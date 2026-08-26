@@ -1,0 +1,44 @@
+name: release
+
+# Tag vX.Y.Z → build the macOS app (Apple Silicon) and attach the .dmg to a
+# GitHub Release. The bundle is unsigned/un-notarized for now: downloaders
+# must right-click → Open (or `xattr -c deck.app`) on first launch. Add
+# APPLE_CERTIFICATE / APPLE_ID secrets and the tauri-action signing inputs
+# when a Developer ID certificate is available.
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-macos:
+    runs-on: macos-latest # Apple Silicon
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            app/src-tauri/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('app/src-tauri/Cargo.lock') }}
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: app
+          tagName: ${{ github.ref_name }}
+          releaseName: 'deck ${{ github.ref_name }}'
+          releaseBody: |
+            macOS (Apple Silicon) build. Unsigned — on first launch,
+            right-click the app and choose Open.
+          releaseDraft: false
+          prerelease: false

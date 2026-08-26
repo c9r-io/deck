@@ -1,0 +1,1592 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>deck</title>
+<link rel="stylesheet" href="vendor/xterm.css">
+<style>
+  :root {
+    --bg: #101318;
+    --panel: #171b22;
+    --raised: #1e242e;
+    --hover: #232b37;
+    --border: #2a3140;
+    --border-soft: #222834;
+    --text: #dce3ec;
+    --muted: #7e8a9a;
+    --faint: #566072;
+    --accent: #4fd6be;
+    --accent-dim: #2a6e62;
+    --run: #41d392;
+    --wait: #e8b45a;
+    --stop: #566072;
+    --danger: #e06c75;
+    --sel: rgba(79, 214, 190, 0.10);
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    --radius: 8px;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 13px;
+    overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+    user-select: none;
+    cursor: default;
+  }
+  button { font: inherit; color: inherit; background: none; border: none; cursor: pointer; }
+  button:focus-visible, input:focus-visible, [tabindex]:focus-visible {
+    outline: 2px solid var(--accent); outline-offset: 1px;
+  }
+  /* body is user-select:none; WebKit refuses keyboard input in a textarea/input
+     that inherits it — xterm's hidden helper textarea included. Force it back. */
+  input, textarea {
+    user-select: text;
+    -webkit-user-select: text;
+  }
+  input {
+    font: inherit; color: var(--text);
+    background: var(--bg); border: 1px solid var(--border);
+    border-radius: 6px; padding: 7px 10px; width: 100%;
+  }
+  input::placeholder { color: var(--faint); }
+
+  #app { display: flex; height: 100%; }
+
+  /* ---------- sidebar ---------- */
+  #sidebar {
+    width: 232px; flex: none;
+    background: var(--panel);
+    border-right: 1px solid var(--border-soft);
+    display: flex; flex-direction: column;
+    transition: width 0.16s ease;
+    overflow: hidden;
+  }
+  .side-top { display: flex; align-items: center; gap: 8px; padding: 14px 10px 10px 14px; }
+  .wordmark { font-family: var(--mono); font-size: 15px; font-weight: 600; letter-spacing: 0.02em; flex: 1; white-space: nowrap; }
+  .wordmark .glyph { color: var(--accent); }
+  .wordmark .sub { color: var(--faint); font-size: 10px; font-weight: 400; }
+  .collapse-btn { padding: 5px 7px; border-radius: 6px; color: var(--faint); flex: none; }
+  .collapse-btn:hover { background: var(--hover); color: var(--text); }
+  .side-home {
+    margin: 0 10px 6px; display: flex; align-items: center; gap: 8px;
+    padding: 7px 10px; border-radius: 6px; color: var(--text); white-space: nowrap;
+  }
+  .side-home:hover { background: var(--hover); }
+  .side-home.active { background: var(--sel); color: var(--accent); }
+  .side-group {
+    padding: 12px 14px 4px; font-size: 10px; font-weight: 600; letter-spacing: 0.09em;
+    text-transform: uppercase; color: var(--faint);
+    display: flex; justify-content: space-between; white-space: nowrap;
+  }
+  .side-list { overflow-y: auto; flex: 1; padding-bottom: 8px; }
+  .side-item {
+    display: flex; align-items: center; gap: 8px;
+    margin: 1px 10px; padding: 6px 10px;
+    border-radius: 6px; cursor: pointer; color: var(--text); white-space: nowrap;
+  }
+  .side-item:hover { background: var(--hover); }
+  .side-item.active { background: var(--sel); }
+  .side-item .name { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+  .side-item .col-tag { font-size: 10px; color: var(--faint); }
+  .side-new {
+    margin: 10px; padding: 8px 10px;
+    display: flex; align-items: center; justify-content: center; gap: 6px;
+    border: 1px dashed var(--border); border-radius: 6px;
+    color: var(--muted); white-space: nowrap;
+  }
+  .side-new:hover { color: var(--accent); border-color: var(--accent-dim); }
+
+  body.side-collapsed #sidebar { width: 50px; }
+  body.side-collapsed .side-top { padding: 14px 0 10px; justify-content: center; }
+  body.side-collapsed .wordmark { display: none; }
+  body.side-collapsed .side-home { justify-content: center; padding: 7px 0; margin: 0 8px 6px; }
+  body.side-collapsed .side-home .label { display: none; }
+  body.side-collapsed .side-group { display: none; }
+  body.side-collapsed .side-item { justify-content: center; padding: 8px 0; margin: 1px 8px; }
+  body.side-collapsed .side-item .name, body.side-collapsed .side-item .col-tag { display: none; }
+  body.side-collapsed .side-new { padding: 8px 0; margin: 8px; }
+  body.side-collapsed .side-new .label { display: none; }
+
+  .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--stop); }
+  .dot.running { background: var(--run); box-shadow: 0 0 6px rgba(65, 211, 146, 0.55); }
+  .dot.waiting { background: var(--wait); animation: pulse 1.6s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: 0.35; } }
+  @media (prefers-reduced-motion: reduce) {
+    .dot.waiting { animation: none; }
+    * { transition: none !important; }
+  }
+
+  #main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+
+  /* ---------- project tabs ---------- */
+  #tabs {
+    display: flex; align-items: flex-end; gap: 2px;
+    padding: 8px 14px 0;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border-soft);
+    overflow-x: auto;
+  }
+  #tabs::-webkit-scrollbar { height: 5px; }
+  .tab {
+    display: flex; align-items: center; gap: 7px;
+    padding: 7px 14px 8px;
+    border: 1px solid transparent; border-bottom: none;
+    border-radius: 8px 8px 0 0;
+    color: var(--muted); white-space: nowrap;
+    cursor: pointer; position: relative; top: 1px;
+    max-width: 220px;
+  }
+  .tab:hover { color: var(--text); background: var(--hover); }
+  .tab.active { color: var(--text); background: var(--bg); border-color: var(--border-soft); font-weight: 600; }
+  .tab .name { overflow: hidden; text-overflow: ellipsis; }
+  .tab .wait-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--wait); animation: pulse 1.6s ease-in-out infinite; }
+  .tab input { padding: 1px 6px; font-size: 13px; width: 110px; background: var(--raised); }
+  .tab-add { padding: 6px 10px 8px; color: var(--faint); border-radius: 8px 8px 0 0; flex: none; }
+  .tab-add:hover { color: var(--accent); background: var(--hover); }
+
+  /* ---------- board view ---------- */
+  #board-view { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+  .board-head { display: flex; align-items: center; gap: 12px; padding: 14px 20px 10px; }
+  .board-head h1 {
+    font-size: 15px; font-weight: 600;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 40%;
+  }
+  .board-head .hint {
+    color: var(--faint); font-size: 12px; margin-left: auto;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0;
+  }
+  .btn {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 6px 12px; border-radius: 6px;
+    background: var(--raised); border: 1px solid var(--border);
+    color: var(--text); white-space: nowrap;
+  }
+  .btn:hover { background: var(--hover); }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #0b201c; font-weight: 600; }
+  .btn.primary:hover { filter: brightness(1.08); }
+  .btn.danger:hover { border-color: var(--danger); color: var(--danger); }
+
+  #columns { flex: 1; display: flex; gap: 12px; padding: 4px 20px 20px; overflow-x: auto; min-height: 0; }
+  .column {
+    flex: 1; min-width: 200px; max-width: 320px;
+    display: flex; flex-direction: column;
+    background: var(--panel);
+    border: 1px solid var(--border-soft); border-radius: 10px;
+    min-height: 0;
+  }
+  .column.drop-target { border-color: var(--accent-dim); background: #182028; }
+  .column.selected { border-color: var(--accent-dim); box-shadow: inset 0 0 0 1px var(--accent-dim); }
+  .column.selected .col-name { color: var(--accent); }
+  .column.selected .col-head::before {
+    content: '▸'; color: var(--accent); font-size: 10px; margin-right: -2px;
+  }
+  .col-head {
+    display: flex; align-items: center; gap: 8px;
+    padding: 10px 12px 8px;
+    font-size: 11px; font-weight: 600; letter-spacing: 0.07em;
+    text-transform: uppercase; color: var(--muted);
+  }
+  .col-head .col-name { cursor: text; }
+  .col-head .count { font-family: var(--mono); font-size: 10px; color: var(--faint); background: var(--raised); border-radius: 8px; padding: 1px 7px; }
+  .col-head input { padding: 2px 6px; font-size: 11px; letter-spacing: 0.07em; text-transform: uppercase; background: var(--raised); width: 120px; }
+  .col-del { margin-left: auto; padding: 1px 6px; border-radius: 4px; color: transparent; font-size: 13px; line-height: 1; }
+  .column:hover .col-del { color: var(--faint); }
+  .col-del:hover { color: var(--danger) !important; background: var(--hover); }
+  .col-cards { flex: 1; overflow-y: auto; padding: 2px 8px 10px; display: flex; flex-direction: column; gap: 8px; }
+
+  .col-ghost { flex: none; width: 150px; display: flex; align-items: flex-start; }
+  .col-ghost button { width: 100%; padding: 10px; border: 1px dashed var(--border); border-radius: 10px; color: var(--faint); font-size: 12px; }
+  .col-ghost button:hover { color: var(--accent); border-color: var(--accent-dim); }
+
+  .card {
+    background: var(--raised);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 10px 12px;
+    cursor: pointer;
+    transition: border-color 0.12s;
+  }
+  .card:hover { border-color: #3a4356; }
+  .card.waiting { border-color: rgba(232, 180, 90, 0.45); }
+  .card.waiting:hover { border-color: rgba(232, 180, 90, 0.7); }
+  .card.dragging { opacity: 0.45; }
+  .card-top { display: flex; align-items: center; gap: 8px; }
+  .card-title { font-weight: 600; flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .mem-chip {
+    font-family: var(--mono); font-size: 10px; color: var(--faint);
+    background: var(--panel); border: 1px solid var(--border-soft);
+    border-radius: 4px; padding: 1px 5px; flex: none;
+    font-variant-numeric: tabular-nums;
+  }
+  .mem-chip:empty { display: none; }
+  .mem-chip.high { color: var(--wait); border-color: rgba(232, 180, 90, 0.35); }
+  .sess-head .mem-chip { font-size: 11px; padding: 2px 7px; background: var(--raised); border-color: var(--border); }
+  .card-meta {
+    margin-top: 5px; display: flex; gap: 8px; align-items: baseline;
+    font-family: var(--mono); font-size: 11px; color: var(--muted);
+    white-space: nowrap; overflow: hidden;
+  }
+  .card-meta .cmd { color: var(--accent); flex: none; }
+  .card-meta .dir { overflow: hidden; text-overflow: ellipsis; color: var(--faint); }
+  .card-desc {
+    margin-top: 5px; font-size: 11.5px; line-height: 1.4; color: var(--muted);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .card-desc input { padding: 2px 6px; font-size: 11.5px; background: var(--panel); }
+  .card-tail {
+    margin-top: 8px; padding: 7px 9px;
+    background: var(--bg); border-radius: 6px;
+    font-family: var(--mono); font-size: 11px; line-height: 1.5;
+    color: var(--muted);
+    white-space: nowrap; overflow: hidden;
+  }
+  .card-tail div { overflow: hidden; text-overflow: ellipsis; }
+  .card-actions { margin-top: 8px; display: none; gap: 6px; }
+  .card:hover .card-actions { display: flex; }
+  .chip-btn { font-size: 11px; padding: 3px 9px; border-radius: 5px; background: var(--panel); border: 1px solid var(--border); color: var(--muted); }
+  .chip-btn:hover { color: var(--text); border-color: var(--faint); }
+  .chip-btn.accent:hover { color: var(--accent); border-color: var(--accent-dim); }
+  .chip-btn.danger:hover { color: var(--danger); border-color: var(--danger); }
+
+  /* ---------- session view ---------- */
+  #session-view { flex: 1; display: none; flex-direction: column; min-height: 0; }
+  .sess-head {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--border-soft);
+    background: var(--panel);
+  }
+  .back-btn { display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 6px; color: var(--muted); }
+  .back-btn:hover { background: var(--hover); color: var(--text); }
+  .sess-title { font-weight: 600; display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .sess-title .name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .sess-path { font-family: var(--mono); font-size: 11px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .sess-spacer { flex: 1; min-width: 12px; }
+  .col-select {
+    font-size: 12px; color: var(--muted);
+    background: var(--raised); border: 1px solid var(--border);
+    border-radius: 6px; padding: 5px 8px; font-family: var(--sans);
+  }
+  #terminal { flex: 1; min-height: 0; background: var(--bg); padding: 10px 6px 10px 14px; }
+  #terminal .xterm { height: 100%; }
+  #terminal, #terminal * { user-select: text; -webkit-user-select: text; }
+  /* IME preedit overlay — xterm leaves it unstyled, which is invisible on a
+     dark background */
+  #terminal .composition-view {
+    color: var(--text);
+    background: var(--raised);
+    outline: 1px solid var(--accent-dim);
+    border-radius: 2px;
+    padding: 0 2px;
+  }
+
+  /* ---------- context menu ---------- */
+  #ctx {
+    position: fixed; z-index: 50; display: none;
+    min-width: 180px;
+    max-height: min(70vh, 480px); overflow-y: auto;
+    background: var(--raised); border: 1px solid var(--border);
+    border-radius: 8px; padding: 5px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  }
+  #ctx button, #ctx .ctx-label { display: block; width: 100%; text-align: left; padding: 7px 10px; border-radius: 5px; font-size: 12.5px; }
+  #ctx button:hover { background: var(--hover); }
+  #ctx button.danger:hover { color: var(--danger); }
+  #ctx .ctx-label { color: var(--faint); font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; padding-bottom: 3px; }
+  #ctx .ctx-value {
+    display: block; font-family: var(--mono); font-size: 11px; color: var(--faint);
+    padding: 6px 10px 4px; max-width: 280px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  #ctx hr { border: none; border-top: 1px solid var(--border-soft); margin: 4px 2px; }
+
+  /* ---------- quick-command / completion bar (bottom of terminal) ---------- */
+  #quick-bar {
+    display: none; align-items: center; gap: 6px;
+    padding: 8px 16px;
+    background: var(--panel); border-top: 1px solid var(--border-soft);
+    overflow-x: auto; white-space: nowrap;
+  }
+  .qb-chip b { color: var(--accent); font-weight: 600; }
+  .qb-chip.first { border-color: var(--accent-dim); }
+  #quick-bar::-webkit-scrollbar { height: 5px; }
+  #quick-bar .qb-label { font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--faint); flex: none; margin-right: 4px; }
+  .qb-chip {
+    font-family: var(--mono); font-size: 11px;
+    padding: 3px 10px; border-radius: 12px;
+    border: 1px solid var(--border); color: var(--muted);
+    flex: none; max-width: 260px; overflow: hidden; text-overflow: ellipsis;
+  }
+  .qb-chip:hover { color: var(--accent); border-color: var(--accent-dim); background: var(--sel); }
+  #quick-bar .qb-close { margin-left: auto; color: var(--faint); padding: 2px 7px; border-radius: 4px; flex: none; }
+  #quick-bar .qb-close:hover { color: var(--text); background: var(--hover); }
+
+  /* ---------- confirm dialog (window.confirm is a no-op in WKWebView) ---------- */
+  #cfm {
+    position: fixed; inset: 0; z-index: 70; display: none;
+    background: rgba(8, 10, 13, 0.55);
+    align-items: flex-start; justify-content: center;
+  }
+  #cfm-box {
+    margin-top: 16vh; width: 380px; max-width: calc(100vw - 40px);
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 12px; padding: 18px;
+    box-shadow: 0 16px 48px rgba(0, 0, 0, 0.55);
+  }
+  #cfm-msg { font-size: 13px; line-height: 1.5; margin-bottom: 16px; }
+  .cfm-actions { display: flex; gap: 8px; justify-content: flex-end; }
+  .btn.cfm-danger { background: var(--danger); border-color: var(--danger); color: #1a0e10; font-weight: 600; }
+  .btn.cfm-danger:hover { filter: brightness(1.1); }
+
+  /* ---------- toast / banner ---------- */
+  #toasts { position: fixed; bottom: 18px; right: 18px; z-index: 60; display: flex; flex-direction: column; gap: 8px; }
+  .toast {
+    background: var(--raised); border: 1px solid var(--border);
+    border-left: 3px solid var(--accent);
+    border-radius: 8px; padding: 9px 14px;
+    font-size: 12.5px; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+    animation: toast-in 0.18s ease-out;
+  }
+  @keyframes toast-in { from { transform: translateY(8px); opacity: 0; } }
+  #banner {
+    display: none; padding: 10px 16px; font-size: 12.5px;
+    background: rgba(232, 180, 90, 0.12); color: var(--wait);
+    border-bottom: 1px solid rgba(232, 180, 90, 0.3);
+  }
+
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 5px; border: 2px solid transparent; background-clip: content-box; }
+  ::-webkit-scrollbar-track { background: transparent; }
+</style>
+</head>
+<body>
+<div id="app">
+  <nav id="sidebar">
+    <div class="side-top">
+      <div class="wordmark"><span class="glyph">▞</span> deck <span class="sub">0.2</span></div>
+      <button class="collapse-btn" id="collapse-btn" title="Collapse sidebar (⌘B)">
+        <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M10 3 5 8l5 5"/></svg>
+      </button>
+    </div>
+    <button class="side-home active" id="home-btn" title="Board">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1.5" y="2.5" width="3.4" height="11"/><rect x="6.3" y="2.5" width="3.4" height="7"/><rect x="11.1" y="2.5" width="3.4" height="9"/></svg>
+      <span class="label">Board</span>
+    </button>
+    <div class="side-group"><span>Sessions</span><span id="side-count"></span></div>
+    <div class="side-list" id="side-list"></div>
+    <button class="side-new" id="side-new" title="New session"><span>＋</span><span class="label">New session</span></button>
+  </nav>
+
+  <div id="main">
+    <div id="tabs"></div>
+    <div id="banner">deck needs tmux as its session backend — install it with <b>brew install tmux</b> and restart the app.</div>
+
+    <div id="board-view">
+      <div class="board-head">
+        <h1 id="board-title">Sessions</h1>
+        <button class="btn primary" id="board-new">＋ New session</button>
+        <span class="hint">click a board title to target new sessions · drag cards between boards · right-click for actions</span>
+      </div>
+      <div id="columns"></div>
+    </div>
+
+    <div id="session-view">
+      <div class="sess-head">
+        <button class="back-btn" id="back-btn" title="Back to board">
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M10 3 5 8l5 5"/></svg>
+          Board
+        </button>
+        <span class="dot" id="sess-dot"></span>
+        <div class="sess-title"><span class="name" id="sess-name"></span></div>
+        <span class="sess-path" id="sess-path"></span>
+        <div class="sess-spacer"></div>
+        <span class="mem-chip" id="sess-mem" title="Memory of the whole session process tree: shell + agent + spawned children"></span>
+        <select class="col-select" id="sess-col" title="Move to board"></select>
+        <button class="btn" id="sess-new-here" title="New session in this directory">＋ Here</button>
+        <button class="btn danger" id="sess-close" title="Close session (terminates the shell and removes the card)">Close</button>
+      </div>
+      <div id="terminal"></div>
+      <div id="quick-bar"></div>
+    </div>
+  </div>
+</div>
+
+<div id="ctx"></div>
+<div id="cfm">
+  <div id="cfm-box">
+    <div id="cfm-msg"></div>
+    <div class="cfm-actions">
+      <button class="btn" id="cfm-no">Cancel</button>
+      <button class="btn cfm-danger" id="cfm-yes">Confirm</button>
+    </div>
+  </div>
+</div>
+<div id="toasts"></div>
+
+<script src="vendor/xterm.js"></script>
+<script src="vendor/addon-fit.js"></script>
+<script>
+'use strict';
+/* ================================================================
+   deck 0.2 — real frontend. tmux owns the sessions; the Rust side
+   (src-tauri) provides board persistence, a poll endpoint, and a
+   PTY bridge for the one session that is open.
+   ================================================================ */
+
+/* guarded so the page also loads in a plain browser (headless UI testing) */
+const inv = (cmd, args) => window.__TAURI__
+  ? window.__TAURI__.core.invoke(cmd, args)
+  : Promise.reject('no tauri runtime');
+const listen = (ev, cb) => window.__TAURI__
+  ? window.__TAURI__.event.listen(ev, cb)
+  : Promise.reject('no tauri runtime');
+
+/* diagnostics → ~/.deck/app.log (webview console is invisible in production) */
+const ulog = m => inv('ui_log', { msg: String(m) }).catch(() => {});
+window.onerror = (msg, src, line) => ulog(`error: ${msg} @${line}`);
+let kdLogged = 0;
+document.addEventListener('keydown', e => {
+  if (kdLogged < 20) {
+    kdLogged++;
+    ulog(`keydown '${e.key}' composing=${e.isComposing} keyCode=${e.keyCode} target=${e.target.tagName}`);
+  }
+}, true);
+document.addEventListener('compositionstart', e => ulog(`compositionstart '${e.data}'`), true);
+document.addEventListener('compositionend', e => ulog(`compositionend '${e.data}'`), true);
+
+const $ = id => document.getElementById(id);
+let HOME = '~';
+
+/* how long without output before a live session counts as "quiet" —
+   amber means "no output for a while, may be waiting for you" */
+const QUIET_SECS = 15;
+const POLL_MS = 2500;
+
+/* ---------- state ---------- */
+const store = {
+  projects: [],   // {id, name, columns: [{id, name}]}
+  cards: [],      // {id, projectId, columnId, title, desc, cmd, dir, session}
+                  // + runtime (not persisted): status, mem, tail, idle
+};
+const state = {
+  projectId: null,
+  view: 'board',
+  sessionId: null,
+};
+
+let nextIdCounter = 1;
+const genId = p => p + Date.now().toString(36) + (nextIdCounter++).toString(36);
+
+function sessionName(title, id) {
+  let slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  if (!slug) slug = 'card';
+  return 'deck-' + slug.slice(0, 24).replace(/-+$/, '') + '-' + id.slice(-4);
+}
+
+/* ---------- tiny event bus (same contract as the mock) ---------- */
+const listeners = new Set();
+const emit = (ev, s) => listeners.forEach(fn => fn(ev, s));
+
+/* ---------- persistence ---------- */
+let saveTimer = null;
+function saveBoard() {
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => {
+    const data = {
+      projects: store.projects,
+      cards: store.cards.map(c => ({
+        id: c.id, projectId: c.projectId, columnId: c.columnId,
+        title: c.title, desc: c.desc || '', cmd: c.cmd, dir: c.dir, session: c.session,
+      })),
+    };
+    inv('save_board', { data: JSON.stringify(data, null, 2) })
+      .catch(e => toast('save failed: ' + e));
+  }, 300);
+}
+
+/* ---------- provider (board CRUD is sync-local, persistence async) ---------- */
+const provider = {
+  projects: () => store.projects,
+  project: pid => store.projects.find(p => p.id === pid),
+  list: pid => store.cards.filter(c => !pid || c.projectId === pid),
+  get: sid => store.cards.find(c => c.id === sid),
+  subscribe: fn => { listeners.add(fn); return () => listeners.delete(fn); },
+
+  createProject(name) {
+    const p = {
+      id: genId('P'),
+      name,
+      columns: ['Attention', 'Working', 'Queued', 'Parked'].map(n => ({ id: genId('C'), name: n })),
+    };
+    store.projects.push(p);
+    saveBoard();
+    emit('projects', p);
+    return p;
+  },
+  renameProject(pid, name) {
+    this.project(pid).name = name;
+    saveBoard();
+    emit('projects');
+  },
+  removeProject(pid) {
+    for (const c of store.cards.filter(c => c.projectId === pid)) {
+      if (c.status !== 'stopped') inv('kill_session', { name: c.session }).catch(() => {});
+    }
+    store.cards = store.cards.filter(c => c.projectId !== pid);
+    store.projects = store.projects.filter(p => p.id !== pid);
+    saveBoard();
+    emit('projects');
+  },
+
+  addColumn(pid, name) {
+    const col = { id: genId('C'), name };
+    this.project(pid).columns.push(col);
+    saveBoard();
+    emit('projects');
+    return col;
+  },
+  renameColumn(pid, cid, name) {
+    const col = this.project(pid).columns.find(c => c.id === cid);
+    if (col) col.name = name;
+    saveBoard();
+    emit('projects');
+  },
+  removeColumn(pid, cid) {
+    const p = this.project(pid);
+    if (p.columns.length <= 1) return false;
+    if (p.selected === cid) p.selected = null;
+    p.columns = p.columns.filter(c => c.id !== cid);
+    const fallback = p.columns[0];
+    let moved = 0;
+    for (const c of store.cards) {
+      if (c.projectId === pid && c.columnId === cid) { c.columnId = fallback.id; moved++; }
+    }
+    saveBoard();
+    emit('projects');
+    return { fallback: fallback.name, moved };
+  },
+
+  create({ projectId, columnId, title, cmd, dir, desc = '' }) {
+    const id = genId('S');
+    const card = {
+      id, projectId, columnId, title, cmd, dir, desc,
+      session: sessionName(title, id),
+      status: 'stopped', mem: null, tail: [],
+    };
+    store.cards.push(card);
+    saveBoard();
+    emit('list', card);
+    return card;
+  },
+
+  async start(sid) {
+    const c = this.get(sid);
+    if (!c) return;
+    try {
+      await inv('start_session', { name: c.session, dir: c.dir, cmd: c.cmd });
+      await pollNow();
+    } catch (e) {
+      toast('start failed: ' + e);
+    }
+  },
+
+  /* stop and delete are one operation */
+  async close(sid) {
+    const c = this.get(sid);
+    if (!c) return;
+    if (c.status !== 'stopped') {
+      try { await inv('kill_session', { name: c.session }); } catch (e) { /* already gone */ }
+    }
+    store.cards = store.cards.filter(x => x.id !== sid);
+    saveBoard();
+    emit('list', c);
+  },
+
+  move(sid, columnId) {
+    const c = this.get(sid);
+    if (!c || c.columnId === columnId) return;
+    c.columnId = columnId;
+    saveBoard();
+    emit('list', c);
+  },
+  rename(sid, title) {
+    const c = this.get(sid);
+    if (c) { c.title = title; saveBoard(); emit('list', c); }
+  },
+  setDesc(sid, desc) {
+    const c = this.get(sid);
+    if (c) { c.desc = desc; saveBoard(); emit('list', c); }
+  },
+};
+
+/* ---------- polling ---------- */
+let pollTimer = null;
+async function pollNow() {
+  if (!store.cards.length) return;
+  const names = store.cards.map(c => c.session);
+  const tailFor = state.view === 'board'
+    ? store.cards.filter(c => c.projectId === state.projectId).map(c => c.session)
+    : [];
+  let infos;
+  try {
+    infos = await inv('poll_sessions', { names, tailFor });
+  } catch (e) {
+    return;
+  }
+  const byName = new Map(infos.map(i => [i.name, i]));
+  for (const c of store.cards) {
+    const info = byName.get(c.session);
+    if (!info) continue;
+    const status = !info.alive ? 'stopped'
+      : (info.idle_secs != null && info.idle_secs >= QUIET_SECS) ? 'waiting' : 'running';
+    const mem = info.alive && info.mem_mb != null ? info.mem_mb : null;
+    const tail = info.tail || [];
+    if (status !== c.status) { c.status = status; emit('status', c); }
+    if ((mem == null) !== (c.mem == null) || (mem != null && Math.abs(mem - c.mem) > 1)) {
+      c.mem = mem;
+      emit('mem', c);
+    }
+    if (tail.join('\n') !== (c.tail || []).join('\n')) { c.tail = tail; emit('output', c); }
+  }
+}
+function startPolling() {
+  clearInterval(pollTimer);
+  pollTimer = setInterval(pollNow, POLL_MS);
+  pollNow();
+}
+
+/* ---------- confirm dialog (window.confirm is a silent no-op in WKWebView) ---------- */
+let cfmResolve = null;
+function confirmDialog(msg) {
+  return new Promise(resolve => {
+    cfmResolve = resolve;
+    $('cfm-msg').textContent = msg;
+    $('cfm').style.display = 'flex';
+    $('cfm-yes').focus();
+  });
+}
+function cfmDone(v) {
+  $('cfm').style.display = 'none';
+  if (cfmResolve) { cfmResolve(v); cfmResolve = null; }
+}
+$('cfm-yes').onclick = () => cfmDone(true);
+$('cfm-no').onclick = () => cfmDone(false);
+$('cfm').addEventListener('mousedown', e => { if (e.target === $('cfm')) cfmDone(false); });
+document.addEventListener('keydown', e => {
+  if ($('cfm').style.display !== 'flex') return;
+  if (e.key === 'Enter') { e.stopPropagation(); e.preventDefault(); cfmDone(true); }
+  if (e.key === 'Escape') { e.stopPropagation(); e.preventDefault(); cfmDone(false); }
+}, true);
+
+/* ---------- toasts ---------- */
+function toast(msg) {
+  const el = document.createElement('div');
+  el.className = 'toast';
+  el.textContent = msg;
+  $('toasts').appendChild(el);
+  setTimeout(() => el.remove(), 2600);
+}
+
+/* ---------- inline rename helper ---------- */
+function inlineRename(host, current, onDone, allowEmpty = false) {
+  const input = document.createElement('input');
+  input.value = current;
+  host.replaceChildren(input);
+  input.focus();
+  input.select();
+  let done = false;
+  const finish = commit => {
+    if (done) return;
+    done = true;
+    const v = input.value.trim();
+    onDone(!commit ? null : (v || (allowEmpty ? '' : null)));
+  };
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter') finish(true);
+    if (e.key === 'Escape') finish(false);
+    e.stopPropagation();
+  });
+  input.addEventListener('blur', () => finish(true));
+  input.addEventListener('click', e => e.stopPropagation());
+  input.addEventListener('dblclick', e => e.stopPropagation());
+}
+
+/* ---------- formatting ---------- */
+function fmtMem(mb) {
+  return mb >= 1024 ? (mb / 1024).toFixed(1) + 'G' : Math.round(mb) + 'M';
+}
+function setMemChip(chip, s) {
+  if (!chip) return;
+  chip.textContent = s.mem == null ? '' : fmtMem(s.mem);
+  chip.classList.toggle('high', s.mem != null && s.mem > 1536);
+}
+
+const activeProject = () => provider.project(state.projectId);
+
+const COL_HINTS = {
+  Attention: 'things you want to deal with next',
+  Working: 'running autonomously, nothing needed from you',
+  Queued: 'created but not started yet',
+  Parked: 'kept around, low priority',
+};
+
+const DOT_TITLES = {
+  running: 'output within the last few seconds',
+  waiting: 'no output for a while — may be waiting for input',
+  stopped: 'no live session',
+};
+
+/* ---------- sidebar ---------- */
+function renderSidebar() {
+  const list = $('side-list');
+  const st = list.scrollTop;
+  list.innerHTML = '';
+  const all = provider.list(state.projectId);
+  const order = { waiting: 0, running: 1, stopped: 2 };
+  all.sort((a, b) => order[a.status] - order[b.status]);
+  $('side-count').textContent = all.length;
+  const proj = activeProject();
+  for (const s of all) {
+    const el = document.createElement('div');
+    el.className = 'side-item' + (state.view === 'session' && state.sessionId === s.id ? ' active' : '');
+    el.title = s.title;
+    el.innerHTML = `<span class="dot ${s.status}"></span><span class="name"></span><span class="col-tag"></span>`;
+    el.querySelector('.name').textContent = s.title;
+    const c = proj && proj.columns.find(c => c.id === s.columnId);
+    el.querySelector('.col-tag').textContent = c ? c.name : '';
+    el.onclick = () => openSession(s.id);
+    el.oncontextmenu = e => showSessionCtx(e, s.id);
+    list.appendChild(el);
+  }
+  list.scrollTop = st;
+  $('home-btn').classList.toggle('active', state.view === 'board');
+}
+
+/* ---------- project tabs ---------- */
+function renderTabs() {
+  const bar = $('tabs');
+  bar.innerHTML = '';
+  for (const p of provider.projects()) {
+    const el = document.createElement('div');
+    el.className = 'tab' + (p.id === state.projectId ? ' active' : '');
+    el.innerHTML = `<span class="name"></span>`;
+    el.querySelector('.name').textContent = p.name;
+    if (p.id !== state.projectId &&
+        provider.list(p.id).some(s => s.status === 'waiting')) {
+      el.insertAdjacentHTML('beforeend', '<span class="wait-dot" title="a session has been quiet — may be waiting for input"></span>');
+    }
+    el.onclick = () => switchProject(p.id);
+    el.ondblclick = () => renameTab(el, p);
+    el.oncontextmenu = e => showProjectCtx(e, p.id);
+    bar.appendChild(el);
+  }
+  const add = document.createElement('button');
+  add.className = 'tab-add';
+  add.title = 'New project';
+  add.textContent = '＋';
+  add.onclick = () => {
+    const p = provider.createProject('new project');
+    switchProject(p.id);
+    const tab = document.querySelector('#tabs .tab.active');
+    if (tab) renameTab(tab, p);
+  };
+  bar.appendChild(add);
+}
+
+function renameTab(el, p) {
+  inlineRename(el, p.name, v => {
+    if (v) provider.renameProject(p.id, v);
+    render();
+  });
+}
+
+function switchProject(pid) {
+  if (state.projectId === pid && state.view === 'board') return;
+  if (state.view === 'session') leaveSessionView();
+  state.projectId = pid;
+  state.view = 'board';
+  state.sessionId = null;
+  render();
+  pollNow();
+}
+
+/* ---------- board ---------- */
+function renderBoard() {
+  const p = activeProject();
+  if (!p) return;
+  $('board-title').textContent = p.name;
+  const wrap = $('columns');
+  const hScroll = wrap.scrollLeft;
+  const colScroll = {};
+  wrap.querySelectorAll('.column[data-cid]').forEach(el => {
+    colScroll[el.dataset.cid] = el.querySelector('.col-cards').scrollTop;
+  });
+  wrap.innerHTML = '';
+  const all = provider.list(p.id);
+
+  for (const c of p.columns) {
+    const colEl = document.createElement('div');
+    colEl.className = 'column';
+    colEl.dataset.cid = c.id;
+    const cards = all.filter(s => s.columnId === c.id);
+    if (p.selected === c.id) colEl.classList.add('selected');
+    colEl.innerHTML = `
+      <div class="col-head">
+        <span class="col-name"></span>
+        <span class="count">${cards.length}</span>
+        <button class="col-del" title="Delete board">✕</button>
+      </div>
+      <div class="col-cards"></div>`;
+    /* click anywhere on the board (header or empty space) to make it the
+       target for new sessions; cards stop propagation */
+    colEl.addEventListener('click', e => {
+      if (e.target.closest('.card, .col-del') || e.target.tagName === 'INPUT') return;
+      p.selected = p.selected === c.id ? null : c.id;
+      saveBoard();
+      render();
+    });
+    const nameEl = colEl.querySelector('.col-name');
+    nameEl.textContent = c.name;
+    const hint = COL_HINTS[c.name];
+    nameEl.title = (hint ? hint + ' · ' : '') +
+      'click to target new sessions here · double-click to rename';
+    nameEl.ondblclick = () => {
+      inlineRename(nameEl, c.name, v => {
+        if (v) provider.renameColumn(p.id, c.id, v);
+        render();
+      });
+    };
+    colEl.querySelector('.col-del').onclick = async e => {
+      e.stopPropagation();
+      if (p.columns.length <= 1) { toast('a project needs at least one board'); return; }
+      if (cards.length &&
+          !(await confirmDialog(`Delete board "${c.name}"? Its ${cards.length} card(s) move to "${p.columns.find(x => x.id !== c.id).name}".`))) return;
+      const r = provider.removeColumn(p.id, c.id);
+      if (r && r.moved) toast(`moved ${r.moved} card(s) to ${r.fallback}`);
+    };
+
+    let dragDepth = 0;
+    colEl.addEventListener('dragover', e => e.preventDefault());
+    colEl.addEventListener('dragenter', e => {
+      e.preventDefault();
+      dragDepth++;
+      colEl.classList.add('drop-target');
+    });
+    colEl.addEventListener('dragleave', () => {
+      if (--dragDepth <= 0) { dragDepth = 0; colEl.classList.remove('drop-target'); }
+    });
+    colEl.addEventListener('drop', e => {
+      e.preventDefault();
+      dragDepth = 0;
+      colEl.classList.remove('drop-target');
+      const sid = e.dataTransfer.getData('text/deck-session');
+      if (sid) { provider.move(sid, c.id); toast(`moved to ${c.name}`); }
+    });
+
+    const body = colEl.querySelector('.col-cards');
+    for (const s of cards) body.appendChild(cardEl(s));
+    wrap.appendChild(colEl);
+  }
+
+  const ghost = document.createElement('div');
+  ghost.className = 'col-ghost';
+  ghost.innerHTML = '<button>＋ New board</button>';
+  ghost.querySelector('button').onclick = () => {
+    const c = provider.addColumn(p.id, 'new board');
+    render();
+    wrap.scrollLeft = wrap.scrollWidth;
+    const heads = document.querySelectorAll('#columns .column .col-name');
+    const nameEl = heads[heads.length - 1];
+    if (nameEl) inlineRename(nameEl, c.name, v => {
+      if (v) provider.renameColumn(p.id, c.id, v);
+      render();
+    });
+  };
+  wrap.appendChild(ghost);
+
+  wrap.scrollLeft = hScroll;
+  wrap.querySelectorAll('.column[data-cid]').forEach(el => {
+    const st = colScroll[el.dataset.cid];
+    if (st) el.querySelector('.col-cards').scrollTop = st;
+  });
+}
+
+function cardEl(s) {
+  const el = document.createElement('div');
+  el.className = 'card' + (s.status === 'waiting' ? ' waiting' : '');
+  el.dataset.sid = s.id;
+  el.draggable = true;
+
+  const tail = (s.tail || []).slice(-2);
+  el.innerHTML = `
+    <div class="card-top"><span class="dot ${s.status}" title="${DOT_TITLES[s.status] || ''}"></span><span class="card-title"></span><span class="mem-chip" title="Memory of the whole session process tree: shell + agent + spawned children"></span></div>
+    <div class="card-meta"><span class="cmd"></span><span class="dir"></span></div>
+    ${s.desc ? '<div class="card-desc"></div>' : ''}
+    ${tail.length ? '<div class="card-tail">' + tail.map(() => '<div></div>').join('') + '</div>' : ''}
+    <div class="card-actions">
+      <button class="chip-btn accent" data-act="open">open</button>
+      ${s.status === 'stopped' ? '<button class="chip-btn" data-act="start">start</button>' : ''}
+      <button class="chip-btn danger" data-act="close">close</button>
+      <button class="chip-btn" data-act="menu">⋯</button>
+    </div>`;
+  el.querySelector('.card-title').textContent = s.title;
+  setMemChip(el.querySelector('.mem-chip'), s);
+  el.querySelector('.cmd').textContent = s.cmd ? '$ ' + s.cmd : '$ shell';
+  el.querySelector('.dir').textContent = s.dir;
+  if (s.desc) {
+    const d = el.querySelector('.card-desc');
+    d.textContent = s.desc;
+    d.title = s.desc;
+  }
+  const tailDivs = el.querySelectorAll('.card-tail div');
+  tail.forEach((l, i) => { tailDivs[i].textContent = l; });
+
+  el.addEventListener('dragstart', e => {
+    e.dataTransfer.setData('text/deck-session', s.id);
+    el.classList.add('dragging');
+  });
+  el.addEventListener('dragend', () => el.classList.remove('dragging'));
+  el.addEventListener('click', e => {
+    e.stopPropagation();   // don't toggle the board selection underneath
+    const act = e.target.dataset && e.target.dataset.act;
+    if (act === 'start') { provider.start(s.id); toast(`started: ${s.title}`); return; }
+    if (act === 'close') { closeSession(s.id); return; }
+    if (act === 'menu') { showSessionCtx(e, s.id); return; }
+    openSession(s.id);
+  });
+  el.oncontextmenu = e => showSessionCtx(e, s.id);
+  return el;
+}
+
+function updateCardInPlace(s) {
+  const el = document.querySelector(`.card[data-sid="${s.id}"]`);
+  if (!el) return;
+  const tail = (s.tail || []).slice(-2);
+  let tailEl = el.querySelector('.card-tail');
+  if (!tailEl && tail.length) {
+    tailEl = document.createElement('div');
+    tailEl.className = 'card-tail';
+    (el.querySelector('.card-desc') || el.querySelector('.card-meta')).after(tailEl);
+  }
+  if (tailEl) {
+    tailEl.replaceChildren(...tail.map(l => {
+      const d = document.createElement('div');
+      d.textContent = l;
+      return d;
+    }));
+  }
+  const dot = el.querySelector('.dot');
+  if (dot) { dot.className = 'dot ' + s.status; dot.title = DOT_TITLES[s.status] || ''; }
+  el.classList.toggle('waiting', s.status === 'waiting');
+}
+
+async function closeSession(sid) {
+  const s = provider.get(sid);
+  if (!s) return;
+  const live = s.status !== 'stopped';
+  if (!(await confirmDialog(`Close "${s.title}"?${live ? ' The shell will be terminated.' : ''}`))) return;
+  if (state.sessionId === sid) leaveSessionView();
+  await provider.close(sid);
+  if (state.view === 'session' && state.sessionId === sid) backToBoard();
+  toast(`closed: ${s.title}`);
+  render();
+}
+
+/* ---------- terminal (xterm + PTY bridge) ---------- */
+let term = null, fitAddon = null, resizeObs = null, attachedName = null, resizeTimer = null;
+
+function b64ToU8(b64) {
+  const bin = atob(b64);
+  const u8 = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+  return u8;
+}
+function strToB64(str) {
+  const u8 = new TextEncoder().encode(str);
+  let bin = '';
+  for (let i = 0; i < u8.length; i++) bin += String.fromCharCode(u8[i]);
+  return btoa(bin);
+}
+
+const LINK_RE = /(https?:\/\/[^\s"'`)\]]+)|((?:~\/|\.{0,2}\/)?[\w.\-]+(?:\/[\w.\-]+)+(?::\d+(?::\d+)?)?|~\/[\w.\-]+)/g;
+function looksLikePath(v) {
+  if (/^(~\/|\.{1,2}\/|\/)/.test(v)) return true;
+  if (v.split('/').length > 2) return true;
+  return /\.[A-Za-z0-9]{1,8}(?::\d+(?::\d+)?)?$/.test(v.split('/').pop());
+}
+
+function mountTerminal(card) {
+  disposeTerminal();
+  const host = $('terminal');
+  host.innerHTML = '';
+  term = new Terminal({
+    fontFamily: 'ui-monospace, "SF Mono", Menlo, monospace',
+    fontSize: 12.5,
+    lineHeight: 1.25,
+    cursorBlink: true,
+    macOptionIsMeta: true,
+    scrollback: 5000,
+    theme: {
+      background: '#101318',
+      foreground: '#dce3ec',
+      cursor: '#4fd6be',
+      selectionBackground: 'rgba(79,214,190,0.25)',
+      black: '#171b22', brightBlack: '#566072',
+      red: '#e06c75', brightRed: '#e06c75',
+      green: '#41d392', brightGreen: '#41d392',
+      yellow: '#e8b45a', brightYellow: '#e8b45a',
+      blue: '#6ca8ff', brightBlue: '#6ca8ff',
+      magenta: '#c678dd', brightMagenta: '#c678dd',
+      cyan: '#4fd6be', brightCyan: '#4fd6be',
+      white: '#dce3ec', brightWhite: '#ffffff',
+    },
+  });
+  fitAddon = new FitAddon.FitAddon();
+  term.loadAddon(fitAddon);
+  term.open(host);
+  fitAddon.fit();
+
+  let odLogged = 0;
+  term.onData(d => {
+    feedMirror(d);
+    renderSuggest();
+    if (odLogged < 3) { odLogged++; ulog(`onData len=${d.length} attached=${!!attachedName}`); }
+    if (attachedName) {
+      inv('pty_write', { name: attachedName, dataB64: strToB64(d) })
+        .catch(e => ulog('pty_write failed: ' + e));
+    }
+  });
+  const ta = host.querySelector('.xterm-helper-textarea');
+  if (ta) {
+    ta.addEventListener('focus', () => ulog('xterm textarea focused'));
+    ta.addEventListener('blur', () => ulog('xterm textarea blurred'));
+  } else {
+    ulog('xterm helper textarea NOT FOUND');
+  }
+  /* app shortcuts pass through; ⌘C/⌘V are handled here because a menu-less
+     macOS app gets no standard edit actions in the webview */
+  term.attachCustomKeyEventHandler(e => {
+    if (e.metaKey && e.key === 'b') return false;
+    /* ⌘V: returning false skips xterm's key handling; the browser then fires
+       a native paste event, which xterm's textarea handler feeds into the
+       PTY. (navigator.clipboard.readText is permission-blocked in WKWebView —
+       the native paste event is the reliable path.) */
+    if (e.type === 'keydown' && e.metaKey && e.key === 'v') return false;
+    if (e.type === 'keydown' && e.metaKey && e.key === 'c' && term.hasSelection()) {
+      navigator.clipboard.writeText(term.getSelection()).catch(() => {});
+      return false;
+    }
+    /* completion bar: Tab accepts the first match; Esc dismisses */
+    if (e.type === 'keydown' && $('quick-bar').style.display === 'flex') {
+      if (e.key === 'Tab' && lineBuf && lineBuf.length >= 2) {
+        const items = suggestions();
+        if (items.length) {
+          e.preventDefault();
+          acceptSuggestion(items[0]);
+          return false;
+        }
+      }
+      if (e.key === 'Escape') {
+        lineBuf = null;
+        freshShell = false;
+        renderSuggest();
+        return false;
+      }
+    }
+    return true;
+  });
+
+  /* clickable paths and URLs in terminal output */
+  term.registerLinkProvider({
+    provideLinks(lineNo, cb) {
+      const line = term.buffer.active.getLine(lineNo - 1);
+      if (!line) return cb(undefined);
+      const text = line.translateToString(true);
+      const links = [];
+      LINK_RE.lastIndex = 0;
+      let m;
+      while ((m = LINK_RE.exec(text)) !== null) {
+        let value = m[0];
+        while (/[.,;:]$/.test(value)) value = value.slice(0, -1);
+        const kind = m[1] ? 'url' : 'path';
+        if (kind === 'path' && !looksLikePath(value)) continue;
+        links.push({
+          range: { start: { x: m.index + 1, y: lineNo }, end: { x: m.index + value.length, y: lineNo } },
+          text: value,
+          activate: (e, txt) => {
+            e.stopPropagation();
+            showLinkCtx(e, kind, txt, card.dir);
+          },
+        });
+      }
+      cb(links);
+    },
+  });
+
+  resizeObs = new ResizeObserver(() => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => {
+      if (!term || !fitAddon) return;
+      fitAddon.fit();
+      if (attachedName) {
+        inv('pty_resize', { name: attachedName, cols: term.cols, rows: term.rows }).catch(() => {});
+      }
+    }, 80);
+  });
+  resizeObs.observe(host);
+}
+
+function disposeTerminal() {
+  if (resizeObs) { resizeObs.disconnect(); resizeObs = null; }
+  if (term) { term.dispose(); term = null; fitAddon = null; }
+}
+
+let rxLogged = 0, rxBytes = 0;
+/* NOTE: listen() requires the core:event permission in
+   src-tauri/capabilities/default.json — without it registration is refused
+   with a silent promise rejection and the terminal never receives output. */
+listen('pty-data', ev => {
+  const { name, data } = ev.payload;
+  if (term && name === attachedName) {
+    const u8 = b64ToU8(data);
+    rxBytes += u8.length;
+    if (rxLogged < 3 || rxLogged % 50 === 0) ulog(`pty-data chunk=${u8.length} total=${rxBytes}`);
+    rxLogged++;
+    term.write(u8);
+  }
+}).catch(e => ulog('listen(pty-data) FAILED: ' + e));
+listen('pty-exit', ev => {
+  if (ev.payload.name === attachedName) {
+    attachedName = null;
+    toast('session ended');
+    pollNow();
+  }
+}).catch(e => ulog('listen(pty-exit) FAILED: ' + e));
+
+/* ---------- session view ---------- */
+async function openSession(sid) {
+  const card = provider.get(sid);
+  if (!card) return;
+  if (attachedName) {
+    inv('detach_session', { name: attachedName }).catch(() => {});
+    attachedName = null;
+  }
+  state.projectId = card.projectId;
+  state.view = 'session';
+  state.sessionId = sid;
+  resetSuggest();
+  render();
+  mountTerminal(card);
+  const wasStopped = card.status === 'stopped';
+  try {
+    if (wasStopped) {
+      await inv('start_session', { name: card.session, dir: card.dir, cmd: card.cmd });
+    }
+    /* set before the await: the initial screen repaint can arrive while
+       attach_session is still resolving, and must not be dropped */
+    attachedName = card.session;
+    await inv('attach_session', { name: card.session, cols: term.cols, rows: term.rows });
+    term.focus();
+  } catch (e) {
+    attachedName = null;
+    toast('attach failed: ' + e);
+  }
+  /* history feeds both the fresh-shell chips and typed-prefix completion */
+  freshShell = wasStopped && !card.cmd.trim();
+  inv('recent_commands', { limit: 50 })
+    .then(c => { histCache = c; renderSuggest(); })
+    .catch(() => { histCache = []; });
+  pollNow();
+}
+
+function leaveSessionView() {
+  resetSuggest();
+  if (attachedName) {
+    inv('detach_session', { name: attachedName }).catch(() => {});
+    attachedName = null;
+  }
+  disposeTerminal();
+}
+
+function backToBoard() {
+  leaveSessionView();
+  state.view = 'board';
+  state.sessionId = null;
+  render();
+  pollNow();
+}
+
+function renderSessionView() {
+  const s = provider.get(state.sessionId);
+  if (!s) { backToBoard(); return; }
+  $('sess-dot').className = 'dot ' + s.status;
+  $('sess-dot').title = DOT_TITLES[s.status] || '';
+  const nameEl = $('sess-name');
+  nameEl.textContent = s.title;
+  nameEl.title = 'double-click to rename';
+  nameEl.ondblclick = () => {
+    inlineRename(nameEl, s.title, v => {
+      if (v) provider.rename(s.id, v);
+      renderSessionView();
+      renderSidebar();
+    });
+  };
+  setMemChip($('sess-mem'), s);
+  $('sess-path').textContent = (s.cmd ? '$ ' + s.cmd + '  ·  ' : '') + s.dir;
+
+  const proj = activeProject();
+  const sel = $('sess-col');
+  sel.innerHTML = proj.columns.map(c =>
+    `<option value="${c.id}" ${c.id === s.columnId ? 'selected' : ''}></option>`).join('');
+  [...sel.options].forEach((o, i) => { o.textContent = proj.columns[i].name; });
+}
+
+/* ---------- context menus ---------- */
+function placeCtx(e) {
+  const ctx = $('ctx');
+  ctx.style.display = 'block';
+  ctx.style.left = Math.min(e.clientX, innerWidth - ctx.offsetWidth - 8) + 'px';
+  ctx.style.top = Math.min(e.clientY, innerHeight - ctx.offsetHeight - 8) + 'px';
+}
+
+function renameCardInline(sid) {
+  const s = provider.get(sid);
+  const host = document.querySelector(`.card[data-sid="${sid}"] .card-title`)
+    || document.querySelector('#side-list .side-item.active .name');
+  if (!host) return;
+  inlineRename(host, s.title, v => {
+    if (v) provider.rename(sid, v);
+    render();
+  });
+}
+
+function editDescInline(sid) {
+  const s = provider.get(sid);
+  const card = document.querySelector(`.card[data-sid="${sid}"]`);
+  if (!card) {
+    const v = prompt('Description', s.desc || '');
+    if (v !== null) provider.setDesc(sid, v.trim());
+    return;
+  }
+  let d = card.querySelector('.card-desc');
+  if (!d) {
+    d = document.createElement('div');
+    d.className = 'card-desc';
+    card.querySelector('.card-meta').after(d);
+  }
+  inlineRename(d, s.desc || '', v => {
+    if (v !== null) provider.setDesc(sid, v);
+    render();
+  }, true);
+}
+
+function showSessionCtx(e, sid) {
+  e.preventDefault();
+  e.stopPropagation();
+  const s = provider.get(sid);
+  const p = provider.project(s.projectId);
+  const ctx = $('ctx');
+  ctx.innerHTML = `
+    <button data-a="rename">Rename card</button>
+    <button data-a="desc">${s.desc ? 'Edit' : 'Add'} description</button>
+    ${s.status === 'stopped' ? '<button data-a="start">Start</button>' : ''}
+    <button data-a="here">New session in this directory</button>
+    <hr>
+    <div class="ctx-label">Move to</div>
+    ${p.columns.filter(c => c.id !== s.columnId).map(c =>
+      `<button data-a="move" data-col="${c.id}">→ ${c.name}</button>`).join('')}
+    <hr>
+    <button data-a="close" class="danger">Close session</button>`;
+  ctx.onclick = ev => {
+    const a = ev.target.dataset && ev.target.dataset.a;
+    ctx.style.display = 'none';
+    if (a === 'rename') renameCardInline(sid);
+    if (a === 'desc') editDescInline(sid);
+    if (a === 'start') { provider.start(sid); toast(`started: ${s.title}`); }
+    if (a === 'here') newSession(s.dir);
+    if (a === 'move') {
+      const cid = ev.target.dataset.col;
+      provider.move(sid, cid);
+      toast(`moved to ${p.columns.find(c => c.id === cid).name}`);
+    }
+    if (a === 'close') closeSession(sid);
+  };
+  placeCtx(e);
+}
+
+function showProjectCtx(e, pid) {
+  e.preventDefault();
+  e.stopPropagation();
+  const p = provider.project(pid);
+  const ctx = $('ctx');
+  ctx.innerHTML = `
+    <button data-a="rename">Rename project</button>
+    <button data-a="remove" class="danger">Delete project</button>`;
+  ctx.onclick = async ev => {
+    const a = ev.target.dataset && ev.target.dataset.a;
+    ctx.style.display = 'none';
+    if (a === 'rename') {
+      switchProject(pid);
+      const tab = document.querySelector('#tabs .tab.active');
+      if (tab) renameTab(tab, p);
+    }
+    if (a === 'remove') {
+      if (provider.projects().length <= 1) { toast('at least one project is required'); return; }
+      const n = provider.list(pid).length;
+      if (!(await confirmDialog(`Delete project "${p.name}"?${n ? ` Its ${n} session(s) will be closed.` : ''}`))) return;
+      provider.removeProject(pid);
+      if (state.projectId === pid) {
+        state.projectId = provider.projects()[0].id;
+        state.view = 'board';
+        state.sessionId = null;
+      }
+      toast(`deleted project: ${p.name}`);
+      render();
+    }
+  };
+  placeCtx(e);
+}
+
+function showLinkCtx(e, kind, value, cwd) {
+  const ctx = $('ctx');
+  ctx.innerHTML = `<span class="ctx-value"></span>` + (kind === 'url'
+    ? `<button data-a="url">Open in browser</button>
+       <button data-a="copy">Copy URL</button>`
+    : `<button data-a="editor">Open in editor</button>
+       <button data-a="reveal">Reveal in Finder</button>
+       <button data-a="copy">Copy path</button>`);
+  ctx.querySelector('.ctx-value').textContent = value;
+  ctx.onclick = ev => {
+    const a = ev.target.dataset && ev.target.dataset.a;
+    ctx.style.display = 'none';
+    if (a === 'copy') {
+      navigator.clipboard.writeText(value).then(() => toast('copied'), () => toast('copy failed'));
+    } else if (a) {
+      inv('open_target', { kind: a, value, cwd: cwd || HOME })
+        .then(() => toast(a === 'url' ? 'opened in browser' : a === 'editor' ? 'opened in editor' : 'revealed in Finder'))
+        .catch(err => toast('open failed: ' + err));
+    }
+  };
+  placeCtx(e);
+}
+
+document.addEventListener('click', () => { $('ctx').style.display = 'none'; });
+
+/* ---------- new session: no modal — create a shell and enter it.
+   Title is renamed on the board later; command is typed in the shell
+   (with quick-command chips as a shortcut); dir defaults to $HOME. ---------- */
+let creatingSession = false;
+
+function nextShellTitle(p) {
+  const used = new Set(provider.list(p.id).map(c => c.title));
+  let n = 1;
+  while (used.has('shell ' + n)) n++;
+  return 'shell ' + n;
+}
+
+async function newSession(dir) {
+  if (creatingSession) return;
+  creatingSession = true;
+  try {
+    const p = activeProject();
+    const selected = p.columns.find(c => c.id === p.selected);
+    const columnId = (selected
+      || p.columns.find(c => c.name === 'Working')
+      || p.columns[1] || p.columns[0]).id;
+    const card = provider.create({
+      projectId: p.id, columnId,
+      title: nextShellTitle(p),
+      cmd: '',
+      dir: dir || HOME,
+    });
+    await openSession(card.id);
+  } finally {
+    creatingSession = false;
+  }
+}
+
+/* ---------- command suggestions (Warp-style, driven by an input mirror) ----------
+   We mirror what the user types (via onData) into `lineBuf` and prefix-match it
+   against command history. Escape sequences / Tab desync the mirror → suggestions
+   pause until the next Enter/^C resets the line. Accepting a suggestion sends
+   Ctrl+U + the full command, which is immune to mirror desync. */
+let histCache = [];
+let lineBuf = '';        // null = desynced
+let freshShell = false;  // just-created empty shell → offer recent commands
+
+function feedMirror(d) {
+  for (const ch of d) {
+    if (ch === '\r' || ch === '\n' || ch === '\x03' || ch === '\x15') {
+      lineBuf = '';
+      freshShell = false;
+    } else if (ch === '\x7f') {
+      if (lineBuf !== null) lineBuf = lineBuf.slice(0, -1);
+    } else if (ch === '\x1b' || ch === '\t') {
+      lineBuf = null;
+    } else if (lineBuf !== null && ch >= ' ') {
+      lineBuf += ch;
+    }
+  }
+}
+
+function suggestions() {
+  if (lineBuf === null) return [];
+  if (lineBuf.length >= 2) {
+    return histCache.filter(c => c.startsWith(lineBuf) && c !== lineBuf).slice(0, 6);
+  }
+  if (freshShell && lineBuf === '') return histCache.slice(0, 8);
+  return [];
+}
+
+function acceptSuggestion(cmd) {
+  if (!attachedName) return;
+  inv('pty_write', { name: attachedName, dataB64: strToB64('\x15' + cmd) }).catch(() => {});
+  inv('record_command', { cmd }).catch(() => {});
+  lineBuf = cmd;
+  freshShell = false;
+  renderSuggest();
+  if (term) term.focus();
+}
+
+function renderSuggest() {
+  const bar = $('quick-bar');
+  const items = suggestions();
+  if (!items.length) { bar.style.display = 'none'; return; }
+  const completing = lineBuf && lineBuf.length >= 2;
+  bar.innerHTML = `<span class="qb-label">${completing ? 'tab ⇥' : 'recent'}</span>`;
+  items.forEach((c, i) => {
+    const b = document.createElement('button');
+    b.className = 'qb-chip' + (completing && i === 0 ? ' first' : '');
+    b.title = c;
+    if (completing) {
+      const bold = document.createElement('b');
+      bold.textContent = lineBuf;
+      b.appendChild(bold);
+      b.appendChild(document.createTextNode(c.slice(lineBuf.length)));
+    } else {
+      b.textContent = c;
+    }
+    b.onclick = () => acceptSuggestion(c);
+    bar.appendChild(b);
+  });
+  bar.style.display = 'flex';
+}
+
+function resetSuggest() {
+  lineBuf = '';
+  freshShell = false;
+  $('quick-bar').style.display = 'none';
+}
+
+/* ---------- chrome wiring ---------- */
+function toggleSidebar() {
+  document.body.classList.toggle('side-collapsed');
+  const collapsed = document.body.classList.contains('side-collapsed');
+  $('collapse-btn').title = (collapsed ? 'Expand' : 'Collapse') + ' sidebar (⌘B)';
+  $('collapse-btn').firstElementChild.style.transform = collapsed ? 'scaleX(-1)' : '';
+}
+$('collapse-btn').onclick = toggleSidebar;
+$('home-btn').onclick = backToBoard;
+$('back-btn').onclick = backToBoard;
+$('board-new').onclick = () => newSession(HOME);
+$('side-new').onclick = () => newSession(HOME);
+$('sess-new-here').onclick = () => {
+  const s = provider.get(state.sessionId);
+  newSession(s ? s.dir : HOME);
+};
+$('sess-close').onclick = () => closeSession(state.sessionId);
+$('sess-col').addEventListener('change', e => {
+  provider.move(state.sessionId, e.target.value);
+  const c = activeProject().columns.find(c => c.id === e.target.value);
+  toast(`moved to ${c.name}`);
+});
+document.addEventListener('keydown', e => {
+  if ((e.metaKey || e.ctrlKey) && e.key === 'b') { e.preventDefault(); toggleSidebar(); return; }
+  if (e.key === 'Escape') {
+    if ($('ctx').style.display === 'block') { $('ctx').style.display = 'none'; return; }
+    /* Esc inside the terminal belongs to the terminal (agents use it) */
+    if (state.view === 'session' && !(document.activeElement && document.activeElement.closest('#terminal'))) {
+      backToBoard();
+    }
+  }
+});
+
+/* ---------- render root ---------- */
+function render() {
+  $('board-view').style.display = state.view === 'board' ? 'flex' : 'none';
+  $('session-view').style.display = state.view === 'session' ? 'flex' : 'none';
+  renderTabs();
+  renderSidebar();
+  if (state.view === 'board') renderBoard();
+  else renderSessionView();
+}
+
+provider.subscribe((ev, s) => {
+  if (document.activeElement && document.activeElement.tagName === 'INPUT'
+      && document.activeElement.closest('#tabs, .col-head, .card, .side-item, .sess-head')) return;
+
+  if (ev === 'mem') {
+    if (state.view === 'session' && s.id === state.sessionId) setMemChip($('sess-mem'), s);
+    else setMemChip(document.querySelector(`.card[data-sid="${s.id}"] .mem-chip`), s);
+    return;
+  }
+  if (ev === 'output') {
+    if (state.view === 'board' && s.projectId === state.projectId) updateCardInPlace(s);
+    return;
+  }
+  if (ev === 'status') {
+    renderTabs();
+    renderSidebar();
+    if (state.view === 'session' && s.id === state.sessionId) renderSessionView();
+    else if (state.view === 'board' && s.projectId === state.projectId) {
+      /* start/stop changes the chip row → rebuild the one card */
+      const old = document.querySelector(`.card[data-sid="${s.id}"]`);
+      if (old) old.replaceWith(cardEl(s));
+    }
+    return;
+  }
+  render();
+});
+
+/* ---------- boot ---------- */
+async function boot() {
+  try {
+    await listen('deck-ping', () => ulog('ping event RECEIVED'));
+    await inv('ping_event');
+  } catch (e) {
+    ulog('ping setup failed: ' + e);
+  }
+  HOME = await inv('default_dir').catch(() => '~');
+  const ok = await inv('tmux_available').catch(() => false);
+  if (!ok) $('banner').style.display = 'block';
+
+  let raw = '';
+  try { raw = await inv('load_board'); } catch (e) { /* first run */ }
+  if (raw) {
+    try {
+      const data = JSON.parse(raw);
+      store.projects = data.projects || [];
+      store.cards = (data.cards || []).map(c => ({ ...c, status: 'stopped', mem: null, tail: [] }));
+    } catch (e) {
+      toast('board file unreadable — starting fresh');
+    }
+  }
+  if (!store.projects.length) {
+    const p = provider.createProject('main');
+    state.projectId = p.id;
+  } else {
+    state.projectId = store.projects[0].id;
+  }
+  render();
+  startPolling();
+}
+boot();
+</script>
+</body>
+</html>
