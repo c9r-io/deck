@@ -47,6 +47,12 @@ there instead of the default board.
 └─────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
+## Download
+
+Grab the latest `.dmg` from [Releases](https://github.com/c9r-io/deck/releases)
+(macOS, Apple Silicon). The bundle is unsigned for now — right-click → Open on
+first launch. Tagging `vX.Y.Z` builds and publishes a release automatically.
+
 ## Requirements
 
 - tmux (`brew install tmux`)
