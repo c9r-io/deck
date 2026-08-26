@@ -1,25 +1,63 @@
 name: release
 
-# Tag vX.Y.Z → build the macOS app (Apple Silicon) and attach the .dmg to a
-# GitHub Release. The bundle is unsigned/un-notarized for now: downloaders
-# must right-click → Open (or `xattr -c deck.app`) on first launch. Add
-# APPLE_CERTIFICATE / APPLE_ID secrets and the tauri-action signing inputs
-# when a Developer ID certificate is available.
+# Build the macOS app (Apple Silicon) for a v* tag and attach the .dmg to a
+# GitHub Release. Three triggers, because push-event delivery is currently
+# broken for this account (events appear in the feed but never create runs;
+# workflow_dispatch works — likely an account-level flag, ask GitHub support):
+#   1. tag push        — instant, once event delivery is fixed
+#   2. schedule        — every 15 min, builds the newest v* tag that has no
+#                        release yet (the bridge while pushes don't trigger)
+#   3. workflow_dispatch — manual, builds the newest unreleased v* tag
+#
+# Bundles are unsigned/un-notarized: downloaders must right-click → Open on
+# first launch. Add Developer ID secrets + tauri-action signing inputs later.
 
 on:
   push:
     tags:
       - 'v*'
+  schedule:
+    - cron: '*/15 * * * *'
   workflow_dispatch: {}
 
 permissions:
   contents: write
 
 jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.pick.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: pick
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          latest=$(git tag -l 'v*' --sort=-v:refname | head -1)
+          if [ -z "$latest" ]; then
+            echo "no v* tags"; echo "tag=" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if gh release view "$latest" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "release for $latest already exists"; echo "tag=" >> "$GITHUB_OUTPUT"
+          else
+            echo "will build $latest"; echo "tag=$latest" >> "$GITHUB_OUTPUT"
+          fi
+
   build-macos:
+    needs: resolve
+    if: needs.resolve.outputs.tag != ''
     runs-on: macos-latest # Apple Silicon
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.tag }}
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -36,8 +74,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           projectPath: app
-          tagName: ${{ github.ref_name }}
-          releaseName: 'deck ${{ github.ref_name }}'
+          tagName: ${{ needs.resolve.outputs.tag }}
+          releaseName: 'deck ${{ needs.resolve.outputs.tag }}'
           releaseBody: |
             macOS (Apple Silicon) build. Unsigned — on first launch,
             right-click the app and choose Open.
