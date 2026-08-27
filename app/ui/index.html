@@ -2649,8 +2649,7 @@ function showTplPop() {
   pop.style.display = 'block';
 }
 
-  add('t-sep');
-  add('t-row', '<span class="t-name" style="color:var(--faint)">☆ on a group header saves that group as a template</span>');function promptDialog(msg, initial = '') {
+function promptDialog(msg, initial = '') {
   return new Promise(res => {
     $('ppd-msg').textContent = msg;
     const inp = $('ppd-input');
