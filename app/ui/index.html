@@ -229,6 +229,12 @@
   .card.dragging { opacity: 0.45; }
   .card-top { display: flex; align-items: center; gap: 8px; }
   .card-title { font-weight: 600; flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .card-x {
+    flex: none; padding: 1px 5px; border-radius: 4px;
+    font-size: 12px; line-height: 1; color: transparent;
+  }
+  .card:hover .card-x { color: var(--faint); }
+  .card-x:hover { color: var(--danger) !important; background: var(--hover); }
   .mem-chip {
     font-family: var(--mono); font-size: 10px; color: var(--faint);
     background: var(--panel); border: 1px solid var(--border-soft);
@@ -1013,7 +1019,7 @@ function cardEl(s) {
   /* fixed shape: the tail box is always present (2 lines) and there are no
      hover-only rows — cards never change size under the pointer */
   el.innerHTML = `
-    <div class="card-top"><span class="dot ${s.status}" title="${DOT_TITLES[s.status] || ''}"></span><span class="card-title"></span></div>
+    <div class="card-top"><span class="dot ${s.status}" title="${DOT_TITLES[s.status] || ''}"></span><span class="card-title"></span><button class="card-x" title="Close session">✕</button></div>
     <div class="card-meta"><span class="cmd"></span><span class="dir"></span><span class="q-chip"></span><span class="mem-chip" title="Memory of the whole session process tree: shell + agent + spawned children"></span></div>
     ${s.desc ? '<div class="card-desc"></div>' : ''}
     <div class="card-tail"><div></div><div></div></div>`;
@@ -1035,8 +1041,13 @@ function cardEl(s) {
     el.classList.add('dragging');
   });
   el.addEventListener('dragend', () => el.classList.remove('dragging'));
+  el.querySelector('.card-x').onclick = e => {
+    e.stopPropagation();
+    closeSession(s.id);
+  };
   el.addEventListener('click', e => {
     e.stopPropagation();   // don't toggle the board selection underneath
+    if (e.target.closest('.card-x')) return;
     openSession(s.id);
   });
   el.oncontextmenu = e => showSessionCtx(e, s.id);
