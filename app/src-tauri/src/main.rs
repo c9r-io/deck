@@ -75,6 +75,8 @@ fn tmux_conf() -> String {
              set -g mouse on\n\
              set -g set-clipboard on\n\
              set -g history-limit 50000\n\
+             set -g copy-mode-position-format ''\n\
+             bind -n WheelUpPane if -F '#{pane_in_mode}' 'send-keys -M' 'if -F \"#{e|>:#{history_size},0}\" \"copy-mode -e; send-keys -M\" \"\"'\n\
              set-environment -g COLORTERM truecolor\n",
         );
         path.display().to_string()
@@ -271,6 +273,12 @@ fn init_deck_server() {
     let _ = tmux(&["set", "-g", "mouse", "on"]);
     let _ = tmux(&["set", "-g", "set-clipboard", "on"]);
     let _ = tmux(&["set", "-g", "history-limit", "50000"]);
+    let _ = tmux(&["set", "-g", "copy-mode-position-format", ""]);
+    let _ = tmux(&[
+        "bind", "-n", "WheelUpPane",
+        "if", "-F", "#{pane_in_mode}", "send-keys -M",
+        "if -F \"#{e|>:#{history_size},0}\" \"copy-mode -e; send-keys -M\" \"\"",
+    ]);
 }
 
 #[tauri::command]
