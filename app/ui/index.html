@@ -182,6 +182,13 @@
   .btn.primary { background: var(--accent); border-color: var(--accent); color: #0b201c; font-weight: 600; }
   .btn.primary:hover { filter: brightness(1.08); }
   .btn.danger:hover { border-color: var(--danger); color: var(--danger); }
+  /* session header: every control sits on the same 28px line; the split /
+     schedule buttons are fixed-width icon squares (the ⏰ emoji used to
+     render at its own size and threw the whole row off) */
+  .sess-head .btn, .sess-head .col-select { height: 28px; box-sizing: border-box; }
+  .sess-head .btn { padding: 0 12px; }
+  .sess-head .btn.icon-btn { width: 32px; padding: 0; justify-content: center; flex: none; font-size: 13px; }
+  .sess-head .mem-chip { height: 28px; display: inline-flex; align-items: center; box-sizing: border-box; padding: 0 9px; }
 
   #columns { flex: 1; display: flex; gap: 12px; padding: 4px 20px 20px; overflow-x: auto; min-height: 0; }
   .column {
@@ -422,6 +429,24 @@
   }
   #cfm-msg { font-size: 13px; line-height: 1.5; margin-bottom: 16px; }
   .cfm-actions { display: flex; gap: 8px; justify-content: flex-end; }
+  #settings-modal {
+    position: fixed; inset: 0; z-index: 70; display: none;
+    background: rgba(8, 10, 13, 0.55);
+    align-items: flex-start; justify-content: center;
+  }
+  #settings-box {
+    margin-top: 14vh; width: 420px; max-width: calc(100vw - 40px);
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 12px; padding: 18px;
+    box-shadow: 0 16px 48px rgba(0, 0, 0, 0.55);
+  }
+  .set-title { font-size: 14px; font-weight: 600; margin-bottom: 14px; }
+  .set-row { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; font-size: 13px; }
+  .set-row label { color: var(--muted); width: 96px; flex: none; }
+  .set-row select { flex: 1; }
+  .set-hint { font-size: 11.5px; color: var(--muted); margin: 2px 0 14px 106px; line-height: 1.5; min-height: 1em; }
+  .set-sep { border-top: 1px solid var(--border-soft); margin: 4px 0 14px; }
+  .set-actions { display: flex; justify-content: flex-end; margin-top: 4px; }
   .btn.cfm-danger { background: var(--danger); border-color: var(--danger); color: #1a0e10; font-weight: 600; }
   .btn.cfm-danger:hover { filter: brightness(1.1); }
 
@@ -463,6 +488,7 @@
     <div class="side-list" id="side-list"></div>
     <button id="update-btn"><span>⬆</span><span class="label"></span></button>
     <button class="side-new" id="side-new" title="New session"><span>＋</span><span class="label">New session</span></button>
+    <button class="side-new" id="settings-btn" title="Settings"><span><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" style="vertical-align:-2px"><circle cx="8" cy="8" r="2.3"/><path d="M8 1.6v2.1M8 12.3v2.1M1.6 8h2.1M12.3 8h2.1M3.5 3.5l1.5 1.5M11 11l1.5 1.5M12.5 3.5 11 5M5 11l-1.5 1.5"/></svg></span><span class="label">Settings</span></button>
   </nav>
 
   <div id="main">
@@ -489,9 +515,9 @@
         <span class="sess-path" id="sess-path"></span>
         <div class="sess-spacer"></div>
         <span class="mem-chip" id="sess-mem" title="Memory of the whole session process tree: shell + agent + spawned children"></span>
-        <button class="btn" id="split-right" title="Split right (⌘D)">◧</button>
-        <button class="btn" id="split-down" title="Split down (⌘⇧D)">⬓</button>
-        <button class="btn" id="queue-btn" title="Scheduled prompts — send prompts to this session later">⏰<span class="cnt" id="queue-cnt"></span></button>
+        <button class="btn icon-btn" id="split-right" title="Split right (⌘D)">◧</button>
+        <button class="btn icon-btn" id="split-down" title="Split down (⌘⇧D)">⬓</button>
+        <button class="btn icon-btn" id="queue-btn" title="Scheduled prompts — send prompts to this session later"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8.8" r="5"/><path d="M8 6.2v2.6l1.8 1.2"/><path d="M13.9 2.8l-1.7 1.5M2.1 2.8l1.7 1.5" stroke-linecap="round"/></svg><span class="cnt" id="queue-cnt"></span></button>
         <select class="col-select" id="sess-col" title="Move to board"></select>
         <button class="btn danger" id="sess-close" title="Close session (terminates the shell and removes the card)">Close</button>
       </div>
@@ -520,6 +546,24 @@
 
 <div id="ctx"></div>
 <div id="dropzone"></div>
+<div id="settings-modal">
+  <div id="settings-box">
+    <div class="set-title">Settings</div>
+    <div class="set-row">
+      <label for="set-editor">Open files in</label>
+      <select class="col-select" id="set-editor"></select>
+    </div>
+    <div class="set-hint">Used by “Open in editor” on file links in the terminal. Editors are auto-detected from /Applications.</div>
+    <div class="set-sep"></div>
+    <div class="set-row">
+      <label>Updates</label>
+      <span id="set-ver" style="color:var(--muted)"></span>
+      <button class="btn" id="set-check" style="margin-left:auto">Check for updates</button>
+    </div>
+    <div class="set-hint" id="set-upd-status"></div>
+    <div class="set-actions"><button class="btn" id="set-close">Done</button></div>
+  </div>
+</div>
 <div id="cfm">
   <div id="cfm-box">
     <div id="cfm-msg"></div>
@@ -2315,6 +2359,47 @@ listen('queue-fired', ev => {
   pollNow();
 }).catch(e => ulog('listen(queue-fired) FAILED: ' + e));
 
+/* ---------- settings ---------- */
+let settings = { editor: '' };
+
+async function loadSettings() {
+  try {
+    const raw = await inv('load_settings');
+    if (raw) settings = { editor: '', ...JSON.parse(raw) };
+  } catch (e) { ulog('load_settings failed: ' + e); }
+}
+
+function persistSettings() {
+  inv('save_settings', { data: JSON.stringify(settings, null, 2) })
+    .catch(e => ulog('save_settings failed: ' + e));
+}
+
+async function openSettings() {
+  const sel = $('set-editor');
+  sel.innerHTML = '';
+  const mk = (v, t) => { const o = document.createElement('option'); o.value = v; o.textContent = t; sel.appendChild(o); };
+  mk('', 'System default (TextEdit)');
+  const eds = await inv('detect_editors').catch(() => []);
+  eds.forEach(name => mk(name, name));
+  if (settings.editor && !eds.includes(settings.editor)) mk(settings.editor, settings.editor + ' (not found)');
+  sel.value = settings.editor || '';
+  $('set-ver').textContent = 'deck v' + ($('app-ver').textContent || '?');
+  $('set-upd-status').textContent = '';
+  $('settings-modal').style.display = 'flex';
+}
+
+$('settings-btn').onclick = openSettings;
+$('set-close').onclick = () => { $('settings-modal').style.display = 'none'; };
+$('settings-modal').addEventListener('mousedown', e => {
+  if (e.target === $('settings-modal')) $('settings-modal').style.display = 'none';
+});
+$('set-editor').onchange = () => {
+  settings.editor = $('set-editor').value;
+  persistSettings();
+  toast(settings.editor ? 'file links open in ' + settings.editor : 'file links open in system default');
+};
+$('set-check').onclick = () => manualUpdateCheck();
+
 /* ---------- in-app updates (tauri-plugin-updater) ---------- */
 let pendingUpdate = null;
 
@@ -2333,6 +2418,30 @@ async function checkForUpdate() {
     ulog(`update available: v${update.version}`);
   } catch (e) {
     ulog('update check failed: ' + e);   // offline / endpoint unreachable — silent
+  }
+}
+
+async function manualUpdateCheck() {
+  const st = $('set-upd-status');
+  const inModal = $('settings-modal').style.display === 'flex';
+  const say = msg => { if (inModal) st.textContent = msg; else toast(msg); };
+  const up = window.__TAURI__ && window.__TAURI__.updater;
+  if (!up) { say('updater unavailable in dev builds'); return; }
+  say('Checking…');
+  try {
+    const update = await up.check();
+    if (update) {
+      pendingUpdate = update;
+      const btn = $('update-btn');
+      btn.querySelector('.label').textContent = `Update to v${update.version}`;
+      btn.style.display = 'flex';
+      say(`v${update.version} is available — click “Update to v${update.version}” in the sidebar to install.`);
+    } else {
+      say(`deck is up to date (v${$('app-ver').textContent})`);
+    }
+  } catch (e) {
+    say('update check failed — are you online?');
+    ulog('manual update check failed: ' + e);
   }
 }
 
@@ -2403,6 +2512,8 @@ async function boot() {
   setTimeout(checkForUpdate, 4000);
   /* runtime cadence comes from a Rust thread (App Nap freezes JS timers) */
   listen('update-check', checkForUpdate).catch(e => ulog('listen(update-check) FAILED: ' + e));
+  listen('update-check-manual', manualUpdateCheck).catch(e => ulog('listen(update-check-manual) FAILED: ' + e));
+  loadSettings();
 }
 boot();
 </script>

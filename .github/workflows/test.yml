@@ -1,0 +1,21 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    # arm64 runner: the committed tmux sidecar the contract tests drive is
+    # an aarch64 binary
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app/src-tauri
+      - name: cargo test (unit + tmux contract tests)
+        run: cargo test --manifest-path app/src-tauri/Cargo.toml -- --test-threads=1

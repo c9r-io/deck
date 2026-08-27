@@ -228,6 +228,70 @@ fn save_board(data: String) -> Result<(), String> {
     std::fs::rename(&tmp, &path).map_err(|e| e.to_string())
 }
 
+// ---------- settings ------------------------------------------------------------
+
+fn settings_path() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".deck")
+        .join("settings.json")
+}
+
+#[tauri::command]
+fn load_settings() -> Result<String, String> {
+    let path = settings_path();
+    if !path.exists() {
+        return Ok(String::new());
+    }
+    std::fs::read_to_string(&path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn save_settings(data: String) -> Result<(), String> {
+    let path = settings_path();
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, data).map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, &path).map_err(|e| e.to_string())
+}
+
+fn editor_app() -> Option<String> {
+    let raw = std::fs::read_to_string(settings_path()).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    let e = v.get("editor")?.as_str()?.trim().to_string();
+    if e.is_empty() { None } else { Some(e) }
+}
+
+/// Developer editors present in /Applications or ~/Applications, offered in
+/// the Settings editor picker. Names double as `open -a` targets.
+#[tauri::command]
+fn detect_editors() -> Vec<String> {
+    const CANDIDATES: &[&str] = &[
+        "Cursor",
+        "Visual Studio Code",
+        "Zed",
+        "Sublime Text",
+        "TextMate",
+        "BBEdit",
+        "Nova",
+        "IntelliJ IDEA",
+        "WebStorm",
+        "RustRover",
+        "Xcode",
+    ];
+    let mut roots = vec![PathBuf::from("/Applications")];
+    if let Some(h) = dirs::home_dir() {
+        roots.push(h.join("Applications"));
+    }
+    CANDIDATES
+        .iter()
+        .filter(|c| roots.iter().any(|r| r.join(format!("{c}.app")).exists()))
+        .map(|c| c.to_string())
+        .collect()
+}
+
 #[tauri::command]
 fn default_dir() -> String {
     dirs::home_dir()
@@ -957,7 +1021,10 @@ fn open_target(kind: String, value: String, cwd: String) -> Result<(), String> {
     };
     let status = match kind.as_str() {
         "url" => Command::new("open").arg(&value).status(),
-        "editor" => Command::new("open").args(["-t", &resolve()]).status(),
+        "editor" => match editor_app() {
+            Some(app) => Command::new("open").args(["-a", &app, &resolve()]).status(),
+            None => Command::new("open").args(["-t", &resolve()]).status(),
+        },
         "reveal" => Command::new("open").args(["-R", &resolve()]).status(),
         _ => return Err(format!("unknown kind: {kind}")),
     }
@@ -978,6 +1045,21 @@ fn regex_strip_lineno(path: &str) -> String {
             head.to_string()
         }
         _ => path.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strip_lineno_suffixes() {
+        assert_eq!(regex_strip_lineno("src/foo.rs:42:7"), "src/foo.rs");
+        assert_eq!(regex_strip_lineno("src/foo.rs:42"), "src/foo.rs");
+        assert_eq!(regex_strip_lineno("src/foo.rs"), "src/foo.rs");
+        // a colon followed by non-digits is part of the path, not a lineno
+        assert_eq!(regex_strip_lineno("a:b/c"), "a:b/c");
+        assert_eq!(regex_strip_lineno("http://x/y:8080"), "http://x/y:8080");
     }
 }
 
@@ -1013,16 +1095,31 @@ fn main() {
                 .build(app)?;
             let export = tauri::menu::MenuItemBuilder::with_id("export-logs", "Export Logs…")
                 .build(app)?;
-            let term_menu = tauri::menu::SubmenuBuilder::new(app, "Terminal")
+            let check = tauri::menu::MenuItemBuilder::with_id("check-updates", "Check for Updates…")
+                .build(app)?;
+            // standard macOS spot: application menu, right under "About deck"
+            let mut in_app_menu = false;
+            if let Some(first) = menu.items()?.into_iter().next() {
+                if let Some(sub) = first.as_submenu() {
+                    in_app_menu = sub.insert(&check, 1).is_ok();
+                }
+            }
+            let mut tb = tauri::menu::SubmenuBuilder::new(app, "Terminal")
                 .item(&clear)
                 .separator()
-                .item(&export)
-                .build()?;
+                .item(&export);
+            if !in_app_menu {
+                tb = tb.item(&check);
+            }
+            let term_menu = tb.build()?;
             menu.append(&term_menu)?;
             app.set_menu(menu)?;
             app.on_menu_event(|app, e| {
                 if e.id() == "clear" {
                     let _ = app.emit("menu-clear", ());
+                }
+                if e.id() == "check-updates" {
+                    let _ = app.emit("update-check-manual", ());
                 }
                 if e.id() == "export-logs" {
                     match export_logs() {
@@ -1054,6 +1151,9 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             load_board,
             save_board,
+            load_settings,
+            save_settings,
+            detect_editors,
             default_dir,
             tmux_available,
             start_session,
