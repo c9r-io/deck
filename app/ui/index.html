@@ -269,7 +269,7 @@
   .card-tail div { overflow: hidden; text-overflow: ellipsis; height: 16.5px; }
 
   /* ---------- session view ---------- */
-  #session-view { flex: 1; display: none; flex-direction: column; min-height: 0; }
+  #session-view { flex: 1; display: none; flex-direction: column; min-height: 0; position: relative; }
   .sess-head {
     display: flex; align-items: center; gap: 10px;
     padding: 10px 16px;
@@ -384,11 +384,14 @@
   }
   .card .q-chip:empty { display: none; }
 
-  /* ---------- quick-command / completion bar (bottom of terminal) ---------- */
+  /* ---------- quick-command / completion bar ----------
+     Overlays the bottom of the session view: appearing/disappearing while
+     typing must not reflow the split panes (that made the screen jitter). */
   #quick-bar {
     display: none; align-items: center; gap: 6px;
+    position: absolute; left: 0; right: 0; bottom: 0; z-index: 6;
     padding: 8px 16px;
-    background: var(--panel); border-top: 1px solid var(--border-soft);
+    background: rgba(23, 27, 34, 0.96); border-top: 1px solid var(--border-soft);
     overflow-x: auto; white-space: nowrap;
   }
   .qb-chip b { color: var(--accent); font-weight: 600; }
@@ -1228,7 +1231,14 @@ function createPane(card) {
   const pane = { sid: card.id, session, el, body, term: t, fit };
   panes.set(session, pane);
 
-  el.querySelector('.spane-head').addEventListener('mousedown', () => focusPane(session));
+  const head = el.querySelector('.spane-head');
+  head.addEventListener('mousedown', () => focusPane(session));
+  /* pane headers are drag sources: drop on another pane's edge to MOVE it */
+  head.draggable = true;
+  head.addEventListener('dragstart', ev => {
+    ev.dataTransfer.setData('text/deck-session', pane.sid);
+  });
+  head.addEventListener('dragend', () => { $('dropzone').style.display = 'none'; });
   el.querySelector('.px').onclick = e => {
     e.stopPropagation();
     closePaneBySid(pane.sid);
@@ -1495,7 +1505,14 @@ async function ensureAttached(pane) {
 async function addSplit(targetSid, dir, before, newSid) {
   const card = provider.get(newSid);
   if (!card || state.view !== 'session' || !layout) return;
+  if (newSid === targetSid) return;
+  /* already open in a pane → this is a MOVE: pluck the leaf and re-insert
+     at the drop position; the terminal instance is reused untouched */
   if (panes.has(card.session)) {
+    if (!collectLeaves(layout).includes(newSid)) { focusPane(card.session); return; }
+    layout = removeFromLayout(layout, newSid);
+    layout = splitAt(layout, targetSid, dir, newSid, before);
+    renderLayout();
     focusPane(card.session);
     return;
   }
