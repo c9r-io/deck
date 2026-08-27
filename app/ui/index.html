@@ -979,12 +979,16 @@ function renderBoard() {
       </div>
       <div class="col-cards"></div>`;
     /* click anywhere on the board (header or empty space) to make it the
-       target for new sessions; cards stop propagation */
+       target for new sessions; cards stop propagation. Toggle classes in
+       place — a re-render here would replace the title element between the
+       two clicks of a double-click and break rename. */
     colEl.addEventListener('click', e => {
       if (e.target.closest('.card, .col-del') || e.target.tagName === 'INPUT') return;
       p.selected = p.selected === c.id ? null : c.id;
       saveBoard();
-      render();
+      document.querySelectorAll('#columns .column[data-cid]').forEach(el2 => {
+        el2.classList.toggle('selected', el2.dataset.cid === p.selected);
+      });
     });
     const nameEl = colEl.querySelector('.col-name');
     nameEl.textContent = c.name;
