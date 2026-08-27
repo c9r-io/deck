@@ -18,9 +18,28 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 // ---------- tmux helpers ----------------------------------------------------
 
+/// Absolute path to tmux. Apps launched from Finder/Dock get launchd's PATH,
+/// which has no /opt/homebrew/bin — relying on PATH would make a dmg install
+/// report "tmux missing" even when it's installed.
+fn tmux_bin() -> &'static str {
+    static BIN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    BIN.get_or_init(|| {
+        for p in [
+            "/opt/homebrew/bin/tmux", // Apple Silicon Homebrew
+            "/usr/local/bin/tmux",    // Intel Homebrew / manual installs
+            "/opt/local/bin/tmux",    // MacPorts
+        ] {
+            if std::path::Path::new(p).exists() {
+                return p.to_string();
+            }
+        }
+        "tmux".to_string() // fall back to PATH (dev runs from a shell)
+    })
+}
+
 /// Run tmux with output captured — stray stderr must never reach a terminal.
 fn tmux(args: &[&str]) -> Result<String, String> {
-    let out = Command::new("tmux")
+    let out = Command::new(tmux_bin())
         .args(args)
         .output()
         .map_err(|e| format!("tmux not runnable: {e}"))?;
@@ -121,7 +140,7 @@ fn default_dir() -> String {
 
 #[tauri::command]
 fn tmux_available() -> bool {
-    Command::new("tmux")
+    Command::new(tmux_bin())
         .arg("-V")
         .output()
         .map(|o| o.status.success())
@@ -341,7 +360,7 @@ fn attach_session(
         })
         .map_err(|e| e.to_string())?;
 
-    let mut cmd = CommandBuilder::new("tmux");
+    let mut cmd = CommandBuilder::new(tmux_bin());
     cmd.args(["attach-session", "-t", &session_target(&name)]);
     cmd.env("TERM", "xterm-256color");
     cmd.env("LANG", "en_US.UTF-8");

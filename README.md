@@ -58,13 +58,18 @@ be running for prompts to fire.
 ## Download
 
 Grab the latest `.dmg` from [Releases](https://github.com/c9r-io/deck/releases)
-(macOS, Apple Silicon). The bundle is unsigned for now — right-click → Open on
-first launch. Tagging `vX.Y.Z` builds and publishes a release automatically.
+(macOS, Apple Silicon; signed and notarized). Tagging `vX.Y.Z` builds and
+publishes a release automatically, and installed apps self-update in-app.
 
-## Requirements
+**The only runtime requirement is tmux** (`brew install tmux`) — it is the
+session backend that keeps your agents alive across app restarts. No Rust,
+no Node, nothing else. deck finds tmux in the usual Homebrew/MacPorts
+locations even when launched from Finder.
 
-- tmux (`brew install tmux`)
-- Rust toolchain to build
+## Building from source
+
+- Rust toolchain
+- `app/run.sh` builds and launches the dev bundle
 
 ## Install
 
