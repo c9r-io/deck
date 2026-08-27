@@ -1065,11 +1065,12 @@ function updateCardInPlace(s) {
   el.classList.toggle('waiting', s.status === 'waiting');
 }
 
-async function closeSession(sid) {
+async function closeSession(sid, needConfirm = false) {
   const s = provider.get(sid);
   if (!s) return;
   const live = s.status !== 'stopped';
-  if (!(await confirmDialog(`Close "${s.title}"?${live ? ' The shell will be terminated.' : ''}`))) return;
+  if (needConfirm &&
+      !(await confirmDialog(`Close "${s.title}"?${live ? ' The shell will be terminated.' : ''}`))) return;
   if (state.sessionId === sid) leaveSessionView();
   await provider.close(sid);
   if (state.view === 'session' && state.sessionId === sid) backToBoard();
@@ -1141,11 +1142,22 @@ function mountTerminal(card) {
      OSC `ESC]..BEL`) through onData. Those are not user input — without
      this filter they desync the input mirror on every attach, and the
      first command typed after attaching is never captured. */
-  const AUTO_REPLY = /^(?:\x1b\[\?[0-9;]*[cu]|\x1b\[[0-9;]*R|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1bP[^\x1b]*\x1b\\)+$/;
-  let odLogged = 0;
+  /* Auto-replies, not user input:
+     - CSI with a ?/> prefix (DA1/DA2, DECRPM `$y`, mode reports …) — user
+       keys never carry those prefixes
+     - DSR cursor reports `ESC[..R`, focus events `ESC[I`/`ESC[O`
+     - OSC / DCS responses */
+  const AUTO_REPLY = /^(?:\x1b\[[?>][0-9;$]*[a-zA-Z]|\x1b\[[0-9;]*R|\x1b\[[IO]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1bP[^\x1b]*\x1b\\)+$/;
+  let odLogged = 0, escLogged = 0;
   term.onData(d => {
     const isAutoReply = AUTO_REPLY.test(d);
     if (!isAutoReply) {
+      /* any ESC chunk reaching the mirror desyncs it — log escapees so new
+         reply families are identifiable from ~/.deck/app.log */
+      if (d.includes('\x1b') && escLogged < 5) {
+        escLogged++;
+        ulog('mirror-desync chunk: ' + JSON.stringify(d.slice(0, 40)));
+      }
       const completed = feedMirror(d);
       if (completed) maybeRecordCommand(completed);
       renderSuggest();
@@ -1663,7 +1675,7 @@ $('home-btn').onclick = backToBoard;
 $('back-btn').onclick = backToBoard;
 $('board-new').onclick = () => newSession(HOME);
 $('side-new').onclick = () => newSession(HOME);
-$('sess-close').onclick = () => closeSession(state.sessionId);
+$('sess-close').onclick = () => closeSession(state.sessionId, true);
 $('sess-col').addEventListener('change', e => {
   provider.move(state.sessionId, e.target.value);
   const c = activeProject().columns.find(c => c.id === e.target.value);
