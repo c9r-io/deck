@@ -72,12 +72,21 @@ jobs:
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Developer ID signing (identity: han chen / Y8ZG3D692W)
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          # To enable notarization: add APPLE_ID + APPLE_PASSWORD
+          # (app-specific password) secrets, then add these env lines:
+          #   APPLE_ID / APPLE_PASSWORD / APPLE_TEAM_ID
+          # (don't add them while the secrets are unset — empty strings
+          # make the bundler attempt notarization and fail)
         with:
           projectPath: app
           tagName: ${{ needs.resolve.outputs.tag }}
           releaseName: 'deck ${{ needs.resolve.outputs.tag }}'
           releaseBody: |
-            macOS (Apple Silicon) build. Unsigned — on first launch,
-            right-click the app and choose Open.
+            macOS (Apple Silicon) build, signed with a Developer ID
+            certificate.
           releaseDraft: false
           prerelease: false
