@@ -389,6 +389,30 @@
     border: 1px solid var(--border); border-radius: 6px; padding: 5px 8px;
   }
   .q-meta { font-family: var(--mono); font-size: 10.5px; color: var(--faint); flex: none; white-space: nowrap; }
+  #queue-list { display: flex; flex-direction: column; gap: 8px; }
+  .q-group { border: 1px solid var(--border-soft); border-radius: 8px; background: var(--raised); overflow: hidden; }
+  .q-group.rule { border-color: var(--accent-dim); }
+  .q-group.paused { opacity: 0.55; }
+  .qg-head {
+    display: flex; align-items: center; gap: 8px; padding: 4px 8px 4px 10px;
+    background: var(--panel); border-bottom: 1px solid var(--border-soft); font-size: 11px;
+  }
+  .qg-when { font-family: var(--mono); color: var(--wait); flex: none; }
+  .q-group.rule .qg-when { color: var(--accent); }
+  .qg-meta {
+    font-family: var(--mono); font-size: 10.5px; color: var(--faint);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0;
+  }
+  .qg-act { display: flex; gap: 2px; flex: none; margin-left: auto; }
+  .qg-act button { color: var(--faint); padding: 2px 6px; border-radius: 4px; font-size: 11px; }
+  .qg-act button:hover { color: var(--text); background: var(--hover); }
+  .qg-act .qg-del:hover { color: var(--danger); }
+  .qg-row { display: flex; align-items: center; gap: 8px; padding: 5px 10px 5px 12px; font-size: 12.5px; }
+  .qg-row + .qg-row { border-top: 1px solid rgba(34, 40, 52, 0.55); }
+  .qg-row .tree { font-family: var(--mono); color: var(--faint); width: 12px; flex: none; font-size: 11px; }
+  .qg-row .q-text { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .qg-row.ro .q-text { color: var(--muted); }
+  .qg-row .row-meta { font-family: var(--mono); font-size: 10px; color: var(--faint); flex: none; }
   .q-pause { color: var(--faint); padding: 2px 6px; border-radius: 4px; flex: none; }
   .q-pause:hover { color: var(--wait); background: var(--hover); }
   .q-item.rule { border-color: var(--accent-dim); }
@@ -604,7 +628,7 @@
           </select>
           <input type="time" id="q-until-t" style="display:none">
         </div>
-        <div class="q-hint">Prompts are typed into the session at the scheduled moment (works while detached; the app must be running). "After previous" fires once the session has been quiet for 3 minutes. "Every…" is a standing rule — it keeps firing on schedule (optionally only inside a daily time window) until you pause or remove it. A window like 20:00–08:00 wraps midnight.</div>
+        <div class="q-hint">Prompts are typed into the session at the scheduled moment (works while detached; the app must be running). "After previous" fires once the session has been quiet for 3 minutes. "Every…" is a standing rule — it keeps firing on schedule (optionally only inside a daily time window) until you pause or remove it; a window like 20:00–08:00 wraps midnight. A timed prompt starts a new group; "after previous" joins the last group. ☆ on a group header saves that group as a project template.</div>
         <div id="tpl-pop"></div>
       </div>
       <div id="terminal"></div>
@@ -2380,6 +2404,112 @@ function qMeta(i) {
   return parts.join(' · ');
 }
 
+/* a timed item (at / every) starts a group; chain items join the last
+   once-group. chains after a standing rule start their own group — they fire
+   independently of the rule. */
+function groupQueue(items) {
+  const groups = [];
+  for (const i of items) {
+    const last = groups[groups.length - 1];
+    if (i.mode === 'chain' && last && last.head.mode !== 'every') last.rows.push(i);
+    else groups.push({ head: i, rows: [i] });
+  }
+  return groups;
+}
+
+/* all prompt texts of a group in fire order (rule rows contribute their
+   embedded template steps too) */
+function groupSteps(g) {
+  const steps = [];
+  for (const i of g.rows) {
+    steps.push(i.text);
+    if (i.steps && i.steps.length) steps.push(...i.steps);
+  }
+  return steps;
+}
+
+async function saveGroupAsTemplate(g) {
+  const card = provider.get(state.sessionId);
+  if (!card) return;
+  const steps = groupSteps(g);
+  const name = await promptDialog(
+    `Save this group (${steps.length} prompt${steps.length > 1 ? 's, in order' : ''}) as a template for this project:`,
+    g.head.tpl || '');
+  if (!name) return;
+  const tpls = projTemplates(card);
+  const ex = tpls.find(t => t.name === name);
+  if (ex) ex.steps = steps; else tpls.push({ name, steps });
+  saveBoard();
+  toast('template saved: ' + name);
+}
+
+function groupEl(g) {
+  const rule = g.head.mode === 'every';
+  const el = document.createElement('div');
+  el.className = 'q-group' + (rule ? ' rule' : '') + (g.head.paused ? ' paused' : '');
+
+  const head = document.createElement('div');
+  head.className = 'qg-head';
+  head.innerHTML = '<span class="qg-when"></span><span class="qg-meta"></span><span class="qg-act">'
+    + (rule ? '<button class="qg-pause"></button>' : '')
+    + '<button class="qg-save" title="save this group as a project template">☆</button>'
+    + '<button class="qg-del" title="remove the whole group">✕</button></span>';
+  head.querySelector('.qg-when').textContent = fmtWhen(g.head);
+  const n = groupSteps(g).length;
+  head.querySelector('.qg-meta').textContent =
+    [qMeta(g.head), n > 1 ? `then ${n - 1} follow-up${n > 2 ? 's' : ''}, in order` : '']
+      .filter(Boolean).join(' · ');
+  const pb = head.querySelector('.qg-pause');
+  if (pb) {
+    pb.textContent = g.head.paused ? '▶' : '⏸';
+    pb.title = g.head.paused ? 'resume this rule' : 'pause this rule (keeps its settings)';
+    pb.onclick = () => inv('queue_pause', { id: g.head.id, paused: !g.head.paused }).catch(() => {});
+  }
+  head.querySelector('.qg-save').onclick = () => saveGroupAsTemplate(g);
+  head.querySelector('.qg-del').onclick = () => {
+    for (const i of g.rows) inv('queue_remove', { id: i.id }).catch(() => {});
+  };
+  el.appendChild(head);
+
+  /* rows: real queue items, plus a rule's embedded steps (read-only) */
+  const rows = [];
+  for (const i of g.rows) {
+    rows.push({ text: i.text, item: i });
+    if (i.steps) for (const s of i.steps) rows.push({ text: s, item: null });
+  }
+  rows.forEach((r, k) => {
+    const row = document.createElement('div');
+    row.className = 'qg-row' + (r.item ? '' : ' ro');
+    row.innerHTML = '<span class="tree"></span><span class="q-text"></span><span class="row-meta"></span>'
+      + (r.item ? '<button class="q-del" title="remove this prompt">✕</button>' : '');
+    row.querySelector('.tree').textContent =
+      rows.length === 1 || k === 0 ? '' : (k === rows.length - 1 ? '└' : '├');
+    const txt = row.querySelector('.q-text');
+    txt.textContent = r.text;
+    if (r.item) {
+      const i = r.item;
+      txt.title = 'click to edit';
+      txt.onclick = () => {
+        inlineRename(txt, i.text, v => {
+          if (v && v !== i.text) {
+            inv('queue_update', { id: i.id, text: v }).catch(e => toast('edit failed: ' + e));
+          } else {
+            setTimeout(renderQueueUI, 0);   // after blur, so the guard won't skip
+          }
+        });
+      };
+      row.querySelector('.q-del').onclick = () => inv('queue_remove', { id: i.id }).catch(() => {});
+      if (i.tpl && i.mode !== 'every') {
+        row.querySelector('.row-meta').textContent = `tpl·${i.tpl} ${i.tpl_idx}/${i.tpl_total}`;
+      }
+    } else {
+      txt.title = 'template step — fires as part of this rule, in order';
+    }
+    el.appendChild(row);
+  });
+  return el;
+}
+
 function renderQueueUI() {
   /* don't clobber an in-progress inline edit of a queued prompt */
   if (document.activeElement && document.activeElement.tagName === 'INPUT'
@@ -2391,34 +2521,7 @@ function renderQueueUI() {
     if (queueOpen) {
       const list = $('queue-list');
       list.innerHTML = '';
-      for (const i of q) {
-        const el = document.createElement('div');
-        el.className = 'q-item' + (i.mode === 'every' ? ' rule' : '') + (i.paused ? ' paused' : '');
-        el.innerHTML = '<span class="q-when"></span><span class="q-text" title="click to edit"></span><span class="q-meta"></span>'
-          + (i.mode === 'every' ? '<button class="q-pause"></button>' : '')
-          + '<button class="q-del" title="remove">✕</button>';
-        el.querySelector('.q-when').textContent = fmtWhen(i);
-        el.querySelector('.q-meta').textContent = qMeta(i);
-        const pb = el.querySelector('.q-pause');
-        if (pb) {
-          pb.textContent = i.paused ? '▶' : '⏸';
-          pb.title = i.paused ? 'resume this rule' : 'pause this rule (keeps its settings)';
-          pb.onclick = () => inv('queue_pause', { id: i.id, paused: !i.paused }).catch(() => {});
-        }
-        const txt = el.querySelector('.q-text');
-        txt.textContent = i.text;
-        txt.onclick = () => {
-          inlineRename(txt, i.text, v => {
-            if (v && v !== i.text) {
-              inv('queue_update', { id: i.id, text: v }).catch(e => toast('edit failed: ' + e));
-            } else {
-              setTimeout(renderQueueUI, 0);   // after blur, so the guard won't skip
-            }
-          });
-        };
-        el.querySelector('.q-del').onclick = () => inv('queue_remove', { id: i.id }).catch(() => {});
-        list.appendChild(el);
-      }
+      for (const g of groupQueue(q)) list.appendChild(groupEl(g));
       if (!q.length) list.innerHTML = '<div class="q-hint">nothing scheduled for this session yet</div>';
     }
   }
@@ -2539,38 +2642,15 @@ function showTplPop() {
     };
   }
   add('t-sep');
-  const save = add('t-row', '<span class="t-name">☆ Save current queue as template</span>');
-  if (sessionQueue(card.session).length) {
-    save.onclick = () => { hideTplPop(); saveQueueAsTemplate(); };
-  } else {
-    save.style.opacity = '0.45';
-    save.title = 'queue some prompts first';
-  }
+  add('t-row', '<span class="t-name" style="color:var(--faint)">☆ on a group header saves that group as a template</span>');
   const a = $('q-src');
   pop.style.left = a.offsetLeft + 'px';
   pop.style.top = (a.offsetTop + a.offsetHeight + 6) + 'px';
   pop.style.display = 'block';
 }
 
-async function saveQueueAsTemplate() {
-  const card = provider.get(state.sessionId);
-  if (!card) return;
-  const steps = [];
-  for (const i of sessionQueue(card.session)) {
-    steps.push(i.text);
-    if (i.steps && i.steps.length) steps.push(...i.steps);
-  }
-  if (!steps.length) return;
-  const name = await promptDialog(`Save these ${steps.length} prompt(s), in order, as a template for this project:`);
-  if (!name) return;
-  const tpls = projTemplates(card);
-  const ex = tpls.find(t => t.name === name);
-  if (ex) ex.steps = steps; else tpls.push({ name, steps });
-  saveBoard();
-  toast('template saved: ' + name);
-}
-
-function promptDialog(msg, initial = '') {
+  add('t-sep');
+  add('t-row', '<span class="t-name" style="color:var(--faint)">☆ on a group header saves that group as a template</span>');function promptDialog(msg, initial = '') {
   return new Promise(res => {
     $('ppd-msg').textContent = msg;
     const inp = $('ppd-input');
