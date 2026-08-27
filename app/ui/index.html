@@ -425,7 +425,7 @@
 <div id="app">
   <nav id="sidebar">
     <div class="side-top">
-      <div class="wordmark"><span class="glyph">▞</span> deck <span class="sub">0.2</span></div>
+      <div class="wordmark"><span class="glyph">▞</span> deck <span class="sub" id="app-ver"></span></div>
       <button class="collapse-btn" id="collapse-btn" title="Collapse sidebar (⌘B)">
         <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M10 3 5 8l5 5"/></svg>
       </button>
@@ -520,6 +520,12 @@ const inv = (cmd, args) => window.__TAURI__
 const listen = (ev, cb) => window.__TAURI__
   ? window.__TAURI__.event.listen(ev, cb)
   : Promise.reject('no tauri runtime');
+
+/* the window starts hidden (no white flash) — show as soon as the dark UI
+   shell is parsed and styled, before any async boot work */
+try {
+  if (window.__TAURI__) window.__TAURI__.window.getCurrentWindow().show();
+} catch (e) { /* plain browser */ }
 
 /* diagnostics → ~/.deck/app.log (webview console is invisible in production) */
 const ulog = m => inv('ui_log', { msg: String(m) }).catch(() => {});
@@ -1927,6 +1933,11 @@ $('update-btn').onclick = async () => {
 
 /* ---------- boot ---------- */
 async function boot() {
+  try {
+    if (window.__TAURI__ && window.__TAURI__.app) {
+      $('app-ver').textContent = await window.__TAURI__.app.getVersion();
+    }
+  } catch (e) { /* label stays empty */ }
   try {
     await listen('deck-ping', () => ulog('ping event RECEIVED'));
     await inv('ping_event');

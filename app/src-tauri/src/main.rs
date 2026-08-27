@@ -113,6 +113,55 @@ fn ui_log(msg: String) {
     applog(&format!("[ui] {msg}"));
 }
 
+/// Keep app.log bounded so support bundles stay small.
+fn rotate_log() {
+    let path = dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".deck")
+        .join("app.log");
+    if let Ok(meta) = std::fs::metadata(&path) {
+        if meta.len() > 2 * 1024 * 1024 {
+            if let Ok(data) = std::fs::read(&path) {
+                let keep = &data[data.len().saturating_sub(512 * 1024)..];
+                let _ = std::fs::write(&path, keep);
+            }
+        }
+    }
+}
+
+/// Bundle diagnostics into a timestamped file and reveal it in Finder —
+/// the "Export Logs" support flow for non-technical users.
+fn export_logs() -> Result<PathBuf, String> {
+    let home = dirs::home_dir().ok_or("no home dir")?;
+    let dir = home.join(".deck").join("exports");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let name = format!("deck-log-{}.txt", now_epoch());
+    let path = dir.join(name);
+
+    let mut out = String::new();
+    out.push_str(&format!("deck {}\n", env!("CARGO_PKG_VERSION")));
+    if let Ok(o) = Command::new("sw_vers").output() {
+        out.push_str(&String::from_utf8_lossy(&o.stdout));
+    }
+    if let Ok(o) = Command::new("uname").arg("-m").output() {
+        out.push_str(&format!("arch: {}", String::from_utf8_lossy(&o.stdout)));
+    }
+    out.push_str(&format!("tmux: {}\n", tmux_bin()));
+    out.push_str(&format!(
+        "sessions: {}\n",
+        tmux(&["list-sessions", "-F", "#{session_name}"])
+            .map(|s| s.lines().count())
+            .unwrap_or(0)
+    ));
+    out.push_str("\n===== app.log =====\n");
+    out.push_str(
+        &std::fs::read_to_string(home.join(".deck").join("app.log")).unwrap_or_default(),
+    );
+    std::fs::write(&path, out).map_err(|e| e.to_string())?;
+    let _ = Command::new("open").arg("-R").arg(&path).status();
+    Ok(path)
+}
+
 /// Rust→JS event self-test: the frontend calls this after registering a
 /// listener; if the pong never arrives, the event bus is the broken link.
 #[tauri::command]
@@ -855,6 +904,7 @@ fn regex_strip_lineno(path: &str) -> String {
 // ---------- main ---------------------------------------------------------------
 
 fn main() {
+    rotate_log();
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
@@ -869,14 +919,24 @@ fn main() {
             let clear = tauri::menu::MenuItemBuilder::with_id("clear", "Clear")
                 .accelerator("Cmd+K")
                 .build(app)?;
+            let export = tauri::menu::MenuItemBuilder::with_id("export-logs", "Export Logs…")
+                .build(app)?;
             let term_menu = tauri::menu::SubmenuBuilder::new(app, "Terminal")
                 .item(&clear)
+                .separator()
+                .item(&export)
                 .build()?;
             menu.append(&term_menu)?;
             app.set_menu(menu)?;
             app.on_menu_event(|app, e| {
                 if e.id() == "clear" {
                     let _ = app.emit("menu-clear", ());
+                }
+                if e.id() == "export-logs" {
+                    match export_logs() {
+                        Ok(p) => applog(&format!("[export] logs → {}", p.display())),
+                        Err(err) => applog(&format!("[export] FAILED: {err}")),
+                    }
                 }
             });
             Ok(())
