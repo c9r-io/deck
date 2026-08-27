@@ -533,6 +533,7 @@
 
 <script src="vendor/xterm.js"></script>
 <script src="vendor/addon-fit.js"></script>
+<script src="vendor/addon-clipboard.js"></script>
 <script>
 'use strict';
 /* ================================================================
@@ -1231,6 +1232,10 @@ function createPane(card) {
   });
   const fit = new FitAddon.FitAddon();
   t.loadAddon(fit);
+  try {
+    /* OSC52: tmux mouse selections land in the system clipboard */
+    t.loadAddon(new ClipboardAddon.ClipboardAddon());
+  } catch (e) { ulog('clipboard addon failed: ' + e); }
   t.open(body);
 
   if (!ghostEl) {
@@ -1488,13 +1493,18 @@ function wireTerminalInput(pane, term, host) {
     },
   });
 
-  /* Trackpad/wheel scrolling inside a tmux alt-screen gets translated by
-     xterm into arrow-key bursts (ESC OA/OB) — shell history spins and agent
-     REPLs recall old messages. Swallow wheel events entirely: history is
-     the ↑ key's job; scrollback lives in tmux (Ctrl-b [). */
+  /* Wheel handling: with tmux mouse mode on, the app requests mouse
+     reporting and xterm forwards wheel events as mouse reports — tmux
+     scrolls its own history (long agent output stays reachable). Only if
+     no mouse tracking is active do we swallow the wheel, because xterm
+     would otherwise translate it into arrow-key bursts on the alt screen
+     (history spinning / agent message recall). */
   host.addEventListener('wheel', e => {
-    e.preventDefault();
-    e.stopPropagation();
+    const mode = term.modes && term.modes.mouseTrackingMode;
+    if (!mode || mode === 'none') {
+      e.preventDefault();
+      e.stopPropagation();
+    }
   }, { passive: false, capture: true });
 
 }
