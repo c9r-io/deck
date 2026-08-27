@@ -599,7 +599,7 @@
         <div class="q-sentence">
           <span>Send</span>
           <select id="q-when">
-            <option value="chain">after previous finishes</option>
+            <option value="chain">after previous (3 min quiet)</option>
             <option value="30">in 30 min</option>
             <option value="60">in 1 h</option>
             <option value="180">in 3 h</option>
@@ -628,7 +628,7 @@
           </select>
           <input type="time" id="q-until-t" style="display:none">
         </div>
-        <div class="q-hint">Prompts are typed into the session at the scheduled moment (works while detached; the app must be running). "After previous" fires once the session has been quiet for 3 minutes. "Every…" is a standing rule — it keeps firing on schedule (optionally only inside a daily time window) until you pause or remove it; a window like 20:00–08:00 wraps midnight. A timed prompt starts a new group; "after previous" joins the last group. ☆ on a group header saves that group as a project template.</div>
+        <div class="q-hint">Prompts are typed into the session at the scheduled moment (works while detached; the app must be running). "After previous" fires once the session has been quiet for 3 minutes — quiet means no output, which may also be a prompt waiting for you. Delivery is at-most-once: a prompt interrupted mid-send by a crash is never re-sent. "Every…" is a standing rule — it keeps firing on schedule (optionally only inside a daily time window) until you pause or remove it; a window like 20:00–08:00 wraps midnight. A timed prompt starts a new group; "after previous" joins the last group. ☆ on a group header saves that group as a project template.</div>
         <div id="tpl-pop"></div>
       </div>
       <div id="terminal"></div>
@@ -2408,6 +2408,7 @@ function qMeta(i) {
       parts.push((sleeping ? 'sleeps — resumes ' : 'next ') + fmtClock(nextFire(i)));
     }
     if (i.fired) parts.push(i.fired + '×' + (i.until_n ? '/' + i.until_n : ''));
+    if (i.state === 'failed') parts.push('⚠ send failed ×' + i.attempts + (i.last_error ? ': ' + i.last_error : ''));
     else if (i.until_n) parts.push('stops after ' + i.until_n + '×');
     if (i.until_at) parts.push('until ' + fmtClock(i.until_at));
   }
@@ -2509,9 +2510,12 @@ function groupEl(g) {
         });
       };
       row.querySelector('.q-del').onclick = () => inv('queue_remove', { id: i.id }).catch(() => {});
-      if (i.tpl && i.mode !== 'every') {
-        row.querySelector('.row-meta').textContent = `tpl·${i.tpl} ${i.tpl_idx}/${i.tpl_total}`;
+      const bits = [];
+      if (i.tpl && i.mode !== 'every') bits.push(`tpl·${i.tpl} ${i.tpl_idx}/${i.tpl_total}`);
+      if (i.state === 'failed' && i.mode !== 'every') {
+        bits.push('⚠ ' + (i.attempts >= 8 ? 'gave up' : 'send failed, retrying') + (i.last_error ? ': ' + i.last_error : ''));
       }
+      row.querySelector('.row-meta').textContent = bits.join(' · ');
     } else {
       txt.title = 'template step — fires as part of this rule, in order';
     }
@@ -2725,20 +2729,20 @@ $('q-add-btn').onclick = async () => {
       if (mode === 'every') {
         /* one standing rule holds the whole template; steps 2..N re-enqueue
            as chain items on every fire */
-        await inv('queue_add', { ...base, text: steps[0], mode, at: null, every, winFrom, winTo, untilN, untilAt,
-          steps: steps.slice(1), tpl: qTpl.name, tplIdx: 1, tplTotal: steps.length });
+        await inv('queue_add', { args: { ...base, text: steps[0], mode, at: null, every, winFrom, winTo, untilN, untilAt,
+          steps: steps.slice(1), tpl: qTpl.name, tplIdx: 1, tplTotal: steps.length } });
       } else {
         for (let k = 0; k < steps.length; k++) {
-          await inv('queue_add', { ...base, text: steps[k],
+          await inv('queue_add', { args: { ...base, text: steps[k],
             mode: k === 0 ? mode : 'chain', at: k === 0 ? at : null,
-            tpl: qTpl.name, tplIdx: k + 1, tplTotal: steps.length });
+            tpl: qTpl.name, tplIdx: k + 1, tplTotal: steps.length } });
         }
       }
       setQSrc(null);
     } else {
       const text = $('q-text').value.trim();
       if (!text) { $('q-text').focus(); return; }
-      await inv('queue_add', { ...base, text, mode, at, every, winFrom, winTo, untilN, untilAt });
+      await inv('queue_add', { args: { ...base, text, mode, at, every, winFrom, winTo, untilN, untilAt } });
       $('q-text').value = '';
     }
     $('q-when').value = 'chain';   // natural default for the next one

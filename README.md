@@ -52,8 +52,8 @@ candidates sit in a bar below.
 
 **Scheduled prompts.** The quota-window workflow: queue prompts on a session
 and have them typed in later — at a set time ("in 5 h, when my Claude window
-resets") or chained ("after the previous one finishes", detected via 3 minutes
-of quiet). Works while detached; dead sessions are started automatically; the
+resets") or chained ("after the previous one goes quiet for 3 minutes" — quiet
+means no output; it may also be a prompt waiting for you). Works while detached; dead sessions are started automatically; the
 queue survives restarts. The app must be running for prompts to fire.
 
 **Recurring rules.** A prompt can repeat — *every 5/15/30 min, 1/2 h* —

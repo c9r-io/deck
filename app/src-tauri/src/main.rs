@@ -811,6 +811,17 @@ struct QueueItem {
     /// last fire instant (recurring only)
     #[serde(default)]
     last: Option<u64>,
+    /// lifecycle: "pending" (default) | "firing" | "failed".
+    /// "firing" is persisted BEFORE injection: after a crash such an item is
+    /// resolved as "assume sent" (at-most-once delivery — see recover()).
+    #[serde(default = "default_state")]
+    state: String,
+    #[serde(default)]
+    attempts: u32,
+    #[serde(default)]
+    last_error: Option<String>,
+    #[serde(default)]
+    last_attempt_at: Option<u64>,
     /// template steps 2..N — re-enqueued as chain items on every fire
     #[serde(default)]
     steps: Vec<String>,
@@ -820,6 +831,10 @@ struct QueueItem {
     tpl_idx: Option<u32>,
     #[serde(default)]
     tpl_total: Option<u32>,
+}
+
+fn default_state() -> String {
+    "pending".into()
 }
 
 #[derive(Serialize, Deserialize, Clone, Default)]
@@ -909,10 +924,9 @@ fn queue_list(state: State<'_, Queues>) -> QueueState {
     state.0.lock().unwrap().clone()
 }
 
-#[tauri::command]
-fn queue_add(
-    state: State<'_, Queues>,
-    app: AppHandle,
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct QueueAddArgs {
     session: String,
     dir: String,
     cmd: String,
@@ -928,34 +942,97 @@ fn queue_add(
     tpl: Option<String>,
     tpl_idx: Option<u32>,
     tpl_total: Option<u32>,
-) -> Result<(), String> {
-    let text = text.replace(['\n', '\r'], " ").trim().to_string();
+}
+
+/// Reject invalid schedule combinations up front.
+fn validate_add(a: &QueueAddArgs) -> Result<(), String> {
+    match a.mode.as_str() {
+        "at" => {
+            if a.at.is_none() {
+                return Err("a timed prompt needs its time".into());
+            }
+        }
+        "chain" => {}
+        "every" => {
+            let e = a.every.ok_or("a recurring rule needs an interval")?;
+            if e < 60 {
+                return Err("recurring interval must be at least 1 minute".into());
+            }
+        }
+        m => return Err(format!("unknown schedule mode: {m}")),
+    }
+    if a.mode != "every" && (a.every.is_some() || a.steps.as_ref().is_some_and(|s| !s.is_empty())) {
+        return Err("interval/steps only make sense on a recurring rule".into());
+    }
+    for w in [a.win_from, a.win_to] {
+        if w.is_some_and(|m| m >= 1440) {
+            return Err("time-window minutes must be below 24h".into());
+        }
+    }
+    if a.win_from.is_some() != a.win_to.is_some() {
+        return Err("a time window needs both ends".into());
+    }
+    if a.until_n.is_some_and(|n| n == 0) {
+        return Err("stop-after count must be at least 1".into());
+    }
+    if a.session.trim().is_empty() {
+        return Err("missing session".into());
+    }
+    Ok(())
+}
+
+/// Collision-proof id: ms clock + process-wide counter, verified against the
+/// live queue (the old `q<sec>-<len>` scheme collided after a remove+add in
+/// the same second).
+fn next_queue_id(existing: &[QueueItem]) -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    loop {
+        let id = format!("q{ms}-{}", SEQ.fetch_add(1, Ordering::Relaxed));
+        if !existing.iter().any(|i| i.id == id) {
+            return id;
+        }
+    }
+}
+
+#[tauri::command]
+fn queue_add(state: State<'_, Queues>, app: AppHandle, args: QueueAddArgs) -> Result<(), String> {
+    validate_add(&args)?;
+    let text = args.text.replace(['\n', '\r'], " ").trim().to_string();
     if text.is_empty() {
         return Err("empty prompt".into());
     }
     let mut q = state.0.lock().unwrap();
-    let id = format!("q{}-{}", now_epoch(), q.items.len());
+    let id = next_queue_id(&q.items);
     q.items.push(QueueItem {
         id,
-        session,
-        dir,
-        cmd,
+        session: args.session,
+        dir: args.dir,
+        cmd: args.cmd,
         text,
-        mode,
-        at,
+        mode: args.mode,
+        at: args.at,
         added: now_epoch(),
-        every,
-        win_from,
-        win_to,
-        until_n,
-        until_at,
+        every: args.every,
+        win_from: args.win_from,
+        win_to: args.win_to,
+        until_n: args.until_n,
+        until_at: args.until_at,
         fired: 0,
         paused: false,
         last: None,
-        steps: steps.unwrap_or_default(),
-        tpl,
-        tpl_idx,
-        tpl_total,
+        state: default_state(),
+        attempts: 0,
+        last_error: None,
+        last_attempt_at: None,
+        steps: args.steps.unwrap_or_default(),
+        tpl: args.tpl,
+        tpl_idx: args.tpl_idx,
+        tpl_total: args.tpl_total,
     });
     save_queue(&q)?;
     let _ = app.emit("queue-changed", ());
@@ -1043,6 +1120,167 @@ fn fire_item(item: &QueueItem) -> Result<(), String> {
     Ok(())
 }
 
+const MAX_ATTEMPTS: u32 = 8;
+
+/// Retry backoff after a failed injection: 20s · 2^(n-1), capped at 30 min.
+fn backoff_secs(attempts: u32) -> u64 {
+    if attempts == 0 {
+        return 0;
+    }
+    20u64.saturating_mul(1 << (attempts.min(10) - 1)).min(1800)
+}
+
+/// Permanently failed: attempts exhausted. Stays visible in the UI (with its
+/// error) but never blocks the rest of the session's chain.
+fn item_dead(i: &QueueItem) -> bool {
+    i.state == "failed" && i.attempts >= MAX_ATTEMPTS
+}
+
+fn retry_ok(i: &QueueItem, now: u64) -> bool {
+    i.last_attempt_at
+        .map(|t| now >= t + backoff_secs(i.attempts))
+        .unwrap_or(true)
+}
+
+/// Pure per-tick candidate selection (unit-tested; the thread only adds IO).
+fn select_due(
+    q: &QueueState,
+    now: u64,
+    now_min: u32,
+    activity: &HashMap<String, u64>,
+) -> Vec<QueueItem> {
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut out = Vec::new();
+    for i in &q.items {
+        if item_dead(i) || i.state == "firing" {
+            continue; // dead items don't occupy the head slot either
+        }
+        if i.mode != "every" && !seen.insert(i.session.clone()) {
+            continue; // only the head once-item per session is a candidate
+        }
+        if !retry_ok(i, now) {
+            continue;
+        }
+        let due = match i.mode.as_str() {
+            "at" => i.at.map(|t| now >= t).unwrap_or(false),
+            "chain" => {
+                let gap_ok = q
+                    .last_fired
+                    .get(&i.session)
+                    .map(|t| now >= t + CHAIN_MIN_GAP_SECS)
+                    .unwrap_or(true);
+                let quiet_ok = activity
+                    .get(&i.session)
+                    .map(|a| now >= a + CHAIN_QUIET_SECS)
+                    .unwrap_or(true); // dead session = quiet; fire_item restarts it
+                gap_ok && quiet_ok
+            }
+            "every" => every_due(i, now, now_min, q.last_fired.get(&i.session).copied()),
+            _ => false,
+        };
+        if due {
+            out.push(i.clone());
+        }
+    }
+    out
+}
+
+/// Expired rules die quietly (their stop instant passed while sleeping).
+fn purge_expired(q: &mut QueueState, now: u64) -> bool {
+    let n0 = q.items.len();
+    q.items
+        .retain(|i| !(i.mode == "every" && i.until_at.map(|t| now >= t).unwrap_or(false)));
+    q.items.len() != n0
+}
+
+/// Success bookkeeping: once-items are consumed; a rule counts the fire,
+/// re-enqueues its template steps 2..N as chain items, and retires itself
+/// when its stop-after count is reached.
+fn note_fired(q: &mut QueueState, item: &QueueItem, now: u64) {
+    if item.mode == "every" {
+        for (k, step) in item.steps.iter().enumerate() {
+            let id = next_queue_id(&q.items);
+            q.items.push(QueueItem {
+                id,
+                session: item.session.clone(),
+                dir: item.dir.clone(),
+                cmd: item.cmd.clone(),
+                text: step.clone(),
+                mode: "chain".into(),
+                at: None,
+                added: now,
+                every: None,
+                win_from: None,
+                win_to: None,
+                until_n: None,
+                until_at: None,
+                fired: 0,
+                paused: false,
+                last: None,
+                state: default_state(),
+                attempts: 0,
+                last_error: None,
+                last_attempt_at: None,
+                steps: Vec::new(),
+                tpl: item.tpl.clone(),
+                tpl_idx: item.tpl_idx.map(|_| k as u32 + 2),
+                tpl_total: item.tpl_total,
+            });
+        }
+        let mut done = false;
+        if let Some(it) = q.items.iter_mut().find(|i| i.id == item.id) {
+            it.fired += 1;
+            it.last = Some(now);
+            it.state = default_state();
+            it.last_error = None;
+            done = it.until_n.map(|n| it.fired >= n).unwrap_or(false);
+        }
+        if done {
+            q.items.retain(|i| i.id != item.id);
+        }
+    } else {
+        q.items.retain(|i| i.id != item.id);
+    }
+    q.last_fired.insert(item.session.clone(), now);
+}
+
+fn note_failed(q: &mut QueueState, id: &str, err: &str) {
+    if let Some(it) = q.items.iter_mut().find(|i| i.id == id) {
+        it.state = "failed".into();
+        it.last_error = Some(err.chars().take(200).collect());
+    }
+}
+
+/// At-most-once crash recovery. "firing" is persisted BEFORE injection, so
+/// after a crash such an item may or may not have reached the session. We
+/// assume it did — deck never risks sending a prompt twice: once-items are
+/// dropped (with a user-visible notice), rules just count the attempt.
+fn recover_interrupted(q: &mut QueueState) -> Vec<String> {
+    let mut notes = Vec::new();
+    let mut drop_ids = Vec::new();
+    for it in q.items.iter_mut() {
+        if it.state != "firing" {
+            continue;
+        }
+        if it.mode == "every" {
+            it.state = default_state();
+            it.last = Some(it.last_attempt_at.unwrap_or_else(now_epoch));
+            notes.push(format!(
+                "a recurring prompt for {} was interrupted mid-send last run; treated as sent (deck delivers at-most-once)",
+                it.session
+            ));
+        } else {
+            drop_ids.push(it.id.clone());
+            notes.push(format!(
+                "a scheduled prompt for {} was interrupted mid-send last run; removed to avoid double-sending (deck delivers at-most-once)",
+                it.session
+            ));
+        }
+    }
+    q.items.retain(|i| !drop_ids.contains(&i.id));
+    notes
+}
+
 fn spawn_scheduler(app: AppHandle) {
     std::thread::spawn(move || loop {
         std::thread::sleep(std::time::Duration::from_secs(20));
@@ -1052,7 +1290,6 @@ fn spawn_scheduler(app: AppHandle) {
             if q.items.is_empty() {
                 continue;
             }
-            let now = now_epoch();
             // pane activity for chain-mode quiet checks
             let mut activity: HashMap<String, u64> = HashMap::new();
             if let Ok(out) = tmux(&["list-panes", "-a", "-F", "#{session_name}\t#{window_activity}"]) {
@@ -1065,42 +1302,11 @@ fn spawn_scheduler(app: AppHandle) {
                     }
                 }
             }
-            let now_min = local_minutes();
-            // once-items: only the head of each session's queue is a candidate.
-            // "every" rules are standing and independent of that ordering.
-            let mut seen: HashSet<String> = HashSet::new();
-            q.items
-                .iter()
-                .filter(|i| i.mode == "every" || seen.insert(i.session.clone()))
-                .filter(|i| match i.mode.as_str() {
-                    "at" => i.at.map(|t| now >= t).unwrap_or(false),
-                    "chain" => {
-                        let gap_ok = q
-                            .last_fired
-                            .get(&i.session)
-                            .map(|t| now >= t + CHAIN_MIN_GAP_SECS)
-                            .unwrap_or(true);
-                        let quiet_ok = activity
-                            .get(&i.session)
-                            .map(|a| now >= a + CHAIN_QUIET_SECS)
-                            .unwrap_or(true); // dead session = quiet; fire_item restarts it
-                        gap_ok && quiet_ok
-                    }
-                    "every" => every_due(i, now, now_min, q.last_fired.get(&i.session).copied()),
-                    _ => false,
-                })
-                .cloned()
-                .collect()
+            select_due(&q, now_epoch(), local_minutes(), &activity)
         };
-        // expired rules die quietly (their stop instant passed while sleeping)
         {
             let mut q = state.0.lock().unwrap();
-            let n0 = q.items.len();
-            let now = now_epoch();
-            q.items.retain(|i| {
-                !(i.mode == "every" && i.until_at.map(|t| now >= t).unwrap_or(false))
-            });
-            if q.items.len() != n0 {
+            if purge_expired(&mut q, now_epoch()) {
                 if let Err(e) = save_queue(&q) {
                     applog(&format!("[queue] persist (expiry purge) FAILED: {e}"));
                 }
@@ -1109,6 +1315,27 @@ fn spawn_scheduler(app: AppHandle) {
             }
         }
         for item in due {
+            // Persist the firing intent BEFORE injecting — this ordering is
+            // what makes delivery at-most-once across crashes.
+            {
+                let mut q = state.0.lock().unwrap();
+                let Some(it) = q.items.iter_mut().find(|i| i.id == item.id) else {
+                    continue;
+                };
+                it.state = "firing".into();
+                it.attempts += 1;
+                it.last_attempt_at = Some(now_epoch());
+                if let Err(e) = save_queue(&q) {
+                    applog(&format!(
+                        "[queue] persist (pre-fire) FAILED: {e} — not sending this tick"
+                    ));
+                    if let Some(it) = q.items.iter_mut().find(|i| i.id == item.id) {
+                        it.state = default_state();
+                        it.attempts -= 1;
+                    }
+                    continue;
+                }
+            }
             match fire_item(&item) {
                 Ok(()) => {
                     // never log prompt contents — length only (privacy)
@@ -1119,47 +1346,7 @@ fn spawn_scheduler(app: AppHandle) {
                         item.mode
                     ));
                     let mut q = state.0.lock().unwrap();
-                    let now = now_epoch();
-                    if item.mode == "every" {
-                        // template steps 2..N follow as one-shot chain items
-                        for (k, step) in item.steps.iter().enumerate() {
-                            let id = format!("q{}-{}", now, q.items.len());
-                            q.items.push(QueueItem {
-                                id,
-                                session: item.session.clone(),
-                                dir: item.dir.clone(),
-                                cmd: item.cmd.clone(),
-                                text: step.clone(),
-                                mode: "chain".into(),
-                                at: None,
-                                added: now,
-                                every: None,
-                                win_from: None,
-                                win_to: None,
-                                until_n: None,
-                                until_at: None,
-                                fired: 0,
-                                paused: false,
-                                last: None,
-                                steps: Vec::new(),
-                                tpl: item.tpl.clone(),
-                                tpl_idx: item.tpl_idx.map(|_| k as u32 + 2),
-                                tpl_total: item.tpl_total,
-                            });
-                        }
-                        let mut done = false;
-                        if let Some(it) = q.items.iter_mut().find(|i| i.id == item.id) {
-                            it.fired += 1;
-                            it.last = Some(now);
-                            done = it.until_n.map(|n| it.fired >= n).unwrap_or(false);
-                        }
-                        if done {
-                            q.items.retain(|i| i.id != item.id);
-                        }
-                    } else {
-                        q.items.retain(|i| i.id != item.id);
-                    }
-                    q.last_fired.insert(item.session.clone(), now);
+                    note_fired(&mut q, &item, now_epoch());
                     if let Err(e) = save_queue(&q) {
                         applog(&format!("[queue] persist (post-fire) FAILED: {e}"));
                     }
@@ -1171,7 +1358,20 @@ fn spawn_scheduler(app: AppHandle) {
                     let _ = app.emit("queue-changed", ());
                 }
                 Err(e) => {
-                    applog(&format!("[queue] send FAILED for {}: {e} (will retry)", item.session));
+                    let mut q = state.0.lock().unwrap();
+                    note_failed(&mut q, &item.id, &e);
+                    let gave_up = q.items.iter().any(|i| i.id == item.id && item_dead(i));
+                    if let Err(pe) = save_queue(&q) {
+                        applog(&format!("[queue] persist (post-failure) FAILED: {pe}"));
+                    }
+                    drop(q);
+                    applog(&format!(
+                        "[queue] send FAILED for {} (attempt {}): {e}{}",
+                        item.session,
+                        item.attempts + 1,
+                        if gave_up { " — giving up" } else { " (will back off and retry)" }
+                    ));
+                    let _ = app.emit("queue-changed", ());
                 }
             }
         }
@@ -1225,17 +1425,17 @@ fn regex_strip_lineno(path: &str) -> String {
 mod tests {
     use super::*;
 
-    fn rule(every: u64) -> QueueItem {
+    fn qi(id: &str, mode: &str) -> QueueItem {
         QueueItem {
-            id: "t".into(),
+            id: id.into(),
             session: "s".into(),
             dir: String::new(),
             cmd: String::new(),
             text: "x".into(),
-            mode: "every".into(),
+            mode: mode.into(),
             at: None,
             added: 0,
-            every: Some(every),
+            every: None,
             win_from: None,
             win_to: None,
             until_n: None,
@@ -1243,11 +1443,187 @@ mod tests {
             fired: 0,
             paused: false,
             last: None,
+            state: default_state(),
+            attempts: 0,
+            last_error: None,
+            last_attempt_at: None,
             steps: Vec::new(),
             tpl: None,
             tpl_idx: None,
             tpl_total: None,
         }
+    }
+
+    fn rule(every: u64) -> QueueItem {
+        let mut i = qi("t", "every");
+        i.every = Some(every);
+        i
+    }
+
+    fn qs(items: Vec<QueueItem>) -> QueueState {
+        QueueState { items, last_fired: HashMap::new() }
+    }
+
+    const NOW: u64 = 1_000_000;
+
+    #[test]
+    fn at_fires_only_when_due() {
+        let mut a = qi("a", "at");
+        a.at = Some(NOW - 1);
+        let mut b = qi("b", "at");
+        b.session = "other".into();
+        b.at = Some(NOW + 100);
+        let q = qs(vec![a, b]);
+        let due = select_due(&q, NOW, 720, &HashMap::new());
+        assert_eq!(due.iter().map(|i| i.id.as_str()).collect::<Vec<_>>(), ["a"]);
+    }
+
+    #[test]
+    fn chain_respects_order_quiet_and_gap() {
+        let c1 = qi("c1", "chain");
+        let c2 = qi("c2", "chain");
+        let mut q = qs(vec![c1, c2]);
+        // quiet session, no prior fire → only the HEAD chain item fires
+        let quiet: HashMap<String, u64> = [("s".into(), NOW - 400)].into();
+        let due = select_due(&q, NOW, 720, &quiet);
+        assert_eq!(due.iter().map(|i| i.id.as_str()).collect::<Vec<_>>(), ["c1"]);
+        // recent activity → nothing
+        let busy: HashMap<String, u64> = [("s".into(), NOW - 10)].into();
+        assert!(select_due(&q, NOW, 720, &busy).is_empty());
+        // fired 10s ago → min-gap blocks even a quiet session
+        q.last_fired.insert("s".into(), NOW - 10);
+        assert!(select_due(&q, NOW, 720, &quiet).is_empty());
+    }
+
+    #[test]
+    fn paused_rule_skipped_resume_restores() {
+        let mut r = rule(300);
+        r.paused = true;
+        let mut q = qs(vec![r]);
+        assert!(select_due(&q, NOW, 720, &HashMap::new()).is_empty());
+        q.items[0].paused = false;
+        assert_eq!(select_due(&q, NOW, 720, &HashMap::new()).len(), 1);
+    }
+
+    #[test]
+    fn failed_item_backs_off_then_dies_without_blocking_chain() {
+        let mut c1 = qi("c1", "chain");
+        c1.state = "failed".into();
+        c1.attempts = 1;
+        c1.last_attempt_at = Some(NOW - 10);
+        let c2 = qi("c2", "chain");
+        let mut q = qs(vec![c1, c2]);
+        let quiet: HashMap<String, u64> = [("s".into(), NOW - 400)].into();
+        // 10s after 1st failure: backoff (20s) holds it, and it still owns the head
+        assert!(select_due(&q, NOW, 720, &quiet).is_empty());
+        // backoff elapsed → retried
+        q.items[0].last_attempt_at = Some(NOW - 30);
+        assert_eq!(select_due(&q, NOW, 720, &quiet)[0].id, "c1");
+        // attempts exhausted → dead: never selected, and c2 takes the head
+        q.items[0].attempts = MAX_ATTEMPTS;
+        assert_eq!(select_due(&q, NOW, 720, &quiet)[0].id, "c2");
+        assert_eq!(backoff_secs(1), 20);
+        assert_eq!(backoff_secs(20), 1800, "backoff is capped");
+    }
+
+    #[test]
+    fn crash_recovery_is_at_most_once() {
+        let mut once = qi("o", "at");
+        once.state = "firing".into();
+        let mut r = rule(300);
+        r.state = "firing".into();
+        r.last_attempt_at = Some(NOW - 5);
+        let mut q = qs(vec![once, r]);
+        let notes = recover_interrupted(&mut q);
+        assert_eq!(notes.len(), 2);
+        // the once-item is gone (assumed sent), the rule survives with the
+        // attempt counted as a fire instant
+        assert_eq!(q.items.len(), 1);
+        assert_eq!(q.items[0].mode, "every");
+        assert_eq!(q.items[0].state, "pending");
+        assert_eq!(q.items[0].last, Some(NOW - 5));
+    }
+
+    #[test]
+    fn queue_ids_never_collide() {
+        let existing = vec![qi("q1-0", "at")];
+        let a = next_queue_id(&existing);
+        let b = next_queue_id(&existing);
+        assert_ne!(a, b);
+        assert!(!existing.iter().any(|i| i.id == a || i.id == b));
+    }
+
+    #[test]
+    fn template_steps_reenqueue_on_rule_fire() {
+        let mut r = rule(300);
+        r.steps = vec!["s2".into(), "s3".into()];
+        r.tpl = Some("tp".into());
+        r.tpl_idx = Some(1);
+        r.tpl_total = Some(3);
+        r.until_n = Some(1);
+        let item = r.clone();
+        let mut q = qs(vec![r]);
+        note_fired(&mut q, &item, NOW);
+        // rule retired (until_n=1), steps 2..3 queued as chain items in order
+        let modes: Vec<_> = q.items.iter().map(|i| (i.mode.as_str(), i.text.as_str())).collect();
+        assert_eq!(modes, [("chain", "s2"), ("chain", "s3")]);
+        assert_eq!(q.items[0].tpl_idx, Some(2));
+        assert_eq!(q.items[1].tpl_idx, Some(3));
+        assert_eq!(q.last_fired.get("s"), Some(&NOW));
+    }
+
+    #[test]
+    fn expired_rules_purge() {
+        let mut r = rule(300);
+        r.until_at = Some(NOW - 1);
+        let mut q = qs(vec![r, qi("keep", "chain")]);
+        assert!(purge_expired(&mut q, NOW));
+        assert_eq!(q.items.len(), 1);
+        assert_eq!(q.items[0].id, "keep");
+    }
+
+    #[test]
+    fn add_validation_rejects_bad_combinations() {
+        let base = || QueueAddArgs {
+            session: "s".into(),
+            dir: String::new(),
+            cmd: String::new(),
+            text: "x".into(),
+            mode: "at".into(),
+            at: Some(NOW),
+            every: None,
+            win_from: None,
+            win_to: None,
+            until_n: None,
+            until_at: None,
+            steps: None,
+            tpl: None,
+            tpl_idx: None,
+            tpl_total: None,
+        };
+        assert!(validate_add(&base()).is_ok());
+        let mut a = base();
+        a.at = None;
+        assert!(validate_add(&a).is_err(), "at without a time");
+        let mut a = base();
+        a.mode = "every".into();
+        a.every = Some(30);
+        assert!(validate_add(&a).is_err(), "sub-minute interval");
+        let mut a = base();
+        a.mode = "every".into();
+        a.every = Some(300);
+        a.win_from = Some(480);
+        assert!(validate_add(&a).is_err(), "one-sided window");
+        a.win_to = Some(2000);
+        assert!(validate_add(&a).is_err(), "window past 24h");
+        let mut a = base();
+        a.mode = "chain".into();
+        a.at = None;
+        a.steps = Some(vec!["y".into()]);
+        assert!(validate_add(&a).is_err(), "steps on a non-rule");
+        let mut a = base();
+        a.mode = "yearly".into();
+        assert!(validate_add(&a).is_err(), "unknown mode");
     }
 
     #[test]
@@ -1327,7 +1703,19 @@ fn main() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .manage(PtyState::default())
-        .manage(Queues(Mutex::new(load_queue())))
+        .manage(Queues(Mutex::new({
+            let mut qs = load_queue();
+            let notes = recover_interrupted(&mut qs);
+            if !notes.is_empty() {
+                for n in notes {
+                    storage::warn(n);
+                }
+                if let Err(e) = save_queue(&qs) {
+                    applog(&format!("[queue] persist (crash recovery) FAILED: {e}"));
+                }
+            }
+            qs
+        })))
         .setup(|app| {
             std::thread::spawn(init_deck_server);
             spawn_scheduler(app.handle().clone());
