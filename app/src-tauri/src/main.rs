@@ -565,6 +565,8 @@ fn regex_strip_lineno(path: &str) -> String {
 
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .manage(PtyState::default())
         .invoke_handler(tauri::generate_handler![
             load_board,

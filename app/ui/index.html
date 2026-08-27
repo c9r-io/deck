@@ -101,6 +101,17 @@
     color: var(--muted); white-space: nowrap;
   }
   .side-new:hover { color: var(--accent); border-color: var(--accent-dim); }
+  #update-btn {
+    display: none; margin: 0 10px; padding: 7px 10px;
+    align-items: center; justify-content: center; gap: 6px;
+    border-radius: 6px; white-space: nowrap;
+    background: var(--sel); border: 1px solid var(--accent-dim);
+    color: var(--accent); font-size: 12px;
+  }
+  #update-btn:hover { filter: brightness(1.15); }
+  #update-btn[disabled] { opacity: 0.7; cursor: default; }
+  body.side-collapsed #update-btn { padding: 7px 0; margin: 0 8px; }
+  body.side-collapsed #update-btn .label { display: none; }
 
   body.side-collapsed #sidebar { width: 50px; }
   body.side-collapsed .side-top { padding: 14px 0 10px; justify-content: center; }
@@ -380,6 +391,7 @@
     </button>
     <div class="side-group"><span>Sessions</span><span id="side-count"></span></div>
     <div class="side-list" id="side-list"></div>
+    <button id="update-btn"><span>⬆</span><span class="label"></span></button>
     <button class="side-new" id="side-new" title="New session"><span>＋</span><span class="label">New session</span></button>
   </nav>
 
@@ -1554,6 +1566,53 @@ provider.subscribe((ev, s) => {
   render();
 });
 
+/* ---------- in-app updates (tauri-plugin-updater) ---------- */
+let pendingUpdate = null;
+
+async function checkForUpdate() {
+  const up = window.__TAURI__ && window.__TAURI__.updater;
+  if (!up) return;
+  try {
+    const update = await up.check();
+    if (!update) return;
+    pendingUpdate = update;
+    const btn = $('update-btn');
+    btn.querySelector('.label').textContent = `Update to v${update.version}`;
+    btn.title = `deck v${update.version} is available — click to download and restart`;
+    btn.style.display = 'flex';
+    ulog(`update available: v${update.version}`);
+  } catch (e) {
+    ulog('update check failed: ' + e);   // offline / endpoint unreachable — silent
+  }
+}
+
+$('update-btn').onclick = async () => {
+  if (!pendingUpdate) return;
+  const btn = $('update-btn');
+  const label = btn.querySelector('.label');
+  btn.disabled = true;
+  try {
+    let got = 0, total = 0;
+    await pendingUpdate.downloadAndInstall(ev => {
+      if (ev.event === 'Started') total = ev.data.contentLength || 0;
+      if (ev.event === 'Progress') {
+        got += ev.data.chunkLength;
+        label.textContent = total
+          ? `Downloading ${Math.round(got / total * 100)}%`
+          : `Downloading ${(got / 1048576).toFixed(1)}MB`;
+      }
+      if (ev.event === 'Finished') label.textContent = 'Installing…';
+    });
+    label.textContent = 'Restarting…';
+    await window.__TAURI__.process.relaunch();
+  } catch (e) {
+    btn.disabled = false;
+    label.textContent = 'Update failed — retry';
+    toast('update failed: ' + e);
+    ulog('update install failed: ' + e);
+  }
+};
+
 /* ---------- boot ---------- */
 async function boot() {
   try {
@@ -1585,6 +1644,8 @@ async function boot() {
   }
   render();
   startPolling();
+  setTimeout(checkForUpdate, 4000);
+  setInterval(checkForUpdate, 6 * 3600 * 1000);
 }
 boot();
 </script>
