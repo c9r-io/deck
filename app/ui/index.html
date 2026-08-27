@@ -1373,10 +1373,13 @@ function wireTerminalInput(pane, term, host) {
       const preDesynced = lineBuf === null;
       const completed = feedMirror(d);
       if (completed) maybeRecordCommand(completed);
-      /* separator on submit: synced mirror knows for sure; a desynced one
-         still marks any Enter (better a rare extra line than a missing one) */
+      /* separator on submit — SHELLS ONLY: markers assume append-scroll
+         output; agent TUIs (claude) repaint in place, so a line anchored
+         to "the input row" ends up crossing arbitrary repainted content.
+         Agent UIs already delineate messages with their own ❯ rows. */
       if (completed || (preDesynced && (d.includes('\r') || d.includes('\n')))) {
-        addInputSeparator(pane);
+        const c = card();
+        if (c && SHELL_FG.test(c.fg || '')) addInputSeparator(pane);
       }
       renderSuggest();
       if (odLogged < 3) {
@@ -1449,6 +1452,15 @@ function wireTerminalInput(pane, term, host) {
           text: value,
           activate: (e, txt) => {
             e.stopPropagation();
+            /* the menu swallows the mouseup, leaving xterm's selection
+               tracker in drag mode — end the gesture synthetically */
+            const scr = host.querySelector('.xterm-screen');
+            if (scr) {
+              scr.dispatchEvent(new MouseEvent('mouseup', {
+                bubbles: true, clientX: e.clientX, clientY: e.clientY,
+              }));
+            }
+            try { term.clearSelection(); } catch (e2) { /* fine */ }
             const c = card();
             showLinkCtx(e, kind, txt, c ? c.dir : HOME);
           },
