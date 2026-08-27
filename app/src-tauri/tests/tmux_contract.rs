@@ -140,3 +140,102 @@ fn poll_formats_exist() {
         "pane_current_command should report the fg shell, got {fg:?}"
     );
 }
+
+/// poll_sessions batches every visible card's preview into ONE tmux
+/// invocation: `display-message -p <mark> ; capture-pane -p …` pairs.
+/// This encodes the two tmux behaviors that design depends on:
+/// 1. command batches run in order, output concatenated on stdout;
+/// 2. a failing command mid-batch aborts the REST of the batch — which is
+///    why poll_sessions only ever batches targets it just saw alive.
+#[test]
+fn batched_capture_markers_and_dead_target_abort() {
+    let s = Server::new("batch");
+    s.run(&[
+        "new-session",
+        "-d",
+        "-s",
+        "u",
+        "-x",
+        "80",
+        "-y",
+        "12",
+        "/bin/sh",
+    ]);
+    sleep(Duration::from_millis(400));
+    // exact `=name:` targets, always: with >1 session a BARE name target can
+    // resolve to a different session entirely (observed with this very
+    // sidecar: bare `-t t` delivered keys to session u) — the reason deck's
+    // pane_target()/session_target() prefix every target with `=`.
+    s.run(&["send-keys", "-t", "=t:", "-l", "echo tee-one"]);
+    s.run(&["send-keys", "-t", "=t:", "Enter"]);
+    s.run(&["send-keys", "-t", "=u:", "-l", "echo tee-two"]);
+    s.run(&["send-keys", "-t", "=u:", "Enter"]);
+    sleep(Duration::from_millis(600));
+
+    const MARK: &str = "\u{1}deck-tail\u{1}";
+    let both = s.run(&[
+        "display-message",
+        "-p",
+        &format!("{MARK}t"),
+        ";",
+        "capture-pane",
+        "-p",
+        "-t",
+        "=t:",
+        "-S",
+        "-30",
+        ";",
+        "display-message",
+        "-p",
+        &format!("{MARK}u"),
+        ";",
+        "capture-pane",
+        "-p",
+        "-t",
+        "=u:",
+        "-S",
+        "-30",
+    ]);
+    let segs: Vec<&str> = both.split(MARK).filter(|s| !s.is_empty()).collect();
+    let t_seg = segs
+        .iter()
+        .find(|s| s.starts_with("t\n"))
+        .expect("t segment");
+    let u_seg = segs
+        .iter()
+        .find(|s| s.starts_with("u\n"))
+        .expect("u segment");
+    assert!(t_seg.contains("tee-one"), "t capture in batch: {both:?}");
+    assert!(u_seg.contains("tee-two"), "u capture in batch: {both:?}");
+    assert!(!t_seg.contains("tee-two"), "segments must not bleed");
+
+    // dead target mid-batch: everything after the failing command is lost
+    let after_dead = s.run(&[
+        "display-message",
+        "-p",
+        &format!("{MARK}gone"),
+        ";",
+        "capture-pane",
+        "-p",
+        "-t",
+        "=gone:",
+        "-S",
+        "-30",
+        ";",
+        "display-message",
+        "-p",
+        &format!("{MARK}t"),
+        ";",
+        "capture-pane",
+        "-p",
+        "-t",
+        "=t:",
+        "-S",
+        "-30",
+    ]);
+    assert!(
+        !after_dead.contains("tee-one"),
+        "tmux aborts a batch at the first failure — if this ever changes, \
+         poll_sessions' alive-only filtering is merely redundant, not wrong: {after_dead:?}"
+    );
+}

@@ -171,15 +171,14 @@ pub(crate) fn start_session(name: String, dir: String, cmd: String) -> Result<()
 #[tauri::command]
 pub(crate) fn scroll_session(name: String, lines: i32) -> Result<(), String> {
     let t = pane_target(&name);
-    let in_mode = tmux(&["display", "-p", "-t", &t, "#{pane_in_mode}"])
-        .map(|s| s.trim() == "1")
-        .unwrap_or(false);
+    // one query for both facts (was two subprocesses per wheel tick)
+    let stat =
+        tmux(&["display", "-p", "-t", &t, "#{pane_in_mode} #{history_size}"]).unwrap_or_default();
+    let mut it = stat.split_whitespace();
+    let in_mode = it.next() == Some("1");
+    let hist: i64 = it.next().and_then(|s| s.parse().ok()).unwrap_or(0);
     if lines < 0 {
         if !in_mode {
-            let hist = tmux(&["display", "-p", "-t", &t, "#{history_size}"])
-                .ok()
-                .and_then(|s| s.trim().parse::<i64>().ok())
-                .unwrap_or(0);
             if hist == 0 {
                 return Ok(());
             }
@@ -266,81 +265,139 @@ pub(crate) fn tree_mem(roots: &HashMap<String, u32>) -> HashMap<String, f64> {
     result
 }
 
-pub(crate) fn capture_tail(name: &str, lines: usize) -> Vec<String> {
-    match tmux(&["capture-pane", "-p", "-t", &pane_target(name), "-S", "-30"]) {
-        Ok(text) => {
-            let non_empty: Vec<String> = text
-                .lines()
-                .filter(|l| !l.trim().is_empty())
-                .map(|l| l.to_string())
-                .collect();
-            let skip = non_empty.len().saturating_sub(lines);
-            non_empty.into_iter().skip(skip).collect()
+/// Per-poll ceiling on `capture-pane` targets. Every capture is pane-content
+/// I/O through the tmux server; an unbounded board would make poll cost grow
+/// with visible-card count. Boards with more on-screen cards than this get
+/// previews for the first MAX_TAIL_SESSIONS only (frontend sends visible
+/// cards in board order, so the truncation is stable, not flickering).
+const MAX_TAIL_SESSIONS: usize = 16;
+
+/// Marker line separating per-session segments in a batched capture. \x01 is
+/// never produced by capture-pane for ordinary pane text lines.
+const TAIL_MARK: &str = "\u{1}deck-tail\u{1}";
+
+/// One pane-listing line → (session, pane pid, activity epoch, fg command).
+/// Every tmux session has at least one pane, so this listing doubles as the
+/// liveness set — no separate `list-sessions` round-trip.
+pub(crate) fn parse_panes(text: &str) -> HashMap<String, (u32, u64, String)> {
+    let mut panes: HashMap<String, (u32, u64, String)> = HashMap::new();
+    for line in text.lines() {
+        let mut it = line.split('\t');
+        if let (Some(s), Some(pid), Some(act), Some(fg)) =
+            (it.next(), it.next(), it.next(), it.next())
+        {
+            if let (Ok(pid), Ok(act)) = (pid.parse(), act.parse()) {
+                panes
+                    .entry(s.to_string())
+                    .or_insert((pid, act, fg.to_string()));
+            }
         }
-        Err(_) => Vec::new(),
     }
+    panes
+}
+
+/// Split batched `display-message ; capture-pane` output back into per-session
+/// tails: each segment starts with a TAIL_MARK line naming the session, and
+/// keeps the last `lines` non-empty lines of its capture.
+pub(crate) fn parse_tail_batches(text: &str, lines: usize) -> HashMap<String, Vec<String>> {
+    let mut tails: HashMap<String, Vec<String>> = HashMap::new();
+    let mut current: Option<String> = None;
+    for line in text.lines() {
+        if let Some(name) = line.strip_prefix(TAIL_MARK) {
+            current = Some(name.to_string());
+            tails.entry(name.to_string()).or_default();
+        } else if let Some(name) = &current {
+            if !line.trim().is_empty() {
+                tails.get_mut(name).unwrap().push(line.to_string());
+            }
+        }
+    }
+    for v in tails.values_mut() {
+        let skip = v.len().saturating_sub(lines);
+        v.drain(..skip);
+    }
+    tails
+}
+
+/// Fetch tail previews for many sessions in ONE tmux invocation: a command
+/// batch of `display-message -p <marker+name> ; capture-pane -p …` pairs.
+/// Ran per-session before (one subprocess per visible card, every 2.5s).
+pub(crate) fn capture_tails(names: &[&String], lines: usize) -> HashMap<String, Vec<String>> {
+    if names.is_empty() {
+        return HashMap::new();
+    }
+    let mut args: Vec<String> = Vec::new();
+    for (i, name) in names.iter().enumerate() {
+        if i > 0 {
+            args.push(";".into());
+        }
+        args.push("display-message".into());
+        args.push("-p".into());
+        args.push(format!("{TAIL_MARK}{}", crate::tmux::fmt_escape(name)));
+        args.push(";".into());
+        args.push("capture-pane".into());
+        args.push("-p".into());
+        args.push("-t".into());
+        args.push(pane_target(name));
+        args.push("-S".into());
+        args.push("-30".into());
+    }
+    parse_tail_batches(&crate::tmux::tmux_batch(&args), lines)
 }
 
 /// Single poll for everything the board needs: liveness, output recency,
 /// process-tree memory, and (for the sessions on screen) tail previews.
+/// Cost is bounded: 2 tmux subprocesses + 1 ps per poll, independent of
+/// session count (was 2 + one capture-pane per visible card).
+///
+/// PERF (examples/poll_bench.rs, M-series, release, 2026-08): per poll at
+/// 5/20/50 sessions — old pattern 14/45/108 ms with 7/22/52 subprocesses;
+/// batched pattern 4.3/4.6/5.1 ms with a constant 2 (+1 ps here).
 #[tauri::command]
 pub(crate) fn poll_sessions(names: Vec<String>, tail_for: Vec<String>) -> Vec<SessInfo> {
-    let alive: HashSet<String> = tmux(&["list-sessions", "-F", "#{session_name}"])
-        .map(|o| o.lines().map(|s| s.to_string()).collect())
-        .unwrap_or_default();
-
-    // session name → (pane pid, last activity epoch, foreground command)
-    let mut panes: HashMap<String, (u32, u64, String)> = HashMap::new();
-    if let Ok(out) = tmux(&[
-        "list-panes",
-        "-a",
-        "-F",
-        "#{session_name}\t#{pane_pid}\t#{window_activity}\t#{pane_current_command}",
-    ]) {
-        for line in out.lines() {
-            let mut it = line.split('\t');
-            if let (Some(s), Some(pid), Some(act), Some(fg)) =
-                (it.next(), it.next(), it.next(), it.next())
-            {
-                if let (Ok(pid), Ok(act)) = (pid.parse(), act.parse()) {
-                    panes
-                        .entry(s.to_string())
-                        .or_insert((pid, act, fg.to_string()));
-                }
-            }
-        }
-    }
+    // one listing supplies liveness + activity + pid + fg for every session
+    let panes = parse_panes(
+        &tmux(&[
+            "list-panes",
+            "-a",
+            "-F",
+            "#{session_name}\t#{pane_pid}\t#{window_activity}\t#{pane_current_command}",
+        ])
+        .unwrap_or_default(),
+    );
 
     let roots: HashMap<String, u32> = names
         .iter()
-        .filter(|n| alive.contains(*n))
         .filter_map(|n| panes.get(n).map(|(pid, _, _)| (n.clone(), *pid)))
         .collect();
     let mem = tree_mem(&roots);
-    let tails: HashSet<&String> = tail_for.iter().collect();
+
+    // captures only for sessions that are both requested AND alive — a dead
+    // target inside the batch would abort the remaining commands
+    let want_tails: Vec<&String> = tail_for
+        .iter()
+        .filter(|n| panes.contains_key(*n))
+        .take(MAX_TAIL_SESSIONS)
+        .collect();
+    if tail_for.len() > MAX_TAIL_SESSIONS {
+        applog(&format!(
+            "[poll] tail previews capped at {MAX_TAIL_SESSIONS} of {}",
+            tail_for.len()
+        ));
+    }
+    let mut tails = capture_tails(&want_tails, 2);
     let now = now_epoch();
 
     names
         .into_iter()
         .map(|name| {
-            let is_alive = alive.contains(&name);
-            let idle = panes
-                .get(&name)
-                .map(|(_, act, _)| now.saturating_sub(*act))
-                .filter(|_| is_alive);
+            let pane = panes.get(&name);
             SessInfo {
-                alive: is_alive,
-                idle_secs: idle,
+                alive: pane.is_some(),
+                idle_secs: pane.map(|(_, act, _)| now.saturating_sub(*act)),
                 mem_mb: mem.get(&name).copied(),
-                tail: if is_alive && tails.contains(&name) {
-                    capture_tail(&name, 2)
-                } else {
-                    Vec::new()
-                },
-                fg: panes
-                    .get(&name)
-                    .map(|(_, _, fg)| fg.clone())
-                    .filter(|_| is_alive),
+                tail: tails.remove(&name).unwrap_or_default(),
+                fg: pane.map(|(_, _, fg)| fg.clone()),
                 name,
             }
         })
@@ -393,6 +450,41 @@ pub(crate) fn regex_strip_lineno(path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_panes_basic_and_malformed() {
+        let text =
+            "alpha\t100\t1700000000\tzsh\nbeta\t200\t1700000005\tclaude\njunk-line\nempty\t\t\t\n";
+        let p = parse_panes(text);
+        assert_eq!(p.len(), 2);
+        assert_eq!(p["alpha"], (100, 1700000000, "zsh".into()));
+        assert_eq!(p["beta"], (200, 1700000005, "claude".into()));
+    }
+
+    #[test]
+    fn parse_panes_first_pane_wins() {
+        // multi-pane session: the first listed pane is the representative one
+        let text = "s\t10\t111\tzsh\ns\t20\t222\tvim\n";
+        assert_eq!(parse_panes(text)["s"], (10, 111, "zsh".into()));
+    }
+
+    #[test]
+    fn tail_batches_split_and_trim() {
+        let text =
+            format!("{TAIL_MARK}a\nline1\n\nline2\nline3\n{TAIL_MARK}b\n\n{TAIL_MARK}c\nonly\n");
+        let t = parse_tail_batches(&text, 2);
+        assert_eq!(t["a"], vec!["line2", "line3"]);
+        assert!(t["b"].is_empty(), "empty pane still yields an entry");
+        assert_eq!(t["c"], vec!["only"]);
+    }
+
+    #[test]
+    fn tail_batches_ignore_preamble() {
+        // output before the first marker (e.g. a stray error line) is dropped
+        let t = parse_tail_batches(&format!("noise\n{TAIL_MARK}a\nx\n"), 2);
+        assert_eq!(t.len(), 1);
+        assert_eq!(t["a"], vec!["x"]);
+    }
 
     #[test]
     fn strip_lineno_suffixes() {

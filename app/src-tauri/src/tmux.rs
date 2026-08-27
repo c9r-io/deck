@@ -91,6 +91,26 @@ pub(crate) fn tmux(args: &[&str]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
+/// Run a `;`-separated tmux command batch, returning stdout even when one
+/// command in the batch fails (e.g. a session died between listing and
+/// capture). Callers parse per-command markers, so partial output is useful
+/// and a hard error would throw away every other command's result.
+pub(crate) fn tmux_batch(args: &[String]) -> String {
+    let conf = tmux_conf();
+    Command::new(tmux_bin())
+        .args(["-f", &conf, "-L", SOCKET])
+        .args(args)
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default()
+}
+
+/// Escape a string for use inside a tmux format/message argument:
+/// `#` starts a format expansion in `display-message -p`.
+pub(crate) fn fmt_escape(s: &str) -> String {
+    s.replace('#', "##")
+}
+
 /// Exact-match session target. Pane-level commands need the trailing colon.
 pub(crate) fn session_target(name: &str) -> String {
     format!("={name}")
