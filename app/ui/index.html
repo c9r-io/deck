@@ -1493,18 +1493,25 @@ function wireTerminalInput(pane, term, host) {
     },
   });
 
-  /* Wheel handling: with tmux mouse mode on, the app requests mouse
-     reporting and xterm forwards wheel events as mouse reports — tmux
-     scrolls its own history (long agent output stays reachable). Only if
-     no mouse tracking is active do we swallow the wheel, because xterm
-     would otherwise translate it into arrow-key bursts on the alt screen
-     (history spinning / agent message recall). */
+  /* Wheel handling, deck-driven: tmux mouse mode stays OFF so xterm keeps
+     its native local selection (drag + ⌘C). Wheel deltas are batched and
+     translated into tmux copy-mode scrolling on the backend — long agent
+     output is reachable, and an empty shell is a true no-op. If an app
+     requests mouse reporting itself, the wheel passes through to it. */
+  let wheelAcc = 0, wheelTimer = null;
   host.addEventListener('wheel', e => {
     const mode = term.modes && term.modes.mouseTrackingMode;
-    if (!mode || mode === 'none') {
-      e.preventDefault();
-      e.stopPropagation();
-    }
+    if (mode && mode !== 'none') return;   // app owns the mouse
+    e.preventDefault();
+    e.stopPropagation();
+    wheelAcc += e.deltaY;
+    if (wheelTimer) return;
+    wheelTimer = setTimeout(() => {
+      const lines = Math.round(wheelAcc / 14);
+      wheelAcc = 0;
+      wheelTimer = null;
+      if (lines) inv('scroll_session', { name: session, lines }).catch(() => {});
+    }, 50);
   }, { passive: false, capture: true });
 
 }
