@@ -1,6 +1,6 @@
 [package]
 name = "deck-app"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 description = "deck — kanban for terminal agent sessions (Tauri app)"
 license = "MIT"
