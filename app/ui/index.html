@@ -281,8 +281,16 @@
     background: var(--raised); border: 1px solid var(--border);
     border-radius: 6px; padding: 5px 8px; font-family: var(--sans);
   }
-  #terminal { flex: 1; min-height: 0; background: var(--bg); padding: 10px 6px 10px 14px; }
+  #terminal { flex: 1; min-height: 0; background: var(--bg); padding: 10px 6px 10px 14px; position: relative; }
   #terminal .xterm { height: 100%; }
+  #ghost {
+    position: absolute; display: none;
+    pointer-events: none; z-index: 5;
+    color: var(--faint);
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 12.5px;
+    white-space: pre;
+  }
   #terminal, #terminal * { user-select: text; -webkit-user-select: text; }
   /* IME preedit overlay — xterm leaves it unstyled, which is invisible on a
      dark background */
@@ -1112,6 +1120,12 @@ function mountTerminal(card) {
   term.open(host);
   fitAddon.fit();
 
+  ghostEl = document.createElement('div');
+  ghostEl.id = 'ghost';
+  host.appendChild(ghostEl);
+  /* echo arrives asynchronously — reposition after each parsed write */
+  term.onWriteParsed(() => { if (ghostRemainder) updateGhost(); });
+
   /* xterm auto-answers terminal queries (DA `ESC[?..c`, DSR `ESC[..R`,
      OSC `ESC]..BEL`) through onData. Those are not user input — without
      this filter they desync the input mirror on every attach, and the
@@ -1154,15 +1168,12 @@ function mountTerminal(card) {
       navigator.clipboard.writeText(term.getSelection()).catch(() => {});
       return false;
     }
-    /* completion bar: Tab accepts the first match; Esc dismisses */
-    if (e.type === 'keydown' && $('quick-bar').style.display === 'flex') {
-      if (e.key === 'Tab' && lineBuf && lineBuf.length >= 2) {
-        const items = suggestions();
-        if (items.length) {
-          e.preventDefault();
-          acceptSuggestion(items[0]);
-          return false;
-        }
+    /* ghost suggestion: Tab or → applies it in place; Esc dismisses */
+    if (e.type === 'keydown' && ghostRemainder) {
+      if (e.key === 'Tab' || e.key === 'ArrowRight') {
+        e.preventDefault();
+        acceptGhost();
+        return false;
       }
       if (e.key === 'Escape') {
         lineBuf = null;
@@ -1170,6 +1181,13 @@ function mountTerminal(card) {
         renderSuggest();
         return false;
       }
+    }
+    if (e.type === 'keydown' && e.key === 'Escape'
+        && $('quick-bar').style.display === 'flex') {
+      lineBuf = null;
+      freshShell = false;
+      renderSuggest();
+      return false;
     }
     return true;
   });
@@ -1552,7 +1570,55 @@ function acceptSuggestion(cmd) {
   if (term) term.focus();
 }
 
+/* ---------- inline ghost suggestion (Warp-style) ---------- */
+let ghostEl = null;
+let ghostRemainder = '';
+
+function ghostCellDims(host) {
+  try {
+    const cell = term._core._renderService.dimensions.css.cell;
+    if (cell.width && cell.height) return { w: cell.width, h: cell.height };
+  } catch (e) { /* private API moved — fall back to measuring */ }
+  const screen = host.querySelector('.xterm-screen');
+  return { w: screen.clientWidth / term.cols, h: screen.clientHeight / term.rows };
+}
+
+function updateGhost() {
+  if (!term || !ghostEl) return;
+  const items = suggestions();
+  if (!(lineBuf && lineBuf.length >= 2 && items.length)) {
+    ghostRemainder = '';
+    ghostEl.style.display = 'none';
+    return;
+  }
+  ghostRemainder = items[0].slice(lineBuf.length);
+  const host = $('terminal');
+  const screen = host.querySelector('.xterm-screen');
+  if (!screen) return;
+  const buf = term.buffer.active;
+  const { w, h } = ghostCellDims(host);
+  const hostRect = host.getBoundingClientRect();
+  const sRect = screen.getBoundingClientRect();
+  ghostEl.textContent = ghostRemainder;
+  ghostEl.style.left = (sRect.left - hostRect.left + buf.cursorX * w) + 'px';
+  ghostEl.style.top = (sRect.top - hostRect.top + buf.cursorY * h) + 'px';
+  ghostEl.style.lineHeight = h + 'px';
+  ghostEl.style.display = 'block';
+}
+
+/* the mirror is append-only while synced, so completing = typing the rest */
+function acceptGhost() {
+  if (!ghostRemainder || !attachedName) return;
+  const full = lineBuf + ghostRemainder;
+  inv('pty_write', { name: attachedName, dataB64: strToB64(ghostRemainder) }).catch(() => {});
+  inv('record_command', { cmd: full }).catch(() => {});
+  histCache = [full, ...histCache.filter(x => x !== full)];
+  lineBuf = full;
+  renderSuggest();
+}
+
 function renderSuggest() {
+  updateGhost();
   const bar = $('quick-bar');
   const items = suggestions();
   if (!items.length) { bar.style.display = 'none'; return; }
@@ -1579,6 +1645,8 @@ function renderSuggest() {
 function resetSuggest() {
   lineBuf = '';
   freshShell = false;
+  ghostRemainder = '';
+  if (ghostEl) ghostEl.style.display = 'none';
   $('quick-bar').style.display = 'none';
 }
 
