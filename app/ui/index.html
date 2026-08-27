@@ -1288,12 +1288,14 @@ function createPane(card) {
 /* hairline above each submitted input — separates the user's commands /
    messages from surrounding output. Anchored to the buffer line via a
    marker, so it scrolls with the content. */
+let sepLogged = 0;
 function addInputSeparator(t) {
   try {
     const marker = t.registerMarker(0);
-    if (!marker) return;
+    if (!marker) { if (sepLogged < 5) { sepLogged++; ulog('separator: no marker'); } return; }
     const deco = t.registerDecoration({ marker, width: t.cols });
-    if (!deco) return;
+    if (!deco) { if (sepLogged < 5) { sepLogged++; ulog('separator: no decoration (alt buffer?)'); } return; }
+    if (sepLogged < 5) { sepLogged++; ulog('separator registered @line ' + marker.line); }
     deco.onRender(el => {
       el.style.width = '100%';
       el.style.height = '1px';
@@ -1301,7 +1303,9 @@ function addInputSeparator(t) {
       el.style.pointerEvents = 'none';
       el.style.marginTop = '-2px';
     });
-  } catch (e) { /* cosmetic only */ }
+  } catch (e) {
+    if (sepLogged < 5) { sepLogged++; ulog('separator failed: ' + e); }
+  }
 }
 
 function wireTerminalInput(pane, term, host) {
