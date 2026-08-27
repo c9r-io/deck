@@ -18,28 +18,47 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 // ---------- tmux helpers ----------------------------------------------------
 
-/// Absolute path to tmux. Apps launched from Finder/Dock get launchd's PATH,
-/// which has no /opt/homebrew/bin — relying on PATH would make a dmg install
-/// report "tmux missing" even when it's installed.
+/// Absolute path to tmux. The bundled sidecar comes first (zero-dependency
+/// installs — a statically linked tmux ships inside the .app); Homebrew /
+/// MacPorts are fallbacks for source builds. Apps launched from Finder get
+/// launchd's PATH (no /opt/homebrew/bin), so plain "tmux" is last resort.
 fn tmux_bin() -> &'static str {
     static BIN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     BIN.get_or_init(|| {
-        for p in [
-            "/opt/homebrew/bin/tmux", // Apple Silicon Homebrew
-            "/usr/local/bin/tmux",    // Intel Homebrew / manual installs
-            "/opt/local/bin/tmux",    // MacPorts
-        ] {
-            if std::path::Path::new(p).exists() {
-                return p.to_string();
+        let mut candidates: Vec<String> = Vec::new();
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(dir) = exe.parent() {
+                candidates.push(dir.join("tmux").display().to_string());
             }
         }
-        "tmux".to_string() // fall back to PATH (dev runs from a shell)
+        for p in [
+            "/opt/homebrew/bin/tmux",
+            "/usr/local/bin/tmux",
+            "/opt/local/bin/tmux",
+        ] {
+            candidates.push(p.to_string());
+        }
+        for c in candidates {
+            if std::path::Path::new(&c).exists() {
+                applog(&format!("[tmux] using {c}"));
+                return c;
+            }
+        }
+        applog("[tmux] falling back to PATH lookup");
+        "tmux".to_string()
     })
 }
 
-/// Run tmux with output captured — stray stderr must never reach a terminal.
+/// deck runs its own tmux server (socket "deck"): the bundled binary never
+/// clashes with a user-installed tmux of a different version, and deck's
+/// sessions stay out of the user's personal `tmux ls`.
+const SOCKET: &str = "deck";
+
+/// Run tmux (on the deck server) with output captured — stray stderr must
+/// never reach a terminal.
 fn tmux(args: &[&str]) -> Result<String, String> {
     let out = Command::new(tmux_bin())
+        .args(["-L", SOCKET])
         .args(args)
         .output()
         .map_err(|e| format!("tmux not runnable: {e}"))?;
@@ -361,7 +380,7 @@ fn attach_session(
         .map_err(|e| e.to_string())?;
 
     let mut cmd = CommandBuilder::new(tmux_bin());
-    cmd.args(["attach-session", "-t", &session_target(&name)]);
+    cmd.args(["-L", SOCKET, "attach-session", "-t", &session_target(&name)]);
     cmd.env("TERM", "xterm-256color");
     cmd.env("LANG", "en_US.UTF-8");
     let child = pair.slave.spawn_command(cmd).map_err(|e| {

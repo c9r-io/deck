@@ -1,140 +1,98 @@
 # deck
 
-A kanban board for terminal agent sessions — Claude Code, Codex, or any shell process.
-
-Each card on the board **is** a tmux session. deck is deliberately not a terminal or a
-session manager itself: tmux owns the shells, their persistence, and their scrollback.
-deck is a *projection* — a project-management view over those sessions, with the extra
-metadata (title, stage, notes) that a raw session list can't hold.
-
-## The app (v0.2 — macOS)
-
-`app/` is the native macOS app: Tauri 2, with the no-build-step static frontend in
-`app/ui/` (vendored xterm.js, no bundler) and the Rust backend in `app/src-tauri/`.
-Because tmux owns the sessions, **agents keep running when the app quits** and are
-all still there when it reopens.
-
-```bash
-app/run.sh          # build + launch as a .app via LaunchServices
-```
-
-(Launching the bare binary from a background shell leaves keyboard input dead —
-macOS text-input services are only reachable from the GUI login session.)
-
-The backend exposes: board persistence (`~/.deck/deck.json`), a poll endpoint
-(liveness + output recency + process-tree memory + tail previews in one call),
-a PTY bridge (`tmux attach` for the one open session, streamed to xterm.js),
-`open`-based path/URL actions, and command history (deck-launched commands +
-the user's shell history). Status semantics are honest: green = output in the
-last 15s, amber = quiet (may be waiting for input), gray = no session.
-
-Creating a session has no form: "＋ New session" drops you straight into a
-fresh shell in `$HOME` ("＋ Here" uses the current card's directory). Type the
-command yourself, or click one of the recent-command chips offered above a
-fresh shell; rename the card later (double-click the title anywhere). Click a
-board's title to select it — an accent edge marks it, and new sessions land
-there instead of the default board.
-
-**Scheduled prompts** (⏰ in the session header): queue prompts to be typed
-into a session later — built for the agent rate-limit workflow ("when my
-quota window resets in 5 h, run these tasks in order"). Each entry fires
-either at a set time or after the previous one finishes (session quiet for
-3 minutes). Works while detached; sessions are started automatically if
-needed; the queue survives app restarts (`~/.deck/queue.json`). The app must
-be running for prompts to fire.
+**A native macOS command center for terminal agent sessions** — Claude Code,
+Codex, or any long-running CLI. Every card on the board is a real, persistent
+terminal session; the board tells you where your attention is needed.
 
 ```
-┌ Backlog ────────┐┌ Active ─────────┐┌ Waiting ────────┐┌ Review ─────────┐┌ Done ───────────┐
-│○ refactor auth  ││● fix flaky test ││● migrate schema ││○ PR #42         ││○ docs pass      │
-│                 ││● triage crash   ││                 ││                 ││                 │
-└─────────────────┘└─────────────────┘└─────────────────┘└─────────────────┘└─────────────────┘
-┌ detail ─────────────────────────────────────────────────────────────────────────────────────┐
-│fix flaky test   running   ~/c9r-io/orchestrator  $ claude                                    │
-│─ live output ─                                                                              │
-│  ⏺ Running cargo test --workspace ...                                                       │
-└─────────────────────────────────────────────────────────────────────────────────────────────┘
+┌ Attention ──────┐┌ Working ─────────┐┌ Queued ─────────┐┌ Parked ─────────┐
+│● fix flaky test ││● refactor auth   ││○ migration plan ││○ changelog pass │
+│  ⧗ waiting for  ││  ⏺ cargo test …  ││                 ││                 │
+│    your input   ││            812M  ││                 ││                 │
+└─────────────────┘└──────────────────┘└─────────────────┘└─────────────────┘
 ```
-
-## Download
-
-Grab the latest `.dmg` from [Releases](https://github.com/c9r-io/deck/releases)
-(macOS, Apple Silicon; signed and notarized). Tagging `vX.Y.Z` builds and
-publishes a release automatically, and installed apps self-update in-app.
-
-**The only runtime requirement is tmux** (`brew install tmux`) — it is the
-session backend that keeps your agents alive across app restarts. No Rust,
-no Node, nothing else. deck finds tmux in the usual Homebrew/MacPorts
-locations even when launched from Finder.
-
-## Building from source
-
-- Rust toolchain
-- `app/run.sh` builds and launches the dev bundle
 
 ## Install
 
+Download the latest `.dmg` from [Releases](https://github.com/c9r-io/deck/releases),
+drag to Applications, open. That's it:
+
+- **Zero dependencies** — a statically linked tmux ships inside the app
+- **Signed & notarized** — no Gatekeeper prompts
+- **Self-updating** — new versions appear as a button in the sidebar
+
+Apple Silicon only for now.
+
+## What it does
+
+**Boards express attention, not workflow.** Default boards per project:
+*Attention* (things you want to deal with next) · *Working* (agents running
+autonomously) · *Queued* · *Parked*. Cards never move on their own — status
+dots and amber highlights carry the information; you make the calls. Boards
+are per-project (tabs), and fully customizable: add, rename, delete, drag
+cards anywhere.
+
+**Sessions outlive the app.** deck runs its own private tmux server, so
+quitting deck (or it crashing) never kills your agents. Reopen and everything
+is exactly where you left it. Closing a card (corner ✕, or Ctrl+D in the
+shell) is the only way a session ends.
+
+**A real terminal.** Full xterm with truecolor, ⌘C/⌘V, and clickable file
+paths / URLs (open in editor, reveal in Finder, open in browser).
+
+**Command completion, Warp-style.** deck records the commands you run in its
+shells (agent prompts are never recorded) and suggests as you type: the first
+match appears as gray ghost text at the cursor — **Tab or →** applies it; more
+candidates sit in a bar below.
+
+**Scheduled prompts.** The quota-window workflow: queue prompts on a session
+and have them typed in later — at a set time ("in 5 h, when my Claude window
+resets") or chained ("after the previous one finishes", detected via 3 minutes
+of quiet). Works while detached; dead sessions are started automatically; the
+queue survives restarts. The app must be running for prompts to fire.
+
+**Honest signals.** Green = output in the last 15 s. Amber = quiet, may be
+waiting for you. Memory chips show the *whole process tree* of a session
+(shell + agent + everything it spawned), not just the shell.
+
+## Day-to-day
+
+| Action | How |
+| --- | --- |
+| New session | ＋ New session → you're in a shell (`$HOME`); recent commands offered as chips |
+| Target board for new sessions | click a board's empty area (accent edge marks it) |
+| Enter / leave a session | click card · back button (shows the board name) or Esc |
+| Move cards | drag & drop (or the board dropdown inside a session) |
+| Close | card ✕ / Ctrl+D in shell (instant) · in-session Close (confirms) |
+| Rename / describe | double-click titles · right-click card |
+| Schedule prompts | ⏰ in the session header |
+| Collapse sidebar | ⌘B |
+
+## Data
+
+Everything lives in `~/.deck/` as plain JSON you can inspect or edit:
+`deck.json` (boards & cards) · `queue.json` (scheduled prompts) ·
+`history.json` (command history) · `app.log` (diagnostics).
+
+Sessions live on a dedicated tmux socket: `tmux -L deck ls` shows them,
+`tmux -L deck attach -t <name>` attaches from any terminal — deck never
+touches your personal tmux server.
+
+## Building from source
+
 ```bash
-cargo install --path .
+app/run.sh                                # build + launch the dev bundle
+cd app/src-tauri && cargo run --example pty_smoke   # headless PTY test
+app/src-tauri/binaries/build-tmux.sh      # rebuild the static tmux sidecar
 ```
 
-## Usage
+Requires a Rust toolchain. The frontend (`app/ui/`) is a single static
+HTML file — no Node, no bundler.
 
-Run `deck`. Cards live in five columns: Backlog → Active → Waiting → Review → Done.
+Releases: push a `v*` tag — CI builds, signs, notarizes, and publishes the
+dmg plus in-app-update artifacts. An hourly scheduled run rebuilds the newest
+tag if a release is missing or incomplete.
 
-Creating a card asks for a title, a command (default `claude`), and a working
-directory. The card starts in Backlog with no session. Starting it creates a
-detached tmux session in that directory, running a normal shell with the command
-typed in — so when the agent exits, the shell and scrollback survive.
+## License
 
-| Key | Action |
-| --- | --- |
-| `h j k l` / arrows | move selection |
-| `[` / `]` (or `H`/`L`) | move card to previous / next column |
-| `J` / `K` | reorder card within its column |
-| `n` | new card |
-| `Enter` | attach to the card's session (starts it first if needed) |
-| `s` | start the session detached, without attaching |
-| `x` | kill the card's session (card stays) |
-| `d` | delete card (kills its session; card is archived in board.json) |
-| `o` | open the card's notes file in `$EDITOR` |
-| `e` / `c` | edit title / command |
-| `r` | refresh now |
-| `q` | quit |
-
-Detach from an attached session with the normal tmux binding (`Ctrl-b d`) to get
-back to the board. When deck itself runs inside tmux, attaching uses
-`switch-client`, so the board keeps running in its own session.
-
-## State
-
-Everything lives in `~/.deck/`:
-
-- `board.json` — cards, columns, archive
-- `notes/<card-id>.md` — free-form notes per card
-
-Both are plain files; edit them by hand or with an agent if you like.
-
-## GUI prototype
-
-`gui/index.html` is a self-contained, mock-only GUI prototype (no backend, no build
-step — open it directly in a browser). It exists to settle the interaction design
-before wiring: project tabs (each project has its own set of boards, addable /
-renamable / deletable), a collapsible sidebar session list (⌘B), a kanban board
-with drag & drop and right-click card actions, a full session view with a fake
-streaming terminal (detected file paths / URLs are clickable), per-session
-process-tree memory chips, and a new-session modal with "open here" prefill.
-Stop and delete are one operation ("Close"): removing a card terminates its shell.
-
-Default boards express attention, not workflow stage: Attention / Working /
-Queued / Parked — no "Done". Placement is always manual: the board's job is to
-surface information (status dots, amber highlights on sessions waiting for
-input) and lower the user's decision cost, never to move cards on its own.
-Custom task-style boards remain fully supported. The `MockProvider` object at
-the top of the script is the seam where a real backend (WebSocket + PTY, or a
-tmux bridge) plugs in.
-
-## Non-goals (v1)
-
-- Its own terminal emulator, panes, or scrollback — that's tmux's job
-- Multi-machine / remote sessions
-- Automatic agent-state detection beyond alive/dead + live pane tail
+MIT

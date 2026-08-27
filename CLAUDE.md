@@ -25,6 +25,12 @@ xterm.js vendored in `app/ui/vendor/`); backend `app/src-tauri/src/main.rs`.
 - Status semantics: green = output <15s ago; amber "waiting" = alive but quiet ≥15s
   (honest heuristic — may be waiting for input, may be a silent build); gray = no
   session.
+- tmux ships INSIDE the app: a statically linked binary (see
+  `binaries/build-tmux.sh`, committed as `binaries/tmux-aarch64-apple-darwin`,
+  bundled+signed via tauri `externalBin`). `tmux_bin()` prefers the sidecar,
+  then Homebrew/MacPorts probes. deck talks to its OWN server (`-L deck`
+  socket) — never version-clashes with a user tmux, and deck sessions don't
+  appear in the user's `tmux ls`. Debug: `tmux -L deck ls`.
 - Attach = `tmux attach` inside a portable-pty, bytes streamed as base64 over the
   `pty-data` event to xterm.js; detach kills only the tmux *client*. Reader threads
   carry a generation counter so a stale thread never removes a newer attachment.

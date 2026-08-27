@@ -20,6 +20,10 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp target/debug/deck-app "$APP/Contents/MacOS/deck"
 cp icons/icon.png "$APP/Contents/Resources/icon.png"
 cp icons/icon.icns "$APP/Contents/Resources/deck.icns"
+# bundle the static tmux sidecar into the dev bundle too (dmg parity)
+if [ -f binaries/tmux-aarch64-apple-darwin ]; then
+  cp binaries/tmux-aarch64-apple-darwin "$APP/Contents/MacOS/tmux"
+fi
 VER=$(python3 -c "import json;print(json.load(open('tauri.conf.json'))['version'])")
 cat > "$APP/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
