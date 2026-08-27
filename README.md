@@ -56,6 +56,18 @@ resets") or chained ("after the previous one finishes", detected via 3 minutes
 of quiet). Works while detached; dead sessions are started automatically; the
 queue survives restarts. The app must be running for prompts to fire.
 
+**Recurring rules.** A prompt can repeat — *every 5/15/30 min, 1/2 h* —
+optionally only inside a daily time window ("only 09:00–18:00"; 20:00–08:00
+wraps midnight, so night-only works too). Rules keep firing until you pause
+(⏸ keeps the settings) or remove them, or stop themselves after N times /
+at a set time. Outside the window a rule sleeps and resumes by itself.
+
+**Prompt templates.** Save a queue of prompts as a named, per-project
+template (📋 in the scheduler panel). Inserting a template queues all its
+steps in order — your schedule applies to the first step, the rest follow
+"after previous". Combine with a recurring rule and the whole template
+re-runs on cadence.
+
 **Honest signals.** Green = output in the last 15 s. Amber = quiet, may be
 waiting for you. Memory chips show the *whole process tree* of a session
 (shell + agent + everything it spawned), not just the shell.
@@ -71,7 +83,7 @@ waiting for you. Memory chips show the *whole process tree* of a session
 | Close | card ✕ / Ctrl+D in shell (instant) · in-session Close (confirms) |
 | Rename / describe | double-click titles · right-click card |
 | Split view | drag a card onto a pane edge · ⌘D right / ⌘⇧D down |
-| Schedule prompts | ⏰ in the session header |
+| Schedule prompts | ⏱ in the session header; 📋 for templates |
 | Collapse sidebar | ⌘B |
 
 ## Data

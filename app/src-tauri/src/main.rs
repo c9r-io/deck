@@ -800,10 +800,40 @@ struct QueueItem {
     cmd: String,
     text: String,
     /// "at" = fire at `at` (epoch secs); "chain" = fire once the session has
-    /// been quiet for CHAIN_QUIET_SECS after the previous send
+    /// been quiet for CHAIN_QUIET_SECS after the previous send; "every" = a
+    /// standing rule that re-fires every `every` secs (optionally only inside
+    /// a daily time window) until stopped
     mode: String,
     at: Option<u64>,
     added: u64,
+    #[serde(default)]
+    every: Option<u64>,
+    /// daily window in minutes since local midnight; from > to wraps midnight
+    #[serde(default)]
+    win_from: Option<u32>,
+    #[serde(default)]
+    win_to: Option<u32>,
+    /// stop conditions for "every": after N fires / after an instant
+    #[serde(default)]
+    until_n: Option<u32>,
+    #[serde(default)]
+    until_at: Option<u64>,
+    #[serde(default)]
+    fired: u32,
+    #[serde(default)]
+    paused: bool,
+    /// last fire instant (recurring only)
+    #[serde(default)]
+    last: Option<u64>,
+    /// template steps 2..N — re-enqueued as chain items on every fire
+    #[serde(default)]
+    steps: Vec<String>,
+    #[serde(default)]
+    tpl: Option<String>,
+    #[serde(default)]
+    tpl_idx: Option<u32>,
+    #[serde(default)]
+    tpl_total: Option<u32>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Default)]
@@ -814,6 +844,45 @@ struct QueueState {
 }
 
 struct Queues(Mutex<QueueState>);
+
+/// true when `now_min` (minutes since local midnight) falls inside the daily
+/// window; from > to means the window wraps midnight (e.g. 20:00–08:00)
+fn in_window(now_min: u32, from: Option<u32>, to: Option<u32>) -> bool {
+    match (from, to) {
+        (Some(f), Some(t)) if f != t => {
+            if f < t {
+                now_min >= f && now_min < t
+            } else {
+                now_min >= f || now_min < t
+            }
+        }
+        _ => true,
+    }
+}
+
+fn local_minutes() -> u32 {
+    // std has no timezone support; /bin/date is always there on macOS
+    Command::new("date")
+        .arg("+%H %M")
+        .output()
+        .ok()
+        .and_then(|o| {
+            let t = String::from_utf8_lossy(&o.stdout);
+            let mut it = t.split_whitespace();
+            Some(it.next()?.parse::<u32>().ok()? * 60 + it.next()?.parse::<u32>().ok()?)
+        })
+        .unwrap_or(720)
+}
+
+/// Whether an "every" rule is due to fire, pure for testability.
+fn every_due(i: &QueueItem, now: u64, now_min: u32, session_last: Option<u64>) -> bool {
+    i.mode == "every"
+        && !i.paused
+        && i.until_at.map(|t| now < t).unwrap_or(true)
+        && in_window(now_min, i.win_from, i.win_to)
+        && i.last.map(|l| now >= l + i.every.unwrap_or(u64::MAX)).unwrap_or(true)
+        && session_last.map(|t| now >= t + CHAIN_MIN_GAP_SECS).unwrap_or(true)
+}
 
 const CHAIN_QUIET_SECS: u64 = 180;
 const CHAIN_MIN_GAP_SECS: u64 = 60;
@@ -855,6 +924,15 @@ fn queue_add(
     text: String,
     mode: String,
     at: Option<u64>,
+    every: Option<u64>,
+    win_from: Option<u32>,
+    win_to: Option<u32>,
+    until_n: Option<u32>,
+    until_at: Option<u64>,
+    steps: Option<Vec<String>>,
+    tpl: Option<String>,
+    tpl_idx: Option<u32>,
+    tpl_total: Option<u32>,
 ) -> Result<(), String> {
     let text = text.replace(['\n', '\r'], " ").trim().to_string();
     if text.is_empty() {
@@ -871,6 +949,18 @@ fn queue_add(
         mode,
         at,
         added: now_epoch(),
+        every,
+        win_from,
+        win_to,
+        until_n,
+        until_at,
+        fired: 0,
+        paused: false,
+        last: None,
+        steps: steps.unwrap_or_default(),
+        tpl,
+        tpl_idx,
+        tpl_total,
     });
     save_queue(&q);
     let _ = app.emit("queue-changed", ());
@@ -901,6 +991,16 @@ fn queue_update(
 fn queue_remove(state: State<'_, Queues>, app: AppHandle, id: String) {
     let mut q = state.0.lock().unwrap();
     q.items.retain(|i| i.id != id);
+    save_queue(&q);
+    let _ = app.emit("queue-changed", ());
+}
+
+#[tauri::command]
+fn queue_pause(state: State<'_, Queues>, app: AppHandle, id: String, paused: bool) {
+    let mut q = state.0.lock().unwrap();
+    if let Some(item) = q.items.iter_mut().find(|i| i.id == id) {
+        item.paused = paused;
+    }
     save_queue(&q);
     let _ = app.emit("queue-changed", ());
 }
@@ -958,11 +1058,13 @@ fn spawn_scheduler(app: AppHandle) {
                     }
                 }
             }
-            // only the head item of each session's queue is a candidate
+            let now_min = local_minutes();
+            // once-items: only the head of each session's queue is a candidate.
+            // "every" rules are standing and independent of that ordering.
             let mut seen: HashSet<String> = HashSet::new();
             q.items
                 .iter()
-                .filter(|i| seen.insert(i.session.clone()))
+                .filter(|i| i.mode == "every" || seen.insert(i.session.clone()))
                 .filter(|i| match i.mode.as_str() {
                     "at" => i.at.map(|t| now >= t).unwrap_or(false),
                     "chain" => {
@@ -977,18 +1079,72 @@ fn spawn_scheduler(app: AppHandle) {
                             .unwrap_or(true); // dead session = quiet; fire_item restarts it
                         gap_ok && quiet_ok
                     }
+                    "every" => every_due(i, now, now_min, q.last_fired.get(&i.session).copied()),
                     _ => false,
                 })
                 .cloned()
                 .collect()
         };
+        // expired rules die quietly (their stop instant passed while sleeping)
+        {
+            let mut q = state.0.lock().unwrap();
+            let n0 = q.items.len();
+            let now = now_epoch();
+            q.items.retain(|i| {
+                !(i.mode == "every" && i.until_at.map(|t| now >= t).unwrap_or(false))
+            });
+            if q.items.len() != n0 {
+                save_queue(&q);
+                drop(q);
+                let _ = app.emit("queue-changed", ());
+            }
+        }
         for item in due {
             match fire_item(&item) {
                 Ok(()) => {
                     applog(&format!("[queue] sent to {}: {}", item.session, item.text));
                     let mut q = state.0.lock().unwrap();
-                    q.items.retain(|i| i.id != item.id);
-                    q.last_fired.insert(item.session.clone(), now_epoch());
+                    let now = now_epoch();
+                    if item.mode == "every" {
+                        // template steps 2..N follow as one-shot chain items
+                        for (k, step) in item.steps.iter().enumerate() {
+                            let id = format!("q{}-{}", now, q.items.len());
+                            q.items.push(QueueItem {
+                                id,
+                                session: item.session.clone(),
+                                dir: item.dir.clone(),
+                                cmd: item.cmd.clone(),
+                                text: step.clone(),
+                                mode: "chain".into(),
+                                at: None,
+                                added: now,
+                                every: None,
+                                win_from: None,
+                                win_to: None,
+                                until_n: None,
+                                until_at: None,
+                                fired: 0,
+                                paused: false,
+                                last: None,
+                                steps: Vec::new(),
+                                tpl: item.tpl.clone(),
+                                tpl_idx: item.tpl_idx.map(|_| k as u32 + 2),
+                                tpl_total: item.tpl_total,
+                            });
+                        }
+                        let mut done = false;
+                        if let Some(it) = q.items.iter_mut().find(|i| i.id == item.id) {
+                            it.fired += 1;
+                            it.last = Some(now);
+                            done = it.until_n.map(|n| it.fired >= n).unwrap_or(false);
+                        }
+                        if done {
+                            q.items.retain(|i| i.id != item.id);
+                        }
+                    } else {
+                        q.items.retain(|i| i.id != item.id);
+                    }
+                    q.last_fired.insert(item.session.clone(), now);
                     save_queue(&q);
                     drop(q);
                     let _ = app.emit(
@@ -1051,6 +1207,76 @@ fn regex_strip_lineno(path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn rule(every: u64) -> QueueItem {
+        QueueItem {
+            id: "t".into(),
+            session: "s".into(),
+            dir: String::new(),
+            cmd: String::new(),
+            text: "x".into(),
+            mode: "every".into(),
+            at: None,
+            added: 0,
+            every: Some(every),
+            win_from: None,
+            win_to: None,
+            until_n: None,
+            until_at: None,
+            fired: 0,
+            paused: false,
+            last: None,
+            steps: Vec::new(),
+            tpl: None,
+            tpl_idx: None,
+            tpl_total: None,
+        }
+    }
+
+    #[test]
+    fn every_rule_due_logic() {
+        let now = 1_000_000;
+        // never fired → due immediately
+        assert!(every_due(&rule(1800), now, 720, None));
+        // fired 10 min ago on a 30-min cadence → not due; after 30 min → due
+        let mut r = rule(1800);
+        r.last = Some(now - 600);
+        assert!(!every_due(&r, now, 720, None));
+        r.last = Some(now - 1800);
+        assert!(every_due(&r, now, 720, None));
+        // paused wins over everything
+        r.paused = true;
+        assert!(!every_due(&r, now, 720, None));
+        r.paused = false;
+        // outside the 08:00–18:00 window (22:00) → sleeping
+        r.win_from = Some(480);
+        r.win_to = Some(1080);
+        assert!(!every_due(&r, now, 22 * 60, None));
+        assert!(every_due(&r, now, 9 * 60, None));
+        // stop instant passed → never due again
+        r.until_at = Some(now - 1);
+        assert!(!every_due(&r, now, 9 * 60, None));
+        r.until_at = None;
+        // a prompt was injected into the session 10s ago → min-gap holds it back
+        assert!(!every_due(&r, now, 9 * 60, Some(now - 10)));
+        assert!(every_due(&r, now, 9 * 60, Some(now - 61)));
+    }
+
+    #[test]
+    fn window_plain_and_midnight_wrap() {
+        // 08:00–18:00
+        assert!(in_window(8 * 60, Some(480), Some(1080)));
+        assert!(in_window(17 * 60 + 59, Some(480), Some(1080)));
+        assert!(!in_window(18 * 60, Some(480), Some(1080)));
+        assert!(!in_window(3 * 60, Some(480), Some(1080)));
+        // 20:00–08:00 wraps midnight
+        assert!(in_window(23 * 60, Some(1200), Some(480)));
+        assert!(in_window(2 * 60, Some(1200), Some(480)));
+        assert!(!in_window(12 * 60, Some(1200), Some(480)));
+        // no / degenerate window = always
+        assert!(in_window(0, None, None));
+        assert!(in_window(700, Some(600), Some(600)));
+    }
 
     #[test]
     fn strip_lineno_suffixes() {
@@ -1174,6 +1400,7 @@ fn main() {
             queue_add,
             queue_update,
             queue_remove,
+            queue_pause,
             queue_clear_session,
         ])
         .build(tauri::generate_context!())

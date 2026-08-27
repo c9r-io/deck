@@ -359,7 +359,7 @@
 
   /* ---------- scheduled prompts panel ---------- */
   #queue-panel {
-    display: none; flex-direction: column; gap: 6px;
+    display: none; flex-direction: column; gap: 6px; position: relative;
     padding: 10px 16px;
     background: var(--panel); border-bottom: 1px solid var(--border-soft);
     max-height: 40vh; overflow-y: auto;
@@ -383,6 +383,50 @@
     border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px;
   }
   .q-hint { font-size: 11px; color: var(--faint); }
+  .q-sentence { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
+  .q-sentence select, .q-sentence input[type=time] {
+    font-size: 12px; color: var(--text); background: var(--raised);
+    border: 1px solid var(--border); border-radius: 6px; padding: 5px 8px;
+  }
+  .q-meta { font-family: var(--mono); font-size: 10.5px; color: var(--faint); flex: none; white-space: nowrap; }
+  .q-pause { color: var(--faint); padding: 2px 6px; border-radius: 4px; flex: none; }
+  .q-pause:hover { color: var(--wait); background: var(--hover); }
+  .q-item.rule { border-color: var(--accent-dim); }
+  .q-item.rule .q-when { color: var(--accent); }
+  .q-item.paused { opacity: 0.55; }
+  #q-src { flex: none; padding: 0 10px; height: 30px; }
+  #q-src.tpl { color: var(--accent); border-color: var(--accent-dim); }
+  #tpl-pop {
+    position: absolute; display: none; background: var(--raised);
+    border: 1px solid var(--border); border-radius: 10px;
+    box-shadow: 0 14px 40px rgba(0, 0, 0, 0.6); padding: 6px;
+    font-size: 12px; z-index: 80; width: 300px;
+  }
+  #tpl-pop .t-head { font-size: 10px; letter-spacing: 0.06em; color: var(--faint); padding: 5px 9px; }
+  #tpl-pop .t-row { display: flex; align-items: center; gap: 8px; padding: 6px 9px; border-radius: 6px; cursor: default; }
+  #tpl-pop .t-row:hover { background: var(--hover); }
+  #tpl-pop .t-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #tpl-pop .t-n { color: var(--faint); font-size: 10.5px; flex: none; }
+  #tpl-pop .t-act { color: var(--faint); padding: 1px 5px; border-radius: 4px; flex: none; }
+  #tpl-pop .t-act:hover { color: var(--text); background: var(--bg); }
+  #tpl-pop .t-sep { border-top: 1px solid var(--border-soft); margin: 5px 4px; }
+  #ppd {
+    position: fixed; inset: 0; z-index: 72; display: none;
+    background: rgba(8, 10, 13, 0.55);
+    align-items: flex-start; justify-content: center;
+  }
+  #ppd-box {
+    margin-top: 16vh; width: 400px; max-width: calc(100vw - 40px);
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 12px; padding: 18px;
+    box-shadow: 0 16px 48px rgba(0, 0, 0, 0.55);
+  }
+  #ppd-msg { font-size: 13px; line-height: 1.5; margin-bottom: 10px; }
+  #ppd-input {
+    width: 100%; box-sizing: border-box; margin-bottom: 14px;
+    background: var(--bg); border: 1px solid var(--border); border-radius: 7px;
+    padding: 7px 10px; color: var(--text); font-size: 12.5px;
+  }
   #queue-btn .cnt { font-family: var(--mono); font-size: 10px; color: var(--wait); }
   .card .q-chip {
     font-family: var(--mono); font-size: 10px; color: var(--wait);
@@ -524,7 +568,12 @@
       <div id="queue-panel">
         <div id="queue-list"></div>
         <div class="q-add">
+          <button class="btn" id="q-src" title="Source — type a prompt, or insert a template (templates are saved per project)">✎</button>
           <input type="text" id="q-text" placeholder="prompt to send to this session later…" autocomplete="off" spellcheck="false">
+          <button class="btn primary" id="q-add-btn">Add</button>
+        </div>
+        <div class="q-sentence">
+          <span>Send</span>
           <select id="q-when">
             <option value="chain">after previous finishes</option>
             <option value="30">in 30 min</option>
@@ -532,11 +581,31 @@
             <option value="180">in 3 h</option>
             <option value="300">in 5 h</option>
             <option value="custom">at time…</option>
+            <option value="e5">every 5 min</option>
+            <option value="e15">every 15 min</option>
+            <option value="e30">every 30 min</option>
+            <option value="e60">every 1 h</option>
+            <option value="e120">every 2 h</option>
           </select>
           <input type="time" id="q-time" style="display:none">
-          <button class="btn primary" id="q-add-btn">Add</button>
+          <select id="q-win" style="display:none">
+            <option value="">any time of day</option>
+            <option value="540-1080">only 09:00–18:00</option>
+            <option value="480-1320">only 08:00–22:00</option>
+            <option value="custom">only between…</option>
+          </select>
+          <input type="time" id="q-win-a" style="display:none"><span id="q-win-dash" style="display:none">–</span><input type="time" id="q-win-b" style="display:none">
+          <select id="q-until" style="display:none">
+            <option value="">until I remove it</option>
+            <option value="n5">5 times</option>
+            <option value="n10">10 times</option>
+            <option value="n20">20 times</option>
+            <option value="t">until time…</option>
+          </select>
+          <input type="time" id="q-until-t" style="display:none">
         </div>
-        <div class="q-hint">Prompts are typed into the session at the scheduled moment (works while detached; the app must be running). "After previous" fires once the session has been quiet for 3 minutes.</div>
+        <div class="q-hint">Prompts are typed into the session at the scheduled moment (works while detached; the app must be running). "After previous" fires once the session has been quiet for 3 minutes. "Every…" is a standing rule — it keeps firing on schedule (optionally only inside a daily time window) until you pause or remove it. A window like 20:00–08:00 wraps midnight.</div>
+        <div id="tpl-pop"></div>
       </div>
       <div id="terminal"></div>
       <div id="quick-bar"></div>
@@ -562,6 +631,16 @@
     </div>
     <div class="set-hint" id="set-upd-status"></div>
     <div class="set-actions"><button class="btn" id="set-close">Done</button></div>
+  </div>
+</div>
+<div id="ppd">
+  <div id="ppd-box">
+    <div id="ppd-msg"></div>
+    <input type="text" id="ppd-input" autocomplete="off" spellcheck="false">
+    <div class="cfm-actions">
+      <button class="btn" id="ppd-no">Cancel</button>
+      <button class="btn primary" id="ppd-yes">Save</button>
+    </div>
   </div>
 </div>
 <div id="cfm">
@@ -2250,11 +2329,55 @@ function setQueueChip(chip, card) {
   chip.title = q.length ? `next ${fmtWhen(q[0])}: ${q[0].text}` : '';
 }
 
-function fmtWhen(i) {
-  if (i.mode === 'chain') return '↳ after prev';
-  const d = new Date(i.at * 1000);
+const fmtClock = ts => {
+  const d = new Date(ts * 1000);
   const today = new Date().toDateString() === d.toDateString();
   return (today ? '' : (d.getMonth() + 1) + '/' + d.getDate() + ' ') + d.toTimeString().slice(0, 5);
+};
+const fmtEvery = s => s % 3600 === 0 ? (s / 3600) + ' h' : (s / 60) + ' min';
+const minToHM = m => String(Math.floor(m / 60)).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0');
+const winHas = (m, f, t) => f < t ? (m >= f && m < t) : (m >= f || m < t);
+const hasWindow = i => i.win_from != null && i.win_to != null && i.win_from !== i.win_to;
+
+function fmtWhen(i) {
+  if (i.mode === 'chain') return '↳ after prev';
+  if (i.mode === 'every') return '↻ every ' + fmtEvery(i.every);
+  return fmtClock(i.at);
+}
+
+/* earliest instant an "every" rule can fire again, window-aware */
+function nextFire(i) {
+  const now = Math.floor(Date.now() / 1000);
+  let t = i.last ? i.last + i.every : now;
+  if (t < now) t = now;
+  if (hasWindow(i)) {
+    const d = new Date(t * 1000);
+    if (!winHas(d.getHours() * 60 + d.getMinutes(), i.win_from, i.win_to)) {
+      d.setHours(Math.floor(i.win_from / 60), i.win_from % 60, 0, 0);
+      if (Math.floor(d.getTime() / 1000) < t) d.setDate(d.getDate() + 1);
+      t = Math.floor(d.getTime() / 1000);
+    }
+  }
+  return t;
+}
+
+function qMeta(i) {
+  const parts = [];
+  if (i.tpl) parts.push(`tpl·${i.tpl} ${i.tpl_idx}/${i.tpl_total}`);
+  if (i.mode === 'every') {
+    if (hasWindow(i)) parts.push(minToHM(i.win_from) + '–' + minToHM(i.win_to));
+    if (i.paused) {
+      parts.push('paused');
+    } else {
+      const nm = new Date();
+      const sleeping = hasWindow(i) && !winHas(nm.getHours() * 60 + nm.getMinutes(), i.win_from, i.win_to);
+      parts.push((sleeping ? 'sleeps — resumes ' : 'next ') + fmtClock(nextFire(i)));
+    }
+    if (i.fired) parts.push(i.fired + '×' + (i.until_n ? '/' + i.until_n : ''));
+    else if (i.until_n) parts.push('stops after ' + i.until_n + '×');
+    if (i.until_at) parts.push('until ' + fmtClock(i.until_at));
+  }
+  return parts.join(' · ');
 }
 
 function renderQueueUI() {
@@ -2270,9 +2393,18 @@ function renderQueueUI() {
       list.innerHTML = '';
       for (const i of q) {
         const el = document.createElement('div');
-        el.className = 'q-item';
-        el.innerHTML = '<span class="q-when"></span><span class="q-text" title="click to edit"></span><button class="q-del" title="remove">✕</button>';
+        el.className = 'q-item' + (i.mode === 'every' ? ' rule' : '') + (i.paused ? ' paused' : '');
+        el.innerHTML = '<span class="q-when"></span><span class="q-text" title="click to edit"></span><span class="q-meta"></span>'
+          + (i.mode === 'every' ? '<button class="q-pause"></button>' : '')
+          + '<button class="q-del" title="remove">✕</button>';
         el.querySelector('.q-when').textContent = fmtWhen(i);
+        el.querySelector('.q-meta').textContent = qMeta(i);
+        const pb = el.querySelector('.q-pause');
+        if (pb) {
+          pb.textContent = i.paused ? '▶' : '⏸';
+          pb.title = i.paused ? 'resume this rule' : 'pause this rule (keeps its settings)';
+          pb.onclick = () => inv('queue_pause', { id: i.id, paused: !i.paused }).catch(() => {});
+        }
         const txt = el.querySelector('.q-text');
         txt.textContent = i.text;
         txt.onclick = () => {
@@ -2302,7 +2434,7 @@ function toggleQueuePanel(open) {
   if (queueOpen) {
     const card = provider.get(state.sessionId);
     $('q-when').value = card && sessionQueue(card.session).length ? 'chain' : '300';
-    $('q-time').style.display = 'none';
+    syncSentence();
     renderQueueUI();
     $('q-text').focus();
   } else if (term) {
@@ -2311,34 +2443,217 @@ function toggleQueuePanel(open) {
 }
 
 $('queue-btn').onclick = () => toggleQueuePanel();
-$('q-when').addEventListener('change', () => {
-  $('q-time').style.display = $('q-when').value === 'custom' ? '' : 'none';
+function syncSentence() {
+  const w = $('q-when').value;
+  $('q-time').style.display = w === 'custom' ? '' : 'none';
+  const rec = w.startsWith('e');
+  $('q-win').style.display = rec ? '' : 'none';
+  $('q-until').style.display = rec ? '' : 'none';
+  const wc = rec && $('q-win').value === 'custom';
+  for (const id of ['q-win-a', 'q-win-dash', 'q-win-b']) $(id).style.display = wc ? '' : 'none';
+  $('q-until-t').style.display = rec && $('q-until').value === 't' ? '' : 'none';
+}
+$('q-when').addEventListener('change', syncSentence);
+$('q-win').addEventListener('change', syncSentence);
+$('q-until').addEventListener('change', syncSentence);
+const hmToMin = t => { const [h, m] = t.split(':').map(Number); return h * 60 + m; };
+const nextEpochFor = t => {
+  const [h, m] = t.split(':').map(Number);
+  const d = new Date();
+  d.setHours(h, m, 0, 0);
+  if (d.getTime() <= Date.now()) d.setDate(d.getDate() + 1);   // past → tomorrow
+  return Math.floor(d.getTime() / 1000);
+};
+
+/* templates live on the project object → persisted inside the board file */
+function projTemplates(card) {
+  const p = card && provider.project(card.projectId);
+  if (!p) return [];
+  if (!p.templates) p.templates = [];
+  return p.templates;
+}
+
+let qTpl = null;   // selected template {name, steps} or null = hand-typed prompt
+
+function setQSrc(tpl) {
+  qTpl = tpl;
+  const btn = $('q-src'), inp = $('q-text');
+  if (tpl) {
+    btn.textContent = '📋';
+    btn.classList.add('tpl');
+    inp.value = `${tpl.name}  (${tpl.steps.length} steps, in order)`;
+    inp.readOnly = true;
+    $('q-add-btn').textContent = 'Add ' + tpl.steps.length;
+  } else {
+    btn.textContent = '✎';
+    btn.classList.remove('tpl');
+    if (inp.readOnly) inp.value = '';
+    inp.readOnly = false;
+    $('q-add-btn').textContent = 'Add';
+  }
+}
+
+function hideTplPop() { $('tpl-pop').style.display = 'none'; }
+
+function showTplPop() {
+  const card = provider.get(state.sessionId);
+  if (!card) return;
+  const pop = $('tpl-pop');
+  const tpls = projTemplates(card);
+  pop.innerHTML = '';
+  const add = (cls, html) => {
+    const el = document.createElement('div');
+    el.className = cls;
+    if (html !== undefined) el.innerHTML = html;
+    pop.appendChild(el);
+    return el;
+  };
+  const proj = provider.project(card.projectId);
+  add('t-head').textContent = 'TEMPLATES — PROJECT ' + ((proj && proj.name) || '').toUpperCase();
+  if (qTpl) {
+    const r = add('t-row', '<span class="t-name">✎ type a prompt instead</span>');
+    r.onclick = () => { setQSrc(null); hideTplPop(); $('q-text').focus(); };
+  }
+  if (!tpls.length) {
+    add('t-row', '<span class="t-name" style="color:var(--faint)">no templates yet — queue prompts, then save them below</span>');
+  }
+  for (const t of tpls) {
+    const r = add('t-row', '<span class="t-name"></span><span class="t-n"></span><button class="t-act" title="rename">✎</button><button class="t-act t-del" title="delete">✕</button>');
+    r.querySelector('.t-name').textContent = t.name;
+    r.querySelector('.t-name').title = t.steps.join('\n');
+    r.querySelector('.t-n').textContent = t.steps.length + ' steps';
+    r.querySelector('.t-name').onclick = () => { setQSrc(t); hideTplPop(); };
+    r.querySelector('.t-act').onclick = async e => {
+      e.stopPropagation();
+      const name = await promptDialog('Rename template:', t.name);
+      if (name && name !== t.name) { t.name = name; saveBoard(); if (qTpl === t) setQSrc(t); }
+    };
+    r.querySelector('.t-del').onclick = async e => {
+      e.stopPropagation();
+      if (!(await confirmDialog(`Delete template "${t.name}"? Prompts already queued are not affected.`))) return;
+      const arr = projTemplates(card);
+      arr.splice(arr.indexOf(t), 1);
+      saveBoard();
+      if (qTpl === t) setQSrc(null);
+      hideTplPop();
+    };
+  }
+  add('t-sep');
+  const save = add('t-row', '<span class="t-name">☆ Save current queue as template</span>');
+  if (sessionQueue(card.session).length) {
+    save.onclick = () => { hideTplPop(); saveQueueAsTemplate(); };
+  } else {
+    save.style.opacity = '0.45';
+    save.title = 'queue some prompts first';
+  }
+  const a = $('q-src');
+  pop.style.left = a.offsetLeft + 'px';
+  pop.style.top = (a.offsetTop + a.offsetHeight + 6) + 'px';
+  pop.style.display = 'block';
+}
+
+async function saveQueueAsTemplate() {
+  const card = provider.get(state.sessionId);
+  if (!card) return;
+  const steps = [];
+  for (const i of sessionQueue(card.session)) {
+    steps.push(i.text);
+    if (i.steps && i.steps.length) steps.push(...i.steps);
+  }
+  if (!steps.length) return;
+  const name = await promptDialog(`Save these ${steps.length} prompt(s), in order, as a template for this project:`);
+  if (!name) return;
+  const tpls = projTemplates(card);
+  const ex = tpls.find(t => t.name === name);
+  if (ex) ex.steps = steps; else tpls.push({ name, steps });
+  saveBoard();
+  toast('template saved: ' + name);
+}
+
+function promptDialog(msg, initial = '') {
+  return new Promise(res => {
+    $('ppd-msg').textContent = msg;
+    const inp = $('ppd-input');
+    inp.value = initial;
+    $('ppd').style.display = 'flex';
+    inp.focus();
+    inp.select();
+    const done = v => { $('ppd').style.display = 'none'; inp.onkeydown = null; res(v); };
+    $('ppd-yes').onclick = () => done(inp.value.trim() || null);
+    $('ppd-no').onclick = () => done(null);
+    inp.onkeydown = e => {
+      if (e.key === 'Enter') done(inp.value.trim() || null);
+      if (e.key === 'Escape') done(null);
+    };
+  });
+}
+
+$('q-src').onclick = e => {
+  e.stopPropagation();
+  if ($('tpl-pop').style.display === 'block') hideTplPop(); else showTplPop();
+};
+document.addEventListener('click', e => {
+  if (!e.target.closest('#tpl-pop') && !e.target.closest('#q-src')) hideTplPop();
 });
+
 $('q-add-btn').onclick = async () => {
   const card = provider.get(state.sessionId);
   if (!card) return;
-  const text = $('q-text').value.trim();
-  if (!text) { $('q-text').focus(); return; }
   const w = $('q-when').value;
-  let mode = 'at', at = null;
+  let mode = 'at', at = null, every = null, winFrom = null, winTo = null, untilN = null, untilAt = null;
   if (w === 'chain') {
     mode = 'chain';
   } else if (w === 'custom') {
     const t = $('q-time').value;
     if (!t) { $('q-time').focus(); return; }
-    const [h, m] = t.split(':').map(Number);
-    const d = new Date();
-    d.setHours(h, m, 0, 0);
-    if (d.getTime() <= Date.now()) d.setDate(d.getDate() + 1);   // past → tomorrow
-    at = Math.floor(d.getTime() / 1000);
+    at = nextEpochFor(t);
+  } else if (w.startsWith('e')) {
+    mode = 'every';
+    every = parseInt(w.slice(1), 10) * 60;
+    const wv = $('q-win').value;
+    if (wv === 'custom') {
+      const a = $('q-win-a').value, b = $('q-win-b').value;
+      if (!a || !b) { toast('set both ends of the time window'); return; }
+      winFrom = hmToMin(a);
+      winTo = hmToMin(b);
+    } else if (wv) {
+      [winFrom, winTo] = wv.split('-').map(Number);
+    }
+    const uv = $('q-until').value;
+    if (uv.startsWith('n')) untilN = parseInt(uv.slice(1), 10);
+    else if (uv === 't') {
+      const t = $('q-until-t').value;
+      if (!t) { toast('set the stop time'); return; }
+      untilAt = nextEpochFor(t);
+    }
   } else {
     at = Math.floor(Date.now() / 1000) + parseInt(w, 10) * 60;
   }
+  const base = { session: card.session, dir: card.dir, cmd: card.cmd };
   try {
-    await inv('queue_add', { session: card.session, dir: card.dir, cmd: card.cmd, text, mode, at });
-    $('q-text').value = '';
+    if (qTpl) {
+      const steps = qTpl.steps.slice();
+      if (mode === 'every') {
+        /* one standing rule holds the whole template; steps 2..N re-enqueue
+           as chain items on every fire */
+        await inv('queue_add', { ...base, text: steps[0], mode, at: null, every, winFrom, winTo, untilN, untilAt,
+          steps: steps.slice(1), tpl: qTpl.name, tplIdx: 1, tplTotal: steps.length });
+      } else {
+        for (let k = 0; k < steps.length; k++) {
+          await inv('queue_add', { ...base, text: steps[k],
+            mode: k === 0 ? mode : 'chain', at: k === 0 ? at : null,
+            tpl: qTpl.name, tplIdx: k + 1, tplTotal: steps.length });
+        }
+      }
+      setQSrc(null);
+    } else {
+      const text = $('q-text').value.trim();
+      if (!text) { $('q-text').focus(); return; }
+      await inv('queue_add', { ...base, text, mode, at, every, winFrom, winTo, untilN, untilAt });
+      $('q-text').value = '';
+    }
     $('q-when').value = 'chain';   // natural default for the next one
-    $('q-time').style.display = 'none';
+    syncSentence();
   } catch (e) {
     toast('add failed: ' + e);
   }
