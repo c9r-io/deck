@@ -1397,17 +1397,12 @@ function showSessionCtx(e, sid) {
   e.preventDefault();
   e.stopPropagation();
   const s = provider.get(sid);
-  const p = provider.project(s.projectId);
   const ctx = $('ctx');
   ctx.innerHTML = `
     <button data-a="rename">Rename card</button>
     <button data-a="desc">${s.desc ? 'Edit' : 'Add'} description</button>
     ${s.status === 'stopped' ? '<button data-a="start">Start</button>' : ''}
     <button data-a="here">New session in this directory</button>
-    <hr>
-    <div class="ctx-label">Move to</div>
-    ${p.columns.filter(c => c.id !== s.columnId).map(c =>
-      `<button data-a="move" data-col="${c.id}">→ ${c.name}</button>`).join('')}
     <hr>
     <button data-a="close" class="danger">Close session</button>`;
   ctx.onclick = ev => {
@@ -1417,11 +1412,6 @@ function showSessionCtx(e, sid) {
     if (a === 'desc') editDescInline(sid);
     if (a === 'start') { provider.start(sid); toast(`started: ${s.title}`); }
     if (a === 'here') newSession(s.dir);
-    if (a === 'move') {
-      const cid = ev.target.dataset.col;
-      provider.move(sid, cid);
-      toast(`moved to ${p.columns.find(c => c.id === cid).name}`);
-    }
     if (a === 'close') closeSession(sid);
   };
   placeCtx(e);
