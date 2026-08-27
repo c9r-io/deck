@@ -76,17 +76,16 @@ jobs:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          # To enable notarization: add APPLE_ID + APPLE_PASSWORD
-          # (app-specific password) secrets, then add these env lines:
-          #   APPLE_ID / APPLE_PASSWORD / APPLE_TEAM_ID
-          # (don't add them while the secrets are unset — empty strings
-          # make the bundler attempt notarization and fail)
+          # Notarization (Apple ID + app-specific password)
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
           projectPath: app
           tagName: ${{ needs.resolve.outputs.tag }}
           releaseName: 'deck ${{ needs.resolve.outputs.tag }}'
           releaseBody: |
-            macOS (Apple Silicon) build, signed with a Developer ID
-            certificate.
+            macOS (Apple Silicon) build, signed and notarized with a Developer ID
+            certificate — no Gatekeeper prompts.
           releaseDraft: false
           prerelease: false
