@@ -10,10 +10,17 @@ cd "$(dirname "$0")/src-tauri"
 cargo build
 
 APP=target/debug/deck.app
+# the in-app updater may have replaced this bundle with a release build whose
+# executable is named deck-app — kill both names and rebuild the bundle fresh
+pkill -x deck 2>/dev/null || true
+pkill -f "deck.app/Contents/MacOS" 2>/dev/null || true
+sleep 0.3
+rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp target/debug/deck-app "$APP/Contents/MacOS/deck"
 cp icons/icon.png "$APP/Contents/Resources/icon.png"
-cat > "$APP/Contents/Info.plist" <<'EOF'
+VER=$(python3 -c "import json;print(json.load(open('tauri.conf.json'))['version'])")
+cat > "$APP/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -22,8 +29,8 @@ cat > "$APP/Contents/Info.plist" <<'EOF'
   <key>CFBundleDisplayName</key><string>deck</string>
   <key>CFBundleExecutable</key><string>deck</string>
   <key>CFBundleIdentifier</key><string>io.c9r.deck</string>
-  <key>CFBundleVersion</key><string>0.2.0</string>
-  <key>CFBundleShortVersionString</key><string>0.2.0</string>
+  <key>CFBundleVersion</key><string>${VER}</string>
+  <key>CFBundleShortVersionString</key><string>${VER}</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>LSMinimumSystemVersion</key><string>11.0</string>
@@ -31,7 +38,5 @@ cat > "$APP/Contents/Info.plist" <<'EOF'
 </plist>
 EOF
 
-pkill -x deck 2>/dev/null || true
-sleep 0.3
 open "$APP"
 echo "deck launched. logs: ~/.deck/app.log"
