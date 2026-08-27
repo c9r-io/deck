@@ -767,7 +767,14 @@ async function pollNow() {
       : (info.idle_secs != null && info.idle_secs >= QUIET_SECS) ? 'waiting' : 'running';
     const mem = info.alive && info.mem_mb != null ? info.mem_mb : null;
     const tail = info.tail || [];
+    const prevFg = c.fg;
     c.fg = info.fg || null;
+    /* shell → agent transition: shell-era separator lines would overlap the
+       TUI's in-place repaints — drop them for this pane */
+    if (prevFg !== c.fg && !SHELL_FG.test(c.fg || '')) {
+      const pn = panes.get(c.session);
+      if (pn && pn.seps.length) clearSeparators(pn);
+    }
     if (status !== c.status) { c.status = status; emit('status', c); }
     if ((mem == null) !== (c.mem == null) || (mem != null && Math.abs(mem - c.mem) > 1)) {
       c.mem = mem;
@@ -1308,7 +1315,7 @@ function addInputSeparator(pane) {
     if (!marker) { if (sepLogged < 5) { sepLogged++; ulog('separator: no marker'); } return; }
     const el = document.createElement('div');
     el.style.cssText = 'position:absolute; left:0; right:0; height:1px;' +
-      'background:rgba(79,214,190,0.35); pointer-events:none; z-index:4; display:none;';
+      'background:rgba(126,138,153,0.28); pointer-events:none; z-index:4; display:none;';
     pane.body.appendChild(el);
     const entry = { marker, el };
     pane.seps.push(entry);
@@ -1327,6 +1334,13 @@ function addInputSeparator(pane) {
   } catch (e) {
     if (sepLogged < 5) { sepLogged++; ulog('separator failed: ' + e); }
   }
+}
+
+function clearSeparators(pane) {
+  for (const s of [...pane.seps]) {
+    try { s.marker.dispose(); } catch (e) { s.el.remove(); }
+  }
+  pane.seps.length = 0;
 }
 
 function positionSeparators(pane) {
