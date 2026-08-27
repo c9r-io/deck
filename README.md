@@ -35,6 +35,14 @@ fresh shell; rename the card later (double-click the title anywhere). Click a
 board's title to select it — an accent edge marks it, and new sessions land
 there instead of the default board.
 
+**Scheduled prompts** (⏰ in the session header): queue prompts to be typed
+into a session later — built for the agent rate-limit workflow ("when my
+quota window resets in 5 h, run these tasks in order"). Each entry fires
+either at a set time or after the previous one finishes (session quiet for
+3 minutes). Works while detached; sessions are started automatically if
+needed; the queue survives app restarts (`~/.deck/queue.json`). The app must
+be running for prompts to fire.
+
 ```
 ┌ Backlog ────────┐┌ Active ─────────┐┌ Waiting ────────┐┌ Review ─────────┐┌ Done ───────────┐
 │○ refactor auth  ││● fix flaky test ││● migrate schema ││○ PR #42         ││○ docs pass      │

@@ -317,6 +317,40 @@
   }
   #ctx hr { border: none; border-top: 1px solid var(--border-soft); margin: 4px 2px; }
 
+  /* ---------- scheduled prompts panel ---------- */
+  #queue-panel {
+    display: none; flex-direction: column; gap: 6px;
+    padding: 10px 16px;
+    background: var(--panel); border-bottom: 1px solid var(--border-soft);
+    max-height: 40vh; overflow-y: auto;
+  }
+  .q-item {
+    display: flex; align-items: center; gap: 10px;
+    padding: 6px 10px; border: 1px solid var(--border-soft); border-radius: 6px;
+    background: var(--raised);
+  }
+  .q-when {
+    font-family: var(--mono); font-size: 11px; color: var(--wait);
+    flex: none; min-width: 92px;
+  }
+  .q-text { flex: 1; min-width: 0; font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .q-del { color: var(--faint); padding: 2px 7px; border-radius: 4px; flex: none; }
+  .q-del:hover { color: var(--danger); background: var(--hover); }
+  .q-add { display: flex; gap: 6px; align-items: center; }
+  .q-add input[type=text] { flex: 1; font-size: 12.5px; padding: 6px 10px; }
+  .q-add select, .q-add input[type=time] {
+    font-size: 12px; color: var(--muted); background: var(--raised);
+    border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px;
+  }
+  .q-hint { font-size: 11px; color: var(--faint); }
+  #queue-btn .cnt { font-family: var(--mono); font-size: 10px; color: var(--wait); }
+  .card .q-chip {
+    font-family: var(--mono); font-size: 10px; color: var(--wait);
+    border: 1px solid rgba(232, 180, 90, 0.35); border-radius: 4px;
+    padding: 1px 5px; flex: none;
+  }
+  .card .q-chip:empty { display: none; }
+
   /* ---------- quick-command / completion bar (bottom of terminal) ---------- */
   #quick-bar {
     display: none; align-items: center; gap: 6px;
@@ -419,9 +453,27 @@
         <span class="sess-path" id="sess-path"></span>
         <div class="sess-spacer"></div>
         <span class="mem-chip" id="sess-mem" title="Memory of the whole session process tree: shell + agent + spawned children"></span>
+        <button class="btn" id="queue-btn" title="Scheduled prompts — send prompts to this session later">⏰<span class="cnt" id="queue-cnt"></span></button>
         <select class="col-select" id="sess-col" title="Move to board"></select>
         <button class="btn" id="sess-new-here" title="New session in this directory">＋ Here</button>
         <button class="btn danger" id="sess-close" title="Close session (terminates the shell and removes the card)">Close</button>
+      </div>
+      <div id="queue-panel">
+        <div id="queue-list"></div>
+        <div class="q-add">
+          <input type="text" id="q-text" placeholder="prompt to send to this session later…" autocomplete="off" spellcheck="false">
+          <select id="q-when">
+            <option value="chain">after previous finishes</option>
+            <option value="30">in 30 min</option>
+            <option value="60">in 1 h</option>
+            <option value="180">in 3 h</option>
+            <option value="300">in 5 h</option>
+            <option value="custom">at time…</option>
+          </select>
+          <input type="time" id="q-time" style="display:none">
+          <button class="btn primary" id="q-add-btn">Add</button>
+        </div>
+        <div class="q-hint">Prompts are typed into the session at the scheduled moment (works while detached; the app must be running). "After previous" fires once the session has been quiet for 3 minutes.</div>
       </div>
       <div id="terminal"></div>
       <div id="quick-bar"></div>
@@ -937,7 +989,7 @@ function cardEl(s) {
 
   const tail = (s.tail || []).slice(-2);
   el.innerHTML = `
-    <div class="card-top"><span class="dot ${s.status}" title="${DOT_TITLES[s.status] || ''}"></span><span class="card-title"></span><span class="mem-chip" title="Memory of the whole session process tree: shell + agent + spawned children"></span></div>
+    <div class="card-top"><span class="dot ${s.status}" title="${DOT_TITLES[s.status] || ''}"></span><span class="card-title"></span><span class="q-chip"></span><span class="mem-chip" title="Memory of the whole session process tree: shell + agent + spawned children"></span></div>
     <div class="card-meta"><span class="cmd"></span><span class="dir"></span></div>
     ${s.desc ? '<div class="card-desc"></div>' : ''}
     ${tail.length ? '<div class="card-tail">' + tail.map(() => '<div></div>').join('') + '</div>' : ''}
@@ -1193,6 +1245,7 @@ async function openSession(sid) {
   state.view = 'session';
   state.sessionId = sid;
   resetSuggest();
+  toggleQueuePanel(false);
   render();
   mountTerminal(card);
   const wasStopped = card.status === 'stopped';
@@ -1219,6 +1272,7 @@ async function openSession(sid) {
 
 function leaveSessionView() {
   resetSuggest();
+  toggleQueuePanel(false);
   if (attachedName) {
     inv('detach_session', { name: attachedName }).catch(() => {});
     attachedName = null;
@@ -1537,6 +1591,7 @@ function render() {
   renderSidebar();
   if (state.view === 'board') renderBoard();
   else renderSessionView();
+  renderQueueUI();
 }
 
 provider.subscribe((ev, s) => {
@@ -1565,6 +1620,111 @@ provider.subscribe((ev, s) => {
   }
   render();
 });
+
+/* ---------- scheduled prompts ---------- */
+let queueCache = { items: [], last_fired: {} };
+let queueOpen = false;
+
+async function refreshQueue() {
+  try { queueCache = await inv('queue_list'); } catch (e) { return; }
+  renderQueueUI();
+}
+
+const sessionQueue = session => queueCache.items.filter(i => i.session === session);
+
+function fmtWhen(i) {
+  if (i.mode === 'chain') return '↳ after prev';
+  const d = new Date(i.at * 1000);
+  const today = new Date().toDateString() === d.toDateString();
+  return (today ? '' : (d.getMonth() + 1) + '/' + d.getDate() + ' ') + d.toTimeString().slice(0, 5);
+}
+
+function renderQueueUI() {
+  const card = state.view === 'session' && provider.get(state.sessionId);
+  if (card) {
+    const q = sessionQueue(card.session);
+    $('queue-cnt').textContent = q.length || '';
+    if (queueOpen) {
+      const list = $('queue-list');
+      list.innerHTML = '';
+      for (const i of q) {
+        const el = document.createElement('div');
+        el.className = 'q-item';
+        el.innerHTML = '<span class="q-when"></span><span class="q-text"></span><button class="q-del" title="remove">✕</button>';
+        el.querySelector('.q-when').textContent = fmtWhen(i);
+        el.querySelector('.q-text').textContent = i.text;
+        el.querySelector('.q-text').title = i.text;
+        el.querySelector('.q-del').onclick = () => inv('queue_remove', { id: i.id }).catch(() => {});
+        list.appendChild(el);
+      }
+      if (!q.length) list.innerHTML = '<div class="q-hint">nothing scheduled for this session yet</div>';
+    }
+  }
+  document.querySelectorAll('.card[data-sid]').forEach(el => {
+    const c = provider.get(el.dataset.sid);
+    const chip = el.querySelector('.q-chip');
+    if (c && chip) {
+      const q = sessionQueue(c.session);
+      chip.textContent = q.length ? '⏰' + q.length : '';
+      chip.title = q.length ? `next ${fmtWhen(q[0])}: ${q[0].text}` : '';
+    }
+  });
+}
+
+function toggleQueuePanel(open) {
+  queueOpen = open !== undefined ? open : !queueOpen;
+  $('queue-panel').style.display = queueOpen ? 'flex' : 'none';
+  if (queueOpen) {
+    const card = provider.get(state.sessionId);
+    $('q-when').value = card && sessionQueue(card.session).length ? 'chain' : '300';
+    $('q-time').style.display = 'none';
+    renderQueueUI();
+    $('q-text').focus();
+  } else if (term) {
+    term.focus();
+  }
+}
+
+$('queue-btn').onclick = () => toggleQueuePanel();
+$('q-when').addEventListener('change', () => {
+  $('q-time').style.display = $('q-when').value === 'custom' ? '' : 'none';
+});
+$('q-add-btn').onclick = async () => {
+  const card = provider.get(state.sessionId);
+  if (!card) return;
+  const text = $('q-text').value.trim();
+  if (!text) { $('q-text').focus(); return; }
+  const w = $('q-when').value;
+  let mode = 'at', at = null;
+  if (w === 'chain') {
+    mode = 'chain';
+  } else if (w === 'custom') {
+    const t = $('q-time').value;
+    if (!t) { $('q-time').focus(); return; }
+    const [h, m] = t.split(':').map(Number);
+    const d = new Date();
+    d.setHours(h, m, 0, 0);
+    if (d.getTime() <= Date.now()) d.setDate(d.getDate() + 1);   // past → tomorrow
+    at = Math.floor(d.getTime() / 1000);
+  } else {
+    at = Math.floor(Date.now() / 1000) + parseInt(w, 10) * 60;
+  }
+  try {
+    await inv('queue_add', { session: card.session, dir: card.dir, cmd: card.cmd, text, mode, at });
+    $('q-text').value = '';
+    $('q-when').value = 'chain';   // natural default for the next one
+    $('q-time').style.display = 'none';
+  } catch (e) {
+    toast('add failed: ' + e);
+  }
+};
+$('q-text').addEventListener('keydown', e => { if (e.key === 'Enter') $('q-add-btn').click(); });
+
+listen('queue-changed', refreshQueue).catch(e => ulog('listen(queue-changed) FAILED: ' + e));
+listen('queue-fired', ev => {
+  toast(`scheduled prompt sent → ${ev.payload.session}`);
+  pollNow();
+}).catch(e => ulog('listen(queue-fired) FAILED: ' + e));
 
 /* ---------- in-app updates (tauri-plugin-updater) ---------- */
 let pendingUpdate = null;
@@ -1644,6 +1804,7 @@ async function boot() {
   }
   render();
   startPolling();
+  refreshQueue();
   setTimeout(checkForUpdate, 4000);
   setInterval(checkForUpdate, 6 * 3600 * 1000);
 }

@@ -28,6 +28,11 @@ xterm.js vendored in `app/ui/vendor/`); backend `app/src-tauri/src/main.rs`.
 - Attach = `tmux attach` inside a portable-pty, bytes streamed as base64 over the
   `pty-data` event to xterm.js; detach kills only the tmux *client*. Reader threads
   carry a generation counter so a stale thread never removes a newer attachment.
+- Scheduled prompts: Rust-side scheduler thread (NOT webview timers — App Nap
+  freezes those), 20s tick, queue persisted at `~/.deck/queue.json` and loaded at
+  boot. Injection = `tmux send-keys -l` (literal) + Enter, no attach needed; dead
+  sessions are started first. "chain" mode fires after `window_activity` has been
+  quiet ≥180s (a permission prompt also counts as quiet — documented behavior).
 - The GUI design reference (mock, same UI with fake data) lives in `gui/index.html`.
 
 ### WKWebView / Tauri gotchas (each cost a real bug)

@@ -7,7 +7,7 @@
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
 use std::path::PathBuf;
@@ -521,6 +521,195 @@ fn record_command(cmd: String) -> Result<(), String> {
     std::fs::write(&path, serde_json::to_string_pretty(&hist).unwrap()).map_err(|e| e.to_string())
 }
 
+// ---------- scheduled prompts ----------------------------------------------------
+// Queue prompts to be typed into a session later — the rate-limit workflow:
+// "when my Claude quota window resets in 5h, send these tasks in order".
+// tmux send-keys needs no attached client, so this works fully detached.
+// The scheduler lives in a Rust thread (webview timers get frozen by App Nap).
+
+#[derive(Serialize, Deserialize, Clone)]
+struct QueueItem {
+    id: String,
+    session: String,
+    dir: String,
+    cmd: String,
+    text: String,
+    /// "at" = fire at `at` (epoch secs); "chain" = fire once the session has
+    /// been quiet for CHAIN_QUIET_SECS after the previous send
+    mode: String,
+    at: Option<u64>,
+    added: u64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Default)]
+struct QueueState {
+    items: Vec<QueueItem>,
+    /// session → when we last injected a prompt
+    last_fired: HashMap<String, u64>,
+}
+
+struct Queues(Mutex<QueueState>);
+
+const CHAIN_QUIET_SECS: u64 = 180;
+const CHAIN_MIN_GAP_SECS: u64 = 60;
+
+fn queue_path() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".deck")
+        .join("queue.json")
+}
+
+fn load_queue() -> QueueState {
+    std::fs::read_to_string(queue_path())
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+fn save_queue(q: &QueueState) {
+    let path = queue_path();
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(&path, serde_json::to_string_pretty(q).unwrap());
+}
+
+#[tauri::command]
+fn queue_list(state: State<'_, Queues>) -> QueueState {
+    state.0.lock().unwrap().clone()
+}
+
+#[tauri::command]
+fn queue_add(
+    state: State<'_, Queues>,
+    app: AppHandle,
+    session: String,
+    dir: String,
+    cmd: String,
+    text: String,
+    mode: String,
+    at: Option<u64>,
+) -> Result<(), String> {
+    let text = text.replace(['\n', '\r'], " ").trim().to_string();
+    if text.is_empty() {
+        return Err("empty prompt".into());
+    }
+    let mut q = state.0.lock().unwrap();
+    let id = format!("q{}-{}", now_epoch(), q.items.len());
+    q.items.push(QueueItem {
+        id,
+        session,
+        dir,
+        cmd,
+        text,
+        mode,
+        at,
+        added: now_epoch(),
+    });
+    save_queue(&q);
+    let _ = app.emit("queue-changed", ());
+    Ok(())
+}
+
+#[tauri::command]
+fn queue_remove(state: State<'_, Queues>, app: AppHandle, id: String) {
+    let mut q = state.0.lock().unwrap();
+    q.items.retain(|i| i.id != id);
+    save_queue(&q);
+    let _ = app.emit("queue-changed", ());
+}
+
+#[derive(Clone, Serialize)]
+struct QueueFired {
+    session: String,
+    text: String,
+}
+
+/// Inject one prompt into its session, starting the session if needed.
+fn fire_item(item: &QueueItem) -> Result<(), String> {
+    let alive: HashSet<String> = tmux(&["list-sessions", "-F", "#{session_name}"])
+        .map(|o| o.lines().map(|s| s.to_string()).collect())
+        .unwrap_or_default();
+    if !alive.contains(&item.session) {
+        start_session(item.session.clone(), item.dir.clone(), item.cmd.clone())?;
+        std::thread::sleep(std::time::Duration::from_millis(2500));
+    }
+    // -l = literal text (no key-name interpretation), then a real Enter
+    tmux(&["send-keys", "-t", &pane_target(&item.session), "-l", &item.text])?;
+    tmux(&["send-keys", "-t", &pane_target(&item.session), "Enter"])?;
+    Ok(())
+}
+
+fn spawn_scheduler(app: AppHandle) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(std::time::Duration::from_secs(20));
+        let state = app.state::<Queues>();
+        let due: Vec<QueueItem> = {
+            let q = state.0.lock().unwrap();
+            if q.items.is_empty() {
+                continue;
+            }
+            let now = now_epoch();
+            // pane activity for chain-mode quiet checks
+            let mut activity: HashMap<String, u64> = HashMap::new();
+            if let Ok(out) = tmux(&["list-panes", "-a", "-F", "#{session_name}\t#{window_activity}"]) {
+                for line in out.lines() {
+                    let mut it = line.split('\t');
+                    if let (Some(s), Some(a)) = (it.next(), it.next()) {
+                        if let Ok(a) = a.parse() {
+                            activity.entry(s.to_string()).or_insert(a);
+                        }
+                    }
+                }
+            }
+            // only the head item of each session's queue is a candidate
+            let mut seen: HashSet<String> = HashSet::new();
+            q.items
+                .iter()
+                .filter(|i| seen.insert(i.session.clone()))
+                .filter(|i| match i.mode.as_str() {
+                    "at" => i.at.map(|t| now >= t).unwrap_or(false),
+                    "chain" => {
+                        let gap_ok = q
+                            .last_fired
+                            .get(&i.session)
+                            .map(|t| now >= t + CHAIN_MIN_GAP_SECS)
+                            .unwrap_or(true);
+                        let quiet_ok = activity
+                            .get(&i.session)
+                            .map(|a| now >= a + CHAIN_QUIET_SECS)
+                            .unwrap_or(true); // dead session = quiet; fire_item restarts it
+                        gap_ok && quiet_ok
+                    }
+                    _ => false,
+                })
+                .cloned()
+                .collect()
+        };
+        for item in due {
+            match fire_item(&item) {
+                Ok(()) => {
+                    applog(&format!("[queue] sent to {}: {}", item.session, item.text));
+                    let mut q = state.0.lock().unwrap();
+                    q.items.retain(|i| i.id != item.id);
+                    q.last_fired.insert(item.session.clone(), now_epoch());
+                    save_queue(&q);
+                    drop(q);
+                    let _ = app.emit(
+                        "queue-fired",
+                        QueueFired { session: item.session.clone(), text: item.text.clone() },
+                    );
+                    let _ = app.emit("queue-changed", ());
+                }
+                Err(e) => {
+                    applog(&format!("[queue] send FAILED for {}: {e} (will retry)", item.session));
+                }
+            }
+        }
+    });
+}
+
 // ---------- open path / url ----------------------------------------------------
 
 #[tauri::command]
@@ -568,6 +757,11 @@ fn main() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .manage(PtyState::default())
+        .manage(Queues(Mutex::new(load_queue())))
+        .setup(|app| {
+            spawn_scheduler(app.handle().clone());
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             load_board,
             save_board,
@@ -585,6 +779,9 @@ fn main() {
             record_command,
             ui_log,
             ping_event,
+            queue_list,
+            queue_add,
+            queue_remove,
         ])
         .run(tauri::generate_context!())
         .expect("error while running deck");
