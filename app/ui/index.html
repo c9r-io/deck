@@ -447,7 +447,7 @@
       <div class="sess-head">
         <button class="back-btn" id="back-btn" title="Back to board">
           <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M10 3 5 8l5 5"/></svg>
-          Board
+          <span id="back-label">Board</span>
         </button>
         <span class="dot" id="sess-dot"></span>
         <div class="sess-title"><span class="name" id="sess-name"></span></div>
@@ -712,6 +712,7 @@ async function pollNow() {
       : (info.idle_secs != null && info.idle_secs >= QUIET_SECS) ? 'waiting' : 'running';
     const mem = info.alive && info.mem_mb != null ? info.mem_mb : null;
     const tail = info.tail || [];
+    c.fg = info.fg || null;
     if (status !== c.status) { c.status = status; emit('status', c); }
     if ((mem == null) !== (c.mem == null) || (mem != null && Math.abs(mem - c.mem) > 1)) {
       c.mem = mem;
@@ -1120,7 +1121,8 @@ function mountTerminal(card) {
 
   let odLogged = 0;
   term.onData(d => {
-    feedMirror(d);
+    const completed = feedMirror(d);
+    if (completed) maybeRecordCommand(completed);
     renderSuggest();
     if (odLogged < 3) { odLogged++; ulog(`onData len=${d.length} attached=${!!attachedName}`); }
     if (attachedName) {
@@ -1295,6 +1297,10 @@ function renderSessionView() {
   if (!s) { backToBoard(); return; }
   $('sess-dot').className = 'dot ' + s.status;
   $('sess-dot').title = DOT_TITLES[s.status] || '';
+  /* back button names the board this card lives on */
+  const proj0 = activeProject();
+  const col0 = proj0 && proj0.columns.find(c => c.id === s.columnId);
+  $('back-label').textContent = col0 ? col0.name : 'Board';
   const nameEl = $('sess-name');
   nameEl.textContent = s.title;
   nameEl.title = 'double-click to rename';
@@ -1488,9 +1494,15 @@ let histCache = [];
 let lineBuf = '';        // null = desynced
 let freshShell = false;  // just-created empty shell → offer recent commands
 
+/* returns the completed command line when the chunk contained an Enter */
 function feedMirror(d) {
+  let completed = null;
   for (const ch of d) {
-    if (ch === '\r' || ch === '\n' || ch === '\x03' || ch === '\x15') {
+    if (ch === '\r' || ch === '\n') {
+      if (lineBuf && lineBuf.trim().length >= 2) completed = lineBuf.trim();
+      lineBuf = '';
+      freshShell = false;
+    } else if (ch === '\x03' || ch === '\x15') {
       lineBuf = '';
       freshShell = false;
     } else if (ch === '\x7f') {
@@ -1501,6 +1513,18 @@ function feedMirror(d) {
       lineBuf += ch;
     }
   }
+  return completed;
+}
+
+/* record commands typed into deck shells — the user's ~/.zsh_history only
+   fills when a shell exits, and deck shells live for days. Agent prompts
+   are excluded via the pane's foreground process. */
+const SHELL_FG = /^-?(zsh|bash|fish|sh|dash)$/;
+function maybeRecordCommand(cmd) {
+  const c = provider.get(state.sessionId);
+  if (!c || !SHELL_FG.test(c.fg || '')) return;
+  inv('record_command', { cmd }).catch(() => {});
+  histCache = [cmd, ...histCache.filter(x => x !== cmd)];
 }
 
 function suggestions() {

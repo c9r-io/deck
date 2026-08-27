@@ -40,9 +40,16 @@ jobs:
           if [ -z "$latest" ]; then
             echo "no v* tags"; echo "tag=" >> "$GITHUB_OUTPUT"; exit 0
           fi
-          if gh release view "$latest" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "release for $latest already exists"; echo "tag=" >> "$GITHUB_OUTPUT"
+          # a release is only complete when the updater manifest made it up —
+          # a build that dies mid-upload leaves a partial release behind
+          if gh release view "$latest" -R "$GITHUB_REPOSITORY" --json assets \
+               --jq '.assets[].name' 2>/dev/null | grep -qx 'latest.json'; then
+            echo "complete release for $latest exists"; echo "tag=" >> "$GITHUB_OUTPUT"
           else
+            if gh release view "$latest" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              echo "incomplete release for $latest — deleting so the build recreates it"
+              gh release delete "$latest" -R "$GITHUB_REPOSITORY" --yes
+            fi
             echo "will build $latest"; echo "tag=$latest" >> "$GITHUB_OUTPUT"
           fi
 

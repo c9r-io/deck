@@ -163,6 +163,9 @@ struct SessInfo {
     mem_mb: Option<f64>,
     /// last non-empty lines of the pane, for card previews
     tail: Vec<String>,
+    /// foreground process in the pane (zsh, claude, node, …) — lets the
+    /// frontend record shell commands but not agent prompts
+    fg: Option<String>,
 }
 
 fn now_epoch() -> u64 {
@@ -234,19 +237,21 @@ fn poll_sessions(names: Vec<String>, tail_for: Vec<String>) -> Vec<SessInfo> {
         .map(|o| o.lines().map(|s| s.to_string()).collect())
         .unwrap_or_default();
 
-    // session name → (pane pid, last activity epoch)
-    let mut panes: HashMap<String, (u32, u64)> = HashMap::new();
+    // session name → (pane pid, last activity epoch, foreground command)
+    let mut panes: HashMap<String, (u32, u64, String)> = HashMap::new();
     if let Ok(out) = tmux(&[
         "list-panes",
         "-a",
         "-F",
-        "#{session_name}\t#{pane_pid}\t#{window_activity}",
+        "#{session_name}\t#{pane_pid}\t#{window_activity}\t#{pane_current_command}",
     ]) {
         for line in out.lines() {
             let mut it = line.split('\t');
-            if let (Some(s), Some(pid), Some(act)) = (it.next(), it.next(), it.next()) {
+            if let (Some(s), Some(pid), Some(act), Some(fg)) =
+                (it.next(), it.next(), it.next(), it.next())
+            {
                 if let (Ok(pid), Ok(act)) = (pid.parse(), act.parse()) {
-                    panes.entry(s.to_string()).or_insert((pid, act));
+                    panes.entry(s.to_string()).or_insert((pid, act, fg.to_string()));
                 }
             }
         }
@@ -255,7 +260,7 @@ fn poll_sessions(names: Vec<String>, tail_for: Vec<String>) -> Vec<SessInfo> {
     let roots: HashMap<String, u32> = names
         .iter()
         .filter(|n| alive.contains(*n))
-        .filter_map(|n| panes.get(n).map(|(pid, _)| (n.clone(), *pid)))
+        .filter_map(|n| panes.get(n).map(|(pid, _, _)| (n.clone(), *pid)))
         .collect();
     let mem = tree_mem(&roots);
     let tails: HashSet<&String> = tail_for.iter().collect();
@@ -267,7 +272,7 @@ fn poll_sessions(names: Vec<String>, tail_for: Vec<String>) -> Vec<SessInfo> {
             let is_alive = alive.contains(&name);
             let idle = panes
                 .get(&name)
-                .map(|(_, act)| now.saturating_sub(*act))
+                .map(|(_, act, _)| now.saturating_sub(*act))
                 .filter(|_| is_alive);
             SessInfo {
                 alive: is_alive,
@@ -278,6 +283,7 @@ fn poll_sessions(names: Vec<String>, tail_for: Vec<String>) -> Vec<SessInfo> {
                 } else {
                     Vec::new()
                 },
+                fg: panes.get(&name).map(|(_, _, fg)| fg.clone()).filter(|_| is_alive),
                 name,
             }
         })
@@ -445,10 +451,29 @@ fn deck_history_path() -> PathBuf {
         .join("history.json")
 }
 
-fn read_deck_history() -> Vec<String> {
-    std::fs::read_to_string(deck_history_path())
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
+#[derive(Serialize, Deserialize, Clone)]
+struct HistEntry {
+    cmd: String,
+    n: u32,
+    last: u64,
+}
+
+/// Frequency-boosted recency: each past use is worth an hour of freshness.
+fn hist_score(e: &HistEntry) -> u64 {
+    e.last + (e.n as u64) * 3600
+}
+
+fn read_deck_history() -> Vec<HistEntry> {
+    let Some(raw) = std::fs::read_to_string(deck_history_path()).ok() else {
+        return Vec::new();
+    };
+    if let Ok(v) = serde_json::from_str::<Vec<HistEntry>>(&raw) {
+        return v;
+    }
+    // migrate v1 (plain string array)
+    let now = now_epoch();
+    serde_json::from_str::<Vec<String>>(&raw)
+        .map(|v| v.into_iter().map(|cmd| HistEntry { cmd, n: 1, last: now }).collect())
         .unwrap_or_default()
 }
 
@@ -480,8 +505,10 @@ fn recent_commands(limit: usize) -> Vec<String> {
         }
     };
 
-    for cmd in read_deck_history() {
-        push(&cmd);
+    let mut own = read_deck_history();
+    own.sort_by_key(|e| std::cmp::Reverse(hist_score(e)));
+    for e in own {
+        push(&e.cmd);
     }
     if let Some(home) = dirs::home_dir() {
         for file in [".zsh_history", ".bash_history"] {
@@ -503,7 +530,9 @@ fn recent_commands(limit: usize) -> Vec<String> {
     out
 }
 
-/// Record a command deck injected into a shell, so it ranks first next time.
+/// Record a command run in a deck shell (typed, completed, or injected).
+/// deck owns its history: shells inside tmux sessions stay alive, so the
+/// user's ~/.zsh_history only fills on shell exit — too late for completion.
 #[tauri::command]
 fn record_command(cmd: String) -> Result<(), String> {
     if !usable_command(&cmd) {
@@ -511,9 +540,14 @@ fn record_command(cmd: String) -> Result<(), String> {
     }
     let cmd = cmd.trim().to_string();
     let mut hist = read_deck_history();
-    hist.retain(|c| c != &cmd);
-    hist.insert(0, cmd);
-    hist.truncate(50);
+    if let Some(e) = hist.iter_mut().find(|e| e.cmd == cmd) {
+        e.n += 1;
+        e.last = now_epoch();
+    } else {
+        hist.push(HistEntry { cmd, n: 1, last: now_epoch() });
+    }
+    hist.sort_by_key(|e| std::cmp::Reverse(hist_score(e)));
+    hist.truncate(500);
     let path = deck_history_path();
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
