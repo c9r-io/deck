@@ -2896,6 +2896,7 @@ async function boot() {
   } catch (e) {
     ulog('ping setup failed: ' + e);
   }
+  inv('storage_warnings').then(ws => (ws || []).forEach(w => toast(w))).catch(() => {});
   HOME = await inv('default_dir').catch(() => '~');
   const ok = await inv('tmux_available').catch(() => false);
   if (!ok) $('banner').style.display = 'block';

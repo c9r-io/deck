@@ -523,6 +523,7 @@ version = "0.4.15"
 dependencies = [
  "base64 0.22.1",
  "dirs 5.0.1",
+ "libc",
  "portable-pty",
  "serde",
  "serde_json",

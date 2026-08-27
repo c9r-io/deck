@@ -16,6 +16,8 @@ use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager, State};
 
+mod storage;
+
 // ---------- tmux helpers ----------------------------------------------------
 
 /// Absolute path to tmux. The bundled sidecar comes first (zero-dependency
@@ -122,7 +124,7 @@ fn expand_tilde(path: &str) -> String {
 
 /// Append a line to ~/.deck/app.log (the app may be launched via `open`,
 /// where stderr goes nowhere useful).
-fn applog(msg: &str) {
+pub(crate) fn applog(msg: &str) {
     let path = dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".deck")
@@ -210,22 +212,19 @@ fn board_path() -> PathBuf {
 
 #[tauri::command]
 fn load_board() -> Result<String, String> {
-    let path = board_path();
-    if !path.exists() {
-        return Ok(String::new());
-    }
-    std::fs::read_to_string(&path).map_err(|e| e.to_string())
+    Ok(storage::load(&board_path())?.unwrap_or_default())
 }
 
 #[tauri::command]
 fn save_board(data: String) -> Result<(), String> {
-    let path = board_path();
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-    }
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, data).map_err(|e| e.to_string())?;
-    std::fs::rename(&tmp, &path).map_err(|e| e.to_string())
+    storage::save(&board_path(), &data)
+}
+
+/// Boot-time storage notices (corruption recovered from .bak, etc.) for the
+/// frontend to surface as toasts.
+#[tauri::command]
+fn storage_warnings() -> Vec<String> {
+    std::mem::take(&mut *storage::WARNINGS.lock().unwrap())
 }
 
 // ---------- settings ------------------------------------------------------------
@@ -239,26 +238,16 @@ fn settings_path() -> PathBuf {
 
 #[tauri::command]
 fn load_settings() -> Result<String, String> {
-    let path = settings_path();
-    if !path.exists() {
-        return Ok(String::new());
-    }
-    std::fs::read_to_string(&path).map_err(|e| e.to_string())
+    Ok(storage::load(&settings_path())?.unwrap_or_default())
 }
 
 #[tauri::command]
 fn save_settings(data: String) -> Result<(), String> {
-    let path = settings_path();
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-    }
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, data).map_err(|e| e.to_string())?;
-    std::fs::rename(&tmp, &path).map_err(|e| e.to_string())
+    storage::save(&settings_path(), &data)
 }
 
 fn editor_app() -> Option<String> {
-    let raw = std::fs::read_to_string(settings_path()).ok()?;
+    let raw = storage::load(&settings_path()).ok()??;
     let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
     let e = v.get("editor")?.as_str()?.trim().to_string();
     if e.is_empty() { None } else { Some(e) }
@@ -695,7 +684,7 @@ fn hist_score(e: &HistEntry) -> u64 {
 }
 
 fn read_deck_history() -> Vec<HistEntry> {
-    let Some(raw) = std::fs::read_to_string(deck_history_path()).ok() else {
+    let Some(raw) = storage::load(&deck_history_path()).ok().flatten() else {
         return Vec::new();
     };
     if let Ok(v) = serde_json::from_str::<Vec<HistEntry>>(&raw) {
@@ -779,11 +768,8 @@ fn record_command(cmd: String) -> Result<(), String> {
     }
     hist.sort_by_key(|e| std::cmp::Reverse(hist_score(e)));
     hist.truncate(500);
-    let path = deck_history_path();
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-    }
-    std::fs::write(&path, serde_json::to_string_pretty(&hist).unwrap()).map_err(|e| e.to_string())
+    let raw = serde_json::to_string(&hist).map_err(|e| e.to_string())?;
+    storage::save(&deck_history_path(), &raw)
 }
 
 // ---------- scheduled prompts ----------------------------------------------------
@@ -895,18 +881,27 @@ fn queue_path() -> PathBuf {
 }
 
 fn load_queue() -> QueueState {
-    std::fs::read_to_string(queue_path())
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
+    match storage::load(&queue_path()) {
+        Ok(Some(raw)) => serde_json::from_str(&raw).unwrap_or_else(|e| {
+            storage::warn(format!(
+                "queue.json parsed but has an unexpected shape ({e}); starting with an empty queue —                  the original file is preserved as .bak"
+            ));
+            QueueState::default()
+        }),
+        Ok(None) => QueueState::default(),
+        Err(e) => {
+            storage::warn(format!("scheduled prompts could not be loaded: {e}"));
+            QueueState::default()
+        }
+    }
 }
 
-fn save_queue(q: &QueueState) {
-    let path = queue_path();
-    if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
-    let _ = std::fs::write(&path, serde_json::to_string_pretty(q).unwrap());
+/// Persist the queue. Callers must not proceed with side effects (like
+/// injecting a prompt) when this fails.
+#[must_use]
+fn save_queue(q: &QueueState) -> Result<(), String> {
+    let raw = serde_json::to_string(q).map_err(|e| e.to_string())?;
+    storage::save(&queue_path(), &raw)
 }
 
 #[tauri::command]
@@ -962,7 +957,7 @@ fn queue_add(
         tpl_idx,
         tpl_total,
     });
-    save_queue(&q);
+    save_queue(&q)?;
     let _ = app.emit("queue-changed", ());
     Ok(())
 }
@@ -982,37 +977,49 @@ fn queue_update(
     if let Some(item) = q.items.iter_mut().find(|i| i.id == id) {
         item.text = text;
     }
-    save_queue(&q);
+    save_queue(&q)?;
     let _ = app.emit("queue-changed", ());
     Ok(())
 }
 
 #[tauri::command]
-fn queue_remove(state: State<'_, Queues>, app: AppHandle, id: String) {
+fn queue_remove(state: State<'_, Queues>, app: AppHandle, id: String) -> Result<(), String> {
     let mut q = state.0.lock().unwrap();
     q.items.retain(|i| i.id != id);
-    save_queue(&q);
+    save_queue(&q)?;
     let _ = app.emit("queue-changed", ());
+    Ok(())
 }
 
 #[tauri::command]
-fn queue_pause(state: State<'_, Queues>, app: AppHandle, id: String, paused: bool) {
+fn queue_pause(
+    state: State<'_, Queues>,
+    app: AppHandle,
+    id: String,
+    paused: bool,
+) -> Result<(), String> {
     let mut q = state.0.lock().unwrap();
     if let Some(item) = q.items.iter_mut().find(|i| i.id == id) {
         item.paused = paused;
     }
-    save_queue(&q);
+    save_queue(&q)?;
     let _ = app.emit("queue-changed", ());
+    Ok(())
 }
 
 /// Drop all queued prompts for a session — called when its card closes.
 #[tauri::command]
-fn queue_clear_session(state: State<'_, Queues>, app: AppHandle, session: String) {
+fn queue_clear_session(
+    state: State<'_, Queues>,
+    app: AppHandle,
+    session: String,
+) -> Result<(), String> {
     let mut q = state.0.lock().unwrap();
     q.items.retain(|i| i.session != session);
     q.last_fired.remove(&session);
-    save_queue(&q);
+    save_queue(&q)?;
     let _ = app.emit("queue-changed", ());
+    Ok(())
 }
 
 #[derive(Clone, Serialize)]
@@ -1094,7 +1101,9 @@ fn spawn_scheduler(app: AppHandle) {
                 !(i.mode == "every" && i.until_at.map(|t| now >= t).unwrap_or(false))
             });
             if q.items.len() != n0 {
-                save_queue(&q);
+                if let Err(e) = save_queue(&q) {
+                    applog(&format!("[queue] persist (expiry purge) FAILED: {e}"));
+                }
                 drop(q);
                 let _ = app.emit("queue-changed", ());
             }
@@ -1151,7 +1160,9 @@ fn spawn_scheduler(app: AppHandle) {
                         q.items.retain(|i| i.id != item.id);
                     }
                     q.last_fired.insert(item.session.clone(), now);
-                    save_queue(&q);
+                    if let Err(e) = save_queue(&q) {
+                        applog(&format!("[queue] persist (post-fire) FAILED: {e}"));
+                    }
                     drop(q);
                     let _ = app.emit(
                         "queue-fired",
@@ -1299,6 +1310,19 @@ mod tests {
 
 fn main() {
     rotate_log();
+    let deck_dir = dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".deck");
+    if let Err(e) = storage::acquire_instance_lock(&deck_dir) {
+        applog(&format!("[boot] {e} — exiting"));
+        let _ = Command::new("osascript")
+            .args([
+                "-e",
+                "display alert \"deck is already running\" message \"Another deck instance owns this Mac's sessions. Use the running one (check the Dock).\"",
+            ])
+            .status();
+        std::process::exit(0);
+    }
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
@@ -1407,6 +1431,7 @@ fn main() {
             queue_update,
             queue_remove,
             queue_pause,
+            storage_warnings,
             queue_clear_session,
         ])
         .build(tauri::generate_context!())
