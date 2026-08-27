@@ -1619,6 +1619,17 @@ function updateGhost() {
   ghostEl.style.display = 'block';
 }
 
+/* Debounced ghost: echoes come back asynchronously, so painting on every
+   keystroke uses a momentarily stale cursor and the ghost jitters during
+   fast edits (backspace bursts). Hide instantly, settle after 150ms. */
+let ghostTimer = null;
+function scheduleGhost() {
+  ghostRemainder = '';
+  if (ghostEl) ghostEl.style.display = 'none';
+  clearTimeout(ghostTimer);
+  ghostTimer = setTimeout(updateGhost, 150);
+}
+
 /* the mirror is append-only while synced, so completing = typing the rest */
 function acceptGhost() {
   if (!ghostRemainder || !attachedName) return;
@@ -1631,7 +1642,7 @@ function acceptGhost() {
 }
 
 function renderSuggest() {
-  updateGhost();
+  scheduleGhost();
   const bar = $('quick-bar');
   const items = suggestions();
   if (!items.length) { bar.style.display = 'none'; return; }
@@ -1659,6 +1670,7 @@ function resetSuggest() {
   lineBuf = '';
   freshShell = false;
   ghostRemainder = '';
+  clearTimeout(ghostTimer);
   if (ghostEl) ghostEl.style.display = 'none';
   $('quick-bar').style.display = 'none';
 }
