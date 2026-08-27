@@ -862,7 +862,32 @@ fn main() {
         .manage(Queues(Mutex::new(load_queue())))
         .setup(|app| {
             spawn_scheduler(app.handle().clone());
+            // Native menu: the default set restores all standard macOS
+            // shortcuts (⌘C/V/A/Z/Q/H/M/W…); Terminal→Clear adds ⌘K.
+            let handle = app.handle();
+            let menu = tauri::menu::Menu::default(handle)?;
+            let clear = tauri::menu::MenuItemBuilder::with_id("clear", "Clear")
+                .accelerator("Cmd+K")
+                .build(app)?;
+            let term_menu = tauri::menu::SubmenuBuilder::new(app, "Terminal")
+                .item(&clear)
+                .build()?;
+            menu.append(&term_menu)?;
+            app.set_menu(menu)?;
+            app.on_menu_event(|app, e| {
+                if e.id() == "clear" {
+                    let _ = app.emit("menu-clear", ());
+                }
+            });
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            // ⌘W / red button hides instead of destroying the only window;
+            // the Dock icon (Reopen) brings it back.
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                let _ = window.hide();
+                api.prevent_close();
+            }
         })
         .invoke_handler(tauri::generate_handler![
             load_board,
@@ -887,6 +912,16 @@ fn main() {
             queue_remove,
             queue_clear_session,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running deck");
+        .build(tauri::generate_context!())
+        .expect("error while building deck")
+        .run(|app, event| {
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { .. } = event {
+                if let Some(w) = app.get_webview_window("main") {
+                    let _ = w.show();
+                    let _ = w.set_focus();
+                }
+            }
+            let _ = (app, &event);
+        });
 }

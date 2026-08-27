@@ -1242,6 +1242,15 @@ function mountTerminal(card) {
     },
   });
 
+  /* Trackpad/wheel scrolling inside a tmux alt-screen gets translated by
+     xterm into arrow-key bursts (ESC OA/OB) — shell history spins and agent
+     REPLs recall old messages. Swallow wheel events entirely: history is
+     the ↑ key's job; scrollback lives in tmux (Ctrl-b [). */
+  host.addEventListener('wheel', e => {
+    e.preventDefault();
+    e.stopPropagation();
+  }, { passive: false, capture: true });
+
   resizeObs = new ResizeObserver(() => {
     clearTimeout(resizeTimer);
     resizeTimer = setTimeout(() => {
@@ -1854,6 +1863,14 @@ $('q-add-btn').onclick = async () => {
   }
 };
 $('q-text').addEventListener('keydown', e => { if (e.key === 'Enter') $('q-add-btn').click(); });
+
+/* native menu: Terminal → Clear (⌘K) */
+listen('menu-clear', () => {
+  if (state.view === 'session' && term) {
+    term.clear();
+    if (attachedName) inv('pty_write', { name: attachedName, dataB64: strToB64('\x0c') }).catch(() => {});
+  }
+}).catch(e => ulog('listen(menu-clear) FAILED: ' + e));
 
 listen('queue-changed', refreshQueue).catch(e => ulog('listen(queue-changed) FAILED: ' + e));
 listen('queue-fired', ev => {
