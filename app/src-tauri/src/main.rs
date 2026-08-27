@@ -912,6 +912,17 @@ fn main() {
         .manage(Queues(Mutex::new(load_queue())))
         .setup(|app| {
             spawn_scheduler(app.handle().clone());
+            // Update-check heartbeat from a Rust thread: webview timers are
+            // frozen by App Nap when the app is backgrounded, so a JS
+            // setInterval would effectively never fire. One latest.json
+            // fetch (~1.4 KB) per 30 min is the entire cost.
+            {
+                let handle = app.handle().clone();
+                std::thread::spawn(move || loop {
+                    std::thread::sleep(std::time::Duration::from_secs(30 * 60));
+                    let _ = handle.emit("update-check", ());
+                });
+            }
             // Native menu: the default set restores all standard macOS
             // shortcuts (⌘C/V/A/Z/Q/H/M/W…); Terminal→Clear adds ⌘K.
             let handle = app.handle();

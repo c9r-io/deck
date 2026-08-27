@@ -1890,6 +1890,7 @@ let pendingUpdate = null;
 async function checkForUpdate() {
   const up = window.__TAURI__ && window.__TAURI__.updater;
   if (!up) return;
+  if ($('update-btn').disabled) return;   // download/install in progress
   try {
     const update = await up.check();
     if (!update) return;
@@ -1969,7 +1970,8 @@ async function boot() {
   startPolling();
   refreshQueue();
   setTimeout(checkForUpdate, 4000);
-  setInterval(checkForUpdate, 6 * 3600 * 1000);
+  /* runtime cadence comes from a Rust thread (App Nap freezes JS timers) */
+  listen('update-check', checkForUpdate).catch(e => ulog('listen(update-check) FAILED: ' + e));
 }
 boot();
 </script>
