@@ -1102,7 +1102,13 @@ fn spawn_scheduler(app: AppHandle) {
         for item in due {
             match fire_item(&item) {
                 Ok(()) => {
-                    applog(&format!("[queue] sent to {}: {}", item.session, item.text));
+                    // never log prompt contents — length only (privacy)
+                    applog(&format!(
+                        "[queue] sent to {} ({}B, mode {})",
+                        item.session,
+                        item.text.len(),
+                        item.mode
+                    ));
                     let mut q = state.0.lock().unwrap();
                     let now = now_epoch();
                     if item.mode == "every" {
