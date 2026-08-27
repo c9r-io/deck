@@ -303,6 +303,15 @@ fn scroll_session(name: String, lines: i32) -> Result<(), String> {
     Ok(())
 }
 
+/// Fresh shells accumulate junk history from the attach-time resize
+/// reflow (blank lines pushed into scrollback), which made "empty" shells
+/// scrollable. Called once for sessions deck itself just started.
+#[tauri::command]
+fn clear_history(name: String) {
+    let t = pane_target(&name);
+    let _ = tmux(&["clear-history", "-t", &t]);
+}
+
 #[tauri::command]
 fn kill_session(name: String) -> Result<(), String> {
     tmux(&["kill-session", "-t", &session_target(&name)]).map(|_| ())
@@ -1050,6 +1059,7 @@ fn main() {
             start_session,
             kill_session,
             scroll_session,
+            clear_history,
             poll_sessions,
             attach_session,
             pty_write,

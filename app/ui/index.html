@@ -1223,7 +1223,7 @@ function createPane(card) {
   const t = new Terminal({
     fontFamily: 'ui-monospace, "SF Mono", Menlo, monospace',
     fontSize: 12.5,
-    lineHeight: 1.25,
+    lineHeight: 1.35,
     cursorBlink: true,
     macOptionIsMeta: true,
     scrollback: 5000,
@@ -1365,7 +1365,7 @@ function positionSeparators(pane) {
       s.el.style.display = 'none';
     } else {
       s.el.style.display = 'block';
-      s.el.style.top = (top0 + row * h - 1) + 'px';
+      s.el.style.top = (top0 + row * h - Math.round(h * 0.16)) + 'px';
     }
   }
 }
@@ -1638,6 +1638,7 @@ async function addSplit(targetSid, dir, before, newSid) {
   layout = splitAt(layout, targetSid, dir, newSid, before);
   renderLayout();
   await ensureAttached(pane);
+  if (wasStopped) setTimeout(() => inv('clear_history', { name: card.session }).catch(() => {}), 900);
   freshShell = wasStopped && !card.cmd.trim();
   focusPane(card.session);
   pollNow();
@@ -1746,6 +1747,7 @@ async function openSession(sid) {
   layout = leafOf(sid);
   renderLayout();
   await ensureAttached(pane);
+  if (wasStopped) setTimeout(() => inv('clear_history', { name: card.session }).catch(() => {}), 900);
   freshShell = wasStopped && !card.cmd.trim();
   focusPane(card.session);
   /* history feeds both the fresh-shell chips and typed-prefix completion */
