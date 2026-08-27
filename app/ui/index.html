@@ -452,7 +452,6 @@
         <span class="mem-chip" id="sess-mem" title="Memory of the whole session process tree: shell + agent + spawned children"></span>
         <button class="btn" id="queue-btn" title="Scheduled prompts — send prompts to this session later">⏰<span class="cnt" id="queue-cnt"></span></button>
         <select class="col-select" id="sess-col" title="Move to board"></select>
-        <button class="btn" id="sess-new-here" title="New session in this directory">＋ Here</button>
         <button class="btn danger" id="sess-close" title="Close session (terminates the shell and removes the card)">Close</button>
       </div>
       <div id="queue-panel">
@@ -1113,12 +1112,23 @@ function mountTerminal(card) {
   term.open(host);
   fitAddon.fit();
 
+  /* xterm auto-answers terminal queries (DA `ESC[?..c`, DSR `ESC[..R`,
+     OSC `ESC]..BEL`) through onData. Those are not user input — without
+     this filter they desync the input mirror on every attach, and the
+     first command typed after attaching is never captured. */
+  const AUTO_REPLY = /^(?:\x1b\[\?[0-9;]*[cu]|\x1b\[[0-9;]*R|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1bP[^\x1b]*\x1b\\)+$/;
   let odLogged = 0;
   term.onData(d => {
-    const completed = feedMirror(d);
-    if (completed) maybeRecordCommand(completed);
-    renderSuggest();
-    if (odLogged < 3) { odLogged++; ulog(`onData len=${d.length} attached=${!!attachedName}`); }
+    const isAutoReply = AUTO_REPLY.test(d);
+    if (!isAutoReply) {
+      const completed = feedMirror(d);
+      if (completed) maybeRecordCommand(completed);
+      renderSuggest();
+      if (odLogged < 3) {
+        odLogged++;
+        ulog(`onData len=${d.length} mirror=${lineBuf === null ? 'desync' : JSON.stringify(lineBuf.slice(-30))}`);
+      }
+    }
     if (attachedName) {
       inv('pty_write', { name: attachedName, dataB64: strToB64(d) })
         .catch(e => ulog('pty_write failed: ' + e));
@@ -1584,10 +1594,6 @@ $('home-btn').onclick = backToBoard;
 $('back-btn').onclick = backToBoard;
 $('board-new').onclick = () => newSession(HOME);
 $('side-new').onclick = () => newSession(HOME);
-$('sess-new-here').onclick = () => {
-  const s = provider.get(state.sessionId);
-  newSession(s ? s.dir : HOME);
-};
 $('sess-close').onclick = () => closeSession(state.sessionId);
 $('sess-col').addEventListener('change', e => {
   provider.move(state.sessionId, e.target.value);
