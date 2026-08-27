@@ -1215,6 +1215,7 @@ function createPane(card) {
     cursorBlink: true,
     macOptionIsMeta: true,
     scrollback: 5000,
+    allowProposedApi: true,   // registerDecoration (input separators)
     theme: TERM_THEME,
   });
   const fit = new FitAddon.FitAddon();
@@ -1284,6 +1285,25 @@ function createPane(card) {
   return pane;
 }
 
+/* hairline above each submitted input — separates the user's commands /
+   messages from surrounding output. Anchored to the buffer line via a
+   marker, so it scrolls with the content. */
+function addInputSeparator(t) {
+  try {
+    const marker = t.registerMarker(0);
+    if (!marker) return;
+    const deco = t.registerDecoration({ marker, width: t.cols });
+    if (!deco) return;
+    deco.onRender(el => {
+      el.style.width = '100%';
+      el.style.height = '1px';
+      el.style.background = 'rgba(79, 214, 190, 0.35)';
+      el.style.pointerEvents = 'none';
+      el.style.marginTop = '-2px';
+    });
+  } catch (e) { /* cosmetic only */ }
+}
+
 function wireTerminalInput(pane, term, host) {
   const session = pane.session;
   const card = () => provider.get(pane.sid);
@@ -1307,8 +1327,14 @@ function wireTerminalInput(pane, term, host) {
         escLogged++;
         ulog('mirror-desync chunk: ' + JSON.stringify(d.slice(0, 40)));
       }
+      const preDesynced = lineBuf === null;
       const completed = feedMirror(d);
       if (completed) maybeRecordCommand(completed);
+      /* separator on submit: synced mirror knows for sure; a desynced one
+         still marks any Enter (better a rare extra line than a missing one) */
+      if (completed || (preDesynced && (d.includes('\r') || d.includes('\n')))) {
+        addInputSeparator(term);
+      }
       renderSuggest();
       if (odLogged < 3) {
         odLogged++;
