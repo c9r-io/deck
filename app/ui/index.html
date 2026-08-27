@@ -524,7 +524,10 @@ const listen = (ev, cb) => window.__TAURI__
 /* the window starts hidden (no white flash) — show as soon as the dark UI
    shell is parsed and styled, before any async boot work */
 try {
-  if (window.__TAURI__) window.__TAURI__.window.getCurrentWindow().show();
+  if (window.__TAURI__) {
+    const w = window.__TAURI__.window.getCurrentWindow();
+    w.show().then(() => w.setFocus()).catch(() => {});
+  }
 } catch (e) { /* plain browser */ }
 
 /* diagnostics → ~/.deck/app.log (webview console is invisible in production) */

@@ -952,6 +952,16 @@ fn main() {
             });
             Ok(())
         })
+        .on_page_load(|webview, payload| {
+            // The window is created hidden (no white flash). Reveal it from
+            // the Rust side once content is loaded — the JS show() alone
+            // doesn't reliably surface a relaunched-by-updater instance.
+            if payload.event() == tauri::webview::PageLoadEvent::Finished {
+                let w = webview.window();
+                let _ = w.show();
+                let _ = w.set_focus();
+            }
+        })
         .on_window_event(|window, event| {
             // ⌘W / red button hides instead of destroying the only window;
             // the Dock icon (Reopen) brings it back.

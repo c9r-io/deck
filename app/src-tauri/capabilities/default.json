@@ -3,5 +3,11 @@
   "identifier": "default",
   "description": "main window: core APIs incl. event listen (PTY stream arrives as events)",
   "windows": ["main"],
-  "permissions": ["core:default", "updater:default", "process:default"]
+  "permissions": [
+    "core:default",
+    "core:window:allow-show",
+    "core:window:allow-set-focus",
+    "updater:default",
+    "process:default"
+  ]
 }
