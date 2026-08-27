@@ -613,6 +613,26 @@ fn queue_add(
 }
 
 #[tauri::command]
+fn queue_update(
+    state: State<'_, Queues>,
+    app: AppHandle,
+    id: String,
+    text: String,
+) -> Result<(), String> {
+    let text = text.replace(['\n', '\r'], " ").trim().to_string();
+    if text.is_empty() {
+        return Err("empty prompt".into());
+    }
+    let mut q = state.0.lock().unwrap();
+    if let Some(item) = q.items.iter_mut().find(|i| i.id == id) {
+        item.text = text;
+    }
+    save_queue(&q);
+    let _ = app.emit("queue-changed", ());
+    Ok(())
+}
+
+#[tauri::command]
 fn queue_remove(state: State<'_, Queues>, app: AppHandle, id: String) {
     let mut q = state.0.lock().unwrap();
     q.items.retain(|i| i.id != id);
@@ -781,6 +801,7 @@ fn main() {
             ping_event,
             queue_list,
             queue_add,
+            queue_update,
             queue_remove,
         ])
         .run(tauri::generate_context!())

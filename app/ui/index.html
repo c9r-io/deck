@@ -244,7 +244,8 @@
     white-space: nowrap; overflow: hidden;
   }
   .card-meta .cmd { color: var(--accent); flex: none; }
-  .card-meta .dir { overflow: hidden; text-overflow: ellipsis; color: var(--faint); }
+  .card-meta .dir { overflow: hidden; text-overflow: ellipsis; color: var(--faint); flex: 1; }
+  .card-meta .q-chip, .card-meta .mem-chip { align-self: center; }
   .card-desc {
     margin-top: 5px; font-size: 11.5px; line-height: 1.4; color: var(--muted);
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
@@ -989,8 +990,8 @@ function cardEl(s) {
 
   const tail = (s.tail || []).slice(-2);
   el.innerHTML = `
-    <div class="card-top"><span class="dot ${s.status}" title="${DOT_TITLES[s.status] || ''}"></span><span class="card-title"></span><span class="q-chip"></span><span class="mem-chip" title="Memory of the whole session process tree: shell + agent + spawned children"></span></div>
-    <div class="card-meta"><span class="cmd"></span><span class="dir"></span></div>
+    <div class="card-top"><span class="dot ${s.status}" title="${DOT_TITLES[s.status] || ''}"></span><span class="card-title"></span></div>
+    <div class="card-meta"><span class="cmd"></span><span class="dir"></span><span class="q-chip"></span><span class="mem-chip" title="Memory of the whole session process tree: shell + agent + spawned children"></span></div>
     ${s.desc ? '<div class="card-desc"></div>' : ''}
     ${tail.length ? '<div class="card-tail">' + tail.map(() => '<div></div>').join('') + '</div>' : ''}
     <div class="card-actions">
@@ -1001,6 +1002,7 @@ function cardEl(s) {
     </div>`;
   el.querySelector('.card-title').textContent = s.title;
   setMemChip(el.querySelector('.mem-chip'), s);
+  setQueueChip(el.querySelector('.q-chip'), s);   // self-fill: survives card rebuilds
   el.querySelector('.cmd').textContent = s.cmd ? '$ ' + s.cmd : '$ shell';
   el.querySelector('.dir').textContent = s.dir;
   if (s.desc) {
@@ -1632,6 +1634,13 @@ async function refreshQueue() {
 
 const sessionQueue = session => queueCache.items.filter(i => i.session === session);
 
+function setQueueChip(chip, card) {
+  if (!chip) return;
+  const q = sessionQueue(card.session);
+  chip.textContent = q.length ? '⏰' + q.length : '';
+  chip.title = q.length ? `next ${fmtWhen(q[0])}: ${q[0].text}` : '';
+}
+
 function fmtWhen(i) {
   if (i.mode === 'chain') return '↳ after prev';
   const d = new Date(i.at * 1000);
@@ -1640,6 +1649,9 @@ function fmtWhen(i) {
 }
 
 function renderQueueUI() {
+  /* don't clobber an in-progress inline edit of a queued prompt */
+  if (document.activeElement && document.activeElement.tagName === 'INPUT'
+      && document.activeElement.closest('#queue-list')) return;
   const card = state.view === 'session' && provider.get(state.sessionId);
   if (card) {
     const q = sessionQueue(card.session);
@@ -1650,10 +1662,19 @@ function renderQueueUI() {
       for (const i of q) {
         const el = document.createElement('div');
         el.className = 'q-item';
-        el.innerHTML = '<span class="q-when"></span><span class="q-text"></span><button class="q-del" title="remove">✕</button>';
+        el.innerHTML = '<span class="q-when"></span><span class="q-text" title="click to edit"></span><button class="q-del" title="remove">✕</button>';
         el.querySelector('.q-when').textContent = fmtWhen(i);
-        el.querySelector('.q-text').textContent = i.text;
-        el.querySelector('.q-text').title = i.text;
+        const txt = el.querySelector('.q-text');
+        txt.textContent = i.text;
+        txt.onclick = () => {
+          inlineRename(txt, i.text, v => {
+            if (v && v !== i.text) {
+              inv('queue_update', { id: i.id, text: v }).catch(e => toast('edit failed: ' + e));
+            } else {
+              setTimeout(renderQueueUI, 0);   // after blur, so the guard won't skip
+            }
+          });
+        };
         el.querySelector('.q-del').onclick = () => inv('queue_remove', { id: i.id }).catch(() => {});
         list.appendChild(el);
       }
@@ -1662,12 +1683,7 @@ function renderQueueUI() {
   }
   document.querySelectorAll('.card[data-sid]').forEach(el => {
     const c = provider.get(el.dataset.sid);
-    const chip = el.querySelector('.q-chip');
-    if (c && chip) {
-      const q = sessionQueue(c.session);
-      chip.textContent = q.length ? '⏰' + q.length : '';
-      chip.title = q.length ? `next ${fmtWhen(q[0])}: ${q[0].text}` : '';
-    }
+    setQueueChip(el.querySelector('.q-chip'), c || { session: '' });
   });
 }
 
