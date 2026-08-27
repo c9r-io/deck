@@ -222,15 +222,24 @@ fn tmux_available() -> bool {
 #[tauri::command]
 fn start_session(name: String, dir: String, cmd: String) -> Result<(), String> {
     let dir = expand_tilde(&dir);
-    // Advertise truecolor to processes in the panes (iTerm/Warp do the same);
-    // our attach clients are TERM=xterm-256color, which tmux RGB-passes.
-    let _ = tmux(&["start-server"]);
-    let _ = tmux(&["set-environment", "-g", "COLORTERM", "truecolor"]);
+    init_deck_server();
     tmux(&["new-session", "-d", "-s", &name, "-c", &dir])?;
     if !cmd.trim().is_empty() {
         tmux(&["send-keys", "-t", &pane_target(&name), &cmd, "Enter"])?;
     }
     Ok(())
+}
+
+/// Server-wide defaults for the deck tmux server. Idempotent; called at app
+/// boot and before creating sessions so updates also apply to a server that
+/// is already running.
+fn init_deck_server() {
+    let _ = tmux(&["start-server"]);
+    // truecolor for agent processes (iTerm/Warp advertise the same)
+    let _ = tmux(&["set-environment", "-g", "COLORTERM", "truecolor"]);
+    // deck's pane headers already identify sessions — tmux's own status bar
+    // ("[name] host HH:MM date") is noise and costs a terminal row
+    let _ = tmux(&["set", "-g", "status", "off"]);
 }
 
 #[tauri::command]
@@ -911,6 +920,7 @@ fn main() {
         .manage(PtyState::default())
         .manage(Queues(Mutex::new(load_queue())))
         .setup(|app| {
+            std::thread::spawn(init_deck_server);
             spawn_scheduler(app.handle().clone());
             // Update-check heartbeat from a Rust thread: webview timers are
             // frozen by App Nap when the app is backgrounded, so a JS
