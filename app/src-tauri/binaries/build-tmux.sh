@@ -15,9 +15,17 @@ UTF8PROC=2.9.0
 curl -sL -o libevent.tgz "https://github.com/libevent/libevent/releases/download/release-$LIBEVENT/libevent-$LIBEVENT.tar.gz"
 curl -sL -o ncurses.tgz "https://ftp.gnu.org/gnu/ncurses/ncurses-$NCURSES.tar.gz"
 curl -sL -o utf8proc.tgz "https://github.com/JuliaStrings/utf8proc/archive/refs/tags/v$UTF8PROC.tar.gz"
-TMUX_TAG=$(curl -sL https://api.github.com/repos/tmux/tmux/releases/latest | python3 -c "import json,sys; print(json.load(sys.stdin)['tag_name'])")
+TMUX_TAG=3.7c
 curl -sL -o tmux.tgz "https://github.com/tmux/tmux/releases/download/$TMUX_TAG/tmux-$TMUX_TAG.tar.gz"
 echo "building tmux $TMUX_TAG"
+
+# supply-chain pinning: refuse to build from tarballs we haven't reviewed
+shasum -a 256 -c <<'SUMS'
+92e6de1be9ec176428fd2367677e61ceffc2ee1cb119035037a27d346b0403bb  libevent.tgz
+136d91bc269a9a5785e5f9e980bc76ab57428f604ce3e5a5a90cebc767971cc6  ncurses.tgz
+7c60cae9a0e25288e2e24750aafc9e8800fc7fd4555e447e1b29ee4201cfb3bf  tmux.tgz
+18c1626e9fc5a2e192311e36b3010bfc698078f692888940f1fa150547abb0c1  utf8proc.tgz
+SUMS
 
 tar xzf libevent.tgz && cd "libevent-$LIBEVENT"
 ./configure --prefix="$PREFIX" --disable-shared --enable-static --disable-openssl --disable-samples >/dev/null
