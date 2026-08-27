@@ -10,9 +10,25 @@ fn read(rel: &str) -> String {
     std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()))
 }
 
+/// All frontend module sources concatenated (the ES-module split moved the
+/// script out of index.html).
+fn frontend_js() -> String {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../ui/js");
+    let mut out = String::new();
+    for e in std::fs::read_dir(&dir).expect("ui/js") {
+        let p = e.unwrap().path();
+        if p.extension().is_some_and(|x| x == "js") {
+            out.push_str(&std::fs::read_to_string(&p).unwrap());
+            out.push('\n');
+        }
+    }
+    assert!(!out.is_empty(), "no frontend modules found");
+    out
+}
+
 #[test]
 fn frontend_logs_carry_no_user_content() {
-    let ui = read("../ui/index.html");
+    let ui = frontend_js();
     let forbidden: &[(&str, &str)] = &[
         (
             "${e.key}",
@@ -53,7 +69,7 @@ fn backend_logs_carry_no_user_content() {
 /// The verbose diagnostics gate must stay default-off.
 #[test]
 fn debug_logging_defaults_off() {
-    let ui = read("../ui/index.html");
+    let ui = frontend_js();
     assert!(
         ui.contains("window.__DECK_DEBUG = !!settings.debug"),
         "debug flag must derive from settings.debug"
