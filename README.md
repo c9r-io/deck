@@ -40,6 +40,11 @@ shell) is the only way a session ends.
 **A real terminal.** Full xterm with truecolor, ⌘C/⌘V, and clickable file
 paths / URLs (open in editor, reveal in Finder, open in browser).
 
+**Split view.** Watch several agents at once: drag a card from the sidebar
+onto a pane edge, or hit ⌘D / ⌘⇧D (or the ◧ ⬓ buttons) and pick a session.
+Splits nest freely, dividers drag to resize, closing a pane never kills the
+session.
+
 **Command completion, Warp-style.** deck records the commands you run in its
 shells (agent prompts are never recorded) and suggests as you type: the first
 match appears as gray ghost text at the cursor — **Tab or →** applies it; more
@@ -65,6 +70,7 @@ waiting for you. Memory chips show the *whole process tree* of a session
 | Move cards | drag & drop (or the board dropdown inside a session) |
 | Close | card ✕ / Ctrl+D in shell (instant) · in-session Close (confirms) |
 | Rename / describe | double-click titles · right-click card |
+| Split view | drag a card onto a pane edge · ⌘D right / ⌘⇧D down |
 | Schedule prompts | ⏰ in the session header |
 | Collapse sidebar | ⌘B |
 

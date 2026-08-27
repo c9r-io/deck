@@ -287,8 +287,30 @@
     background: var(--raised); border: 1px solid var(--border);
     border-radius: 6px; padding: 5px 8px; font-family: var(--sans);
   }
-  #terminal { flex: 1; min-height: 0; background: var(--bg); padding: 10px 6px 10px 14px; position: relative; }
-  #terminal .xterm { height: 100%; }
+  #terminal { flex: 1; min-height: 0; background: var(--bg); display: flex; }
+  .spane { display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; }
+  .spane-head {
+    display: flex; align-items: center; gap: 7px;
+    padding: 3px 10px; flex: none;
+    background: var(--panel); border-bottom: 1px solid var(--border-soft);
+    font-size: 11px; color: var(--muted);
+    user-select: none; -webkit-user-select: none; cursor: default;
+  }
+  .spane.focus .spane-head { color: var(--text); background: #1a2530; box-shadow: inset 0 2px 0 var(--accent); }
+  .spane-head .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .spane-head .px { margin-left: auto; color: transparent; padding: 0 5px; border-radius: 4px; font-size: 12px; }
+  .spane:hover .spane-head .px { color: var(--faint); }
+  .spane-head .px:hover { color: var(--danger) !important; background: var(--hover); }
+  .spane-body { flex: 1; min-height: 0; position: relative; padding: 8px 6px 8px 12px; }
+  .spane-body .xterm { height: 100%; }
+  .split-divider-v { width: 5px; flex: none; background: var(--border-soft); cursor: col-resize; }
+  .split-divider-h { height: 5px; flex: none; background: var(--border-soft); cursor: row-resize; }
+  .split-divider-v:hover, .split-divider-h:hover { background: var(--accent-dim); }
+  #dropzone {
+    position: fixed; z-index: 45; display: none; pointer-events: none;
+    background: rgba(79, 214, 190, 0.13);
+    border: 2px dashed var(--accent); border-radius: 8px;
+  }
   #ghost {
     position: absolute; display: none;
     pointer-events: none; z-index: 5;
@@ -464,6 +486,8 @@
         <span class="sess-path" id="sess-path"></span>
         <div class="sess-spacer"></div>
         <span class="mem-chip" id="sess-mem" title="Memory of the whole session process tree: shell + agent + spawned children"></span>
+        <button class="btn" id="split-right" title="Split right (⌘D)">◧</button>
+        <button class="btn" id="split-down" title="Split down (⌘⇧D)">⬓</button>
         <button class="btn" id="queue-btn" title="Scheduled prompts — send prompts to this session later">⏰<span class="cnt" id="queue-cnt"></span></button>
         <select class="col-select" id="sess-col" title="Move to board"></select>
         <button class="btn danger" id="sess-close" title="Close session (terminates the shell and removes the card)">Close</button>
@@ -492,6 +516,7 @@
 </div>
 
 <div id="ctx"></div>
+<div id="dropzone"></div>
 <div id="cfm">
   <div id="cfm-box">
     <div id="cfm-msg"></div>
@@ -749,8 +774,8 @@ async function pollNow() {
   }
   for (const c of exited) {
     inv('queue_clear_session', { session: c.session }).catch(() => {});
+    closePaneBySid(c.id);
     store.cards = store.cards.filter(x => x.id !== c.id);
-    if (state.sessionId === c.id) backToBoard();
     toast(`"${c.title}" closed — shell exited`);
     emit('list', c);
   }
@@ -863,6 +888,12 @@ function renderSidebar() {
     el.querySelector('.col-tag').textContent = c ? c.name : '';
     el.onclick = () => openSession(s.id);
     el.oncontextmenu = e => showSessionCtx(e, s.id);
+    /* sidebar items are drag sources for split (方案 A) */
+    el.draggable = true;
+    el.addEventListener('dragstart', ev => {
+      ev.dataTransfer.setData('text/deck-session', s.id);
+    });
+    el.addEventListener('dragend', () => { $('dropzone').style.display = 'none'; });
     list.appendChild(el);
   }
   list.scrollTop = st;
@@ -1080,15 +1111,69 @@ async function closeSession(sid, needConfirm = false) {
   const live = s.status !== 'stopped';
   if (needConfirm &&
       !(await confirmDialog(`Close "${s.title}"?${live ? ' The shell will be terminated.' : ''}`))) return;
-  if (state.sessionId === sid) leaveSessionView();
+  closePaneBySid(sid, { detach: false });   // pane out first (may fall back to board)
   await provider.close(sid);
-  if (state.view === 'session' && state.sessionId === sid) backToBoard();
   toast(`closed: ${s.title}`);
   render();
 }
 
-/* ---------- terminal (xterm + PTY bridge) ---------- */
-let term = null, fitAddon = null, resizeObs = null, attachedName = null, resizeTimer = null;
+/* ---------- terminal (xterm + PTY bridge, split panes) ----------
+   The session view is a split tree of panes, one live session each.
+   `term` and `attachedName` always alias the FOCUSED pane, so the
+   completion / ghost / clipboard code keeps its single-terminal world. */
+let term = null, attachedName = null, resizeTimer = null;
+
+let layout = null;            // {type:'leaf',sid} | {type:'split',dir,ratio,a,b}
+const panes = new Map();      // session name -> {sid, session, el, body, term, fit}
+
+const TERM_THEME = {
+  background: '#101318',
+  foreground: '#dce3ec',
+  cursor: '#4fd6be',
+  selectionBackground: 'rgba(79,214,190,0.25)',
+  black: '#171b22', brightBlack: '#566072',
+  red: '#e06c75', brightRed: '#e06c75',
+  green: '#41d392', brightGreen: '#41d392',
+  yellow: '#e8b45a', brightYellow: '#e8b45a',
+  blue: '#6ca8ff', brightBlue: '#6ca8ff',
+  magenta: '#c678dd', brightMagenta: '#c678dd',
+  cyan: '#4fd6be', brightCyan: '#4fd6be',
+  white: '#dce3ec', brightWhite: '#ffffff',
+};
+
+/* ----- layout tree helpers ----- */
+const leafOf = sid => ({ type: 'leaf', sid });
+
+function collectLeaves(n, out = []) {
+  if (!n) return out;
+  if (n.type === 'leaf') out.push(n.sid);
+  else { collectLeaves(n.a, out); collectLeaves(n.b, out); }
+  return out;
+}
+
+function splitAt(n, targetSid, dir, newSid, before) {
+  if (!n) return n;
+  if (n.type === 'leaf') {
+    if (n.sid !== targetSid) return n;
+    const fresh = leafOf(newSid);
+    return {
+      type: 'split', dir, ratio: 0.5,
+      a: before ? fresh : n,
+      b: before ? n : fresh,
+    };
+  }
+  return { ...n, a: splitAt(n.a, targetSid, dir, newSid, before), b: splitAt(n.b, targetSid, dir, newSid, before) };
+}
+
+function removeFromLayout(n, sid) {
+  if (!n) return null;
+  if (n.type === 'leaf') return n.sid === sid ? null : n;
+  const a = removeFromLayout(n.a, sid);
+  const b = removeFromLayout(n.b, sid);
+  if (!a) return b;
+  if (!b) return a;
+  return { ...n, a, b };
+}
 
 function b64ToU8(b64) {
   const bin = atob(b64);
@@ -1110,42 +1195,88 @@ function looksLikePath(v) {
   return /\.[A-Za-z0-9]{1,8}(?::\d+(?::\d+)?)?$/.test(v.split('/').pop());
 }
 
-function mountTerminal(card) {
-  disposeTerminal();
-  const host = $('terminal');
-  host.innerHTML = '';
-  term = new Terminal({
+function createPane(card) {
+  const el = document.createElement('div');
+  el.className = 'spane';
+  el.innerHTML = `
+    <div class="spane-head"><span class="dot ${card.status}"></span><span class="name"></span><button class="px" title="Close pane (session keeps running)">✕</button></div>
+    <div class="spane-body"></div>`;
+  el.querySelector('.name').textContent = card.title;
+  const body = el.querySelector('.spane-body');
+  const session = card.session;
+
+  const t = new Terminal({
     fontFamily: 'ui-monospace, "SF Mono", Menlo, monospace',
     fontSize: 12.5,
     lineHeight: 1.25,
     cursorBlink: true,
     macOptionIsMeta: true,
     scrollback: 5000,
-    theme: {
-      background: '#101318',
-      foreground: '#dce3ec',
-      cursor: '#4fd6be',
-      selectionBackground: 'rgba(79,214,190,0.25)',
-      black: '#171b22', brightBlack: '#566072',
-      red: '#e06c75', brightRed: '#e06c75',
-      green: '#41d392', brightGreen: '#41d392',
-      yellow: '#e8b45a', brightYellow: '#e8b45a',
-      blue: '#6ca8ff', brightBlue: '#6ca8ff',
-      magenta: '#c678dd', brightMagenta: '#c678dd',
-      cyan: '#4fd6be', brightCyan: '#4fd6be',
-      white: '#dce3ec', brightWhite: '#ffffff',
-    },
+    theme: TERM_THEME,
   });
-  fitAddon = new FitAddon.FitAddon();
-  term.loadAddon(fitAddon);
-  term.open(host);
-  fitAddon.fit();
+  const fit = new FitAddon.FitAddon();
+  t.loadAddon(fit);
+  t.open(body);
 
-  ghostEl = document.createElement('div');
-  ghostEl.id = 'ghost';
-  host.appendChild(ghostEl);
+  if (!ghostEl) {
+    ghostEl = document.createElement('div');
+    ghostEl.id = 'ghost';
+  }
   /* echo arrives asynchronously — reposition after each parsed write */
-  term.onWriteParsed(() => { if (ghostRemainder) updateGhost(); });
+  t.onWriteParsed(() => { if (ghostRemainder && attachedName === session) updateGhost(); });
+
+  const pane = { sid: card.id, session, el, body, term: t, fit };
+  panes.set(session, pane);
+
+  el.querySelector('.spane-head').addEventListener('mousedown', () => focusPane(session));
+  el.querySelector('.px').onclick = e => {
+    e.stopPropagation();
+    closePaneBySid(pane.sid);
+  };
+  body.addEventListener('mousedown', () => { if (attachedName !== session) focusPane(session); });
+
+  /* drag a card (from sidebar or board) onto a pane edge to split (方案 A) */
+  el.addEventListener('dragover', e => {
+    e.preventDefault();
+    const r = el.getBoundingClientRect();
+    const x = (e.clientX - r.left) / r.width;
+    const y = (e.clientY - r.top) / r.height;
+    let zone = null;
+    if (x < 0.3) zone = { dir: 'row', before: true, box: [r.left, r.top, r.width / 2, r.height] };
+    else if (x > 0.7) zone = { dir: 'row', before: false, box: [r.left + r.width / 2, r.top, r.width / 2, r.height] };
+    else if (y < 0.35) zone = { dir: 'col', before: true, box: [r.left, r.top, r.width, r.height / 2] };
+    else if (y > 0.65) zone = { dir: 'col', before: false, box: [r.left, r.top + r.height / 2, r.width, r.height / 2] };
+    const dz = $('dropzone');
+    if (zone) {
+      dz.style.display = 'block';
+      dz.style.left = zone.box[0] + 'px';
+      dz.style.top = zone.box[1] + 'px';
+      dz.style.width = zone.box[2] + 'px';
+      dz.style.height = zone.box[3] + 'px';
+      dz.dataset.dir = zone.dir;
+      dz.dataset.before = zone.before;
+      dz.dataset.target = pane.sid;
+    } else {
+      dz.style.display = 'none';
+    }
+  });
+  el.addEventListener('dragleave', () => { $('dropzone').style.display = 'none'; });
+  el.addEventListener('drop', e => {
+    e.preventDefault();
+    const dz = $('dropzone');
+    dz.style.display = 'none';
+    const droppedSid = e.dataTransfer.getData('text/deck-session');
+    if (!droppedSid || dz.dataset.target !== pane.sid) return;
+    addSplit(pane.sid, dz.dataset.dir, dz.dataset.before === 'true', droppedSid);
+  });
+
+  wireTerminalInput(pane, t, body);
+  return pane;
+}
+
+function wireTerminalInput(pane, term, host) {
+  const session = pane.session;
+  const card = () => provider.get(pane.sid);
 
   /* xterm auto-answers terminal queries (DA `ESC[?..c`, DSR `ESC[..R`,
      OSC `ESC]..BEL`) through onData. Those are not user input — without
@@ -1160,9 +1291,8 @@ function mountTerminal(card) {
   let odLogged = 0, escLogged = 0;
   term.onData(d => {
     const isAutoReply = AUTO_REPLY.test(d);
-    if (!isAutoReply) {
-      /* any ESC chunk reaching the mirror desyncs it — log escapees so new
-         reply families are identifiable from ~/.deck/app.log */
+    /* the input mirror / completion only tracks the focused pane */
+    if (!isAutoReply && attachedName === session) {
       if (d.includes('\x1b') && escLogged < 5) {
         escLogged++;
         ulog('mirror-desync chunk: ' + JSON.stringify(d.slice(0, 40)));
@@ -1175,22 +1305,19 @@ function mountTerminal(card) {
         ulog(`onData len=${d.length} mirror=${lineBuf === null ? 'desync' : JSON.stringify(lineBuf.slice(-30))}`);
       }
     }
-    if (attachedName) {
-      inv('pty_write', { name: attachedName, dataB64: strToB64(d) })
-        .catch(e => ulog('pty_write failed: ' + e));
-    }
+    inv('pty_write', { name: session, dataB64: strToB64(d) })
+      .catch(e => ulog('pty_write failed: ' + e));
   });
-  const ta = host.querySelector('.xterm-helper-textarea');
-  if (ta) {
-    ta.addEventListener('focus', () => ulog('xterm textarea focused'));
-    ta.addEventListener('blur', () => ulog('xterm textarea blurred'));
-  } else {
-    ulog('xterm helper textarea NOT FOUND');
-  }
   /* app shortcuts pass through; ⌘C/⌘V are handled here because a menu-less
      macOS app gets no standard edit actions in the webview */
   term.attachCustomKeyEventHandler(e => {
     if (e.metaKey && e.key === 'b') return false;
+    /* split shortcuts (方案 B): ⌘D right, ⌘⇧D down */
+    if (e.type === 'keydown' && e.metaKey && (e.key === 'd' || e.key === 'D')) {
+      e.preventDefault();
+      showSplitPicker(e.shiftKey ? 'col' : 'row');
+      return false;
+    }
     /* ⌘V: returning false skips xterm's key handling; the browser then fires
        a native paste event, which xterm's textarea handler feeds into the
        PTY. (navigator.clipboard.readText is permission-blocked in WKWebView —
@@ -1243,7 +1370,8 @@ function mountTerminal(card) {
           text: value,
           activate: (e, txt) => {
             e.stopPropagation();
-            showLinkCtx(e, kind, txt, card.dir);
+            const c = card();
+            showLinkCtx(e, kind, txt, c ? c.dir : HOME);
           },
         });
       }
@@ -1260,23 +1388,187 @@ function mountTerminal(card) {
     e.stopPropagation();
   }, { passive: false, capture: true });
 
-  resizeObs = new ResizeObserver(() => {
-    clearTimeout(resizeTimer);
-    resizeTimer = setTimeout(() => {
-      if (!term || !fitAddon) return;
-      fitAddon.fit();
-      if (attachedName) {
-        inv('pty_resize', { name: attachedName, cols: term.cols, rows: term.rows }).catch(() => {});
-      }
-    }, 80);
-  });
-  resizeObs.observe(host);
 }
 
-function disposeTerminal() {
-  if (resizeObs) { resizeObs.disconnect(); resizeObs = null; }
-  if (term) { term.dispose(); term = null; fitAddon = null; }
+/* ----- layout rendering & pane lifecycle ----- */
+function fitAll() {
+  requestAnimationFrame(() => {
+    panes.forEach(p => {
+      try {
+        p.fit.fit();
+        inv('pty_resize', { name: p.session, cols: p.term.cols, rows: p.term.rows }).catch(() => {});
+      } catch (e) { /* pane mid-teardown */ }
+    });
+    if (ghostRemainder) updateGhost();
+  });
 }
+new ResizeObserver(() => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(fitAll, 80);
+}).observe(document.getElementById('terminal'));
+
+function buildNode(node, parent, grow) {
+  if (node.type === 'leaf') {
+    const card = provider.get(node.sid);
+    const p = card && panes.get(card.session);
+    if (!p) return;
+    p.el.style.flex = `${grow} 1 0%`;
+    parent.appendChild(p.el);
+    return;
+  }
+  const box = document.createElement('div');
+  box.style.cssText = `display:flex; min-width:0; min-height:0; flex:${grow} 1 0%;` +
+    (node.dir === 'col' ? 'flex-direction:column;' : '');
+  const divider = document.createElement('div');
+  divider.className = node.dir === 'col' ? 'split-divider-h' : 'split-divider-v';
+  buildNode(node.a, box, node.ratio);
+  box.appendChild(divider);
+  buildNode(node.b, box, 1 - node.ratio);
+  /* drag the divider to resize */
+  divider.addEventListener('mousedown', e => {
+    e.preventDefault();
+    const horiz = node.dir !== 'col';
+    const move = ev => {
+      const r = box.getBoundingClientRect();
+      let ratio = horiz ? (ev.clientX - r.left) / r.width : (ev.clientY - r.top) / r.height;
+      ratio = Math.min(0.85, Math.max(0.15, ratio));
+      node.ratio = ratio;
+      box.children[0].style.flex = `${ratio} 1 0%`;
+      box.children[2].style.flex = `${1 - ratio} 1 0%`;
+    };
+    const up = () => {
+      document.removeEventListener('mousemove', move);
+      document.removeEventListener('mouseup', up);
+      fitAll();
+    };
+    document.addEventListener('mousemove', move);
+    document.addEventListener('mouseup', up);
+  });
+  parent.appendChild(box);
+}
+
+function renderLayout() {
+  const host = $('terminal');
+  host.innerHTML = '';
+  if (layout) buildNode(layout, host, 1);
+  fitAll();
+}
+
+/* keep pane mini-headers in sync with polling / renames */
+function updatePaneChrome(card) {
+  const p = card && panes.get(card.session);
+  if (!p) return;
+  const dot = p.el.querySelector('.spane-head .dot');
+  if (dot) { dot.className = 'dot ' + card.status; dot.title = DOT_TITLES[card.status] || ''; }
+  const name = p.el.querySelector('.spane-head .name');
+  if (name && name.textContent !== card.title) name.textContent = card.title;
+}
+
+function focusPane(session) {
+  const p = panes.get(session);
+  if (!p) return;
+  const changed = attachedName !== session;
+  attachedName = session;
+  term = p.term;
+  panes.forEach(q => q.el.classList.toggle('focus', q === p));
+  state.sessionId = p.sid;
+  if (changed) resetSuggest();
+  if (ghostEl && ghostEl.parentElement !== p.body) p.body.appendChild(ghostEl);
+  renderSessionView();
+  renderSidebar();
+  p.term.focus();
+}
+
+async function ensureAttached(pane) {
+  const card = provider.get(pane.sid);
+  if (!card) return;
+  try {
+    if (card.status === 'stopped') {
+      await inv('start_session', { name: card.session, dir: card.dir, cmd: card.cmd });
+    }
+    await inv('attach_session', { name: card.session, cols: pane.term.cols, rows: pane.term.rows });
+  } catch (e) {
+    toast('attach failed: ' + e);
+  }
+}
+
+async function addSplit(targetSid, dir, before, newSid) {
+  const card = provider.get(newSid);
+  if (!card || state.view !== 'session' || !layout) return;
+  if (panes.has(card.session)) {
+    focusPane(card.session);
+    return;
+  }
+  const wasStopped = card.status === 'stopped';
+  const pane = createPane(card);
+  layout = splitAt(layout, targetSid, dir, newSid, before);
+  renderLayout();
+  await ensureAttached(pane);
+  freshShell = wasStopped && !card.cmd.trim();
+  focusPane(card.session);
+  pollNow();
+}
+
+/* close one pane; the session keeps running unless the card itself closes */
+function closePaneBySid(sid, opts = {}) {
+  const entry = [...panes.values()].find(p => p.sid === sid);
+  if (!entry) return;
+  if (opts.detach !== false) inv('detach_session', { name: entry.session }).catch(() => {});
+  try { entry.term.dispose(); } catch (e) { /* already gone */ }
+  entry.el.remove();
+  panes.delete(entry.session);
+  layout = removeFromLayout(layout, sid);
+  if (!layout || !collectLeaves(layout).length) {
+    backToBoard();
+    return;
+  }
+  renderLayout();
+  if (attachedName === entry.session) {
+    const nextSid = collectLeaves(layout)[0];
+    const c = provider.get(nextSid);
+    if (c) focusPane(c.session);
+  }
+}
+
+/* 方案 B: split button / ⌘D — pick a session for the new pane */
+function showSplitPicker(dir) {
+  if (state.view !== 'session' || !state.sessionId) return;
+  const targetSid = state.sessionId;
+  const openSids = new Set(collectLeaves(layout));
+  const candidates = store.cards.filter(c => !openSids.has(c.id));
+  const order = { running: 0, waiting: 0, stopped: 1 };
+  candidates.sort((a, b) => order[a.status] - order[b.status]);
+  const ctx = $('ctx');
+  ctx.innerHTML = `<div class="ctx-label">Split ${dir === 'col' ? 'down' : 'right'} — choose session</div>` +
+    candidates.slice(0, 12).map(c =>
+      `<button data-sid="${c.id}"><span style="color:${c.status === 'stopped' ? 'var(--faint)' : c.status === 'waiting' ? 'var(--wait)' : 'var(--run)'}">●</span> ${c.title.replace(/</g, '&lt;')}</button>`).join('') +
+    `<hr><button data-new="1">＋ new shell here</button>`;
+  ctx.onclick = async ev => {
+    const sid = ev.target.closest('button') && ev.target.closest('button').dataset.sid;
+    const isNew = ev.target.closest('button') && ev.target.closest('button').dataset.new;
+    ctx.style.display = 'none';
+    if (sid) addSplit(targetSid, dir, false, sid);
+    if (isNew) {
+      const p = activeProject();
+      const focused = provider.get(targetSid);
+      const c = provider.create({
+        projectId: p.id,
+        columnId: (p.columns.find(x => x.name === 'Working') || p.columns[0]).id,
+        title: nextShellTitle(p),
+        cmd: '',
+        dir: focused ? focused.dir : HOME,
+      });
+      addSplit(targetSid, dir, false, c.id);
+    }
+  };
+  const btn = $(dir === 'col' ? 'split-down' : 'split-right');
+  const r = btn.getBoundingClientRect();
+  ctx.style.display = 'block';
+  ctx.style.left = Math.min(r.left, innerWidth - ctx.offsetWidth - 8) + 'px';
+  ctx.style.top = (r.bottom + 6) + 'px';
+}
+$('split-right').onclick = e => { e.stopPropagation(); showSplitPicker('row'); };
+$('split-down').onclick = e => { e.stopPropagation(); showSplitPicker('col'); };
 
 let rxLogged = 0, rxBytes = 0;
 /* NOTE: listen() requires the core:event permission in
@@ -1284,17 +1576,17 @@ let rxLogged = 0, rxBytes = 0;
    with a silent promise rejection and the terminal never receives output. */
 listen('pty-data', ev => {
   const { name, data } = ev.payload;
-  if (term && name === attachedName) {
+  const p = panes.get(name);
+  if (p) {
     const u8 = b64ToU8(data);
     rxBytes += u8.length;
-    if (rxLogged < 3 || rxLogged % 50 === 0) ulog(`pty-data chunk=${u8.length} total=${rxBytes}`);
+    if (rxLogged < 3 || rxLogged % 200 === 0) ulog(`pty-data chunk=${u8.length} total=${rxBytes}`);
     rxLogged++;
-    term.write(u8);
+    p.term.write(u8);
   }
 }).catch(e => ulog('listen(pty-data) FAILED: ' + e));
 listen('pty-exit', ev => {
-  if (ev.payload.name === attachedName) {
-    attachedName = null;
+  if (panes.has(ev.payload.name)) {
     toast('session ended');
     pollNow();
   }
@@ -1304,33 +1596,25 @@ listen('pty-exit', ev => {
 async function openSession(sid) {
   const card = provider.get(sid);
   if (!card) return;
-  if (attachedName) {
-    inv('detach_session', { name: attachedName }).catch(() => {});
-    attachedName = null;
+  /* already open in a pane → just focus it */
+  if (state.view === 'session' && panes.has(card.session)) {
+    focusPane(card.session);
+    return;
   }
+  leaveSessionView();
   state.projectId = card.projectId;
   state.view = 'session';
   state.sessionId = sid;
-  resetSuggest();
   toggleQueuePanel(false);
   render();
-  mountTerminal(card);
   const wasStopped = card.status === 'stopped';
-  try {
-    if (wasStopped) {
-      await inv('start_session', { name: card.session, dir: card.dir, cmd: card.cmd });
-    }
-    /* set before the await: the initial screen repaint can arrive while
-       attach_session is still resolving, and must not be dropped */
-    attachedName = card.session;
-    await inv('attach_session', { name: card.session, cols: term.cols, rows: term.rows });
-    term.focus();
-  } catch (e) {
-    attachedName = null;
-    toast('attach failed: ' + e);
-  }
-  /* history feeds both the fresh-shell chips and typed-prefix completion */
+  const pane = createPane(card);
+  layout = leafOf(sid);
+  renderLayout();
+  await ensureAttached(pane);
   freshShell = wasStopped && !card.cmd.trim();
+  focusPane(card.session);
+  /* history feeds both the fresh-shell chips and typed-prefix completion */
   inv('recent_commands', { limit: 50 })
     .then(c => { histCache = c; renderSuggest(); })
     .catch(() => { histCache = []; });
@@ -1340,11 +1624,15 @@ async function openSession(sid) {
 function leaveSessionView() {
   resetSuggest();
   toggleQueuePanel(false);
-  if (attachedName) {
-    inv('detach_session', { name: attachedName }).catch(() => {});
-    attachedName = null;
-  }
-  disposeTerminal();
+  panes.forEach(p => {
+    inv('detach_session', { name: p.session }).catch(() => {});
+    try { p.term.dispose(); } catch (e) { /* fine */ }
+    p.el.remove();
+  });
+  panes.clear();
+  layout = null;
+  attachedName = null;
+  term = null;
 }
 
 function backToBoard() {
@@ -1623,7 +1911,9 @@ function updateGhost() {
     return;
   }
   ghostRemainder = items[0].slice(lineBuf.length);
-  const host = $('terminal');
+  const fp = attachedName && panes.get(attachedName);
+  if (!fp) { ghostEl.style.display = 'none'; return; }
+  const host = fp.body;
   const screen = host.querySelector('.xterm-screen');
   if (!screen) return;
   const buf = term.buffer.active;
@@ -1730,6 +2020,7 @@ function render() {
   renderSidebar();
   if (state.view === 'board') renderBoard();
   else renderSessionView();
+  panes.forEach(p => updatePaneChrome(provider.get(p.sid)));
   renderQueueUI();
 }
 
@@ -1749,6 +2040,7 @@ provider.subscribe((ev, s) => {
   if (ev === 'status') {
     renderTabs();
     renderSidebar();
+    updatePaneChrome(s);
     if (state.view === 'session' && s.id === state.sessionId) renderSessionView();
     else if (state.view === 'board' && s.projectId === state.projectId) {
       /* start/stop changes the chip row → rebuild the one card */
