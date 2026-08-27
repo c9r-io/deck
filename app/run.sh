@@ -19,6 +19,7 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp target/debug/deck-app "$APP/Contents/MacOS/deck"
 cp icons/icon.png "$APP/Contents/Resources/icon.png"
+cp icons/icon.icns "$APP/Contents/Resources/deck.icns"
 VER=$(python3 -c "import json;print(json.load(open('tauri.conf.json'))['version'])")
 cat > "$APP/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -31,6 +32,7 @@ cat > "$APP/Contents/Info.plist" <<EOF
   <key>CFBundleIdentifier</key><string>io.c9r.deck</string>
   <key>CFBundleVersion</key><string>${VER}</string>
   <key>CFBundleShortVersionString</key><string>${VER}</string>
+  <key>CFBundleIconFile</key><string>deck</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>LSMinimumSystemVersion</key><string>11.0</string>
