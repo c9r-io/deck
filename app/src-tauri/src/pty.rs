@@ -102,35 +102,58 @@ pub(crate) fn attach_session(
         },
     );
 
-    let thread_app = app.clone();
-    let thread_name = name.clone();
+    // Bounded pipeline between the PTY and the webview: reader → sync
+    // channel → coalescing emitter. The channel caps in-flight data at
+    // PTY_CHANNEL_CHUNKS × 8KB; when the webview can't keep up, the reader
+    // blocks on send(), the kernel PTY buffer fills, and the tmux client
+    // stalls — backpressure all the way down instead of unbounded event
+    // queueing in the webview. The emitter drains whatever accumulated into
+    // ONE pty-data event (up to EMIT_COALESCE_MAX), so a fast producer
+    // yields few large events rather than thousands of 8KB ones.
+    const PTY_CHANNEL_CHUNKS: usize = 64; // × 8KB = 512KB bound
+    const EMIT_COALESCE_MAX: usize = 256 * 1024;
+    let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(PTY_CHANNEL_CHUNKS);
+
+    let reader_name = name.clone();
     std::thread::spawn(move || {
-        applog(&format!("[pty] reader started for {thread_name}"));
+        applog(&format!("[pty] reader started for {reader_name}"));
         let mut buf = [0u8; 8192];
-        let mut chunks: u64 = 0;
         loop {
             match reader.read(&mut buf) {
                 Ok(0) | Err(_) => break,
                 Ok(n) => {
-                    chunks += 1;
-                    if chunks <= 3 || chunks.is_multiple_of(200) {
-                        applog(&format!(
-                            "[pty] read chunk #{chunks} {n}B from {thread_name}"
-                        ));
-                    }
-                    let r = thread_app.emit(
-                        "pty-data",
-                        PtyData {
-                            name: thread_name.clone(),
-                            data: B64.encode(&buf[..n]),
-                        },
-                    );
-                    if chunks == 1 {
-                        applog(&format!("[pty] first emit result: {:?}", r.is_ok()));
+                    if tx.send(buf[..n].to_vec()).is_err() {
+                        break; // emitter gone
                     }
                 }
             }
         }
+        // dropping tx ends the emitter's recv loop
+    });
+
+    let thread_app = app.clone();
+    let thread_name = name.clone();
+    std::thread::spawn(move || {
+        let mut emits: u64 = 0;
+        pump_coalesced(&rx, EMIT_COALESCE_MAX, |batch| {
+            emits += 1;
+            if emits <= 3 || emits.is_multiple_of(200) {
+                applog(&format!(
+                    "[pty] emit #{emits} {}B to {thread_name}",
+                    batch.len()
+                ));
+            }
+            let r = thread_app.emit(
+                "pty-data",
+                PtyData {
+                    name: thread_name.clone(),
+                    data: B64.encode(&batch),
+                },
+            );
+            if emits == 1 {
+                applog(&format!("[pty] first emit result: {:?}", r.is_ok()));
+            }
+        });
         // clean up only if this attachment is still the current one
         let state = thread_app.state::<PtyState>();
         let mut map = state.map.lock().unwrap();
@@ -143,6 +166,69 @@ pub(crate) fn attach_session(
     });
 
     Ok(())
+}
+
+/// Drain the channel into as-large-as-available batches: blocking recv for
+/// the first chunk, then non-blocking drains until `max` bytes or the queue
+/// is momentarily empty. Returns when the sender is dropped.
+pub(crate) fn pump_coalesced<F: FnMut(Vec<u8>)>(
+    rx: &std::sync::mpsc::Receiver<Vec<u8>>,
+    max: usize,
+    mut emit: F,
+) {
+    while let Ok(first) = rx.recv() {
+        let mut batch = first;
+        while batch.len() < max {
+            match rx.try_recv() {
+                Ok(more) => batch.extend_from_slice(&more),
+                Err(_) => break,
+            }
+        }
+        emit(batch);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pump_coalesced;
+    use std::sync::mpsc::sync_channel;
+
+    #[test]
+    fn coalesces_queued_chunks_into_one_emit() {
+        let (tx, rx) = sync_channel::<Vec<u8>>(64);
+        for i in 0u8..10 {
+            tx.send(vec![i; 100]).unwrap();
+        }
+        drop(tx);
+        let mut emits: Vec<usize> = Vec::new();
+        pump_coalesced(&rx, 1 << 20, |b| emits.push(b.len()));
+        assert_eq!(emits, vec![1000], "10 queued chunks → one emit");
+    }
+
+    #[test]
+    fn respects_coalesce_ceiling() {
+        let (tx, rx) = sync_channel::<Vec<u8>>(64);
+        for _ in 0..10 {
+            tx.send(vec![0u8; 100]).unwrap();
+        }
+        drop(tx);
+        let mut emits: Vec<usize> = Vec::new();
+        pump_coalesced(&rx, 250, |b| emits.push(b.len()));
+        // ceiling is checked before each drain, so batches stop growing at
+        // the first size ≥ max — bounded, order-preserving, nothing lost
+        assert_eq!(emits.iter().sum::<usize>(), 1000);
+        assert!(emits.len() > 1, "ceiling must split the stream: {emits:?}");
+        assert!(emits.iter().all(|&n| n <= 300), "{emits:?}");
+    }
+
+    #[test]
+    fn ends_when_sender_drops() {
+        let (tx, rx) = sync_channel::<Vec<u8>>(4);
+        drop(tx);
+        let mut called = false;
+        pump_coalesced(&rx, 1024, |_| called = true);
+        assert!(!called);
+    }
 }
 
 #[tauri::command]
