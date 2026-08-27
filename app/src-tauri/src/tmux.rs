@@ -111,6 +111,26 @@ pub(crate) fn fmt_escape(s: &str) -> String {
     s.replace('#', "##")
 }
 
+/// Session names reach tmux CLI arguments, format strings, and log lines, so
+/// the accepted alphabet is the intersection of what tmux allows (no `:` `.`)
+/// and what can never read as a flag (no leading `-`) or a format expansion
+/// (no `#`). deck itself only generates `deck-<a-z0-9-slug>-<id>`.
+pub(crate) fn validate_session_name(name: &str) -> Result<(), String> {
+    if name.is_empty() || name.len() > 64 {
+        return Err("session name must be 1–64 characters".into());
+    }
+    if name.starts_with('-') {
+        return Err("session name must not start with '-'".into());
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '@'))
+    {
+        return Err("session name may only contain letters, digits, _ - @".into());
+    }
+    Ok(())
+}
+
 /// Exact-match session target. Pane-level commands need the trailing colon.
 pub(crate) fn session_target(name: &str) -> String {
     format!("={name}")
@@ -140,4 +160,39 @@ pub(crate) fn init_deck_server() {
     let _ = tmux(&["set", "-g", "set-clipboard", "on"]);
     let _ = tmux(&["set", "-g", "history-limit", "50000"]);
     let _ = tmux(&["set", "-g", "copy-mode-position-format", ""]);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn session_names_accept_the_deck_alphabet() {
+        for ok in ["deck-my-card-ab12", "elemental-tcg-02", "a", "A_b@2"] {
+            assert!(validate_session_name(ok).is_ok(), "{ok}");
+        }
+    }
+
+    #[test]
+    fn session_names_reject_flags_formats_and_separators() {
+        for bad in [
+            "",             // empty
+            "-starts-dash", // reads as a flag
+            "has space",
+            "has:colon", // tmux target separator
+            "has.dot",   // tmux target separator
+            "has#hash",  // tmux format expansion
+            "has;semi",
+            "日本語", // outside the generated alphabet
+            &"x".repeat(65),
+        ] {
+            assert!(validate_session_name(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn fmt_escape_doubles_hashes() {
+        assert_eq!(fmt_escape("a#b##c"), "a##b####c");
+        assert_eq!(fmt_escape("plain"), "plain");
+    }
 }

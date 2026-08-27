@@ -9,7 +9,10 @@ use tauri::{AppHandle, Emitter};
 
 use crate::storage;
 use crate::storage::{applog, now_epoch};
-use crate::tmux::{expand_tilde, init_deck_server, pane_target, session_target, tmux, tmux_bin};
+use crate::tmux::{
+    expand_tilde, init_deck_server, pane_target, session_target, tmux, tmux_bin,
+    validate_session_name,
+};
 
 #[tauri::command]
 pub(crate) fn ui_log(msg: String) {
@@ -155,7 +158,11 @@ pub(crate) fn tmux_available() -> bool {
 
 #[tauri::command]
 pub(crate) fn start_session(name: String, dir: String, cmd: String) -> Result<(), String> {
+    validate_session_name(&name)?;
     let dir = expand_tilde(&dir);
+    if !std::path::Path::new(&dir).is_dir() {
+        return Err(format!("not a directory: {dir}"));
+    }
     tmux(&["new-session", "-d", "-s", &name, "-c", &dir])?;
     // belt & suspenders for servers started by older deck versions
     init_deck_server();
@@ -170,6 +177,7 @@ pub(crate) fn start_session(name: String, dir: String, cmd: String) -> Result<()
 /// stays off), and deck translates wheel deltas into tmux copy-mode
 #[tauri::command]
 pub(crate) fn scroll_session(name: String, lines: i32) -> Result<(), String> {
+    validate_session_name(&name)?;
     let t = pane_target(&name);
     // one query for both facts (was two subprocesses per wheel tick)
     let stat =
@@ -198,12 +206,16 @@ pub(crate) fn scroll_session(name: String, lines: i32) -> Result<(), String> {
 /// scrollable. Called once for sessions deck itself just started.
 #[tauri::command]
 pub(crate) fn clear_history(name: String) {
+    if validate_session_name(&name).is_err() {
+        return;
+    }
     let t = pane_target(&name);
     let _ = tmux(&["clear-history", "-t", &t]);
 }
 
 #[tauri::command]
 pub(crate) fn kill_session(name: String) -> Result<(), String> {
+    validate_session_name(&name)?;
     tmux(&["kill-session", "-t", &session_target(&name)]).map(|_| ())
 }
 
@@ -406,9 +418,37 @@ pub(crate) fn poll_sessions(names: Vec<String>, tail_for: Vec<String>) -> Vec<Se
 
 // ---------- open path / url ----------------------------------------------------
 
+/// What open_target is allowed to hand to `open`, decided BEFORE any
+/// subprocess spawns. `open` treats its argument as a URL when it parses as
+/// one — an unvalidated "url" click could reach file:// or an arbitrary app
+/// scheme; a relative path could resolve outside the card's cwd view. Rules:
+/// urls must be http(s); paths must resolve absolute and exist.
+pub(crate) fn validate_open(kind: &str, value: &str, resolved: &str) -> Result<(), String> {
+    match kind {
+        "url" => {
+            let lower = value.trim().to_ascii_lowercase();
+            if lower.starts_with("http://") || lower.starts_with("https://") {
+                Ok(())
+            } else {
+                Err(format!("only http(s) links open externally: {value}"))
+            }
+        }
+        "editor" | "reveal" => {
+            if !resolved.starts_with('/') {
+                return Err(format!("path did not resolve absolute: {resolved}"));
+            }
+            if !std::path::Path::new(resolved).exists() {
+                return Err(format!("no such path: {resolved}"));
+            }
+            Ok(())
+        }
+        _ => Err(format!("unknown kind: {kind}")),
+    }
+}
+
 #[tauri::command]
 pub(crate) fn open_target(kind: String, value: String, cwd: String) -> Result<(), String> {
-    let resolve = || {
+    let resolved = {
         let v = expand_tilde(&value);
         // strip a trailing :line[:col] suffix before hitting the filesystem
         let stripped = regex_strip_lineno(&v);
@@ -418,14 +458,15 @@ pub(crate) fn open_target(kind: String, value: String, cwd: String) -> Result<()
             format!("{}/{}", expand_tilde(&cwd).trim_end_matches('/'), stripped)
         }
     };
+    validate_open(&kind, &value, &resolved)?;
     let status = match kind.as_str() {
-        "url" => Command::new("open").arg(&value).status(),
+        "url" => Command::new("open").arg(value.trim()).status(),
         "editor" => match editor_app() {
-            Some(app) => Command::new("open").args(["-a", &app, &resolve()]).status(),
-            None => Command::new("open").args(["-t", &resolve()]).status(),
+            Some(app) => Command::new("open").args(["-a", &app, &resolved]).status(),
+            None => Command::new("open").args(["-t", &resolved]).status(),
         },
-        "reveal" => Command::new("open").args(["-R", &resolve()]).status(),
-        _ => return Err(format!("unknown kind: {kind}")),
+        "reveal" => Command::new("open").args(["-R", &resolved]).status(),
+        _ => unreachable!("validate_open rejects unknown kinds"),
     }
     .map_err(|e| e.to_string())?;
     if status.success() {
@@ -484,6 +525,25 @@ mod tests {
         let t = parse_tail_batches(&format!("noise\n{TAIL_MARK}a\nx\n"), 2);
         assert_eq!(t.len(), 1);
         assert_eq!(t["a"], vec!["x"]);
+    }
+
+    #[test]
+    fn open_validation_gates_urls_and_paths() {
+        assert!(validate_open("url", "https://example.com/x", "").is_ok());
+        assert!(validate_open("url", "HTTP://example.com", "").is_ok());
+        for bad in [
+            "file:///etc/passwd",
+            "javascript:alert(1)",
+            "ssh://host",
+            "x-apple.systempreferences:",
+            "/etc/passwd",
+        ] {
+            assert!(validate_open("url", bad, "").is_err(), "{bad}");
+        }
+        assert!(validate_open("reveal", "", "/tmp").is_ok());
+        assert!(validate_open("reveal", "", "relative/path").is_err());
+        assert!(validate_open("editor", "", "/no/such/path/deck-test").is_err());
+        assert!(validate_open("shell", "", "/tmp").is_err(), "unknown kind");
     }
 
     #[test]

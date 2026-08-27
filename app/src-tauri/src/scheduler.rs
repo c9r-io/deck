@@ -193,6 +193,7 @@ pub(crate) struct QueueAddArgs {
 
 /// Reject invalid schedule combinations up front.
 pub(crate) fn validate_add(a: &QueueAddArgs) -> Result<(), String> {
+    crate::tmux::validate_session_name(&a.session)?;
     match a.mode.as_str() {
         "at" => {
             if a.at.is_none() {

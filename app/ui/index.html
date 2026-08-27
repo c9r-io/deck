@@ -695,6 +695,11 @@ window.addEventListener('error', e => {
 window.addEventListener('unhandledrejection', e => {
   try { window.__TAURI__.core.invoke('ui_log', { msg: 'JSREJ ' + (e.reason && (e.reason.stack || e.reason.message) || e.reason) }); } catch (_) {}
 });
+/* CSP is strict (tauri.conf.json) — surface even non-fatal violations, which
+   WKWebView otherwise swallows silently. Logs directive + URI, never content. */
+window.addEventListener('securitypolicyviolation', e => {
+  try { window.__TAURI__.core.invoke('ui_log', { msg: 'CSP ' + e.violatedDirective + ' blocked ' + (e.blockedURI || '?') }); } catch (_) {}
+});
 </script>
 <script type="module" src="js/app.js"></script>
 </body>

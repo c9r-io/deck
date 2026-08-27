@@ -49,6 +49,7 @@ pub(crate) fn attach_session(
     cols: u16,
     rows: u16,
 ) -> Result<(), String> {
+    crate::tmux::validate_session_name(&name)?;
     // replace any previous attachment for this session
     if let Some(mut old) = state.map.lock().unwrap().remove(&name) {
         let _ = old.child.kill();
