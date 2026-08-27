@@ -239,9 +239,10 @@
   .mem-chip.high { color: var(--wait); border-color: rgba(232, 180, 90, 0.35); }
   .sess-head .mem-chip { font-size: 11px; padding: 2px 7px; background: var(--raised); border-color: var(--border); }
   .card-meta {
-    margin-top: 5px; display: flex; gap: 8px; align-items: baseline;
+    margin-top: 5px; display: flex; gap: 8px; align-items: center;
     font-family: var(--mono); font-size: 11px; color: var(--muted);
     white-space: nowrap; overflow: hidden;
+    height: 20px;   /* constant, with or without chips */
   }
   .card-meta .cmd { color: var(--accent); flex: none; }
   .card-meta .dir { overflow: hidden; text-overflow: ellipsis; color: var(--faint); flex: 1; }
@@ -257,14 +258,9 @@
     font-family: var(--mono); font-size: 11px; line-height: 1.5;
     color: var(--muted);
     white-space: nowrap; overflow: hidden;
+    height: 47px;   /* always two lines — cards keep a constant shape */
   }
-  .card-tail div { overflow: hidden; text-overflow: ellipsis; }
-  .card-actions { margin-top: 8px; display: none; gap: 6px; }
-  .card:hover .card-actions { display: flex; }
-  .chip-btn { font-size: 11px; padding: 3px 9px; border-radius: 5px; background: var(--panel); border: 1px solid var(--border); color: var(--muted); }
-  .chip-btn:hover { color: var(--text); border-color: var(--faint); }
-  .chip-btn.accent:hover { color: var(--accent); border-color: var(--accent-dim); }
-  .chip-btn.danger:hover { color: var(--danger); border-color: var(--danger); }
+  .card-tail div { overflow: hidden; text-overflow: ellipsis; height: 16.5px; }
 
   /* ---------- session view ---------- */
   #session-view { flex: 1; display: none; flex-direction: column; min-height: 0; }
@@ -668,6 +664,7 @@ const provider = {
     if (c.status !== 'stopped') {
       try { await inv('kill_session', { name: c.session }); } catch (e) { /* already gone */ }
     }
+    inv('queue_clear_session', { session: c.session }).catch(() => {});
     store.cards = store.cards.filter(x => x.id !== sid);
     saveBoard();
     emit('list', c);
@@ -705,9 +702,17 @@ async function pollNow() {
     return;
   }
   const byName = new Map(infos.map(i => [i.name, i]));
+  const exited = [];
   for (const c of store.cards) {
     const info = byName.get(c.session);
     if (!info) continue;
+    /* the shell exited (Ctrl+D etc.) → the card has nothing left to hold;
+       close it without ceremony. Only live→dead transitions count, so cards
+       that were already stopped (e.g. after an app restart) stay. */
+    if (!info.alive && (c.status === 'running' || c.status === 'waiting')) {
+      exited.push(c);
+      continue;
+    }
     const status = !info.alive ? 'stopped'
       : (info.idle_secs != null && info.idle_secs >= QUIET_SECS) ? 'waiting' : 'running';
     const mem = info.alive && info.mem_mb != null ? info.mem_mb : null;
@@ -720,6 +725,14 @@ async function pollNow() {
     }
     if (tail.join('\n') !== (c.tail || []).join('\n')) { c.tail = tail; emit('output', c); }
   }
+  for (const c of exited) {
+    inv('queue_clear_session', { session: c.session }).catch(() => {});
+    store.cards = store.cards.filter(x => x.id !== c.id);
+    if (state.sessionId === c.id) backToBoard();
+    toast(`"${c.title}" closed — shell exited`);
+    emit('list', c);
+  }
+  if (exited.length) saveBoard();
 }
 function startPolling() {
   clearInterval(pollTimer);
@@ -990,21 +1003,17 @@ function cardEl(s) {
   el.draggable = true;
 
   const tail = (s.tail || []).slice(-2);
+  /* fixed shape: the tail box is always present (2 lines) and there are no
+     hover-only rows — cards never change size under the pointer */
   el.innerHTML = `
     <div class="card-top"><span class="dot ${s.status}" title="${DOT_TITLES[s.status] || ''}"></span><span class="card-title"></span></div>
     <div class="card-meta"><span class="cmd"></span><span class="dir"></span><span class="q-chip"></span><span class="mem-chip" title="Memory of the whole session process tree: shell + agent + spawned children"></span></div>
     ${s.desc ? '<div class="card-desc"></div>' : ''}
-    ${tail.length ? '<div class="card-tail">' + tail.map(() => '<div></div>').join('') + '</div>' : ''}
-    <div class="card-actions">
-      <button class="chip-btn accent" data-act="open">open</button>
-      ${s.status === 'stopped' ? '<button class="chip-btn" data-act="start">start</button>' : ''}
-      <button class="chip-btn danger" data-act="close">close</button>
-      <button class="chip-btn" data-act="menu">⋯</button>
-    </div>`;
+    <div class="card-tail"><div></div><div></div></div>`;
   el.querySelector('.card-title').textContent = s.title;
   setMemChip(el.querySelector('.mem-chip'), s);
   setQueueChip(el.querySelector('.q-chip'), s);   // self-fill: survives card rebuilds
-  el.querySelector('.cmd').textContent = s.cmd ? '$ ' + s.cmd : '$ shell';
+  el.querySelector('.cmd').textContent = s.cmd ? '$ ' + s.cmd : '';
   el.querySelector('.dir').textContent = s.dir;
   if (s.desc) {
     const d = el.querySelector('.card-desc');
@@ -1021,10 +1030,6 @@ function cardEl(s) {
   el.addEventListener('dragend', () => el.classList.remove('dragging'));
   el.addEventListener('click', e => {
     e.stopPropagation();   // don't toggle the board selection underneath
-    const act = e.target.dataset && e.target.dataset.act;
-    if (act === 'start') { provider.start(s.id); toast(`started: ${s.title}`); return; }
-    if (act === 'close') { closeSession(s.id); return; }
-    if (act === 'menu') { showSessionCtx(e, s.id); return; }
     openSession(s.id);
   });
   el.oncontextmenu = e => showSessionCtx(e, s.id);
@@ -1035,19 +1040,8 @@ function updateCardInPlace(s) {
   const el = document.querySelector(`.card[data-sid="${s.id}"]`);
   if (!el) return;
   const tail = (s.tail || []).slice(-2);
-  let tailEl = el.querySelector('.card-tail');
-  if (!tailEl && tail.length) {
-    tailEl = document.createElement('div');
-    tailEl.className = 'card-tail';
-    (el.querySelector('.card-desc') || el.querySelector('.card-meta')).after(tailEl);
-  }
-  if (tailEl) {
-    tailEl.replaceChildren(...tail.map(l => {
-      const d = document.createElement('div');
-      d.textContent = l;
-      return d;
-    }));
-  }
+  const tailDivs = el.querySelectorAll('.card-tail div');
+  tailDivs.forEach((d, i) => { d.textContent = tail[i] || ''; });
   const dot = el.querySelector('.dot');
   if (dot) { dot.className = 'dot ' + s.status; dot.title = DOT_TITLES[s.status] || ''; }
   el.classList.toggle('waiting', s.status === 'waiting');
@@ -1522,8 +1516,10 @@ function feedMirror(d) {
 const SHELL_FG = /^-?(zsh|bash|fish|sh|dash)$/;
 function maybeRecordCommand(cmd) {
   const c = provider.get(state.sessionId);
-  if (!c || !SHELL_FG.test(c.fg || '')) return;
-  inv('record_command', { cmd }).catch(() => {});
+  if (!c) { ulog('record skip: no card'); return; }
+  if (!SHELL_FG.test(c.fg || '')) { ulog(`record skip: fg=${c.fg}`); return; }
+  ulog(`record: "${cmd.slice(0, 60)}"`);
+  inv('record_command', { cmd }).catch(e => ulog('record_command failed: ' + e));
   histCache = [cmd, ...histCache.filter(x => x !== cmd)];
 }
 

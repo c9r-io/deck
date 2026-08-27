@@ -674,6 +674,16 @@ fn queue_remove(state: State<'_, Queues>, app: AppHandle, id: String) {
     let _ = app.emit("queue-changed", ());
 }
 
+/// Drop all queued prompts for a session — called when its card closes.
+#[tauri::command]
+fn queue_clear_session(state: State<'_, Queues>, app: AppHandle, session: String) {
+    let mut q = state.0.lock().unwrap();
+    q.items.retain(|i| i.session != session);
+    q.last_fired.remove(&session);
+    save_queue(&q);
+    let _ = app.emit("queue-changed", ());
+}
+
 #[derive(Clone, Serialize)]
 struct QueueFired {
     session: String,
@@ -837,6 +847,7 @@ fn main() {
             queue_add,
             queue_update,
             queue_remove,
+            queue_clear_session,
         ])
         .run(tauri::generate_context!())
         .expect("error while running deck");

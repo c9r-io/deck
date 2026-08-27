@@ -47,6 +47,10 @@ xterm.js vendored in `app/ui/vendor/`); backend `app/src-tauri/src/main.rs`.
   either issue — verify webview-specific behavior in the real app.
 - A menu-less macOS app gets no standard Edit actions, so ⌘C/⌘V are implemented
   inside xterm's attachCustomKeyEventHandler via navigator.clipboard.
+- The frontend is embedded at COMPILE time and cargo does not track it: without
+  the `cargo:rerun-if-changed=../ui/...` lines in build.rs, UI-only edits build
+  in 1s as a no-op and the app silently runs the previous UI. (Bit us: command
+  capture appeared broken because the binary shipped a stale frontend.)
 - Tauri v2 requires `src-tauri/capabilities/default.json` granting `core:default`
   or `event.listen` is REFUSED with a silent promise rejection — invoke (JS→Rust)
   works, events (Rust→JS) never arrive, so the terminal receives no output while
