@@ -1227,9 +1227,13 @@ function createPane(card) {
     ghostEl.id = 'ghost';
   }
   /* echo arrives asynchronously — reposition after each parsed write */
-  t.onWriteParsed(() => { if (ghostRemainder && attachedName === session) updateGhost(); });
+  const pane = { sid: card.id, session, el, body, term: t, fit, seps: [] };
 
-  const pane = { sid: card.id, session, el, body, term: t, fit };
+  t.onWriteParsed(() => {
+    if (ghostRemainder && attachedName === session) updateGhost();
+    positionSeparators(pane);
+  });
+  t.onScroll(() => positionSeparators(pane));
   panes.set(session, pane);
 
   const head = el.querySelector('.spane-head');
@@ -1288,23 +1292,58 @@ function createPane(card) {
 /* hairline above each submitted input — separates the user's commands /
    messages from surrounding output. Anchored to the buffer line via a
    marker, so it scrolls with the content. */
+/* We draw the lines ourselves: xterm markers track the buffer line (stable
+   API), and a plain absolutely-positioned 1px div per marker is placed with
+   the same geometry math as the ghost suggestion. xterm's decoration
+   renderer proved unreliable (registered but never painted). */
 let sepLogged = 0;
-function addInputSeparator(t) {
+function addInputSeparator(pane) {
   try {
+    const t = pane.term;
     const marker = t.registerMarker(0);
     if (!marker) { if (sepLogged < 5) { sepLogged++; ulog('separator: no marker'); } return; }
-    const deco = t.registerDecoration({ marker, width: t.cols });
-    if (!deco) { if (sepLogged < 5) { sepLogged++; ulog('separator: no decoration (alt buffer?)'); } return; }
-    if (sepLogged < 5) { sepLogged++; ulog('separator registered @line ' + marker.line); }
-    deco.onRender(el => {
-      el.style.width = '100%';
-      el.style.height = '1px';
-      el.style.background = 'rgba(79, 214, 190, 0.35)';
-      el.style.pointerEvents = 'none';
-      el.style.marginTop = '-2px';
+    const el = document.createElement('div');
+    el.style.cssText = 'position:absolute; left:0; right:0; height:1px;' +
+      'background:rgba(79,214,190,0.35); pointer-events:none; z-index:4; display:none;';
+    pane.body.appendChild(el);
+    const entry = { marker, el };
+    pane.seps.push(entry);
+    if (pane.seps.length > 200) {
+      const old = pane.seps.shift();
+      old.el.remove();
+      try { old.marker.dispose(); } catch (e2) { /* fine */ }
+    }
+    marker.onDispose(() => {
+      el.remove();
+      const i = pane.seps.indexOf(entry);
+      if (i >= 0) pane.seps.splice(i, 1);
     });
+    if (sepLogged < 5) { sepLogged++; ulog('separator @line ' + marker.line); }
+    positionSeparators(pane);
   } catch (e) {
     if (sepLogged < 5) { sepLogged++; ulog('separator failed: ' + e); }
+  }
+}
+
+function positionSeparators(pane) {
+  if (!pane.seps.length) return;
+  const t = pane.term;
+  const screen = pane.body.querySelector('.xterm-screen');
+  if (!screen) return;
+  const bodyRect = pane.body.getBoundingClientRect();
+  const sRect = screen.getBoundingClientRect();
+  const top0 = sRect.top - bodyRect.top;
+  const h = sRect.height / t.rows;
+  const viewportY = t.buffer.active.viewportY;
+  for (const s of pane.seps) {
+    if (s.marker.isDisposed) continue;
+    const row = s.marker.line - viewportY;
+    if (row < 0 || row >= t.rows) {
+      s.el.style.display = 'none';
+    } else {
+      s.el.style.display = 'block';
+      s.el.style.top = (top0 + row * h - 1) + 'px';
+    }
   }
 }
 
@@ -1337,7 +1376,7 @@ function wireTerminalInput(pane, term, host) {
       /* separator on submit: synced mirror knows for sure; a desynced one
          still marks any Enter (better a rare extra line than a missing one) */
       if (completed || (preDesynced && (d.includes('\r') || d.includes('\n')))) {
-        addInputSeparator(term);
+        addInputSeparator(pane);
       }
       renderSuggest();
       if (odLogged < 3) {
@@ -1440,6 +1479,7 @@ function fitAll() {
       } catch (e) { /* pane mid-teardown */ }
     });
     if (ghostRemainder) updateGhost();
+    panes.forEach(positionSeparators);
   });
 }
 new ResizeObserver(() => {
