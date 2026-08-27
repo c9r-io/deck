@@ -14,10 +14,22 @@ fn read(rel: &str) -> String {
 fn frontend_logs_carry_no_user_content() {
     let ui = read("../ui/index.html");
     let forbidden: &[(&str, &str)] = &[
-        ("${e.key}", "keydown logging must not include the pressed key text"),
-        ("${e.data}", "IME composition logging must not include composed text"),
-        ("lineBuf.slice", "input-mirror logging must not include the typed line"),
-        ("cmd.slice(0", "command recording must not log the command text"),
+        (
+            "${e.key}",
+            "keydown logging must not include the pressed key text",
+        ),
+        (
+            "${e.data}",
+            "IME composition logging must not include composed text",
+        ),
+        (
+            "lineBuf.slice",
+            "input-mirror logging must not include the typed line",
+        ),
+        (
+            "cmd.slice(0",
+            "command recording must not log the command text",
+        ),
     ];
     for (pat, why) in forbidden {
         for line in ui.lines() {

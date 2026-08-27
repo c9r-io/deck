@@ -9,7 +9,9 @@ use std::time::Duration;
 
 fn main() {
     let name = "deck-pty-smoke";
-    let _ = Command::new("tmux").args(["kill-session", "-t", name]).output();
+    let _ = Command::new("tmux")
+        .args(["kill-session", "-t", name])
+        .output();
     let ok = Command::new("tmux")
         .args(["new-session", "-d", "-s", name, "-x", "120", "-y", "30"])
         .status()
@@ -18,7 +20,12 @@ fn main() {
 
     let pty = native_pty_system();
     let pair = pty
-        .openpty(PtySize { rows: 30, cols: 120, pixel_width: 0, pixel_height: 0 })
+        .openpty(PtySize {
+            rows: 30,
+            cols: 120,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
         .unwrap();
     let mut cmd = CommandBuilder::new("tmux");
     cmd.args(["attach-session", "-t", &format!("={name}")]);
@@ -59,12 +66,23 @@ fn main() {
 
     // resize while attached must not error
     pair.master
-        .resize(PtySize { rows: 40, cols: 100, pixel_width: 0, pixel_height: 0 })
+        .resize(PtySize {
+            rows: 40,
+            cols: 100,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
         .unwrap();
 
     let _ = child.kill();
-    let _ = Command::new("tmux").args(["kill-session", "-t", name]).output();
+    let _ = Command::new("tmux")
+        .args(["kill-session", "-t", name])
+        .output();
 
-    assert!(found, "expected command output via PTY stream; got {} bytes", collected.len());
+    assert!(
+        found,
+        "expected command output via PTY stream; got {} bytes",
+        collected.len()
+    );
     println!("PTY smoke test OK: attach → write → stream → resize → detach");
 }

@@ -15,6 +15,7 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const SCHEMA_VERSION: u64 = 1;
 
@@ -24,15 +25,8 @@ pub const SCHEMA_VERSION: u64 = 1;
 pub static WARNINGS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 pub fn warn(msg: String) {
-    crate::applog(&format!("[storage] {msg}"));
+    applog(&format!("[storage] {msg}"));
     WARNINGS.lock().unwrap().push(msg);
-}
-
-fn now_epoch() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
 }
 
 fn bak_path(path: &Path) -> PathBuf {
@@ -139,6 +133,53 @@ pub fn acquire_instance_lock(dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
+// ---------- logging -------------------------------------------------------------
+
+/// Append a line to ~/.deck/app.log (the app may be launched via `open`,
+/// where stderr goes nowhere useful).
+pub(crate) fn applog(msg: &str) {
+    if cfg!(test) {
+        return; // unit tests must not write into the user's real app.log
+    }
+    let path = dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".deck")
+        .join("app.log");
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let ts = now_epoch();
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = writeln!(f, "{ts} {msg}");
+    }
+}
+
+pub(crate) fn rotate_log() {
+    let path = dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".deck")
+        .join("app.log");
+    if let Ok(meta) = std::fs::metadata(&path) {
+        if meta.len() > 2 * 1024 * 1024 {
+            if let Ok(data) = std::fs::read(&path) {
+                let keep = &data[data.len().saturating_sub(512 * 1024)..];
+                let _ = std::fs::write(&path, keep);
+            }
+        }
+    }
+}
+
+pub(crate) fn now_epoch() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -173,7 +214,9 @@ mod tests {
         assert!(got.contains("items"));
         // next save upgrades in place
         save(&p, &got).unwrap();
-        assert!(std::fs::read_to_string(&p).unwrap().contains("schema_version"));
+        assert!(std::fs::read_to_string(&p)
+            .unwrap()
+            .contains("schema_version"));
     }
 
     #[test]
@@ -184,7 +227,10 @@ mod tests {
         save(&p, r#"{"v":2}"#).unwrap(); // .bak now holds v1
         std::fs::write(&p, "{garbage").unwrap();
         let got = load(&p).unwrap().unwrap();
-        assert!(got.contains("\"v\":1") || got.contains("\"v\": 1"), "recovered from .bak: {got}");
+        assert!(
+            got.contains("\"v\":1") || got.contains("\"v\": 1"),
+            "recovered from .bak: {got}"
+        );
     }
 
     #[test]

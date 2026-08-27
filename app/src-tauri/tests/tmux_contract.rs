@@ -18,7 +18,17 @@ struct Server(String);
 impl Server {
     fn new(tag: &str) -> Self {
         let s = Server(format!("deck-test-{tag}-{}", std::process::id()));
-        s.run(&["new-session", "-d", "-s", "t", "-x", "80", "-y", "12", "/bin/sh"]);
+        s.run(&[
+            "new-session",
+            "-d",
+            "-s",
+            "t",
+            "-x",
+            "80",
+            "-y",
+            "12",
+            "/bin/sh",
+        ]);
         sleep(Duration::from_millis(400)); // let the shell print its prompt
         s
     }
@@ -42,7 +52,9 @@ impl Server {
 
 impl Drop for Server {
     fn drop(&mut self) {
-        let _ = Command::new(tmux_bin()).args(["-L", &self.0, "kill-server"]).output();
+        let _ = Command::new(tmux_bin())
+            .args(["-L", &self.0, "kill-server"])
+            .output();
     }
 }
 
@@ -56,8 +68,16 @@ fn resize_junk_history_is_clearable_and_stays_zero() {
     s.run(&["resize-window", "-t", "t", "-x", "60", "-y", "8"]);
     sleep(Duration::from_millis(200));
     s.run(&["clear-history", "-t", "t"]);
-    assert_eq!(s.fmt("#{history_size}"), "0", "clear-history must zero the scrollback");
-    assert_eq!(s.fmt("#{pane_in_mode}"), "0", "clearing must not enter copy-mode");
+    assert_eq!(
+        s.fmt("#{history_size}"),
+        "0",
+        "clear-history must zero the scrollback"
+    );
+    assert_eq!(
+        s.fmt("#{pane_in_mode}"),
+        "0",
+        "clearing must not enter copy-mode"
+    );
 }
 
 /// v0.4.11 scrolling model: scroll-up enters copy-mode positioned in history;
@@ -67,15 +87,29 @@ fn resize_junk_history_is_clearable_and_stays_zero() {
 fn copy_mode_enters_on_scroll_up_and_auto_exits_at_bottom() {
     let s = Server::new("scroll");
     s.shell("i=0; while [ $i -lt 40 ]; do echo line$i; i=$((i+1)); done");
-    let hist: i64 = s.fmt("#{history_size}").parse().expect("history_size numeric");
-    assert!(hist > 0, "40 echoed lines on a 12-row pane must create history");
+    let hist: i64 = s
+        .fmt("#{history_size}")
+        .parse()
+        .expect("history_size numeric");
+    assert!(
+        hist > 0,
+        "40 echoed lines on a 12-row pane must create history"
+    );
 
     s.run(&["copy-mode", "-e", "-t", "t"]);
     s.run(&["send-keys", "-t", "t", "-X", "-N", "5", "scroll-up"]);
-    assert_eq!(s.fmt("#{pane_in_mode}"), "1", "scroll-up must land in copy-mode");
+    assert_eq!(
+        s.fmt("#{pane_in_mode}"),
+        "1",
+        "scroll-up must land in copy-mode"
+    );
 
     s.run(&["send-keys", "-t", "t", "-X", "-N", "500", "scroll-down"]);
-    assert_eq!(s.fmt("#{pane_in_mode}"), "0", "copy-mode -e must auto-exit at bottom");
+    assert_eq!(
+        s.fmt("#{pane_in_mode}"),
+        "0",
+        "copy-mode -e must auto-exit at bottom"
+    );
 }
 
 /// Scheduled prompts and pty_write inject via `send-keys -l`: the text must
