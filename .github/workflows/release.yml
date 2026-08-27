@@ -1,16 +1,12 @@
 name: release
 
-# Build the macOS app (Apple Silicon) for a v* tag and attach the .dmg to a
-# GitHub Release. Three triggers, because push-event delivery is currently
-# broken for this account (events appear in the feed but never create runs;
-# workflow_dispatch works — likely an account-level flag, ask GitHub support):
-#   1. tag push        — instant, once event delivery is fixed
-#   2. schedule        — every 15 min, builds the newest v* tag that has no
-#                        release yet (the bridge while pushes don't trigger)
-#   3. workflow_dispatch — manual, builds the newest unreleased v* tag
-#
-# Bundles are unsigned/un-notarized: downloaders must right-click → Open on
-# first launch. Add Developer ID secrets + tauri-action signing inputs later.
+# Build, sign, and notarize the macOS app (Apple Silicon) for a v* tag,
+# then attach the .dmg and in-app-updater artifacts to a GitHub Release.
+# Triggers:
+#   1. tag push          — the normal path
+#   2. schedule (hourly) — resilience: builds the newest v* tag that has no
+#                          release yet (covers platform event-delivery outages)
+#   3. workflow_dispatch — manual fallback, same resolve logic
 
 on:
   push:
