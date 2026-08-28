@@ -115,6 +115,13 @@ Frontend gates: `node --check` (syntax) · `ui/test/pure.test.mjs` (node:test)
     injection that FAILS was not sent — retry is safe, nothing is audited.
     The crash window between persist-intent and the send cannot be closed:
     recovery assumes sent, never re-sends.
+- File drop / image paste into a terminal pane (Warp-style): WKWebView
+  surfaces external files as CONTENT with no path, so the frontend reads the
+  bytes and `save_dropped_file` persists them 0600 under `~/.deck/drops`
+  (0700, week-old entries pruned at boot); the returned path is typed into
+  the session shell-quoted, no Enter. Card/pane DnD is distinguished by the
+  `text/deck-session` payload; file drags show a plain accent outline, not
+  the split dropzone.
 - The GUI design reference (mock, same UI with fake data) lives in `gui/index.html`.
 
 ### WKWebView / Tauri gotchas (each cost a real bug)

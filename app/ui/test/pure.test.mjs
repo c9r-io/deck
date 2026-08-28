@@ -7,8 +7,16 @@ import assert from 'node:assert/strict';
 import {
   sessionName, fmtMem, fmtEvery, minToHM, hmToMin, winHas, hasWindow,
   nextFire, groupQueue, groupSteps, itemDead, blockedBy,
-  chainQuietHint, CHAIN_QUIET_SECS,
+  chainQuietHint, CHAIN_QUIET_SECS, shQuote,
 } from '../js/pure.js';
+
+test('shQuote leaves safe paths bare and single-quotes the rest', () => {
+  assert.equal(shQuote('/Users/x/shot.png'), '/Users/x/shot.png');
+  assert.equal(shQuote('~/.deck/drops/a-b_c.1.png'), '~/.deck/drops/a-b_c.1.png');
+  assert.equal(shQuote('/tmp/my shot.png'), "'/tmp/my shot.png'");
+  assert.equal(shQuote("/tmp/o'brien.png"), "'/tmp/o'\\''brien.png'");
+  assert.equal(shQuote('/tmp/$HOME`x`;rm.png'), "'/tmp/$HOME`x`;rm.png'");
+});
 
 test('sessionName derives a safe slug + id suffix', () => {
   assert.equal(sessionName('My API Server!', 'Cw741'), 'deck-my-api-server-w741');

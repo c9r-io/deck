@@ -9,6 +9,13 @@ export function sessionName(title, id) {
   return 'deck-' + slug.slice(0, 24).replace(/-+$/, '') + '-' + id.slice(-4);
 }
 
+/* POSIX single-quote escaping for a path typed into a shell or agent
+   prompt; simple safe paths pass through unquoted. */
+export function shQuote(p) {
+  const s = String(p);
+  return /^[A-Za-z0-9_/.~-]+$/.test(s) ? s : "'" + s.replace(/'/g, "'\\''") + "'";
+}
+
 /* ---------- formatting ---------- */
 export function fmtMem(mb) {
   return mb >= 1024 ? (mb / 1024).toFixed(1) + 'G' : Math.round(mb) + 'M';

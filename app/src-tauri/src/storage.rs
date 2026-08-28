@@ -350,6 +350,31 @@ pub fn acquire_instance_lock(dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Best-effort cleanup of transient files older than `max_age_secs`
+/// (~/.deck/drops — files saved from drag/paste so their path could be
+/// typed into a session). Missing dir is fine; failures are silent.
+pub(crate) fn prune_old_files(dir: &Path, max_age_secs: u64) {
+    let now = now_epoch();
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for e in rd.flatten() {
+        if !e.file_type().map(|t| t.is_file()).unwrap_or(false) {
+            continue;
+        }
+        let old = e
+            .metadata()
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|m| m.duration_since(UNIX_EPOCH).ok())
+            .map(|d| now.saturating_sub(d.as_secs()) > max_age_secs)
+            .unwrap_or(false);
+        if old {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
+}
+
 // ---------- logging -------------------------------------------------------------
 
 /// Stable, content-free category for an error message. The FULL error text

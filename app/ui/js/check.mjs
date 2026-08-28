@@ -25,6 +25,7 @@ const BROWSER = new Set([
   'KeyboardEvent', 'MouseEvent', 'localStorage', 'structuredClone', 'queueMicrotask',
   'alert', 'prompt', 'confirm', 'getComputedStyle', 'encodeURIComponent', 'decodeURIComponent', 'fetch',
   'innerWidth', 'innerHeight', 'devicePixelRatio', 'performance', 'crypto', 'history',
+  'FileReader',
   // vendored xterm.js globals (classic scripts)
   'Terminal', 'FitAddon', 'WebLinksAddon', 'ClipboardAddon',
 ]);

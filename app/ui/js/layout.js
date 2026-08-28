@@ -4,6 +4,7 @@ import { $, DOT_TITLES, duev, inv, listen, setMemChip, state, store, uev } from 
 import { inlineRename, toast } from './dialogs.js';
 import { TERM_THEME, panes, pollNow, provider, render, renderSidebar, activeProject } from './board.js';
 import { SHELL_FG, acceptGhost, feedMirror, maybeRecordCommand, nextShellTitle, renderSuggest, resetSuggest, showLinkCtx, updateGhost } from './terminal.js';
+import { shQuote } from './pure.js';
 import { toggleQueuePanel } from './scheduler.js';
 
 /* ----- layout tree helpers ----- */
@@ -58,6 +59,44 @@ export function looksLikePath(v) {
   if (/^(~\/|\.{1,2}\/|\/)/.test(v)) return true;
   if (v.split('/').length > 2) return true;
   return /\.[A-Za-z0-9]{1,8}(?::\d+(?::\d+)?)?$/.test(v.split('/').pop());
+}
+
+/* ----- file drop / image paste → path insertion (Warp-style) ----- */
+
+/* external drag from Finder / the screenshot thumbnail — never true for
+   deck's own card/pane drags (those use text/deck-session) */
+export function isFileDrag(dt) {
+  return !!dt && Array.from(dt.types || []).includes('Files');
+}
+
+const MAX_DROP_BYTES = 32 * 1024 * 1024;
+
+/* WKWebView surfaces dropped/pasted files as CONTENT (no usable path), so:
+   read the bytes → backend saves them 0600 under ~/.deck/drops → the saved
+   path is typed into the pane's session (quoted, no Enter — the user still
+   owns submission). */
+async function insertDroppedFiles(pane, fileList) {
+  const files = Array.from(fileList).slice(0, 4);
+  const paths = [];
+  for (const f of files) {
+    if (f.size > MAX_DROP_BYTES) { toast('file too large to attach (32MB max)'); continue; }
+    try {
+      const b64 = await new Promise((res, rej) => {
+        const r = new FileReader();
+        r.onload = () => res(String(r.result).split(',')[1] || '');
+        r.onerror = () => rej(new Error('read failed'));
+        r.readAsDataURL(f);
+      });
+      paths.push(await inv('save_dropped_file', { name: f.name || 'pasted.png', dataB64: b64 }));
+    } catch (e) {
+      toast('could not attach file: ' + e);
+    }
+  }
+  if (!paths.length) return;
+  focusPane(pane.session);
+  const text = paths.map(shQuote).join(' ') + ' ';
+  inv('pty_write', { name: pane.session, dataB64: strToB64(text) })
+    .catch(() => uev('pty-write-fail'));
 }
 
 export function createPane(card) {
@@ -116,9 +155,18 @@ export function createPane(card) {
   };
   body.addEventListener('mousedown', () => { if (attachedName !== session) focusPane(session); });
 
-  /* drag a card (from sidebar or board) onto a pane edge to split (方案 A) */
+  /* drag a card (from sidebar or board) onto a pane edge to split (方案 A);
+     an EXTERNAL file drag (Finder, the screenshot floating thumbnail) is a
+     different gesture: drop anywhere on the pane to attach the file — its
+     path is typed into the session, Warp-style */
   el.addEventListener('dragover', e => {
     e.preventDefault();
+    if (isFileDrag(e.dataTransfer)) {
+      e.dataTransfer.dropEffect = 'copy';
+      $('dropzone').style.display = 'none';
+      el.classList.add('file-drop');
+      return;
+    }
     const r = el.getBoundingClientRect();
     const x = (e.clientX - r.left) / r.width;
     const y = (e.clientY - r.top) / r.height;
@@ -141,15 +189,34 @@ export function createPane(card) {
       dz.style.display = 'none';
     }
   });
-  el.addEventListener('dragleave', () => { $('dropzone').style.display = 'none'; });
+  el.addEventListener('dragleave', () => {
+    $('dropzone').style.display = 'none';
+    el.classList.remove('file-drop');
+  });
   el.addEventListener('drop', e => {
     e.preventDefault();
+    el.classList.remove('file-drop');
     const dz = $('dropzone');
     dz.style.display = 'none';
+    if (e.dataTransfer.files && e.dataTransfer.files.length) {
+      insertDroppedFiles(pane, e.dataTransfer.files);
+      return;
+    }
     const droppedSid = e.dataTransfer.getData('text/deck-session');
     if (!droppedSid || dz.dataset.target !== pane.sid) return;
     addSplit(pane.sid, dz.dataset.dir, dz.dataset.before === 'true', droppedSid);
   });
+  /* ⌘V with an IMAGE on the clipboard (⌃⌘⇧4 screenshots): the native paste
+     event carries a file, which xterm's text path would silently drop —
+     save it and type its path instead. Text pastes pass through untouched. */
+  body.addEventListener('paste', e => {
+    const files = e.clipboardData && e.clipboardData.files;
+    if (files && files.length) {
+      e.preventDefault();
+      e.stopPropagation();
+      insertDroppedFiles(pane, files);
+    }
+  }, true);
 
   wireTerminalInput(pane, t, body);
   return pane;

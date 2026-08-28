@@ -31,6 +31,9 @@ fn main() {
         storage::warn(format!("data privacy hardening incomplete: {e}"));
     }
     storage::rotate_log();
+    // dropped/pasted files only exist so their path could be typed into a
+    // session — a week later nobody references them anymore
+    storage::prune_old_files(&deck_dir.join("drops"), 7 * 24 * 3600);
     if let Err(e) = storage::acquire_instance_lock(&deck_dir) {
         applog(&format!(
             "[boot] instance lock unavailable ({}) — exiting",
@@ -178,6 +181,7 @@ fn main() {
             scheduler::queue_skip,
             commands::storage_warnings,
             scheduler::queue_clear_session,
+            commands::save_dropped_file,
         ])
         .build(tauri::generate_context!())
         .expect("error while building deck")

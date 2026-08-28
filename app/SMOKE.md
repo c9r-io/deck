@@ -28,6 +28,18 @@ tagging a release; 3 minutes total.
 - [ ] Second command typed shows gray ghost; Tab applies remainder only
 - [ ] Separator lines appear between shell commands, none inside `claude`
 
+## File drop & image paste (Warp-style path insertion)
+- [ ] Take a screenshot (⌘⇧4) → drag its floating thumbnail onto a terminal
+      pane → the pane outlines in accent, and on drop a quoted path under
+      `~/.deck/drops/` is typed at the cursor (no Enter); the agent/shell can
+      read that file
+- [ ] Drag a file from Finder onto a pane → same path insertion; dragging a
+      CARD between boards still works (file drags must not break card DnD)
+- [ ] ⌃⌘⇧4 (screenshot to clipboard) → ⌘V in a pane → same: file saved,
+      path typed; plain TEXT ⌘V still pastes as text
+- [ ] `ls -l ~/.deck/drops` → files 0600, dir 0700; relaunch after 7 days
+      (or backdate with touch) → old drops pruned
+
 ## Splits
 - [ ] ⌘D split; typing goes to the FOCUSED pane; no reflow jitter from the
       completion bar; divider drags
