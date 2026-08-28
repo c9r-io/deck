@@ -120,10 +120,11 @@ pub(crate) fn harden_data_dir(dir: &Path) -> Result<(), String> {
 /// command. Request-path loads return their warning in-band instead.
 pub static WARNINGS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
-/// `note` is always a backend-built template (file names + serde errors),
-/// never a raw frontend string — the only frontend log entry is `ui_event`.
+/// The full note goes to the USER (toast via storage_warnings / in-band
+/// warning); the log gets only a stable category code — notes can embed
+/// serde detail and quarantine file names, which stay out of app.log.
 pub fn warn(note: String) {
-    applog(&format!("[storage] {note}"));
+    applog(&format!("[storage] warning ({})", err_code(&note)));
     WARNINGS.lock().unwrap().push(note);
 }
 
@@ -224,9 +225,17 @@ pub fn load_typed<T: DeserializeOwned>(path: &Path) -> Result<Option<LoadOutcome
     let kept_at = match std::fs::rename(path, &corrupt) {
         Ok(()) => {
             // the damaged bytes may hold user content; a pre-migration 0644
-            // mode would survive the rename, so restrict explicitly
+            // mode would survive the rename, so restrict explicitly. Only
+            // the file NAME is reported (it sits beside the original) — the
+            // absolute path never enters warnings or logs.
             restrict_to_user(&corrupt);
-            format!(" — the damaged file was kept at {}", corrupt.display())
+            format!(
+                " — the damaged file was kept as {}",
+                corrupt
+                    .file_name()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_default()
+            )
         }
         Err(e) => format!(" (quarantining it also failed: {e})"),
     };
@@ -238,7 +247,11 @@ pub fn load_typed<T: DeserializeOwned>(path: &Path) -> Result<Option<LoadOutcome
         Ok(payload) => {
             let warning =
                 format!("{name} was unreadable ({main_err}); recovered from its .bak backup{kept_at}");
-            applog(&format!("[storage] {warning}"));
+            // detail goes to the caller; the log gets file name + category
+            applog(&format!(
+                "[storage] {name} recovered from backup ({})",
+                err_code(&main_err)
+            ));
             Ok(Some(LoadOutcome {
                 payload,
                 source: "backup",
@@ -338,6 +351,48 @@ pub fn acquire_instance_lock(dir: &Path) -> Result<(), String> {
 }
 
 // ---------- logging -------------------------------------------------------------
+
+/// Stable, content-free category for an error message. The FULL error text
+/// goes back to the current operation's caller (command result → UI toast);
+/// the log gets only this code — raw io/tmux/storage/serde Display texts can
+/// embed absolute paths, directories or file contents and must never be
+/// interpolated into app.log.
+pub(crate) fn err_code(e: &str) -> &'static str {
+    let l = e.to_ascii_lowercase();
+    if l.contains("permission denied") || l.contains("read-only") {
+        "perm"
+    } else if l.contains("already running") {
+        "locked"
+    } else if l.contains("not a directory") {
+        "not-dir"
+    } else if l.contains("tmux not runnable") {
+        "tmux-missing"
+    } else if l.contains("no such file") || l.contains("not found") || l.contains("no such path") {
+        "missing"
+    } else if l.contains("no space") || l.contains("quota") {
+        "disk-full"
+    } else if l.contains("newer deck") {
+        "newer-schema"
+    } else if l.contains("invalid json")
+        || l.contains("wrong structure")
+        || l.contains("refusing to save")
+        || l.contains("expected")
+    {
+        "invalid-doc"
+    } else if l.contains("no server")
+        || l.contains("can't find session")
+        || l.contains("can't find pane")
+        || l.contains("no such session")
+    {
+        "no-session"
+    } else if l.contains("tmux") {
+        "tmux"
+    } else if l.contains("unreadable") || l.contains("backup") || l.contains("corrupt") {
+        "recovery"
+    } else {
+        "other"
+    }
+}
 
 /// Append a line to ~/.deck/app.log (the app may be launched via `open`,
 /// where stderr goes nowhere useful). The log is chmod 0600: it must never
@@ -618,6 +673,24 @@ mod tests {
             .expect("quarantine file exists")
             .path();
         assert_eq!(mode_of(&corrupt), 0o600, "quarantine restricted");
+    }
+
+    #[test]
+    fn recovery_warning_names_files_but_never_paths() {
+        let d = tdir("noleak");
+        let p = d.join("x.json");
+        save(&p, r#"{"v":1}"#).unwrap();
+        save(&p, r#"{"v":2}"#).unwrap();
+        std::fs::write(&p, "{garbage").unwrap();
+        let w = load_doc(&p).unwrap().unwrap().warning.unwrap();
+        assert!(
+            w.contains("x.corrupt-"),
+            "quarantine stays discoverable: {w}"
+        );
+        assert!(
+            !w.contains(d.to_str().unwrap()),
+            "no absolute path in the user-facing warning: {w}"
+        );
     }
 
     #[test]

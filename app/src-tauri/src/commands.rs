@@ -14,57 +14,142 @@ use crate::tmux::{
     validate_session_name,
 };
 
-/// The only frontend diagnostic codes the backend will log. Anything else —
-/// and any detail slug that isn't a short plain token — is dropped, so no
-/// free-form frontend string (keystrokes, prompts, paths, URLs, error
-/// messages) can reach app.log even if the webview is compromised.
-const UI_EVENT_CODES: &[&str] = &[
-    "js-error",
-    "js-reject",
-    "csp-block",
-    "listen-fail",
-    "ping-recv",
-    "ping-fail",
-    "update-avail",
-    "update-check-fail",
-    "update-install-fail",
-    "board-load-fail",
-    "settings-load-fail",
-    "settings-save-fail",
-    "poll-fail",
-    "poll-recovered",
-    "clipboard-addon-fail",
-    "separator",
-    "mirror-desync",
-    "ondata",
-    "pty-write-fail",
-    "pty-rx",
-    "keydown",
-    "composition",
-    "record",
-    "record-skip",
-    "record-fail",
+/// Per-event detail policy: which detail strings an event code may log.
+/// Anything outside its policy is logged as `<redacted>` — the code and the
+/// integers survive, the string does not. There is deliberately NO generic
+/// "looks like a slug" fallback: a token-shaped secret is still a secret.
+pub(crate) enum DetailPolicy {
+    /// this event never carries a detail string
+    None,
+    /// closed enumeration of allowed values (exact match)
+    Closed(&'static [&'static str]),
+    /// a bare version number: digits and dots only, ≤16 chars
+    Version,
+}
+
+const JS_ERROR_CLASSES: &[&str] = &[
+    "TypeError",
+    "ReferenceError",
+    "SyntaxError",
+    "RangeError",
+    "EvalError",
+    "URIError",
+    "AggregateError",
+    "InternalError",
+    "error",
 ];
 
+/// CSP directive names the securitypolicyviolation listener may report.
+const CSP_DIRECTIVES: &[&str] = &[
+    "default-src",
+    "script-src",
+    "script-src-elem",
+    "script-src-attr",
+    "style-src",
+    "style-src-elem",
+    "style-src-attr",
+    "img-src",
+    "font-src",
+    "connect-src",
+    "media-src",
+    "object-src",
+    "worker-src",
+    "frame-src",
+    "form-action",
+    "base-uri",
+];
+
+/// Rust→JS event names the frontend registers listeners for.
+const LISTEN_TARGETS: &[&str] = &[
+    "deck-ping",
+    "update-check",
+    "update-check-manual",
+    "menu-clear",
+    "queue-changed",
+    "queue-fired",
+    "pty-data",
+    "pty-exit",
+];
+
+/// Keydown CATEGORIES — the frontend classifies before sending; a raw key
+/// name (let alone typed text) never crosses the bridge.
+const KEY_CLASSES: &[&str] = &[
+    "char",
+    "enter",
+    "backspace",
+    "delete",
+    "tab",
+    "escape",
+    "arrow",
+    "mod",
+    "fn",
+    "nav",
+    "compose",
+    "other",
+];
+
+/// Foreground-process CATEGORIES for record-skip (why a typed line was not
+/// recorded). Process names themselves stay out of the log.
+const FG_CLASSES: &[&str] = &["no-card", "no-fg", "agent", "editor", "repl", "other"];
+
+/// The only frontend diagnostic codes the backend will log, each with its
+/// closed detail policy. Anything else is dropped, so no free-form frontend
+/// string (keystrokes, prompts, paths, URLs, error messages, token-shaped
+/// slugs) can reach app.log even if the webview is compromised.
+const UI_EVENT_SPECS: &[(&str, DetailPolicy)] = &[
+    ("js-error", DetailPolicy::Closed(JS_ERROR_CLASSES)),
+    ("js-reject", DetailPolicy::Closed(JS_ERROR_CLASSES)),
+    ("csp-block", DetailPolicy::Closed(CSP_DIRECTIVES)),
+    ("listen-fail", DetailPolicy::Closed(LISTEN_TARGETS)),
+    ("ping-recv", DetailPolicy::None),
+    ("ping-fail", DetailPolicy::None),
+    ("update-avail", DetailPolicy::Version),
+    ("update-check-fail", DetailPolicy::Closed(&["manual"])),
+    ("update-install-fail", DetailPolicy::None),
+    ("board-load-fail", DetailPolicy::None),
+    ("settings-load-fail", DetailPolicy::None),
+    ("settings-save-fail", DetailPolicy::None),
+    ("poll-fail", DetailPolicy::None),
+    ("poll-recovered", DetailPolicy::None),
+    ("clipboard-addon-fail", DetailPolicy::None),
+    (
+        "separator",
+        DetailPolicy::Closed(&["no-marker", "at", "fail"]),
+    ),
+    ("mirror-desync", DetailPolicy::Closed(&["esc", "plain"])),
+    ("ondata", DetailPolicy::Closed(&["desync", "ok"])),
+    ("pty-write-fail", DetailPolicy::None),
+    ("pty-rx", DetailPolicy::None),
+    ("keydown", DetailPolicy::Closed(KEY_CLASSES)),
+    ("composition", DetailPolicy::Closed(&["start", "end"])),
+    ("record", DetailPolicy::None),
+    ("record-skip", DetailPolicy::Closed(FG_CLASSES)),
+    ("record-fail", DetailPolicy::None),
+];
+
+fn detail_allowed(policy: &DetailPolicy, d: &str) -> bool {
+    match policy {
+        DetailPolicy::None => false,
+        DetailPolicy::Closed(set) => set.contains(&d),
+        DetailPolicy::Version => {
+            !d.is_empty() && d.len() <= 16 && d.chars().all(|c| c.is_ascii_digit() || c == '.')
+        }
+    }
+}
+
 /// Pure formatter so the sanitization rules are unit-testable: whitelisted
-/// code, detail restricted to a 64-char `[A-Za-z0-9_.:-]` slug (no spaces,
-/// no slashes → no prose, paths or URLs), plus up to two integers.
+/// code, detail vetted by that code's OWN policy (closed enum / version
+/// pattern — never a generic slug), plus up to two integers.
 pub(crate) fn format_ui_event(
     code: &str,
     detail: Option<&str>,
     a: Option<i64>,
     b: Option<i64>,
 ) -> Option<String> {
-    if !UI_EVENT_CODES.contains(&code) {
-        return None;
-    }
+    let (_, policy) = UI_EVENT_SPECS.iter().find(|(c, _)| *c == code)?;
     let mut s = format!("[ui] {code}");
     if let Some(d) = detail {
-        if !d.is_empty()
-            && d.len() <= 64
-            && d.chars()
-                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | ':' | '-'))
-        {
+        if detail_allowed(policy, d) {
             s.push(' ');
             s.push_str(d);
         } else {
@@ -103,7 +188,8 @@ pub(crate) fn export_logs() -> Result<PathBuf, String> {
     if let Ok(o) = Command::new("uname").arg("-m").output() {
         out.push_str(&format!("arch: {}", String::from_utf8_lossy(&o.stdout)));
     }
-    out.push_str(&format!("tmux: {}\n", tmux_bin()));
+    // classification only — the absolute tmux path stays out of exports
+    out.push_str(&format!("tmux: {}\n", crate::tmux::tmux_kind()));
     out.push_str(&format!(
         "sessions: {}\n",
         tmux(&["list-sessions", "-F", "#{session_name}"])
@@ -546,7 +632,10 @@ pub(crate) fn poll_sessions(names: Vec<String>, tail_for: Vec<String>) -> Vec<Se
         match &listing {
             Err(e) if !*broken => {
                 *broken = true;
-                applog(&format!("[poll] session listing FAILED: {e}"));
+                applog(&format!(
+                    "[poll] session listing FAILED ({})",
+                    storage::err_code(e)
+                ));
             }
             Ok(_) if *broken => {
                 *broken = false;
@@ -740,27 +829,114 @@ mod tests {
         // unknown codes never reach the log line
         assert!(format_ui_event("rm -rf", None, None, None).is_none());
         assert!(format_ui_event("", None, None, None).is_none());
-        // clean slug + numbers pass
+        // per-code closed values + numbers pass
         assert_eq!(
             format_ui_event("js-error", Some("TypeError"), Some(42), None).unwrap(),
             "[ui] js-error TypeError a=42"
         );
-        // anything that could carry prose, prompts, paths or URLs is redacted
+        assert_eq!(
+            format_ui_event("keydown", Some("arrow"), Some(0), None).unwrap(),
+            "[ui] keydown arrow a=0"
+        );
+        assert_eq!(
+            format_ui_event("csp-block", Some("script-src"), None, None).unwrap(),
+            "[ui] csp-block script-src"
+        );
+        assert_eq!(
+            format_ui_event("listen-fail", Some("pty-data"), None, None).unwrap(),
+            "[ui] listen-fail pty-data"
+        );
+        assert_eq!(
+            format_ui_event("record-skip", Some("agent"), None, None).unwrap(),
+            "[ui] record-skip agent"
+        );
+        assert_eq!(
+            format_ui_event("update-avail", Some("0.4.27"), None, None).unwrap(),
+            "[ui] update-avail 0.4.27"
+        );
+        // anything that could carry prose, prompts, paths, URLs or a
+        // token-SHAPED slug (the old loophole) is redacted per event code
         for bad in [
             "my secret prompt text",
-            "/Users/someone/project",
+            "/Users/example/private",
             "https://example.com/x",
+            "file:///secret",
             "key=$AWS_SECRET",
+            "ghp_AbCdEf0123456789",
+            "sk_live_4242424242",
+            "distinctive-secret-9f8e",
+            "TypeErrorX", // near-miss of a closed value
             "line1\nline2",
             "词语",
         ] {
-            let line = format_ui_event("js-error", Some(bad), None, None).unwrap();
-            assert_eq!(line, "[ui] js-error <redacted>", "leaked: {bad}");
+            for code in ["js-error", "keydown", "record-skip", "separator"] {
+                let line = format_ui_event(code, Some(bad), None, None).unwrap();
+                assert_eq!(line, format!("[ui] {code} <redacted>"), "leaked: {bad}");
+                assert!(!line.contains("secret") && !line.contains("ghp_"));
+            }
         }
-        // over-long slugs are redacted wholesale, not truncated
-        let long = "a".repeat(65);
-        assert!(format_ui_event("keydown", Some(&long), None, None)
-            .unwrap()
-            .ends_with("<redacted>"));
+        // codes with no detail policy redact ANY detail
+        assert_eq!(
+            format_ui_event("poll-fail", Some("anything"), None, None).unwrap(),
+            "[ui] poll-fail <redacted>"
+        );
+        // version policy admits only bare dotted numbers
+        for bad in ["0.4.27-nightly", "v0.4.27", "1.2.3.4.5.6.7.8.9.10.11", ""] {
+            assert!(format_ui_event("update-avail", Some(bad), None, None)
+                .unwrap()
+                .ends_with("<redacted>"));
+        }
+    }
+
+    /// The backend log-side error classifier: raw io/tmux/storage errors map
+    /// to stable codes and their original text (paths included) never
+    /// survives into the returned category.
+    #[test]
+    fn err_codes_are_stable_and_path_free() {
+        use crate::storage::err_code;
+        let real_io = std::fs::read_to_string("/no/such/deck-test-file")
+            .unwrap_err()
+            .to_string();
+        assert_eq!(err_code(&real_io), "missing");
+        let cases = [
+            ("Permission denied (os error 13)", "perm"),
+            ("could not create temp file (permission denied)", "perm"),
+            ("Not a directory (os error 20)", "not-dir"),
+            ("not a directory: /Users/example/private", "not-dir"),
+            ("No space left on device (os error 28)", "disk-full"),
+            (
+                "deck.json was written by a newer deck (schema v9)",
+                "newer-schema",
+            ),
+            (
+                "refusing to save invalid JSON: expected value",
+                "invalid-doc",
+            ),
+            ("wrong structure: missing field `projects`", "invalid-doc"),
+            ("tmux send-keys failed: can't find session: x", "no-session"),
+            (
+                "tmux not runnable: No such file or directory",
+                "tmux-missing",
+            ),
+            ("tmux new-session failed: server exited", "tmux"),
+            ("another deck instance is already running", "locked"),
+            ("something entirely different", "other"),
+        ];
+        for (input, want) in cases {
+            let got = crate::storage::err_code(input);
+            assert_eq!(got, want, "{input}");
+            // categories are single tokens, never echoing the input
+            assert!(!got.contains('/') && got.len() <= 16);
+        }
+        // zero-hit guarantee: distinctive markers never survive classification
+        for marker in [
+            "ghp_AbCdEf0123456789",
+            "sk_live_4242",
+            "/Users/example/private",
+            "file:///secret",
+        ] {
+            let code = err_code(&format!("open failed for {marker}"));
+            assert!(!code.contains(marker));
+        }
     }
 }

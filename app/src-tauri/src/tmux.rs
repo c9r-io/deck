@@ -30,13 +30,32 @@ pub(crate) fn tmux_bin() -> &'static str {
         }
         for c in candidates {
             if std::path::Path::new(&c).exists() {
-                applog(&format!("[tmux] using {c}"));
+                // log the CATEGORY, never the absolute path (it can embed
+                // the .app location / user directories and ends up in exports)
+                applog(&format!("[tmux] using {} binary", tmux_kind_of(&c)));
                 return c;
             }
         }
         applog("[tmux] falling back to PATH lookup");
         "tmux".to_string()
     })
+}
+
+/// Path-free classification of a tmux binary location, for logs/exports.
+pub(crate) fn tmux_kind_of(path: &str) -> &'static str {
+    if path == "tmux" {
+        "PATH"
+    } else if path.starts_with("/opt/homebrew") || path.starts_with("/usr/local") {
+        "homebrew"
+    } else if path.starts_with("/opt/local") {
+        "macports"
+    } else {
+        "sidecar"
+    }
+}
+
+pub(crate) fn tmux_kind() -> &'static str {
+    tmux_kind_of(tmux_bin())
 }
 
 /// deck runs its own tmux server (socket "deck"): the bundled binary never

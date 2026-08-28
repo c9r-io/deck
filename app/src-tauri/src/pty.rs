@@ -170,8 +170,13 @@ pub(crate) fn attach_session(
     cmd.env("TERM", "xterm-256color");
     cmd.env("LANG", "en_US.UTF-8");
     let child = pair.slave.spawn_command(cmd).map_err(|e| {
-        applog(&format!("[pty] attach spawn failed for {name}: {e}"));
-        e.to_string()
+        // the raw error (may embed the tmux path) goes to the caller only
+        let msg = e.to_string();
+        applog(&format!(
+            "[pty] attach spawn failed for {name} ({})",
+            crate::storage::err_code(&msg)
+        ));
+        msg
     })?;
     drop(pair.slave);
     applog(&format!("[pty] attached {name} ({cols}x{rows})"));

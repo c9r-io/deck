@@ -79,10 +79,21 @@ export const errClass = e => {
   return m ? m[1] : 'error';
 };
 window.onerror = (msg, src, line) => uev('js-error', errClass(msg), line);
+/* keydown CATEGORY only — raw key names never cross into the log (the
+   backend's closed allowlist would redact them anyway) */
+const keyClass = k =>
+  k.length === 1 ? 'char'
+  : /^(Enter|Backspace|Delete|Tab|Escape)$/.test(k) ? k.toLowerCase()
+  : k.startsWith('Arrow') ? 'arrow'
+  : /^(Shift|Control|Alt|Meta|CapsLock)$/.test(k) ? 'mod'
+  : /^F\d+$/.test(k) ? 'fn'
+  : /^(Home|End|PageUp|PageDown)$/.test(k) ? 'nav'
+  : /^(Dead|Process|Compose)/.test(k) ? 'compose'
+  : 'other';
 document.addEventListener('keydown', e => {
   if (kdLogged < 20) {
     kdLogged++;
-    duev('keydown', e.key.length === 1 ? 'char' : e.key, e.isComposing ? 1 : 0);
+    duev('keydown', keyClass(e.key), e.isComposing ? 1 : 0);
   }
 }, true);
 document.addEventListener('compositionstart', e => duev('composition', 'start', (e.data || '').length), true);

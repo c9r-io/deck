@@ -32,7 +32,10 @@ fn main() {
     }
     storage::rotate_log();
     if let Err(e) = storage::acquire_instance_lock(&deck_dir) {
-        applog(&format!("[boot] {e} — exiting"));
+        applog(&format!(
+            "[boot] instance lock unavailable ({}) — exiting",
+            storage::err_code(&e)
+        ));
         let _ = Command::new("osascript")
             .args([
                 "-e",
@@ -53,7 +56,10 @@ fn main() {
                     storage::warn(n);
                 }
                 if let Err(e) = scheduler::save_queue(&qs) {
-                    applog(&format!("[queue] persist (crash recovery) FAILED: {e}"));
+                    applog(&format!(
+                        "[queue] persist (crash recovery) FAILED ({})",
+                        storage::err_code(&e)
+                    ));
                 }
             }
             qs
@@ -109,9 +115,13 @@ fn main() {
                     let _ = app.emit("update-check-manual", ());
                 }
                 if e.id() == "export-logs" {
+                    // never log the export's absolute path (it embeds the
+                    // user's home directory) — Finder reveals it anyway
                     match commands::export_logs() {
-                        Ok(p) => applog(&format!("[export] logs → {}", p.display())),
-                        Err(err) => applog(&format!("[export] FAILED: {err}")),
+                        Ok(_) => applog("[export] logs written"),
+                        Err(err) => {
+                            applog(&format!("[export] FAILED ({})", storage::err_code(&err)))
+                        }
                     }
                 }
             });

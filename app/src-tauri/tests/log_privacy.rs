@@ -79,13 +79,21 @@ fn free_form_log_channel_stays_dead() {
 fn every_event_call_site_uses_a_whitelisted_code() {
     let commands = std::fs::read_to_string(manifest("src/commands.rs")).unwrap();
     let list = commands
-        .split("UI_EVENT_CODES: &[&str] = &[")
+        .split("UI_EVENT_SPECS: &[(&str, DetailPolicy)] = &[")
         .nth(1)
         .expect("whitelist present")
         .split("];")
         .next()
         .unwrap();
-    let codes: Vec<&str> = list.split('"').skip(1).step_by(2).collect();
+    // each spec is `("code", DetailPolicy::…)`; rustfmt may split it across
+    // lines, leaving the code either as `("code",` or a bare `"code",` line
+    let codes: Vec<&str> = list
+        .lines()
+        .map(|l| l.trim())
+        .filter_map(|l| l.strip_prefix("(\"").or_else(|| l.strip_prefix('"')))
+        .filter(|l| l.contains("\","))
+        .filter_map(|l| l.split('"').next())
+        .collect();
     assert!(codes.len() > 10, "whitelist parsed: {codes:?}");
 
     let mut sites = 0;
@@ -142,6 +150,12 @@ fn backend_logs_carry_no_user_content() {
         "{cmd}",
         "{prompt}",
         ".stack",
+        // raw error Display / paths must go through storage::err_code or a
+        // file_name() — never interpolated into a log line verbatim
+        ": {e}",
+        ": {err}",
+        ": {pe}",
+        ".display()",
     ];
     for (name, src) in backend_sources() {
         for line in src.lines() {

@@ -87,9 +87,19 @@ tagging a release; 3 minutes total.
 - [ ] With Settings → debug logging ON, repeat — including ⌘V-pasting the
       marker into the shell (bracketed paste) and typing it through the IME:
       marker still absent (debug adds volume, never content; the frontend
-      can only emit whitelisted event codes + numbers)
-- [ ] `ls -l ~/.deck/app.log ~/.deck/history.json ~/.deck/exports/` →
-      everything `-rw-------` (0600)
+      can only emit whitelisted event codes, per-code closed detail values
+      and numbers)
+- [ ] `grep -E '/Users/|file://' ~/.deck/app.log ~/.deck/exports/*` → zero
+      hits (errors are logged as category codes; the tmux binary is logged
+      as sidecar/homebrew/…, never as a path; storage recovery logs name
+      files, never absolute paths)
+- [ ] Permissions: `ls -ld ~/.deck ~/.deck/exports` → `drwx------` (0700);
+      `ls -l ~/.deck/*.json ~/.deck/*.json.bak ~/.deck/*.corrupt-* \
+      ~/.deck/app.log ~/.deck/exports/*` → everything `-rw-------` (0600),
+      including deck.json, queue.json, settings.json, history.json, every
+      `.bak`, every quarantined `.corrupt-*` and every export
+- [ ] `chmod 644 ~/.deck/deck.json; chmod 755 ~/.deck` → relaunch deck →
+      both are back to 0600/0700 (boot-time migration)
 
 ## Security baseline
 - [ ] `app.log` contains no `CSP` violation lines after a full session of use

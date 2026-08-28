@@ -189,10 +189,20 @@ export function feedMirror(d) {
    fills when a shell exits, and deck shells live for days. Agent prompts
    are excluded via the pane's foreground process. */
 export const SHELL_FG = /^-?(zsh|bash|fish|sh|dash)$/;
+/* foreground-process CATEGORY for diagnostics — the process name itself
+   never reaches the log (backend closed allowlist would redact it) */
+const fgClass = fg => {
+  if (!fg) return 'no-fg';
+  const f = fg.replace(/^-/, '');
+  if (/^(claude|codex|gemini|aider|goose)$/.test(f)) return 'agent';
+  if (/^(vim|nvim|nano|emacs|hx|micro)$/.test(f)) return 'editor';
+  if (/^(node|python\d*|ruby|irb|deno|bun)$/.test(f)) return 'repl';
+  return 'other';
+};
 export function maybeRecordCommand(cmd) {
   const c = provider.get(state.sessionId);
   if (!c) { duev('record-skip', 'no-card'); return; }
-  if (!SHELL_FG.test(c.fg || '')) { duev('record-skip', c.fg); return; }
+  if (!SHELL_FG.test(c.fg || '')) { duev('record-skip', fgClass(c.fg)); return; }
   duev('record', null, cmd.length);
   inv('record_command', { cmd }).catch(() => uev('record-fail'));
   histCache = [cmd, ...histCache.filter(x => x !== cmd)];

@@ -1021,7 +1021,8 @@ pub(crate) fn send_one(
         });
         if let Err(e) = persist(&q) {
             applog(&format!(
-                "[queue] persist (pre-fire) FAILED: {e} — not sending this tick"
+                "[queue] persist (pre-fire) FAILED ({}) — not sending this tick",
+                storage::err_code(&e)
             ));
             q.pending.retain(|p| p.id != delivery);
             if let Some(it) = q.items.iter_mut().find(|i| i.id == sel.id) {
@@ -1046,7 +1047,10 @@ pub(crate) fn send_one(
             let mut q = qm.lock().unwrap();
             finalize_delivery(&mut q, &item.id, &delivery, now_epoch(), false);
             if let Err(e) = persist(&q) {
-                applog(&format!("[queue] persist (post-fire) FAILED: {e}"));
+                applog(&format!(
+                    "[queue] persist (post-fire) FAILED ({})",
+                    storage::err_code(&e)
+                ));
             }
             SendResult::Sent {
                 session: item.session.clone(),
@@ -1057,13 +1061,19 @@ pub(crate) fn send_one(
             note_failed(&mut q, &item.id, &e);
             let gave_up = q.items.iter().any(|i| i.id == item.id && item_dead(i));
             if let Err(pe) = persist(&q) {
-                applog(&format!("[queue] persist (post-failure) FAILED: {pe}"));
+                applog(&format!(
+                    "[queue] persist (post-failure) FAILED ({})",
+                    storage::err_code(&pe)
+                ));
             }
             drop(q);
+            // the raw error stays on the item (last_error → queue UI); the
+            // log gets only its category — tmux/start errors can embed paths
             applog(&format!(
-                "[queue] send FAILED for {} (attempt {}): {e}{}",
+                "[queue] send FAILED for {} (attempt {}, {}){}",
                 item.session,
                 item.attempts,
+                storage::err_code(&e),
                 if gave_up {
                     " — giving up"
                 } else {
@@ -1106,7 +1116,10 @@ pub(crate) fn spawn_scheduler(app: AppHandle) {
             let mut q = state.q.lock().unwrap();
             if purge_expired(&mut q, now_epoch()) {
                 if let Err(e) = save_queue(&q) {
-                    applog(&format!("[queue] persist (expiry purge) FAILED: {e}"));
+                    applog(&format!(
+                        "[queue] persist (expiry purge) FAILED ({})",
+                        storage::err_code(&e)
+                    ));
                 }
                 drop(q);
                 let _ = app.emit("queue-changed", ());
