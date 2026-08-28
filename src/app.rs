@@ -68,9 +68,7 @@ impl App {
     pub fn refresh(&mut self) {
         self.live_sessions = tmux::sessions();
         self.tail = match self.selected_card() {
-            Some(c) if self.live_sessions.contains(&c.session) => {
-                tmux::capture_tail(&c.session, 8)
-            }
+            Some(c) if self.live_sessions.contains(&c.session) => tmux::capture_tail(&c.session, 8),
             _ => Vec::new(),
         };
     }
@@ -81,7 +79,10 @@ impl App {
     }
 
     fn selected_global_index(&self) -> Option<usize> {
-        self.board.column_indices(self.sel_col).get(self.sel_row).copied()
+        self.board
+            .column_indices(self.sel_col)
+            .get(self.sel_row)
+            .copied()
     }
 
     fn clamp_row(&mut self) {
@@ -142,12 +143,17 @@ impl App {
             KeyCode::Char('K') => self.reorder_card(-1),
             KeyCode::Char('J') => self.reorder_card(1),
             KeyCode::Char('n') => {
-                self.mode = Mode::Input { kind: InputKind::NewTitle, buffer: String::new() };
+                self.mode = Mode::Input {
+                    kind: InputKind::NewTitle,
+                    buffer: String::new(),
+                };
             }
             KeyCode::Char('e') => {
                 if let Some(c) = self.selected_card() {
                     self.mode = Mode::Input {
-                        kind: InputKind::EditTitle { card_id: c.id.clone() },
+                        kind: InputKind::EditTitle {
+                            card_id: c.id.clone(),
+                        },
                         buffer: c.title.clone(),
                     };
                 }
@@ -155,7 +161,9 @@ impl App {
             KeyCode::Char('c') => {
                 if let Some(c) = self.selected_card() {
                     self.mode = Mode::Input {
-                        kind: InputKind::EditCommand { card_id: c.id.clone() },
+                        kind: InputKind::EditCommand {
+                            card_id: c.id.clone(),
+                        },
                         buffer: c.command.clone(),
                     };
                 }
@@ -163,8 +171,11 @@ impl App {
             KeyCode::Enter => {
                 if let Some(c) = self.selected_card() {
                     let (id, session, dir, command, title) = (
-                        c.id.clone(), c.session.clone(), c.dir.clone(),
-                        c.command.clone(), c.title.clone(),
+                        c.id.clone(),
+                        c.session.clone(),
+                        c.dir.clone(),
+                        c.command.clone(),
+                        c.title.clone(),
                     );
                     if !self.live_sessions.contains(&session) {
                         match tmux::new_session(&session, &dir, &command) {
@@ -189,8 +200,12 @@ impl App {
             }
             KeyCode::Char('s') => {
                 if let Some(c) = self.selected_card() {
-                    let (id, session, dir, command) =
-                        (c.id.clone(), c.session.clone(), c.dir.clone(), c.command.clone());
+                    let (id, session, dir, command) = (
+                        c.id.clone(),
+                        c.session.clone(),
+                        c.dir.clone(),
+                        c.command.clone(),
+                    );
                     if self.live_sessions.contains(&session) {
                         self.status = "session already running".into();
                     } else {
@@ -213,7 +228,9 @@ impl App {
             KeyCode::Char('x') => {
                 if let Some(c) = self.selected_card() {
                     if self.live_sessions.contains(&c.session) {
-                        self.mode = Mode::Confirm(ConfirmKind::KillSession { card_id: c.id.clone() });
+                        self.mode = Mode::Confirm(ConfirmKind::KillSession {
+                            card_id: c.id.clone(),
+                        });
                     } else {
                         self.status = "no live session".into();
                     }
@@ -221,12 +238,16 @@ impl App {
             }
             KeyCode::Char('d') => {
                 if let Some(c) = self.selected_card() {
-                    self.mode = Mode::Confirm(ConfirmKind::DeleteCard { card_id: c.id.clone() });
+                    self.mode = Mode::Confirm(ConfirmKind::DeleteCard {
+                        card_id: c.id.clone(),
+                    });
                 }
             }
             KeyCode::Char('o') => {
                 if let Some(c) = self.selected_card() {
-                    self.pending = Some(Action::EditNotes { card_id: c.id.clone() });
+                    self.pending = Some(Action::EditNotes {
+                        card_id: c.id.clone(),
+                    });
                 }
             }
             KeyCode::Char('r') => {
@@ -238,7 +259,9 @@ impl App {
     }
 
     fn on_key_input(&mut self, code: KeyCode) {
-        let Mode::Input { kind, buffer } = &mut self.mode else { return };
+        let Mode::Input { kind, buffer } = &mut self.mode else {
+            return;
+        };
         match code {
             KeyCode::Esc => {
                 self.mode = Mode::Normal;
@@ -264,14 +287,21 @@ impl App {
                     }
                     InputKind::NewCommand { title } => {
                         self.mode = Mode::Input {
-                            kind: InputKind::NewDir { title, command: text },
+                            kind: InputKind::NewDir {
+                                title,
+                                command: text,
+                            },
                             buffer: std::env::current_dir()
                                 .map(|p| p.display().to_string())
                                 .unwrap_or_else(|_| "~".into()),
                         };
                     }
                     InputKind::NewDir { title, command } => {
-                        let dir = if text.is_empty() { "~".to_string() } else { text };
+                        let dir = if text.is_empty() {
+                            "~".to_string()
+                        } else {
+                            text
+                        };
                         let dir = expand_tilde(&dir);
                         let id = model::new_id();
                         let session = model::session_name(&title, &id);
@@ -314,7 +344,9 @@ impl App {
     }
 
     fn on_key_confirm(&mut self, code: KeyCode) {
-        let Mode::Confirm(kind) = &self.mode else { return };
+        let Mode::Confirm(kind) = &self.mode else {
+            return;
+        };
         let kind = kind.clone();
         match code {
             KeyCode::Char('y') | KeyCode::Char('Y') => {
@@ -353,7 +385,9 @@ impl App {
     }
 
     fn move_card(&mut self, delta: i32) {
-        let Some(i) = self.selected_global_index() else { return };
+        let Some(i) = self.selected_global_index() else {
+            return;
+        };
         let col = self.board.cards[i].column as i32 + delta;
         if col < 0 || col >= COLUMNS.len() as i32 {
             return;
@@ -369,7 +403,9 @@ impl App {
 
     fn reorder_card(&mut self, delta: i32) {
         let idx = self.board.column_indices(self.sel_col);
-        let Some(&cur) = idx.get(self.sel_row) else { return };
+        let Some(&cur) = idx.get(self.sel_row) else {
+            return;
+        };
         let target_row = self.sel_row as i32 + delta;
         if target_row < 0 || target_row >= idx.len() as i32 {
             return;

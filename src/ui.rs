@@ -26,7 +26,10 @@ pub fn draw(f: &mut Frame, app: &App) {
 fn draw_board(f: &mut Frame, app: &App, area: Rect) {
     let cols = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints(vec![Constraint::Ratio(1, COLUMNS.len() as u32); COLUMNS.len()])
+        .constraints(vec![
+            Constraint::Ratio(1, COLUMNS.len() as u32);
+            COLUMNS.len()
+        ])
         .split(area);
 
     for (ci, name) in COLUMNS.iter().enumerate() {
@@ -48,8 +51,7 @@ fn draw_board(f: &mut Frame, app: &App, area: Rect) {
                 if selected_col && ri == app.sel_row {
                     style = style.bg(Color::DarkGray).add_modifier(Modifier::BOLD);
                 }
-                ListItem::new(Line::from(vec![dot, Span::raw(card.title.clone())]))
-                    .style(style)
+                ListItem::new(Line::from(vec![dot, Span::raw(card.title.clone())])).style(style)
             })
             .collect();
 
@@ -66,7 +68,10 @@ fn draw_board(f: &mut Frame, app: &App, area: Rect) {
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(border_style)
-            .title(Span::styled(format!(" {} ({}) ", name, indices.len()), title_style));
+            .title(Span::styled(
+                format!(" {} ({}) ", name, indices.len()),
+                title_style,
+            ));
 
         f.render_widget(List::new(items).block(block), cols[ci]);
     }

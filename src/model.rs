@@ -48,8 +48,8 @@ impl Board {
         if !path.exists() {
             return Ok(Board::default());
         }
-        let raw = fs::read_to_string(&path)
-            .with_context(|| format!("reading {}", path.display()))?;
+        let raw =
+            fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
         serde_json::from_str(&raw).with_context(|| format!("parsing {}", path.display()))
     }
 
@@ -116,6 +116,13 @@ pub fn session_name(title: &str, id: &str) -> String {
         .join("-");
     let slug = if slug.is_empty() { "card" } else { &slug };
     let slug: String = slug.chars().take(24).collect();
-    let tail: String = id.chars().rev().take(4).collect::<Vec<_>>().into_iter().rev().collect();
+    let tail: String = id
+        .chars()
+        .rev()
+        .take(4)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
     format!("deck-{}-{}", slug.trim_matches('-'), tail)
 }
