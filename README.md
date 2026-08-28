@@ -38,7 +38,8 @@ is exactly where you left it. Closing a card (corner ✕, or Ctrl+D in the
 shell) is the only way a session ends.
 
 **A real terminal.** Full xterm with truecolor, ⌘C/⌘V, and clickable file
-paths / URLs (open in editor, reveal in Finder, open in browser).
+paths / URLs. A path can open in the editor, reveal in Finder, open its parent
+in the configured editor, or start a new session in that parent directory.
 
 **Split view.** Watch several agents at once: drag a card from the sidebar
 onto a pane edge, or hit ⌘D / ⌘⇧D (or the ◧ ⬓ buttons) and pick a session.
@@ -52,7 +53,8 @@ come first within a Board, followed by running and stopped sessions.
 **Command completion, Warp-style.** deck records the commands you run in its
 shells (agent prompts are never recorded) and suggests as you type: the first
 match appears as gray ghost text at the cursor — **Tab or →** applies it; more
-candidates sit in a bar below.
+candidates sit in a reserved row below. Only the focused pane gives up that
+row, and xterm plus the underlying PTY are refit together.
 
 **Scheduled prompts.** The quota-window workflow: queue prompts on a session
 and have them typed in later — at a set time ("in 5 h, when my Claude window
@@ -132,6 +134,8 @@ The long-output copy panel captures up to the newest 20,000 terminal rows,
 preserves Unicode and blank lines, and says explicitly when that cap truncated
 older output. `Copy all` uses the native macOS clipboard path and reports
 success only after the write actually completes; ⌘C copies only the selection.
+Dragging a selection against either vertical edge continuously scrolls the
+document, including output far outside the initially visible viewport.
 
 Closing a card — or deleting a project, or letting its shell exit —
 permanently cancels every scheduled prompt for that session, and the card
@@ -139,6 +143,11 @@ only leaves the board once that cancellation is on disk, its tmux session is
 stopped, and the resulting Board is durably saved. A kill or save failure keeps
 the cards visible, manageable, and retryable. Nothing deck schedules can
 outlive the card it belongs to.
+
+All Board changes share one serial persist-before-commit transaction stream.
+A later close, rename, move, project edit, or debounced description is computed
+from the latest committed state when its turn begins, so concurrent UI actions
+cannot resurrect a card or silently overwrite each other.
 
 Sessions live on a dedicated tmux socket: `tmux -L deck ls` shows them,
 `tmux -L deck attach -t <name>` attaches from any terminal — deck never
@@ -154,7 +163,7 @@ app/src-tauri/binaries/build-tmux.sh      # rebuild the static tmux sidecar
 
 Requires a Rust toolchain. The frontend (`app/ui/`) is plain HTML + native
 ES modules — no Node runtime, no bundler (Node is used only for dev-time
-checks: `node --check`, `node --test app/ui/test/pure.test.mjs`,
+checks: `node --check`, `node --test app/ui/test/*.test.mjs`,
 `node app/ui/js/check.mjs`).
 
 Releases: push a `v*` tag — CI builds, signs, notarizes, and publishes the

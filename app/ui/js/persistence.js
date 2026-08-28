@@ -1,10 +1,11 @@
-// persistence.js — debounced board persistence
+// persistence.js — one global Board transaction queue
 // Part of deck's no-build frontend: native ES modules, no bundler.
 import { inv, store } from './state.js';
-import { toast } from './dialogs.js';
+import { createSerialTransactionQueue } from './pure.js';
 
-/* ---------- persistence ---------- */
-let boardSaveChain = Promise.resolve();
+const PERSISTED_CARD_KEYS = new Set([
+  'id', 'projectId', 'columnId', 'title', 'desc', 'cmd', 'dir', 'session',
+]);
 
 export function boardData(projects = store.projects, cards = store.cards) {
   return {
@@ -16,22 +17,71 @@ export function boardData(projects = store.projects, cards = store.cards) {
   };
 }
 
-function enqueueBoardSave(data) {
-  const write = () => inv('save_board', { data: JSON.stringify(data, null, 2) });
-  const pending = boardSaveChain.catch(() => {}).then(write);
-  boardSaveChain = pending;
+function snapshotBoard() {
+  return { projects: store.projects, cards: store.cards };
+}
+
+/* Polling may update runtime-only fields while the disk write is in flight.
+   Preserve those newest observations when the durable candidate commits. */
+function commitBoard(candidate) {
+  const live = new Map(store.cards.map(c => [c.id, c]));
+  candidate.cards = candidate.cards.map(card => {
+    const current = live.get(card.id);
+    if (!current) return card;
+    const runtime = {};
+    for (const [key, value] of Object.entries(current)) {
+      if (!PERSISTED_CARD_KEYS.has(key)) runtime[key] = value;
+    }
+    return { ...card, ...runtime };
+  });
+  store.projects = candidate.projects;
+  store.cards = candidate.cards;
+}
+
+const transactions = createSerialTransactionQueue({
+  snapshot: snapshotBoard,
+  serialize: candidate => JSON.stringify(boardData(candidate.projects, candidate.cards), null, 2),
+  persist: (_candidate, json) => inv('save_board', { data: json }),
+  commit: commitBoard,
+});
+
+let debounced = [];
+
+function enqueuePendingDebounced() {
+  clearTimeout(saveTimer);
+  saveTimer = null;
+  if (!debounced.length) return null;
+  const batch = debounced;
+  debounced = [];
+  const pending = transactions.enqueue(async candidate => {
+    let last;
+    for (const entry of batch) last = await entry.mutate(candidate);
+    return last;
+  });
+  pending.then(
+    () => batch.forEach(entry => entry.onCommit && entry.onCommit()),
+    error => batch.forEach(entry => entry.onError && entry.onError(error)),
+  );
   return pending;
 }
 
-/** Immediate, awaitable durability barrier used before destructive UI commits. */
-export function saveBoardNow(projects = store.projects, cards = store.cards) {
-  clearTimeout(saveTimer);
-  return enqueueBoardSave(boardData(projects, cards));
+/** Pending debounced edits are ordered immediately before this barrier. */
+export function mutateBoard(mutate) {
+  enqueuePendingDebounced();
+  return transactions.enqueue(mutate);
 }
 
-export function saveBoard() {
+export function mutateBoardDebounced(mutate, { delay = 300, onCommit, onError } = {}) {
+  debounced.push({ mutate, onCommit, onError });
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
-    enqueueBoardSave(boardData()).catch(e => toast('save failed: ' + e));
-  }, 300);
+    const pending = enqueuePendingDebounced();
+    if (pending) pending.catch(() => {});
+  }, delay);
+}
+
+export async function flushBoardMutations() {
+  const pending = enqueuePendingDebounced();
+  if (pending) await pending;
+  await transactions.idle();
 }

@@ -1,7 +1,7 @@
 // terminal.js — context menus & link opening, ghost completion, chrome wiring
 // Part of deck's no-build frontend: native ES modules, no bundler.
 import { $, duev, inv, state, uev } from './state.js';
-import { copyExact, copyShortcutAction, latestRequestGuard, quickBarBottom } from './pure.js';
+import { copyExact, copyShortcutAction, createSelectionAutoScroller, latestRequestGuard, linkMenuItems } from './pure.js';
 import { confirmDialog, inlineRename, toast, promptDialog } from './dialogs.js';
 import { closeSession, panes, provider, renameTab, render, switchProject, activeProject } from './board.js';
 import { backToBoard, openSession, strToB64 } from './layout.js';
@@ -22,8 +22,8 @@ export function renameCardInline(sid, preferredHost = null) {
     || document.querySelector(`.card[data-sid="${sid}"] .card-title`)
     || (state.sessionId === sid ? document.querySelector('.sess-head .sess-title .name') : null);
   if (!host) return;
-  inlineRename(host, s.title, v => {
-    if (v && v !== s.title) provider.rename(sid, v);
+  inlineRename(host, s.title, async v => {
+    if (v && v !== s.title) await provider.rename(sid, v);
     else render();
   });
 }
@@ -33,8 +33,8 @@ export function editDescInline(sid) {
   const card = document.querySelector(`.card[data-sid="${sid}"]`);
   if (!card) {
     // window.prompt is a silent no-op in WKWebView — use the in-app dialog
-    promptDialog('Description', s.desc || '').then(v => {
-      if (v !== null) provider.setDesc(sid, v.trim());
+    promptDialog('Description', s.desc || '').then(async v => {
+      if (v !== null) await provider.setDesc(sid, v.trim());
     });
     return;
   }
@@ -44,8 +44,8 @@ export function editDescInline(sid) {
     d.className = 'card-desc';
     card.querySelector('.card-meta').after(d);
   }
-  inlineRename(d, s.desc || '', v => {
-    if (v !== null) provider.setDesc(sid, v);
+  inlineRename(d, s.desc || '', async v => {
+    if (v !== null) await provider.setDesc(sid, v);
     render();
   }, true);
 }
@@ -111,30 +111,70 @@ export function showProjectCtx(e, pid) {
   placeCtx(e);
 }
 
-export function showLinkCtx(e, kind, value, cwd) {
+let linkActionGeneration = 0;
+
+export function showLinkCtx(e, kind, value, cwd, sid = null) {
   const ctx = $('ctx');
-  ctx.innerHTML = `<span class="ctx-value"></span>` + (kind === 'url'
-    ? `<button data-a="url">Open in browser</button>
-       <button data-a="copy">Copy URL</button>`
-    : `<button data-a="editor">Open in editor</button>
-       <button data-a="reveal">Reveal in Finder</button>
-       <button data-a="copy">Copy path</button>`);
+  linkActionGeneration++; // invalidate any older path resolution
+  const restoreFocus = document.activeElement;
+  ctx.innerHTML = '<span class="ctx-value"></span>' + linkMenuItems(kind)
+    .map(item => `<button data-a="${item.action}">${item.label}</button>`).join('');
   ctx.querySelector('.ctx-value').textContent = value;
-  ctx.onclick = ev => {
-    const a = ev.target.dataset && ev.target.dataset.a;
+  ctx.setAttribute('role', 'menu');
+  ctx.querySelectorAll('button').forEach(b => b.setAttribute('role', 'menuitem'));
+  const close = () => {
+    linkActionGeneration++;
     ctx.style.display = 'none';
+    ctx.onkeydown = null;
+    if (restoreFocus && restoreFocus.isConnected && restoreFocus.focus) restoreFocus.focus();
+  };
+  ctx.onclick = async ev => {
+    ev.stopPropagation();
+    const a = ev.target.dataset && ev.target.dataset.a;
+    if (!a) return;
+    const request = ++linkActionGeneration;
+    ctx.style.display = 'none';
+    if (restoreFocus && restoreFocus.isConnected && restoreFocus.focus) restoreFocus.focus();
     if (a === 'copy') {
       writeClipboard(value).then(() => toast('copied'), () => toast('copy failed'));
-    } else if (a) {
+    } else if (a === 'session-parent') {
+      try {
+        const origin = sid && provider.get(sid);
+        if (!origin) throw new Error('the source session is no longer available');
+        const resolved = await inv('resolve_parent_dir', { value, cwd: cwd || HOME });
+        if (request !== linkActionGeneration || !provider.get(sid)) return;
+        await newSession(resolved.directory, { projectId: origin.projectId, requireStart: true });
+        toast('opened a new session in the parent folder');
+      } catch (err) {
+        if (request === linkActionGeneration) toast('could not create a session from this path');
+      }
+    } else {
       inv('open_target', { kind: a, value, cwd: cwd || HOME })
-        .then(() => toast(a === 'url' ? 'opened in browser' : a === 'editor' ? 'opened in editor' : 'revealed in Finder'))
+        .then(() => toast(a === 'url' ? 'opened in browser' : a.startsWith('editor') ? 'opened in editor' : 'revealed in Finder'))
         .catch(err => toast('open failed: ' + err));
     }
   };
+  ctx.onkeydown = ev => {
+    const buttons = [...ctx.querySelectorAll('button')];
+    const i = buttons.indexOf(document.activeElement);
+    if (ev.key === 'Escape') { ev.preventDefault(); ev.stopPropagation(); close(); return; }
+    if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp' || ev.key === 'Home' || ev.key === 'End') {
+      ev.preventDefault(); ev.stopPropagation();
+      const next = ev.key === 'Home' ? 0 : ev.key === 'End' ? buttons.length - 1
+        : ev.key === 'ArrowDown' ? (i + 1 + buttons.length) % buttons.length
+        : (i - 1 + buttons.length) % buttons.length;
+      buttons[next].focus();
+    }
+  };
   placeCtx(e);
+  const first = ctx.querySelector('button');
+  if (first) first.focus();
 }
 
-document.addEventListener('click', () => { $('ctx').style.display = 'none'; });
+document.addEventListener('click', () => {
+  linkActionGeneration++;
+  $('ctx').style.display = 'none';
+});
 
 /* ---------- new session: no modal — create a shell and enter it.
    Title is renamed on the board later; command is typed in the shell
@@ -146,22 +186,39 @@ export function nextShellTitle(p) {
   return 'shell ' + n;
 }
 
-export async function newSession(dir) {
-  if (creatingSession) return;
+export async function newSession(dir, opts = {}) {
+  if (creatingSession) {
+    if (opts.requireStart) throw new Error('a session is already being created');
+    return;
+  }
   creatingSession = true;
   try {
-    const p = activeProject();
+    const p = opts.projectId ? provider.project(opts.projectId) : activeProject();
+    if (!p) throw new Error('project no longer exists');
     const selected = p.columns.find(c => c.id === p.selected);
     const columnId = (selected
       || p.columns.find(c => c.name === 'Working')
       || p.columns[1] || p.columns[0]).id;
-    const card = provider.create({
+    let started = false;
+    const card = await provider.create({
       projectId: p.id, columnId,
       title: nextShellTitle(p),
       cmd: '',
       dir: dir || HOME,
-    });
+    }, opts.requireStart ? {
+      beforePersist: async card => {
+        started = await inv('start_session', { name: card.session, dir: card.dir, cmd: card.cmd });
+        return started;
+      },
+      rollback: async card => {
+        if (started) await inv('kill_session', { name: card.session });
+      },
+    } : {});
     await openSession(card.id);
+    return card;
+  } catch (error) {
+    if (opts.requireStart) throw error;
+    toast('new session could not be created safely');
   } finally {
     creatingSession = false;
   }
@@ -292,27 +349,52 @@ export function acceptGhost() {
   renderSuggest();
 }
 
-/* Keep the bar off the line being typed: a shell prompt at the bottom of a
-   pane sits exactly where a bottom-anchored overlay would be. */
-export function placeQuickBar(bar) {
-  const view = bar.offsetParent;
-  const fp = attachedName && panes.get(attachedName);
-  const screen = fp && fp.body.querySelector('.xterm-screen');
-  if (!view || !screen || !term) { bar.style.bottom = '0px'; return; }
-  const { h } = ghostCellDims(fp.body);
-  const vRect = view.getBoundingClientRect();
-  const sRect = screen.getBoundingClientRect();
-  const cursorTop = sRect.top - vRect.top + term.buffer.active.cursorY * h;
-  bar.style.bottom = quickBarBottom({
-    viewH: vRect.height, cursorTop, cellH: h, barH: bar.offsetHeight,
-  }) + 'px';
+let quickBarFitFrame = null;
+let quickBarHeight = 0;
+
+function refitQuickBarPane() {
+  if (quickBarFitFrame != null) window.cancelAnimationFrame(quickBarFitFrame);
+  quickBarFitFrame = requestAnimationFrame(() => {
+    quickBarFitFrame = null;
+    const pane = attachedName && panes.get(attachedName);
+    if (!pane) return;
+    const buf = pane.term.buffer.active;
+    const followedBottom = buf.viewportY >= buf.baseY;
+    try {
+      pane.fit.fit();
+      inv('pty_resize', { name: pane.session, cols: pane.term.cols, rows: pane.term.rows }).catch(() => {});
+      if (followedBottom) pane.term.scrollToBottom();
+    } catch (e) { /* pane was destroyed during the frame */ }
+  });
+}
+
+export function mountQuickBar(pane) {
+  const bar = $('quick-bar');
+  if (pane && bar.parentElement !== pane.el) pane.el.appendChild(bar);
+}
+
+function showQuickBar(show) {
+  const bar = $('quick-bar');
+  const changed = (bar.style.display === 'flex') !== show;
+  bar.style.display = show ? 'flex' : 'none';
+  if (!show) quickBarHeight = 0;
+  if (changed) refitQuickBarPane();
+  if (show) requestAnimationFrame(() => {
+    const height = bar.offsetHeight;
+    if (height !== quickBarHeight) {
+      quickBarHeight = height;
+      if (!changed) refitQuickBarPane();
+    }
+  });
 }
 
 export function renderSuggest() {
   scheduleGhost();
   const bar = $('quick-bar');
   const items = suggestions();
-  if (!items.length) { bar.style.display = 'none'; return; }
+  if (!items.length) { showQuickBar(false); return; }
+  const pane = attachedName && panes.get(attachedName);
+  if (pane) mountQuickBar(pane);
   const completing = lineBuf && lineBuf.length >= 2;
   bar.innerHTML = `<span class="qb-label">${completing ? 'tab ⇥' : 'recent'}</span>`;
   items.forEach((c, i) => {
@@ -330,8 +412,7 @@ export function renderSuggest() {
     b.onclick = () => acceptSuggestion(c);
     bar.appendChild(b);
   });
-  bar.style.display = 'flex';
-  placeQuickBar(bar);   // after display+content: offsetHeight must be real
+  showQuickBar(true);
 }
 
 export function resetSuggest() {
@@ -340,7 +421,7 @@ export function resetSuggest() {
   ghostRemainder = '';
   clearTimeout(ghostTimer);
   if (ghostEl) ghostEl.style.display = 'none';
-  $('quick-bar').style.display = 'none';
+  showQuickBar(false);
 }
 
 /* ---------- copy panel ----------
@@ -351,6 +432,61 @@ export function resetSuggest() {
    selection scrolls and ⌘C behaves like it does in any document. */
 const COPY_LINES = 20000;
 const copyRequests = latestRequestGuard();
+let copyAnchor = null;
+let copyPointerId = null;
+
+function copyCaretPoint(body, x, y) {
+  const rect = body.getBoundingClientRect();
+  const cx = Math.max(rect.left + 1, Math.min(rect.right - 1, x));
+  const cy = Math.max(rect.top + 1, Math.min(rect.bottom - 1, y));
+  if (document.caretPositionFromPoint) {
+    const p = document.caretPositionFromPoint(cx, cy);
+    if (p) return { node: p.offsetNode, offset: p.offset };
+  }
+  if (document.caretRangeFromPoint) {
+    const r = document.caretRangeFromPoint(cx, cy);
+    if (r) return { node: r.startContainer, offset: r.startOffset };
+  }
+  return null;
+}
+
+function extendCopySelection(point, rect) {
+  const body = $('cb-body');
+  if (!copyAnchor || !body.isConnected) return;
+  const focus = copyCaretPoint(
+    body,
+    point.x,
+    Math.max(rect.top + 1, Math.min(rect.bottom - 1, point.y)),
+  );
+  if (!focus || !body.contains(focus.node)) return;
+  const selection = window.getSelection();
+  if (selection && selection.setBaseAndExtent) {
+    selection.setBaseAndExtent(copyAnchor.node, copyAnchor.offset, focus.node, focus.offset);
+  }
+}
+
+const copyAutoScroller = createSelectionAutoScroller({
+  frame: cb => requestAnimationFrame(cb),
+  cancelFrame: id => window.cancelAnimationFrame(id),
+  measure: () => $('cb-body').getBoundingClientRect(),
+  scrollBy: dy => {
+    const body = $('cb-body');
+    const before = body.scrollTop;
+    body.scrollTop = Math.max(0, Math.min(body.scrollHeight - body.clientHeight, before + dy));
+    return body.scrollTop !== before;
+  },
+  extend: extendCopySelection,
+});
+
+function stopCopySelection() {
+  copyAutoScroller.stop();
+  const body = $('cb-body');
+  if (copyPointerId != null && body.releasePointerCapture) {
+    try { body.releasePointerCapture(copyPointerId); } catch (e) { /* already released */ }
+  }
+  copyPointerId = null;
+  copyAnchor = null;
+}
 
 export async function writeClipboard(text) {
   try {
@@ -405,12 +541,42 @@ export async function openCopyPanel(session, title) {
 }
 
 export function closeCopyPanel() {
+  stopCopySelection();
   copyRequests.cancel();
   $('copybox').style.display = 'none';
 }
 export const copyPanelOpen = () => $('copybox').style.display === 'flex';
 
 $('cb-close').onclick = closeCopyPanel;
+$('cb-body').addEventListener('pointerdown', e => {
+  if (e.button !== 0) return;
+  const body = $('cb-body');
+  const anchor = copyCaretPoint(body, e.clientX, e.clientY);
+  if (!anchor || !body.contains(anchor.node)) return;
+  e.preventDefault();
+  e.stopPropagation();
+  stopCopySelection();
+  copyAnchor = anchor;
+  copyPointerId = e.pointerId;
+  if (body.setPointerCapture) {
+    try { body.setPointerCapture(e.pointerId); } catch (err) { /* document listeners still work */ }
+  }
+  const selection = window.getSelection();
+  if (selection && selection.setBaseAndExtent) {
+    selection.setBaseAndExtent(anchor.node, anchor.offset, anchor.node, anchor.offset);
+  }
+  copyAutoScroller.start({ x: e.clientX, y: e.clientY });
+});
+document.addEventListener('pointermove', e => {
+  if (!copyAutoScroller.active() || (copyPointerId != null && e.pointerId !== copyPointerId)) return;
+  e.preventDefault();
+  copyAutoScroller.move({ x: e.clientX, y: e.clientY });
+}, true);
+document.addEventListener('pointerup', e => {
+  if (copyPointerId == null || e.pointerId === copyPointerId) stopCopySelection();
+}, true);
+document.addEventListener('pointercancel', stopCopySelection, true);
+window.addEventListener('blur', stopCopySelection);
 $('copybox').addEventListener('mousedown', e => {
   if (e.target === $('copybox')) closeCopyPanel();   // click the backdrop
 });
@@ -436,8 +602,8 @@ $('back-btn').onclick = backToBoard;
 $('board-new').onclick = () => newSession(HOME);
 $('side-new').onclick = () => newSession(HOME);
 $('sess-close').onclick = () => closeSession(state.sessionId, true);
-$('sess-col').addEventListener('change', e => {
-  provider.move(state.sessionId, e.target.value);
+$('sess-col').addEventListener('change', async e => {
+  await provider.move(state.sessionId, e.target.value);
   const c = activeProject().columns.find(c => c.id === e.target.value);
   toast(`moved to ${c.name}`);
 });

@@ -3,7 +3,7 @@
 import { $, DOT_TITLES, duev, inv, listen, setMemChip, state, store, uev } from './state.js';
 import { inlineRename, toast } from './dialogs.js';
 import { TERM_THEME, panes, pollNow, provider, render, renderSidebar, activeProject } from './board.js';
-import { SHELL_FG, acceptGhost, feedMirror, maybeRecordCommand, nextShellTitle, openCopyPanel, placeQuickBar, renderSuggest, resetSuggest, showLinkCtx, updateGhost, writeClipboard } from './terminal.js';
+import { SHELL_FG, acceptGhost, feedMirror, maybeRecordCommand, mountQuickBar, nextShellTitle, openCopyPanel, renderSuggest, resetSuggest, showLinkCtx, updateGhost, writeClipboard } from './terminal.js';
 import { shQuote } from './pure.js';
 import { toggleQueuePanel } from './scheduler.js';
 
@@ -54,11 +54,12 @@ export function strToB64(str) {
   return btoa(bin);
 }
 
-export const LINK_RE = /(https?:\/\/[^\s"'`)\]]+)|((?:~\/|\.{0,2}\/)?[\w.\-]+(?:\/[\w.\-]+)+(?::\d+(?::\d+)?)?|~\/[\w.\-]+)/g;
+export const LINK_RE = /(https?:\/\/[^\s"'`)\]]+)|((?:"(?:~\/|\/|\.{1,2}\/)[^"\n]+"|'(?:~\/|\/|\.{1,2}\/)[^'\n]+'|(?:~\/|\.{0,2}\/)?[\p{L}\p{N}_.\-]+(?:\/[\p{L}\p{N}_.\-]+)+|~\/[\p{L}\p{N}_.\-]+)(?::\d+(?::\d+)?)?)/gu;
 export function looksLikePath(v) {
-  if (/^(~\/|\.{1,2}\/|\/)/.test(v)) return true;
-  if (v.split('/').length > 2) return true;
-  return /\.[A-Za-z0-9]{1,8}(?::\d+(?::\d+)?)?$/.test(v.split('/').pop());
+  const raw = v.replace(/^['"]|['"](?=:\d|$)/g, '');
+  if (/^(~\/|\.{1,2}\/|\/)/.test(raw)) return true;
+  if (raw.split('/').length > 2) return true;
+  return /\.[A-Za-z0-9]{1,8}(?::\d+(?::\d+)?)?$/.test(raw.split('/').pop());
 }
 
 /* ----- file drop / image paste → path insertion (Warp-style) ----- */
@@ -136,8 +137,6 @@ export function createPane(card) {
 
   t.onWriteParsed(() => {
     if (ghostRemainder && attachedName === session) updateGhost();
-    /* output moves the prompt: keep the completion bar off the input line */
-    if (attachedName === session) keepQuickBarClear();
     positionSeparators(pane);
   });
   t.onScroll(() => positionSeparators(pane));
@@ -450,7 +449,7 @@ export function wireTerminalInput(pane, term, host) {
             }
             try { term.clearSelection(); } catch (e2) { /* fine */ }
             const c = card();
-            showLinkCtx(e, kind, txt, c ? c.dir : HOME);
+            showLinkCtx(e, kind, txt, c ? c.dir : HOME, c ? c.id : null);
           },
         });
       }
@@ -489,13 +488,6 @@ export function wireTerminalInput(pane, term, host) {
 
 }
 
-/* the completion bar is an overlay; re-anchor it whenever the cursor or the
-   pane geometry moved (no-op while it is hidden) */
-export function keepQuickBarClear() {
-  const bar = $('quick-bar');
-  if (bar.style.display === 'flex') placeQuickBar(bar);
-}
-
 /* ----- layout rendering & pane lifecycle ----- */
 export function fitAll() {
   requestAnimationFrame(() => {
@@ -506,7 +498,6 @@ export function fitAll() {
       } catch (e) { /* pane mid-teardown */ }
     });
     if (ghostRemainder) updateGhost();
-    keepQuickBarClear();
     panes.forEach(positionSeparators);
   });
 }
@@ -605,6 +596,7 @@ export function focusPane(session) {
   panes.forEach(q => q.el.classList.toggle('focus', q === p));
   state.sessionId = p.sid;
   if (changed) resetSuggest();
+  mountQuickBar(p);
   if (ghostEl && ghostEl.parentElement !== p.body) p.body.appendChild(ghostEl);
   renderSessionView();
   renderSidebar();
@@ -664,6 +656,8 @@ export function closePaneBySid(sid, opts = {}) {
   if (!entry) return;
   if (opts.detach !== false) inv('detach_session', { name: entry.session }).catch(() => {});
   try { entry.term.dispose(); } catch (e) { /* already gone */ }
+  const quickBar = $('quick-bar');
+  if (quickBar && entry.el.contains(quickBar)) $('session-view').appendChild(quickBar);
   entry.el.remove();
   panes.delete(entry.session);
   ptyGens.delete(entry.session);
@@ -701,7 +695,7 @@ export function showSplitPicker(dir) {
     if (isNew) {
       const p = activeProject();
       const focused = provider.get(targetSid);
-      const c = provider.create({
+      const c = await provider.create({
         projectId: p.id,
         columnId: (p.columns.find(x => x.name === 'Working') || p.columns[0]).id,
         title: nextShellTitle(p),
@@ -785,6 +779,8 @@ export async function openSession(sid) {
 export function leaveSessionView() {
   resetSuggest();
   toggleQueuePanel(false);
+  const quickBar = $('quick-bar');
+  if (quickBar && quickBar.closest('.spane')) $('session-view').appendChild(quickBar);
   panes.forEach(p => {
     inv('detach_session', { name: p.session }).catch(() => {});
     try { p.term.dispose(); } catch (e) { /* fine */ }
@@ -817,8 +813,8 @@ export function renderSessionView() {
   nameEl.textContent = s.title;
   nameEl.title = 'double-click to rename';
   nameEl.ondblclick = () => {
-    inlineRename(nameEl, s.title, v => {
-      if (v) provider.rename(s.id, v);
+    inlineRename(nameEl, s.title, async v => {
+      if (v) await provider.rename(s.id, v);
       renderSessionView();
       renderSidebar();
     });

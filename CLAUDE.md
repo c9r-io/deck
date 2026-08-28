@@ -14,7 +14,7 @@ Tauri 2 macOS app. Frontend `app/ui/` is a no-build set of native ES modules
 loaded by `ui/index.html`; xterm.js vendored in `app/ui/vendor/`. Backend
 `app/src-tauri/src/` is modular: `main.rs` (wiring) · `commands.rs` ·
 `scheduler.rs` · `storage.rs` · `pty.rs` · `tmux.rs` · `history.rs`.
-Frontend gates: `node --check` (syntax) · `ui/test/pure.test.mjs` (node:test)
+Frontend gates: `node --check` (syntax) · `ui/test/*.mjs` (node:test)
 · `ui/js/check.mjs` (unresolved identifiers; forbids xterm `._core`).
 
 - Run: `app/run.sh` — builds, wraps the binary in a minimal .app, launches via
@@ -41,8 +41,20 @@ Frontend gates: `node --check` (syntax) · `ui/test/pure.test.mjs` (node:test)
   `.corrupt-*`, log, exports); `harden_data_dir()` re-migrates legacy modes
   at every boot.
 - PTY smoke test (headless): `cargo run --example pty_smoke`
-- Board persistence: `~/.deck/deck.json` (frontend owns the state, saves wholesale,
-  debounced). storage.rs is TYPED and durable for all four data files
+- WKWebView release regression (debug bundles only): launch with a fresh
+  absolute `DECK_SMOKE_DATA_DIR`, unique `DECK_SMOKE_TMUX_SOCKET`, and
+  `DECK_SMOKE_WKWEBVIEW=1 app/run.sh`. The production modules run inside the
+  real bundled WKWebView; results are closed numeric `smoke-check` events in
+  that isolated directory's `app.log`. Release builds ignore these debug-only
+  arguments, and the harness must never point at `~/.deck`.
+- Board persistence: `~/.deck/deck.json` (frontend owns the state). EVERY
+  mutation enters one global persist-before-commit transaction queue and builds
+  its candidate from the latest committed Board only when it reaches the head;
+  debounced mutations enter that same queue before an immediate-operation
+  barrier. A rejected mutation or failed write cannot poison the following
+  transaction, resurrect a removed card, or overwrite a concurrent rename/move.
+  Runtime-only card fields are merged from the newest live state at commit.
+  `storage.rs` is TYPED and durable for all four data files
   (deck/queue/history/settings): JSON + version envelope + business-structure
   validation on load — BoardDoc/SettingsDoc validate via `try_from`
   (referential rules: unique ids, cards reference an existing project and a
@@ -69,11 +81,15 @@ Frontend gates: `node --check` (syntax) · `ui/test/pure.test.mjs` (node:test)
   feeds a copy panel where the text scrolls and selects like a document — ⧉
   in the pane header, ⌘⇧C, or the card context menu. `Copy all` writes through
   native `pbcopy` and reports success only after exit 0; ⌘C writes exactly the
-  panel selection. Trailing blank rows are preserved because tmux cannot prove
+  panel selection. Pointer capture plus a bounded animation-frame controller
+  extends native WebKit selection and continuously scrolls near either vertical
+  edge; pointer-up/cancel, Escape, close and window blur always stop it. Trailing
+  blank rows are preserved because tmux cannot prove
   whether they are padding or answer content. Do NOT "fix" this by enabling
-  tmux mouse mode: that
-  takes xterm's local selection away. The completion bar anchors itself
-  above the cursor row when it would cover the prompt (`quickBarBottom`).
+  tmux mouse mode: that takes xterm's local selection away. The completion bar
+  is a real flex row inside the focused pane, never an overlay: showing/hiding
+  it refits that pane's public xterm FitAddon and synchronizes PTY rows while
+  leaving sibling panes unchanged.
 - One poll command (`poll_sessions`) returns liveness + `#{window_activity}` recency +
   process-tree RSS (pane_pid → ps tree walk) + tail previews. Frontend polls every
   2.5s and diffs into granular UI events (status/mem/output) — never full re-renders
@@ -164,7 +180,11 @@ Frontend gates: `node --check` (syntax) · `ui/test/pure.test.mjs` (node:test)
     and re-arms it, both persist-then-commit and idempotent. A definitively
     refused atomic injection becomes retryable `failed`; if that post-failure
     save and the process both fail, the old disk intent is honestly ambiguous.
-    `flush_dirty` runs before the empty-queue fast path.
+    Boot recovery installs every persisted `firing`/orphan ledger entry as
+    in-memory `ambiguous` BEFORE attempting the repair write. If that write
+    fails, the ambiguous actions remain available and unschedulable while
+    `dirty` retries the exact snapshot. `flush_dirty` runs before the
+    empty-queue fast path.
 - File drop / image paste into a terminal pane (Warp-style): WKWebView
   surfaces external files as CONTENT with no path, so the frontend reads the
   bytes and `save_dropped_file` persists them 0600 under `~/.deck/drops`
@@ -186,6 +206,15 @@ Frontend gates: `node --check` (syntax) · `ui/test/pure.test.mjs` (node:test)
   either issue — verify webview-specific behavior in the real app.
 - A menu-less macOS app gets no standard Edit actions, so ⌘C/⌘V are implemented
   inside xterm's attachCustomKeyEventHandler via navigator.clipboard.
+- Inline rename is a one-shot edit lifecycle: Enter commits once (and removes
+  the editor before async persistence), Escape restores without persistence,
+  blur commits once, and composition/`keyCode 229` Enter is ignored. Persistence
+  failure rolls every visible title back with an explicit toast.
+- Terminal path menus resolve parent directories in Rust without invoking a
+  shell: quoted/relative/absolute/Unicode paths and optional `:line[:column]`
+  suffixes are normalized against the canonical session cwd, but a literal
+  existing colon-number filename wins. New-session-in-parent starts tmux before
+  the Board transaction and kills only that new session on save failure.
 - The frontend is embedded at COMPILE time and cargo does not track it: without
   the `cargo:rerun-if-changed=../ui/...` lines in build.rs, UI-only edits build
   in 1s as a no-op and the app silently runs the previous UI. (Bit us: command

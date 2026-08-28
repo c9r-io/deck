@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.4.31 — 2026-08-28
+
+- Serialize every Board mutation through one persist-before-commit transaction
+  queue, including debounced edits, destructive closes, project deletion and
+  natural shell exit; failed writes remain visible and retryable without
+  dropping later mutations.
+- Keep crash-recovered scheduler deliveries visibly ambiguous in memory even
+  when the recovery write fails, and retry that dirty snapshot without ever
+  making it schedulable again.
+- Make inline rename IME-safe and single-commit across Enter, Escape and blur,
+  with durable rollback and immediate updates in Board, sidebar and pane titles.
+- Add continuous up/down edge auto-scroll to native long-output selection while
+  keeping selection copy separate from verified `Copy all`.
+- Expand file-path actions with safe parent-directory resolution, opening the
+  parent in the configured editor and creating a session there without a shell.
+- Reserve real pane layout space for completion candidates, refit xterm and PTY
+  rows, and keep adjacent split panes unaffected.
+- Add production-module DOM regressions and an isolated, in-app WKWebView smoke
+  harness covering concurrent Board mutations, rename, copy, paths and layout.
+
 ## 0.4.30 — 2026-08-28
 
 - Replace silent assumed-sent crash recovery with an explicit ambiguous

@@ -45,12 +45,26 @@ export function inlineRename(host, current, onDone, allowEmpty = false) {
   const finish = commit => {
     if (done) return;
     done = true;
-    onDone(inlineRenameValue(current, input.value, commit, allowEmpty));
+    const value = inlineRenameValue(current, input.value, commit, allowEmpty);
+    /* End the editing DOM/focus state before subscribers can render. Enter
+       therefore looks committed in the same gesture and its subsequent blur
+       is guaranteed to be a no-op. */
+    host.textContent = value === null ? current : value;
+    Promise.resolve(onDone(value)).catch(() => {
+      if (host.isConnected) host.textContent = current;
+      toast('change was not saved; the original value was restored');
+    });
   };
   input.addEventListener('keydown', e => {
-    if (e.key === 'Enter') finish(true);
-    if (e.key === 'Escape') finish(false);
     e.stopPropagation();
+    if (e.key === 'Enter') {
+      if (e.isComposing || e.keyCode === 229) return;
+      e.preventDefault();
+      finish(true);
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      finish(false);
+    }
   });
   input.addEventListener('blur', () => finish(true));
   input.addEventListener('click', e => e.stopPropagation());

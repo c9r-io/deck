@@ -129,6 +129,17 @@ fn main() {
                 let w = webview.window();
                 let _ = w.show();
                 let _ = w.set_focus();
+                if let Some(mode) = storage::debug_arg("--smoke-wkwebview") {
+                    let entry = if mode == "restart" {
+                        "m.verifyRestart()"
+                    } else {
+                        "m.run()"
+                    };
+                    let script = format!(
+                        "setTimeout(() => import('./test/wk-smoke.mjs').then(m => {entry}).catch(e => {{ window.__TAURI__.core.invoke('ui_event', {{code:'js-reject',detail:(e&&e.name)||'error',a:0,b:0}}); window.__TAURI__.core.invoke('ui_event', {{code:'smoke-check',detail:'done',a:0,b:-1}}); }}), 1800)"
+                    );
+                    let _ = webview.eval(&script);
+                }
             }
         })
         .on_window_event(|window, event| {
@@ -161,6 +172,7 @@ fn main() {
             pty::pty_resize,
             pty::detach_session,
             commands::open_target,
+            commands::resolve_parent_dir,
             history::recent_commands,
             history::record_command,
             history::history_clear,

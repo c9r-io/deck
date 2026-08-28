@@ -3,7 +3,6 @@
 import { $, inv, listen, state, uev } from './state.js';
 import { blockedBy, chainQuietHint, fmtEvery, groupQueue, groupSteps, hasWindow, hmToMin, itemDead, minToHM, nextFire, winHas } from './pure.js';
 export { blockedBy, chainQuietHint, fmtEvery, groupQueue, groupSteps, hasWindow, hmToMin, itemDead, minToHM, nextFire, winHas };
-import { saveBoard } from './persistence.js';
 import { confirmDialog, inlineRename, toast, promptDialog } from './dialogs.js';
 import { pollNow, provider } from './board.js';
 import { strToB64 } from './layout.js';
@@ -81,10 +80,7 @@ export async function saveGroupAsTemplate(g) {
     `Save this group (${steps.length} prompt${steps.length > 1 ? 's, in order' : ''}) as a template for this project:`,
     g.head.tpl || '');
   if (!name) return;
-  const tpls = projTemplates(card);
-  const ex = tpls.find(t => t.name === name);
-  if (ex) ex.steps = steps; else tpls.push({ name, steps });
-  saveBoard();
+  await provider.saveTemplate(card.projectId, name, steps);
   toast('template saved: ' + name);
 }
 
@@ -248,8 +244,7 @@ export const nextEpochFor = t => {
 export function projTemplates(card) {
   const p = card && provider.project(card.projectId);
   if (!p) return [];
-  if (!p.templates) p.templates = [];
-  return p.templates;
+  return p.templates || [];
 }
 
 
@@ -304,14 +299,16 @@ export function showTplPop() {
     r.querySelector('.t-act').onclick = async e => {
       e.stopPropagation();
       const name = await promptDialog('Rename template:', t.name);
-      if (name && name !== t.name) { t.name = name; saveBoard(); if (qTpl === t) setQSrc(t); }
+      if (name && name !== t.name) {
+        const oldName = t.name;
+        await provider.renameTemplate(card.projectId, oldName, name);
+        if (qTpl === t) setQSrc({ ...t, name });
+      }
     };
     r.querySelector('.t-del').onclick = async e => {
       e.stopPropagation();
       if (!(await confirmDialog(`Delete template "${t.name}"? Prompts already queued are not affected.`))) return;
-      const arr = projTemplates(card);
-      arr.splice(arr.indexOf(t), 1);
-      saveBoard();
+      await provider.deleteTemplate(card.projectId, t.name);
       if (qTpl === t) setQSrc(null);
       hideTplPop();
     };

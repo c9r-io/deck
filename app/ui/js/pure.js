@@ -24,18 +24,22 @@ export const fmtEvery = s => s % 3600 === 0 ? (s / 3600) + ' h' : (s / 60) + ' m
 export const minToHM = m => String(Math.floor(m / 60)).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0');
 export const hmToMin = t => { const [h, m] = t.split(':').map(Number); return h * 60 + m; };
 
-/* ---------- completion bar placement ----------
-   The quick-command / completion bar is an overlay (it must not reflow the
-   split panes while you type). Its natural home is the bottom edge — but a
-   shell prompt usually sits on the LAST line of its pane, so an overlay
-   there covers exactly the line being typed. When the cursor row falls
-   inside the bar (or within `gap` of it), the bar hops ABOVE the cursor
-   line instead. Returns the CSS `bottom` offset in px. */
-export function quickBarBottom({ viewH, cursorTop, cellH, barH, gap = 6 }) {
-  if (!(viewH > 0) || !(barH > 0) || cursorTop == null || !(cellH >= 0)) return 0;
-  if (viewH - (cursorTop + cellH) >= barH + gap) return 0;   // room below the prompt
-  const above = viewH - cursorTop + gap;                     // bottom edge above the cursor row
-  return Math.max(0, Math.min(above, viewH - barH));         // never leaves the view
+/* ---------- completion bar layout ----------
+   The bar owns a real flex row inside the focused pane. This returns the two
+   non-overlapping rectangles used by layout/tests; no shell cell can ever be
+   under the bar because xterm is fitted only into `terminal`. */
+export function quickBarLayout({ width, height, barHeight, visible }) {
+  const w = Math.max(0, Number(width) || 0);
+  const h = Math.max(0, Number(height) || 0);
+  const bh = visible ? Math.min(h, Math.max(0, Number(barHeight) || 0)) : 0;
+  return {
+    terminal: { left: 0, top: 0, right: w, bottom: h - bh },
+    bar: { left: 0, top: h - bh, right: w, bottom: h },
+  };
+}
+
+export function rectsOverlap(a, b) {
+  return a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
 }
 
 /* ---------- daily windows ---------- */
@@ -129,6 +133,57 @@ export async function deleteSessionsTransaction(cards, { cancel, kill, persist, 
   return { ok: true, stage: 'commit', failed: [] };
 }
 
+/* ---------- serialized board transactions ---------- */
+const cloneJson = value => JSON.parse(JSON.stringify(value));
+
+/**
+ * A tiny, dependency-injected transaction queue used by the frontend and by
+ * Node tests. `snapshot` is called only when the transaction reaches the
+ * head of the queue, so no caller can write a candidate derived from a stale
+ * Board. A failed transaction never poisons the next one.
+ */
+export function createSerialTransactionQueue({ snapshot, persist, commit, serialize = JSON.stringify }) {
+  let chain = Promise.resolve();
+  const enqueue = mutate => {
+    const run = async () => {
+      const candidate = cloneJson(snapshot());
+      const result = await mutate(candidate);
+      if (result && result.noop) return result;
+      const json = serialize(candidate);
+      await persist(candidate, json);
+      commit(candidate, json);
+      return result;
+    };
+    const pending = chain.catch(() => {}).then(run);
+    chain = pending;
+    return pending;
+  };
+  return { enqueue, idle: () => chain.catch(() => {}) };
+}
+
+/** Stable retry/no-spam lifecycle for shells discovered dead by polling. */
+export function createExitRetirementTracker() {
+  const pending = new Set();
+  const warned = new Set();
+  return {
+    observe(sid) { pending.add(sid); },
+    async drain({ get, markStopped, close, failed, succeeded }) {
+      for (const sid of [...pending]) {
+        const card = get(sid);
+        if (!card) { pending.delete(sid); warned.delete(sid); continue; }
+        markStopped(card);
+        if (!(await close(card))) {
+          if (!warned.has(sid)) { warned.add(sid); failed(card); }
+          continue;
+        }
+        pending.delete(sid); warned.delete(sid);
+        succeeded(card);
+      }
+    },
+    pending: sid => pending.has(sid),
+  };
+}
+
 /* ---------- copy panel ---------- */
 export function latestRequestGuard() {
   let current = 0;
@@ -149,6 +204,58 @@ export function copyShortcutAction({ metaKey, shiftKey, key, panelOpen, sessionV
   if (panelOpen && !shiftKey) return hasSelection ? 'copy-panel-selection' : 'none';
   if (!panelOpen && shiftKey && sessionView) return 'open-copy-panel';
   return null;
+}
+
+export function linkMenuItems(kind) {
+  return kind === 'url'
+    ? [
+      { action: 'url', label: 'Open in browser' },
+      { action: 'copy', label: 'Copy URL' },
+    ]
+    : [
+      { action: 'editor', label: 'Open in editor' },
+      { action: 'editor-parent', label: 'Open parent folder in editor' },
+      { action: 'session-parent', label: 'New session in parent folder' },
+      { action: 'reveal', label: 'Reveal in Finder' },
+      { action: 'copy', label: 'Copy path' },
+    ];
+}
+
+/** Signed pixels/frame for copy-panel edge auto-scroll. */
+export function selectionAutoScrollSpeed({ pointerY, top, bottom, hotZone = 56, maxSpeed = 28 }) {
+  if (![pointerY, top, bottom, hotZone, maxSpeed].every(Number.isFinite) || bottom <= top || hotZone <= 0) return 0;
+  if (pointerY < top + hotZone) {
+    const depth = Math.min(1, (top + hotZone - pointerY) / hotZone);
+    return -Math.max(1, Math.round(maxSpeed * depth * depth));
+  }
+  if (pointerY > bottom - hotZone) {
+    const depth = Math.min(1, (pointerY - (bottom - hotZone)) / hotZone);
+    return Math.max(1, Math.round(maxSpeed * depth * depth));
+  }
+  return 0;
+}
+
+/** RAF lifecycle core for copy-panel selection; DOM endpoint updates are injected. */
+export function createSelectionAutoScroller({ frame, cancelFrame, measure, scrollBy, extend }) {
+  let active = false, raf = null, point = null;
+  const tick = () => {
+    raf = null;
+    if (!active || !point) return;
+    const rect = measure();
+    const speed = selectionAutoScrollSpeed({ pointerY: point.y, top: rect.top, bottom: rect.bottom });
+    const moved = speed ? scrollBy(speed) : false;
+    extend(point, rect);
+    if (active && speed && moved !== false) raf = frame(tick);
+  };
+  const schedule = () => {
+    if (active && raf == null) raf = frame(tick);
+  };
+  return {
+    start(p) { active = true; point = p; schedule(); },
+    move(p) { if (!active) return; point = p; schedule(); },
+    stop() { active = false; point = null; if (raf != null) cancelFrame(raf); raf = null; },
+    active: () => active,
+  };
 }
 
 /* ---------- sidebar grouping ---------- */

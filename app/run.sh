@@ -44,5 +44,29 @@ cat > "$APP/Contents/Info.plist" <<EOF
 </plist>
 EOF
 
-open "$APP"
-echo "deck launched. logs: ~/.deck/app.log"
+if [ -n "${DECK_SMOKE_DATA_DIR:-}" ]; then
+  case "$DECK_SMOKE_DATA_DIR" in
+    /*) ;;
+    *) echo "DECK_SMOKE_DATA_DIR must be absolute" >&2; exit 2 ;;
+  esac
+  DECK_SMOKE_TMUX_SOCKET=${DECK_SMOKE_TMUX_SOCKET:-deck-smoke}
+  if [ -n "${DECK_SMOKE_WKWEBVIEW:-}" ]; then
+    SMOKE_MODE=$DECK_SMOKE_WKWEBVIEW
+    case "$SMOKE_MODE" in
+      run|restart) ;;
+      *) SMOKE_MODE=run ;;
+    esac
+    open "$APP" --args \
+      --smoke-data-dir "$DECK_SMOKE_DATA_DIR" \
+      --smoke-tmux-socket "$DECK_SMOKE_TMUX_SOCKET" \
+      --smoke-wkwebview "$SMOKE_MODE"
+  else
+    open "$APP" --args \
+      --smoke-data-dir "$DECK_SMOKE_DATA_DIR" \
+      --smoke-tmux-socket "$DECK_SMOKE_TMUX_SOCKET"
+  fi
+  echo "deck smoke bundle launched with isolated data and tmux socket"
+else
+  open "$APP"
+  echo "deck launched. logs: ~/.deck/app.log"
+fi

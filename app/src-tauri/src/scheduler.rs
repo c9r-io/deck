@@ -1331,28 +1331,40 @@ pub(crate) fn send_one(
     }
 }
 
-/// Boot the queue and transactionally migrate interrupted deliveries to the
-/// ambiguous state. If the save fails the original firing state remains in
-/// memory; it is still ineligible and the UI treats it as unresolved.
-pub(crate) fn boot_queues() -> Queues {
-    let queues = Queues::new(load_queue());
+/// Boot migration is unusual: the interrupted send is an irreversible fact,
+/// so recovered `ambiguous` memory is authoritative even when the first disk
+/// write fails. `dirty` then gives the scheduler a real retry driver.
+fn boot_queues_with(
+    mut loaded: QueueState,
+    persist: &dyn Fn(&QueueState) -> Result<(), String>,
+) -> Queues {
     let has_interrupted = {
-        let q = queues.q.lock().unwrap();
-        q.items.iter().any(|i| i.state == "firing")
-            || q.pending
+        loaded.items.iter().any(|i| i.state == "firing")
+            || loaded
+                .pending
                 .iter()
-                .any(|p| !q.items.iter().any(|i| i.id == p.snapshot.id))
+                .any(|p| !loaded.items.iter().any(|i| i.id == p.snapshot.id))
     };
     if has_interrupted {
-        match with_queue(&queues.q, &save_queue, |q| Ok(recover_interrupted(q))) {
-            Ok(notes) => notes.into_iter().for_each(storage::warn),
-            Err(e) => storage::warn(format!(
-                "interrupted deliveries remain unresolved because queue state could not be saved ({}); retry their decision in the queue",
+        let notes = recover_interrupted(&mut loaded);
+        notes.into_iter().for_each(storage::warn);
+        let queues = Queues::new(loaded);
+        let q = queues.q.lock().unwrap();
+        if let Err(e) = persist(&q) {
+            queues.dirty.store(true, AtomicOrdering::Relaxed);
+            storage::warn(format!(
+                "interrupted deliveries are available to acknowledge or retry now; their recovered state could not be saved yet ({}), so deck will keep retrying",
                 storage::err_code(&e)
-            )),
+            ));
         }
+        drop(q);
+        return queues;
     }
-    queues
+    Queues::new(loaded)
+}
+
+pub(crate) fn boot_queues() -> Queues {
+    boot_queues_with(load_queue(), &save_queue)
 }
 
 pub(crate) fn spawn_scheduler(app: AppHandle) {
@@ -2285,6 +2297,63 @@ mod tests {
         let snapshot = serde_json::to_string(&q).unwrap();
         recover_interrupted(&mut q);
         assert_eq!(serde_json::to_string(&q).unwrap(), snapshot);
+    }
+
+    #[test]
+    fn boot_persist_failure_keeps_ambiguous_memory_dirty_until_flush() {
+        let mut firing = due_at("a", "s");
+        firing.state = "firing".into();
+        firing.delivery = Some("d1".into());
+        let loaded = qs(vec![firing]);
+        let fail = AtomicBool::new(true);
+        let disk = Mutex::new(String::new());
+        let persist = |q: &QueueState| {
+            if fail.load(AtomicOrdering::Relaxed) {
+                Err("disk unavailable".into())
+            } else {
+                *disk.lock().unwrap() = serde_json::to_string(q).unwrap();
+                Ok(())
+            }
+        };
+        let queues = boot_queues_with(loaded, &persist);
+        {
+            let q = queues.q.lock().unwrap();
+            assert_eq!(q.items[0].state, "ambiguous");
+            assert!(select_due(&q, NOW + 100_000, 720, &HashMap::new()).is_empty());
+        }
+        assert!(queues.dirty.load(AtomicOrdering::Relaxed));
+        assert!(!flush_dirty(&queues.q, &queues.dirty, &persist));
+        assert!(queues.dirty.load(AtomicOrdering::Relaxed));
+        fail.store(false, AtomicOrdering::Relaxed);
+        assert!(flush_dirty(&queues.q, &queues.dirty, &persist));
+        assert!(!queues.dirty.load(AtomicOrdering::Relaxed));
+        let saved: QueueState = serde_json::from_str(&disk.lock().unwrap()).unwrap();
+        assert_eq!(saved.items[0].state, "ambiguous");
+    }
+
+    #[test]
+    fn orphan_ledger_boot_failure_is_immediately_decidable_and_ack_is_transactional() {
+        let mut snapshot = due_at("a", "s");
+        snapshot.state = "firing".into();
+        snapshot.delivery = Some("d1".into());
+        let mut loaded = qs(vec![]);
+        loaded.pending.push(PendingDelivery {
+            id: "d1".into(),
+            snapshot,
+        });
+        let queues = boot_queues_with(loaded, &|_| Err("read only".into()));
+        let before = serde_json::to_string(&*queues.q.lock().unwrap()).unwrap();
+        assert!(before.contains("ambiguous"));
+        assert!(
+            with_queue(&queues.q, &|_| Err("still read only".into()), |q| {
+                acknowledge_ambiguous(q, "a")
+            })
+            .is_err()
+        );
+        assert_eq!(
+            serde_json::to_string(&*queues.q.lock().unwrap()).unwrap(),
+            before
+        );
     }
 
     // ---------- send_one: the full firing state machine with fakes ----------

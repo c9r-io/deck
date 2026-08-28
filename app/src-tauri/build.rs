@@ -4,6 +4,7 @@ fn main() {
     println!("cargo:rerun-if-changed=../ui/index.html");
     println!("cargo:rerun-if-changed=../ui/vendor");
     println!("cargo:rerun-if-changed=../ui/js");
+    println!("cargo:rerun-if-changed=../ui/test");
     println!("cargo:rerun-if-changed=icons");
     tauri_build::build()
 }

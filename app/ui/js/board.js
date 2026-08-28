@@ -1,15 +1,16 @@
 // board.js — board CRUD provider, polling loop, sidebar/tabs/board rendering
 // Part of deck's no-build frontend: native ES modules, no bundler.
 import { $, COL_HINTS, DOT_TITLES, POLL_MS, QUIET_SECS, emit, genId, inv, listeners, sessionName, setMemChip, state, store, uev } from './state.js';
-import { saveBoard, saveBoardNow } from './persistence.js';
-import { deleteSessionsTransaction, persistOptimistically, sidebarGroups } from './pure.js';
+import { mutateBoard, mutateBoardDebounced } from './persistence.js';
+import { createExitRetirementTracker, sidebarGroups } from './pure.js';
 import { confirmDialog, inlineRename, toast } from './dialogs.js';
 import { clearSeparators, closePaneBySid, leaveSessionView, openSession, renderSessionView, updatePaneChrome } from './layout.js';
 import { SHELL_FG, showProjectCtx, showSessionCtx } from './terminal.js';
 import { renderQueueUI, setQueueChip, updateQuietHints } from './scheduler.js';
 
-/* ---------- provider (board CRUD is sync-local, persistence async) ---------- */
+/* ---------- provider (every persistent mutation is one queued transaction) ---------- */
 export const activeProject = () => provider.project(state.projectId);
+const exitRetirement = createExitRetirementTracker();
 
 export const provider = {
   projects: () => store.projects,
@@ -18,20 +19,22 @@ export const provider = {
   get: sid => store.cards.find(c => c.id === sid),
   subscribe: fn => { listeners.add(fn); return () => listeners.delete(fn); },
 
-  createProject(name) {
+  async createProject(name) {
     const p = {
       id: genId('P'),
       name,
       columns: ['Attention', 'Working', 'Queued', 'Parked'].map(n => ({ id: genId('C'), name: n })),
     };
-    store.projects.push(p);
-    saveBoard();
+    await mutateBoard(draft => { draft.projects.push(p); });
     emit('projects', p);
     return p;
   },
-  renameProject(pid, name) {
-    this.project(pid).name = name;
-    saveBoard();
+  async renameProject(pid, name) {
+    await mutateBoard(draft => {
+      const p = draft.projects.find(x => x.id === pid);
+      if (!p || p.name === name) return { noop: true };
+      p.name = name;
+    });
     emit('projects');
   },
   /* Deleting a card or a project means "cancel every future scheduling of
@@ -40,36 +43,51 @@ export const provider = {
      recurring rule survives would have the scheduler restart a tmux session
      nobody can see or manage any more. A failure therefore deletes nothing
      and says so. */
-  async cancelSchedule(cards) {
+  async cancelSchedule(cards, opts = {}) {
     const sessions = (Array.isArray(cards) ? cards : [cards]).map(c => c.session);
     if (!sessions.length) return true;
     try {
       await inv('queue_clear_sessions', { sessions });
       return true;
     } catch (e) {
-      toast('scheduled prompts could not be cancelled — nothing was deleted: ' + e);
+      if (!opts.quiet) toast('scheduled prompts could not be cancelled — nothing was deleted: ' + e);
       return false;
     }
   },
 
-  async removeProject(pid) {
-    const cards = store.cards.filter(c => c.projectId === pid);
-    const nextCards = store.cards.filter(c => c.projectId !== pid);
-    const nextProjects = store.projects.filter(p => p.id !== pid);
-    const result = await deleteSessionsTransaction(cards, {
-      cancel: cs => this.cancelSchedule(cs),
-      kill: async c => {
-        await inv('kill_session', { name: c.session });
-        c.status = 'stopped';
-      },
-      persist: () => saveBoardNow(nextProjects, nextCards),
-      commit: () => { store.cards = nextCards; store.projects = nextProjects; },
-    });
-    if (!result.ok) {
-      if (result.stage === 'kill') {
-        toast('project kept — these sessions could not be closed: ' + result.failed.map(x => x.card.title).join(', '));
-      } else if (result.stage === 'persist') {
-        toast('project kept because the board could not be saved: ' + result.error);
+  async removeProject(pid, opts = {}) {
+    try {
+      await mutateBoard(async draft => {
+        if (!draft.projects.some(p => p.id === pid)) return { noop: true };
+        const cards = draft.cards.filter(c => c.projectId === pid);
+        if (!(await this.cancelSchedule(cards, { quiet: opts.quiet }))) {
+          const error = new Error('schedule cancellation failed');
+          error.stage = 'cancel';
+          throw error;
+        }
+        const failed = [];
+        for (const card of cards) {
+          try {
+            await inv('kill_session', { name: card.session });
+            const live = this.get(card.id);
+            if (live) live.status = 'stopped';
+            card.status = 'stopped';
+          } catch (error) { failed.push({ card, error }); }
+        }
+        if (failed.length) {
+          const error = new Error('one or more sessions could not be closed');
+          error.stage = 'kill';
+          error.failed = failed;
+          throw error;
+        }
+        draft.cards = draft.cards.filter(c => c.projectId !== pid);
+        draft.projects = draft.projects.filter(p => p.id !== pid);
+      });
+    } catch (error) {
+      if (!opts.quiet && error.stage === 'kill') {
+        toast('project kept — one or more sessions could not be closed');
+      } else if (!opts.quiet && error.stage !== 'cancel') {
+        toast('project kept because the board could not be saved');
       }
       emit('projects');
       return false;
@@ -78,43 +96,57 @@ export const provider = {
     return true;
   },
 
-  addColumn(pid, name) {
+  async addColumn(pid, name) {
     const col = { id: genId('C'), name };
-    this.project(pid).columns.push(col);
-    saveBoard();
+    await mutateBoard(draft => { draft.projects.find(p => p.id === pid).columns.push(col); });
     emit('projects');
     return col;
   },
-  renameColumn(pid, cid, name) {
-    const col = this.project(pid).columns.find(c => c.id === cid);
-    if (col) col.name = name;
-    saveBoard();
+  async renameColumn(pid, cid, name) {
+    await mutateBoard(draft => {
+      const p = draft.projects.find(x => x.id === pid);
+      const col = p && p.columns.find(c => c.id === cid);
+      if (!col || col.name === name) return { noop: true };
+      col.name = name;
+    });
     emit('projects');
   },
-  removeColumn(pid, cid) {
-    const p = this.project(pid);
-    if (p.columns.length <= 1) return false;
-    if (p.selected === cid) p.selected = null;
-    p.columns = p.columns.filter(c => c.id !== cid);
-    const fallback = p.columns[0];
-    let moved = 0;
-    for (const c of store.cards) {
-      if (c.projectId === pid && c.columnId === cid) { c.columnId = fallback.id; moved++; }
-    }
-    saveBoard();
+  async removeColumn(pid, cid) {
+    let result = false;
+    await mutateBoard(draft => {
+      const p = draft.projects.find(x => x.id === pid);
+      if (!p || p.columns.length <= 1) return { noop: true };
+      if (p.selected === cid) p.selected = null;
+      p.columns = p.columns.filter(c => c.id !== cid);
+      const fallback = p.columns[0];
+      let moved = 0;
+      for (const c of draft.cards) {
+        if (c.projectId === pid && c.columnId === cid) { c.columnId = fallback.id; moved++; }
+      }
+      result = { fallback: fallback.name, moved };
+    });
     emit('projects');
-    return { fallback: fallback.name, moved };
+    return result;
   },
 
-  create({ projectId, columnId, title, cmd, dir, desc = '' }) {
+  async create({ projectId, columnId, title, cmd, dir, desc = '' }, opts = {}) {
     const id = genId('S');
     const card = {
       id, projectId, columnId, title, cmd, dir, desc,
       session: sessionName(title, id),
       status: 'stopped', mem: null, tail: [],
     };
-    store.cards.push(card);
-    saveBoard();
+    let sideEffect;
+    try {
+      await mutateBoard(async draft => {
+        if (!draft.projects.some(p => p.id === projectId)) throw new Error('project no longer exists');
+        if (opts.beforePersist) sideEffect = await opts.beforePersist(card);
+        draft.cards.push(card);
+      });
+    } catch (error) {
+      if (opts.rollback) await opts.rollback(card, sideEffect).catch(() => {});
+      throw error;
+    }
     emit('list', card);
     return card;
   },
@@ -122,55 +154,112 @@ export const provider = {
   /* stop and delete are one operation; returns false when the card was
      KEPT (its schedule could not be cancelled reliably) */
   async close(sid, opts = {}) {
-    const c = this.get(sid);
-    if (!c) return false;
-    const nextCards = store.cards.filter(x => x.id !== sid);
-    const result = await deleteSessionsTransaction([c], {
-      cancel: () => opts.cancelled ? true : this.cancelSchedule(c),
-      kill: async card => {
-        await inv('kill_session', { name: card.session });
+    let closedCard = null;
+    try {
+      await mutateBoard(async draft => {
+        const card = draft.cards.find(c => c.id === sid);
+        if (!card) return { noop: true };
+        closedCard = card;
+        if (!opts.cancelled && !(await this.cancelSchedule(card, { quiet: opts.quiet }))) {
+          const error = new Error('schedule cancellation failed');
+          error.stage = 'cancel';
+          throw error;
+        }
+        try {
+          await inv('kill_session', { name: card.session });
+        } catch (cause) {
+          const error = new Error('session could not be closed');
+          error.stage = 'kill'; error.cause = cause;
+          throw error;
+        }
+        const live = this.get(sid);
+        if (live) live.status = 'stopped';
         card.status = 'stopped';
-      },
-      persist: () => saveBoardNow(store.projects, nextCards),
-      commit: () => { store.cards = nextCards; },
-    });
-    if (!result.ok) {
-      if (result.stage === 'kill') toast(`session kept — "${c.title}" could not be closed; retry after checking tmux permissions`);
-      if (result.stage === 'persist') toast('session kept because the board could not be saved: ' + result.error);
-      emit('status', c);
+        draft.cards = draft.cards.filter(c => c.id !== sid);
+      });
+    } catch (error) {
+      const c = this.get(sid);
+      if (!opts.quiet && error.stage === 'kill') toast('session kept because it could not be closed; retry after checking tmux permissions');
+      if (!opts.quiet && error.stage !== 'cancel' && error.stage !== 'kill') toast('session kept because the board could not be saved');
+      if (c) emit('status', c);
       return false;
     }
-    emit('list', c);
+    if (closedCard) emit('list', closedCard);
     return true;
   },
 
-  move(sid, columnId) {
+  async move(sid, columnId) {
+    await mutateBoard(draft => {
+      const c = draft.cards.find(x => x.id === sid);
+      if (!c || c.columnId === columnId) return { noop: true };
+      c.columnId = columnId;
+    });
     const c = this.get(sid);
-    if (!c || c.columnId === columnId) return;
-    c.columnId = columnId;
-    saveBoard();
-    emit('list', c);
+    if (c) emit('list', c);
   },
   async rename(sid, title) {
     const c = this.get(sid);
     if (!c || !title || title === c.title) return true;
-    const old = c.title;
-    return persistOptimistically({
-      apply: () => {
-        c.title = title;
-        emit('list', c); // board, exact sidebar item and session header sync now
-      },
-      persist: () => saveBoardNow(),
-      rollback: e => {
-        c.title = old;
-        emit('list', c);
-        toast('rename was not saved; the original title was restored: ' + e);
-      },
+    try {
+      await mutateBoard(draft => {
+        const card = draft.cards.find(x => x.id === sid);
+        if (!card) return { noop: true };
+        card.title = title;
+      });
+      const saved = this.get(sid);
+      if (saved) emit('list', saved);
+      return true;
+    } catch (e) {
+      emit('list', c);
+      toast('rename was not saved; the original title was restored');
+      return false;
+    }
+  },
+  async setDesc(sid, desc) {
+    await mutateBoard(draft => {
+      const c = draft.cards.find(x => x.id === sid);
+      if (!c || c.desc === desc) return { noop: true };
+      c.desc = desc;
+    });
+    const c = this.get(sid);
+    if (c) emit('list', c);
+  },
+  selectColumn(pid, selected) {
+    mutateBoardDebounced(draft => {
+      const p = draft.projects.find(x => x.id === pid);
+      if (!p) return { noop: true };
+      p.selected = selected;
+    }, {
+      onCommit: () => emit('projects'),
+      onError: () => toast('the target board could not be saved'),
     });
   },
-  setDesc(sid, desc) {
-    const c = this.get(sid);
-    if (c) { c.desc = desc; saveBoard(); emit('list', c); }
+  async saveTemplate(pid, name, steps) {
+    await mutateBoard(draft => {
+      const p = draft.projects.find(x => x.id === pid);
+      if (!p) throw new Error('project no longer exists');
+      if (!Array.isArray(p.templates)) p.templates = [];
+      const existing = p.templates.find(t => t.name === name);
+      if (existing) existing.steps = steps; else p.templates.push({ name, steps });
+    });
+    emit('projects');
+  },
+  async renameTemplate(pid, oldName, name) {
+    await mutateBoard(draft => {
+      const p = draft.projects.find(x => x.id === pid);
+      const t = p && (p.templates || []).find(x => x.name === oldName);
+      if (!t) return { noop: true };
+      t.name = name;
+    });
+    emit('projects');
+  },
+  async deleteTemplate(pid, name) {
+    await mutateBoard(draft => {
+      const p = draft.projects.find(x => x.id === pid);
+      if (!p) return { noop: true };
+      p.templates = (p.templates || []).filter(t => t.name !== name);
+    });
+    emit('projects');
   },
 };
 
@@ -195,7 +284,6 @@ export async function pollNow() {
   }
   if (state.lastPollError) { state.lastPollError = null; uev('poll-recovered'); }
   const byName = new Map(infos.map(i => [i.name, i]));
-  const exited = [];
   for (const c of store.cards) {
     const info = byName.get(c.session);
     if (!info) continue;
@@ -203,7 +291,7 @@ export async function pollNow() {
        close it without ceremony. Only live→dead transitions count, so cards
        that were already stopped (e.g. after an app restart) stay. */
     if (!info.alive && (c.status === 'running' || c.status === 'waiting')) {
-      exited.push(c);
+      exitRetirement.observe(c.id);
       continue;
     }
     const status = !info.alive ? 'stopped'
@@ -234,13 +322,16 @@ export async function pollNow() {
   /* a shell that exited on its own retires its card through the SAME
      reliable path as an explicit close: cancel the schedule first, and keep
      the card if that cannot be persisted */
-  for (const c of exited) {
-    c.status = 'stopped';
-    if (!(await provider.cancelSchedule(c))) { emit('status', c); continue; }
-    closePaneBySid(c.id);
-    await provider.close(c.id, { cancelled: true });
-    toast(`"${c.title}" closed — shell exited`);
-  }
+  await exitRetirement.drain({
+    get: sid => provider.get(sid),
+    markStopped: c => { c.status = 'stopped'; emit('status', c); },
+    close: c => provider.close(c.id, { quiet: true }),
+    failed: () => toast('shell exited, but its card could not be retired; deck will retry safely'),
+    succeeded: c => {
+      closePaneBySid(c.id, { detach: false });
+      toast(`"${c.title}" closed — shell exited`);
+    },
+  });
 }
 export function startPolling() {
   clearInterval(pollTimer);
@@ -314,8 +405,8 @@ export function renderTabs() {
   add.className = 'tab-add';
   add.title = 'New project';
   add.textContent = '＋';
-  add.onclick = () => {
-    const p = provider.createProject('new project');
+  add.onclick = async () => {
+    const p = await provider.createProject('new project');
     switchProject(p.id);
     const tab = document.querySelector('#tabs .tab.active');
     if (tab) renameTab(tab, p);
@@ -324,8 +415,8 @@ export function renderTabs() {
 }
 
 export function renameTab(el, p) {
-  inlineRename(el, p.name, v => {
-    if (v) provider.renameProject(p.id, v);
+  inlineRename(el, p.name, async v => {
+    if (v) await provider.renameProject(p.id, v);
     render();
   });
 }
@@ -373,10 +464,10 @@ export function renderBoard() {
        two clicks of a double-click and break rename. */
     colEl.addEventListener('click', e => {
       if (e.target.closest('.card, .col-del') || e.target.tagName === 'INPUT') return;
-      p.selected = p.selected === c.id ? null : c.id;
-      saveBoard();
+      const next = p.selected === c.id ? null : c.id;
+      provider.selectColumn(p.id, next);
       document.querySelectorAll('#columns .column[data-cid]').forEach(el2 => {
-        el2.classList.toggle('selected', el2.dataset.cid === p.selected);
+        el2.classList.toggle('selected', el2.dataset.cid === next);
       });
     });
     const nameEl = colEl.querySelector('.col-name');
@@ -385,8 +476,8 @@ export function renderBoard() {
     nameEl.title = (hint ? hint + ' · ' : '') +
       'click to target new sessions here · double-click to rename';
     nameEl.ondblclick = () => {
-      inlineRename(nameEl, c.name, v => {
-        if (v) provider.renameColumn(p.id, c.id, v);
+      inlineRename(nameEl, c.name, async v => {
+        if (v) await provider.renameColumn(p.id, c.id, v);
         render();
       });
     };
@@ -395,7 +486,7 @@ export function renderBoard() {
       if (p.columns.length <= 1) { toast('a project needs at least one board'); return; }
       if (cards.length &&
           !(await confirmDialog(`Delete board "${c.name}"? Its ${cards.length} card(s) move to "${p.columns.find(x => x.id !== c.id).name}".`))) return;
-      const r = provider.removeColumn(p.id, c.id);
+      const r = await provider.removeColumn(p.id, c.id);
       if (r && r.moved) toast(`moved ${r.moved} card(s) to ${r.fallback}`);
     };
 
@@ -409,12 +500,12 @@ export function renderBoard() {
     colEl.addEventListener('dragleave', () => {
       if (--dragDepth <= 0) { dragDepth = 0; colEl.classList.remove('drop-target'); }
     });
-    colEl.addEventListener('drop', e => {
+    colEl.addEventListener('drop', async e => {
       e.preventDefault();
       dragDepth = 0;
       colEl.classList.remove('drop-target');
       const sid = e.dataTransfer.getData('text/deck-session');
-      if (sid) { provider.move(sid, c.id); toast(`moved to ${c.name}`); }
+      if (sid) { await provider.move(sid, c.id); toast(`moved to ${c.name}`); }
     });
 
     const body = colEl.querySelector('.col-cards');
@@ -425,14 +516,14 @@ export function renderBoard() {
   const ghost = document.createElement('div');
   ghost.className = 'col-ghost';
   ghost.innerHTML = '<button>＋ New board</button>';
-  ghost.querySelector('button').onclick = () => {
-    const c = provider.addColumn(p.id, 'new board');
+  ghost.querySelector('button').onclick = async () => {
+    const c = await provider.addColumn(p.id, 'new board');
     render();
     wrap.scrollLeft = wrap.scrollWidth;
     const heads = document.querySelectorAll('#columns .column .col-name');
     const nameEl = heads[heads.length - 1];
-    if (nameEl) inlineRename(nameEl, c.name, v => {
-      if (v) provider.renameColumn(p.id, c.id, v);
+    if (nameEl) inlineRename(nameEl, c.name, async v => {
+      if (v) await provider.renameColumn(p.id, c.id, v);
       render();
     });
   };
@@ -502,18 +593,22 @@ export function updateCardInPlace(s) {
 }
 
 export async function closeSession(sid, needConfirm = false) {
+  if (!state.destructiveCards) state.destructiveCards = new Set();
+  if (state.destructiveCards.has(sid)) return;
   const s = provider.get(sid);
   if (!s) return;
   const live = s.status !== 'stopped';
   if (needConfirm &&
       !(await confirmDialog(`Close "${s.title}"?${live ? ' The shell will be terminated.' : ''}`))) return;
-  /* the schedule goes first: if that cannot be persisted the card stays on
-     the board (with its pane) instead of vanishing into a hidden schedule */
-  if (!(await provider.cancelSchedule(s))) return;
-  if (!(await provider.close(sid, { cancelled: true }))) return;
-  closePaneBySid(sid, { detach: false });
-  toast(`closed: ${s.title}`);
-  render();
+  state.destructiveCards.add(sid);
+  try {
+    if (!(await provider.close(sid))) return;
+    closePaneBySid(sid, { detach: false });
+    toast(`closed: ${s.title}`);
+    render();
+  } finally {
+    state.destructiveCards.delete(sid);
+  }
 }
 
 /* ---------- terminal (xterm + PTY bridge, split panes) ----------

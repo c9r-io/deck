@@ -48,9 +48,10 @@ jobs:
           for f in app/ui/js/*.js app/ui/js/*.mjs app/ui/test/*.mjs; do
             node --check "$f"
           done
-      # 2. headless unit tests of the DOM-free logic (node:test, no npm)
+      # 2. headless pure + production-module DOM tests (node:test, no npm).
+      #    wk-smoke is environment-guarded here and executes only in WKWebView.
       - name: JS unit tests (node --test)
-        run: node --test app/ui/test/pure.test.mjs
+        run: node --test app/ui/test/*.mjs
       # 3. unresolved-identifier scan (forgotten imports; also forbids
       #    xterm private ._core API in deck code) — an approximation, not a
       #    syntax check; that's what gate 1 is for

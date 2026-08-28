@@ -126,7 +126,15 @@ export async function boot() {
         columns: ['Attention', 'Working', 'Queued', 'Parked'].map(n => ({ id: genId('C'), name: n })),
       });
     } else {
-      provider.createProject('main');
+      try {
+        await provider.createProject('main');
+      } catch (e) {
+        store.projects.push({
+          id: genId('P'), name: 'main',
+          columns: ['Attention', 'Working', 'Queued', 'Parked'].map(n => ({ id: genId('C'), name: n })),
+        });
+        toast('the first board could not be saved; it is temporary until storage recovers');
+      }
     }
   }
   state.projectId = store.projects[0].id;

@@ -7,10 +7,50 @@ while the real webview fails (that is how every regression in this list
 originally shipped). Run through them in the `app/run.sh` build before
 tagging a release; 3 minutes total.
 
-## Input
+## v0.4.31 executed release gate — 2026-08-28
+
+The round-six blockers were executed, not merely added to the checklist:
+
+- [x] A debug arm64 `.app` was placed in a 0.4.31 DMG, mounted read-only, and
+      run in its real WKWebView with a fresh private data directory and unique
+      tmux socket. The 13,928 KiB candidate DMG had SHA-256
+      `d3bcf7e484b8a02f231022032cb0af283db138d020b0b3c61a1966a1f8893888`.
+- [x] Board overlap cases completed with mask 255 and disk JSON equal to the
+      final in-memory Board. The scheduler boot-save-failure and natural-exit
+      retry cases passed their deterministic Rust/Node regressions.
+- [x] Sidebar Enter rename ended editing and updated all four surfaces once;
+      the mounted app was killed and relaunched against the same isolated data,
+      then reported the renamed title in both loaded UI state and disk.
+- [x] A deterministic 2,204-row / 31,657-JavaScript-character Unicode capture
+      auto-scrolled down and up. Native selection and Copy all produced distinct
+      clipboard payloads; external paste measurement was 108 selection lines /
+      2,280 bytes versus 2,203 full-output newlines / 47,071 bytes.
+- [x] The real file menu retained two URL actions and exposed five path actions;
+      editor-parent plus relative and absolute Unicode/space parent-session
+      actions all completed without a ghost card.
+- [x] Completion geometry passed mask 255 across bottom-follow, tmux scrollback,
+      split pane, sidebar resize, rapid show/hide and a long full-width/emoji
+      prefix. The terminal viewport was 617 px high, the reserved bar 38 px,
+      their gap was 0 px without intersection, and the sibling gap was 5 px.
+      xterm/tmux rows agreed at 24 while shown and 25 after hiding.
+- [x] Smoke logs contained zero absolute-path/URL hits and zero raw generated
+      session-name hits. macOS denied programmatic window capture without Screen
+      Recording permission, so the retained evidence is the closed numeric DOM
+      rectangles, overlap masks and PTY dimensions above rather than a screenshot.
+
+The commit/tag SHA and signed release-DMG digest are recorded in the release
+report after CI produces the notarized artifact; the debug digest above is only
+the pre-tag functional carrier.
+
+## Input & rename
 - [ ] New session → type `ls` → characters echo, Enter runs it (TSM/IMK alive)
 - [ ] Chinese IME: type 中文, composition window appears, Enter commits
 - [ ] ⌘V pastes into the shell; ⌘C copies a selection out
+- [ ] Rename a non-active session from the sidebar: Enter removes the editor
+      immediately, persists exactly once, and updates Board/sidebar/open-pane
+      titles. Reopen the app and confirm the title remains.
+- [ ] Rename again: Escape restores without a write; click away commits once;
+      Chinese IME Enter commits composition first and does not end editing.
 
 ## Scrolling & selection
 - [ ] Fresh shell: trackpad scroll does nothing (no pull-down, no copy-mode badge)
@@ -27,23 +67,37 @@ tagging a release; 3 minutes total.
       scroll (tmux owns the history — this is the known limit) and deck
       toasts the way out ONCE
 - [ ] ⧉ in the pane header (also ⌘⇧C, also right-click card → Copy output…)
-      opens the copy panel: `seq 500` first, then confirm the panel scrolls,
-      a drag-selection auto-scrolls with it, ⌘C copies the selection, and
-      "Copy all" pastes ALL 500 lines elsewhere — including lines long since
-      scrolled out of the pane. A line wider than the pane comes back in one
-      piece, not broken at the pane width. Esc / backdrop closes.
+      opens the copy panel: use at least 2,000 lines containing Chinese,
+      emoji, blank lines, code-block markers and one line wider than the pane.
+      Dragging at the bottom edge must continuously scroll down; dragging at
+      the top must continuously scroll up. ⌘C copies only that native selection,
+      while "Copy all" pastes the full capture byte-for-byte — including lines
+      long since scrolled out of view and the unwrapped long line. Pointer-up,
+      cancel, Escape, backdrop close and window blur must stop auto-scroll.
 
 ## Board & cards
 - [ ] Drag a card between boards (native drop must not swallow HTML5 DnD)
 - [ ] Double-click board title renames (no render() mid-dblclick regression)
 - [ ] Card ✕ closes instantly; in-session Close shows the custom confirm
       (window.confirm is a silent no-op in WKWebView — never use it)
+- [ ] With delayed persistence, overlap two card closes; close+rename/move;
+      project delete+unrelated create/rename; and a failed first write followed
+      by a successful second mutation. Reload `deck.json`: it must exactly equal
+      the final visible Board, with no resurrection or lost unrelated change.
+- [ ] Ctrl+D/natural exit with queue-cancel or Board-save failure keeps the
+      stopped card and pane visible, toasts only once, and retries. After durable
+      success it closes the pane and retires once without repeated toasts.
 
 ## Completion & separators
 - [ ] Second command typed shows gray ghost; Tab applies remainder only
-- [ ] Type at a prompt sitting on the LAST line of the pane (fill the pane
-      first, e.g. `seq 60`): the completion bar appears ABOVE the prompt and
-      never covers what you are typing; scroll/resize keeps it clear
+- [ ] Test a fresh shell prompt, a scrolled-history prompt, a prompt on the
+      last visible row, a long wrapped command, rapid input, pane resize, and
+      horizontal/vertical/nested splits. The candidates occupy real reserved
+      space and never cover any terminal row; only the focused pane shrinks.
+- [ ] While candidates show, compare xterm rows and `tmux display -p
+      '#{pane_width} #{pane_height}'`; they agree. Hide candidates and confirm
+      both grow back, the prompt/cursor remains visible, and no extra jump or
+      blank row is introduced.
 - [ ] Separator lines appear between shell commands, none inside `claude`
 
 ## File drop & image paste (Warp-style path insertion)
@@ -73,6 +127,22 @@ tagging a release; 3 minutes total.
 - [ ] `chmod 400 ~/.deck/queue.json` → close a card → an explicit toast, the
       card STAYS on the board (never a silent delete with a live schedule);
       `chmod 600` back → closing works
+- [ ] Start from a persisted `firing` item and force the boot repair save to
+      fail. The UI still exposes acknowledge/retry immediately; the item stays
+      ambiguous and cannot fire. Restore writes: the exact in-memory snapshot
+      is flushed, remains ambiguous after restart, and the dirty flag clears.
+
+## File-path menu
+
+- [ ] Print relative and absolute paths containing spaces, Chinese and emoji,
+      plus `:line[:column]`. Keyboard-open the menu: URL entries remain only
+      Open/Copy; file entries include Open, Reveal, Copy, Open parent folder in
+      editor, and New session in parent folder. Arrow/Home/End/Escape navigation
+      and focus restoration work.
+- [ ] Open parent uses the configured editor with the directory as an argument;
+      New session starts in the canonical parent and follows the normal project/
+      Board placement rules. Repeated clicks create at most one session. Missing,
+      unreadable or stale paths show a safe error and create no ghost card/session.
 
 ## Splits
 - [ ] ⌘D split; typing goes to the FOCUSED pane; no reflow jitter from the

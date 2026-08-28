@@ -7,28 +7,24 @@ import assert from 'node:assert/strict';
 import {
   sessionName, fmtMem, fmtEvery, minToHM, hmToMin, winHas, hasWindow,
   nextFire, groupQueue, groupSteps, itemDead, blockedBy,
-  chainQuietHint, CHAIN_QUIET_SECS, shQuote, quickBarBottom,
-  deleteSessionsTransaction, sidebarGroups,
+  chainQuietHint, CHAIN_QUIET_SECS, shQuote, quickBarLayout, rectsOverlap,
+  createExitRetirementTracker, createSerialTransactionQueue, deleteSessionsTransaction, sidebarGroups,
   copyExact, copyShortcutAction, latestRequestGuard,
+  createSelectionAutoScroller, selectionAutoScrollSpeed,
+  linkMenuItems,
   inlineRenameValue, persistOptimistically,
 } from '../js/pure.js';
 
-test('the completion bar never covers the line being typed', () => {
-  const view = { viewH: 600, cellH: 20, barH: 40 };
-  // prompt high up in the pane: the bar keeps its bottom-edge home
-  assert.equal(quickBarBottom({ ...view, cursorTop: 100 }), 0);
-  assert.equal(quickBarBottom({ ...view, cursorTop: 534 }), 0, 'exactly fits below');
-  // prompt at the bottom (the reported bug): the bar hops above the row
-  assert.equal(quickBarBottom({ ...view, cursorTop: 560 }), 46);
-  assert.equal(quickBarBottom({ ...view, cursorTop: 580 }), 26, 'last line');
-  // …and stays fully inside the view even for an absurd cursor/bar combo
-  assert.equal(quickBarBottom({ ...view, cursorTop: 0 }), 0);
-  assert.equal(quickBarBottom({ viewH: 60, cellH: 20, barH: 40, cursorTop: 30 }), 20);
-  assert.equal(quickBarBottom({ viewH: 30, cellH: 20, barH: 40, cursorTop: 10 }), 0);
-  // degenerate inputs (pane mid-teardown, bar not laid out yet) → bottom
-  for (const bad of [{ viewH: 0 }, { barH: 0 }, { cursorTop: null }]) {
-    assert.equal(quickBarBottom({ ...view, cursorTop: 580, ...bad }), 0);
-  }
+test('the completion bar reserves a non-overlapping row in only its pane', () => {
+  const shown = quickBarLayout({ width: 800, height: 600, barHeight: 42, visible: true });
+  assert.deepEqual(shown.terminal, { left: 0, top: 0, right: 800, bottom: 558 });
+  assert.deepEqual(shown.bar, { left: 0, top: 558, right: 800, bottom: 600 });
+  assert.equal(rectsOverlap(shown.terminal, shown.bar), false);
+  const hidden = quickBarLayout({ width: 800, height: 600, barHeight: 42, visible: false });
+  assert.equal(hidden.terminal.bottom, 600);
+  assert.equal(rectsOverlap(hidden.terminal, hidden.bar), false);
+  const adjacentPane = { left: 800, top: 0, right: 1200, bottom: 600 };
+  assert.equal(rectsOverlap(shown.bar, adjacentPane), false);
 });
 
 test('shQuote leaves safe paths bare and single-quotes the rest', () => {
@@ -206,6 +202,150 @@ test('delete transaction keeps all cards on partial kill or board-save failure',
   assert.equal(commits, 1, 'only the successful retry commits deletion');
 });
 
+function boardHarness({ failWrites = 0 } = {}) {
+  let state = {
+    projects: [
+      { id: 'p1', name: 'one', columns: [{ id: 'c1', name: 'Working' }] },
+      { id: 'p2', name: 'two', columns: [{ id: 'c2', name: 'Working' }] },
+    ],
+    cards: [
+      { id: 'a', projectId: 'p1', columnId: 'c1', title: 'A' },
+      { id: 'b', projectId: 'p1', columnId: 'c1', title: 'B' },
+    ],
+  };
+  let disk = JSON.stringify(state);
+  let failures = failWrites;
+  const writes = [];
+  const queue = createSerialTransactionQueue({
+    snapshot: () => state,
+    persist: async (_candidate, json) => {
+      writes.push(json);
+      if (failures-- > 0) throw new Error('disk full');
+      disk = json;
+    },
+    commit: candidate => { state = candidate; },
+  });
+  return { queue, get state() { return state; }, get disk() { return disk; }, writes };
+}
+
+test('all overlapping Board mutations serialize from the latest committed JSON', async () => {
+  const h = boardHarness();
+  const closeA = h.queue.enqueue(async draft => {
+    await new Promise(resolve => setTimeout(resolve, 8));
+    draft.cards = draft.cards.filter(c => c.id !== 'a');
+  });
+  const closeB = h.queue.enqueue(draft => { draft.cards = draft.cards.filter(c => c.id !== 'b'); });
+  await Promise.all([closeA, closeB]);
+  assert.deepEqual(h.state.cards, [], 'rapid close A+B deletes both');
+  assert.equal(h.disk, JSON.stringify(h.state), 'memory and serialized JSON are identical');
+
+  const h2 = boardHarness();
+  await Promise.all([
+    h2.queue.enqueue(draft => { draft.cards = draft.cards.filter(c => c.id !== 'a'); }),
+    h2.queue.enqueue(draft => {
+      const b = draft.cards.find(c => c.id === 'b');
+      b.title = 'renamed'; b.columnId = 'c1';
+    }),
+  ]);
+  assert.deepEqual(h2.state.cards.map(c => [c.id, c.title]), [['b', 'renamed']]);
+  assert.equal(h2.disk, JSON.stringify(h2.state), 'close+rename/move loses nothing and revives nothing');
+
+  const h3 = boardHarness();
+  await Promise.all([
+    h3.queue.enqueue(draft => {
+      draft.projects = draft.projects.filter(p => p.id !== 'p1');
+      draft.cards = draft.cards.filter(c => c.projectId !== 'p1');
+    }),
+    h3.queue.enqueue(draft => {
+      draft.projects.find(p => p.id === 'p2').name = 'two-renamed';
+      draft.cards.push({ id: 'x', projectId: 'p2', columnId: 'c2', title: 'new' });
+    }),
+  ]);
+  assert.deepEqual(h3.state.projects.map(p => p.name), ['two-renamed']);
+  assert.deepEqual(h3.state.cards.map(c => c.id), ['x']);
+  assert.equal(h3.disk, JSON.stringify(h3.state));
+});
+
+test('a failed Board persist does not poison the next transaction or write an old snapshot', async () => {
+  const h = boardHarness({ failWrites: 1 });
+  await assert.rejects(h.queue.enqueue(draft => { draft.cards[0].title = 'not committed'; }));
+  await h.queue.enqueue(draft => { draft.cards[1].title = 'second succeeds'; });
+  assert.equal(h.state.cards[0].title, 'A');
+  assert.equal(h.state.cards[1].title, 'second succeeds');
+  assert.equal(h.disk, JSON.stringify(h.state));
+  assert.ok(!h.disk.includes('not committed'));
+
+  // A pending debounced edit is inserted before an immediate destructive
+  // barrier by persistence.js; the queue core then applies both in order.
+  await h.queue.enqueue(draft => { draft.projects[0].selected = 'c1'; });
+  await h.queue.enqueue(draft => { draft.cards = draft.cards.filter(c => c.id !== 'a'); });
+  await h.queue.enqueue(draft => {
+    if (!draft.cards.some(c => c.id === 'a')) return { noop: true }; // duplicate close
+    draft.cards = draft.cards.filter(c => c.id !== 'a');
+  });
+  assert.equal(h.state.projects[0].selected, 'c1');
+  assert.deepEqual(h.state.cards.map(c => c.id), ['b']);
+  assert.equal(h.disk, JSON.stringify(h.state));
+});
+
+test('natural shell exit keeps the pane/card on failures, retries, and never spams', async () => {
+  const tracker = createExitRetirementTracker();
+  const card = { id: 'a', status: 'running' };
+  const outcomes = [false, false, true]; // cancel fail, Board persist fail, success
+  let warnings = 0, paneCloses = 0, successes = 0;
+  const hooks = {
+    get: sid => sid === 'a' ? card : null,
+    markStopped: c => { c.status = 'stopped'; },
+    close: async () => outcomes.shift(),
+    failed: () => { warnings++; },
+    succeeded: () => { paneCloses++; successes++; },
+  };
+  tracker.observe('a');
+  await tracker.drain(hooks);
+  assert.equal(card.status, 'stopped');
+  assert.equal(paneCloses, 0, 'cancel failure cannot close the pane');
+  await tracker.drain(hooks);
+  assert.equal(paneCloses, 0, 'Board save failure still keeps the pane');
+  assert.equal(warnings, 1, 'same automatic error is reported once');
+  await tracker.drain(hooks);
+  assert.equal(successes, 1);
+  assert.equal(paneCloses, 1, 'pane closes only after durable Board commit');
+  assert.equal(tracker.pending('a'), false);
+});
+
+test('copy selection auto-scroll is bidirectional, progressive, and cleans up', () => {
+  assert.equal(selectionAutoScrollSpeed({ pointerY: 300, top: 0, bottom: 600 }), 0);
+  assert.ok(selectionAutoScrollSpeed({ pointerY: 599, top: 0, bottom: 600 }) > 0);
+  assert.ok(selectionAutoScrollSpeed({ pointerY: 1, top: 0, bottom: 600 }) < 0);
+  assert.ok(Math.abs(selectionAutoScrollSpeed({ pointerY: 599, top: 0, bottom: 600 }))
+    > Math.abs(selectionAutoScrollSpeed({ pointerY: 570, top: 0, bottom: 600 })));
+
+  let next = 1;
+  const frames = new Map();
+  const cancelled = [];
+  const scrolls = [];
+  const endpoints = [];
+  const ctl = createSelectionAutoScroller({
+    frame: cb => { const id = next++; frames.set(id, cb); return id; },
+    cancelFrame: id => { cancelled.push(id); frames.delete(id); },
+    measure: () => ({ top: 0, bottom: 600 }),
+    scrollBy: dy => { scrolls.push(dy); return true; },
+    extend: p => endpoints.push(p),
+  });
+  ctl.start({ x: 10, y: 598 });
+  const runOne = () => { const [id, cb] = frames.entries().next().value; frames.delete(id); cb(); };
+  runOne();
+  assert.ok(scrolls[0] > 0);
+  ctl.move({ x: 10, y: 2 });
+  runOne();
+  assert.ok(scrolls.some(v => v < 0));
+  assert.ok(endpoints.length >= 2, 'selection endpoint follows scrolling');
+  ctl.stop();
+  assert.equal(ctl.active(), false);
+  assert.equal(frames.size, 0);
+  assert.ok(cancelled.length >= 1, 'outstanding animation frame cancelled');
+});
+
 test('copy guard rejects stale session results and exact copy reports real completion', async () => {
   const guard = latestRequestGuard();
   const old = guard.begin();
@@ -220,6 +360,18 @@ test('copy guard rejects stale session results and exact copy reports real compl
   assert.equal(await copyExact(text, async value => { received = value; }), text.length);
   assert.equal(received, text, 'no trimming, normalization, or chunk loss');
   await assert.rejects(copyExact(text, async () => { throw new Error('denied'); }));
+
+  const long = Array.from({ length: 2000 }, (_, i) => {
+    if (i === 20) return '```rust';
+    if (i === 24) return '```';
+    if (i === 100) return '路径/' + '无空格'.repeat(300) + '/file.rs';
+    return `${String(i + 1).padStart(4, '0')} 中文 😀 e\u0301`;
+  }).join('\n');
+  let pasted = '';
+  await copyExact(long, async value => { pasted = value; });
+  assert.equal(pasted, long);
+  assert.equal(pasted.split('\n').length, 2000);
+  assert.equal(pasted.length, long.length, 'Unicode/code blocks/long lines remain byte-for-byte ordered');
 });
 
 test('copy shortcuts keep panel selection separate from Copy all and open-panel routing', () => {
@@ -228,6 +380,13 @@ test('copy shortcuts keep panel selection separate from Copy all and open-panel 
   assert.equal(action({ panelOpen: true, hasSelection: false }), 'none');
   assert.equal(action({ shiftKey: true }), 'open-copy-panel');
   assert.equal(action({ metaKey: false, shiftKey: true }), null);
+});
+
+test('path menu adds parent actions while the URL menu remains unchanged', () => {
+  assert.deepEqual(linkMenuItems('url').map(x => x.action), ['url', 'copy']);
+  assert.deepEqual(linkMenuItems('path').map(x => x.action), [
+    'editor', 'editor-parent', 'session-parent', 'reveal', 'copy',
+  ]);
 });
 
 test('rename Enter/Escape/empty semantics and persistence rollback are deterministic', async () => {
