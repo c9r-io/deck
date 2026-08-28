@@ -17,6 +17,13 @@ fn main() -> Result<()> {
         std::process::exit(1);
     }
 
+    // idempotent privacy migration before any data file is touched:
+    // ~/.deck → 0700, anything an older deck (or the ambient umask) left
+    // group/world-readable → 0600. Reported, never silently ignored.
+    if let Err(e) = model::harden_data_dir(&model::data_dir()) {
+        eprintln!("warning: {e}");
+    }
+
     let mut app = App::load()?;
     let mut terminal = ratatui::init();
     let result = run(&mut terminal, &mut app);
@@ -74,8 +81,15 @@ fn perform(terminal: &mut DefaultTerminal, app: &mut App, action: Action) -> Res
             }
         }
         Action::EditNotes { card_id } => {
-            let path = model::notes_path(&card_id);
-            std::fs::create_dir_all(path.parent().unwrap())?;
+            // create dir + file ourselves so notes are 0600 from the start:
+            // an editor creating the file would use the ambient umask
+            let path = match model::prepare_notes(&model::data_dir(), &card_id) {
+                Ok(p) => p,
+                Err(e) => {
+                    app.status = format!("notes unavailable: {e}");
+                    return Ok(());
+                }
+            };
             let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".into());
             ratatui::restore();
             let status = Command::new(&editor).arg(&path).status();
