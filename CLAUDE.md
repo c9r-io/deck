@@ -26,9 +26,17 @@ Frontend gates: `node --check` (syntax) · `ui/test/pure.test.mjs` (node:test)
   that code's OWN closed policy (enum values / version pattern — no generic
   slug rule) + two ints, and redacts everything else — never add a free-form
   frontend log channel (log_privacy tests enforce this). Backend log lines
-  never interpolate raw error Display text: `storage::err_code()` maps
-  errors to stable path-free categories; the full error goes only to the
-  operation's caller. The whole `~/.deck` tree is private by construction
+  never interpolate raw error Display text or a raw session NAME:
+  `storage::err_code()` maps errors to stable path-free categories (the full
+  error goes only to the operation's caller) and `storage::session_tag()`
+  gives a per-RUN, non-reversible tag. Every line is redacted again by
+  `sanitize_log` on its way to disk (absolute paths, `~/`, any `scheme://`,
+  credential prefixes, long opaque tokens, session-name shapes →
+  `<redacted>`); exports sanitize their own header AND body instead of
+  trusting app.log; `sanitize_existing_logs` migrates logs/exports an older
+  deck wrote, in place, at boot (atomic, 0600, no raw copy kept). The
+  runtime privacy tests write REAL files through `applog_to` into temp dirs
+  — never stub the writer and call it proven. The whole `~/.deck` tree is private by construction
   (dir 0700, every file created 0600 — atomic-write temps, `.bak`,
   `.corrupt-*`, log, exports); `harden_data_dir()` re-migrates legacy modes
   at every boot.
@@ -48,7 +56,20 @@ Frontend gates: `node --check` (syntax) · `ui/test/pure.test.mjs` (node:test)
   refused untouched (save refuses to overwrite them too); recovery never
   writes; a load FAILURE is surfaced, never treated as a first run — the UI
   must never auto-save defaults over an existing file. Writes: unique temp +
-  fsync + rename + parent-dir fsync, `.bak` written the same way.
+  fsync + rename + parent-dir fsync, `.bak` written the same way. The
+  envelope is validated STRICTLY: only a document carrying neither
+  `schema_version` nor `data` is legacy v0; once either appears the file
+  must be a COMPLETE envelope with a non-negative INTEGER version (string /
+  fractional / negative / null version, or a version without data, is
+  damage → recovery), and `save` refuses to overwrite a malformed or future
+  envelope.
+- Copying long output: a terminal selection can only ever cover ONE screen
+  (tmux owns the scrollback and repaints in place), so `capture_scrollback`
+  (`capture-pane -p -J -S -N`, ≤20k lines) feeds a copy panel where the text
+  scrolls and selects like a document — ⧉ in the pane header, ⌘⇧C, or the
+  card context menu. Do NOT "fix" this by enabling tmux mouse mode: that
+  takes xterm's local selection away. The completion bar anchors itself
+  above the cursor row when it would cover the prompt (`quickBarBottom`).
 - One poll command (`poll_sessions`) returns liveness + `#{window_activity}` recency +
   process-tree RSS (pane_pid → ps tree walk) + tail previews. Frontend polls every
   2.5s and diffs into granular UI events (status/mem/output) — never full re-renders
@@ -101,7 +122,28 @@ Frontend gates: `node --check` (syntax) · `ui/test/pure.test.mjs` (node:test)
     array adjacency);
   - the firing contract: while an item is mid-send, queue remove/update/
     pause/retry/skip return a conflict error (UI toasts it) and the item
-    survives until finalize; queue_clear_session spares the firing item;
+    survives until finalize;
+  - EVERY user-driven mutation goes through `with_queue` (persist-then-
+    commit): clone the state, mutate the CANDIDATE, persist, only then swap
+    it in — a rejected mutation or a failed save leaves memory byte-identical
+    to disk, so the scheduler never acts on a change the user was told
+    failed. The two POST-send transitions are deliberately the opposite: the
+    injection cannot be rolled back, so memory takes the new state and a
+    failed write sets `Queues.dirty`, warns the user, and is retried by
+    `flush_dirty` every tick — that retry is what stops a definitively
+    NOT-sent prompt from being counted as delivered after a restart;
+  - deleting a card/project is PERMANENT cancellation: `queue_clear_session(s)`
+    tombstones the session (`cancelled`, capped 500) and drops ALL its items
+    INCLUDING one mid-send — that delivery still finalizes from the
+    pending-ledger snapshot (the audit completes), but no rule is restored,
+    no template step spawned, no cadence and no send-gap entry left behind,
+    and a tombstoned session is never eligible again (so `fire_item` cannot
+    restart it). A delete landing while a worker is inside its injection is
+    reaped afterwards (`SendHooks.kill`); scheduling for a session again
+    clears its tombstone. The frontend removes a card ONLY after that
+    cancellation is on disk — close, project delete (one atomic
+    `queue_clear_sessions`) and the shell-exited auto-retire share the path,
+    and a failure keeps the card with an explicit toast;
   - a step that exhausts its 8 attempts BLOCKS its group until the user
     retries/skips/removes it (queue_retry / queue_skip commands);
   - a recurring rule has at most one active iteration (its spawned steps,
@@ -148,9 +190,17 @@ Frontend gates: `node --check` (syntax) · `ui/test/pure.test.mjs` (node:test)
 
 ## TUI (v0.1, legacy) — `src/`
 
-- `src/model.rs` — `Board`/`Card` structs, JSON persistence in `~/.deck/board.json`
-  (atomic write via tmp+rename), id/session-name generation. Columns are the fixed
-  `COLUMNS` array; a card's `column` is an index into it.
+- `src/model.rs` — `Board`/`Card` structs, JSON persistence in `~/.deck/board.json`,
+  id/session-name generation. Columns are the fixed `COLUMNS` array; a card's
+  `column` is an index into it. The TUI holds the SAME privacy/durability
+  contract as the app backend (its own small copy, not a dependency): dirs
+  0700 and files 0600 at CREATION, boot-time idempotent migration
+  (`harden_data_dir`), atomic + durable saves (unique temp → fsync → rename →
+  parent-dir fsync) keeping `board.json.bak`, `.bak` fallback for a damaged
+  main file, and notes created by deck — never by `$EDITOR` under the ambient
+  umask — behind a card-id alphabet check so a note can never escape
+  `notes/`. Path-taking variants (`load_from` / `save_to` / `notes_path_in` /
+  `prepare_notes`) exist so no test touches the real `~/.deck`.
 - `src/tmux.rs` — all tmux subprocess calls. Every call captures stdout/stderr
   (never inherit — stray tmux stderr corrupts the TUI). Pane-level targets
   (`send-keys`, `capture-pane`) need `=name:`; session-level targets need `=name`

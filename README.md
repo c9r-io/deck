@@ -93,6 +93,7 @@ waiting for you. Memory chips show the *whole process tree* of a session
 | Enter / leave a session | click card · back button (shows the board name) or Esc |
 | Move cards | drag & drop (or the board dropdown inside a session) |
 | Close | card ✕ / Ctrl+D in shell (instant) · in-session Close (confirms) |
+| Copy long output | ⧉ in the pane header · ⌘⇧C · right-click card → Copy output… |
 | Rename / describe | double-click titles · right-click card |
 | Split view | drag a card onto a pane edge · ⌘D right / ⌘⇧D down |
 | Schedule prompts | ⏱ in the session header; 📋 for templates |
@@ -105,7 +106,9 @@ Everything lives in `~/.deck/` as plain JSON you can inspect or edit:
 short delivery audit) · `history.json` (command history; wipeable from
 Settings) · `settings.json` · `app.log` (diagnostics — event codes and
 counts only, never what you type; errors appear as categories, never as
-raw paths).
+raw paths, and session names as a per-run tag rather than the name itself).
+Every line is redacted again as it is written, and logs or exports a
+pre-0.4.29 deck left behind are cleaned up in place at first launch.
 
 The whole directory is readable only by you: `~/.deck` is 0700 and every
 file — including backups, quarantined corrupt files, logs and exports — is
@@ -115,7 +118,14 @@ version left more open at every launch.
 Every file keeps a `.bak` of its previous good version. If a file is
 damaged, deck sets the damaged bytes aside as `<file>.corrupt-<timestamp>`,
 restores from the backup, and tells you — it never silently replaces your
-data with an empty default.
+data with an empty default. A file written by a NEWER deck (or one whose
+version header deck cannot read) is left byte-for-byte alone instead of
+being overwritten.
+
+Closing a card — or deleting a project, or letting its shell exit —
+permanently cancels every scheduled prompt for that session, and the card
+only leaves the board once that cancellation is on disk. Nothing deck
+schedules can outlive the card it belongs to.
 
 Sessions live on a dedicated tmux socket: `tmux -L deck ls` shows them,
 `tmux -L deck attach -t <name>` attaches from any terminal — deck never

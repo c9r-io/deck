@@ -23,6 +23,15 @@ tagging a release; 3 minutes total.
       (typing while scrolled first leaves copy-mode, so keys are never eaten
       as copy-mode commands)
 - [ ] Drag-select multiple lines → ⌘C → paste elsewhere matches
+- [ ] Drag a selection UP to the top edge of the pane: the view does not
+      scroll (tmux owns the history — this is the known limit) and deck
+      toasts the way out ONCE
+- [ ] ⧉ in the pane header (also ⌘⇧C, also right-click card → Copy output…)
+      opens the copy panel: `seq 500` first, then confirm the panel scrolls,
+      a drag-selection auto-scrolls with it, ⌘C copies the selection, and
+      "Copy all" pastes ALL 500 lines elsewhere — including lines long since
+      scrolled out of the pane. A line wider than the pane comes back in one
+      piece, not broken at the pane width. Esc / backdrop closes.
 
 ## Board & cards
 - [ ] Drag a card between boards (native drop must not swallow HTML5 DnD)
@@ -32,6 +41,9 @@ tagging a release; 3 minutes total.
 
 ## Completion & separators
 - [ ] Second command typed shows gray ghost; Tab applies remainder only
+- [ ] Type at a prompt sitting on the LAST line of the pane (fill the pane
+      first, e.g. `seq 60`): the completion bar appears ABOVE the prompt and
+      never covers what you are typing; scroll/resize keeps it clear
 - [ ] Separator lines appear between shell commands, none inside `claude`
 
 ## File drop & image paste (Warp-style path insertion)
@@ -45,6 +57,22 @@ tagging a release; 3 minutes total.
       path typed; plain TEXT ⌘V still pastes as text
 - [ ] `ls -l ~/.deck/drops` → files 0600, dir 0700; relaunch after 7 days
       (or backdate with touch) → old drops pruned
+
+## Scheduler deletion (release gate — orphan sessions)
+- [ ] Card with a recurring rule ("every 1 min") → close the card → the queue
+      panel loses its rows, and after several minutes NO tmux session comes
+      back: `tmux -L deck ls` shows nothing for it and `~/.deck/queue.json`
+      lists the session under `cancelled`
+- [ ] Same, but close the card in the second the prompt fires (rule due, hit
+      ✕): the send may still land, `deliveries` records it, and still nothing
+      re-arms or restarts
+- [ ] Delete a whole project holding 2–3 scheduled cards → every one of their
+      queue rows is gone at once, other projects untouched
+- [ ] Ctrl+D a shell that has queued prompts → card retires itself and its
+      queue rows go with it
+- [ ] `chmod 400 ~/.deck/queue.json` → close a card → an explicit toast, the
+      card STAYS on the board (never a silent delete with a live schedule);
+      `chmod 600` back → closing works
 
 ## Splits
 - [ ] ⌘D split; typing goes to the FOCUSED pane; no reflow jitter from the
@@ -93,6 +121,9 @@ tagging a release; 3 minutes total.
       file until you actually change something
 - [ ] Set `"schema_version": 99` in deck.json → toast says update deck; the
       file is left byte-identical (no .corrupt, no overwrite on save)
+- [ ] Set `"schema_version": "1"` (a STRING) → treated as damage: recovery
+      from `.bak` + `.corrupt-<ts>` kept, never read as a legacy file
+- [ ] Delete the `data` key but keep `schema_version` → same recovery path
 - [ ] Same truncate drill for `queue.json`
 - [ ] Launch a second deck instance → alert "deck is already running", no
       data raced
@@ -111,6 +142,13 @@ tagging a release; 3 minutes total.
       hits (errors are logged as category codes; the tmux binary is logged
       as sidecar/homebrew/…, never as a path; storage recovery logs name
       files, never absolute paths)
+- [ ] `grep -E 'deck-[a-z0-9]+-[a-z0-9-]+' ~/.deck/app.log ~/.deck/exports/*`
+      → zero hits: sessions appear as `sess-xxxxx` tags, never by name
+- [ ] Migration of what an OLDER deck left: append a fake legacy line
+      (`echo "1 [pty] attached deck-my-card-ab12 /Users/$USER/secret" >>
+      ~/.deck/app.log`), relaunch deck → the line is still there structurally
+      but the name and path read `<redacted>`, the file is still 0600, and no
+      `.bak` copy of the raw line exists anywhere in `~/.deck`
 - [ ] Permissions: `ls -ld ~/.deck ~/.deck/exports` → `drwx------` (0700);
       `ls -l ~/.deck/*.json ~/.deck/*.json.bak ~/.deck/*.corrupt-* \
       ~/.deck/app.log ~/.deck/exports/*` → everything `-rw-------` (0600),
@@ -124,3 +162,11 @@ tagging a release; 3 minutes total.
       (the securitypolicyviolation listener logs any)
 - [ ] A `file:///…` or non-http link printed in a terminal does NOT open on
       click (only http/https leave the app)
+
+## Root TUI (only if you ship/run the legacy `deck` binary)
+- [ ] `mv ~/.deck ~/.deck.bak && cargo run` → `ls -ld ~/.deck` is 0700 and
+      `ls -l ~/.deck/board.json` is 0600 on the very first save
+- [ ] `o` on a card opens $EDITOR on a notes file that is already 0600, in a
+      0700 `~/.deck/notes/`
+- [ ] `chmod 755 ~/.deck; chmod 644 ~/.deck/board.json` → relaunch → both are
+      restricted again
