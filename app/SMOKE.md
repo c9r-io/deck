@@ -32,6 +32,17 @@ tagging a release; 3 minutes total.
 - [ ] ⌘D split; typing goes to the FOCUSED pane; no reflow jitter from the
       completion bar; divider drags
 
+## PTY flow control
+- [ ] `seq 1 500000` (or `yes | head -2000000`) → output streams smoothly to
+      the end, scrollback intact at the tail (ACK window at work: no dropped
+      or reordered bytes, no beachball)
+- [ ] While it streams, close the pane mid-flood → no hang, no crash
+      (detach closes the AckGate and releases the emitter); reopen the card
+      → terminal repaints correctly (fresh generation, stale tail dropped)
+- [ ] After heavy output, `grep "ack stall" ~/.deck/app.log` — a stall line
+      is fine (it means the window did its job); the app must have stayed
+      responsive throughout
+
 ## Update & settings
 - [ ] Settings → editor list shows installed editors; file link opens there
 - [ ] deck menu → Check for Updates… reports up-to-date (or offers install)

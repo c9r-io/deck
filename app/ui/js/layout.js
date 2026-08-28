@@ -475,7 +475,11 @@ export async function ensureAttached(pane) {
     if (card.status === 'stopped') {
       created = await inv('start_session', { name: card.session, dir: card.dir, cmd: card.cmd });
     }
-    await inv('attach_session', { name: card.session, cols: pane.term.cols, rows: pane.term.rows });
+    const gen = await inv('attach_session', { name: card.session, cols: pane.term.cols, rows: pane.term.rows });
+    /* max(): the first pty-data event can arrive BEFORE this invoke resolves;
+       the handler below already advanced ptyGens then, and regressing it
+       would make us drop (and never ACK) the current stream */
+    ptyGens.set(card.session, Math.max(ptyGens.get(card.session) || 0, gen));
   } catch (e) {
     toast('attach failed: ' + e);
   }
@@ -514,6 +518,7 @@ export function closePaneBySid(sid, opts = {}) {
   try { entry.term.dispose(); } catch (e) { /* already gone */ }
   entry.el.remove();
   panes.delete(entry.session);
+  ptyGens.delete(entry.session);
   layout = removeFromLayout(layout, sid);
   if (!layout || !collectLeaves(layout).length) {
     backToBoard();
@@ -571,14 +576,26 @@ $('split-down').onclick = e => { e.stopPropagation(); showSplitPicker('col'); };
    src-tauri/capabilities/default.json — without it registration is refused
    with a silent promise rejection and the terminal never receives output. */
 listen('pty-data', ev => {
-  const { name, data } = ev.payload;
+  const { name, gen, seq, data } = ev.payload;
+  /* flow control: drop a stale attachment's tail (its gate is already
+     closed backend-side — no ACK owed); a NEWER gen means our attach invoke
+     hasn't resolved yet — accept it and advance, or the first paint is lost */
+  const cur = ptyGens.get(name) || 0;
+  if (gen < cur) return;
+  if (gen > cur) ptyGens.set(name, gen);
   const p = panes.get(name);
   if (p) {
     const u8 = b64ToU8(data);
     rxBytes += u8.length;
     if (rxLogged < 3 || rxLogged % 200 === 0) uev('pty-rx', null, u8.length, rxBytes);
     rxLogged++;
-    p.term.write(u8);
+    /* ACK only after xterm has actually consumed the bytes — this is what
+       bounds the backend's in-flight window (see pty.rs) */
+    p.term.write(u8, () => inv('pty_ack', { name, gen, seq }).catch(() => {}));
+  } else {
+    /* pane already gone but the stream still current: ACK so the emitter
+       reaches its natural end instead of waiting on a window we'll never fill */
+    inv('pty_ack', { name, gen, seq }).catch(() => {});
   }
 }).catch(() => uev('listen-fail', 'pty-data'));
 listen('pty-exit', ev => {

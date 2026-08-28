@@ -145,6 +145,7 @@ fn main() {
             commands::poll_sessions,
             pty::attach_session,
             pty::pty_write,
+            pty::pty_ack,
             pty::pty_resize,
             pty::detach_session,
             commands::open_target,

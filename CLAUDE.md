@@ -52,10 +52,15 @@ Frontend gates: `node --check` (syntax) · `ui/test/pure.test.mjs` (node:test)
 - Attach = `tmux attach` inside a portable-pty, bytes streamed as base64 over the
   `pty-data` event to xterm.js; detach kills only the tmux *client*. Reader threads
   carry a generation counter so a stale thread never removes a newer attachment.
-  Flow control is internal buffering + coalescing ONLY (bounded reader→emitter
-  channel, ≤256KB per event) — `app.emit` is fire-and-forget, so there is NO
-  end-to-end backpressure to the webview; an ACK-window protocol is future
-  work (see the honest-limit comment in pty.rs; don't claim otherwise).
+  Flow control is END-TO-END: pty-data events carry `gen`+`seq`; the frontend
+  ACKs (`pty_ack`) only after xterm's write callback, and the emitter never
+  runs more than MAX_INFLIGHT_BATCHES (4 × ≤256KB) past the last ACK — past
+  that it waits on the attachment's AckGate (closed by detach/re-attach, which
+  is what releases a stalled emitter; stalls are logged). A wedged webview
+  therefore stalls emitter → bounded channel → kernel PTY → tmux client, with
+  memory bounded at ~1.5MB per attachment. The frontend drops (without ACKing)
+  events whose gen is older than the current attachment, and accepts+adopts a
+  NEWER gen (the first event can beat the attach invoke's resolution).
 - Scheduled prompts: Rust-side scheduler thread (NOT webview timers — App Nap
   freezes those), 20s tick, queue persisted at `~/.deck/queue.json` and loaded at
   boot. Injection = `tmux send-keys -l` (literal) + Enter, no attach needed; dead

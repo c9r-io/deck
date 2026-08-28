@@ -22,6 +22,7 @@ Object.assign(globalThis, {
   pendingUpdate: null,
   lastPollError: null,
   pollTimer: null,
+  ptyGens: new Map(),
   qTpl: null,
   queueCache: { items: [], last_fired: {} },
   queueOpen: false,
