@@ -150,6 +150,7 @@ fn main() {
             commands::open_target,
             history::recent_commands,
             history::record_command,
+            history::history_clear,
             commands::ui_log,
             commands::ping_event,
             scheduler::queue_list,

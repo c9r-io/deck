@@ -61,9 +61,13 @@ export function inlineRename(host, current, onDone, allowEmpty = false) {
 /* ---------- settings ---------- */
 export async function loadSettings() {
   try {
-    const raw = await inv('load_settings');
-    if (raw) settings = { editor: '', debug: false, ...JSON.parse(raw) };
-  } catch (e) { ulog('load_settings failed: ' + e); }
+    const doc = await inv('load_settings');
+    if (doc && doc.warning) toast(doc.warning);
+    if (doc && doc.data) settings = { editor: '', debug: false, ...JSON.parse(doc.data) };
+  } catch (e) {
+    toast('settings could not be loaded: ' + e);   // NOT a first run — defaults stay in memory only
+    ulog('load_settings failed (see message above)');
+  }
   window.__DECK_DEBUG = !!settings.debug;
 }
 
@@ -103,6 +107,12 @@ $('set-editor').onchange = () => {
   toast(settings.editor ? 'file links open in ' + settings.editor : 'file links open in system default');
 };
 $('set-check').onclick = () => manualUpdateCheck();
+$('set-clear-hist').onclick = async () => {
+  if (!(await confirmDialog('Clear deck’s command history (and its backup)? Completion chips will start over.'))) return;
+  inv('history_clear')
+    .then(() => toast('command history cleared'))
+    .catch(e => toast('clear failed: ' + e));
+};
 
 export function promptDialog(msg, initial = '') {
   return new Promise(res => {

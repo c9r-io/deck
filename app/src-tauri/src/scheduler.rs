@@ -181,23 +181,21 @@ pub(crate) fn queue_path() -> PathBuf {
 }
 
 pub(crate) fn load_queue() -> QueueState {
-    match storage::load(&queue_path()) {
-        Ok(Some(raw)) => {
-            let mut q: QueueState = serde_json::from_str(&raw).unwrap_or_else(|e| {
-                storage::warn(format!(
-                    "queue.json parsed but has an unexpected shape ({e}); starting with an empty queue —                  the original file is preserved as .bak"
-                ));
-                QueueState::default()
-            });
-            migrate_groups(&mut q);
-            q
+    let mut q = match storage::load_typed::<QueueState>(&queue_path()) {
+        Ok(Some(o)) => {
+            if let Some(w) = o.warning {
+                storage::warn(w); // boot-time: surfaced via storage_warnings
+            }
+            serde_json::from_str(&o.payload).unwrap_or_default()
         }
         Ok(None) => QueueState::default(),
         Err(e) => {
             storage::warn(format!("scheduled prompts could not be loaded: {e}"));
             QueueState::default()
         }
-    }
+    };
+    migrate_groups(&mut q);
+    q
 }
 
 /// Compatibility migration: pre-group queue files expressed chains purely by

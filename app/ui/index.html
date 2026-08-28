@@ -653,6 +653,11 @@
       <input type="checkbox" id="set-debug">
       <span style="font-size:11.5px;color:var(--muted)">verbose diagnostics in app.log (never records what you type)</span>
     </div>
+    <div class="set-row">
+      <label>Command history</label>
+      <button class="btn" id="set-clear-hist" style="margin-left:auto">Clear</button>
+    </div>
+    <div class="set-hint">deck keeps commands typed in its shells (for the completion chips) in ~/.deck/history.json, readable only by you. Avoid typing secrets directly into command lines; Clear wipes the file and its backup.</div>
     <div class="set-sep"></div>
     <div class="set-row">
       <label>Updates</label>

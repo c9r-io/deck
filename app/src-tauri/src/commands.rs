@@ -44,6 +44,7 @@ pub(crate) fn export_logs() -> Result<PathBuf, String> {
     out.push_str("\n===== app.log =====\n");
     out.push_str(&std::fs::read_to_string(home.join(".deck").join("app.log")).unwrap_or_default());
     std::fs::write(&path, out).map_err(|e| e.to_string())?;
+    storage::restrict_to_user(&path); // logs are metadata-only, but still private
     let _ = Command::new("open").arg("-R").arg(&path).status();
     Ok(path)
 }
@@ -58,6 +59,87 @@ pub(crate) fn ping_event(app: AppHandle) {
 
 // ---------- board persistence ------------------------------------------------
 
+/// Business-structure validation for deck.json. Field-lenient on purpose
+/// (the frontend owns the shape and may grow it), but the skeleton the UI
+/// cannot boot without — projects/cards arrays with ids — must be present,
+/// or the file goes through backup recovery instead of being "parsed" into
+/// an empty board and silently overwritten.
+#[derive(serde::Deserialize)]
+pub(crate) struct BoardDoc {
+    #[allow(dead_code)]
+    projects: Vec<BoardProject>,
+    #[allow(dead_code)]
+    cards: Vec<BoardCard>,
+}
+#[derive(serde::Deserialize)]
+pub(crate) struct BoardProject {
+    #[allow(dead_code)]
+    id: String,
+    #[allow(dead_code)]
+    name: String,
+    #[serde(default)]
+    #[allow(dead_code)]
+    columns: Vec<BoardColumn>,
+}
+#[derive(serde::Deserialize)]
+pub(crate) struct BoardColumn {
+    #[allow(dead_code)]
+    id: String,
+    #[allow(dead_code)]
+    name: String,
+}
+#[derive(serde::Deserialize)]
+pub(crate) struct BoardCard {
+    #[allow(dead_code)]
+    id: String,
+    #[serde(rename = "projectId")]
+    #[allow(dead_code)]
+    project_id: String,
+    #[serde(rename = "columnId")]
+    #[allow(dead_code)]
+    column_id: String,
+    #[allow(dead_code)]
+    title: String,
+}
+
+/// Settings must at least be a JSON object; individual keys are optional.
+#[derive(serde::Deserialize)]
+pub(crate) struct SettingsDoc {
+    #[serde(default)]
+    #[allow(dead_code)]
+    editor: Option<String>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    debug: Option<bool>,
+}
+
+/// What a typed load hands the frontend: the payload, where it came from
+/// ("main" | "backup" | "none" for a first run), and — when recovery
+/// happened — a warning the UI must show. A rejected promise here is a HARD
+/// error (nothing loadable): the UI must surface it, never treat it as a
+/// first run.
+#[derive(Serialize)]
+pub(crate) struct LoadedDoc {
+    data: String,
+    source: String,
+    warning: Option<String>,
+}
+
+fn to_loaded(o: Option<storage::LoadOutcome>) -> LoadedDoc {
+    match o {
+        Some(o) => LoadedDoc {
+            data: o.payload,
+            source: o.source.into(),
+            warning: o.warning,
+        },
+        None => LoadedDoc {
+            data: String::new(),
+            source: "none".into(),
+            warning: None,
+        },
+    }
+}
+
 pub(crate) fn board_path() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
@@ -66,8 +148,8 @@ pub(crate) fn board_path() -> PathBuf {
 }
 
 #[tauri::command]
-pub(crate) fn load_board() -> Result<String, String> {
-    Ok(storage::load(&board_path())?.unwrap_or_default())
+pub(crate) fn load_board() -> Result<LoadedDoc, String> {
+    Ok(to_loaded(storage::load_typed::<BoardDoc>(&board_path())?))
 }
 
 #[tauri::command]
@@ -92,8 +174,10 @@ pub(crate) fn settings_path() -> PathBuf {
 }
 
 #[tauri::command]
-pub(crate) fn load_settings() -> Result<String, String> {
-    Ok(storage::load(&settings_path())?.unwrap_or_default())
+pub(crate) fn load_settings() -> Result<LoadedDoc, String> {
+    Ok(to_loaded(storage::load_typed::<SettingsDoc>(
+        &settings_path(),
+    )?))
 }
 
 #[tauri::command]
@@ -102,7 +186,9 @@ pub(crate) fn save_settings(data: String) -> Result<(), String> {
 }
 
 pub(crate) fn editor_app() -> Option<String> {
-    let raw = storage::load(&settings_path()).ok()??;
+    let raw = storage::load_typed::<SettingsDoc>(&settings_path())
+        .ok()??
+        .payload;
     let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
     let e = v.get("editor")?.as_str()?.trim().to_string();
     if e.is_empty() {

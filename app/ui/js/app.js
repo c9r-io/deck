@@ -7,7 +7,7 @@ import './board.js';
 import './layout.js';
 import './terminal.js';
 import './scheduler.js';
-import { $, inv, listen, state, store, ulog } from './state.js';
+import { $, genId, inv, listen, state, store, ulog } from './state.js';
 import { loadSettings, toast } from './dialogs.js';
 import { provider, render, startPolling } from './board.js';
 import { refreshQueue } from './scheduler.js';
@@ -100,23 +100,34 @@ export async function boot() {
   const ok = await inv('tmux_available').catch(() => false);
   if (!ok) $('banner').style.display = 'block';
 
-  let raw = '';
-  try { raw = await inv('load_board'); } catch (e) { /* first run */ }
-  if (raw) {
-    try {
-      const data = JSON.parse(raw);
-      store.projects = data.projects || [];
-      store.cards = (data.cards || []).map(c => ({ ...c, status: 'stopped', mem: null, tail: [] }));
-    } catch (e) {
-      toast('board file unreadable — starting fresh');
-    }
+  /* load_board resolves even on a first run (source "none"); a REJECTION
+     means the board exists but could not be loaded — never treat that as a
+     first run, and never auto-save defaults over whatever is on disk */
+  let doc = null, loadErr = null;
+  try { doc = await inv('load_board'); } catch (e) { loadErr = String(e); }
+  if (doc && doc.warning) toast(doc.warning);
+  if (doc && doc.data) {
+    const data = JSON.parse(doc.data);   // backend already validated the shape
+    store.projects = data.projects || [];
+    store.cards = (data.cards || []).map(c => ({ ...c, status: 'stopped', mem: null, tail: [] }));
+  }
+  if (loadErr) {
+    toast('board could not be loaded: ' + loadErr);
+    ulog('board load failed (see message above)');
   }
   if (!store.projects.length) {
-    const p = provider.createProject('main');
-    state.projectId = p.id;
-  } else {
-    state.projectId = store.projects[0].id;
+    if (loadErr) {
+      /* in-memory board only — nothing touches disk until the user actually
+         changes something (the damaged file was already quarantined) */
+      store.projects.push({
+        id: genId('P'), name: 'main',
+        columns: ['Attention', 'Working', 'Queued', 'Parked'].map(n => ({ id: genId('C'), name: n })),
+      });
+    } else {
+      provider.createProject('main');
+    }
   }
+  state.projectId = store.projects[0].id;
   render();
   startPolling();
   refreshQueue();
