@@ -51,22 +51,7 @@ fn main() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .manage(pty::PtyState::default())
-        .manage(scheduler::Queues::new({
-            let mut qs = scheduler::load_queue();
-            let notes = scheduler::recover_interrupted(&mut qs);
-            if !notes.is_empty() {
-                for n in notes {
-                    storage::warn(n);
-                }
-                if let Err(e) = scheduler::save_queue(&qs) {
-                    applog(&format!(
-                        "[queue] persist (crash recovery) FAILED ({})",
-                        storage::err_code(&e)
-                    ));
-                }
-            }
-            qs
-        }))
+        .manage(scheduler::boot_queues())
         .setup(|app| {
             std::thread::spawn(tmux::init_deck_server);
             scheduler::spawn_scheduler(app.handle().clone());

@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -144,6 +145,9 @@ pub(crate) struct Queues {
     /// session here before spawning its worker, so the same session never has
     /// two concurrent sends and a long send never collides with the next tick
     pub(crate) busy: Mutex<HashSet<String>>,
+    /// set when a POST-send persist failed: memory is ahead of disk and the
+    /// scheduler must keep retrying the write (see `flush_dirty`)
+    pub(crate) dirty: AtomicBool,
 }
 
 impl Queues {
@@ -151,8 +155,79 @@ impl Queues {
         Queues {
             q: Mutex::new(q),
             busy: Mutex::new(HashSet::new()),
+            dirty: AtomicBool::new(false),
         }
     }
+}
+
+/// Sentinel error meaning "this transaction found nothing to do": `with_queue`
+/// returns it without persisting or committing, and callers translate it into
+/// their own no-op result. It is never shown to the user.
+pub(crate) const TX_NOOP: &str = "\u{0}tx-noop";
+
+/// Persist-then-commit: EVERY user-driven queue mutation runs inside this.
+///
+/// The shared state is cloned, the mutation runs on the CANDIDATE only, the
+/// candidate is persisted, and the shared state is replaced only after the
+/// write succeeded. A rejected mutation or a failed save therefore leaves the
+/// in-memory queue byte-identical to what is on disk — the scheduler can
+/// never act on a change the user was told had failed.
+///
+/// The queue lock is held across the (short, local) save; it is NEVER held
+/// across a tmux send or a session-boot wait (see `send_one`).
+pub(crate) fn with_queue<T>(
+    qm: &Mutex<QueueState>,
+    persist: &dyn Fn(&QueueState) -> Result<(), String>,
+    f: impl FnOnce(&mut QueueState) -> Result<T, String>,
+) -> Result<T, String> {
+    let mut guard = qm.lock().unwrap();
+    let mut candidate = guard.clone();
+    let out = f(&mut candidate)?; // rejected: shared state never touched
+    persist(&candidate)?; // disk first…
+    *guard = candidate; // …memory only after it landed
+    Ok(out)
+}
+
+/// Retry a persist that failed AFTER an irreversible side effect (a prompt
+/// was really sent, or definitively refused). Memory is authoritative in that
+/// window; until the write lands, a crash falls back to the at-most-once
+/// recovery rule ("assume sent"), so the scheduler keeps retrying every tick.
+pub(crate) fn flush_dirty(
+    qm: &Mutex<QueueState>,
+    dirty: &AtomicBool,
+    persist: &dyn Fn(&QueueState) -> Result<(), String>,
+) -> bool {
+    if !dirty.load(AtomicOrdering::Relaxed) {
+        return false;
+    }
+    let q = qm.lock().unwrap();
+    match persist(&q) {
+        Ok(()) => {
+            dirty.store(false, AtomicOrdering::Relaxed);
+            applog("[queue] deferred persist recovered — disk matches memory again");
+            true
+        }
+        Err(e) => {
+            applog(&format!(
+                "[queue] deferred persist still FAILING ({})",
+                storage::err_code(&e)
+            ));
+            false
+        }
+    }
+}
+
+/// A persist that failed after the side effect already happened: memory keeps
+/// the truth, the user is told, and the write is retried on every later tick.
+fn note_persist_lag(dirty: &AtomicBool, stage: &str, e: &str) {
+    dirty.store(true, AtomicOrdering::Relaxed);
+    applog(&format!(
+        "[queue] persist ({stage}) FAILED ({}) — memory is ahead of disk, retrying",
+        storage::err_code(e)
+    ));
+    storage::warn(format!(
+        "scheduled prompts could not be saved after a send ({stage}); deck keeps retrying — if this persists, free disk space or check permissions on ~/.deck"
+    ));
 }
 
 /// Claim a session for a send worker; false = a worker is already on it.
@@ -360,18 +435,9 @@ pub(crate) fn next_queue_id(existing: &[QueueItem]) -> String {
     }
 }
 
-#[tauri::command]
-pub(crate) fn queue_add(
-    state: State<'_, Queues>,
-    app: AppHandle,
-    args: QueueAddArgs,
-) -> Result<(), String> {
-    validate_add(&args)?;
-    let text = args.text.replace(['\n', '\r'], " ").trim().to_string();
-    if text.is_empty() {
-        return Err("empty prompt".into());
-    }
-    let mut q = state.q.lock().unwrap();
+/// Pure core of queue_add: append one already-validated item to the
+/// candidate state (never to the shared state directly — see `with_queue`).
+pub(crate) fn add_item(q: &mut QueueState, args: QueueAddArgs, text: String) -> Result<(), String> {
     let id = next_queue_id(&q.items);
     let (group, seq) = if args.mode == "every" {
         (None, None) // rules carry no group; their iterations get one at spawn
@@ -430,11 +496,22 @@ pub(crate) fn queue_add(
         rule: None,
         delivery: None,
     });
-    if let Err(e) = save_queue(&q) {
-        // never let the scheduler act on an item the disk doesn't know about
-        q.items.pop();
-        return Err(e);
+    Ok(())
+}
+
+#[tauri::command]
+pub(crate) fn queue_add(
+    state: State<'_, Queues>,
+    app: AppHandle,
+    args: QueueAddArgs,
+) -> Result<(), String> {
+    validate_add(&args)?;
+    let text = args.text.replace(['\n', '\r'], " ").trim().to_string();
+    if text.is_empty() {
+        return Err("empty prompt".into());
     }
+    // never let the scheduler act on an item the disk doesn't know about
+    with_queue(&state.q, &save_queue, |q| add_item(q, args, text))?;
     let _ = app.emit("queue-changed", ());
     Ok(())
 }
@@ -500,9 +577,9 @@ pub(crate) fn queue_update(
     if text.is_empty() {
         return Err("empty prompt".into());
     }
-    let mut q = state.q.lock().unwrap();
-    update_text(&mut q, &id, text)?;
-    save_queue(&q)?;
+    // a failed save must not leave the new text in memory: the scheduler
+    // would then send a prompt the user was told was not saved
+    with_queue(&state.q, &save_queue, |q| update_text(q, &id, text))?;
     let _ = app.emit("queue-changed", ());
     Ok(())
 }
@@ -513,9 +590,7 @@ pub(crate) fn queue_remove(
     app: AppHandle,
     id: String,
 ) -> Result<(), String> {
-    let mut q = state.q.lock().unwrap();
-    remove_item(&mut q, &id)?;
-    save_queue(&q)?;
+    with_queue(&state.q, &save_queue, |q| remove_item(q, &id))?;
     let _ = app.emit("queue-changed", ());
     Ok(())
 }
@@ -527,9 +602,8 @@ pub(crate) fn queue_pause(
     id: String,
     paused: bool,
 ) -> Result<(), String> {
-    let mut q = state.q.lock().unwrap();
-    pause_item(&mut q, &id, paused)?;
-    save_queue(&q)?;
+    // a failed save keeps the OLD pause state in force, matching the error
+    with_queue(&state.q, &save_queue, |q| pause_item(q, &id, paused))?;
     let _ = app.emit("queue-changed", ());
     Ok(())
 }
@@ -541,9 +615,8 @@ pub(crate) fn queue_retry(
     app: AppHandle,
     id: String,
 ) -> Result<(), String> {
-    let mut q = state.q.lock().unwrap();
-    retry_item(&mut q, &id)?;
-    save_queue(&q)?;
+    // a failed save must not re-arm the item in memory only
+    with_queue(&state.q, &save_queue, |q| retry_item(q, &id))?;
     let _ = app.emit("queue-changed", ());
     Ok(())
 }
@@ -556,11 +629,9 @@ pub(crate) fn queue_skip(
     app: AppHandle,
     id: String,
 ) -> Result<(), String> {
-    let mut q = state.q.lock().unwrap();
-    if remove_item(&mut q, &id)? {
+    if with_queue(&state.q, &save_queue, |q| remove_item(q, &id))? {
         applog("[queue] step skipped by user — group unblocked");
     }
-    save_queue(&q)?;
     let _ = app.emit("queue-changed", ());
     Ok(())
 }
@@ -581,9 +652,10 @@ pub(crate) fn queue_clear_session(
     app: AppHandle,
     session: String,
 ) -> Result<(), String> {
-    let mut q = state.q.lock().unwrap();
-    clear_session_items(&mut q, &session);
-    save_queue(&q)?;
+    with_queue(&state.q, &save_queue, |q| {
+        clear_session_items(q, &session);
+        Ok(())
+    })?;
     let _ = app.emit("queue-changed", ());
     Ok(())
 }
@@ -751,11 +823,15 @@ pub(crate) fn select_due(
         .collect()
 }
 
+/// A rule whose stop instant passed (while deck slept, typically).
+pub(crate) fn expired(i: &QueueItem, now: u64) -> bool {
+    i.mode == "every" && i.until_at.map(|t| now >= t).unwrap_or(false)
+}
+
 /// Expired rules die quietly (their stop instant passed while sleeping).
 pub(crate) fn purge_expired(q: &mut QueueState, now: u64) -> bool {
     let n0 = q.items.len();
-    q.items
-        .retain(|i| !(i.mode == "every" && i.until_at.map(|t| now >= t).unwrap_or(false)));
+    q.items.retain(|i| !expired(i, now));
     q.items.len() != n0
 }
 
@@ -985,55 +1061,63 @@ pub(crate) enum SendResult {
 ///   firing ──fire Err──► note_failed (retryable, ledger dropped)
 ///   firing ──crash──► recover_interrupted at next boot (assume sent)
 ///
+/// Persistence has two distinct regimes, and the difference is deliberate:
+///
+/// * BEFORE the injection, the intent is a normal transaction — a failed
+///   write rolls everything back and nothing is sent (`NotPersisted`).
+/// * AFTER the injection (success or definitive refusal) the side effect is
+///   already irreversible, so memory takes the new state unconditionally and
+///   a failed write only sets the `dirty` flag: the scheduler retries the
+///   save every tick (`flush_dirty`) and the user is warned. Until it lands,
+///   a crash resolves through the usual at-most-once rule (disk still shows
+///   "firing" → assume sent), which is why the retry — not silence — is the
+///   contract for a definitively-NOT-sent prompt.
+///
 /// The queue lock is held only for state transitions and their persists —
 /// never across `fire` (tmux + a possible session-boot wait).
 pub(crate) fn send_one(
     qm: &Mutex<QueueState>,
+    dirty: &AtomicBool,
     session: &str,
     now_min: u32,
     activity: &HashMap<String, u64>,
     fire: &(dyn Fn(&QueueItem) -> Result<(), String> + Sync),
     persist: &(dyn Fn(&QueueState) -> Result<(), String> + Sync),
 ) -> SendResult {
-    let (item, delivery) = {
-        let mut q = qm.lock().unwrap();
+    // Persist the firing intent (delivery id + ledger snapshot) BEFORE
+    // injecting — this ordering makes delivery at-most-once across crashes,
+    // and the snapshot makes finalize independent of the item surviving.
+    let pre = with_queue(qm, persist, |q| {
         // fresh re-selection under the lock: a pause, edit or removal since
         // the tick began is honored here
-        let Some(sel) = select_for_session(&q, session, now_epoch(), now_min, activity) else {
-            return SendResult::Nothing;
+        let Some(sel) = select_for_session(q, session, now_epoch(), now_min, activity) else {
+            return Err(TX_NOOP.into());
         };
-        // Persist the firing intent (delivery id + ledger snapshot) BEFORE
-        // injecting — this ordering makes delivery at-most-once across
-        // crashes, and the snapshot makes finalize independent of the item.
         let delivery = next_delivery_id();
-        let prev_attempt_at = sel.last_attempt_at;
         let Some(it) = q.items.iter_mut().find(|i| i.id == sel.id) else {
-            return SendResult::Nothing;
+            return Err(TX_NOOP.into());
         };
         it.state = "firing".into();
         it.attempts += 1;
         it.last_attempt_at = Some(now_epoch());
         it.delivery = Some(delivery.clone());
-        let snapshot = q.items.iter().find(|i| i.id == sel.id).unwrap().clone();
+        let snapshot = it.clone();
         q.pending.push(PendingDelivery {
             id: delivery.clone(),
             snapshot: snapshot.clone(),
         });
-        if let Err(e) = persist(&q) {
+        Ok((snapshot, delivery))
+    });
+    let (item, delivery) = match pre {
+        Ok(v) => v,
+        Err(e) if e == TX_NOOP => return SendResult::Nothing,
+        Err(e) => {
             applog(&format!(
                 "[queue] persist (pre-fire) FAILED ({}) — not sending this tick",
                 storage::err_code(&e)
             ));
-            q.pending.retain(|p| p.id != delivery);
-            if let Some(it) = q.items.iter_mut().find(|i| i.id == sel.id) {
-                it.state = default_state();
-                it.attempts -= 1;
-                it.last_attempt_at = prev_attempt_at;
-                it.delivery = None;
-            }
             return SendResult::NotPersisted;
         }
-        (snapshot, delivery)
     };
     match fire(&item) {
         Ok(()) => {
@@ -1047,10 +1131,7 @@ pub(crate) fn send_one(
             let mut q = qm.lock().unwrap();
             finalize_delivery(&mut q, &item.id, &delivery, now_epoch(), false);
             if let Err(e) = persist(&q) {
-                applog(&format!(
-                    "[queue] persist (post-fire) FAILED ({})",
-                    storage::err_code(&e)
-                ));
+                note_persist_lag(dirty, "post-fire", &e);
             }
             SendResult::Sent {
                 session: item.session.clone(),
@@ -1061,10 +1142,7 @@ pub(crate) fn send_one(
             note_failed(&mut q, &item.id, &e);
             let gave_up = q.items.iter().any(|i| i.id == item.id && item_dead(i));
             if let Err(pe) = persist(&q) {
-                applog(&format!(
-                    "[queue] persist (post-failure) FAILED ({})",
-                    storage::err_code(&pe)
-                ));
+                note_persist_lag(dirty, "post-failure", &pe);
             }
             drop(q);
             // the raw error stays on the item (last_error → queue UI); the
@@ -1086,6 +1164,26 @@ pub(crate) fn send_one(
             }
         }
     }
+}
+
+/// Boot the queue: load, resolve any interrupted delivery (at-most-once),
+/// persist the resolution. A failed write here is the same "memory ahead of
+/// disk" case as a post-send failure — flagged dirty and retried per tick,
+/// never silently dropped.
+pub(crate) fn boot_queues() -> Queues {
+    let mut qs = load_queue();
+    let notes = recover_interrupted(&mut qs);
+    let queues = Queues::new(qs);
+    if !notes.is_empty() {
+        for n in notes {
+            storage::warn(n);
+        }
+        let q = queues.q.lock().unwrap();
+        if let Err(e) = save_queue(&q) {
+            note_persist_lag(&queues.dirty, "crash recovery", &e);
+        }
+    }
+    queues
 }
 
 pub(crate) fn spawn_scheduler(app: AppHandle) {
@@ -1112,17 +1210,30 @@ pub(crate) fn spawn_scheduler(app: AppHandle) {
                 }
             }
         }
+        // a post-send write that failed keeps memory ahead of disk — retry it
+        // before anything else touches the queue this tick
+        flush_dirty(&state.q, &state.dirty, &save_queue);
+        // expired rules die quietly, transactionally like every other change
+        let now = now_epoch();
+        if state
+            .q
+            .lock()
+            .unwrap()
+            .items
+            .iter()
+            .any(|i| expired(i, now))
         {
-            let mut q = state.q.lock().unwrap();
-            if purge_expired(&mut q, now_epoch()) {
-                if let Err(e) = save_queue(&q) {
-                    applog(&format!(
-                        "[queue] persist (expiry purge) FAILED ({})",
-                        storage::err_code(&e)
-                    ));
+            match with_queue(&state.q, &save_queue, |q| {
+                purge_expired(q, now_epoch());
+                Ok(())
+            }) {
+                Ok(()) => {
+                    let _ = app.emit("queue-changed", ());
                 }
-                drop(q);
-                let _ = app.emit("queue-changed", ());
+                Err(e) => applog(&format!(
+                    "[queue] persist (expiry purge) FAILED ({}) — rules kept",
+                    storage::err_code(&e)
+                )),
             }
         }
         // tick-start candidate pass: at most one session slot each. The
@@ -1149,6 +1260,7 @@ pub(crate) fn spawn_scheduler(app: AppHandle) {
                 let state = app2.state::<Queues>();
                 let res = send_one(
                     &state.q,
+                    &state.dirty,
                     &session,
                     local_minutes(),
                     &act,
@@ -1828,6 +1940,7 @@ mod tests {
         let fired = AtomicU32::new(0);
         let res = send_one(
             &qm,
+            &AtomicBool::new(false),
             "s",
             720,
             &HashMap::new(),
@@ -1858,6 +1971,7 @@ mod tests {
         let qm = Mutex::new(qs(vec![due_at("a", "s")]));
         let res = send_one(
             &qm,
+            &AtomicBool::new(false),
             "s",
             720,
             &HashMap::new(),
@@ -1886,6 +2000,7 @@ mod tests {
         let qm = Mutex::new(qs(vec![due_at("a", "s")]));
         let _ = send_one(
             &qm,
+            &AtomicBool::new(false),
             "s",
             720,
             &HashMap::new(),
@@ -1896,6 +2011,7 @@ mod tests {
         let sent = AtomicU32::new(0);
         let res = send_one(
             &qm,
+            &AtomicBool::new(false),
             "s",
             720,
             &HashMap::new(),
@@ -1916,6 +2032,7 @@ mod tests {
         let qm = Mutex::new(qs(vec![due_at("a", "s")]));
         let res = send_one(
             &qm,
+            &AtomicBool::new(false),
             "s",
             720,
             &HashMap::new(),
@@ -1937,6 +2054,7 @@ mod tests {
         let qm = Mutex::new(qs(vec![a]));
         let res = send_one(
             &qm,
+            &AtomicBool::new(false),
             "s",
             720,
             &HashMap::new(),
@@ -1981,6 +2099,7 @@ mod tests {
             s.spawn(move || {
                 let res = send_one(
                     qref,
+                    &AtomicBool::new(false),
                     "slow",
                     720,
                     &HashMap::new(),
@@ -1997,6 +2116,7 @@ mod tests {
             // while "slow" is stalled inside its injection, "fast" completes
             let res = send_one(
                 &qm,
+                &AtomicBool::new(false),
                 "fast",
                 720,
                 &HashMap::new(),
@@ -2020,6 +2140,259 @@ mod tests {
         let q = qm.lock().unwrap();
         assert_eq!(q.deliveries.len(), 2, "both sessions delivered");
         assert!(q.pending.is_empty());
+    }
+
+    // ---------- round 4: persist-then-commit transactions ----------
+
+    /// A persist that can be switched to failing, recording every state it
+    /// was asked to write (the "disk").
+    struct FakeDisk {
+        fail: AtomicBool,
+        writes: Mutex<Vec<String>>,
+    }
+    impl FakeDisk {
+        fn new(initial: &QueueState) -> Self {
+            FakeDisk {
+                fail: AtomicBool::new(false),
+                writes: Mutex::new(vec![serde_json::to_string(initial).unwrap()]),
+            }
+        }
+        fn persist(&self, q: &QueueState) -> Result<(), String> {
+            if self.fail.load(AtomicOrdering::Relaxed) {
+                return Err("No space left on device (os error 28)".into());
+            }
+            self.writes
+                .lock()
+                .unwrap()
+                .push(serde_json::to_string(q).unwrap());
+            Ok(())
+        }
+        /// what a fresh deck would load right now
+        fn on_disk(&self) -> String {
+            self.writes.lock().unwrap().last().unwrap().clone()
+        }
+    }
+
+    fn add_args(session: &str, text: &str) -> QueueAddArgs {
+        QueueAddArgs {
+            session: session.into(),
+            dir: String::new(),
+            cmd: String::new(),
+            text: text.into(),
+            mode: "chain".into(),
+            at: None,
+            every: None,
+            win_from: None,
+            win_to: None,
+            until_n: None,
+            until_at: None,
+            steps: None,
+            tpl: None,
+            tpl_idx: None,
+            tpl_total: None,
+        }
+    }
+
+    /// Every user-driven mutation, run twice: once against a healthy disk
+    /// (change visible in memory AND on disk) and once against a failing one
+    /// (error returned, memory byte-identical, disk untouched).
+    #[test]
+    fn every_queue_mutation_is_all_or_nothing() {
+        let base = || {
+            let mut a = qi("a", "at");
+            a.at = Some(NOW - 1);
+            let mut b = qi("b", "chain");
+            b.text = "second".into();
+            let mut f = qi("f", "chain");
+            f.state = "failed".into();
+            f.attempts = MAX_ATTEMPTS;
+            let mut other = qi("o", "at");
+            other.session = "other".into();
+            qs(vec![a, b, f, other])
+        };
+        type Mutation = (&'static str, fn(&mut QueueState) -> Result<(), String>);
+        let mutations: Vec<Mutation> = vec![
+            ("add", |q| {
+                add_item(q, add_args("s", "fresh"), "fresh".into())
+            }),
+            ("update", |q| update_text(q, "a", "edited".into())),
+            ("remove", |q| remove_item(q, "a").map(|_| ())),
+            ("pause", |q| pause_item(q, "a", true)),
+            ("retry", |q| retry_item(q, "f")),
+            ("skip", |q| remove_item(q, "f").map(|_| ())),
+            ("clear-session", |q| {
+                clear_session_items(q, "s");
+                Ok(())
+            }),
+            ("expiry-purge", |q| {
+                q.items[0].mode = "every".into();
+                q.items[0].until_at = Some(NOW - 1);
+                purge_expired(q, NOW);
+                Ok(())
+            }),
+        ];
+        for (name, mutate) in mutations {
+            // healthy disk: the change lands in memory and on disk together
+            let qm = Mutex::new(base());
+            let disk = FakeDisk::new(&base());
+            let before = serde_json::to_string(&*qm.lock().unwrap()).unwrap();
+            with_queue(&qm, &|q| disk.persist(q), mutate).unwrap_or_else(|e| panic!("{name}: {e}"));
+            let after = serde_json::to_string(&*qm.lock().unwrap()).unwrap();
+            assert_ne!(before, after, "{name}: mutation had no effect");
+            assert_eq!(after, disk.on_disk(), "{name}: memory and disk agree");
+
+            // failing disk: same mutation, nothing changes anywhere
+            let qm = Mutex::new(base());
+            let disk = FakeDisk::new(&base());
+            disk.fail.store(true, AtomicOrdering::Relaxed);
+            let disk_before = disk.on_disk();
+            let err = with_queue(&qm, &|q| disk.persist(q), mutate)
+                .expect_err(&format!("{name}: failed save must be an error"));
+            assert_eq!(storage::err_code(&err), "disk-full", "{name}: {err}");
+            assert_eq!(
+                serde_json::to_string(&*qm.lock().unwrap()).unwrap(),
+                before,
+                "{name}: shared memory must be byte-identical after a failed save"
+            );
+            assert_eq!(disk.on_disk(), disk_before, "{name}: disk untouched");
+        }
+    }
+
+    #[test]
+    fn a_rejected_mutation_never_reaches_the_disk() {
+        // the firing contract rejects before any write is attempted
+        let mut a = qi("a", "at");
+        a.state = "firing".into();
+        let qm = Mutex::new(qs(vec![a]));
+        let disk = FakeDisk::new(&qm.lock().unwrap().clone());
+        let writes0 = disk.writes.lock().unwrap().len();
+        assert!(with_queue(&qm, &|q| disk.persist(q), |q| update_text(
+            q,
+            "a",
+            "edited".into()
+        ))
+        .is_err());
+        assert_eq!(disk.writes.lock().unwrap().len(), writes0, "no save tried");
+        assert_eq!(qm.lock().unwrap().items[0].text, "x");
+    }
+
+    #[test]
+    fn a_failed_retry_save_keeps_the_item_out_of_the_candidate_set() {
+        let mut f = qi("f", "chain");
+        f.state = "failed".into();
+        f.attempts = MAX_ATTEMPTS;
+        let qm = Mutex::new(qs(vec![f]));
+        let disk = FakeDisk::new(&qm.lock().unwrap().clone());
+        disk.fail.store(true, AtomicOrdering::Relaxed);
+        assert!(with_queue(&qm, &|q| disk.persist(q), |q| retry_item(q, "f")).is_err());
+        let q = qm.lock().unwrap();
+        assert!(item_dead(&q.items[0]), "still dead in memory");
+        let quiet: HashMap<String, u64> = [("s".into(), NOW - 400)].into();
+        assert!(
+            select_due(&q, NOW, 720, &quiet).is_empty(),
+            "a retry the user was told failed must not re-enter the schedule"
+        );
+    }
+
+    #[test]
+    fn a_failed_pre_fire_save_sends_nothing_and_changes_nothing() {
+        let qm = Mutex::new(qs(vec![due_at("a", "s")]));
+        let before = serde_json::to_string(&*qm.lock().unwrap()).unwrap();
+        let dirty = AtomicBool::new(false);
+        let res = send_one(
+            &qm,
+            &dirty,
+            "s",
+            720,
+            &HashMap::new(),
+            &|_: &QueueItem| panic!("must not inject when the intent never hit disk"),
+            &|_: &QueueState| Err("No space left on device".into()),
+        );
+        assert_eq!(res, SendResult::NotPersisted);
+        assert_eq!(
+            serde_json::to_string(&*qm.lock().unwrap()).unwrap(),
+            before,
+            "intent rolled back completely"
+        );
+        assert!(!dirty.load(AtomicOrdering::Relaxed), "nothing owed to disk");
+    }
+
+    #[test]
+    fn a_failed_post_send_save_keeps_memory_authoritative_and_retries() {
+        // the prompt really went out: memory MUST take the finalized state
+        // (re-sending would break at-most-once), and the write is retried
+        let qm = Mutex::new(qs(vec![due_at("a", "s")]));
+        let disk = FakeDisk::new(&qm.lock().unwrap().clone());
+        let dirty = AtomicBool::new(false);
+        let persist = |q: &QueueState| disk.persist(q);
+        let res = send_one(
+            &qm,
+            &dirty,
+            "s",
+            720,
+            &HashMap::new(),
+            &|_: &QueueItem| {
+                disk.fail.store(true, AtomicOrdering::Relaxed); // disk dies mid-send
+                Ok(())
+            },
+            &persist,
+        );
+        assert!(matches!(res, SendResult::Sent { .. }));
+        assert!(dirty.load(AtomicOrdering::Relaxed), "write still owed");
+        {
+            let q = qm.lock().unwrap();
+            assert!(q.items.is_empty(), "delivery finalized in memory");
+            assert_eq!(q.deliveries.len(), 1);
+            assert!(q.pending.is_empty());
+        }
+        // still failing: nothing changes, the flag stays up
+        assert!(!flush_dirty(&qm, &dirty, &persist));
+        assert!(dirty.load(AtomicOrdering::Relaxed));
+        // disk recovers: the retry lands and the flag clears
+        disk.fail.store(false, AtomicOrdering::Relaxed);
+        assert!(flush_dirty(&qm, &dirty, &persist));
+        assert!(!dirty.load(AtomicOrdering::Relaxed));
+        assert_eq!(
+            disk.on_disk(),
+            serde_json::to_string(&*qm.lock().unwrap()).unwrap()
+        );
+        assert!(!flush_dirty(&qm, &dirty, &persist), "nothing owed anymore");
+    }
+
+    #[test]
+    fn a_definitively_refused_send_that_cannot_be_saved_is_retried_not_forgotten() {
+        let qm = Mutex::new(qs(vec![due_at("a", "s")]));
+        let disk = FakeDisk::new(&qm.lock().unwrap().clone());
+        let dirty = AtomicBool::new(false);
+        let persist = |q: &QueueState| disk.persist(q);
+        let res = send_one(
+            &qm,
+            &dirty,
+            "s",
+            720,
+            &HashMap::new(),
+            &|_: &QueueItem| {
+                disk.fail.store(true, AtomicOrdering::Relaxed);
+                Err("tmux send-keys failed: can't find session: x".into())
+            },
+            &persist,
+        );
+        assert!(matches!(res, SendResult::Failed { .. }));
+        {
+            let q = qm.lock().unwrap();
+            assert_eq!(q.items[0].state, "failed", "not sent — retryable");
+            assert!(q.pending.is_empty(), "no delivery to recover");
+            assert!(q.deliveries.is_empty(), "a refused send is never audited");
+        }
+        assert!(dirty.load(AtomicOrdering::Relaxed));
+        disk.fail.store(false, AtomicOrdering::Relaxed);
+        assert!(flush_dirty(&qm, &dirty, &persist));
+        // the persisted state carries the "not sent" truth, so a restart
+        // resumes the retry instead of counting the prompt as delivered
+        let recovered: QueueState = serde_json::from_str(&disk.on_disk()).unwrap();
+        assert_eq!(recovered.items[0].state, "failed");
+        assert!(recovered.pending.is_empty());
+        assert!(recovered.deliveries.is_empty());
     }
 
     #[test]
