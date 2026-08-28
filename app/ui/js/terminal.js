@@ -54,7 +54,6 @@ export function showSessionCtx(e, sid) {
   ctx.innerHTML = `
     <button data-a="rename">Rename card</button>
     <button data-a="desc">${s.desc ? 'Edit' : 'Add'} description</button>
-    ${s.status === 'stopped' ? '<button data-a="start">Start</button>' : ''}
     <button data-a="here">New session in this directory</button>
     <hr>
     <button data-a="close" class="danger">Close session</button>`;
@@ -63,7 +62,6 @@ export function showSessionCtx(e, sid) {
     ctx.style.display = 'none';
     if (a === 'rename') renameCardInline(sid);
     if (a === 'desc') editDescInline(sid);
-    if (a === 'start') { provider.start(sid); toast(`started: ${s.title}`); }
     if (a === 'here') newSession(s.dir);
     if (a === 'close') closeSession(sid);
   };

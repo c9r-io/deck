@@ -169,7 +169,7 @@ export function addInputSeparator(pane) {
     if (!marker) { if (sepLogged < 5) { sepLogged++; ulog('separator: no marker'); } return; }
     const el = document.createElement('div');
     el.style.cssText = 'position:absolute; left:0; right:0; height:1px;' +
-      'background:rgba(126,138,153,0.28); pointer-events:none; z-index:4; display:none;';
+      'background:rgba(126,138,153,0.18); pointer-events:none; z-index:4; display:none;';
     pane.body.appendChild(el);
     const entry = { marker, el };
     pane.seps.push(entry);
@@ -214,7 +214,11 @@ export function positionSeparators(pane) {
       s.el.style.display = 'none';
     } else {
       s.el.style.display = 'block';
-      s.el.style.top = (top0 + row * h - Math.round(h * 0.16)) + 'px';
+      /* Warp-style breathing room: the hairline sits half a row above the
+         prompt line, i.e. centered in the blank line most prompts print
+         before themselves — equal space above and below the line instead of
+         hugging the command text. */
+      s.el.style.top = (top0 + row * h - Math.round(h * 0.5)) + 'px';
     }
   }
 }

@@ -84,17 +84,6 @@ export const provider = {
     return card;
   },
 
-  async start(sid) {
-    const c = this.get(sid);
-    if (!c) return;
-    try {
-      await inv('start_session', { name: c.session, dir: c.dir, cmd: c.cmd });
-      await pollNow();
-    } catch (e) {
-      toast('start failed: ' + e);
-    }
-  },
-
   /* stop and delete are one operation */
   async close(sid) {
     const c = this.get(sid);
