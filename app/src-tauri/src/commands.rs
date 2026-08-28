@@ -5,6 +5,8 @@ use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter};
 
 use crate::storage;
@@ -946,6 +948,19 @@ pub(crate) fn terminal_selection_update(
 }
 
 const MAX_TERMINAL_SELECTION_BYTES: u64 = 64 * 1024 * 1024;
+static TERMINAL_SELECTION_BUFFER_NONCE: AtomicU64 = AtomicU64::new(0);
+
+fn terminal_selection_buffer_prefix(token: u64) -> String {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    let nonce = TERMINAL_SELECTION_BUFFER_NONCE.fetch_add(1, Ordering::Relaxed);
+    format!(
+        "deck-copy-{:x}-{token:x}-{nanos:x}-{nonce:x}-",
+        std::process::id()
+    )
+}
 
 #[derive(Serialize)]
 pub(crate) struct TerminalSelectionCopy {
@@ -965,28 +980,14 @@ pub(crate) fn terminal_selection_copy(
     if !status.active || !status.selection_present {
         return Err("there is no terminal selection".into());
     }
-    let _ = token; // request correlation is enforced by the frontend generation.
-    let point = |row: u32, col: u32| crate::terminal_selection::SelectionPoint {
-        row: row as i64 - status.history_rows as i64,
-        col,
-    };
-    let text = crate::terminal_selection::extract_terminal_selection(
-        point(status.selection_start_row, status.selection_start_col),
-        point(status.selection_end_row, status.selection_end_col),
-        |start, end| {
-            tmux(&[
-                "capture-pane",
-                "-p",
-                "-J",
-                "-S",
-                &start.to_string(),
-                "-E",
-                &end.to_string(),
-                "-t",
-                &target,
-            ])
-        },
-    )?;
+    let prefix = terminal_selection_buffer_prefix(token);
+    let text = crate::terminal_selection::snapshot_selection(&target, &prefix, tmux_owned)
+        .map_err(|e| {
+            format!(
+                "terminal selection could not be copied ({})",
+                storage::err_code(&e)
+            )
+        })?;
     let bytes = text.len() as u64;
     if bytes > MAX_TERMINAL_SELECTION_BYTES {
         return Err(

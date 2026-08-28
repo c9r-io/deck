@@ -4,6 +4,8 @@
 //! They run the committed static tmux sidecar against a THROWAWAY socket
 //! (`deck-test-*`), never the live `deck` socket.
 
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::path::PathBuf;
 use std::process::Command;
 use std::thread::sleep;
@@ -11,7 +13,7 @@ use std::time::Duration;
 
 #[path = "../src/terminal_selection.rs"]
 mod terminal_selection;
-use terminal_selection::{cursor_steps_for_cell, extract_terminal_selection, SelectionPoint};
+use terminal_selection::{cursor_steps_for_cell, snapshot_selection};
 
 fn tmux_bin() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("binaries/tmux-aarch64-apple-darwin")
@@ -71,6 +73,17 @@ impl Server {
         );
         out.stdout
     }
+    fn run_owned(&self, args: &[String]) -> Result<String, String> {
+        let out = Command::new(tmux_bin())
+            .args(["-f", "/dev/null", "-L", &self.0])
+            .args(args)
+            .output()
+            .expect("tmux spawn");
+        if !out.status.success() {
+            return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+        }
+        String::from_utf8(out.stdout).map_err(|_| "tmux output was not UTF-8".to_string())
+    }
     fn fmt(&self, f: &str) -> String {
         self.run(&["display-message", "-p", "-t", "t", f])
     }
@@ -78,6 +91,29 @@ impl Server {
         self.run(&["send-keys", "-t", "t", "-l", cmd]);
         self.run(&["send-keys", "-t", "t", "Enter"]);
         sleep(Duration::from_millis(600));
+    }
+
+    fn write_pane_lines(&self, prefix: &str, start: usize, end: usize) {
+        let tty = self.fmt("#{pane_tty}");
+        let mut pane = OpenOptions::new()
+            .write(true)
+            .open(tty)
+            .expect("open pane tty");
+        for index in start..end {
+            write!(pane, "{prefix}-{index:03}\r\n").expect("write pane fixture");
+        }
+        pane.flush().expect("flush pane fixture");
+        let marker = format!("{prefix}-{:03}", end - 1);
+        for _ in 0..100 {
+            if self
+                .run(&["capture-pane", "-p", "-t", "t"])
+                .contains(&marker)
+            {
+                return;
+            }
+            sleep(Duration::from_millis(10));
+        }
+        panic!("pane did not render fixture marker {marker}");
     }
 
     fn fixture(tag: &str, width: u32, height: u32, command: &str) -> Self {
@@ -161,7 +197,7 @@ impl Server {
         assert_eq!(self.fmt("#{selection_present}"), "1");
     }
 
-    fn selection_points(&self) -> (SelectionPoint, SelectionPoint) {
+    fn selection_points(&self) -> ((i64, u32), (i64, u32)) {
         let raw = self.fmt(
             "#{history_size}\t#{selection_start_y}\t#{selection_start_x}\t#{selection_end_y}\t#{selection_end_x}",
         );
@@ -172,34 +208,18 @@ impl Server {
         assert_eq!(fields.len(), 5);
         let history = fields[0];
         (
-            SelectionPoint {
-                row: fields[1] - history,
-                col: fields[2] as u32,
-            },
-            SelectionPoint {
-                row: fields[3] - history,
-                col: fields[4] as u32,
-            },
+            (fields[1] - history, fields[2] as u32),
+            (fields[3] - history, fields[4] as u32),
         )
     }
 
-    fn production_selection_text(&self) -> String {
-        let (first, second) = self.selection_points();
-        extract_terminal_selection(first, second, |start, end| {
-            String::from_utf8(self.run_raw_checked(&[
-                "capture-pane",
-                "-p",
-                "-J",
-                "-S",
-                &start.to_string(),
-                "-E",
-                &end.to_string(),
-                "-t",
-                "t",
-            ]))
-            .map_err(|_| "tmux capture was not utf8".to_string())
-        })
-        .expect("production selection extraction")
+    fn production_selection_snapshot(&self, prefix: &str) -> Vec<u8> {
+        self.try_production_selection_snapshot(prefix)
+            .expect("production selection snapshot")
+    }
+
+    fn try_production_selection_snapshot(&self, prefix: &str) -> Result<Vec<u8>, String> {
+        snapshot_selection("t", prefix, |args| self.run_owned(args)).map(String::into_bytes)
     }
 
     fn tmux_selection_oracle(&self, label: &str) -> Vec<u8> {
@@ -583,12 +603,12 @@ fn copy_mode_selection_reaches_beyond_20000_rows() {
     );
 }
 
-/// The release copy command does not ask tmux to populate a paste buffer: it
-/// extracts the same half-open coordinates through `capture-pane -J`. Compare
-/// that exact production module with tmux's own byte oracle so an internally
-/// self-consistent inclusive-end regression cannot pass again.
+/// The release copy command snapshots tmux's native selection into a uniquely
+/// named buffer, reads its exact bytes, and deletes it in one command batch.
+/// Compare that production batch with a separately-read tmux buffer and fixed
+/// literals so command plumbing cannot add a byte or clear the selection.
 #[test]
-fn production_selection_extraction_matches_tmux_oracle_byte_for_byte() {
+fn production_selection_snapshot_matches_tmux_byte_for_byte() {
     let s = Server::fixture(
         "selection-bytes",
         80,
@@ -616,15 +636,22 @@ fn production_selection_extraction_matches_tmux_oracle_byte_for_byte() {
 
     for (label, anchor, active, literal) in cases {
         s.select(anchor, active);
-        let production = s.production_selection_text();
+        let prefix = format!("production-{label}-");
+        let production = s.production_selection_snapshot(&prefix);
         let oracle = s.tmux_selection_oracle(label);
-        assert_eq!(production.as_bytes(), oracle, "tmux mismatch: {label}");
-        assert_eq!(production, literal, "literal mismatch: {label}");
+        assert_eq!(production, oracle, "tmux mismatch: {label}");
+        assert_eq!(production, literal.as_bytes(), "literal mismatch: {label}");
+        assert!(
+            !s.run(&["list-buffers", "-F", "#{buffer_name}"])
+                .lines()
+                .any(|name| name.starts_with(&prefix)),
+            "production snapshot buffer must be deleted: {label}"
+        );
     }
 }
 
 #[test]
-fn production_selection_extraction_rejoins_only_soft_wraps() {
+fn production_selection_snapshot_rejoins_only_soft_wraps() {
     let s = Server::fixture(
         "selection-wrap",
         10,
@@ -636,12 +663,70 @@ fn production_selection_extraction_rejoins_only_soft_wraps() {
         ("wrap-reverse", (2, 3), (0, 3)),
     ] {
         s.select(anchor, active);
-        let production = s.production_selection_text();
-        assert_eq!(production, "DEFGHIJKLMNO\nSEC", "literal mismatch: {label}");
+        let prefix = format!("production-{label}-");
+        let production = s.production_selection_snapshot(&prefix);
         assert_eq!(
-            production.as_bytes(),
+            production, b"DEFGHIJKLMNO\nSEC",
+            "literal mismatch: {label}"
+        );
+        assert_eq!(
+            production,
             s.tmux_selection_oracle(label),
             "tmux mismatch: {label}"
         );
     }
+}
+
+/// v0.4.32 read history_size and absolute selection rows once, then issued up
+/// to three capture-pane commands with derived relative coordinates. Force
+/// output before every one of those captures: all stale coordinates drift,
+/// while the production native snapshot remains the exact selected bytes.
+#[test]
+fn selection_snapshot_stays_exact_while_history_grows_between_captures() {
+    let s = Server::fixture("selection-race", 80, 8, "sleep 30");
+    s.write_pane_lines("PRE", 0, 80);
+    s.select((3, 0), (5, 7));
+    let (start, end) = s.selection_points();
+    assert_eq!((start, end), ((3, 0), (5, 7)));
+
+    let stale_ranges = [(start.0, start.0), (end.0, end.0), (start.0, end.0)];
+    for (index, (capture_start, capture_end)) in stale_ranges.into_iter().enumerate() {
+        s.write_pane_lines("POST", index * 20, (index + 1) * 20);
+        let captured = s.run_raw_checked(&[
+            "capture-pane",
+            "-p",
+            "-J",
+            "-S",
+            &capture_start.to_string(),
+            "-E",
+            &capture_end.to_string(),
+            "-t",
+            "t",
+        ]);
+        assert!(
+            !captured.windows(b"PRE-076".len()).any(|w| w == b"PRE-076"),
+            "stale capture {index} must demonstrate coordinate drift"
+        );
+    }
+
+    let production = s.production_selection_snapshot("production-race-");
+    let oracle = s.tmux_selection_oracle("race-oracle");
+    assert_eq!(production, b"PRE-076\nPRE-077\nPRE-078");
+    assert_eq!(production, oracle);
+}
+
+#[test]
+fn vanished_selection_never_copies_or_deletes_an_unrelated_tmux_buffer() {
+    let s = Server::fixture("selection-vanished", 80, 8, "sleep 30");
+    s.run(&["set-buffer", "-b", "unrelated", "DO-NOT-COPY"]);
+    s.run(&["copy-mode", "-H", "-t", "t"]);
+
+    let error = s
+        .try_production_selection_snapshot("production-vanished-")
+        .unwrap_err();
+    assert_eq!(error, "tmux did not create a terminal selection snapshot");
+    assert_eq!(
+        s.run_raw_checked(&["show-buffer", "-b", "unrelated"]),
+        b"DO-NOT-COPY"
+    );
 }

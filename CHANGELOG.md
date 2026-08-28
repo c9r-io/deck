@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.33 — 2026-08-29
+
+- Snapshot terminal selections through tmux's native copy buffer so ongoing
+  pane output cannot drift stale `capture-pane` coordinates and silently copy
+  the wrong rows.
+- Add a deterministic contract that grows history before every legacy capture
+  step and verifies the production snapshot byte-for-byte against tmux's
+  selection, including buffer cleanup and disappeared-selection handling.
+
 ## 0.4.32 — 2026-08-29
 
 - Add direct, tmux-owned terminal drag selection that continuously crosses

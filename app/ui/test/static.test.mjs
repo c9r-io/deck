@@ -28,6 +28,7 @@ test('production terminal path wires the tmux-owned selection coordinator', () =
   const layout = read('app/ui/js/layout.js');
   const selection = read('app/ui/js/selection.js');
   const backend = read('app/src-tauri/src/commands.rs');
+  const backendSelection = read('app/src-tauri/src/terminal_selection.rs');
   assert.match(layout, /wireTerminalSelection\(pane/);
   assert.match(selection, /terminal_selection_start/);
   assert.match(selection, /terminal_selection_update/);
@@ -36,7 +37,11 @@ test('production terminal path wires the tmux-owned selection coordinator', () =
   assert.match(selection, /compatibilityBlocked/);
   assert.match(backend, /copy-mode/);
   assert.match(backend, /selection_start_y/);
-  assert.match(backend, /extract_terminal_selection/);
+  assert.match(backend, /snapshot_selection/);
+  assert.match(backendSelection, /copy-selection-no-clear/);
+  assert.match(backendSelection, /show-buffer/);
+  assert.match(backendSelection, /delete-buffer/);
+  assert.doesNotMatch(backend, /extract_terminal_selection/);
   assert.doesNotMatch(selection, /\._core/);
 });
 
