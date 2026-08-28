@@ -301,3 +301,37 @@ fn format_tabs_survive_only_with_utf8_locale() {
          LANG, the pinned env in tmux()/pty.rs is merely redundant"
     );
 }
+
+/// The copy panel exists because a terminal SELECTION can only ever cover one
+/// screen: tmux owns the scrollback and repaints the same rows in place. The
+/// panel's whole value is that `capture-pane` reaches past the visible frame,
+/// and that `-J` rejoins lines tmux wrapped for display (a path or URL broken
+/// at the pane width would be useless once pasted).
+#[test]
+fn capture_reaches_past_the_visible_screen_and_rejoins_wrapped_lines() {
+    let s = Server::new("capture");
+    s.shell("i=1; while [ $i -le 40 ]; do echo scrollback-line-$i; i=$((i+1)); done");
+    let visible = s.run(&["capture-pane", "-p", "-t", "t"]);
+    assert!(
+        !visible.contains("scrollback-line-1\n"),
+        "the earliest lines must already be off-screen for this test to mean \
+         anything:\n{visible}"
+    );
+    let full = s.run(&["capture-pane", "-p", "-J", "-S", "-500", "-t", "t"]);
+    for n in [1, 20, 40] {
+        assert!(
+            full.contains(&format!("scrollback-line-{n}")),
+            "line {n} missing from the captured scrollback"
+        );
+    }
+    assert!(full.lines().count() > visible.lines().count());
+
+    // a line longer than the 80-column pane comes back in ONE piece with -J
+    let long = "x".repeat(200);
+    s.shell(&format!("echo start-{long}-end"));
+    let joined = s.run(&["capture-pane", "-p", "-J", "-S", "-500", "-t", "t"]);
+    assert!(
+        joined.contains(&format!("start-{long}-end")),
+        "-J must rejoin a display-wrapped line"
+    );
+}

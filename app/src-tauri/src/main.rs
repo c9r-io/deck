@@ -155,6 +155,7 @@ fn main() {
             commands::scroll_session,
             commands::scroll_bottom,
             commands::clear_history,
+            commands::capture_scrollback,
             commands::poll_sessions,
             pty::attach_session,
             pty::pty_write,

@@ -669,6 +669,47 @@ pub(crate) fn clear_history(name: String) {
     let _ = tmux(&["clear-history", "-t", &t]);
 }
 
+/// Drop the empty rows tmux pads the bottom of a capture with (the unused
+/// part of the screen) — they are not output, and they push the real text
+/// out of view in the copy panel.
+pub(crate) fn trim_trailing_blanks(s: &str) -> String {
+    let mut lines: Vec<&str> = s.lines().collect();
+    while lines.last().is_some_and(|l| l.trim().is_empty()) {
+        lines.pop();
+    }
+    lines.join("\n")
+}
+
+/// Ceiling on one scrollback capture. tmux keeps 50 000 lines per pane;
+/// this bounds one IPC payload while still covering any real "copy that
+/// long answer" case.
+const MAX_CAPTURE_LINES: u32 = 20_000;
+
+/// The pane's scrollback plus its current screen, as plain text.
+///
+/// The terminal itself can only ever SELECT what is on screen: tmux owns
+/// the history and repaints the same rows in place, so a mouse selection
+/// cannot be dragged past the top of the pane and a long answer could not
+/// be copied in one piece. Handing the TEXT to the UI is what makes that
+/// possible — the copy panel scrolls and selects like any document.
+/// `-J` rejoins lines tmux wrapped for display, so a copied path or URL
+/// comes back in one piece instead of broken at the pane width.
+#[tauri::command]
+pub(crate) fn capture_scrollback(name: String, lines: u32) -> Result<String, String> {
+    validate_session_name(&name)?;
+    let n = lines.clamp(1, MAX_CAPTURE_LINES);
+    let out = tmux(&[
+        "capture-pane",
+        "-p",
+        "-J",
+        "-S",
+        &format!("-{n}"),
+        "-t",
+        &pane_target(&name),
+    ])?;
+    Ok(trim_trailing_blanks(&out))
+}
+
 #[tauri::command]
 pub(crate) fn kill_session(name: String) -> Result<(), String> {
     validate_session_name(&name)?;
@@ -1008,6 +1049,18 @@ mod tests {
         let t = parse_tail_batches(&format!("noise\n{TAIL_MARK}a\nx\n"), 2);
         assert_eq!(t.len(), 1);
         assert_eq!(t["a"], vec!["x"]);
+    }
+
+    #[test]
+    fn capture_trims_the_padding_not_the_output() {
+        // tmux pads the capture with the unused rows of the screen
+        assert_eq!(trim_trailing_blanks("a\nb\n\n   \n\n"), "a\nb");
+        // blank lines INSIDE the output are part of it
+        assert_eq!(trim_trailing_blanks("a\n\nb\n\n"), "a\n\nb");
+        // leading blanks (the top of a short history) are output too
+        assert_eq!(trim_trailing_blanks("\na\n"), "\na");
+        assert_eq!(trim_trailing_blanks("\n\n  \n"), "");
+        assert_eq!(trim_trailing_blanks(""), "");
     }
 
     #[test]

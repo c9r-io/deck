@@ -56,6 +56,7 @@ export function showSessionCtx(e, sid) {
     <button data-a="rename">Rename card</button>
     <button data-a="desc">${s.desc ? 'Edit' : 'Add'} description</button>
     <button data-a="here">New session in this directory</button>
+    <button data-a="copy">Copy output…</button>
     <hr>
     <button data-a="close" class="danger">Close session</button>`;
   ctx.onclick = ev => {
@@ -64,6 +65,7 @@ export function showSessionCtx(e, sid) {
     if (a === 'rename') renameCardInline(sid);
     if (a === 'desc') editDescInline(sid);
     if (a === 'here') newSession(s.dir);
+    if (a === 'copy') openCopyPanel(s.session, s.title);
     if (a === 'close') closeSession(sid);
   };
   placeCtx(e);
@@ -336,6 +338,56 @@ export function resetSuggest() {
   $('quick-bar').style.display = 'none';
 }
 
+/* ---------- copy panel ----------
+   A selection inside the terminal can only ever cover ONE screen: tmux owns
+   the scrollback and repaints the same rows in place, so a drag cannot be
+   carried past the top of the pane and a long answer could not be copied in
+   one piece. The panel shows the pane's scrollback as plain text, where the
+   selection scrolls and ⌘C behaves like it does in any document. */
+const COPY_LINES = 20000;
+
+export async function openCopyPanel(session, title) {
+  const box = $('copybox');
+  const body = $('cb-body');
+  $('cb-title').textContent = title ? `Output — ${title}` : 'Output';
+  body.textContent = 'reading the scrollback…';
+  box.style.display = 'flex';
+  let text = '';
+  try {
+    text = await inv('capture_scrollback', { name: session, lines: COPY_LINES });
+  } catch (e) {
+    body.textContent = 'could not read this session’s output: ' + e;
+    return;
+  }
+  body.textContent = text;
+  const n = text ? text.split('\n').length : 0;
+  $('cb-title').textContent = (title ? `Output — ${title}` : 'Output') +
+    `  ·  ${n} line${n === 1 ? '' : 's'}` + (n >= COPY_LINES ? ' (newest)' : '');
+  body.scrollTop = body.scrollHeight;   // the newest output is what you came for
+  $('cb-all').onclick = () => {
+    navigator.clipboard.writeText(text)
+      .then(() => toast(`copied ${n} line${n === 1 ? '' : 's'}`), () => toast('copy failed'));
+  };
+}
+
+export function closeCopyPanel() {
+  $('copybox').style.display = 'none';
+}
+export const copyPanelOpen = () => $('copybox').style.display === 'flex';
+
+$('cb-close').onclick = closeCopyPanel;
+$('copybox').addEventListener('mousedown', e => {
+  if (e.target === $('copybox')) closeCopyPanel();   // click the backdrop
+});
+
+/* the focused pane's output, from anywhere in the session view */
+export function copyFocusedPaneOutput() {
+  if (!attachedName) return;
+  const p = panes.get(attachedName);
+  const c = p && provider.get(p.sid);
+  openCopyPanel(attachedName, c ? c.title : '');
+}
+
 /* ---------- chrome wiring ---------- */
 export function toggleSidebar() {
   document.body.classList.toggle('side-collapsed');
@@ -356,7 +408,15 @@ $('sess-col').addEventListener('change', e => {
 });
 document.addEventListener('keydown', e => {
   if ((e.metaKey || e.ctrlKey) && e.key === 'b') { e.preventDefault(); toggleSidebar(); return; }
+  /* ⌘⇧C: copy panel for the focused pane (⌘C stays "copy the selection") */
+  if (e.metaKey && e.shiftKey && (e.key === 'c' || e.key === 'C')
+      && state.view === 'session' && !copyPanelOpen()) {
+    e.preventDefault();
+    copyFocusedPaneOutput();
+    return;
+  }
   if (e.key === 'Escape') {
+    if (copyPanelOpen()) { closeCopyPanel(); return; }
     if ($('ctx').style.display === 'block') { $('ctx').style.display = 'none'; return; }
     /* Esc inside the terminal belongs to the terminal (agents use it) */
     if (state.view === 'session' && !(document.activeElement && document.activeElement.closest('#terminal'))) {

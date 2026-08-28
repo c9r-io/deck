@@ -3,7 +3,7 @@
 import { $, DOT_TITLES, duev, inv, listen, setMemChip, state, store, uev } from './state.js';
 import { inlineRename, toast } from './dialogs.js';
 import { TERM_THEME, panes, pollNow, provider, render, renderSidebar, activeProject } from './board.js';
-import { SHELL_FG, acceptGhost, feedMirror, maybeRecordCommand, nextShellTitle, placeQuickBar, renderSuggest, resetSuggest, showLinkCtx, updateGhost } from './terminal.js';
+import { SHELL_FG, acceptGhost, feedMirror, maybeRecordCommand, nextShellTitle, openCopyPanel, placeQuickBar, renderSuggest, resetSuggest, showLinkCtx, updateGhost } from './terminal.js';
 import { shQuote } from './pure.js';
 import { toggleQueuePanel } from './scheduler.js';
 
@@ -103,7 +103,7 @@ export function createPane(card) {
   const el = document.createElement('div');
   el.className = 'spane';
   el.innerHTML = `
-    <div class="spane-head"><span class="dot ${card.status}"></span><span class="name"></span><button class="px" title="Close pane (session keeps running)">✕</button></div>
+    <div class="spane-head"><span class="dot ${card.status}"></span><span class="name"></span><span class="hspace"></span><button class="cbtn" title="Copy output — the whole scrollback as selectable text (⌘⇧C)">⧉</button><button class="px" title="Close pane (session keeps running)">✕</button></div>
     <div class="spane-body"></div>`;
   el.querySelector('.name').textContent = card.title;
   const body = el.querySelector('.spane-body');
@@ -154,6 +154,10 @@ export function createPane(card) {
   el.querySelector('.px').onclick = e => {
     e.stopPropagation();
     closePaneBySid(pane.sid);
+  };
+  el.querySelector('.cbtn').onclick = e => {
+    e.stopPropagation();
+    openCopyPanel(session, card.title);
   };
   body.addEventListener('mousedown', () => { if (attachedName !== session) focusPane(session); });
 
@@ -369,6 +373,14 @@ export function wireTerminalInput(pane, term, host) {
        PTY. (navigator.clipboard.readText is permission-blocked in WKWebView —
        the native paste event is the reliable path.) */
     if (e.type === 'keydown' && e.metaKey && e.key === 'v') return false;
+    /* ⌘⇧C opens the copy panel (a terminal selection can only reach ONE
+       screen); handled here so xterm never swallows the chord */
+    if (e.type === 'keydown' && e.metaKey && e.shiftKey && (e.key === 'c' || e.key === 'C')) {
+      e.preventDefault();
+      const c = card();
+      openCopyPanel(session, c ? c.title : '');
+      return false;
+    }
     if (e.type === 'keydown' && e.metaKey && e.key === 'c' && term.hasSelection()) {
       navigator.clipboard.writeText(term.getSelection()).catch(() => {});
       return false;
@@ -395,6 +407,18 @@ export function wireTerminalInput(pane, term, host) {
       return false;
     }
     return true;
+  });
+
+  /* The wall the copy panel exists for: a selection dragged to the top of
+     the pane cannot go any further — the rows above it live in tmux's
+     scrollback, not in this frame — so the gesture silently stops instead
+     of scrolling. Name the way out, once per run, exactly when it bites. */
+  term.onSelectionChange(() => {
+    if (copyHintShown || attachedName !== session || !term.hasSelection()) return;
+    const pos = term.getSelectionPosition && term.getSelectionPosition();
+    if (!pos || pos.start.y > term.buffer.active.viewportY) return;
+    copyHintShown = true;
+    toast('a selection stops at the top of the pane — ⧉ (⌘⇧C) opens the whole output, scrollable and selectable');
   });
 
   /* clickable paths and URLs in terminal output */
@@ -556,7 +580,7 @@ export function updatePaneChrome(card) {
       chip.textContent = '⤓ scrollback';
       chip.title = 'view is frozen in scrollback — click, type, or scroll to the bottom to go live';
       chip.onclick = e => { e.stopPropagation(); goLive(card.session); };
-      p.el.querySelector('.spane-head .px').before(chip);
+      p.el.querySelector('.spane-head .cbtn').before(chip);
     }
   } else if (chip) {
     chip.remove();
