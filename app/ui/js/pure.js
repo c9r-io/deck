@@ -24,6 +24,20 @@ export const fmtEvery = s => s % 3600 === 0 ? (s / 3600) + ' h' : (s / 60) + ' m
 export const minToHM = m => String(Math.floor(m / 60)).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0');
 export const hmToMin = t => { const [h, m] = t.split(':').map(Number); return h * 60 + m; };
 
+/* ---------- completion bar placement ----------
+   The quick-command / completion bar is an overlay (it must not reflow the
+   split panes while you type). Its natural home is the bottom edge — but a
+   shell prompt usually sits on the LAST line of its pane, so an overlay
+   there covers exactly the line being typed. When the cursor row falls
+   inside the bar (or within `gap` of it), the bar hops ABOVE the cursor
+   line instead. Returns the CSS `bottom` offset in px. */
+export function quickBarBottom({ viewH, cursorTop, cellH, barH, gap = 6 }) {
+  if (!(viewH > 0) || !(barH > 0) || cursorTop == null || !(cellH >= 0)) return 0;
+  if (viewH - (cursorTop + cellH) >= barH + gap) return 0;   // room below the prompt
+  const above = viewH - cursorTop + gap;                     // bottom edge above the cursor row
+  return Math.max(0, Math.min(above, viewH - barH));         // never leaves the view
+}
+
 /* ---------- daily windows ---------- */
 export const winHas = (m, f, t) => f < t ? (m >= f && m < t) : (m >= f || m < t);
 export const hasWindow = i => i.win_from != null && i.win_to != null && i.win_from !== i.win_to;

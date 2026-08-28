@@ -3,7 +3,7 @@
 import { $, DOT_TITLES, duev, inv, listen, setMemChip, state, store, uev } from './state.js';
 import { inlineRename, toast } from './dialogs.js';
 import { TERM_THEME, panes, pollNow, provider, render, renderSidebar, activeProject } from './board.js';
-import { SHELL_FG, acceptGhost, feedMirror, maybeRecordCommand, nextShellTitle, renderSuggest, resetSuggest, showLinkCtx, updateGhost } from './terminal.js';
+import { SHELL_FG, acceptGhost, feedMirror, maybeRecordCommand, nextShellTitle, placeQuickBar, renderSuggest, resetSuggest, showLinkCtx, updateGhost } from './terminal.js';
 import { shQuote } from './pure.js';
 import { toggleQueuePanel } from './scheduler.js';
 
@@ -136,6 +136,8 @@ export function createPane(card) {
 
   t.onWriteParsed(() => {
     if (ghostRemainder && attachedName === session) updateGhost();
+    /* output moves the prompt: keep the completion bar off the input line */
+    if (attachedName === session) keepQuickBarClear();
     positionSeparators(pane);
   });
   t.onScroll(() => positionSeparators(pane));
@@ -463,6 +465,13 @@ export function wireTerminalInput(pane, term, host) {
 
 }
 
+/* the completion bar is an overlay; re-anchor it whenever the cursor or the
+   pane geometry moved (no-op while it is hidden) */
+export function keepQuickBarClear() {
+  const bar = $('quick-bar');
+  if (bar.style.display === 'flex') placeQuickBar(bar);
+}
+
 /* ----- layout rendering & pane lifecycle ----- */
 export function fitAll() {
   requestAnimationFrame(() => {
@@ -473,6 +482,7 @@ export function fitAll() {
       } catch (e) { /* pane mid-teardown */ }
     });
     if (ghostRemainder) updateGhost();
+    keepQuickBarClear();
     panes.forEach(positionSeparators);
   });
 }

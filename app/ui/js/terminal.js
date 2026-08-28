@@ -1,6 +1,7 @@
 // terminal.js — context menus & link opening, ghost completion, chrome wiring
 // Part of deck's no-build frontend: native ES modules, no bundler.
 import { $, duev, inv, state, uev } from './state.js';
+import { quickBarBottom } from './pure.js';
 import { confirmDialog, inlineRename, toast, promptDialog } from './dialogs.js';
 import { closeSession, panes, provider, renameTab, render, switchProject, activeProject } from './board.js';
 import { backToBoard, openSession, strToB64 } from './layout.js';
@@ -284,6 +285,22 @@ export function acceptGhost() {
   renderSuggest();
 }
 
+/* Keep the bar off the line being typed: a shell prompt at the bottom of a
+   pane sits exactly where a bottom-anchored overlay would be. */
+export function placeQuickBar(bar) {
+  const view = bar.offsetParent;
+  const fp = attachedName && panes.get(attachedName);
+  const screen = fp && fp.body.querySelector('.xterm-screen');
+  if (!view || !screen || !term) { bar.style.bottom = '0px'; return; }
+  const { h } = ghostCellDims(fp.body);
+  const vRect = view.getBoundingClientRect();
+  const sRect = screen.getBoundingClientRect();
+  const cursorTop = sRect.top - vRect.top + term.buffer.active.cursorY * h;
+  bar.style.bottom = quickBarBottom({
+    viewH: vRect.height, cursorTop, cellH: h, barH: bar.offsetHeight,
+  }) + 'px';
+}
+
 export function renderSuggest() {
   scheduleGhost();
   const bar = $('quick-bar');
@@ -307,6 +324,7 @@ export function renderSuggest() {
     bar.appendChild(b);
   });
   bar.style.display = 'flex';
+  placeQuickBar(bar);   // after display+content: offsetHeight must be real
 }
 
 export function resetSuggest() {

@@ -7,8 +7,26 @@ import assert from 'node:assert/strict';
 import {
   sessionName, fmtMem, fmtEvery, minToHM, hmToMin, winHas, hasWindow,
   nextFire, groupQueue, groupSteps, itemDead, blockedBy,
-  chainQuietHint, CHAIN_QUIET_SECS, shQuote,
+  chainQuietHint, CHAIN_QUIET_SECS, shQuote, quickBarBottom,
 } from '../js/pure.js';
+
+test('the completion bar never covers the line being typed', () => {
+  const view = { viewH: 600, cellH: 20, barH: 40 };
+  // prompt high up in the pane: the bar keeps its bottom-edge home
+  assert.equal(quickBarBottom({ ...view, cursorTop: 100 }), 0);
+  assert.equal(quickBarBottom({ ...view, cursorTop: 534 }), 0, 'exactly fits below');
+  // prompt at the bottom (the reported bug): the bar hops above the row
+  assert.equal(quickBarBottom({ ...view, cursorTop: 560 }), 46);
+  assert.equal(quickBarBottom({ ...view, cursorTop: 580 }), 26, 'last line');
+  // …and stays fully inside the view even for an absurd cursor/bar combo
+  assert.equal(quickBarBottom({ ...view, cursorTop: 0 }), 0);
+  assert.equal(quickBarBottom({ viewH: 60, cellH: 20, barH: 40, cursorTop: 30 }), 20);
+  assert.equal(quickBarBottom({ viewH: 30, cellH: 20, barH: 40, cursorTop: 10 }), 0);
+  // degenerate inputs (pane mid-teardown, bar not laid out yet) → bottom
+  for (const bad of [{ viewH: 0 }, { barH: 0 }, { cursorTop: null }]) {
+    assert.equal(quickBarBottom({ ...view, cursorTop: 580, ...bad }), 0);
+  }
+});
 
 test('shQuote leaves safe paths bare and single-quotes the rest', () => {
   assert.equal(shQuote('/Users/x/shot.png'), '/Users/x/shot.png');
