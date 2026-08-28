@@ -22,23 +22,23 @@ jobs:
             .
             app/src-tauri
 
-      # formatting is enforced for the app backend; the legacy TUI crate
-      # (src/) predates rustfmt adoption and reformatting it wholesale would
-      # bury real diffs — enforce there if/when it gets touched again
+      # both crates hold the same bar: fmt --check, clippy -D warnings, tests
+      - name: cargo fmt (TUI crate)
+        run: cargo fmt --all -- --check
       - name: cargo fmt (app backend)
-        run: cargo fmt --check --manifest-path app/src-tauri/Cargo.toml
+        run: cargo fmt --all --check --manifest-path app/src-tauri/Cargo.toml
 
       - name: cargo clippy -D warnings (TUI crate)
-        run: cargo clippy --all-targets --locked -- -D warnings
+        run: cargo clippy --all-targets --all-features --locked -- -D warnings
       - name: cargo clippy -D warnings (app backend)
-        run: cargo clippy --all-targets --locked --manifest-path app/src-tauri/Cargo.toml -- -D warnings
+        run: cargo clippy --all-targets --all-features --locked --manifest-path app/src-tauri/Cargo.toml -- -D warnings
 
       - name: cargo test (TUI crate)
-        run: cargo test --locked
+        run: cargo test --all-targets --all-features --locked
       # single-threaded: tmux contract tests + storage/scheduler recovery
       # tests share process-wide state (throwaway tmux servers, env)
       - name: cargo test (app backend — unit, storage/scheduler recovery, log privacy, tmux contract)
-        run: cargo test --locked --manifest-path app/src-tauri/Cargo.toml -- --test-threads=1
+        run: cargo test --all-targets --all-features --locked --manifest-path app/src-tauri/Cargo.toml -- --test-threads=1
 
       # no-build frontend, three gates:
       # 1. real syntax check of every module (node --check)
