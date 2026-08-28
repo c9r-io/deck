@@ -12,6 +12,12 @@
 //! discarded by the frontend (gen mismatch) without being ACKed — its gate
 //! is closed by the detach/re-attach that replaced it, which is also what
 //! releases a waiting emitter.
+//!
+//! The gate tracks an emitted HIGH-WATER mark: an ACK is honored only for
+//! `acked < seq <= emitted` on an open gate, so a buggy or hostile webview
+//! ACKing sequences that were never sent cannot widen the window. A failed
+//! app.emit ends the pump and closes the gate (the webview can never ACK an
+//! event it never received); sequence overflow ends the stream cleanly.
 
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
@@ -35,6 +41,10 @@ pub(crate) const MAX_INFLIGHT_BATCHES: u64 = 4;
 #[derive(Default)]
 struct AckInner {
     acked: u64,
+    /// high-water mark: the last sequence actually handed to the webview.
+    /// ACKs are only valid up to here — the window can never be widened by
+    /// acknowledging events that were never sent.
+    emitted: u64,
     closed: bool,
 }
 
@@ -57,12 +67,33 @@ impl AckGate {
     }
 
     /// Frontend confirmed everything up to `seq` was written to xterm.
+    /// Valid only when `acked < seq <= emitted` on an open gate: a FUTURE
+    /// ack (buggy or hostile webview acking a seq that was never emitted),
+    /// a regressed ack, a duplicate, or an ack after close is ignored and
+    /// can never expand the in-flight window past MAX_INFLIGHT_BATCHES.
     pub(crate) fn ack(&self, seq: u64) {
         let mut g = self.inner.lock().unwrap();
-        if seq > g.acked {
+        if !g.closed && seq > g.acked && seq <= g.emitted {
             g.acked = seq;
             self.cv.notify_all();
         }
+    }
+
+    /// Register `seq` as handed to the webview. MUST run before the event
+    /// becomes visible to the frontend, so a fast ACK is never rejected as
+    /// "future" — pump_gated calls this between admit() and the emit.
+    pub(crate) fn mark_emitted(&self, seq: u64) {
+        let mut g = self.inner.lock().unwrap();
+        if seq > g.emitted {
+            g.emitted = seq;
+        }
+    }
+
+    /// (acked, emitted, closed) — test observability.
+    #[cfg(test)]
+    pub(crate) fn state(&self) -> (u64, u64, bool) {
+        let g = self.inner.lock().unwrap();
+        (g.acked, g.emitted, g.closed)
     }
 
     /// Release any waiting emitter and mark the attachment finished —
@@ -257,6 +288,9 @@ pub(crate) fn attach_session(
                 if emits == 1 {
                     applog(&format!("[pty] first emit result: {:?}", r.is_ok()));
                 }
+                // a failed emit ends the pump (see pump_gated) — the webview
+                // can never ACK an event it never received
+                r.map_err(|e| e.to_string())
             },
         );
         // clean up only if this attachment is still the current one
@@ -276,10 +310,15 @@ pub(crate) fn attach_session(
 /// Drain the channel into as-large-as-available batches: blocking recv for
 /// the first chunk, then non-blocking drains until `max` bytes or the queue
 /// is momentarily empty. Each batch gets the next sequence number and is
-/// emitted only once the gate admits it (≤`window` un-ACKed). Returns when
-/// the sender is dropped (stream end) or the gate closes (detach/replace) —
-/// order-preserving, nothing dropped, nothing emitted past the window.
-pub(crate) fn pump_gated<F: FnMut(u64, Vec<u8>)>(
+/// emitted only once the gate admits it (≤`window` un-ACKed); the sequence
+/// is registered as emitted (high-water) BEFORE the emit so the webview's
+/// ACK is always valid. Returns when the sender is dropped (stream end),
+/// the gate closes (detach/replace), or an emit FAILS — a webview that
+/// never received an event can never ACK it, so continuing would deadlock;
+/// the failure closes the gate (which also lets the reader thread die via
+/// the dropped channel) and logs a classified, content-free diagnostic.
+/// Order-preserving, nothing dropped, nothing emitted past the window.
+pub(crate) fn pump_gated<F: FnMut(u64, Vec<u8>) -> Result<(), String>>(
     rx: &std::sync::mpsc::Receiver<Vec<u8>>,
     max: usize,
     gate: &AckGate,
@@ -295,11 +334,28 @@ pub(crate) fn pump_gated<F: FnMut(u64, Vec<u8>)>(
                 Err(_) => break,
             }
         }
-        seq += 1;
+        // explicit overflow handling — 2^64 batches is unreachable in any
+        // real stream, but wrap-around must end the stream cleanly rather
+        // than rely on a debug-build panic (or silently reuse seq 0)
+        seq = match seq.checked_add(1) {
+            Some(s) => s,
+            None => {
+                gate.close();
+                return;
+            }
+        };
         if !gate.admit(seq, window) {
             return; // closed: this attachment is over, drop the tail
         }
-        emit(seq, batch);
+        gate.mark_emitted(seq);
+        if let Err(e) = emit(seq, batch) {
+            applog(&format!(
+                "[pty] emit failed ({}) — ending stream",
+                crate::storage::err_code(&e)
+            ));
+            gate.close();
+            return;
+        }
     }
 }
 
@@ -318,10 +374,13 @@ mod tests {
     fn pump_free<F: FnMut(u64, Vec<u8>)>(
         rx: &std::sync::mpsc::Receiver<Vec<u8>>,
         max: usize,
-        emit: F,
+        mut emit: F,
     ) {
         let gate = open_gate();
-        pump_gated(rx, max, &gate, u64::MAX, emit);
+        pump_gated(rx, max, &gate, u64::MAX, |s, b| {
+            emit(s, b);
+            Ok(())
+        });
     }
 
     #[test]
@@ -386,6 +445,7 @@ mod tests {
                     a.fetch_max(seq, Ordering::SeqCst); // delayed threads may race
                     cg.ack(seq);
                 });
+                Ok(())
             });
             out
         });
@@ -416,6 +476,7 @@ mod tests {
         let h = std::thread::spawn(move || {
             pump_gated(&rx, 64, &g2, MAX_INFLIGHT_BATCHES, |_, _| {
                 e2.fetch_add(1, Ordering::SeqCst);
+                Ok(())
             });
         });
         // feed far more than the window; consumer never ACKs
@@ -469,11 +530,72 @@ mod tests {
     }
 
     #[test]
-    fn ack_regression_is_ignored() {
+    fn ack_regression_and_duplicates_are_ignored() {
         let gate = open_gate();
+        gate.mark_emitted(5);
         gate.ack(5);
+        assert_eq!(gate.state().0, 5);
         gate.ack(3); // out-of-order ACK must not move the window backwards
+        assert_eq!(gate.state().0, 5);
+        gate.ack(5); // duplicate: no change
+        assert_eq!(gate.state().0, 5);
         assert!(gate.admit(5 + MAX_INFLIGHT_BATCHES, MAX_INFLIGHT_BATCHES));
+    }
+
+    /// The round-3 exploit this closes: a buggy/hostile webview ACKing a
+    /// gigantic seq used to open the window permanently. Now an ACK is only
+    /// valid up to the emitted high-water mark.
+    #[test]
+    fn future_ack_never_widens_the_window() {
+        let gate = open_gate();
+        gate.mark_emitted(2); // two events actually sent
+        gate.ack(u64::MAX); // hostile ACK far past anything emitted
+        gate.ack(3); // even one-past-emitted is refused
+        assert_eq!(gate.state().0, 0, "future ACKs ignored entirely");
+        // the emitter therefore still stalls exactly at the window
+        let g2 = gate.clone();
+        let h =
+            std::thread::spawn(move || g2.admit(MAX_INFLIGHT_BATCHES + 1, MAX_INFLIGHT_BATCHES));
+        std::thread::sleep(Duration::from_millis(50));
+        assert!(!h.is_finished(), "window must NOT have been widened");
+        gate.close();
+        assert!(!h.join().unwrap());
+    }
+
+    /// An emit failure must end the pump: the webview never received the
+    /// event, so it can never ACK it — waiting would deadlock forever.
+    #[test]
+    fn emit_failure_ends_pump_and_closes_gate() {
+        let gate = open_gate();
+        let (tx, rx) = sync_channel::<Vec<u8>>(8);
+        for _ in 0..8 {
+            tx.send(vec![0u8; 16]).unwrap();
+        }
+        // keep the sender alive: "input exhausted" cannot explain the return
+        let mut calls = 0u32;
+        pump_gated(&rx, 16, &gate, MAX_INFLIGHT_BATCHES, |_, _| {
+            calls += 1;
+            Err("event bus broken".into())
+        });
+        assert_eq!(calls, 1, "pump stops at the first failed emit");
+        assert!(gate.state().2, "gate closed so nothing can wait forever");
+        drop(tx);
+    }
+
+    /// mark_emitted runs before the emit, so an ACK arriving DURING the
+    /// emit callback (the realistic fast-webview race) is always valid.
+    #[test]
+    fn ack_during_emit_is_valid() {
+        let gate = open_gate();
+        let (tx, rx) = sync_channel::<Vec<u8>>(4);
+        tx.send(vec![1u8; 8]).unwrap();
+        drop(tx);
+        let g = gate.clone();
+        pump_gated(&rx, 64, &gate, MAX_INFLIGHT_BATCHES, |seq, _| {
+            g.ack(seq); // webview ACKs while emit is still on the stack
+            Ok(())
+        });
+        assert_eq!(gate.state(), (1, 1, false));
     }
 
     /// Stress: 8MB through the full pump with an ACKing consumer thread.
@@ -501,7 +623,8 @@ mod tests {
             bytes += b.len();
             batches += 1;
             max_batch = max_batch.max(b.len());
-            gate.ack(seq); // consumer keeps up
+            gate.ack(seq); // consumer keeps up (valid: emitted was marked)
+            Ok(())
         });
         let sent = feeder.join().unwrap();
         let el = t0.elapsed();
