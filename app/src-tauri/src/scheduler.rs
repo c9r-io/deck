@@ -1238,7 +1238,7 @@ pub(crate) fn send_one(
             // never log prompt contents — length only (privacy)
             applog(&format!(
                 "[queue] sent to {} ({}B, mode {})",
-                item.session,
+                storage::session_tag(&item.session),
                 item.text.len(),
                 item.mode
             ));
@@ -1268,7 +1268,7 @@ pub(crate) fn send_one(
             // log gets only its category — tmux/start errors can embed paths
             applog(&format!(
                 "[queue] send FAILED for {} (attempt {}, {}){}",
-                item.session,
+                storage::session_tag(&item.session),
                 item.attempts,
                 storage::err_code(&e),
                 if gave_up {

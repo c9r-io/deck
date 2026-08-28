@@ -20,6 +20,11 @@
 //!   user actually changes something and a normal save runs;
 //! - a single flock guards against two deck instances fighting over the
 //!   same files (and double-firing the scheduler).
+//!
+//! It also owns app.log: every line is redacted on its way to disk
+//! (`sanitize_log`), session names are logged as a per-run tag rather than
+//! verbatim (`session_tag`), and logs/exports written by an OLDER deck are
+//! migrated in place at boot (`sanitize_existing_logs`).
 
 use serde::de::DeserializeOwned;
 use std::io::Write;
@@ -419,18 +424,126 @@ pub(crate) fn err_code(e: &str) -> &'static str {
     }
 }
 
-/// Append a line to ~/.deck/app.log (the app may be launched via `open`,
-/// where stderr goes nowhere useful). The log is chmod 0600: it must never
-/// carry user content, but even metadata stays private to the user.
-pub(crate) fn applog(msg: &str) {
-    if cfg!(test) {
-        return; // unit tests must not write into the user's real app.log
+// ---------- log redaction ---------------------------------------------------
+//
+// Log lines are written by deck itself, so the call sites are the primary
+// guarantee: no prompt, command, PTY byte, clipboard/IME content, raw error
+// Display text or raw session name is ever formatted into one. `sanitize_log`
+// is the net UNDER that: every line passes through it on its way to disk (and
+// again on its way into an export), so a future call site — or a log written
+// by an older deck — cannot leak an absolute path, a URL or a token shape.
+
+const SECRET_PREFIXES: &[&str] = &[
+    "ghp_",
+    "gho_",
+    "ghu_",
+    "ghs_",
+    "ghr_",
+    "github_pat_",
+    "sk_live_",
+    "sk_test_",
+    "sk-",
+    "pk_live_",
+    "rk_live_",
+    "xoxb-",
+    "xoxp-",
+    "xoxa-",
+    "xoxs-",
+    "xapp-",
+    "AKIA",
+    "ASIA",
+    "AIza",
+    "eyJ", // JWT header
+];
+
+/// A word that must never survive into a log or an export.
+fn is_sensitive_word(w: &str) -> bool {
+    if w.contains("://") {
+        return true; // file:// http(s):// and any other scheme
     }
-    use std::os::unix::fs::OpenOptionsExt;
-    let path = dirs::home_dir()
+    if w.starts_with('/') && w[1..].contains('/') {
+        return true; // absolute filesystem path
+    }
+    if w.starts_with("~/") {
+        return true;
+    }
+    if SECRET_PREFIXES.iter().any(|p| w.starts_with(p)) {
+        return true;
+    }
+    // a tmux session name: deck never logs one (it logs `session_tag`), so
+    // any that shows up came from an older build or a new call site
+    if w.starts_with("deck-") && w[5..].contains('-') {
+        return true;
+    }
+    // long opaque credential-shaped run (deck's own ids stay well below this)
+    let opaque = w.len() >= 24
+        && w.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        && w.chars().any(|c| c.is_ascii_digit())
+        && w.chars().any(|c| c.is_ascii_alphabetic());
+    opaque
+}
+
+/// Replace every sensitive word in `line` with `<redacted>`, keeping the
+/// diagnostic structure (event names, categories, counters) intact.
+pub(crate) fn sanitize_log(line: &str) -> String {
+    // words are split on whitespace and on the punctuation deck uses to wrap
+    // values in its own messages, so `(/Users/x)` and `for deck-a-1: n` are
+    // covered without mangling the surrounding text
+    let is_edge = |c: char| c.is_whitespace() || matches!(c, '(' | ')' | '[' | ']' | ',' | ';');
+    let mut out = String::with_capacity(line.len());
+    let mut word = String::new();
+    let flush = |word: &mut String, out: &mut String| {
+        if !word.is_empty() {
+            if is_sensitive_word(word) {
+                out.push_str("<redacted>");
+            } else {
+                out.push_str(word);
+            }
+            word.clear();
+        }
+    };
+    for c in line.chars() {
+        if is_edge(c) {
+            flush(&mut word, &mut out);
+            out.push(c);
+        } else {
+            word.push(c);
+        }
+    }
+    flush(&mut word, &mut out);
+    out
+}
+
+/// Non-reversible, per-RUN short tag for a session name. Log lines need to
+/// correlate events of one session; the NAME itself is user-derived (it is
+/// built from a card title) and must not be persisted, so it is hashed with
+/// a per-process random seed — the same session reads consistently within a
+/// run and is meaningless across runs.
+pub(crate) fn session_tag(name: &str) -> String {
+    use std::collections::hash_map::RandomState;
+    use std::hash::{BuildHasher, Hasher};
+    static SEED: std::sync::OnceLock<RandomState> = std::sync::OnceLock::new();
+    let mut h = SEED.get_or_init(RandomState::new).build_hasher();
+    h.write(name.as_bytes());
+    format!("sess-{:05x}", h.finish() & 0xf_ffff)
+}
+
+pub(crate) fn log_path(dir: &Path) -> PathBuf {
+    dir.join("app.log")
+}
+
+fn deck_dir() -> PathBuf {
+    dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".deck")
-        .join("app.log");
+}
+
+/// Append one sanitized line to `path` (0600 from creation). Split out of
+/// `applog` so the real writing path — including redaction and permissions —
+/// is exercised by tests against a temp directory instead of being stubbed.
+pub(crate) fn applog_to(path: &Path, msg: &str) {
+    use std::os::unix::fs::OpenOptionsExt;
     if let Some(dir) = path.parent() {
         let _ = create_private_dir(dir);
     }
@@ -439,10 +552,53 @@ pub(crate) fn applog(msg: &str) {
         .create(true)
         .append(true)
         .mode(0o600) // applies at creation; legacy 0644 logs are fixed at boot
-        .open(&path)
+        .open(path)
     {
-        let _ = writeln!(f, "{ts} {msg}");
+        let _ = writeln!(f, "{ts} {}", sanitize_log(msg));
     }
+}
+
+/// Append a line to ~/.deck/app.log (the app may be launched via `open`,
+/// where stderr goes nowhere useful). The log is 0600: it must never carry
+/// user content, but even metadata stays private to the user.
+pub(crate) fn applog(msg: &str) {
+    if cfg!(test) {
+        return; // unit tests must not write into the user's real app.log
+    }
+    applog_to(&log_path(&deck_dir()), msg);
+}
+
+/// One-time, in-place migration of logs and exports an OLDER deck wrote:
+/// absolute paths, URLs, token shapes and raw session names are replaced
+/// with `<redacted>`. The files keep their diagnostic structure, are
+/// rewritten atomically 0600, and no copy of the original content is left
+/// behind (a `.bak` would defeat the whole point). Files that need no change
+/// are not touched at all.
+pub(crate) fn sanitize_existing_logs(dir: &Path) -> u32 {
+    let mut cleaned = 0;
+    let mut targets = vec![log_path(dir)];
+    if let Ok(rd) = std::fs::read_dir(dir.join("exports")) {
+        for e in rd.flatten() {
+            if e.file_type().map(|t| t.is_file()).unwrap_or(false) {
+                targets.push(e.path());
+            }
+        }
+    }
+    for path in targets {
+        let Ok(raw) = std::fs::read_to_string(&path) else {
+            continue; // missing or non-UTF-8: nothing to rewrite safely
+        };
+        let clean: String = raw.lines().map(sanitize_log).collect::<Vec<_>>().join("\n");
+        let clean = if raw.ends_with('\n') && !clean.is_empty() {
+            clean + "\n"
+        } else {
+            clean
+        };
+        if clean != raw && atomic_write(&path, clean.as_bytes()).is_ok() {
+            cleaned += 1;
+        }
+    }
+    cleaned
 }
 
 /// chmod 0600 — best-effort, silent (fixes pre-existing lax modes; new files
@@ -453,10 +609,7 @@ pub(crate) fn restrict_to_user(path: &Path) {
 }
 
 pub(crate) fn rotate_log() {
-    let path = dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".deck")
-        .join("app.log");
+    let path = log_path(&deck_dir());
     if let Ok(meta) = std::fs::metadata(&path) {
         if meta.len() > 2 * 1024 * 1024 {
             if let Ok(data) = std::fs::read(&path) {
@@ -793,6 +946,134 @@ mod tests {
         let d = tdir("hardennew").join("fresh");
         harden_data_dir(&d).unwrap();
         assert_eq!(mode_of(&d), 0o700);
+    }
+
+    // ---------- logs: behavior against real files, not a source scan ----------
+
+    /// Everything that must never reach app.log or an export. Each marker is
+    /// distinctive enough that a substring search is a real tripwire.
+    const MARKERS: &[&str] = &[
+        "/Users/example/private",
+        "file:///secret",
+        "https://example.com/private",
+        "~/Documents/taxes",
+        "ghp_AbCdEf0123456789xyz",
+        "sk_live_4242424242424242",
+        "AKIAIOSFODNN7EXAMPLE",
+        "xoxb-9999-8888-distinctivetoken",
+        "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9",
+        "deck-quarterly-report-ab12",
+        "distinctive0secret0value0here",
+    ];
+
+    #[test]
+    fn the_log_writer_redacts_every_marker_and_stays_private() {
+        let d = tdir("log");
+        let p = log_path(&d);
+        // lines shaped like the ones deck really writes, plus the marker
+        for m in MARKERS {
+            applog_to(&p, &format!("[pty] attached {m} (80x24)"));
+            applog_to(
+                &p,
+                &format!("[queue] send FAILED for {m} (attempt 1, tmux)"),
+            );
+            applog_to(&p, &format!("[ui] js-error {m} a=12"));
+        }
+        // and the shapes of real user content that must never be logged at
+        // all: prompt text, a typed command, IME text, a bracketed paste,
+        // a PTY marker — the call sites never build these, and if one did,
+        // the redactor still has to catch the dangerous parts
+        applog_to(&p, "[ui] record a=42");
+        applog_to(
+            &p,
+            "[queue] sent to deck-alpha-9zz1 (17B, mode chain) rm -rf /Users/example/private",
+        );
+        applog_to(&p, "\x1b[200~pasted https://example.com/private\x1b[201~");
+        let text = std::fs::read_to_string(&p).unwrap();
+        for m in MARKERS {
+            assert!(!text.contains(m), "app.log leaked {m}:\n{text}");
+        }
+        assert!(text.contains("<redacted>"), "redaction actually happened");
+        // the diagnostic structure survives — that is the point of the log
+        assert!(text.contains("[pty] attached") && text.contains("(80x24)"));
+        assert!(text.contains("[ui] js-error") && text.contains("a=12"));
+        assert_eq!(mode_of(&p), 0o600, "app.log is user-only");
+        assert_eq!(mode_of(&d), 0o700);
+    }
+
+    #[test]
+    fn ordinary_diagnostics_survive_redaction_unchanged() {
+        // false positives would make the log useless, so pin the negative
+        for line in [
+            "[queue] sent to sess-1a2b3 (17B, mode chain)",
+            "[poll] session listing FAILED (tmux-missing)",
+            "[storage] warning (invalid-doc)",
+            "[ui] keydown arrow a=0",
+            "[ui] update-avail 0.4.29",
+            "[tmux] using sidecar binary",
+            "[boot] instance lock unavailable (locked) — exiting",
+            "[pty] emit #3 4096B to sess-0f1e2",
+            "[queue] step skipped by user — group unblocked",
+        ] {
+            assert_eq!(sanitize_log(line), line, "over-redacted: {line}");
+        }
+    }
+
+    #[test]
+    fn session_tags_identify_without_revealing() {
+        let a = session_tag("deck-quarterly-report-ab12");
+        assert_eq!(a, session_tag("deck-quarterly-report-ab12"), "stable");
+        assert_ne!(a, session_tag("deck-other-card-cd34"), "distinguishes");
+        assert!(!a.contains("quarterly") && !a.contains("report"));
+        assert_eq!(sanitize_log(&a), a, "a tag is safe to log");
+    }
+
+    #[test]
+    fn old_logs_and_exports_are_migrated_in_place() {
+        let d = tdir("logmig");
+        create_private_dir(&d).unwrap();
+        let exports = d.join("exports");
+        std::fs::create_dir_all(&exports).unwrap();
+        let log = log_path(&d);
+        let old_export = exports.join("deck-log-1787814782.txt");
+        // what a pre-0.4.29 deck really left behind (the real-world case:
+        // the absolute path of the bundled tmux binary), world-readable
+        let body = "1787814000 [boot] deck started\n\
+             1787814001 [tmux] using /Users/example/private/deck.app/Contents/MacOS/tmux\n\
+             1787814002 [pty] attached deck-quarterly-report-ab12 (80x24)\n\
+             1787814003 [queue] token ghp_AbCdEf0123456789xyz seen\n\
+             1787814004 [poll] session listing recovered\n";
+        std::fs::write(&log, body).unwrap();
+        std::fs::write(&old_export, format!("deck 0.4.28\n{body}")).unwrap();
+        set_mode(&log, 0o644);
+        set_mode(&old_export, 0o644);
+
+        assert_eq!(sanitize_existing_logs(&d), 2, "both files rewritten");
+        harden_data_dir(&d).unwrap();
+        for p in [&log, &old_export] {
+            let t = std::fs::read_to_string(p).unwrap();
+            for m in [
+                "/Users/example/private",
+                "deck-quarterly-report-ab12",
+                "ghp_AbCdEf0123456789xyz",
+            ] {
+                assert!(!t.contains(m), "{} still leaks {m}", p.display());
+            }
+            assert!(t.contains("[boot] deck started"), "structure kept");
+            assert!(t.contains("[poll] session listing recovered"));
+            assert_eq!(
+                t.lines().count(),
+                body.lines().count() + usize::from(p == &old_export)
+            );
+            assert_eq!(mode_of(p), 0o600);
+        }
+        // no raw copy left anywhere in the tree
+        for e in std::fs::read_dir(&d).unwrap().flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            assert!(!name.contains(".bak"), "migration must not keep a raw copy");
+        }
+        // idempotent: a second run finds nothing left to clean
+        assert_eq!(sanitize_existing_logs(&d), 0);
     }
 
     #[test]

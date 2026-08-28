@@ -138,7 +138,8 @@ fn event_calls_carry_no_content_bearing_arguments() {
 }
 
 /// Backend log lines must never interpolate user content — prompt text,
-/// command lines, or a raw frontend string.
+/// command lines, a raw frontend string, or a raw tmux session name (which
+/// is derived from the card title): those go through storage::session_tag.
 #[test]
 fn backend_logs_carry_no_user_content() {
     let forbidden = [
@@ -156,6 +157,13 @@ fn backend_logs_carry_no_user_content() {
         ": {err}",
         ": {pe}",
         ".display()",
+        // session names: log the per-run tag, never the name itself
+        "{name}",
+        "{session}",
+        "{reader_name}",
+        "{thread_name}",
+        "item.session,",
+        "self.name,",
     ];
     for (name, src) in backend_sources() {
         for line in src.lines() {
@@ -187,6 +195,38 @@ fn debug_logging_defaults_off_and_stays_structured() {
     assert!(
         all.contains("if (window.__DECK_DEBUG) uev("),
         "debug logging must route through the structured event channel"
+    );
+}
+
+/// The sanitizer must be the LAST thing between a line and the disk, on both
+/// paths that write one — the log writer and the export builder.
+#[test]
+fn every_write_path_runs_through_the_sanitizer() {
+    let storage = std::fs::read_to_string(manifest("src/storage.rs")).unwrap();
+    let applog = storage
+        .split("pub(crate) fn applog_to(")
+        .nth(1)
+        .expect("applog_to present")
+        .split("\npub")
+        .next()
+        .unwrap();
+    assert!(
+        applog.contains("sanitize_log(msg)"),
+        "app.log lines must be sanitized as they are written"
+    );
+    let commands = std::fs::read_to_string(manifest("src/commands.rs")).unwrap();
+    let export = commands
+        .split("pub(crate) fn build_export(")
+        .nth(1)
+        .expect("build_export present")
+        .split("\npub")
+        .next()
+        .unwrap();
+    assert_eq!(
+        export.matches("storage::sanitize_log(").count(),
+        2,
+        "an export sanitizes its header AND its log body — it must not just \
+         trust that app.log was already clean"
     );
 }
 

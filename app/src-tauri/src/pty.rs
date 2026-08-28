@@ -122,7 +122,8 @@ impl AckGate {
                 stalled = true;
                 applog(&format!(
                     "[pty] ack stall for {}: seq {seq} waiting on ack {} (webview not consuming)",
-                    self.name, g.acked
+                    crate::storage::session_tag(&self.name),
+                    g.acked
                 ));
             }
             g = self.cv.wait(g).unwrap();
@@ -204,13 +205,17 @@ pub(crate) fn attach_session(
         // the raw error (may embed the tmux path) goes to the caller only
         let msg = e.to_string();
         applog(&format!(
-            "[pty] attach spawn failed for {name} ({})",
+            "[pty] attach spawn failed for {} ({})",
+            crate::storage::session_tag(&name),
             crate::storage::err_code(&msg)
         ));
         msg
     })?;
     drop(pair.slave);
-    applog(&format!("[pty] attached {name} ({cols}x{rows})"));
+    applog(&format!(
+        "[pty] attached {} ({cols}x{rows})",
+        crate::storage::session_tag(&name)
+    ));
 
     let mut reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
     let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
@@ -244,7 +249,10 @@ pub(crate) fn attach_session(
 
     let reader_name = name.clone();
     std::thread::spawn(move || {
-        applog(&format!("[pty] reader started for {reader_name}"));
+        applog(&format!(
+            "[pty] reader started for {}",
+            crate::storage::session_tag(&reader_name)
+        ));
         let mut buf = [0u8; 8192];
         loop {
             match reader.read(&mut buf) {
@@ -272,8 +280,9 @@ pub(crate) fn attach_session(
                 emits += 1;
                 if emits <= 3 || emits.is_multiple_of(200) {
                     applog(&format!(
-                        "[pty] emit #{emits} {}B to {thread_name}",
-                        batch.len()
+                        "[pty] emit #{emits} {}B to {}",
+                        batch.len(),
+                        crate::storage::session_tag(&thread_name)
                     ));
                 }
                 let r = thread_app.emit(
@@ -299,7 +308,10 @@ pub(crate) fn attach_session(
         if map.get(&thread_name).map(|e| e.generation) == Some(generation) {
             map.remove(&thread_name);
             drop(map);
-            applog(&format!("[pty] stream ended for {thread_name}"));
+            applog(&format!(
+                "[pty] stream ended for {}",
+                crate::storage::session_tag(&thread_name)
+            ));
             let _ = thread_app.emit("pty-exit", PtyExit { name: thread_name });
         }
     });

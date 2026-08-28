@@ -173,6 +173,24 @@ pub(crate) fn ui_event(code: String, detail: Option<String>, a: Option<i64>, b: 
     }
 }
 
+/// Build the export text. EVERY line — the environment header and the log
+/// body alike — goes through the log sanitizer on the way out: an export is
+/// meant to be mailed to someone, so it must not be able to inherit anything
+/// an older deck (or a future call site) left in app.log.
+pub(crate) fn build_export(header: &str, log: &str) -> String {
+    let mut out = String::with_capacity(header.len() + log.len() + 32);
+    for line in header.lines() {
+        out.push_str(&storage::sanitize_log(line));
+        out.push('\n');
+    }
+    out.push_str("\n===== app.log =====\n");
+    for line in log.lines() {
+        out.push_str(&storage::sanitize_log(line));
+        out.push('\n');
+    }
+    out
+}
+
 pub(crate) fn export_logs() -> Result<PathBuf, String> {
     let home = dirs::home_dir().ok_or("no home dir")?;
     let dir = home.join(".deck").join("exports");
@@ -180,26 +198,25 @@ pub(crate) fn export_logs() -> Result<PathBuf, String> {
     let name = format!("deck-log-{}.txt", now_epoch());
     let path = dir.join(name);
 
-    let mut out = String::new();
-    out.push_str(&format!("deck {}\n", env!("CARGO_PKG_VERSION")));
+    let mut header = String::new();
+    header.push_str(&format!("deck {}\n", env!("CARGO_PKG_VERSION")));
     if let Ok(o) = Command::new("sw_vers").output() {
-        out.push_str(&String::from_utf8_lossy(&o.stdout));
+        header.push_str(&String::from_utf8_lossy(&o.stdout));
     }
     if let Ok(o) = Command::new("uname").arg("-m").output() {
-        out.push_str(&format!("arch: {}", String::from_utf8_lossy(&o.stdout)));
+        header.push_str(&format!("arch: {}", String::from_utf8_lossy(&o.stdout)));
     }
     // classification only — the absolute tmux path stays out of exports
-    out.push_str(&format!("tmux: {}\n", crate::tmux::tmux_kind()));
-    out.push_str(&format!(
+    header.push_str(&format!("tmux: {}\n", crate::tmux::tmux_kind()));
+    header.push_str(&format!(
         "sessions: {}\n",
         tmux(&["list-sessions", "-F", "#{session_name}"])
             .map(|s| s.lines().count())
             .unwrap_or(0)
     ));
-    out.push_str("\n===== app.log =====\n");
-    out.push_str(&std::fs::read_to_string(home.join(".deck").join("app.log")).unwrap_or_default());
+    let log = std::fs::read_to_string(home.join(".deck").join("app.log")).unwrap_or_default();
     // created 0600 from the first byte — never world-readable-then-chmod
-    storage::write_private(&path, out.as_bytes())?;
+    storage::write_private(&path, build_export(&header, &log).as_bytes())?;
     let _ = Command::new("open").arg("-R").arg(&path).status();
     Ok(path)
 }
@@ -1287,6 +1304,27 @@ mod tests {
                 .unwrap()
                 .ends_with("<redacted>"));
         }
+    }
+
+    #[test]
+    fn an_export_is_sanitized_again_on_its_way_out() {
+        // an export is meant to be sent to someone else, so it may not
+        // inherit anything a PRE-0.4.29 app.log still holds
+        let stale = "1787814001 [tmux] using /Users/example/private/deck.app/tmux\n\
+                     1787814002 [pty] attached deck-quarterly-report-ab12 (80x24)\n\
+                     1787814003 [queue] ghp_AbCdEf0123456789xyz\n\
+                     1787814004 [poll] session listing recovered\n";
+        let out = build_export("deck 0.4.29\ntmux: sidecar\nsessions: 3\n", stale);
+        for m in [
+            "/Users/example/private",
+            "deck-quarterly-report-ab12",
+            "ghp_AbCdEf0123456789xyz",
+        ] {
+            assert!(!out.contains(m), "export leaked {m}:\n{out}");
+        }
+        assert!(out.contains("deck 0.4.29") && out.contains("tmux: sidecar"));
+        assert!(out.contains("===== app.log ====="));
+        assert!(out.contains("[poll] session listing recovered"), "{out}");
     }
 
     /// The backend log-side error classifier: raw io/tmux/storage errors map

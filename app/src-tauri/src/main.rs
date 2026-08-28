@@ -30,7 +30,16 @@ fn main() {
     if let Err(e) = storage::harden_data_dir(&deck_dir) {
         storage::warn(format!("data privacy hardening incomplete: {e}"));
     }
+    // one-time redaction of logs/exports an OLDER deck wrote (absolute
+    // paths, URLs, token shapes, raw session names). Runs before anything
+    // appends to app.log, rewrites in place 0600, keeps no raw copy.
+    let cleaned = storage::sanitize_existing_logs(&deck_dir);
     storage::rotate_log();
+    if cleaned > 0 {
+        applog(&format!(
+            "[boot] redacted {cleaned} pre-existing log/export file(s)"
+        ));
+    }
     // dropped/pasted files only exist so their path could be typed into a
     // session — a week later nobody references them anymore
     storage::prune_old_files(&deck_dir.join("drops"), 7 * 24 * 3600);
