@@ -73,7 +73,7 @@ export function createPane(card) {
   const t = new Terminal({
     fontFamily: 'ui-monospace, "SF Mono", Menlo, monospace',
     fontSize: 12.5,
-    lineHeight: 1.35,
+    lineHeight: 1.5,
     cursorBlink: true,
     macOptionIsMeta: true,
     scrollback: 5000,
@@ -239,18 +239,9 @@ export function wireTerminalInput(pane, term, host) {
      - DSR cursor reports `ESC[..R`, focus events `ESC[I`/`ESC[O`
      - OSC / DCS responses */
   const AUTO_REPLY = /^(?:\x1b\[[?>][0-9;$]*[a-zA-Z]|\x1b\[[0-9;]*R|\x1b\[[IO]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1bP[^\x1b]*\x1b\\)+$/;
-  let odLogged = 0, escLogged = 0, sepDiag = 0;
+  let odLogged = 0, escLogged = 0;
   term.onData(d => {
     const isAutoReply = AUTO_REPLY.test(d);
-    /* separator no-show diagnosis (booleans + fg process name only): every
-       gate on the submit->hairline path, for the first few Enters */
-    if (sepDiag < 5 && (d.includes('\r') || d.includes('\n'))) {
-      sepDiag++;
-      const c0 = card();
-      ulog(`sepdiag auto=${isAutoReply} attached=${attachedName === session}` +
-        ` mirror=${lineBuf === null ? 'desync' : 'buf:' + lineBuf.length}` +
-        ` fg=${c0 ? c0.fg : 'no-card'} seps=${pane.seps.length}`);
-    }
     /* the input mirror / completion only tracks the focused pane */
     if (!isAutoReply && attachedName === session) {
       if (d.includes('\x1b') && escLogged < 5) {

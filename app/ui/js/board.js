@@ -134,13 +134,6 @@ export async function pollNow() {
     return;
   }
   if (state.lastPollError) { state.lastPollError = null; ulog('poll recovered'); }
-  /* first polls after boot: what the frontend actually received, per card
-     (session + process names only) — pairs with the backend '[poll] diag'
-     lines to bisect where fg/liveness gets lost */
-  if (state.pollDiagCount < 3) {
-    state.pollDiagCount++;
-    ulog('polldiag ' + infos.map(i => `${i.name}:${i.alive}:${i.fg || '-'}`).join(' '));
-  }
   const byName = new Map(infos.map(i => [i.name, i]));
   const exited = [];
   for (const c of store.cards) {
