@@ -40,7 +40,19 @@ jobs:
       - name: cargo test (app backend — unit, storage/scheduler recovery, log privacy, tmux contract)
         run: cargo test --locked --manifest-path app/src-tauri/Cargo.toml -- --test-threads=1
 
-      # no-build frontend: every identifier in the ES modules must resolve
-      # (catches forgotten imports before the webview does)
-      - name: frontend module check
+      # no-build frontend, three gates:
+      # 1. real syntax check of every module (node --check)
+      - name: JS syntax (node --check)
+        run: |
+          set -e
+          for f in app/ui/js/*.js app/ui/js/*.mjs app/ui/test/*.mjs; do
+            node --check "$f"
+          done
+      # 2. headless unit tests of the DOM-free logic (node:test, no npm)
+      - name: JS unit tests (node --test)
+        run: node --test app/ui/test/pure.test.mjs
+      # 3. unresolved-identifier scan (forgotten imports; also forbids
+      #    xterm private ._core API in deck code) — an approximation, not a
+      #    syntax check; that's what gate 1 is for
+      - name: JS unresolved-identifier scan
         run: node app/ui/js/check.mjs

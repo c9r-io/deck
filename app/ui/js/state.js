@@ -107,20 +107,16 @@ export const state = {
 
 export const genId = p => p + Date.now().toString(36) + (nextIdCounter++).toString(36);
 
-export function sessionName(title, id) {
-  let slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
-  if (!slug) slug = 'card';
-  return 'deck-' + slug.slice(0, 24).replace(/-+$/, '') + '-' + id.slice(-4);
-}
+/* DOM-free logic lives in pure.js (node-testable); re-exported here so the
+   rest of the app keeps one import point for shared helpers */
+import { fmtMem, sessionName } from './pure.js';
+export { fmtMem, sessionName };
 
 /* ---------- tiny event bus (same contract as the mock) ---------- */
 export const listeners = new Set();
 export const emit = (ev, s) => listeners.forEach(fn => fn(ev, s));
 
 /* ---------- formatting ---------- */
-export function fmtMem(mb) {
-  return mb >= 1024 ? (mb / 1024).toFixed(1) + 'G' : Math.round(mb) + 'M';
-}
 export function setMemChip(chip, s) {
   if (!chip) return;
   chip.textContent = s.mem == null ? '' : fmtMem(s.mem);

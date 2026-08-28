@@ -55,6 +55,8 @@ export async function manualUpdateCheck() {
   }
 }
 
+$('set-check').onclick = () => manualUpdateCheck();
+
 $('update-btn').onclick = async () => {
   if (!pendingUpdate) return;
   const btn = $('update-btn');

@@ -218,11 +218,10 @@ export function acceptSuggestion(cmd) {
 }
 
 /* ---------- inline ghost suggestion (Warp-style) ---------- */
+/* cell size from public layout only: .xterm-screen is sized to exactly
+   cols×rows cells, so division measures a cell without any xterm private
+   API (deck code never touches _core). */
 export function ghostCellDims(host) {
-  try {
-    const cell = term._core._renderService.dimensions.css.cell;
-    if (cell.width && cell.height) return { w: cell.width, h: cell.height };
-  } catch (e) { /* private API moved — fall back to measuring */ }
   const screen = host.querySelector('.xterm-screen');
   return { w: screen.clientWidth / term.cols, h: screen.clientHeight / term.rows };
 }

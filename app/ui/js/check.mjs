@@ -1,8 +1,11 @@
 #!/usr/bin/env node
-// Static reference check for deck's no-build ES modules: every identifier a
-// module uses must be declared in it, imported, a shared globalThis slot
-// (declared in state.js), a vendor global, or a browser built-in. Catches
-// the "forgot an import during refactor" class before the webview does.
+// Static UNRESOLVED-IDENTIFIER scan for deck's no-build ES modules — NOT a
+// syntax check (CI runs `node --check` for that) and not a behavior test
+// (CI runs `node --test` on ui/test/): every identifier a module uses must
+// be declared in it, imported, a shared globalThis slot (declared in
+// state.js), a vendor global, or a browser built-in. Catches the "forgot an
+// import during refactor" class before the webview does. Also forbids
+// xterm private API (`._core`) in deck's own code.
 // Runs in CI (test.yml) and exits non-zero on violations.
 
 import { readFileSync, readdirSync } from 'node:fs';
@@ -111,6 +114,12 @@ const SLOTS = new Set([...(slotBlock ? slotBlock[1].matchAll(/^\s*([A-Za-z_$][\w
 let bad = 0;
 for (const f of files) {
   const raw = readFileSync(join(dir, f), 'utf8');
+  // deck code must stay on xterm's public API (vendored addons are exempt —
+  // they live in ui/vendor/, outside this scan)
+  if (raw.includes('._core')) {
+    bad++;
+    console.error(`${f}: uses xterm private API (._core) — public API or DOM measurement only`);
+  }
   const src = stripped(raw);
   const declared = new Set();
   for (const m of src.matchAll(/\b(?:const|let|var|function|class)\s+([A-Za-z_$][\w$]*)/g)) declared.add(m[1]);

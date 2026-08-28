@@ -1,7 +1,6 @@
 // dialogs.js — confirm/prompt dialogs, toasts, inline rename, settings modal
 // Part of deck's no-build frontend: native ES modules, no bundler.
 import { $, inv, uev } from './state.js';
-import { manualUpdateCheck } from './app.js';
 
 /* ---------- confirm dialog (window.confirm is a silent no-op in WKWebView) ---------- */
 export function confirmDialog(msg) {
@@ -106,7 +105,8 @@ $('set-editor').onchange = () => {
   persistSettings();
   toast(settings.editor ? 'file links open in ' + settings.editor : 'file links open in system default');
 };
-$('set-check').onclick = () => manualUpdateCheck();
+/* set-check's click handler is wired by app.js (which owns update checks) —
+   keeps dialogs.js from importing app.js back (no module cycle) */
 $('set-clear-hist').onclick = async () => {
   if (!(await confirmDialog('Clear deck’s command history (and its backup)? Completion chips will start over.'))) return;
   inv('history_clear')
