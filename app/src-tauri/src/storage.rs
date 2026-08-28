@@ -155,21 +155,55 @@ fn bak_path(path: &Path) -> PathBuf {
     PathBuf::from(os)
 }
 
+/// Envelope check, strictly: a document is legacy v0 ONLY when it carries
+/// neither marker. The moment `schema_version` or `data` appears, the file
+/// claims to be enveloped and must be a COMPLETE, well-formed envelope —
+/// a string/float/negative/null version, or a version without data, is a
+/// damaged file (recovery material), never "probably v0". Reading a half
+/// envelope as v0 would hand the caller the wrapper object as if it were
+/// the payload, and let `save` overwrite a file it never understood.
+fn envelope_payload(v: &serde_json::Value) -> Result<serde_json::Value, DocErr> {
+    match (v.get("schema_version"), v.get("data")) {
+        (None, None) => Ok(v.clone()), // legacy v0: the whole document
+        (Some(sv), data) => {
+            let n = sv.as_u64().ok_or_else(|| {
+                DocErr::Bad(format!(
+                    "schema_version must be a non-negative integer, found {}",
+                    type_name_of(sv)
+                ))
+            })?;
+            if n > SCHEMA_VERSION {
+                return Err(DocErr::Newer(n));
+            }
+            data.cloned()
+                .ok_or_else(|| DocErr::Bad("version envelope has no data field".into()))
+        }
+        (None, Some(_)) => Err(DocErr::Bad(
+            "version envelope has no schema_version field".into(),
+        )),
+    }
+}
+
+/// JSON type name for an envelope diagnostic (never the VALUE — a data file
+/// can hold user content, and this text reaches the user-facing warning).
+fn type_name_of(v: &serde_json::Value) -> &'static str {
+    match v {
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "a boolean",
+        serde_json::Value::Number(n) if n.is_f64() => "a fractional number",
+        serde_json::Value::Number(_) => "a negative number",
+        serde_json::Value::String(_) => "a string",
+        serde_json::Value::Array(_) => "an array",
+        serde_json::Value::Object(_) => "an object",
+    }
+}
+
 /// Full validation of one file's bytes: JSON → envelope (schema version) →
 /// the document type `T`. Returns the payload serialized back to a string.
 fn parse_doc<T: DeserializeOwned>(raw: &str) -> Result<String, DocErr> {
     let v: serde_json::Value =
         serde_json::from_str(raw).map_err(|e| DocErr::Bad(format!("invalid JSON: {e}")))?;
-    let payload = match (v.get("schema_version"), v.get("data")) {
-        (Some(sv), Some(data)) => {
-            let n = sv.as_u64().unwrap_or(0);
-            if n > SCHEMA_VERSION {
-                return Err(DocErr::Newer(n));
-            }
-            data.clone()
-        }
-        _ => v, // legacy v0: the whole document is the payload
-    };
+    let payload = envelope_payload(&v)?;
     let raw_payload = serde_json::to_string(&payload).map_err(|e| DocErr::Bad(e.to_string()))?;
     serde_json::from_str::<T>(&raw_payload)
         .map_err(|e| DocErr::Bad(format!("wrong structure: {e}")))?;
@@ -314,17 +348,25 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
 pub fn save(path: &Path, payload: &str) -> Result<(), String> {
     let data: serde_json::Value =
         serde_json::from_str(payload).map_err(|e| format!("refusing to save invalid JSON: {e}"))?;
+    // Never clobber a file this build does not understand. `load_typed`
+    // quarantines a damaged main file before anything can save over it, so
+    // reaching here with a broken envelope means the file was never loaded
+    // (or was replaced behind our back) — refuse rather than destroy it.
     if let Ok(existing) = std::fs::read_to_string(path) {
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(&existing) {
-            let n = v
-                .get("schema_version")
-                .and_then(|s| s.as_u64())
-                .unwrap_or(0);
-            if n > SCHEMA_VERSION {
-                return Err(format!(
-                    "refusing to overwrite {} — it was written by a newer deck (schema v{n}); update deck first",
-                    path.file_name().unwrap_or_default().to_string_lossy()
-                ));
+            let name = path.file_name().unwrap_or_default().to_string_lossy();
+            match envelope_payload(&v) {
+                Ok(_) => {}
+                Err(DocErr::Newer(n)) => {
+                    return Err(format!(
+                        "refusing to overwrite {name} — it was written by a newer deck (schema v{n}); update deck first"
+                    ))
+                }
+                Err(DocErr::Bad(e)) => {
+                    return Err(format!(
+                        "refusing to overwrite {name} — its version envelope is unreadable ({e}); move the file aside first"
+                    ))
+                }
             }
         }
     }
@@ -765,6 +807,122 @@ mod tests {
         let err = save(&p, r#"{"v":2}"#).unwrap_err();
         assert!(err.contains("newer deck"), "save refuses too: {err}");
         assert!(std::fs::read_to_string(&p).unwrap().contains("99"));
+    }
+
+    // ---------- round 4: the envelope is validated strictly ----------
+
+    /// Anything that CLAIMS to be enveloped must be a complete envelope.
+    /// The old rule (`as_u64().unwrap_or(0)`) read every one of these as a
+    /// legacy v0 document and handed the WRAPPER back as the payload.
+    #[test]
+    fn a_half_or_mistyped_envelope_is_damage_not_a_legacy_file() {
+        let d = tdir("envelope");
+        for (k, doc) in [
+            r#"{"schema_version":"99","data":{"v":1}}"#, // string version
+            r#"{"schema_version":1.5,"data":{"v":1}}"#,  // fractional
+            r#"{"schema_version":-1,"data":{"v":1}}"#,   // negative
+            r#"{"schema_version":null,"data":{"v":1}}"#, // null
+            r#"{"schema_version":true,"data":{"v":1}}"#, // boolean
+            r#"{"schema_version":1}"#,                   // version, no data
+            r#"{"data":{"v":1}}"#,                       // data, no version
+        ]
+        .iter()
+        .enumerate()
+        {
+            let p = d.join(format!("x{k}.json"));
+            std::fs::write(&p, doc).unwrap();
+            let err = load_doc(&p).unwrap_err();
+            assert!(
+                err.contains("unreadable") && err.contains("backup is unusable"),
+                "{doc} → {err}"
+            );
+            assert!(!p.exists(), "{doc}: damaged main file was quarantined");
+            // …and the quarantined bytes are exactly the original
+            let kept = std::fs::read_dir(&d)
+                .unwrap()
+                .flatten()
+                .find(|e| {
+                    e.file_name()
+                        .to_string_lossy()
+                        .starts_with(&format!("x{k}.corrupt-"))
+                })
+                .expect("quarantine file")
+                .path();
+            assert_eq!(&std::fs::read_to_string(kept).unwrap(), doc);
+        }
+    }
+
+    #[test]
+    fn a_valid_envelope_and_a_valid_legacy_file_both_load() {
+        let d = tdir("envelope-ok");
+        let legacy = d.join("legacy.json");
+        std::fs::write(&legacy, r#"{"v":7}"#).unwrap(); // no markers at all
+        assert!(load_doc(&legacy)
+            .unwrap()
+            .unwrap()
+            .payload
+            .contains("\"v\""));
+        let current = d.join("current.json");
+        std::fs::write(&current, r#"{"schema_version":1,"data":{"v":8}}"#).unwrap();
+        let got = load_doc(&current).unwrap().unwrap();
+        assert_eq!(got.source, "main");
+        assert!(got.payload.contains("\"v\":8"), "{}", got.payload);
+        // v0 spelled out explicitly is still valid
+        let zero = d.join("zero.json");
+        std::fs::write(&zero, r#"{"schema_version":0,"data":{"v":9}}"#).unwrap();
+        assert!(load_doc(&zero)
+            .unwrap()
+            .unwrap()
+            .payload
+            .contains("\"v\":9"));
+    }
+
+    #[test]
+    fn a_malformed_envelope_recovers_from_a_valid_backup() {
+        let d = tdir("envelope-bak");
+        let p = d.join("x.json");
+        save(&p, r#"{"v":1}"#).unwrap();
+        save(&p, r#"{"v":2}"#).unwrap(); // .bak now holds a valid v1 envelope
+        std::fs::write(&p, r#"{"schema_version":"99","data":{"v":3}}"#).unwrap();
+        let got = load_doc(&p).unwrap().unwrap();
+        assert_eq!(got.source, "backup");
+        assert!(got.payload.contains("\"v\":1"), "{}", got.payload);
+        assert!(got.warning.unwrap().contains("schema_version must be"));
+    }
+
+    #[test]
+    fn a_backup_with_a_malformed_envelope_is_refused_too() {
+        let d = tdir("envelope-bakbad");
+        let p = d.join("x.json");
+        std::fs::write(&p, r#"{"schema_version":1}"#).unwrap();
+        std::fs::write(bak_path(&p), r#"{"data":{"v":1}}"#).unwrap();
+        let err = load_doc(&p).unwrap_err();
+        assert!(err.contains("backup is unusable"), "{err}");
+        assert!(err.contains("no schema_version field"), "{err}");
+    }
+
+    #[test]
+    fn save_refuses_a_file_whose_envelope_it_cannot_read() {
+        let d = tdir("envelope-save");
+        for doc in [
+            r#"{"schema_version":"99","data":{"v":1}}"#,
+            r#"{"schema_version":1.5,"data":{"v":1}}"#,
+            r#"{"schema_version":1}"#,
+            r#"{"data":{"v":1}}"#,
+        ] {
+            let p = d.join("x.json");
+            std::fs::write(&p, doc).unwrap();
+            let bak = bak_path(&p);
+            std::fs::write(&bak, doc).unwrap();
+            let err = save(&p, r#"{"v":2}"#).unwrap_err();
+            assert!(err.contains("refusing to overwrite"), "{doc} → {err}");
+            assert_eq!(std::fs::read_to_string(&p).unwrap(), doc, "main untouched");
+            assert_eq!(
+                std::fs::read_to_string(&bak).unwrap(),
+                doc,
+                "backup not rotated"
+            );
+        }
     }
 
     #[test]
