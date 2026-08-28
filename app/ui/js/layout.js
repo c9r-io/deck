@@ -73,7 +73,7 @@ export function createPane(card) {
   const t = new Terminal({
     fontFamily: 'ui-monospace, "SF Mono", Menlo, monospace',
     fontSize: 12.5,
-    lineHeight: 1.5,
+    lineHeight: 1.7,
     cursorBlink: true,
     macOptionIsMeta: true,
     scrollback: 5000,
