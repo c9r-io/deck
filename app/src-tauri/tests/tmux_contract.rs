@@ -239,3 +239,33 @@ fn batched_capture_markers_and_dead_target_abort() {
          poll_sessions' alive-only filtering is merely redundant, not wrong: {after_dead:?}"
     );
 }
+
+/// The v0.4.16 all-gray-board bug: GUI-launched apps have no locale env, and
+/// under the C locale tmux sanitizes control chars in command output — the
+/// \t separators poll_sessions parses become '_'. deck pins LANG=en_US.UTF-8
+/// on every tmux invocation (tmux.rs, pty.rs); this pins WHY.
+#[test]
+fn format_tabs_survive_only_with_utf8_locale() {
+    let s = Server::new("locale");
+    let run_env = |lang: Option<&str>| {
+        let mut c = Command::new(tmux_bin());
+        c.env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .env("HOME", std::env::var("HOME").unwrap_or_default())
+            .args(["-f", "/dev/null", "-L", &s.0])
+            .args(["display-message", "-p", "-t", "t", "a\tb"]);
+        if let Some(l) = lang {
+            c.env("LANG", l);
+        }
+        String::from_utf8_lossy(&c.output().expect("tmux spawn").stdout).into_owned()
+    };
+    assert!(
+        run_env(Some("en_US.UTF-8")).contains("a\tb"),
+        "UTF-8 locale must pass tabs through"
+    );
+    assert!(
+        run_env(None).contains("a_b"),
+        "C locale sanitizes tabs to '_' — if this ever stops failing without \
+         LANG, the pinned env in tmux()/pty.rs is merely redundant"
+    );
+}

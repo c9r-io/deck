@@ -74,11 +74,20 @@ pub(crate) fn tmux_conf() -> String {
 
 /// Run tmux (on the deck server) with output captured — stray stderr must
 /// never reach a terminal.
+///
+/// LANG is pinned to a UTF-8 locale: GUI-launched apps get NO locale env,
+/// and under the C locale tmux sanitizes every control character in command
+/// output — including the \t field separators poll_sessions parses — to
+/// '_', and mangles non-ASCII pane content in capture-pane. (Shipped as the
+/// v0.4.16 "board all gray / no separators" bug: dev builds launched from a
+/// terminal inherited the shell's LANG and never reproduced it.) pty.rs
+/// sets the same for the attach client.
 pub(crate) fn tmux(args: &[&str]) -> Result<String, String> {
     let conf = tmux_conf();
     let out = Command::new(tmux_bin())
         .args(["-f", &conf, "-L", SOCKET])
         .args(args)
+        .env("LANG", "en_US.UTF-8")
         .output()
         .map_err(|e| format!("tmux not runnable: {e}"))?;
     if !out.status.success() {
@@ -100,6 +109,7 @@ pub(crate) fn tmux_batch(args: &[String]) -> String {
     Command::new(tmux_bin())
         .args(["-f", &conf, "-L", SOCKET])
         .args(args)
+        .env("LANG", "en_US.UTF-8") // see tmux(): C locale mangles output
         .output()
         .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
         .unwrap_or_default()
