@@ -382,6 +382,24 @@ pub(crate) fn poll_sessions(names: Vec<String>, tail_for: Vec<String>) -> Vec<Se
         "-F",
         "#{session_name}\t#{pane_pid}\t#{window_activity}\t#{pane_current_command}",
     ]);
+    // first polls: the RAW bytes the listing produced (pane metadata only —
+    // session names, pids, process names; never pane content)
+    static RAW_DIAG: std::sync::Mutex<u8> = std::sync::Mutex::new(0);
+    {
+        let mut n = RAW_DIAG.lock().unwrap();
+        if *n < 2 {
+            *n += 1;
+            match &listing {
+                Ok(o) => applog(&format!(
+                    "[poll] rawdiag ok len={} tmux_env={:?} head={:?}",
+                    o.len(),
+                    std::env::var("TMUX").ok(),
+                    o.chars().take(160).collect::<String>()
+                )),
+                Err(e) => applog(&format!("[poll] rawdiag err {e:?}")),
+            }
+        }
+    }
     // a failing listing silently reads as "everything is dead" — log the
     // failure and the recovery, once per transition (tmux errors carry no
     // user content)
