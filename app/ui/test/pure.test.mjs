@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 import {
   sessionName, fmtMem, fmtEvery, minToHM, hmToMin, winHas, hasWindow,
   nextFire, groupQueue, groupSteps, itemDead, blockedBy,
+  chainQuietHint, CHAIN_QUIET_SECS,
 } from '../js/pure.js';
 
 test('sessionName derives a safe slug + id suffix', () => {
@@ -74,6 +75,16 @@ test('nextFire defers to the window opening (UTC)', () => {
     nextFire({ every: 300, win_from: 480, win_to: 1080 }, evening),
     48 * 3600 + 8 * 3600
   );
+});
+
+test('chainQuietHint tracks the quiet window', () => {
+  assert.equal(CHAIN_QUIET_SECS, 180, 'must match scheduler.rs');
+  assert.equal(chainQuietHint(42, true), ' · quiet 42s/180s');
+  assert.equal(chainQuietHint(0, true), ' · quiet 0s/180s', 'fresh activity resets to zero');
+  assert.equal(chainQuietHint(180, true), ' · quiet ✓');
+  assert.equal(chainQuietHint(9999, true), ' · quiet ✓', 'capped, no runaway counter');
+  assert.equal(chainQuietHint(null, true), '', 'no poll data yet — no hint');
+  assert.equal(chainQuietHint(null, false), ' · ready', 'dead session counts as quiet');
 });
 
 const item = (id, mode, extra = {}) =>

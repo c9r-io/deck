@@ -1,8 +1,8 @@
 // scheduler.js — scheduled prompts: queue groups, recurring rules, templates
 // Part of deck's no-build frontend: native ES modules, no bundler.
 import { $, inv, listen, state, uev } from './state.js';
-import { blockedBy, fmtEvery, groupQueue, groupSteps, hasWindow, hmToMin, itemDead, minToHM, nextFire, winHas } from './pure.js';
-export { blockedBy, fmtEvery, groupQueue, groupSteps, hasWindow, hmToMin, itemDead, minToHM, nextFire, winHas };
+import { blockedBy, chainQuietHint, fmtEvery, groupQueue, groupSteps, hasWindow, hmToMin, itemDead, minToHM, nextFire, winHas } from './pure.js';
+export { blockedBy, chainQuietHint, fmtEvery, groupQueue, groupSteps, hasWindow, hmToMin, itemDead, minToHM, nextFire, winHas };
 import { saveBoard } from './persistence.js';
 import { confirmDialog, inlineRename, toast, promptDialog } from './dialogs.js';
 import { pollNow, provider } from './board.js';
@@ -32,6 +32,22 @@ export function fmtWhen(i) {
   if (i.mode === 'chain') return '↳ after prev';
   if (i.mode === 'every') return '↻ every ' + fmtEvery(i.every);
   return fmtClock(i.at);
+}
+
+const chainWhenSuffix = (i, card) =>
+  i.mode === 'chain' && card ? chainQuietHint(card.idle, card.status !== 'stopped') : '';
+
+/* refresh the quiet counters in place on every poll tick — text-only, so an
+   open panel never gets its DOM (hover/click targets, inline edits) rebuilt.
+   The panel is per-session, so every chain head shares one hint. */
+export function updateQuietHints() {
+  if (!queueOpen || state.view !== 'session') return;
+  const card = provider.get(state.sessionId);
+  if (!card) return;
+  const suffix = chainQuietHint(card.idle, card.status !== 'stopped');
+  document.querySelectorAll('#queue-list .qg-when[data-quiet]').forEach(el => {
+    el.textContent = '↳ after prev' + suffix;
+  });
 }
 
 export function qMeta(i) {
@@ -70,7 +86,7 @@ export async function saveGroupAsTemplate(g) {
   toast('template saved: ' + name);
 }
 
-export function groupEl(g) {
+export function groupEl(g, card) {
   const rule = g.head.mode === 'every';
   const el = document.createElement('div');
   el.className = 'q-group' + (rule ? ' rule' : '') + (g.head.paused ? ' paused' : '');
@@ -82,7 +98,10 @@ export function groupEl(g) {
     + (rule && itemDead(g.head) ? '<button class="qg-retry" title="retry this rule (fresh attempts)">↻</button>' : '')
     + '<button class="qg-save" title="save this group as a project template">☆</button>'
     + '<button class="qg-del" title="remove the whole group">✕</button></span>';
-  head.querySelector('.qg-when').textContent = fmtWhen(g.head);
+  const whenEl = head.querySelector('.qg-when');
+  whenEl.textContent = fmtWhen(g.head) + chainWhenSuffix(g.head, card);
+  /* chain heads get their quiet counter refreshed on every poll tick */
+  if (g.head.mode === 'chain') whenEl.dataset.quiet = '1';
   const n = groupSteps(g).length;
   head.querySelector('.qg-meta').textContent =
     [qMeta(g.head), n > 1 ? `then ${n - 1} follow-up${n > 2 ? 's' : ''}, in order` : '']
@@ -164,7 +183,7 @@ export function renderQueueUI() {
     if (queueOpen) {
       const list = $('queue-list');
       list.innerHTML = '';
-      for (const g of groupQueue(q)) list.appendChild(groupEl(g));
+      for (const g of groupQueue(q)) list.appendChild(groupEl(g, card));
       if (!q.length) list.innerHTML = '<div class="q-hint">nothing scheduled for this session yet</div>';
     }
   }

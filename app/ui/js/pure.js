@@ -36,6 +36,20 @@ export function nextFire(i, now = Math.floor(Date.now() / 1000)) {
   return t;
 }
 
+/* how long a session must stay quiet before a chain prompt fires —
+   keep in sync with CHAIN_QUIET_SECS in scheduler.rs */
+export const CHAIN_QUIET_SECS = 180;
+
+/* progress hint for a chain head: how far the quiet timer has come. Any
+   output (including the user typing in the pane) resets it — that's the
+   product semantics, and exactly why the wait deserves a visible counter. */
+export function chainQuietHint(idleSecs, alive) {
+  if (!alive) return ' · ready'; // dead session counts as quiet; fires next tick
+  if (idleSecs == null) return '';
+  const q = Math.min(Math.floor(idleSecs), CHAIN_QUIET_SECS);
+  return q >= CHAIN_QUIET_SECS ? ' · quiet ✓' : ` · quiet ${q}s/${CHAIN_QUIET_SECS}s`;
+}
+
 /* ---------- queue grouping (mirrors the backend's group semantics) ---------- */
 /* items carry an explicit group id (assigned by the backend, which is also
    what the scheduler's chain ordering runs on) — one panel group per group

@@ -5,7 +5,7 @@ import { saveBoard } from './persistence.js';
 import { confirmDialog, inlineRename, toast } from './dialogs.js';
 import { clearSeparators, closePaneBySid, leaveSessionView, openSession, renderSessionView, updatePaneChrome } from './layout.js';
 import { SHELL_FG, showProjectCtx, showSessionCtx } from './terminal.js';
-import { renderQueueUI, setQueueChip } from './scheduler.js';
+import { renderQueueUI, setQueueChip, updateQuietHints } from './scheduler.js';
 
 /* ---------- provider (board CRUD is sync-local, persistence async) ---------- */
 export const activeProject = () => provider.project(state.projectId);
@@ -158,6 +158,7 @@ export async function pollNow() {
       const pn = panes.get(c.session);
       if (pn && pn.seps.length) clearSeparators(pn);
     }
+    c.idle = info.alive ? (info.idle_secs != null ? info.idle_secs : null) : null;
     if (status !== c.status) { c.status = status; emit('status', c); }
     if ((mem == null) !== (c.mem == null) || (mem != null && Math.abs(mem - c.mem) > 1)) {
       c.mem = mem;
@@ -165,6 +166,7 @@ export async function pollNow() {
     }
     if (tail.join('\n') !== (c.tail || []).join('\n')) { c.tail = tail; emit('output', c); }
   }
+  updateQuietHints();
   for (const c of exited) {
     inv('queue_clear_session', { session: c.session }).catch(() => {});
     closePaneBySid(c.id);

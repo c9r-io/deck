@@ -111,7 +111,7 @@ export async function boot() {
   if (doc && doc.data) {
     const data = JSON.parse(doc.data);   // backend already validated the shape
     store.projects = data.projects || [];
-    store.cards = (data.cards || []).map(c => ({ ...c, status: 'stopped', mem: null, tail: [] }));
+    store.cards = (data.cards || []).map(c => ({ ...c, status: 'stopped', mem: null, tail: [], idle: null }));
   }
   if (loadErr) {
     toast('board could not be loaded: ' + loadErr);
