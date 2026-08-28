@@ -22,14 +22,27 @@ Frontend gates: `node --check` (syntax) · `ui/test/pure.test.mjs` (node:test)
   login session the process can't reach macOS text-input services (TSM/IMK) —
   window and mouse work, keyboard is silently dead. `~/.deck/app.log` (0600)
   collects backend + frontend diagnostics. Frontend logging is STRUCTURED
-  ONLY: the `ui_event` command takes a whitelisted code + short slug + two
-  ints and rejects everything else — never add a free-form frontend log
-  channel (log_privacy tests enforce this).
+  ONLY: the `ui_event` command takes a whitelisted code + a detail vetted by
+  that code's OWN closed policy (enum values / version pattern — no generic
+  slug rule) + two ints, and redacts everything else — never add a free-form
+  frontend log channel (log_privacy tests enforce this). Backend log lines
+  never interpolate raw error Display text: `storage::err_code()` maps
+  errors to stable path-free categories; the full error goes only to the
+  operation's caller. The whole `~/.deck` tree is private by construction
+  (dir 0700, every file created 0600 — atomic-write temps, `.bak`,
+  `.corrupt-*`, log, exports); `harden_data_dir()` re-migrates legacy modes
+  at every boot.
 - PTY smoke test (headless): `cargo run --example pty_smoke`
 - Board persistence: `~/.deck/deck.json` (frontend owns the state, saves wholesale,
   debounced). storage.rs is TYPED and durable for all four data files
   (deck/queue/history/settings): JSON + version envelope + business-structure
-  validation on load; damaged main quarantined to a unique `.corrupt-<ts>`
+  validation on load — BoardDoc/SettingsDoc validate via `try_from`
+  (referential rules: unique ids, cards reference an existing project and a
+  column of that project, ≥1 column per project, runtime fields present,
+  session names by the same tmux rule the runtime enforces), and
+  save_board/save_settings run the SAME validation before touching disk;
+  unknown extension fields round-trip untouched. Damaged main quarantined to
+  a unique `.corrupt-<ts>`
   BEFORE the fully-validated `.bak` is tried; recovery warnings returned
   in-band (`LoadedDoc {data, source, warning}`); future schema versions
   refused untouched (save refuses to overwrite them too); recovery never
@@ -56,35 +69,52 @@ Frontend gates: `node --check` (syntax) · `ui/test/pure.test.mjs` (node:test)
   ACKs (`pty_ack`) only after xterm's write callback, and the emitter never
   runs more than MAX_INFLIGHT_BATCHES (4 × ≤256KB) past the last ACK — past
   that it waits on the attachment's AckGate (closed by detach/re-attach, which
-  is what releases a stalled emitter; stalls are logged). A wedged webview
+  is what releases a stalled emitter; stalls are logged). The gate tracks an
+  emitted HIGH-WATER mark: an ACK counts only for acked < seq ≤ emitted on an
+  open gate, so a buggy/hostile webview ACKing sequences never sent cannot
+  widen the window; a failed app.emit ends the pump and closes the gate (the
+  webview can never ACK an event it never received); seq overflow ends the
+  stream cleanly. A wedged webview
   therefore stalls emitter → bounded channel → kernel PTY → tmux client, with
   memory bounded at ~1.5MB per attachment. The frontend drops (without ACKing)
   events whose gen is older than the current attachment, and accepts+adopts a
   NEWER gen (the first event can beat the attach invoke's resolution).
 - Scheduled prompts: Rust-side scheduler thread (NOT webview timers — App Nap
   freezes those), 20s tick, queue persisted at `~/.deck/queue.json` and loaded at
-  boot. Injection = `tmux send-keys -l` (literal) + Enter, no attach needed; dead
-  sessions are started first. "chain" mode fires after `window_activity` has been
-  quiet ≥180s (a permission prompt also counts as quiet — documented behavior;
-  quiet NEVER means "the agent finished"). Round-2 semantics (scheduler.rs is
-  the reference, all unit-tested):
+  boot. Injection = ONE atomic tmux command: literal text + trailing CR in a
+  single `send-keys -l` (no "text landed but Enter didn't" window), no attach
+  needed; dead sessions are started first. "chain" mode fires after
+  `window_activity` has been quiet ≥180s (a permission prompt also counts as
+  quiet — documented behavior; quiet NEVER means "the agent finished").
+  Round-2/3 semantics (scheduler.rs is the reference, all unit-tested):
   - at most ONE candidate per session per tick, ≥60s between any two
-    injections into the same session; sessions are independent;
+    injections into the same session; each due session gets its own
+    short-lived worker thread claimed via a busy-set, so sessions are truly
+    independent (a 2.5s session-boot wait delays only its own session), the
+    same session never has two concurrent sends, and a worker outliving its
+    tick can't collide with the next tick;
   - deterministic priority: backoff-elapsed retry → earliest-due `at` →
     cadence-due `every` → chain; a future `at` never blocks a due one;
-  - each send re-selects from fresh state under the lock (pause/edit/remove
-    races are closed); chain steps carry explicit `group`/`seq` (legacy
-    files migrate from array adjacency);
+  - each worker re-selects from fresh state under the lock (`send_one` is
+    the whole firing state machine, testable with fake fire/persist);
+    chain steps carry explicit `group`/`seq` (legacy files migrate from
+    array adjacency);
+  - the firing contract: while an item is mid-send, queue remove/update/
+    pause/retry/skip return a conflict error (UI toasts it) and the item
+    survives until finalize; queue_clear_session spares the firing item;
   - a step that exhausts its 8 attempts BLOCKS its group until the user
     retries/skips/removes it (queue_retry / queue_skip commands);
   - a recurring rule has at most one active iteration (its spawned steps,
     keyed `rule`/`group`=delivery id) — iterations never interleave;
-  - delivery is at-most-once: firing intent + delivery id persisted BEFORE
-    injection; success and crash recovery share one idempotent
-    `finalize_delivery` (fired count, until-N retirement, template-step
-    spawn, audit record — `deliveries`, capped 200). The crash window
-    between persist-intent and Enter cannot be closed: recovery assumes
-    sent, never re-sends.
+  - delivery is at-most-once: firing intent + delivery id + a full item
+    snapshot (the `pending` ledger) persisted BEFORE injection; success and
+    crash recovery share one idempotent `finalize_delivery` (fired count,
+    until-N retirement, template-step spawn, audit record — `deliveries`,
+    capped 200) that works even if the item vanished (ledger snapshot →
+    audit + session gap; a removed rule never respawns steps). An atomic
+    injection that FAILS was not sent — retry is safe, nothing is audited.
+    The crash window between persist-intent and the send cannot be closed:
+    recovery assumes sent, never re-sends.
 - The GUI design reference (mock, same UI with fake data) lives in `gui/index.html`.
 
 ### WKWebView / Tauri gotchas (each cost a real bug)

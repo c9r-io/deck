@@ -63,9 +63,13 @@ wraps midnight, so night-only works too). Rules keep firing until you pause
 at a set time. Outside the window a rule sleeps and resumes by itself.
 
 **Delivery you can reason about.** One prompt per session at a time, at least
-a minute apart; different sessions run independently. Delivery is
-*at-most-once*: if deck crashes mid-send, the prompt is treated as sent on
-restart rather than ever risking a duplicate. If a step permanently fails to
+a minute apart; different sessions run independently (a session that needs a
+2.5 s boot never delays another session's prompt). Delivery is
+*at-most-once*: the text and its Enter go in as one atomic tmux command, and
+if deck crashes mid-send, the prompt is treated as sent on restart rather
+than ever risking a duplicate. While a prompt is mid-send (a window of
+seconds), editing/pausing/removing it is refused with a clear message
+instead of racing the delivery. If a step permanently fails to
 send (its session can't start, say), the later steps of its group **wait** —
 the queue shows ⚠ with retry ↻ and skip ⏭ buttons, and nothing runs past a
 failed step until you decide.
@@ -98,9 +102,15 @@ waiting for you. Memory chips show the *whole process tree* of a session
 
 Everything lives in `~/.deck/` as plain JSON you can inspect or edit:
 `deck.json` (boards & cards) · `queue.json` (scheduled prompts, incl. a
-short delivery audit) · `history.json` (command history; readable only by
-you, wipeable from Settings) · `settings.json` · `app.log` (diagnostics —
-event codes and counts only, never what you type).
+short delivery audit) · `history.json` (command history; wipeable from
+Settings) · `settings.json` · `app.log` (diagnostics — event codes and
+counts only, never what you type; errors appear as categories, never as
+raw paths).
+
+The whole directory is readable only by you: `~/.deck` is 0700 and every
+file — including backups, quarantined corrupt files, logs and exports — is
+created 0600 from its first byte; deck re-restricts anything an older
+version left more open at every launch.
 
 Every file keeps a `.bak` of its previous good version. If a file is
 damaged, deck sets the damaged bytes aside as `<file>.corrupt-<timestamp>`,
