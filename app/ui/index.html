@@ -320,13 +320,9 @@
     border: 1px solid var(--accent-dim); cursor: pointer;
   }
   .scrollchip:hover { background: rgba(79, 214, 190, 0.22); }
-  .spane-head .px, .spane-head .cbtn { flex: none; color: transparent; padding: 0 5px; border-radius: 4px; font-size: 12px; }
-  .spane:hover .spane-head .px, .spane:hover .spane-head .cbtn { color: var(--faint); }
-  /* the copy affordance stays visible in the focused pane — it is the answer
-     to "I can't select more than one screen" and must be findable */
-  .spane.focus .spane-head .cbtn { color: var(--faint); }
+  .spane-head .px { flex: none; color: transparent; padding: 0 5px; border-radius: 4px; font-size: 12px; }
+  .spane:hover .spane-head .px { color: var(--faint); }
   .spane-head .px:hover { color: var(--danger) !important; background: var(--hover); }
-  .spane-head .cbtn:hover { color: var(--accent) !important; background: var(--hover); }
   .spane.file-drop { box-shadow: inset 0 0 0 2px var(--accent); }
   .spane-body { flex: 1; min-height: 0; position: relative; overflow: hidden; padding: 8px 6px 8px 12px; }
   .spane-body .xterm { height: 100%; }
@@ -519,36 +515,6 @@
   #cfm-msg { font-size: 13px; line-height: 1.5; margin-bottom: 16px; }
   .cfm-actions { display: flex; gap: 8px; justify-content: flex-end; }
 
-  /* ---------- copy panel (the pane's scrollback as selectable text) ----------
-     A terminal selection can only ever cover ONE screen — tmux owns the
-     history and repaints in place — so copying a long answer happens here,
-     where the text scrolls and selects like any document. */
-  #copybox {
-    position: fixed; inset: 0; z-index: 72; display: none;
-    background: rgba(8, 10, 13, 0.6);
-    align-items: center; justify-content: center;
-  }
-  #cb-box {
-    width: min(980px, calc(100vw - 64px)); height: min(76vh, calc(100vh - 96px));
-    display: flex; flex-direction: column;
-    background: var(--panel); border: 1px solid var(--border);
-    border-radius: 12px; box-shadow: 0 16px 48px rgba(0, 0, 0, 0.55);
-  }
-  #cb-head {
-    display: flex; align-items: center; gap: 10px; flex: none;
-    padding: 10px 14px; border-bottom: 1px solid var(--border-soft);
-  }
-  #cb-title { font-size: 12.5px; font-weight: 600; }
-  #cb-hint { font-size: 11px; color: var(--faint); margin-right: auto; }
-  #cb-body {
-    flex: 1; min-height: 0; overflow: auto; margin: 0;
-    padding: 12px 14px; background: var(--bg);
-    border-radius: 0 0 12px 12px;
-    font-family: var(--mono); font-size: 12px; line-height: 1.55;
-    color: var(--text); white-space: pre; overflow-wrap: normal;
-    user-select: text; -webkit-user-select: text;
-  }
-  #cb-body::selection { background: rgba(79, 214, 190, 0.3); }
   #settings-modal {
     position: fixed; inset: 0; z-index: 70; display: none;
     background: rgba(8, 10, 13, 0.55);
@@ -727,17 +693,6 @@
       <button class="btn" id="ppd-no">Cancel</button>
       <button class="btn primary" id="ppd-yes">Save</button>
     </div>
-  </div>
-</div>
-<div id="copybox">
-  <div id="cb-box">
-    <div id="cb-head">
-      <span id="cb-title"></span>
-      <span id="cb-hint">drag to select (it scrolls) · ⌘C copies the selection · Esc closes</span>
-      <button class="btn" id="cb-all">Copy all</button>
-      <button class="btn" id="cb-close">Close</button>
-    </div>
-    <pre id="cb-body"></pre>
   </div>
 </div>
 <div id="cfm">

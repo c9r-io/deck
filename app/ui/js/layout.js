@@ -3,9 +3,10 @@
 import { $, DOT_TITLES, duev, inv, listen, setMemChip, state, store, uev } from './state.js';
 import { inlineRename, toast } from './dialogs.js';
 import { TERM_THEME, panes, pollNow, provider, render, renderSidebar, activeProject } from './board.js';
-import { SHELL_FG, acceptGhost, feedMirror, maybeRecordCommand, mountQuickBar, nextShellTitle, openCopyPanel, renderSuggest, resetSuggest, showLinkCtx, updateGhost, writeClipboard } from './terminal.js';
+import { SHELL_FG, acceptGhost, feedMirror, maybeRecordCommand, mountQuickBar, nextShellTitle, renderSuggest, resetSuggest, showLinkCtx, updateGhost, writeClipboard } from './terminal.js';
 import { shQuote } from './pure.js';
 import { toggleQueuePanel } from './scheduler.js';
+import { cancelAllTerminalSelections, cancelTerminalSelection, copyTerminalSelection, hasTerminalSelection, wireTerminalSelection } from './selection.js';
 
 /* ----- layout tree helpers ----- */
 export const leafOf = sid => ({ type: 'leaf', sid });
@@ -104,7 +105,7 @@ export function createPane(card) {
   const el = document.createElement('div');
   el.className = 'spane';
   el.innerHTML = `
-    <div class="spane-head"><span class="dot ${card.status}"></span><span class="name"></span><span class="hspace"></span><button class="cbtn" title="Copy output — the whole scrollback as selectable text (⌘⇧C)">⧉</button><button class="px" title="Close pane (session keeps running)">✕</button></div>
+    <div class="spane-head"><span class="dot ${card.status}"></span><span class="name"></span><span class="hspace"></span><button class="px" title="Close pane (session keeps running)">✕</button></div>
     <div class="spane-body"></div>`;
   el.querySelector('.name').textContent = card.title;
   const body = el.querySelector('.spane-body');
@@ -134,6 +135,12 @@ export function createPane(card) {
   }
   /* echo arrives asynchronously — reposition after each parsed write */
   const pane = { sid: card.id, session, el, body, term: t, fit, seps: [] };
+  wireTerminalSelection(pane, active => {
+    const current = provider.get(pane.sid);
+    if (!current) return;
+    current.scrolled = active;
+    updatePaneChrome(current);
+  });
 
   t.onWriteParsed(() => {
     if (ghostRemainder && attachedName === session) updateGhost();
@@ -153,10 +160,6 @@ export function createPane(card) {
   el.querySelector('.px').onclick = e => {
     e.stopPropagation();
     closePaneBySid(pane.sid);
-  };
-  el.querySelector('.cbtn').onclick = e => {
-    e.stopPropagation();
-    openCopyPanel(session, card.title);
   };
   body.addEventListener('mousedown', () => { if (attachedName !== session) focusPane(session); });
 
@@ -346,6 +349,9 @@ export function wireTerminalInput(pane, term, host) {
     const doWrite = bytes => inv('pty_write', { name: session, dataB64: strToB64(bytes) })
       .catch(() => uev('pty-write-fail'));
     const cc = card();
+    if (!isAutoReply && hasTerminalSelection(pane)) {
+      pane.liveQ = cancelTerminalSelection(pane);
+    }
     if (!isAutoReply && cc && cc.scrolled) {
       pane.liveQ = goLive(session);
     }
@@ -372,12 +378,17 @@ export function wireTerminalInput(pane, term, host) {
        PTY. (navigator.clipboard.readText is permission-blocked in WKWebView —
        the native paste event is the reliable path.) */
     if (e.type === 'keydown' && e.metaKey && e.key === 'v') return false;
-    /* ⌘⇧C opens the copy panel (a terminal selection can only reach ONE
-       screen); handled here so xterm never swallows the chord */
-    if (e.type === 'keydown' && e.metaKey && e.shiftKey && (e.key === 'c' || e.key === 'C')) {
+    if (e.type === 'keydown' && e.key === 'Escape' && hasTerminalSelection(pane)) {
       e.preventDefault();
-      const c = card();
-      openCopyPanel(session, c ? c.title : '');
+      cancelTerminalSelection(pane);
+      return false;
+    }
+    if (e.type === 'keydown' && e.metaKey && e.key.toLowerCase() === 'c'
+        && hasTerminalSelection(pane)) {
+      e.preventDefault();
+      copyTerminalSelection(pane)
+        .then(text => text == null ? null : writeClipboard(text))
+        .catch(() => toast('copy failed — clipboard was not changed'));
       return false;
     }
     if (e.type === 'keydown' && e.metaKey && e.key === 'c' && term.hasSelection()) {
@@ -406,18 +417,6 @@ export function wireTerminalInput(pane, term, host) {
       return false;
     }
     return true;
-  });
-
-  /* The wall the copy panel exists for: a selection dragged to the top of
-     the pane cannot go any further — the rows above it live in tmux's
-     scrollback, not in this frame — so the gesture silently stops instead
-     of scrolling. Name the way out, once per run, exactly when it bites. */
-  term.onSelectionChange(() => {
-    if (copyHintShown || attachedName !== session || !term.hasSelection()) return;
-    const pos = term.getSelectionPosition && term.getSelectionPosition();
-    if (!pos || pos.start.y > term.buffer.active.viewportY) return;
-    copyHintShown = true;
-    toast('a selection stops at the top of the pane — ⧉ (⌘⇧C) opens the whole output, scrollable and selectable');
   });
 
   /* clickable paths and URLs in terminal output */
@@ -495,6 +494,7 @@ export function fitAll() {
       try {
         p.fit.fit();
         inv('pty_resize', { name: p.session, cols: p.term.cols, rows: p.term.rows }).catch(() => {});
+        if (p.selection) p.selection.resize();
       } catch (e) { /* pane mid-teardown */ }
     });
     if (ghostRemainder) updateGhost();
@@ -571,7 +571,7 @@ export function updatePaneChrome(card) {
       chip.textContent = '⤓ scrollback';
       chip.title = 'view is frozen in scrollback — click, type, or scroll to the bottom to go live';
       chip.onclick = e => { e.stopPropagation(); goLive(card.session); };
-      p.el.querySelector('.spane-head .cbtn').before(chip);
+      p.el.querySelector('.spane-head .px').before(chip);
     }
   } else if (chip) {
     chip.remove();
@@ -584,6 +584,7 @@ export function goLive(session) {
   const p = panes.get(session);
   const c = p && provider.get(p.sid);
   if (c && c.scrolled) { c.scrolled = false; updatePaneChrome(c); }
+  if (p && hasTerminalSelection(p)) return cancelTerminalSelection(p);
   return inv('scroll_bottom', { name: session }).catch(() => {});
 }
 
@@ -591,12 +592,14 @@ export function focusPane(session) {
   const p = panes.get(session);
   if (!p) return;
   const changed = attachedName !== session;
+  const previous = changed && attachedName ? panes.get(attachedName) : null;
+  if (previous && hasTerminalSelection(previous)) cancelTerminalSelection(previous);
   attachedName = session;
   term = p.term;
   panes.forEach(q => q.el.classList.toggle('focus', q === p));
   state.sessionId = p.sid;
-  if (changed) resetSuggest();
-  mountQuickBar(p);
+  if (changed) resetSuggest(p);
+  else mountQuickBar(p);
   if (ghostEl && ghostEl.parentElement !== p.body) p.body.appendChild(ghostEl);
   renderSessionView();
   renderSidebar();
@@ -654,6 +657,8 @@ export async function addSplit(targetSid, dir, before, newSid) {
 export function closePaneBySid(sid, opts = {}) {
   const entry = [...panes.values()].find(p => p.sid === sid);
   if (!entry) return;
+  if ($('quick-bar').closest('.spane') === entry.el) resetSuggest();
+  if (entry.selection) entry.selection.dispose();
   if (opts.detach !== false) inv('detach_session', { name: entry.session }).catch(() => {});
   try { entry.term.dispose(); } catch (e) { /* already gone */ }
   const quickBar = $('quick-bar');
@@ -741,7 +746,9 @@ listen('pty-data', ev => {
   }
 }).catch(() => uev('listen-fail', 'pty-data'));
 listen('pty-exit', ev => {
-  if (panes.has(ev.payload.name)) {
+  const pane = panes.get(ev.payload.name);
+  if (pane) {
+    cancelTerminalSelection(pane);
     toast('session ended');
     pollNow();
   }
@@ -777,11 +784,13 @@ export async function openSession(sid) {
 }
 
 export function leaveSessionView() {
-  resetSuggest();
+  cancelAllTerminalSelections();
+  resetSuggest(null);
   toggleQueuePanel(false);
   const quickBar = $('quick-bar');
   if (quickBar && quickBar.closest('.spane')) $('session-view').appendChild(quickBar);
   panes.forEach(p => {
+    if (p.selection) p.selection.dispose();
     inv('detach_session', { name: p.session }).catch(() => {});
     try { p.term.dispose(); } catch (e) { /* fine */ }
     p.el.remove();

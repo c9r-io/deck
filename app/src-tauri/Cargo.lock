@@ -519,7 +519,7 @@ dependencies = [
 
 [[package]]
 name = "deck-app"
-version = "0.4.31"
+version = "0.4.32"
 dependencies = [
  "base64 0.22.1",
  "dirs 5.0.1",
@@ -531,6 +531,8 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-process",
  "tauri-plugin-updater",
+ "unicode-segmentation",
+ "unicode-width",
 ]
 
 [[package]]
@@ -4238,6 +4240,12 @@ name = "unicode-segmentation"
 version = "1.13.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c6f5d3c3b1bf09027a88a6bc961fc00497d651009560b5463668dc81b0fa87a8"
+
+[[package]]
+name = "unicode-width"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b4ac048d71ede7ee76d585517add45da530660ef4390e49b098733c6e897f254"
 
 [[package]]
 name = "untrusted"

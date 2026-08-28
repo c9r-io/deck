@@ -38,8 +38,11 @@ is exactly where you left it. Closing a card (corner ✕, or Ctrl+D in the
 shell) is the only way a session ends.
 
 **A real terminal.** Full xterm with truecolor, ⌘C/⌘V, and clickable file
-paths / URLs. A path can open in the editor, reveal in Finder, open its parent
-in the configured editor, or start a new session in that parent directory.
+paths / URLs. Drag directly over terminal cells; holding at either vertical
+edge continuously extends the same selection through tmux history, including
+reverse shrinking across screens. A path can open in the editor, reveal in
+Finder, open its parent in the configured editor, or start a new session in
+that parent directory.
 
 **Split view.** Watch several agents at once: drag a card from the sidebar
 onto a pane edge, or hit ⌘D / ⌘⇧D (or the ◧ ⬓ buttons) and pick a session.
@@ -100,7 +103,7 @@ waiting for you. Memory chips show the *whole process tree* of a session
 | Enter / leave a session | click card · back button (shows the board name) or Esc |
 | Move cards | drag & drop (or the board dropdown inside a session) |
 | Close | card ✕ / Ctrl+D in shell (instant) · in-session Close (confirms) |
-| Copy long output | ⧉ in the pane header · ⌘⇧C · right-click card → Copy output… |
+| Copy terminal text | drag directly in the terminal (hold at an edge to cross screens) · ⌘C |
 | Rename / describe | double-click titles · right-click card |
 | Split view | drag a card onto a pane edge · ⌘D right / ⌘⇧D down |
 | Schedule prompts | ⏱ in the session header; 📋 for templates |
@@ -130,12 +133,15 @@ data with an empty default. A file written by a NEWER deck (or one whose
 version header deck cannot read) is left byte-for-byte alone instead of
 being overwritten.
 
-The long-output copy panel captures up to the newest 20,000 terminal rows,
-preserves Unicode and blank lines, and says explicitly when that cap truncated
-older output. `Copy all` uses the native macOS clipboard path and reports
-success only after the write actually completes; ⌘C copies only the selection.
-Dragging a selection against either vertical edge continuously scrolls the
-document, including output far outside the initially visible viewport.
+Terminal selection is tmux-owned: tmux copy-mode holds the anchor, active
+endpoint, scroll position, wrapping semantics and visible highlight while xterm
+renders the repainted frame. Holding a drag at the pane's top or bottom edge
+continuously crosses screens without leaving the terminal. ⌘C copies only the
+highlighted logical text; with no selection it leaves the clipboard untouched.
+Hard newlines and real blank lines are retained, soft wraps are rejoined, and
+ANSI drawing sequences are excluded. Each pane keeps a 50,000-row tmux history;
+deck reports when that reachable history limit is hit and refuses a clipboard
+payload above 64 MiB instead of silently truncating the highlighted selection.
 
 Closing a card — or deleting a project, or letting its shell exit —
 permanently cancels every scheduled prompt for that session, and the card

@@ -10,7 +10,7 @@ use tauri::{AppHandle, Emitter};
 use crate::storage;
 use crate::storage::{applog, now_epoch};
 use crate::tmux::{
-    expand_tilde, init_deck_server, pane_target, session_target, tmux, tmux_bin,
+    expand_tilde, init_deck_server, pane_target, session_target, tmux, tmux_bin, tmux_owned,
     validate_session_name,
 };
 
@@ -93,10 +93,17 @@ const KEY_CLASSES: &[&str] = &[
 const FG_CLASSES: &[&str] = &["no-card", "no-fg", "agent", "editor", "repl", "other"];
 const SMOKE_CHECKS: &[&str] = &[
     "rename",
-    "copy-down",
-    "copy-up",
-    "copy-selection",
-    "copy-all",
+    "selection-up",
+    "selection-markers",
+    "selection-live",
+    "selection-reverse",
+    "selection-down",
+    "selection-cancel",
+    "selection-split",
+    "selection-detach",
+    "selection-clipboard",
+    "selection-owner",
+    "selection-gestures",
     "path-menu",
     "path-editor",
     "path-session-relative",
@@ -110,6 +117,10 @@ const SMOKE_CHECKS: &[&str] = &[
     "completion-long",
     "completion-hidden",
     "board-concurrency",
+    "board-fault",
+    "natural-fault",
+    "completion-owner",
+    "ambiguous-boot",
     "rename-restart",
     "done",
 ];
@@ -520,6 +531,9 @@ pub(crate) fn save_validated<T: serde::de::DeserializeOwned>(
 
 #[tauri::command]
 pub(crate) fn save_board(data: String) -> Result<(), String> {
+    if crate::smoke_faults::take("board-save") {
+        return Err("injected board save failure".into());
+    }
     save_validated::<BoardDoc>(&board_path(), &data, "board")
 }
 
@@ -685,107 +699,335 @@ pub(crate) fn clear_history(name: String) {
     let _ = tmux(&["clear-history", "-t", &t]);
 }
 
-/// Ceiling on one scrollback capture. tmux keeps 50 000 lines per pane;
-/// this bounds one IPC payload while still covering any real "copy that
-/// long answer" case.
-const MAX_CAPTURE_LINES: u32 = 20_000;
-
-#[derive(Debug, PartialEq)]
-pub(crate) struct CaptureWindow {
-    start: i64,
-    captured_rows: u32,
-    truncated: bool,
-}
-
-pub(crate) fn capture_window(history: u32, pane_height: u32, requested: u32) -> CaptureWindow {
-    let limit = requested.clamp(1, MAX_CAPTURE_LINES);
-    let total = history.saturating_add(pane_height);
-    let captured_rows = total.min(limit);
-    let history_rows = captured_rows.saturating_sub(pane_height.min(captured_rows));
-    let start = if captured_rows < pane_height {
-        (pane_height - captured_rows) as i64
-    } else {
-        -(history_rows as i64)
-    };
-    CaptureWindow {
-        start,
-        captured_rows,
-        truncated: total > limit,
-    }
-}
-
-fn parse_capture_meta(meta: &str) -> Option<(u32, u32)> {
-    let mut fields = meta.trim().split('\t');
-    Some((fields.next()?.parse().ok()?, fields.next()?.parse().ok()?))
-}
-
-#[derive(Serialize)]
-pub(crate) struct ScrollbackCapture {
-    text: String,
-    line_limit: u32,
-    captured_rows: u32,
+/// tmux copy-mode is the sole authority for cross-screen selection. The
+/// attached PTY repaints tmux's own highlighted frame into xterm; no second
+/// scrollback document or private xterm API is involved.
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct TerminalSelectionStatus {
+    active: bool,
+    selection_present: bool,
+    history_rows: u32,
+    history_limit: u32,
     pane_rows: u32,
-    truncated: bool,
+    pane_cols: u32,
+    scroll_position: u32,
+    cursor_row: u32,
+    cursor_col: u32,
+    absolute_row: u64,
+    at_top: bool,
+    at_bottom: bool,
+    history_at_limit: bool,
+    selection_start_row: u32,
+    selection_start_col: u32,
+    selection_end_row: u32,
+    selection_end_col: u32,
 }
 
-/// The pane's scrollback plus its current screen, as plain text.
-///
-/// The terminal itself can only ever SELECT what is on screen: tmux owns
-/// the history and repaints the same rows in place, so a mouse selection
-/// cannot be dragged past the top of the pane and a long answer could not
-/// be copied in one piece. Handing the TEXT to the UI is what makes that
-/// possible — the copy panel scrolls and selects like any document.
-/// `-J` rejoins lines tmux wrapped for display, so a copied path or URL
-/// comes back in one piece instead of broken at the pane width.
-#[tauri::command]
-pub(crate) fn capture_scrollback(name: String, lines: u32) -> Result<ScrollbackCapture, String> {
-    validate_session_name(&name)?;
-    let n = lines.clamp(1, MAX_CAPTURE_LINES);
-    let target = pane_target(&name);
-    let meta = tmux(&[
+fn parse_u32_or_zero(raw: Option<&str>) -> u32 {
+    raw.and_then(|s| s.parse().ok()).unwrap_or(0)
+}
+
+fn terminal_selection_status_for(target: &str) -> Result<TerminalSelectionStatus, String> {
+    let raw = tmux(&[
         "display-message",
         "-p",
         "-t",
-        &target,
-        "#{history_size}\t#{pane_height}",
-    ])
-    .map_err(|e| format!("scrollback capture failed ({})", storage::err_code(&e)))?;
-    let (history, pane_height) =
-        parse_capture_meta(&meta).ok_or("tmux returned invalid scrollback metadata")?;
-    let window = capture_window(history, pane_height, n);
-    let out = tmux(&[
+        target,
+        "#{pane_in_mode}\t#{selection_present}\t#{history_size}\t#{history_limit}\t#{pane_height}\t#{pane_width}\t#{scroll_position}\t#{copy_cursor_y}\t#{copy_cursor_x}\t#{selection_start_y}\t#{selection_start_x}\t#{selection_end_y}\t#{selection_end_x}",
+    ])?;
+    let mut f = raw.trim_end().split('\t');
+    let active = f.next() == Some("1");
+    let selection_present = f.next() == Some("1");
+    let history_rows = parse_u32_or_zero(f.next());
+    let history_limit = parse_u32_or_zero(f.next());
+    let pane_rows = parse_u32_or_zero(f.next());
+    let pane_cols = parse_u32_or_zero(f.next());
+    let scroll_position = parse_u32_or_zero(f.next());
+    let cursor_row = parse_u32_or_zero(f.next());
+    let cursor_col = parse_u32_or_zero(f.next());
+    let selection_start_row = parse_u32_or_zero(f.next());
+    let selection_start_col = parse_u32_or_zero(f.next());
+    let selection_end_row = parse_u32_or_zero(f.next());
+    let selection_end_col = parse_u32_or_zero(f.next());
+    if pane_rows == 0 || pane_cols == 0 {
+        return Err("tmux returned invalid terminal dimensions".into());
+    }
+    let visible_start = history_rows.saturating_sub(scroll_position) as u64;
+    let absolute_row = visible_start.saturating_add(cursor_row as u64);
+    let last_row = history_rows as u64 + pane_rows.saturating_sub(1) as u64;
+    Ok(TerminalSelectionStatus {
+        active,
+        selection_present,
+        history_rows,
+        history_limit,
+        pane_rows,
+        pane_cols,
+        scroll_position,
+        cursor_row,
+        cursor_col,
+        absolute_row,
+        at_top: absolute_row == 0,
+        at_bottom: absolute_row >= last_row,
+        history_at_limit: history_limit > 0 && history_rows >= history_limit,
+        selection_start_row,
+        selection_start_col,
+        selection_end_row,
+        selection_end_col,
+    })
+}
+
+fn push_tmux_command(batch: &mut Vec<String>, command: &[String]) {
+    if !batch.is_empty() {
+        batch.push(";".into());
+    }
+    batch.extend(command.iter().cloned());
+}
+
+fn push_copy_cursor(batch: &mut Vec<String>, target: &str, row: u32, horizontal_steps: u32) {
+    for action in ["top-line", "start-of-line"] {
+        push_tmux_command(
+            batch,
+            &[
+                "send-keys".into(),
+                "-t".into(),
+                target.into(),
+                "-X".into(),
+                action.into(),
+            ],
+        );
+    }
+    if row > 0 {
+        push_tmux_command(
+            batch,
+            &[
+                "send-keys".into(),
+                "-t".into(),
+                target.into(),
+                "-X".into(),
+                "-N".into(),
+                row.to_string(),
+                "cursor-down".into(),
+            ],
+        );
+    }
+    if horizontal_steps > 0 {
+        push_tmux_command(
+            batch,
+            &[
+                "send-keys".into(),
+                "-t".into(),
+                target.into(),
+                "-X".into(),
+                "-N".into(),
+                horizontal_steps.to_string(),
+                "cursor-right".into(),
+            ],
+        );
+    }
+}
+
+fn copy_cursor_steps(
+    target: &str,
+    scroll_position: u32,
+    row: u32,
+    col: u32,
+) -> Result<u32, String> {
+    let coord = row as i64 - scroll_position as i64;
+    let captured = tmux(&[
         "capture-pane",
         "-p",
         "-J",
         "-S",
-        &window.start.to_string(),
+        &coord.to_string(),
+        "-E",
+        &coord.to_string(),
         "-t",
-        &target,
-    ])
-    .map_err(|e| format!("scrollback capture failed ({})", storage::err_code(&e)))?;
-    // Output can continue while the two tmux commands run. Re-read metadata
-    // after capture so crossing the cap during this request cannot be falsely
-    // advertised as complete. A session that exits after a successful capture
-    // simply keeps the conservative pre-capture metadata.
-    let after = tmux(&[
-        "display-message",
-        "-p",
-        "-t",
-        &target,
-        "#{history_size}\t#{pane_height}",
-    ])
-    .ok()
-    .and_then(|meta| parse_capture_meta(&meta));
-    let after_window = after.map(|(h, p)| capture_window(h, p, n));
-    Ok(ScrollbackCapture {
-        text: out,
-        line_limit: n,
-        captured_rows: after_window
-            .as_ref()
-            .map(|w| w.captured_rows)
-            .unwrap_or(window.captured_rows),
-        pane_rows: after.map(|(_, p)| p).unwrap_or(pane_height),
-        truncated: window.truncated || after_window.is_some_and(|w| w.truncated),
+        target,
+    ])?;
+    let row_text = captured.strip_suffix('\n').unwrap_or(&captured);
+    Ok(crate::terminal_selection::cursor_steps_for_cell(
+        row_text, col,
+    ))
+}
+
+#[tauri::command]
+pub(crate) fn terminal_selection_start(
+    name: String,
+    anchor_row: u32,
+    anchor_col: u32,
+    active_row: u32,
+    active_col: u32,
+) -> Result<TerminalSelectionStatus, String> {
+    validate_session_name(&name)?;
+    let target = pane_target(&name);
+    let dims = terminal_selection_status_for(&target)?;
+    let clamp_row = |row: u32| row.min(dims.pane_rows.saturating_sub(1));
+    let clamp_col = |col: u32| col.min(dims.pane_cols.saturating_sub(1));
+    let anchor_row = clamp_row(anchor_row);
+    let anchor_col = clamp_col(anchor_col);
+    let active_row = clamp_row(active_row);
+    let active_col = clamp_col(active_col);
+    let anchor_steps = copy_cursor_steps(&target, dims.scroll_position, anchor_row, anchor_col)?;
+    let active_steps = copy_cursor_steps(&target, dims.scroll_position, active_row, active_col)?;
+    let mut batch = Vec::new();
+    // A wheel-scrolled pane is already in copy-mode at the user's chosen
+    // history position. Re-entering copy-mode here jumps it back to the live
+    // frame and makes a downward cross-screen drag impossible.
+    if !dims.active {
+        push_tmux_command(
+            &mut batch,
+            &["copy-mode".into(), "-H".into(), "-t".into(), target.clone()],
+        );
+    }
+    push_copy_cursor(&mut batch, &target, anchor_row, anchor_steps);
+    push_tmux_command(
+        &mut batch,
+        &[
+            "send-keys".into(),
+            "-t".into(),
+            target.clone(),
+            "-X".into(),
+            "begin-selection".into(),
+        ],
+    );
+    push_copy_cursor(&mut batch, &target, active_row, active_steps);
+    tmux_owned(&batch).map_err(|e| {
+        format!(
+            "terminal selection could not start ({})",
+            storage::err_code(&e)
+        )
+    })?;
+    terminal_selection_status_for(&target)
+}
+
+#[tauri::command]
+pub(crate) fn terminal_selection_update(
+    name: String,
+    row: u32,
+    col: u32,
+    edge_lines: i32,
+) -> Result<TerminalSelectionStatus, String> {
+    validate_session_name(&name)?;
+    let target = pane_target(&name);
+    let before = terminal_selection_status_for(&target)?;
+    if !before.active || !before.selection_present {
+        return Err("terminal selection is no longer active".into());
+    }
+    let row = row.min(before.pane_rows.saturating_sub(1));
+    let col = col.min(before.pane_cols.saturating_sub(1));
+    let horizontal_steps = copy_cursor_steps(&target, before.scroll_position, row, col)?;
+    let mut batch = Vec::new();
+    push_copy_cursor(&mut batch, &target, row, horizontal_steps);
+    if edge_lines != 0 {
+        push_tmux_command(
+            &mut batch,
+            &[
+                "send-keys".into(),
+                "-t".into(),
+                target.clone(),
+                "-X".into(),
+                "-N".into(),
+                edge_lines.unsigned_abs().clamp(1, 8).to_string(),
+                if edge_lines < 0 {
+                    "cursor-up".into()
+                } else {
+                    "cursor-down".into()
+                },
+            ],
+        );
+    }
+    tmux_owned(&batch).map_err(|e| {
+        format!(
+            "terminal selection could not move ({})",
+            storage::err_code(&e)
+        )
+    })?;
+    terminal_selection_status_for(&target)
+}
+
+const MAX_TERMINAL_SELECTION_BYTES: u64 = 64 * 1024 * 1024;
+
+#[derive(Serialize)]
+pub(crate) struct TerminalSelectionCopy {
+    text: String,
+    bytes: u64,
+    history_limit: u32,
+}
+
+#[tauri::command]
+pub(crate) fn terminal_selection_copy(
+    name: String,
+    token: u64,
+) -> Result<TerminalSelectionCopy, String> {
+    validate_session_name(&name)?;
+    let target = pane_target(&name);
+    let status = terminal_selection_status_for(&target)?;
+    if !status.active || !status.selection_present {
+        return Err("there is no terminal selection".into());
+    }
+    let _ = token; // request correlation is enforced by the frontend generation.
+    let point = |row: u32, col: u32| crate::terminal_selection::SelectionPoint {
+        row: row as i64 - status.history_rows as i64,
+        col,
+    };
+    let text = crate::terminal_selection::extract_terminal_selection(
+        point(status.selection_start_row, status.selection_start_col),
+        point(status.selection_end_row, status.selection_end_col),
+        |start, end| {
+            tmux(&[
+                "capture-pane",
+                "-p",
+                "-J",
+                "-S",
+                &start.to_string(),
+                "-E",
+                &end.to_string(),
+                "-t",
+                &target,
+            ])
+        },
+    )?;
+    let bytes = text.len() as u64;
+    if bytes > MAX_TERMINAL_SELECTION_BYTES {
+        return Err(
+            "terminal selection exceeds the 64 MiB clipboard limit; narrow the selection".into(),
+        );
+    }
+    Ok(TerminalSelectionCopy {
+        text,
+        bytes,
+        history_limit: status.history_limit,
+    })
+}
+
+#[tauri::command]
+pub(crate) fn terminal_selection_cancel(name: String) -> Result<(), String> {
+    validate_session_name(&name)?;
+    let _ = tmux(&["send-keys", "-t", &pane_target(&name), "-X", "cancel"]);
+    Ok(())
+}
+
+#[derive(Serialize)]
+pub(crate) struct TerminalMetrics {
+    history_rows: u32,
+    history_limit: u32,
+    pane_rows: u32,
+    pane_cols: u32,
+    in_copy_mode: bool,
+    scroll_position: u32,
+}
+
+#[tauri::command]
+pub(crate) fn terminal_metrics(name: String) -> Result<TerminalMetrics, String> {
+    validate_session_name(&name)?;
+    let status = terminal_selection_status_for(&pane_target(&name))?;
+    Ok(TerminalMetrics {
+        history_rows: status.history_rows,
+        history_limit: status.history_limit,
+        pane_rows: status.pane_rows,
+        pane_cols: status.pane_cols,
+        in_copy_mode: status.active,
+        scroll_position: status.scroll_position,
     })
 }
 
@@ -1269,36 +1511,6 @@ mod tests {
         let t = parse_tail_batches(&format!("noise\n{TAIL_MARK}a\nx\n"), 2);
         assert_eq!(t.len(), 1);
         assert_eq!(t["a"], vec!["x"]);
-    }
-
-    #[test]
-    fn capture_limit_uses_tmux_metadata_not_returned_line_count() {
-        assert_eq!(parse_capture_meta("123\t45\n"), Some((123, 45)));
-        assert_eq!(parse_capture_meta("bad\t45"), None);
-        assert_eq!(
-            capture_window(30_000, 40, 20_000),
-            CaptureWindow {
-                start: -19_960,
-                captured_rows: 20_000,
-                truncated: true,
-            }
-        );
-        assert_eq!(
-            capture_window(50, 20, 20_000),
-            CaptureWindow {
-                start: -50,
-                captured_rows: 70,
-                truncated: false,
-            }
-        );
-        assert_eq!(
-            capture_window(0, 24, 10),
-            CaptureWindow {
-                start: 14,
-                captured_rows: 10,
-                truncated: true,
-            }
-        );
     }
 
     #[test]

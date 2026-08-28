@@ -1,7 +1,7 @@
 // terminal.js — context menus & link opening, ghost completion, chrome wiring
 // Part of deck's no-build frontend: native ES modules, no bundler.
 import { $, duev, inv, state, uev } from './state.js';
-import { copyExact, copyShortcutAction, createSelectionAutoScroller, latestRequestGuard, linkMenuItems } from './pure.js';
+import { copyExact, linkMenuItems } from './pure.js';
 import { confirmDialog, inlineRename, toast, promptDialog } from './dialogs.js';
 import { closeSession, panes, provider, renameTab, render, switchProject, activeProject } from './board.js';
 import { backToBoard, openSession, strToB64 } from './layout.js';
@@ -61,7 +61,6 @@ export function showSessionCtx(e, sid) {
     <button data-a="rename">Rename card</button>
     <button data-a="desc">${s.desc ? 'Edit' : 'Add'} description</button>
     <button data-a="here">New session in this directory</button>
-    <button data-a="copy">Copy output…</button>
     <hr>
     <button data-a="close" class="danger">Close session</button>`;
   ctx.onclick = ev => {
@@ -70,7 +69,6 @@ export function showSessionCtx(e, sid) {
     if (a === 'rename') renameCardInline(sid, renameHost);
     if (a === 'desc') editDescInline(sid);
     if (a === 'here') newSession(s.dir);
-    if (a === 'copy') openCopyPanel(s.session, s.title);
     if (a === 'close') closeSession(sid);
   };
   placeCtx(e);
@@ -349,43 +347,88 @@ export function acceptGhost() {
   renderSuggest();
 }
 
-let quickBarFitFrame = null;
+let quickBarFitFrames = [];
+let quickBarGeneration = 0;
 let quickBarHeight = 0;
 
-function refitQuickBarPane() {
-  if (quickBarFitFrame != null) window.cancelAnimationFrame(quickBarFitFrame);
-  quickBarFitFrame = requestAnimationFrame(() => {
-    quickBarFitFrame = null;
-    const pane = attachedName && panes.get(attachedName);
-    if (!pane) return;
-    const buf = pane.term.buffer.active;
-    const followedBottom = buf.viewportY >= buf.baseY;
-    try {
-      pane.fit.fit();
-      inv('pty_resize', { name: pane.session, cols: pane.term.cols, rows: pane.term.rows }).catch(() => {});
-      if (followedBottom) pane.term.scrollToBottom();
-    } catch (e) { /* pane was destroyed during the frame */ }
+function cancelQuickBarFrames() {
+  quickBarFitFrames.forEach(id => window.cancelAnimationFrame(id));
+  quickBarFitFrames = [];
+}
+
+function paneHoldingQuickBar() {
+  const bar = $('quick-bar');
+  const owner = bar.closest('.spane');
+  return owner ? [...panes.values()].find(p => p.el === owner) || null : null;
+}
+
+function refitQuickBarPane(pane, followedBottom, generation) {
+  if (!pane || generation !== quickBarGeneration || !pane.el.isConnected) return;
+  try {
+    pane.fit.fit();
+    inv('pty_resize', { name: pane.session, cols: pane.term.cols, rows: pane.term.rows }).catch(() => {});
+    if (followedBottom) pane.term.scrollToBottom();
+    if (pane.selection) pane.selection.resize();
+  } catch (e) { /* pane was destroyed during the frame */ }
+}
+
+function transitionQuickBar(pane, show) {
+  const bar = $('quick-bar');
+  const old = paneHoldingQuickBar();
+  const visible = bar.style.display === 'flex';
+  const ownerChanged = old !== pane;
+  const visibilityChanged = visible !== show;
+  if (!ownerChanged && !visibilityChanged) return quickBarGeneration;
+  cancelQuickBarFrames();
+  const generation = ++quickBarGeneration;
+  const oldFollowed = old && old.term.buffer.active.viewportY >= old.term.buffer.active.baseY;
+  const newFollowed = pane && pane.term.buffer.active.viewportY >= pane.term.buffer.active.baseY;
+
+  /* Explicit layout transaction:
+     old owner -> hidden/detached -> old refit -> new mount -> new refit. */
+  bar.style.display = 'none';
+  quickBarHeight = 0;
+  if (old) $('session-view').appendChild(bar);
+  const first = requestAnimationFrame(() => {
+    refitQuickBarPane(old, oldFollowed, generation);
+    if (generation !== quickBarGeneration) return;
+    if (pane && pane.el.isConnected) pane.el.appendChild(bar);
+    bar.style.display = show ? 'flex' : 'none';
+    const second = requestAnimationFrame(() => {
+      refitQuickBarPane(pane, newFollowed, generation);
+      if (!show || generation !== quickBarGeneration) return;
+      const height = bar.offsetHeight;
+      if (height !== quickBarHeight) {
+        quickBarHeight = height;
+        const third = requestAnimationFrame(() => refitQuickBarPane(pane, newFollowed, generation));
+        quickBarFitFrames.push(third);
+      }
+    });
+    quickBarFitFrames.push(second);
   });
+  quickBarFitFrames.push(first);
+  return generation;
 }
 
 export function mountQuickBar(pane) {
-  const bar = $('quick-bar');
-  if (pane && bar.parentElement !== pane.el) pane.el.appendChild(bar);
+  if (paneHoldingQuickBar() !== pane) transitionQuickBar(pane, false);
 }
 
-function showQuickBar(show) {
-  const bar = $('quick-bar');
-  const changed = (bar.style.display === 'flex') !== show;
-  bar.style.display = show ? 'flex' : 'none';
-  if (!show) quickBarHeight = 0;
-  if (changed) refitQuickBarPane();
-  if (show) requestAnimationFrame(() => {
-    const height = bar.offsetHeight;
-    if (height !== quickBarHeight) {
-      quickBarHeight = height;
-      if (!changed) refitQuickBarPane();
-    }
-  });
+function showQuickBar(show, pane = attachedName && panes.get(attachedName)) {
+  const generation = transitionQuickBar(pane || null, show);
+  if (show) {
+    const frame = requestAnimationFrame(() => {
+      if (generation !== quickBarGeneration) return;
+      const bar = $('quick-bar');
+      const height = bar.offsetHeight;
+      if (height !== quickBarHeight) {
+        quickBarHeight = height;
+        const followed = pane && pane.term.buffer.active.viewportY >= pane.term.buffer.active.baseY;
+        refitQuickBarPane(pane, followed, generation);
+      }
+    });
+    quickBarFitFrames.push(frame);
+  }
 }
 
 export function renderSuggest() {
@@ -394,7 +437,6 @@ export function renderSuggest() {
   const items = suggestions();
   if (!items.length) { showQuickBar(false); return; }
   const pane = attachedName && panes.get(attachedName);
-  if (pane) mountQuickBar(pane);
   const completing = lineBuf && lineBuf.length >= 2;
   bar.innerHTML = `<span class="qb-label">${completing ? 'tab ⇥' : 'recent'}</span>`;
   items.forEach((c, i) => {
@@ -412,80 +454,16 @@ export function renderSuggest() {
     b.onclick = () => acceptSuggestion(c);
     bar.appendChild(b);
   });
-  showQuickBar(true);
+  showQuickBar(true, pane);
 }
 
-export function resetSuggest() {
+export function resetSuggest(nextPane = null) {
   lineBuf = '';
   freshShell = false;
   ghostRemainder = '';
   clearTimeout(ghostTimer);
   if (ghostEl) ghostEl.style.display = 'none';
-  showQuickBar(false);
-}
-
-/* ---------- copy panel ----------
-   A selection inside the terminal can only ever cover ONE screen: tmux owns
-   the scrollback and repaints the same rows in place, so a drag cannot be
-   carried past the top of the pane and a long answer could not be copied in
-   one piece. The panel shows the pane's scrollback as plain text, where the
-   selection scrolls and ⌘C behaves like it does in any document. */
-const COPY_LINES = 20000;
-const copyRequests = latestRequestGuard();
-let copyAnchor = null;
-let copyPointerId = null;
-
-function copyCaretPoint(body, x, y) {
-  const rect = body.getBoundingClientRect();
-  const cx = Math.max(rect.left + 1, Math.min(rect.right - 1, x));
-  const cy = Math.max(rect.top + 1, Math.min(rect.bottom - 1, y));
-  if (document.caretPositionFromPoint) {
-    const p = document.caretPositionFromPoint(cx, cy);
-    if (p) return { node: p.offsetNode, offset: p.offset };
-  }
-  if (document.caretRangeFromPoint) {
-    const r = document.caretRangeFromPoint(cx, cy);
-    if (r) return { node: r.startContainer, offset: r.startOffset };
-  }
-  return null;
-}
-
-function extendCopySelection(point, rect) {
-  const body = $('cb-body');
-  if (!copyAnchor || !body.isConnected) return;
-  const focus = copyCaretPoint(
-    body,
-    point.x,
-    Math.max(rect.top + 1, Math.min(rect.bottom - 1, point.y)),
-  );
-  if (!focus || !body.contains(focus.node)) return;
-  const selection = window.getSelection();
-  if (selection && selection.setBaseAndExtent) {
-    selection.setBaseAndExtent(copyAnchor.node, copyAnchor.offset, focus.node, focus.offset);
-  }
-}
-
-const copyAutoScroller = createSelectionAutoScroller({
-  frame: cb => requestAnimationFrame(cb),
-  cancelFrame: id => window.cancelAnimationFrame(id),
-  measure: () => $('cb-body').getBoundingClientRect(),
-  scrollBy: dy => {
-    const body = $('cb-body');
-    const before = body.scrollTop;
-    body.scrollTop = Math.max(0, Math.min(body.scrollHeight - body.clientHeight, before + dy));
-    return body.scrollTop !== before;
-  },
-  extend: extendCopySelection,
-});
-
-function stopCopySelection() {
-  copyAutoScroller.stop();
-  const body = $('cb-body');
-  if (copyPointerId != null && body.releasePointerCapture) {
-    try { body.releasePointerCapture(copyPointerId); } catch (e) { /* already released */ }
-  }
-  copyPointerId = null;
-  copyAnchor = null;
+  showQuickBar(false, nextPane);
 }
 
 export async function writeClipboard(text) {
@@ -495,98 +473,6 @@ export async function writeClipboard(text) {
     if (!navigator.clipboard || !navigator.clipboard.writeText) throw nativeError;
     return copyExact(text, value => navigator.clipboard.writeText(value));
   }
-}
-
-export async function openCopyPanel(session, title) {
-  const request = copyRequests.begin();
-  const box = $('copybox');
-  const body = $('cb-body');
-  $('cb-title').textContent = title ? `Output — ${title}` : 'Output';
-  body.textContent = 'reading the scrollback…';
-  $('cb-all').textContent = 'Copy all';
-  $('cb-all').disabled = true;
-  $('cb-all').onclick = null;
-  box.style.display = 'flex';
-  let capture;
-  try {
-    capture = await inv('capture_scrollback', { name: session, lines: COPY_LINES });
-  } catch (e) {
-    if (!copyRequests.isCurrent(request)) return;
-    body.textContent = 'could not read this session’s output: ' + e;
-    $('cb-all').textContent = 'Retry';
-    $('cb-all').disabled = false;
-    $('cb-all').onclick = () => openCopyPanel(session, title);
-    return;
-  }
-  if (!copyRequests.isCurrent(request)) return;
-  const text = capture.text;
-  body.textContent = text;
-  const n = capture.captured_rows;
-  $('cb-title').textContent = (title ? `Output — ${title}` : 'Output') +
-    `  ·  ${n} terminal row${n === 1 ? '' : 's'}` +
-    (capture.truncated ? ` · newest ${capture.line_limit.toLocaleString()} terminal rows only` : '');
-  body.scrollTop = body.scrollHeight;   // the newest output is what you came for
-  $('cb-all').textContent = 'Copy all';
-  $('cb-all').disabled = false;
-  $('cb-all').onclick = async () => {
-    try {
-      await writeClipboard(text);
-      toast(capture.truncated
-        ? `copied newest ${capture.line_limit.toLocaleString()} terminal rows only`
-        : `copied ${n} terminal row${n === 1 ? '' : 's'}`);
-    } catch (e) {
-      toast('copy failed — clipboard was not changed');
-    }
-  };
-}
-
-export function closeCopyPanel() {
-  stopCopySelection();
-  copyRequests.cancel();
-  $('copybox').style.display = 'none';
-}
-export const copyPanelOpen = () => $('copybox').style.display === 'flex';
-
-$('cb-close').onclick = closeCopyPanel;
-$('cb-body').addEventListener('pointerdown', e => {
-  if (e.button !== 0) return;
-  const body = $('cb-body');
-  const anchor = copyCaretPoint(body, e.clientX, e.clientY);
-  if (!anchor || !body.contains(anchor.node)) return;
-  e.preventDefault();
-  e.stopPropagation();
-  stopCopySelection();
-  copyAnchor = anchor;
-  copyPointerId = e.pointerId;
-  if (body.setPointerCapture) {
-    try { body.setPointerCapture(e.pointerId); } catch (err) { /* document listeners still work */ }
-  }
-  const selection = window.getSelection();
-  if (selection && selection.setBaseAndExtent) {
-    selection.setBaseAndExtent(anchor.node, anchor.offset, anchor.node, anchor.offset);
-  }
-  copyAutoScroller.start({ x: e.clientX, y: e.clientY });
-});
-document.addEventListener('pointermove', e => {
-  if (!copyAutoScroller.active() || (copyPointerId != null && e.pointerId !== copyPointerId)) return;
-  e.preventDefault();
-  copyAutoScroller.move({ x: e.clientX, y: e.clientY });
-}, true);
-document.addEventListener('pointerup', e => {
-  if (copyPointerId == null || e.pointerId === copyPointerId) stopCopySelection();
-}, true);
-document.addEventListener('pointercancel', stopCopySelection, true);
-window.addEventListener('blur', stopCopySelection);
-$('copybox').addEventListener('mousedown', e => {
-  if (e.target === $('copybox')) closeCopyPanel();   // click the backdrop
-});
-
-/* the focused pane's output, from anywhere in the session view */
-export function copyFocusedPaneOutput() {
-  if (!attachedName) return;
-  const p = panes.get(attachedName);
-  const c = p && provider.get(p.sid);
-  openCopyPanel(attachedName, c ? c.title : '');
 }
 
 /* ---------- chrome wiring ---------- */
@@ -609,31 +495,7 @@ $('sess-col').addEventListener('change', async e => {
 });
 document.addEventListener('keydown', e => {
   if ((e.metaKey || e.ctrlKey) && e.key === 'b') { e.preventDefault(); toggleSidebar(); return; }
-  const selection = window.getSelection && window.getSelection();
-  const rangeNode = selection && selection.rangeCount ? selection.getRangeAt(0).commonAncestorContainer : null;
-  const selectionHost = rangeNode && (rangeNode.nodeType === 3 ? rangeNode.parentElement : rangeNode);
-  const selected = selectionHost && $('cb-body').contains(selectionHost) ? selection.toString() : '';
-  const copyAction = copyShortcutAction({
-    metaKey: e.metaKey, shiftKey: e.shiftKey, key: e.key,
-    panelOpen: copyPanelOpen(), sessionView: state.view === 'session', hasSelection: !!selected,
-  });
-  if (copyAction === 'copy-panel-selection') {
-    e.preventDefault();
-    e.stopPropagation();
-    writeClipboard(selected).then(
-      () => toast('copied selection'),
-      () => toast('copy failed — clipboard was not changed'),
-    );
-    return;
-  }
-  if (copyAction === 'none') { e.preventDefault(); return; }
-  if (copyAction === 'open-copy-panel') {
-    e.preventDefault();
-    copyFocusedPaneOutput();
-    return;
-  }
   if (e.key === 'Escape') {
-    if (copyPanelOpen()) { closeCopyPanel(); return; }
     if ($('ctx').style.display === 'block') { $('ctx').style.display = 'none'; return; }
     /* Esc inside the terminal belongs to the terminal (agents use it) */
     if (state.view === 'session' && !(document.activeElement && document.activeElement.closest('#terminal'))) {

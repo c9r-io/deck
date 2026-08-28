@@ -9,8 +9,7 @@ import {
   nextFire, groupQueue, groupSteps, itemDead, blockedBy,
   chainQuietHint, CHAIN_QUIET_SECS, shQuote, quickBarLayout, rectsOverlap,
   createExitRetirementTracker, createSerialTransactionQueue, deleteSessionsTransaction, sidebarGroups,
-  copyExact, copyShortcutAction, latestRequestGuard,
-  createSelectionAutoScroller, selectionAutoScrollSpeed,
+  copyExact, createTerminalSelectionModel, terminalSelectionEdgeLines,
   linkMenuItems,
   inlineRenameValue, persistOptimistically,
 } from '../js/pure.js';
@@ -313,47 +312,88 @@ test('natural shell exit keeps the pane/card on failures, retries, and never spa
   assert.equal(tracker.pending('a'), false);
 });
 
-test('copy selection auto-scroll is bidirectional, progressive, and cleans up', () => {
-  assert.equal(selectionAutoScrollSpeed({ pointerY: 300, top: 0, bottom: 600 }), 0);
-  assert.ok(selectionAutoScrollSpeed({ pointerY: 599, top: 0, bottom: 600 }) > 0);
-  assert.ok(selectionAutoScrollSpeed({ pointerY: 1, top: 0, bottom: 600 }) < 0);
-  assert.ok(Math.abs(selectionAutoScrollSpeed({ pointerY: 599, top: 0, bottom: 600 }))
-    > Math.abs(selectionAutoScrollSpeed({ pointerY: 570, top: 0, bottom: 600 })));
-
-  let next = 1;
-  const frames = new Map();
-  const cancelled = [];
-  const scrolls = [];
-  const endpoints = [];
-  const ctl = createSelectionAutoScroller({
-    frame: cb => { const id = next++; frames.set(id, cb); return id; },
-    cancelFrame: id => { cancelled.push(id); frames.delete(id); },
-    measure: () => ({ top: 0, bottom: 600 }),
-    scrollBy: dy => { scrolls.push(dy); return true; },
-    extend: p => endpoints.push(p),
-  });
-  ctl.start({ x: 10, y: 598 });
-  const runOne = () => { const [id, cb] = frames.entries().next().value; frames.delete(id); cb(); };
-  runOne();
-  assert.ok(scrolls[0] > 0);
-  ctl.move({ x: 10, y: 2 });
-  runOne();
-  assert.ok(scrolls.some(v => v < 0));
-  assert.ok(endpoints.length >= 2, 'selection endpoint follows scrolling');
-  ctl.stop();
-  assert.equal(ctl.active(), false);
-  assert.equal(frames.size, 0);
-  assert.ok(cancelled.length >= 1, 'outstanding animation frame cancelled');
+test('natural retirement is single-flight per sid while other sessions keep progressing', async () => {
+  const tracker = createExitRetirementTracker();
+  const cards = new Map([['a', { id: 'a' }], ['b', { id: 'b' }]]);
+  let releaseA;
+  const blockedA = new Promise(resolve => { releaseA = resolve; });
+  const calls = new Map();
+  const succeeded = [];
+  const hooks = {
+    get: sid => cards.get(sid), markStopped() {}, failed() {},
+    close: async card => {
+      calls.set(card.id, (calls.get(card.id) || 0) + 1);
+      if (card.id === 'a') await blockedA;
+      return { ok: true, applied: true };
+    },
+    succeeded: card => succeeded.push(card.id),
+  };
+  tracker.observe('a'); tracker.observe('b');
+  const first = tracker.drain(hooks);
+  await Promise.resolve();
+  await tracker.drain(hooks);
+  assert.equal(calls.get('a'), 1, 'overlapping drains cannot re-enter A');
+  assert.equal(calls.get('b'), 1, 'B starts while A remains blocked');
+  assert.deepEqual(succeeded, ['b']);
+  releaseA();
+  await first;
+  assert.deepEqual(succeeded.sort(), ['a', 'b']);
+  assert.equal(tracker.inFlight('a'), false);
 });
 
-test('copy guard rejects stale session results and exact copy reports real completion', async () => {
-  const guard = latestRequestGuard();
-  const old = guard.begin();
-  const current = guard.begin();
-  assert.equal(guard.isCurrent(old), false);
-  assert.equal(guard.isCurrent(current), true);
-  guard.cancel();
-  assert.equal(guard.isCurrent(current), false);
+test('retirement joiners and disposal cannot duplicate success callbacks', async () => {
+  const tracker = createExitRetirementTracker();
+  const card = { id: 'a' };
+  let successes = 0;
+  tracker.observe('a');
+  await tracker.drain({
+    get: () => card, markStopped() {}, failed() {},
+    close: async () => ({ ok: true, applied: false }),
+    succeeded: () => { successes++; },
+  });
+  assert.equal(successes, 0, 'a close-operation joiner must not own UI cleanup');
+
+  let release;
+  const blocked = new Promise(resolve => { release = resolve; });
+  tracker.observe('a');
+  const draining = tracker.drain({
+    get: () => card, markStopped() {}, failed() {},
+    close: async () => { await blocked; return { ok: true, applied: true }; },
+    succeeded: () => { successes++; },
+  });
+  tracker.clear();
+  release();
+  await draining;
+  assert.equal(successes, 0, 'disposed tracker suppresses late callbacks');
+  assert.equal(tracker.pending('a'), false);
+});
+
+test('terminal selection model keeps anchor, reverses, clamps boundaries, and rejects stale replies', () => {
+  assert.equal(terminalSelectionEdgeLines({ pointerY: 300, top: 0, bottom: 600 }), 0);
+  assert.ok(terminalSelectionEdgeLines({ pointerY: 599, top: 0, bottom: 600 }) > 0);
+  assert.ok(terminalSelectionEdgeLines({ pointerY: 1, top: 0, bottom: 600 }) < 0);
+
+  const model = createTerminalSelectionModel();
+  const first = model.begin({ row: 20, col: 4 });
+  model.move({ row: 24, col: 12 });
+  assert.equal(model.apply(first, { absolute_row: 100, at_top: false, at_bottom: false }), true);
+  model.move({ row: 0, col: 2 });
+  model.apply(first, { absolute_row: 20, at_top: false, at_bottom: false });
+  model.move({ row: 24, col: 8 }); // reverse and shrink again
+  const snap = model.snapshot();
+  assert.deepEqual(snap.anchor, { row: 20, col: 4 }, 'anchor never moves');
+  assert.deepEqual(snap.active, { row: 24, col: 8 });
+  assert.equal(model.apply(first, { absolute_row: 0, at_top: true, at_bottom: false }), true);
+  model.cancel();
+  assert.equal(model.apply(first, { absolute_row: 999 }), false, 'late response is stale after cancel');
+  const second = model.begin({ row: 2, col: 1 });
+  assert.notEqual(second, first);
+  assert.equal(model.apply(first, { absolute_row: 5 }), false, 'old gesture cannot mutate new anchor');
+  model.finish();
+  assert.equal(model.snapshot().phase, 'selected');
+});
+
+test('terminal clipboard payload remains exact for 2,500 deterministic Unicode rows', async () => {
 
   const text = '\n中文 English 😀 e\u0301\n```rust\nfn main() {}\n```\n' + 'x'.repeat(10000) + '\n\n';
   let received = null;
@@ -361,25 +401,19 @@ test('copy guard rejects stale session results and exact copy reports real compl
   assert.equal(received, text, 'no trimming, normalization, or chunk loss');
   await assert.rejects(copyExact(text, async () => { throw new Error('denied'); }));
 
-  const long = Array.from({ length: 2000 }, (_, i) => {
+  const long = Array.from({ length: 2500 }, (_, i) => {
     if (i === 20) return '```rust';
     if (i === 24) return '```';
+    if (i === 25) return '\ttrailing spaces   ';
+    if (i === 26) return '';
     if (i === 100) return '路径/' + '无空格'.repeat(300) + '/file.rs';
-    return `${String(i + 1).padStart(4, '0')} 中文 😀 e\u0301`;
+    return `${String(i + 1).padStart(4, '0')} 中文 😀 e\u0301 👩‍💻️`;
   }).join('\n');
   let pasted = '';
   await copyExact(long, async value => { pasted = value; });
   assert.equal(pasted, long);
-  assert.equal(pasted.split('\n').length, 2000);
+  assert.equal(pasted.split('\n').length, 2500);
   assert.equal(pasted.length, long.length, 'Unicode/code blocks/long lines remain byte-for-byte ordered');
-});
-
-test('copy shortcuts keep panel selection separate from Copy all and open-panel routing', () => {
-  const action = extra => copyShortcutAction({ metaKey: true, shiftKey: false, key: 'c', panelOpen: false, sessionView: true, hasSelection: false, ...extra });
-  assert.equal(action({ panelOpen: true, hasSelection: true }), 'copy-panel-selection');
-  assert.equal(action({ panelOpen: true, hasSelection: false }), 'none');
-  assert.equal(action({ shiftKey: true }), 'open-copy-panel');
-  assert.equal(action({ metaKey: false, shiftKey: true }), null);
 });
 
 test('path menu adds parent actions while the URL menu remains unchanged', () => {

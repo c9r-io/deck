@@ -11,6 +11,7 @@ import { renderQueueUI, setQueueChip, updateQuietHints } from './scheduler.js';
 /* ---------- provider (every persistent mutation is one queued transaction) ---------- */
 export const activeProject = () => provider.project(state.projectId);
 const exitRetirement = createExitRetirementTracker();
+const closeOperations = new Map();
 
 export const provider = {
   projects: () => store.projects,
@@ -154,38 +155,57 @@ export const provider = {
   /* stop and delete are one operation; returns false when the card was
      KEPT (its schedule could not be cancelled reliably) */
   async close(sid, opts = {}) {
-    let closedCard = null;
-    try {
-      await mutateBoard(async draft => {
-        const card = draft.cards.find(c => c.id === sid);
-        if (!card) return { noop: true };
-        closedCard = card;
-        if (!opts.cancelled && !(await this.cancelSchedule(card, { quiet: opts.quiet }))) {
-          const error = new Error('schedule cancellation failed');
-          error.stage = 'cancel';
-          throw error;
-        }
-        try {
-          await inv('kill_session', { name: card.session });
-        } catch (cause) {
-          const error = new Error('session could not be closed');
-          error.stage = 'kill'; error.cause = cause;
-          throw error;
-        }
-        const live = this.get(sid);
-        if (live) live.status = 'stopped';
-        card.status = 'stopped';
-        draft.cards = draft.cards.filter(c => c.id !== sid);
-      });
-    } catch (error) {
-      const c = this.get(sid);
-      if (!opts.quiet && error.stage === 'kill') toast('session kept because it could not be closed; retry after checking tmux permissions');
-      if (!opts.quiet && error.stage !== 'cancel' && error.stage !== 'kill') toast('session kept because the board could not be saved');
-      if (c) emit('status', c);
-      return false;
+    const existing = closeOperations.get(sid);
+    if (existing) {
+      const result = await existing;
+      return opts.detail ? { ok: result.ok, applied: false } : result.ok;
     }
-    if (closedCard) emit('list', closedCard);
-    return true;
+    const operation = (async () => {
+      let closedCard = null;
+      try {
+        await mutateBoard(async draft => {
+          const card = draft.cards.find(c => c.id === sid);
+          if (!card) return { noop: true };
+          closedCard = card;
+          if (!opts.cancelled && !(await this.cancelSchedule(card, { quiet: opts.quiet }))) {
+            const error = new Error('schedule cancellation failed');
+            error.stage = 'cancel';
+            throw error;
+          }
+          try {
+            await inv('kill_session', { name: card.session });
+          } catch (cause) {
+            const error = new Error('session could not be closed');
+            error.stage = 'kill'; error.cause = cause;
+            throw error;
+          }
+          const live = this.get(sid);
+          if (live) live.status = 'stopped';
+          card.status = 'stopped';
+          draft.cards = draft.cards.filter(c => c.id !== sid);
+        });
+      } catch (error) {
+        const c = this.get(sid);
+        if (!opts.quiet && error.stage === 'kill') toast('session kept because it could not be closed; retry after checking tmux permissions');
+        if (!opts.quiet && error.stage !== 'cancel' && error.stage !== 'kill') toast('session kept because the board could not be saved');
+        if (c) emit('status', c);
+        return { ok: false, applied: false };
+      }
+      if (closedCard) {
+        emit('list', closedCard);
+        return { ok: true, applied: true };
+      }
+      // Another committed transaction already removed it. This is an
+      // idempotent success, but this caller owns no UI success effect.
+      return { ok: true, applied: false };
+    })();
+    closeOperations.set(sid, operation);
+    try {
+      const result = await operation;
+      return opts.detail ? result : result.ok;
+    } finally {
+      if (closeOperations.get(sid) === operation) closeOperations.delete(sid);
+    }
   },
 
   async move(sid, columnId) {
@@ -325,7 +345,7 @@ export async function pollNow() {
   await exitRetirement.drain({
     get: sid => provider.get(sid),
     markStopped: c => { c.status = 'stopped'; emit('status', c); },
-    close: c => provider.close(c.id, { quiet: true }),
+    close: c => provider.close(c.id, { quiet: true, detail: true }),
     failed: () => toast('shell exited, but its card could not be retired; deck will retry safely'),
     succeeded: c => {
       closePaneBySid(c.id, { detach: false });
@@ -337,6 +357,11 @@ export function startPolling() {
   clearInterval(pollTimer);
   pollTimer = setInterval(pollNow, POLL_MS);
   pollNow();
+}
+export function stopPolling() {
+  clearInterval(pollTimer);
+  pollTimer = null;
+  exitRetirement.clear();
 }
 
 /* ---------- sidebar ---------- */
@@ -602,7 +627,8 @@ export async function closeSession(sid, needConfirm = false) {
       !(await confirmDialog(`Close "${s.title}"?${live ? ' The shell will be terminated.' : ''}`))) return;
   state.destructiveCards.add(sid);
   try {
-    if (!(await provider.close(sid))) return;
+    const result = await provider.close(sid, { detail: true });
+    if (!result.ok || !result.applied) return;
     closePaneBySid(sid, { detach: false });
     toast(`closed: ${s.title}`);
     render();

@@ -9,7 +9,9 @@ mod commands;
 mod history;
 mod pty;
 mod scheduler;
+mod smoke_faults;
 mod storage;
+mod terminal_selection;
 mod tmux;
 
 pub(crate) use storage::applog;
@@ -132,6 +134,8 @@ fn main() {
                 if let Some(mode) = storage::debug_arg("--smoke-wkwebview") {
                     let entry = if mode == "restart" {
                         "m.verifyRestart()"
+                    } else if mode == "ambiguous" {
+                        "m.verifyAmbiguousBoot()"
                     } else {
                         "m.run()"
                     };
@@ -163,7 +167,11 @@ fn main() {
             commands::scroll_session,
             commands::scroll_bottom,
             commands::clear_history,
-            commands::capture_scrollback,
+            commands::terminal_selection_start,
+            commands::terminal_selection_update,
+            commands::terminal_selection_copy,
+            commands::terminal_selection_cancel,
+            commands::terminal_metrics,
             commands::write_clipboard,
             commands::poll_sessions,
             pty::attach_session,
@@ -179,6 +187,9 @@ fn main() {
             commands::ui_event,
             commands::ping_event,
             scheduler::queue_list,
+            scheduler::smoke_seed_ambiguous,
+            scheduler::smoke_queue_state,
+            scheduler::smoke_flush_queue,
             scheduler::queue_add,
             scheduler::queue_update,
             scheduler::queue_remove,
@@ -190,6 +201,8 @@ fn main() {
             scheduler::queue_clear_session,
             scheduler::queue_clear_sessions,
             commands::save_dropped_file,
+            smoke_faults::smoke_fault_set,
+            smoke_faults::smoke_clipboard_metrics,
         ])
         .build(tauri::generate_context!())
         .expect("error while building deck")

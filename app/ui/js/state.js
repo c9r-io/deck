@@ -9,7 +9,6 @@ Object.assign(globalThis, {
   HOME: '~',
   attachedName: null,
   cfmResolve: null,
-  copyHintShown: false,
   creatingSession: false,
   freshShell: false,
   ghostEl: null,

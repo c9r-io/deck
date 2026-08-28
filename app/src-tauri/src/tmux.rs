@@ -90,6 +90,7 @@ pub(crate) fn tmux_conf() -> String {
              set -g status off\n\
              set -g set-clipboard on\n\
              set -g history-limit 50000\n\
+             set -g mode-style 'fg=#101318,bg=#4fd6be'\n\
              set -g copy-mode-position-format ''\n\
              set-environment -g COLORTERM truecolor\n"
                 .as_bytes(),
@@ -121,6 +122,27 @@ pub(crate) fn tmux(args: &[&str]) -> Result<String, String> {
         return Err(format!(
             "tmux {} failed: {}",
             args.first().unwrap_or(&""),
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// Owned-argument variant used for bounded command batches whose numeric
+/// cursor movements are assembled at runtime. Arguments still bypass a
+/// shell; `;` is an explicit tmux command separator, never shell syntax.
+pub(crate) fn tmux_owned(args: &[String]) -> Result<String, String> {
+    let conf = tmux_conf();
+    let out = Command::new(tmux_bin())
+        .args(["-f", &conf, "-L", socket()])
+        .args(args)
+        .env("LANG", "en_US.UTF-8")
+        .output()
+        .map_err(|e| format!("tmux not runnable: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "tmux {} failed: {}",
+            args.first().map(String::as_str).unwrap_or(""),
             String::from_utf8_lossy(&out.stderr).trim()
         ));
     }
@@ -196,6 +218,7 @@ pub(crate) fn init_deck_server() {
     let _ = tmux(&["set", "-g", "mouse", "off"]);
     let _ = tmux(&["set", "-g", "set-clipboard", "on"]);
     let _ = tmux(&["set", "-g", "history-limit", "50000"]);
+    let _ = tmux(&["set", "-g", "mode-style", "fg=#101318,bg=#4fd6be"]);
     let _ = tmux(&["set", "-g", "copy-mode-position-format", ""]);
 }
 

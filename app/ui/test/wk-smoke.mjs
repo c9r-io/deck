@@ -2,21 +2,26 @@
 // app was launched with --smoke-wkwebview and an isolated --smoke-data-dir.
 // The release gate also runs `node --test app/ui/test/*.mjs`; defer production
 // DOM imports so Node can load this carrier without fabricating a browser.
-let $, inv, state, store, panes, provider, render, boardData;
-let closeCopyPanel, openCopyPanel, renameCardInline, renderSuggest, resetSuggest;
+let $, inv, state, store, panes, provider, render, pollNow, boardData;
+let renameCardInline, renderSuggest, resetSuggest;
 let showLinkCtx, toggleSidebar, addSplit, backToBoard, openSession, strToB64;
+let closePaneBySid, focusPane, cancelTerminalSelection, copyTerminalSelection;
+let refreshQueue, toggleQueuePanel;
 if (typeof window !== 'undefined') {
   ({ $, inv, state, store } = await import('../js/state.js'));
-  ({ panes, provider, render } = await import('../js/board.js'));
+  ({ panes, provider, render, pollNow } = await import('../js/board.js'));
   ({ boardData } = await import('../js/persistence.js'));
   ({
-    closeCopyPanel, openCopyPanel, renameCardInline, renderSuggest, resetSuggest,
+    renameCardInline, renderSuggest, resetSuggest,
     showLinkCtx, toggleSidebar,
   } = await import('../js/terminal.js'));
-  ({ addSplit, backToBoard, openSession, strToB64 } = await import('../js/layout.js'));
+  ({ addSplit, backToBoard, closePaneBySid, focusPane, openSession, strToB64 } = await import('../js/layout.js'));
+  ({ cancelTerminalSelection, copyTerminalSelection } = await import('../js/selection.js'));
+  ({ refreshQueue, toggleQueuePanel } = await import('../js/scheduler.js'));
 }
 
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
+let smokeFailed = false;
 async function waitFor(test, timeout = 8000) {
   const end = Date.now() + timeout;
   while (Date.now() < end) {
@@ -25,10 +30,13 @@ async function waitFor(test, timeout = 8000) {
   }
   return false;
 }
-const report = (name, ok, a = 0, b = 0) => inv('ui_event', {
-  code: 'smoke-check', detail: name,
-  a: ok ? Math.trunc(a || 1) : -Math.abs(Math.trunc(a || 1)), b: Math.trunc(b || 0),
-});
+const report = (name, ok, a = 0, b = 0) => {
+  if (!ok) smokeFailed = true;
+  return inv('ui_event', {
+    code: 'smoke-check', detail: name,
+    a: ok ? Math.trunc(a || 1) : -Math.abs(Math.trunc(a || 1)), b: Math.trunc(b || 0),
+  });
+};
 const metric = (name, a = 0, b = 0) => inv('ui_event', {
   code: 'smoke-check', detail: name, a: Math.trunc(a), b: Math.trunc(b),
 });
@@ -75,6 +83,26 @@ async function boardConcurrency(project, column) {
   await report('board-concurrency', mask === 255, parsed.cards.length, mask);
 }
 
+async function boardFaultSmoke(project, column) {
+  await inv('smoke_fault_set', { kind: 'board-save', count: 1 });
+  let firstFailed = false;
+  try {
+    await provider.create({
+      projectId: project.id, columnId: column.id, title: 'fault-first', cmd: '', dir: '/tmp',
+    });
+  } catch (e) { firstFailed = true; }
+  const second = await provider.create({
+    projectId: project.id, columnId: column.id, title: 'fault-second', cmd: '', dir: '/tmp',
+  });
+  const disk = JSON.parse((await inv('load_board')).data);
+  const memory = boardData();
+  const diskCards = disk.cards.map(card => `${card.id}:${card.title}`).sort().join(',');
+  const memoryCards = memory.cards.map(card => `${card.id}:${card.title}`).sort().join(',');
+  const same = diskCards === memoryCards && disk.projects.length === memory.projects.length;
+  await report('board-fault', firstFailed && !store.cards.some(c => c.title === 'fault-first')
+    && provider.get(second.id)?.title === 'fault-second' && same, store.cards.length, same ? 1 : 0);
+}
+
 async function renameSmoke(card) {
   await openSession(card.id);
   const host = document.querySelector(`#side-list .side-item[data-sid="${card.id}"] .name`);
@@ -97,55 +125,261 @@ async function renameSmoke(card) {
 
 function pointer(type, id, x, y, button = 0) {
   return new PointerEvent(type, {
-    pointerId: id, pointerType: 'mouse', button, buttons: type === 'pointerup' ? 0 : 1,
+    pointerId: id, pointerType: 'mouse', isPrimary: true, button,
+    buttons: type === 'pointerup' ? 0 : button === 2 ? 2 : 1,
     clientX: x, clientY: y, bubbles: true, cancelable: true,
   });
 }
 
-async function copySmoke(card) {
+const fixtureClipboardLine = i => `R7C-${String(i).padStart(4, '0')}|中文|😀|é|👩‍💻|END`;
+const fnv1a64 = text => {
+  let hash = 0xcbf29ce484222325n;
+  for (const byte of new TextEncoder().encode(text)) {
+    hash ^= BigInt(byte);
+    hash = BigInt.asUintN(64, hash * 0x100000001b3n);
+  }
+  return hash.toString(16).padStart(16, '0');
+};
+
+function visibleTerminalLine(pane, row) {
+  const buffer = pane.term.buffer.active;
+  return buffer.getLine(buffer.viewportY + row)?.translateToString(true) || '';
+}
+
+async function selectionSmoke(card) {
+  let selectionStage = 0;
+  try {
+  selectionStage = 1;
   await openSession(card.id);
-  const command = `python3 -c 'for i in range(2200): print(f"{i:04d} 中文 😀 é" + ("x"*600 if i==100 else ""))'`;
+  const command = `python3 -c 'import time; f=lambda i: ((chr(96)*3+"rust") if i%101==0 else ("\\tTAB trailing   " if i%97==0 else ("" if i%89==0 else (f"R7-{i:04d}|中文|😀|é|👩‍💻️|" + ("x"*600 if i%113==0 else ""))))); [print(f(i)) for i in range(2500)]; print("R7-END",flush=True); [(time.sleep(.05),print(f"R7-LIVE-{j:03d}",flush=True)) for j in range(80)]'`;
   await inv('pty_write', { name: card.session, dataB64: strToB64(command + '\r') });
   await waitFor(async () => {
-    const capture = await inv('capture_scrollback', { name: card.session, lines: 20_000 });
-    return capture.text.includes('2199');
-  }, 12_000);
-  await openCopyPanel(card.session, card.title);
-  const body = $('cb-body');
-  const loaded = await waitFor(() => !$('cb-all').disabled && body.textContent.includes('2199'));
-  const lines = body.textContent.split('\n').length;
-  const chars = body.textContent.length;
-  const rect = body.getBoundingClientRect();
+    const metrics = await inv('terminal_metrics', { name: card.session });
+    return metrics.history_rows >= 2500;
+  }, 15_000);
+  selectionStage = 2;
+  const pane = panes.get(card.session);
+  const screen = pane.body.querySelector('.xterm-screen');
+  let rect = screen.getBoundingClientRect();
+  const neighbor = [...panes.values()].find(p => p !== pane);
+  const neighborBefore = neighbor && await inv('terminal_metrics', { name: neighbor.session });
 
-  body.scrollTop = 0;
-  body.dispatchEvent(pointer('pointerdown', 41, rect.left + 40, rect.top + 8));
-  document.dispatchEvent(pointer('pointermove', 41, rect.left + 40, rect.bottom + 48));
-  await pause(850);
-  const downScroll = body.scrollTop;
-  const downSelection = window.getSelection().toString().length;
-  document.dispatchEvent(pointer('pointerup', 41, rect.left + 40, rect.bottom + 48));
-  await report('copy-down', loaded && downScroll > 0 && downSelection > 0, downScroll, downSelection);
+  selectionStage = 3;
+  screen.dispatchEvent(pointer('pointerdown', 41, rect.left + 60, rect.bottom - 6));
+  document.dispatchEvent(pointer('pointermove', 41, rect.left + 60, rect.top - 32));
+  const started = await waitFor(() => pane.selection.hasSelection(), 3000);
+  if (!started) {
+    const metrics = await inv('terminal_metrics', { name: card.session });
+    document.dispatchEvent(pointer('pointerup', 41, rect.left + 60, rect.top - 32));
+    await report('selection-up', false, 0, metrics.in_copy_mode ? 1 : 0);
+    return;
+  }
+  const crossedUp = await waitFor(() => pane.selection.status()?.scroll_position > 120, 8000);
+  const liveHistoryBefore = pane.selection.status()?.history_rows || 0;
+  selectionStage = 4;
+  let expanded = await copyTerminalSelection(pane);
+  if (typeof expanded !== 'string') {
+    const status = pane.selection.status();
+    await report('selection-up', false, pane.selection.hasSelection() ? 1 : 0, status?.selection_present ? 1 : 0);
+    return;
+  }
+  selectionStage = 5;
+  await report('selection-up', crossedUp && expanded.split('\n').length > 100
+    && expanded.includes('R7-') && expanded.includes('```rust')
+    && expanded.includes('\tTAB trailing   ')
+    && expanded.includes('\n\n') && expanded.includes('x'.repeat(200)),
+  expanded.split('\n').length, expanded.length);
+  const markerIds = [...expanded.matchAll(/R7-(\d{4})/g)].map(match => Number(match[1]));
+  const markerStart = markerIds[0] ?? -1;
+  const markerEnd = markerIds.at(-1) ?? -1;
+  await report('selection-markers', markerIds.length > 2 && markerStart < markerEnd,
+    markerStart, markerEnd);
+  const liveAdvanced = await waitFor(() =>
+    (pane.selection.status()?.history_rows || liveHistoryBefore) > liveHistoryBefore, 3000);
+  await report('selection-live', liveAdvanced && pane.selection.hasSelection(),
+    (pane.selection.status()?.history_rows || liveHistoryBefore) - liveHistoryBefore,
+    pane.selection.hasSelection() ? 1 : 0);
 
-  body.scrollTop = body.scrollHeight;
-  const fromBottom = body.scrollTop;
-  body.dispatchEvent(pointer('pointerdown', 42, rect.left + 40, rect.bottom - 8));
-  document.dispatchEvent(pointer('pointermove', 42, rect.left + 40, rect.top - 48));
-  await pause(850);
-  const upScroll = body.scrollTop;
-  const selection = window.getSelection().toString();
-  document.dispatchEvent(pointer('pointerup', 42, rect.left + 40, rect.top - 48));
-  await report('copy-up', upScroll < fromBottom && selection.length > 0, fromBottom - upScroll, selection.length);
+  document.dispatchEvent(pointer('pointermove', 41, rect.left + 60, rect.bottom + 32));
+  const beforeReverse = pane.selection.status()?.scroll_position || 0;
+  const reversed = await waitFor(() => (pane.selection.status()?.scroll_position || beforeReverse) < beforeReverse, 5000);
+  const shrunk = await copyTerminalSelection(pane);
+  selectionStage = 6;
+  document.dispatchEvent(pointer('pointerup', 41, rect.left + 60, rect.bottom + 32));
+  await report('selection-reverse', reversed && shrunk.length < expanded.length,
+    expanded.length - shrunk.length, shrunk.length);
 
-  document.dispatchEvent(new KeyboardEvent('keydown', {
+  /* Independent clipboard oracle: both endpoints are column zero on visible
+     generated marker rows, so the expected half-open range is computed from
+     the fixture generator. It never calls the production copy function. */
+  await cancelTerminalSelection(pane);
+  await inv('scroll_bottom', { name: card.session });
+  const clipboardCommand = `python3 -c '[print(f"R7C-{i:04d}|中文|😀|é|👩‍💻|END") for i in range(400)]; print("R7C-DONE")'`;
+  await inv('pty_write', { name: card.session, dataB64: strToB64(clipboardCommand + '\r') });
+  const fixtureVisible = await waitFor(() => {
+    for (let row = 0; row < pane.term.rows; row++) {
+      if (visibleTerminalLine(pane, row).trim() === 'R7C-DONE') return true;
+    }
+    return false;
+  }, 10_000);
+  rect = screen.getBoundingClientRect();
+  // After 400 newline-terminated rows and the DONE row, the returned shell
+  // prompt occupies the last row; marker 399 is deterministically rows - 3.
+  const anchorRow = pane.term.rows - 3;
+  const cellX = rect.left + rect.width / pane.term.cols * 0.2;
+  const rowY = row => rect.top + (row + 0.5) * rect.height / pane.term.rows;
+  const downOwned = anchorRow >= 0
+    && !screen.dispatchEvent(pointer('pointerdown', 61, cellX, rowY(anchorRow)));
+  const compatDownBlocked = !screen.dispatchEvent(new MouseEvent('mousedown', {
+    bubbles: true, cancelable: true, button: 0, buttons: 1,
+    clientX: cellX, clientY: rowY(Math.max(0, anchorRow)),
+  }));
+  document.dispatchEvent(pointer('pointermove', 61, cellX, rect.top - 32));
+  const exactStarted = await waitFor(() => pane.selection.hasSelection(), 3000);
+  const exactCrossed = await waitFor(() => pane.selection.status()?.scroll_position > 80, 8000);
+  const activeRow = Math.floor(pane.term.rows / 2);
+  document.dispatchEvent(pointer('pointermove', 61, cellX, rowY(activeRow)));
+  await pause(300);
+  await pane.selection.idle();
+  const exactStatus = pane.selection.status();
+  const fixtureZero = exactStatus
+    ? exactStatus.selection_start_row - 399 : Number.NaN;
+  const activeId = exactStatus
+    ? exactStatus.selection_end_row - fixtureZero : -1;
+  const expected = activeId >= 0 && activeId < 399
+    ? Array.from({ length: 399 - activeId }, (_, offset) => fixtureClipboardLine(activeId + offset)).join('\n') + '\n'
+    : '';
+  document.dispatchEvent(pointer('pointerup', 61, cellX, rowY(activeRow)));
+  const lateMouseupBlocked = !screen.dispatchEvent(new MouseEvent('mouseup', {
+    bubbles: true, cancelable: true, button: 0, buttons: 0,
+    clientX: cellX, clientY: rowY(activeRow),
+  }));
+  const ownership = pane.selection.ownership();
+  const ownerMask = (downOwned ? 1 : 0) | (compatDownBlocked ? 2 : 0)
+    | (lateMouseupBlocked ? 4 : 0) | (ownership.promoted === 1 ? 8 : 0)
+    | (!ownership.xtermSelection && ownership.owner === 'none'
+      && ownership.clickReplayed === 0 && ownership.ended === 1 ? 16 : 0);
+  await report('selection-owner', fixtureVisible && exactStarted && exactCrossed
+    && ownerMask === 31 && ownership.compatibilityBlocked >= 2,
+  ownerMask, ownership.compatibilityBlocked);
+
+  const expectedBytes = new TextEncoder().encode(expected).length;
+  const expectedNewlines = (expected.match(/\n/g) || []).length;
+  const expectedHash = fnv1a64(expected);
+  pane.term.textarea.dispatchEvent(new KeyboardEvent('keydown', {
     key: 'c', metaKey: true, bubbles: true, cancelable: true,
   }));
-  await pause(350);
-  await report('copy-selection', selection.length > 0, selection.length, chars);
-  await pause(3000); // external smoke runner pastes/measures the native selection here
-  $('cb-all').click();
-  await pause(500);
-  await report('copy-all', loaded && lines >= 2200 && chars > 25_000, lines, chars);
-  closeCopyPanel();
+  const copiedByKey = await waitFor(async () => {
+    const metrics = await inv('smoke_clipboard_metrics');
+    return metrics.bytes === expectedBytes && metrics.newlines === expectedNewlines
+      && metrics.hash === expectedHash;
+  }, 3000);
+  const clipboard = await inv('smoke_clipboard_metrics');
+  selectionStage = 7;
+  await report('selection-clipboard', expected.length > 0 && copiedByKey
+    && clipboard.bytes === expectedBytes && clipboard.newlines === expectedNewlines
+    && clipboard.hash === expectedHash, clipboard.bytes, clipboard.newlines);
+
+  await cancelTerminalSelection(pane);
+  pane.term.clearSelection();
+  const clickRow = Math.max(2, pane.term.rows - 3);
+  const clickX = rect.left + rect.width / pane.term.cols * 4.2;
+  const clickY = rowY(clickRow);
+  const replayPointerClick = id => {
+    const down = !screen.dispatchEvent(pointer('pointerdown', id, clickX, clickY));
+    const up = !document.dispatchEvent(pointer('pointerup', id, clickX, clickY));
+    return down && up;
+  };
+  const tapOwned = replayPointerClick(71);
+  const tapPlain = tapOwned && !pane.term.hasSelection();
+  replayPointerClick(72);
+  const doubleWord = pane.term.hasSelection() && pane.term.getSelection().length > 0;
+  const wordLength = pane.term.getSelection().length;
+  replayPointerClick(73);
+  const tripleLine = pane.term.hasSelection()
+    && pane.term.getSelection().length >= wordLength;
+  const rightUntouched = screen.dispatchEvent(pointer('pointerdown', 74, clickX, clickY, 2));
+  pane.term.clearSelection();
+  const singleAnchorRow = Math.max(2, pane.term.rows - 6);
+  screen.dispatchEvent(pointer('pointerdown', 75, cellX, rowY(singleAnchorRow)));
+  document.dispatchEvent(pointer('pointermove', 75,
+    rect.left + rect.width / pane.term.cols * 8.2, rowY(singleAnchorRow + 1)));
+  const singleStarted = await waitFor(() => pane.selection.hasSelection(), 3000);
+  document.dispatchEvent(pointer('pointerup', 75,
+    rect.left + rect.width / pane.term.cols * 8.2, rowY(singleAnchorRow + 1)));
+  const singleOwned = singleStarted && pane.selection.ownership().promoted === 1
+    && !pane.selection.ownership().xtermSelection;
+  const gestureMask = (tapPlain ? 1 : 0) | (doubleWord ? 2 : 0)
+    | (tripleLine ? 4 : 0) | (rightUntouched && singleOwned ? 8 : 0);
+  await report('selection-gestures', gestureMask === 15, gestureMask, wordLength);
+  await cancelTerminalSelection(pane);
+  for (let i = 0; i < 12; i++) {
+    await inv('scroll_session', { name: card.session, lines: -60 });
+  }
+  rect = screen.getBoundingClientRect();
+  const downMetrics = await inv('terminal_metrics', { name: card.session });
+  const downStart = downMetrics.history_rows;
+  screen.dispatchEvent(pointer('pointerdown', 42, rect.left + 60, rect.top + 6));
+  document.dispatchEvent(pointer('pointermove', 42, rect.left + 60, rect.bottom + 32));
+  const startedDown = await waitFor(() => pane.selection.hasSelection(), 3000);
+  if (!startedDown) {
+    const metrics = await inv('terminal_metrics', { name: card.session });
+    await report('selection-down', false, metrics.in_copy_mode ? 1 : 0, 0);
+    await inv('scroll_bottom', { name: card.session });
+  }
+  const downInitialScroll = pane.selection.status()?.scroll_position || 0;
+  const crossedDown = await waitFor(() =>
+    (pane.selection.status()?.scroll_position ?? downInitialScroll)
+      < downInitialScroll - pane.term.rows * 3, 8000);
+  const downText = startedDown ? await copyTerminalSelection(pane) : '';
+  selectionStage = 8;
+  document.dispatchEvent(pointer('pointerup', 42, rect.left + 60, rect.bottom + 32));
+  await report('selection-down', downMetrics.scroll_position > pane.term.rows * 10
+    && crossedDown && downText.length > 1000 && downStart >= 2500,
+    downText.split('\n').length, downText.length);
+
+  await cancelTerminalSelection(pane);
+  screen.dispatchEvent(pointer('pointerdown', 43, rect.left + 60, rect.bottom - 6));
+  document.dispatchEvent(pointer('pointermove', 43, rect.left + 60, rect.top - 32));
+  await waitFor(() => pane.selection.hasSelection());
+  toggleSidebar();
+  await pause(300);
+  rect = screen.getBoundingClientRect();
+  pane.term.textarea.dispatchEvent(new KeyboardEvent('keydown', {
+    key: 'Escape', bubbles: true, cancelable: true,
+  }));
+  const cancelled = await waitFor(async () => !(await inv('terminal_metrics', { name: card.session })).in_copy_mode);
+  await report('selection-cancel', cancelled && !pane.selection.hasSelection(), 1, 0);
+
+  if (document.body.classList.contains('side-collapsed')) toggleSidebar();
+  const neighborAfter = neighbor && await inv('terminal_metrics', { name: neighbor.session });
+  await report('selection-split', !neighbor || (!neighborBefore.in_copy_mode
+    && !neighborAfter.in_copy_mode && neighborAfter.pane_rows === neighbor.term.rows
+    && attachedName === pane.session), neighborAfter?.pane_rows || 0, 0);
+
+  const neighborSid = neighbor?.sid;
+  rect = screen.getBoundingClientRect();
+  screen.dispatchEvent(pointer('pointerdown', 44, rect.left + 60, rect.bottom - 6));
+  document.dispatchEvent(pointer('pointermove', 44, rect.left + 60, rect.top - 32));
+  const selectedBeforeDetach = await waitFor(() => pane.selection.hasSelection(), 3000);
+  document.dispatchEvent(pointer('pointerup', 44, rect.left + 60, rect.top - 32));
+  backToBoard();
+  const detachedClean = await waitFor(async () =>
+    !(await inv('terminal_metrics', { name: card.session })).in_copy_mode, 3000);
+  await openSession(card.id);
+  if (neighborSid) await addSplit(card.id, 'row', false, neighborSid);
+  await report('selection-detach', selectedBeforeDetach && detachedClean
+    && panes.has(card.session) && (!neighborSid || [...panes.values()].some(p => p.sid === neighborSid)),
+  panes.size, detachedClean ? 1 : 0);
+  } catch (error) {
+    const message = String(error);
+    const category = message.includes('dimensions') ? 1
+      : message.includes('tmux') ? 2
+      : message.includes('selection') ? 3
+      : message.includes('session') ? 4 : 9;
+    await report('selection-up', false, selectionStage, category);
+    throw error;
+  }
 }
 
 async function pathSmoke(card) {
@@ -194,6 +428,7 @@ async function pathSmoke(card) {
 
 async function completionSmoke(card, project, column) {
   await openSession(card.id);
+  await pause(1100); // let fresh-pane clear_history finish before generating the fixture
   const other = await provider.create({
     projectId: project.id, columnId: column.id, title: 'completion-neighbor', cmd: '', dir: '/tmp',
   });
@@ -204,15 +439,13 @@ async function completionSmoke(card, project, column) {
     name: card.session,
     dataB64: strToB64("python3 -c 'for i in range(120): print(i)'\r"),
   });
-  let historyCapture;
+  let historyMetrics;
   await waitFor(async () => {
-    historyCapture = await inv('capture_scrollback', { name: card.session, lines: 500 });
-    return historyCapture.captured_rows > historyCapture.pane_rows + 20;
+    historyMetrics = await inv('terminal_metrics', { name: card.session });
+    return historyMetrics.history_rows > 20;
   }, 8000);
   await waitFor(() => pane.term.buffer.active.cursorY >= pane.term.rows - 2, 8000);
-  const readPtyRows = async () => (await inv('capture_scrollback', {
-    name: card.session, lines: 1,
-  })).pane_rows;
+  const readPtyRows = async () => (await inv('terminal_metrics', { name: card.session })).pane_rows;
   const waitForPtyRows = async () => {
     let rows = 0;
     await waitFor(async () => {
@@ -225,7 +458,7 @@ async function completionSmoke(card, project, column) {
   pane.term.scrollToBottom();
   await pause(120);
   const rowsBefore = pane.term.rows;
-  const historyPresent = historyCapture.captured_rows > historyCapture.pane_rows + 20;
+  const historyPresent = historyMetrics.history_rows > 20;
   const promptAtBottom = pane.term.buffer.active.cursorY >= rowsBefore - 2;
   globalThis.histCache = ['echo one', 'echo two', 'echo three'];
   globalThis.lineBuf = 'ec';
@@ -305,6 +538,82 @@ async function completionSmoke(card, project, column) {
   await report('completion', mask === 255, mask, rowsBefore * 1000 + rowsAfter);
 }
 
+async function completionOwnerSmoke(card) {
+  const paneA = panes.get(card.session);
+  const paneB = [...panes.values()].find(p => p !== paneA);
+  if (!paneA || !paneB) {
+    await report('completion-owner', false, 0, 0);
+    return;
+  }
+  const show = pane => {
+    focusPane(pane.session);
+    globalThis.histCache = ['echo owner transition'];
+    globalThis.lineBuf = 'ec';
+    globalThis.freshShell = false;
+    renderSuggest();
+  };
+  show(paneA); show(paneB); show(paneA);
+  await pause(700);
+  const a1 = await inv('terminal_metrics', { name: paneA.session });
+  const b1 = await inv('terminal_metrics', { name: paneB.session });
+  let mask = 0;
+  if (a1.pane_rows === paneA.term.rows && b1.pane_rows === paneB.term.rows) mask |= 1;
+  show(paneB);
+  await pause(350);
+  await addSplit(paneA.sid, 'col', false, paneB.sid);
+  await pause(500);
+  const a2 = await inv('terminal_metrics', { name: paneA.session });
+  const b2 = await inv('terminal_metrics', { name: paneB.session });
+  if (a2.pane_rows === paneA.term.rows && b2.pane_rows === paneB.term.rows) mask |= 2;
+  closePaneBySid(paneB.sid);
+  await pause(600);
+  const a3 = await inv('terminal_metrics', { name: paneA.session });
+  if (!panes.has(paneB.session) && a3.pane_rows === paneA.term.rows
+      && $('quick-bar').style.display === 'none') mask |= 4;
+  await report('completion-owner', mask === 7, mask, a3.pane_rows * 1000 + paneA.term.rows);
+}
+
+async function naturalExitFaultSmoke(project, column) {
+  const card = await provider.create({
+    projectId: project.id, columnId: column.id, title: 'natural-fault', cmd: '', dir: '/tmp',
+  });
+  await openSession(card.id);
+  await pollNow();
+  await pause(1100); // wait out the fresh-shell history cleanup
+  await inv('pty_write', {
+    name: card.session,
+    dataB64: strToB64("python3 -c '[print(f\"EXIT-{i:03d}\") for i in range(60)]'\r"),
+  });
+  await waitFor(async () =>
+    (await inv('terminal_metrics', { name: card.session })).history_rows > 30);
+  const pane = panes.get(card.session);
+  const screen = pane.body.querySelector('.xterm-screen');
+  const rect = screen.getBoundingClientRect();
+  screen.dispatchEvent(pointer('pointerdown', 51, rect.left + 50, rect.bottom - 5));
+  document.dispatchEvent(pointer('pointermove', 51, rect.left + 50, rect.top + 5));
+  const selectedBeforeExit = await waitFor(() => pane.selection.hasSelection(), 3000);
+  document.dispatchEvent(pointer('pointerup', 51, rect.left + 50, rect.top + 5));
+  card.status = 'running';
+  await inv('smoke_fault_set', { kind: 'queue-cancel', count: 8 });
+  await inv('kill_session', { name: card.session });
+  const selectionCleared = await waitFor(() => !pane.selection.hasSelection(), 3000);
+  await pollNow();
+  const keptAfterCancel = !!provider.get(card.id) && panes.has(card.session);
+  await inv('smoke_fault_set', { kind: 'queue-cancel', count: 0 });
+  await inv('smoke_fault_set', { kind: 'board-save', count: 8 });
+  await pollNow();
+  const keptAfterSave = !!provider.get(card.id) && panes.has(card.session);
+  await inv('smoke_fault_set', { kind: 'board-save', count: 0 });
+  await pollNow();
+  const retired = await waitFor(() => !provider.get(card.id) && !panes.has(card.session), 6000);
+  await pollNow();
+  const stable = !provider.get(card.id) && !panes.has(card.session);
+  const mask = (selectedBeforeExit ? 1 : 0) | (selectionCleared ? 2 : 0)
+    | (keptAfterCancel ? 4 : 0) | (keptAfterSave ? 8 : 0)
+    | (retired ? 16 : 0) | (stable ? 32 : 0);
+  await report('natural-fault', mask === 63, mask, 63);
+}
+
 export async function run() {
   let stage = 0;
   try {
@@ -315,21 +624,65 @@ export async function run() {
     stage = 2;
     await boardConcurrency(project, column);
     stage = 3;
+    await boardFaultSmoke(project, column);
+    stage = 4;
     const main = await provider.create({
       projectId: project.id, columnId: column.id, title: 'wk-smoke', cmd: '', dir: '/tmp/deck-r6-path',
     });
     render();
-    stage = 4;
-    await renameSmoke(main);
     stage = 5;
-    await copySmoke(main);
+    await renameSmoke(main);
     stage = 6;
     await pathSmoke(main);
     stage = 7;
     await completionSmoke(main, project, column);
-    await report('done', true, 1, 0);
+    stage = 8;
+    await selectionSmoke(main);
+    stage = 9;
+    await completionOwnerSmoke(main);
+    stage = 10;
+    await naturalExitFaultSmoke(project, column);
+    stage = 11;
+    await inv('queue_add', { args: {
+      session: main.session, dir: main.dir, cmd: main.cmd,
+      text: 'deterministic smoke delivery', mode: 'at',
+      at: Math.floor(Date.now() / 1000) + 3600,
+      every: null, winFrom: null, winTo: null, untilN: null, untilAt: null,
+    } });
+    await inv('smoke_seed_ambiguous');
+    await report('done', !smokeFailed, 1, 0);
   } catch (error) {
     await report('done', false, 0, stage);
+  }
+}
+
+export async function verifyAmbiguousBoot() {
+  try {
+    await waitFor(() => provider.projects().length > 0);
+    await refreshQueue();
+    const ambiguous = await waitFor(async () => {
+      const q = await inv('queue_list');
+      return q.items?.some(item => item.state === 'ambiguous');
+    }, 5000);
+    const q = await inv('queue_list');
+    const item = q.items?.find(entry => entry.state === 'ambiguous');
+    const card = item && store.cards.find(entry => entry.session === item.session);
+    if (card) await openSession(card.id);
+    toggleQueuePanel(true);
+    await pause(300);
+    const actionsVisible = !!document.querySelector('#queue-list .q-ack')
+      && !!document.querySelector('#queue-list .q-risk-retry');
+    const failedRepair = await inv('smoke_queue_state');
+    document.querySelector('#queue-list .q-ack')?.click();
+    const resolved = await waitFor(async () => !(await inv('queue_list')).items?.length, 5000);
+    const flushed = await inv('smoke_flush_queue');
+    const recovered = await inv('smoke_queue_state');
+    await report('ambiguous-boot', ambiguous && actionsVisible && failedRepair.dirty
+      && !failedRepair.disk_matches && resolved && flushed && !recovered.dirty
+      && recovered.disk_matches, actionsVisible ? 1 : 0, recovered.disk_matches ? 1 : 0);
+    await report('done', !smokeFailed, 1, 0);
+  } catch (error) {
+    await report('done', false, 0, 12);
   }
 }
 
@@ -347,7 +700,7 @@ export async function verifyRestart() {
     const disk = JSON.parse((await inv('load_board')).data);
     const durable = card && disk.cards.some(c => c.id === card.id && c.title === 'renamed-enter-smoke');
     await report('rename-restart', !!card && durable && boardTitle === 'renamed-enter-smoke', 1, 1);
-    await report('done', true, 1, 0);
+    await report('done', !smokeFailed, 1, 0);
   } catch (error) {
     await report('done', false, 0, 8);
   }

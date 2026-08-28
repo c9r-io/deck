@@ -1,6 +1,6 @@
 [package]
 name = "deck-app"
-version = "0.4.31"
+version = "0.4.32"
 edition = "2021"
 description = "deck — kanban for terminal agent sessions (Tauri app)"
 license = "MIT"
@@ -20,6 +20,8 @@ serde_json = "1"
 dirs = "5"
 base64 = "0.22"
 portable-pty = "0.8"
+unicode-segmentation = "1"
+unicode-width = "0.2"
 
 [profile.release]
 lto = true

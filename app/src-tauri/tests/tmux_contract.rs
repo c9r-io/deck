@@ -9,6 +9,10 @@ use std::process::Command;
 use std::thread::sleep;
 use std::time::Duration;
 
+#[path = "../src/terminal_selection.rs"]
+mod terminal_selection;
+use terminal_selection::{cursor_steps_for_cell, extract_terminal_selection, SelectionPoint};
+
 fn tmux_bin() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("binaries/tmux-aarch64-apple-darwin")
 }
@@ -19,6 +23,13 @@ impl Server {
     fn new(tag: &str) -> Self {
         let s = Server(format!("deck-test-{tag}-{}", std::process::id()));
         s.run(&[
+            "start-server",
+            ";",
+            "set-option",
+            "-g",
+            "history-limit",
+            "50000",
+            ";",
             "new-session",
             "-d",
             "-s",
@@ -33,12 +44,32 @@ impl Server {
         s
     }
     fn run(&self, args: &[&str]) -> String {
+        String::from_utf8(self.run_raw(args))
+            .expect("tmux output utf8")
+            .trim()
+            .to_string()
+    }
+    fn run_raw(&self, args: &[&str]) -> Vec<u8> {
         let out = Command::new(tmux_bin())
             .args(["-f", "/dev/null", "-L", &self.0])
             .args(args)
             .output()
             .expect("tmux spawn");
-        String::from_utf8_lossy(&out.stdout).trim().to_string()
+        out.stdout
+    }
+    fn run_raw_checked(&self, args: &[&str]) -> Vec<u8> {
+        let out = Command::new(tmux_bin())
+            .args(["-f", "/dev/null", "-L", &self.0])
+            .args(args)
+            .output()
+            .expect("tmux spawn");
+        assert!(
+            out.status.success(),
+            "tmux {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&out.stderr)
+        );
+        out.stdout
     }
     fn fmt(&self, f: &str) -> String {
         self.run(&["display-message", "-p", "-t", "t", f])
@@ -47,6 +78,149 @@ impl Server {
         self.run(&["send-keys", "-t", "t", "-l", cmd]);
         self.run(&["send-keys", "-t", "t", "Enter"]);
         sleep(Duration::from_millis(600));
+    }
+
+    fn fixture(tag: &str, width: u32, height: u32, command: &str) -> Self {
+        let s = Server(format!("deck-test-{tag}-{}", std::process::id()));
+        s.run(&[
+            "start-server",
+            ";",
+            "set-option",
+            "-g",
+            "history-limit",
+            "50000",
+            ";",
+            "new-session",
+            "-d",
+            "-s",
+            "t",
+            "-x",
+            &width.to_string(),
+            "-y",
+            &height.to_string(),
+            command,
+        ]);
+        sleep(Duration::from_millis(300));
+        s
+    }
+
+    fn move_copy_cursor(&self, row: u32, col: u32) {
+        self.run(&["send-keys", "-t", "t", "-X", "top-line"]);
+        self.run(&["send-keys", "-t", "t", "-X", "start-of-line"]);
+        if row > 0 {
+            self.run(&[
+                "send-keys",
+                "-t",
+                "t",
+                "-X",
+                "-N",
+                &row.to_string(),
+                "cursor-down",
+            ]);
+        }
+        let scroll: i64 = self
+            .fmt("#{scroll_position}")
+            .parse()
+            .expect("scroll position numeric");
+        let coord = row as i64 - scroll;
+        let captured = String::from_utf8(self.run_raw_checked(&[
+            "capture-pane",
+            "-p",
+            "-J",
+            "-S",
+            &coord.to_string(),
+            "-E",
+            &coord.to_string(),
+            "-t",
+            "t",
+        ]))
+        .expect("fixture row utf8");
+        let steps = cursor_steps_for_cell(captured.strip_suffix('\n').unwrap_or(&captured), col);
+        if steps > 0 {
+            self.run(&[
+                "send-keys",
+                "-t",
+                "t",
+                "-X",
+                "-N",
+                &steps.to_string(),
+                "cursor-right",
+            ]);
+        }
+    }
+
+    fn select(&self, anchor: (u32, u32), active: (u32, u32)) {
+        let _ = Command::new(tmux_bin())
+            .args(["-f", "/dev/null", "-L", &self.0])
+            .args(["send-keys", "-t", "t", "-X", "cancel"])
+            .output();
+        self.run(&["copy-mode", "-H", "-t", "t"]);
+        self.move_copy_cursor(anchor.0, anchor.1);
+        self.run(&["send-keys", "-t", "t", "-X", "begin-selection"]);
+        self.move_copy_cursor(active.0, active.1);
+        assert_eq!(self.fmt("#{selection_present}"), "1");
+    }
+
+    fn selection_points(&self) -> (SelectionPoint, SelectionPoint) {
+        let raw = self.fmt(
+            "#{history_size}\t#{selection_start_y}\t#{selection_start_x}\t#{selection_end_y}\t#{selection_end_x}",
+        );
+        let fields: Vec<i64> = raw
+            .split('\t')
+            .map(|field| field.parse().expect("selection coordinate numeric"))
+            .collect();
+        assert_eq!(fields.len(), 5);
+        let history = fields[0];
+        (
+            SelectionPoint {
+                row: fields[1] - history,
+                col: fields[2] as u32,
+            },
+            SelectionPoint {
+                row: fields[3] - history,
+                col: fields[4] as u32,
+            },
+        )
+    }
+
+    fn production_selection_text(&self) -> String {
+        let (first, second) = self.selection_points();
+        extract_terminal_selection(first, second, |start, end| {
+            String::from_utf8(self.run_raw_checked(&[
+                "capture-pane",
+                "-p",
+                "-J",
+                "-S",
+                &start.to_string(),
+                "-E",
+                &end.to_string(),
+                "-t",
+                "t",
+            ]))
+            .map_err(|_| "tmux capture was not utf8".to_string())
+        })
+        .expect("production selection extraction")
+    }
+
+    fn tmux_selection_oracle(&self, label: &str) -> Vec<u8> {
+        self.run(&[
+            "send-keys",
+            "-t",
+            "t",
+            "-X",
+            "copy-selection-no-clear",
+            "-C",
+            label,
+        ]);
+        let name = self
+            .run(&["list-buffers", "-F", "#{buffer_name}"])
+            .lines()
+            .find(|name| name.starts_with(label))
+            .expect("selection oracle buffer")
+            .to_string();
+        let bytes = self.run_raw_checked(&["show-buffer", "-b", &name]);
+        self.run(&["delete-buffer", "-b", &name]);
+        bytes
     }
 }
 
@@ -302,36 +476,172 @@ fn format_tabs_survive_only_with_utf8_locale() {
     );
 }
 
-/// The copy panel exists because a terminal SELECTION can only ever cover one
-/// screen: tmux owns the scrollback and repaints the same rows in place. The
-/// panel's whole value is that `capture-pane` reaches past the visible frame,
-/// and that `-J` rejoins lines tmux wrapped for display (a path or URL broken
-/// at the pane width would be useless once pasted).
+/// Cross-screen selection delegates anchor, endpoint, repaint and wrap
+/// semantics to tmux copy-mode. This exercises 2,500 deterministic rows and
+/// verifies that the selected text crosses many screens in both directions,
+/// rejoins soft wraps, and preserves real hard/blank line boundaries.
 #[test]
-fn capture_reaches_past_the_visible_screen_and_rejoins_wrapped_lines() {
-    let s = Server::new("capture");
-    s.shell("i=1; while [ $i -le 40 ]; do echo scrollback-line-$i; i=$((i+1)); done");
-    let visible = s.run(&["capture-pane", "-p", "-t", "t"]);
-    assert!(
-        !visible.contains("scrollback-line-1\n"),
-        "the earliest lines must already be off-screen for this test to mean \
-         anything:\n{visible}"
+fn copy_mode_selection_crosses_2500_rows_with_exact_wrap_boundaries() {
+    let s = Server::new("selection");
+    s.shell(
+        "python3 -c '[print((f\"R7-{i:04d}|中文|😀|é|\") + (\"x\"*180 if i == 120 else \"\")) for i in range(2500)]; print(\"BLANK-A\"); print(); print(\"BLANK-B\")'",
     );
-    let full = s.run(&["capture-pane", "-p", "-J", "-S", "-500", "-t", "t"]);
-    for n in [1, 20, 40] {
-        assert!(
-            full.contains(&format!("scrollback-line-{n}")),
-            "line {n} missing from the captured scrollback"
+    for _ in 0..30 {
+        if s.run(&["capture-pane", "-p", "-t", "t"])
+            .contains("BLANK-B")
+        {
+            break;
+        }
+        sleep(Duration::from_millis(100));
+    }
+    let hist: usize = s.fmt("#{history_size}").parse().expect("history numeric");
+    assert!(hist > 2_400, "fixture must retain all 2,500 logical rows");
+
+    s.run(&["copy-mode", "-H", "-t", "t"]);
+    s.run(&["send-keys", "-t", "t", "-X", "history-top"]);
+    s.run(&["send-keys", "-t", "t", "-X", "start-of-line"]);
+    s.run(&["send-keys", "-t", "t", "-X", "begin-selection"]);
+    s.run(&["send-keys", "-t", "t", "-X", "history-bottom"]);
+    s.run(&["send-keys", "-t", "t", "-X", "end-of-line"]);
+    s.run(&[
+        "send-keys",
+        "-t",
+        "t",
+        "-X",
+        "copy-selection-no-clear",
+        "-C",
+        "r7selection",
+    ]);
+    let name = s
+        .run(&["list-buffers", "-F", "#{buffer_name}"])
+        .lines()
+        .find(|name| name.starts_with("r7selection"))
+        .expect("selection buffer")
+        .to_string();
+    let copied = s.run(&["show-buffer", "-b", &name]);
+    assert!(copied.contains("R7-0000|中文|😀|é|"));
+    assert!(copied.contains("R7-2499|中文|😀|é|"));
+    let long = format!("R7-0120|中文|😀|é|{}", "x".repeat(180));
+    assert!(copied.contains(&long), "soft wrap must not add a newline");
+    assert!(
+        copied.contains("BLANK-A\n\nBLANK-B"),
+        "hard blank line must survive"
+    );
+    assert!(
+        copied.find("R7-0000").unwrap() < copied.find("R7-2499").unwrap(),
+        "selection order must stay forward"
+    );
+
+    // Reverse the active endpoint back toward the anchor: selection shrinks
+    // without flipping or duplicating the intermediate rows.
+    s.run(&["send-keys", "-t", "t", "-X", "-N", "100", "cursor-up"]);
+    assert_eq!(s.fmt("#{selection_present}"), "1");
+    s.run(&["send-keys", "-t", "t", "-X", "cancel"]);
+}
+
+/// The production history limit is 50,000. Keep a contract beyond 20,000
+/// physical rows so a future tmux/config change cannot silently restore the
+/// old short-scrollback ceiling or clamp selection coordinates to a screen.
+#[test]
+fn copy_mode_selection_reaches_beyond_20000_rows() {
+    let s = Server::new("selection20k");
+    s.shell(
+        "python3 -c '[print(f\"R7-DEEP-{i:05d}\") for i in range(20050)]; print(\"R7-DEEP-END\")'",
+    );
+    for _ in 0..100 {
+        if s.run(&["capture-pane", "-p", "-t", "t"])
+            .contains("R7-DEEP-END")
+        {
+            break;
+        }
+        sleep(Duration::from_millis(100));
+    }
+    let hist: i64 = s.fmt("#{history_size}").parse().expect("history numeric");
+    assert!(
+        hist > 20_000,
+        "fixture must cross the 20,000-row boundary: {hist}"
+    );
+
+    s.run(&["copy-mode", "-H", "-t", "t"]);
+    s.run(&["send-keys", "-t", "t", "-X", "history-top"]);
+    s.run(&["send-keys", "-t", "t", "-X", "start-of-line"]);
+    s.run(&["send-keys", "-t", "t", "-X", "begin-selection"]);
+    s.run(&["send-keys", "-t", "t", "-X", "history-bottom"]);
+    s.run(&["send-keys", "-t", "t", "-X", "end-of-line"]);
+    assert_eq!(s.fmt("#{selection_present}"), "1");
+    let start: i64 = s
+        .fmt("#{selection_start_y}")
+        .parse()
+        .expect("selection_start_y numeric");
+    let end: i64 = s
+        .fmt("#{selection_end_y}")
+        .parse()
+        .expect("selection_end_y numeric");
+    assert!(
+        (start - end).abs() > 20_000,
+        "selection span must cross 20,000 rows: start={start}, end={end}"
+    );
+}
+
+/// The release copy command does not ask tmux to populate a paste buffer: it
+/// extracts the same half-open coordinates through `capture-pane -J`. Compare
+/// that exact production module with tmux's own byte oracle so an internally
+/// self-consistent inclusive-end regression cannot pass again.
+#[test]
+fn production_selection_extraction_matches_tmux_oracle_byte_for_byte() {
+    let s = Server::fixture(
+        "selection-bytes",
+        80,
+        8,
+        "sh -c 'printf \"ABCDEFGHIJKLMNO\\nSECOND-LINE\\n\\nA中BéC👩‍💻D\\nTRAIL   X\\n\"; sleep 30'",
+    );
+    let cases = [
+        ("ascii-forward", (0, 3), (0, 7), "DEFG"),
+        ("ascii-reverse", (0, 7), (0, 3), "DEFG"),
+        ("ascii-one", (0, 3), (0, 4), "D"),
+        ("line-start", (0, 0), (0, 1), "A"),
+        ("line-end", (0, 14), (1, 0), "O\n"),
+        ("multi-forward", (0, 3), (1, 6), "DEFGHIJKLMNO\nSECOND"),
+        ("multi-reverse", (1, 6), (0, 3), "DEFGHIJKLMNO\nSECOND"),
+        ("blank-line", (1, 11), (3, 0), "\n\n"),
+        // Requesting the second cell of 中 makes tmux snap the endpoint to
+        // the next legal cursor boundary (column 3); extraction uses the
+        // actual coordinates reported by that same pane.
+        ("wide-second-end", (3, 0), (3, 2), "A"),
+        ("wide-second-start", (3, 2), (3, 3), "中"),
+        ("combining", (3, 4), (3, 5), "é"),
+        ("zwj", (3, 6), (3, 8), "👩‍💻"),
+        ("trailing-spaces", (4, 0), (4, 8), "TRAIL   "),
+    ];
+
+    for (label, anchor, active, literal) in cases {
+        s.select(anchor, active);
+        let production = s.production_selection_text();
+        let oracle = s.tmux_selection_oracle(label);
+        assert_eq!(production.as_bytes(), oracle, "tmux mismatch: {label}");
+        assert_eq!(production, literal, "literal mismatch: {label}");
+    }
+}
+
+#[test]
+fn production_selection_extraction_rejoins_only_soft_wraps() {
+    let s = Server::fixture(
+        "selection-wrap",
+        10,
+        5,
+        "sh -c 'printf \"ABCDEFGHIJKLMNO\\nSECOND\\n\"; sleep 30'",
+    );
+    for (label, anchor, active) in [
+        ("wrap-forward", (0, 3), (2, 3)),
+        ("wrap-reverse", (2, 3), (0, 3)),
+    ] {
+        s.select(anchor, active);
+        let production = s.production_selection_text();
+        assert_eq!(production, "DEFGHIJKLMNO\nSEC", "literal mismatch: {label}");
+        assert_eq!(
+            production.as_bytes(),
+            s.tmux_selection_oracle(label),
+            "tmux mismatch: {label}"
         );
     }
-    assert!(full.lines().count() > visible.lines().count());
-
-    // a line longer than the 80-column pane comes back in ONE piece with -J
-    let long = "x".repeat(200);
-    s.shell(&format!("echo start-{long}-end"));
-    let joined = s.run(&["capture-pane", "-p", "-J", "-S", "-500", "-t", "t"]);
-    assert!(
-        joined.contains(&format!("start-{long}-end")),
-        "-J must rejoin a display-wrapped line"
-    );
 }

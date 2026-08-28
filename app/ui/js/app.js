@@ -9,8 +9,10 @@ import './terminal.js';
 import './scheduler.js';
 import { $, genId, inv, listen, state, store, uev } from './state.js';
 import { loadSettings, toast } from './dialogs.js';
-import { provider, render, startPolling } from './board.js';
+import { provider, render, startPolling, stopPolling } from './board.js';
 import { refreshQueue } from './scheduler.js';
+
+window.addEventListener('beforeunload', stopPolling, { once: true });
 
 /* ---------- in-app updates (tauri-plugin-updater) ---------- */
 export async function checkForUpdate() {

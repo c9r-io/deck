@@ -9,11 +9,13 @@ information; the user makes every placement decision.
 
 Tauri 2 macOS app. Frontend `app/ui/` is a no-build set of native ES modules
 (`ui/js/state.js` shared slots/helpers · `pure.js` DOM-free logic, node-tested ·
-`board.js` · `layout.js` splits/terminal host · `terminal.js` completion/ghost ·
+`board.js` · `layout.js` splits/terminal host · `selection.js` tmux-owned
+terminal selection · `terminal.js` completion/ghost ·
 `scheduler.js` queue UI · `dialogs.js` · `persistence.js` · `app.js` boot),
 loaded by `ui/index.html`; xterm.js vendored in `app/ui/vendor/`. Backend
 `app/src-tauri/src/` is modular: `main.rs` (wiring) · `commands.rs` ·
-`scheduler.rs` · `storage.rs` · `pty.rs` · `tmux.rs` · `history.rs`.
+`scheduler.rs` · `storage.rs` · `pty.rs` · `tmux.rs` · `history.rs` ·
+`smoke_faults.rs` (debug/isolated-smoke only).
 Frontend gates: `node --check` (syntax) · `ui/test/*.mjs` (node:test)
 · `ui/js/check.mjs` (unresolved identifiers; forbids xterm `._core`).
 
@@ -75,21 +77,26 @@ Frontend gates: `node --check` (syntax) · `ui/test/*.mjs` (node:test)
   fractional / negative / null version, or a version without data, is
   damage → recovery), and `save` refuses to overwrite a malformed or future
   envelope.
-- Copying long output: a terminal selection can only ever cover ONE screen
-  (tmux owns the scrollback and repaints in place), so `capture_scrollback`
-  (`capture-pane -p -J`, ≤20k terminal rows with explicit truncation metadata)
-  feeds a copy panel where the text scrolls and selects like a document — ⧉
-  in the pane header, ⌘⇧C, or the card context menu. `Copy all` writes through
-  native `pbcopy` and reports success only after exit 0; ⌘C writes exactly the
-  panel selection. Pointer capture plus a bounded animation-frame controller
-  extends native WebKit selection and continuously scrolls near either vertical
-  edge; pointer-up/cancel, Escape, close and window blur always stop it. Trailing
-  blank rows are preserved because tmux cannot prove
-  whether they are padding or answer content. Do NOT "fix" this by enabling
-  tmux mouse mode: that takes xterm's local selection away. The completion bar
-  is a real flex row inside the focused pane, never an overlay: showing/hiding
-  it refits that pane's public xterm FitAddon and synchronizes PTY rows while
-  leaving sibling panes unchanged.
+- Terminal selection has one authority: tmux copy-mode owns anchor, active
+  endpoint, history position, highlight and hard/soft-wrap semantics; PTY
+  repaint makes that highlight visible in xterm. `selection.js` owns a primary
+  gesture at pointerdown (blocking its compatible mouse sequence), promotes
+  drags to tmux, and replays only a sub-threshold click to xterm. It translates
+  pointer coordinates using only the public `.xterm-screen` rectangle and
+  public xterm cols/rows, coalesces IPC updates, holds pointer capture through
+  edge scrolling, and cancels on Escape, blur, visibility, pane detach or
+  disposal. tmux endpoints are directional and end-exclusive; cell columns
+  must be converted to grapheme steps before cursor movement. Never add a
+  mirror document, transparent textarea, or xterm `._core` dependency. ⌘C
+  asks tmux for exactly the current logical selection
+  and writes it through native `pbcopy`; no selection is a clipboard no-op.
+  History is 50,000 rows and clipboard extraction is explicitly capped at
+  64 MiB without truncation. During selection tmux freezes the reading frame
+  while the PTY stream continues through its bounded ACK gate.
+- The completion bar is a real flex row inside one pane, never an overlay.
+  Its generation-based transition is: detach/hide old owner, refit old owner,
+  mount new owner, refit new owner. Stale RAF work must not resize a newer
+  owner, and each pane preserves its own bottom-follow/scrollback position.
 - One poll command (`poll_sessions`) returns liveness + `#{window_activity}` recency +
   process-tree RSS (pane_pid → ps tree walk) + tail previews. Frontend polls every
   2.5s and diffs into granular UI events (status/mem/output) — never full re-renders

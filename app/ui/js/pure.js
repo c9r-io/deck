@@ -165,45 +165,47 @@ export function createSerialTransactionQueue({ snapshot, persist, commit, serial
 export function createExitRetirementTracker() {
   const pending = new Set();
   const warned = new Set();
+  const inFlight = new Set();
+  let lifecycle = 0;
   return {
     observe(sid) { pending.add(sid); },
     async drain({ get, markStopped, close, failed, succeeded }) {
+      const turn = lifecycle;
+      const tasks = [];
       for (const sid of [...pending]) {
         const card = get(sid);
         if (!card) { pending.delete(sid); warned.delete(sid); continue; }
+        if (inFlight.has(sid)) continue;
         markStopped(card);
-        if (!(await close(card))) {
-          if (!warned.has(sid)) { warned.add(sid); failed(card); }
-          continue;
-        }
-        pending.delete(sid); warned.delete(sid);
-        succeeded(card);
+        inFlight.add(sid);
+        tasks.push((async () => {
+          try {
+            const result = await close(card);
+            if (turn !== lifecycle) return;
+            const ok = typeof result === 'object' ? !!result.ok : !!result;
+            const applied = typeof result === 'object' ? !!result.applied : ok;
+            if (!ok) {
+              if (!warned.has(sid)) { warned.add(sid); failed(card); }
+              return;
+            }
+            pending.delete(sid); warned.delete(sid);
+            if (applied) succeeded(card);
+          } finally {
+            inFlight.delete(sid);
+          }
+        })());
       }
+      await Promise.all(tasks);
     },
     pending: sid => pending.has(sid),
-  };
-}
-
-/* ---------- copy panel ---------- */
-export function latestRequestGuard() {
-  let current = 0;
-  return {
-    begin() { return ++current; },
-    cancel() { current++; },
-    isCurrent(id) { return id === current; },
+    inFlight: sid => inFlight.has(sid),
+    clear() { lifecycle++; pending.clear(); warned.clear(); },
   };
 }
 
 export async function copyExact(text, writer) {
   await writer(text);
   return text.length;
-}
-
-export function copyShortcutAction({ metaKey, shiftKey, key, panelOpen, sessionView, hasSelection }) {
-  if (!metaKey || String(key).toLowerCase() !== 'c') return null;
-  if (panelOpen && !shiftKey) return hasSelection ? 'copy-panel-selection' : 'none';
-  if (!panelOpen && shiftKey && sessionView) return 'open-copy-panel';
-  return null;
 }
 
 export function linkMenuItems(kind) {
@@ -221,40 +223,67 @@ export function linkMenuItems(kind) {
     ];
 }
 
-/** Signed pixels/frame for copy-panel edge auto-scroll. */
-export function selectionAutoScrollSpeed({ pointerY, top, bottom, hotZone = 56, maxSpeed = 28 }) {
-  if (![pointerY, top, bottom, hotZone, maxSpeed].every(Number.isFinite) || bottom <= top || hotZone <= 0) return 0;
+/** Signed rows per selection update for the terminal's edge hot zones. */
+export function terminalSelectionEdgeLines({ pointerY, top, bottom, hotZone = 48, maxLines = 6 }) {
+  if (![pointerY, top, bottom, hotZone, maxLines].every(Number.isFinite) || bottom <= top || hotZone <= 0) return 0;
   if (pointerY < top + hotZone) {
     const depth = Math.min(1, (top + hotZone - pointerY) / hotZone);
-    return -Math.max(1, Math.round(maxSpeed * depth * depth));
+    return -Math.max(1, Math.round(maxLines * depth * depth));
   }
   if (pointerY > bottom - hotZone) {
     const depth = Math.min(1, (pointerY - (bottom - hotZone)) / hotZone);
-    return Math.max(1, Math.round(maxSpeed * depth * depth));
+    return Math.max(1, Math.round(maxLines * depth * depth));
   }
   return 0;
 }
 
-/** RAF lifecycle core for copy-panel selection; DOM endpoint updates are injected. */
-export function createSelectionAutoScroller({ frame, cancelFrame, measure, scrollBy, extend }) {
-  let active = false, raf = null, point = null;
-  const tick = () => {
-    raf = null;
-    if (!active || !point) return;
-    const rect = measure();
-    const speed = selectionAutoScrollSpeed({ pointerY: point.y, top: rect.top, bottom: rect.bottom });
-    const moved = speed ? scrollBy(speed) : false;
-    extend(point, rect);
-    if (active && speed && moved !== false) raf = frame(tick);
-  };
-  const schedule = () => {
-    if (active && raf == null) raf = frame(tick);
-  };
+/** Pure generation/state core shared by production terminal selection and tests. */
+export function createTerminalSelectionModel() {
+  let generation = 0;
+  let phase = 'idle';
+  let anchor = null;
+  let active = null;
+  let status = null;
   return {
-    start(p) { active = true; point = p; schedule(); },
-    move(p) { if (!active) return; point = p; schedule(); },
-    stop() { active = false; point = null; if (raf != null) cancelFrame(raf); raf = null; },
-    active: () => active,
+    begin(point) {
+      generation++;
+      phase = 'starting';
+      anchor = { ...point };
+      active = { ...point };
+      status = null;
+      return generation;
+    },
+    move(point) {
+      if (phase !== 'starting' && phase !== 'dragging') return false;
+      active = { ...point };
+      return true;
+    },
+    apply(id, next) {
+      if (id !== generation || phase === 'idle' || phase === 'cancelled') return false;
+      status = { ...next };
+      phase = 'dragging';
+      return true;
+    },
+    finish() {
+      if (phase === 'starting' || phase === 'dragging') phase = 'selected';
+    },
+    cancel() {
+      generation++;
+      phase = 'cancelled';
+      anchor = null;
+      active = null;
+      status = null;
+      return generation;
+    },
+    reset() { phase = 'idle'; },
+    snapshot() {
+      return {
+        generation, phase,
+        anchor: anchor && { ...anchor },
+        active: active && { ...active },
+        status: status && { ...status },
+      };
+    },
   };
 }
 

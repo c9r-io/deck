@@ -7,40 +7,43 @@ while the real webview fails (that is how every regression in this list
 originally shipped). Run through them in the `app/run.sh` build before
 tagging a release; 3 minutes total.
 
-## v0.4.31 executed release gate — 2026-08-28
+## v0.4.32 post-review automated candidate — 2026-08-29
 
-The round-six blockers were executed, not merely added to the checklist:
+The round-seven automated and WKWebView portions below have been executed.
+Exact candidate carrier, selection sizes, fault results and the remaining
+physical-input blocker are recorded in `RELEASE_REPORT_v0.4.32.md`.
 
-- [x] A debug arm64 `.app` was placed in a 0.4.31 DMG, mounted read-only, and
-      run in its real WKWebView with a fresh private data directory and unique
-      tmux socket. The 13,928 KiB candidate DMG had SHA-256
-      `d3bcf7e484b8a02f231022032cb0af283db138d020b0b3c61a1966a1f8893888`.
-- [x] Board overlap cases completed with mask 255 and disk JSON equal to the
-      final in-memory Board. The scheduler boot-save-failure and natural-exit
-      retry cases passed their deterministic Rust/Node regressions.
-- [x] Sidebar Enter rename ended editing and updated all four surfaces once;
-      the mounted app was killed and relaunched against the same isolated data,
-      then reported the renamed title in both loaded UI state and disk.
-- [x] A deterministic 2,204-row / 31,657-JavaScript-character Unicode capture
-      auto-scrolled down and up. Native selection and Copy all produced distinct
-      clipboard payloads; external paste measurement was 108 selection lines /
-      2,280 bytes versus 2,203 full-output newlines / 47,071 bytes.
-- [x] The real file menu retained two URL actions and exposed five path actions;
-      editor-parent plus relative and absolute Unicode/space parent-session
-      actions all completed without a ghost card.
-- [x] Completion geometry passed mask 255 across bottom-follow, tmux scrollback,
-      split pane, sidebar resize, rapid show/hide and a long full-width/emoji
-      prefix. The terminal viewport was 617 px high, the reserved bar 38 px,
-      their gap was 0 px without intersection, and the sibling gap was 5 px.
-      xterm/tmux rows agreed at 24 while shown and 25 after hiding.
-- [x] Smoke logs contained zero absolute-path/URL hits and zero raw generated
-      session-name hits. macOS denied programmatic window capture without Screen
-      Recording permission, so the retained evidence is the closed numeric DOM
-      rectangles, overlap masks and PTY dimensions above rather than a screenshot.
-
-The commit/tag SHA and signed release-DMG digest are recorded in the release
-report after CI produces the notarized artifact; the debug digest above is only
-the pre-tag functional carrier.
+- [x] The isolated debug review candidate was packaged as
+      `deck-v0.4.32-review.app` and `deck_0.4.32_review_aarch64.dmg`
+      (13,299,623 bytes, SHA-256
+      `941bb8c28ed7791944238498c13f8e779be5be927472849a7c6f2cd903fbd584`).
+- [x] Production-module pointer smoke crossed upward 135 logical lines
+      (generated markers 2369→2499), then reverse-shrank by 962 characters.
+      Its independent generator/hash oracle verified `R7C-0305`→`R7C-0398`
+      as 3,854 bytes / 94 newlines. A separate
+      downward drag crossed 113 logical lines from an existing history viewport.
+- [x] Synthetic production routing proved one owner from pointerdown (31/31),
+      blocked compatibility events, and passed light click, double-click word,
+      triple-click line, single-screen drag and right-button routing (15/15).
+- [x] Live output advanced history while selection remained active; resize,
+      Escape/cancel, detach/re-attach and split isolation passed, with the
+      sibling xterm/tmux both at 25 rows.
+- [x] Completion geometry passed 255/255 and rapid owner switch/move/close
+      passed 7/7; old/new pane xterm and tmux rows agreed at 24/24 shown and
+      25/25 hidden.
+- [x] Board overlap passed 255/255. Board first-save failure recovered with
+      memory/disk equality; queue-cancel then Board-save failure retained the
+      natural-exit card, cleared its active selection, and retired it once after
+      recovery (63/63); ambiguous boot-save
+      failure remained actionable and flushed to disk (1/1).
+- [x] The isolated log contained no absolute home path, URL, raw generated
+      session name, JavaScript error or CSP failure. The app and private tmux
+      server were explicitly stopped after the run.
+- [x] A user completed the physical gate with a real mouse/trackpad in the
+      isolated review app and pasted into TextEdit. Light/double/triple click,
+      single- and multi-screen selection, reverse shrink, split isolation,
+      right-click and cancellation passed; `R7C-0305`→`R7C-0398` matched 3,854
+      bytes, 94 newlines and the independent SHA-256 in the release report.
 
 ## Input & rename
 - [ ] New session → type `ls` → characters echo, Enter runs it (TSM/IMK alive)
@@ -63,17 +66,25 @@ the pre-tag functional carrier.
       (typing while scrolled first leaves copy-mode, so keys are never eaten
       as copy-mode commands)
 - [ ] Drag-select multiple lines → ⌘C → paste elsewhere matches
-- [ ] Drag a selection UP to the top edge of the pane: the view does not
-      scroll (tmux owns the history — this is the known limit) and deck
-      toasts the way out ONCE
-- [ ] ⧉ in the pane header (also ⌘⇧C, also right-click card → Copy output…)
-      opens the copy panel: use at least 2,000 lines containing Chinese,
-      emoji, blank lines, code-block markers and one line wider than the pane.
-      Dragging at the bottom edge must continuously scroll down; dragging at
-      the top must continuously scroll up. ⌘C copies only that native selection,
-      while "Copy all" pastes the full capture byte-for-byte — including lines
-      long since scrolled out of view and the unwrapped long line. Pointer-up,
-      cancel, Escape, backdrop close and window blur must stop auto-scroll.
+- [ ] Produce at least 2,500 deterministic rows containing Chinese, emoji,
+      combining/ZWJ characters, blank lines, fenced-code markers, tabs,
+      trailing spaces and a line wider than the pane. Drag directly on xterm
+      cells into the top edge and hold: highlight and anchor remain continuous
+      while tmux crosses multiple screens. Repeat downward from history.
+- [ ] After crossing multiple screens, reverse direction within the same drag:
+      the selection shrinks without duplicating, dropping or reversing rows.
+      ⌘C copies only that logical selection; with no selection, the existing
+      clipboard remains byte-identical.
+- [ ] Paste into an external text target and verify start/end markers, order,
+      hard blank lines, joined soft wraps, Unicode byte count and summary.
+- [ ] Repeat in horizontal and vertical splits. Only the gesture's pane may
+      scroll or highlight; its sibling keeps focus, viewport and xterm/PTY rows.
+- [ ] While holding the selection, generate live output and resize the window,
+      sidebar and divider. Then test Escape, pointer cancel, app blur, pane
+      switch and detach: each stops edge work immediately and restores input.
+- [ ] Select beyond 20,000 rows and at the 50,000-row history boundary. The UI
+      announces the reachable limit; clipboard requests over 64 MiB fail
+      explicitly and never return a truncated highlighted range.
 
 ## Board & cards
 - [ ] Drag a card between boards (native drop must not swallow HTML5 DnD)

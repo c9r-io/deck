@@ -367,6 +367,9 @@ pub(crate) fn migrate_groups(q: &mut QueueState) {
 /// Persist the queue. Callers must not proceed with side effects (like
 /// injecting a prompt) when this fails.
 pub(crate) fn save_queue(q: &QueueState) -> Result<(), String> {
+    if crate::smoke_faults::take("queue-save") {
+        return Err("injected queue save failure".into());
+    }
     let raw = serde_json::to_string(q).map_err(|e| e.to_string())?;
     storage::save_typed::<QueueState>(&queue_path(), &raw)
 }
@@ -374,6 +377,54 @@ pub(crate) fn save_queue(q: &QueueState) -> Result<(), String> {
 #[tauri::command]
 pub(crate) fn queue_list(state: State<'_, Queues>) -> QueueState {
     state.q.lock().unwrap().clone()
+}
+
+#[tauri::command]
+pub(crate) fn smoke_seed_ambiguous(state: State<'_, Queues>) -> Result<(), String> {
+    if !crate::smoke_faults::enabled() {
+        return Err("smoke queue hooks are unavailable".into());
+    }
+    let mut q = state.q.lock().unwrap();
+    let item = q.items.first_mut().ok_or("smoke queue is empty")?;
+    let delivery = "smoke-delivery".to_string();
+    item.state = "firing".into();
+    item.delivery = Some(delivery.clone());
+    let snapshot = item.clone();
+    q.pending.clear();
+    q.pending.push(PendingDelivery {
+        id: delivery,
+        snapshot,
+    });
+    save_queue(&q)
+}
+
+#[derive(Serialize)]
+pub(crate) struct SmokeQueueState {
+    dirty: bool,
+    disk_matches: bool,
+}
+
+#[tauri::command]
+pub(crate) fn smoke_queue_state(state: State<'_, Queues>) -> Result<SmokeQueueState, String> {
+    if !crate::smoke_faults::enabled() {
+        return Err("smoke queue hooks are unavailable".into());
+    }
+    let q = state.q.lock().unwrap().clone();
+    let disk =
+        storage::load_typed::<QueueState>(&queue_path())?.ok_or("smoke queue file is missing")?;
+    let disk: QueueState = serde_json::from_str(&disk.payload).map_err(|e| e.to_string())?;
+    Ok(SmokeQueueState {
+        dirty: state.dirty.load(AtomicOrdering::Relaxed),
+        disk_matches: serde_json::to_value(q).ok() == serde_json::to_value(disk).ok(),
+    })
+}
+
+#[tauri::command]
+pub(crate) fn smoke_flush_queue(state: State<'_, Queues>) -> Result<bool, String> {
+    if !crate::smoke_faults::enabled() {
+        return Err("smoke queue hooks are unavailable".into());
+    }
+    Ok(flush_dirty(&state.q, &state.dirty, &save_queue))
 }
 
 #[derive(Deserialize)]
@@ -774,6 +825,9 @@ pub(crate) fn queue_clear_sessions(
     app: AppHandle,
     sessions: Vec<String>,
 ) -> Result<(), String> {
+    if crate::smoke_faults::take("queue-cancel") {
+        return Err("injected queue cancellation failure".into());
+    }
     with_queue(&state.q, &save_queue, |q| {
         clear_sessions(q, &sessions);
         Ok(())
