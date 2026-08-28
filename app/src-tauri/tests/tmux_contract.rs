@@ -160,6 +160,11 @@ fn poll_formats_exist() {
     let s = Server::new("fmt");
     assert!(!s.fmt("#{pane_pid}").is_empty(), "pane_pid");
     assert!(!s.fmt("#{window_activity}").is_empty(), "window_activity");
+    assert_eq!(
+        s.fmt("#{pane_in_mode}"),
+        "0",
+        "pane_in_mode (scrollback chip)"
+    );
     let fg = s.fmt("#{pane_current_command}");
     // macOS /bin/sh is bash in sh-mode; the SHELL_FG gate matches both
     assert!(

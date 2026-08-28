@@ -599,8 +599,10 @@ pub(crate) fn start_session(name: String, dir: String, cmd: String) -> Result<bo
 /// Server-wide defaults for the deck tmux server. Idempotent; called at app
 /// Wheel scrolling, deck-driven: xterm keeps LOCAL selection (mouse mode
 /// stays off), and deck translates wheel deltas into tmux copy-mode
+/// Returns whether the pane is in copy-mode AFTER the scroll, so the UI can
+/// show/hide its scrollback indicator without waiting for the next poll.
 #[tauri::command]
-pub(crate) fn scroll_session(name: String, lines: i32) -> Result<(), String> {
+pub(crate) fn scroll_session(name: String, lines: i32) -> Result<bool, String> {
     validate_session_name(&name)?;
     let t = pane_target(&name);
     // one query for both facts (was two subprocesses per wheel tick)
@@ -612,7 +614,7 @@ pub(crate) fn scroll_session(name: String, lines: i32) -> Result<(), String> {
     if lines < 0 {
         if !in_mode {
             if hist == 0 {
-                return Ok(());
+                return Ok(false);
             }
             tmux(&["copy-mode", "-e", "-t", &t])?;
         }
@@ -621,7 +623,20 @@ pub(crate) fn scroll_session(name: String, lines: i32) -> Result<(), String> {
     } else if lines > 0 && in_mode {
         let n = lines.clamp(1, 60).to_string();
         let _ = tmux(&["send-keys", "-t", &t, "-X", "-N", &n, "scroll-down"]);
+    } else {
+        return Ok(in_mode);
     }
+    let after = tmux(&["display", "-p", "-t", &t, "#{pane_in_mode}"]).unwrap_or_default();
+    Ok(after.trim() == "1")
+}
+
+/// Leave copy-mode and return to the live view (typing, the scrollback
+/// chip, or wheel-to-bottom all end here). A pane that is not in copy-mode
+/// is a no-op — tmux's error for that case is deliberately swallowed.
+#[tauri::command]
+pub(crate) fn scroll_bottom(name: String) -> Result<(), String> {
+    validate_session_name(&name)?;
+    let _ = tmux(&["send-keys", "-t", &pane_target(&name), "-X", "cancel"]);
     Ok(())
 }
 
@@ -658,6 +673,10 @@ pub(crate) struct SessInfo {
     /// foreground process in the pane (zsh, claude, node, …) — lets the
     /// frontend record shell commands but not agent prompts
     fg: Option<String>,
+    /// pane is in tmux copy-mode: the VISIBLE frame is frozen scrollback,
+    /// not live output — the UI must say so (a silently frozen agent TUI
+    /// reads as a hung session)
+    scrolled: Option<bool>,
 }
 
 pub(crate) fn tree_mem(roots: &HashMap<String, u32>) -> HashMap<String, f64> {
@@ -712,20 +731,20 @@ const MAX_TAIL_SESSIONS: usize = 16;
 /// never produced by capture-pane for ordinary pane text lines.
 const TAIL_MARK: &str = "\u{1}deck-tail\u{1}";
 
-/// One pane-listing line → (session, pane pid, activity epoch, fg command).
-/// Every tmux session has at least one pane, so this listing doubles as the
-/// liveness set — no separate `list-sessions` round-trip.
-pub(crate) fn parse_panes(text: &str) -> HashMap<String, (u32, u64, String)> {
-    let mut panes: HashMap<String, (u32, u64, String)> = HashMap::new();
+/// One pane-listing line → (session, pane pid, activity epoch, in copy-mode,
+/// fg command). Every tmux session has at least one pane, so this listing
+/// doubles as the liveness set — no separate `list-sessions` round-trip.
+pub(crate) fn parse_panes(text: &str) -> HashMap<String, (u32, u64, bool, String)> {
+    let mut panes: HashMap<String, (u32, u64, bool, String)> = HashMap::new();
     for line in text.lines() {
         let mut it = line.split('\t');
-        if let (Some(s), Some(pid), Some(act), Some(fg)) =
-            (it.next(), it.next(), it.next(), it.next())
+        if let (Some(s), Some(pid), Some(act), Some(mode), Some(fg)) =
+            (it.next(), it.next(), it.next(), it.next(), it.next())
         {
             if let (Ok(pid), Ok(act)) = (pid.parse(), act.parse()) {
                 panes
                     .entry(s.to_string())
-                    .or_insert((pid, act, fg.to_string()));
+                    .or_insert((pid, act, mode == "1", fg.to_string()));
             }
         }
     }
@@ -796,7 +815,7 @@ pub(crate) fn poll_sessions(names: Vec<String>, tail_for: Vec<String>) -> Vec<Se
         "list-panes",
         "-a",
         "-F",
-        "#{session_name}\t#{pane_pid}\t#{window_activity}\t#{pane_current_command}",
+        "#{session_name}\t#{pane_pid}\t#{window_activity}\t#{pane_in_mode}\t#{pane_current_command}",
     ]);
     // a failing listing silently reads as "everything is dead" — log the
     // failure and the recovery, once per transition (tmux errors carry no
@@ -823,7 +842,7 @@ pub(crate) fn poll_sessions(names: Vec<String>, tail_for: Vec<String>) -> Vec<Se
 
     let roots: HashMap<String, u32> = names
         .iter()
-        .filter_map(|n| panes.get(n).map(|(pid, _, _)| (n.clone(), *pid)))
+        .filter_map(|n| panes.get(n).map(|(pid, _, _, _)| (n.clone(), *pid)))
         .collect();
     let mem = tree_mem(&roots);
 
@@ -849,10 +868,11 @@ pub(crate) fn poll_sessions(names: Vec<String>, tail_for: Vec<String>) -> Vec<Se
             let pane = panes.get(&name);
             SessInfo {
                 alive: pane.is_some(),
-                idle_secs: pane.map(|(_, act, _)| now.saturating_sub(*act)),
+                idle_secs: pane.map(|(_, act, _, _)| now.saturating_sub(*act)),
                 mem_mb: mem.get(&name).copied(),
                 tail: tails.remove(&name).unwrap_or_default(),
-                fg: pane.map(|(_, _, fg)| fg.clone()),
+                fg: pane.map(|(_, _, _, fg)| fg.clone()),
+                scrolled: pane.map(|(_, _, m, _)| *m),
                 name,
             }
         })
@@ -937,19 +957,22 @@ mod tests {
 
     #[test]
     fn parse_panes_basic_and_malformed() {
-        let text =
-            "alpha\t100\t1700000000\tzsh\nbeta\t200\t1700000005\tclaude\njunk-line\nempty\t\t\t\n";
+        let text = "alpha\t100\t1700000000\t0\tzsh\nbeta\t200\t1700000005\t1\tclaude\njunk-line\nempty\t\t\t\t\n";
         let p = parse_panes(text);
         assert_eq!(p.len(), 2);
-        assert_eq!(p["alpha"], (100, 1700000000, "zsh".into()));
-        assert_eq!(p["beta"], (200, 1700000005, "claude".into()));
+        assert_eq!(p["alpha"], (100, 1700000000, false, "zsh".into()));
+        assert_eq!(
+            p["beta"],
+            (200, 1700000005, true, "claude".into()),
+            "copy-mode pane reported as scrolled"
+        );
     }
 
     #[test]
     fn parse_panes_first_pane_wins() {
         // multi-pane session: the first listed pane is the representative one
-        let text = "s\t10\t111\tzsh\ns\t20\t222\tvim\n";
-        assert_eq!(parse_panes(text)["s"], (10, 111, "zsh".into()));
+        let text = "s\t10\t111\t0\tzsh\ns\t20\t222\t1\tvim\n";
+        assert_eq!(parse_panes(text)["s"], (10, 111, false, "zsh".into()));
     }
 
     #[test]

@@ -159,6 +159,10 @@ export async function pollNow() {
       if (pn && pn.seps.length) clearSeparators(pn);
     }
     c.idle = info.alive ? (info.idle_secs != null ? info.idle_secs : null) : null;
+    /* copy-mode = the visible frame is FROZEN scrollback; surface it (the
+       pane header chip) instead of letting an agent TUI look hung */
+    const scrolled = !!(info.alive && info.scrolled);
+    if (scrolled !== !!c.scrolled) { c.scrolled = scrolled; updatePaneChrome(c); }
     if (status !== c.status) { c.status = status; emit('status', c); }
     if ((mem == null) !== (c.mem == null) || (mem != null && Math.abs(mem - c.mem) > 1)) {
       c.mem = mem;

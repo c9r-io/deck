@@ -15,7 +15,13 @@ tagging a release; 3 minutes total.
 ## Scrolling & selection
 - [ ] Fresh shell: trackpad scroll does nothing (no pull-down, no copy-mode badge)
 - [ ] `seq 200` → scroll up reaches history, scroll to bottom auto-returns live
+- [ ] Scroll up and STOP: an accent "⤓ scrollback" chip appears in the pane
+      header within the gesture (view is frozen history — an agent TUI must
+      never look silently hung); clicking the chip OR typing returns live
+      and the chip disappears
 - [ ] Inside `claude`: long output scrollable; typing still reaches the agent
+      (typing while scrolled first leaves copy-mode, so keys are never eaten
+      as copy-mode commands)
 - [ ] Drag-select multiple lines → ⌘C → paste elsewhere matches
 
 ## Board & cards

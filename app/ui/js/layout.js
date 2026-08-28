@@ -334,8 +334,23 @@ export function wireTerminalInput(pane, term, host) {
         duev('ondata', lineBuf === null ? 'desync' : 'ok', d.length, lineBuf === null ? -1 : lineBuf.length);
       }
     }
-    inv('pty_write', { name: session, dataB64: strToB64(d) })
+    /* typing while the view is frozen in scrollback: leave copy-mode FIRST
+       (otherwise tmux eats the keys as copy-mode commands), then write —
+       chained so keystroke order is preserved; once the chain drains,
+       writes go direct again. Terminal auto-replies never trigger this. */
+    const doWrite = bytes => inv('pty_write', { name: session, dataB64: strToB64(bytes) })
       .catch(() => uev('pty-write-fail'));
+    const cc = card();
+    if (!isAutoReply && cc && cc.scrolled) {
+      pane.liveQ = goLive(session);
+    }
+    if (pane.liveQ) {
+      const q = pane.liveQ.then(() => doWrite(d));
+      pane.liveQ = q;
+      q.then(() => { if (pane.liveQ === q) pane.liveQ = null; });
+    } else {
+      doWrite(d);
+    }
   });
   /* app shortcuts pass through; ⌘C/⌘V are handled here because a menu-less
      macOS app gets no standard edit actions in the webview */
@@ -434,7 +449,15 @@ export function wireTerminalInput(pane, term, host) {
       const lines = Math.round(wheelAcc / 14);
       wheelAcc = 0;
       wheelTimer = null;
-      if (lines) inv('scroll_session', { name: session, lines }).catch(() => {});
+      if (lines) {
+        /* the backend reports post-scroll copy-mode state, so the
+           scrollback chip appears/disappears with the gesture, not on the
+           next 2.5s poll */
+        inv('scroll_session', { name: session, lines }).then(inMode => {
+          const c = card();
+          if (c && !!c.scrolled !== !!inMode) { c.scrolled = !!inMode; updatePaneChrome(c); }
+        }).catch(() => {});
+      }
     }, 50);
   }, { passive: false, capture: true });
 
@@ -513,6 +536,30 @@ export function updatePaneChrome(card) {
   if (dot) { dot.className = 'dot ' + card.status; dot.title = DOT_TITLES[card.status] || ''; }
   const name = p.el.querySelector('.spane-head .name');
   if (name && name.textContent !== card.title) name.textContent = card.title;
+  /* scrollback chip: the ONLY visual clue that the view is frozen history
+     (the tmux position badge is deliberately off) */
+  let chip = p.el.querySelector('.spane-head .scrollchip');
+  if (card.scrolled) {
+    if (!chip) {
+      chip = document.createElement('button');
+      chip.className = 'scrollchip';
+      chip.textContent = '⤓ scrollback';
+      chip.title = 'view is frozen in scrollback — click, type, or scroll to the bottom to go live';
+      chip.onclick = e => { e.stopPropagation(); goLive(card.session); };
+      p.el.querySelector('.spane-head .px').before(chip);
+    }
+  } else if (chip) {
+    chip.remove();
+  }
+}
+
+/* leave copy-mode → live view; clears the chip immediately (the poll would
+   confirm within 2.5s anyway) */
+export function goLive(session) {
+  const p = panes.get(session);
+  const c = p && provider.get(p.sid);
+  if (c && c.scrolled) { c.scrolled = false; updatePaneChrome(c); }
+  return inv('scroll_bottom', { name: session }).catch(() => {});
 }
 
 export function focusPane(session) {
