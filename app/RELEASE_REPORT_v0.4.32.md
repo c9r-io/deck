@@ -137,6 +137,52 @@ This is the physical evidence; the synthetic routing and `pbpaste` checks above
 remain supplemental automation only.
 
 The isolated candidate process and private tmux server were stopped after the
-manual gate. Source release is now unblocked. Formal tag, workflow, release
-asset, Developer ID signature, notarization, Gatekeeper, updater metadata and
-downloaded-DMG digest evidence will be recorded after GitHub produces them.
+manual gate.
+
+## Formal release evidence
+
+- Release: <https://github.com/c9r-io/deck/releases/tag/v0.4.32>; published,
+  not a draft and not a prerelease.
+- Annotated tag object: `58b2d633fdb7bba5ad278d28fc027b483ffb8f6a`.
+- Dereferenced release commit:
+  `f048182077624bbf43ce59683ec5ff33884e4fc2`.
+- GitHub `test` workflow: [run 33186635596](https://github.com/c9r-io/deck/actions/runs/33186635596),
+  completed successfully for the release commit.
+- GitHub `release` workflow: [run 33186638877](https://github.com/c9r-io/deck/actions/runs/33186638877),
+  completed successfully for the release commit.
+
+The published release contains all four required assets:
+
+- `deck_0.4.32_aarch64.dmg`: 4,769,183 bytes; SHA-256
+  `51ae7e0357e4480ec20c1cb383ea7a0c857cc454fcdf57188d8d146ed514b98e`.
+- `deck_aarch64.app.tar.gz`: 4,698,495 bytes; SHA-256
+  `8d2997e5a1c1f4b518001c1da7076ab09ca1925fe4114acaaac36fdad19c4e55`.
+- `deck_aarch64.app.tar.gz.sig`: 400 bytes; SHA-256
+  `cbedcdf6b3c06bbe724cd98e91c108ded0c132e9a83955c20d1d307f9535140d`.
+- `latest.json`: 1,316 bytes; SHA-256
+  `ba420db0c2baa4566a92192006045d895fcf922878741426ee9018ab52abb49f`.
+
+Each independently downloaded file's SHA-256 exactly matched the digest
+reported by its GitHub Release asset. The official DMG mounted with all image
+CRC checks verified. Its `deck.app` has both version fields set to `0.4.32`.
+`codesign --verify --deep --strict` passed and reported identifier
+`io.c9r.deck`, arm64 hardened runtime, Developer ID Application
+`han chen (Y8ZG3D692W)`, Team ID `Y8ZG3D692W`, and CDHash
+`188595acd2cf3298cea875402c6521404f7cdad3`. The application contains a
+stapled notarization ticket; `xcrun stapler validate` passed and Gatekeeper
+returned `accepted`, source `Notarized Developer ID`.
+
+The downloaded `latest.json` reports version `0.4.32`. Both
+`darwin-aarch64` platform entries point to this release's
+`deck_aarch64.app.tar.gz`, and their metadata signature exactly equals the
+published `.sig` asset (whose Base64 payload decodes to the expected Tauri
+minisign envelope).
+
+## Known remaining risk
+
+GitHub emitted only a non-blocking maintenance annotation: `actions/checkout@v4`
+and `actions/cache@v4` still declare Node.js 20 and GitHub forced them onto
+Node.js 24. It did not affect either successful workflow or any release asset.
+Physical pointer behavior still depends on macOS/WKWebView input delivery, so
+the deterministic ownership tests and the completed real-device gate should
+remain mandatory for future changes to selection routing.
