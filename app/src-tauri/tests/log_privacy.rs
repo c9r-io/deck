@@ -85,11 +85,7 @@ fn every_event_call_site_uses_a_whitelisted_code() {
         .split("];")
         .next()
         .unwrap();
-    let codes: Vec<&str> = list
-        .split('"')
-        .skip(1)
-        .step_by(2)
-        .collect();
+    let codes: Vec<&str> = list.split('"').skip(1).step_by(2).collect();
     assert!(codes.len() > 10, "whitelist parsed: {codes:?}");
 
     let mut sites = 0;
@@ -141,7 +137,7 @@ fn backend_logs_carry_no_user_content() {
         "&item.text",
         "item.text)",
         "item.text,",
-        "{msg}",   // the old ui_log passthrough
+        "{msg}", // the old ui_log passthrough
         "{text}",
         "{cmd}",
         "{prompt}",

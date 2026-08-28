@@ -7,17 +7,35 @@ information; the user makes every placement decision.
 
 ## App (v0.2, primary) — `app/`
 
-Tauri 2 macOS app. Frontend `app/ui/` is a single static index.html (no build step,
-xterm.js vendored in `app/ui/vendor/`); backend `app/src-tauri/src/main.rs`.
+Tauri 2 macOS app. Frontend `app/ui/` is a no-build set of native ES modules
+(`ui/js/state.js` shared slots/helpers · `pure.js` DOM-free logic, node-tested ·
+`board.js` · `layout.js` splits/terminal host · `terminal.js` completion/ghost ·
+`scheduler.js` queue UI · `dialogs.js` · `persistence.js` · `app.js` boot),
+loaded by `ui/index.html`; xterm.js vendored in `app/ui/vendor/`. Backend
+`app/src-tauri/src/` is modular: `main.rs` (wiring) · `commands.rs` ·
+`scheduler.rs` · `storage.rs` · `pty.rs` · `tmux.rs` · `history.rs`.
+Frontend gates: `node --check` (syntax) · `ui/test/pure.test.mjs` (node:test)
+· `ui/js/check.mjs` (unresolved identifiers; forbids xterm `._core`).
 
 - Run: `app/run.sh` — builds, wraps the binary in a minimal .app, launches via
   `open`. NEVER run the bare binary from a background shell: outside the GUI
   login session the process can't reach macOS text-input services (TSM/IMK) —
-  window and mouse work, keyboard is silently dead. `~/.deck/app.log` collects
-  backend + frontend (`ui_log`) diagnostics.
+  window and mouse work, keyboard is silently dead. `~/.deck/app.log` (0600)
+  collects backend + frontend diagnostics. Frontend logging is STRUCTURED
+  ONLY: the `ui_event` command takes a whitelisted code + short slug + two
+  ints and rejects everything else — never add a free-form frontend log
+  channel (log_privacy tests enforce this).
 - PTY smoke test (headless): `cargo run --example pty_smoke`
 - Board persistence: `~/.deck/deck.json` (frontend owns the state, saves wholesale,
-  debounced; backend does atomic tmp+rename writes)
+  debounced). storage.rs is TYPED and durable for all four data files
+  (deck/queue/history/settings): JSON + version envelope + business-structure
+  validation on load; damaged main quarantined to a unique `.corrupt-<ts>`
+  BEFORE the fully-validated `.bak` is tried; recovery warnings returned
+  in-band (`LoadedDoc {data, source, warning}`); future schema versions
+  refused untouched (save refuses to overwrite them too); recovery never
+  writes; a load FAILURE is surfaced, never treated as a first run — the UI
+  must never auto-save defaults over an existing file. Writes: unique temp +
+  fsync + rename + parent-dir fsync, `.bak` written the same way.
 - One poll command (`poll_sessions`) returns liveness + `#{window_activity}` recency +
   process-tree RSS (pane_pid → ps tree walk) + tail previews. Frontend polls every
   2.5s and diffs into granular UI events (status/mem/output) — never full re-renders
@@ -34,11 +52,34 @@ xterm.js vendored in `app/ui/vendor/`); backend `app/src-tauri/src/main.rs`.
 - Attach = `tmux attach` inside a portable-pty, bytes streamed as base64 over the
   `pty-data` event to xterm.js; detach kills only the tmux *client*. Reader threads
   carry a generation counter so a stale thread never removes a newer attachment.
+  Flow control is internal buffering + coalescing ONLY (bounded reader→emitter
+  channel, ≤256KB per event) — `app.emit` is fire-and-forget, so there is NO
+  end-to-end backpressure to the webview; an ACK-window protocol is future
+  work (see the honest-limit comment in pty.rs; don't claim otherwise).
 - Scheduled prompts: Rust-side scheduler thread (NOT webview timers — App Nap
   freezes those), 20s tick, queue persisted at `~/.deck/queue.json` and loaded at
   boot. Injection = `tmux send-keys -l` (literal) + Enter, no attach needed; dead
   sessions are started first. "chain" mode fires after `window_activity` has been
-  quiet ≥180s (a permission prompt also counts as quiet — documented behavior).
+  quiet ≥180s (a permission prompt also counts as quiet — documented behavior;
+  quiet NEVER means "the agent finished"). Round-2 semantics (scheduler.rs is
+  the reference, all unit-tested):
+  - at most ONE candidate per session per tick, ≥60s between any two
+    injections into the same session; sessions are independent;
+  - deterministic priority: backoff-elapsed retry → earliest-due `at` →
+    cadence-due `every` → chain; a future `at` never blocks a due one;
+  - each send re-selects from fresh state under the lock (pause/edit/remove
+    races are closed); chain steps carry explicit `group`/`seq` (legacy
+    files migrate from array adjacency);
+  - a step that exhausts its 8 attempts BLOCKS its group until the user
+    retries/skips/removes it (queue_retry / queue_skip commands);
+  - a recurring rule has at most one active iteration (its spawned steps,
+    keyed `rule`/`group`=delivery id) — iterations never interleave;
+  - delivery is at-most-once: firing intent + delivery id persisted BEFORE
+    injection; success and crash recovery share one idempotent
+    `finalize_delivery` (fired count, until-N retirement, template-step
+    spawn, audit record — `deliveries`, capped 200). The crash window
+    between persist-intent and Enter cannot be closed: recovery assumes
+    sent, never re-sends.
 - The GUI design reference (mock, same UI with fake data) lives in `gui/index.html`.
 
 ### WKWebView / Tauri gotchas (each cost a real bug)

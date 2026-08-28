@@ -38,10 +38,18 @@ tagging a release; 3 minutes total.
 
 ## Scheduler queue & templates
 - [ ] Add an `at` prompt 1 min out on a harmless card (`while true; do date;
-      sleep 1; done`) → fires once, queue row moves to fired
+      sleep 1; done`) → fires once and its row disappears (there is no
+      "fired" UI; the send is recorded in queue.json's `deliveries` audit
+      list, capped at 200 entries)
 - [ ] Add a chain of 2 prompts → they fire in order, second only after the
       first target went quiet (~3 min; "quiet" ≠ "done" — the UI must say
-      quiet)
+      quiet) and ≥60s after the first send (per-session min gap)
+- [ ] Two prompts due at once on the SAME session → they arrive one per
+      20s-tick, a minute apart — never both in one tick
+- [ ] Schedule onto a card whose directory was deleted → the row shows
+      "⚠ send failed, retrying"; after retries exhaust it shows "gave up —
+      blocks later steps" with ↻ retry and ⏭ skip; a queued follow-up in
+      the same group shows "⏸ waiting" and does NOT fire until skip/retry
 - [ ] Save a template from the queue group header → re-add it on another card
 - [ ] Pause a recurring rule → skipped while paused; resume → fires again
 
@@ -49,7 +57,14 @@ tagging a release; 3 minutes total.
 - [ ] Quit deck → corrupt `~/.deck/deck.json` (truncate mid-JSON) → relaunch:
       board restores from `.bak`, a toast explains, the corrupt file is set
       aside as `.corrupt-<ts>` — NEVER silently replaced with an empty board
-- [ ] Same drill for `queue.json`
+- [ ] Valid-JSON corruption too: replace deck.json's contents with `{"x":1}`
+      → same recovery path (typed validation, not just a JSON parse)
+- [ ] Delete `.bak` as well → relaunch shows a hard "could not be loaded"
+      toast; deck runs with an in-memory board and does NOT write a default
+      file until you actually change something
+- [ ] Set `"schema_version": 99` in deck.json → toast says update deck; the
+      file is left byte-identical (no .corrupt, no overwrite on save)
+- [ ] Same truncate drill for `queue.json`
 - [ ] Launch a second deck instance → alert "deck is already running", no
       data raced
 
@@ -58,8 +73,12 @@ tagging a release; 3 minutes total.
       string into a session, schedule a prompt containing the marker, export
       logs. `grep <marker> ~/.deck/app.log ~/.deck/exports/*` → ZERO hits.
       Bytes/counts/session names in logs are fine; user content is not.
-- [ ] With Settings → debug logging ON, repeat: marker still absent (debug
-      adds volume, never content)
+- [ ] With Settings → debug logging ON, repeat — including ⌘V-pasting the
+      marker into the shell (bracketed paste) and typing it through the IME:
+      marker still absent (debug adds volume, never content; the frontend
+      can only emit whitelisted event codes + numbers)
+- [ ] `ls -l ~/.deck/app.log ~/.deck/history.json ~/.deck/exports/` →
+      everything `-rw-------` (0600)
 
 ## Security baseline
 - [ ] `app.log` contains no `CSP` violation lines after a full session of use

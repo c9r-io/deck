@@ -62,6 +62,14 @@ wraps midnight, so night-only works too). Rules keep firing until you pause
 (⏸ keeps the settings) or remove them, or stop themselves after N times /
 at a set time. Outside the window a rule sleeps and resumes by itself.
 
+**Delivery you can reason about.** One prompt per session at a time, at least
+a minute apart; different sessions run independently. Delivery is
+*at-most-once*: if deck crashes mid-send, the prompt is treated as sent on
+restart rather than ever risking a duplicate. If a step permanently fails to
+send (its session can't start, say), the later steps of its group **wait** —
+the queue shows ⚠ with retry ↻ and skip ⏭ buttons, and nothing runs past a
+failed step until you decide.
+
 **Prompt templates.** Save a queue of prompts as a named, per-project
 template (📋 in the scheduler panel). Inserting a template queues all its
 steps in order — your schedule applies to the first step, the rest follow
@@ -89,8 +97,15 @@ waiting for you. Memory chips show the *whole process tree* of a session
 ## Data
 
 Everything lives in `~/.deck/` as plain JSON you can inspect or edit:
-`deck.json` (boards & cards) · `queue.json` (scheduled prompts) ·
-`history.json` (command history) · `app.log` (diagnostics).
+`deck.json` (boards & cards) · `queue.json` (scheduled prompts, incl. a
+short delivery audit) · `history.json` (command history; readable only by
+you, wipeable from Settings) · `settings.json` · `app.log` (diagnostics —
+event codes and counts only, never what you type).
+
+Every file keeps a `.bak` of its previous good version. If a file is
+damaged, deck sets the damaged bytes aside as `<file>.corrupt-<timestamp>`,
+restores from the backup, and tells you — it never silently replaces your
+data with an empty default.
 
 Sessions live on a dedicated tmux socket: `tmux -L deck ls` shows them,
 `tmux -L deck attach -t <name>` attaches from any terminal — deck never
@@ -104,8 +119,10 @@ cd app/src-tauri && cargo run --example pty_smoke   # headless PTY test
 app/src-tauri/binaries/build-tmux.sh      # rebuild the static tmux sidecar
 ```
 
-Requires a Rust toolchain. The frontend (`app/ui/`) is a single static
-HTML file — no Node, no bundler.
+Requires a Rust toolchain. The frontend (`app/ui/`) is plain HTML + native
+ES modules — no Node runtime, no bundler (Node is used only for dev-time
+checks: `node --check`, `node --test app/ui/test/pure.test.mjs`,
+`node app/ui/js/check.mjs`).
 
 Releases: push a `v*` tag — CI builds, signs, notarizes, and publishes the
 dmg plus in-app-update artifacts. An hourly scheduled run rebuilds the newest

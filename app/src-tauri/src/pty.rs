@@ -103,14 +103,22 @@ pub(crate) fn attach_session(
         },
     );
 
-    // Bounded pipeline between the PTY and the webview: reader → sync
-    // channel → coalescing emitter. The channel caps in-flight data at
-    // PTY_CHANNEL_CHUNKS × 8KB; when the webview can't keep up, the reader
-    // blocks on send(), the kernel PTY buffer fills, and the tmux client
-    // stalls — backpressure all the way down instead of unbounded event
-    // queueing in the webview. The emitter drains whatever accumulated into
-    // ONE pty-data event (up to EMIT_COALESCE_MAX), so a fast producer
-    // yields few large events rather than thousands of 8KB ones.
+    // Internal buffering + event coalescing between the PTY and the webview:
+    // reader → sync channel → coalescing emitter. The channel caps
+    // reader→emitter in-flight data at PTY_CHANNEL_CHUNKS × 8KB (a slow
+    // EMITTER stalls the reader, the kernel PTY buffer fills, and the tmux
+    // client blocks), and the emitter drains whatever accumulated into ONE
+    // pty-data event (up to EMIT_COALESCE_MAX) so a fast producer yields few
+    // large events rather than thousands of 8KB ones.
+    //
+    // HONEST LIMIT — this is NOT end-to-end backpressure: app.emit() is
+    // fire-and-forget, so nothing bounds the Tauri→WKWebView event queue if
+    // the webview itself stops consuming. Coalescing keeps the event RATE
+    // low, which is what matters in practice, but a wedged webview could
+    // still accumulate emitted events. A real fix needs an ACK-window
+    // protocol (frontend acknowledges written bytes; emitter waits when the
+    // window is exhausted) — planned as its own change, too invasive to
+    // ship alongside the scheduler rework.
     const PTY_CHANNEL_CHUNKS: usize = 64; // × 8KB = 512KB bound
     const EMIT_COALESCE_MAX: usize = 256 * 1024;
     let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(PTY_CHANNEL_CHUNKS);
