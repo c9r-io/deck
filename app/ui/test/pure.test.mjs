@@ -8,6 +8,9 @@ import {
   sessionName, fmtMem, fmtEvery, minToHM, hmToMin, winHas, hasWindow,
   nextFire, groupQueue, groupSteps, itemDead, blockedBy,
   chainQuietHint, CHAIN_QUIET_SECS, shQuote, quickBarBottom,
+  deleteSessionsTransaction, sidebarGroups,
+  copyExact, copyShortcutAction, latestRequestGuard,
+  inlineRenameValue, persistOptimistically,
 } from '../js/pure.js';
 
 test('the completion bar never covers the line being typed', () => {
@@ -144,4 +147,107 @@ test('itemDead / blockedBy mirror the backend blocking rule', () => {
   const t2 = item('t2', 'chain', { group: 'g2', seq: 2 });
   assert.equal(blockedBy(t2, [retrying, t2]), null, 'retrying head does not block');
   assert.equal(blockedBy(item('solo', 'chain'), []), null, 'ungrouped never blocks');
+});
+
+test('sidebar groups follow board order, count, and stable status order', () => {
+  const project = { columns: [
+    { id: 'working', name: 'Working' },
+    { id: 'attention', name: 'A very long Attention board name' },
+    { id: 'empty', name: 'Empty' },
+  ] };
+  const cards = [
+    { id: 'a', columnId: 'attention', status: 'running', title: 'same' },
+    { id: 'b', columnId: 'working', status: 'stopped', title: 'same' },
+    { id: 'c', columnId: 'working', status: 'waiting', title: 'c' },
+    { id: 'd', columnId: 'working', status: 'running', title: 'd' },
+    { id: 'e', columnId: 'working', status: 'waiting', title: 'e' },
+  ];
+  const groups = sidebarGroups(project, cards);
+  assert.deepEqual(groups.map(g => [g.column.id, g.count]), [['working', 4], ['attention', 1]]);
+  assert.deepEqual(groups[0].sessions.map(c => c.id), ['c', 'e', 'd', 'b']);
+  // moving a session changes groups immediately without relying on its title
+  cards[1].columnId = 'attention';
+  const moved = sidebarGroups(project, cards);
+  assert.deepEqual(moved.map(g => [g.column.id, g.count]), [['working', 3], ['attention', 2]]);
+  assert.deepEqual(moved[1].sessions.map(c => c.id), ['a', 'b']);
+});
+
+test('delete transaction keeps all cards on partial kill or board-save failure', async () => {
+  const cards = [{ id: 'a' }, { id: 'b' }];
+  let commits = 0;
+  let persisted = 0;
+  const partial = await deleteSessionsTransaction(cards, {
+    cancel: async () => true,
+    kill: async c => { if (c.id === 'b') throw new Error('kill refused'); },
+    persist: async () => { persisted++; },
+    commit: () => { commits++; },
+  });
+  assert.equal(partial.stage, 'kill');
+  assert.deepEqual(partial.failed.map(x => x.card.id), ['b']);
+  assert.equal(persisted, 0);
+  assert.equal(commits, 0);
+
+  const saveFail = await deleteSessionsTransaction(cards, {
+    cancel: async () => true,
+    kill: async () => {}, // already-missing sessions are idempotent success
+    persist: async () => { throw new Error('disk full'); },
+    commit: () => { commits++; },
+  });
+  assert.equal(saveFail.stage, 'persist');
+  assert.equal(commits, 0);
+
+  const retry = await deleteSessionsTransaction(cards, {
+    cancel: async () => true,
+    kill: async () => {},
+    persist: async () => { persisted++; },
+    commit: () => { commits++; },
+  });
+  assert.equal(retry.ok, true);
+  assert.equal(commits, 1, 'only the successful retry commits deletion');
+});
+
+test('copy guard rejects stale session results and exact copy reports real completion', async () => {
+  const guard = latestRequestGuard();
+  const old = guard.begin();
+  const current = guard.begin();
+  assert.equal(guard.isCurrent(old), false);
+  assert.equal(guard.isCurrent(current), true);
+  guard.cancel();
+  assert.equal(guard.isCurrent(current), false);
+
+  const text = '\n中文 English 😀 e\u0301\n```rust\nfn main() {}\n```\n' + 'x'.repeat(10000) + '\n\n';
+  let received = null;
+  assert.equal(await copyExact(text, async value => { received = value; }), text.length);
+  assert.equal(received, text, 'no trimming, normalization, or chunk loss');
+  await assert.rejects(copyExact(text, async () => { throw new Error('denied'); }));
+});
+
+test('copy shortcuts keep panel selection separate from Copy all and open-panel routing', () => {
+  const action = extra => copyShortcutAction({ metaKey: true, shiftKey: false, key: 'c', panelOpen: false, sessionView: true, hasSelection: false, ...extra });
+  assert.equal(action({ panelOpen: true, hasSelection: true }), 'copy-panel-selection');
+  assert.equal(action({ panelOpen: true, hasSelection: false }), 'none');
+  assert.equal(action({ shiftKey: true }), 'open-copy-panel');
+  assert.equal(action({ metaKey: false, shiftKey: true }), null);
+});
+
+test('rename Enter/Escape/empty semantics and persistence rollback are deterministic', async () => {
+  assert.equal(inlineRenameValue('old', ' new ', true), 'new');
+  assert.equal(inlineRenameValue('old', 'old', true), null);
+  assert.equal(inlineRenameValue('old', '   ', true), null, 'empty cannot overwrite title');
+  assert.equal(inlineRenameValue('old', 'new', false), null, 'Escape cancels');
+  assert.equal(inlineRenameValue('old', '   ', true, true), '', 'descriptions may opt into empty');
+
+  let value = 'old';
+  const failed = await persistOptimistically({
+    apply: () => { value = 'new'; },
+    persist: async () => { throw new Error('disk full'); },
+    rollback: () => { value = 'old'; },
+  });
+  assert.equal(failed, false);
+  assert.equal(value, 'old', 'persistence failure restores the visible title');
+  const ok = await persistOptimistically({
+    apply: () => { value = 'new'; }, persist: async () => {}, rollback: () => { value = 'old'; },
+  });
+  assert.equal(ok, true);
+  assert.equal(value, 'new');
 });

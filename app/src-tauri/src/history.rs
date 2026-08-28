@@ -17,10 +17,7 @@ static HIST_LOCK: Mutex<()> = Mutex::new(());
 // ---------- command history -----------------------------------------------------
 
 pub(crate) fn deck_history_path() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".deck")
-        .join("history.json")
+    storage::deck_dir().join("history.json")
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -150,7 +147,7 @@ pub(crate) fn record_into(path: &Path, cmd: &str) -> Result<(), String> {
     let raw = serde_json::to_string(&hist).map_err(|e| e.to_string())?;
     // full shell commands are user content; storage::save creates every
     // artifact (main, .bak, temp) 0600 by construction
-    storage::save(path, &raw)
+    storage::save_typed::<Vec<HistEntry>>(path, &raw)
 }
 
 #[tauri::command]
@@ -165,7 +162,7 @@ pub(crate) fn record_command(cmd: String) -> Result<(), String> {
 /// still holds the old commands — clearing means clearing).
 pub(crate) fn clear_into(path: &Path) -> Result<(), String> {
     let _g = HIST_LOCK.lock().unwrap();
-    storage::save(path, "[]")?;
+    storage::save_typed::<Vec<HistEntry>>(path, "[]")?;
     let mut bak = path.as_os_str().to_owned();
     bak.push(".bak");
     let _ = std::fs::remove_file(PathBuf::from(bak));

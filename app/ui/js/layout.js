@@ -3,7 +3,7 @@
 import { $, DOT_TITLES, duev, inv, listen, setMemChip, state, store, uev } from './state.js';
 import { inlineRename, toast } from './dialogs.js';
 import { TERM_THEME, panes, pollNow, provider, render, renderSidebar, activeProject } from './board.js';
-import { SHELL_FG, acceptGhost, feedMirror, maybeRecordCommand, nextShellTitle, openCopyPanel, placeQuickBar, renderSuggest, resetSuggest, showLinkCtx, updateGhost } from './terminal.js';
+import { SHELL_FG, acceptGhost, feedMirror, maybeRecordCommand, nextShellTitle, openCopyPanel, placeQuickBar, renderSuggest, resetSuggest, showLinkCtx, updateGhost, writeClipboard } from './terminal.js';
 import { shQuote } from './pure.js';
 import { toggleQueuePanel } from './scheduler.js';
 
@@ -382,7 +382,7 @@ export function wireTerminalInput(pane, term, host) {
       return false;
     }
     if (e.type === 'keydown' && e.metaKey && e.key === 'c' && term.hasSelection()) {
-      navigator.clipboard.writeText(term.getSelection()).catch(() => {});
+      writeClipboard(term.getSelection()).catch(() => toast('copy failed — clipboard was not changed'));
       return false;
     }
     /* ghost suggestion: Tab or → applies it in place; Esc dismisses */

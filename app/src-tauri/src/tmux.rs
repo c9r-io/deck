@@ -1,7 +1,6 @@
 //! tmux backend: sidecar discovery, the private `deck` server, config, and
 //! raw command execution. Everything deck knows about tmux lives here.
 
-use std::path::PathBuf;
 use std::process::Command;
 
 use crate::applog;
@@ -61,7 +60,18 @@ pub(crate) fn tmux_kind() -> &'static str {
 /// deck runs its own tmux server (socket "deck"): the bundled binary never
 /// clashes with a user-installed tmux of a different version, and deck's
 /// sessions stay out of the user's personal `tmux ls`.
-pub(crate) const SOCKET: &str = "deck";
+pub(crate) fn socket() -> &'static str {
+    static SOCKET: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    SOCKET.get_or_init(|| {
+        crate::storage::debug_arg("--smoke-tmux-socket")
+            .filter(|s| {
+                !s.is_empty()
+                    && s.len() <= 48
+                    && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+            })
+            .unwrap_or_else(|| "deck".into())
+    })
+}
 
 /// Server config file: options set via `tmux set -g` die with the server
 /// process (a session-less server exits immediately, so boot-time `set`
@@ -70,10 +80,7 @@ pub(crate) const SOCKET: &str = "deck";
 pub(crate) fn tmux_conf() -> String {
     static CONF: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     CONF.get_or_init(|| {
-        let path = dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(".deck")
-            .join("tmux.conf");
+        let path = crate::storage::deck_dir().join("tmux.conf");
         if let Some(dir) = path.parent() {
             let _ = crate::storage::create_private_dir(dir);
         }
@@ -105,7 +112,7 @@ pub(crate) fn tmux_conf() -> String {
 pub(crate) fn tmux(args: &[&str]) -> Result<String, String> {
     let conf = tmux_conf();
     let out = Command::new(tmux_bin())
-        .args(["-f", &conf, "-L", SOCKET])
+        .args(["-f", &conf, "-L", socket()])
         .args(args)
         .env("LANG", "en_US.UTF-8")
         .output()
@@ -127,7 +134,7 @@ pub(crate) fn tmux(args: &[&str]) -> Result<String, String> {
 pub(crate) fn tmux_batch(args: &[String]) -> String {
     let conf = tmux_conf();
     Command::new(tmux_bin())
-        .args(["-f", &conf, "-L", SOCKET])
+        .args(["-f", &conf, "-L", socket()])
         .args(args)
         .env("LANG", "en_US.UTF-8") // see tmux(): C locale mangles output
         .output()

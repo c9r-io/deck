@@ -14,16 +14,13 @@ mod tmux;
 
 pub(crate) use storage::applog;
 
-use std::path::PathBuf;
 use std::process::Command;
 use tauri::{Emitter, Manager};
 
 // ---------- main ---------------------------------------------------------------
 
 fn main() {
-    let deck_dir = dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".deck");
+    let deck_dir = storage::deck_dir();
     // idempotent permission migration BEFORE anything touches the data files:
     // ~/.deck → 0700, every file an older deck may have left 0644 → 0600.
     // A failure is surfaced (log + boot toast), never silently ignored.
@@ -156,6 +153,7 @@ fn main() {
             commands::scroll_bottom,
             commands::clear_history,
             commands::capture_scrollback,
+            commands::write_clipboard,
             commands::poll_sessions,
             pty::attach_session,
             pty::pty_write,
@@ -174,6 +172,7 @@ fn main() {
             scheduler::queue_remove,
             scheduler::queue_pause,
             scheduler::queue_retry,
+            scheduler::queue_acknowledge,
             scheduler::queue_skip,
             commands::storage_warnings,
             scheduler::queue_clear_session,

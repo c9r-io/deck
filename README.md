@@ -45,6 +45,10 @@ onto a pane edge, or hit ⌘D / ⌘⇧D (or the ◧ ⬓ buttons) and pick a sess
 Splits nest freely, dividers drag to resize, closing a pane never kills the
 session.
 
+**Board-grouped sidebar.** Sessions in the current project are grouped under
+their Board names, in Board order, with counts in each group. Waiting sessions
+come first within a Board, followed by running and stopped sessions.
+
 **Command completion, Warp-style.** deck records the commands you run in its
 shells (agent prompts are never recorded) and suggests as you type: the first
 match appears as gray ghost text at the cursor — **Tab or →** applies it; more
@@ -64,10 +68,11 @@ at a set time. Outside the window a rule sleeps and resumes by itself.
 
 **Delivery you can reason about.** One prompt per session at a time, at least
 a minute apart; different sessions run independently (a session that needs a
-2.5 s boot never delays another session's prompt). Delivery is
-*at-most-once*: the text and its Enter go in as one atomic tmux command, and
-if deck crashes mid-send, the prompt is treated as sent on restart rather
-than ever risking a duplicate. While a prompt is mid-send (a window of
+2.5 s boot never delays another session's prompt). The text and its Enter go
+in as one atomic tmux command. If deck crashes in the narrow delivery window,
+the queue shows the prompt as **ambiguous** instead of claiming success or
+silently sending it again: acknowledge it as sent, or explicitly retry while
+accepting the possible duplicate. While a prompt is mid-send (a window of
 seconds), editing/pausing/removing it is refused with a clear message
 instead of racing the delivery. If a step permanently fails to
 send (its session can't start, say), the later steps of its group **wait** —
@@ -107,8 +112,9 @@ short delivery audit) · `history.json` (command history; wipeable from
 Settings) · `settings.json` · `app.log` (diagnostics — event codes and
 counts only, never what you type; errors appear as categories, never as
 raw paths, and session names as a per-run tag rather than the name itself).
-Every line is redacted again as it is written, and logs or exports a
-pre-0.4.29 deck left behind are cleaned up in place at first launch.
+Every line is redacted again as it is written—including assignment/JSON/
+quoted/ANSI-wrapped paths, URLs and credential shapes—and logs or exports an
+older deck left behind are cleaned up in place at first launch.
 
 The whole directory is readable only by you: `~/.deck` is 0700 and every
 file — including backups, quarantined corrupt files, logs and exports — is
@@ -122,10 +128,17 @@ data with an empty default. A file written by a NEWER deck (or one whose
 version header deck cannot read) is left byte-for-byte alone instead of
 being overwritten.
 
+The long-output copy panel captures up to the newest 20,000 terminal rows,
+preserves Unicode and blank lines, and says explicitly when that cap truncated
+older output. `Copy all` uses the native macOS clipboard path and reports
+success only after the write actually completes; ⌘C copies only the selection.
+
 Closing a card — or deleting a project, or letting its shell exit —
 permanently cancels every scheduled prompt for that session, and the card
-only leaves the board once that cancellation is on disk. Nothing deck
-schedules can outlive the card it belongs to.
+only leaves the board once that cancellation is on disk, its tmux session is
+stopped, and the resulting Board is durably saved. A kill or save failure keeps
+the cards visible, manageable, and retryable. Nothing deck schedules can
+outlive the card it belongs to.
 
 Sessions live on a dedicated tmux socket: `tmux -L deck ls` shows them,
 `tmux -L deck attach -t <name>` attaches from any terminal — deck never

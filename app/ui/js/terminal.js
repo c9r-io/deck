@@ -1,7 +1,7 @@
 // terminal.js — context menus & link opening, ghost completion, chrome wiring
 // Part of deck's no-build frontend: native ES modules, no bundler.
 import { $, duev, inv, state, uev } from './state.js';
-import { quickBarBottom } from './pure.js';
+import { copyExact, copyShortcutAction, latestRequestGuard, quickBarBottom } from './pure.js';
 import { confirmDialog, inlineRename, toast, promptDialog } from './dialogs.js';
 import { closeSession, panes, provider, renameTab, render, switchProject, activeProject } from './board.js';
 import { backToBoard, openSession, strToB64 } from './layout.js';
@@ -14,14 +14,17 @@ export function placeCtx(e) {
   ctx.style.top = Math.min(e.clientY, innerHeight - ctx.offsetHeight - 8) + 'px';
 }
 
-export function renameCardInline(sid) {
+export function renameCardInline(sid, preferredHost = null) {
   const s = provider.get(sid);
-  const host = document.querySelector(`.card[data-sid="${sid}"] .card-title`)
-    || document.querySelector('#side-list .side-item.active .name');
+  if (!s) return;
+  const host = (preferredHost && preferredHost.isConnected ? preferredHost : null)
+    || document.querySelector(`#side-list .side-item[data-sid="${sid}"] .name`)
+    || document.querySelector(`.card[data-sid="${sid}"] .card-title`)
+    || (state.sessionId === sid ? document.querySelector('.sess-head .sess-title .name') : null);
   if (!host) return;
   inlineRename(host, s.title, v => {
-    if (v) provider.rename(sid, v);
-    render();
+    if (v && v !== s.title) provider.rename(sid, v);
+    else render();
   });
 }
 
@@ -51,6 +54,8 @@ export function showSessionCtx(e, sid) {
   e.preventDefault();
   e.stopPropagation();
   const s = provider.get(sid);
+  const renameHost = e.currentTarget && e.currentTarget.querySelector
+    ? e.currentTarget.querySelector('.name, .card-title') : null;
   const ctx = $('ctx');
   ctx.innerHTML = `
     <button data-a="rename">Rename card</button>
@@ -62,7 +67,7 @@ export function showSessionCtx(e, sid) {
   ctx.onclick = ev => {
     const a = ev.target.dataset && ev.target.dataset.a;
     ctx.style.display = 'none';
-    if (a === 'rename') renameCardInline(sid);
+    if (a === 'rename') renameCardInline(sid, renameHost);
     if (a === 'desc') editDescInline(sid);
     if (a === 'here') newSession(s.dir);
     if (a === 'copy') openCopyPanel(s.session, s.title);
@@ -119,7 +124,7 @@ export function showLinkCtx(e, kind, value, cwd) {
     const a = ev.target.dataset && ev.target.dataset.a;
     ctx.style.display = 'none';
     if (a === 'copy') {
-      navigator.clipboard.writeText(value).then(() => toast('copied'), () => toast('copy failed'));
+      writeClipboard(value).then(() => toast('copied'), () => toast('copy failed'));
     } else if (a) {
       inv('open_target', { kind: a, value, cwd: cwd || HOME })
         .then(() => toast(a === 'url' ? 'opened in browser' : a === 'editor' ? 'opened in editor' : 'revealed in Finder'))
@@ -345,32 +350,62 @@ export function resetSuggest() {
    one piece. The panel shows the pane's scrollback as plain text, where the
    selection scrolls and ⌘C behaves like it does in any document. */
 const COPY_LINES = 20000;
+const copyRequests = latestRequestGuard();
+
+export async function writeClipboard(text) {
+  try {
+    return await copyExact(text, value => inv('write_clipboard', { text: value }));
+  } catch (nativeError) {
+    if (!navigator.clipboard || !navigator.clipboard.writeText) throw nativeError;
+    return copyExact(text, value => navigator.clipboard.writeText(value));
+  }
+}
 
 export async function openCopyPanel(session, title) {
+  const request = copyRequests.begin();
   const box = $('copybox');
   const body = $('cb-body');
   $('cb-title').textContent = title ? `Output — ${title}` : 'Output';
   body.textContent = 'reading the scrollback…';
+  $('cb-all').textContent = 'Copy all';
+  $('cb-all').disabled = true;
+  $('cb-all').onclick = null;
   box.style.display = 'flex';
-  let text = '';
+  let capture;
   try {
-    text = await inv('capture_scrollback', { name: session, lines: COPY_LINES });
+    capture = await inv('capture_scrollback', { name: session, lines: COPY_LINES });
   } catch (e) {
+    if (!copyRequests.isCurrent(request)) return;
     body.textContent = 'could not read this session’s output: ' + e;
+    $('cb-all').textContent = 'Retry';
+    $('cb-all').disabled = false;
+    $('cb-all').onclick = () => openCopyPanel(session, title);
     return;
   }
+  if (!copyRequests.isCurrent(request)) return;
+  const text = capture.text;
   body.textContent = text;
-  const n = text ? text.split('\n').length : 0;
+  const n = capture.captured_rows;
   $('cb-title').textContent = (title ? `Output — ${title}` : 'Output') +
-    `  ·  ${n} line${n === 1 ? '' : 's'}` + (n >= COPY_LINES ? ' (newest)' : '');
+    `  ·  ${n} terminal row${n === 1 ? '' : 's'}` +
+    (capture.truncated ? ` · newest ${capture.line_limit.toLocaleString()} terminal rows only` : '');
   body.scrollTop = body.scrollHeight;   // the newest output is what you came for
-  $('cb-all').onclick = () => {
-    navigator.clipboard.writeText(text)
-      .then(() => toast(`copied ${n} line${n === 1 ? '' : 's'}`), () => toast('copy failed'));
+  $('cb-all').textContent = 'Copy all';
+  $('cb-all').disabled = false;
+  $('cb-all').onclick = async () => {
+    try {
+      await writeClipboard(text);
+      toast(capture.truncated
+        ? `copied newest ${capture.line_limit.toLocaleString()} terminal rows only`
+        : `copied ${n} terminal row${n === 1 ? '' : 's'}`);
+    } catch (e) {
+      toast('copy failed — clipboard was not changed');
+    }
   };
 }
 
 export function closeCopyPanel() {
+  copyRequests.cancel();
   $('copybox').style.display = 'none';
 }
 export const copyPanelOpen = () => $('copybox').style.display === 'flex';
@@ -408,9 +443,25 @@ $('sess-col').addEventListener('change', e => {
 });
 document.addEventListener('keydown', e => {
   if ((e.metaKey || e.ctrlKey) && e.key === 'b') { e.preventDefault(); toggleSidebar(); return; }
-  /* ⌘⇧C: copy panel for the focused pane (⌘C stays "copy the selection") */
-  if (e.metaKey && e.shiftKey && (e.key === 'c' || e.key === 'C')
-      && state.view === 'session' && !copyPanelOpen()) {
+  const selection = window.getSelection && window.getSelection();
+  const rangeNode = selection && selection.rangeCount ? selection.getRangeAt(0).commonAncestorContainer : null;
+  const selectionHost = rangeNode && (rangeNode.nodeType === 3 ? rangeNode.parentElement : rangeNode);
+  const selected = selectionHost && $('cb-body').contains(selectionHost) ? selection.toString() : '';
+  const copyAction = copyShortcutAction({
+    metaKey: e.metaKey, shiftKey: e.shiftKey, key: e.key,
+    panelOpen: copyPanelOpen(), sessionView: state.view === 'session', hasSelection: !!selected,
+  });
+  if (copyAction === 'copy-panel-selection') {
+    e.preventDefault();
+    e.stopPropagation();
+    writeClipboard(selected).then(
+      () => toast('copied selection'),
+      () => toast('copy failed — clipboard was not changed'),
+    );
+    return;
+  }
+  if (copyAction === 'none') { e.preventDefault(); return; }
+  if (copyAction === 'open-copy-panel') {
     e.preventDefault();
     copyFocusedPaneOutput();
     return;

@@ -1,7 +1,8 @@
 // board.js — board CRUD provider, polling loop, sidebar/tabs/board rendering
 // Part of deck's no-build frontend: native ES modules, no bundler.
 import { $, COL_HINTS, DOT_TITLES, POLL_MS, QUIET_SECS, emit, genId, inv, listeners, sessionName, setMemChip, state, store, uev } from './state.js';
-import { saveBoard } from './persistence.js';
+import { saveBoard, saveBoardNow } from './persistence.js';
+import { deleteSessionsTransaction, persistOptimistically, sidebarGroups } from './pure.js';
 import { confirmDialog, inlineRename, toast } from './dialogs.js';
 import { clearSeparators, closePaneBySid, leaveSessionView, openSession, renderSessionView, updatePaneChrome } from './layout.js';
 import { SHELL_FG, showProjectCtx, showSessionCtx } from './terminal.js';
@@ -53,16 +54,26 @@ export const provider = {
 
   async removeProject(pid) {
     const cards = store.cards.filter(c => c.projectId === pid);
-    if (!(await this.cancelSchedule(cards))) return false;
-    for (const c of cards) {
-      if (c.status !== 'stopped') {
-        try { await inv('kill_session', { name: c.session }); }
-        catch (e) { toast(`the shell of "${c.title}" could not be killed: ${e}`); }
+    const nextCards = store.cards.filter(c => c.projectId !== pid);
+    const nextProjects = store.projects.filter(p => p.id !== pid);
+    const result = await deleteSessionsTransaction(cards, {
+      cancel: cs => this.cancelSchedule(cs),
+      kill: async c => {
+        await inv('kill_session', { name: c.session });
+        c.status = 'stopped';
+      },
+      persist: () => saveBoardNow(nextProjects, nextCards),
+      commit: () => { store.cards = nextCards; store.projects = nextProjects; },
+    });
+    if (!result.ok) {
+      if (result.stage === 'kill') {
+        toast('project kept — these sessions could not be closed: ' + result.failed.map(x => x.card.title).join(', '));
+      } else if (result.stage === 'persist') {
+        toast('project kept because the board could not be saved: ' + result.error);
       }
+      emit('projects');
+      return false;
     }
-    store.cards = store.cards.filter(c => c.projectId !== pid);
-    store.projects = store.projects.filter(p => p.id !== pid);
-    saveBoard();
     emit('projects');
     return true;
   },
@@ -113,13 +124,22 @@ export const provider = {
   async close(sid, opts = {}) {
     const c = this.get(sid);
     if (!c) return false;
-    if (!opts.cancelled && !(await this.cancelSchedule(c))) return false;
-    if (c.status !== 'stopped') {
-      try { await inv('kill_session', { name: c.session }); }
-      catch (e) { toast(`the shell of "${c.title}" could not be killed: ${e}`); }
+    const nextCards = store.cards.filter(x => x.id !== sid);
+    const result = await deleteSessionsTransaction([c], {
+      cancel: () => opts.cancelled ? true : this.cancelSchedule(c),
+      kill: async card => {
+        await inv('kill_session', { name: card.session });
+        card.status = 'stopped';
+      },
+      persist: () => saveBoardNow(store.projects, nextCards),
+      commit: () => { store.cards = nextCards; },
+    });
+    if (!result.ok) {
+      if (result.stage === 'kill') toast(`session kept — "${c.title}" could not be closed; retry after checking tmux permissions`);
+      if (result.stage === 'persist') toast('session kept because the board could not be saved: ' + result.error);
+      emit('status', c);
+      return false;
     }
-    store.cards = store.cards.filter(x => x.id !== sid);
-    saveBoard();
     emit('list', c);
     return true;
   },
@@ -131,9 +151,22 @@ export const provider = {
     saveBoard();
     emit('list', c);
   },
-  rename(sid, title) {
+  async rename(sid, title) {
     const c = this.get(sid);
-    if (c) { c.title = title; saveBoard(); emit('list', c); }
+    if (!c || !title || title === c.title) return true;
+    const old = c.title;
+    return persistOptimistically({
+      apply: () => {
+        c.title = title;
+        emit('list', c); // board, exact sidebar item and session header sync now
+      },
+      persist: () => saveBoardNow(),
+      rollback: e => {
+        c.title = old;
+        emit('list', c);
+        toast('rename was not saved; the original title was restored: ' + e);
+      },
+    });
   },
   setDesc(sid, desc) {
     const c = this.get(sid);
@@ -221,18 +254,29 @@ export function renderSidebar() {
   const st = list.scrollTop;
   list.innerHTML = '';
   const all = provider.list(state.projectId);
-  const order = { waiting: 0, running: 1, stopped: 2 };
-  all.sort((a, b) => order[a.status] - order[b.status]);
   $('side-count').textContent = all.length;
   const proj = activeProject();
-  for (const s of all) {
+  if (!all.length) {
+    const empty = document.createElement('div');
+    empty.className = 'side-empty';
+    empty.textContent = 'No sessions in this project';
+    list.appendChild(empty);
+  }
+  for (const group of sidebarGroups(proj, all)) {
+    const heading = document.createElement('div');
+    heading.className = 'side-board-group';
+    heading.innerHTML = '<span class="side-board-name"></span><span class="side-board-count"></span>';
+    heading.querySelector('.side-board-name').textContent = group.column.name;
+    heading.querySelector('.side-board-count').textContent = group.count;
+    heading.title = group.column.name;
+    list.appendChild(heading);
+    for (const s of group.sessions) {
     const el = document.createElement('div');
     el.className = 'side-item' + (state.view === 'session' && state.sessionId === s.id ? ' active' : '');
+    el.dataset.sid = s.id;
     el.title = s.title;
-    el.innerHTML = `<span class="dot ${s.status}"></span><span class="name"></span><span class="col-tag"></span>`;
+    el.innerHTML = `<span class="dot ${s.status}"></span><span class="name"></span>`;
     el.querySelector('.name').textContent = s.title;
-    const c = proj && proj.columns.find(c => c.id === s.columnId);
-    el.querySelector('.col-tag').textContent = c ? c.name : '';
     el.onclick = () => openSession(s.id);
     el.oncontextmenu = e => showSessionCtx(e, s.id);
     /* sidebar items are drag sources for split (方案 A) */
@@ -242,6 +286,7 @@ export function renderSidebar() {
     });
     el.addEventListener('dragend', () => { $('dropzone').style.display = 'none'; });
     list.appendChild(el);
+    }
   }
   list.scrollTop = st;
   $('home-btn').classList.toggle('active', state.view === 'board');
@@ -465,8 +510,8 @@ export async function closeSession(sid, needConfirm = false) {
   /* the schedule goes first: if that cannot be persisted the card stays on
      the board (with its pane) instead of vanishing into a hidden schedule */
   if (!(await provider.cancelSchedule(s))) return;
-  closePaneBySid(sid, { detach: false });   // pane out first (may fall back to board)
-  await provider.close(sid, { cancelled: true });
+  if (!(await provider.close(sid, { cancelled: true }))) return;
+  closePaneBySid(sid, { detach: false });
   toast(`closed: ${s.title}`);
   render();
 }

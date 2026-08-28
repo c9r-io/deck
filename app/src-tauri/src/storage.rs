@@ -34,6 +34,7 @@ use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const SCHEMA_VERSION: u64 = 1;
+static SAVE_LOCK: Mutex<()> = Mutex::new(());
 
 // ---------- private-by-construction file creation --------------------------------
 //
@@ -345,18 +346,36 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
 /// Atomically save `payload` (a JSON document) wrapped in the version
 /// envelope, keeping the previous version as `.bak` (also written
 /// atomically). Refuses to overwrite a file written by a newer deck.
-pub fn save(path: &Path, payload: &str) -> Result<(), String> {
+fn save_checked(
+    path: &Path,
+    payload: &str,
+    validate_existing: impl Fn(&serde_json::Value) -> Result<(), String>,
+) -> Result<(), String> {
+    // Scheduler workers and UI commands can save concurrently. Serialize the
+    // validate → backup → replace sequence so one writer cannot validate
+    // bytes another writer replaces before its backup is taken.
+    let _save_guard = SAVE_LOCK.lock().unwrap();
     let data: serde_json::Value =
         serde_json::from_str(payload).map_err(|e| format!("refusing to save invalid JSON: {e}"))?;
     // Never clobber a file this build does not understand. `load_typed`
     // quarantines a damaged main file before anything can save over it, so
     // reaching here with a broken envelope means the file was never loaded
     // (or was replaced behind our back) — refuse rather than destroy it.
-    if let Ok(existing) = std::fs::read_to_string(path) {
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&existing) {
-            let name = path.file_name().unwrap_or_default().to_string_lossy();
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    let existing = match std::fs::read(path) {
+        Ok(bytes) => {
+            let raw = std::str::from_utf8(&bytes).map_err(|_| {
+                format!("refusing to overwrite {name} — the existing file is not valid UTF-8")
+            })?;
+            let v = serde_json::from_str::<serde_json::Value>(raw).map_err(|_| {
+                format!("refusing to overwrite {name} — the existing file is invalid JSON")
+            })?;
             match envelope_payload(&v) {
-                Ok(_) => {}
+                Ok(existing_payload) => validate_existing(&existing_payload).map_err(|e| {
+                    format!(
+                        "refusing to overwrite {name} — the existing file has the wrong structure ({e})"
+                    )
+                })?,
                 Err(DocErr::Newer(n)) => {
                     return Err(format!(
                         "refusing to overwrite {name} — it was written by a newer deck (schema v{n}); update deck first"
@@ -368,17 +387,42 @@ pub fn save(path: &Path, payload: &str) -> Result<(), String> {
                     ))
                 }
             }
+            Some(bytes)
         }
-    }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(_) => {
+            return Err(format!(
+                "refusing to overwrite {name} — the existing file could not be read"
+            ))
+        }
+    };
     let doc = serde_json::json!({ "schema_version": SCHEMA_VERSION, "data": data });
     let out = serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?;
 
     let dir = path.parent().ok_or("data path has no parent directory")?;
     create_private_dir(dir)?;
-    if let Ok(cur) = std::fs::read(path) {
+    if let Some(cur) = existing {
         atomic_write(&bak_path(path), &cur).map_err(|e| format!("backup failed: {e}"))?;
     }
     atomic_write(path, out.as_bytes())
+}
+
+#[allow(dead_code)] // low-level envelope tests intentionally exercise this directly
+pub fn save(path: &Path, payload: &str) -> Result<(), String> {
+    save_checked(path, payload, |_| Ok(()))
+}
+
+/// Typed save used by every app data file. It validates both the new payload
+/// and any concurrently replaced existing payload under the same save lock,
+/// so malformed business structure cannot be silently overwritten.
+pub(crate) fn save_typed<T: DeserializeOwned>(path: &Path, payload: &str) -> Result<(), String> {
+    serde_json::from_str::<T>(payload)
+        .map_err(|e| format!("refusing to save wrong structure: {e}"))?;
+    save_checked(path, payload, |existing| {
+        serde_json::from_value::<T>(existing.clone())
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    })
 }
 
 /// Hold an exclusive advisory lock for the app's lifetime. A second deck
@@ -498,62 +542,160 @@ const SECRET_PREFIXES: &[&str] = &[
     "eyJ", // JWT header
 ];
 
-/// A word that must never survive into a log or an export.
-fn is_sensitive_word(w: &str) -> bool {
-    if w.contains("://") {
-        return true; // file:// http(s):// and any other scheme
+fn value_end(bytes: &[u8], mut i: usize) -> usize {
+    while i < bytes.len()
+        && !bytes[i].is_ascii_whitespace()
+        && !matches!(bytes[i], b'"' | b'\'' | b')' | b']' | b'}' | b',' | b';')
+    {
+        i += 1;
     }
-    if w.starts_with('/') && w[1..].contains('/') {
-        return true; // absolute filesystem path
-    }
-    if w.starts_with("~/") {
-        return true;
-    }
-    if SECRET_PREFIXES.iter().any(|p| w.starts_with(p)) {
-        return true;
-    }
-    // a tmux session name: deck never logs one (it logs `session_tag`), so
-    // any that shows up came from an older build or a new call site
-    if w.starts_with("deck-") && w[5..].contains('-') {
-        return true;
-    }
-    // long opaque credential-shaped run (deck's own ids stay well below this)
-    let opaque = w.len() >= 24
-        && w.chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-        && w.chars().any(|c| c.is_ascii_digit())
-        && w.chars().any(|c| c.is_ascii_alphabetic());
-    opaque
+    i
 }
 
-/// Replace every sensitive word in `line` with `<redacted>`, keeping the
-/// diagnostic structure (event names, categories, counters) intact.
-pub(crate) fn sanitize_log(line: &str) -> String {
-    // words are split on whitespace and on the punctuation deck uses to wrap
-    // values in its own messages, so `(/Users/x)` and `for deck-a-1: n` are
-    // covered without mangling the surrounding text
-    let is_edge = |c: char| c.is_whitespace() || matches!(c, '(' | ')' | '[' | ']' | ',' | ';');
-    let mut out = String::with_capacity(line.len());
-    let mut word = String::new();
-    let flush = |word: &mut String, out: &mut String| {
-        if !word.is_empty() {
-            if is_sensitive_word(word) {
-                out.push_str("<redacted>");
-            } else {
-                out.push_str(word);
-            }
-            word.clear();
-        }
-    };
-    for c in line.chars() {
-        if is_edge(c) {
-            flush(&mut word, &mut out);
-            out.push(c);
-        } else {
-            word.push(c);
+fn token_end(bytes: &[u8], mut i: usize) -> usize {
+    while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || matches!(bytes[i], b'_' | b'-')) {
+        i += 1;
+    }
+    i
+}
+
+fn credential_assignment(line: &str, start: usize) -> Option<(usize, usize)> {
+    let bytes = line.as_bytes();
+    if start > 0 {
+        let prev = bytes[start - 1];
+        if prev.is_ascii_alphanumeric() || matches!(prev, b'_' | b'-') {
+            return None;
         }
     }
-    flush(&mut word, &mut out);
+    let key_end = token_end(bytes, start);
+    if key_end == start {
+        return None;
+    }
+    let key = line[start..key_end].to_ascii_lowercase();
+    if !matches!(
+        key.as_str(),
+        "token"
+            | "password"
+            | "passwd"
+            | "secret"
+            | "api_key"
+            | "apikey"
+            | "access_key"
+            | "authorization"
+            | "credential"
+            | "cookie"
+    ) {
+        return None;
+    }
+    let mut i = key_end;
+    if bytes.get(i).is_some_and(|b| matches!(b, b'"' | b'\'')) {
+        i += 1; // closing quote around a JSON key
+    }
+    while bytes.get(i).is_some_and(u8::is_ascii_whitespace) {
+        i += 1;
+    }
+    if !bytes.get(i).is_some_and(|b| matches!(b, b'=' | b':')) {
+        return None;
+    }
+    i += 1;
+    while bytes.get(i).is_some_and(u8::is_ascii_whitespace) {
+        i += 1;
+    }
+    if bytes
+        .get(i)
+        .is_some_and(|b| matches!(b, b'"' | b'\'' | b'(' | b'['))
+    {
+        i += 1; // keep the user's syntax, redact only its value
+    }
+    let mut end = value_end(bytes, i);
+    if line[i..end].eq_ignore_ascii_case("bearer") {
+        let mut j = end;
+        while bytes.get(j).is_some_and(u8::is_ascii_whitespace) {
+            j += 1;
+        }
+        end = value_end(bytes, j);
+    }
+    (end > i).then_some((i, end))
+}
+
+/// Return the end of a sensitive value beginning exactly at `start`.
+fn sensitive_end(line: &str, start: usize) -> Option<usize> {
+    let bytes = line.as_bytes();
+    let rest = &line[start..];
+    if rest.starts_with("~/") || rest.starts_with('/') {
+        let ansi_boundary = line[..start].rfind('\x1b').is_some_and(|esc| {
+            line[esc..start].starts_with("\x1b[") && line[esc..start].ends_with('m')
+        });
+        let boundary = start == 0
+            || bytes[start - 1].is_ascii_whitespace()
+            || matches!(
+                bytes[start - 1],
+                b'=' | b':' | b'"' | b'\'' | b'(' | b'[' | b'{'
+            )
+            || ansi_boundary;
+        if boundary {
+            return Some(value_end(bytes, start));
+        }
+    }
+    if SECRET_PREFIXES.iter().any(|p| rest.starts_with(p)) {
+        return Some(value_end(bytes, start));
+    }
+    if rest.starts_with("deck-") {
+        let end = token_end(bytes, start);
+        if line[start + 5..end].contains('-') {
+            return Some(end);
+        }
+    }
+
+    // Any RFC-style scheme:// URL, even when attached to JSON/assignment
+    // punctuation. Detection starts at the scheme rather than splitting on
+    // whitespace, so quotes, colons, equals and ANSI wrappers cannot hide it.
+    if bytes[start].is_ascii_alphabetic() {
+        let mut j = start + 1;
+        while j < bytes.len()
+            && (bytes[j].is_ascii_alphanumeric() || matches!(bytes[j], b'+' | b'-' | b'.'))
+        {
+            j += 1;
+        }
+        if line[j..].starts_with("://") {
+            return Some(value_end(bytes, j + 3));
+        }
+    }
+
+    let end = token_end(bytes, start);
+    if end > start {
+        let run = &line[start..end];
+        let opaque = run.len() >= 24
+            && run.bytes().any(|c| c.is_ascii_digit())
+            && run.bytes().any(|c| c.is_ascii_alphabetic());
+        if opaque {
+            return Some(end);
+        }
+    }
+    None
+}
+
+/// Replace sensitive spans wherever they occur while preserving surrounding
+/// diagnostic punctuation and ANSI control sequences.
+pub(crate) fn sanitize_log(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut i = 0;
+    while i < line.len() {
+        if let Some((value_start, end)) = credential_assignment(line, i) {
+            out.push_str(&line[i..value_start]);
+            out.push_str("<redacted>");
+            i = end;
+            continue;
+        }
+        if let Some(end) = sensitive_end(line, i) {
+            out.push_str("<redacted>");
+            i = end;
+            continue;
+        }
+        let ch = line[i..].chars().next().unwrap();
+        out.push(ch);
+        i += ch.len_utf8();
+    }
     out
 }
 
@@ -575,7 +717,25 @@ pub(crate) fn log_path(dir: &Path) -> PathBuf {
     dir.join("app.log")
 }
 
-fn deck_dir() -> PathBuf {
+/// Debug bundles accept an isolated data root for packaged WKWebView smoke
+/// tests. Release builds ignore this argument completely.
+pub(crate) fn debug_arg(name: &str) -> Option<String> {
+    if !cfg!(debug_assertions) {
+        return None;
+    }
+    let args: Vec<String> = std::env::args().collect();
+    args.windows(2)
+        .find(|pair| pair[0] == name)
+        .map(|pair| pair[1].clone())
+}
+
+pub(crate) fn deck_dir() -> PathBuf {
+    if let Some(root) = debug_arg("--smoke-data-dir") {
+        let path = PathBuf::from(root);
+        if path.is_absolute() {
+            return path;
+        }
+    }
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".deck")
@@ -926,6 +1086,62 @@ mod tests {
     }
 
     #[test]
+    fn save_refuses_invalid_json_main_without_poisoning_valid_backup() {
+        let d = tdir("invalid-main-save");
+        let p = d.join("x.json");
+        let bak = bak_path(&p);
+        let good_backup = r#"{"schema_version":1,"data":{"v":7}}"#;
+        std::fs::write(&p, b"{broken main").unwrap();
+        std::fs::write(&bak, good_backup).unwrap();
+        let err = save(&p, r#"{"v":8}"#).unwrap_err();
+        assert!(err.contains("refusing to overwrite") && err.contains("invalid JSON"));
+        assert_eq!(std::fs::read(&p).unwrap(), b"{broken main");
+        assert_eq!(std::fs::read_to_string(&bak).unwrap(), good_backup);
+    }
+
+    #[test]
+    fn typed_save_refuses_wrong_existing_structure_and_preserves_backup() {
+        let d = tdir("wrong-structure-save");
+        let p = d.join("x.json");
+        let bak = bak_path(&p);
+        let malformed = r#"{"schema_version":1,"data":{"v":"not-a-number"}}"#;
+        let good_backup = r#"{"schema_version":1,"data":{"v":7}}"#;
+        std::fs::write(&p, malformed).unwrap();
+        std::fs::write(&bak, good_backup).unwrap();
+        let err = save_typed::<Doc>(&p, r#"{"v":8}"#).unwrap_err();
+        assert!(err.contains("wrong structure"));
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), malformed);
+        assert_eq!(std::fs::read_to_string(&bak).unwrap(), good_backup);
+    }
+
+    #[test]
+    fn unreadable_or_wrong_kind_main_is_never_treated_as_missing() {
+        let d = tdir("wrong-kind-save");
+        let p = d.join("x.json");
+        std::fs::create_dir(&p).unwrap();
+        let err = save(&p, r#"{"v":1}"#).unwrap_err();
+        assert!(err.contains("refusing to overwrite"));
+        assert!(p.is_dir(), "existing main object was untouched");
+    }
+
+    #[test]
+    fn failed_atomic_main_replace_leaves_no_temp_and_preserves_target() {
+        let d = tdir("main-write-fail");
+        let target = d.join("x.json");
+        std::fs::create_dir(&target).unwrap(); // rename(temp, non-empty-dir) must fail
+        std::fs::write(target.join("keep"), b"sentinel").unwrap();
+        assert!(atomic_write(&target, b"replacement").is_err());
+        assert_eq!(std::fs::read(target.join("keep")).unwrap(), b"sentinel");
+        assert!(
+            !std::fs::read_dir(&d)
+                .unwrap()
+                .flatten()
+                .any(|e| e.file_name().to_string_lossy().contains(".tmp.")),
+            "failed main write cleaned its private temp"
+        );
+    }
+
+    #[test]
     fn invalid_payload_is_refused_before_touching_disk() {
         let d = tdir("invalid");
         let p = d.join("x.json");
@@ -1160,6 +1376,66 @@ mod tests {
     }
 
     #[test]
+    fn assignment_json_quotes_ansi_and_multiple_values_are_redacted_in_files() {
+        let d = tdir("log-shapes");
+        let log = log_path(&d);
+        let cases = [
+            (
+                "path=/Users/example/private/file",
+                "/Users/example/private/file",
+            ),
+            (
+                "token=ghp_ShapeMarker0123456789",
+                "ghp_ShapeMarker0123456789",
+            ),
+            (
+                r#"{"path":"/Users/example/json-private"}"#,
+                "/Users/example/json-private",
+            ),
+            (r#"authorization: "Bearer shortSecret7""#, "shortSecret7"),
+            (
+                "wrapped=(https://example.com/private?q=1)",
+                "https://example.com/private?q=1",
+            ),
+            ("\x1b[31m~/Documents/private\x1b[0m", "~/Documents/private"),
+            ("a=1 token=shortSecret7 path=/opt/private/x", "shortSecret7"),
+            (
+                "jwt=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJwcml2YXRlIn0.signature",
+                "eyJhbGciOiJIUzI1NiJ9",
+            ),
+        ];
+        for (line, _) in cases {
+            applog_to(&log, line);
+        }
+        let text = std::fs::read_to_string(&log).unwrap();
+        for (index, (_, secret)) in cases.iter().enumerate() {
+            assert!(
+                !text.contains(secret),
+                "sensitive marker survived case {index}"
+            );
+        }
+        assert_eq!(text.matches("<redacted>").count(), cases.len() + 1);
+
+        // The migration path uses the exact same sanitizer on whole files.
+        let exports = d.join("exports");
+        std::fs::create_dir_all(&exports).unwrap();
+        let old = exports.join("old.txt");
+        std::fs::write(
+            &old,
+            cases.iter().map(|x| x.0).collect::<Vec<_>>().join("\n"),
+        )
+        .unwrap();
+        assert_eq!(sanitize_existing_logs(&d), 1);
+        let migrated = std::fs::read_to_string(old).unwrap();
+        for (index, (_, secret)) in cases.iter().enumerate() {
+            assert!(
+                !migrated.contains(secret),
+                "migration retained case {index}"
+            );
+        }
+    }
+
+    #[test]
     fn ordinary_diagnostics_survive_redaction_unchanged() {
         // false positives would make the log useless, so pin the negative
         for line in [
@@ -1172,6 +1448,8 @@ mod tests {
             "[boot] instance lock unavailable (locked) — exiting",
             "[pty] emit #3 4096B to sess-0f1e2",
             "[queue] step skipped by user — group unblocked",
+            "ratios at/every/chain and count=24 are safe",
+            "relative/path and version 0.4.30 stay useful",
         ] {
             assert_eq!(sanitize_log(line), line, "over-redacted: {line}");
         }

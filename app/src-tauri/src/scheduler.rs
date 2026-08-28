@@ -1,7 +1,8 @@
 //! Scheduled prompts: at / chain (quiet-based) / every (recurring rules
-//! with daily windows) + per-project templates. Delivery is at-most-once:
-//! the firing intent is persisted before injection and crash recovery never
-//! re-sends. Tick logic is pure and unit-tested; the thread only adds IO.
+//! with daily windows) + per-project templates. A persisted firing intent is
+//! deliberately treated as ambiguous after a crash: deck neither claims it
+//! succeeded nor sends it again until the user resolves it. Tick logic is
+//! pure and unit-tested; the thread only adds IO.
 
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -56,9 +57,10 @@ pub(crate) struct QueueItem {
     /// last fire instant (recurring only)
     #[serde(default)]
     last: Option<u64>,
-    /// lifecycle: "pending" (default) | "firing" | "failed".
-    /// "firing" is persisted BEFORE injection: after a crash such an item is
-    /// resolved as "assume sent" (at-most-once delivery — see recover()).
+    /// lifecycle: "pending" (default) | "firing" | "failed" | "ambiguous".
+    /// "firing" is persisted BEFORE injection. If the process disappears
+    /// before the post-send state lands, boot migrates it to "ambiguous" and
+    /// requires an explicit acknowledge or risk-accepting retry.
     #[serde(default = "default_state")]
     state: String,
     #[serde(default)]
@@ -98,9 +100,9 @@ pub(crate) fn default_state() -> String {
     "pending".into()
 }
 
-/// Audit record of one prompt delivery. `assumed` marks boot-time crash
-/// recovery, where the send may or may not have reached the session (the
-/// at-most-once uncertainty window) — deck never risks sending twice.
+/// Audit record of one prompt delivery. `assumed` is retained for schema
+/// compatibility and now means the user explicitly acknowledged an
+/// ambiguous delivery; recovery itself never fabricates success.
 #[derive(Serialize, Deserialize, Clone)]
 pub(crate) struct DeliveryRecord {
     id: String,
@@ -208,8 +210,8 @@ pub(crate) fn with_queue<T>(
 
 /// Retry a persist that failed AFTER an irreversible side effect (a prompt
 /// was really sent, or definitively refused). Memory is authoritative in that
-/// window; until the write lands, a crash falls back to the at-most-once
-/// recovery rule ("assume sent"), so the scheduler keeps retrying every tick.
+/// window; until the write lands, a crash sees the older firing intent and
+/// exposes it as ambiguous, so the scheduler keeps retrying every tick.
 pub(crate) fn flush_dirty(
     qm: &Mutex<QueueState>,
     dirty: &AtomicBool,
@@ -305,10 +307,7 @@ pub(crate) const CHAIN_QUIET_SECS: u64 = 180;
 pub(crate) const SESSION_MIN_GAP_SECS: u64 = 60;
 
 pub(crate) fn queue_path() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".deck")
-        .join("queue.json")
+    storage::deck_dir().join("queue.json")
 }
 
 pub(crate) fn load_queue() -> QueueState {
@@ -369,7 +368,7 @@ pub(crate) fn migrate_groups(q: &mut QueueState) {
 /// injecting a prompt) when this fails.
 pub(crate) fn save_queue(q: &QueueState) -> Result<(), String> {
     let raw = serde_json::to_string(q).map_err(|e| e.to_string())?;
-    storage::save(&queue_path(), &raw)
+    storage::save_typed::<QueueState>(&queue_path(), &raw)
 }
 
 #[tauri::command]
@@ -544,8 +543,15 @@ pub(crate) fn queue_add(
 /// conflict error and the item is kept until finalize completes. The window
 /// is at most one send (seconds); the UI surfaces the error as a toast.
 pub(crate) fn firing_conflict(q: &QueueState, id: &str) -> Result<(), String> {
-    if q.items.iter().any(|i| i.id == id && i.state == "firing") {
-        return Err("this prompt is being sent right now — try again in a few seconds".into());
+    if let Some(i) = q.items.iter().find(|i| i.id == id) {
+        if i.state == "firing" {
+            return Err("this prompt is being sent right now — try again in a few seconds".into());
+        }
+        if i.state == "ambiguous" {
+            return Err(
+                "this prompt has an ambiguous delivery — acknowledge or retry it first".into(),
+            );
+        }
     }
     Ok(())
 }
@@ -578,13 +584,56 @@ pub(crate) fn pause_item(q: &mut QueueState, id: &str, paused: bool) -> Result<(
 
 /// Pure core of queue_retry.
 pub(crate) fn retry_item(q: &mut QueueState, id: &str) -> Result<(), String> {
-    firing_conflict(q, id)?;
+    if q.items.iter().any(|i| i.id == id && i.state == "firing") {
+        return Err("this prompt is being sent right now — try again in a few seconds".into());
+    }
+    let delivery = q
+        .items
+        .iter()
+        .find(|i| i.id == id && i.state == "ambiguous")
+        .and_then(|i| i.delivery.clone());
     if let Some(item) = q.items.iter_mut().find(|i| i.id == id) {
+        if !matches!(
+            item.state.as_str(),
+            "firing" | "ambiguous" | "failed" | "pending"
+        ) {
+            return Err("prompt has an unknown delivery state".into());
+        }
         item.state = default_state();
         item.attempts = 0;
         item.last_error = None;
         item.last_attempt_at = None;
+        item.delivery = None;
+    } else if q.deliveries.iter().any(|d| d.item == id) {
+        return Ok(()); // repeated resolution of a consumed once item
     }
+    if let Some(delivery) = delivery {
+        q.pending.retain(|p| p.id != delivery);
+    }
+    Ok(())
+}
+
+/// Resolve an uncertain delivery as sent. Accounting is performed on the
+/// candidate state and reaches memory only after persistence succeeds.
+/// Replays are no-ops, including once/template steps already consumed.
+pub(crate) fn acknowledge_ambiguous(q: &mut QueueState, id: &str) -> Result<(), String> {
+    let Some(item) = q.items.iter().find(|i| i.id == id).cloned() else {
+        return if q.deliveries.iter().any(|d| d.item == id) {
+            Ok(())
+        } else {
+            Err("scheduled prompt not found".into())
+        };
+    };
+    if item.state != "ambiguous" {
+        return if item.delivery.is_none() && q.deliveries.iter().any(|d| d.item == id) {
+            Ok(())
+        } else {
+            Err("this prompt is not awaiting an ambiguous-delivery decision".into())
+        };
+    }
+    let delivery = item.delivery.unwrap_or_else(|| format!("legacy-{id}"));
+    let when = item.last_attempt_at.unwrap_or_else(now_epoch);
+    finalize_delivery(q, id, &delivery, when, true);
     Ok(())
 }
 
@@ -643,6 +692,19 @@ pub(crate) fn queue_retry(
     Ok(())
 }
 
+/// Explicitly treat an ambiguous delivery as sent. This is the only recovery
+/// path that performs delivery accounting; boot never does so on its own.
+#[tauri::command]
+pub(crate) fn queue_acknowledge(
+    state: State<'_, Queues>,
+    app: AppHandle,
+    id: String,
+) -> Result<(), String> {
+    with_queue(&state.q, &save_queue, |q| acknowledge_ambiguous(q, &id))?;
+    let _ = app.emit("queue-changed", ());
+    Ok(())
+}
+
 /// Explicitly skip a failed step so the rest of its group can continue.
 /// (A dead step blocks its group's later steps until the user decides.)
 #[tauri::command]
@@ -668,8 +730,8 @@ pub(crate) fn is_cancelled(q: &QueueState, session: &str) -> bool {
 ///
 /// 1. the session is tombstoned (persisted, so it survives a crash);
 /// 2. EVERY item of that session is dropped, including one that is mid-send
-///    — its delivery still finalizes from the pending-ledger snapshot, so
-///    the at-most-once audit is complete, but there is no item left to
+///    — a live delivery still finalizes from the pending-ledger snapshot, so
+///    its audit is complete, but there is no item left to
 ///    re-arm, no rule to restore, no template step to spawn and no next
 ///    cadence (see finalize_delivery's cancelled branch);
 /// 3. the session's last-fired bookkeeping goes with it.
@@ -822,7 +884,11 @@ fn eligible(
     now_min: u32,
     activity: &HashMap<String, u64>,
 ) -> bool {
-    if i.paused || i.state == "firing" || item_dead(i) || !retry_ok(i, now) {
+    if i.paused
+        || matches!(i.state.as_str(), "firing" | "ambiguous")
+        || item_dead(i)
+        || !retry_ok(i, now)
+    {
         return false;
     }
     // the card (or its project) was deleted: nothing of this session ever
@@ -930,7 +996,7 @@ pub(crate) fn next_delivery_id() -> String {
 }
 
 /// Idempotent delivery bookkeeping — the ONE function that records a send,
-/// shared by the live success path and boot-time "assume sent" recovery.
+/// shared by the live success path and explicit user acknowledgement.
 /// In one pass it: writes the audit record, updates the session's last-fired
 /// instant, consumes a once-item or counts a rule fire (last + fired),
 /// spawns the iteration's template steps exactly once, and retires a rule
@@ -985,7 +1051,7 @@ pub(crate) fn finalize_delivery(
         q.deliveries.drain(..n);
     }
     // The card was deleted while this delivery was in flight. The audit
-    // record above closes the at-most-once window (the prompt may really
+    // record above closes the in-flight delivery window (the prompt may really
     // have landed), but NOTHING about the session may come back to life:
     // no rule restored to pending, no template steps spawned, no next
     // cadence, no send-gap bookkeeping for a session that no longer exists.
@@ -1060,73 +1126,54 @@ pub(crate) fn finalize_delivery(
 
 /// The send definitively did NOT happen (atomic injection refused) — mark
 /// the item for retry and drop its ledger entry: there is no delivery to
-/// recover, and crash recovery must not "assume sent" for it. The ledger
+/// recover, and crash recovery must not treat it as ambiguous. The ledger
 /// entry goes even when the item itself vanished mid-send (its card was
 /// deleted), so a refused send is never resurrected as an assumed delivery.
 pub(crate) fn note_failed(q: &mut QueueState, id: &str, delivery: &str, err: &str) {
     if let Some(it) = q.items.iter_mut().find(|i| i.id == id) {
         it.delivery = None;
         it.state = "failed".into();
-        it.last_error = Some(err.chars().take(200).collect());
+        it.last_error = Some(format!("send failed ({})", storage::err_code(err)));
     }
     q.pending.retain(|p| p.id != delivery);
 }
 
-/// At-most-once crash recovery. The firing intent (with its delivery id) is
-/// persisted BEFORE injection, so after a crash such an item may or may not
-/// have reached the session — this window cannot be closed from outside the
-/// terminal. Deck assumes the send happened and finalizes that exact
-/// delivery through the same idempotent path as a live success, so fired
-/// counts, until-N retirement and template steps stay correct and repeated
-/// recovery changes nothing. It never re-sends.
+/// Crash recovery exposes unresolved firing intents as ambiguous. The send
+/// may or may not have reached tmux, so neither automatic retry nor automatic
+/// delivery accounting is honest. The user must acknowledge it as sent or
+/// explicitly retry while accepting the duplicate-delivery risk.
 pub(crate) fn recover_interrupted(q: &mut QueueState) -> Vec<String> {
-    let firing: Vec<(String, Option<String>, u64, String, String)> = q
-        .items
-        .iter()
-        .filter(|i| i.state == "firing")
-        .map(|i| {
-            (
-                i.id.clone(),
-                i.delivery.clone(),
-                i.last_attempt_at.unwrap_or_else(now_epoch),
-                i.mode.clone(),
-                i.session.clone(),
-            )
-        })
-        .collect();
     let mut notes = Vec::new();
-    for (id, delivery, when, mode, session) in firing {
-        // pre-delivery-id queue files: synthesize a stable id so repeated
-        // recovery of the same interruption stays idempotent
-        let d = delivery.unwrap_or_else(|| format!("legacy-{id}"));
-        finalize_delivery(q, &id, &d, when, true);
+    for item in q.items.iter_mut().filter(|i| i.state == "firing") {
+        item.state = "ambiguous".into();
         notes.push(format!(
-            "a {} prompt for {session} was interrupted mid-send last run; treated as sent (deck delivers at-most-once)",
-            if mode == "every" { "recurring" } else { "scheduled" }
+            "a {} prompt was interrupted during delivery; choose acknowledge or retry in its session queue",
+            if item.mode == "every" { "recurring" } else { "scheduled" }
         ));
     }
-    // Orphaned ledger entries: the firing item itself is gone (crash combined
-    // with an item removal) but the persisted delivery still must be
-    // accounted — audit + session gap via the snapshot, assumed sent.
-    let orphans: Vec<(String, String, u64, String)> = q
+    // A pre-v0.4.30 file can contain a ledger entry whose live item is gone.
+    // Restore its snapshot as ambiguous unless its session was tombstoned.
+    let orphans: Vec<PendingDelivery> = q
         .pending
         .iter()
-        .filter(|p| !q.items.iter().any(|i| i.id == p.snapshot.id))
-        .map(|p| {
-            (
-                p.snapshot.id.clone(),
-                p.id.clone(),
-                p.snapshot.last_attempt_at.unwrap_or_else(now_epoch),
-                p.snapshot.session.clone(),
-            )
+        .filter(|p| {
+            !q.items.iter().any(|i| i.id == p.snapshot.id) && !is_cancelled(q, &p.snapshot.session)
         })
+        .cloned()
         .collect();
-    for (item_id, delivery, when, session) in orphans {
-        finalize_delivery(q, &item_id, &delivery, when, true);
-        notes.push(format!(
-            "a scheduled prompt for {session} was interrupted mid-send last run; treated as sent (deck delivers at-most-once)"
-        ));
+    for pending in orphans {
+        let mut item = pending.snapshot;
+        item.state = "ambiguous".into();
+        item.delivery = Some(pending.id);
+        notes.push(
+            "a scheduled prompt was interrupted during delivery; choose acknowledge or retry in its session queue"
+                .into(),
+        );
+        q.items.push(item);
     }
+    let cancelled: HashSet<&str> = q.cancelled.iter().map(|t| t.session.as_str()).collect();
+    q.pending
+        .retain(|p| !cancelled.contains(p.snapshot.session.as_str()));
     notes
 }
 
@@ -1173,7 +1220,7 @@ fn reap_if_cancelled(cancelled: bool, session: &str, h: &SendHooks) {
 ///   pending ──(re-select fresh under lock, persist intent+ledger)──► firing
 ///   firing ──fire Ok──► finalize_delivery (audit, gap, consume/count/spawn)
 ///   firing ──fire Err──► note_failed (retryable, ledger dropped)
-///   firing ──crash──► recover_interrupted at next boot (assume sent)
+///   firing ──crash──► ambiguous (user acknowledge or risk-accepting retry)
 ///
 /// Persistence has two distinct regimes, and the difference is deliberate:
 ///
@@ -1183,9 +1230,8 @@ fn reap_if_cancelled(cancelled: bool, session: &str, h: &SendHooks) {
 ///   already irreversible, so memory takes the new state unconditionally and
 ///   a failed write only sets the `dirty` flag: the scheduler retries the
 ///   save every tick (`flush_dirty`) and the user is warned. Until it lands,
-///   a crash resolves through the usual at-most-once rule (disk still shows
-///   "firing" → assume sent), which is why the retry — not silence — is the
-///   contract for a definitively-NOT-sent prompt.
+///   a crash sees the older "firing" intent and exposes the uncertainty for
+///   an explicit user decision.
 ///
 /// The queue lock is held only for state transitions and their persists —
 /// never across `fire` (tmux + a possible session-boot wait).
@@ -1199,8 +1245,8 @@ pub(crate) fn send_one(
 ) -> SendResult {
     let persist = h.persist;
     // Persist the firing intent (delivery id + ledger snapshot) BEFORE
-    // injecting — this ordering makes delivery at-most-once across crashes,
-    // and the snapshot makes finalize independent of the item surviving.
+    // injecting — this ordering preserves an honest ambiguity record across
+    // crashes, and the snapshot makes resolution independent of item survival.
     let pre = with_queue(qm, persist, |q| {
         // fresh re-selection under the lock: a pause, edit or removal since
         // the tick began is honored here
@@ -1264,8 +1310,8 @@ pub(crate) fn send_one(
             }
             drop(q);
             reap_if_cancelled(cancelled, &item.session, h);
-            // the raw error stays on the item (last_error → queue UI); the
-            // log gets only its category — tmux/start errors can embed paths
+            // The item and log both keep only a category — tmux/start errors
+            // can embed paths or raw session names.
             applog(&format!(
                 "[queue] send FAILED for {} (attempt {}, {}){}",
                 storage::session_tag(&item.session),
@@ -1285,21 +1331,25 @@ pub(crate) fn send_one(
     }
 }
 
-/// Boot the queue: load, resolve any interrupted delivery (at-most-once),
-/// persist the resolution. A failed write here is the same "memory ahead of
-/// disk" case as a post-send failure — flagged dirty and retried per tick,
-/// never silently dropped.
+/// Boot the queue and transactionally migrate interrupted deliveries to the
+/// ambiguous state. If the save fails the original firing state remains in
+/// memory; it is still ineligible and the UI treats it as unresolved.
 pub(crate) fn boot_queues() -> Queues {
-    let mut qs = load_queue();
-    let notes = recover_interrupted(&mut qs);
-    let queues = Queues::new(qs);
-    if !notes.is_empty() {
-        for n in notes {
-            storage::warn(n);
-        }
+    let queues = Queues::new(load_queue());
+    let has_interrupted = {
         let q = queues.q.lock().unwrap();
-        if let Err(e) = save_queue(&q) {
-            note_persist_lag(&queues.dirty, "crash recovery", &e);
+        q.items.iter().any(|i| i.state == "firing")
+            || q.pending
+                .iter()
+                .any(|p| !q.items.iter().any(|i| i.id == p.snapshot.id))
+    };
+    if has_interrupted {
+        match with_queue(&queues.q, &save_queue, |q| Ok(recover_interrupted(q))) {
+            Ok(notes) => notes.into_iter().for_each(storage::warn),
+            Err(e) => storage::warn(format!(
+                "interrupted deliveries remain unresolved because queue state could not be saved ({}); retry their decision in the queue",
+                storage::err_code(&e)
+            )),
         }
     }
     queues
@@ -1309,6 +1359,9 @@ pub(crate) fn spawn_scheduler(app: AppHandle) {
     std::thread::spawn(move || loop {
         std::thread::sleep(std::time::Duration::from_secs(20));
         let state = app.state::<Queues>();
+        // A post-send transition can be the last once item. Flush before the
+        // empty-queue fast path so dirty state never loses its retry driver.
+        flush_dirty(&state.q, &state.dirty, &save_queue);
         if state.q.lock().unwrap().items.is_empty() {
             continue;
         }
@@ -1329,9 +1382,6 @@ pub(crate) fn spawn_scheduler(app: AppHandle) {
                 }
             }
         }
-        // a post-send write that failed keeps memory ahead of disk — retry it
-        // before anything else touches the queue this tick
-        flush_dirty(&state.q, &state.dirty, &save_queue);
         // expired rules die quietly, transactionally like every other change
         let now = now_epoch();
         if state
@@ -1697,7 +1747,7 @@ mod tests {
         assert_eq!(q.items.iter().find(|i| i.id == "t").unwrap().group, None);
     }
 
-    // ---------- finalize / crash recovery (at-most-once accounting) ----------
+    // ---------- finalize / ambiguous crash recovery ----------
 
     #[test]
     fn finalize_is_idempotent_per_delivery() {
@@ -1722,9 +1772,7 @@ mod tests {
     }
 
     #[test]
-    fn crash_after_intent_recovers_as_assumed_sent_never_resends() {
-        // crash windows 1–3 (before injection / between text and Enter /
-        // after Enter, before finalize) all leave this exact persisted state:
+    fn crash_after_intent_becomes_ambiguous_and_never_auto_resends() {
         let mut once = qi("o", "at");
         once.state = "firing".into();
         once.delivery = Some("dA".into());
@@ -1737,18 +1785,16 @@ mod tests {
         let mut q = qs(vec![once, r]);
         let notes = recover_interrupted(&mut q);
         assert_eq!(notes.len(), 2);
-        // once-item consumed (assumed sent), never re-queued
-        assert!(!q.items.iter().any(|i| i.id == "o"));
-        // rule fully accounted: counted, stamped, iteration spawned
+        let once = q.items.iter().find(|i| i.id == "o").unwrap();
+        assert_eq!(once.state, "ambiguous");
         let rl = q.items.iter().find(|i| i.id == "t").unwrap();
         assert_eq!(
             (rl.fired, rl.last, rl.state.as_str()),
-            (1, Some(NOW - 5), "pending")
+            (0, None, "ambiguous")
         );
-        assert_eq!(q.items.iter().filter(|i| i.mode == "chain").count(), 1);
-        assert!(q.deliveries.iter().any(|d| d.id == "dB" && d.assumed));
-        // nothing is selectable for immediate re-send of the same prompts
-        assert!(!q.items.iter().any(|i| i.state == "firing"));
+        assert!(q.deliveries.is_empty(), "recovery never claims success");
+        assert_eq!(q.items.iter().filter(|i| i.mode == "chain").count(), 0);
+        assert!(select_due(&q, NOW + 100_000, 720, &HashMap::new()).is_empty());
     }
 
     #[test]
@@ -1762,15 +1808,11 @@ mod tests {
         recover_interrupted(&mut q);
         let snapshot = serde_json::to_string(&q).unwrap();
         recover_interrupted(&mut q);
-        finalize_delivery(&mut q, "t", "dB", NOW - 5, true); // even a direct replay
         assert_eq!(serde_json::to_string(&q).unwrap(), snapshot);
     }
 
     #[test]
-    fn recovery_when_finalize_persisted_nothing_matches_live_result() {
-        // finalize completed in memory but persisting failed and deck died:
-        // disk still holds the pre-finalize state. Recovery must produce the
-        // same accounting a live success would have.
+    fn acknowledge_after_crash_matches_live_result_and_is_idempotent() {
         let mut r = rule(300);
         r.steps = vec!["s2".into()];
         r.state = "firing".into();
@@ -1781,6 +1823,8 @@ mod tests {
         finalize_delivery(&mut live, "t", "dX", NOW, false);
         let mut rec = pre.clone();
         recover_interrupted(&mut rec);
+        acknowledge_ambiguous(&mut rec, "t").unwrap();
+        acknowledge_ambiguous(&mut rec, "t").unwrap();
         let strip = |q: &QueueState| {
             let mut v: Vec<_> = q
                 .items
@@ -1803,7 +1847,13 @@ mod tests {
         r.last_attempt_at = Some(NOW);
         let mut q = qs(vec![r]);
         recover_interrupted(&mut q);
-        // second (and last) fire counted → rule retired, not over-counted
+        assert!(q
+            .items
+            .iter()
+            .any(|i| i.id == "t" && i.state == "ambiguous"));
+        acknowledge_ambiguous(&mut q, "t").unwrap();
+        acknowledge_ambiguous(&mut q, "t").unwrap();
+        // second (and last) fire counted exactly once after acknowledgement
         assert!(!q.items.iter().any(|i| i.id == "t"));
         assert_eq!(q.deliveries.len(), 1);
     }
@@ -1815,7 +1865,10 @@ mod tests {
         once.last_attempt_at = Some(NOW - 5);
         let mut q = qs(vec![once]);
         recover_interrupted(&mut q);
+        assert_eq!(q.items[0].state, "ambiguous");
+        acknowledge_ambiguous(&mut q, "o").unwrap();
         assert!(q.items.is_empty());
+        acknowledge_ambiguous(&mut q, "o").unwrap();
         recover_interrupted(&mut q);
         assert_eq!(q.deliveries.len(), 1, "synthetic id keeps it idempotent");
     }
@@ -1999,8 +2052,8 @@ mod tests {
 
     #[test]
     fn a_delete_during_a_send_audits_the_delivery_but_revives_nothing() {
-        // recurring rule mid-send: the delivery is inside the at-most-once
-        // window, so it must finish its audit — but the card is gone
+        // recurring rule mid-send: a live result still finishes its audit,
+        // but the deleted card and its future schedule never return
         let mut r = rule(300);
         r.steps = vec!["s2".into(), "s3".into()];
         r.state = "firing".into();
@@ -2040,7 +2093,7 @@ mod tests {
         let on_disk = serde_json::to_string(&q).unwrap();
         let mut booted: QueueState = serde_json::from_str(&on_disk).unwrap();
         let notes = recover_interrupted(&mut booted);
-        assert_eq!(notes.len(), 1, "the interrupted delivery is accounted for");
+        assert!(notes.is_empty(), "a cancelled delivery needs no decision");
         assert!(booted.items.is_empty(), "nothing revived");
         assert!(booted.pending.is_empty());
         assert!(
@@ -2212,7 +2265,7 @@ mod tests {
     }
 
     #[test]
-    fn recovery_finalizes_orphaned_ledger_entries() {
+    fn recovery_restores_orphaned_ledger_entries_as_ambiguous() {
         let mut a = qi("a", "at");
         a.state = "firing".into();
         a.delivery = Some("dX".into());
@@ -2224,10 +2277,10 @@ mod tests {
         });
         let notes = recover_interrupted(&mut q);
         assert_eq!(notes.len(), 1);
-        assert!(notes[0].contains("treated as sent"));
-        assert!(q.deliveries.iter().any(|d| d.id == "dX" && d.assumed));
-        assert_eq!(q.last_fired.get("s"), Some(&(NOW - 5)));
-        assert!(q.pending.is_empty());
+        assert!(notes[0].contains("choose acknowledge or retry"));
+        assert!(q.deliveries.is_empty());
+        assert!(q.last_fired.is_empty());
+        assert_eq!(q.items[0].state, "ambiguous");
         // repeated recovery changes nothing
         let snapshot = serde_json::to_string(&q).unwrap();
         recover_interrupted(&mut q);
@@ -2660,7 +2713,7 @@ mod tests {
     #[test]
     fn a_failed_post_send_save_keeps_memory_authoritative_and_retries() {
         // the prompt really went out: memory MUST take the finalized state
-        // (re-sending would break at-most-once), and the write is retried
+        // (automatic re-sending could duplicate it), and the write is retried
         let qm = Mutex::new(qs(vec![due_at("a", "s")]));
         let disk = FakeDisk::new(&qm.lock().unwrap().clone());
         let dirty = AtomicBool::new(false);
@@ -2733,6 +2786,94 @@ mod tests {
         assert_eq!(recovered.items[0].state, "failed");
         assert!(recovered.pending.is_empty());
         assert!(recovered.deliveries.is_empty());
+    }
+
+    #[test]
+    fn crash_before_dirty_flush_recovers_old_firing_disk_as_ambiguous() {
+        // Exact crash window from the regression: intent save succeeds, the
+        // tmux injection explicitly refuses, the post-failure save fails,
+        // then the process disappears WITHOUT flush_dirty.
+        let initial = qs(vec![due_at("a", "s")]);
+        let qm = Mutex::new(initial.clone());
+        let disk = FakeDisk::new(&initial);
+        let dirty = AtomicBool::new(false);
+        let persist = |q: &QueueState| disk.persist(q);
+        let res = send_test(
+            &qm,
+            &dirty,
+            "s",
+            720,
+            &HashMap::new(),
+            &|_: &QueueItem| {
+                disk.fail.store(true, AtomicOrdering::Relaxed);
+                Err("tmux send-keys refused".into())
+            },
+            &persist,
+        );
+        assert!(matches!(res, SendResult::Failed { .. }));
+        assert!(dirty.load(AtomicOrdering::Relaxed));
+
+        let mut restarted: QueueState = serde_json::from_str(&disk.on_disk()).unwrap();
+        assert_eq!(restarted.items[0].state, "firing", "old disk is the intent");
+        recover_interrupted(&mut restarted);
+        assert_eq!(restarted.items[0].state, "ambiguous");
+        assert!(restarted.deliveries.is_empty());
+        assert!(select_due(&restarted, NOW + 100_000, 720, &HashMap::new()).is_empty());
+
+        retry_item(&mut restarted, "a").unwrap();
+        retry_item(&mut restarted, "a").unwrap();
+        assert_eq!(restarted.items[0].state, "pending");
+        assert!(restarted.pending.is_empty());
+    }
+
+    #[test]
+    fn ambiguous_acknowledgement_accounts_once_for_once_rule_and_template_chain() {
+        let mut once = due_at("once", "once-session");
+        once.state = "firing".into();
+        once.delivery = Some("do".into());
+        once.last_attempt_at = Some(NOW);
+
+        let mut recurring = rule(300);
+        recurring.id = "rule".into();
+        recurring.session = "rule-session".into();
+        recurring.until_n = Some(2);
+        recurring.fired = 1;
+        recurring.steps = vec!["step two".into(), "step three".into()];
+        recurring.state = "firing".into();
+        recurring.delivery = Some("dr".into());
+        recurring.last_attempt_at = Some(NOW);
+
+        let mut head = due_at("head", "chain-session");
+        head.group = Some("g".into());
+        head.seq = Some(1);
+        head.state = "firing".into();
+        head.delivery = Some("dh".into());
+        head.last_attempt_at = Some(NOW);
+        let mut tail = qi("tail", "chain");
+        tail.session = "chain-session".into();
+        tail.group = Some("g".into());
+        tail.seq = Some(2);
+
+        let mut q = qs(vec![once, recurring, head, tail]);
+        recover_interrupted(&mut q);
+        for id in ["once", "rule", "head"] {
+            acknowledge_ambiguous(&mut q, id).unwrap();
+            acknowledge_ambiguous(&mut q, id).unwrap();
+        }
+        assert!(!q
+            .items
+            .iter()
+            .any(|i| i.id == "once" || i.id == "rule" || i.id == "head"));
+        assert!(q.items.iter().any(|i| i.id == "tail"));
+        assert_eq!(
+            q.items
+                .iter()
+                .filter(|i| i.rule.as_deref() == Some("rule"))
+                .count(),
+            2
+        );
+        assert_eq!(q.deliveries.len(), 3);
+        assert!(q.deliveries.iter().all(|d| d.assumed));
     }
 
     #[test]

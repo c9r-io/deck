@@ -108,3 +108,77 @@ export function groupSteps(g) {
   }
   return steps;
 }
+
+/* ---------- board deletion transaction ---------- */
+/**
+ * Run the irreversible parts of deleting cards, but call commit only after
+ * every kill and the candidate board save succeeded. Keeping this orchestration
+ * DOM-free makes the partial-failure contract executable in Node tests.
+ */
+export async function deleteSessionsTransaction(cards, { cancel, kill, persist, commit }) {
+  if (!(await cancel(cards))) return { ok: false, stage: 'cancel', failed: [] };
+  const failed = [];
+  for (const card of cards) {
+    try { await kill(card); }
+    catch (error) { failed.push({ card, error }); }
+  }
+  if (failed.length) return { ok: false, stage: 'kill', failed };
+  try { await persist(); }
+  catch (error) { return { ok: false, stage: 'persist', failed: [], error }; }
+  commit();
+  return { ok: true, stage: 'commit', failed: [] };
+}
+
+/* ---------- copy panel ---------- */
+export function latestRequestGuard() {
+  let current = 0;
+  return {
+    begin() { return ++current; },
+    cancel() { current++; },
+    isCurrent(id) { return id === current; },
+  };
+}
+
+export async function copyExact(text, writer) {
+  await writer(text);
+  return text.length;
+}
+
+export function copyShortcutAction({ metaKey, shiftKey, key, panelOpen, sessionView, hasSelection }) {
+  if (!metaKey || String(key).toLowerCase() !== 'c') return null;
+  if (panelOpen && !shiftKey) return hasSelection ? 'copy-panel-selection' : 'none';
+  if (!panelOpen && shiftKey && sessionView) return 'open-copy-panel';
+  return null;
+}
+
+/* ---------- sidebar grouping ---------- */
+export function sidebarGroups(project, cards) {
+  if (!project) return [];
+  const rank = { waiting: 0, running: 1, stopped: 2 };
+  return project.columns.map(column => {
+    const sessions = cards
+      .map((card, index) => ({ card, index }))
+      .filter(x => x.card.columnId === column.id)
+      .sort((a, b) => (rank[a.card.status] ?? 3) - (rank[b.card.status] ?? 3) || a.index - b.index)
+      .map(x => x.card);
+    return { column, sessions, count: sessions.length };
+  }).filter(group => group.count > 0);
+}
+
+export function inlineRenameValue(current, input, commit, allowEmpty = false) {
+  if (!commit) return null;
+  const value = String(input).trim();
+  if (!value && !allowEmpty) return null;
+  return value === current ? null : value;
+}
+
+export async function persistOptimistically({ apply, persist, rollback }) {
+  apply();
+  try {
+    await persist();
+    return true;
+  } catch (error) {
+    rollback(error);
+    return false;
+  }
+}

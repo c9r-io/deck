@@ -1,6 +1,7 @@
 // dialogs.js — confirm/prompt dialogs, toasts, inline rename, settings modal
 // Part of deck's no-build frontend: native ES modules, no bundler.
 import { $, inv, uev } from './state.js';
+import { inlineRenameValue } from './pure.js';
 
 /* ---------- confirm dialog (window.confirm is a silent no-op in WKWebView) ---------- */
 export function confirmDialog(msg) {
@@ -44,8 +45,7 @@ export function inlineRename(host, current, onDone, allowEmpty = false) {
   const finish = commit => {
     if (done) return;
     done = true;
-    const v = input.value.trim();
-    onDone(!commit ? null : (v || (allowEmpty ? '' : null)));
+    onDone(inlineRenameValue(current, input.value, commit, allowEmpty));
   };
   input.addEventListener('keydown', e => {
     if (e.key === 'Enter') finish(true);

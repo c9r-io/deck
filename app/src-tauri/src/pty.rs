@@ -29,7 +29,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::storage::applog;
-use crate::tmux::{session_target, tmux_bin, tmux_conf, SOCKET};
+use crate::tmux::{session_target, socket, tmux_bin, tmux_conf};
 
 // ---------- ACK window ---------------------------------------------------------
 
@@ -194,7 +194,7 @@ pub(crate) fn attach_session(
         "-f",
         &conf,
         "-L",
-        SOCKET,
+        socket(),
         "attach-session",
         "-t",
         &session_target(&name),

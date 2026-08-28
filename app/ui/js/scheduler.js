@@ -52,6 +52,8 @@ export function updateQuietHints() {
 
 export function qMeta(i) {
   const parts = [];
+  if (i.state === 'ambiguous') parts.push('⚠ delivery outcome unknown — decide below');
+  else if (i.state === 'firing') parts.push('sending…');
   if (i.tpl) parts.push(`tpl·${i.tpl} ${i.tpl_idx}/${i.tpl_total}`);
   if (i.mode === 'every') {
     if (hasWindow(i)) parts.push(minToHM(i.win_from) + '–' + minToHM(i.win_to));
@@ -130,7 +132,10 @@ export function groupEl(g, card) {
     const row = document.createElement('div');
     row.className = 'qg-row' + (r.item ? '' : ' ro');
     const dead = r.item && itemDead(r.item);
+    const ambiguous = r.item && r.item.state === 'ambiguous';
     row.innerHTML = '<span class="tree"></span><span class="q-text"></span><span class="row-meta"></span>'
+      + (ambiguous ? '<button class="q-ack" title="acknowledge as sent (does not resend)">✓ sent</button>'
+              + '<button class="q-risk-retry" title="retry — may deliver this prompt twice">↻ retry</button>' : '')
       + (dead ? '<button class="q-retry" title="retry this step (fresh attempts)">↻</button>'
               + '<button class="q-skip" title="skip this failed step — later steps continue">⏭</button>' : '')
       + (r.item ? '<button class="q-del" title="remove this prompt">✕</button>' : '');
@@ -153,11 +158,21 @@ export function groupEl(g, card) {
       row.querySelector('.q-del').onclick = () => inv('queue_remove', { id: i.id }).catch(e => toast('remove failed: ' + e));
       const rb = row.querySelector('.q-retry');
       if (rb) rb.onclick = () => inv('queue_retry', { id: i.id }).catch(e => toast('retry failed: ' + e));
+      const ack = row.querySelector('.q-ack');
+      if (ack) ack.onclick = () => inv('queue_acknowledge', { id: i.id })
+        .catch(e => toast('acknowledge failed: ' + e));
+      const riskRetry = row.querySelector('.q-risk-retry');
+      if (riskRetry) riskRetry.onclick = async () => {
+        if (!(await confirmDialog('Retry this ambiguous delivery? The earlier send may have succeeded, so this can send the prompt twice.'))) return;
+        inv('queue_retry', { id: i.id }).catch(e => toast('retry failed: ' + e));
+      };
       const sb = row.querySelector('.q-skip');
       if (sb) sb.onclick = () => inv('queue_skip', { id: i.id }).catch(e => toast('skip failed: ' + e));
       const bits = [];
       if (i.tpl && i.mode !== 'every') bits.push(`tpl·${i.tpl} ${i.tpl_idx}/${i.tpl_total}`);
-      if (i.state === 'failed' && i.mode !== 'every') {
+      if (i.state === 'ambiguous') {
+        bits.push('⚠ deck crashed during delivery; acknowledge it as sent or retry with duplicate risk');
+      } else if (i.state === 'failed' && i.mode !== 'every') {
         bits.push('⚠ ' + (itemDead(i) ? 'gave up — blocks later steps until retried or skipped'
           : 'send failed, retrying') + (i.last_error ? ': ' + i.last_error : ''));
       } else if (blockedBy(i, g.rows)) {

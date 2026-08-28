@@ -65,9 +65,13 @@ Frontend gates: `node --check` (syntax) · `ui/test/pure.test.mjs` (node:test)
   envelope.
 - Copying long output: a terminal selection can only ever cover ONE screen
   (tmux owns the scrollback and repaints in place), so `capture_scrollback`
-  (`capture-pane -p -J -S -N`, ≤20k lines) feeds a copy panel where the text
-  scrolls and selects like a document — ⧉ in the pane header, ⌘⇧C, or the
-  card context menu. Do NOT "fix" this by enabling tmux mouse mode: that
+  (`capture-pane -p -J`, ≤20k terminal rows with explicit truncation metadata)
+  feeds a copy panel where the text scrolls and selects like a document — ⧉
+  in the pane header, ⌘⇧C, or the card context menu. `Copy all` writes through
+  native `pbcopy` and reports success only after exit 0; ⌘C writes exactly the
+  panel selection. Trailing blank rows are preserved because tmux cannot prove
+  whether they are padding or answer content. Do NOT "fix" this by enabling
+  tmux mouse mode: that
   takes xterm's local selection away. The completion bar anchors itself
   above the cursor row when it would cover the prompt (`quickBarBottom`).
 - One poll command (`poll_sessions`) returns liveness + `#{window_activity}` recency +
@@ -143,20 +147,24 @@ Frontend gates: `node --check` (syntax) · `ui/test/pure.test.mjs` (node:test)
     clears its tombstone. The frontend removes a card ONLY after that
     cancellation is on disk — close, project delete (one atomic
     `queue_clear_sessions`) and the shell-exited auto-retire share the path,
-    and a failure keeps the card with an explicit toast;
+    and a failure keeps the card with an explicit toast. The frontend then
+    kills every tmux session (already-missing is success) and persists the
+    candidate Board BEFORE committing removal; any kill/save failure keeps
+    the card/project and pane visible for retry;
   - a step that exhausts its 8 attempts BLOCKS its group until the user
     retries/skips/removes it (queue_retry / queue_skip commands);
   - a recurring rule has at most one active iteration (its spawned steps,
     keyed `rule`/`group`=delivery id) — iterations never interleave;
-  - delivery is at-most-once: firing intent + delivery id + a full item
-    snapshot (the `pending` ledger) persisted BEFORE injection; success and
-    crash recovery share one idempotent `finalize_delivery` (fired count,
-    until-N retirement, template-step spawn, audit record — `deliveries`,
-    capped 200) that works even if the item vanished (ledger snapshot →
-    audit + session gap; a removed rule never respawns steps). An atomic
-    injection that FAILS was not sent — retry is safe, nothing is audited.
-    The crash window between persist-intent and the send cannot be closed:
-    recovery assumes sent, never re-sends.
+  - firing intent + delivery id + a full item snapshot (the `pending` ledger)
+    is persisted BEFORE injection. A live confirmed success uses idempotent
+    `finalize_delivery` (fired count, until-N retirement, template-step spawn,
+    audit record — `deliveries`, capped 200). A persisted `firing` found after
+    a crash becomes `ambiguous`: it is never auto-retried or silently counted.
+    User acknowledge finalizes it once; risk-accepting retry clears the ledger
+    and re-arms it, both persist-then-commit and idempotent. A definitively
+    refused atomic injection becomes retryable `failed`; if that post-failure
+    save and the process both fail, the old disk intent is honestly ambiguous.
+    `flush_dirty` runs before the empty-queue fast path.
 - File drop / image paste into a terminal pane (Warp-style): WKWebView
   surfaces external files as CONTENT with no path, so the frontend reads the
   bytes and `save_dropped_file` persists them 0600 under `~/.deck/drops`

@@ -192,8 +192,8 @@ pub(crate) fn build_export(header: &str, log: &str) -> String {
 }
 
 pub(crate) fn export_logs() -> Result<PathBuf, String> {
-    let home = dirs::home_dir().ok_or("no home dir")?;
-    let dir = home.join(".deck").join("exports");
+    let data_dir = storage::deck_dir();
+    let dir = data_dir.join("exports");
     storage::create_private_dir(&dir)?;
     let name = format!("deck-log-{}.txt", now_epoch());
     let path = dir.join(name);
@@ -214,7 +214,7 @@ pub(crate) fn export_logs() -> Result<PathBuf, String> {
             .map(|s| s.lines().count())
             .unwrap_or(0)
     ));
-    let log = std::fs::read_to_string(home.join(".deck").join("app.log")).unwrap_or_default();
+    let log = std::fs::read_to_string(data_dir.join("app.log")).unwrap_or_default();
     // created 0600 from the first byte — never world-readable-then-chmod
     storage::write_private(&path, build_export(&header, &log).as_bytes())?;
     let _ = Command::new("open").arg("-R").arg(&path).status();
@@ -297,8 +297,7 @@ pub(crate) fn save_dropped_file(name: String, data_b64: String) -> Result<String
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(data_b64)
         .map_err(|_| "malformed file payload".to_string())?;
-    let home = dirs::home_dir().ok_or("no home dir")?;
-    let path = save_drop_into(&home.join(".deck").join("drops"), &name, &bytes)?;
+    let path = save_drop_into(&storage::deck_dir().join("drops"), &name, &bytes)?;
     applog(&format!("[drop] saved {}B", bytes.len()));
     Ok(path.display().to_string())
 }
@@ -477,10 +476,7 @@ fn to_loaded(o: Option<storage::LoadOutcome>) -> LoadedDoc {
 }
 
 pub(crate) fn board_path() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".deck")
-        .join("deck.json")
+    storage::deck_dir().join("deck.json")
 }
 
 #[tauri::command]
@@ -496,7 +492,7 @@ pub(crate) fn save_validated<T: serde::de::DeserializeOwned>(
     what: &str,
 ) -> Result<(), String> {
     serde_json::from_str::<T>(data).map_err(|e| format!("refusing to save invalid {what}: {e}"))?;
-    storage::save(path, data)
+    storage::save_typed::<T>(path, data)
 }
 
 #[tauri::command]
@@ -514,10 +510,7 @@ pub(crate) fn storage_warnings() -> Vec<String> {
 // ---------- settings ------------------------------------------------------------
 
 pub(crate) fn settings_path() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".deck")
-        .join("settings.json")
+    storage::deck_dir().join("settings.json")
 }
 
 #[tauri::command]
@@ -669,21 +662,47 @@ pub(crate) fn clear_history(name: String) {
     let _ = tmux(&["clear-history", "-t", &t]);
 }
 
-/// Drop the empty rows tmux pads the bottom of a capture with (the unused
-/// part of the screen) — they are not output, and they push the real text
-/// out of view in the copy panel.
-pub(crate) fn trim_trailing_blanks(s: &str) -> String {
-    let mut lines: Vec<&str> = s.lines().collect();
-    while lines.last().is_some_and(|l| l.trim().is_empty()) {
-        lines.pop();
-    }
-    lines.join("\n")
-}
-
 /// Ceiling on one scrollback capture. tmux keeps 50 000 lines per pane;
 /// this bounds one IPC payload while still covering any real "copy that
 /// long answer" case.
 const MAX_CAPTURE_LINES: u32 = 20_000;
+
+#[derive(Debug, PartialEq)]
+pub(crate) struct CaptureWindow {
+    start: i64,
+    captured_rows: u32,
+    truncated: bool,
+}
+
+pub(crate) fn capture_window(history: u32, pane_height: u32, requested: u32) -> CaptureWindow {
+    let limit = requested.clamp(1, MAX_CAPTURE_LINES);
+    let total = history.saturating_add(pane_height);
+    let captured_rows = total.min(limit);
+    let history_rows = captured_rows.saturating_sub(pane_height.min(captured_rows));
+    let start = if captured_rows < pane_height {
+        (pane_height - captured_rows) as i64
+    } else {
+        -(history_rows as i64)
+    };
+    CaptureWindow {
+        start,
+        captured_rows,
+        truncated: total > limit,
+    }
+}
+
+fn parse_capture_meta(meta: &str) -> Option<(u32, u32)> {
+    let mut fields = meta.trim().split('\t');
+    Some((fields.next()?.parse().ok()?, fields.next()?.parse().ok()?))
+}
+
+#[derive(Serialize)]
+pub(crate) struct ScrollbackCapture {
+    text: String,
+    line_limit: u32,
+    captured_rows: u32,
+    truncated: bool,
+}
 
 /// The pane's scrollback plus its current screen, as plain text.
 ///
@@ -695,25 +714,98 @@ const MAX_CAPTURE_LINES: u32 = 20_000;
 /// `-J` rejoins lines tmux wrapped for display, so a copied path or URL
 /// comes back in one piece instead of broken at the pane width.
 #[tauri::command]
-pub(crate) fn capture_scrollback(name: String, lines: u32) -> Result<String, String> {
+pub(crate) fn capture_scrollback(name: String, lines: u32) -> Result<ScrollbackCapture, String> {
     validate_session_name(&name)?;
     let n = lines.clamp(1, MAX_CAPTURE_LINES);
+    let target = pane_target(&name);
+    let meta = tmux(&[
+        "display-message",
+        "-p",
+        "-t",
+        &target,
+        "#{history_size}\t#{pane_height}",
+    ])
+    .map_err(|e| format!("scrollback capture failed ({})", storage::err_code(&e)))?;
+    let (history, pane_height) =
+        parse_capture_meta(&meta).ok_or("tmux returned invalid scrollback metadata")?;
+    let window = capture_window(history, pane_height, n);
     let out = tmux(&[
         "capture-pane",
         "-p",
         "-J",
         "-S",
-        &format!("-{n}"),
+        &window.start.to_string(),
         "-t",
-        &pane_target(&name),
-    ])?;
-    Ok(trim_trailing_blanks(&out))
+        &target,
+    ])
+    .map_err(|e| format!("scrollback capture failed ({})", storage::err_code(&e)))?;
+    // Output can continue while the two tmux commands run. Re-read metadata
+    // after capture so crossing the cap during this request cannot be falsely
+    // advertised as complete. A session that exits after a successful capture
+    // simply keeps the conservative pre-capture metadata.
+    let after = tmux(&[
+        "display-message",
+        "-p",
+        "-t",
+        &target,
+        "#{history_size}\t#{pane_height}",
+    ])
+    .ok()
+    .and_then(|meta| parse_capture_meta(&meta));
+    let after_window = after.map(|(h, p)| capture_window(h, p, n));
+    Ok(ScrollbackCapture {
+        text: out,
+        line_limit: n,
+        captured_rows: after_window
+            .as_ref()
+            .map(|w| w.captured_rows)
+            .unwrap_or(window.captured_rows),
+        truncated: window.truncated || after_window.is_some_and(|w| w.truncated),
+    })
+}
+
+/// Native clipboard path for WKWebView. Success means pbcopy consumed all
+/// bytes and exited zero; clipboard content never enters logs or errors.
+#[tauri::command]
+pub(crate) fn write_clipboard(text: String) -> Result<(), String> {
+    use std::io::Write as _;
+    use std::process::Stdio;
+    let mut child = Command::new("/usr/bin/pbcopy")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|_| "native clipboard is unavailable".to_string())?;
+    child
+        .stdin
+        .take()
+        .ok_or("native clipboard input is unavailable")?
+        .write_all(text.as_bytes())
+        .map_err(|_| "native clipboard write failed".to_string())?;
+    let status = child
+        .wait()
+        .map_err(|_| "native clipboard completion failed".to_string())?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err("native clipboard write failed".into())
+    }
 }
 
 #[tauri::command]
 pub(crate) fn kill_session(name: String) -> Result<(), String> {
     validate_session_name(&name)?;
-    tmux(&["kill-session", "-t", &session_target(&name)]).map(|_| ())
+    idempotent_kill_result(tmux(&["kill-session", "-t", &session_target(&name)]))
+}
+
+pub(crate) fn idempotent_kill_result(result: Result<String, String>) -> Result<(), String> {
+    match result {
+        Ok(_) => Ok(()),
+        // Closing an already-gone session is the successful end state. This
+        // also covers an empty deck tmux server ("no server running").
+        Err(e) if storage::err_code(&e) == "no-session" => Ok(()),
+        Err(e) => Err(e),
+    }
 }
 
 // ---------- polling ------------------------------------------------------------
@@ -1052,15 +1144,47 @@ mod tests {
     }
 
     #[test]
-    fn capture_trims_the_padding_not_the_output() {
-        // tmux pads the capture with the unused rows of the screen
-        assert_eq!(trim_trailing_blanks("a\nb\n\n   \n\n"), "a\nb");
-        // blank lines INSIDE the output are part of it
-        assert_eq!(trim_trailing_blanks("a\n\nb\n\n"), "a\n\nb");
-        // leading blanks (the top of a short history) are output too
-        assert_eq!(trim_trailing_blanks("\na\n"), "\na");
-        assert_eq!(trim_trailing_blanks("\n\n  \n"), "");
-        assert_eq!(trim_trailing_blanks(""), "");
+    fn capture_limit_uses_tmux_metadata_not_returned_line_count() {
+        assert_eq!(parse_capture_meta("123\t45\n"), Some((123, 45)));
+        assert_eq!(parse_capture_meta("bad\t45"), None);
+        assert_eq!(
+            capture_window(30_000, 40, 20_000),
+            CaptureWindow {
+                start: -19_960,
+                captured_rows: 20_000,
+                truncated: true,
+            }
+        );
+        assert_eq!(
+            capture_window(50, 20, 20_000),
+            CaptureWindow {
+                start: -50,
+                captured_rows: 70,
+                truncated: false,
+            }
+        );
+        assert_eq!(
+            capture_window(0, 24, 10),
+            CaptureWindow {
+                start: 14,
+                captured_rows: 10,
+                truncated: true,
+            }
+        );
+    }
+
+    #[test]
+    fn killing_an_already_missing_session_is_idempotent_but_real_errors_survive() {
+        for missing in [
+            "tmux kill-session failed: can't find session: x",
+            "tmux kill-session failed: no server running",
+        ] {
+            assert!(idempotent_kill_result(Err(missing.into())).is_ok());
+        }
+        let real =
+            idempotent_kill_result(Err("tmux kill-session failed: permission denied".into()));
+        assert!(real.is_err());
+        assert!(idempotent_kill_result(Ok(String::new())).is_ok());
     }
 
     #[test]
