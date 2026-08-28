@@ -1,6 +1,6 @@
 // terminal.js — context menus & link opening, ghost completion, chrome wiring
 // Part of deck's no-build frontend: native ES modules, no bundler.
-import { $, dlog, inv, state, ulog } from './state.js';
+import { $, duev, inv, state, uev } from './state.js';
 import { confirmDialog, inlineRename, toast, promptDialog } from './dialogs.js';
 import { closeSession, panes, provider, renameTab, render, switchProject, activeProject } from './board.js';
 import { backToBoard, openSession, strToB64 } from './layout.js';
@@ -191,10 +191,10 @@ export function feedMirror(d) {
 export const SHELL_FG = /^-?(zsh|bash|fish|sh|dash)$/;
 export function maybeRecordCommand(cmd) {
   const c = provider.get(state.sessionId);
-  if (!c) { dlog('record skip: no card'); return; }
-  if (!SHELL_FG.test(c.fg || '')) { dlog(`record skip: fg=${c.fg}`); return; }
-  dlog('record: len=' + cmd.length);
-  inv('record_command', { cmd }).catch(e => ulog('record_command failed: ' + e));
+  if (!c) { duev('record-skip', 'no-card'); return; }
+  if (!SHELL_FG.test(c.fg || '')) { duev('record-skip', c.fg); return; }
+  duev('record', null, cmd.length);
+  inv('record_command', { cmd }).catch(() => uev('record-fail'));
   histCache = [cmd, ...histCache.filter(x => x !== cmd)];
 }
 

@@ -1,6 +1,6 @@
 // board.js — board CRUD provider, polling loop, sidebar/tabs/board rendering
 // Part of deck's no-build frontend: native ES modules, no bundler.
-import { $, COL_HINTS, DOT_TITLES, POLL_MS, QUIET_SECS, emit, genId, inv, listeners, sessionName, setMemChip, state, store, ulog } from './state.js';
+import { $, COL_HINTS, DOT_TITLES, POLL_MS, QUIET_SECS, emit, genId, inv, listeners, sessionName, setMemChip, state, store, uev } from './state.js';
 import { saveBoard } from './persistence.js';
 import { confirmDialog, inlineRename, toast } from './dialogs.js';
 import { clearSeparators, closePaneBySid, leaveSessionView, openSession, renderSessionView, updatePaneChrome } from './layout.js';
@@ -129,11 +129,11 @@ export async function pollNow() {
        error so app.log shows WHY the board went stale */
     if (String(e) !== state.lastPollError) {
       state.lastPollError = String(e);
-      ulog('poll failed: ' + e);
+      uev('poll-fail');
     }
     return;
   }
-  if (state.lastPollError) { state.lastPollError = null; ulog('poll recovered'); }
+  if (state.lastPollError) { state.lastPollError = null; uev('poll-recovered'); }
   const byName = new Map(infos.map(i => [i.name, i]));
   const exited = [];
   for (const c of store.cards) {

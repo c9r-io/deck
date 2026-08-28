@@ -151,7 +151,7 @@ fn main() {
             history::recent_commands,
             history::record_command,
             history::history_clear,
-            commands::ui_log,
+            commands::ui_event,
             commands::ping_event,
             scheduler::queue_list,
             scheduler::queue_add,

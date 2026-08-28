@@ -1,6 +1,6 @@
 // scheduler.js — scheduled prompts: queue groups, recurring rules, templates
 // Part of deck's no-build frontend: native ES modules, no bundler.
-import { $, inv, listen, state, ulog } from './state.js';
+import { $, inv, listen, state, uev } from './state.js';
 import { saveBoard } from './persistence.js';
 import { confirmDialog, inlineRename, toast, promptDialog } from './dialogs.js';
 import { pollNow, provider } from './board.js';
@@ -425,10 +425,10 @@ listen('menu-clear', () => {
     term.clear();
     if (attachedName) inv('pty_write', { name: attachedName, dataB64: strToB64('\x0c') }).catch(() => {});
   }
-}).catch(e => ulog('listen(menu-clear) FAILED: ' + e));
+}).catch(() => uev('listen-fail', 'menu-clear'));
 
-listen('queue-changed', refreshQueue).catch(e => ulog('listen(queue-changed) FAILED: ' + e));
+listen('queue-changed', refreshQueue).catch(() => uev('listen-fail', 'queue-changed'));
 listen('queue-fired', ev => {
   toast(`scheduled prompt sent → ${ev.payload.session}`);
   pollNow();
-}).catch(e => ulog('listen(queue-fired) FAILED: ' + e));
+}).catch(() => uev('listen-fail', 'queue-fired'));

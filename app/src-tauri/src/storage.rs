@@ -35,9 +35,11 @@ pub const SCHEMA_VERSION: u64 = 1;
 /// command. Request-path loads return their warning in-band instead.
 pub static WARNINGS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
-pub fn warn(msg: String) {
-    applog(&format!("[storage] {msg}"));
-    WARNINGS.lock().unwrap().push(msg);
+/// `note` is always a backend-built template (file names + serde errors),
+/// never a raw frontend string — the only frontend log entry is `ui_event`.
+pub fn warn(note: String) {
+    applog(&format!("[storage] {note}"));
+    WARNINGS.lock().unwrap().push(note);
 }
 
 /// A successful load: the payload plus where it came from and, when it came

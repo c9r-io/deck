@@ -1,6 +1,6 @@
 // layout.js — split-tree layout, pane lifecycle, terminal creation, session view
 // Part of deck's no-build frontend: native ES modules, no bundler.
-import { $, DOT_TITLES, dlog, inv, listen, setMemChip, state, store, ulog } from './state.js';
+import { $, DOT_TITLES, duev, inv, listen, setMemChip, state, store, uev } from './state.js';
 import { inlineRename, toast } from './dialogs.js';
 import { TERM_THEME, panes, pollNow, provider, render, renderSidebar, activeProject } from './board.js';
 import { SHELL_FG, acceptGhost, feedMirror, maybeRecordCommand, nextShellTitle, renderSuggest, resetSuggest, showLinkCtx, updateGhost } from './terminal.js';
@@ -85,7 +85,7 @@ export function createPane(card) {
   try {
     /* OSC52: tmux mouse selections land in the system clipboard */
     t.loadAddon(new ClipboardAddon.ClipboardAddon());
-  } catch (e) { ulog('clipboard addon failed: ' + e); }
+  } catch (e) { uev('clipboard-addon-fail'); }
   t.open(body);
 
   if (!ghostEl) {
@@ -166,7 +166,7 @@ export function addInputSeparator(pane) {
   try {
     const t = pane.term;
     const marker = t.registerMarker(0);
-    if (!marker) { if (sepLogged < 5) { sepLogged++; ulog('separator: no marker'); } return; }
+    if (!marker) { if (sepLogged < 5) { sepLogged++; uev('separator', 'no-marker'); } return; }
     const el = document.createElement('div');
     el.style.cssText = 'position:absolute; left:0; right:0; height:1px;' +
       'background:rgba(126,138,153,0.25); pointer-events:none; z-index:4; display:none;';
@@ -183,10 +183,10 @@ export function addInputSeparator(pane) {
       const i = pane.seps.indexOf(entry);
       if (i >= 0) pane.seps.splice(i, 1);
     });
-    if (sepLogged < 5) { sepLogged++; ulog('separator @line ' + marker.line); }
+    if (sepLogged < 5) { sepLogged++; uev('separator', 'at', marker.line); }
     positionSeparators(pane);
   } catch (e) {
-    if (sepLogged < 5) { sepLogged++; ulog('separator failed: ' + e); }
+    if (sepLogged < 5) { sepLogged++; uev('separator', 'fail'); }
   }
 }
 
@@ -248,7 +248,7 @@ export function wireTerminalInput(pane, term, host) {
         escLogged++;
         /* control replies (ESC-prefixed) are loggable; anything else could be
            typed/pasted user text — length only */
-        dlog('mirror-desync chunk: ' + (d.startsWith('\x1b') ? JSON.stringify(d.slice(0, 40)) : 'len=' + d.length));
+        duev('mirror-desync', d.startsWith('\x1b') ? 'esc' : 'plain', d.length);
       }
       const preDesynced = lineBuf === null;
       const completed = feedMirror(d);
@@ -264,11 +264,11 @@ export function wireTerminalInput(pane, term, host) {
       renderSuggest();
       if (odLogged < 3) {
         odLogged++;
-        dlog(`onData len=${d.length} mirror=${lineBuf === null ? 'desync' : 'len:' + lineBuf.length}`);
+        duev('ondata', lineBuf === null ? 'desync' : 'ok', d.length, lineBuf === null ? -1 : lineBuf.length);
       }
     }
     inv('pty_write', { name: session, dataB64: strToB64(d) })
-      .catch(e => ulog('pty_write failed: ' + e));
+      .catch(() => uev('pty-write-fail'));
   });
   /* app shortcuts pass through; ⌘C/⌘V are handled here because a menu-less
      macOS app gets no standard edit actions in the webview */
@@ -576,17 +576,17 @@ listen('pty-data', ev => {
   if (p) {
     const u8 = b64ToU8(data);
     rxBytes += u8.length;
-    if (rxLogged < 3 || rxLogged % 200 === 0) ulog(`pty-data chunk=${u8.length} total=${rxBytes}`);
+    if (rxLogged < 3 || rxLogged % 200 === 0) uev('pty-rx', null, u8.length, rxBytes);
     rxLogged++;
     p.term.write(u8);
   }
-}).catch(e => ulog('listen(pty-data) FAILED: ' + e));
+}).catch(() => uev('listen-fail', 'pty-data'));
 listen('pty-exit', ev => {
   if (panes.has(ev.payload.name)) {
     toast('session ended');
     pollNow();
   }
-}).catch(e => ulog('listen(pty-exit) FAILED: ' + e));
+}).catch(() => uev('listen-fail', 'pty-exit'));
 
 /* ---------- session view ---------- */
 export async function openSession(sid) {

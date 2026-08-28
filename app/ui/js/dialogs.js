@@ -1,6 +1,6 @@
 // dialogs.js — confirm/prompt dialogs, toasts, inline rename, settings modal
 // Part of deck's no-build frontend: native ES modules, no bundler.
-import { $, inv, ulog } from './state.js';
+import { $, inv, uev } from './state.js';
 import { manualUpdateCheck } from './app.js';
 
 /* ---------- confirm dialog (window.confirm is a silent no-op in WKWebView) ---------- */
@@ -66,14 +66,14 @@ export async function loadSettings() {
     if (doc && doc.data) settings = { editor: '', debug: false, ...JSON.parse(doc.data) };
   } catch (e) {
     toast('settings could not be loaded: ' + e);   // NOT a first run — defaults stay in memory only
-    ulog('load_settings failed (see message above)');
+    uev('settings-load-fail');
   }
   window.__DECK_DEBUG = !!settings.debug;
 }
 
 export function persistSettings() {
   inv('save_settings', { data: JSON.stringify(settings, null, 2) })
-    .catch(e => ulog('save_settings failed: ' + e));
+    .catch(() => uev('settings-save-fail'));
 }
 
 export async function openSettings() {

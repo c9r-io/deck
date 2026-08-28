@@ -14,9 +14,78 @@ use crate::tmux::{
     validate_session_name,
 };
 
+/// The only frontend diagnostic codes the backend will log. Anything else —
+/// and any detail slug that isn't a short plain token — is dropped, so no
+/// free-form frontend string (keystrokes, prompts, paths, URLs, error
+/// messages) can reach app.log even if the webview is compromised.
+const UI_EVENT_CODES: &[&str] = &[
+    "js-error",
+    "js-reject",
+    "csp-block",
+    "listen-fail",
+    "ping-recv",
+    "ping-fail",
+    "update-avail",
+    "update-check-fail",
+    "update-install-fail",
+    "board-load-fail",
+    "settings-load-fail",
+    "settings-save-fail",
+    "poll-fail",
+    "poll-recovered",
+    "clipboard-addon-fail",
+    "separator",
+    "mirror-desync",
+    "ondata",
+    "pty-write-fail",
+    "pty-rx",
+    "keydown",
+    "composition",
+    "record",
+    "record-skip",
+    "record-fail",
+];
+
+/// Pure formatter so the sanitization rules are unit-testable: whitelisted
+/// code, detail restricted to a 64-char `[A-Za-z0-9_.:-]` slug (no spaces,
+/// no slashes → no prose, paths or URLs), plus up to two integers.
+pub(crate) fn format_ui_event(
+    code: &str,
+    detail: Option<&str>,
+    a: Option<i64>,
+    b: Option<i64>,
+) -> Option<String> {
+    if !UI_EVENT_CODES.contains(&code) {
+        return None;
+    }
+    let mut s = format!("[ui] {code}");
+    if let Some(d) = detail {
+        if !d.is_empty()
+            && d.len() <= 64
+            && d.chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | ':' | '-'))
+        {
+            s.push(' ');
+            s.push_str(d);
+        } else {
+            s.push_str(" <redacted>");
+        }
+    }
+    if let Some(a) = a {
+        s.push_str(&format!(" a={a}"));
+    }
+    if let Some(b) = b {
+        s.push_str(&format!(" b={b}"));
+    }
+    Some(s)
+}
+
 #[tauri::command]
-pub(crate) fn ui_log(msg: String) {
-    applog(&format!("[ui] {msg}"));
+pub(crate) fn ui_event(code: String, detail: Option<String>, a: Option<i64>, b: Option<i64>) {
+    match format_ui_event(&code, detail.as_deref(), a, b) {
+        Some(line) => applog(&line),
+        None => applog("[ui] unknown-event"),
+    }
 }
 
 pub(crate) fn export_logs() -> Result<PathBuf, String> {
@@ -664,5 +733,34 @@ mod tests {
         // a colon followed by non-digits is part of the path, not a lineno
         assert_eq!(regex_strip_lineno("a:b/c"), "a:b/c");
         assert_eq!(regex_strip_lineno("http://x/y:8080"), "http://x/y:8080");
+    }
+
+    #[test]
+    fn ui_events_admit_no_free_form_content() {
+        // unknown codes never reach the log line
+        assert!(format_ui_event("rm -rf", None, None, None).is_none());
+        assert!(format_ui_event("", None, None, None).is_none());
+        // clean slug + numbers pass
+        assert_eq!(
+            format_ui_event("js-error", Some("TypeError"), Some(42), None).unwrap(),
+            "[ui] js-error TypeError a=42"
+        );
+        // anything that could carry prose, prompts, paths or URLs is redacted
+        for bad in [
+            "my secret prompt text",
+            "/Users/someone/project",
+            "https://example.com/x",
+            "key=$AWS_SECRET",
+            "line1\nline2",
+            "词语",
+        ] {
+            let line = format_ui_event("js-error", Some(bad), None, None).unwrap();
+            assert_eq!(line, "[ui] js-error <redacted>", "leaked: {bad}");
+        }
+        // over-long slugs are redacted wholesale, not truncated
+        let long = "a".repeat(65);
+        assert!(format_ui_event("keydown", Some(&long), None, None)
+            .unwrap()
+            .ends_with("<redacted>"));
     }
 }

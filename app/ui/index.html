@@ -694,18 +694,19 @@
 <script src="vendor/addon-clipboard.js"></script>
 <script>
 /* Module-load crash reporter: WKWebView has no visible console, so JS errors
-   (incl. import failures) are forwarded to app.log via the backend. */
-window.addEventListener('error', e => {
-  try { window.__TAURI__.core.invoke('ui_log', { msg: 'JSERR ' + e.message + ' @' + (e.filename || '') + ':' + (e.lineno || 0) }); } catch (_) {}
-});
-window.addEventListener('unhandledrejection', e => {
-  try { window.__TAURI__.core.invoke('ui_log', { msg: 'JSREJ ' + (e.reason && (e.reason.stack || e.reason.message) || e.reason) }); } catch (_) {}
-});
+   (incl. import failures) are forwarded to app.log via the backend — as a
+   structured event carrying the error CLASS and line only, never the message
+   (messages can quote user input, paths or prompt text). */
+const uevRaw = (code, detail, a) => {
+  try { window.__TAURI__.core.invoke('ui_event', { code, detail: detail || null, a: a == null ? null : a, b: null }); } catch (_) {}
+};
+const errCls = v => { const m = /([A-Za-z]+Error)/.exec(String((v && v.name) || v || '')); return m ? m[1] : 'error'; };
+window.addEventListener('error', e => uevRaw('js-error', errCls(e.message), e.lineno || 0));
+window.addEventListener('unhandledrejection', e => uevRaw('js-reject', errCls(e.reason)));
 /* CSP is strict (tauri.conf.json) — surface even non-fatal violations, which
-   WKWebView otherwise swallows silently. Logs directive + URI, never content. */
-window.addEventListener('securitypolicyviolation', e => {
-  try { window.__TAURI__.core.invoke('ui_log', { msg: 'CSP ' + e.violatedDirective + ' blocked ' + (e.blockedURI || '?') }); } catch (_) {}
-});
+   WKWebView otherwise swallows silently. Directive only; URIs are dropped
+   backend-side when they aren't plain slugs. */
+window.addEventListener('securitypolicyviolation', e => uevRaw('csp-block', e.violatedDirective));
 </script>
 <script type="module" src="js/app.js"></script>
 </body>

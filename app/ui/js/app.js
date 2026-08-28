@@ -7,7 +7,7 @@ import './board.js';
 import './layout.js';
 import './terminal.js';
 import './scheduler.js';
-import { $, genId, inv, listen, state, store, ulog } from './state.js';
+import { $, genId, inv, listen, state, store, uev } from './state.js';
 import { loadSettings, toast } from './dialogs.js';
 import { provider, render, startPolling } from './board.js';
 import { refreshQueue } from './scheduler.js';
@@ -25,9 +25,9 @@ export async function checkForUpdate() {
     btn.querySelector('.label').textContent = `Update to v${update.version}`;
     btn.title = `deck v${update.version} is available — click to download and restart`;
     btn.style.display = 'flex';
-    ulog(`update available: v${update.version}`);
+    uev('update-avail', update.version);
   } catch (e) {
-    ulog('update check failed: ' + e);   // offline / endpoint unreachable — silent
+    uev('update-check-fail');   // offline / endpoint unreachable — silent
   }
 }
 
@@ -51,7 +51,7 @@ export async function manualUpdateCheck() {
     }
   } catch (e) {
     say('update check failed — are you online?');
-    ulog('manual update check failed: ' + e);
+    uev('update-check-fail', 'manual');
   }
 }
 
@@ -78,7 +78,7 @@ $('update-btn').onclick = async () => {
     btn.disabled = false;
     label.textContent = 'Update failed — retry';
     toast('update failed: ' + e);
-    ulog('update install failed: ' + e);
+    uev('update-install-fail');
   }
 };
 
@@ -90,10 +90,10 @@ export async function boot() {
     }
   } catch (e) { /* label stays empty */ }
   try {
-    await listen('deck-ping', () => ulog('ping event RECEIVED'));
+    await listen('deck-ping', () => uev('ping-recv'));
     await inv('ping_event');
   } catch (e) {
-    ulog('ping setup failed: ' + e);
+    uev('ping-fail');
   }
   inv('storage_warnings').then(ws => (ws || []).forEach(w => toast(w))).catch(() => {});
   HOME = await inv('default_dir').catch(() => '~');
@@ -113,7 +113,7 @@ export async function boot() {
   }
   if (loadErr) {
     toast('board could not be loaded: ' + loadErr);
-    ulog('board load failed (see message above)');
+    uev('board-load-fail');
   }
   if (!store.projects.length) {
     if (loadErr) {
@@ -133,8 +133,8 @@ export async function boot() {
   refreshQueue();
   setTimeout(checkForUpdate, 4000);
   /* runtime cadence comes from a Rust thread (App Nap freezes JS timers) */
-  listen('update-check', checkForUpdate).catch(e => ulog('listen(update-check) FAILED: ' + e));
-  listen('update-check-manual', manualUpdateCheck).catch(e => ulog('listen(update-check-manual) FAILED: ' + e));
+  listen('update-check', checkForUpdate).catch(() => uev('listen-fail', 'update-check'));
+  listen('update-check-manual', manualUpdateCheck).catch(() => uev('listen-fail', 'update-check-manual'));
   loadSettings();
 }
 boot();

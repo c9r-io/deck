@@ -59,20 +59,33 @@ try {
   }
 } catch (e) { /* plain browser */ }
 
-/* diagnostics → ~/.deck/app.log (webview console is invisible in production) */
-export const ulog = m => inv('ui_log', { msg: String(m) }).catch(() => {});
-/* verbose diagnostics: OFF unless settings.debug — and even then, never log
-   typed characters, IME text, command lines or prompt contents (privacy) */
-export const dlog = m => { if (window.__DECK_DEBUG) ulog(m); };
-window.onerror = (msg, src, line) => ulog(`error: ${msg} @${line}`);
+/* structured diagnostics → ~/.deck/app.log (webview console is invisible in
+   production). ONLY event codes plus a short slug and numbers ever cross to
+   the backend — never free-form strings, so no typed characters, IME text,
+   command lines, prompt contents, paths or URLs can end up in a log. The
+   backend whitelists the code and sanitizes the slug again. */
+export const uev = (code, detail, a, b) => inv('ui_event', {
+  code,
+  detail: detail == null ? null : String(detail).slice(0, 64),
+  a: a == null ? null : Math.trunc(Number(a)),
+  b: b == null ? null : Math.trunc(Number(b)),
+}).catch(() => {});
+/* verbose diagnostics: OFF unless settings.debug (same structured contract) */
+export const duev = (code, detail, a, b) => { if (window.__DECK_DEBUG) uev(code, detail, a, b); };
+/* error CLASS only — the message can quote user input, so it stays out */
+export const errClass = e => {
+  const m = /([A-Za-z]+Error)/.exec(String((e && e.name) || e || ''));
+  return m ? m[1] : 'error';
+};
+window.onerror = (msg, src, line) => uev('js-error', errClass(msg), line);
 document.addEventListener('keydown', e => {
   if (kdLogged < 20) {
     kdLogged++;
-    dlog(`keydown ${e.key.length === 1 ? '<char>' : e.key} composing=${e.isComposing} target=${e.target.tagName}`);
+    duev('keydown', e.key.length === 1 ? 'char' : e.key, e.isComposing ? 1 : 0);
   }
 }, true);
-document.addEventListener('compositionstart', e => dlog(`compositionstart len=${(e.data || '').length}`), true);
-document.addEventListener('compositionend', e => dlog(`compositionend len=${(e.data || '').length}`), true);
+document.addEventListener('compositionstart', e => duev('composition', 'start', (e.data || '').length), true);
+document.addEventListener('compositionend', e => duev('composition', 'end', (e.data || '').length), true);
 
 export const $ = id => document.getElementById(id);
 /* how long without output before a live session counts as "quiet" —
