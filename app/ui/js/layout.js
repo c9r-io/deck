@@ -457,17 +457,23 @@ export function focusPane(session) {
   p.term.focus();
 }
 
+/* Returns true only when the session was actually CREATED here (backend is
+   idempotent: an already-live session is success, not an error). Callers use
+   that to decide fresh-shell behaviors — clearing history on a session that
+   merely LOOKED stopped would eat a live agent's scrollback. */
 export async function ensureAttached(pane) {
   const card = provider.get(pane.sid);
-  if (!card) return;
+  if (!card) return false;
+  let created = false;
   try {
     if (card.status === 'stopped') {
-      await inv('start_session', { name: card.session, dir: card.dir, cmd: card.cmd });
+      created = await inv('start_session', { name: card.session, dir: card.dir, cmd: card.cmd });
     }
     await inv('attach_session', { name: card.session, cols: pane.term.cols, rows: pane.term.rows });
   } catch (e) {
     toast('attach failed: ' + e);
   }
+  return created;
 }
 
 export async function addSplit(targetSid, dir, before, newSid) {
@@ -484,13 +490,12 @@ export async function addSplit(targetSid, dir, before, newSid) {
     focusPane(card.session);
     return;
   }
-  const wasStopped = card.status === 'stopped';
   const pane = createPane(card);
   layout = splitAt(layout, targetSid, dir, newSid, before);
   renderLayout();
-  await ensureAttached(pane);
-  if (wasStopped) setTimeout(() => inv('clear_history', { name: card.session }).catch(() => {}), 900);
-  freshShell = wasStopped && !card.cmd.trim();
+  const created = await ensureAttached(pane);
+  if (created) setTimeout(() => inv('clear_history', { name: card.session }).catch(() => {}), 900);
+  freshShell = created && !card.cmd.trim();
   focusPane(card.session);
   pollNow();
 }
@@ -592,13 +597,12 @@ export async function openSession(sid) {
   state.sessionId = sid;
   toggleQueuePanel(false);
   render();
-  const wasStopped = card.status === 'stopped';
   const pane = createPane(card);
   layout = leafOf(sid);
   renderLayout();
-  await ensureAttached(pane);
-  if (wasStopped) setTimeout(() => inv('clear_history', { name: card.session }).catch(() => {}), 900);
-  freshShell = wasStopped && !card.cmd.trim();
+  const created = await ensureAttached(pane);
+  if (created) setTimeout(() => inv('clear_history', { name: card.session }).catch(() => {}), 900);
+  freshShell = created && !card.cmd.trim();
   focusPane(card.session);
   /* history feeds both the fresh-shell chips and typed-prefix completion */
   inv('recent_commands', { limit: 50 })

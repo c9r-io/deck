@@ -156,9 +156,17 @@ pub(crate) fn tmux_available() -> bool {
         .unwrap_or(false)
 }
 
+/// Idempotent start: returns true only when it actually CREATED the session.
+/// "Enter card" means "make sure it's running, then attach" — if the session
+/// already lives (stale frontend status, click before the first poll, another
+/// window), that is success-without-side-effects: never a duplicate-session
+/// error, and never re-typing the boot cmd into a running shell.
 #[tauri::command]
-pub(crate) fn start_session(name: String, dir: String, cmd: String) -> Result<(), String> {
+pub(crate) fn start_session(name: String, dir: String, cmd: String) -> Result<bool, String> {
     validate_session_name(&name)?;
+    if tmux(&["has-session", "-t", &session_target(&name)]).is_ok() {
+        return Ok(false);
+    }
     let dir = expand_tilde(&dir);
     if !std::path::Path::new(&dir).is_dir() {
         return Err(format!("not a directory: {dir}"));
@@ -169,7 +177,7 @@ pub(crate) fn start_session(name: String, dir: String, cmd: String) -> Result<()
     if !cmd.trim().is_empty() {
         tmux(&["send-keys", "-t", &pane_target(&name), &cmd, "Enter"])?;
     }
-    Ok(())
+    Ok(true)
 }
 
 /// Server-wide defaults for the deck tmux server. Idempotent; called at app
@@ -368,15 +376,31 @@ pub(crate) fn capture_tails(names: &[&String], lines: usize) -> HashMap<String, 
 #[tauri::command]
 pub(crate) fn poll_sessions(names: Vec<String>, tail_for: Vec<String>) -> Vec<SessInfo> {
     // one listing supplies liveness + activity + pid + fg for every session
-    let panes = parse_panes(
-        &tmux(&[
-            "list-panes",
-            "-a",
-            "-F",
-            "#{session_name}\t#{pane_pid}\t#{window_activity}\t#{pane_current_command}",
-        ])
-        .unwrap_or_default(),
-    );
+    let listing = tmux(&[
+        "list-panes",
+        "-a",
+        "-F",
+        "#{session_name}\t#{pane_pid}\t#{window_activity}\t#{pane_current_command}",
+    ]);
+    // a failing listing silently reads as "everything is dead" — log the
+    // failure and the recovery, once per transition (tmux errors carry no
+    // user content)
+    static POLL_BROKEN: std::sync::Mutex<bool> = std::sync::Mutex::new(false);
+    {
+        let mut broken = POLL_BROKEN.lock().unwrap();
+        match &listing {
+            Err(e) if !*broken => {
+                *broken = true;
+                applog(&format!("[poll] session listing FAILED: {e}"));
+            }
+            Ok(_) if *broken => {
+                *broken = false;
+                applog("[poll] session listing recovered");
+            }
+            _ => {}
+        }
+    }
+    let panes = parse_panes(&listing.unwrap_or_default());
 
     let roots: HashMap<String, u32> = names
         .iter()

@@ -519,7 +519,7 @@ dependencies = [
 
 [[package]]
 name = "deck-app"
-version = "0.4.16"
+version = "0.4.17"
 dependencies = [
  "base64 0.22.1",
  "dirs 5.0.1",
