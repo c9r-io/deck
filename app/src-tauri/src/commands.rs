@@ -214,58 +214,140 @@ pub(crate) fn ping_event(app: AppHandle) {
 
 // ---------- board persistence ------------------------------------------------
 
-/// Business-structure validation for deck.json. Field-lenient on purpose
-/// (the frontend owns the shape and may grow it), but the skeleton the UI
-/// cannot boot without — projects/cards arrays with ids — must be present,
-/// or the file goes through backup recovery instead of being "parsed" into
-/// an empty board and silently overwritten.
+/// Business-structure validation for deck.json — ONE rule set shared by
+/// load and save: `BoardDoc` deserializes via `try_from`, so
+/// `storage::load_typed::<BoardDoc>` (quarantine/backup recovery on
+/// failure) and `save_board` (reject before touching disk) both run the
+/// full referential checks below. Unknown extension fields are tolerated
+/// (serde ignores them; save persists the original string, so they
+/// round-trip untouched).
 #[derive(serde::Deserialize)]
-pub(crate) struct BoardDoc {
-    #[allow(dead_code)]
+pub(crate) struct BoardDocRaw {
     projects: Vec<BoardProject>,
-    #[allow(dead_code)]
     cards: Vec<BoardCard>,
 }
+
+#[derive(serde::Deserialize)]
+#[serde(try_from = "BoardDocRaw")]
+pub(crate) struct BoardDoc(#[allow(dead_code)] BoardDocRaw);
+
+impl TryFrom<BoardDocRaw> for BoardDoc {
+    type Error = String;
+    fn try_from(raw: BoardDocRaw) -> Result<Self, String> {
+        validate_board(&raw)?;
+        Ok(BoardDoc(raw))
+    }
+}
+
 #[derive(serde::Deserialize)]
 pub(crate) struct BoardProject {
-    #[allow(dead_code)]
     id: String,
     #[allow(dead_code)]
     name: String,
     #[serde(default)]
-    #[allow(dead_code)]
     columns: Vec<BoardColumn>,
 }
 #[derive(serde::Deserialize)]
 pub(crate) struct BoardColumn {
-    #[allow(dead_code)]
     id: String,
     #[allow(dead_code)]
     name: String,
 }
 #[derive(serde::Deserialize)]
 pub(crate) struct BoardCard {
-    #[allow(dead_code)]
     id: String,
     #[serde(rename = "projectId")]
-    #[allow(dead_code)]
     project_id: String,
     #[serde(rename = "columnId")]
-    #[allow(dead_code)]
     column_id: String,
     #[allow(dead_code)]
     title: String,
+    /// runtime fields the UI cannot operate a card without
+    #[allow(dead_code)]
+    cmd: String,
+    #[allow(dead_code)]
+    dir: String,
+    session: String,
 }
 
-/// Settings must at least be a JSON object; individual keys are optional.
+/// The referential rules a usable board must satisfy. Errors carry ids
+/// (deck-generated), never titles/commands/paths — they end up in recovery
+/// warnings.
+fn validate_board(b: &BoardDocRaw) -> Result<(), String> {
+    let mut project_ids = HashSet::new();
+    for p in &b.projects {
+        if p.id.trim().is_empty() {
+            return Err("a project has an empty id".into());
+        }
+        if !project_ids.insert(p.id.as_str()) {
+            return Err(format!("duplicate project id {}", p.id));
+        }
+        if p.columns.is_empty() {
+            return Err(format!("project {} has no columns", p.id));
+        }
+        let mut col_ids = HashSet::new();
+        for c in &p.columns {
+            if c.id.trim().is_empty() {
+                return Err(format!("project {} has a column with an empty id", p.id));
+            }
+            if !col_ids.insert(c.id.as_str()) {
+                return Err(format!("duplicate column id {} in project {}", c.id, p.id));
+            }
+        }
+    }
+    let mut card_ids = HashSet::new();
+    let mut sessions = HashSet::new();
+    for c in &b.cards {
+        if c.id.trim().is_empty() {
+            return Err("a card has an empty id".into());
+        }
+        if !card_ids.insert(c.id.as_str()) {
+            return Err(format!("duplicate card id {}", c.id));
+        }
+        // the SAME session-name rule the runtime enforces on start/attach
+        crate::tmux::validate_session_name(&c.session)
+            .map_err(|e| format!("card {}: {e}", c.id))?;
+        if !sessions.insert(c.session.as_str()) {
+            return Err(format!("card {}: session name is already used", c.id));
+        }
+        let Some(project) = b.projects.iter().find(|p| p.id == c.project_id) else {
+            return Err(format!("card {} references a missing project", c.id));
+        };
+        if !project.columns.iter().any(|col| col.id == c.column_id) {
+            return Err(format!(
+                "card {} references a column that is not in its project",
+                c.id
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Settings must be a JSON object; individual keys are optional but must
+/// have the right type when present. Same try_from sharing as BoardDoc.
 #[derive(serde::Deserialize)]
-pub(crate) struct SettingsDoc {
+pub(crate) struct SettingsDocRaw {
     #[serde(default)]
-    #[allow(dead_code)]
     editor: Option<String>,
     #[serde(default)]
     #[allow(dead_code)]
     debug: Option<bool>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(try_from = "SettingsDocRaw")]
+pub(crate) struct SettingsDoc(#[allow(dead_code)] SettingsDocRaw);
+
+impl TryFrom<SettingsDocRaw> for SettingsDoc {
+    type Error = String;
+    fn try_from(raw: SettingsDocRaw) -> Result<Self, String> {
+        if let Some(e) = &raw.editor {
+            if e.len() > 200 {
+                return Err("editor name is unreasonably long".into());
+            }
+        }
+        Ok(SettingsDoc(raw))
+    }
 }
 
 /// What a typed load hands the frontend: the payload, where it came from
@@ -307,9 +389,20 @@ pub(crate) fn load_board() -> Result<LoadedDoc, String> {
     Ok(to_loaded(storage::load_typed::<BoardDoc>(&board_path())?))
 }
 
+/// The same full business validation as load, BEFORE anything touches disk:
+/// an invalid document never overwrites the main file or rotates the .bak.
+pub(crate) fn save_validated<T: serde::de::DeserializeOwned>(
+    path: &std::path::Path,
+    data: &str,
+    what: &str,
+) -> Result<(), String> {
+    serde_json::from_str::<T>(data).map_err(|e| format!("refusing to save invalid {what}: {e}"))?;
+    storage::save(path, data)
+}
+
 #[tauri::command]
 pub(crate) fn save_board(data: String) -> Result<(), String> {
-    storage::save(&board_path(), &data)
+    save_validated::<BoardDoc>(&board_path(), &data, "board")
 }
 
 /// Boot-time storage notices (corruption recovered from .bak, etc.) for the
@@ -337,7 +430,7 @@ pub(crate) fn load_settings() -> Result<LoadedDoc, String> {
 
 #[tauri::command]
 pub(crate) fn save_settings(data: String) -> Result<(), String> {
-    storage::save(&settings_path(), &data)
+    save_validated::<SettingsDoc>(&settings_path(), &data, "settings")
 }
 
 pub(crate) fn editor_app() -> Option<String> {
@@ -822,6 +915,143 @@ mod tests {
         // a colon followed by non-digits is part of the path, not a lineno
         assert_eq!(regex_strip_lineno("a:b/c"), "a:b/c");
         assert_eq!(regex_strip_lineno("http://x/y:8080"), "http://x/y:8080");
+    }
+
+    // ---------- board / settings business validation ----------
+
+    /// A minimal valid board matching what persistence.js actually writes.
+    fn board(cards: &str) -> String {
+        format!(
+            r#"{{"projects":[{{"id":"P1","name":"main","columns":[
+                 {{"id":"C1","name":"Attention"}},{{"id":"C2","name":"Working"}}]}},
+                 {{"id":"P2","name":"side","columns":[{{"id":"C9","name":"Only"}}]}}],
+               "cards":[{cards}]}}"#
+        )
+    }
+    fn card(id: &str, project: &str, column: &str, session: &str) -> String {
+        format!(
+            r#"{{"id":"{id}","projectId":"{project}","columnId":"{column}",
+                 "title":"t","desc":"","cmd":"claude","dir":"~/w","session":"{session}"}}"#
+        )
+    }
+
+    #[test]
+    fn board_validation_accepts_real_shape_and_unknown_extensions() {
+        let ok = board(&card("s1", "P1", "C1", "deck-t-ab12"));
+        assert!(serde_json::from_str::<BoardDoc>(&ok).is_ok());
+        // future extension fields anywhere must not break loading
+        let extended = ok
+            .replacen(
+                "{\"projects\"",
+                "{\"futureTopLevel\":{\"x\":1},\"projects\"",
+                1,
+            )
+            .replacen("\"title\":\"t\"", "\"title\":\"t\",\"pinned\":true", 1);
+        assert!(
+            serde_json::from_str::<BoardDoc>(&extended).is_ok(),
+            "unknown fields are tolerated"
+        );
+        // empty board is a valid first save
+        assert!(serde_json::from_str::<BoardDoc>(r#"{"projects":[],"cards":[]}"#).is_ok());
+    }
+
+    #[test]
+    fn board_validation_rejects_broken_documents() {
+        let fail = |doc: &str, why: &str, needle: &str| {
+            let e = match serde_json::from_str::<BoardDoc>(doc) {
+                Err(e) => e.to_string(),
+                Ok(_) => panic!("{why}: invalid document was accepted"),
+            };
+            assert!(e.contains(needle), "{why}: wrong error {e}");
+        };
+        // missing runtime field (no session)
+        let no_session =
+            board(r#"{"id":"s1","projectId":"P1","columnId":"C1","title":"t","cmd":"","dir":""}"#);
+        fail(&no_session, "missing session", "session");
+        // duplicate project id
+        let dup_proj = r#"{"projects":[
+            {"id":"P1","name":"a","columns":[{"id":"C1","name":"x"}]},
+            {"id":"P1","name":"b","columns":[{"id":"C2","name":"y"}]}],"cards":[]}"#;
+        fail(dup_proj, "dup project", "duplicate project id");
+        // duplicate column id within a project
+        let dup_col = r#"{"projects":[{"id":"P1","name":"a","columns":[
+            {"id":"C1","name":"x"},{"id":"C1","name":"y"}]}],"cards":[]}"#;
+        fail(dup_col, "dup column", "duplicate column id");
+        // a project with no columns cannot hold cards
+        let no_cols = r#"{"projects":[{"id":"P1","name":"a","columns":[]}],"cards":[]}"#;
+        fail(no_cols, "no columns", "no columns");
+        // duplicate card ids
+        let dup_card = board(&format!(
+            "{},{}",
+            card("s1", "P1", "C1", "deck-a-1111"),
+            card("s1", "P1", "C2", "deck-b-2222")
+        ));
+        fail(&dup_card, "dup card", "duplicate card id");
+        // dangling project reference
+        fail(
+            &board(&card("s1", "PX", "C1", "deck-a-1111")),
+            "dangling project",
+            "missing project",
+        );
+        // column exists but belongs to ANOTHER project
+        fail(
+            &board(&card("s1", "P1", "C9", "deck-a-1111")),
+            "wrong-project column",
+            "not in its project",
+        );
+        // session name breaking the runtime rule (tmux target separators)
+        fail(
+            &board(&card("s1", "P1", "C1", "has:colon")),
+            "illegal session",
+            "session name",
+        );
+        // two cards sharing one tmux session
+        let dup_sess = board(&format!(
+            "{},{}",
+            card("s1", "P1", "C1", "deck-a-1111"),
+            card("s2", "P1", "C2", "deck-a-1111")
+        ));
+        fail(&dup_sess, "dup session", "already used");
+    }
+
+    #[test]
+    fn settings_validation_type_checks_optional_keys() {
+        assert!(serde_json::from_str::<SettingsDoc>(r#"{}"#).is_ok());
+        assert!(
+            serde_json::from_str::<SettingsDoc>(r#"{"editor":"Zed","debug":true,"future":1}"#)
+                .is_ok()
+        );
+        assert!(serde_json::from_str::<SettingsDoc>(r#"{"editor":123}"#).is_err());
+        assert!(serde_json::from_str::<SettingsDoc>(r#"{"debug":"yes"}"#).is_err());
+        assert!(serde_json::from_str::<SettingsDoc>(r#"[1,2]"#).is_err());
+    }
+
+    #[test]
+    fn save_rejection_touches_neither_main_nor_backup() {
+        let d = std::env::temp_dir().join(format!("deck-savereject-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let p = d.join("deck.json");
+        let good = board(&card("s1", "P1", "C1", "deck-t-ab12"));
+        save_validated::<BoardDoc>(&p, &good, "board").unwrap();
+        let before = std::fs::read_to_string(&p).unwrap();
+
+        let bad = board(&card("s1", "PX", "C1", "deck-t-ab12")); // dangling ref
+        let err = save_validated::<BoardDoc>(&p, &bad, "board").unwrap_err();
+        assert!(err.contains("refusing to save"), "{err}");
+        assert_eq!(
+            std::fs::read_to_string(&p).unwrap(),
+            before,
+            "main untouched"
+        );
+        let mut bak = p.as_os_str().to_owned();
+        bak.push(".bak");
+        assert!(
+            !std::path::PathBuf::from(bak).exists(),
+            "backup not rotated by a rejected save"
+        );
+        // a valid save afterwards still works (rejection left no debris)
+        save_validated::<BoardDoc>(&p, &good, "board").unwrap();
     }
 
     #[test]
