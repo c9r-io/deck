@@ -402,6 +402,26 @@ pub(crate) fn poll_sessions(names: Vec<String>, tail_for: Vec<String>) -> Vec<Se
     }
     let panes = parse_panes(&listing.unwrap_or_default());
 
+    // first polls after boot: what the backend parsed, and which requested
+    // sessions came back missing or with an empty fg (names only, no content)
+    static POLL_DIAG: std::sync::Mutex<u8> = std::sync::Mutex::new(0);
+    {
+        let mut n = POLL_DIAG.lock().unwrap();
+        if *n < 3 {
+            *n += 1;
+            let missing: Vec<&String> = names.iter().filter(|n| !panes.contains_key(*n)).collect();
+            let empty_fg: Vec<&String> = names
+                .iter()
+                .filter(|n| panes.get(*n).is_some_and(|(_, _, fg)| fg.is_empty()))
+                .collect();
+            applog(&format!(
+                "[poll] diag: {} names, {} panes parsed, missing={missing:?}, emptyfg={empty_fg:?}",
+                names.len(),
+                panes.len()
+            ));
+        }
+    }
+
     let roots: HashMap<String, u32> = names
         .iter()
         .filter_map(|n| panes.get(n).map(|(pid, _, _)| (n.clone(), *pid)))

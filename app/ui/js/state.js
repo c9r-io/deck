@@ -21,6 +21,7 @@ Object.assign(globalThis, {
   nextIdCounter: 1,
   pendingUpdate: null,
   lastPollError: null,
+  pollDiagCount: 0,
   pollTimer: null,
   qTpl: null,
   queueCache: { items: [], last_fired: {} },
