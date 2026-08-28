@@ -176,22 +176,8 @@ fn debug_logging_defaults_off_and_stays_structured() {
     );
 }
 
-/// history.json holds full shell commands — the code must keep it 0600 and
-/// provide a way to wipe it (Settings → Clear).
-#[test]
-fn history_stays_private_and_clearable() {
-    let hist = std::fs::read_to_string(manifest("src/history.rs")).unwrap();
-    assert!(
-        hist.contains("restrict_to_user"),
-        "history.json must be chmod 0600 on write"
-    );
-    assert!(
-        hist.contains("fn history_clear"),
-        "a history wipe command must exist"
-    );
-    let storage = std::fs::read_to_string(manifest("src/storage.rs")).unwrap();
-    assert!(
-        storage.contains("from_mode(0o600)"),
-        "restrict_to_user must actually chmod 0600"
-    );
-}
+// File-permission guarantees are BEHAVIORAL tests now, not source scans:
+// storage.rs (every_saved_artifact_is_user_only, harden_migrates_legacy_modes_
+// idempotently, quarantined_corrupt_file_is_user_only, concurrent_saves_stay_
+// user_only) and history.rs (history_files_are_user_only_and_clear_removes_
+// backup) verify real filesystem metadata in temp dirs.

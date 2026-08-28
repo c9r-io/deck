@@ -91,7 +91,7 @@ pub(crate) fn ui_event(code: String, detail: Option<String>, a: Option<i64>, b: 
 pub(crate) fn export_logs() -> Result<PathBuf, String> {
     let home = dirs::home_dir().ok_or("no home dir")?;
     let dir = home.join(".deck").join("exports");
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    storage::create_private_dir(&dir)?;
     let name = format!("deck-log-{}.txt", now_epoch());
     let path = dir.join(name);
 
@@ -112,8 +112,8 @@ pub(crate) fn export_logs() -> Result<PathBuf, String> {
     ));
     out.push_str("\n===== app.log =====\n");
     out.push_str(&std::fs::read_to_string(home.join(".deck").join("app.log")).unwrap_or_default());
-    std::fs::write(&path, out).map_err(|e| e.to_string())?;
-    storage::restrict_to_user(&path); // logs are metadata-only, but still private
+    // created 0600 from the first byte — never world-readable-then-chmod
+    storage::write_private(&path, out.as_bytes())?;
     let _ = Command::new("open").arg("-R").arg(&path).status();
     Ok(path)
 }

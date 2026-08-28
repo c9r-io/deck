@@ -22,10 +22,16 @@ use tauri::{Emitter, Manager};
 // ---------- main ---------------------------------------------------------------
 
 fn main() {
-    storage::rotate_log();
     let deck_dir = dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".deck");
+    // idempotent permission migration BEFORE anything touches the data files:
+    // ~/.deck → 0700, every file an older deck may have left 0644 → 0600.
+    // A failure is surfaced (log + boot toast), never silently ignored.
+    if let Err(e) = storage::harden_data_dir(&deck_dir) {
+        storage::warn(format!("data privacy hardening incomplete: {e}"));
+    }
+    storage::rotate_log();
     if let Err(e) = storage::acquire_instance_lock(&deck_dir) {
         applog(&format!("[boot] {e} — exiting"));
         let _ = Command::new("osascript")

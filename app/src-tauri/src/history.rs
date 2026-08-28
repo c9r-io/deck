@@ -148,10 +148,9 @@ pub(crate) fn record_into(path: &Path, cmd: &str) -> Result<(), String> {
     hist.sort_by_key(|e| std::cmp::Reverse(hist_score(e)));
     hist.truncate(500);
     let raw = serde_json::to_string(&hist).map_err(|e| e.to_string())?;
-    storage::save(path, &raw)?;
-    // full shell commands are user content — keep the file private
-    storage::restrict_to_user(path);
-    Ok(())
+    // full shell commands are user content; storage::save creates every
+    // artifact (main, .bak, temp) 0600 by construction
+    storage::save(path, &raw)
 }
 
 #[tauri::command]
@@ -162,18 +161,21 @@ pub(crate) fn record_command(cmd: String) -> Result<(), String> {
     record_into(&deck_history_path(), cmd.trim())
 }
 
-/// Wipe deck's own command history (file + backup) — Settings → privacy.
-#[tauri::command]
-pub(crate) fn history_clear() -> Result<(), String> {
+/// Wipe history at `path`: empty the main file AND delete the .bak (which
+/// still holds the old commands — clearing means clearing).
+pub(crate) fn clear_into(path: &Path) -> Result<(), String> {
     let _g = HIST_LOCK.lock().unwrap();
-    let p = deck_history_path();
-    storage::save(&p, "[]")?;
-    storage::restrict_to_user(&p);
-    // the .bak still holds the old commands — clearing means clearing
-    let mut bak = p.as_os_str().to_owned();
+    storage::save(path, "[]")?;
+    let mut bak = path.as_os_str().to_owned();
     bak.push(".bak");
     let _ = std::fs::remove_file(PathBuf::from(bak));
     Ok(())
+}
+
+/// Wipe deck's own command history (file + backup) — Settings → privacy.
+#[tauri::command]
+pub(crate) fn history_clear() -> Result<(), String> {
+    clear_into(&deck_history_path())
 }
 
 #[cfg(test)]
@@ -197,6 +199,27 @@ mod tests {
             }
         });
         assert_eq!(read_history_from(&p).len(), 40, "every record survived");
+    }
+
+    #[test]
+    fn history_files_are_user_only_and_clear_removes_backup() {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        let d = std::env::temp_dir().join(format!("deck-hist-perm-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let p = d.join("history.json");
+        record_into(&p, "first-command").unwrap();
+        record_into(&p, "second-command").unwrap(); // creates the .bak
+        let bak = d.join("history.json.bak");
+        assert_eq!(mode(&p), 0o600, "history main");
+        assert_eq!(mode(&bak), 0o600, "history backup");
+        // clearing wipes the main file AND removes the backup's old commands
+        clear_into(&p).unwrap();
+        assert!(!bak.exists(), "backup removed on clear");
+        let after = std::fs::read_to_string(&p).unwrap();
+        assert!(!after.contains("first-command"), "content gone");
+        assert_eq!(mode(&p), 0o600, "cleared file still private");
     }
 
     #[test]

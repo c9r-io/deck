@@ -30,6 +30,91 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const SCHEMA_VERSION: u64 = 1;
 
+// ---------- private-by-construction file creation --------------------------------
+//
+// Everything under ~/.deck can carry user content (board titles, prompts,
+// shell commands), so the entire tree is user-only: the directory 0700 and
+// every file 0600 FROM CREATION — never "create world-readable, chmod later"
+// (that window is a real race). Renames preserve the creation mode, so the
+// atomic-write temp being 0600 makes main files and .bak files 0600 too.
+
+/// Open `path` for writing (create-or-truncate) with user-only permissions
+/// applied at creation time.
+pub(crate) fn open_private(path: &Path) -> std::io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let f = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)?;
+    // the mode above only applies when the file is CREATED; a pre-existing
+    // file (e.g. written by an older deck as 0644) keeps its old bits
+    restrict_to_user(path);
+    Ok(f)
+}
+
+/// Write a whole file with user-only permissions (non-atomic; for files that
+/// are not load-bearing data, e.g. exports).
+pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let mut f = open_private(path).map_err(|e| format!("could not create file ({})", e.kind()))?;
+    f.write_all(bytes)
+        .map_err(|e| format!("could not write file ({})", e.kind()))
+}
+
+/// Create `dir` (and parents) and restrict it to the user (0700).
+pub(crate) fn create_private_dir(dir: &Path) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::create_dir_all(dir)
+        .map_err(|e| format!("could not create data dir ({})", e.kind()))?;
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+        .map_err(|e| format!("could not restrict data dir ({})", e.kind()))
+}
+
+/// Boot-time, idempotent permission migration for the whole data tree:
+/// directories → 0700, regular files → 0600 (covers main files, .bak,
+/// .corrupt-*, app.log, exports and anything an older deck left 0644).
+/// Symlinks are left untouched — chmod would follow them out of the tree.
+/// Errors are counted and reported without embedding any path.
+pub(crate) fn harden_data_dir(dir: &Path) -> Result<(), String> {
+    let mut errs = 0u32;
+    fn set(p: &Path, mode: u32, errs: &mut u32) {
+        use std::os::unix::fs::PermissionsExt;
+        if std::fs::set_permissions(p, std::fs::Permissions::from_mode(mode)).is_err() {
+            *errs += 1;
+        }
+    }
+    if !dir.exists() {
+        return create_private_dir(dir);
+    }
+    set(dir, 0o700, &mut errs);
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&d) else {
+            errs += 1;
+            continue;
+        };
+        for e in rd.flatten() {
+            let p = e.path();
+            match e.file_type() {
+                Ok(t) if t.is_dir() => {
+                    set(&p, 0o700, &mut errs);
+                    stack.push(p);
+                }
+                Ok(t) if t.is_file() => set(&p, 0o600, &mut errs),
+                _ => {} // symlink or unknown: never chmod through it
+            }
+        }
+    }
+    if errs > 0 {
+        Err(format!(
+            "could not restrict {errs} data file(s) to user-only access"
+        ))
+    } else {
+        Ok(())
+    }
+}
+
 /// Warnings produced before the webview exists (e.g. corrupt files found at
 /// boot); the frontend fetches and toasts them via the `storage_warnings`
 /// command. Request-path loads return their warning in-band instead.
@@ -137,7 +222,12 @@ pub fn load_typed<T: DeserializeOwned>(path: &Path) -> Result<Option<LoadOutcome
     // quarantine the damaged original FIRST — it is preserved, never clobbered
     let corrupt = unique_corrupt_path(path);
     let kept_at = match std::fs::rename(path, &corrupt) {
-        Ok(()) => format!(" — the damaged file was kept at {}", corrupt.display()),
+        Ok(()) => {
+            // the damaged bytes may hold user content; a pre-migration 0644
+            // mode would survive the rename, so restrict explicitly
+            restrict_to_user(&corrupt);
+            format!(" — the damaged file was kept at {}", corrupt.display())
+        }
         Err(e) => format!(" (quarantining it also failed: {e})"),
     };
     let bak = bak_path(path);
@@ -178,7 +268,15 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
         SEQ.fetch_add(1, Ordering::Relaxed)
     ));
     {
-        let mut f = std::fs::File::create(&tmp).map_err(|e| e.to_string())?;
+        use std::os::unix::fs::OpenOptionsExt;
+        // create_new + mode: the temp file is 0600 from its first instant,
+        // and the rename below preserves that mode on the final file
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&tmp)
+            .map_err(|e| format!("could not create temp file ({})", e.kind()))?;
         f.write_all(bytes).map_err(|e| e.to_string())?;
         f.sync_all().map_err(|e| e.to_string())?;
     }
@@ -216,7 +314,7 @@ pub fn save(path: &Path, payload: &str) -> Result<(), String> {
     let out = serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?;
 
     let dir = path.parent().ok_or("data path has no parent directory")?;
-    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    create_private_dir(dir)?;
     if let Ok(cur) = std::fs::read(path) {
         atomic_write(&bak_path(path), &cur).map_err(|e| format!("backup failed: {e}"))?;
     }
@@ -228,8 +326,8 @@ pub fn save(path: &Path, payload: &str) -> Result<(), String> {
 /// so it must not start.
 pub fn acquire_instance_lock(dir: &Path) -> Result<(), String> {
     use std::os::fd::AsRawFd;
-    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-    let f = std::fs::File::create(dir.join("deck.lock")).map_err(|e| e.to_string())?;
+    create_private_dir(dir)?;
+    let f = open_private(&dir.join("deck.lock")).map_err(|e| e.to_string())?;
     // LOCK_EX | LOCK_NB
     let rc = unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
     if rc != 0 {
@@ -248,25 +346,27 @@ pub(crate) fn applog(msg: &str) {
     if cfg!(test) {
         return; // unit tests must not write into the user's real app.log
     }
+    use std::os::unix::fs::OpenOptionsExt;
     let path = dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".deck")
         .join("app.log");
     if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
+        let _ = create_private_dir(dir);
     }
     let ts = now_epoch();
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
+        .mode(0o600) // applies at creation; legacy 0644 logs are fixed at boot
         .open(&path)
     {
         let _ = writeln!(f, "{ts} {msg}");
-        restrict_to_user(&path);
     }
 }
 
-/// chmod 0600 — best-effort, silent (used on logs, exports and history).
+/// chmod 0600 — best-effort, silent (fixes pre-existing lax modes; new files
+/// are already created 0600 via open_private/atomic_write).
 pub(crate) fn restrict_to_user(path: &Path) {
     use std::os::unix::fs::PermissionsExt;
     let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
@@ -281,7 +381,7 @@ pub(crate) fn rotate_log() {
         if meta.len() > 2 * 1024 * 1024 {
             if let Ok(data) = std::fs::read(&path) {
                 let keep = &data[data.len().saturating_sub(512 * 1024)..];
-                let _ = std::fs::write(&path, keep);
+                let _ = write_private(&path, keep);
             }
         }
     }
@@ -470,10 +570,138 @@ mod tests {
         );
     }
 
+    // ---------- permissions: behavioral checks against real fs metadata ----------
+
+    fn mode_of(p: &Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(p).unwrap().permissions().mode() & 0o777
+    }
+
+    fn set_mode(p: &Path, mode: u32) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(p, std::fs::Permissions::from_mode(mode)).unwrap();
+    }
+
+    #[test]
+    fn every_saved_artifact_is_user_only() {
+        let d = tdir("perm");
+        let p = d.join("x.json");
+        save(&p, r#"{"v":1}"#).unwrap(); // first write
+        assert_eq!(mode_of(&p), 0o600, "main file");
+        assert_eq!(mode_of(&d), 0o700, "data dir");
+        save(&p, r#"{"v":2}"#).unwrap(); // second write creates the backup
+        assert_eq!(mode_of(&p), 0o600, "main after rewrite");
+        assert_eq!(mode_of(&bak_path(&p)), 0o600, "backup file");
+        // no temp litter, so no temp modes to check — creation itself is 0600
+        assert!(!std::fs::read_dir(&d).unwrap().any(|e| e
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .contains(".tmp.")));
+    }
+
+    #[test]
+    fn quarantined_corrupt_file_is_user_only() {
+        let d = tdir("permq");
+        let p = d.join("x.json");
+        save(&p, r#"{"v":1}"#).unwrap();
+        save(&p, r#"{"v":2}"#).unwrap();
+        // a damaged main file left world-readable by an older deck
+        std::fs::write(&p, "{garbage").unwrap();
+        set_mode(&p, 0o644);
+        let got = load_doc(&p).unwrap().unwrap();
+        assert_eq!(got.source, "backup");
+        let corrupt = std::fs::read_dir(&d)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .find(|e| e.file_name().to_string_lossy().contains("corrupt-"))
+            .expect("quarantine file exists")
+            .path();
+        assert_eq!(mode_of(&corrupt), 0o600, "quarantine restricted");
+    }
+
+    #[test]
+    fn concurrent_saves_stay_user_only() {
+        let d = tdir("permrace");
+        let p = d.join("x.json");
+        std::thread::scope(|s| {
+            for k in 0..4 {
+                let p = p.clone();
+                s.spawn(move || {
+                    for i in 0..15 {
+                        save(&p, &format!("{{\"v\":{}}}", k * 100 + i)).unwrap();
+                    }
+                });
+            }
+        });
+        assert_eq!(mode_of(&p), 0o600);
+        assert_eq!(mode_of(&bak_path(&p)), 0o600);
+        assert_eq!(mode_of(&d), 0o700);
+    }
+
+    #[test]
+    fn write_private_restricts_even_a_preexisting_lax_file() {
+        let d = tdir("permw");
+        let p = d.join("out.txt");
+        std::fs::write(&p, "old").unwrap();
+        set_mode(&p, 0o644);
+        write_private(&p, b"new").unwrap();
+        assert_eq!(mode_of(&p), 0o600);
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "new");
+    }
+
+    #[test]
+    fn harden_migrates_legacy_modes_idempotently() {
+        let d = tdir("harden");
+        // simulate an older deck's layout: lax dir + files, incl. backup,
+        // quarantine, log and an exports subdirectory
+        for name in [
+            "deck.json",
+            "deck.json.bak",
+            "queue.json.corrupt-1",
+            "app.log",
+        ] {
+            let p = d.join(name);
+            std::fs::write(&p, "x").unwrap();
+            set_mode(&p, 0o644);
+        }
+        let exports = d.join("exports");
+        std::fs::create_dir(&exports).unwrap();
+        let exp_file = exports.join("deck-log-1.txt");
+        std::fs::write(&exp_file, "x").unwrap();
+        set_mode(&exp_file, 0o644);
+        set_mode(&exports, 0o755);
+        set_mode(&d, 0o755);
+
+        harden_data_dir(&d).unwrap();
+        assert_eq!(mode_of(&d), 0o700);
+        assert_eq!(mode_of(&exports), 0o700);
+        for name in [
+            "deck.json",
+            "deck.json.bak",
+            "queue.json.corrupt-1",
+            "app.log",
+        ] {
+            assert_eq!(mode_of(&d.join(name)), 0o600, "{name}");
+        }
+        assert_eq!(mode_of(&exp_file), 0o600);
+        // idempotent: a second run changes nothing and still succeeds
+        harden_data_dir(&d).unwrap();
+        assert_eq!(mode_of(&d), 0o700);
+    }
+
+    #[test]
+    fn harden_creates_a_missing_dir_private() {
+        let d = tdir("hardennew").join("fresh");
+        harden_data_dir(&d).unwrap();
+        assert_eq!(mode_of(&d), 0o700);
+    }
+
     #[test]
     fn second_instance_lock_is_refused() {
         let d = tdir("lock");
         acquire_instance_lock(&d).unwrap();
+        assert_eq!(mode_of(&d.join("deck.lock")), 0o600, "lock file private");
         // same-process flock on a fresh fd of the same file: macOS grants it
         // (locks are per-open-file but merge per process), so exercise the
         // failure path from a child process instead.
