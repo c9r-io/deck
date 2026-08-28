@@ -11,6 +11,8 @@ use std::process::Command;
 use std::thread::sleep;
 use std::time::Duration;
 
+#[path = "../src/terminal_scroll.rs"]
+mod terminal_scroll;
 #[path = "../src/terminal_selection.rs"]
 mod terminal_selection;
 use terminal_selection::{cursor_steps_for_cell, snapshot_selection};
@@ -274,6 +276,37 @@ fn resize_junk_history_is_clearable_and_stays_zero() {
     );
 }
 
+/// Starting a selection while one is already present must clear it first:
+/// tmux's begin-selection command is a toggle, so calling it directly would
+/// remove the old selection and leave the next update with nothing active.
+/// A zero-cell selection is also a valid intermediate state until movement.
+#[test]
+fn repeated_selection_clear_then_begin_keeps_the_new_anchor_active() {
+    let s = Server::fixture(
+        "selection-repeat",
+        40,
+        8,
+        "printf 'zero\\none\\ntwo\\nthree\\nfour\\nfive\\n'; sleep 30",
+    );
+    s.run(&["copy-mode", "-H", "-t", "t"]);
+    s.move_copy_cursor(1, 0);
+    s.run(&["send-keys", "-t", "t", "-X", "begin-selection"]);
+    s.move_copy_cursor(3, 0);
+    assert_eq!(s.fmt("#{selection_present}"), "1");
+
+    s.run(&["send-keys", "-t", "t", "-X", "clear-selection"]);
+    s.move_copy_cursor(2, 0);
+    s.run(&["send-keys", "-t", "t", "-X", "begin-selection"]);
+    assert_eq!(
+        s.fmt("#{selection_present}"),
+        "0",
+        "the anchor alone is not yet selected text"
+    );
+    s.move_copy_cursor(5, 0);
+    assert_eq!(s.fmt("#{selection_present}"), "1");
+    assert_eq!(s.selection_points(), ((2, 0), (5, 0)));
+}
+
 /// v0.4.11 scrolling model: scroll-up enters copy-mode positioned in history;
 /// scroll-down past the bottom AUTO-EXITS (copy-mode -e). If -e ever stops
 /// working, the terminal gets stuck in copy-mode and looks frozen.
@@ -304,6 +337,40 @@ fn copy_mode_enters_on_scroll_up_and_auto_exits_at_bottom() {
         "0",
         "copy-mode -e must auto-exit at bottom"
     );
+}
+
+/// Production scrolling is a single tmux command list: it enters copy-mode
+/// only when history exists, advances on every call, and reports auto-exit at
+/// the live bottom without separate state-query subprocesses.
+#[test]
+fn production_scroll_batch_enters_advances_and_exits() {
+    let empty = Server::fixture("scroll-batch-empty", 40, 8, "sleep 30");
+    assert_eq!(empty.fmt("#{history_size}"), "0");
+    let no_op = empty
+        .run_owned(&terminal_scroll::args("t", -2))
+        .expect("empty production scroll");
+    assert_eq!(no_op.trim(), "0", "empty history remains a live no-op");
+
+    let s = Server::new("scroll-batch");
+    s.shell("i=0; while [ $i -lt 40 ]; do echo batch$i; i=$((i+1)); done");
+
+    let first = s
+        .run_owned(&terminal_scroll::args("t", -2))
+        .expect("first production scroll");
+    assert_eq!(first.trim(), "1");
+    assert_eq!(s.fmt("#{scroll_position}"), "2");
+
+    let second = s
+        .run_owned(&terminal_scroll::args("t", -3))
+        .expect("second production scroll");
+    assert_eq!(second.trim(), "1");
+    assert_eq!(s.fmt("#{scroll_position}"), "5");
+
+    let live = s
+        .run_owned(&terminal_scroll::args("t", 60))
+        .expect("production scroll to bottom");
+    assert_eq!(live.trim(), "0");
+    assert_eq!(s.fmt("#{pane_in_mode}"), "0");
 }
 
 /// Scheduled prompts and pty_write inject via `send-keys -l`: the text must

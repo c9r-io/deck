@@ -184,11 +184,18 @@ async function selectionSmoke(card) {
     return;
   }
   selectionStage = 5;
-  await report('selection-up', crossedUp && expanded.split('\n').length > 100
-    && expanded.includes('R7-') && expanded.includes('```rust')
-    && expanded.includes('\tTAB trailing   ')
-    && expanded.includes('\n\n') && expanded.includes('x'.repeat(200)),
-  expanded.split('\n').length, expanded.length);
+  let upMask = 0;
+  if (crossedUp) upMask |= 1;
+  if (expanded.split('\n').length > 100) upMask |= 2;
+  if (expanded.includes('R7-')) upMask |= 4;
+  if (expanded.includes('```rust')) upMask |= 8;
+  // A terminal expands the source Tab before tmux owns it, and this broad
+  // cross-screen half-open range need not include every padding cell. Assert
+  // visible content here; exact trailing-space bytes have their own contract.
+  if (expanded.includes('TAB trailing')) upMask |= 16;
+  if (expanded.includes('\n\n')) upMask |= 32;
+  if (expanded.includes('x'.repeat(200))) upMask |= 64;
+  await report('selection-up', upMask === 127, expanded.split('\n').length, upMask);
   const markerIds = [...expanded.matchAll(/R7-(\d{4})/g)].map(match => Number(match[1]));
   const markerStart = markerIds[0] ?? -1;
   const markerEnd = markerIds.at(-1) ?? -1;
@@ -312,7 +319,54 @@ async function selectionSmoke(card) {
   const gestureMask = (tapPlain ? 1 : 0) | (doubleWord ? 2 : 0)
     | (tripleLine ? 4 : 0) | (rightUntouched && singleOwned ? 8 : 0);
   await report('selection-gestures', gestureMask === 15, gestureMask, wordLength);
+
+  /* Regression: start a second drag while tmux still owns the completed first
+     selection. begin-selection is a toggle, so production must explicitly
+     replace it rather than lose the new anchor. */
+  screen.dispatchEvent(pointer('pointerdown', 76, cellX, rowY(singleAnchorRow + 2)));
+  document.dispatchEvent(pointer('pointermove', 76,
+    rect.left + rect.width / pane.term.cols * 10.2, rowY(singleAnchorRow)));
+  const repeated = await waitFor(() => pane.selection.hasSelection(), 3000);
+  document.dispatchEvent(pointer('pointerup', 76,
+    rect.left + rect.width / pane.term.cols * 10.2, rowY(singleAnchorRow)));
+  const repeatedText = repeated ? await copyTerminalSelection(pane) : null;
+  await report('selection-repeat', repeated && typeof repeatedText === 'string'
+    && repeatedText.length > 0, repeatedText?.length || 0, 0);
+
   await cancelTerminalSelection(pane);
+  await inv('scroll_bottom', { name: card.session });
+
+  /* Real wheel routing: two sub-threshold pixel events must combine into one
+     line; the retained rounding remainder must absorb the complementary tail;
+     DOM_DELTA_LINE must remain line-scaled. */
+  const wheel = (deltaY, deltaMode = 0) => screen.dispatchEvent(new WheelEvent('wheel', {
+    deltaY, deltaMode, bubbles: true, cancelable: true,
+  }));
+  wheel(-4);
+  await pause(100);
+  const wheelSub = await inv('terminal_metrics', { name: card.session });
+  wheel(-4);
+  const wheelFirst = await waitFor(async () => {
+    const metrics = await inv('terminal_metrics', { name: card.session });
+    return metrics.scroll_position === 1 && metrics;
+  }, 3000);
+  wheel(-6);
+  await pause(100);
+  const wheelRemainder = await inv('terminal_metrics', { name: card.session });
+  wheel(-2, 1);
+  const wheelLines = await waitFor(async () => {
+    const metrics = await inv('terminal_metrics', { name: card.session });
+    return metrics.scroll_position === 3 && metrics;
+  }, 3000);
+  let wheelMask = 0;
+  if (!wheelSub.in_copy_mode && wheelSub.scroll_position === 0) wheelMask |= 1;
+  if (wheelFirst) wheelMask |= 2;
+  if (wheelRemainder.scroll_position === 1) wheelMask |= 4;
+  if (wheelLines) wheelMask |= 8;
+  await report('scroll-frame', wheelMask === 15, wheelMask,
+    wheelRemainder.scroll_position);
+  await inv('scroll_bottom', { name: card.session });
+
   for (let i = 0; i < 12; i++) {
     await inv('scroll_session', { name: card.session, lines: -60 });
   }
@@ -341,7 +395,7 @@ async function selectionSmoke(card) {
   await cancelTerminalSelection(pane);
   screen.dispatchEvent(pointer('pointerdown', 43, rect.left + 60, rect.bottom - 6));
   document.dispatchEvent(pointer('pointermove', 43, rect.left + 60, rect.top - 32));
-  await waitFor(() => pane.selection.hasSelection());
+  const cancelStarted = await waitFor(() => pane.selection.hasSelection());
   toggleSidebar();
   await pause(300);
   rect = screen.getBoundingClientRect();
@@ -349,7 +403,13 @@ async function selectionSmoke(card) {
     key: 'Escape', bubbles: true, cancelable: true,
   }));
   const cancelled = await waitFor(async () => !(await inv('terminal_metrics', { name: card.session })).in_copy_mode);
-  await report('selection-cancel', cancelled && !pane.selection.hasSelection(), 1, 0);
+  let cancelMask = 0;
+  if (cancelStarted) cancelMask |= 1;
+  if (cancelled) cancelMask |= 2;
+  if (!pane.selection.hasSelection()) cancelMask |= 4;
+  const cancelMetrics = await inv('terminal_metrics', { name: card.session });
+  await report('selection-cancel', cancelMask === 7, cancelMask,
+    cancelMetrics.in_copy_mode ? 1 : 0);
 
   if (document.body.classList.contains('side-collapsed')) toggleSidebar();
   const neighborAfter = neighbor && await inv('terminal_metrics', { name: neighbor.session });

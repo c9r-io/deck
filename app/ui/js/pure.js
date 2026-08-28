@@ -237,6 +237,38 @@ export function terminalSelectionEdgeLines({ pointerY, top, bottom, hotZone = 48
   return 0;
 }
 
+/** Normalize browser wheel units into fractional terminal lines. */
+export function terminalWheelLines(deltaY, deltaMode, rows, pixelsPerLine = 14) {
+  if (![deltaY, deltaMode, rows, pixelsPerLine].every(Number.isFinite)
+      || rows <= 0 || pixelsPerLine <= 0) return 0;
+  if (deltaMode === 1) return deltaY;        // DOM_DELTA_LINE
+  if (deltaMode === 2) return deltaY * rows; // DOM_DELTA_PAGE
+  return deltaY / pixelsPerLine;             // DOM_DELTA_PIXEL
+}
+
+/**
+ * Fraction-preserving wheel accumulator. take() error-diffuses sub-line
+ * input instead of dropping the trackpad's small inertial tail every frame.
+ */
+export function createTerminalWheelAccumulator(maxLines = 60) {
+  let pending = 0;
+  const limit = Number.isFinite(maxLines) ? Math.max(1, Math.floor(maxLines)) : 60;
+  return {
+    add(lines) {
+      if (Number.isFinite(lines)) pending += lines;
+      return pending;
+    },
+    ready: () => Math.abs(pending) >= 0.5,
+    take() {
+      const rounded = pending < 0 ? -Math.round(-pending) : Math.round(pending);
+      const lines = Math.max(-limit, Math.min(limit, rounded));
+      pending -= lines;
+      return lines;
+    },
+    pending: () => pending,
+  };
+}
+
 /** Pure generation/state core shared by production terminal selection and tests. */
 export function createTerminalSelectionModel() {
   let generation = 0;
@@ -261,7 +293,9 @@ export function createTerminalSelectionModel() {
     apply(id, next) {
       if (id !== generation || phase === 'idle' || phase === 'cancelled') return false;
       status = { ...next };
-      phase = 'dragging';
+      // A final backend reply may arrive after pointerup. Keep the completed
+      // lifecycle completed instead of reopening it as a dragging gesture.
+      if (phase !== 'selected') phase = 'dragging';
       return true;
     },
     finish() {

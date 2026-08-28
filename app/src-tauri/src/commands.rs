@@ -106,6 +106,8 @@ const SMOKE_CHECKS: &[&str] = &[
     "selection-clipboard",
     "selection-owner",
     "selection-gestures",
+    "selection-repeat",
+    "scroll-frame",
     "path-menu",
     "path-editor",
     "path-session-relative",
@@ -654,28 +656,10 @@ pub(crate) fn start_session(name: String, dir: String, cmd: String) -> Result<bo
 pub(crate) fn scroll_session(name: String, lines: i32) -> Result<bool, String> {
     validate_session_name(&name)?;
     let t = pane_target(&name);
-    // one query for both facts (was two subprocesses per wheel tick)
-    let stat =
-        tmux(&["display", "-p", "-t", &t, "#{pane_in_mode} #{history_size}"]).unwrap_or_default();
-    let mut it = stat.split_whitespace();
-    let in_mode = it.next() == Some("1");
-    let hist: i64 = it.next().and_then(|s| s.parse().ok()).unwrap_or(0);
-    if lines < 0 {
-        if !in_mode {
-            if hist == 0 {
-                return Ok(false);
-            }
-            tmux(&["copy-mode", "-e", "-t", &t])?;
-        }
-        let n = (-lines).clamp(1, 60).to_string();
-        let _ = tmux(&["send-keys", "-t", &t, "-X", "-N", &n, "scroll-up"]);
-    } else if lines > 0 && in_mode {
-        let n = lines.clamp(1, 60).to_string();
-        let _ = tmux(&["send-keys", "-t", &t, "-X", "-N", &n, "scroll-down"]);
-    } else {
-        return Ok(in_mode);
-    }
-    let after = tmux(&["display", "-p", "-t", &t, "#{pane_in_mode}"]).unwrap_or_default();
+    // State test, optional copy-mode entry, movement and post-state report all
+    // execute in one tmux server command list. This removes two to three
+    // process/IPC round trips from every display-frame scroll update.
+    let after = tmux_owned(&crate::terminal_scroll::args(&t, lines))?;
     Ok(after.trim() == "1")
 }
 
@@ -880,6 +864,22 @@ pub(crate) fn terminal_selection_start(
             &mut batch,
             &["copy-mode".into(), "-H".into(), "-t".into(), target.clone()],
         );
+    } else if dims.selection_present {
+        // begin-selection is a toggle in tmux: invoking it while an older
+        // selection is still present clears that selection instead of moving
+        // its anchor. This can happen when a second physical drag starts
+        // before the first start reply has crossed the webview boundary.
+        // Clear explicitly so every start command has restart semantics.
+        push_tmux_command(
+            &mut batch,
+            &[
+                "send-keys".into(),
+                "-t".into(),
+                target.clone(),
+                "-X".into(),
+                "clear-selection".into(),
+            ],
+        );
     }
     push_copy_cursor(&mut batch, &target, anchor_row, anchor_steps);
     push_tmux_command(
@@ -912,7 +912,10 @@ pub(crate) fn terminal_selection_update(
     validate_session_name(&name)?;
     let target = pane_target(&name);
     let before = terminal_selection_status_for(&target)?;
-    if !before.active || !before.selection_present {
+    // A freshly begun selection has no selected cells until its cursor first
+    // leaves the anchor, so selection_present=0 is valid while a drag is
+    // still inside that cell. Moving the copy cursor is what makes it present.
+    if !before.active {
         return Err("terminal selection is no longer active".into());
     }
     let row = row.min(before.pane_rows.saturating_sub(1));

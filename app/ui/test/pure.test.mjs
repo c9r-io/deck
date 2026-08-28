@@ -10,6 +10,7 @@ import {
   chainQuietHint, CHAIN_QUIET_SECS, shQuote, quickBarLayout, rectsOverlap,
   createExitRetirementTracker, createSerialTransactionQueue, deleteSessionsTransaction, sidebarGroups,
   copyExact, createTerminalSelectionModel, terminalSelectionEdgeLines,
+  createTerminalWheelAccumulator, terminalWheelLines,
   linkMenuItems,
   inlineRenameValue, persistOptimistically,
 } from '../js/pure.js';
@@ -384,6 +385,10 @@ test('terminal selection model keeps anchor, reverses, clamps boundaries, and re
   assert.deepEqual(snap.anchor, { row: 20, col: 4 }, 'anchor never moves');
   assert.deepEqual(snap.active, { row: 24, col: 8 });
   assert.equal(model.apply(first, { absolute_row: 0, at_top: true, at_bottom: false }), true);
+  model.finish();
+  assert.equal(model.snapshot().phase, 'selected');
+  model.apply(first, { absolute_row: 1, at_top: false, at_bottom: false });
+  assert.equal(model.snapshot().phase, 'selected', 'late status cannot reopen a completed drag');
   model.cancel();
   assert.equal(model.apply(first, { absolute_row: 999 }), false, 'late response is stale after cancel');
   const second = model.begin({ row: 2, col: 1 });
@@ -391,6 +396,29 @@ test('terminal selection model keeps anchor, reverses, clamps boundaries, and re
   assert.equal(model.apply(first, { absolute_row: 5 }), false, 'old gesture cannot mutate new anchor');
   model.finish();
   assert.equal(model.snapshot().phase, 'selected');
+});
+
+test('terminal wheel input preserves fractions and normalizes browser delta modes', () => {
+  assert.equal(terminalWheelLines(28, 0, 24), 2);
+  assert.equal(terminalWheelLines(3, 1, 24), 3);
+  assert.equal(terminalWheelLines(1, 2, 24), 24);
+  assert.equal(terminalWheelLines(1, 99, 24), 1 / 14, 'unknown modes stay pixel-like');
+  assert.equal(terminalWheelLines(Number.NaN, 0, 24), 0);
+
+  const wheel = createTerminalWheelAccumulator(3);
+  wheel.add(0.3);
+  assert.equal(wheel.ready(), false);
+  wheel.add(0.3);
+  assert.equal(wheel.take(), 1);
+  assert.ok(Math.abs(wheel.pending() + 0.4) < 1e-9, 'rounding error is retained');
+  wheel.add(4.4);
+  assert.equal(wheel.take(), 3, 'one frame is capped without dropping excess');
+  assert.equal(wheel.take(), 1);
+  wheel.add(-1.6);
+  assert.equal(wheel.take(), -2, 'reverse inertial deltas remain directional');
+  const reverseHalf = createTerminalWheelAccumulator();
+  reverseHalf.add(-0.5);
+  assert.equal(reverseHalf.take(), -1, 'negative half-lines round symmetrically');
 });
 
 test('terminal clipboard payload remains exact for 2,500 deterministic Unicode rows', async () => {

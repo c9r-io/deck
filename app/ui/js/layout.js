@@ -4,7 +4,7 @@ import { $, DOT_TITLES, duev, inv, listen, setMemChip, state, store, uev } from 
 import { inlineRename, toast } from './dialogs.js';
 import { TERM_THEME, panes, pollNow, provider, render, renderSidebar, activeProject } from './board.js';
 import { SHELL_FG, acceptGhost, feedMirror, maybeRecordCommand, mountQuickBar, nextShellTitle, renderSuggest, resetSuggest, showLinkCtx, updateGhost, writeClipboard } from './terminal.js';
-import { shQuote } from './pure.js';
+import { createTerminalWheelAccumulator, shQuote, terminalWheelLines } from './pure.js';
 import { toggleQueuePanel } from './scheduler.js';
 import { cancelAllTerminalSelections, cancelTerminalSelection, copyTerminalSelection, hasTerminalSelection, wireTerminalSelection } from './selection.js';
 
@@ -457,32 +457,36 @@ export function wireTerminalInput(pane, term, host) {
   });
 
   /* Wheel handling, deck-driven: tmux mouse mode stays OFF so xterm keeps
-     its native local selection (drag + ⌘C). Wheel deltas are batched and
-     translated into tmux copy-mode scrolling on the backend — long agent
-     output is reachable, and an empty shell is a true no-op. If an app
-     requests mouse reporting itself, the wheel passes through to it. */
-  let wheelAcc = 0, wheelTimer = null;
+     its native local selection (drag + ⌘C). Fractional trackpad deltas are
+     consumed on display frames, with one backend request in flight; tmux
+     remains the scrollback authority without imposing the old 50ms/20fps
+     timer or dropping each batch's sub-line remainder. */
+  const wheel = createTerminalWheelAccumulator();
+  let wheelFrame = null, wheelInFlight = false;
+  const scheduleWheel = () => {
+    if (wheelFrame != null || wheelInFlight || !wheel.ready()) return;
+    wheelFrame = requestAnimationFrame(() => {
+      wheelFrame = null;
+      if (!host.isConnected || wheelInFlight) return;
+      const lines = wheel.take();
+      if (!lines) return;
+      wheelInFlight = true;
+      inv('scroll_session', { name: session, lines }).then(inMode => {
+        const c = card();
+        if (c && !!c.scrolled !== !!inMode) { c.scrolled = !!inMode; updatePaneChrome(c); }
+      }).catch(() => {}).finally(() => {
+        wheelInFlight = false;
+        if (host.isConnected) scheduleWheel();
+      });
+    });
+  };
   host.addEventListener('wheel', e => {
     const mode = term.modes && term.modes.mouseTrackingMode;
     if (mode && mode !== 'none') return;   // app owns the mouse
     e.preventDefault();
     e.stopPropagation();
-    wheelAcc += e.deltaY;
-    if (wheelTimer) return;
-    wheelTimer = setTimeout(() => {
-      const lines = Math.round(wheelAcc / 14);
-      wheelAcc = 0;
-      wheelTimer = null;
-      if (lines) {
-        /* the backend reports post-scroll copy-mode state, so the
-           scrollback chip appears/disappears with the gesture, not on the
-           next 2.5s poll */
-        inv('scroll_session', { name: session, lines }).then(inMode => {
-          const c = card();
-          if (c && !!c.scrolled !== !!inMode) { c.scrolled = !!inMode; updatePaneChrome(c); }
-        }).catch(() => {});
-      }
-    }, 50);
+    wheel.add(terminalWheelLines(e.deltaY, e.deltaMode, term.rows));
+    scheduleWheel();
   }, { passive: false, capture: true });
 
 }

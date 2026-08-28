@@ -11,6 +11,7 @@ mod pty;
 mod scheduler;
 mod smoke_faults;
 mod storage;
+mod terminal_scroll;
 mod terminal_selection;
 mod tmux;
 

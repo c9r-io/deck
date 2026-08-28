@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.4.34 — 2026-08-29
+
+- Make repeated terminal drags replace the prior tmux selection reliably,
+  accept the valid zero-cell anchor state, and invalidate late gesture replies.
+- Coalesce each burst of PTY repaint bytes before handing it to xterm so tmux
+  selection and scroll redraws cannot expose a partially painted frame.
+- Drive terminal wheel input at display-frame cadence, preserve fractional
+  trackpad deltas, serialize requests, and execute each tmux scroll as one
+  server command list instead of several subprocess round trips.
+- Add real-WKWebView release regressions for immediate repeated selection and
+  fractional pixel/line-mode wheel routing.
+
 ## 0.4.33 — 2026-08-29
 
 - Snapshot terminal selections through tmux's native copy buffer so ongoing

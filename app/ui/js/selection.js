@@ -115,7 +115,11 @@ function terminalSelectionController(pane, onModeChange) {
           }));
           if (!model.apply(generation, status)) continue;
           lastStatus = status;
-          setMode(true);
+          // Pane resize can report one transient selection_present=0 while
+          // tmux redraws copy-mode. Once text has been selected, retain local
+          // ownership until an explicit cancel/error so Escape cannot strand
+          // the pane in backend copy-mode.
+          setMode(selected || !!status.selection_present);
           if (status.history_at_limit && status.at_top && edgeLines < 0 && !limitNoticeShown) {
             limitNoticeShown = true;
             toast(`selection reached tmux’s ${status.history_limit.toLocaleString()}-row history limit; older output is no longer available`);
@@ -155,7 +159,7 @@ function terminalSelectionController(pane, onModeChange) {
     })).then(status => {
       if (!model.apply(generation, status)) return;
       lastStatus = status;
-      setMode(true);
+      setMode(selected || !!status.selection_present);
       requestUpdate();
     }).catch(() => {
       if (model.snapshot().generation === generation) {
@@ -174,7 +178,10 @@ function terminalSelectionController(pane, onModeChange) {
        tmux coordinator from ever starting the same physical drag. */
     event.preventDefault();
     event.stopImmediatePropagation();
-    if (selected) cancel(false);
+    // Always invalidate an older generation, even when its start reply is
+    // still in flight and `selected` has not become true yet. The backend
+    // start command independently replaces any tmux selection it encounters.
+    cancel(false);
     try { pane.term.clearSelection(); } catch (e) { /* already empty */ }
     clearEdgeTimer();
     ownerTrace = {

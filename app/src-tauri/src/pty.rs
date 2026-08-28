@@ -26,6 +26,7 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::sync::{Arc, Condvar, Mutex};
+use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::storage::applog;
@@ -320,8 +321,12 @@ pub(crate) fn attach_session(
 }
 
 /// Drain the channel into as-large-as-available batches: blocking recv for
-/// the first chunk, then non-blocking drains until `max` bytes or the queue
-/// is momentarily empty. Each batch gets the next sequence number and is
+/// the first chunk, then wait across a short idle gap while a terminal repaint
+/// is still arriving. tmux full-frame redraws commonly cross the reader's 8KB
+/// boundary; emitting the clear-prefix separately lets xterm visibly paint a
+/// half-frame and looks like flicker during selection and scrolling. The 2ms
+/// burst window keeps one repaint atomic without perceptible input latency.
+/// Each batch gets the next sequence number and is
 /// emitted only once the gate admits it (≤`window` un-ACKed); the sequence
 /// is registered as emitted (high-water) BEFORE the emit so the webview's
 /// ACK is always valid. Returns when the sender is dropped (stream end),
@@ -337,11 +342,12 @@ pub(crate) fn pump_gated<F: FnMut(u64, Vec<u8>) -> Result<(), String>>(
     window: u64,
     mut emit: F,
 ) {
+    const BURST_IDLE: Duration = Duration::from_millis(2);
     let mut seq: u64 = 0;
     while let Ok(first) = rx.recv() {
         let mut batch = first;
         while batch.len() < max {
-            match rx.try_recv() {
+            match rx.recv_timeout(BURST_IDLE) {
                 Ok(more) => batch.extend_from_slice(&more),
                 Err(_) => break,
             }

@@ -58,6 +58,9 @@ physical-input blocker are recorded in `RELEASE_REPORT_v0.4.32.md`.
 ## Scrolling & selection
 - [ ] Fresh shell: trackpad scroll does nothing (no pull-down, no copy-mode badge)
 - [ ] `seq 200` → scroll up reaches history, scroll to bottom auto-returns live
+- [ ] Compare slow trackpad movement, fast swipes, inertia tails and direction
+      reversal with Terminal.app/Warp: updates follow display frames without
+      the old 50ms stepping, and sub-line input is not dropped.
 - [ ] Scroll up and STOP: an accent "⤓ scrollback" chip appears in the pane
       header within the gesture (view is frozen history — an agent TUI must
       never look silently hung); clicking the chip OR typing returns live
@@ -66,6 +69,9 @@ physical-input blocker are recorded in `RELEASE_REPORT_v0.4.32.md`.
       (typing while scrolled first leaves copy-mode, so keys are never eaten
       as copy-mode commands)
 - [ ] Drag-select multiple lines → ⌘C → paste elsewhere matches
+- [ ] Without cancelling that selection first, immediately drag-select a
+      different multi-line range. The new range replaces it without a
+      "session changed" error or leaving the pane in copy-mode.
 - [ ] Produce at least 2,500 deterministic rows containing Chinese, emoji,
       combining/ZWJ characters, blank lines, fenced-code markers, tabs,
       trailing spaces and a line wider than the pane. Drag directly on xterm
