@@ -16,7 +16,6 @@ pub(crate) use storage::applog;
 
 use std::path::PathBuf;
 use std::process::Command;
-use std::sync::Mutex;
 use tauri::{Emitter, Manager};
 
 // ---------- main ---------------------------------------------------------------
@@ -46,7 +45,7 @@ fn main() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .manage(pty::PtyState::default())
-        .manage(scheduler::Queues(Mutex::new({
+        .manage(scheduler::Queues::new({
             let mut qs = scheduler::load_queue();
             let notes = scheduler::recover_interrupted(&mut qs);
             if !notes.is_empty() {
@@ -58,7 +57,7 @@ fn main() {
                 }
             }
             qs
-        })))
+        }))
         .setup(|app| {
             std::thread::spawn(tmux::init_deck_server);
             scheduler::spawn_scheduler(app.handle().clone());

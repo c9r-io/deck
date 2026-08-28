@@ -110,13 +110,13 @@ export function groupEl(g, card) {
   if (pb) {
     pb.textContent = g.head.paused ? '▶' : '⏸';
     pb.title = g.head.paused ? 'resume this rule' : 'pause this rule (keeps its settings)';
-    pb.onclick = () => inv('queue_pause', { id: g.head.id, paused: !g.head.paused }).catch(() => {});
+    pb.onclick = () => inv('queue_pause', { id: g.head.id, paused: !g.head.paused }).catch(e => toast('pause failed: ' + e));
   }
   const hr = head.querySelector('.qg-retry');
   if (hr) hr.onclick = () => inv('queue_retry', { id: g.head.id }).catch(e => toast('retry failed: ' + e));
   head.querySelector('.qg-save').onclick = () => saveGroupAsTemplate(g);
   head.querySelector('.qg-del').onclick = () => {
-    for (const i of g.rows) inv('queue_remove', { id: i.id }).catch(() => {});
+    for (const i of g.rows) inv('queue_remove', { id: i.id }).catch(e => toast('remove failed: ' + e));
   };
   el.appendChild(head);
 
@@ -150,7 +150,7 @@ export function groupEl(g, card) {
           }
         });
       };
-      row.querySelector('.q-del').onclick = () => inv('queue_remove', { id: i.id }).catch(() => {});
+      row.querySelector('.q-del').onclick = () => inv('queue_remove', { id: i.id }).catch(e => toast('remove failed: ' + e));
       const rb = row.querySelector('.q-retry');
       if (rb) rb.onclick = () => inv('queue_retry', { id: i.id }).catch(e => toast('retry failed: ' + e));
       const sb = row.querySelector('.q-skip');

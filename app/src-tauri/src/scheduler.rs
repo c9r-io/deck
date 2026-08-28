@@ -114,6 +114,17 @@ pub(crate) struct DeliveryRecord {
 /// How many delivery audit records queue.json retains (oldest dropped first).
 pub(crate) const MAX_DELIVERIES: usize = 200;
 
+/// Ledger entry for an in-flight delivery, persisted together with the
+/// firing intent. Carries a full snapshot of the item so the delivery can be
+/// finalized (audit record + session gap) even if the original QueueItem
+/// vanishes mid-flight — finalize must never depend on the item surviving.
+#[derive(Serialize, Deserialize, Clone)]
+pub(crate) struct PendingDelivery {
+    /// the delivery id (matches QueueItem.delivery while in flight)
+    id: String,
+    snapshot: QueueItem,
+}
+
 #[derive(Serialize, Deserialize, Clone, Default)]
 pub(crate) struct QueueState {
     items: Vec<QueueItem>,
@@ -122,9 +133,36 @@ pub(crate) struct QueueState {
     /// delivery audit trail; also the idempotency guard for finalize
     #[serde(default)]
     deliveries: Vec<DeliveryRecord>,
+    /// in-flight delivery ledger (empty except during a send / after a crash)
+    #[serde(default)]
+    pending: Vec<PendingDelivery>,
 }
 
-pub(crate) struct Queues(pub(crate) Mutex<QueueState>);
+pub(crate) struct Queues {
+    pub(crate) q: Mutex<QueueState>,
+    /// sessions with a send worker currently running — the tick claims a
+    /// session here before spawning its worker, so the same session never has
+    /// two concurrent sends and a long send never collides with the next tick
+    pub(crate) busy: Mutex<HashSet<String>>,
+}
+
+impl Queues {
+    pub(crate) fn new(q: QueueState) -> Self {
+        Queues {
+            q: Mutex::new(q),
+            busy: Mutex::new(HashSet::new()),
+        }
+    }
+}
+
+/// Claim a session for a send worker; false = a worker is already on it.
+pub(crate) fn claim_session(busy: &Mutex<HashSet<String>>, session: &str) -> bool {
+    busy.lock().unwrap().insert(session.to_string())
+}
+
+pub(crate) fn release_session(busy: &Mutex<HashSet<String>>, session: &str) {
+    busy.lock().unwrap().remove(session);
+}
 
 /// true when `now_min` (minutes since local midnight) falls inside the daily
 /// window; from > to means the window wraps midnight (e.g. 20:00–08:00)
@@ -243,7 +281,7 @@ pub(crate) fn save_queue(q: &QueueState) -> Result<(), String> {
 
 #[tauri::command]
 pub(crate) fn queue_list(state: State<'_, Queues>) -> QueueState {
-    state.0.lock().unwrap().clone()
+    state.q.lock().unwrap().clone()
 }
 
 #[derive(Deserialize)]
@@ -333,7 +371,7 @@ pub(crate) fn queue_add(
     if text.is_empty() {
         return Err("empty prompt".into());
     }
-    let mut q = state.0.lock().unwrap();
+    let mut q = state.q.lock().unwrap();
     let id = next_queue_id(&q.items);
     let (group, seq) = if args.mode == "every" {
         (None, None) // rules carry no group; their iterations get one at spawn
@@ -401,6 +439,56 @@ pub(crate) fn queue_add(
     Ok(())
 }
 
+/// The firing contract for user operations: while an item is mid-send
+/// ("firing" persisted, injection possibly in flight), mutating it would race
+/// the delivery — remove/update/pause/retry/skip are refused with a clear
+/// conflict error and the item is kept until finalize completes. The window
+/// is at most one send (seconds); the UI surfaces the error as a toast.
+pub(crate) fn firing_conflict(q: &QueueState, id: &str) -> Result<(), String> {
+    if q.items.iter().any(|i| i.id == id && i.state == "firing") {
+        return Err("this prompt is being sent right now — try again in a few seconds".into());
+    }
+    Ok(())
+}
+
+/// Pure core of queue_update (unit-tested with the firing contract).
+pub(crate) fn update_text(q: &mut QueueState, id: &str, text: String) -> Result<(), String> {
+    firing_conflict(q, id)?;
+    if let Some(item) = q.items.iter_mut().find(|i| i.id == id) {
+        item.text = text;
+    }
+    Ok(())
+}
+
+/// Pure core of queue_remove / queue_skip.
+pub(crate) fn remove_item(q: &mut QueueState, id: &str) -> Result<bool, String> {
+    firing_conflict(q, id)?;
+    let n0 = q.items.len();
+    q.items.retain(|i| i.id != id);
+    Ok(q.items.len() != n0)
+}
+
+/// Pure core of queue_pause.
+pub(crate) fn pause_item(q: &mut QueueState, id: &str, paused: bool) -> Result<(), String> {
+    firing_conflict(q, id)?;
+    if let Some(item) = q.items.iter_mut().find(|i| i.id == id) {
+        item.paused = paused;
+    }
+    Ok(())
+}
+
+/// Pure core of queue_retry.
+pub(crate) fn retry_item(q: &mut QueueState, id: &str) -> Result<(), String> {
+    firing_conflict(q, id)?;
+    if let Some(item) = q.items.iter_mut().find(|i| i.id == id) {
+        item.state = default_state();
+        item.attempts = 0;
+        item.last_error = None;
+        item.last_attempt_at = None;
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub(crate) fn queue_update(
     state: State<'_, Queues>,
@@ -412,10 +500,8 @@ pub(crate) fn queue_update(
     if text.is_empty() {
         return Err("empty prompt".into());
     }
-    let mut q = state.0.lock().unwrap();
-    if let Some(item) = q.items.iter_mut().find(|i| i.id == id) {
-        item.text = text;
-    }
+    let mut q = state.q.lock().unwrap();
+    update_text(&mut q, &id, text)?;
     save_queue(&q)?;
     let _ = app.emit("queue-changed", ());
     Ok(())
@@ -427,8 +513,8 @@ pub(crate) fn queue_remove(
     app: AppHandle,
     id: String,
 ) -> Result<(), String> {
-    let mut q = state.0.lock().unwrap();
-    q.items.retain(|i| i.id != id);
+    let mut q = state.q.lock().unwrap();
+    remove_item(&mut q, &id)?;
     save_queue(&q)?;
     let _ = app.emit("queue-changed", ());
     Ok(())
@@ -441,10 +527,8 @@ pub(crate) fn queue_pause(
     id: String,
     paused: bool,
 ) -> Result<(), String> {
-    let mut q = state.0.lock().unwrap();
-    if let Some(item) = q.items.iter_mut().find(|i| i.id == id) {
-        item.paused = paused;
-    }
+    let mut q = state.q.lock().unwrap();
+    pause_item(&mut q, &id, paused)?;
     save_queue(&q)?;
     let _ = app.emit("queue-changed", ());
     Ok(())
@@ -457,13 +541,8 @@ pub(crate) fn queue_retry(
     app: AppHandle,
     id: String,
 ) -> Result<(), String> {
-    let mut q = state.0.lock().unwrap();
-    if let Some(item) = q.items.iter_mut().find(|i| i.id == id) {
-        item.state = default_state();
-        item.attempts = 0;
-        item.last_error = None;
-        item.last_attempt_at = None;
-    }
+    let mut q = state.q.lock().unwrap();
+    retry_item(&mut q, &id)?;
     save_queue(&q)?;
     let _ = app.emit("queue-changed", ());
     Ok(())
@@ -477,15 +556,22 @@ pub(crate) fn queue_skip(
     app: AppHandle,
     id: String,
 ) -> Result<(), String> {
-    let mut q = state.0.lock().unwrap();
-    let n0 = q.items.len();
-    q.items.retain(|i| i.id != id);
-    if q.items.len() != n0 {
+    let mut q = state.q.lock().unwrap();
+    if remove_item(&mut q, &id)? {
         applog("[queue] step skipped by user — group unblocked");
     }
     save_queue(&q)?;
     let _ = app.emit("queue-changed", ());
     Ok(())
+}
+
+/// Pure core of queue_clear_session: an item that is mid-send survives the
+/// sweep (its delivery must finalize); once-items are then consumed by
+/// finalize anyway, a surviving rule can be removed afterwards.
+pub(crate) fn clear_session_items(q: &mut QueueState, session: &str) {
+    q.items
+        .retain(|i| i.session != session || i.state == "firing");
+    q.last_fired.remove(session);
 }
 
 /// Drop all queued prompts for a session — called when its card closes.
@@ -495,9 +581,8 @@ pub(crate) fn queue_clear_session(
     app: AppHandle,
     session: String,
 ) -> Result<(), String> {
-    let mut q = state.0.lock().unwrap();
-    q.items.retain(|i| i.session != session);
-    q.last_fired.remove(&session);
+    let mut q = state.q.lock().unwrap();
+    clear_session_items(&mut q, &session);
     save_queue(&q)?;
     let _ = app.emit("queue-changed", ());
     Ok(())
@@ -511,23 +596,28 @@ pub(crate) struct QueueFired {
 }
 
 /// Inject one prompt into its session, starting the session if needed.
+///
+/// The injection is ONE atomic tmux command: the literal text with a
+/// trailing CR (byte-identical to pressing Enter) in a single `send-keys -l`.
+/// There is no window where the text landed but Enter did not — the server
+/// either executes the whole command (exit 0) or refuses it (non-zero, e.g.
+/// the session died between the liveness check and the send), so a failure
+/// here means NOT SENT and retrying cannot duplicate the prompt. Queue text
+/// has \r/\n stripped at add/update time, so the CR we append is the only
+/// one. (Residual ambiguity: the tmux client being externally SIGKILLed
+/// after the server executed would read as a failure — deck never does this
+/// and it is the same class of window as a power loss mid-send.)
 pub(crate) fn fire_item(item: &QueueItem) -> Result<(), String> {
     let alive: HashSet<String> = tmux(&["list-sessions", "-F", "#{session_name}"])
         .map(|o| o.lines().map(|s| s.to_string()).collect())
         .unwrap_or_default();
     if !alive.contains(&item.session) {
         start_session(item.session.clone(), item.dir.clone(), item.cmd.clone())?;
+        // boot wait blocks only THIS session's worker, never other sessions
         std::thread::sleep(std::time::Duration::from_millis(2500));
     }
-    // -l = literal text (no key-name interpretation), then a real Enter
-    tmux(&[
-        "send-keys",
-        "-t",
-        &pane_target(&item.session),
-        "-l",
-        &item.text,
-    ])?;
-    tmux(&["send-keys", "-t", &pane_target(&item.session), "Enter"])?;
+    let line = format!("{}\r", item.text);
+    tmux(&["send-keys", "-t", &pane_target(&item.session), "-l", &line])?;
     Ok(())
 }
 
@@ -695,10 +785,33 @@ pub(crate) fn finalize_delivery(
     assumed: bool,
 ) {
     if q.deliveries.iter().any(|d| d.id == delivery) {
+        q.pending.retain(|p| p.id != delivery);
         return; // this delivery is already fully accounted
     }
-    let Some(item) = q.items.iter().find(|i| i.id == item_id).cloned() else {
-        return; // removed mid-flight (user action) — nothing left to account
+    // The live item is preferred; if it vanished mid-flight (a race the
+    // firing contract normally forbids, or a crash+user-edit combination),
+    // the pending-ledger snapshot still lets the delivery be accounted:
+    // audit record + session gap always happen, item-side accounting
+    // (consume/count/spawn steps) only if the item still exists.
+    let live = q.items.iter().any(|i| i.id == item_id);
+    let item = match q
+        .items
+        .iter()
+        .find(|i| i.id == item_id)
+        .cloned()
+        .or_else(|| {
+            q.pending
+                .iter()
+                .find(|p| p.id == delivery)
+                .map(|p| p.snapshot.clone())
+        }) {
+        Some(i) => i,
+        None => {
+            // pre-ledger legacy recovery with the item already gone —
+            // nothing is known about this delivery beyond its id; record
+            // nothing rather than fabricate an audit row
+            return;
+        }
     };
     q.deliveries.push(DeliveryRecord {
         id: delivery.to_string(),
@@ -713,6 +826,12 @@ pub(crate) fn finalize_delivery(
         q.deliveries.drain(..n);
     }
     q.last_fired.insert(item.session.clone(), now);
+    if !live {
+        // item-side accounting has no item to act on; the audit record and
+        // session gap above are the whole story
+        q.pending.retain(|p| p.id != delivery);
+        return;
+    }
     if item.mode == "every" {
         // spawn this iteration's follow-up steps 2..N exactly once, keyed by
         // the delivery id (also their group id — one group per iteration)
@@ -767,13 +886,20 @@ pub(crate) fn finalize_delivery(
     } else {
         q.items.retain(|i| i.id != item_id);
     }
+    q.pending.retain(|p| p.id != delivery);
 }
 
+/// The send definitively did NOT happen (atomic injection refused) — mark
+/// the item for retry and drop its ledger entry: there is no delivery to
+/// recover, and crash recovery must not "assume sent" for it.
 pub(crate) fn note_failed(q: &mut QueueState, id: &str, err: &str) {
     if let Some(it) = q.items.iter_mut().find(|i| i.id == id) {
+        let d = it.delivery.take();
         it.state = "failed".into();
         it.last_error = Some(err.chars().take(200).collect());
-        it.delivery = None; // the send did NOT happen — no delivery to recover
+        if let Some(d) = d {
+            q.pending.retain(|p| p.id != d);
+        }
     }
 }
 
@@ -810,14 +936,153 @@ pub(crate) fn recover_interrupted(q: &mut QueueState) -> Vec<String> {
             if mode == "every" { "recurring" } else { "scheduled" }
         ));
     }
+    // Orphaned ledger entries: the firing item itself is gone (crash combined
+    // with an item removal) but the persisted delivery still must be
+    // accounted — audit + session gap via the snapshot, assumed sent.
+    let orphans: Vec<(String, String, u64, String)> = q
+        .pending
+        .iter()
+        .filter(|p| !q.items.iter().any(|i| i.id == p.snapshot.id))
+        .map(|p| {
+            (
+                p.snapshot.id.clone(),
+                p.id.clone(),
+                p.snapshot.last_attempt_at.unwrap_or_else(now_epoch),
+                p.snapshot.session.clone(),
+            )
+        })
+        .collect();
+    for (item_id, delivery, when, session) in orphans {
+        finalize_delivery(q, &item_id, &delivery, when, true);
+        notes.push(format!(
+            "a scheduled prompt for {session} was interrupted mid-send last run; treated as sent (deck delivers at-most-once)"
+        ));
+    }
     notes
+}
+
+/// What one send attempt did — the worker emits UI events from this.
+#[derive(Debug, PartialEq)]
+pub(crate) enum SendResult {
+    /// nothing eligible at send time (state changed since the tick began)
+    Nothing,
+    Sent {
+        session: String,
+    },
+    Failed {
+        session: String,
+        gave_up: bool,
+    },
+    /// pre-fire persist failed — the intent never reached disk, nothing sent
+    NotPersisted,
+}
+
+/// One complete send attempt for one session — the ENTIRE firing state
+/// machine lives here, unit-testable with a fake `fire`/`persist`:
+///
+///   pending ──(re-select fresh under lock, persist intent+ledger)──► firing
+///   firing ──fire Ok──► finalize_delivery (audit, gap, consume/count/spawn)
+///   firing ──fire Err──► note_failed (retryable, ledger dropped)
+///   firing ──crash──► recover_interrupted at next boot (assume sent)
+///
+/// The queue lock is held only for state transitions and their persists —
+/// never across `fire` (tmux + a possible session-boot wait).
+pub(crate) fn send_one(
+    qm: &Mutex<QueueState>,
+    session: &str,
+    now_min: u32,
+    activity: &HashMap<String, u64>,
+    fire: &(dyn Fn(&QueueItem) -> Result<(), String> + Sync),
+    persist: &(dyn Fn(&QueueState) -> Result<(), String> + Sync),
+) -> SendResult {
+    let (item, delivery) = {
+        let mut q = qm.lock().unwrap();
+        // fresh re-selection under the lock: a pause, edit or removal since
+        // the tick began is honored here
+        let Some(sel) = select_for_session(&q, session, now_epoch(), now_min, activity) else {
+            return SendResult::Nothing;
+        };
+        // Persist the firing intent (delivery id + ledger snapshot) BEFORE
+        // injecting — this ordering makes delivery at-most-once across
+        // crashes, and the snapshot makes finalize independent of the item.
+        let delivery = next_delivery_id();
+        let prev_attempt_at = sel.last_attempt_at;
+        let Some(it) = q.items.iter_mut().find(|i| i.id == sel.id) else {
+            return SendResult::Nothing;
+        };
+        it.state = "firing".into();
+        it.attempts += 1;
+        it.last_attempt_at = Some(now_epoch());
+        it.delivery = Some(delivery.clone());
+        let snapshot = q.items.iter().find(|i| i.id == sel.id).unwrap().clone();
+        q.pending.push(PendingDelivery {
+            id: delivery.clone(),
+            snapshot: snapshot.clone(),
+        });
+        if let Err(e) = persist(&q) {
+            applog(&format!(
+                "[queue] persist (pre-fire) FAILED: {e} — not sending this tick"
+            ));
+            q.pending.retain(|p| p.id != delivery);
+            if let Some(it) = q.items.iter_mut().find(|i| i.id == sel.id) {
+                it.state = default_state();
+                it.attempts -= 1;
+                it.last_attempt_at = prev_attempt_at;
+                it.delivery = None;
+            }
+            return SendResult::NotPersisted;
+        }
+        (snapshot, delivery)
+    };
+    match fire(&item) {
+        Ok(()) => {
+            // never log prompt contents — length only (privacy)
+            applog(&format!(
+                "[queue] sent to {} ({}B, mode {})",
+                item.session,
+                item.text.len(),
+                item.mode
+            ));
+            let mut q = qm.lock().unwrap();
+            finalize_delivery(&mut q, &item.id, &delivery, now_epoch(), false);
+            if let Err(e) = persist(&q) {
+                applog(&format!("[queue] persist (post-fire) FAILED: {e}"));
+            }
+            SendResult::Sent {
+                session: item.session.clone(),
+            }
+        }
+        Err(e) => {
+            let mut q = qm.lock().unwrap();
+            note_failed(&mut q, &item.id, &e);
+            let gave_up = q.items.iter().any(|i| i.id == item.id && item_dead(i));
+            if let Err(pe) = persist(&q) {
+                applog(&format!("[queue] persist (post-failure) FAILED: {pe}"));
+            }
+            drop(q);
+            applog(&format!(
+                "[queue] send FAILED for {} (attempt {}): {e}{}",
+                item.session,
+                item.attempts,
+                if gave_up {
+                    " — giving up"
+                } else {
+                    " (will back off and retry)"
+                }
+            ));
+            SendResult::Failed {
+                session: item.session.clone(),
+                gave_up,
+            }
+        }
+    }
 }
 
 pub(crate) fn spawn_scheduler(app: AppHandle) {
     std::thread::spawn(move || loop {
         std::thread::sleep(std::time::Duration::from_secs(20));
         let state = app.state::<Queues>();
-        if state.0.lock().unwrap().items.is_empty() {
+        if state.q.lock().unwrap().items.is_empty() {
             continue;
         }
         // pane activity for chain-mode quiet checks (one snapshot per tick)
@@ -838,7 +1103,7 @@ pub(crate) fn spawn_scheduler(app: AppHandle) {
             }
         }
         {
-            let mut q = state.0.lock().unwrap();
+            let mut q = state.q.lock().unwrap();
             if purge_expired(&mut q, now_epoch()) {
                 if let Err(e) = save_queue(&q) {
                     applog(&format!("[queue] persist (expiry purge) FAILED: {e}"));
@@ -848,95 +1113,47 @@ pub(crate) fn spawn_scheduler(app: AppHandle) {
             }
         }
         // tick-start candidate pass: at most one session slot each. The
-        // candidates only tell us WHICH sessions to serve — each actual send
-        // below re-selects from FRESH state under the lock, so a pause, text
-        // edit or removal that happened since the tick began is honored.
+        // candidates only tell us WHICH sessions to serve — each worker
+        // re-selects from FRESH state under the lock before sending.
         let sessions: Vec<String> = {
-            let q = state.0.lock().unwrap();
+            let q = state.q.lock().unwrap();
             select_due(&q, now_epoch(), local_minutes(), &activity)
                 .into_iter()
                 .map(|i| i.session)
                 .collect()
         };
+        // One short-lived worker thread per session: a slow send (e.g. the
+        // 2.5s boot wait of a dead session) delays only its own session.
+        // The busy-set claim guarantees a session never has two concurrent
+        // workers — including a worker still running from a previous tick.
         for session in sessions {
-            let (item, delivery) = {
-                let mut q = state.0.lock().unwrap();
-                let Some(sel) =
-                    select_for_session(&q, &session, now_epoch(), local_minutes(), &activity)
-                else {
-                    continue;
-                };
-                // Persist the firing intent (with its delivery id) BEFORE
-                // injecting — this ordering is what makes delivery
-                // at-most-once across crashes.
-                let delivery = next_delivery_id();
-                let prev_attempt_at = sel.last_attempt_at;
-                let Some(it) = q.items.iter_mut().find(|i| i.id == sel.id) else {
-                    continue;
-                };
-                it.state = "firing".into();
-                it.attempts += 1;
-                it.last_attempt_at = Some(now_epoch());
-                it.delivery = Some(delivery.clone());
-                if let Err(e) = save_queue(&q) {
-                    applog(&format!(
-                        "[queue] persist (pre-fire) FAILED: {e} — not sending this tick"
-                    ));
-                    if let Some(it) = q.items.iter_mut().find(|i| i.id == sel.id) {
-                        it.state = default_state();
-                        it.attempts -= 1;
-                        it.last_attempt_at = prev_attempt_at;
-                        it.delivery = None;
-                    }
-                    continue;
-                }
-                let snapshot = q.items.iter().find(|i| i.id == sel.id).unwrap().clone();
-                (snapshot, delivery)
-            };
-            match fire_item(&item) {
-                Ok(()) => {
-                    // never log prompt contents — length only (privacy)
-                    applog(&format!(
-                        "[queue] sent to {} ({}B, mode {})",
-                        item.session,
-                        item.text.len(),
-                        item.mode
-                    ));
-                    let mut q = state.0.lock().unwrap();
-                    finalize_delivery(&mut q, &item.id, &delivery, now_epoch(), false);
-                    if let Err(e) = save_queue(&q) {
-                        applog(&format!("[queue] persist (post-fire) FAILED: {e}"));
-                    }
-                    drop(q);
-                    let _ = app.emit(
-                        "queue-fired",
-                        QueueFired {
-                            session: item.session.clone(),
-                        },
-                    );
-                    let _ = app.emit("queue-changed", ());
-                }
-                Err(e) => {
-                    let mut q = state.0.lock().unwrap();
-                    note_failed(&mut q, &item.id, &e);
-                    let gave_up = q.items.iter().any(|i| i.id == item.id && item_dead(i));
-                    if let Err(pe) = save_queue(&q) {
-                        applog(&format!("[queue] persist (post-failure) FAILED: {pe}"));
-                    }
-                    drop(q);
-                    applog(&format!(
-                        "[queue] send FAILED for {} (attempt {}): {e}{}",
-                        item.session,
-                        item.attempts,
-                        if gave_up {
-                            " — giving up"
-                        } else {
-                            " (will back off and retry)"
-                        }
-                    ));
-                    let _ = app.emit("queue-changed", ());
-                }
+            if !claim_session(&state.busy, &session) {
+                continue; // previous worker still on this session
             }
+            let app2 = app.clone();
+            let act = activity.clone();
+            std::thread::spawn(move || {
+                let state = app2.state::<Queues>();
+                let res = send_one(
+                    &state.q,
+                    &session,
+                    local_minutes(),
+                    &act,
+                    &fire_item,
+                    &save_queue,
+                );
+                release_session(&state.busy, &session);
+                match res {
+                    SendResult::Sent { session } => {
+                        let _ = app2.emit("queue-fired", QueueFired { session });
+                        let _ = app2.emit("queue-changed", ());
+                    }
+                    SendResult::Failed { .. } => {
+                        let _ = app2.emit("queue-changed", ());
+                    }
+                    SendResult::Nothing | SendResult::NotPersisted => {}
+                }
+            });
         }
     });
 }
@@ -991,6 +1208,7 @@ mod tests {
             items,
             last_fired: HashMap::new(),
             deliveries: Vec::new(),
+            pending: Vec::new(),
         };
         migrate_groups(&mut q);
         q
@@ -1458,6 +1676,337 @@ mod tests {
         // stop instant passed → never due again
         r.until_at = Some(now - 1);
         assert!(!every_due(&r, now, 9 * 60));
+    }
+
+    // ---------- round 3: firing contract, delivery ledger, send_one ----------
+
+    #[test]
+    fn user_mutations_conflict_while_firing() {
+        let mut a = qi("a", "at");
+        a.at = Some(NOW - 1);
+        a.state = "firing".into();
+        let mut q = qs(vec![a]);
+        assert!(update_text(&mut q, "a", "edited".into()).is_err());
+        assert!(remove_item(&mut q, "a").is_err());
+        assert!(pause_item(&mut q, "a", true).is_err());
+        assert!(retry_item(&mut q, "a").is_err());
+        // the item is untouched by all four refused operations
+        assert_eq!(q.items.len(), 1);
+        assert_eq!(q.items[0].state, "firing");
+        assert_eq!(q.items[0].text, "x");
+        assert!(!q.items[0].paused);
+        // once the send finalized (state left "firing") the same ops work
+        q.items[0].state = default_state();
+        assert!(remove_item(&mut q, "a").unwrap());
+        assert!(q.items.is_empty());
+    }
+
+    #[test]
+    fn clear_session_spares_the_firing_item() {
+        let mut a = qi("a", "at");
+        a.state = "firing".into();
+        let b = qi("b", "chain");
+        let mut c = qi("c", "at");
+        c.session = "other".into();
+        c.at = Some(NOW);
+        let mut q = qs(vec![a, b, c]);
+        clear_session_items(&mut q, "s");
+        let left: Vec<&str> = q.items.iter().map(|i| i.id.as_str()).collect();
+        assert_eq!(left, ["a", "c"], "firing item survives, other session kept");
+    }
+
+    #[test]
+    fn finalize_without_item_still_audits_via_ledger() {
+        let mut a = qi("a", "at");
+        a.state = "firing".into();
+        a.delivery = Some("d1".into());
+        let mut q = qs(vec![a.clone()]);
+        q.pending.push(PendingDelivery {
+            id: "d1".into(),
+            snapshot: q.items[0].clone(),
+        });
+        q.items.clear(); // the item vanished mid-flight
+        finalize_delivery(&mut q, "a", "d1", NOW, false);
+        assert_eq!(q.deliveries.len(), 1, "delivery audited from the snapshot");
+        assert_eq!(q.deliveries[0].session, "s");
+        assert_eq!(q.last_fired.get("s"), Some(&NOW), "session gap updated");
+        assert!(q.pending.is_empty(), "ledger entry consumed");
+        assert!(q.items.is_empty(), "no item resurrected, no steps spawned");
+        // idempotent replay with the item still missing
+        finalize_delivery(&mut q, "a", "d1", NOW, false);
+        assert_eq!(q.deliveries.len(), 1);
+    }
+
+    #[test]
+    fn vanished_rule_delivery_spawns_no_steps() {
+        let mut r = rule(300);
+        r.steps = vec!["s2".into()];
+        r.state = "firing".into();
+        r.delivery = Some("d1".into());
+        let mut q = qs(vec![r]);
+        q.pending.push(PendingDelivery {
+            id: "d1".into(),
+            snapshot: q.items[0].clone(),
+        });
+        q.items.clear();
+        finalize_delivery(&mut q, "t", "d1", NOW, false);
+        assert!(q.items.is_empty(), "removed rule must not respawn steps");
+        assert_eq!(q.deliveries.len(), 1);
+    }
+
+    #[test]
+    fn note_failed_drops_the_ledger_entry() {
+        let mut a = qi("a", "at");
+        a.state = "firing".into();
+        a.delivery = Some("d1".into());
+        a.attempts = 1;
+        let mut q = qs(vec![a]);
+        q.pending.push(PendingDelivery {
+            id: "d1".into(),
+            snapshot: q.items[0].clone(),
+        });
+        note_failed(&mut q, "a", "tmux send-keys failed");
+        assert!(q.pending.is_empty(), "not-sent leaves nothing to recover");
+        assert_eq!(q.items[0].state, "failed");
+        assert!(q.items[0].delivery.is_none());
+        assert!(q.deliveries.is_empty(), "a refused send is never audited");
+    }
+
+    #[test]
+    fn recovery_finalizes_orphaned_ledger_entries() {
+        let mut a = qi("a", "at");
+        a.state = "firing".into();
+        a.delivery = Some("dX".into());
+        a.last_attempt_at = Some(NOW - 5);
+        let mut q = qs(vec![]);
+        q.pending.push(PendingDelivery {
+            id: "dX".into(),
+            snapshot: a,
+        });
+        let notes = recover_interrupted(&mut q);
+        assert_eq!(notes.len(), 1);
+        assert!(notes[0].contains("treated as sent"));
+        assert!(q.deliveries.iter().any(|d| d.id == "dX" && d.assumed));
+        assert_eq!(q.last_fired.get("s"), Some(&(NOW - 5)));
+        assert!(q.pending.is_empty());
+        // repeated recovery changes nothing
+        let snapshot = serde_json::to_string(&q).unwrap();
+        recover_interrupted(&mut q);
+        assert_eq!(serde_json::to_string(&q).unwrap(), snapshot);
+    }
+
+    // ---------- send_one: the full firing state machine with fakes ----------
+
+    fn ok_persist(_: &QueueState) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn due_at(id: &str, session: &str) -> QueueItem {
+        let mut a = qi(id, "at");
+        a.session = session.into();
+        a.at = Some(1); // long past — always due against the real clock
+        a
+    }
+
+    #[test]
+    fn send_one_success_runs_the_full_cycle() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        let qm = Mutex::new(qs(vec![due_at("a", "s")]));
+        let fired = AtomicU32::new(0);
+        let res = send_one(
+            &qm,
+            "s",
+            720,
+            &HashMap::new(),
+            &|i: &QueueItem| {
+                fired.fetch_add(1, Ordering::SeqCst);
+                assert_eq!(i.text, "x", "worker sends the snapshot text");
+                Ok(())
+            },
+            &ok_persist,
+        );
+        assert_eq!(
+            res,
+            SendResult::Sent {
+                session: "s".into()
+            }
+        );
+        assert_eq!(fired.load(Ordering::SeqCst), 1);
+        let q = qm.lock().unwrap();
+        assert!(q.items.is_empty(), "once-item consumed");
+        assert_eq!(q.deliveries.len(), 1);
+        assert!(!q.deliveries[0].assumed);
+        assert!(q.pending.is_empty());
+        assert!(q.last_fired.contains_key("s"));
+    }
+
+    #[test]
+    fn send_one_failure_is_retryable_and_never_audited() {
+        let qm = Mutex::new(qs(vec![due_at("a", "s")]));
+        let res = send_one(
+            &qm,
+            "s",
+            720,
+            &HashMap::new(),
+            &|_: &QueueItem| Err("injection refused".into()),
+            &ok_persist,
+        );
+        assert_eq!(
+            res,
+            SendResult::Failed {
+                session: "s".into(),
+                gave_up: false
+            }
+        );
+        let q = qm.lock().unwrap();
+        assert_eq!(q.items[0].state, "failed");
+        assert_eq!(q.items[0].attempts, 1);
+        assert!(q.items[0].delivery.is_none());
+        assert!(q.pending.is_empty());
+        assert!(q.deliveries.is_empty(), "refused send is not a delivery");
+        assert!(q.last_fired.is_empty(), "no gap update for a refused send");
+    }
+
+    #[test]
+    fn retry_after_failure_sends_the_full_text_exactly_once() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        let qm = Mutex::new(qs(vec![due_at("a", "s")]));
+        let _ = send_one(
+            &qm,
+            "s",
+            720,
+            &HashMap::new(),
+            &|_: &QueueItem| Err("refused".into()),
+            &ok_persist,
+        );
+        qm.lock().unwrap().items[0].last_attempt_at = Some(0); // backoff elapsed
+        let sent = AtomicU32::new(0);
+        let res = send_one(
+            &qm,
+            "s",
+            720,
+            &HashMap::new(),
+            &|i: &QueueItem| {
+                sent.fetch_add(1, Ordering::SeqCst);
+                assert_eq!(i.text, "x", "retry re-sends the WHOLE text once");
+                Ok(())
+            },
+            &ok_persist,
+        );
+        assert!(matches!(res, SendResult::Sent { .. }));
+        assert_eq!(sent.load(Ordering::SeqCst), 1);
+        assert_eq!(qm.lock().unwrap().deliveries.len(), 1, "one audit total");
+    }
+
+    #[test]
+    fn send_one_persist_failure_rolls_back_the_intent() {
+        let qm = Mutex::new(qs(vec![due_at("a", "s")]));
+        let res = send_one(
+            &qm,
+            "s",
+            720,
+            &HashMap::new(),
+            &|_: &QueueItem| panic!("must not inject when the intent never hit disk"),
+            &|_: &QueueState| Err("disk full".into()),
+        );
+        assert_eq!(res, SendResult::NotPersisted);
+        let q = qm.lock().unwrap();
+        assert_eq!(q.items[0].state, "pending");
+        assert_eq!(q.items[0].attempts, 0);
+        assert!(q.items[0].delivery.is_none());
+        assert!(q.pending.is_empty());
+    }
+
+    #[test]
+    fn send_one_honors_a_pause_that_landed_after_the_tick() {
+        let mut a = due_at("a", "s");
+        a.paused = true; // user paused between candidate pass and worker
+        let qm = Mutex::new(qs(vec![a]));
+        let res = send_one(
+            &qm,
+            "s",
+            720,
+            &HashMap::new(),
+            &|_: &QueueItem| panic!("paused item must not fire"),
+            &ok_persist,
+        );
+        assert_eq!(res, SendResult::Nothing);
+    }
+
+    #[test]
+    fn a_firing_item_is_never_selected_again() {
+        let mut a = due_at("a", "s");
+        a.state = "firing".into();
+        let q = qs(vec![a]);
+        assert!(
+            select_for_session(&q, "s", NOW, 720, &HashMap::new()).is_none(),
+            "a second worker on the same session finds nothing"
+        );
+    }
+
+    #[test]
+    fn session_claim_is_exclusive_and_releasable() {
+        let busy = Mutex::new(HashSet::new());
+        assert!(claim_session(&busy, "s"));
+        assert!(!claim_session(&busy, "s"), "second worker refused");
+        assert!(claim_session(&busy, "other"), "other sessions independent");
+        release_session(&busy, "s");
+        assert!(claim_session(&busy, "s"), "released slot reusable");
+    }
+
+    /// A slow send on one session must not delay another session — proven
+    /// with barriers (deterministic sync points), not sleeps.
+    #[test]
+    fn sessions_progress_independently_during_a_slow_send() {
+        use std::sync::Barrier;
+        let qm = Mutex::new(qs(vec![due_at("a", "slow"), due_at("b", "fast")]));
+        let entered = Barrier::new(2); // slow worker is inside fire()
+        let release = Barrier::new(2); // let the slow send finish
+        std::thread::scope(|s| {
+            let qref = &qm;
+            let (er, rl) = (&entered, &release);
+            s.spawn(move || {
+                let res = send_one(
+                    qref,
+                    "slow",
+                    720,
+                    &HashMap::new(),
+                    &|_: &QueueItem| {
+                        er.wait(); // signal: mid-send, queue lock NOT held
+                        rl.wait(); // block until the main thread saw "fast" done
+                        Ok(())
+                    },
+                    &ok_persist,
+                );
+                assert!(matches!(res, SendResult::Sent { .. }));
+            });
+            entered.wait();
+            // while "slow" is stalled inside its injection, "fast" completes
+            let res = send_one(
+                &qm,
+                "fast",
+                720,
+                &HashMap::new(),
+                &|_: &QueueItem| Ok(()),
+                &ok_persist,
+            );
+            assert!(matches!(res, SendResult::Sent { .. }));
+            {
+                let q = qm.lock().unwrap();
+                assert!(
+                    !q.items.iter().any(|i| i.session == "fast"),
+                    "fast session progressed while slow was mid-send"
+                );
+                assert!(
+                    q.items.iter().any(|i| i.session == "slow"),
+                    "slow send still in flight"
+                );
+            }
+            release.wait();
+        });
+        let q = qm.lock().unwrap();
+        assert_eq!(q.deliveries.len(), 2, "both sessions delivered");
+        assert!(q.pending.is_empty());
     }
 
     #[test]

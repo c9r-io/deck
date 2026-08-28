@@ -126,6 +126,33 @@ fn send_keys_literal_is_byte_for_byte() {
     );
 }
 
+/// The scheduler injects a prompt as ONE atomic tmux command: literal text
+/// with a trailing CR in a single `send-keys -l`. This is what removes the
+/// "text landed but Enter didn't" partial-send window — the command either
+/// executes wholly (the shell runs the line) or is refused. The CR byte must
+/// behave exactly like pressing Enter.
+#[test]
+fn single_send_keys_with_trailing_cr_executes_the_line() {
+    let s = Server::new("atomic");
+    s.run(&["send-keys", "-t", "t", "-l", "echo atomic-$((20+22))\r"]);
+    sleep(Duration::from_millis(600));
+    let screen = s.run(&["capture-pane", "-p", "-t", "t"]);
+    assert!(
+        screen.contains("atomic-42"),
+        "trailing CR in a single -l send must execute the line; screen:\n{screen}"
+    );
+    // and a refused variant (dead target) really is refused, not half-run
+    let out = Command::new(tmux_bin())
+        .args(["-f", "/dev/null", "-L", &s.0])
+        .args(["send-keys", "-t", "=no-such-session:", "-l", "echo nope\r"])
+        .output()
+        .expect("tmux spawn");
+    assert!(
+        !out.status.success(),
+        "a bad target must fail the whole atomic injection"
+    );
+}
+
 /// The board's tail preview + fg-process gate read these formats every poll;
 /// a tmux upgrade that renames them would blank the whole board.
 #[test]
