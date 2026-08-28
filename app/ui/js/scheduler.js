@@ -73,17 +73,30 @@ export function qMeta(i) {
   return parts.join(' · ');
 }
 
-/* a timed item (at / every) starts a group; chain items join the last
-   once-group. chains after a standing rule start their own group — they fire
-   independently of the rule. */
+/* items carry an explicit group id (assigned by the backend, which is also
+   what the scheduler's chain ordering runs on) — render one panel group per
+   group id. Rules ("every") have no group and stand alone. */
 export function groupQueue(items) {
   const groups = [];
+  const byKey = new Map();
   for (const i of items) {
-    const last = groups[groups.length - 1];
-    if (i.mode === 'chain' && last && last.head.mode !== 'every') last.rows.push(i);
-    else groups.push({ head: i, rows: [i] });
+    const key = i.mode === 'every' ? i.id : (i.group || i.id);
+    let g = byKey.get(key);
+    if (!g) { g = { head: i, rows: [] }; byKey.set(key, g); groups.push(g); }
+    g.rows.push(i);
   }
   return groups;
+}
+
+/* mirror of the backend's blocking rule: a step whose group head is dead
+   (failed, attempts exhausted) waits for the user to retry/skip/remove it */
+export const itemDead = i => i.state === 'failed' && i.attempts >= 8;
+export function blockedBy(i, rows) {
+  if (!i.group) return null;
+  const sibs = rows.filter(x => x.group === i.group);
+  if (!sibs.length) return null;
+  const head = sibs.reduce((a, b) => ((a.seq ?? 1) <= (b.seq ?? 1) ? a : b));
+  return head.id !== i.id && itemDead(head) ? head : null;
 }
 
 /* all prompt texts of a group in fire order (rule rows contribute their
@@ -121,6 +134,7 @@ export function groupEl(g) {
   head.className = 'qg-head';
   head.innerHTML = '<span class="qg-when"></span><span class="qg-meta"></span><span class="qg-act">'
     + (rule ? '<button class="qg-pause"></button>' : '')
+    + (rule && itemDead(g.head) ? '<button class="qg-retry" title="retry this rule (fresh attempts)">↻</button>' : '')
     + '<button class="qg-save" title="save this group as a project template">☆</button>'
     + '<button class="qg-del" title="remove the whole group">✕</button></span>';
   head.querySelector('.qg-when').textContent = fmtWhen(g.head);
@@ -134,6 +148,8 @@ export function groupEl(g) {
     pb.title = g.head.paused ? 'resume this rule' : 'pause this rule (keeps its settings)';
     pb.onclick = () => inv('queue_pause', { id: g.head.id, paused: !g.head.paused }).catch(() => {});
   }
+  const hr = head.querySelector('.qg-retry');
+  if (hr) hr.onclick = () => inv('queue_retry', { id: g.head.id }).catch(e => toast('retry failed: ' + e));
   head.querySelector('.qg-save').onclick = () => saveGroupAsTemplate(g);
   head.querySelector('.qg-del').onclick = () => {
     for (const i of g.rows) inv('queue_remove', { id: i.id }).catch(() => {});
@@ -149,7 +165,10 @@ export function groupEl(g) {
   rows.forEach((r, k) => {
     const row = document.createElement('div');
     row.className = 'qg-row' + (r.item ? '' : ' ro');
+    const dead = r.item && itemDead(r.item);
     row.innerHTML = '<span class="tree"></span><span class="q-text"></span><span class="row-meta"></span>'
+      + (dead ? '<button class="q-retry" title="retry this step (fresh attempts)">↻</button>'
+              + '<button class="q-skip" title="skip this failed step — later steps continue">⏭</button>' : '')
       + (r.item ? '<button class="q-del" title="remove this prompt">✕</button>' : '');
     row.querySelector('.tree').textContent =
       rows.length === 1 || k === 0 ? '' : (k === rows.length - 1 ? '└' : '├');
@@ -168,10 +187,17 @@ export function groupEl(g) {
         });
       };
       row.querySelector('.q-del').onclick = () => inv('queue_remove', { id: i.id }).catch(() => {});
+      const rb = row.querySelector('.q-retry');
+      if (rb) rb.onclick = () => inv('queue_retry', { id: i.id }).catch(e => toast('retry failed: ' + e));
+      const sb = row.querySelector('.q-skip');
+      if (sb) sb.onclick = () => inv('queue_skip', { id: i.id }).catch(e => toast('skip failed: ' + e));
       const bits = [];
       if (i.tpl && i.mode !== 'every') bits.push(`tpl·${i.tpl} ${i.tpl_idx}/${i.tpl_total}`);
       if (i.state === 'failed' && i.mode !== 'every') {
-        bits.push('⚠ ' + (i.attempts >= 8 ? 'gave up' : 'send failed, retrying') + (i.last_error ? ': ' + i.last_error : ''));
+        bits.push('⚠ ' + (itemDead(i) ? 'gave up — blocks later steps until retried or skipped'
+          : 'send failed, retrying') + (i.last_error ? ': ' + i.last_error : ''));
+      } else if (blockedBy(i, g.rows)) {
+        bits.push('⏸ waiting — an earlier step failed (retry or skip it)');
       }
       row.querySelector('.row-meta').textContent = bits.join(' · ');
     } else {

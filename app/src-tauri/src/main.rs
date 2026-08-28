@@ -157,6 +157,8 @@ fn main() {
             scheduler::queue_update,
             scheduler::queue_remove,
             scheduler::queue_pause,
+            scheduler::queue_retry,
+            scheduler::queue_skip,
             commands::storage_warnings,
             scheduler::queue_clear_session,
         ])

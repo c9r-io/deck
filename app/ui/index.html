@@ -374,7 +374,8 @@
     flex: none; min-width: 92px;
   }
   .q-text { flex: 1; min-width: 0; font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .q-del { color: var(--faint); padding: 2px 7px; border-radius: 4px; flex: none; }
+  .q-del, .q-retry, .q-skip { color: var(--faint); padding: 2px 7px; border-radius: 4px; flex: none; }
+  .q-retry:hover, .q-skip:hover { color: var(--text); background: var(--hover); }
   .q-del:hover { color: var(--danger); background: var(--hover); }
   .q-add { display: flex; gap: 6px; align-items: center; }
   .q-add input[type=text] { flex: 1; font-size: 12.5px; padding: 6px 10px; }
