@@ -87,8 +87,10 @@ export function showProjectCtx(e, pid) {
     if (a === 'remove') {
       if (provider.projects().length <= 1) { toast('at least one project is required'); return; }
       const n = provider.list(pid).length;
-      if (!(await confirmDialog(`Delete project "${p.name}"?${n ? ` Its ${n} session(s) will be closed.` : ''}`))) return;
-      provider.removeProject(pid);
+      if (!(await confirmDialog(`Delete project "${p.name}"?${n ? ` Its ${n} session(s) will be closed and their scheduled prompts cancelled.` : ''}`))) return;
+      /* nothing is removed unless every card's schedule was cancelled and
+         persisted first (the toast explains a refusal) */
+      if (!(await provider.removeProject(pid))) return;
       if (state.projectId === pid) {
         state.projectId = provider.projects()[0].id;
         state.view = 'board';

@@ -33,14 +33,38 @@ export const provider = {
     saveBoard();
     emit('projects');
   },
-  removeProject(pid) {
-    for (const c of store.cards.filter(c => c.projectId === pid)) {
-      if (c.status !== 'stopped') inv('kill_session', { name: c.session }).catch(() => {});
+  /* Deleting a card or a project means "cancel every future scheduling of
+     its session(s), permanently". That cancellation must be PERSISTED
+     before anything leaves the board — a card that disappears while its
+     recurring rule survives would have the scheduler restart a tmux session
+     nobody can see or manage any more. A failure therefore deletes nothing
+     and says so. */
+  async cancelSchedule(cards) {
+    const sessions = (Array.isArray(cards) ? cards : [cards]).map(c => c.session);
+    if (!sessions.length) return true;
+    try {
+      await inv('queue_clear_sessions', { sessions });
+      return true;
+    } catch (e) {
+      toast('scheduled prompts could not be cancelled — nothing was deleted: ' + e);
+      return false;
+    }
+  },
+
+  async removeProject(pid) {
+    const cards = store.cards.filter(c => c.projectId === pid);
+    if (!(await this.cancelSchedule(cards))) return false;
+    for (const c of cards) {
+      if (c.status !== 'stopped') {
+        try { await inv('kill_session', { name: c.session }); }
+        catch (e) { toast(`the shell of "${c.title}" could not be killed: ${e}`); }
+      }
     }
     store.cards = store.cards.filter(c => c.projectId !== pid);
     store.projects = store.projects.filter(p => p.id !== pid);
     saveBoard();
     emit('projects');
+    return true;
   },
 
   addColumn(pid, name) {
@@ -84,17 +108,20 @@ export const provider = {
     return card;
   },
 
-  /* stop and delete are one operation */
-  async close(sid) {
+  /* stop and delete are one operation; returns false when the card was
+     KEPT (its schedule could not be cancelled reliably) */
+  async close(sid, opts = {}) {
     const c = this.get(sid);
-    if (!c) return;
+    if (!c) return false;
+    if (!opts.cancelled && !(await this.cancelSchedule(c))) return false;
     if (c.status !== 'stopped') {
-      try { await inv('kill_session', { name: c.session }); } catch (e) { /* already gone */ }
+      try { await inv('kill_session', { name: c.session }); }
+      catch (e) { toast(`the shell of "${c.title}" could not be killed: ${e}`); }
     }
-    inv('queue_clear_session', { session: c.session }).catch(() => {});
     store.cards = store.cards.filter(x => x.id !== sid);
     saveBoard();
     emit('list', c);
+    return true;
   },
 
   move(sid, columnId) {
@@ -171,14 +198,16 @@ export async function pollNow() {
     if (tail.join('\n') !== (c.tail || []).join('\n')) { c.tail = tail; emit('output', c); }
   }
   updateQuietHints();
+  /* a shell that exited on its own retires its card through the SAME
+     reliable path as an explicit close: cancel the schedule first, and keep
+     the card if that cannot be persisted */
   for (const c of exited) {
-    inv('queue_clear_session', { session: c.session }).catch(() => {});
+    c.status = 'stopped';
+    if (!(await provider.cancelSchedule(c))) { emit('status', c); continue; }
     closePaneBySid(c.id);
-    store.cards = store.cards.filter(x => x.id !== c.id);
+    await provider.close(c.id, { cancelled: true });
     toast(`"${c.title}" closed — shell exited`);
-    emit('list', c);
   }
-  if (exited.length) saveBoard();
 }
 export function startPolling() {
   clearInterval(pollTimer);
@@ -433,8 +462,11 @@ export async function closeSession(sid, needConfirm = false) {
   const live = s.status !== 'stopped';
   if (needConfirm &&
       !(await confirmDialog(`Close "${s.title}"?${live ? ' The shell will be terminated.' : ''}`))) return;
+  /* the schedule goes first: if that cannot be persisted the card stays on
+     the board (with its pane) instead of vanishing into a hidden schedule */
+  if (!(await provider.cancelSchedule(s))) return;
   closePaneBySid(sid, { detach: false });   // pane out first (may fall back to board)
-  await provider.close(sid);
+  await provider.close(sid, { cancelled: true });
   toast(`closed: ${s.title}`);
   render();
 }

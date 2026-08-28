@@ -126,6 +126,21 @@ pub(crate) struct PendingDelivery {
     snapshot: QueueItem,
 }
 
+/// A session whose card (or whole project) was deleted. Deleting a card
+/// means "cancel every future scheduling for this session, permanently" —
+/// the tombstone is what makes that survive a crash, an in-flight delivery
+/// and a recurring rule's own bookkeeping.
+#[derive(Serialize, Deserialize, Clone)]
+pub(crate) struct Tombstone {
+    session: String,
+    at: u64,
+}
+
+/// How many deleted sessions are remembered (oldest dropped first). Only
+/// reached by boards with hundreds of deletions; a dropped tombstone can do
+/// no harm because its items are long gone.
+pub(crate) const MAX_TOMBSTONES: usize = 500;
+
 #[derive(Serialize, Deserialize, Clone, Default)]
 pub(crate) struct QueueState {
     items: Vec<QueueItem>,
@@ -137,6 +152,9 @@ pub(crate) struct QueueState {
     /// in-flight delivery ledger (empty except during a send / after a crash)
     #[serde(default)]
     pending: Vec<PendingDelivery>,
+    /// sessions whose card/project was deleted — permanently unschedulable
+    #[serde(default)]
+    cancelled: Vec<Tombstone>,
 }
 
 pub(crate) struct Queues {
@@ -438,6 +456,10 @@ pub(crate) fn next_queue_id(existing: &[QueueItem]) -> String {
 /// Pure core of queue_add: append one already-validated item to the
 /// candidate state (never to the shared state directly — see `with_queue`).
 pub(crate) fn add_item(q: &mut QueueState, args: QueueAddArgs, text: String) -> Result<(), String> {
+    // Scheduling for a session again means it is alive again (the UI can
+    // only add prompts from a live card), so a stale tombstone from an
+    // earlier card of the same name must not silently swallow the schedule.
+    q.cancelled.retain(|t| t.session != args.session);
     let id = next_queue_id(&q.items);
     let (group, seq) = if args.mode == "every" {
         (None, None) // rules carry no group; their iterations get one at spawn
@@ -636,28 +658,76 @@ pub(crate) fn queue_skip(
     Ok(())
 }
 
-/// Pure core of queue_clear_session: an item that is mid-send survives the
-/// sweep (its delivery must finalize); once-items are then consumed by
-/// finalize anyway, a surviving rule can be removed afterwards.
+/// Has this session been deleted? A tombstoned session is never eligible,
+/// never restarted, and never re-armed by a finalizing delivery.
+pub(crate) fn is_cancelled(q: &QueueState, session: &str) -> bool {
+    q.cancelled.iter().any(|t| t.session == session)
+}
+
+/// Pure core of queue_clear_session(s) — the deletion semantics:
+///
+/// 1. the session is tombstoned (persisted, so it survives a crash);
+/// 2. EVERY item of that session is dropped, including one that is mid-send
+///    — its delivery still finalizes from the pending-ledger snapshot, so
+///    the at-most-once audit is complete, but there is no item left to
+///    re-arm, no rule to restore, no template step to spawn and no next
+///    cadence (see finalize_delivery's cancelled branch);
+/// 3. the session's last-fired bookkeeping goes with it.
+///
+/// Idempotent: clearing twice refreshes the tombstone and changes nothing
+/// else, and it never errors.
 pub(crate) fn clear_session_items(q: &mut QueueState, session: &str) {
-    q.items
-        .retain(|i| i.session != session || i.state == "firing");
+    let now = now_epoch();
+    match q.cancelled.iter_mut().find(|t| t.session == session) {
+        Some(t) => t.at = now,
+        None => q.cancelled.push(Tombstone {
+            session: session.to_string(),
+            at: now,
+        }),
+    }
+    if q.cancelled.len() > MAX_TOMBSTONES {
+        let n = q.cancelled.len() - MAX_TOMBSTONES;
+        q.cancelled.drain(..n);
+    }
+    q.items.retain(|i| i.session != session);
     q.last_fired.remove(session);
 }
 
-/// Drop all queued prompts for a session — called when its card closes.
+/// Cancel a whole set of sessions in ONE transaction — deleting a project
+/// must not be able to half-clear its cards.
+pub(crate) fn clear_sessions(q: &mut QueueState, sessions: &[String]) {
+    for s in sessions {
+        clear_session_items(q, s);
+    }
+}
+
+/// Permanently cancel every scheduled prompt of these sessions — called
+/// when a card is closed, a project deleted, or a shell exits on its own.
+/// The frontend must not remove the card(s) until this resolved: a rejected
+/// promise means the cancellation is NOT on disk and the board must keep
+/// showing the card rather than hide a session that still has a schedule.
+#[tauri::command]
+pub(crate) fn queue_clear_sessions(
+    state: State<'_, Queues>,
+    app: AppHandle,
+    sessions: Vec<String>,
+) -> Result<(), String> {
+    with_queue(&state.q, &save_queue, |q| {
+        clear_sessions(q, &sessions);
+        Ok(())
+    })?;
+    let _ = app.emit("queue-changed", ());
+    Ok(())
+}
+
+/// Single-session form of `queue_clear_sessions`.
 #[tauri::command]
 pub(crate) fn queue_clear_session(
     state: State<'_, Queues>,
     app: AppHandle,
     session: String,
 ) -> Result<(), String> {
-    with_queue(&state.q, &save_queue, |q| {
-        clear_session_items(q, &session);
-        Ok(())
-    })?;
-    let _ = app.emit("queue-changed", ());
-    Ok(())
+    queue_clear_sessions(state, app, vec![session])
 }
 
 /// Note: deliberately carries no prompt text — the UI only toasts the
@@ -691,6 +761,12 @@ pub(crate) fn fire_item(item: &QueueItem) -> Result<(), String> {
     let line = format!("{}\r", item.text);
     tmux(&["send-keys", "-t", &pane_target(&item.session), "-l", &line])?;
     Ok(())
+}
+
+/// Best-effort kill of a session deck must not leave running (already dead
+/// is the normal case, hence the swallowed error).
+pub(crate) fn kill_session_quietly(session: &str) {
+    let _ = tmux(&["kill-session", "-t", &crate::tmux::session_target(session)]);
 }
 
 pub(crate) const MAX_ATTEMPTS: u32 = 8;
@@ -747,6 +823,13 @@ fn eligible(
     activity: &HashMap<String, u64>,
 ) -> bool {
     if i.paused || i.state == "firing" || item_dead(i) || !retry_ok(i, now) {
+        return false;
+    }
+    // the card (or its project) was deleted: nothing of this session ever
+    // fires again, and in particular fire_item never restarts its tmux
+    // session. Belt and braces — clear_session_items already dropped the
+    // items; this also covers a file hand-edited between runs.
+    if is_cancelled(q, &i.session) {
         return false;
     }
     // one prompt per session at a time: every mode honors the send gap
@@ -901,6 +984,16 @@ pub(crate) fn finalize_delivery(
         let n = q.deliveries.len() - MAX_DELIVERIES;
         q.deliveries.drain(..n);
     }
+    // The card was deleted while this delivery was in flight. The audit
+    // record above closes the at-most-once window (the prompt may really
+    // have landed), but NOTHING about the session may come back to life:
+    // no rule restored to pending, no template steps spawned, no next
+    // cadence, no send-gap bookkeeping for a session that no longer exists.
+    if is_cancelled(q, &item.session) {
+        q.items.retain(|i| i.session != item.session);
+        q.pending.retain(|p| p.id != delivery);
+        return;
+    }
     q.last_fired.insert(item.session.clone(), now);
     if !live {
         // item-side accounting has no item to act on; the audit record and
@@ -967,16 +1060,16 @@ pub(crate) fn finalize_delivery(
 
 /// The send definitively did NOT happen (atomic injection refused) — mark
 /// the item for retry and drop its ledger entry: there is no delivery to
-/// recover, and crash recovery must not "assume sent" for it.
-pub(crate) fn note_failed(q: &mut QueueState, id: &str, err: &str) {
+/// recover, and crash recovery must not "assume sent" for it. The ledger
+/// entry goes even when the item itself vanished mid-send (its card was
+/// deleted), so a refused send is never resurrected as an assumed delivery.
+pub(crate) fn note_failed(q: &mut QueueState, id: &str, delivery: &str, err: &str) {
     if let Some(it) = q.items.iter_mut().find(|i| i.id == id) {
-        let d = it.delivery.take();
+        it.delivery = None;
         it.state = "failed".into();
         it.last_error = Some(err.chars().take(200).collect());
-        if let Some(d) = d {
-            q.pending.retain(|p| p.id != d);
-        }
     }
+    q.pending.retain(|p| p.id != delivery);
 }
 
 /// At-most-once crash recovery. The firing intent (with its delivery id) is
@@ -1053,6 +1146,27 @@ pub(crate) enum SendResult {
     NotPersisted,
 }
 
+/// The side-effecting parts of one send, injected so the whole firing state
+/// machine can be unit-tested without tmux or a disk.
+pub(crate) struct SendHooks<'a> {
+    pub(crate) fire: &'a (dyn Fn(&QueueItem) -> Result<(), String> + Sync),
+    pub(crate) persist: &'a (dyn Fn(&QueueState) -> Result<(), String> + Sync),
+    /// kill a session whose card was deleted DURING this send
+    pub(crate) kill: &'a (dyn Fn(&str) + Sync),
+}
+
+/// Closing the last hole in "a deleted card leaves nothing running": the
+/// worker holds no lock while it injects, so a card deleted in exactly that
+/// instant is tombstoned only AFTER `fire_item` may already have restarted
+/// its session. Once the send is over we re-read the tombstone and kill the
+/// session, so the scheduler can never leave a session behind a deleted card.
+fn reap_if_cancelled(cancelled: bool, session: &str, h: &SendHooks) {
+    if cancelled {
+        applog("[queue] card was deleted mid-send — its session is being killed");
+        (h.kill)(session);
+    }
+}
+
 /// One complete send attempt for one session — the ENTIRE firing state
 /// machine lives here, unit-testable with a fake `fire`/`persist`:
 ///
@@ -1081,9 +1195,9 @@ pub(crate) fn send_one(
     session: &str,
     now_min: u32,
     activity: &HashMap<String, u64>,
-    fire: &(dyn Fn(&QueueItem) -> Result<(), String> + Sync),
-    persist: &(dyn Fn(&QueueState) -> Result<(), String> + Sync),
+    h: &SendHooks,
 ) -> SendResult {
+    let persist = h.persist;
     // Persist the firing intent (delivery id + ledger snapshot) BEFORE
     // injecting — this ordering makes delivery at-most-once across crashes,
     // and the snapshot makes finalize independent of the item surviving.
@@ -1119,7 +1233,7 @@ pub(crate) fn send_one(
             return SendResult::NotPersisted;
         }
     };
-    match fire(&item) {
+    match (h.fire)(&item) {
         Ok(()) => {
             // never log prompt contents — length only (privacy)
             applog(&format!(
@@ -1130,21 +1244,26 @@ pub(crate) fn send_one(
             ));
             let mut q = qm.lock().unwrap();
             finalize_delivery(&mut q, &item.id, &delivery, now_epoch(), false);
+            let cancelled = is_cancelled(&q, &item.session);
             if let Err(e) = persist(&q) {
                 note_persist_lag(dirty, "post-fire", &e);
             }
+            drop(q);
+            reap_if_cancelled(cancelled, &item.session, h);
             SendResult::Sent {
                 session: item.session.clone(),
             }
         }
         Err(e) => {
             let mut q = qm.lock().unwrap();
-            note_failed(&mut q, &item.id, &e);
+            note_failed(&mut q, &item.id, &delivery, &e);
             let gave_up = q.items.iter().any(|i| i.id == item.id && item_dead(i));
+            let cancelled = is_cancelled(&q, &item.session);
             if let Err(pe) = persist(&q) {
                 note_persist_lag(dirty, "post-failure", &pe);
             }
             drop(q);
+            reap_if_cancelled(cancelled, &item.session, h);
             // the raw error stays on the item (last_error → queue UI); the
             // log gets only its category — tmux/start errors can embed paths
             applog(&format!(
@@ -1264,8 +1383,11 @@ pub(crate) fn spawn_scheduler(app: AppHandle) {
                     &session,
                     local_minutes(),
                     &act,
-                    &fire_item,
-                    &save_queue,
+                    &SendHooks {
+                        fire: &fire_item,
+                        persist: &save_queue,
+                        kill: &kill_session_quietly,
+                    },
                 );
                 release_session(&state.busy, &session);
                 match res {
@@ -1334,6 +1456,7 @@ mod tests {
             last_fired: HashMap::new(),
             deliveries: Vec::new(),
             pending: Vec::new(),
+            cancelled: Vec::new(),
         };
         migrate_groups(&mut q);
         q
@@ -1826,18 +1949,209 @@ mod tests {
         assert!(q.items.is_empty());
     }
 
+    // ---------- round 4: deleting a card cancels its schedule for good ----------
+
     #[test]
-    fn clear_session_spares_the_firing_item() {
+    fn deleting_a_card_empties_its_queue_and_spares_other_sessions() {
         let mut a = qi("a", "at");
-        a.state = "firing".into();
+        a.at = Some(NOW);
         let b = qi("b", "chain");
+        let mut r = rule(300);
+        r.id = "r".into();
         let mut c = qi("c", "at");
         c.session = "other".into();
         c.at = Some(NOW);
-        let mut q = qs(vec![a, b, c]);
+        let mut q = qs(vec![a, b, r, c]);
+        q.last_fired.insert("s".into(), NOW - 10);
         clear_session_items(&mut q, "s");
         let left: Vec<&str> = q.items.iter().map(|i| i.id.as_str()).collect();
-        assert_eq!(left, ["a", "c"], "firing item survives, other session kept");
+        assert_eq!(left, ["c"], "every item of the deleted card is gone");
+        assert!(!q.last_fired.contains_key("s"), "send-gap entry cleared");
+        assert!(is_cancelled(&q, "s"));
+        assert!(!is_cancelled(&q, "other"));
+        // idempotent: clearing again is a no-op, never an error
+        let snapshot = serde_json::to_string(&q).unwrap();
+        clear_session_items(&mut q, "s");
+        assert_eq!(q.cancelled.len(), 1, "one tombstone per session");
+        assert_eq!(
+            serde_json::to_string(&q)
+                .unwrap()
+                .replace(&format!("\"at\":{}", q.cancelled[0].at), "\"at\":T"),
+            snapshot.replace(&format!("\"at\":{}", q.cancelled[0].at), "\"at\":T")
+        );
+    }
+
+    #[test]
+    fn a_deleted_recurring_rule_never_becomes_a_candidate_again() {
+        let mut r = rule(300);
+        r.steps = vec!["s2".into()];
+        let mut q = qs(vec![r]);
+        assert_eq!(select_due(&q, NOW, 720, &HashMap::new()).len(), 1);
+        clear_session_items(&mut q, "s");
+        assert!(q.items.is_empty());
+        // even if a rule for that session somehow reappears (hand-edited
+        // file, stale queue from another deck), it is not schedulable
+        q.items.push(rule(300));
+        let later = NOW + 10_000;
+        assert!(select_due(&q, later, 720, &HashMap::new()).is_empty());
+        assert!(select_for_session(&q, "s", later, 720, &HashMap::new()).is_none());
+    }
+
+    #[test]
+    fn a_delete_during_a_send_audits_the_delivery_but_revives_nothing() {
+        // recurring rule mid-send: the delivery is inside the at-most-once
+        // window, so it must finish its audit — but the card is gone
+        let mut r = rule(300);
+        r.steps = vec!["s2".into(), "s3".into()];
+        r.state = "firing".into();
+        r.delivery = Some("dX".into());
+        let mut q = qs(vec![r]);
+        q.pending.push(PendingDelivery {
+            id: "dX".into(),
+            snapshot: q.items[0].clone(),
+        });
+        clear_session_items(&mut q, "s"); // the user deletes the card now
+        finalize_delivery(&mut q, "t", "dX", NOW, false); // the send lands
+        assert_eq!(q.deliveries.len(), 1, "delivery audited");
+        assert!(q.items.is_empty(), "no rule restored, no steps spawned");
+        assert!(q.pending.is_empty(), "ledger consumed");
+        assert!(
+            !q.last_fired.contains_key("s"),
+            "no cadence bookkeeping for a session that no longer exists"
+        );
+        // and nothing can fire for that session afterwards, ever
+        assert!(select_due(&q, NOW + 100_000, 720, &HashMap::new()).is_empty());
+    }
+
+    #[test]
+    fn a_crash_right_after_a_delete_does_not_revive_anything() {
+        let mut r = rule(300);
+        r.steps = vec!["s2".into()];
+        r.state = "firing".into();
+        r.delivery = Some("dX".into());
+        r.last_attempt_at = Some(NOW);
+        let mut q = qs(vec![r]);
+        q.pending.push(PendingDelivery {
+            id: "dX".into(),
+            snapshot: q.items[0].clone(),
+        });
+        clear_session_items(&mut q, "s");
+        // …deck dies here; this is exactly what is on disk
+        let on_disk = serde_json::to_string(&q).unwrap();
+        let mut booted: QueueState = serde_json::from_str(&on_disk).unwrap();
+        let notes = recover_interrupted(&mut booted);
+        assert_eq!(notes.len(), 1, "the interrupted delivery is accounted for");
+        assert!(booted.items.is_empty(), "nothing revived");
+        assert!(booted.pending.is_empty());
+        assert!(
+            is_cancelled(&booted, "s"),
+            "the tombstone survived the crash"
+        );
+        assert!(select_due(&booted, NOW + 100_000, 720, &HashMap::new()).is_empty());
+        // repeated recovery still changes nothing
+        let after = serde_json::to_string(&booted).unwrap();
+        recover_interrupted(&mut booted);
+        assert_eq!(serde_json::to_string(&booted).unwrap(), after);
+    }
+
+    #[test]
+    fn deleting_a_project_clears_every_one_of_its_sessions_at_once() {
+        let mk = |id: &str, session: &str| {
+            let mut i = qi(id, "at");
+            i.session = session.into();
+            i.at = Some(NOW);
+            i
+        };
+        let mut q = qs(vec![
+            mk("a", "p-one"),
+            mk("b", "p-two"),
+            mk("c", "p-two"),
+            mk("keep", "other-project"),
+        ]);
+        clear_sessions(&mut q, &["p-one".to_string(), "p-two".to_string()]);
+        let left: Vec<&str> = q.items.iter().map(|i| i.id.as_str()).collect();
+        assert_eq!(left, ["keep"], "other projects untouched");
+        assert!(is_cancelled(&q, "p-one") && is_cancelled(&q, "p-two"));
+        assert!(!is_cancelled(&q, "other-project"));
+        assert_eq!(ids(&select_due(&q, NOW, 720, &HashMap::new())), ["keep"]);
+    }
+
+    #[test]
+    fn a_deleted_session_never_reaches_the_send_hook() {
+        let qm = Mutex::new(qs(vec![due_at("a", "s")]));
+        with_queue(&qm, &ok_persist, |q| {
+            clear_session_items(q, "s");
+            Ok(())
+        })
+        .unwrap();
+        let res = send_test(
+            &qm,
+            &AtomicBool::new(false),
+            "s",
+            720,
+            &HashMap::new(),
+            &|_: &QueueItem| panic!("a deleted card must never start or feed a session"),
+            &ok_persist,
+        );
+        assert_eq!(res, SendResult::Nothing);
+    }
+
+    #[test]
+    fn a_card_deleted_mid_send_leaves_no_session_behind() {
+        // the worker holds no lock while injecting, so the delete can land
+        // between the intent and the send — fire_item may just have started
+        // the session, which must not outlive the card
+        let qm = Mutex::new(qs(vec![due_at("a", "s")]));
+        let killed: Mutex<Vec<String>> = Mutex::new(Vec::new());
+        let fire = |_: &QueueItem| {
+            // the user deletes the card at exactly this instant
+            with_queue(&qm, &ok_persist, |q| {
+                clear_session_items(q, "s");
+                Ok(())
+            })
+            .unwrap();
+            Ok(())
+        };
+        let kill = |s: &str| killed.lock().unwrap().push(s.to_string());
+        let res = send_one(
+            &qm,
+            &AtomicBool::new(false),
+            "s",
+            720,
+            &HashMap::new(),
+            &SendHooks {
+                fire: &fire,
+                persist: &ok_persist,
+                kill: &kill,
+            },
+        );
+        assert!(matches!(res, SendResult::Sent { .. }));
+        assert_eq!(killed.lock().unwrap().as_slice(), ["s"], "session reaped");
+        let q = qm.lock().unwrap();
+        assert_eq!(q.deliveries.len(), 1, "the delivery is still audited");
+        assert!(q.items.is_empty() && q.pending.is_empty());
+    }
+
+    #[test]
+    fn scheduling_for_a_session_again_clears_its_tombstone() {
+        // a NEW card that happens to reuse a name must schedule normally
+        let mut q = qs(vec![]);
+        clear_session_items(&mut q, "s");
+        add_item(&mut q, add_args("s", "hello"), "hello".into()).unwrap();
+        assert!(!is_cancelled(&q, "s"));
+        let quiet: HashMap<String, u64> = [("s".into(), NOW - 400)].into();
+        assert_eq!(select_due(&q, NOW, 720, &quiet).len(), 1);
+    }
+
+    #[test]
+    fn tombstones_are_capped() {
+        let mut q = qs(vec![]);
+        for k in 0..(MAX_TOMBSTONES + 5) {
+            clear_session_items(&mut q, &format!("s{k}"));
+        }
+        assert_eq!(q.cancelled.len(), MAX_TOMBSTONES);
+        assert!(is_cancelled(&q, &format!("s{}", MAX_TOMBSTONES + 4)));
+        assert!(!is_cancelled(&q, "s0"), "oldest dropped first");
     }
 
     #[test]
@@ -1890,7 +2204,7 @@ mod tests {
             id: "d1".into(),
             snapshot: q.items[0].clone(),
         });
-        note_failed(&mut q, "a", "tmux send-keys failed");
+        note_failed(&mut q, "a", "d1", "tmux send-keys failed");
         assert!(q.pending.is_empty(), "not-sent leaves nothing to recover");
         assert_eq!(q.items[0].state, "failed");
         assert!(q.items[0].delivery.is_none());
@@ -1926,6 +2240,32 @@ mod tests {
         Ok(())
     }
 
+    /// send_one with a no-op kill hook — keeps the state-machine tests about
+    /// the state machine. The kill hook has its own test below.
+    fn send_test(
+        qm: &Mutex<QueueState>,
+        dirty: &AtomicBool,
+        session: &str,
+        now_min: u32,
+        activity: &HashMap<String, u64>,
+        fire: &(dyn Fn(&QueueItem) -> Result<(), String> + Sync),
+        persist: &(dyn Fn(&QueueState) -> Result<(), String> + Sync),
+    ) -> SendResult {
+        let kill = |_: &str| {};
+        send_one(
+            qm,
+            dirty,
+            session,
+            now_min,
+            activity,
+            &SendHooks {
+                fire,
+                persist,
+                kill: &kill,
+            },
+        )
+    }
+
     fn due_at(id: &str, session: &str) -> QueueItem {
         let mut a = qi(id, "at");
         a.session = session.into();
@@ -1938,7 +2278,7 @@ mod tests {
         use std::sync::atomic::{AtomicU32, Ordering};
         let qm = Mutex::new(qs(vec![due_at("a", "s")]));
         let fired = AtomicU32::new(0);
-        let res = send_one(
+        let res = send_test(
             &qm,
             &AtomicBool::new(false),
             "s",
@@ -1969,7 +2309,7 @@ mod tests {
     #[test]
     fn send_one_failure_is_retryable_and_never_audited() {
         let qm = Mutex::new(qs(vec![due_at("a", "s")]));
-        let res = send_one(
+        let res = send_test(
             &qm,
             &AtomicBool::new(false),
             "s",
@@ -1998,7 +2338,7 @@ mod tests {
     fn retry_after_failure_sends_the_full_text_exactly_once() {
         use std::sync::atomic::{AtomicU32, Ordering};
         let qm = Mutex::new(qs(vec![due_at("a", "s")]));
-        let _ = send_one(
+        let _ = send_test(
             &qm,
             &AtomicBool::new(false),
             "s",
@@ -2009,7 +2349,7 @@ mod tests {
         );
         qm.lock().unwrap().items[0].last_attempt_at = Some(0); // backoff elapsed
         let sent = AtomicU32::new(0);
-        let res = send_one(
+        let res = send_test(
             &qm,
             &AtomicBool::new(false),
             "s",
@@ -2030,7 +2370,7 @@ mod tests {
     #[test]
     fn send_one_persist_failure_rolls_back_the_intent() {
         let qm = Mutex::new(qs(vec![due_at("a", "s")]));
-        let res = send_one(
+        let res = send_test(
             &qm,
             &AtomicBool::new(false),
             "s",
@@ -2052,7 +2392,7 @@ mod tests {
         let mut a = due_at("a", "s");
         a.paused = true; // user paused between candidate pass and worker
         let qm = Mutex::new(qs(vec![a]));
-        let res = send_one(
+        let res = send_test(
             &qm,
             &AtomicBool::new(false),
             "s",
@@ -2097,7 +2437,7 @@ mod tests {
             let qref = &qm;
             let (er, rl) = (&entered, &release);
             s.spawn(move || {
-                let res = send_one(
+                let res = send_test(
                     qref,
                     &AtomicBool::new(false),
                     "slow",
@@ -2114,7 +2454,7 @@ mod tests {
             });
             entered.wait();
             // while "slow" is stalled inside its injection, "fast" completes
-            let res = send_one(
+            let res = send_test(
                 &qm,
                 &AtomicBool::new(false),
                 "fast",
@@ -2299,7 +2639,7 @@ mod tests {
         let qm = Mutex::new(qs(vec![due_at("a", "s")]));
         let before = serde_json::to_string(&*qm.lock().unwrap()).unwrap();
         let dirty = AtomicBool::new(false);
-        let res = send_one(
+        let res = send_test(
             &qm,
             &dirty,
             "s",
@@ -2325,7 +2665,7 @@ mod tests {
         let disk = FakeDisk::new(&qm.lock().unwrap().clone());
         let dirty = AtomicBool::new(false);
         let persist = |q: &QueueState| disk.persist(q);
-        let res = send_one(
+        let res = send_test(
             &qm,
             &dirty,
             "s",
@@ -2365,7 +2705,7 @@ mod tests {
         let disk = FakeDisk::new(&qm.lock().unwrap().clone());
         let dirty = AtomicBool::new(false);
         let persist = |q: &QueueState| disk.persist(q);
-        let res = send_one(
+        let res = send_test(
             &qm,
             &dirty,
             "s",

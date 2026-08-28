@@ -167,6 +167,7 @@ fn main() {
             scheduler::queue_skip,
             commands::storage_warnings,
             scheduler::queue_clear_session,
+            scheduler::queue_clear_sessions,
             commands::save_dropped_file,
         ])
         .build(tauri::generate_context!())
