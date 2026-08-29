@@ -102,6 +102,16 @@ test('production terminal path wires the token-bound frozen selection coordinato
   assert.match(selection, /terminal_selection_finish/);
   assert.match(selection, /terminal_selection_scroll/);
   assert.match(selection, /terminalSelectionOverlayRows/);
+  assert.match(selection, /status reply and its PTY repaint have no fixed ordering/,
+    'selection scrolling must handle either tmux-status/xterm-frame ordering');
+  assert.match(selection, /pane\.term\.onSelectionChange/,
+    'promoted pointer drags must clear late native xterm selections');
+  assert.match(selection, /getSelectionPosition/,
+    'native xterm word/line selections need public coordinates for wheel adoption');
+  assert.doesNotMatch(selection, /distance\s*<\s*4/,
+    'terminal drag ownership must not depend on an arbitrary CSS-pixel threshold');
+  assert.match(selection, /if \(!ended\.promoted\) promote\(\)/,
+    'pointerup must recover a cell transition from a coalesced final pointermove');
   assert.match(selection, /updateAt\(currentToken, finalPoint, false\)/,
     'pointerup must position exactly at the pointer without another edge scroll');
   assert.match(selection, /grid: \{ cols: pane\.term\.cols, rows: pane\.term\.rows \}/);
@@ -109,7 +119,14 @@ test('production terminal path wires the token-bound frozen selection coordinato
     'xterm-native Command-C must suppress WebKit default copy');
   assert.match(layout, /createTerminalResizeCoordinator/);
   assert.match(layout, /pane\.syncSize = \(\) => resize\.sync/);
+  assert.match(layout, /pane\.selection\?\.writeParsed\(\)/,
+    'selection frame barrier must observe every parsed xterm write');
+  assert.match(layout, /pane\.selection\.freezeNative\(\)[\s\S]{0,160}pane\.selection\.scroll\(lines\)/,
+    'the first native-selection wheel frame must join the frozen tmux scroll path');
   assert.match(layout, /createTerminalWheelAccumulator/);
+  assert.match(layout, /terminalAgentHistoryUpRoute/);
+  assert.match(layout, /term\.input\(AGENT_HISTORY_VERTICAL_UP\)/,
+    'agent history workaround must re-enter the ordinary xterm input path');
   assert.match(layout, /requestAnimationFrame[\s\S]*?wheelInFlight/);
   assert.doesNotMatch(layout, /wheelTimer[\s\S]*?50/);
   assert.match(backend, /copy-mode/);

@@ -375,15 +375,33 @@ async function selectionSmoke(card) {
   const rightUntouched = screen.dispatchEvent(pointer('pointerdown', 74, clickX, clickY, 2));
   pane.term.clearSelection();
   const singleAnchorRow = Math.max(2, pane.term.rows - 6);
-  screen.dispatchEvent(pointer('pointerdown', 75, cellX, rowY(singleAnchorRow)));
-  document.dispatchEvent(pointer('pointermove', 75,
-    rect.left + rect.width / pane.term.cols * 8.2, rowY(singleAnchorRow)));
+  const cellWidth = rect.width / pane.term.cols;
+  const singleStartCol = 7;
+  const singleEndCol = 8;
+  const singleStartX = rect.left + cellWidth * singleEndCol - 1;
+  const singleEndX = rect.left + cellWidth * singleEndCol + 1;
+  screen.dispatchEvent(pointer('pointerdown', 75, singleStartX, rowY(singleAnchorRow)));
+  screen.dispatchEvent(new MouseEvent('mousedown', {
+    bubbles: true, cancelable: true, button: 0, buttons: 1,
+    clientX: singleStartX, clientY: rowY(singleAnchorRow),
+  }));
+  // Real WKWebView horizontal selection can deliver only compatibility
+  // mousemove between pointerdown and pointerup. Two CSS pixels cross a cell;
+  // Deck must promote this path before xterm retains a viewport-fixed range.
+  const promotedMouseMoveBlocked = !screen.dispatchEvent(new MouseEvent('mousemove', {
+    bubbles: true, cancelable: true, button: 0, buttons: 1,
+    clientX: singleEndX, clientY: rowY(singleAnchorRow),
+  }));
   const singleStarted = await waitFor(() => pane.selection.hasSelection(), 3000);
-  document.dispatchEvent(pointer('pointerup', 75,
-    rect.left + rect.width / pane.term.cols * 8.2, rowY(singleAnchorRow)));
+  document.dispatchEvent(pointer('pointerup', 75, singleEndX, rowY(singleAnchorRow)));
+  screen.dispatchEvent(new MouseEvent('mouseup', {
+    bubbles: true, cancelable: true, button: 0, buttons: 0,
+    clientX: singleEndX, clientY: rowY(singleAnchorRow),
+  }));
   await pane.selection.idle();
   const singleText = singleStarted ? await copyTerminalSelection(pane) : null;
-  const singleExpected = visibleTerminalLine(pane, singleAnchorRow).slice(0, 8);
+  const singleExpected = visibleTerminalLine(pane, singleAnchorRow)
+    .slice(singleStartCol, singleEndCol);
   const singleExpectedBytes = new TextEncoder().encode(singleExpected).length;
   pane.term.textarea.dispatchEvent(new KeyboardEvent('keydown', {
     key: 'c', metaKey: true, bubbles: true, cancelable: true,
@@ -393,13 +411,65 @@ async function selectionSmoke(card) {
     return metrics.bytes === singleExpectedBytes && metrics.newlines === 0
       && metrics.hash === fnv1a64(singleExpected);
   }, 3000);
-  const singleOwned = singleStarted && pane.selection.ownership().promoted === 1
+  const singleOwned = singleStarted && promotedMouseMoveBlocked
+    && pane.selection.ownership().promoted === 1
     && !pane.selection.ownership().xtermSelection
     && singleText === singleExpected && !singleText.includes('\n');
   const gestureMask = (tapPlain ? 1 : 0) | (doubleWord ? 2 : 0)
     | (tripleLine ? 4 : 0) | (rightUntouched && singleOwned ? 8 : 0)
     | (nativeCopiedByKey ? 16 : 0) | (singleCopiedByKey ? 32 : 0);
   await report('selection-gestures', gestureMask === 63, gestureMask, wordLength);
+
+  /* The user-visible regression is specifically a physical single-row drag.
+     Its immutable bytes and absolute row stay fixed while its one overlay
+     band follows the tmux content frame, never the pointer's viewport row. */
+  const stableBefore = pane.selection.status();
+  const overlayBefore = new Map([...pane.body.querySelectorAll('.deck-selection-band')]
+    .map(band => [band.dataset.absoluteRow, Number.parseFloat(band.style.top)]));
+  const bytesBeforeScroll = await copyTerminalSelection(pane);
+  await pane.selection.scroll(-3);
+  const stableAfter = pane.selection.status();
+  const bytesAfterScroll = await copyTerminalSelection(pane);
+  let overlayAfter = new Map();
+  const overlayMovedWithContent = await waitFor(() => {
+    overlayAfter = new Map([...pane.body.querySelectorAll('.deck-selection-band')]
+      .map(band => [band.dataset.absoluteRow, Number.parseFloat(band.style.top)]));
+    const common = [...overlayBefore.keys()].filter(row => overlayAfter.has(row));
+    return overlayBefore.size === 1 && overlayAfter.size === 1
+      && common.some(row => overlayBefore.get(row) !== overlayAfter.get(row));
+  }, 3000);
+  const sameCoordinates = stableBefore.selection_start_row === stableAfter.selection_start_row
+    && stableBefore.selection_start_col === stableAfter.selection_start_col
+    && stableBefore.selection_end_row === stableAfter.selection_end_row
+    && stableBefore.selection_end_col === stableAfter.selection_end_col;
+  await report('selection-scroll-stable', sameCoordinates
+    && bytesBeforeScroll === bytesAfterScroll, bytesAfterScroll?.length || 0,
+  stableAfter.scroll_position - stableBefore.scroll_position);
+  await report('selection-overlay', overlayMovedWithContent
+    && !pane.term.hasSelection(), overlayBefore.size, overlayAfter.size);
+
+  /* Native word/line selections (double/triple click, or a focus click that
+     WebKit folds into the next drag) must be adopted on the first wheel frame
+     before tmux redraws the screen underneath xterm's fixed buffer rows. */
+  await cancelTerminalSelection(pane);
+  await inv('scroll_bottom', { name: card.session });
+  const nativeRow = Math.max(2, pane.term.rows - 6);
+  const nativeAbsoluteRow = pane.term.buffer.active.viewportY + nativeRow;
+  pane.term.select(2, nativeAbsoluteRow, 4);
+  const nativeScrollExpected = pane.term.getSelection();
+  pane.body.dispatchEvent(new WheelEvent('wheel', {
+    deltaY: -42, deltaMode: WheelEvent.DOM_DELTA_PIXEL,
+    bubbles: true, cancelable: true,
+  }));
+  const nativeAdopted = await waitFor(() => pane.selection.isFrozen()
+    && !pane.term.hasSelection()
+    && pane.selection.status()?.scroll_position >= 3, 3000);
+  await pane.selection.idle();
+  const nativeCopied = nativeAdopted ? await copyTerminalSelection(pane) : null;
+  const nativeBands = pane.body.querySelectorAll('.deck-selection-band').length;
+  await report('selection-native-scroll', nativeAdopted
+    && nativeScrollExpected.length === 4 && nativeCopied === nativeScrollExpected
+    && nativeBands === 1, nativeCopied?.length || 0, nativeBands);
 
   /* Regression: start a second drag while tmux still owns the completed first
      selection. begin-selection is a toggle, so production must explicitly
@@ -413,30 +483,6 @@ async function selectionSmoke(card) {
   const repeatedText = repeated ? await copyTerminalSelection(pane) : null;
   await report('selection-repeat', repeated && typeof repeatedText === 'string'
     && repeatedText.length > 0, repeatedText?.length || 0, 0);
-
-  await pane.selection.idle();
-  const stableBefore = pane.selection.status();
-  const overlayBefore = new Map([...pane.body.querySelectorAll('.deck-selection-band')]
-    .map(band => [band.dataset.absoluteRow, Number.parseFloat(band.style.top)]));
-  const bytesBeforeScroll = await copyTerminalSelection(pane);
-  await pane.selection.scroll(-3);
-  const stableAfter = pane.selection.status();
-  const bytesAfterScroll = await copyTerminalSelection(pane);
-  const overlayAfter = new Map([...pane.body.querySelectorAll('.deck-selection-band')]
-    .map(band => [band.dataset.absoluteRow, Number.parseFloat(band.style.top)]));
-  const sameCoordinates = stableBefore.selection_start_row === stableAfter.selection_start_row
-    && stableBefore.selection_start_col === stableAfter.selection_start_col
-    && stableBefore.selection_end_row === stableAfter.selection_end_row
-    && stableBefore.selection_end_col === stableAfter.selection_end_col;
-  await report('selection-scroll-stable', sameCoordinates
-    && bytesBeforeScroll === bytesAfterScroll, bytesAfterScroll?.length || 0,
-  stableAfter.scroll_position - stableBefore.scroll_position);
-  const commonOverlayRows = [...overlayBefore.keys()]
-    .filter(row => overlayAfter.has(row));
-  const overlayMovedWithContent = commonOverlayRows.some(row =>
-    overlayBefore.get(row) !== overlayAfter.get(row));
-  await report('selection-overlay', overlayMovedWithContent,
-    overlayBefore.size, overlayAfter.size);
 
   await cancelTerminalSelection(pane);
   await inv('scroll_bottom', { name: card.session });
@@ -541,7 +587,7 @@ async function selectionSmoke(card) {
   const crossedDown = await waitFor(() =>
     (pane.selection.status()?.scroll_position ?? downInitialScroll)
       < downInitialScroll - pane.term.rows * 3, 8000);
-  const downText = startedDown ? await copyTerminalSelection(pane) : '';
+  const downText = startedDown ? (await copyTerminalSelection(pane) || '') : '';
   selectionStage = 8;
   document.dispatchEvent(pointer('pointerup', 42, rect.left + 60, rect.bottom + 32));
   const crossedDownEvidence = crossedDown

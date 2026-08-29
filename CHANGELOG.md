@@ -2,6 +2,16 @@
 
 ## 0.4.39 — Unreleased
 
+- Synchronize frozen terminal selections across either tmux-status/xterm-frame
+  ordering, promote drags by terminal-cell movement rather than a CSS-pixel
+  threshold, and recheck the pointerup cell. On the first wheel frame, native
+  xterm word/line selections are adopted into the same immutable tmux range
+  and overlay used by multi-row drags. Even a one-cell horizontal selection
+  now follows its text while its coordinates and clipboard bytes stay frozen.
+- Let Codex/Claude history recall yield to editing a visible multi-row prompt:
+  after recalling a long entry, Up moves into its preceding visual row first;
+  ordinary single-line history, modifiers, shells, editors and other TUIs keep
+  their existing keys. The check reads only five public xterm cells per row.
 - Fix terminal drag selection inside full-screen agent panes (Claude Code,
   Codex), where the highlight and the copied bytes landed on rows the pointer
   never touched while the identical drag in a shell pane was correct.

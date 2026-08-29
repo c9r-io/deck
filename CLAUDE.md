@@ -136,13 +136,31 @@ Frontend gates: `node --check` (syntax) · `ui/test/*.mjs` (node:test)
   final cell with edge scrolling disabled. Every pointer coordinate uses a
   frontend grid confirmed by `pty_resize`; the backend serializes resize reflow
   with selection operations and rejects stale dimensions instead of clamping.
+  A completed-selection scroll treats tmux status and xterm `onWriteParsed` as
+  unordered: if the frame arrived first, the status completion renders; if the
+  status arrived first, the next parsed frame renders. While Deck owns a
+  promoted drag, `onSelectionChange` clears any late compatibility-mouse xterm
+  selection so a second viewport-fixed highlight cannot survive.
   ⌘C waits for the whole
   chain and reads only the current token. Escape, input/composition, blur,
   visibility, focus change, detach and disposal revoke the lease. Never add a
   transparent textarea or xterm `._core` dependency.
+  Gesture promotion is based on crossing a public terminal cell, never an
+  arbitrary CSS-pixel distance, and pointerup rechecks the final cell because
+  WebKit may coalesce the last pointermove. This is what keeps short one-row
+  drags on the same tmux/overlay path as multi-row drags while same-cell and
+  double/triple clicks remain native xterm operations. If a native xterm
+  word/line range survives until the first wheel frame, read only its public
+  `getSelectionPosition()` coordinates, convert visible absolute buffer rows
+  with `terminalNativeSelectionCells`, and freeze it in tmux before scrolling.
+  Wheel routing keeps an existing Deck token authoritative, adopts an idle
+  native range, and otherwise uses ordinary session scrolling.
   Selection never sets `disableStdin`; composition/dead-key events bypass all
   Deck shortcuts, and `macOptionIsMeta` is false so Option remains owned by
-  macOS text input.
+  macOS text input. Codex/Claude Up-arrow compatibility is narrowly armed by a
+  history recall at the agent prompt and requires a visible continuation row
+  located from the first five public xterm cells; it re-enters `term.input` and
+  must never capture shell/editor keys or terminal text.
   Terminal links use `tokenizeTerminalLinks`, not an overlapping global regex:
   an HTTP(S) URL consumes its whole logical-line interval before path candidates
   are considered. `terminal_paths_exist` then resolves candidates against the

@@ -12,7 +12,8 @@ import {
   copyExact, createTerminalResizeCoordinator, createTerminalSelectionModel,
   terminalCopyRoute, terminalSelectionEdgeLines,
   isComposingKeyEvent, isPlainShiftKeydown, shouldRouteImeKeydownThroughInput,
-  terminalSelectionOverlayRows,
+  AGENT_HISTORY_VERTICAL_UP, terminalAgentComposerGeometry, terminalAgentHistoryUpRoute,
+  terminalNativeSelectionCells, terminalSelectionOverlayRows, terminalSelectionWheelRoute,
   tokenizeTerminalLinks,
   createTerminalWheelAccumulator, terminalWheelLines,
   linkMenuItems,
@@ -482,6 +483,113 @@ test('frozen selection overlay follows content coordinates, not viewport pixels'
     viewportTop: 99, rows: 10, cols: 80,
   });
   assert.deepEqual(reverse, after, 'reverse endpoints normalize to the same content spans');
+});
+
+test('native xterm selections convert from absolute buffer rows before tmux scrolls', () => {
+  assert.deepEqual(terminalNativeSelectionCells({
+    position: { start: { x: 2, y: 105 }, end: { x: 6, y: 105 } },
+    viewportY: 100, rows: 24, cols: 80,
+  }), {
+    anchor: { row: 5, col: 2 }, active: { row: 5, col: 6 },
+  }, 'a native single-row range keeps its half-open xterm columns');
+
+  assert.deepEqual(terminalNativeSelectionCells({
+    position: { start: { x: 3, y: 204 }, end: { x: 80, y: 207 } },
+    viewportY: 200, rows: 24, cols: 80,
+  }), {
+    anchor: { row: 4, col: 3 }, active: { row: 7, col: 80 },
+  }, 'an end-of-line endpoint may use xterm\'s exclusive column');
+});
+
+test('native selection adoption rejects stale geometry and preserves scroll ownership', () => {
+  const convert = position => terminalNativeSelectionCells({
+    position, viewportY: 100, rows: 24, cols: 80,
+  });
+  assert.equal(convert({ start: { x: 2, y: 99 }, end: { x: 6, y: 99 } }), null,
+    'selection above the current viewport is stale');
+  assert.equal(convert({ start: { x: 2, y: 124 }, end: { x: 6, y: 124 } }), null,
+    'selection below the current viewport is stale');
+  assert.equal(convert({ start: { x: 2, y: 105 }, end: { x: 2, y: 105 } }), null,
+    'collapsed selections are not adopted');
+  assert.equal(convert({ start: { x: 80, y: 105 }, end: { x: 81, y: 105 } }), null,
+    'a start cell must exist inside the terminal grid');
+  assert.equal(convert({ start: { x: 2, y: 105 }, end: { x: 81, y: 105 } }), null,
+    'an endpoint cannot extend beyond xterm\'s exclusive line end');
+  assert.equal(terminalNativeSelectionCells({
+    position: { start: { x: 2, y: 105 }, end: { x: 6, y: 105 } },
+    viewportY: Number.NaN, rows: 24, cols: 80,
+  }), null, 'non-finite geometry is rejected');
+
+  assert.equal(terminalSelectionWheelRoute({
+    tokenSelected: true, frozen: true, nativeSelected: true,
+  }), 'frozen', 'a completed Deck selection remains the only scroll authority');
+  assert.equal(terminalSelectionWheelRoute({
+    tokenSelected: true, frozen: false, nativeSelected: true,
+  }), 'ordinary', 'a live Deck gesture is never replaced by native adoption');
+  assert.equal(terminalSelectionWheelRoute({
+    tokenSelected: false, frozen: false, nativeSelected: true,
+  }), 'native', 'an idle native selection is adopted before the first scroll');
+  assert.equal(terminalSelectionWheelRoute({
+    tokenSelected: false, frozen: false, nativeSelected: false,
+  }), 'ordinary');
+});
+
+test('agent history recall yields to visible prompt rows before older history', () => {
+  const continuation = terminalAgentComposerGeometry({
+    lines: ['conversation', '› recalled prompt starts', '  and continues here'],
+    cursorRow: 2,
+    cursorCol: 20,
+  });
+  assert.deepEqual(continuation, {
+    markerRow: 1, markerCol: 0, continuation: true, atStart: false,
+  });
+  assert.equal(terminalAgentHistoryUpRoute({
+    foreground: 'codex', browsing: true, composer: continuation,
+  }), 'vertical');
+  assert.equal(AGENT_HISTORY_VERTICAL_UP, '\x1b[D\x1b[A\x1b[C');
+
+  const firstLine = terminalAgentComposerGeometry({
+    lines: ['  ❯ recalled prompt'], cursorRow: 0, cursorCol: 6,
+  });
+  assert.equal(firstLine.continuation, false);
+  assert.equal(terminalAgentHistoryUpRoute({
+    foreground: 'claude', browsing: true, composer: firstLine,
+  }), 'passthrough', 'single-line recall keeps ordinary history traversal');
+  assert.equal(terminalAgentHistoryUpRoute({
+    foreground: 'claude', browsing: false,
+    composer: { ...firstLine, atStart: true },
+  }), 'history', 'the prompt start arms history browsing');
+  assert.equal(terminalAgentHistoryUpRoute({
+    foreground: 'nvim', browsing: true, composer: continuation,
+  }), 'passthrough', 'editors and unrelated TUIs are never intercepted');
+  assert.equal(terminalAgentComposerGeometry({
+    lines: ['ordinary output › not a prompt'], cursorRow: 0, cursorCol: 12,
+  }), null, 'a glyph in terminal content is not a composer marker');
+});
+
+test('agent Up routing is a one-shot escape from recalled multiline history', () => {
+  const promptStart = terminalAgentComposerGeometry({
+    lines: ['› '], cursorRow: 0, cursorCol: 2,
+  });
+  const recalledEnd = terminalAgentComposerGeometry({
+    lines: ['› first visual row', '  second visual row', '  third visual row'],
+    cursorRow: 2, cursorCol: 18,
+  });
+  let browsing = false;
+  assert.equal(terminalAgentHistoryUpRoute({
+    foreground: '-codex', browsing, composer: promptStart,
+  }), 'history', 'Up at the empty first row is allowed to recall history');
+  browsing = true;
+  assert.equal(terminalAgentHistoryUpRoute({
+    foreground: '-codex', browsing, composer: recalledEnd,
+  }), 'vertical', 'the next Up escapes the recalled-history boundary');
+  browsing = false;
+  assert.equal(terminalAgentHistoryUpRoute({
+    foreground: '-codex', browsing, composer: recalledEnd,
+  }), 'passthrough', 'later Ups are left to the agent while moving within the prompt');
+  assert.equal(terminalAgentHistoryUpRoute({
+    foreground: 'claude', browsing: true, composer: null,
+  }), 'passthrough', 'no visible composer geometry means no interception');
 });
 
 test('IME/dead-key events bypass every Deck keyboard shortcut', () => {

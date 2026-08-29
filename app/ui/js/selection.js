@@ -7,6 +7,7 @@ import { inv, uev } from './state.js';
 import { toast } from './dialogs.js';
 import {
   createTerminalSelectionModel,
+  terminalNativeSelectionCells,
   terminalSelectionEdgeLines,
   terminalSelectionOverlayRows,
 } from './pure.js';
@@ -51,6 +52,8 @@ function terminalSelectionController(pane, onModeChange) {
   let updateDirty = false;
   let edgeTimer = null;
   let lastStatus = null;
+  let parsedFrame = 0;
+  let nativeSelectionDisposable = null;
   let limitNoticeShown = false;
   let token = 0;
   let suppressLinkUntil = 0;
@@ -178,6 +181,25 @@ function terminalSelectionController(pane, onModeChange) {
     throw new Error('selection-dimensions-changed');
   };
 
+  const startCells = async (currentToken, anchor, active) => {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const dimensions = await synchronizeSize();
+      try {
+        const status = await inv('terminal_selection_start', {
+          name: pane.session, token: currentToken,
+          anchorRow: anchor.row, anchorCol: anchor.col,
+          activeRow: active.row, activeCol: active.col,
+          ...dimensions,
+        });
+        return { status, dimensions };
+      } catch (error) {
+        if (!dimensionsChanged(error) || attempt === 2) throw error;
+        invalidateSynchronizedSize();
+      }
+    }
+    throw new Error('selection-dimensions-changed');
+  };
+
   const updateAt = async (currentToken, point, allowEdgeScroll) => {
     for (let attempt = 0; attempt < 3; attempt++) {
       const dimensions = await synchronizeSize();
@@ -275,7 +297,7 @@ function terminalSelectionController(pane, onModeChange) {
     if (disposed || event.button !== 0) return;
     if (!terminalCell(pane, event.clientX, event.clientY)) return;
     // Keep the physical compatibility sequence trusted for click/link. A
-    // later threshold crossing explicitly transfers ownership to tmux.
+    // later terminal-cell transition explicitly transfers ownership to tmux.
     cancel(false);
     ownerTrace = {
       pointerDown: 1, promoted: 0, trustedClick: 0,
@@ -294,11 +316,10 @@ function terminalSelectionController(pane, onModeChange) {
     if (!gesture || event.pointerId !== gesture.pointerId) return;
     gesture.x = event.clientX;
     gesture.y = event.clientY;
-    if (!gesture.promoted) {
-      const distance = Math.hypot(gesture.x - gesture.startX, gesture.y - gesture.startY);
-      if (distance < 4) return;
-      promote();
-    }
+    // xterm selects terminal cells, not CSS-pixel distances. Promote as soon
+    // as the pointer enters a different cell so a short horizontal drag near
+    // a glyph boundary follows the exact same tmux path as a multi-row drag.
+    if (!gesture.promoted) promote();
     if (gesture.promoted) {
       event.preventDefault();
       event.stopImmediatePropagation();
@@ -311,6 +332,10 @@ function terminalSelectionController(pane, onModeChange) {
     const ended = gesture;
     ended.x = event.clientX ?? ended.x;
     ended.y = event.clientY ?? ended.y;
+    // WebKit can coalesce the final pointermove of a quick drag. Re-evaluate
+    // the pointerup cell before deciding this was a click; promote() already
+    // leaves same-cell clicks and native double/triple-click selection alone.
+    if (!ended.promoted) promote();
     clearEdgeTimer();
     releaseCapture(ended);
     gesture = null;
@@ -372,10 +397,19 @@ function terminalSelectionController(pane, onModeChange) {
   };
 
   const compatibilityMove = event => {
-    if (!gesture?.promoted || physicalPointerOwner !== api) return;
+    if (!gesture || physicalPointerOwner !== api) return;
+    // macOS WKWebView can emit horizontal drag motion only as compatibility
+    // mousemove events even though pointerdown/pointerup were delivered. Use
+    // the same public cell transition as pointerMove before xterm's bubbling
+    // listener sees the event, so one-row and multi-row drags share ownership.
+    gesture.x = event.clientX;
+    gesture.y = event.clientY;
+    if (!gesture.promoted) promote();
+    if (!gesture.promoted) return;
     ownerTrace.compatibilityBlocked++;
     event.preventDefault();
     event.stopImmediatePropagation();
+    requestUpdate();
   };
 
   async function cancel(clearNative = true) {
@@ -424,16 +458,70 @@ function terminalSelectionController(pane, onModeChange) {
     }
   };
 
+  const freezeNative = async () => {
+    if (selected) return frozen;
+    const position = pane.term.getSelectionPosition?.();
+    const viewport = pane.term.buffer.active.viewportY;
+    const cells = terminalNativeSelectionCells({
+      position, viewportY: viewport, rows: pane.term.rows, cols: pane.term.cols,
+    });
+    if (!cells) return false;
+    const { anchor, active } = cells;
+
+    token = nextSelectionToken++;
+    frozen = false;
+    const currentToken = token;
+    const generation = model.begin(anchor);
+    model.move(active);
+    model.finish();
+    setMode(true);
+    try {
+      const status = await queue(async () => {
+        const started = await startCells(currentToken, anchor, active);
+        if (currentToken !== token || disposed
+            || !model.apply(generation, started.status)) throw new Error('selection-missing');
+        return inv('terminal_selection_finish', {
+          name: pane.session, token: currentToken,
+          ...started.dimensions,
+        });
+      });
+      if (currentToken !== token || disposed
+          || model.snapshot().generation !== generation) return false;
+      lastStatus = status;
+      frozen = true;
+      pane.term.clearSelection();
+      renderOverlay();
+      return true;
+    } catch (error) {
+      if (currentToken === token && !disposed) await cancel();
+      return false;
+    }
+  };
+
   const scroll = async lines => {
     const scrollToken = token;
     if (!selected || !frozen || !scrollToken) return null;
-    const status = await queue(() => inv('terminal_selection_scroll', {
-      name: pane.session, token: scrollToken, lines,
-    }));
+    let frameAtRequest = parsedFrame;
+    const status = await queue(() => {
+      // Capture inside the serialized operation: writes which arrived while a
+      // preceding selection command was queued cannot satisfy this scroll.
+      frameAtRequest = parsedFrame;
+      return inv('terminal_selection_scroll', {
+        name: pane.session, token: scrollToken, lines,
+      });
+    });
     if (!selected || token !== scrollToken || disposed) return null;
     lastStatus = status;
-    renderOverlay();
+    // The tmux status reply and its PTY repaint have no fixed ordering. If a
+    // frame was already parsed, render the new coordinates now; otherwise
+    // writeParsed() will render them when the repaint reaches xterm.
+    if (parsedFrame !== frameAtRequest) renderOverlay();
     return status;
+  };
+
+  const writeParsed = () => {
+    parsedFrame++;
+    renderOverlay();
   };
 
   const prepareInput = () => {
@@ -453,6 +541,8 @@ function terminalSelectionController(pane, onModeChange) {
     if (disposed) return;
     disposed = true;
     cancel(false);
+    nativeSelectionDisposable?.dispose();
+    nativeSelectionDisposable = null;
     pane.body.removeEventListener('pointerdown', pointerDown, true);
     document.removeEventListener('pointermove', pointerMove, true);
     document.removeEventListener('pointerup', pointerEnd, true);
@@ -474,7 +564,8 @@ function terminalSelectionController(pane, onModeChange) {
   document.addEventListener('visibilitychange', visibility);
 
   const api = {
-    copy, cancel, dispose, prepareInput, resize, scroll, render: renderOverlay,
+    copy, cancel, dispose, freezeNative, prepareInput, resize, scroll,
+    render: renderOverlay, writeParsed,
     hasSelection: () => selected,
     isDragging: () => !!gesture?.promoted,
     isFrozen: () => frozen,
@@ -490,6 +581,14 @@ function terminalSelectionController(pane, onModeChange) {
     }),
     idle: () => opChain.catch(() => {}),
   };
+  // A physical drag begins on xterm so clicks and double/triple-clicks stay
+  // native. Once Deck promotes that gesture, any late compatibility mouse
+  // event must not leave a second, viewport-fixed xterm selection behind.
+  nativeSelectionDisposable = pane.term.onSelectionChange?.(() => {
+    if ((gesture?.promoted || selected) && pane.term.hasSelection?.()) {
+      try { pane.term.clearSelection(); } catch (e) { /* pane may be disposing */ }
+    }
+  });
   controllers.add(api);
   return api;
 }

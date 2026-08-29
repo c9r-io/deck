@@ -468,6 +468,76 @@ export const isPlainShiftKeydown = event => !!event
   && event.key === 'Shift'
   && !event.ctrlKey && !event.altKey && !event.metaKey;
 
+/** Locate the first visible row of an agent composer from its prompt glyph.
+ * The scan is intentionally geometry-only: no prompt text leaves the xterm
+ * buffer. Codex uses › (» at Ultra effort) and Claude Code uses ❯. */
+export function terminalAgentComposerGeometry({ lines, cursorRow, cursorCol, maxScanRows = 256 }) {
+  if (!Array.isArray(lines) || !Number.isFinite(cursorRow) || !Number.isFinite(cursorCol)) {
+    return null;
+  }
+  const row = Math.trunc(cursorRow);
+  const col = Math.trunc(cursorCol);
+  if (row < 0 || row >= lines.length || col < 0) return null;
+  const first = Math.max(0, row - Math.max(1, Math.trunc(maxScanRows)) + 1);
+  for (let y = row; y >= first; y--) {
+    const match = /^(\s{0,4})([›»❯])(?=\s|$)/u.exec(String(lines[y] || ''));
+    if (!match) continue;
+    const markerCol = match[1].length;
+    return {
+      markerRow: y,
+      markerCol,
+      continuation: row > y,
+      // Agent composers reserve two cells for the prompt glyph and gutter.
+      atStart: row === y && col <= markerCol + 2,
+    };
+  }
+  return null;
+}
+
+/** A recalled agent prompt at its end is a history boundary to the agent.
+ * Deck only supplies the one-key vertical escape when the public terminal
+ * geometry proves that the recalled prompt has a visible continuation row. */
+export function terminalAgentHistoryUpRoute({ foreground, browsing, composer }) {
+  if (!/^-?(?:codex|claude)$/.test(String(foreground || ''))) return 'passthrough';
+  if (browsing && composer?.continuation) return 'vertical';
+  if (composer?.atStart) return 'history';
+  return 'passthrough';
+}
+
+// Move off the history boundary, move one visual row up, then restore the
+// desired column. Standard CSI cursor keys are accepted in either cursor mode.
+export const AGENT_HISTORY_VERTICAL_UP = '\x1b[D\x1b[A\x1b[C';
+
+/** Convert xterm's public absolute-buffer selection into tmux viewport cells.
+ * Native word/line selections are adopted only while both endpoints belong
+ * to the visible frame which tmux is about to scroll. */
+export function terminalNativeSelectionCells({ position, viewportY, rows, cols }) {
+  if (!position?.start || !position?.end
+      || ![viewportY, rows, cols, position.start.x, position.start.y,
+        position.end.x, position.end.y].every(Number.isFinite)
+      || rows <= 0 || cols <= 0) return null;
+  const top = Math.trunc(viewportY);
+  const anchor = {
+    row: Math.trunc(position.start.y) - top,
+    col: Math.trunc(position.start.x),
+  };
+  const active = {
+    row: Math.trunc(position.end.y) - top,
+    col: Math.trunc(position.end.x),
+  };
+  if (anchor.row < 0 || active.row < 0 || anchor.row >= rows || active.row >= rows
+      || anchor.col < 0 || anchor.col >= cols || active.col < 0 || active.col > cols
+      || (anchor.row === active.row && anchor.col === active.col)) return null;
+  return { anchor, active };
+}
+
+/** Choose exactly one scroll authority. A drag which Deck already owns must
+ * never be replaced; an idle native word/line selection is adopted first. */
+export function terminalSelectionWheelRoute({ tokenSelected, frozen, nativeSelected }) {
+  if (tokenSelected) return frozen ? 'frozen' : 'ordinary';
+  return nativeSelected ? 'native' : 'ordinary';
+}
+
 /** Visible row/column spans for an immutable half-open content selection.
  * tmux rows are absolute buffer rows; only viewportTop changes while scrolling. */
 export function terminalSelectionOverlayRows({

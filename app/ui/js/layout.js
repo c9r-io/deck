@@ -5,7 +5,7 @@ import { inlineRename, toast } from './dialogs.js';
 import { t } from './i18n.js';
 import { panes, pollNow, provider, render, renderSidebar, activeProject } from './board.js';
 import { SHELL_FG, acceptGhost, feedMirror, maybeRecordCommand, mountQuickBar, nextShellTitle, renderSuggest, resetSuggest, showLinkCtx, updateGhost, writeClipboard } from './terminal.js';
-import { createTerminalResizeCoordinator, createTerminalWheelAccumulator, isComposingKeyEvent, isPlainShiftKeydown, shouldRouteImeKeydownThroughInput, shQuote, terminalCopyRoute, tokenizeTerminalLinks, terminalWheelLines } from './pure.js';
+import { AGENT_HISTORY_VERTICAL_UP, createTerminalResizeCoordinator, createTerminalWheelAccumulator, isComposingKeyEvent, isPlainShiftKeydown, shouldRouteImeKeydownThroughInput, shQuote, terminalAgentComposerGeometry, terminalAgentHistoryUpRoute, terminalCopyRoute, terminalSelectionWheelRoute, tokenizeTerminalLinks, terminalWheelLines } from './pure.js';
 import { toggleQueuePanel } from './scheduler.js';
 import { cancelAllTerminalSelections, cancelTerminalSelection, copyTerminalSelection, hasTerminalSelection, wireTerminalSelection } from './selection.js';
 import { getTerminalTheme, onThemeChange, syncThemeIntegrations } from './theme.js';
@@ -205,7 +205,7 @@ export function createPane(card) {
   term.onWriteParsed(() => {
     if (ghostRemainder && attachedName === session) updateGhost();
     positionSeparators(pane);
-    pane.selection?.render();
+    pane.selection?.writeParsed();
   });
   term.onScroll(() => positionSeparators(pane));
   panes.set(session, pane);
@@ -367,6 +367,17 @@ export function positionSeparators(pane) {
 export function wireTerminalInput(pane, term, host) {
   const session = pane.session;
   const card = () => provider.get(pane.sid);
+  let agentHistoryBrowsing = false;
+
+  const agentComposerGeometry = () => {
+    const buffer = term.buffer.active;
+    const viewport = buffer.viewportY;
+    const lines = Array.from({ length: term.rows }, (_, row) =>
+      buffer.getLine(viewport + row)?.translateToString(true, 0, 5) || '');
+    return terminalAgentComposerGeometry({
+      lines, cursorRow: buffer.cursorY, cursorCol: buffer.cursorX,
+    });
+  };
 
   /* Apple Pinyin and other macOS IMEs may deliver a printable punctuation
      keydown as keyCode=229 before OR after the corresponding InputEvent.
@@ -449,6 +460,25 @@ export function wireTerminalInput(pane, term, host) {
      macOS app gets no standard edit actions in the webview */
   term.attachCustomKeyEventHandler(e => {
     if (isComposingKeyEvent(e)) return true;
+    if (e.type === 'keydown' && e.key === 'ArrowUp'
+        && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey) {
+      const route = terminalAgentHistoryUpRoute({
+        foreground: card()?.fg,
+        browsing: agentHistoryBrowsing,
+        composer: agentComposerGeometry(),
+      });
+      if (route === 'vertical') {
+        e.preventDefault();
+        agentHistoryBrowsing = false;
+        // Feed the public xterm input path so selection/live-view cleanup and
+        // PTY write ordering remain identical to an ordinary physical key.
+        term.input(AGENT_HISTORY_VERTICAL_UP);
+        return false;
+      }
+      if (route === 'history') agentHistoryBrowsing = true;
+    } else if (e.type === 'keydown' && !/^(?:ArrowUp|ArrowDown|Shift|Control|Alt|Meta)$/.test(e.key)) {
+      agentHistoryBrowsing = false;
+    }
     if (e.metaKey && e.key === 'b') return false;
     /* split shortcuts (方案 B): ⌘D right, ⌘⇧D down */
     if (e.type === 'keydown' && e.metaKey && (e.key === 'd' || e.key === 'D')) {
@@ -580,9 +610,18 @@ export function wireTerminalInput(pane, term, host) {
       const lines = wheel.take();
       if (!lines) return;
       wheelInFlight = true;
-      const request = hasTerminalSelection(pane) && pane.selection.isFrozen()
+      const route = terminalSelectionWheelRoute({
+        tokenSelected: hasTerminalSelection(pane),
+        frozen: pane.selection.isFrozen(),
+        nativeSelected: term.hasSelection(),
+      });
+      const request = route === 'frozen'
         ? pane.selection.scroll(lines)
-        : inv('scroll_session', { name: session, lines });
+        : route === 'native'
+          ? pane.selection.freezeNative().then(adopted => adopted
+            ? pane.selection.scroll(lines)
+            : inv('scroll_session', { name: session, lines }))
+          : inv('scroll_session', { name: session, lines });
       request.then(result => {
         const inMode = typeof result === 'object' ? result?.active : result;
         const c = card();
