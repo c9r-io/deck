@@ -25,6 +25,18 @@ drag to Applications, open. That's it:
 
 Apple Silicon only for now.
 
+### Update channels
+
+Stable is the default and reads only the latest non-prerelease Release.
+Maintainers and testers can explicitly opt into **Nightly** in Settings to
+exercise a signed and notarized candidate through its separate feed. Nightly
+uses the same app identity and `~/.deck` data, so it replaces Stable rather
+than installing beside it. Back up important data first and do not run Stable
+and Nightly at the same time. Switching back to Stable affects future checks
+but does not downgrade a newer Nightly; reinstall the Stable DMG if a downgrade
+is required. See [release channels](docs/release-channels.md) for the complete
+operator and recovery guide.
+
 ## What it does
 
 **Boards express attention, not workflow.** Default boards per project:
@@ -135,7 +147,7 @@ Everything lives in `~/.deck/` as plain JSON you can inspect or edit:
 identity, an optional sanitized executable basename, a content-free last
 context result, and a short
 delivery audit) · `history.json` (command history; wipeable from
-Settings) · `settings.json` (including locale, theme and accent) · `app.log` (diagnostics — event codes and
+Settings) · `settings.json` (including locale, theme, accent and update channel) · `app.log` (diagnostics — event codes and
 counts only, never what you type; errors appear as categories, never as
 raw paths, and session names as a per-run tag rather than the name itself).
 Every line is redacted again as it is written—including assignment/JSON/
@@ -197,9 +209,13 @@ ES modules — no Node runtime, no bundler (Node is used only for dev-time
 checks: `node --check`, `node --test app/ui/test/*.test.mjs`,
 `node app/ui/js/check.mjs`).
 
-Releases: push a `v*` tag — CI builds, signs, notarizes, and publishes the
-dmg plus in-app-update artifacts. An hourly scheduled run rebuilds the newest
-tag if a release is missing or incomplete.
+Releases use strict numeric versions. `scripts/release-version set X.Y.Z`
+prepares a version commit. The manual `nightly` workflow builds and verifies an
+immutable prerelease; the `promote` workflow copies that exact tested DMG and
+updater archive into Stable without rebuilding. Directly pushing a strict
+`vX.Y.Z` tag remains the emergency source-build path. The hourly resolver only
+considers Stable tags and never deletes an incomplete Release. Full procedures
+are in [docs/release-channels.md](docs/release-channels.md).
 
 ## License
 

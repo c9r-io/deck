@@ -1,0 +1,230 @@
+name: promote
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_tag:
+        description: 'Immutable nightly-vMAJOR.MINOR.PATCH-YYYYMMDD-SHA candidate tag'
+        required: true
+        type: string
+      tested_since:
+        description: 'Public Nightly test period and result'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.verify.outputs.version }}
+      sha: ${{ steps.verify.outputs.sha }}
+      stable_tag: ${{ steps.verify.outputs.stable_tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: verify
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_TAG: ${{ inputs.candidate_tag }}
+        run: |
+          set -euo pipefail
+          [[ "$CANDIDATE_TAG" =~ ^nightly-v([0-9]+\.[0-9]+\.[0-9]+)-[0-9]{8}-[0-9a-f]{7,40}$ ]]
+          version="${BASH_REMATCH[1]}"
+          scripts/release_channels.py validate-version "$version"
+          git fetch --force origin "refs/tags/$CANDIDATE_TAG:refs/tags/$CANDIDATE_TAG"
+          sha=$(git rev-parse "refs/tags/$CANDIDATE_TAG^{commit}")
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          git checkout --detach "$sha"
+          scripts/release-version check --expected "$version" --skip-monotonic
+          gh release view "$CANDIDATE_TAG" \
+            --json tagName,isDraft,isPrerelease,assets,targetCommitish > candidate-release.json
+          python3 - "$CANDIDATE_TAG" <<'PY'
+          import json, sys
+          release = json.load(open('candidate-release.json'))
+          if release['tagName'] != sys.argv[1] or release['isDraft'] or not release['isPrerelease']:
+              raise SystemExit('candidate must be a published prerelease')
+          names = {asset['name'] for asset in release['assets']}
+          if names & {'withdrawn.json', 'rejected.json', 'superseded.json'}:
+              raise SystemExit('candidate is withdrawn, rejected, or superseded')
+          PY
+          mkdir nightly-current
+          gh release download nightly-feed --pattern latest.json --dir nightly-current
+          python3 - "$version" "$CANDIDATE_TAG" <<'PY'
+          import json, sys
+          feed = json.load(open('nightly-current/latest.json'))
+          target = feed.get('platforms', {}).get('darwin-aarch64', {})
+          expected_fragment = f"/releases/download/{sys.argv[2]}/deck_aarch64.app.tar.gz"
+          if feed.get('version') != sys.argv[1] or expected_fragment not in target.get('url', ''):
+              raise SystemExit('candidate is not the current complete Nightly feed')
+          PY
+          stable_tag="v$version"
+          if git ls-remote --exit-code --tags origin "refs/tags/$stable_tag" >/dev/null 2>&1 \
+             || gh release view "$stable_tag" >/dev/null 2>&1; then
+            echo "Stable tag or Release already exists: $stable_tag" >&2
+            exit 1
+          fi
+          stable_versions=()
+          while IFS= read -r release_tag; do
+            if [[ "$release_tag" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+              stable_versions+=(--published "${BASH_REMATCH[1]}")
+            fi
+          done < <(gh api --paginate "repos/$GITHUB_REPOSITORY/releases" --jq '.[].tag_name')
+          scripts/release_channels.py assert-newer --candidate "$version" "${stable_versions[@]}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "stable_tag=$stable_tag" >> "$GITHUB_OUTPUT"
+
+  promote:
+    needs: resolve
+    runs-on: macos-14
+    environment: production
+    concurrency:
+      group: stable-release-v${{ needs.resolve.outputs.version }}
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      actions: read
+    env:
+      CANDIDATE_TAG: ${{ inputs.candidate_tag }}
+      TESTED_SINCE: ${{ inputs.tested_since }}
+      VERSION: ${{ needs.resolve.outputs.version }}
+      CANDIDATE_SHA: ${{ needs.resolve.outputs.sha }}
+      STABLE_TAG: ${{ needs.resolve.outputs.stable_tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.resolve.outputs.sha }}
+      - name: Enforce copy-only promotion policy
+        run: |
+          set -euo pipefail
+          scripts/release_channels.py assert-no-build .github/workflows/promote.yml
+      - name: Download and validate the published candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir candidate unpacked
+          gh release download "$CANDIDATE_TAG" --dir candidate
+          gh release view "$CANDIDATE_TAG" \
+            --json tagName,isDraft,isPrerelease,assets,targetCommitish > candidate/release.json
+          scripts/release_channels.py verify-candidate --dir candidate \
+            --tag "$CANDIDATE_TAG" --commit "$CANDIDATE_SHA" \
+            --release-json candidate/release.json
+          brew install minisign
+          python3 - <<'PY'
+          import base64, json, pathlib
+          root = pathlib.Path('candidate')
+          root.joinpath('signature.minisig').write_bytes(base64.b64decode(root.joinpath('deck_aarch64.app.tar.gz.sig').read_text().strip(), validate=True))
+          config = json.loads(pathlib.Path('app/src-tauri/tauri.conf.json').read_text())
+          root.joinpath('updater.pub').write_bytes(base64.b64decode(config['plugins']['updater']['pubkey'], validate=True))
+          PY
+          minisign -Vm candidate/deck_aarch64.app.tar.gz \
+            -x candidate/signature.minisig -p candidate/updater.pub
+          tar -xzf candidate/deck_aarch64.app.tar.gz -C unpacked
+          app_path=unpacked/deck.app
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app_path/Contents/Info.plist")" = io.c9r.deck
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app_path/Contents/Info.plist")" = "$VERSION"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app_path/Contents/Info.plist")" = "$VERSION"
+          strings "$app_path/Contents/MacOS/deck" | grep -Fqx "$CANDIDATE_SHA"
+          codesign --verify --deep --strict --verbose=2 "$app_path"
+          xcrun stapler validate "$app_path"
+          spctl -a -vv -t exec "$app_path"
+          dmg=(candidate/*.dmg)
+          test "${#dmg[@]}" -eq 1
+          codesign --verify --verbose=2 "${dmg[0]}"
+          xcrun stapler validate "${dmg[0]}"
+          spctl -a -vv -t install "${dmg[0]}"
+      - name: Require a successful test workflow for the candidate commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          runs=$(gh run list --workflow test.yml --commit "$CANDIDATE_SHA" \
+            --status completed --limit 100 --json conclusion,headSha,databaseId)
+          test "$(jq --arg sha "$CANDIDATE_SHA" '[.[] | select(.headSha == $sha and .conclusion == "success")] | length' <<<"$runs")" -gt 0
+      - name: Create Stable tag and draft Release from identical bytes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir stable verify-stable
+          dmg=(candidate/*.dmg)
+          dmg_name=$(basename "${dmg[0]}")
+          cp "${dmg[0]}" "stable/$dmg_name"
+          cp candidate/deck_aarch64.app.tar.gz stable/deck_aarch64.app.tar.gz
+          cp candidate/deck_aarch64.app.tar.gz.sig stable/deck_aarch64.app.tar.gz.sig
+          scripts/release_channels.py write-sums --dir stable --output stable/SHA256SUMS \
+            "$dmg_name" deck_aarch64.app.tar.gz deck_aarch64.app.tar.gz.sig
+          python3 - <<'PY'
+          import json, os, pathlib
+          source = json.loads(pathlib.Path('candidate/provenance.json').read_text())
+          evidence = {
+              'schema': 1,
+              'stable_tag': os.environ['STABLE_TAG'],
+              'candidate_tag': os.environ['CANDIDATE_TAG'],
+              'commit': os.environ['CANDIDATE_SHA'],
+              'nightly_test_period': os.environ['TESTED_SINCE'],
+              'workflow': {'run_id': os.environ['GITHUB_RUN_ID'], 'run_attempt': os.environ['GITHUB_RUN_ATTEMPT']},
+              'copied_artifacts': [item for item in source['artifacts'] if item['kind'] in ('dmg', 'archive', 'signature')],
+          }
+          pathlib.Path('stable/promotion.json').write_text(json.dumps(evidence, indent=2, ensure_ascii=False) + '\n')
+          PY
+          {
+            printf 'Promoted without rebuilding from `%s`.\n\n' "$CANDIDATE_TAG"
+            printf 'Commit: `%s`\n\n' "$CANDIDATE_SHA"
+            printf 'Nightly test period: %s\n\n' "$TESTED_SINCE"
+            printf 'DMG, updater archive and signature are byte-identical to the candidate. See `promotion.json` and `SHA256SUMS`.\n'
+          } > stable/release-notes.md
+          built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          scripts/release_channels.py manifest --version "$VERSION" --tag "$STABLE_TAG" \
+            --signature-file stable/deck_aarch64.app.tar.gz.sig \
+            --notes-file stable/release-notes.md --pub-date "$built_at" --output stable/latest.json
+
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git tag -a "$STABLE_TAG" "$CANDIDATE_SHA" \
+            -m "deck $STABLE_TAG promoted from $CANDIDATE_TAG"
+          git push origin "refs/tags/$STABLE_TAG"
+          gh release create "$STABLE_TAG" --verify-tag --target "$CANDIDATE_SHA" --draft \
+            --title "deck $STABLE_TAG" --notes-file stable/release-notes.md \
+            "stable/$dmg_name" stable/deck_aarch64.app.tar.gz \
+            stable/deck_aarch64.app.tar.gz.sig stable/SHA256SUMS stable/promotion.json
+
+          gh release download "$STABLE_TAG" --dir verify-stable
+          for file in "$dmg_name" deck_aarch64.app.tar.gz deck_aarch64.app.tar.gz.sig SHA256SUMS promotion.json; do
+            cmp "stable/$file" "verify-stable/$file"
+          done
+          test "$(git rev-parse "refs/tags/$STABLE_TAG^{commit}")" = "$CANDIDATE_SHA"
+          scripts/release_channels.py verify-manifest --file stable/latest.json \
+            --version "$VERSION" --tag "$STABLE_TAG" \
+            --signature-file stable/deck_aarch64.app.tar.gz.sig
+          gh release upload "$STABLE_TAG" stable/latest.json
+          gh release download "$STABLE_TAG" --pattern latest.json --dir verify-stable
+          cmp stable/latest.json verify-stable/latest.json
+          gh release edit "$STABLE_TAG" --draft=false --prerelease=false
+          gh release view "$STABLE_TAG" --json tagName,targetCommitish,isDraft,isPrerelease,assets \
+            --jq 'select(.tagName == env.STABLE_TAG and .targetCommitish == env.CANDIDATE_SHA and (.isDraft | not) and (.isPrerelease | not)) | [.assets[].name] | index("latest.json")' \
+            | grep -Eq '^[0-9]+$'
+      - name: Attach non-destructive promotion evidence to candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          evidence_name="promotion-${STABLE_TAG}.json"
+          if gh release view "$CANDIDATE_TAG" --json assets --jq '.assets[].name' | grep -Fqx "$evidence_name"; then
+            echo "candidate already has promotion evidence: $evidence_name" >&2
+            exit 1
+          fi
+          cp stable/promotion.json "stable/$evidence_name"
+          gh release upload "$CANDIDATE_TAG" "stable/$evidence_name"
+          gh release view "$CANDIDATE_TAG" --json body --jq .body > stable/candidate-promoted-notes.md
+          {
+            printf '\n\n---\nPromoted without rebuilding to `%s` from commit `%s`.\n' \
+              "$STABLE_TAG" "$CANDIDATE_SHA"
+          } >> stable/candidate-promoted-notes.md
+          gh release edit "$CANDIDATE_TAG" --notes-file stable/candidate-promoted-notes.md

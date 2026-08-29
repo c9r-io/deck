@@ -15,6 +15,19 @@ deck 是用于管理终端 agent session 的原生 macOS 应用。每张卡片�
 
 语言可在“设置 → 语言”中选择“跟随系统 / English / 简体中文”，无需重启。
 
+## 更新通道
+
+Stable 是默认更新通道，只接收正式版本。需要提前体验候选版本时，可在
+“设置 → 更新通道”中选择 Nightly 并确认风险；Nightly 经过相同的签名和
+Apple 公证，但仍可能不稳定。版本号旁会显示当前通道和短 commit，反馈问题
+时请一并提供。
+
+Nightly 与 Stable 使用同一个应用、`~/.deck` 数据和 tmux session，不能同时
+运行。安装 Nightly 前请备份重要数据。切回 Stable 只影响之后的更新检查，
+不会自动降级；如果当前 Nightly 版本更高，需要重新安装 Stable DMG，同时仍
+须遵守 future-schema/data compatibility 规则。维护者流程、恢复方法和信任
+边界见[发布通道说明](release-channels.md)。
+
 ## 文档维护方式
 
 完整的安全、持久化、构建与发布规范以英文 [README](../README.md) 为唯一技术来源。本页维护中文入口、核心操作和容易误解的产品语义，避免复制整份规范后产生漂移。

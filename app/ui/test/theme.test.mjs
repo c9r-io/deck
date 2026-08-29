@@ -36,6 +36,10 @@ test('old settings gain safe theme defaults and unknown fields round-trip', () =
   assert.deepEqual(JSON.parse(serializeSettings(old)).future, { kept: 1 });
   assert.equal(parseSettings('{"theme":"unknown","accent":"red"}').theme, 'deck-dark');
   assert.equal(parseSettings('{"theme":"unknown","accent":"red"}').accent, 'teal');
+  assert.equal(old.updateChannel, 'stable', 'existing users remain on Stable');
+  assert.equal(parseSettings('{"updateChannel":"night"}').updateChannel, 'stable');
+  assert.equal(parseSettings('{"updateChannel":false}').updateChannel, 'stable');
+  assert.equal(parseSettings('{"updateChannel":"nightly"}').updateChannel, 'nightly');
 });
 
 test('every theme and accent resolves complete CSS, xterm and native palettes', () => {

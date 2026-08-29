@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+version=1.7.7
+archive=actionlint_1.7.7_darwin_arm64.tar.gz
+expected=2693315b9093aeacb4ebd91a993fea54fc215057bf0da2659056b4bc033873db
+tool_dir=$(mktemp -d /tmp/deck-actionlint.XXXXXX)
+curl --fail --silent --show-error --location \
+  "https://github.com/rhysd/actionlint/releases/download/v${version}/${archive}" \
+  --output "$tool_dir/$archive"
+actual=$(shasum -a 256 "$tool_dir/$archive" | awk '{print $1}')
+if [ "$actual" != "$expected" ]; then
+  echo "actionlint archive checksum mismatch" >&2
+  exit 1
+fi
+tar -xzf "$tool_dir/$archive" -C "$tool_dir"
+"$tool_dir/actionlint" "$@"

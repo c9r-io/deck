@@ -26,13 +26,23 @@ function renderPendingUpdate() {
   btn.title = t('update.availableTitle', { version: pendingUpdate.version });
 }
 
+function channelLabel(channel = settings.updateChannel) {
+  return t(channel === 'nightly' ? 'settings.channel.nightly' : 'settings.channel.stable');
+}
+
+export function renderBuildIdentity(identity = buildIdentity) {
+  const version = identity.version || '?';
+  const commit = identity.commit || 'dev';
+  $('app-ver').textContent = `v${version} · ${channelLabel()} · ${commit}`;
+  if ($('settings-modal').style.display === 'flex') $('set-ver').textContent = `deck ${$('app-ver').textContent}`;
+}
+
 /* ---------- in-app updates (tauri-plugin-updater) ---------- */
 export async function checkForUpdate() {
-  const up = window.__TAURI__ && window.__TAURI__.updater;
-  if (!up) return;
+  if (!window.__TAURI__) return;
   if ($('update-btn').disabled) return;   // download/install in progress
   try {
-    const update = await up.check();
+    const update = await inv('check_for_update', { channel: settings.updateChannel });
     if (!update) return;
     pendingUpdate = update;
     const btn = $('update-btn');
@@ -48,11 +58,10 @@ export async function manualUpdateCheck() {
   const st = $('set-upd-status');
   const inModal = $('settings-modal').style.display === 'flex';
   const say = msg => { if (inModal) st.textContent = msg; else toast(msg); };
-  const up = window.__TAURI__ && window.__TAURI__.updater;
-  if (!up) { say(t('update.unavailableDev')); return; }
+  if (!window.__TAURI__) { say(t('update.unavailableDev')); return; }
   say(t('update.checking'));
   try {
-    const update = await up.check();
+    const update = await inv('check_for_update', { channel: settings.updateChannel });
     if (update) {
       pendingUpdate = update;
       const btn = $('update-btn');
@@ -60,7 +69,7 @@ export async function manualUpdateCheck() {
       btn.style.display = 'flex';
       say(t('update.installHint', { version: update.version }));
     } else {
-      say(t('update.current', { version: $('app-ver').textContent }));
+      say(t('update.current', { version: buildIdentity.version || '?' }));
     }
   } catch (e) {
     say(t('update.checkFailed'));
@@ -75,17 +84,11 @@ $('update-btn').onclick = async () => {
   const btn = $('update-btn');
   const label = btn.querySelector('.label');
   btn.disabled = true;
+  updateDownloadBytes = 0;
   try {
-    let got = 0, total = 0;
-    await pendingUpdate.downloadAndInstall(ev => {
-      if (ev.event === 'Started') total = ev.data.contentLength || 0;
-      if (ev.event === 'Progress') {
-        got += ev.data.chunkLength;
-        label.textContent = total
-          ? t('update.downloadingPercent', { percent: Math.round(got / total * 100) })
-          : t('update.downloadingSize', { size: (got / 1048576).toFixed(1) });
-      }
-      if (ev.event === 'Finished') label.textContent = t('update.installing');
+    await inv('install_update', {
+      channel: settings.updateChannel,
+      expectedVersion: pendingUpdate.version,
     });
     label.textContent = t('update.restarting');
     await window.__TAURI__.process.relaunch();
@@ -102,10 +105,27 @@ export async function boot() {
   await loadSettings();
   await revealThemedWindow();
   try {
-    if (window.__TAURI__ && window.__TAURI__.app) {
-      $('app-ver').textContent = await window.__TAURI__.app.getVersion();
-    }
+    buildIdentity = await inv('build_identity');
   } catch (e) { /* label stays empty */ }
+  renderBuildIdentity();
+  window.addEventListener('deck-update-channel-changed', () => {
+    pendingUpdate = null;
+    $('update-btn').style.display = 'none';
+    renderBuildIdentity();
+  });
+  listen('update-download-progress', event => {
+    const data = event.payload || {};
+    const label = $('update-btn').querySelector('.label');
+    if (data.event === 'finished') {
+      label.textContent = t('update.installing');
+      return;
+    }
+    updateDownloadBytes += Number(data.chunkLength) || 0;
+    const total = Number(data.contentLength) || 0;
+    label.textContent = total
+      ? t('update.downloadingPercent', { percent: Math.min(100, Math.round(updateDownloadBytes / total * 100)) })
+      : t('update.downloadingSize', { size: (updateDownloadBytes / 1048576).toFixed(1) });
+  }).catch(() => uev('listen-fail', 'update-download-progress'));
   try {
     await listen('deck-ping', () => uev('ping-recv'));
     await inv('ping_event');
@@ -163,6 +183,7 @@ export async function boot() {
 }
 onLocaleChange(() => {
   renderPendingUpdate();
+  renderBuildIdentity();
   render();
   refreshQueue();
 });

@@ -19,6 +19,23 @@ loaded by `ui/index.html`; xterm.js vendored in `app/ui/vendor/`. Backend
 Frontend gates: `node --check` (syntax) · `ui/test/*.mjs` (node:test)
 · `ui/js/check.mjs` (unresolved identifiers; forbids xterm `._core`).
 
+- Updates have a closed `stable | nightly` setting; missing, unknown or damaged
+  values normalize to Stable. The webview owns no updater capability or URL.
+  `commands.rs` maps the enum to exactly one compiled HTTPS endpoint and uses
+  `UpdaterExt::updater_builder().endpoints(vec![endpoint])`; a Nightly failure
+  never falls back. Tauri 2.10.1 still owns semver comparison, archive download,
+  minisign verification and install. Build identity is only numeric version +
+  a bounded hex commit from `build.rs`.
+- Release operation is documented in `docs/release-channels.md`.
+  `scripts/release-version` synchronizes the three numeric source/lock entries;
+  `scripts/release_channels.py` is the shared manifest/hash/provenance validator;
+  `scripts/check-workflows` runs checksum-pinned actionlint. `nightly.yml`
+  builds a signed/notarized immutable candidate and updates `nightly-feed` last.
+  `promote.yml` is copy-only: its static gate rejects application build
+  commands, and Stable `latest.json` is the last completeness asset. Never
+  create a public candidate, Stable tag, feed update or promotion without the
+  user's explicit authorization.
+
 - Run: `app/run.sh` — builds, wraps the binary in a minimal .app, launches via
   `open`. NEVER run the bare binary from a background shell: outside the GUI
   login session the process can't reach macOS text-input services (TSM/IMK) —

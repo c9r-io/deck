@@ -716,6 +716,14 @@
     <div class="set-hint" data-i18n="settings.historyHint">deck keeps commands typed in its shells (for the completion chips) in ~/.deck/history.json, readable only by you.</div>
     <div class="set-sep"></div>
     <div class="set-row">
+      <label for="set-channel" data-i18n="settings.updateChannel">Update channel</label>
+      <select class="col-select" id="set-channel">
+        <option value="stable" data-i18n="settings.channel.stable">Stable</option>
+        <option value="nightly" data-i18n="settings.channel.nightly">Nightly</option>
+      </select>
+    </div>
+    <div class="set-hint" data-i18n="settings.channelHint">Nightly provides early candidate builds and may be unstable.</div>
+    <div class="set-row">
       <label data-i18n="settings.updates">Updates</label>
       <span id="set-ver" style="color:var(--muted)"></span>
       <button class="btn" id="set-check" style="margin-left:auto" data-i18n="settings.checkUpdates">Check for updates</button>

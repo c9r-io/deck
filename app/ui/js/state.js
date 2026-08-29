@@ -20,6 +20,7 @@ Object.assign(globalThis, {
   lineBuf: '',
   nextIdCounter: 1,
   pendingUpdate: null,
+  updateDownloadBytes: 0,
   lastPollError: null,
   pollTimer: null,
   ptyGens: new Map(),
@@ -31,7 +32,11 @@ Object.assign(globalThis, {
   rxBytes: 0,
   saveTimer: null,
   sepLogged: 0,
-  settings: { editor: '', debug: false, locale: 'system', theme: 'deck-dark', accent: 'teal' },
+  settings: {
+    editor: '', debug: false, locale: 'system', theme: 'deck-dark', accent: 'teal',
+    updateChannel: 'stable',
+  },
+  buildIdentity: { version: '', commit: 'dev' },
   term: null,
   wheelTimer: null,
 });

@@ -57,3 +57,9 @@ jobs:
       #    syntax check; that's what gate 1 is for
       - name: JS unresolved-identifier scan
         run: node app/ui/js/check.mjs
+
+      - name: Release tooling fixtures
+        run: python3 -m unittest scripts/test_release_tools.py
+
+      - name: Workflow syntax and expression validation
+        run: scripts/check-workflows

@@ -1,0 +1,307 @@
+name: nightly
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Candidate commit or tag (must be reachable from main)'
+        required: true
+        default: main
+        type: string
+      version:
+        description: 'Strict numeric app version (MAJOR.MINOR.PATCH)'
+        required: true
+        type: string
+      notes:
+        description: 'Public candidate notes (no secrets)'
+        required: false
+        type: string
+      publish_feed:
+        description: 'Publish this verified candidate to the rolling Nightly feed'
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-release-and-feed
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+      tag: ${{ steps.resolve.outputs.tag }}
+      version: ${{ steps.resolve.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.ref }}
+      - id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_REF: ${{ inputs.ref }}
+          CANDIDATE_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          [[ "$CANDIDATE_REF" =~ ^[A-Za-z0-9._/-]{1,160}$ ]]
+          [[ ! "$CANDIDATE_REF" =~ (^|/)\.\.?(/|$) ]]
+          scripts/release_channels.py validate-version "$CANDIDATE_VERSION"
+          sha=$(git rev-parse --verify "${CANDIDATE_REF}^{commit}")
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          git merge-base --is-ancestor "$sha" origin/main
+          git checkout --detach "$sha"
+          scripts/release-version check --expected "$CANDIDATE_VERSION" --skip-monotonic
+
+          published=()
+          while IFS= read -r release_tag; do
+            if [[ "$release_tag" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+              published+=(--published "${BASH_REMATCH[1]}")
+            elif [[ "$release_tag" =~ ^nightly-v([0-9]+\.[0-9]+\.[0-9]+)-[0-9]{8}-[0-9a-f]{7,40}$ ]]; then
+              published+=(--published "${BASH_REMATCH[1]}")
+            fi
+          done < <(gh api --paginate "repos/$GITHUB_REPOSITORY/releases" --jq '.[].tag_name')
+          scripts/release_channels.py assert-newer --candidate "$CANDIDATE_VERSION" "${published[@]}"
+
+          date_utc=$(date -u +%Y%m%d)
+          candidate_tag=$(scripts/release_channels.py candidate-tag \
+            --version "$CANDIDATE_VERSION" --date "$date_utc" --sha "$sha")
+          if git ls-remote --exit-code --tags origin "refs/tags/$candidate_tag" >/dev/null 2>&1; then
+            echo "candidate tag already exists: $candidate_tag" >&2
+            exit 1
+          fi
+          if gh release view "$candidate_tag" >/dev/null 2>&1; then
+            echo "candidate Release already exists: $candidate_tag" >&2
+            exit 1
+          fi
+          stable_tag="v$CANDIDATE_VERSION"
+          if git ls-remote --exit-code --tags origin "refs/tags/$stable_tag" >/dev/null 2>&1 \
+             || gh release view "$stable_tag" >/dev/null 2>&1; then
+            echo "Stable identity already exists: $stable_tag" >&2
+            exit 1
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "tag=$candidate_tag" >> "$GITHUB_OUTPUT"
+          echo "version=$CANDIDATE_VERSION" >> "$GITHUB_OUTPUT"
+
+  test:
+    needs: resolve
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            app/src-tauri
+      - name: Full release gate
+        run: |
+          set -euo pipefail
+          cargo fmt --all -- --check
+          cargo fmt --all --check --manifest-path app/src-tauri/Cargo.toml
+          cargo clippy --all-targets --all-features --locked -- -D warnings
+          cargo clippy --all-targets --all-features --locked --manifest-path app/src-tauri/Cargo.toml -- -D warnings
+          cargo test --all-targets --all-features --locked
+          cargo test --all-targets --all-features --locked --manifest-path app/src-tauri/Cargo.toml -- --test-threads=1
+          for file in app/ui/js/*.js app/ui/js/i18n/*.js app/ui/js/*.mjs app/ui/test/*.mjs; do
+            node --check "$file"
+          done
+          node --test app/ui/test/*.mjs
+          node app/ui/js/check.mjs
+          python3 -m unittest scripts/test_release_tools.py
+          scripts/check-workflows
+
+  build-publish:
+    needs: [resolve, test]
+    runs-on: macos-14
+    environment: nightly
+    permissions:
+      contents: write
+    env:
+      CANDIDATE_SHA: ${{ needs.resolve.outputs.sha }}
+      CANDIDATE_TAG: ${{ needs.resolve.outputs.tag }}
+      CANDIDATE_VERSION: ${{ needs.resolve.outputs.version }}
+      CANDIDATE_NOTES: ${{ inputs.notes }}
+      PUBLISH_FEED: ${{ inputs.publish_feed }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.resolve.outputs.sha }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            app/src-tauri/target
+          key: ${{ runner.os }}-nightly-cargo-${{ hashFiles('app/src-tauri/Cargo.lock') }}
+      - name: Build, sign, notarize app and updater archive
+        uses: tauri-apps/tauri-action@v0
+        env:
+          DECK_BUILD_COMMIT: ${{ needs.resolve.outputs.sha }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          projectPath: app
+          args: --target aarch64-apple-darwin
+      - name: Verify carrier and assemble immutable candidate
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          mkdir candidate unpacked
+          dmg_files=(app/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg)
+          archives=(app/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/deck.app.tar.gz)
+          signatures=(app/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/deck.app.tar.gz.sig)
+          test "${#dmg_files[@]}" -eq 1
+          test "${#archives[@]}" -eq 1
+          test "${#signatures[@]}" -eq 1
+          test -f "${dmg_files[0]}"
+          test -f "${archives[0]}"
+          test -f "${signatures[0]}"
+          cp "${dmg_files[0]}" "candidate/deck_${CANDIDATE_VERSION}_aarch64.dmg"
+          cp "${archives[0]}" candidate/deck_aarch64.app.tar.gz
+          cp "${signatures[0]}" candidate/deck_aarch64.app.tar.gz.sig
+          tar -xzf candidate/deck_aarch64.app.tar.gz -C unpacked
+          app_path=unpacked/deck.app
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app_path/Contents/Info.plist")" = io.c9r.deck
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app_path/Contents/Info.plist")" = "$CANDIDATE_VERSION"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app_path/Contents/Info.plist")" = "$CANDIDATE_VERSION"
+          strings "$app_path/Contents/MacOS/deck" | grep -Fqx "$CANDIDATE_SHA"
+          codesign --verify --deep --strict --verbose=2 "$app_path"
+          xcrun stapler validate "$app_path"
+          spctl -a -vv -t exec "$app_path"
+
+          dmg="candidate/deck_${CANDIDATE_VERSION}_aarch64.dmg"
+          codesign --verify --verbose=2 "$dmg"
+          xcrun notarytool submit "$dmg" --apple-id "$APPLE_ID" \
+            --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait
+          xcrun stapler staple "$dmg"
+          xcrun stapler validate "$dmg"
+          spctl -a -vv -t install "$dmg"
+
+          printf '%s\n' "${CANDIDATE_NOTES:-Nightly candidate $CANDIDATE_VERSION}" > candidate/notes.txt
+          built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          scripts/release_channels.py manifest --version "$CANDIDATE_VERSION" \
+            --tag "$CANDIDATE_TAG" --signature-file candidate/deck_aarch64.app.tar.gz.sig \
+            --notes-file candidate/notes.txt --pub-date "$built_at" --output candidate/candidate.json
+          identity=$(codesign -dv --verbose=4 "$app_path" 2>&1 | sed -n 's/^Authority=//p' | head -1)
+          team_id=$(codesign -dv --verbose=4 "$app_path" 2>&1 | sed -n 's/^TeamIdentifier=//p')
+          scripts/release_channels.py provenance --dir candidate \
+            --dmg "deck_${CANDIDATE_VERSION}_aarch64.dmg" --version "$CANDIDATE_VERSION" \
+            --tag "$CANDIDATE_TAG" --commit "$CANDIDATE_SHA" --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" --built-at "$built_at" \
+            --team-id "$team_id" --identity "$identity" --output candidate/provenance.json
+          scripts/release_channels.py write-sums --dir candidate --output candidate/SHA256SUMS \
+            "deck_${CANDIDATE_VERSION}_aarch64.dmg" deck_aarch64.app.tar.gz \
+            deck_aarch64.app.tar.gz.sig candidate.json
+          scripts/release_channels.py verify-candidate --dir candidate \
+            --tag "$CANDIDATE_TAG" --commit "$CANDIDATE_SHA"
+      - name: Verify updater minisign signature
+        run: |
+          set -euo pipefail
+          brew install minisign
+          python3 - <<'PY'
+          import base64, json, pathlib
+          root = pathlib.Path('candidate')
+          root.joinpath('signature.minisig').write_bytes(base64.b64decode(root.joinpath('deck_aarch64.app.tar.gz.sig').read_text().strip(), validate=True))
+          config = json.loads(pathlib.Path('app/src-tauri/tauri.conf.json').read_text())
+          root.joinpath('updater.pub').write_bytes(base64.b64decode(config['plugins']['updater']['pubkey'], validate=True))
+          PY
+          minisign -Vm candidate/deck_aarch64.app.tar.gz \
+            -x candidate/signature.minisig -p candidate/updater.pub
+      - name: Publish and independently verify immutable prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git tag -a "$CANDIDATE_TAG" "$CANDIDATE_SHA" \
+            -m "deck Nightly $CANDIDATE_VERSION ($CANDIDATE_SHA)"
+          git push origin "refs/tags/$CANDIDATE_TAG"
+          gh release create "$CANDIDATE_TAG" --verify-tag --target "$CANDIDATE_SHA" --draft --prerelease \
+            --title "deck Nightly $CANDIDATE_VERSION (${CANDIDATE_SHA:0:7})" \
+            --notes-file candidate/notes.txt \
+            "candidate/deck_${CANDIDATE_VERSION}_aarch64.dmg" \
+            candidate/deck_aarch64.app.tar.gz candidate/deck_aarch64.app.tar.gz.sig \
+            candidate/candidate.json candidate/SHA256SUMS candidate/provenance.json
+          mkdir redownload
+          gh release download "$CANDIDATE_TAG" --dir redownload
+          gh release view "$CANDIDATE_TAG" --json tagName,isDraft,isPrerelease,assets,targetCommitish > redownload/release.json
+          scripts/release_channels.py verify-candidate --dir redownload \
+            --tag "$CANDIDATE_TAG" --commit "$CANDIDATE_SHA"
+          for file in "deck_${CANDIDATE_VERSION}_aarch64.dmg" deck_aarch64.app.tar.gz \
+            deck_aarch64.app.tar.gz.sig candidate.json SHA256SUMS provenance.json; do
+            cmp "candidate/$file" "redownload/$file"
+          done
+          gh release edit "$CANDIDATE_TAG" --draft=false --prerelease
+          gh release view "$CANDIDATE_TAG" --json tagName,isDraft,isPrerelease,assets,targetCommitish > redownload/release.json
+          scripts/release_channels.py verify-candidate --dir redownload \
+            --tag "$CANDIDATE_TAG" --commit "$CANDIDATE_SHA" --release-json redownload/release.json
+      - name: Publish rolling Nightly feed last
+        if: inputs.publish_feed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir feed-check feed-backup
+          if ! gh release view nightly-feed >/dev/null 2>&1; then
+            gh release create nightly-feed --target "$CANDIDATE_SHA" --prerelease \
+              --title 'deck Nightly update feed' \
+              --notes 'Mutable pointer only. Immutable candidate evidence lives in nightly-v* prereleases.'
+          elif ! gh release view nightly-feed --json tagName,isDraft,isPrerelease \
+              --jq 'select(.tagName == "nightly-feed" and (.isDraft | not) and .isPrerelease) | .tagName' \
+              | grep -Fqx nightly-feed; then
+            echo "nightly-feed must remain a published prerelease" >&2
+            exit 1
+          fi
+          versioned="latest-${CANDIDATE_VERSION}.json"
+          if gh release view nightly-feed --json assets --jq '.assets[].name' | grep -Fqx "$versioned"; then
+            echo "versioned Nightly manifest already exists: $versioned" >&2
+            exit 1
+          fi
+          if gh release download nightly-feed --pattern latest.json --dir feed-backup >/dev/null 2>&1; then
+            had_previous=1
+          else
+            had_previous=0
+          fi
+          restore_previous() {
+            if [ "$had_previous" -eq 1 ]; then
+              gh release upload nightly-feed feed-backup/latest.json --clobber || true
+            fi
+          }
+          trap restore_previous ERR
+          cp candidate/candidate.json "feed-check/$versioned"
+          cp candidate/candidate.json feed-check/latest.json
+          gh release upload nightly-feed "feed-check/$versioned"
+          gh release download nightly-feed --pattern "$versioned" --dir feed-check/downloaded
+          cmp "feed-check/$versioned" "feed-check/downloaded/$versioned"
+          gh release upload nightly-feed feed-check/latest.json --clobber
+          gh release download nightly-feed --pattern latest.json --dir feed-check/current
+          cmp candidate/candidate.json feed-check/current/latest.json
+          scripts/release_channels.py verify-manifest --file feed-check/current/latest.json \
+            --version "$CANDIDATE_VERSION" --tag "$CANDIDATE_TAG" \
+            --signature-file candidate/deck_aarch64.app.tar.gz.sig
+          trap - ERR

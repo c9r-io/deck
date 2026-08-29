@@ -7,6 +7,34 @@ while the real webview fails (that is how every regression in this list
 originally shipped). Run through them in the `app/run.sh` build before
 tagging a release; 3 minutes total.
 
+## Nightly release channel candidate — 2026-08-29
+
+- [x] Unit/static fixtures cover strict/invalid versions, source mismatch,
+      non-incrementing candidates, candidate tag/commit/provenance mismatch,
+      missing/tampered assets, malformed signatures/manifests, wrong target/
+      URL/version/signature, Stable conflicts, prerelease state, forbidden
+      promotion build commands and Stable resolver rejection of Nightly tags.
+- [x] Settings default and legacy/unknown/damaged channel migration remain
+      Stable. Nightly requires explicit confirmation; persistence failure
+      restores the previous channel. Switching to Stable performs only a
+      settings write and never requests an implicit downgrade.
+- [x] Static/Rust gates prove the webview has no updater permission or endpoint,
+      each backend check selects exactly one fixed Stable or Nightly URL, and
+      Tauri retains download/signature/install ownership. Version/channel/commit
+      identity is bounded to public non-personal fields.
+- [x] actionlint validates `test.yml`, strict Stable `release.yml`, protected
+      `nightly.yml` and copy-only `promote.yml`. Release tooling fixtures run in
+      normal CI and in the Nightly pre-build gate.
+- [ ] With explicit release authorization, publish two increasing, signed and
+      notarized Nightly candidates. Install the first DMG, verify Gatekeeper and
+      real data/tmux/scheduler/terminal/i18n survival, then verify Nightly
+      self-update to the second while a Stable client sees neither prerelease.
+- [ ] With explicit promotion authorization and production Environment review,
+      promote the tested candidate. Record candidate/Stable URLs and workflow
+      runs; compare DMG/archive/signature SHA-256 byte-for-byte; update an older
+      Stable through `/releases/latest/`. No public Nightly, feed or Stable
+      promotion is authorized merely by this checklist.
+
 ## Theme system candidate — 2026-08-29
 
 - [x] Static/unit gates cover all four themes × four accent presets, require
@@ -262,6 +290,13 @@ physical-input blocker are recorded in `RELEASE_REPORT_v0.4.32.md`.
 - [ ] Select Follow System, toggle macOS Light/Dark, and confirm live switching;
       select a fixed theme and confirm later macOS changes are ignored.
 - [ ] deck menu → Check for Updates… reports up-to-date (or offers install)
+- [ ] Existing/missing/corrupt channel settings start on Stable. Opt into
+      Nightly only after the risk confirmation; the version label shows
+      `vX.Y.Z · Nightly · commit`. Switch back and confirm the no-downgrade
+      explanation, then restart and verify the Stable preference persisted.
+- [ ] Make the Nightly feed unavailable or malformed: the check fails visibly
+      and never queries Stable or another URL. Test a deliberately invalidly
+      signed fixture only in an isolated feed/release: Tauri refuses install.
 
 ## Scheduler queue & templates
 - [ ] Add an `at` prompt 1 min out on a harmless shell card whose launch command

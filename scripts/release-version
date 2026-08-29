@@ -1,0 +1,161 @@
+#!/usr/bin/env python3
+"""Prepare and validate deck's numeric application version without network I/O."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+VERSION_RE = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
+STABLE_TAG_RE = re.compile(r"^v([0-9]+\.[0-9]+\.[0-9]+)$")
+CANDIDATE_TAG_RE = re.compile(
+    r"^nightly-v([0-9]+\.[0-9]+\.[0-9]+)-[0-9]{8}-[0-9a-f]{7,40}$"
+)
+
+
+class VersionError(RuntimeError):
+    pass
+
+
+def parse_version(value: str) -> tuple[int, int, int]:
+    match = VERSION_RE.fullmatch(value)
+    if not match:
+        raise VersionError(f"version must be strict MAJOR.MINOR.PATCH: {value!r}")
+    return tuple(int(part) for part in match.groups())  # type: ignore[return-value]
+
+
+def paths(root: Path) -> tuple[Path, Path, Path]:
+    base = root / "app" / "src-tauri"
+    return base / "tauri.conf.json", base / "Cargo.toml", base / "Cargo.lock"
+
+
+def source_versions(root: Path) -> tuple[str, str, str]:
+    tauri_path, cargo_path, lock_path = paths(root)
+    tauri_version = json.loads(tauri_path.read_text())["version"]
+    cargo_text = cargo_path.read_text()
+    cargo_match = re.search(r"(?ms)^\[package\]\n.*?^version\s*=\s*\"([^\"]+)\"", cargo_text)
+    if not cargo_match:
+        raise VersionError("Cargo.toml package version not found")
+    lock_text = lock_path.read_text()
+    lock_match = re.search(
+        r'(?ms)^\[\[package\]\]\nname = "deck-app"\nversion = "([^"]+)"', lock_text
+    )
+    if not lock_match:
+        raise VersionError("Cargo.lock deck-app package version not found")
+    return str(tauri_version), cargo_match.group(1), lock_match.group(1)
+
+
+def local_published_versions(root: Path) -> list[str]:
+    result = subprocess.run(
+        ["git", "tag", "--list"], cwd=root, text=True, capture_output=True, check=False
+    )
+    if result.returncode != 0:
+        return []
+    versions: list[str] = []
+    for tag in result.stdout.splitlines():
+        match = STABLE_TAG_RE.fullmatch(tag) or CANDIDATE_TAG_RE.fullmatch(tag)
+        if match:
+            versions.append(match.group(1))
+    return versions
+
+
+def assert_consistent(root: Path, expected: str | None = None) -> str:
+    versions = source_versions(root)
+    for value in versions:
+        parse_version(value)
+    if len(set(versions)) != 1:
+        raise VersionError(
+            "source versions disagree: "
+            f"tauri.conf.json={versions[0]}, Cargo.toml={versions[1]}, Cargo.lock={versions[2]}"
+        )
+    if expected is not None and versions[0] != expected:
+        raise VersionError(f"source version {versions[0]} does not equal requested {expected}")
+    return versions[0]
+
+
+def assert_newer(version: str, published: list[str]) -> None:
+    candidate = parse_version(version)
+    parsed = [(parse_version(item), item) for item in published]
+    if parsed:
+        latest_tuple, latest = max(parsed)
+        if candidate <= latest_tuple:
+            raise VersionError(f"version {version} must be greater than published {latest}")
+
+
+def replace_once(pattern: str, replacement: str, text: str, label: str) -> str:
+    updated, count = re.subn(pattern, replacement, text, count=1, flags=re.MULTILINE | re.DOTALL)
+    if count != 1:
+        raise VersionError(f"could not update exactly one {label} version")
+    return updated
+
+
+def set_version(root: Path, version: str) -> None:
+    parse_version(version)
+    tauri_path, cargo_path, lock_path = paths(root)
+    tauri_text = tauri_path.read_text()
+    # Preserve the repository's deliberate compact formatting; only the
+    # top-level application version changes.
+    tauri_text = replace_once(
+        r'(^  "version"\s*:\s*)"[^"]+"',
+        rf'\g<1>"{version}"',
+        tauri_text,
+        "tauri.conf.json application",
+    )
+    tauri_path.write_text(tauri_text)
+
+    cargo_text = cargo_path.read_text()
+    cargo_text = replace_once(
+        r'(^\[package\]\n(?:(?!^\[).)*?^version\s*=\s*)"[^"]+"',
+        rf'\g<1>"{version}"',
+        cargo_text,
+        "Cargo.toml package",
+    )
+    cargo_path.write_text(cargo_text)
+
+    lock_text = lock_path.read_text()
+    lock_text = replace_once(
+        r'(^\[\[package\]\]\nname = "deck-app"\nversion = )"[^"]+"',
+        rf'\g<1>"{version}"',
+        lock_text,
+        "Cargo.lock deck-app package",
+    )
+    lock_path.write_text(lock_text)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[1])
+    parser.add_argument("--published-version", action="append", default=[])
+    sub = parser.add_subparsers(dest="command", required=True)
+    check = sub.add_parser("check")
+    check.add_argument("--expected")
+    check.add_argument("--skip-monotonic", action="store_true")
+    set_cmd = sub.add_parser("set")
+    set_cmd.add_argument("version")
+    set_cmd.add_argument("--skip-monotonic", action="store_true")
+    args = parser.parse_args()
+    root = args.root.resolve()
+    try:
+        published = local_published_versions(root) + args.published_version
+        if args.command == "set":
+            if not args.skip_monotonic:
+                assert_newer(args.version, published)
+            set_version(root, args.version)
+            version = assert_consistent(root, args.version)
+        else:
+            version = assert_consistent(root, args.expected)
+            if not args.skip_monotonic:
+                assert_newer(version, published)
+        print(version)
+        return 0
+    except (OSError, ValueError, KeyError, VersionError) as error:
+        print(f"release-version: {error}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

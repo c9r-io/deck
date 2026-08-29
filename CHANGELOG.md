@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.4.37 — 2026-08-29
+
+- Add opt-in Stable/Nightly update channels with Stable-safe settings
+  migration, one-time Nightly risk confirmation, fixed backend-owned endpoints,
+  Tauri-native signature verification/install, and visible version/channel/
+  commit identity.
+- Add deterministic numeric version tooling, candidate manifest/hash/provenance
+  validation, and fixture coverage for version, tag, asset, signature,
+  manifest, Release-state and copy-only promotion failures.
+- Add a protected Nightly candidate workflow with the full test/sign/notarize/
+  staple/Gatekeeper gate and a last-step rolling feed update that preserves the
+  prior verified pointer on ordinary failures.
+- Add a production-approved Stable promotion workflow that copies the exact
+  candidate DMG/updater/signature, re-verifies every byte and Apple/minisign
+  identity, creates the Stable tag at the same commit, and publishes Stable
+  `latest.json` last without rebuilding the application.
+- Tighten the legacy Stable resolver to strict tags, per-version concurrency,
+  draft-until-complete publication and non-destructive incomplete-Release
+  handling; promoted candidate commits cannot trigger a duplicate source build.
+
 ## 0.4.36 — 2026-08-29
 
 - Add one closed theme registry for application CSS, native window chrome,

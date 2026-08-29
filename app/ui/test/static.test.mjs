@@ -24,6 +24,22 @@ test('i18n owns visible copy and translation parameters never enter innerHTML', 
     'visible dynamic prose must use a stable translation key');
 });
 
+test('update channels are backend-owned, isolated and never trigger downgrade', () => {
+  const app = read('app/ui/js/app.js');
+  const dialogs = read('app/ui/js/dialogs.js');
+  const backend = read('app/src-tauri/src/commands.rs');
+  assert.doesNotMatch(app, /__TAURI__\.updater|\.updater\.check/);
+  assert.doesNotMatch(app + dialogs, /https?:\/\//, 'the webview owns no updater endpoint');
+  assert.match(app, /inv\('check_for_update', \{ channel: settings\.updateChannel \}\)/);
+  assert.match(backend, /STABLE_UPDATE_ENDPOINT[\s\S]*releases\/latest\/download\/latest\.json/);
+  assert.match(backend, /NIGHTLY_UPDATE_ENDPOINT[\s\S]*releases\/download\/nightly-feed\/latest\.json/);
+  assert.match(backend, /\.endpoints\(vec!\[endpoint\]\)/, 'each check has exactly one endpoint');
+  assert.doesNotMatch(dialogs, /install_update|allow_downgrade|allowDowngrade/);
+  assert.match(backend, /download_and_install/, 'Tauri retains download, verification and install ownership');
+  assert.doesNotMatch(read('app/src-tauri/capabilities/default.json'), /updater:/,
+    'the webview has no direct updater command permission');
+});
+
 test('the canonical dictionary has no unused keys outside documented dynamic families', () => {
   const source = ['app/ui/index.html', 'app/ui/js/app.js', 'app/ui/js/board.js',
     'app/ui/js/dialogs.js', 'app/ui/js/i18n.js', 'app/ui/js/layout.js',

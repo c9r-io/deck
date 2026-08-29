@@ -1,6 +1,6 @@
 name: release
 
-# Build, sign, and notarize the macOS app (Apple Silicon) for a v* tag,
+# Build, sign, and notarize the macOS app (Apple Silicon) for a strict Stable tag,
 # then attach the .dmg and in-app-updater artifacts to a GitHub Release.
 # Triggers:
 #   1. tag push          — the normal path
@@ -11,7 +11,7 @@ name: release
 on:
   push:
     tags:
-      - 'v*'
+      - 'v[0-9]*.[0-9]*.[0-9]*'
   schedule:
     - cron: '7 * * * *'
   workflow_dispatch:
@@ -30,6 +30,8 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.pick.outputs.tag }}
+      version: ${{ steps.pick.outputs.version }}
+      sha: ${{ steps.pick.outputs.sha }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -38,31 +40,89 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            pushed_tag=${GITHUB_REF#refs/tags/}
+            if [[ ! "$pushed_tag" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+              echo "non-Stable tag ignored"
+              echo "tag=" >> "$GITHUB_OUTPUT"
+              echo "version=" >> "$GITHUB_OUTPUT"
+              echo "sha=" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            version=${pushed_tag#v}
+            commit=$(git rev-parse "refs/tags/$pushed_tag^{commit}")
+            if git tag --points-at "$commit" --list 'nightly-v*' | \
+                 grep -Eq '^nightly-v[0-9]+\.[0-9]+\.[0-9]+-[0-9]{8}-[0-9a-f]{7,40}$'; then
+              echo "Stable tag points at a Nightly candidate; promotion owns this release"
+              echo "tag=" >> "$GITHUB_OUTPUT"
+              echo "version=" >> "$GITHUB_OUTPUT"
+              echo "sha=" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            if gh release view "$pushed_tag" -R "$GITHUB_REPOSITORY" \
+                 --json assets,isDraft,isPrerelease \
+                 --jq 'select((.isDraft | not) and (.isPrerelease | not)) | .assets[].name' \
+                 2>/dev/null | grep -qx latest.json; then
+              echo "complete release for $pushed_tag exists; no rebuild or overwrite"
+              echo "tag=" >> "$GITHUB_OUTPUT"
+              echo "version=" >> "$GITHUB_OUTPUT"
+              echo "sha=" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            if gh release view "$pushed_tag" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              echo "incomplete release for $pushed_tag requires ownership/provenance inspection; leaving it untouched"
+              echo "tag=" >> "$GITHUB_OUTPUT"
+              echo "version=" >> "$GITHUB_OUTPUT"
+              echo "sha=" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "tag=$pushed_tag" >> "$GITHUB_OUTPUT"
+            echo "version=$version" >> "$GITHUB_OUTPUT"
+            echo "sha=$commit" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          latest=$(git tag -l 'v*' --sort=-v:refname | head -1)
+          latest=$(git tag -l 'v*' --sort=-v:refname | \
+            grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || true)
           if [ -z "$latest" ]; then
-            echo "no v* tags"; echo "tag=" >> "$GITHUB_OUTPUT"; exit 0
+            echo "no Stable tags"
+            echo "tag=" >> "$GITHUB_OUTPUT"
+            echo "version=" >> "$GITHUB_OUTPUT"
+            echo "sha=" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
           # a release is only complete when the updater manifest made it up —
           # a build that dies mid-upload leaves a partial release behind
-          if gh release view "$latest" -R "$GITHUB_REPOSITORY" --json assets \
-               --jq '.assets[].name' 2>/dev/null | grep -qx 'latest.json'; then
-            echo "complete release for $latest exists"; echo "tag=" >> "$GITHUB_OUTPUT"
+          if gh release view "$latest" -R "$GITHUB_REPOSITORY" \
+               --json assets,isDraft,isPrerelease \
+               --jq 'select((.isDraft | not) and (.isPrerelease | not)) | .assets[].name' \
+               2>/dev/null | grep -qx 'latest.json'; then
+            echo "complete release for $latest exists"
+            echo "tag=" >> "$GITHUB_OUTPUT"
+            echo "version=" >> "$GITHUB_OUTPUT"
+            echo "sha=" >> "$GITHUB_OUTPUT"
           else
             if gh release view "$latest" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-              echo "incomplete release for $latest — deleting so the build recreates it"
-              gh release delete "$latest" -R "$GITHUB_REPOSITORY" --yes
+              echo "incomplete release for $latest requires ownership/provenance inspection; leaving it untouched"
+              echo "tag=" >> "$GITHUB_OUTPUT"
+              echo "version=" >> "$GITHUB_OUTPUT"
+              echo "sha=" >> "$GITHUB_OUTPUT"
+              exit 0
             fi
-            echo "will build $latest"; echo "tag=$latest" >> "$GITHUB_OUTPUT"
+            echo "will build $latest"
+            echo "tag=$latest" >> "$GITHUB_OUTPUT"
+            echo "version=${latest#v}" >> "$GITHUB_OUTPUT"
+            echo "sha=$(git rev-parse "refs/tags/$latest^{commit}")" >> "$GITHUB_OUTPUT"
           fi
 
   build-macos:
     needs: resolve
     if: needs.resolve.outputs.tag != ''
     runs-on: macos-latest # Apple Silicon
+    environment: production
+    concurrency:
+      group: stable-release-v${{ needs.resolve.outputs.version }}
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
         with:
@@ -92,6 +152,7 @@ jobs:
           # In-app updater artifact signing (minisign)
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          DECK_BUILD_COMMIT: ${{ needs.resolve.outputs.sha }}
         with:
           projectPath: app
           tagName: ${{ needs.resolve.outputs.tag }}
@@ -99,7 +160,7 @@ jobs:
           releaseBody: |
             macOS (Apple Silicon) build, signed and notarized with a Developer ID
             certificate — no Gatekeeper prompts.
-          releaseDraft: false
+          releaseDraft: true
           prerelease: false
 
       # Tauri notarizes/staples deck.app before creating the DMG, then signs
@@ -115,6 +176,10 @@ jobs:
         run: |
           set -euo pipefail
           trap 'gh release delete-asset "$RELEASE_TAG" latest.json -R "$GITHUB_REPOSITORY" -y || true' ERR
+          mkdir updater-manifest
+          gh release download "$RELEASE_TAG" -R "$GITHUB_REPOSITORY" \
+            --pattern latest.json --dir updater-manifest
+          gh release delete-asset "$RELEASE_TAG" latest.json -R "$GITHUB_REPOSITORY" -y
           dmg=(app/src-tauri/target/release/bundle/dmg/*.dmg)
           test "${#dmg[@]}" -eq 1
           codesign --verify --verbose=2 "${dmg[0]}"
@@ -126,11 +191,19 @@ jobs:
           spctl -a -vv -t install "${dmg[0]}"
           gh release upload "$RELEASE_TAG" "${dmg[0]}" \
             -R "$GITHUB_REPOSITORY" --clobber
+          gh release upload "$RELEASE_TAG" updater-manifest/latest.json \
+            -R "$GITHUB_REPOSITORY"
+          gh release edit "$RELEASE_TAG" -R "$GITHUB_REPOSITORY" \
+            --draft=false --prerelease=false
           trap - ERR
 
   repair-dmg:
     if: github.event_name == 'workflow_dispatch' && inputs.repair_dmg_tag != ''
     runs-on: macos-latest
+    environment: production
+    concurrency:
+      group: stable-release-${{ inputs.repair_dmg_tag }}
+      cancel-in-progress: false
     steps:
       - name: Download, notarize, staple, and replace published DMG
         env:
@@ -142,7 +215,6 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
-          trap 'gh release delete-asset "$RELEASE_TAG" latest.json -R "$GITHUB_REPOSITORY" -y || true' ERR
           mkdir artifact
           gh release download "$RELEASE_TAG" -R "$GITHUB_REPOSITORY" \
             --pattern '*.dmg' --dir artifact
@@ -157,4 +229,3 @@ jobs:
           spctl -a -vv -t install "${dmg[0]}"
           gh release upload "$RELEASE_TAG" "${dmg[0]}" \
             -R "$GITHUB_REPOSITORY" --clobber
-          trap - ERR

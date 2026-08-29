@@ -125,8 +125,9 @@ export async function openSettings() {
   $('set-locale').value = settings.locale || 'system';
   $('set-theme').value = settings.theme || 'deck-dark';
   $('set-accent').value = settings.accent || 'teal';
+  $('set-channel').value = settings.updateChannel || 'stable';
   $('set-debug').checked = !!settings.debug;
-  $('set-ver').textContent = 'deck v' + ($('app-ver').textContent || '?');
+  $('set-ver').textContent = 'deck ' + ($('app-ver').textContent || 'v?');
   $('set-upd-status').textContent = '';
   $('settings-modal').style.display = 'flex';
 }
@@ -157,6 +158,7 @@ $('set-locale').onchange = () => {
 };
 $('set-theme').onchange = () => persistThemeChoice();
 $('set-accent').onchange = () => persistThemeChoice();
+$('set-channel').onchange = () => persistUpdateChannelChoice();
 
 let themeSavePending = false;
 export async function persistThemeChoice() {
@@ -168,7 +170,7 @@ export async function persistThemeChoice() {
     accent: $('set-accent').value,
   });
   themeSavePending = true;
-  const locked = ['set-theme', 'set-accent', 'set-locale', 'set-editor', 'set-debug'].map($);
+  const locked = ['set-theme', 'set-accent', 'set-channel', 'set-locale', 'set-editor', 'set-debug'].map($);
   locked.forEach(control => { control.disabled = true; });
   activateTheme(candidate); // immediate preview; commit only after durable save
   try {
@@ -182,6 +184,41 @@ export async function persistThemeChoice() {
     uev('settings-save-fail');
   } finally {
     themeSavePending = false;
+    locked.forEach(control => { control.disabled = false; });
+  }
+}
+
+let channelSavePending = false;
+export async function persistUpdateChannelChoice() {
+  if (channelSavePending) return;
+  const previous = settings.updateChannel || 'stable';
+  const desired = $('set-channel').value;
+  if (desired === 'nightly' && previous !== 'nightly') {
+    const accepted = await confirmDialog(t('settings.channelNightlyConfirm'));
+    if (!accepted) {
+      $('set-channel').value = previous;
+      return;
+    }
+  }
+  const candidate = normalizeSettings({ ...settings, updateChannel: desired });
+  channelSavePending = true;
+  const locked = ['set-theme', 'set-accent', 'set-channel', 'set-locale', 'set-editor', 'set-debug'].map($);
+  locked.forEach(control => { control.disabled = true; });
+  try {
+    await inv('save_settings', { data: serializeSettings(candidate) });
+    settings = candidate;
+    toast(t(candidate.updateChannel === 'nightly'
+      ? 'settings.channelNightlyEnabled' : 'settings.channelStableEnabled'));
+    if (typeof window.dispatchEvent === 'function' && typeof Event === 'function') {
+      window.dispatchEvent(new Event('deck-update-channel-changed'));
+    }
+    $('set-ver').textContent = 'deck ' + ($('app-ver').textContent || 'v?');
+  } catch (_) {
+    $('set-channel').value = previous;
+    toast(t('error.settingsSave'));
+    uev('settings-save-fail');
+  } finally {
+    channelSavePending = false;
     locked.forEach(control => { control.disabled = false; });
   }
 }

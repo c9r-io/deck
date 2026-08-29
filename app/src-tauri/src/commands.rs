@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter};
+use tauri_plugin_updater::UpdaterExt;
 
 use crate::storage;
 use crate::storage::{applog, now_epoch};
@@ -67,6 +68,7 @@ const LISTEN_TARGETS: &[&str] = &[
     "deck-ping",
     "update-check",
     "update-check-manual",
+    "update-download-progress",
     "menu-clear",
     "queue-changed",
     "queue-fired",
@@ -500,6 +502,13 @@ pub(crate) struct SettingsDocRaw {
     theme: Option<String>,
     #[serde(default, deserialize_with = "deserialize_present_string")]
     accent: Option<String>,
+    // Deliberately accept any JSON value on load: older/corrupt/unknown values
+    // migrate to Stable in the frontend rather than making all settings
+    // unreadable. Every deck-authored save serializes the closed enum.
+    #[serde(default)]
+    #[serde(rename = "updateChannel")]
+    #[allow(dead_code)]
+    update_channel: Option<serde_json::Value>,
 }
 
 #[derive(serde::Deserialize)]
@@ -533,6 +542,147 @@ impl TryFrom<SettingsDocRaw> for SettingsDoc {
             }
         }
         Ok(SettingsDoc(raw))
+    }
+}
+
+const STABLE_UPDATE_ENDPOINT: &str =
+    "https://github.com/c9r-io/deck/releases/latest/download/latest.json";
+const NIGHTLY_UPDATE_ENDPOINT: &str =
+    "https://github.com/c9r-io/deck/releases/download/nightly-feed/latest.json";
+
+fn update_endpoint(channel: &str) -> Result<&'static str, String> {
+    match channel {
+        "stable" => Ok(STABLE_UPDATE_ENDPOINT),
+        "nightly" => Ok(NIGHTLY_UPDATE_ENDPOINT),
+        _ => Err("update channel must be stable or nightly".into()),
+    }
+}
+
+fn strict_release_version(value: &str) -> bool {
+    let parts: Vec<_> = value.split('.').collect();
+    parts.len() == 3
+        && parts.iter().all(|part| {
+            !part.is_empty()
+                && part.bytes().all(|b| b.is_ascii_digit())
+                && (*part == "0" || !part.starts_with('0'))
+        })
+}
+
+async fn update_for_channel(
+    app: &AppHandle,
+    channel: &str,
+) -> Result<Option<tauri_plugin_updater::Update>, String> {
+    let endpoint = update_endpoint(channel)?
+        .parse()
+        .map_err(|_| "configured update endpoint is invalid".to_string())?;
+    let updater = app
+        .updater_builder()
+        .endpoints(vec![endpoint])
+        .map_err(|_| "configured update endpoint was rejected".to_string())?
+        .build()
+        .map_err(|_| "updater could not be initialized".to_string())?;
+    updater
+        .check()
+        .await
+        .map_err(|_| "update check failed".to_string())
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct UpdateInfo {
+    version: String,
+    current_version: String,
+    channel: String,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateProgress {
+    event: &'static str,
+    chunk_length: usize,
+    content_length: Option<u64>,
+}
+
+/// Select exactly one backend-owned endpoint. The webview can choose only the
+/// closed channel enum and never supplies a URL or a fallback endpoint.
+#[tauri::command]
+pub(crate) async fn check_for_update(
+    app: AppHandle,
+    channel: String,
+) -> Result<Option<UpdateInfo>, String> {
+    Ok(update_for_channel(&app, &channel)
+        .await?
+        .map(|update| UpdateInfo {
+            version: update.version,
+            current_version: update.current_version,
+            channel,
+        }))
+}
+
+/// Re-check the same single endpoint immediately before download so a stale
+/// UI handle cannot install a different release. Tauri performs download,
+/// minisign verification and installation; this command only reports progress.
+#[tauri::command]
+pub(crate) async fn install_update(
+    app: AppHandle,
+    channel: String,
+    expected_version: String,
+) -> Result<(), String> {
+    if !strict_release_version(&expected_version) {
+        return Err("expected update version is invalid".into());
+    }
+    let update = update_for_channel(&app, &channel)
+        .await?
+        .ok_or_else(|| "the selected update is no longer available".to_string())?;
+    if update.version != expected_version {
+        return Err("the selected update changed; check again".into());
+    }
+    let progress_app = app.clone();
+    let finish_app = app.clone();
+    update
+        .download_and_install(
+            move |chunk_length, content_length| {
+                let _ = progress_app.emit(
+                    "update-download-progress",
+                    UpdateProgress {
+                        event: "progress",
+                        chunk_length,
+                        content_length,
+                    },
+                );
+            },
+            move || {
+                let _ = finish_app.emit(
+                    "update-download-progress",
+                    UpdateProgress {
+                        event: "finished",
+                        chunk_length: 0,
+                        content_length: None,
+                    },
+                );
+            },
+        )
+        .await
+        .map_err(|_| "update download, signature verification, or installation failed".to_string())
+}
+
+#[derive(Serialize)]
+pub(crate) struct BuildIdentity {
+    version: &'static str,
+    commit: String,
+}
+
+#[tauri::command]
+pub(crate) fn build_identity() -> BuildIdentity {
+    let raw = env!("DECK_BUILD_COMMIT");
+    let commit = if raw == "dev" {
+        raw.to_string()
+    } else {
+        raw.chars().take(12).collect()
+    };
+    BuildIdentity {
+        version: env!("CARGO_PKG_VERSION"),
+        commit,
     }
 }
 
@@ -641,7 +791,22 @@ pub(crate) fn save_settings(data: String) -> Result<(), String> {
     if crate::smoke_faults::take("settings-save") {
         return Err("injected settings save failure".into());
     }
+    validate_saved_update_channel(&data)?;
     save_validated::<SettingsDoc>(&settings_path(), &data, "settings")
+}
+
+fn validate_saved_update_channel(data: &str) -> Result<(), String> {
+    let value: serde_json::Value =
+        serde_json::from_str(data).map_err(|_| "settings must be valid JSON".to_string())?;
+    match value.get("updateChannel") {
+        None => Ok(()),
+        Some(serde_json::Value::String(channel))
+            if matches!(channel.as_str(), "stable" | "nightly") =>
+        {
+            Ok(())
+        }
+        Some(_) => Err("updateChannel must be stable or nightly".into()),
+    }
 }
 
 fn validated_palette_color(value: &str) -> bool {
@@ -2223,6 +2388,72 @@ mod tests {
         assert!(serde_json::from_str::<SettingsDoc>(r#"{"accent":"red"}"#).is_err());
         assert!(serde_json::from_str::<SettingsDoc>(r#"{"accent":null}"#).is_err());
         assert!(serde_json::from_str::<SettingsDoc>(r#"[1,2]"#).is_err());
+        for channel in [
+            r#""stable""#,
+            r#""nightly""#,
+            r#""unknown""#,
+            "false",
+            "null",
+        ] {
+            let document = format!(r#"{{"updateChannel":{channel}}}"#);
+            assert!(
+                serde_json::from_str::<SettingsDoc>(&document).is_ok(),
+                "unknown/damaged channel must reach the safe Stable migration"
+            );
+        }
+    }
+
+    #[test]
+    fn update_channel_endpoints_are_a_closed_single_choice() {
+        assert_eq!(update_endpoint("stable").unwrap(), STABLE_UPDATE_ENDPOINT);
+        assert_eq!(update_endpoint("nightly").unwrap(), NIGHTLY_UPDATE_ENDPOINT);
+        assert_ne!(STABLE_UPDATE_ENDPOINT, NIGHTLY_UPDATE_ENDPOINT);
+        for invalid in ["", "beta", "night", "https://example.com/latest.json"] {
+            assert!(update_endpoint(invalid).is_err());
+        }
+    }
+
+    #[test]
+    fn settings_save_persists_only_the_closed_update_channel_enum() {
+        for valid in [
+            r#"{}"#,
+            r#"{"updateChannel":"stable"}"#,
+            r#"{"updateChannel":"nightly"}"#,
+        ] {
+            assert!(validate_saved_update_channel(valid).is_ok());
+        }
+        for invalid in [
+            r#"{"updateChannel":"beta"}"#,
+            r#"{"updateChannel":false}"#,
+            r#"{"updateChannel":null}"#,
+            r#"{"updateChannel":"https://example.com/latest.json"}"#,
+        ] {
+            assert!(validate_saved_update_channel(invalid).is_err());
+        }
+    }
+
+    #[test]
+    fn update_versions_and_build_identity_are_public_bounded_values() {
+        for valid in ["0.4.37", "1.0.0", "12.345.6789"] {
+            assert!(strict_release_version(valid));
+        }
+        for invalid in [
+            "0.4",
+            "01.2.3",
+            "0.4.37-nightly.1",
+            "0.4.37+sha",
+            "1.2.3.4",
+            "1..3",
+        ] {
+            assert!(!strict_release_version(invalid));
+        }
+        let identity = build_identity();
+        assert!(strict_release_version(identity.version));
+        assert!(
+            identity.commit == "dev"
+                || ((7..=12).contains(&identity.commit.len())
+                    && identity.commit.bytes().all(|b| b.is_ascii_hexdigit()))
+        );
     }
 
     #[test]

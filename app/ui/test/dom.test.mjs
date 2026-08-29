@@ -54,7 +54,9 @@ const fakeDocument = {
 globalThis.document = fakeDocument;
 globalThis.window = { __TAURI__: null, __DECK_DEBUG: false };
 
-const { inlineRename, promptDialog, persistThemeChoice } = await import('../js/dialogs.js');
+const {
+  cfmDone, inlineRename, persistUpdateChannelChoice, promptDialog, persistThemeChoice,
+} = await import('../js/dialogs.js');
 const { store } = await import('../js/state.js');
 const { flushBoardMutations, mutateBoard, mutateBoardDebounced } = await import('../js/persistence.js');
 
@@ -163,4 +165,44 @@ test('failed theme persistence restores the prior palette and selectors', async 
   assert.equal(fakeDocument.getElementById('set-theme').value, 'deck-dark');
   assert.equal(fakeDocument.getElementById('set-accent').value, 'teal');
   assert.equal(fakeDocument.getElementById('set-theme').disabled, false);
+});
+
+test('Nightly requires confirmation before a durable closed-enum save', async () => {
+  globalThis.settings = {
+    editor: '', debug: false, locale: 'system', theme: 'deck-dark', accent: 'teal',
+    updateChannel: 'stable', future: { kept: 1 },
+  };
+  fakeDocument.getElementById('set-channel').value = 'nightly';
+  let saved = null;
+  window.__TAURI__ = { core: { invoke: async (cmd, args) => {
+    assert.equal(cmd, 'save_settings');
+    saved = JSON.parse(args.data);
+  } } };
+  const pending = persistUpdateChannelChoice();
+  await tick();
+  assert.equal(fakeDocument.getElementById('cfm').style.display, 'flex');
+  assert.equal(saved, null, 'no Nightly setting is written before consent');
+  cfmDone(true);
+  await pending;
+  assert.equal(globalThis.settings.updateChannel, 'nightly');
+  assert.equal(saved.updateChannel, 'nightly');
+  assert.deepEqual(saved.future, { kept: 1 });
+});
+
+test('channel save failure rolls back and Stable switch never invokes install', async () => {
+  globalThis.settings = {
+    editor: '', debug: false, locale: 'system', theme: 'deck-dark', accent: 'teal',
+    updateChannel: 'nightly',
+  };
+  fakeDocument.getElementById('set-channel').value = 'stable';
+  const calls = [];
+  window.__TAURI__ = { core: { invoke: async cmd => {
+    calls.push(cmd);
+    throw new Error('disk full');
+  } } };
+  await persistUpdateChannelChoice();
+  assert.equal(calls.filter(cmd => cmd === 'save_settings').length, 1);
+  assert.equal(calls.includes('install_update'), false);
+  assert.equal(globalThis.settings.updateChannel, 'nightly');
+  assert.equal(fakeDocument.getElementById('set-channel').value, 'nightly');
 });
