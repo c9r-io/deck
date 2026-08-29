@@ -6,7 +6,7 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
 
-const KINDS: &[&str] = &["board-save", "queue-save", "queue-cancel"];
+const KINDS: &[&str] = &["board-save", "settings-save", "queue-save", "queue-cancel"];
 static COUNTS: LazyLock<Mutex<HashMap<&'static str, u8>>> = LazyLock::new(|| {
     let mut counts = HashMap::new();
     if let Some(kind) = crate::storage::debug_arg("--smoke-fault").and_then(|v| canonical(&v)) {
@@ -102,6 +102,7 @@ mod tests {
     #[test]
     fn fault_protocol_is_a_closed_enum_with_a_small_count() {
         assert_eq!(canonical("board-save"), Some("board-save"));
+        assert_eq!(canonical("settings-save"), Some("settings-save"));
         assert_eq!(canonical("shell"), None);
         assert_eq!(canonical("/tmp/file"), None);
         assert_eq!(canonical("queue-save; rm"), None);

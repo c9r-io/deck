@@ -129,6 +129,8 @@ const SMOKE_CHECKS: &[&str] = &[
     "completion-hidden",
     "board-concurrency",
     "board-fault",
+    "theme-switch",
+    "theme-rollback",
     "natural-fault",
     "completion-owner",
     "ambiguous-boot",
@@ -494,6 +496,10 @@ pub(crate) struct SettingsDocRaw {
     debug: Option<bool>,
     #[serde(default, deserialize_with = "deserialize_present_string")]
     locale: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_present_string")]
+    theme: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_present_string")]
+    accent: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -511,6 +517,19 @@ impl TryFrom<SettingsDocRaw> for SettingsDoc {
         if let Some(locale) = &raw.locale {
             if !matches!(locale.as_str(), "system" | "en" | "zh-Hans") {
                 return Err("locale must be system, en, or zh-Hans".into());
+            }
+        }
+        if let Some(theme) = &raw.theme {
+            if !matches!(
+                theme.as_str(),
+                "deck-dark" | "light" | "system" | "high-contrast"
+            ) {
+                return Err("theme must be deck-dark, light, system, or high-contrast".into());
+            }
+        }
+        if let Some(accent) = &raw.accent {
+            if !matches!(accent.as_str(), "teal" | "blue" | "purple" | "orange") {
+                return Err("accent must be teal, blue, purple, or orange".into());
             }
         }
         Ok(SettingsDoc(raw))
@@ -619,7 +638,32 @@ pub(crate) fn load_settings() -> Result<LoadedDoc, String> {
 
 #[tauri::command]
 pub(crate) fn save_settings(data: String) -> Result<(), String> {
+    if crate::smoke_faults::take("settings-save") {
+        return Err("injected settings save failure".into());
+    }
     save_validated::<SettingsDoc>(&settings_path(), &data, "settings")
+}
+
+fn validated_palette_color(value: &str) -> bool {
+    value.len() == 7
+        && value.starts_with('#')
+        && value[1..].bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+/// Keep tmux's transient copy-mode highlight aligned with the same closed JS
+/// registry that owns CSS and xterm. Values never come from a free-form UI;
+/// the strict shape check also prevents option/format injection if the webview
+/// is compromised.
+#[tauri::command]
+pub(crate) fn set_terminal_mode_style(
+    foreground: String,
+    background: String,
+) -> Result<(), String> {
+    if !validated_palette_color(&foreground) || !validated_palette_color(&background) {
+        return Err("terminal palette colors must be six-digit hex values".into());
+    }
+    let style = format!("fg={foreground},bg={background}");
+    crate::tmux::tmux(&["set", "-g", "mode-style", &style]).map(|_| ())
 }
 
 pub(crate) fn editor_app() -> Option<String> {
@@ -2164,7 +2208,37 @@ mod tests {
         assert!(serde_json::from_str::<SettingsDoc>(r#"{"locale":"zh-CN"}"#).is_err());
         assert!(serde_json::from_str::<SettingsDoc>(r#"{"locale":false}"#).is_err());
         assert!(serde_json::from_str::<SettingsDoc>(r#"{"locale":null}"#).is_err());
+        for theme in ["deck-dark", "light", "system", "high-contrast"] {
+            assert!(
+                serde_json::from_str::<SettingsDoc>(&format!(r#"{{"theme":"{theme}"}}"#)).is_ok()
+            );
+        }
+        for accent in ["teal", "blue", "purple", "orange"] {
+            assert!(
+                serde_json::from_str::<SettingsDoc>(&format!(r#"{{"accent":"{accent}"}}"#)).is_ok()
+            );
+        }
+        assert!(serde_json::from_str::<SettingsDoc>(r#"{"theme":"midnight"}"#).is_err());
+        assert!(serde_json::from_str::<SettingsDoc>(r#"{"theme":false}"#).is_err());
+        assert!(serde_json::from_str::<SettingsDoc>(r#"{"accent":"red"}"#).is_err());
+        assert!(serde_json::from_str::<SettingsDoc>(r#"{"accent":null}"#).is_err());
         assert!(serde_json::from_str::<SettingsDoc>(r#"[1,2]"#).is_err());
+    }
+
+    #[test]
+    fn terminal_palette_command_accepts_only_literal_hex_colors() {
+        for color in ["#000000", "#4fd6be", "#FFFFFF"] {
+            assert!(validated_palette_color(color));
+        }
+        for color in [
+            "red",
+            "#fff",
+            "#000000;run-shell",
+            "#[fg=red]",
+            "#１２３４５６",
+        ] {
+            assert!(!validated_palette_color(color), "accepted {color}");
+        }
     }
 
     #[test]

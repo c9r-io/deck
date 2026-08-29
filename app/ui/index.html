@@ -7,22 +7,6 @@
 <link rel="stylesheet" href="vendor/xterm.css">
 <style>
   :root {
-    --bg: #101318;
-    --panel: #171b22;
-    --raised: #1e242e;
-    --hover: #232b37;
-    --border: #2a3140;
-    --border-soft: #222834;
-    --text: #dce3ec;
-    --muted: #7e8a9a;
-    --faint: #566072;
-    --accent: #4fd6be;
-    --accent-dim: #2a6e62;
-    --run: #41d392;
-    --wait: #e8b45a;
-    --stop: #566072;
-    --danger: #e06c75;
-    --sel: rgba(79, 214, 190, 0.10);
     --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
     --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
     --radius: 8px;
@@ -41,7 +25,7 @@
   }
   button { font: inherit; color: inherit; background: none; border: none; cursor: pointer; }
   button:focus-visible, input:focus-visible, [tabindex]:focus-visible {
-    outline: 2px solid var(--accent); outline-offset: 1px;
+    outline: 2px solid var(--focus); outline-offset: 1px;
   }
   /* body is user-select:none; WebKit refuses keyboard input in a textarea/input
      that inherits it — xterm's hidden helper textarea included. Force it back. */
@@ -132,8 +116,12 @@
   body.side-collapsed .side-new .label { display: none; }
 
   .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--stop); }
-  .dot.running { background: var(--run); box-shadow: 0 0 6px rgba(65, 211, 146, 0.55); }
-  .dot.waiting { background: var(--wait); animation: pulse 1.6s ease-in-out infinite; }
+  .dot.stopped { background: transparent; border: 2px solid var(--stop); }
+  .dot.running { background: var(--run); box-shadow: 0 0 6px var(--run-glow); }
+  .dot.waiting { background: var(--wait); border-radius: 1px; transform: rotate(45deg); animation: pulse 1.6s ease-in-out infinite; }
+  .split-status.running { color: var(--run); }
+  .split-status.waiting { color: var(--wait); }
+  .split-status.stopped { color: var(--stop); }
   @keyframes pulse { 50% { opacity: 0.35; } }
   @media (prefers-reduced-motion: reduce) {
     .dot.waiting { animation: none; }
@@ -186,7 +174,7 @@
     color: var(--text); white-space: nowrap;
   }
   .btn:hover { background: var(--hover); }
-  .btn.primary { background: var(--accent); border-color: var(--accent); color: #0b201c; font-weight: 600; }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-contrast); font-weight: 600; }
   .btn.primary:hover { filter: brightness(1.08); }
   .btn.danger:hover { border-color: var(--danger); color: var(--danger); }
   /* session header: every control sits on the same 28px line; the split /
@@ -205,7 +193,7 @@
     border: 1px solid var(--border-soft); border-radius: 10px;
     min-height: 0;
   }
-  .column.drop-target { border-color: var(--accent-dim); background: #182028; }
+  .column.drop-target { border-color: var(--accent-dim); background: var(--drop-target); }
   .column.selected { border-color: var(--accent-dim); box-shadow: inset 0 0 0 1px var(--accent-dim); }
   .column.selected .col-name { color: var(--accent); }
   .column.selected .col-head::before {
@@ -237,9 +225,9 @@
     cursor: pointer;
     transition: border-color 0.12s;
   }
-  .card:hover { border-color: #3a4356; }
-  .card.waiting { border-color: rgba(232, 180, 90, 0.45); }
-  .card.waiting:hover { border-color: rgba(232, 180, 90, 0.7); }
+  .card:hover { border-color: var(--card-hover-border); }
+  .card.waiting { border-color: var(--waiting-border); }
+  .card.waiting:hover { border-color: var(--waiting-border-hover); }
   .card.dragging { opacity: 0.45; }
   .card-top { display: flex; align-items: center; gap: 8px; }
   .card-title { font-weight: 600; flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -256,7 +244,7 @@
     font-variant-numeric: tabular-nums;
   }
   .mem-chip:empty { display: none; }
-  .mem-chip.high { color: var(--wait); border-color: rgba(232, 180, 90, 0.35); }
+  .mem-chip.high { color: var(--wait); border-color: var(--waiting-soft-border); }
   .sess-head .mem-chip { font-size: 11px; padding: 2px 7px; background: var(--raised); border-color: var(--border); }
   .card-meta {
     margin-top: 5px; display: flex; gap: 8px; align-items: center;
@@ -310,16 +298,16 @@
     font-size: 11px; color: var(--muted);
     user-select: none; -webkit-user-select: none; cursor: default;
   }
-  .spane.focus .spane-head { color: var(--text); background: #1a2530; box-shadow: inset 0 2px 0 var(--accent); }
+  .spane.focus .spane-head { color: var(--text); background: var(--pane-focus); box-shadow: inset 0 2px 0 var(--focus); }
   .spane-head .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .spane-head .hspace { flex: 1; min-width: 8px; }
   .scrollchip {
     flex: none;
     font-size: 10px; padding: 1px 7px; border-radius: 8px;
-    color: var(--accent); background: rgba(79, 214, 190, 0.12);
+    color: var(--accent); background: var(--scrollchip);
     border: 1px solid var(--accent-dim); cursor: pointer;
   }
-  .scrollchip:hover { background: rgba(79, 214, 190, 0.22); }
+  .scrollchip:hover { background: var(--scrollchip-hover); }
   .spane-head .px { flex: none; color: transparent; padding: 0 5px; border-radius: 4px; font-size: 12px; }
   .spane:hover .spane-head .px { color: var(--faint); }
   .spane-head .px:hover { color: var(--danger) !important; background: var(--hover); }
@@ -331,7 +319,7 @@
   .split-divider-v:hover, .split-divider-h:hover { background: var(--accent-dim); }
   #dropzone {
     position: fixed; z-index: 45; display: none; pointer-events: none;
-    background: rgba(79, 214, 190, 0.13);
+    background: var(--file-drop);
     border: 2px dashed var(--accent); border-radius: 8px;
   }
   #ghost {
@@ -348,8 +336,8 @@
     overflow: hidden;
   }
   .deck-selection-band {
-    position: absolute; background: rgba(79, 214, 190, 0.34);
-    mix-blend-mode: screen; pointer-events: none;
+    position: absolute; background: var(--terminal-selection-overlay);
+    pointer-events: none;
   }
   /* IME preedit overlay — xterm leaves it unstyled, which is invisible on a
      dark background */
@@ -368,7 +356,7 @@
     max-height: min(70vh, 480px); overflow-y: auto;
     background: var(--raised); border: 1px solid var(--border);
     border-radius: 8px; padding: 5px;
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+    box-shadow: 0 8px 24px var(--shadow-menu);
   }
   #ctx button, #ctx .ctx-label { display: block; width: 100%; text-align: left; padding: 7px 10px; border-radius: 5px; font-size: 12.5px; }
   #ctx button:hover { background: var(--hover); }
@@ -433,7 +421,7 @@
   .qg-act button:hover { color: var(--text); background: var(--hover); }
   .qg-act .qg-del:hover { color: var(--danger); }
   .qg-row { display: flex; align-items: center; gap: 8px; padding: 5px 10px 5px 12px; font-size: 12.5px; }
-  .qg-row + .qg-row { border-top: 1px solid rgba(34, 40, 52, 0.55); }
+  .qg-row + .qg-row { border-top: 1px solid var(--row-divider); }
   .qg-row .tree { font-family: var(--mono); color: var(--faint); width: 12px; flex: none; font-size: 11px; }
   .qg-row .q-text { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .qg-row.ro .q-text { color: var(--muted); }
@@ -448,7 +436,7 @@
   #tpl-pop {
     position: absolute; display: none; background: var(--raised);
     border: 1px solid var(--border); border-radius: 10px;
-    box-shadow: 0 14px 40px rgba(0, 0, 0, 0.6); padding: 6px;
+    box-shadow: 0 14px 40px var(--shadow-modal); padding: 6px;
     font-size: 12px; z-index: 80; width: 300px;
   }
   #tpl-pop .t-head { font-size: 10px; letter-spacing: 0.06em; color: var(--faint); padding: 5px 9px; }
@@ -461,14 +449,14 @@
   #tpl-pop .t-sep { border-top: 1px solid var(--border-soft); margin: 5px 4px; }
   #ppd {
     position: fixed; inset: 0; z-index: 72; display: none;
-    background: rgba(8, 10, 13, 0.55);
+    background: var(--modal-overlay);
     align-items: flex-start; justify-content: center;
   }
   #ppd-box {
     margin-top: 16vh; width: 400px; max-width: calc(100vw - 40px);
     background: var(--panel); border: 1px solid var(--border);
     border-radius: 12px; padding: 18px;
-    box-shadow: 0 16px 48px rgba(0, 0, 0, 0.55);
+    box-shadow: 0 16px 48px var(--shadow-modal);
   }
   #ppd-msg { font-size: 13px; line-height: 1.5; margin-bottom: 10px; }
   #ppd-input {
@@ -479,7 +467,7 @@
   #queue-btn .cnt { font-family: var(--mono); font-size: 10px; color: var(--wait); }
   .card .q-chip {
     font-family: var(--mono); font-size: 10px; color: var(--wait);
-    border: 1px solid rgba(232, 180, 90, 0.35); border-radius: 4px;
+    border: 1px solid var(--waiting-soft-border); border-radius: 4px;
     padding: 1px 5px; flex: none;
   }
   .card .q-chip:empty { display: none; }
@@ -491,7 +479,7 @@
     display: none; align-items: center; gap: 6px;
     position: static; flex: none; width: 100%; box-sizing: border-box; z-index: 6;
     padding: 8px 16px;
-    background: rgba(23, 27, 34, 0.96); border-top: 1px solid var(--border-soft);
+    background: var(--quickbar-bg); border-top: 1px solid var(--border-soft);
     overflow-x: auto; white-space: nowrap;
   }
   .qb-chip b { color: var(--accent); font-weight: 600; }
@@ -511,28 +499,28 @@
   /* ---------- confirm dialog (window.confirm is a no-op in WKWebView) ---------- */
   #cfm {
     position: fixed; inset: 0; z-index: 70; display: none;
-    background: rgba(8, 10, 13, 0.55);
+    background: var(--modal-overlay);
     align-items: flex-start; justify-content: center;
   }
   #cfm-box {
     margin-top: 16vh; width: 380px; max-width: calc(100vw - 40px);
     background: var(--panel); border: 1px solid var(--border);
     border-radius: 12px; padding: 18px;
-    box-shadow: 0 16px 48px rgba(0, 0, 0, 0.55);
+    box-shadow: 0 16px 48px var(--shadow-modal);
   }
   #cfm-msg { font-size: 13px; line-height: 1.5; margin-bottom: 16px; }
   .cfm-actions { display: flex; gap: 8px; justify-content: flex-end; }
 
   #settings-modal {
     position: fixed; inset: 0; z-index: 70; display: none;
-    background: rgba(8, 10, 13, 0.55);
+    background: var(--modal-overlay);
     align-items: flex-start; justify-content: center;
   }
   #settings-box {
     margin-top: 14vh; width: 420px; max-width: calc(100vw - 40px);
     background: var(--panel); border: 1px solid var(--border);
     border-radius: 12px; padding: 18px;
-    box-shadow: 0 16px 48px rgba(0, 0, 0, 0.55);
+    box-shadow: 0 16px 48px var(--shadow-modal);
   }
   .set-title { font-size: 14px; font-weight: 600; margin-bottom: 14px; }
   .set-row { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; font-size: 13px; }
@@ -541,7 +529,7 @@
   .set-hint { font-size: 11.5px; color: var(--muted); margin: 2px 0 14px 106px; line-height: 1.5; min-height: 1em; }
   .set-sep { border-top: 1px solid var(--border-soft); margin: 4px 0 14px; }
   .set-actions { display: flex; justify-content: flex-end; margin-top: 4px; }
-  .btn.cfm-danger { background: var(--danger); border-color: var(--danger); color: #1a0e10; font-weight: 600; }
+  .btn.cfm-danger { background: var(--danger); border-color: var(--danger); color: var(--danger-contrast); font-weight: 600; }
   .btn.cfm-danger:hover { filter: brightness(1.1); }
 
   /* ---------- toast / banner ---------- */
@@ -550,14 +538,14 @@
     background: var(--raised); border: 1px solid var(--border);
     border-left: 3px solid var(--accent);
     border-radius: 8px; padding: 9px 14px;
-    font-size: 12.5px; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+    font-size: 12.5px; box-shadow: 0 6px 20px var(--shadow-toast);
     animation: toast-in 0.18s ease-out;
   }
   @keyframes toast-in { from { transform: translateY(8px); opacity: 0; } }
   #banner {
     display: none; padding: 10px 16px; font-size: 12.5px;
-    background: rgba(232, 180, 90, 0.12); color: var(--wait);
-    border-bottom: 1px solid rgba(232, 180, 90, 0.3);
+    background: var(--waiting-soft); color: var(--wait);
+    border-bottom: 1px solid var(--waiting-soft-border);
   }
 
   /* The supported minimum window is 720×480. Keep long English/Chinese
@@ -692,6 +680,25 @@
         <option value="zh-Hans" data-i18n="settings.locale.zh-Hans">简体中文</option>
       </select>
     </div>
+    <div class="set-row">
+      <label for="set-theme" data-i18n="settings.theme">Theme</label>
+      <select class="col-select" id="set-theme">
+        <option value="deck-dark" data-i18n="settings.theme.deck-dark">Deck Dark</option>
+        <option value="light" data-i18n="settings.theme.light">Light</option>
+        <option value="system" data-i18n="settings.theme.system">Follow system</option>
+        <option value="high-contrast" data-i18n="settings.theme.high-contrast">High Contrast</option>
+      </select>
+    </div>
+    <div class="set-row">
+      <label for="set-accent" data-i18n="settings.accent">Accent</label>
+      <select class="col-select" id="set-accent">
+        <option value="teal" data-i18n="settings.accent.teal">Teal</option>
+        <option value="blue" data-i18n="settings.accent.blue">Blue</option>
+        <option value="purple" data-i18n="settings.accent.purple">Purple</option>
+        <option value="orange" data-i18n="settings.accent.orange">Orange</option>
+      </select>
+    </div>
+    <div class="set-hint" data-i18n="settings.themeHint">Changes apply immediately to the app and every terminal pane.</div>
     <div class="set-row">
       <label for="set-editor" data-i18n="settings.openFiles">Open files in</label>
       <select class="col-select" id="set-editor"></select>

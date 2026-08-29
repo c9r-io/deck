@@ -7,6 +7,32 @@ while the real webview fails (that is how every regression in this list
 originally shipped). Run through them in the `app/run.sh` build before
 tagging a release; 3 minutes total.
 
+## Theme system candidate — 2026-08-29
+
+- [x] Static/unit gates cover all four themes × four accent presets, require
+      every CSS/xterm/native token, and verify ordinary semantic text/status/
+      accent pairs at WCAG AA (≥4.5:1). High Contrast semantic pairs are
+      required to reach ≥7:1; the light terminal's red/green/yellow/blue/
+      magenta/cyan and bright variants are each checked at ≥4.5:1.
+- [x] Deck Dark's base surface/text/status values remain the prior production
+      values. Component CSS and dynamic styles contain no independent palette
+      literals; xterm, focus, drag/drop, completion, modal, toast, warning and
+      frozen-selection colors resolve through `ui/js/theme.js`.
+- [x] Node DOM coverage proves a rejected `settings.json` write restores the
+      previous theme/accent and selectors. Rust typed settings tests accept
+      only the closed theme/accent enums while preserving unknown fields.
+- [x] System-mode unit coverage drives light→dark appearance changes and proves
+      a fixed theme detaches and ignores even a stale queued media callback.
+- [x] Two consecutive isolated real-WKWebView production-module runs completed
+      with `done=1`; `theme-switch` passed 7/7 and `theme-rollback` passed 1/1
+      in both. The complete companion smoke also passed link classification
+      31/31 (logical-line/tokenizer/provider debug mask 127/127), completion,
+      nested split, selection, IME routing, scheduler and persistence faults.
+- [x] User tested the separately launched isolated app and reported the theme
+      functionality OK. The pass covered the interactive Settings switch and
+      real application rendering rather than a browser mock; its data and tmux
+      server were isolated from `~/.deck`. No screenshot artifact was retained.
+
 ## Prompt 05 automated candidate — 2026-08-29
 
 - [x] Baseline and fixed candidates ran in real bundled WKWebView with fresh
@@ -229,6 +255,12 @@ physical-input blocker are recorded in `RELEASE_REPORT_v0.4.32.md`.
 
 ## Update & settings
 - [ ] Settings → editor list shows installed editors; file link opens there
+- [ ] Theme and Accent switch immediately; every already-open split pane and a
+      newly created split use the same xterm background/cursor/selection/ANSI
+      palette. Force a settings-save failure and confirm the prior palette and
+      selectors return with an explicit toast.
+- [ ] Select Follow System, toggle macOS Light/Dark, and confirm live switching;
+      select a fixed theme and confirm later macOS changes are ignored.
 - [ ] deck menu → Check for Updates… reports up-to-date (or offers install)
 
 ## Scheduler queue & templates

@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.4.36 — 2026-08-29
+
+- Add one closed theme registry for application CSS, native window chrome,
+  xterm cursor/selection and ANSI colors, and tmux copy-mode highlighting.
+  Deck Dark remains the default; Light, live system appearance, High Contrast,
+  and reviewed teal/blue/purple/orange accents are available in Settings.
+- Apply the persisted theme before revealing the hidden window, update every
+  existing terminal pane in place, make new splits inherit it, and roll the UI
+  back with an explicit message when settings persistence fails.
+- Add typed Rust and frontend validation/migration, complete-token and
+  WCAG-contrast checks for every theme/accent pair, fixed-vs-system listener
+  tests, DOM rollback coverage, and real-WK smoke stages for switch/rollback.
+- Make native xterm word/line selections use the same prevented, case-insensitive
+  Command-C clipboard path as tmux drag selections.
+- Freeze a drag at the pointer cell without one final edge-scroll step, and
+  synchronize/validate xterm and tmux dimensions so resize reflow cannot shift
+  selection endpoints by characters or rows.
+- Stabilize the real-WK link-classifier smoke by waiting for the synchronized
+  terminal grid and selecting fixture output rather than the shell's echoed
+  `printf` command. Two consecutive isolated production-module runs pass.
+
 ## 0.4.35 — 2026-08-29
 
 - Add complete English and Simplified Chinese UI localization with immediate
@@ -42,12 +63,6 @@
   the input method (`macOptionIsMeta: false`).
 - Add exact path grammar, overlay geometry, IME routing, frozen-scroll tmux
   contract and real-WKWebView provider/clipboard/scroll smoke coverage.
-- Make native xterm word/line selections use the same prevented, case-insensitive
-  Command-C clipboard path as tmux drag selections.
-- Freeze a drag at the pointer cell without one final edge-scroll step, and
-  synchronize/validate xterm and tmux dimensions so resize reflow cannot shift
-  selection endpoints by characters or rows.
-
 ## 0.4.34 — 2026-08-29
 
 - Make repeated terminal drags replace the prior tmux selection reliably,

@@ -52,6 +52,14 @@ onto a pane edge, or hit ⌘D / ⌘⇧D (or the ◧ ⬓ buttons) and pick a sess
 Splits nest freely, dividers drag to resize, closing a pane never kills the
 session.
 
+**Complete, safe themes.** Settings offers Deck Dark (the compatible default),
+Light, Follow System, and High Contrast, plus reviewed teal, blue, purple, and
+orange accents. A switch updates the whole app, every open xterm pane, ANSI
+palette, cursor, selection, focus and tmux copy-mode highlight immediately;
+new splits inherit it. Follow System reacts live to macOS appearance changes.
+Only the closed presets can be selected—there is no free-form color input—and
+the previous palette is restored if settings cannot be saved.
+
 **Board-grouped sidebar.** Sessions in the current project are grouped under
 their Board names, in Board order, with counts in each group. Waiting sessions
 come first within a Board, followed by running and stopped sessions.
@@ -127,7 +135,7 @@ Everything lives in `~/.deck/` as plain JSON you can inspect or edit:
 identity, an optional sanitized executable basename, a content-free last
 context result, and a short
 delivery audit) · `history.json` (command history; wipeable from
-Settings) · `settings.json` · `app.log` (diagnostics — event codes and
+Settings) · `settings.json` (including locale, theme and accent) · `app.log` (diagnostics — event codes and
 counts only, never what you type; errors appear as categories, never as
 raw paths, and session names as a per-run tag rather than the name itself).
 Every line is redacted again as it is written—including assignment/JSON/

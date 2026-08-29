@@ -12,8 +12,10 @@ import { loadSettings, toast } from './dialogs.js';
 import { migrateColumnSemantics, provider, render, startPolling, stopPolling } from './board.js';
 import { refreshQueue } from './scheduler.js';
 import { onLocaleChange, setLocale, t, translateNotice } from './i18n.js';
+import { activateTheme, revealThemedWindow } from './theme.js';
 
 setLocale('system');
+activateTheme({ theme: 'deck-dark', accent: 'teal' });
 
 window.addEventListener('beforeunload', stopPolling, { once: true });
 
@@ -98,6 +100,7 @@ $('update-btn').onclick = async () => {
 /* ---------- boot ---------- */
 export async function boot() {
   await loadSettings();
+  await revealThemedWindow();
   try {
     if (window.__TAURI__ && window.__TAURI__.app) {
       $('app-ver').textContent = await window.__TAURI__.app.getVersion();

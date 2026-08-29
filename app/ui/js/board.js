@@ -655,21 +655,6 @@ export async function closeSession(sid, needConfirm = false) {
    completion / ghost / clipboard code keeps its single-terminal world. */
 export const panes = new Map();      // session name -> {sid, session, el, body, term, fit}
 
-export const TERM_THEME = {
-  background: '#101318',
-  foreground: '#dce3ec',
-  cursor: '#4fd6be',
-  selectionBackground: 'rgba(79,214,190,0.25)',
-  black: '#171b22', brightBlack: '#566072',
-  red: '#e06c75', brightRed: '#e06c75',
-  green: '#41d392', brightGreen: '#41d392',
-  yellow: '#e8b45a', brightYellow: '#e8b45a',
-  blue: '#6ca8ff', brightBlue: '#6ca8ff',
-  magenta: '#c678dd', brightMagenta: '#c678dd',
-  cyan: '#4fd6be', brightCyan: '#4fd6be',
-  white: '#dce3ec', brightWhite: '#ffffff',
-};
-
 /* ---------- render root ---------- */
 export function render() {
   $('board-view').style.display = state.view === 'board' ? 'flex' : 'none';

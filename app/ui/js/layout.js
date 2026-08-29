@@ -3,11 +3,14 @@
 import { $, dotTitle, duev, inv, listen, setMemChip, state, store, uev } from './state.js';
 import { inlineRename, toast } from './dialogs.js';
 import { t } from './i18n.js';
-import { TERM_THEME, panes, pollNow, provider, render, renderSidebar, activeProject } from './board.js';
+import { panes, pollNow, provider, render, renderSidebar, activeProject } from './board.js';
 import { SHELL_FG, acceptGhost, feedMirror, maybeRecordCommand, mountQuickBar, nextShellTitle, renderSuggest, resetSuggest, showLinkCtx, updateGhost, writeClipboard } from './terminal.js';
 import { createTerminalResizeCoordinator, createTerminalWheelAccumulator, isComposingKeyEvent, isPlainShiftKeydown, shouldRouteImeKeydownThroughInput, shQuote, terminalCopyRoute, tokenizeTerminalLinks, terminalWheelLines } from './pure.js';
 import { toggleQueuePanel } from './scheduler.js';
 import { cancelAllTerminalSelections, cancelTerminalSelection, copyTerminalSelection, hasTerminalSelection, wireTerminalSelection } from './selection.js';
+import { getTerminalTheme, onThemeChange, syncThemeIntegrations } from './theme.js';
+
+onThemeChange(({ terminal }) => panes.forEach(pane => { pane.term.options.theme = terminal; }));
 
 /* ----- layout tree helpers ----- */
 export const leafOf = sid => ({ type: 'leaf', sid });
@@ -172,7 +175,7 @@ export function createPane(card) {
     macOptionIsMeta: false,
     scrollback: 5000,
     allowProposedApi: true,   // registerDecoration (input separators)
-    theme: TERM_THEME,
+    theme: getTerminalTheme(),
   });
   const fit = new FitAddon.FitAddon();
   term.loadAddon(fit);
@@ -206,6 +209,9 @@ export function createPane(card) {
   });
   term.onScroll(() => positionSeparators(pane));
   panes.set(session, pane);
+  // A first session can start after the boot-time theme application, so sync
+  // tmux's transient copy-mode highlight once its private server exists.
+  syncThemeIntegrations();
 
   const head = el.querySelector('.spane-head');
   head.addEventListener('mousedown', () => focusPane(session));
@@ -302,7 +308,7 @@ export function addInputSeparator(pane) {
     if (!marker) { if (sepLogged < 5) { sepLogged++; uev('separator', 'no-marker'); } return; }
     const el = document.createElement('div');
     el.style.cssText = 'position:absolute; left:0; right:0; height:1px;' +
-      'background:rgba(126,138,153,0.25); pointer-events:none; z-index:4; display:none;';
+      'background:var(--input-separator); pointer-events:none; z-index:4; display:none;';
     pane.body.appendChild(el);
     const entry = { marker, el };
     pane.seps.push(entry);
@@ -810,8 +816,9 @@ export function showSplitPicker(dir) {
     const button = document.createElement('button');
     button.dataset.sid = c.id;
     const status = document.createElement('span');
-    status.style.color = c.status === 'stopped' ? 'var(--faint)' : c.status === 'waiting' ? 'var(--wait)' : 'var(--run)';
-    status.textContent = '●';
+    status.className = `split-status ${c.status}`;
+    status.textContent = c.status === 'stopped' ? '○' : c.status === 'waiting' ? '◆' : '●';
+    status.title = dotTitle(c.status);
     button.append(status, document.createTextNode(' ' + c.title));
     ctx.appendChild(button);
   }

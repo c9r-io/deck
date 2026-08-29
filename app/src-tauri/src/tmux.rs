@@ -90,7 +90,7 @@ pub(crate) fn tmux_conf() -> String {
              set -g status off\n\
              set -g set-clipboard on\n\
              set -g history-limit 50000\n\
-             set -g mode-style 'fg=#101318,bg=#4fd6be'\n\
+             set -g mode-style 'reverse'\n\
              set -g copy-mode-position-format ''\n\
              set-environment -g COLORTERM truecolor\n"
                 .as_bytes(),
@@ -218,7 +218,7 @@ pub(crate) fn init_deck_server() {
     let _ = tmux(&["set", "-g", "mouse", "off"]);
     let _ = tmux(&["set", "-g", "set-clipboard", "on"]);
     let _ = tmux(&["set", "-g", "history-limit", "50000"]);
-    let _ = tmux(&["set", "-g", "mode-style", "fg=#101318,bg=#4fd6be"]);
+    let _ = tmux(&["set", "-g", "mode-style", "reverse"]);
     let _ = tmux(&["set", "-g", "copy-mode-position-format", ""]);
 }
 

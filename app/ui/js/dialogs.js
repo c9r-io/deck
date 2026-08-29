@@ -3,7 +3,8 @@
 import { $, inv, uev } from './state.js';
 import { inlineRenameValue } from './pure.js';
 import { applyTranslations, setLocale, t, translateNotice } from './i18n.js';
-import { parseSettings, serializeSettings } from './settings-model.js';
+import { normalizeSettings, parseSettings, serializeSettings } from './settings-model.js';
+import { activateTheme } from './theme.js';
 
 /* ---------- confirm dialog (window.confirm is a silent no-op in WKWebView) ---------- */
 let confirmPointerOnly = false;
@@ -102,6 +103,7 @@ export async function loadSettings() {
     uev('settings-load-fail');
   }
   setLocale(settings.locale);
+  activateTheme(settings);
   inv('set_native_locale', { locale: settings.locale }).catch(() => {});
   window.__DECK_DEBUG = !!settings.debug;
 }
@@ -121,6 +123,8 @@ export async function openSettings() {
   if (settings.editor && !eds.includes(settings.editor)) mk(settings.editor, t('common.notFound', { name: settings.editor }));
   sel.value = settings.editor || '';
   $('set-locale').value = settings.locale || 'system';
+  $('set-theme').value = settings.theme || 'deck-dark';
+  $('set-accent').value = settings.accent || 'teal';
   $('set-debug').checked = !!settings.debug;
   $('set-ver').textContent = 'deck v' + ($('app-ver').textContent || '?');
   $('set-upd-status').textContent = '';
@@ -151,6 +155,36 @@ $('set-locale').onchange = () => {
   inv('set_native_locale', { locale: settings.locale }).catch(() => {});
   persistSettings();
 };
+$('set-theme').onchange = () => persistThemeChoice();
+$('set-accent').onchange = () => persistThemeChoice();
+
+let themeSavePending = false;
+export async function persistThemeChoice() {
+  if (themeSavePending) return;
+  const previous = { theme: settings.theme, accent: settings.accent };
+  const candidate = normalizeSettings({
+    ...settings,
+    theme: $('set-theme').value,
+    accent: $('set-accent').value,
+  });
+  themeSavePending = true;
+  const locked = ['set-theme', 'set-accent', 'set-locale', 'set-editor', 'set-debug'].map($);
+  locked.forEach(control => { control.disabled = true; });
+  activateTheme(candidate); // immediate preview; commit only after durable save
+  try {
+    await inv('save_settings', { data: serializeSettings(candidate) });
+    settings = candidate;
+  } catch (_) {
+    activateTheme({ ...settings, ...previous });
+    $('set-theme').value = previous.theme;
+    $('set-accent').value = previous.accent;
+    toast(t('error.themeSave'));
+    uev('settings-save-fail');
+  } finally {
+    themeSavePending = false;
+    locked.forEach(control => { control.disabled = false; });
+  }
+}
 /* set-check's click handler is wired by app.js (which owns update checks) —
    keeps dialogs.js from importing app.js back (no module cycle) */
 $('set-clear-hist').onclick = async () => {

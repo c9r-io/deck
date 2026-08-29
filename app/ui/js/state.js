@@ -31,7 +31,7 @@ Object.assign(globalThis, {
   rxBytes: 0,
   saveTimer: null,
   sepLogged: 0,
-  settings: { editor: '', debug: false, locale: 'system' },
+  settings: { editor: '', debug: false, locale: 'system', theme: 'deck-dark', accent: 'teal' },
   term: null,
   wheelTimer: null,
 });
@@ -51,14 +51,10 @@ export const listen = (ev, cb) => window.__TAURI__
   ? window.__TAURI__.event.listen(ev, cb)
   : Promise.reject('no tauri runtime');
 
-/* the window starts hidden (no white flash) — show as soon as the dark UI
-   shell is parsed and styled, before any async boot work */
-try {
-  if (window.__TAURI__) {
-    const w = window.__TAURI__.window.getCurrentWindow();
-    w.show().then(() => w.setFocus()).catch(() => {});
-  }
-} catch (e) { /* plain browser */ }
+/* The native window remains hidden until settings have loaded and theme.js
+   has applied the resolved palette. app.js reveals it immediately afterwards,
+   preventing a dark/light first-frame flash without persisting a second copy
+   of settings or user data. */
 
 /* structured diagnostics → ~/.deck/app.log (webview console is invisible in
    production). ONLY event codes plus a short slug and numbers ever cross to

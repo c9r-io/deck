@@ -7,6 +7,8 @@ let renameCardInline, renderSuggest, resetSuggest;
 let showLinkCtx, toggleSidebar, addSplit, backToBoard, openSession, strToB64;
 let closePaneBySid, focusPane, cancelTerminalSelection, copyTerminalSelection;
 let refreshQueue, toggleQueuePanel;
+let activateTheme, persistThemeChoice;
+let terminalLogicalLine, tokenizeTerminalLinks;
 if (typeof window !== 'undefined') {
   ({ $, inv, state, store } = await import('../js/state.js'));
   ({ panes, provider, render, pollNow } = await import('../js/board.js'));
@@ -15,9 +17,12 @@ if (typeof window !== 'undefined') {
     renameCardInline, renderSuggest, resetSuggest,
     showLinkCtx, toggleSidebar,
   } = await import('../js/terminal.js'));
-  ({ addSplit, backToBoard, closePaneBySid, focusPane, openSession, strToB64 } = await import('../js/layout.js'));
+  ({ addSplit, backToBoard, closePaneBySid, focusPane, openSession, strToB64, terminalLogicalLine } = await import('../js/layout.js'));
+  ({ tokenizeTerminalLinks } = await import('../js/pure.js'));
   ({ cancelTerminalSelection, copyTerminalSelection } = await import('../js/selection.js'));
   ({ refreshQueue, toggleQueuePanel } = await import('../js/scheduler.js'));
+  ({ activateTheme } = await import('../js/theme.js'));
+  ({ persistThemeChoice } = await import('../js/dialogs.js'));
 }
 
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -101,6 +106,43 @@ async function boardFaultSmoke(project, column) {
   const same = diskCards === memoryCards && disk.projects.length === memory.projects.length;
   await report('board-fault', firstFailed && !store.cards.some(c => c.title === 'fault-first')
     && provider.get(second.id)?.title === 'fault-second' && same, store.cards.length, same ? 1 : 0);
+}
+
+async function themeSmoke(card) {
+  await openSession(card.id);
+  const pane = panes.get(card.session);
+  let mask = 0;
+  const cases = [
+    ['deck-dark', 'teal', 'dark'],
+    ['light', 'purple', 'light'],
+    ['high-contrast', 'orange', 'dark'],
+  ];
+  for (let i = 0; i < cases.length; i++) {
+    const [theme, accent, scheme] = cases[i];
+    const resolved = activateTheme({ theme, accent });
+    await pause(20);
+    const cssBg = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim();
+    if (document.documentElement.dataset.effectiveTheme === theme
+        && document.documentElement.dataset.accent === accent
+        && document.documentElement.style.colorScheme === scheme
+        && cssBg === resolved.css.bg
+        && pane.term.options.theme.background === resolved.terminal.background
+        && pane.term.options.theme.cursor === resolved.terminal.cursor) mask |= (1 << i);
+  }
+  await report('theme-switch', mask === 7, mask, panes.size);
+
+  const originalTheme = settings.theme;
+  const originalAccent = settings.accent;
+  activateTheme(settings);
+  $('set-theme').value = originalTheme === 'light' ? 'deck-dark' : 'light';
+  $('set-accent').value = originalAccent === 'purple' ? 'teal' : 'purple';
+  await inv('smoke_fault_set', { kind: 'settings-save', count: 1 });
+  await persistThemeChoice();
+  const rolledBack = settings.theme === originalTheme && settings.accent === originalAccent
+    && $('set-theme').value === originalTheme && $('set-accent').value === originalAccent
+    && document.documentElement.dataset.theme === originalTheme
+    && pane.term.options.theme.background === activateTheme(settings).terminal.background;
+  await report('theme-rollback', rolledBack, rolledBack ? 1 : 0, panes.size);
 }
 
 async function renameSmoke(card) {
@@ -563,6 +605,15 @@ async function selectionSmoke(card) {
 async function pathSmoke(card) {
   await openSession(card.id);
   const pane = panes.get(card.session);
+  /* openSession can resolve before its first fit RAF. Generate width-sensitive
+     wrap fixtures only after the xterm grid and PTY/tmux grid agree; otherwise
+     the fixture itself is nondeterministic rather than testing redraw links. */
+  pane.fit.fit();
+  await waitFor(async () => {
+    await pane.syncSize().catch(() => {});
+    const metrics = await inv('terminal_metrics', { name: card.session });
+    return metrics.pane_cols === pane.term.cols && metrics.pane_rows === pane.term.rows;
+  }, 5000);
   const fixture = '"空 格😀/code.rs":12:3';
   const addressFixture = '192.168.31.120:6443';
   const missingFixture = 'memcache.go:265';
@@ -650,21 +701,47 @@ async function pathSmoke(card) {
     for (let row = 0; row < pane.term.rows; row++) visible += visibleTerminalLine(pane, row);
     return visible.includes(url) && visible.includes(hardUrl);
   }, 5000);
-  let missingRow = -1, urlRow = -1, hardRow = -1;
-  for (let row = 0; row < pane.term.rows; row++) {
-    const line = visibleTerminalLine(pane, row);
-    if (line.includes(missingFixture) && !line.includes('E0829')) missingRow = row;
-    if (line.includes('https://node100')) urlRow = row;
-    if (line.includes('https://hardw')) hardRow = row;
-  }
-  const missingLinks = missingRow >= 0 ? await linksAt(missingRow) : [];
-  const urlLinks = urlRow >= 0 ? await linksAt(urlRow) : [];
-  const hardLinks = hardRow >= 0 ? await linksAt(hardRow) : [];
+  const findLastVisibleRow = predicate => {
+    /* The shell first echoes the long printf command and then prints its
+       fixture output. The output is the later matching row; selecting the
+       first occurrence accidentally tested URL text embedded in shell syntax. */
+    for (let row = pane.term.rows - 1; row >= 0; row--) {
+      if (predicate(visibleTerminalLine(pane, row))) return row;
+    }
+    return -1;
+  };
+  /* The shell prompt can arrive after urlReady and shift every visible row by
+     one while async path validation is in flight. Take each provider result
+     only when the row still identifies the same content afterwards; this keeps
+     the smoke deterministic without weakening the production assertion. */
+  const stableLinksAt = async (finder, accept = () => true) => {
+    let snapshot = { row: -1, links: [], line: null };
+    await waitFor(async () => {
+      const row = finder();
+      if (row < 0) return false;
+      const absolute = pane.term.buffer.active.viewportY + row;
+      const links = await linksAt(row);
+      if (finder() !== row) return false;
+      snapshot = { row, links, line: pane.term.buffer.active.getLine(absolute) };
+      return accept(snapshot);
+    }, 3000);
+    return snapshot;
+  };
+  const missingSnapshot = await stableLinksAt(() =>
+    findLastVisibleRow(line => line.includes(missingFixture) && !line.includes('E0829')));
+  const urlSnapshot = await stableLinksAt(() =>
+    findLastVisibleRow(line => line.includes('https://node100')),
+  snapshot => snapshot.links.some(link => link.text === url));
+  const hardSnapshot = await stableLinksAt(() =>
+    findLastVisibleRow(line => line.includes('https://hardw')),
+  snapshot => snapshot.links.some(link => link.text === hardUrl));
+  const missingRow = missingSnapshot.row;
+  const missingLinks = missingSnapshot.links;
+  const urlLinks = urlSnapshot.links;
+  const hardLinks = hardSnapshot.links;
   const wrappedUrl = urlLinks.find(link => link.text === url) || null;
   const hardWrappedUrl = hardLinks.find(link => link.text === hardUrl) || null;
-  const hardFirstLine = hardRow >= 0
-    ? pane.term.buffer.active.getLine(pane.term.buffer.active.viewportY + hardRow)
-    : null;
+  const hardFirstLine = hardSnapshot.line;
   const hardRedrawRecovered = !!hardWrappedUrl && hardFirstLine?.isWrapped === false;
   wrappedUrl?.activate(eventAt(linkX, linkY), wrappedUrl.text);
   const exactUrlMenu = $('ctx').style.display === 'block'
@@ -675,7 +752,18 @@ async function pathSmoke(card) {
     | (exactUrlMenu ? 8 : 0)
     | (hardRedrawRecovered ? 16 : 0);
   $('ctx').style.display = 'none';
-  await report('link-classify', tokenizerMask === 31, tokenizerMask, url.length);
+  const urlLogical = urlSnapshot.row >= 0
+    ? terminalLogicalLine(pane.term, pane.term.buffer.active.viewportY + urlSnapshot.row + 1) : null;
+  const hardLogical = hardSnapshot.row >= 0
+    ? terminalLogicalLine(pane.term, pane.term.buffer.active.viewportY + hardSnapshot.row + 1) : null;
+  const classifierDebug = (urlSnapshot.row >= 0 ? 1 : 0)
+    | (urlLogical?.text.includes(url) ? 2 : 0)
+    | (tokenizeTerminalLinks(urlLogical?.text || '').some(token => token.value === url) ? 4 : 0)
+    | (hardSnapshot.row >= 0 ? 8 : 0)
+    | (hardLogical?.text.includes(hardUrl) ? 16 : 0)
+    | (tokenizeTerminalLinks(hardLogical?.text || '').some(token => token.value === hardUrl) ? 32 : 0)
+    | (hardFirstLine?.isWrapped === false ? 64 : 0);
+  await report('link-classify', tokenizerMask === 31, tokenizerMask, classifierDebug);
 
   const focus = document.createElement('button');
   focus.textContent = 'focus';
@@ -1013,14 +1101,16 @@ export async function run() {
     stage = 7;
     await completionSmoke(main, project, column);
     stage = 8;
-    await selectionSmoke(main);
+    await themeSmoke(main);
     stage = 9;
-    await imeRoutingSmoke(main);
+    await selectionSmoke(main);
     stage = 10;
-    await completionOwnerSmoke(main);
+    await imeRoutingSmoke(main);
     stage = 11;
-    await naturalExitFaultSmoke(project, column);
+    await completionOwnerSmoke(main);
     stage = 12;
+    await naturalExitFaultSmoke(project, column);
+    stage = 13;
     await inv('queue_add', { args: {
       session: main.session, cardId: main.id, dir: main.dir, cmd: main.cmd,
       text: 'deterministic smoke delivery', mode: 'at',

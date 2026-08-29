@@ -222,13 +222,11 @@ fn main() {
             Ok(())
         })
         .on_page_load(|webview, payload| {
-            // The window is created hidden (no white flash). Reveal it from
-            // the Rust side once content is loaded — the JS show() alone
-            // doesn't reliably surface a relaunched-by-updater instance.
+            // The window is created hidden. The frontend reveals it only
+            // after typed settings load and the resolved theme (including
+            // system light/dark) has been applied, preventing a first-frame
+            // palette flash without duplicating settings into another store.
             if payload.event() == tauri::webview::PageLoadEvent::Finished {
-                let w = webview.window();
-                let _ = w.show();
-                let _ = w.set_focus();
                 if let Some(mode) = storage::debug_arg("--smoke-wkwebview") {
                     let entry = if mode == "restart" {
                         "m.verifyRestart()"
@@ -257,6 +255,7 @@ fn main() {
             commands::save_board,
             commands::load_settings,
             commands::save_settings,
+            commands::set_terminal_mode_style,
             set_native_locale,
             commands::detect_editors,
             commands::default_dir,

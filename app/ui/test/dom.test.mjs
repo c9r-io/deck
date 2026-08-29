@@ -54,7 +54,7 @@ const fakeDocument = {
 globalThis.document = fakeDocument;
 globalThis.window = { __TAURI__: null, __DECK_DEBUG: false };
 
-const { inlineRename, promptDialog } = await import('../js/dialogs.js');
+const { inlineRename, promptDialog, persistThemeChoice } = await import('../js/dialogs.js');
 const { store } = await import('../js/state.js');
 const { flushBoardMutations, mutateBoard, mutateBoardDebounced } = await import('../js/persistence.js');
 
@@ -145,4 +145,22 @@ test('production debounce is flushed before an immediate destructive Board barri
   assert.equal(final.projects[0].selected, 'c');
   assert.deepEqual(final.cards.map(c => c.id), ['b']);
   assert.deepEqual(final, JSON.parse(JSON.stringify({ projects: store.projects, cards: store.cards })));
+});
+
+test('failed theme persistence restores the prior palette and selectors', async () => {
+  globalThis.settings = {
+    editor: '', debug: false, locale: 'system', theme: 'deck-dark', accent: 'teal', future: { kept: 1 },
+  };
+  fakeDocument.getElementById('set-theme').value = 'light';
+  fakeDocument.getElementById('set-accent').value = 'purple';
+  window.__TAURI__ = { core: { invoke: async cmd => {
+    assert.equal(cmd, 'save_settings');
+    throw new Error('disk full');
+  } } };
+  await persistThemeChoice();
+  assert.equal(globalThis.settings.theme, 'deck-dark');
+  assert.equal(globalThis.settings.accent, 'teal');
+  assert.equal(fakeDocument.getElementById('set-theme').value, 'deck-dark');
+  assert.equal(fakeDocument.getElementById('set-accent').value, 'teal');
+  assert.equal(fakeDocument.getElementById('set-theme').disabled, false);
 });
