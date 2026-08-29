@@ -1,0 +1,9 @@
+{
+  "siteUrl": "https://deck.c9r.io",
+  "downloadUrl": "https://github.com/c9r-io/deck/releases/latest",
+  "githubUrl": "https://github.com/c9r-io/deck",
+  "feedbackUrl": "https://github.com/c9r-io/deck/issues/new?template=feedback.yml",
+  "licenseUrl": "https://github.com/c9r-io/deck/blob/main/LICENSE",
+  "releaseLabel": "Latest Stable",
+  "releaseLabelZh": "最新稳定版"
+}

@@ -4,13 +4,14 @@
 
 **A native macOS command center for terminal agent sessions** — Claude Code,
 Codex, or any long-running CLI. Every card on the board is a real, persistent
-terminal session; the board tells you where your attention is needed.
+terminal session; the board shows which sessions have recent output, are quiet,
+or have stopped, so you decide where to look next.
 
 ```
 ┌ Attention ──────┐┌ Working ─────────┐┌ Queued ─────────┐┌ Parked ─────────┐
 │● fix flaky test ││● refactor auth   ││○ migration plan ││○ changelog pass │
-│  ⧗ waiting for  ││  ⏺ cargo test …  ││                 ││                 │
-│    your input   ││            812M  ││                 ││                 │
+│  ⧗ quiet 3m     ││  ⏺ cargo test …  ││                 ││                 │
+│  inspect next   ││            812M  ││                 ││                 │
 └─────────────────┘└──────────────────┘└─────────────────┘└─────────────────┘
 ```
 
@@ -216,6 +217,13 @@ updater archive into Stable without rebuilding. Directly pushing a strict
 `vX.Y.Z` tag remains the emergency source-build path. The hourly resolver only
 considers Stable tags and never deletes an incomplete Release. Full procedures
 are in [docs/release-channels.md](docs/release-channels.md).
+
+## Feedback
+
+Use the [feedback issue form](https://github.com/c9r-io/deck/issues/new?template=feedback.yml)
+to tell us what became easier or what got in your way. GitHub issues are public:
+do not include prompts, commands, terminal output, secrets, private paths,
+session names, project names, or repository names.
 
 ## License
 

@@ -1,0 +1,52 @@
+name: deck feedback
+description: Share product feedback without including terminal content or private project information.
+title: "[Feedback] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for trying deck. Issues are public. Do not include prompts, commands, terminal output, secrets, private paths, session names, project names, or repository names.
+  - type: dropdown
+    id: usage
+    attributes:
+      label: How many CLI sessions do you typically manage at once?
+      options:
+        - 1–2
+        - 3–4
+        - 5–9
+        - 10 or more
+    validations:
+      required: true
+  - type: dropdown
+    id: value
+    attributes:
+      label: Which part of deck is most useful?
+      options:
+        - Session survival
+        - Activity / quiet / stopped overview
+        - Project Boards
+        - Split view
+        - Scheduled prompts
+        - Something else
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: What became easier after using deck?
+      description: Describe the workflow at a high level. Do not paste terminal content or identify a private project.
+      placeholder: I can now…
+    validations:
+      required: true
+  - type: textarea
+    id: friction
+    attributes:
+      label: What was confusing or got in your way?
+      description: Keep examples free of terminal content, paths, project names, and secrets.
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy check
+      options:
+        - label: I checked that this issue contains no terminal content, private paths, project/repository/session names, or secrets.
+          required: true
