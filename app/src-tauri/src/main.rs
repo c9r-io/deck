@@ -20,6 +20,97 @@ pub(crate) use storage::applog;
 use std::process::Command;
 use tauri::{Emitter, Manager};
 
+#[derive(Clone, Copy)]
+struct NativeStrings {
+    clear: &'static str,
+    export_logs: &'static str,
+    check_updates: &'static str,
+    terminal: &'static str,
+    already_title: &'static str,
+    already_message: &'static str,
+}
+
+const NATIVE_EN: NativeStrings = NativeStrings {
+    clear: "Clear",
+    export_logs: "Export Logs…",
+    check_updates: "Check for Updates…",
+    terminal: "Terminal",
+    already_title: "deck is already running",
+    already_message:
+        "Another deck instance owns this Mac's sessions. Use the running one (check the Dock).",
+};
+const NATIVE_ZH_HANS: NativeStrings = NativeStrings {
+    clear: "清除",
+    export_logs: "导出日志…",
+    check_updates: "检查更新…",
+    terminal: "终端",
+    already_title: "deck 已在运行",
+    already_message:
+        "另一个 deck 实例正在管理这台 Mac 上的 session。请使用已运行的实例（查看程序坞）。",
+};
+
+fn resolve_native_locale(preference: &str, system_languages: &str) -> &'static str {
+    if preference == "zh-Hans"
+        || (preference == "system"
+            && system_languages
+                .split(|c: char| c.is_whitespace() || matches!(c, '(' | ')' | ',' | '"'))
+                .any(|tag| {
+                    let tag = tag.to_ascii_lowercase();
+                    tag == "zh-cn"
+                        || tag == "zh-sg"
+                        || tag == "zh-hans"
+                        || tag.starts_with("zh-hans-")
+                }))
+    {
+        "zh-Hans"
+    } else {
+        "en"
+    }
+}
+
+fn system_languages() -> String {
+    Command::new("defaults")
+        .args(["read", "-g", "AppleLanguages"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default()
+}
+
+fn native_strings(preference: &str) -> NativeStrings {
+    if resolve_native_locale(preference, &system_languages()) == "zh-Hans" {
+        NATIVE_ZH_HANS
+    } else {
+        NATIVE_EN
+    }
+}
+
+struct NativeMenu {
+    clear: tauri::menu::MenuItem<tauri::Wry>,
+    export_logs: tauri::menu::MenuItem<tauri::Wry>,
+    check_updates: tauri::menu::MenuItem<tauri::Wry>,
+    terminal: tauri::menu::Submenu<tauri::Wry>,
+}
+
+#[tauri::command]
+fn set_native_locale(locale: String, menu: tauri::State<'_, NativeMenu>) -> Result<(), String> {
+    if !matches!(locale.as_str(), "system" | "en" | "zh-Hans") {
+        return Err("invalid locale".into());
+    }
+    let s = native_strings(&locale);
+    menu.clear.set_text(s.clear).map_err(|e| e.to_string())?;
+    menu.export_logs
+        .set_text(s.export_logs)
+        .map_err(|e| e.to_string())?;
+    menu.check_updates
+        .set_text(s.check_updates)
+        .map_err(|e| e.to_string())?;
+    menu.terminal
+        .set_text(s.terminal)
+        .map_err(|e| e.to_string())
+}
+
 // ---------- main ---------------------------------------------------------------
 
 fn main() {
@@ -48,12 +139,12 @@ fn main() {
             "[boot] instance lock unavailable ({}) — exiting",
             storage::err_code(&e)
         ));
-        let _ = Command::new("osascript")
-            .args([
-                "-e",
-                "display alert \"deck is already running\" message \"Another deck instance owns this Mac's sessions. Use the running one (check the Dock).\"",
-            ])
-            .status();
+        let s = native_strings(&commands::locale_setting());
+        let script = format!(
+            "display alert {:?} message {:?}",
+            s.already_title, s.already_message
+        );
+        let _ = Command::new("osascript").args(["-e", &script]).status();
         std::process::exit(0);
     }
     tauri::Builder::default()
@@ -78,14 +169,15 @@ fn main() {
             // Native menu: the default set restores all standard macOS
             // shortcuts (⌘C/V/A/Z/Q/H/M/W…); Terminal→Clear adds ⌘K.
             let handle = app.handle();
+            let strings = native_strings(&commands::locale_setting());
             let menu = tauri::menu::Menu::default(handle)?;
-            let clear = tauri::menu::MenuItemBuilder::with_id("clear", "Clear")
+            let clear = tauri::menu::MenuItemBuilder::with_id("clear", strings.clear)
                 .accelerator("Cmd+K")
                 .build(app)?;
             let export =
-                tauri::menu::MenuItemBuilder::with_id("export-logs", "Export Logs…").build(app)?;
+                tauri::menu::MenuItemBuilder::with_id("export-logs", strings.export_logs).build(app)?;
             let check =
-                tauri::menu::MenuItemBuilder::with_id("check-updates", "Check for Updates…")
+                tauri::menu::MenuItemBuilder::with_id("check-updates", strings.check_updates)
                     .build(app)?;
             // standard macOS spot: application menu, right under "About deck"
             let mut in_app_menu = false;
@@ -94,7 +186,7 @@ fn main() {
                     in_app_menu = sub.insert(&check, 1).is_ok();
                 }
             }
-            let mut tb = tauri::menu::SubmenuBuilder::new(app, "Terminal")
+            let mut tb = tauri::menu::SubmenuBuilder::new(app, strings.terminal)
                 .item(&clear)
                 .separator()
                 .item(&export);
@@ -102,6 +194,10 @@ fn main() {
                 tb = tb.item(&check);
             }
             let term_menu = tb.build()?;
+            app.manage(NativeMenu {
+                clear: clear.clone(), export_logs: export.clone(),
+                check_updates: check.clone(), terminal: term_menu.clone(),
+            });
             menu.append(&term_menu)?;
             app.set_menu(menu)?;
             app.on_menu_event(|app, e| {
@@ -160,6 +256,7 @@ fn main() {
             commands::save_board,
             commands::load_settings,
             commands::save_settings,
+            set_native_locale,
             commands::detect_editors,
             commands::default_dir,
             commands::tmux_available,
@@ -217,4 +314,20 @@ fn main() {
             }
             let _ = (app, &event);
         });
+}
+
+#[cfg(test)]
+mod i18n_tests {
+    use super::resolve_native_locale;
+    #[test]
+    fn native_locale_resolution_matches_web_runtime() {
+        assert_eq!(
+            resolve_native_locale("system", "(\n zh-Hans-CN,\n en-US\n)"),
+            "zh-Hans"
+        );
+        assert_eq!(resolve_native_locale("system", "(zh-CN)"), "zh-Hans");
+        assert_eq!(resolve_native_locale("system", "(zh-SG)"), "zh-Hans");
+        assert_eq!(resolve_native_locale("system", "(zh-Hant, en-US)"), "en");
+        assert_eq!(resolve_native_locale("en", "(zh-CN)"), "en");
+    }
 }

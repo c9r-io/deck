@@ -680,7 +680,7 @@ export async function run() {
     stage = 1;
     await waitFor(() => provider.projects().length > 0);
     const project = provider.projects()[0];
-    const column = project.columns.find(c => c.name === 'Working') || project.columns[0];
+    const column = project.columns.find(c => c.semantic === 'working') || project.columns[0];
     stage = 2;
     await boardConcurrency(project, column);
     stage = 3;
@@ -712,6 +712,11 @@ export async function run() {
     await inv('smoke_seed_ambiguous');
     await report('done', !smokeFailed, 1, 0);
   } catch (error) {
+    const stack = String((error && error.stack) || '');
+    const frame = /\/(app|board|dialogs|i18n|layout|scheduler|selection|state|terminal)\.js:(\d+):/.exec(stack);
+    const files = ['app', 'board', 'dialogs', 'i18n', 'layout', 'scheduler', 'selection', 'state', 'terminal'];
+    await inv('ui_event', { code: 'js-reject', detail: (error && error.name) || 'error',
+      a: frame ? Number(frame[2]) : stage, b: frame ? files.indexOf(frame[1]) + 1 : 0 });
     await report('done', false, 0, stage);
   }
 }

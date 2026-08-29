@@ -552,6 +552,22 @@
     border-bottom: 1px solid rgba(232, 180, 90, 0.3);
   }
 
+  /* The supported minimum window is 720×480. Keep long English/Chinese
+     labels scrollable or elided instead of letting controls cover content. */
+  @media (max-width: 800px), (max-height: 540px) {
+    #sidebar { width: 190px; }
+    .board-head .hint, .sess-path { display: none; }
+    .board-head { padding-inline: 12px; }
+    #columns { padding-inline: 12px; }
+    .sess-head { gap: 6px; padding: 8px; }
+    .sess-title { max-width: 120px; }
+    #queue-panel { max-height: 55vh; padding: 8px; }
+    #settings-box { margin-top: 4vh; max-height: 92vh; overflow-y: auto; }
+    #cfm-box, #ppd-box { margin-top: 8vh; max-height: 84vh; overflow-y: auto; }
+    .qg-row { align-items: flex-start; flex-wrap: wrap; }
+    .qg-row .row-meta { flex-basis: calc(100% - 20px); margin-left: 20px; white-space: normal; }
+  }
+
   ::-webkit-scrollbar { width: 10px; height: 10px; }
   ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 5px; border: 2px solid transparent; background-clip: content-box; }
   ::-webkit-scrollbar-track { background: transparent; }
@@ -562,91 +578,91 @@
   <nav id="sidebar">
     <div class="side-top">
       <div class="wordmark"><span class="glyph">▞</span> deck <span class="sub" id="app-ver"></span></div>
-      <button class="collapse-btn" id="collapse-btn" title="Collapse sidebar (⌘B)">
+      <button class="collapse-btn" id="collapse-btn" title="Collapse sidebar (⌘B)" data-i18n-title="app.collapseSidebar">
         <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M10 3 5 8l5 5"/></svg>
       </button>
     </div>
-    <button class="side-home active" id="home-btn" title="Board">
+    <button class="side-home active" id="home-btn" title="Board" data-i18n-title="app.board">
       <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1.5" y="2.5" width="3.4" height="11"/><rect x="6.3" y="2.5" width="3.4" height="7"/><rect x="11.1" y="2.5" width="3.4" height="9"/></svg>
-      <span class="label">Board</span>
+      <span class="label" data-i18n="app.board">Board</span>
     </button>
-    <div class="side-group"><span>Sessions</span><span id="side-count"></span></div>
+    <div class="side-group"><span data-i18n="app.sessions">Sessions</span><span id="side-count"></span></div>
     <div class="side-list" id="side-list"></div>
     <button id="update-btn"><span>⬆</span><span class="label"></span></button>
-    <button class="side-new" id="side-new" title="New session"><span>＋</span><span class="label">New session</span></button>
-    <button class="side-new" id="settings-btn" title="Settings"><span><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" style="vertical-align:-2px"><circle cx="8" cy="8" r="2.3"/><path d="M8 1.6v2.1M8 12.3v2.1M1.6 8h2.1M12.3 8h2.1M3.5 3.5l1.5 1.5M11 11l1.5 1.5M12.5 3.5 11 5M5 11l-1.5 1.5"/></svg></span><span class="label">Settings</span></button>
+    <button class="side-new" id="side-new" title="New session" data-i18n-title="app.newSession"><span>＋</span><span class="label" data-i18n="app.newSession">New session</span></button>
+    <button class="side-new" id="settings-btn" title="Settings" data-i18n-title="app.settings"><span><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" style="vertical-align:-2px"><circle cx="8" cy="8" r="2.3"/><path d="M8 1.6v2.1M8 12.3v2.1M1.6 8h2.1M12.3 8h2.1M3.5 3.5l1.5 1.5M11 11l1.5 1.5M12.5 3.5 11 5M5 11l-1.5 1.5"/></svg></span><span class="label" data-i18n="app.settings">Settings</span></button>
   </nav>
 
   <div id="main">
     <div id="tabs"></div>
-    <div id="banner">deck needs tmux as its session backend. Install <a href="https://brew.sh" style="color:inherit">Homebrew</a> if you don't have it, then run <b>brew install tmux</b> in Terminal and restart deck.</div>
+    <div id="banner"><span data-i18n="app.tmuxBefore">deck needs tmux as its session backend. Install</span> <a href="https://brew.sh" style="color:inherit">Homebrew</a> <span data-i18n="app.tmuxAfter">if you don't have it, then run</span> <b>brew install tmux</b> <span data-i18n="app.tmuxEnd">in Terminal and restart deck.</span></div>
 
     <div id="board-view">
       <div class="board-head">
-        <h1 id="board-title">Sessions</h1>
-        <button class="btn primary" id="board-new">＋ New session</button>
-        <span class="hint">click a board title to target new sessions · drag cards between boards · right-click for actions</span>
+        <h1 id="board-title" data-i18n="app.sessions">Sessions</h1>
+        <button class="btn primary" id="board-new"><span>＋</span> <span data-i18n="app.newSession">New session</span></button>
+        <span class="hint" data-i18n="board.hint">click a Board title to target new sessions · drag cards between Boards · right-click for actions</span>
       </div>
       <div id="columns"></div>
     </div>
 
     <div id="session-view">
       <div class="sess-head">
-        <button class="back-btn" id="back-btn" title="Back to board">
+        <button class="back-btn" id="back-btn" title="Back to Board" data-i18n-title="session.back">
           <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M10 3 5 8l5 5"/></svg>
-          <span id="back-label">Board</span>
+          <span id="back-label" data-i18n="app.board">Board</span>
         </button>
         <span class="dot" id="sess-dot"></span>
         <div class="sess-title"><span class="name" id="sess-name"></span></div>
         <span class="sess-path" id="sess-path"></span>
         <div class="sess-spacer"></div>
-        <span class="mem-chip" id="sess-mem" title="Memory of the whole session process tree: shell + agent + spawned children"></span>
-        <button class="btn icon-btn" id="split-right" title="Split right (⌘D)">◧</button>
-        <button class="btn icon-btn" id="split-down" title="Split down (⌘⇧D)">⬓</button>
-        <button class="btn icon-btn" id="queue-btn" title="Scheduled prompts — send prompts to this session later"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8.8" r="5"/><path d="M8 6.2v2.6l1.8 1.2"/><path d="M13.9 2.8l-1.7 1.5M2.1 2.8l1.7 1.5" stroke-linecap="round"/></svg><span class="cnt" id="queue-cnt"></span></button>
-        <select class="col-select" id="sess-col" title="Move to board"></select>
-        <button class="btn danger" id="sess-close" title="Close session (terminates the shell and removes the card)">Close</button>
+        <span class="mem-chip" id="sess-mem" title="Memory of the whole session process tree: shell + agent + spawned children" data-i18n-title="session.memory"></span>
+        <button class="btn icon-btn" id="split-right" title="Split right (⌘D)" data-i18n-title="session.splitRight">◧</button>
+        <button class="btn icon-btn" id="split-down" title="Split down (⌘⇧D)" data-i18n-title="session.splitDown">⬓</button>
+        <button class="btn icon-btn" id="queue-btn" title="Scheduled prompts — send prompts to this session later" data-i18n-title="queue.title"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8.8" r="5"/><path d="M8 6.2v2.6l1.8 1.2"/><path d="M13.9 2.8l-1.7 1.5M2.1 2.8l1.7 1.5" stroke-linecap="round"/></svg><span class="cnt" id="queue-cnt"></span></button>
+        <select class="col-select" id="sess-col" title="Move to Board" data-i18n-title="session.moveBoard"></select>
+        <button class="btn danger" id="sess-close" title="Close session (terminates the shell and removes the card)" data-i18n="session.close" data-i18n-title="session.closeTitle">Close</button>
       </div>
       <div id="queue-panel">
         <div id="queue-list"></div>
         <div class="q-add">
-          <button class="btn" id="q-src" title="Source — type a prompt, or insert a template (templates are saved per project)">✎</button>
-          <input type="text" id="q-text" placeholder="prompt to send to this session later…" autocomplete="off" spellcheck="false">
-          <button class="btn primary" id="q-add-btn">Add</button>
+          <button class="btn" id="q-src" title="Source — type a prompt, or insert a template (templates are saved per project)" data-i18n-title="queue.sourceTitle">✎</button>
+          <input type="text" id="q-text" placeholder="prompt to send to this session later…" data-i18n-placeholder="queue.placeholder" autocomplete="off" spellcheck="false">
+          <button class="btn primary" id="q-add-btn" data-i18n="common.add">Add</button>
         </div>
         <div class="q-sentence">
-          <span>Send</span>
+          <span data-i18n="queue.send">Send</span>
           <select id="q-when">
-            <option value="chain">after previous (3 min quiet)</option>
-            <option value="30">in 30 min</option>
-            <option value="60">in 1 h</option>
-            <option value="180">in 3 h</option>
-            <option value="300">in 5 h</option>
-            <option value="custom">at time…</option>
-            <option value="e5">every 5 min</option>
-            <option value="e15">every 15 min</option>
-            <option value="e30">every 30 min</option>
-            <option value="e60">every 1 h</option>
-            <option value="e120">every 2 h</option>
+            <option value="chain" data-i18n="queue.when.chain">after previous (3 min quiet)</option>
+            <option value="30" data-i18n="queue.when.30">in 30 min</option>
+            <option value="60" data-i18n="queue.when.60">in 1 h</option>
+            <option value="180" data-i18n="queue.when.180">in 3 h</option>
+            <option value="300" data-i18n="queue.when.300">in 5 h</option>
+            <option value="custom" data-i18n="queue.when.custom">at time…</option>
+            <option value="e5" data-i18n="queue.when.e5">every 5 min</option>
+            <option value="e15" data-i18n="queue.when.e15">every 15 min</option>
+            <option value="e30" data-i18n="queue.when.e30">every 30 min</option>
+            <option value="e60" data-i18n="queue.when.e60">every 1 h</option>
+            <option value="e120" data-i18n="queue.when.e120">every 2 h</option>
           </select>
           <input type="time" id="q-time" style="display:none">
           <select id="q-win" style="display:none">
-            <option value="">any time of day</option>
-            <option value="540-1080">only 09:00–18:00</option>
-            <option value="480-1320">only 08:00–22:00</option>
-            <option value="custom">only between…</option>
+            <option value="" data-i18n="queue.window.any">any time of day</option>
+            <option value="540-1080" data-i18n="queue.window.day">only 09:00–18:00</option>
+            <option value="480-1320" data-i18n="queue.window.longDay">only 08:00–22:00</option>
+            <option value="custom" data-i18n="queue.window.custom">only between…</option>
           </select>
           <input type="time" id="q-win-a" style="display:none"><span id="q-win-dash" style="display:none">–</span><input type="time" id="q-win-b" style="display:none">
           <select id="q-until" style="display:none">
-            <option value="">until I remove it</option>
-            <option value="n5">5 times</option>
-            <option value="n10">10 times</option>
-            <option value="n20">20 times</option>
-            <option value="t">until time…</option>
+            <option value="" data-i18n="queue.until.remove">until I remove it</option>
+            <option value="n5" data-i18n="queue.until.n5">5 times</option>
+            <option value="n10" data-i18n="queue.until.n10">10 times</option>
+            <option value="n20" data-i18n="queue.until.n20">20 times</option>
+            <option value="t" data-i18n="queue.until.time">until time…</option>
           </select>
           <input type="time" id="q-until-t" style="display:none">
         </div>
-        <div class="q-hint">Prompts are typed into the session at the scheduled moment (works while detached; the app must be running). "After previous" fires once the session has been quiet for 3 minutes — quiet means no output, which may also be a prompt waiting for you. If deck crashes during delivery, the outcome is shown as ambiguous and never auto-retried: acknowledge it as sent, or explicitly retry with possible duplicate risk. "Every…" is a standing rule — it keeps firing on schedule (optionally only inside a daily time window) until you pause or remove it; a window like 20:00–08:00 wraps midnight. A timed prompt starts a new group; "after previous" joins the last group. ☆ on a group header saves that group as a project template.</div>
+        <div class="q-hint" data-i18n="queue.explainer">Prompts are typed into the session at the scheduled moment.</div>
         <div id="tpl-pop"></div>
       </div>
       <div id="terminal"></div>
@@ -659,30 +675,38 @@
 <div id="dropzone"></div>
 <div id="settings-modal">
   <div id="settings-box">
-    <div class="set-title">Settings</div>
+    <div class="set-title" data-i18n="settings.title">Settings</div>
     <div class="set-row">
-      <label for="set-editor">Open files in</label>
+      <label for="set-locale" data-i18n="settings.language">Language</label>
+      <select class="col-select" id="set-locale">
+        <option value="system" data-i18n="settings.locale.system">Follow system</option>
+        <option value="en" data-i18n="settings.locale.en">English</option>
+        <option value="zh-Hans" data-i18n="settings.locale.zh-Hans">简体中文</option>
+      </select>
+    </div>
+    <div class="set-row">
+      <label for="set-editor" data-i18n="settings.openFiles">Open files in</label>
       <select class="col-select" id="set-editor"></select>
     </div>
-    <div class="set-hint">Used by “Open in editor” on file links in the terminal. Editors are auto-detected from /Applications.</div>
+    <div class="set-hint" data-i18n="settings.editorHint">Used by “Open in editor” on file links in the terminal. Editors are auto-detected from /Applications.</div>
     <div class="set-row">
-      <label for="set-debug">Debug logging</label>
+      <label for="set-debug" data-i18n="settings.debug">Debug logging</label>
       <input type="checkbox" id="set-debug">
-      <span style="font-size:11.5px;color:var(--muted)">verbose diagnostics in app.log (never records what you type)</span>
+      <span style="font-size:11.5px;color:var(--muted)" data-i18n="settings.debugHint">verbose diagnostics in app.log (never records what you type)</span>
     </div>
     <div class="set-row">
-      <label>Command history</label>
-      <button class="btn" id="set-clear-hist" style="margin-left:auto">Clear</button>
+      <label data-i18n="settings.history">Command history</label>
+      <button class="btn" id="set-clear-hist" style="margin-left:auto" data-i18n="common.clear">Clear</button>
     </div>
-    <div class="set-hint">deck keeps commands typed in its shells (for the completion chips) in ~/.deck/history.json, readable only by you. Avoid typing secrets directly into command lines; Clear wipes the file and its backup.</div>
+    <div class="set-hint" data-i18n="settings.historyHint">deck keeps commands typed in its shells (for the completion chips) in ~/.deck/history.json, readable only by you.</div>
     <div class="set-sep"></div>
     <div class="set-row">
-      <label>Updates</label>
+      <label data-i18n="settings.updates">Updates</label>
       <span id="set-ver" style="color:var(--muted)"></span>
-      <button class="btn" id="set-check" style="margin-left:auto">Check for updates</button>
+      <button class="btn" id="set-check" style="margin-left:auto" data-i18n="settings.checkUpdates">Check for updates</button>
     </div>
     <div class="set-hint" id="set-upd-status"></div>
-    <div class="set-actions"><button class="btn" id="set-close">Done</button></div>
+    <div class="set-actions"><button class="btn" id="set-close" data-i18n="common.done">Done</button></div>
   </div>
 </div>
 <div id="ppd">
@@ -690,8 +714,8 @@
     <div id="ppd-msg"></div>
     <input type="text" id="ppd-input" autocomplete="off" spellcheck="false">
     <div class="cfm-actions">
-      <button class="btn" id="ppd-no">Cancel</button>
-      <button class="btn primary" id="ppd-yes">Save</button>
+      <button class="btn" id="ppd-no" data-i18n="common.cancel">Cancel</button>
+      <button class="btn primary" id="ppd-yes" data-i18n="common.save">Save</button>
     </div>
   </div>
 </div>
@@ -699,8 +723,8 @@
   <div id="cfm-box">
     <div id="cfm-msg"></div>
     <div class="cfm-actions">
-      <button class="btn" id="cfm-no">Cancel</button>
-      <button class="btn cfm-danger" id="cfm-yes">Confirm</button>
+      <button class="btn" id="cfm-no" data-i18n="common.cancel">Cancel</button>
+      <button class="btn cfm-danger" id="cfm-yes" data-i18n="common.confirm">Confirm</button>
     </div>
   </div>
 </div>

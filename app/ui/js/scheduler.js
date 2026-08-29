@@ -6,6 +6,7 @@ export { blockedBy, chainQuietHint, fmtEvery, groupQueue, groupSteps, hasWindow,
 import { confirmDialog, inlineRename, toast, promptDialog } from './dialogs.js';
 import { pollNow, provider } from './board.js';
 import { strToB64 } from './layout.js';
+import { formatDateTime, formatInterval, formatNumber, t } from './i18n.js';
 
 /* ---------- scheduled prompts ---------- */
 export async function refreshQueue() {
@@ -19,22 +20,32 @@ export function setQueueChip(chip, card) {
   if (!chip) return;
   const q = sessionQueue(card.session);
   chip.textContent = q.length ? '⏰' + q.length : '';
-  chip.title = q.length ? `next ${fmtWhen(q[0])}: ${q[0].text}` : '';
+  chip.title = q.length ? t('queue.next', { when: fmtWhen(q[0]), prompt: q[0].text }) : '';
 }
 
 export const fmtClock = ts => {
   const d = new Date(ts * 1000);
   const today = new Date().toDateString() === d.toDateString();
-  return (today ? '' : (d.getMonth() + 1) + '/' + d.getDate() + ' ') + d.toTimeString().slice(0, 5);
+  return formatDateTime(d, today
+    ? { hour: '2-digit', minute: '2-digit' }
+    : { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 };
 export function fmtWhen(i) {
-  if (i.mode === 'chain') return '↳ after prev';
-  if (i.mode === 'every') return '↻ every ' + fmtEvery(i.every);
+  if (i.mode === 'chain') return t('queue.afterPrevious');
+  if (i.mode === 'every') return t('queue.every', { interval: formatInterval(i.every) });
   return fmtClock(i.at);
 }
 
+export function localizedChainQuietHint(idleSecs, alive) {
+  if (!alive) return t('queue.quiet.ready');
+  if (idleSecs == null) return '';
+  const total = 180;
+  const seconds = Math.min(Math.floor(idleSecs), total);
+  return seconds >= total ? t('queue.quiet.done') : t('queue.quiet.progress', { seconds, total });
+}
+
 const chainWhenSuffix = (i, card) =>
-  i.mode === 'chain' && card ? chainQuietHint(card.idle, card.status !== 'stopped') : '';
+  i.mode === 'chain' && card ? localizedChainQuietHint(card.idle, card.status !== 'stopped') : '';
 
 /* refresh the quiet counters in place on every poll tick — text-only, so an
    open panel never gets its DOM (hover/click targets, inline edits) rebuilt.
@@ -43,30 +54,30 @@ export function updateQuietHints() {
   if (!queueOpen || state.view !== 'session') return;
   const card = provider.get(state.sessionId);
   if (!card) return;
-  const suffix = chainQuietHint(card.idle, card.status !== 'stopped');
+  const suffix = localizedChainQuietHint(card.idle, card.status !== 'stopped');
   document.querySelectorAll('#queue-list .qg-when[data-quiet]').forEach(el => {
-    el.textContent = '↳ after prev' + suffix;
+    el.textContent = t('queue.afterPrevious') + suffix;
   });
 }
 
 export function qMeta(i) {
   const parts = [];
-  if (i.state === 'ambiguous') parts.push('⚠ delivery outcome unknown — decide below');
-  else if (i.state === 'firing') parts.push('sending…');
+  if (i.state === 'ambiguous') parts.push(t('queue.meta.ambiguous'));
+  else if (i.state === 'firing') parts.push(t('queue.meta.sending'));
   if (i.tpl) parts.push(`tpl·${i.tpl} ${i.tpl_idx}/${i.tpl_total}`);
   if (i.mode === 'every') {
     if (hasWindow(i)) parts.push(minToHM(i.win_from) + '–' + minToHM(i.win_to));
     if (i.paused) {
-      parts.push('paused');
+      parts.push(t('queue.meta.paused'));
     } else {
       const nm = new Date();
       const sleeping = hasWindow(i) && !winHas(nm.getHours() * 60 + nm.getMinutes(), i.win_from, i.win_to);
-      parts.push((sleeping ? 'sleeps — resumes ' : 'next ') + fmtClock(nextFire(i)));
+      parts.push(t(sleeping ? 'queue.meta.sleeping' : 'queue.meta.next', { time: fmtClock(nextFire(i)) }));
     }
-    if (i.fired) parts.push(i.fired + '×' + (i.until_n ? '/' + i.until_n : ''));
-    if (i.state === 'failed') parts.push('⚠ send failed ×' + i.attempts + (i.last_error ? ': ' + i.last_error : ''));
-    else if (i.until_n) parts.push('stops after ' + i.until_n + '×');
-    if (i.until_at) parts.push('until ' + fmtClock(i.until_at));
+    if (i.fired) parts.push(formatNumber(i.fired) + '×' + (i.until_n ? '/' + formatNumber(i.until_n) : ''));
+    if (i.state === 'failed') parts.push(t('queue.meta.failed', { attempts: formatNumber(i.attempts) }));
+    else if (i.until_n) parts.push(t('queue.meta.stops', { count: formatNumber(i.until_n) }));
+    if (i.until_at) parts.push(t('queue.meta.until', { time: fmtClock(i.until_at) }));
   }
   return parts.join(' · ');
 }
@@ -77,11 +88,11 @@ export async function saveGroupAsTemplate(g) {
   if (!card) return;
   const steps = groupSteps(g);
   const name = await promptDialog(
-    `Save this group (${steps.length} prompt${steps.length > 1 ? 's, in order' : ''}) as a template for this project:`,
+    t('queue.templateSavePrompt', { count: formatNumber(steps.length) }),
     g.head.tpl || '');
   if (!name) return;
   await provider.saveTemplate(card.projectId, name, steps);
-  toast('template saved: ' + name);
+  toast(t('queue.templateSaved', { name }));
 }
 
 export function groupEl(g, card) {
@@ -93,28 +104,33 @@ export function groupEl(g, card) {
   head.className = 'qg-head';
   head.innerHTML = '<span class="qg-when"></span><span class="qg-meta"></span><span class="qg-act">'
     + (rule ? '<button class="qg-pause"></button>' : '')
-    + (rule && itemDead(g.head) ? '<button class="qg-retry" title="retry this rule (fresh attempts)">↻</button>' : '')
-    + '<button class="qg-save" title="save this group as a project template">☆</button>'
-    + '<button class="qg-del" title="remove the whole group">✕</button></span>';
+    + (rule && itemDead(g.head) ? '<button class="qg-retry">↻</button>' : '')
+    + '<button class="qg-save">☆</button>'
+    + '<button class="qg-del">✕</button></span>';
   const whenEl = head.querySelector('.qg-when');
   whenEl.textContent = fmtWhen(g.head) + chainWhenSuffix(g.head, card);
   /* chain heads get their quiet counter refreshed on every poll tick */
   if (g.head.mode === 'chain') whenEl.dataset.quiet = '1';
   const n = groupSteps(g).length;
   head.querySelector('.qg-meta').textContent =
-    [qMeta(g.head), n > 1 ? `then ${n - 1} follow-up${n > 2 ? 's' : ''}, in order` : '']
+    [qMeta(g.head), n > 1 ? t('queue.followups', { count: formatNumber(n - 1) }) : '']
       .filter(Boolean).join(' · ');
   const pb = head.querySelector('.qg-pause');
   if (pb) {
     pb.textContent = g.head.paused ? '▶' : '⏸';
-    pb.title = g.head.paused ? 'resume this rule' : 'pause this rule (keeps its settings)';
-    pb.onclick = () => inv('queue_pause', { id: g.head.id, paused: !g.head.paused }).catch(e => toast('pause failed: ' + e));
+    pb.title = t(g.head.paused ? 'queue.resumeRule' : 'queue.pauseRule');
+    pb.onclick = () => inv('queue_pause', { id: g.head.id, paused: !g.head.paused }).catch(() => toast(t('error.operation', { operation: t('queue.meta.paused') })));
   }
   const hr = head.querySelector('.qg-retry');
-  if (hr) hr.onclick = () => inv('queue_retry', { id: g.head.id }).catch(e => toast('retry failed: ' + e));
+  if (hr) {
+    hr.title = t('queue.retryRule');
+    hr.onclick = () => inv('queue_retry', { id: g.head.id }).catch(() => toast(t('error.operation', { operation: t('queue.riskRetry') })));
+  }
+  head.querySelector('.qg-save').title = t('queue.saveGroup');
+  head.querySelector('.qg-del').title = t('queue.removeGroup');
   head.querySelector('.qg-save').onclick = () => saveGroupAsTemplate(g);
   head.querySelector('.qg-del').onclick = () => {
-    for (const i of g.rows) inv('queue_remove', { id: i.id }).catch(e => toast('remove failed: ' + e));
+    for (const i of g.rows) inv('queue_remove', { id: i.id }).catch(() => toast(t('error.operation', { operation: t('common.delete') })));
   };
   el.appendChild(head);
 
@@ -130,53 +146,56 @@ export function groupEl(g, card) {
     const dead = r.item && itemDead(r.item);
     const ambiguous = r.item && r.item.state === 'ambiguous';
     row.innerHTML = '<span class="tree"></span><span class="q-text"></span><span class="row-meta"></span>'
-      + (ambiguous ? '<button class="q-ack" title="acknowledge as sent (does not resend)">✓ sent</button>'
-              + '<button class="q-risk-retry" title="retry — may deliver this prompt twice">↻ retry</button>' : '')
-      + (dead ? '<button class="q-retry" title="retry this step (fresh attempts)">↻</button>'
-              + '<button class="q-skip" title="skip this failed step — later steps continue">⏭</button>' : '')
-      + (r.item ? '<button class="q-del" title="remove this prompt">✕</button>' : '');
+      + (ambiguous ? '<button class="q-ack"></button><button class="q-risk-retry"></button>' : '')
+      + (dead ? '<button class="q-retry">↻</button><button class="q-skip">⏭</button>' : '')
+      + (r.item ? '<button class="q-del">✕</button>' : '');
     row.querySelector('.tree').textContent =
       rows.length === 1 || k === 0 ? '' : (k === rows.length - 1 ? '└' : '├');
     const txt = row.querySelector('.q-text');
     txt.textContent = r.text;
     if (r.item) {
       const i = r.item;
-      txt.title = 'click to edit';
+      txt.title = t('common.edit');
       txt.onclick = () => {
         inlineRename(txt, i.text, v => {
           if (v && v !== i.text) {
-            inv('queue_update', { id: i.id, text: v }).catch(e => toast('edit failed: ' + e));
+            inv('queue_update', { id: i.id, text: v }).catch(() => toast(t('error.operation', { operation: t('common.edit') })));
           } else {
             setTimeout(renderQueueUI, 0);   // after blur, so the guard won't skip
           }
         });
       };
-      row.querySelector('.q-del').onclick = () => inv('queue_remove', { id: i.id }).catch(e => toast('remove failed: ' + e));
+      const del = row.querySelector('.q-del');
+      del.title = t('queue.removePrompt');
+      del.onclick = () => inv('queue_remove', { id: i.id }).catch(() => toast(t('error.operation', { operation: t('common.delete') })));
       const rb = row.querySelector('.q-retry');
-      if (rb) rb.onclick = () => inv('queue_retry', { id: i.id }).catch(e => toast('retry failed: ' + e));
+      if (rb) { rb.title = t('queue.retryStep'); rb.onclick = () => inv('queue_retry', { id: i.id }).catch(() => toast(t('error.operation', { operation: t('queue.riskRetry') }))); }
       const ack = row.querySelector('.q-ack');
-      if (ack) ack.onclick = () => inv('queue_acknowledge', { id: i.id })
-        .catch(e => toast('acknowledge failed: ' + e));
+      if (ack) {
+        ack.textContent = t('queue.ack'); ack.title = t('queue.ackTitle');
+        ack.onclick = () => inv('queue_acknowledge', { id: i.id })
+          .catch(() => toast(t('error.operation', { operation: t('queue.ack') })));
+      }
       const riskRetry = row.querySelector('.q-risk-retry');
       if (riskRetry) riskRetry.onclick = async () => {
-        if (!(await confirmDialog('Retry this ambiguous delivery? The earlier send may have succeeded, so this can send the prompt twice.'))) return;
-        inv('queue_retry', { id: i.id }).catch(e => toast('retry failed: ' + e));
+        if (!(await confirmDialog(t('queue.retryAmbiguousConfirm')))) return;
+        inv('queue_retry', { id: i.id }).catch(() => toast(t('error.operation', { operation: t('queue.riskRetry') })));
       };
+      if (riskRetry) { riskRetry.textContent = t('queue.riskRetry'); riskRetry.title = t('queue.riskRetryTitle'); }
       const sb = row.querySelector('.q-skip');
-      if (sb) sb.onclick = () => inv('queue_skip', { id: i.id }).catch(e => toast('skip failed: ' + e));
+      if (sb) { sb.title = t('queue.skipStep'); sb.onclick = () => inv('queue_skip', { id: i.id }).catch(() => toast(t('error.operation', { operation: t('queue.skipStep') }))); }
       const bits = [];
       if (i.tpl && i.mode !== 'every') bits.push(`tpl·${i.tpl} ${i.tpl_idx}/${i.tpl_total}`);
       if (i.state === 'ambiguous') {
-        bits.push('⚠ deck crashed during delivery; acknowledge it as sent or retry with duplicate risk');
+        bits.push(t('queue.ambiguousDetail'));
       } else if (i.state === 'failed' && i.mode !== 'every') {
-        bits.push('⚠ ' + (itemDead(i) ? 'gave up — blocks later steps until retried or skipped'
-          : 'send failed, retrying') + (i.last_error ? ': ' + i.last_error : ''));
+        bits.push('⚠ ' + t(itemDead(i) ? 'queue.gaveUp' : 'queue.failedRetrying'));
       } else if (blockedBy(i, g.rows)) {
-        bits.push('⏸ waiting — an earlier step failed (retry or skip it)');
+        bits.push(t('queue.blocked'));
       }
       row.querySelector('.row-meta').textContent = bits.join(' · ');
     } else {
-      txt.title = 'template step — fires as part of this rule, in order';
+      txt.title = t('queue.templateStep');
     }
     el.appendChild(row);
   });
@@ -195,7 +214,10 @@ export function renderQueueUI() {
       const list = $('queue-list');
       list.innerHTML = '';
       for (const g of groupQueue(q)) list.appendChild(groupEl(g, card));
-      if (!q.length) list.innerHTML = '<div class="q-hint">nothing scheduled for this session yet</div>';
+      if (!q.length) {
+        const empty = document.createElement('div');
+        empty.className = 'q-hint'; empty.textContent = t('queue.empty'); list.appendChild(empty);
+      }
     }
   }
   document.querySelectorAll('.card[data-sid]').forEach(el => {
@@ -254,15 +276,15 @@ export function setQSrc(tpl) {
   if (tpl) {
     btn.textContent = '📋';
     btn.classList.add('tpl');
-    inp.value = `${tpl.name}  (${tpl.steps.length} steps, in order)`;
+    inp.value = `${tpl.name}  (${t('queue.steps', { count: formatNumber(tpl.steps.length) })})`;
     inp.readOnly = true;
-    $('q-add-btn').textContent = 'Add ' + tpl.steps.length;
+    $('q-add-btn').textContent = t('common.addCount', { count: formatNumber(tpl.steps.length) });
   } else {
     btn.textContent = '✎';
     btn.classList.remove('tpl');
     if (inp.readOnly) inp.value = '';
     inp.readOnly = false;
-    $('q-add-btn').textContent = 'Add';
+    $('q-add-btn').textContent = t('common.add');
   }
 }
 
@@ -282,39 +304,44 @@ export function showTplPop() {
     return el;
   };
   const proj = provider.project(card.projectId);
-  add('t-head').textContent = 'TEMPLATES — PROJECT ' + ((proj && proj.name) || '').toUpperCase();
+  add('t-head').textContent = t('queue.templatesProject', { project: (proj && proj.name) || '' });
   if (qTpl) {
-    const r = add('t-row', '<span class="t-name">✎ type a prompt instead</span>');
+    const r = add('t-row', '<span class="t-name"></span>');
+    r.querySelector('.t-name').textContent = t('queue.typePrompt');
     r.onclick = () => { setQSrc(null); hideTplPop(); $('q-text').focus(); };
   }
   if (!tpls.length) {
-    add('t-row', '<span class="t-name" style="color:var(--faint)">no templates yet — queue prompts, then save them below</span>');
+    const r = add('t-row', '<span class="t-name" style="color:var(--faint)"></span>');
+    r.querySelector('.t-name').textContent = t('queue.noTemplates');
   }
-  for (const t of tpls) {
-    const r = add('t-row', '<span class="t-name"></span><span class="t-n"></span><button class="t-act" title="rename">✎</button><button class="t-act t-del" title="delete">✕</button>');
-    r.querySelector('.t-name').textContent = t.name;
-    r.querySelector('.t-name').title = t.steps.join('\n');
-    r.querySelector('.t-n').textContent = t.steps.length + ' steps';
-    r.querySelector('.t-name').onclick = () => { setQSrc(t); hideTplPop(); };
+  for (const template of tpls) {
+    const r = add('t-row', '<span class="t-name"></span><span class="t-n"></span><button class="t-act">✎</button><button class="t-act t-del">✕</button>');
+    r.querySelector('.t-name').textContent = template.name;
+    r.querySelector('.t-name').title = template.steps.join('\n');
+    r.querySelector('.t-n').textContent = t('queue.steps', { count: formatNumber(template.steps.length) });
+    r.querySelector('.t-act').title = t('common.rename');
+    r.querySelector('.t-del').title = t('common.delete');
+    r.querySelector('.t-name').onclick = () => { setQSrc(template); hideTplPop(); };
     r.querySelector('.t-act').onclick = async e => {
       e.stopPropagation();
-      const name = await promptDialog('Rename template:', t.name);
-      if (name && name !== t.name) {
-        const oldName = t.name;
+      const name = await promptDialog(t('queue.renameTemplate'), template.name);
+      if (name && name !== template.name) {
+        const oldName = template.name;
         await provider.renameTemplate(card.projectId, oldName, name);
-        if (qTpl === t) setQSrc({ ...t, name });
+        if (qTpl === template) setQSrc({ ...template, name });
       }
     };
     r.querySelector('.t-del').onclick = async e => {
       e.stopPropagation();
-      if (!(await confirmDialog(`Delete template "${t.name}"? Prompts already queued are not affected.`))) return;
-      await provider.deleteTemplate(card.projectId, t.name);
-      if (qTpl === t) setQSrc(null);
+      if (!(await confirmDialog(t('queue.deleteTemplate', { name: template.name })))) return;
+      await provider.deleteTemplate(card.projectId, template.name);
+      if (qTpl === template) setQSrc(null);
       hideTplPop();
     };
   }
   add('t-sep');
-  add('t-row', '<span class="t-name" style="color:var(--faint)">☆ on a group header saves that group as a template</span>');
+  const hint = add('t-row', '<span class="t-name" style="color:var(--faint)"></span>');
+  hint.querySelector('.t-name').textContent = t('queue.saveTemplateHint');
   const a = $('q-src');
   pop.style.left = a.offsetLeft + 'px';
   pop.style.top = (a.offsetTop + a.offsetHeight + 6) + 'px';
@@ -338,16 +365,16 @@ $('q-add-btn').onclick = async () => {
   if (w === 'chain') {
     mode = 'chain';
   } else if (w === 'custom') {
-    const t = $('q-time').value;
-    if (!t) { $('q-time').focus(); return; }
-    at = nextEpochFor(t);
+    const startTime = $('q-time').value;
+    if (!startTime) { $('q-time').focus(); return; }
+    at = nextEpochFor(startTime);
   } else if (w.startsWith('e')) {
     mode = 'every';
     every = parseInt(w.slice(1), 10) * 60;
     const wv = $('q-win').value;
     if (wv === 'custom') {
       const a = $('q-win-a').value, b = $('q-win-b').value;
-      if (!a || !b) { toast('set both ends of the time window'); return; }
+      if (!a || !b) { toast(t('queue.setWindow')); return; }
       winFrom = hmToMin(a);
       winTo = hmToMin(b);
     } else if (wv) {
@@ -356,9 +383,9 @@ $('q-add-btn').onclick = async () => {
     const uv = $('q-until').value;
     if (uv.startsWith('n')) untilN = parseInt(uv.slice(1), 10);
     else if (uv === 't') {
-      const t = $('q-until-t').value;
-      if (!t) { toast('set the stop time'); return; }
-      untilAt = nextEpochFor(t);
+      const stopTime = $('q-until-t').value;
+      if (!stopTime) { toast(t('queue.setStop')); return; }
+      untilAt = nextEpochFor(stopTime);
     }
   } else {
     at = Math.floor(Date.now() / 1000) + parseInt(w, 10) * 60;
@@ -389,7 +416,7 @@ $('q-add-btn').onclick = async () => {
     $('q-when').value = 'chain';   // natural default for the next one
     syncSentence();
   } catch (e) {
-    toast('add failed: ' + e);
+    toast(t('error.operation', { operation: t('common.add') }));
   }
 };
 $('q-text').addEventListener('keydown', e => { if (e.key === 'Enter') $('q-add-btn').click(); });
@@ -404,6 +431,6 @@ listen('menu-clear', () => {
 
 listen('queue-changed', refreshQueue).catch(() => uev('listen-fail', 'queue-changed'));
 listen('queue-fired', ev => {
-  toast(`scheduled prompt sent → ${ev.payload.session}`);
+  toast(t('queue.sent', { session: ev.payload.session }));
   pollNow();
 }).catch(() => uev('listen-fail', 'queue-fired'));

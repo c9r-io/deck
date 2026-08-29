@@ -1,12 +1,17 @@
 // board.js — board CRUD provider, polling loop, sidebar/tabs/board rendering
 // Part of deck's no-build frontend: native ES modules, no bundler.
-import { $, COL_HINTS, DOT_TITLES, POLL_MS, QUIET_SECS, emit, genId, inv, listeners, sessionName, setMemChip, state, store, uev } from './state.js';
+import { $, columnHint, dotTitle, POLL_MS, QUIET_SECS, emit, genId, inv, listeners, sessionName, setMemChip, state, store, uev } from './state.js';
 import { mutateBoard, mutateBoardDebounced } from './persistence.js';
 import { createExitRetirementTracker, sidebarGroups } from './pure.js';
 import { confirmDialog, inlineRename, toast } from './dialogs.js';
 import { clearSeparators, closePaneBySid, leaveSessionView, openSession, renderSessionView, updatePaneChrome } from './layout.js';
 import { SHELL_FG, showProjectCtx, showSessionCtx } from './terminal.js';
 import { renderQueueUI, setQueueChip, updateQuietHints } from './scheduler.js';
+import { t } from './i18n.js';
+import { createDefaultColumns, migrateColumnSemantics } from './board-defaults.js';
+export { migrateColumnSemantics } from './board-defaults.js';
+
+export const defaultColumns = () => createDefaultColumns(genId, t);
 
 /* ---------- provider (every persistent mutation is one queued transaction) ---------- */
 export const activeProject = () => provider.project(state.projectId);
@@ -24,7 +29,7 @@ export const provider = {
     const p = {
       id: genId('P'),
       name,
-      columns: ['Attention', 'Working', 'Queued', 'Parked'].map(n => ({ id: genId('C'), name: n })),
+      columns: defaultColumns(),
     };
     await mutateBoard(draft => { draft.projects.push(p); });
     emit('projects', p);
@@ -51,7 +56,7 @@ export const provider = {
       await inv('queue_clear_sessions', { sessions });
       return true;
     } catch (e) {
-      if (!opts.quiet) toast('scheduled prompts could not be cancelled — nothing was deleted: ' + e);
+      if (!opts.quiet) toast(t('error.scheduleCancel'));
       return false;
     }
   },
@@ -86,9 +91,9 @@ export const provider = {
       });
     } catch (error) {
       if (!opts.quiet && error.stage === 'kill') {
-        toast('project kept — one or more sessions could not be closed');
+        toast(t('error.projectClose'));
       } else if (!opts.quiet && error.stage !== 'cancel') {
-        toast('project kept because the board could not be saved');
+        toast(t('error.projectSave'));
       }
       emit('projects');
       return false;
@@ -186,8 +191,8 @@ export const provider = {
         });
       } catch (error) {
         const c = this.get(sid);
-        if (!opts.quiet && error.stage === 'kill') toast('session kept because it could not be closed; retry after checking tmux permissions');
-        if (!opts.quiet && error.stage !== 'cancel' && error.stage !== 'kill') toast('session kept because the board could not be saved');
+        if (!opts.quiet && error.stage === 'kill') toast(t('error.sessionClose'));
+        if (!opts.quiet && error.stage !== 'cancel' && error.stage !== 'kill') toast(t('error.sessionSave'));
         if (c) emit('status', c);
         return { ok: false, applied: false };
       }
@@ -231,7 +236,7 @@ export const provider = {
       return true;
     } catch (e) {
       emit('list', c);
-      toast('rename was not saved; the original title was restored');
+      toast(t('error.renameSave'));
       return false;
     }
   },
@@ -251,7 +256,7 @@ export const provider = {
       p.selected = selected;
     }, {
       onCommit: () => emit('projects'),
-      onError: () => toast('the target board could not be saved'),
+      onError: () => toast(t('error.targetSave')),
     });
   },
   async saveTemplate(pid, name, steps) {
@@ -346,10 +351,10 @@ export async function pollNow() {
     get: sid => provider.get(sid),
     markStopped: c => { c.status = 'stopped'; emit('status', c); },
     close: c => provider.close(c.id, { quiet: true, detail: true }),
-    failed: () => toast('shell exited, but its card could not be retired; deck will retry safely'),
+    failed: () => toast(t('error.retire')),
     succeeded: c => {
       closePaneBySid(c.id, { detach: false });
-      toast(`"${c.title}" closed — shell exited`);
+      toast(t('session.closedExited', { name: c.title }));
     },
   });
 }
@@ -375,7 +380,7 @@ export function renderSidebar() {
   if (!all.length) {
     const empty = document.createElement('div');
     empty.className = 'side-empty';
-    empty.textContent = 'No sessions in this project';
+    empty.textContent = t('board.empty');
     list.appendChild(empty);
   }
   for (const group of sidebarGroups(proj, all)) {
@@ -419,7 +424,10 @@ export function renderTabs() {
     el.querySelector('.name').textContent = p.name;
     if (p.id !== state.projectId &&
         provider.list(p.id).some(s => s.status === 'waiting')) {
-      el.insertAdjacentHTML('beforeend', '<span class="wait-dot" title="a session has been quiet — may be waiting for input"></span>');
+      const wait = document.createElement('span');
+      wait.className = 'wait-dot';
+      wait.title = t('session.quietTab');
+      el.appendChild(wait);
     }
     el.onclick = () => switchProject(p.id);
     el.ondblclick = () => renameTab(el, p);
@@ -428,10 +436,10 @@ export function renderTabs() {
   }
   const add = document.createElement('button');
   add.className = 'tab-add';
-  add.title = 'New project';
+  add.title = t('app.newProject');
   add.textContent = '＋';
   add.onclick = async () => {
-    const p = await provider.createProject('new project');
+    const p = await provider.createProject(t('project.newName'));
     switchProject(p.id);
     const tab = document.querySelector('#tabs .tab.active');
     if (tab) renameTab(tab, p);
@@ -480,7 +488,7 @@ export function renderBoard() {
       <div class="col-head">
         <span class="col-name"></span>
         <span class="count">${cards.length}</span>
-        <button class="col-del" title="Delete board">✕</button>
+        <button class="col-del">✕</button>
       </div>
       <div class="col-cards"></div>`;
     /* click anywhere on the board (header or empty space) to make it the
@@ -497,9 +505,8 @@ export function renderBoard() {
     });
     const nameEl = colEl.querySelector('.col-name');
     nameEl.textContent = c.name;
-    const hint = COL_HINTS[c.name];
-    nameEl.title = (hint ? hint + ' · ' : '') +
-      'click to target new sessions here · double-click to rename';
+    const hint = columnHint(c);
+    nameEl.title = t('board.targetTitle', { hint: hint ? hint + ' · ' : '' });
     nameEl.ondblclick = () => {
       inlineRename(nameEl, c.name, async v => {
         if (v) await provider.renameColumn(p.id, c.id, v);
@@ -508,12 +515,13 @@ export function renderBoard() {
     };
     colEl.querySelector('.col-del').onclick = async e => {
       e.stopPropagation();
-      if (p.columns.length <= 1) { toast('a project needs at least one board'); return; }
+      if (p.columns.length <= 1) { toast(t('board.atLeastOne')); return; }
       if (cards.length &&
-          !(await confirmDialog(`Delete board "${c.name}"? Its ${cards.length} card(s) move to "${p.columns.find(x => x.id !== c.id).name}".`))) return;
+          !(await confirmDialog(t('board.delete', { name: c.name, count: cards.length, fallback: p.columns.find(x => x.id !== c.id).name })))) return;
       const r = await provider.removeColumn(p.id, c.id);
-      if (r && r.moved) toast(`moved ${r.moved} card(s) to ${r.fallback}`);
+      if (r && r.moved) toast(t('board.movedCards', { count: r.moved, name: r.fallback }));
     };
+    colEl.querySelector('.col-del').title = t('board.deleteTitle');
 
     let dragDepth = 0;
     colEl.addEventListener('dragover', e => e.preventDefault());
@@ -530,7 +538,7 @@ export function renderBoard() {
       dragDepth = 0;
       colEl.classList.remove('drop-target');
       const sid = e.dataTransfer.getData('text/deck-session');
-      if (sid) { await provider.move(sid, c.id); toast(`moved to ${c.name}`); }
+      if (sid) { await provider.move(sid, c.id); toast(t('board.movedTo', { name: c.name })); }
     });
 
     const body = colEl.querySelector('.col-cards');
@@ -540,9 +548,10 @@ export function renderBoard() {
 
   const ghost = document.createElement('div');
   ghost.className = 'col-ghost';
-  ghost.innerHTML = '<button>＋ New board</button>';
+  ghost.innerHTML = '<button></button>';
+  ghost.querySelector('button').textContent = '＋ ' + t('app.newBoard');
   ghost.querySelector('button').onclick = async () => {
-    const c = await provider.addColumn(p.id, 'new board');
+    const c = await provider.addColumn(p.id, t('board.newName'));
     render();
     wrap.scrollLeft = wrap.scrollWidth;
     const heads = document.querySelectorAll('#columns .column .col-name');
@@ -571,11 +580,14 @@ export function cardEl(s) {
   /* fixed shape: the tail box is always present (2 lines) and there are no
      hover-only rows — cards never change size under the pointer */
   el.innerHTML = `
-    <div class="card-top"><span class="dot ${s.status}" title="${DOT_TITLES[s.status] || ''}"></span><span class="card-title"></span><button class="card-x" title="Close session">✕</button></div>
-    <div class="card-meta"><span class="cmd"></span><span class="dir"></span><span class="q-chip"></span><span class="mem-chip" title="Memory of the whole session process tree: shell + agent + spawned children"></span></div>
+    <div class="card-top"><span class="dot ${s.status}"></span><span class="card-title"></span><button class="card-x">✕</button></div>
+    <div class="card-meta"><span class="cmd"></span><span class="dir"></span><span class="q-chip"></span><span class="mem-chip"></span></div>
     ${s.desc ? '<div class="card-desc"></div>' : ''}
     <div class="card-tail"><div></div><div></div></div>`;
   el.querySelector('.card-title').textContent = s.title;
+  el.querySelector('.dot').title = dotTitle(s.status);
+  el.querySelector('.card-x').title = t('session.closeTitle');
+  el.querySelector('.mem-chip').title = t('session.memory');
   setMemChip(el.querySelector('.mem-chip'), s);
   setQueueChip(el.querySelector('.q-chip'), s);   // self-fill: survives card rebuilds
   el.querySelector('.cmd').textContent = s.cmd ? '$ ' + s.cmd : '';
@@ -613,7 +625,7 @@ export function updateCardInPlace(s) {
   const tailDivs = el.querySelectorAll('.card-tail div');
   tailDivs.forEach((d, i) => { d.textContent = tail[i] || ''; });
   const dot = el.querySelector('.dot');
-  if (dot) { dot.className = 'dot ' + s.status; dot.title = DOT_TITLES[s.status] || ''; }
+  if (dot) { dot.className = 'dot ' + s.status; dot.title = dotTitle(s.status); }
   el.classList.toggle('waiting', s.status === 'waiting');
 }
 
@@ -624,13 +636,13 @@ export async function closeSession(sid, needConfirm = false) {
   if (!s) return;
   const live = s.status !== 'stopped';
   if (needConfirm &&
-      !(await confirmDialog(`Close "${s.title}"?${live ? ' The shell will be terminated.' : ''}`))) return;
+      !(await confirmDialog(t('session.closeConfirm', { name: s.title, live: live ? t('session.closeLive') : '' })))) return;
   state.destructiveCards.add(sid);
   try {
     const result = await provider.close(sid, { detail: true });
     if (!result.ok || !result.applied) return;
     closePaneBySid(sid, { detach: false });
-    toast(`closed: ${s.title}`);
+    toast(t('session.closed', { name: s.title }));
     render();
   } finally {
     state.destructiveCards.delete(sid);

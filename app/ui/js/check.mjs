@@ -18,7 +18,7 @@ const files = readdirSync(dir).filter(f => f.endsWith('.js'));
 const BROWSER = new Set([
   'window', 'document', 'globalThis', 'navigator', 'location', 'console',
   'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'requestAnimationFrame',
-  'JSON', 'Math', 'Date', 'Promise', 'Object', 'Array', 'String', 'Number', 'Boolean',
+  'JSON', 'Math', 'Date', 'Intl', 'Promise', 'Object', 'Array', 'String', 'Number', 'Boolean',
   'Map', 'Set', 'WeakMap', 'RegExp', 'Error', 'Uint8Array', 'TextEncoder', 'TextDecoder',
   'atob', 'btoa', 'isNaN', 'parseInt', 'parseFloat', 'undefined', 'null', 'true', 'false',
   'NaN', 'Infinity', 'ResizeObserver', 'MutationObserver', 'CustomEvent', 'Event',

@@ -1,7 +1,7 @@
 //! The non-scheduler Tauri command surface: board/settings persistence,
 //! session lifecycle, polling, link opening, diagnostics.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::process::Command;
@@ -461,6 +461,13 @@ fn validate_board(b: &BoardDocRaw) -> Result<(), String> {
 
 /// Settings must be a JSON object; individual keys are optional but must
 /// have the right type when present. Same try_from sharing as BoardDoc.
+fn deserialize_present_string<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    String::deserialize(deserializer).map(Some)
+}
+
 #[derive(serde::Deserialize)]
 pub(crate) struct SettingsDocRaw {
     #[serde(default)]
@@ -468,6 +475,8 @@ pub(crate) struct SettingsDocRaw {
     #[serde(default)]
     #[allow(dead_code)]
     debug: Option<bool>,
+    #[serde(default, deserialize_with = "deserialize_present_string")]
+    locale: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -480,6 +489,11 @@ impl TryFrom<SettingsDocRaw> for SettingsDoc {
         if let Some(e) = &raw.editor {
             if e.len() > 200 {
                 return Err("editor name is unreasonably long".into());
+            }
+        }
+        if let Some(locale) = &raw.locale {
+            if !matches!(locale.as_str(), "system" | "en" | "zh-Hans") {
+                return Err("locale must be system, en, or zh-Hans".into());
             }
         }
         Ok(SettingsDoc(raw))
@@ -495,7 +509,29 @@ impl TryFrom<SettingsDocRaw> for SettingsDoc {
 pub(crate) struct LoadedDoc {
     data: String,
     source: String,
-    warning: Option<String>,
+    warning: Option<UiNotice>,
+}
+
+#[derive(Serialize)]
+pub(crate) struct UiNotice {
+    code: &'static str,
+}
+
+fn notice_from(note: &str) -> UiNotice {
+    let code = if note.contains("privacy hardening") {
+        "storage.privacy"
+    } else if note.contains("scheduled prompts could not be saved") {
+        "queue.persist"
+    } else if note.contains("scheduled prompts could not be loaded") {
+        "queue.load"
+    } else if note.contains("command history could not be loaded") {
+        "history.load"
+    } else if note.contains("interrupted deliveries") || note.contains("delivery") {
+        "queue.interrupted"
+    } else {
+        "storage.recovered"
+    };
+    UiNotice { code }
 }
 
 fn to_loaded(o: Option<storage::LoadOutcome>) -> LoadedDoc {
@@ -503,7 +539,7 @@ fn to_loaded(o: Option<storage::LoadOutcome>) -> LoadedDoc {
         Some(o) => LoadedDoc {
             data: o.payload,
             source: o.source.into(),
-            warning: o.warning,
+            warning: o.warning.as_deref().map(notice_from),
         },
         None => LoadedDoc {
             data: String::new(),
@@ -544,8 +580,11 @@ pub(crate) fn save_board(data: String) -> Result<(), String> {
 /// Boot-time storage notices (corruption recovered from .bak, etc.) for the
 /// frontend to surface as toasts.
 #[tauri::command]
-pub(crate) fn storage_warnings() -> Vec<String> {
+pub(crate) fn storage_warnings() -> Vec<UiNotice> {
     std::mem::take(&mut *storage::WARNINGS.lock().unwrap())
+        .iter()
+        .map(|note| notice_from(note))
+        .collect()
 }
 
 // ---------- settings ------------------------------------------------------------
@@ -577,6 +616,17 @@ pub(crate) fn editor_app() -> Option<String> {
     } else {
         Some(e)
     }
+}
+
+pub(crate) fn locale_setting() -> String {
+    let raw = storage::load_typed::<SettingsDoc>(&settings_path())
+        .ok()
+        .flatten()
+        .map(|o| o.payload);
+    raw.and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|v| v.get("locale")?.as_str().map(str::to_owned))
+        .filter(|v| matches!(v.as_str(), "system" | "en" | "zh-Hans"))
+        .unwrap_or_else(|| "system".into())
 }
 
 /// Developer editors present in /Applications or ~/Applications, offered in
@@ -1801,7 +1851,42 @@ mod tests {
         );
         assert!(serde_json::from_str::<SettingsDoc>(r#"{"editor":123}"#).is_err());
         assert!(serde_json::from_str::<SettingsDoc>(r#"{"debug":"yes"}"#).is_err());
+        for locale in ["system", "en", "zh-Hans"] {
+            assert!(
+                serde_json::from_str::<SettingsDoc>(&format!(r#"{{"locale":"{locale}"}}"#)).is_ok()
+            );
+        }
+        assert!(serde_json::from_str::<SettingsDoc>(r#"{"locale":"zh-CN"}"#).is_err());
+        assert!(serde_json::from_str::<SettingsDoc>(r#"{"locale":false}"#).is_err());
+        assert!(serde_json::from_str::<SettingsDoc>(r#"{"locale":null}"#).is_err());
         assert!(serde_json::from_str::<SettingsDoc>(r#"[1,2]"#).is_err());
+    }
+
+    #[test]
+    fn locale_setting_persists_with_unknown_fields_and_rejects_atomically() {
+        let d = std::env::temp_dir().join(format!("deck-settings-locale-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let p = d.join("settings.json");
+        let good = r#"{"editor":"Zed","debug":true,"locale":"zh-Hans","future":{"kept":1}}"#;
+        save_validated::<SettingsDoc>(&p, good, "settings").unwrap();
+        let loaded = storage::load_typed::<SettingsDoc>(&p)
+            .unwrap()
+            .unwrap()
+            .payload;
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&loaded).unwrap(),
+            serde_json::from_str::<serde_json::Value>(good).unwrap()
+        );
+        let before = std::fs::read_to_string(&p).unwrap();
+        assert!(save_validated::<SettingsDoc>(
+            &p,
+            r#"{"locale":"zh-CN","future":{"kept":2}}"#,
+            "settings"
+        )
+        .is_err());
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), before);
+        let _ = std::fs::remove_dir_all(d);
     }
 
     #[test]

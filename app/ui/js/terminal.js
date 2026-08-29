@@ -5,6 +5,7 @@ import { copyExact, linkMenuItems } from './pure.js';
 import { confirmDialog, inlineRename, toast, promptDialog } from './dialogs.js';
 import { closeSession, panes, provider, renameTab, render, switchProject, activeProject } from './board.js';
 import { backToBoard, openSession, strToB64 } from './layout.js';
+import { formatNumber, t } from './i18n.js';
 
 /* ---------- context menus ---------- */
 export function placeCtx(e) {
@@ -33,7 +34,7 @@ export function editDescInline(sid) {
   const card = document.querySelector(`.card[data-sid="${sid}"]`);
   if (!card) {
     // window.prompt is a silent no-op in WKWebView — use the in-app dialog
-    promptDialog('Description', s.desc || '').then(async v => {
+    promptDialog(t('terminal.description'), s.desc || '').then(async v => {
       if (v !== null) await provider.setDesc(sid, v.trim());
     });
     return;
@@ -57,12 +58,11 @@ export function showSessionCtx(e, sid) {
   const renameHost = e.currentTarget && e.currentTarget.querySelector
     ? e.currentTarget.querySelector('.name, .card-title') : null;
   const ctx = $('ctx');
-  ctx.innerHTML = `
-    <button data-a="rename">Rename card</button>
-    <button data-a="desc">${s.desc ? 'Edit' : 'Add'} description</button>
-    <button data-a="here">New session in this directory</button>
-    <hr>
-    <button data-a="close" class="danger">Close session</button>`;
+  ctx.innerHTML = '<button data-a="rename"></button><button data-a="desc"></button><button data-a="here"></button><hr><button data-a="close" class="danger"></button>';
+  ctx.querySelector('[data-a="rename"]').textContent = t('menu.renameCard');
+  ctx.querySelector('[data-a="desc"]').textContent = t(s.desc ? 'menu.editDescription' : 'menu.addDescription');
+  ctx.querySelector('[data-a="here"]').textContent = t('menu.newSessionHere');
+  ctx.querySelector('[data-a="close"]').textContent = t('menu.closeSession');
   ctx.onclick = ev => {
     const a = ev.target.dataset && ev.target.dataset.a;
     ctx.style.display = 'none';
@@ -79,9 +79,9 @@ export function showProjectCtx(e, pid) {
   e.stopPropagation();
   const p = provider.project(pid);
   const ctx = $('ctx');
-  ctx.innerHTML = `
-    <button data-a="rename">Rename project</button>
-    <button data-a="remove" class="danger">Delete project</button>`;
+  ctx.innerHTML = '<button data-a="rename"></button><button data-a="remove" class="danger"></button>';
+  ctx.querySelector('[data-a="rename"]').textContent = t('menu.renameProject');
+  ctx.querySelector('[data-a="remove"]').textContent = t('menu.deleteProject');
   ctx.onclick = async ev => {
     const a = ev.target.dataset && ev.target.dataset.a;
     ctx.style.display = 'none';
@@ -91,9 +91,9 @@ export function showProjectCtx(e, pid) {
       if (tab) renameTab(tab, p);
     }
     if (a === 'remove') {
-      if (provider.projects().length <= 1) { toast('at least one project is required'); return; }
+      if (provider.projects().length <= 1) { toast(t('project.atLeastOne')); return; }
       const n = provider.list(pid).length;
-      if (!(await confirmDialog(`Delete project "${p.name}"?${n ? ` Its ${n} session(s) will be closed and their scheduled prompts cancelled.` : ''}`))) return;
+      if (!(await confirmDialog(t('project.delete', { name: p.name, sessions: n ? t('project.deleteSessions', { count: formatNumber(n) }) : '' })))) return;
       /* nothing is removed unless every card's schedule was cancelled and
          persisted first (the toast explains a refusal) */
       if (!(await provider.removeProject(pid))) return;
@@ -102,7 +102,7 @@ export function showProjectCtx(e, pid) {
         state.view = 'board';
         state.sessionId = null;
       }
-      toast(`deleted project: ${p.name}`);
+      toast(t('project.deleted', { name: p.name }));
       render();
     }
   };
@@ -116,8 +116,10 @@ export function showLinkCtx(e, kind, value, cwd, sid = null) {
   linkActionGeneration++; // invalidate any older path resolution
   const restoreFocus = document.activeElement;
   ctx.innerHTML = '<span class="ctx-value"></span>' + linkMenuItems(kind)
-    .map(item => `<button data-a="${item.action}">${item.label}</button>`).join('');
+    .map(item => `<button data-a="${item.action}"></button>`).join('');
   ctx.querySelector('.ctx-value').textContent = value;
+  const labelKeys = { url: 'link.url', copy: kind === 'url' ? 'link.copyUrl' : 'link.copyPath', editor: 'link.editor', 'editor-parent': 'link.editor-parent', 'session-parent': 'link.session-parent', reveal: 'link.reveal' };
+  ctx.querySelectorAll('button').forEach(button => { button.textContent = t(labelKeys[button.dataset.a]); });
   ctx.setAttribute('role', 'menu');
   ctx.querySelectorAll('button').forEach(b => b.setAttribute('role', 'menuitem'));
   const close = () => {
@@ -134,7 +136,7 @@ export function showLinkCtx(e, kind, value, cwd, sid = null) {
     ctx.style.display = 'none';
     if (restoreFocus && restoreFocus.isConnected && restoreFocus.focus) restoreFocus.focus();
     if (a === 'copy') {
-      writeClipboard(value).then(() => toast('copied'), () => toast('copy failed'));
+      writeClipboard(value).then(() => toast(t('terminal.copied')), () => toast(t('terminal.copyFailed')));
     } else if (a === 'session-parent') {
       try {
         const origin = sid && provider.get(sid);
@@ -142,14 +144,14 @@ export function showLinkCtx(e, kind, value, cwd, sid = null) {
         const resolved = await inv('resolve_parent_dir', { value, cwd: cwd || HOME });
         if (request !== linkActionGeneration || !provider.get(sid)) return;
         await newSession(resolved.directory, { projectId: origin.projectId, requireStart: true });
-        toast('opened a new session in the parent folder');
+        toast(t('terminal.openedParent'));
       } catch (err) {
-        if (request === linkActionGeneration) toast('could not create a session from this path');
+        if (request === linkActionGeneration) toast(t('terminal.createPathFailed'));
       }
     } else {
       inv('open_target', { kind: a, value, cwd: cwd || HOME })
-        .then(() => toast(a === 'url' ? 'opened in browser' : a.startsWith('editor') ? 'opened in editor' : 'revealed in Finder'))
-        .catch(err => toast('open failed: ' + err));
+        .then(() => toast(t(a === 'url' ? 'terminal.openBrowser' : a.startsWith('editor') ? 'terminal.openEditor' : 'terminal.revealFinder')))
+        .catch(() => toast(t('terminal.openFailed')));
     }
   };
   ctx.onkeydown = ev => {
@@ -180,8 +182,8 @@ document.addEventListener('click', () => {
 export function nextShellTitle(p) {
   const used = new Set(provider.list(p.id).map(c => c.title));
   let n = 1;
-  while (used.has('shell ' + n)) n++;
-  return 'shell ' + n;
+  while (used.has(t('session.shellName', { number: n }))) n++;
+  return t('session.shellName', { number: n });
 }
 
 export async function newSession(dir, opts = {}) {
@@ -195,7 +197,7 @@ export async function newSession(dir, opts = {}) {
     if (!p) throw new Error('project no longer exists');
     const selected = p.columns.find(c => c.id === p.selected);
     const columnId = (selected
-      || p.columns.find(c => c.name === 'Working')
+      || p.columns.find(c => c.semantic === 'working')
       || p.columns[1] || p.columns[0]).id;
     let started = false;
     const card = await provider.create({
@@ -216,7 +218,7 @@ export async function newSession(dir, opts = {}) {
     return card;
   } catch (error) {
     if (opts.requireStart) throw error;
-    toast('new session could not be created safely');
+    toast(t('terminal.createFailed'));
   } finally {
     creatingSession = false;
   }
@@ -438,7 +440,8 @@ export function renderSuggest() {
   if (!items.length) { showQuickBar(false); return; }
   const pane = attachedName && panes.get(attachedName);
   const completing = lineBuf && lineBuf.length >= 2;
-  bar.innerHTML = `<span class="qb-label">${completing ? 'tab ⇥' : 'recent'}</span>`;
+  bar.innerHTML = '<span class="qb-label"></span>';
+  bar.querySelector('.qb-label').textContent = t(completing ? 'terminal.quickTab' : 'terminal.quickRecent');
   items.forEach((c, i) => {
     const b = document.createElement('button');
     b.className = 'qb-chip' + (completing && i === 0 ? ' first' : '');
@@ -479,7 +482,7 @@ export async function writeClipboard(text) {
 export function toggleSidebar() {
   document.body.classList.toggle('side-collapsed');
   const collapsed = document.body.classList.contains('side-collapsed');
-  $('collapse-btn').title = (collapsed ? 'Expand' : 'Collapse') + ' sidebar (⌘B)';
+  $('collapse-btn').title = t(collapsed ? 'app.expandSidebar' : 'app.collapseSidebar');
   $('collapse-btn').firstElementChild.style.transform = collapsed ? 'scaleX(-1)' : '';
 }
 $('collapse-btn').onclick = toggleSidebar;
@@ -491,7 +494,7 @@ $('sess-close').onclick = () => closeSession(state.sessionId, true);
 $('sess-col').addEventListener('change', async e => {
   await provider.move(state.sessionId, e.target.value);
   const c = activeProject().columns.find(c => c.id === e.target.value);
-  toast(`moved to ${c.name}`);
+  toast(t('board.movedTo', { name: c.name }));
 });
 document.addEventListener('keydown', e => {
   if ((e.metaKey || e.ctrlKey) && e.key === 'b') { e.preventDefault(); toggleSidebar(); return; }

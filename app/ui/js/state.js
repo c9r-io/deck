@@ -31,7 +31,7 @@ Object.assign(globalThis, {
   rxBytes: 0,
   saveTimer: null,
   sepLogged: 0,
-  settings: { editor: '', debug: false },
+  settings: { editor: '', debug: false, locale: 'system' },
   term: null,
   wheelTimer: null,
 });
@@ -136,15 +136,6 @@ export function setMemChip(chip, s) {
 }
 
 
-export const COL_HINTS = {
-  Attention: 'things you want to deal with next',
-  Working: 'running autonomously, nothing needed from you',
-  Queued: 'created but not started yet',
-  Parked: 'kept around, low priority',
-};
-
-export const DOT_TITLES = {
-  running: 'output within the last few seconds',
-  waiting: 'no output for a while — may be waiting for input',
-  stopped: 'no live session',
-};
+import { t } from './i18n.js';
+export const columnHint = column => column?.semantic ? t(`board.hint.${column.semantic}`) : '';
+export const dotTitle = status => t(`session.status.${status}`);

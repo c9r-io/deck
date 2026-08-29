@@ -1,0 +1,3 @@
+/* 用于签名发行的原生 bundle 元数据。 */
+"CFBundleDisplayName" = "deck";
+"CFBundleName" = "deck";

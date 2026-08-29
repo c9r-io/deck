@@ -45,7 +45,7 @@ jobs:
       - name: JS syntax (node --check)
         run: |
           set -e
-          for f in app/ui/js/*.js app/ui/js/*.mjs app/ui/test/*.mjs; do
+          for f in app/ui/js/*.js app/ui/js/i18n/*.js app/ui/js/*.mjs app/ui/test/*.mjs; do
             node --check "$f"
           done
       # 2. headless pure + production-module DOM tests (node:test, no npm).

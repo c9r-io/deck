@@ -1,7 +1,8 @@
 // layout.js — split-tree layout, pane lifecycle, terminal creation, session view
 // Part of deck's no-build frontend: native ES modules, no bundler.
-import { $, DOT_TITLES, duev, inv, listen, setMemChip, state, store, uev } from './state.js';
+import { $, dotTitle, duev, inv, listen, setMemChip, state, store, uev } from './state.js';
 import { inlineRename, toast } from './dialogs.js';
+import { t } from './i18n.js';
 import { TERM_THEME, panes, pollNow, provider, render, renderSidebar, activeProject } from './board.js';
 import { SHELL_FG, acceptGhost, feedMirror, maybeRecordCommand, mountQuickBar, nextShellTitle, renderSuggest, resetSuggest, showLinkCtx, updateGhost, writeClipboard } from './terminal.js';
 import { createTerminalWheelAccumulator, shQuote, terminalWheelLines } from './pure.js';
@@ -81,7 +82,7 @@ async function insertDroppedFiles(pane, fileList) {
   const files = Array.from(fileList).slice(0, 4);
   const paths = [];
   for (const f of files) {
-    if (f.size > MAX_DROP_BYTES) { toast('file too large to attach (32MB max)'); continue; }
+    if (f.size > MAX_DROP_BYTES) { toast(t('error.fileLarge')); continue; }
     try {
       const b64 = await new Promise((res, rej) => {
         const r = new FileReader();
@@ -91,7 +92,7 @@ async function insertDroppedFiles(pane, fileList) {
       });
       paths.push(await inv('save_dropped_file', { name: f.name || 'pasted.png', dataB64: b64 }));
     } catch (e) {
-      toast('could not attach file: ' + e);
+      toast(t('error.fileAttach'));
     }
   }
   if (!paths.length) return;
@@ -105,13 +106,15 @@ export function createPane(card) {
   const el = document.createElement('div');
   el.className = 'spane';
   el.innerHTML = `
-    <div class="spane-head"><span class="dot ${card.status}"></span><span class="name"></span><span class="hspace"></span><button class="px" title="Close pane (session keeps running)">✕</button></div>
+    <div class="spane-head"><span class="dot ${card.status}"></span><span class="name"></span><span class="hspace"></span><button class="px">✕</button></div>
     <div class="spane-body"></div>`;
   el.querySelector('.name').textContent = card.title;
+  el.querySelector('.dot').title = dotTitle(card.status);
+  el.querySelector('.px').title = t('session.closePane');
   const body = el.querySelector('.spane-body');
   const session = card.session;
 
-  const t = new Terminal({
+  const term = new Terminal({
     fontFamily: 'ui-monospace, "SF Mono", Menlo, monospace',
     fontSize: 12.5,
     lineHeight: 1.7,
@@ -122,19 +125,19 @@ export function createPane(card) {
     theme: TERM_THEME,
   });
   const fit = new FitAddon.FitAddon();
-  t.loadAddon(fit);
+  term.loadAddon(fit);
   try {
     /* OSC52: tmux mouse selections land in the system clipboard */
-    t.loadAddon(new ClipboardAddon.ClipboardAddon());
+    term.loadAddon(new ClipboardAddon.ClipboardAddon());
   } catch (e) { uev('clipboard-addon-fail'); }
-  t.open(body);
+  term.open(body);
 
   if (!ghostEl) {
     ghostEl = document.createElement('div');
     ghostEl.id = 'ghost';
   }
   /* echo arrives asynchronously — reposition after each parsed write */
-  const pane = { sid: card.id, session, el, body, term: t, fit, seps: [] };
+  const pane = { sid: card.id, session, el, body, term, fit, seps: [] };
   wireTerminalSelection(pane, active => {
     const current = provider.get(pane.sid);
     if (!current) return;
@@ -142,11 +145,11 @@ export function createPane(card) {
     updatePaneChrome(current);
   });
 
-  t.onWriteParsed(() => {
+  term.onWriteParsed(() => {
     if (ghostRemainder && attachedName === session) updateGhost();
     positionSeparators(pane);
   });
-  t.onScroll(() => positionSeparators(pane));
+  term.onScroll(() => positionSeparators(pane));
   panes.set(session, pane);
 
   const head = el.querySelector('.spane-head');
@@ -226,7 +229,7 @@ export function createPane(card) {
     }
   }, true);
 
-  wireTerminalInput(pane, t, body);
+  wireTerminalInput(pane, term, body);
   return pane;
 }
 
@@ -388,11 +391,11 @@ export function wireTerminalInput(pane, term, host) {
       e.preventDefault();
       copyTerminalSelection(pane)
         .then(text => text == null ? null : writeClipboard(text))
-        .catch(() => toast('copy failed — clipboard was not changed'));
+        .catch(() => toast(t('error.copy')));
       return false;
     }
     if (e.type === 'keydown' && e.metaKey && e.key === 'c' && term.hasSelection()) {
-      writeClipboard(term.getSelection()).catch(() => toast('copy failed — clipboard was not changed'));
+      writeClipboard(term.getSelection()).catch(() => toast(t('error.copy')));
       return false;
     }
     /* ghost suggestion: Tab or → applies it in place; Esc dismisses */
@@ -562,7 +565,7 @@ export function updatePaneChrome(card) {
   const p = card && panes.get(card.session);
   if (!p) return;
   const dot = p.el.querySelector('.spane-head .dot');
-  if (dot) { dot.className = 'dot ' + card.status; dot.title = DOT_TITLES[card.status] || ''; }
+  if (dot) { dot.className = 'dot ' + card.status; dot.title = dotTitle(card.status); }
   const name = p.el.querySelector('.spane-head .name');
   if (name && name.textContent !== card.title) name.textContent = card.title;
   /* scrollback chip: the ONLY visual clue that the view is frozen history
@@ -572,11 +575,13 @@ export function updatePaneChrome(card) {
     if (!chip) {
       chip = document.createElement('button');
       chip.className = 'scrollchip';
-      chip.textContent = '⤓ scrollback';
-      chip.title = 'view is frozen in scrollback — click, type, or scroll to the bottom to go live';
+      chip.textContent = t('session.scrollback');
+      chip.title = t('session.scrollbackTitle');
       chip.onclick = e => { e.stopPropagation(); goLive(card.session); };
       p.el.querySelector('.spane-head .px').before(chip);
     }
+    chip.textContent = t('session.scrollback');
+    chip.title = t('session.scrollbackTitle');
   } else if (chip) {
     chip.remove();
   }
@@ -628,7 +633,7 @@ export async function ensureAttached(pane) {
        would make us drop (and never ACK) the current stream */
     ptyGens.set(card.session, Math.max(ptyGens.get(card.session) || 0, gen));
   } catch (e) {
-    toast('attach failed: ' + e);
+    toast(t('error.attach'));
   }
   return created;
 }
@@ -692,10 +697,25 @@ export function showSplitPicker(dir) {
   const order = { running: 0, waiting: 0, stopped: 1 };
   candidates.sort((a, b) => order[a.status] - order[b.status]);
   const ctx = $('ctx');
-  ctx.innerHTML = `<div class="ctx-label">Split ${dir === 'col' ? 'down' : 'right'} — choose session</div>` +
-    candidates.slice(0, 12).map(c =>
-      `<button data-sid="${c.id}"><span style="color:${c.status === 'stopped' ? 'var(--faint)' : c.status === 'waiting' ? 'var(--wait)' : 'var(--run)'}">●</span> ${c.title.replace(/</g, '&lt;')}</button>`).join('') +
-    `<hr><button data-new="1">＋ new shell here</button>`;
+  ctx.replaceChildren();
+  const label = document.createElement('div');
+  label.className = 'ctx-label';
+  label.textContent = t('split.choose', { direction: t(dir === 'col' ? 'split.down' : 'split.right') });
+  ctx.appendChild(label);
+  for (const c of candidates.slice(0, 12)) {
+    const button = document.createElement('button');
+    button.dataset.sid = c.id;
+    const status = document.createElement('span');
+    status.style.color = c.status === 'stopped' ? 'var(--faint)' : c.status === 'waiting' ? 'var(--wait)' : 'var(--run)';
+    status.textContent = '●';
+    button.append(status, document.createTextNode(' ' + c.title));
+    ctx.appendChild(button);
+  }
+  ctx.appendChild(document.createElement('hr'));
+  const newButton = document.createElement('button');
+  newButton.dataset.new = '1';
+  newButton.textContent = t('session.newShellHere');
+  ctx.appendChild(newButton);
   ctx.onclick = async ev => {
     const sid = ev.target.closest('button') && ev.target.closest('button').dataset.sid;
     const isNew = ev.target.closest('button') && ev.target.closest('button').dataset.new;
@@ -706,7 +726,7 @@ export function showSplitPicker(dir) {
       const focused = provider.get(targetSid);
       const c = await provider.create({
         projectId: p.id,
-        columnId: (p.columns.find(x => x.name === 'Working') || p.columns[0]).id,
+        columnId: (p.columns.find(x => x.semantic === 'working') || p.columns[0]).id,
         title: nextShellTitle(p),
         cmd: '',
         dir: focused ? focused.dir : HOME,
@@ -753,7 +773,7 @@ listen('pty-exit', ev => {
   const pane = panes.get(ev.payload.name);
   if (pane) {
     cancelTerminalSelection(pane);
-    toast('session ended');
+    toast(t('session.ended'));
     pollNow();
   }
 }).catch(() => uev('listen-fail', 'pty-exit'));
@@ -817,14 +837,14 @@ export function renderSessionView() {
   const s = provider.get(state.sessionId);
   if (!s) { backToBoard(); return; }
   $('sess-dot').className = 'dot ' + s.status;
-  $('sess-dot').title = DOT_TITLES[s.status] || '';
+  $('sess-dot').title = dotTitle(s.status);
   /* back button names the board this card lives on */
   const proj0 = activeProject();
   const col0 = proj0 && proj0.columns.find(c => c.id === s.columnId);
-  $('back-label').textContent = col0 ? col0.name : 'Board';
+  $('back-label').textContent = col0 ? col0.name : t('app.board');
   const nameEl = $('sess-name');
   nameEl.textContent = s.title;
-  nameEl.title = 'double-click to rename';
+  nameEl.title = t('session.renameTitle');
   nameEl.ondblclick = () => {
     inlineRename(nameEl, s.title, async v => {
       if (v) await provider.rename(s.id, v);

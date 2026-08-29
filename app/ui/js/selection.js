@@ -4,6 +4,7 @@
 import { inv } from './state.js';
 import { toast } from './dialogs.js';
 import { createTerminalSelectionModel, terminalSelectionEdgeLines } from './pure.js';
+import { formatNumber, t } from './i18n.js';
 
 let nextSelectionToken = 1;
 const controllers = new Set();
@@ -122,12 +123,12 @@ function terminalSelectionController(pane, onModeChange) {
           setMode(selected || !!status.selection_present);
           if (status.history_at_limit && status.at_top && edgeLines < 0 && !limitNoticeShown) {
             limitNoticeShown = true;
-            toast(`selection reached tmux’s ${status.history_limit.toLocaleString()}-row history limit; older output is no longer available`);
+            toast(t('selection.limit', { count: formatNumber(status.history_limit) }));
           }
         } catch (e) {
           if (model.snapshot().generation === generation) {
             await cancel(false);
-            toast('terminal selection ended because its session changed');
+            toast(t('error.selectionChanged'));
           }
           break;
         }
@@ -164,7 +165,7 @@ function terminalSelectionController(pane, onModeChange) {
     }).catch(() => {
       if (model.snapshot().generation === generation) {
         cancel(false);
-        toast('terminal selection could not start');
+        toast(t('error.selectionStart'));
       }
     });
   };

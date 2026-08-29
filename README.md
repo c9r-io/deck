@@ -1,5 +1,7 @@
 # deck
 
+[简体中文入口](docs/zh-Hans.md) · English documentation is the canonical technical specification.
+
 **A native macOS command center for terminal agent sessions** — Claude Code,
 Codex, or any long-running CLI. Every card on the board is a real, persistent
 terminal session; the board tells you where your attention is needed.

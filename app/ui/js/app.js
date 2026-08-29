@@ -9,10 +9,20 @@ import './terminal.js';
 import './scheduler.js';
 import { $, genId, inv, listen, state, store, uev } from './state.js';
 import { loadSettings, toast } from './dialogs.js';
-import { provider, render, startPolling, stopPolling } from './board.js';
+import { migrateColumnSemantics, provider, render, startPolling, stopPolling } from './board.js';
 import { refreshQueue } from './scheduler.js';
+import { onLocaleChange, setLocale, t, translateNotice } from './i18n.js';
+
+setLocale('system');
 
 window.addEventListener('beforeunload', stopPolling, { once: true });
+
+function renderPendingUpdate() {
+  if (!pendingUpdate) return;
+  const btn = $('update-btn');
+  btn.querySelector('.label').textContent = t('update.available', { version: pendingUpdate.version });
+  btn.title = t('update.availableTitle', { version: pendingUpdate.version });
+}
 
 /* ---------- in-app updates (tauri-plugin-updater) ---------- */
 export async function checkForUpdate() {
@@ -24,8 +34,7 @@ export async function checkForUpdate() {
     if (!update) return;
     pendingUpdate = update;
     const btn = $('update-btn');
-    btn.querySelector('.label').textContent = `Update to v${update.version}`;
-    btn.title = `deck v${update.version} is available — click to download and restart`;
+    renderPendingUpdate();
     btn.style.display = 'flex';
     uev('update-avail', update.version);
   } catch (e) {
@@ -38,21 +47,21 @@ export async function manualUpdateCheck() {
   const inModal = $('settings-modal').style.display === 'flex';
   const say = msg => { if (inModal) st.textContent = msg; else toast(msg); };
   const up = window.__TAURI__ && window.__TAURI__.updater;
-  if (!up) { say('updater unavailable in dev builds'); return; }
-  say('Checking…');
+  if (!up) { say(t('update.unavailableDev')); return; }
+  say(t('update.checking'));
   try {
     const update = await up.check();
     if (update) {
       pendingUpdate = update;
       const btn = $('update-btn');
-      btn.querySelector('.label').textContent = `Update to v${update.version}`;
+      btn.querySelector('.label').textContent = t('update.available', { version: update.version });
       btn.style.display = 'flex';
-      say(`v${update.version} is available — click “Update to v${update.version}” in the sidebar to install.`);
+      say(t('update.installHint', { version: update.version }));
     } else {
-      say(`deck is up to date (v${$('app-ver').textContent})`);
+      say(t('update.current', { version: $('app-ver').textContent }));
     }
   } catch (e) {
-    say('update check failed — are you online?');
+    say(t('update.checkFailed'));
     uev('update-check-fail', 'manual');
   }
 }
@@ -71,23 +80,24 @@ $('update-btn').onclick = async () => {
       if (ev.event === 'Progress') {
         got += ev.data.chunkLength;
         label.textContent = total
-          ? `Downloading ${Math.round(got / total * 100)}%`
-          : `Downloading ${(got / 1048576).toFixed(1)}MB`;
+          ? t('update.downloadingPercent', { percent: Math.round(got / total * 100) })
+          : t('update.downloadingSize', { size: (got / 1048576).toFixed(1) });
       }
-      if (ev.event === 'Finished') label.textContent = 'Installing…';
+      if (ev.event === 'Finished') label.textContent = t('update.installing');
     });
-    label.textContent = 'Restarting…';
+    label.textContent = t('update.restarting');
     await window.__TAURI__.process.relaunch();
   } catch (e) {
     btn.disabled = false;
-    label.textContent = 'Update failed — retry';
-    toast('update failed: ' + e);
+    label.textContent = t('update.failedRetry');
+    toast(t('error.operation', { operation: t('settings.updates') }));
     uev('update-install-fail');
   }
 };
 
 /* ---------- boot ---------- */
 export async function boot() {
+  await loadSettings();
   try {
     if (window.__TAURI__ && window.__TAURI__.app) {
       $('app-ver').textContent = await window.__TAURI__.app.getVersion();
@@ -99,7 +109,7 @@ export async function boot() {
   } catch (e) {
     uev('ping-fail');
   }
-  inv('storage_warnings').then(ws => (ws || []).forEach(w => toast(w))).catch(() => {});
+  inv('storage_warnings').then(ws => (ws || []).forEach(w => toast(translateNotice(w)))).catch(() => {});
   HOME = await inv('default_dir').catch(() => '~');
   const ok = await inv('tmux_available').catch(() => false);
   if (!ok) $('banner').style.display = 'block';
@@ -109,14 +119,14 @@ export async function boot() {
      first run, and never auto-save defaults over whatever is on disk */
   let doc = null, loadErr = null;
   try { doc = await inv('load_board'); } catch (e) { loadErr = String(e); }
-  if (doc && doc.warning) toast(doc.warning);
+  if (doc && doc.warning) toast(translateNotice(doc.warning));
   if (doc && doc.data) {
     const data = JSON.parse(doc.data);   // backend already validated the shape
-    store.projects = data.projects || [];
+    store.projects = migrateColumnSemantics(data.projects || []);
     store.cards = (data.cards || []).map(c => ({ ...c, status: 'stopped', mem: null, tail: [], idle: null }));
   }
   if (loadErr) {
-    toast('board could not be loaded: ' + loadErr);
+    toast(t('error.boardLoad'));
     uev('board-load-fail');
   }
   if (!store.projects.length) {
@@ -125,7 +135,7 @@ export async function boot() {
          changes something (the damaged file was already quarantined) */
       store.projects.push({
         id: genId('P'), name: 'main',
-        columns: ['Attention', 'Working', 'Queued', 'Parked'].map(n => ({ id: genId('C'), name: n })),
+        columns: ['attention', 'working', 'queued', 'parked'].map(semantic => ({ id: genId('C'), semantic, name: t(`board.default.${semantic}`) })),
       });
     } else {
       try {
@@ -133,9 +143,9 @@ export async function boot() {
       } catch (e) {
         store.projects.push({
           id: genId('P'), name: 'main',
-          columns: ['Attention', 'Working', 'Queued', 'Parked'].map(n => ({ id: genId('C'), name: n })),
+          columns: ['attention', 'working', 'queued', 'parked'].map(semantic => ({ id: genId('C'), semantic, name: t(`board.default.${semantic}`) })),
         });
-        toast('the first board could not be saved; it is temporary until storage recovers');
+        toast(t('error.firstBoardSave'));
       }
     }
   }
@@ -147,6 +157,10 @@ export async function boot() {
   /* runtime cadence comes from a Rust thread (App Nap freezes JS timers) */
   listen('update-check', checkForUpdate).catch(() => uev('listen-fail', 'update-check'));
   listen('update-check-manual', manualUpdateCheck).catch(() => uev('listen-fail', 'update-check-manual'));
-  loadSettings();
 }
+onLocaleChange(() => {
+  renderPendingUpdate();
+  render();
+  refreshQueue();
+});
 boot();

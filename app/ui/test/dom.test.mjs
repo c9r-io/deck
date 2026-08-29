@@ -27,6 +27,7 @@ class FakeElement {
       ...extra,
     };
     for (const fn of this.listeners.get(type) || []) fn(event);
+    if (typeof this[`on${type}`] === 'function') this[`on${type}`](event);
     return event;
   }
   replaceChildren(...nodes) { this.children = nodes; }
@@ -53,7 +54,7 @@ const fakeDocument = {
 globalThis.document = fakeDocument;
 globalThis.window = { __TAURI__: null, __DECK_DEBUG: false };
 
-const { inlineRename } = await import('../js/dialogs.js');
+const { inlineRename, promptDialog } = await import('../js/dialogs.js');
 const { store } = await import('../js/state.js');
 const { flushBoardMutations, mutateBoard, mutateBoardDebounced } = await import('../js/persistence.js');
 
@@ -102,6 +103,16 @@ test('inline rename Escape cancels, blur commits, and IME Enter waits for compos
   imeInput.fire('keydown', { key: 'Enter', isComposing: false });
   assert.equal(ime.textContent, '中文');
   assert.equal(persisted, 2);
+});
+
+test('prompt dialog does not submit Chinese IME preedit on Enter', async () => {
+  const pending = promptDialog('说明', '');
+  const input = fakeDocument.getElementById('ppd-input');
+  input.value = '中文输入';
+  input.fire('keydown', { key: 'Enter', keyCode: 229, isComposing: true });
+  assert.equal(fakeDocument.getElementById('ppd').style.display, 'flex');
+  input.fire('keydown', { key: 'Enter', keyCode: 13, isComposing: false });
+  assert.equal(await pending, '中文输入');
 });
 
 test('inline rename restores the old DOM value when async persistence rejects', async () => {
