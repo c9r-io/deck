@@ -1145,70 +1145,55 @@ fn push_tmux_command(batch: &mut Vec<String>, command: &[String]) {
     batch.extend(command.iter().cloned());
 }
 
-fn push_copy_cursor(batch: &mut Vec<String>, target: &str, row: u32, horizontal_steps: u32) {
-    for action in ["top-line", "start-of-line"] {
-        push_tmux_command(
-            batch,
-            &[
-                "send-keys".into(),
-                "-t".into(),
-                target.into(),
-                "-X".into(),
-                action.into(),
-            ],
-        );
+fn push_copy_motion(batch: &mut Vec<String>, target: &str, count: u32, action: &str) {
+    if count == 0 {
+        return;
     }
-    if row > 0 {
-        push_tmux_command(
-            batch,
-            &[
-                "send-keys".into(),
-                "-t".into(),
-                target.into(),
-                "-X".into(),
-                "-N".into(),
-                row.to_string(),
-                "cursor-down".into(),
-            ],
-        );
+    let mut command = vec!["send-keys".into(), "-t".into(), target.into(), "-X".into()];
+    if count > 1 {
+        command.push("-N".into());
+        command.push(count.to_string());
     }
-    if horizontal_steps > 0 {
-        push_tmux_command(
-            batch,
-            &[
-                "send-keys".into(),
-                "-t".into(),
-                target.into(),
-                "-X".into(),
-                "-N".into(),
-                horizontal_steps.to_string(),
-                "cursor-right".into(),
-            ],
-        );
-    }
+    command.push(action.into());
+    push_tmux_command(batch, &command);
 }
 
-fn copy_cursor_steps(
+/// Place tmux's copy cursor on the visible cell (`row`, `col`). The move plan
+/// and the tmux motions it may use are documented on
+/// `terminal_selection::copy_cursor_moves`.
+fn push_copy_cursor(batch: &mut Vec<String>, target: &str, rows: &[String], row: u32, col: u32) {
+    let moves = crate::terminal_selection::copy_cursor_moves(rows, row, col);
+    push_copy_motion(batch, target, 1, "top-line");
+    push_copy_motion(batch, target, moves.descend, "cursor-down");
+    if moves.wrap {
+        push_copy_motion(batch, target, 1, "cursor-right");
+    }
+    push_copy_motion(batch, target, moves.descend_after_wrap, "cursor-down");
+    push_copy_motion(batch, target, moves.steps, "cursor-right");
+}
+
+/// The visible frame's rows 0..=`through_row`, measured the way
+/// `terminal_selection::frame_rows` documents.
+fn visible_rows_through(
     target: &str,
     scroll_position: u32,
-    row: u32,
-    col: u32,
-) -> Result<u32, String> {
-    let coord = row as i64 - scroll_position as i64;
+    through_row: u32,
+) -> Result<Vec<String>, String> {
+    let top = -(scroll_position as i64);
+    let bottom = through_row as i64 - scroll_position as i64;
     let captured = tmux(&[
         "capture-pane",
         "-p",
-        "-J",
         "-S",
-        &coord.to_string(),
+        &top.to_string(),
         "-E",
-        &coord.to_string(),
+        &bottom.to_string(),
         "-t",
         target,
     ])?;
-    let row_text = captured.strip_suffix('\n').unwrap_or(&captured);
-    Ok(crate::terminal_selection::cursor_steps_for_cell(
-        row_text, col,
+    Ok(crate::terminal_selection::frame_rows(
+        &captured,
+        through_row,
     ))
 }
 
@@ -1241,8 +1226,7 @@ pub(crate) fn terminal_selection_start(
     let anchor_col = clamp_col(anchor_col);
     let active_row = clamp_row(active_row);
     let active_col = clamp_col(active_col);
-    let anchor_steps = copy_cursor_steps(&target, dims.scroll_position, anchor_row, anchor_col)?;
-    let active_steps = copy_cursor_steps(&target, dims.scroll_position, active_row, active_col)?;
+    let rows = visible_rows_through(&target, dims.scroll_position, anchor_row.max(active_row))?;
     let mut batch = Vec::new();
     // A wheel-scrolled pane is already in copy-mode at the user's chosen
     // history position. Re-entering copy-mode here jumps it back to the live
@@ -1269,7 +1253,7 @@ pub(crate) fn terminal_selection_start(
             ],
         );
     }
-    push_copy_cursor(&mut batch, &target, anchor_row, anchor_steps);
+    push_copy_cursor(&mut batch, &target, &rows, anchor_row, anchor_col);
     push_tmux_command(
         &mut batch,
         &[
@@ -1280,7 +1264,7 @@ pub(crate) fn terminal_selection_start(
             "begin-selection".into(),
         ],
     );
-    push_copy_cursor(&mut batch, &target, active_row, active_steps);
+    push_copy_cursor(&mut batch, &target, &rows, active_row, active_col);
     tmux_owned(&batch).map_err(|e| {
         format!(
             "terminal selection could not start ({})",
@@ -1325,9 +1309,9 @@ pub(crate) fn terminal_selection_update(
     }
     let row = row.min(before.pane_rows.saturating_sub(1));
     let col = col.min(before.pane_cols.saturating_sub(1));
-    let horizontal_steps = copy_cursor_steps(&target, before.scroll_position, row, col)?;
+    let rows = visible_rows_through(&target, before.scroll_position, row)?;
     let mut batch = Vec::new();
-    push_copy_cursor(&mut batch, &target, row, horizontal_steps);
+    push_copy_cursor(&mut batch, &target, &rows, row, col);
     if edge_lines != 0 {
         push_tmux_command(
             &mut batch,
@@ -2029,6 +2013,56 @@ mod tests {
             require_terminal_selection_dimensions(80, 23, 80, 24).unwrap_err(),
             "selection-dimensions-changed"
         );
+    }
+
+    #[test]
+    fn copy_cursor_batch_uses_only_top_line_cursor_down_and_cursor_right() {
+        let rows: Vec<String> = ["", "", "text row"].iter().map(|l| l.to_string()).collect();
+        let mut batch = Vec::new();
+        push_copy_cursor(&mut batch, "=card:", &rows, 2, 4);
+        assert_eq!(
+            batch,
+            [
+                "send-keys",
+                "-t",
+                "=card:",
+                "-X",
+                "top-line",
+                ";",
+                "send-keys",
+                "-t",
+                "=card:",
+                "-X",
+                "cursor-down",
+                ";",
+                "send-keys",
+                "-t",
+                "=card:",
+                "-X",
+                "cursor-right",
+                ";",
+                "send-keys",
+                "-t",
+                "=card:",
+                "-X",
+                "-N",
+                "4",
+                "cursor-right",
+            ]
+        );
+        // start-of-line / end-of-line / back-to-indentation / cursor-left all
+        // leave the visible row on wrapped or wide-character content.
+        for banned in [
+            "start-of-line",
+            "end-of-line",
+            "back-to-indentation",
+            "cursor-left",
+        ] {
+            assert!(
+                !batch.iter().any(|arg| arg == banned),
+                "{banned} is not placement-safe"
+            );
+        }
     }
 
     #[test]

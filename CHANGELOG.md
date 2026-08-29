@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.4.39 — Unreleased
+
+- Fix terminal drag selection inside full-screen agent panes (Claude Code,
+  Codex), where the highlight and the copied bytes landed on rows the pointer
+  never touched while the identical drag in a shell pane was correct.
+- Place copy-mode endpoints with `top-line`/`cursor-down`/`cursor-right` only:
+  `start-of-line`, `end-of-line` and `back-to-indentation` walk to the ends of
+  the wrapped logical line and `cursor-left` lands on a wide grapheme's
+  trailing column, so all four leave the visible row. `cursor-down` snaps the
+  column to a line end until the walk first steps off a non-empty line, which
+  is why a frame that opens with blank rows selected the wrong rows.
+- Measure a row's end the way tmux does, so a pointer past a row's trailing
+  blanks clamps to the line end instead of wrapping onto the next row, and read
+  the frame once per placement instead of once per endpoint.
+- Cover the fix with real-tmux contract tests over alternate-screen frames
+  (blank top rows, wide characters, wrapped rows, styled blanks, scrolled
+  viewports), asserting endpoints and copied bytes; the contract suite now
+  drives the production placement instead of its own copy of the rules.
+
 ## 0.4.38 — Unreleased
 
 - Publish a Nightly-only version bump for validating the Stable-to-Nightly

@@ -101,7 +101,16 @@ Frontend gates: `node --check` (syntax) · `ui/test/*.mjs` (node:test)
   physical gesture stays on xterm's trusted mouse/link path; no synthetic
   compatibility click is replayed. Crossing the threshold transfers the drag
   to `selection.js`/tmux and clears speculative xterm selection. tmux owns the
-  directional, end-exclusive endpoints only while dragging. Pointerup queues
+  directional, end-exclusive endpoints only while dragging. Endpoints are
+  placed with `top-line` + `cursor-down` + `cursor-right` ONLY
+  (`copy_cursor_moves`): `start-of-line`/`end-of-line`/`back-to-indentation`
+  walk to the ends of the WRAPPED logical line and `cursor-left` lands on a
+  wide grapheme's trailing column, so all four leave the visible row. Because
+  `cursor-down` snaps the column to a line end until the walk first steps off
+  a NON-EMPTY line, the plan descends to the last blank row above the frame's
+  first text, wraps out of it with one `cursor-right`, then descends the rest
+  — without that, a full-screen agent frame (blank rows on top) selected rows
+  the pointer never touched while a shell pane looked fine. Pointerup queues
   the final update, atomically snapshots tmux into a unique buffer, validates
   the pane token, clears tmux's cursor-bound highlight without moving the
   viewport, and installs one immutable backend lease (bytes + absolute content

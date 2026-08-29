@@ -15,7 +15,7 @@ use std::time::Duration;
 mod terminal_scroll;
 #[path = "../src/terminal_selection.rs"]
 mod terminal_selection;
-use terminal_selection::{cursor_steps_for_cell, snapshot_selection};
+use terminal_selection::{copy_cursor_moves, frame_rows, snapshot_selection};
 
 fn tmux_bin() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("binaries/tmux-aarch64-apple-darwin")
@@ -142,49 +142,119 @@ impl Server {
         s
     }
 
-    fn move_copy_cursor(&self, row: u32, col: u32) {
-        self.run(&["send-keys", "-t", "t", "-X", "top-line"]);
-        self.run(&["send-keys", "-t", "t", "-X", "start-of-line"]);
-        if row > 0 {
-            self.run(&[
-                "send-keys",
+    /// The production placement: `commands::push_copy_cursor` over
+    /// `commands::visible_rows_through`, so these contracts exercise the same
+    /// motions the app sends and not a second copy of the rules.
+    fn write_pane(&self, text: &str) {
+        let tty = self.fmt("#{pane_tty}");
+        let mut pane = OpenOptions::new()
+            .write(true)
+            .open(tty)
+            .expect("open pane tty");
+        write!(pane, "{text}").expect("write pane bytes");
+        pane.flush().expect("flush pane bytes");
+    }
+
+    /// Scroll up until the visible frame opens with `blank` empty rows over a
+    /// row that carries text — the shape that made `cursor-down` snap.
+    fn scroll_to_blank_top(&self, blank: u32) -> u32 {
+        for _ in 0..120 {
+            // run_raw_checked, not run: trimming a capture would eat exactly
+            // the leading blank rows this is looking for.
+            let captured = String::from_utf8(self.run_raw_checked(&[
+                "capture-pane",
+                "-p",
+                "-S",
+                &(-(self.scroll_position() as i64)).to_string(),
+                "-E",
+                &(blank as i64 - self.scroll_position() as i64).to_string(),
                 "-t",
                 "t",
-                "-X",
-                "-N",
-                &row.to_string(),
-                "cursor-down",
-            ]);
+            ]))
+            .expect("frame utf8");
+            let rows = frame_rows(&captured, blank);
+            if rows[..blank as usize].iter().all(String::is_empty)
+                && !rows[blank as usize].is_empty()
+            {
+                return self.scroll_position();
+            }
+            self.run(&["send-keys", "-t", "t", "-X", "scroll-up"]);
         }
+        panic!("fixture never scrolled to a blank-topped frame");
+    }
+
+    fn scroll_position(&self) -> u32 {
+        self.fmt("#{scroll_position}")
+            .parse()
+            .expect("scroll position numeric")
+    }
+
+    fn move_copy_cursor(&self, row: u32, col: u32) {
         let scroll: i64 = self
             .fmt("#{scroll_position}")
             .parse()
             .expect("scroll position numeric");
-        let coord = row as i64 - scroll;
         let captured = String::from_utf8(self.run_raw_checked(&[
             "capture-pane",
             "-p",
-            "-J",
             "-S",
-            &coord.to_string(),
+            &(-scroll).to_string(),
             "-E",
-            &coord.to_string(),
+            &(row as i64 - scroll).to_string(),
             "-t",
             "t",
         ]))
-        .expect("fixture row utf8");
-        let steps = cursor_steps_for_cell(captured.strip_suffix('\n').unwrap_or(&captured), col);
-        if steps > 0 {
-            self.run(&[
-                "send-keys",
-                "-t",
-                "t",
-                "-X",
-                "-N",
-                &steps.to_string(),
-                "cursor-right",
-            ]);
+        .expect("fixture frame utf8");
+        let moves = copy_cursor_moves(&frame_rows(&captured, row), row, col);
+        self.run(&["send-keys", "-t", "t", "-X", "top-line"]);
+        self.motion(moves.descend, "cursor-down");
+        if moves.wrap {
+            self.motion(1, "cursor-right");
         }
+        self.motion(moves.descend_after_wrap, "cursor-down");
+        self.motion(moves.steps, "cursor-right");
+    }
+
+    fn motion(&self, count: u32, action: &str) {
+        if count == 0 {
+            return;
+        }
+        self.run(&[
+            "send-keys",
+            "-t",
+            "t",
+            "-X",
+            "-N",
+            &count.to_string(),
+            action,
+        ]);
+    }
+
+    /// Paint a full-screen frame the way an agent UI does: alternate screen,
+    /// cleared, then written from the home position.
+    fn write_alternate_frame(&self, lines: &[&str]) {
+        let mut frame = String::from("\x1b[?1049h\x1b[H\x1b[2J");
+        for line in lines {
+            frame.push_str(line);
+            frame.push_str("\r\n");
+        }
+        self.write_pane(&frame);
+        let marker = lines
+            .iter()
+            .rev()
+            .find(|line| !line.is_empty())
+            .expect("frame carries text");
+        for _ in 0..200 {
+            if self.fmt("#{alternate_on}") == "1"
+                && self
+                    .run(&["capture-pane", "-p", "-t", "t"])
+                    .contains(&marker[..marker.len().min(12)])
+            {
+                return;
+            }
+            sleep(Duration::from_millis(10));
+        }
+        panic!("pane did not render the alternate-screen frame");
     }
 
     fn select(&self, anchor: (u32, u32), active: (u32, u32)) {
@@ -193,6 +263,13 @@ impl Server {
             .args(["send-keys", "-t", "t", "-X", "cancel"])
             .output();
         self.run(&["copy-mode", "-H", "-t", "t"]);
+        self.select_in_place(anchor, active);
+    }
+
+    /// The same drag, but on a pane already sitting where the user left it:
+    /// deck never re-enters copy-mode on a wheel-scrolled pane, so scrolled
+    /// placement has to be exercised without resetting the viewport.
+    fn select_in_place(&self, anchor: (u32, u32), active: (u32, u32)) {
         self.move_copy_cursor(anchor.0, anchor.1);
         self.run(&["send-keys", "-t", "t", "-X", "begin-selection"]);
         self.move_copy_cursor(active.0, active.1);
@@ -956,4 +1033,175 @@ fn frozen_selection_coordinates_and_bytes_survive_viewport_scroll() {
     let after_bytes = frozen.clone();
     assert_eq!(after_points, before_points);
     assert_eq!(after_bytes, frozen);
+}
+
+/// v0.4.38: a drag inside a full-screen agent UI (Claude Code, Codex)
+/// highlighted a row the pointer never touched, while the identical drag in a
+/// shell pane was correct. tmux's copy-mode `cursor-down` only keeps the
+/// column at 0 once the walk has stepped off a line that is not empty; until
+/// then it snaps the cursor to the end of the line it lands on, and the
+/// `cursor-right` moves for the column then wrap onto later rows. A shell pane
+/// carries text on the first visible row, an agent frame starts with blank
+/// rows — which is the whole difference between the two.
+#[test]
+fn agent_frame_selection_lands_on_the_rows_the_pointer_touched() {
+    let s = Server::fixture("selection-agent-frame", 40, 12, "sleep 30");
+    let wrapped = "A".repeat(50);
+    s.write_alternate_frame(&[
+        "",
+        "",
+        "改好了 PR #2。",
+        "",
+        &wrapped,
+        "",
+        "tail",
+        "",
+        "trailing blanks   ",
+    ]);
+
+    // The reported case: the first line of text, under two blank rows.
+    s.select((2, 0), (2, 6));
+    assert_eq!(s.selection_points(), ((2, 0), (2, 6)));
+
+    // A pointer inside a wide grapheme snaps to that grapheme, never to
+    // another row.
+    s.select((2, 3), (2, 9));
+    assert_eq!(s.selection_points(), ((2, 2), (2, 9)));
+
+    // The continuation row of a wrapped line: every tmux motion that walks to
+    // a line end would leave this row for the logical line's real end.
+    s.select((5, 0), (5, 4));
+    assert_eq!(s.selection_points(), ((5, 0), (5, 4)));
+
+    // A column at the very end of a short row must stay put, not wrap.
+    s.select((7, 0), (7, 4));
+    assert_eq!(s.selection_points(), ((7, 0), (7, 4)));
+
+    // And the same holds across rows, blank ones included.
+    s.select((2, 2), (7, 4));
+    assert_eq!(s.selection_points(), ((2, 2), (7, 4)));
+
+    // A row's trailing blanks are not cells: a pointer past the text clamps to
+    // the line end instead of running a step over it onto the next row. (This
+    // is why the frame is captured without -J, which would preserve them.)
+    s.select((9, 0), (9, 30));
+    assert_eq!(
+        s.selection_points(),
+        ((9, 0), (9, "trailing blanks".len() as u32))
+    );
+}
+
+/// The wrap out of a blank row only works because tmux measures that row as
+/// zero-length, and the step count only stays inside its row because
+/// `capture-pane` measures line ends the same way tmux does. A row painted
+/// with styled blanks (an agent UI's coloured bars) is the case where those
+/// two could disagree: pin that they don't.
+#[test]
+fn styled_blank_rows_are_empty_to_both_capture_pane_and_the_copy_cursor() {
+    let s = Server::fixture("selection-styled-blank", 40, 10, "sleep 30");
+    // Two rows of spaces on a blue background, then real text.
+    let bar = format!("\x1b[44m{: <40}\x1b[0m", "");
+    s.write_alternate_frame(&[&bar, &bar, "text after the bars"]);
+
+    let captured = String::from_utf8(s.run_raw_checked(&[
+        "capture-pane",
+        "-p",
+        "-S",
+        "0",
+        "-E",
+        "1",
+        "-t",
+        "t",
+    ]))
+    .expect("frame utf8");
+    assert_eq!(
+        frame_rows(&captured, 1),
+        vec![String::new(), String::new()],
+        "styled blanks must capture as empty rows"
+    );
+
+    // And tmux agrees: a cursor-right on such a row wraps to the next row's
+    // column 0 instead of stepping along it.
+    s.run(&["send-keys", "-t", "t", "-X", "cancel"]);
+    s.run(&["copy-mode", "-H", "-t", "t"]);
+    s.run(&["send-keys", "-t", "t", "-X", "top-line"]);
+    s.run(&["send-keys", "-t", "t", "-X", "cursor-right"]);
+    assert_eq!(s.fmt("#{copy_cursor_y}\t#{copy_cursor_x}"), "1\t0");
+
+    s.select((2, 0), (2, 4));
+    assert_eq!(s.selection_points(), ((2, 0), (2, 4)));
+}
+
+/// A wheel-scrolled pane is already in copy-mode at the user's history
+/// position, so placement runs against a non-zero `scroll_position` and every
+/// row/column stays frame-relative — including when the scrolled-to frame is
+/// the blank-topped one that made `cursor-down` snap.
+#[test]
+fn selection_is_frame_relative_when_the_pane_is_scrolled() {
+    let s = Server::fixture("selection-scrolled", 40, 10, "sleep 30");
+    let mut fixture = String::new();
+    for index in 0..30 {
+        fixture.push_str(&format!("hist-{index:03}\r\n"));
+    }
+    // The blank run the frame must open on, then enough output to push it up
+    // into history where a scroll can land on it.
+    fixture.push_str("\r\n\r\n");
+    for index in 0..30 {
+        fixture.push_str(&format!("post-{index:03}\r\n"));
+    }
+    s.write_pane(&fixture);
+    for _ in 0..200 {
+        if s.run(&["capture-pane", "-p", "-t", "t"])
+            .contains("post-029")
+        {
+            break;
+        }
+        sleep(Duration::from_millis(10));
+    }
+
+    s.run(&["send-keys", "-t", "t", "-X", "cancel"]);
+    s.run(&["copy-mode", "-H", "-t", "t"]);
+    let scroll = s.scroll_to_blank_top(2) as i64;
+    assert!(scroll > 0, "fixture must actually be scrolled");
+
+    s.select_in_place((2, 0), (2, 6));
+    assert_eq!(
+        s.scroll_position() as i64,
+        scroll,
+        "placement must not move the viewport"
+    );
+    let ((start_row, start_col), (end_row, end_col)) = s.selection_points();
+    // selection_points() is history-relative; the frame sits `scroll` rows above it.
+    assert_eq!(
+        ((start_row + scroll, start_col), (end_row + scroll, end_col)),
+        ((2, 0), (2, 6))
+    );
+    assert_eq!(
+        s.production_selection_snapshot("deck-copy-scrolled-"),
+        b"post-0"
+    );
+}
+
+/// Coordinates are only half the contract: the bytes tmux hands back must be
+/// the cells the pointer crossed. A wrapped row is where an endpoint that
+/// silently slid onto the logical line's real end would still look plausible.
+#[test]
+fn agent_frame_selection_copies_the_cells_the_pointer_crossed() {
+    let s = Server::fixture("selection-agent-bytes", 40, 10, "sleep 30");
+    let wrapped = format!("{}{}", "C".repeat(40), "tail-of-wrapped-line");
+    s.write_alternate_frame(&["", "", "改好了 PR #2。", "", &wrapped]);
+
+    // Three graphemes of CJK on the first row of text.
+    s.select((2, 0), (2, 6));
+    assert_eq!(
+        s.production_selection_snapshot("deck-copy-agent-cjk-"),
+        "改好了".as_bytes()
+    );
+
+    // And a run inside the continuation row of the wrapped line.
+    s.select((5, 0), (5, 8));
+    assert_eq!(
+        s.production_selection_snapshot("deck-copy-agent-wrapped-"),
+        b"tail-of-"
+    );
 }
