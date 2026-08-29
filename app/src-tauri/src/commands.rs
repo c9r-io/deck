@@ -948,17 +948,32 @@ pub(crate) fn start_session(
 /// Server-wide defaults for the deck tmux server. Idempotent; called at app
 /// Wheel scrolling, deck-driven: xterm keeps LOCAL selection (mouse mode
 /// stays off), and deck translates wheel deltas into tmux copy-mode
-/// Returns whether the pane is in copy-mode AFTER the scroll, so the UI can
-/// show/hide its scrollback indicator without waiting for the next poll.
+/// Returns copy-mode and live-cursor visibility AFTER the scroll, so the UI
+/// can update both without waiting for the next poll.
+#[derive(Serialize)]
+pub(crate) struct TerminalScrollResult {
+    active: bool,
+    cursor_visible: bool,
+}
+
 #[tauri::command]
-pub(crate) fn scroll_session(name: String, lines: i32) -> Result<bool, String> {
+pub(crate) fn scroll_session(name: String, lines: i32) -> Result<TerminalScrollResult, String> {
     validate_session_name(&name)?;
     let t = pane_target(&name);
     // State test, optional copy-mode entry, movement and post-state report all
     // execute in one tmux server command list. This removes two to three
     // process/IPC round trips from every display-frame scroll update.
-    let after = tmux_owned(&crate::terminal_scroll::args(&t, lines))?;
-    Ok(after.trim() == "1")
+    let after = tmux_owned(&crate::terminal_scroll::cursor_following_args(&t, lines))?;
+    let mut fields = after.trim_end().split('\t');
+    let active = fields.next().ok_or("scroll-status-invalid")? == "1";
+    let cursor_visible = fields.next().ok_or("scroll-status-invalid")? == "1";
+    if fields.next().is_some() {
+        return Err("scroll-status-invalid".into());
+    }
+    Ok(TerminalScrollResult {
+        active,
+        cursor_visible,
+    })
 }
 
 /// Leave copy-mode and return to the live view (typing, the scrollback
@@ -967,7 +982,16 @@ pub(crate) fn scroll_session(name: String, lines: i32) -> Result<bool, String> {
 #[tauri::command]
 pub(crate) fn scroll_bottom(name: String) -> Result<(), String> {
     validate_session_name(&name)?;
-    let _ = tmux(&["send-keys", "-t", &pane_target(&name), "-X", "cancel"]);
+    let target = pane_target(&name);
+    let _ = tmux(&["send-keys", "-t", &target, "-X", "cancel"]);
+    let _ = tmux(&[
+        "set-option",
+        "-p",
+        "-u",
+        "-t",
+        &target,
+        crate::terminal_scroll::CURSOR_ROW_OPTION,
+    ]);
     Ok(())
 }
 
@@ -1527,7 +1551,16 @@ pub(crate) fn terminal_selection_cancel(name: String, token: u64) -> Result<(), 
     if !should_cancel {
         return Ok(());
     }
-    let _ = tmux(&["send-keys", "-t", &pane_target(&name), "-X", "cancel"]);
+    let target = pane_target(&name);
+    let _ = tmux(&["send-keys", "-t", &target, "-X", "cancel"]);
+    let _ = tmux(&[
+        "set-option",
+        "-p",
+        "-u",
+        "-t",
+        &target,
+        crate::terminal_scroll::CURSOR_ROW_OPTION,
+    ]);
     Ok(())
 }
 

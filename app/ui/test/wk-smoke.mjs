@@ -565,9 +565,15 @@ async function selectionSmoke(card) {
   if (wheelFirst) wheelMask |= 2;
   if (wheelRemainder.scroll_position === 1) wheelMask |= 4;
   if (wheelLines) wheelMask |= 8;
-  await report('scroll-frame', wheelMask === 15, wheelMask,
+  const cursorHidden = await waitFor(() => !pane.body.querySelector('.xterm-cursor'), 3000);
+  wheel(60, 1);
+  const returnedLive = await waitFor(async () => {
+    const metrics = await inv('terminal_metrics', { name: card.session });
+    return !metrics.in_copy_mode && !!pane.body.querySelector('.xterm-cursor');
+  }, 3000);
+  if (cursorHidden && returnedLive) wheelMask |= 16;
+  await report('scroll-frame', wheelMask === 31, wheelMask,
     wheelRemainder.scroll_position);
-  await inv('scroll_bottom', { name: card.session });
 
   for (let i = 0; i < 12; i++) {
     await inv('scroll_session', { name: card.session, lines: -60 });

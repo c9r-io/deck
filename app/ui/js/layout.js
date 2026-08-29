@@ -153,6 +153,44 @@ async function insertDroppedFiles(pane, fileList) {
     .catch(() => uev('pty-write-fail'));
 }
 
+/* tmux copy-mode always exposes a copy cursor, even after the live input cell
+   has moved below the viewport. xterm's DOM renderer marks that one cell with
+   a public CSS class; remove only the cursor marker so the cell's original
+   foreground/background classes remain intact. Observe while hidden because
+   focus and blink refreshes can rebuild the row without parsing PTY bytes. */
+function setScrollCursorVisible(pane, visible) {
+  const show = visible !== false;
+  if (pane.scrollCursorVisible === show) {
+    if (!show) pane.stripScrollCursor?.();
+    return;
+  }
+  pane.scrollCursorVisible = show;
+  pane.scrollCursorObserver?.disconnect();
+  pane.scrollCursorObserver = null;
+  if (show) {
+    if (pane.body.isConnected) {
+      requestAnimationFrame(() => {
+        if (!pane.body.isConnected || pane.scrollCursorVisible === false) return;
+        try { pane.term.refresh(pane.term.buffer.active.cursorY, pane.term.buffer.active.cursorY); }
+        catch (_) { /* pane was disposed during the frame */ }
+      });
+    }
+    return;
+  }
+  pane.stripScrollCursor = () => {
+    pane.body.querySelectorAll('.xterm-cursor')
+      .forEach(cell => cell.classList.remove('xterm-cursor'));
+  };
+  const rows = pane.body.querySelector('.xterm-rows');
+  if (rows) {
+    pane.scrollCursorObserver = new MutationObserver(pane.stripScrollCursor);
+    pane.scrollCursorObserver.observe(rows, {
+      subtree: true, childList: true, attributes: true, attributeFilter: ['class'],
+    });
+  }
+  pane.stripScrollCursor();
+}
+
 export function createPane(card) {
   const el = document.createElement('div');
   el.className = 'spane';
@@ -196,6 +234,7 @@ export function createPane(card) {
   pane.syncSize = () => resize.sync(pane.term.cols, pane.term.rows);
   pane.invalidateSize = () => resize.invalidate();
   wireTerminalSelection(pane, active => {
+    if (active) setScrollCursorVisible(pane, true);
     const current = provider.get(pane.sid);
     if (!current) return;
     current.scrolled = active;
@@ -203,6 +242,7 @@ export function createPane(card) {
   });
 
   term.onWriteParsed(() => {
+    if (pane.scrollCursorVisible === false) pane.stripScrollCursor?.();
     if (ghostRemainder && attachedName === session) updateGhost();
     positionSeparators(pane);
     pane.selection?.writeParsed();
@@ -624,6 +664,8 @@ export function wireTerminalInput(pane, term, host) {
           : inv('scroll_session', { name: session, lines });
       request.then(result => {
         const inMode = typeof result === 'object' ? result?.active : result;
+        const cursorVisible = typeof result === 'object' ? result?.cursor_visible : true;
+        setScrollCursorVisible(pane, !inMode || cursorVisible !== false);
         const c = card();
         if (c && !!c.scrolled !== !!inMode) { c.scrolled = !!inMode; updatePaneChrome(c); }
       }).catch(() => {}).finally(() => {
@@ -793,6 +835,7 @@ export function installShellRecovery(pane, snapshot) {
    confirm within 2.5s anyway) */
 export function goLive(session) {
   const p = panes.get(session);
+  if (p) setScrollCursorVisible(p, true);
   const c = p && provider.get(p.sid);
   if (c && c.scrolled) { c.scrolled = false; updatePaneChrome(c); }
   if (p && hasTerminalSelection(p)) return cancelTerminalSelection(p);
@@ -884,6 +927,7 @@ export function closePaneBySid(sid, opts = {}) {
   if (!entry) return;
   if ($('quick-bar').closest('.spane') === entry.el) resetSuggest();
   if (entry.selection) entry.selection.dispose();
+  entry.scrollCursorObserver?.disconnect();
   if (opts.detach !== false) inv('detach_session', { name: entry.session }).catch(() => {});
   try { entry.term.dispose(); } catch (e) { /* already gone */ }
   const quickBar = $('quick-bar');
@@ -1032,6 +1076,7 @@ export function leaveSessionView() {
   if (quickBar && quickBar.closest('.spane')) $('session-view').appendChild(quickBar);
   panes.forEach(p => {
     if (p.selection) p.selection.dispose();
+    p.scrollCursorObserver?.disconnect();
     inv('detach_session', { name: p.session }).catch(() => {});
     try { p.term.dispose(); } catch (e) { /* fine */ }
     p.el.remove();

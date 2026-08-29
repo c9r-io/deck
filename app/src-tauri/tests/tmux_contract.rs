@@ -450,6 +450,76 @@ fn production_scroll_batch_enters_advances_and_exits() {
     assert_eq!(s.fmt("#{pane_in_mode}"), "0");
 }
 
+/// Ordinary scrolling is viewport navigation, not copy-cursor navigation.
+/// tmux normally leaves its copy cursor on a fixed screen row, separating it
+/// from an agent composer as that content moves. The production batch follows
+/// the live cursor's content row in both directions without changing the
+/// requested scroll position.
+#[test]
+fn production_scroll_cursor_stays_with_the_live_input_row() {
+    let s = Server::new("scroll-cursor");
+    s.shell("i=0; while [ $i -lt 40 ]; do echo cursor$i; i=$((i+1)); done");
+    s.write_pane("\x1b[?1049h\x1b[2J\x1b[3;1Houtput\x1b[6;1HLONGINPUTTEXT\x1b[6;5H");
+    for _ in 0..100 {
+        if s.fmt("#{alternate_on}:#{cursor_y}:#{cursor_x}") == "1:5:4" {
+            break;
+        }
+        sleep(Duration::from_millis(10));
+    }
+    assert_eq!(s.fmt("#{alternate_on}:#{cursor_y}:#{cursor_x}"), "1:5:4");
+
+    let first_args = terminal_scroll::cursor_following_args("t", -3);
+    let first = s
+        .run_owned(&first_args)
+        .unwrap_or_else(|error| panic!("cursor-following scroll up: {error}; args={first_args:?}"));
+    assert_eq!(first.trim(), "1\t1");
+    assert_eq!(
+        s.fmt("#{scroll_position}:#{copy_cursor_y}:#{copy_cursor_x}"),
+        "3:8:4"
+    );
+
+    let reverse = s
+        .run_owned(&terminal_scroll::cursor_following_args("t", 1))
+        .expect("cursor-following scroll down");
+    assert_eq!(reverse.trim(), "1\t1");
+    assert_eq!(
+        s.fmt("#{scroll_position}:#{copy_cursor_y}:#{copy_cursor_x}"),
+        "2:7:4"
+    );
+
+    let clamped = s
+        .run_owned(&terminal_scroll::cursor_following_args("t", -60))
+        .expect("cursor-following scroll clamps at the viewport edge");
+    assert_eq!(clamped.trim(), "1\t0");
+    let clamped_scroll = s.scroll_position();
+    assert!(
+        clamped_scroll > 6,
+        "fixture must move the input row offscreen"
+    );
+    assert_eq!(s.fmt("#{copy_cursor_y}"), "11");
+    let still_clamped = s
+        .run_owned(&terminal_scroll::cursor_following_args("t", 1))
+        .expect("cursor-following reverse scroll remains clamped");
+    assert_eq!(still_clamped.trim(), "1\t0");
+    assert_eq!(s.scroll_position(), clamped_scroll - 1);
+    assert_eq!(
+        s.fmt("#{copy_cursor_y}"),
+        "11",
+        "cursor following must not undo the requested viewport movement"
+    );
+
+    let live = s
+        .run_owned(&terminal_scroll::cursor_following_args("t", 60))
+        .expect("cursor-following scroll to bottom");
+    assert_eq!(live.trim(), "0\t1");
+    assert_eq!(s.fmt("#{pane_in_mode}:#{cursor_y}:#{cursor_x}"), "0:5:4");
+    assert_eq!(
+        s.fmt("#{@deck-scroll-cursor-row}"),
+        "",
+        "a later unrelated copy-mode must not inherit a stale cursor anchor"
+    );
+}
+
 /// Scheduled prompts and pty_write inject via `send-keys -l`: the text must
 /// arrive byte-for-byte — no tmux format expansion (#{...}), no key-name
 /// parsing ("C-c"), no shell splitting on semicolons.
