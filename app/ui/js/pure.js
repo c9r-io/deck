@@ -596,6 +596,54 @@ export function createTerminalWheelAccumulator(maxLines = 60) {
   };
 }
 
+/**
+ * Display-frame scheduler for terminal wheel work. At most one asynchronous
+ * backend mutation may be in flight, but a pending wheel delta keeps one RAF
+ * armed while that mutation completes. This avoids registering the next RAF
+ * from a late Promise microtask and missing WebKit's next-frame cutoff.
+ */
+export function createTerminalWheelFrameScheduler({
+  requestFrame, ready, take, run, active = () => true,
+}) {
+  let frame = null;
+  let inFlight = false;
+
+  const schedule = () => {
+    if (frame !== null || !ready()) return false;
+    frame = requestFrame(flush);
+    return true;
+  };
+
+  const flush = () => {
+    frame = null;
+    if (!active()) return;
+    if (inFlight) {
+      schedule();
+      return;
+    }
+    const value = take();
+    if (!value) return;
+    inFlight = true;
+    let request;
+    try {
+      request = run(value);
+    } catch (error) {
+      inFlight = false;
+      schedule();
+      return;
+    }
+    Promise.resolve(request).catch(() => {}).finally(() => {
+      inFlight = false;
+      schedule();
+    });
+  };
+
+  return {
+    schedule,
+    state: () => ({ framePending: frame !== null, inFlight }),
+  };
+}
+
 /** Pure generation/state core shared by production terminal selection and tests. */
 export function createTerminalSelectionModel() {
   let generation = 0;

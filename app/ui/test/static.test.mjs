@@ -127,7 +127,9 @@ test('production terminal path wires the token-bound frozen selection coordinato
   assert.match(layout, /terminalAgentHistoryUpRoute/);
   assert.match(layout, /term\.input\(AGENT_HISTORY_VERTICAL_UP\)/,
     'agent history workaround must re-enter the ordinary xterm input path');
-  assert.match(layout, /requestAnimationFrame[\s\S]*?wheelInFlight/);
+  assert.match(layout, /createTerminalWheelFrameScheduler/);
+  assert.match(read('app/ui/js/pure.js'), /if \(inFlight\) \{[\s\S]{0,80}schedule\(\)/,
+    'a busy wheel frame must remain armed instead of waiting for Promise completion');
   assert.doesNotMatch(layout, /wheelTimer[\s\S]*?50/);
   assert.match(backend, /copy-mode/);
   assert.match(backend, /terminal_scroll::args/);

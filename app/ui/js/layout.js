@@ -5,7 +5,7 @@ import { inlineRename, toast } from './dialogs.js';
 import { t } from './i18n.js';
 import { panes, pollNow, provider, render, renderSidebar, activeProject } from './board.js';
 import { SHELL_FG, acceptGhost, feedMirror, maybeRecordCommand, mountQuickBar, nextShellTitle, renderSuggest, resetSuggest, showLinkCtx, updateGhost, writeClipboard } from './terminal.js';
-import { AGENT_HISTORY_VERTICAL_UP, createTerminalResizeCoordinator, createTerminalWheelAccumulator, isComposingKeyEvent, isPlainShiftKeydown, shouldRouteImeKeydownThroughInput, shQuote, terminalAgentComposerGeometry, terminalAgentHistoryUpRoute, terminalCopyRoute, terminalSelectionWheelRoute, tokenizeTerminalLinks, terminalWheelLines } from './pure.js';
+import { AGENT_HISTORY_VERTICAL_UP, createTerminalResizeCoordinator, createTerminalWheelAccumulator, createTerminalWheelFrameScheduler, isComposingKeyEvent, isPlainShiftKeydown, shouldRouteImeKeydownThroughInput, shQuote, terminalAgentComposerGeometry, terminalAgentHistoryUpRoute, terminalCopyRoute, terminalSelectionWheelRoute, tokenizeTerminalLinks, terminalWheelLines } from './pure.js';
 import { toggleQueuePanel } from './scheduler.js';
 import { cancelAllTerminalSelections, cancelTerminalSelection, copyTerminalSelection, hasTerminalSelection, wireTerminalSelection } from './selection.js';
 import { getTerminalTheme, onThemeChange, syncThemeIntegrations } from './theme.js';
@@ -641,15 +641,12 @@ export function wireTerminalInput(pane, term, host) {
      backend request in flight; tmux remains the scrollback authority without
      imposing the old 50ms/20fps timer or dropping each batch's remainder. */
   const wheel = createTerminalWheelAccumulator();
-  let wheelFrame = null, wheelInFlight = false;
-  const scheduleWheel = () => {
-    if (wheelFrame != null || wheelInFlight || !wheel.ready()) return;
-    wheelFrame = requestAnimationFrame(() => {
-      wheelFrame = null;
-      if (!host.isConnected || wheelInFlight) return;
-      const lines = wheel.take();
-      if (!lines) return;
-      wheelInFlight = true;
+  const wheelFrames = createTerminalWheelFrameScheduler({
+    requestFrame: callback => requestAnimationFrame(callback),
+    ready: wheel.ready,
+    take: wheel.take,
+    active: () => host.isConnected,
+    run: lines => {
       const route = terminalSelectionWheelRoute({
         tokenSelected: hasTerminalSelection(pane),
         frozen: pane.selection.isFrozen(),
@@ -668,19 +665,16 @@ export function wireTerminalInput(pane, term, host) {
         setScrollCursorVisible(pane, !inMode || cursorVisible !== false);
         const c = card();
         if (c && !!c.scrolled !== !!inMode) { c.scrolled = !!inMode; updatePaneChrome(c); }
-      }).catch(() => {}).finally(() => {
-        wheelInFlight = false;
-        if (host.isConnected) scheduleWheel();
-      });
-    });
-  };
+      }).catch(() => {});
+    },
+  });
   host.addEventListener('wheel', e => {
     const mode = term.modes && term.modes.mouseTrackingMode;
     if (mode && mode !== 'none') return;   // app owns the mouse
     e.preventDefault();
     e.stopPropagation();
     wheel.add(terminalWheelLines(e.deltaY, e.deltaMode, term.rows));
-    scheduleWheel();
+    wheelFrames.schedule();
   }, { passive: false, capture: true });
 
 }

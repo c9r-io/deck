@@ -15,7 +15,7 @@ import {
   AGENT_HISTORY_VERTICAL_UP, terminalAgentComposerGeometry, terminalAgentHistoryUpRoute,
   terminalNativeSelectionCells, terminalSelectionOverlayRows, terminalSelectionWheelRoute,
   tokenizeTerminalLinks,
-  createTerminalWheelAccumulator, terminalWheelLines,
+  createTerminalWheelAccumulator, createTerminalWheelFrameScheduler, terminalWheelLines,
   linkMenuItems,
   inlineRenameValue, persistOptimistically,
 } from '../js/pure.js';
@@ -640,6 +640,52 @@ test('terminal wheel input preserves fractions and normalizes browser delta mode
   const reverseHalf = createTerminalWheelAccumulator();
   reverseHalf.add(-0.5);
   assert.equal(reverseHalf.take(), -1, 'negative half-lines round symmetrically');
+});
+
+test('terminal wheel scheduler keeps a RAF armed without overlapping backend work', async () => {
+  const wheel = createTerminalWheelAccumulator();
+  const frames = [];
+  const requests = [];
+  const started = [];
+  let frameId = 0;
+  const scheduler = createTerminalWheelFrameScheduler({
+    requestFrame(callback) { frames.push(callback); return ++frameId; },
+    ready: wheel.ready,
+    take: wheel.take,
+    run(value) {
+      started.push(value);
+      return new Promise(resolve => requests.push(resolve));
+    },
+  });
+  const nextFrame = () => {
+    assert.ok(frames.length, 'a display frame must be armed');
+    frames.shift()();
+  };
+  const settle = () => new Promise(resolve => setImmediate(resolve));
+
+  wheel.add(1);
+  assert.equal(scheduler.schedule(), true);
+  nextFrame();
+  assert.deepEqual(started, [1]);
+  assert.deepEqual(scheduler.state(), { framePending: false, inFlight: true });
+
+  wheel.add(1);
+  assert.equal(scheduler.schedule(), true,
+    'new input must arm the next display frame while the prior IPC is in flight');
+  nextFrame();
+  assert.deepEqual(started, [1], 'a pending frame must not overlap backend mutations');
+  assert.deepEqual(scheduler.state(), { framePending: true, inFlight: true },
+    'the busy frame immediately rearms itself instead of waiting for Promise.finally');
+
+  requests.shift()();
+  await settle();
+  assert.deepEqual(scheduler.state(), { framePending: true, inFlight: false });
+  nextFrame();
+  assert.deepEqual(started, [1, 1], 'the very next armed frame consumes pending input');
+
+  requests.shift()();
+  await settle();
+  assert.deepEqual(scheduler.state(), { framePending: false, inFlight: false });
 });
 
 test('terminal clipboard payload remains exact for 2,500 deterministic Unicode rows', async () => {

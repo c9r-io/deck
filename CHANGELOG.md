@@ -2,6 +2,10 @@
 
 ## 0.4.39 — Unreleased
 
+- Keep terminal wheel work armed on every display frame while preserving the
+  single in-flight tmux mutation. Real bundled WKWebView verification improves
+  sustained scroll updates from about 40 Hz to 60 Hz without losing fractional
+  trackpad deltas, inertia tails, direction reversals or tmux scroll authority.
 - Synchronize frozen terminal selections across either tmux-status/xterm-frame
   ordering, promote drags by terminal-cell movement rather than a CSS-pixel
   threshold, and recheck the pointerup cell. On the first wheel frame, native
