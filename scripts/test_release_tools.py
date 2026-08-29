@@ -185,6 +185,10 @@ class ReleaseChannelTests(unittest.TestCase):
                         promote.index('gh release edit "$STABLE_TAG" --draft=false'))
         self.assertNotIn("gh release upload nightly-feed", promote)
         self.assertNotIn("gh release edit nightly-feed", promote)
+        for workflow in (nightly, promote):
+            self.assertIn("Print :CFBundleExecutable", workflow)
+            self.assertIn('grep -aFq "$CANDIDATE_SHA"', workflow)
+            self.assertNotIn('Contents/MacOS/deck"', workflow)
         rc.assert_promotion_has_no_build_commands(ROOT / ".github/workflows/promote.yml")
 
 

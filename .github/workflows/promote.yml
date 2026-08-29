@@ -130,7 +130,10 @@ jobs:
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app_path/Contents/Info.plist")" = io.c9r.deck
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app_path/Contents/Info.plist")" = "$VERSION"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app_path/Contents/Info.plist")" = "$VERSION"
-          strings "$app_path/Contents/MacOS/deck" | grep -Fqx "$CANDIDATE_SHA"
+          executable=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app_path/Contents/Info.plist")
+          test -n "$executable"
+          test -f "$app_path/Contents/MacOS/$executable"
+          LC_ALL=C grep -aFq "$CANDIDATE_SHA" "$app_path/Contents/MacOS/$executable"
           codesign --verify --deep --strict --verbose=2 "$app_path"
           xcrun stapler validate "$app_path"
           spctl -a -vv -t exec "$app_path"
