@@ -47,8 +47,9 @@ tagging a release; 3 minutes total.
       user confirmed the packaged candidate behaves normally.
 - [x] The follow-up link classifier smoke rejects nonexistent log tokens such
       as `memcache.go:265`, preserves one exact long HTTP(S) URL over soft wrap,
-      and proves that the URL's `/api` segment is not exposed as a second path
-      link (15/15 in the real bundled WKWebView).
+      recovers a full-width tmux redraw whose xterm `isWrapped` bit is absent,
+      and proves that neither URL's `/api` segment is exposed as a second path
+      link (31/31 in the real bundled WKWebView).
 
 ## v0.4.32 post-review automated candidate — 2026-08-29
 

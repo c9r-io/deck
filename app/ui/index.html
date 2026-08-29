@@ -376,8 +376,8 @@
   #ctx .ctx-label { color: var(--faint); font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; padding-bottom: 3px; }
   #ctx .ctx-value {
     display: block; font-family: var(--mono); font-size: 11px; color: var(--faint);
-    padding: 6px 10px 4px; max-width: 280px;
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    padding: 6px 10px 4px; max-width: min(420px, calc(100vw - 38px));
+    white-space: normal; overflow-wrap: anywhere; max-height: 7.2em; overflow-y: auto;
   }
   #ctx hr { border: none; border-top: 1px solid var(--border-soft); margin: 4px 2px; }
 

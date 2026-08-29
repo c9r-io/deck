@@ -56,15 +56,43 @@ export function strToB64(str) {
   return btoa(bin);
 }
 
-/* Build one wrapped logical line with UTF-16-offset → terminal-cell mapping,
-   using only xterm's public BufferLine/BufferCell APIs. This keeps provider
-   ranges correct for wide Unicode cells and paths split by terminal wrap. */
+const MAX_LINK_LOGICAL_ROWS = 32;
+
+function terminalLineFillsWidth(line, cols) {
+  if (!line || cols < 1) return false;
+  const tail = line.getCell(cols - 1);
+  if (!tail) return false;
+  if (tail.getChars()) return true;
+  // The final cell of a width-2 glyph is a zero-width continuation cell.
+  if (tail.getWidth() === 0 && cols > 1) {
+    const lead = line.getCell(cols - 2);
+    return !!lead?.getChars() && lead.getWidth() > 1;
+  }
+  return false;
+}
+
+/* Build one visual logical line with UTF-16-offset → terminal-cell mapping,
+   using only xterm's public BufferLine/BufferCell APIs. Live output carries
+   xterm's isWrapped bit. A tmux attach/history redraw can lose that bit and
+   repaint the same wrap as ordinary rows; a content cell in the final column
+   is then the only public continuation signal. Bound the fallback so a dense
+   full-screen TUI can never turn one hover into an unbounded buffer scan. */
 export function terminalLogicalLine(term, requestedLine) {
   const buffer = term.buffer.active;
   let first = requestedLine - 1;
-  while (first > 0 && buffer.getLine(first)?.isWrapped) first--;
+  while (first > 0 && requestedLine - first < MAX_LINK_LOGICAL_ROWS) {
+    const current = buffer.getLine(first);
+    const previous = buffer.getLine(first - 1);
+    if (!current?.isWrapped && !terminalLineFillsWidth(previous, term.cols)) break;
+    first--;
+  }
   let last = requestedLine - 1;
-  while (last + 1 < buffer.length && buffer.getLine(last + 1)?.isWrapped) last++;
+  while (last + 1 < buffer.length && last - first + 1 < MAX_LINK_LOGICAL_ROWS) {
+    const current = buffer.getLine(last);
+    const next = buffer.getLine(last + 1);
+    if (!next?.isWrapped && !terminalLineFillsWidth(current, term.cols)) break;
+    last++;
+  }
   let text = '';
   const positions = [];
   for (let y = first; y <= last; y++) {

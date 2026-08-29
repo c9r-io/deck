@@ -490,9 +490,12 @@ async function pathSmoke(card) {
   const missingFixture = 'memcache.go:265';
   const url = `https://node100.gitski.work:6443/api?timeout=32s&trace=${'a'.repeat(pane.term.cols + 12)}`;
   const urlLine = `E0829 memcache.go:265] err=\\"${url}\\": connect failed`;
+  const hardUrl = 'https://hardwrap.gitski.work:6443/api?timeout=32s';
+  const hardCut = 13; // `https://hardw`, matching the short first-row failure
+  const hardPrefix = `${'H'.repeat(Math.max(0, pane.term.cols - hardCut - 1))} `;
   await inv('pty_write', {
     name: card.session,
-    dataB64: strToB64(`mkdir -p '空 格😀' && : > '空 格😀/code.rs'; printf '%s\\n' '${fixture}' '${addressFixture}' '${missingFixture}' '${urlLine}'\r`),
+    dataB64: strToB64(`mkdir -p '空 格😀' && : > '空 格😀/code.rs'; printf '%s\\n' '${fixture}' '${addressFixture}' '${missingFixture}' '${urlLine}'; printf '%s%s\\n%s\\n' '${hardPrefix}' '${hardUrl.slice(0, hardCut)}' '${hardUrl.slice(hardCut)}'\r`),
   });
   const fixtureReady = await waitFor(() => {
     for (let row = 0; row < pane.term.rows; row++) {
@@ -567,26 +570,34 @@ async function pathSmoke(card) {
   const urlReady = await waitFor(() => {
     let visible = '';
     for (let row = 0; row < pane.term.rows; row++) visible += visibleTerminalLine(pane, row);
-    return visible.includes(url);
+    return visible.includes(url) && visible.includes(hardUrl);
   }, 5000);
-  let missingRow = -1, urlRow = -1;
+  let missingRow = -1, urlRow = -1, hardRow = -1;
   for (let row = 0; row < pane.term.rows; row++) {
     const line = visibleTerminalLine(pane, row);
     if (line.includes(missingFixture) && !line.includes('E0829')) missingRow = row;
     if (line.includes('https://node100')) urlRow = row;
+    if (line.includes('https://hardw')) hardRow = row;
   }
   const missingLinks = missingRow >= 0 ? await linksAt(missingRow) : [];
   const urlLinks = urlRow >= 0 ? await linksAt(urlRow) : [];
+  const hardLinks = hardRow >= 0 ? await linksAt(hardRow) : [];
   const wrappedUrl = urlLinks.find(link => link.text === url) || null;
+  const hardWrappedUrl = hardLinks.find(link => link.text === hardUrl) || null;
+  const hardFirstLine = hardRow >= 0
+    ? pane.term.buffer.active.getLine(pane.term.buffer.active.viewportY + hardRow)
+    : null;
+  const hardRedrawRecovered = !!hardWrappedUrl && hardFirstLine?.isWrapped === false;
   wrappedUrl?.activate(eventAt(linkX, linkY), wrappedUrl.text);
   const exactUrlMenu = $('ctx').style.display === 'block'
     && $('ctx').querySelector('.ctx-value')?.textContent === url;
   const tokenizerMask = (urlReady ? 1 : 0)
     | (missingRow >= 0 && missingLinks.length === 0 ? 2 : 0)
     | (wrappedUrl && urlLinks.length === 1 ? 4 : 0)
-    | (exactUrlMenu ? 8 : 0);
+    | (exactUrlMenu ? 8 : 0)
+    | (hardRedrawRecovered ? 16 : 0);
   $('ctx').style.display = 'none';
-  await report('link-classify', tokenizerMask === 15, tokenizerMask, url.length);
+  await report('link-classify', tokenizerMask === 31, tokenizerMask, url.length);
 
   const focus = document.createElement('button');
   focus.textContent = 'focus';

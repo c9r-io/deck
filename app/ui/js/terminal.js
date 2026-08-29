@@ -121,7 +121,9 @@ export function showLinkCtx(e, kind, value, cwd, sid = null) {
   const restoreFocus = document.activeElement;
   ctx.innerHTML = '<span class="ctx-value"></span>' + linkMenuItems(kind)
     .map(item => `<button data-a="${item.action}"></button>`).join('');
-  ctx.querySelector('.ctx-value').textContent = value;
+  const valueLabel = ctx.querySelector('.ctx-value');
+  valueLabel.textContent = value;
+  valueLabel.title = value;
   const labelKeys = { url: 'link.url', copy: kind === 'url' ? 'link.copyUrl' : 'link.copyPath', editor: 'link.editor', 'editor-parent': 'link.editor-parent', 'session-parent': 'link.session-parent', reveal: 'link.reveal' };
   ctx.querySelectorAll('button').forEach(button => { button.textContent = t(labelKeys[button.dataset.a]); });
   ctx.setAttribute('role', 'menu');
