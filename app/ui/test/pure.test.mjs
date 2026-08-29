@@ -10,7 +10,8 @@ import {
   chainQuietHint, contextStatusKey, CHAIN_QUIET_SECS, shQuote, quickBarLayout, rectsOverlap,
   createExitRetirementTracker, createSerialTransactionQueue, deleteSessionsTransaction, sidebarGroups,
   copyExact, createTerminalSelectionModel, terminalSelectionEdgeLines,
-  isComposingKeyEvent, terminalSelectionOverlayRows,
+  isComposingKeyEvent, isPlainShiftKeydown, shouldRouteImeKeydownThroughInput,
+  terminalSelectionOverlayRows,
   terminalLinkMatches,
   createTerminalWheelAccumulator, terminalWheelLines,
   linkMenuItems,
@@ -435,6 +436,25 @@ test('IME/dead-key events bypass every Deck keyboard shortcut', () => {
   assert.equal(isComposingKeyEvent({ key: '[', isComposing: false, keyCode: 219 }), false);
 });
 
+test('printable IME 229 keydowns defer to final InputEvent data', () => {
+  for (const event of [
+    { key: '?', code: 'Slash', keyCode: 229 },
+    { key: '？', code: 'Slash', keyCode: 229 },
+    { key: 'Process', code: 'Slash', keyCode: 229 },
+    { key: 'Unidentified', code: 'Slash', keyCode: 229 },
+    { key: 'Backspace', keyCode: 229, isComposing: true },
+  ]) assert.equal(shouldRouteImeKeydownThroughInput(event), true, JSON.stringify(event));
+  assert.equal(shouldRouteImeKeydownThroughInput({ key: '?', keyCode: 191 }), false);
+  assert.equal(shouldRouteImeKeydownThroughInput({ key: 'Backspace', keyCode: 229 }), false,
+    'non-composing control keys retain xterm handling');
+  assert.equal(shouldRouteImeKeydownThroughInput({ key: 'Dead', keyCode: 0 }), false,
+    'ordinary dead keys retain xterm dead-key handling');
+  assert.equal(isPlainShiftKeydown({ key: 'Shift', code: 'ShiftLeft' }), true);
+  assert.equal(isPlainShiftKeydown({ key: 'Shift', code: 'ShiftRight', ctrlKey: true }), false);
+  assert.equal(isPlainShiftKeydown({ key: '?', code: 'Slash', shiftKey: true }), false,
+    'the actual chord retains its shift modifier');
+});
+
 test('terminal wheel input preserves fractions and normalizes browser delta modes', () => {
   assert.equal(terminalWheelLines(28, 0, 24), 2);
   assert.equal(terminalWheelLines(3, 1, 24), 3);
@@ -503,6 +523,17 @@ test('terminal link grammar covers relative, quoted, Unicode and line suffix pat
   assert.equal(links.at(-1).kind, 'url');
   assert.deepEqual(terminalLinkMatches('missing.rs), ordinary_word, foo.').map(x => x.value),
     ['missing.rs'], 'line punctuation is excluded and plain words are ignored');
+  assert.deepEqual(terminalLinkMatches([
+    'connect 192.168.31.120:6443 failed',
+    'localhost 127.0.0.1:8080',
+    'version 1.2.3 and v2.4',
+    'numeric 12.34',
+  ].join(' | ')), [], 'IPv4, ports and dotted versions are not file paths');
+  assert.deepEqual(terminalLinkMatches('http://192.168.31.120:6443/a file.123 report.rs'), [
+    { kind: 'url', value: 'http://192.168.31.120:6443/a', index: 0 },
+    { kind: 'path', value: 'file.123', index: 29 },
+    { kind: 'path', value: 'report.rs', index: 38 },
+  ], 'URLs and plausible filenames retain their existing ownership');
 });
 
 test('rename Enter/Escape/empty semantics and persistence rollback are deterministic', async () => {

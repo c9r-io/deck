@@ -106,6 +106,9 @@ test('production terminal path wires the token-bound frozen selection coordinato
   assert.doesNotMatch(selection, /\._core/);
   assert.doesNotMatch(selection, /options\.disableStdin\s*=\s*true/);
   assert.match(layout, /isComposingKeyEvent\(e\)/);
+  assert.match(layout, /shouldRouteImeKeydownThroughInput\(event\)/);
+  assert.match(layout, /isPlainShiftKeydown\(event\)/);
+  assert.match(layout, /event\.stopPropagation\(\)/);
   assert.match(layout, /macOptionIsMeta: false/);
 });
 

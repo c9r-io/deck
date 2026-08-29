@@ -22,6 +22,10 @@ export const TERMINAL_LINK_RE = /(https?:\/\/[^\s"'`)\]]+)|((?:"[^"\n]+"|'[^'\n]
 
 export function looksLikeTerminalPath(value) {
   const raw = value.replace(/^(['"])(.*)\1(?=:\d|$)/, '$2');
+  const withoutLocation = raw.replace(/:\d+(?::\d+)?$/, '');
+  // Dotted numeric addresses/versions are not filenames. This also rejects
+  // partial IPv4 matches such as `192.168` inside `192.168.31.120:6443`.
+  if (/^v?\d+(?:\.\d+)+$/i.test(withoutLocation)) return false;
   if (/^(~\/|\.{1,2}\/|\/)/.test(raw)) return true;
   if (raw.split('/').length > 2) return true;
   return /\.[A-Za-z0-9]{1,8}(?::\d+(?::\d+)?)?$/.test(raw.split('/').pop());
@@ -36,6 +40,8 @@ export function terminalLinkMatches(text) {
     while (/[.,;:!?)}\]]$/.test(value)) value = value.slice(0, -1);
     const kind = match[1] ? 'url' : 'path';
     if (kind === 'path' && !looksLikeTerminalPath(value)) continue;
+    const after = String(text).slice(match.index + match[0].length);
+    if (kind === 'path' && /^\.\d/.test(after)) continue;
     links.push({ kind, value, index: match.index });
   }
   return links;
@@ -277,6 +283,25 @@ export const isComposingKeyEvent = event => !!event && (
   event.isComposing || event.keyCode === 229
   || /^(Process|Dead|Compose)$/.test(event.key || '')
 );
+
+/** Some macOS IMEs deliver printable punctuation as keyCode=229 and let the
+ * final text arrive through a later InputEvent. xterm 5.5's keydown fallback
+ * can mark that input as already handled and drop it. Keep only IME-owned
+ * printable/unknown keydowns out of that fallback; never derive text here. */
+export const shouldRouteImeKeydownThroughInput = event => {
+  if (!event || (event.keyCode !== 229 && event.key !== 'Process')) return false;
+  const key = String(event.key || '');
+  const printable = [...key].length === 1;
+  return !!event.isComposing || printable
+    || key === 'Process' || key === 'Unidentified';
+};
+
+/** A modifier-only Shift keydown carries no terminal bytes. Letting xterm
+ * process it sets its `_keyDownSeen` flag, which makes WKWebView's following
+ * input-before-keydown IME punctuation look duplicated and get discarded. */
+export const isPlainShiftKeydown = event => !!event
+  && event.key === 'Shift'
+  && !event.ctrlKey && !event.altKey && !event.metaKey;
 
 /** Visible row/column spans for an immutable half-open content selection.
  * tmux rows are absolute buffer rows; only viewportTop changes while scrolling. */

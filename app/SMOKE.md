@@ -38,10 +38,13 @@ tagging a release; 3 minutes total.
       repeat shifted punctuation. Record the macOS/input-source/keyboard-layout
       values with the release evidence. Do not mark these two physical gates
       complete from synthetic composition events.
-- [ ] User Pinyin check found one remaining failure: special punctuation such
-      as `?` is absent on the first physical keypress and appears on the second.
-      Keep this gate open until the first press works after a fresh focus/input
-      source transition.
+- [x] Initial user Pinyin check found that special punctuation such as `?` was
+      absent on the first physical keypress and appeared on the second; the
+      follow-up trace and packaged retest below resolved that specific defect.
+- [x] Follow-up physical trace isolated the loss to the first chord after every
+      Shift keydown. Keeping modifier-only Shift out of xterm's byte path made
+      the first chord work across repeated Shift release/press cycles; the
+      user confirmed the packaged candidate behaves normally.
 
 ## v0.4.32 post-review automated candidate — 2026-08-29
 

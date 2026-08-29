@@ -2,6 +2,14 @@
 
 ## Unreleased — terminal interaction reliability
 
+- Route printable macOS IME `keyCode=229` events through the final native
+  `InputEvent` path, avoiding xterm's deferred keydown fallback that could
+  drop the first Pinyin punctuation press in WKWebView.
+- Keep modifier-only Shift keydowns out of xterm's byte path so its transient
+  keydown flag cannot suppress the first Pinyin InputEvent of each Shift chord.
+- Exclude IPv4 addresses, ports and dotted numeric versions from bare-file
+  link detection instead of turning an address prefix such as `192.168` into
+  a path action menu.
 - Keep real pointer clicks on xterm's trusted link state machine, remove
   synthetic click replay, prevent the compatibility click after mouseup from
   immediately closing the path menu, and recognize wrapped/Unicode/quoted,

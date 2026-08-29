@@ -5,7 +5,7 @@ import { inlineRename, toast } from './dialogs.js';
 import { t } from './i18n.js';
 import { TERM_THEME, panes, pollNow, provider, render, renderSidebar, activeProject } from './board.js';
 import { SHELL_FG, acceptGhost, feedMirror, maybeRecordCommand, mountQuickBar, nextShellTitle, renderSuggest, resetSuggest, showLinkCtx, updateGhost, writeClipboard } from './terminal.js';
-import { createTerminalWheelAccumulator, isComposingKeyEvent, shQuote, terminalLinkMatches, terminalWheelLines } from './pure.js';
+import { createTerminalWheelAccumulator, isComposingKeyEvent, isPlainShiftKeydown, shouldRouteImeKeydownThroughInput, shQuote, terminalLinkMatches, terminalWheelLines } from './pure.js';
 import { toggleQueuePanel } from './scheduler.js';
 import { cancelAllTerminalSelections, cancelTerminalSelection, copyTerminalSelection, hasTerminalSelection, wireTerminalSelection } from './selection.js';
 
@@ -329,6 +329,24 @@ export function positionSeparators(pane) {
 export function wireTerminalInput(pane, term, host) {
   const session = pane.session;
   const card = () => provider.get(pane.sid);
+
+  /* Apple Pinyin and other macOS IMEs may deliver a printable punctuation
+     keydown as keyCode=229 before OR after the corresponding InputEvent.
+     xterm 5.5's target keydown handler then enters its deferred textarea-diff
+     fallback and can suppress the first committed character. A modifier-only
+     Shift keydown triggers the same flag despite carrying no terminal bytes.
+     Stop those two non-byte events before xterm, without preventDefault:
+     WebKit still performs the native edit and xterm consumes final
+     InputEvent.data. The actual Shift+key event retains its shiftKey. Host
+     capture runs before xterm's target listener and disappears with the DOM. */
+  host.addEventListener('keydown', event => {
+    if (event.target !== term.textarea) return;
+    const imePrintable = shouldRouteImeKeydownThroughInput(event);
+    const plainShift = isPlainShiftKeydown(event);
+    if (imePrintable || plainShift) {
+      event.stopPropagation();
+    }
+  }, true);
 
   /* xterm auto-answers terminal queries (DA `ESC[?..c`, DSR `ESC[..R`,
      OSC `ESC]..BEL`) through onData. Those are not user input — without

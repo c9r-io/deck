@@ -486,9 +486,10 @@ async function pathSmoke(card) {
   await openSession(card.id);
   const pane = panes.get(card.session);
   const fixture = '"空 格😀/code.rs":12:3';
+  const addressFixture = '192.168.31.120:6443';
   await inv('pty_write', {
     name: card.session,
-    dataB64: strToB64(`printf '%s\\n' '${fixture}'\r`),
+    dataB64: strToB64(`printf '%s\\n' '${fixture}' '${addressFixture}'\r`),
   });
   const fixtureReady = await waitFor(() => {
     for (let row = 0; row < pane.term.rows; row++) {
@@ -539,10 +540,24 @@ async function pathSmoke(card) {
   }));
   const survivedOpeningClick = $('ctx').style.display === 'block';
   $('ctx').querySelector('[data-a="copy"]')?.click();
+  let addressRow = -1;
+  for (let row = 0; row < pane.term.rows; row++) {
+    if (visibleTerminalLine(pane, row).trim() === addressFixture) {
+      addressRow = row;
+      break;
+    }
+  }
+  let addressLinks = null;
+  if (addressRow >= 0) {
+    pane.linkProvider.provideLinks(pane.term.buffer.active.viewportY + addressRow + 1, links => {
+      addressLinks = links || [];
+    });
+  }
+  const addressUnlinked = addressRow >= 0 && addressLinks?.length === 0;
   const linkMask = (fixtureReady ? 1 : 0) | (providerLink ? 2 : 0)
     | (providerOpened ? 4 : 0) | (survivedOpeningClick ? 8 : 0)
-    | (serviceOpened ? 16 : 0);
-  await report('link-activate', (linkMask & 15) === 15 && $('ctx').style.display === 'none',
+    | (serviceOpened ? 16 : 0) | (addressUnlinked ? 32 : 0);
+  await report('link-activate', linkMask === 63 && $('ctx').style.display === 'none',
     linkMask, fixture.length);
 
   const focus = document.createElement('button');
@@ -626,8 +641,48 @@ async function imeRoutingSmoke(card) {
   pane.term.textarea.dispatchEvent(new CompositionEvent('compositionend', {
     data: '', bubbles: true, cancelable: true,
   }));
-  await report('ime-routing', hadSelection && shortcutBypassed && cleaned,
-    shortcutBypassed ? 1 : 0, cleaned ? 1 : 0);
+  await pause(20);
+
+  /* Reproduce both WKWebView orders reported for printable IME keyCode=229:
+     input-before-keydown and keydown-before-input. The fixture characters are
+     test-only; telemetry records only the closed mask below. */
+  const imeData = [];
+  const dataSub = pane.term.onData(data => imeData.push(data));
+  const dispatchImePrintable = (key, code, keyUpCode, inputFirst) => {
+    const input = () => {
+      pane.term.textarea.value += key;
+      pane.term.textarea.dispatchEvent(new InputEvent('input', {
+        data: key, inputType: 'insertText', bubbles: true,
+        cancelable: false, composed: true,
+      }));
+    };
+    if (inputFirst) input();
+    pane.term.textarea.dispatchEvent(new KeyboardEvent('keydown', {
+      key, code, keyCode: 229, bubbles: true, cancelable: true,
+    }));
+    if (!inputFirst) input();
+    pane.term.textarea.dispatchEvent(new KeyboardEvent('keyup', {
+      key, code, keyCode: keyUpCode, bubbles: true, cancelable: true,
+    }));
+  };
+  const dispatchShift = type => pane.term.textarea.dispatchEvent(new KeyboardEvent(type, {
+    key: 'Shift', code: 'ShiftLeft', keyCode: 16,
+    shiftKey: type === 'keydown', bubbles: true, cancelable: true,
+  }));
+  dispatchShift('keydown');
+  dispatchImePrintable('?', 'Slash', 191, true);
+  dispatchShift('keyup');
+  dispatchShift('keydown');
+  dispatchImePrintable(']', 'BracketRight', 221, false);
+  dispatchShift('keyup');
+  await pause(30);
+  dataSub.dispose();
+  pane.term.textarea.value = '';
+  const nativeInputExact = imeData.join('') === '?]';
+  await inv('pty_write', { name: card.session, dataB64: strToB64('\x03') });
+  const imeMask = (hadSelection && cleaned ? 1 : 0)
+    | (shortcutBypassed ? 2 : 0) | (nativeInputExact ? 4 : 0);
+  await report('ime-routing', imeMask === 7, imeMask, 7);
 }
 
 async function completionSmoke(card, project, column) {
