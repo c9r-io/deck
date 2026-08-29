@@ -83,6 +83,14 @@ match appears as gray ghost text at the cursor — **Tab or →** applies it; mo
 candidates sit in a reserved row below. Only the focused pane gives up that
 row, and xterm plus the underlying PTY are refit together.
 
+**Bounded shell recovery.** While a pane is back at a shell prompt, deck
+checkpoints its current directory and up to 256 KB of plain recent output.
+After a machine/tmux restart, opening the card starts a new shell in that
+directory and shows the old text in an inert, read-only history layer. Commands are
+never replayed, and processes, jobs, environment variables and agent TUIs are
+not restored. Checkpointing can be disabled—and all copies cleared—from
+Settings.
+
 **Scheduled prompts.** The quota-window workflow: queue prompts on a session
 and have them typed in later — at a set time ("in 5 h, when my Claude window
 resets") or chained ("after the previous one goes quiet for 3 minutes" — quiet
@@ -144,11 +152,13 @@ waiting for you. Memory chips show the *whole process tree* of a session
 ## Data
 
 Everything lives in `~/.deck/` as plain JSON you can inspect or edit:
-`deck.json` (boards & cards) · `queue.json` (scheduled prompts, incl. card/tmux
+`deck.json` (boards, cards, and each live pane's latest directory) · `queue.json` (scheduled prompts, incl. card/tmux
 identity, an optional sanitized executable basename, a content-free last
 context result, and a short
 delivery audit) · `history.json` (command history; wipeable from
-Settings) · `settings.json` (including locale, theme, accent and update channel) · `app.log` (diagnostics — event codes and
+Settings) · `shell-state/*.json` (bounded shell transcript snapshots; wipeable
+or disableable from Settings) · `settings.json` (including locale, theme,
+accent, shell recovery and update channel) · `app.log` (diagnostics — event codes and
 counts only, never what you type; errors appear as categories, never as
 raw paths, and session names as a per-run tag rather than the name itself).
 Every line is redacted again as it is written—including assignment/JSON/

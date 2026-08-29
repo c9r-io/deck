@@ -34,7 +34,7 @@ Object.assign(globalThis, {
   sepLogged: 0,
   settings: {
     editor: '', debug: false, locale: 'system', theme: 'deck-dark', accent: 'teal',
-    updateChannel: 'stable',
+    updateChannel: 'stable', sessionRestore: true,
   },
   buildIdentity: { version: '', commit: 'dev' },
   term: null,

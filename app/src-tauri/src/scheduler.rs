@@ -1143,7 +1143,12 @@ pub(crate) fn prepare_context(item: &QueueItem, cancelled: &dyn Fn() -> bool) ->
             item.expected_process.as_deref(),
         );
     }
-    match start_session(item.session.clone(), item.dir.clone(), item.cmd.clone()) {
+    match start_session(
+        item.session.clone(),
+        item.dir.clone(),
+        item.cmd.clone(),
+        false,
+    ) {
         Ok(true) => {}
         // Another actor won the race between our outer existence check and
         // start_session's idempotent inner check. It is not a deck-created

@@ -4,7 +4,7 @@ const UPDATE_CHANNELS = new Set(['stable', 'nightly']);
 
 export const DEFAULT_SETTINGS = Object.freeze({
   editor: '', debug: false, locale: 'system', theme: 'deck-dark', accent: 'teal',
-  updateChannel: 'stable',
+  updateChannel: 'stable', sessionRestore: true,
 });
 
 export function normalizeSettings(value) {
@@ -13,6 +13,7 @@ export function normalizeSettings(value) {
   if (!THEMES.has(merged.theme)) merged.theme = DEFAULT_SETTINGS.theme;
   if (!ACCENTS.has(merged.accent)) merged.accent = DEFAULT_SETTINGS.accent;
   if (!UPDATE_CHANNELS.has(merged.updateChannel)) merged.updateChannel = DEFAULT_SETTINGS.updateChannel;
+  if (typeof merged.sessionRestore !== 'boolean') merged.sessionRestore = DEFAULT_SETTINGS.sessionRestore;
   return merged;
 }
 

@@ -76,8 +76,8 @@ Frontend gates: `node --check` (syntax) · `ui/test/*.mjs` (node:test)
   barrier. A rejected mutation or failed write cannot poison the following
   transaction, resurrect a removed card, or overwrite a concurrent rename/move.
   Runtime-only card fields are merged from the newest live state at commit.
-  `storage.rs` is TYPED and durable for all four data files
-  (deck/queue/history/settings): JSON + version envelope + business-structure
+  `storage.rs` is TYPED and durable for every persistent JSON document
+  (deck/queue/history/settings and per-session shell snapshots): JSON + version envelope + business-structure
   validation on load — BoardDoc/SettingsDoc validate via `try_from`
   (referential rules: unique ids, cards reference an existing project and a
   column of that project, ≥1 column per project, runtime fields present,
@@ -97,6 +97,22 @@ Frontend gates: `node --check` (syntax) · `ui/test/*.mjs` (node:test)
   fractional / negative / null version, or a version without data, is
   damage → recovery), and `save` refuses to overwrite a malformed or future
   envelope.
+- Shell restart recovery is deliberately a bounded projection, not process
+  serialization. `poll_sessions` returns `pane_current_path` so the frontend
+  persists cwd changes into the card. `shell_state.rs` checkpoints only panes
+  whose foreground process is a shell, at most every 15s and two panes per
+  pass, into separate 0600 typed files (≤256 KiB / 3000 plain-text lines;
+  control characters stripped). On a user-opened command-less card,
+  `start_session` may use the saved cwd and the frontend shows the transcript
+  in an inert read-only DOM layer above the live terminal (tmux may own an
+  alternate screen, so xterm's normal scrollback is not a reliable sink); it
+  is never sent to stdin and no
+  command/environment/job/process/agent TUI is restored. Recovered history is
+  retained as a bounded prefix for the new generation. Closing a card removes
+  main/backup/quarantine copies; Settings can disable capture and clear all
+  snapshots, with an epoch+IO lock preventing an in-flight writer from
+  resurrecting cleared data. Never turn this into command replay or raw PTY
+  recording.
 - Terminal gesture and selection authority is explicit. A sub-threshold
   physical gesture stays on xterm's trusted mouse/link path; no synthetic
   compatibility click is replayed. Crossing the threshold transfers the drag

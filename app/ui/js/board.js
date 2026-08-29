@@ -249,6 +249,31 @@ export const provider = {
     const c = this.get(sid);
     if (c) emit('list', c);
   },
+  observeDir(sid, dir) {
+    const live = this.get(sid);
+    if (!live || !dir || live.dir === dir) return;
+    const previous = live.dir;
+    // Update link resolution and chrome immediately. The debounced mutation
+    // still enters the same global transaction queue as every board write.
+    live.dir = dir;
+    emit('path', live);
+    mutateBoardDebounced(draft => {
+      const card = draft.cards.find(c => c.id === sid);
+      if (!card || card.dir === dir) return { noop: true };
+      card.dir = dir;
+    }, { delay: 500, onCommit: () => {
+      const saved = this.get(sid);
+      if (saved) emit('path', saved);
+    }, onError: () => {
+      const current = this.get(sid);
+      // A newer cwd observation wins. Otherwise roll back so the next poll
+      // sees a mismatch and retries instead of silently claiming durability.
+      if (current && current.dir === dir) {
+        current.dir = previous;
+        emit('path', current);
+      }
+    } });
+  },
   selectColumn(pid, selected) {
     mutateBoardDebounced(draft => {
       const p = draft.projects.find(x => x.id === pid);
@@ -297,7 +322,9 @@ export async function pollNow() {
     : [];
   let infos;
   try {
-    infos = await inv('poll_sessions', { names, tailFor });
+    infos = await inv('poll_sessions', {
+      names, tailFor, checkpointShells: !!settings.sessionRestore,
+    });
   } catch (e) {
     /* a silently dead poll leaves every card gray — log once per distinct
        error so app.log shows WHY the board went stale */
@@ -325,6 +352,7 @@ export async function pollNow() {
     const tail = info.tail || [];
     const prevFg = c.fg;
     c.fg = info.fg || null;
+    if (info.alive && info.cwd && info.cwd !== c.dir) provider.observeDir(c.id, info.cwd);
     /* shell → agent transition: shell-era separator lines would overlap the
        TUI's in-place repaints — drop them for this pane */
     if (prevFg !== c.fg && !SHELL_FG.test(c.fg || '')) {
@@ -678,6 +706,14 @@ provider.subscribe((ev, s) => {
   }
   if (ev === 'output') {
     if (state.view === 'board' && s.projectId === state.projectId) updateCardInPlace(s);
+    return;
+  }
+  if (ev === 'path') {
+    if (state.view === 'session' && s.id === state.sessionId) renderSessionView();
+    else if (state.view === 'board' && s.projectId === state.projectId) {
+      const dir = document.querySelector(`.card[data-sid="${s.id}"] .card-meta .dir`);
+      if (dir) dir.textContent = s.dir;
+    }
     return;
   }
   if (ev === 'status') {

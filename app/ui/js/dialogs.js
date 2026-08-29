@@ -127,6 +127,7 @@ export async function openSettings() {
   $('set-accent').value = settings.accent || 'teal';
   $('set-channel').value = settings.updateChannel || 'stable';
   $('set-debug').checked = !!settings.debug;
+  $('set-session-restore').checked = settings.sessionRestore !== false;
   $('set-ver').textContent = 'deck ' + ($('app-ver').textContent || 'v?');
   $('set-upd-status').textContent = '';
   $('settings-modal').style.display = 'flex';
@@ -159,6 +160,7 @@ $('set-locale').onchange = () => {
 $('set-theme').onchange = () => persistThemeChoice();
 $('set-accent').onchange = () => persistThemeChoice();
 $('set-channel').onchange = () => persistUpdateChannelChoice();
+$('set-session-restore').onchange = () => persistSessionRestoreChoice();
 
 let themeSavePending = false;
 export async function persistThemeChoice() {
@@ -170,7 +172,7 @@ export async function persistThemeChoice() {
     accent: $('set-accent').value,
   });
   themeSavePending = true;
-  const locked = ['set-theme', 'set-accent', 'set-channel', 'set-locale', 'set-editor', 'set-debug'].map($);
+  const locked = ['set-theme', 'set-accent', 'set-channel', 'set-locale', 'set-editor', 'set-debug', 'set-session-restore'].map($);
   locked.forEach(control => { control.disabled = true; });
   activateTheme(candidate); // immediate preview; commit only after durable save
   try {
@@ -202,7 +204,7 @@ export async function persistUpdateChannelChoice() {
   }
   const candidate = normalizeSettings({ ...settings, updateChannel: desired });
   channelSavePending = true;
-  const locked = ['set-theme', 'set-accent', 'set-channel', 'set-locale', 'set-editor', 'set-debug'].map($);
+  const locked = ['set-theme', 'set-accent', 'set-channel', 'set-locale', 'set-editor', 'set-debug', 'set-session-restore'].map($);
   locked.forEach(control => { control.disabled = true; });
   try {
     await inv('save_settings', { data: serializeSettings(candidate) });
@@ -222,6 +224,39 @@ export async function persistUpdateChannelChoice() {
     locked.forEach(control => { control.disabled = false; });
   }
 }
+let shellRestoreSavePending = false;
+export async function persistSessionRestoreChoice() {
+  if (shellRestoreSavePending) return;
+  const previous = settings.sessionRestore !== false;
+  const desired = $('set-session-restore').checked;
+  const candidate = normalizeSettings({ ...settings, sessionRestore: desired });
+  shellRestoreSavePending = true;
+  $('set-session-restore').disabled = true;
+  $('set-clear-shell').disabled = true;
+  try {
+    // Persist the privacy preference first. A failed disable keeps the old
+    // behavior visible instead of claiming recovery is off when it is not.
+    await inv('save_settings', { data: serializeSettings(candidate) });
+    settings = candidate;
+    if (!desired) {
+      try {
+        await inv('shell_snapshots_clear');
+      } catch (_) {
+        toast(t('settings.shellRecoveryClearFailed'));
+      }
+    }
+    toast(t(desired ? 'settings.shellRecoveryEnabled' : 'settings.shellRecoveryDisabled'));
+  } catch (_) {
+    $('set-session-restore').checked = previous;
+    toast(t('error.restoreSave'));
+    uev('settings-save-fail');
+  } finally {
+    shellRestoreSavePending = false;
+    $('set-session-restore').disabled = false;
+    $('set-clear-shell').disabled = false;
+  }
+}
+
 /* set-check's click handler is wired by app.js (which owns update checks) —
    keeps dialogs.js from importing app.js back (no module cycle) */
 $('set-clear-hist').onclick = async () => {
@@ -229,6 +264,12 @@ $('set-clear-hist').onclick = async () => {
   inv('history_clear')
     .then(() => toast(t('settings.historyCleared')))
     .catch(() => toast(t('error.operation', { operation: t('common.clear') })));
+};
+$('set-clear-shell').onclick = async () => {
+  if (!(await confirmDialog(t('settings.clearShellRecoveryConfirm')))) return;
+  inv('shell_snapshots_clear')
+    .then(() => toast(t('settings.shellRecoveryCleared')))
+    .catch(() => toast(t('settings.shellRecoveryClearFailed')));
 };
 
 export function promptDialog(msg, initial = '') {

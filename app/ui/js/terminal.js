@@ -215,7 +215,10 @@ export async function newSession(dir, opts = {}) {
       dir: dir || HOME,
     }, opts.requireStart ? {
       beforePersist: async card => {
-        started = await inv('start_session', { name: card.session, dir: card.dir, cmd: card.cmd });
+        started = await inv('start_session', {
+          name: card.session, dir: card.dir, cmd: card.cmd,
+          restoreShell: !!settings.sessionRestore,
+        });
         return started;
       },
       rollback: async card => {

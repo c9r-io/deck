@@ -496,6 +496,10 @@ pub(crate) struct SettingsDocRaw {
     #[serde(default)]
     #[allow(dead_code)]
     debug: Option<bool>,
+    #[serde(default)]
+    #[serde(rename = "sessionRestore")]
+    #[allow(dead_code)]
+    session_restore: Option<bool>,
     #[serde(default, deserialize_with = "deserialize_present_string")]
     locale: Option<String>,
     #[serde(default, deserialize_with = "deserialize_present_string")]
@@ -905,12 +909,26 @@ pub(crate) fn tmux_available() -> bool {
 /// window), that is success-without-side-effects: never a duplicate-session
 /// error, and never re-typing the boot cmd into a running shell.
 #[tauri::command]
-pub(crate) fn start_session(name: String, dir: String, cmd: String) -> Result<bool, String> {
+pub(crate) fn start_session(
+    name: String,
+    dir: String,
+    cmd: String,
+    restore_shell: bool,
+) -> Result<bool, String> {
     validate_session_name(&name)?;
     if tmux(&["has-session", "-t", &session_target(&name)]).is_ok() {
         return Ok(false);
     }
-    let dir = expand_tilde(&dir);
+    // A checkpoint is consulted only for a command-less, user-opened shell.
+    // Its cwd may have advanced far beyond the card's original launch dir.
+    // Missing directories fall back safely to the persisted card path.
+    let recovery = crate::shell_state::snapshot_for_start(&name, &cmd, restore_shell);
+    let requested_dir = expand_tilde(&dir);
+    let dir = recovery
+        .as_ref()
+        .map(|snapshot| snapshot.cwd.clone())
+        .filter(|cwd| std::path::Path::new(cwd).is_dir())
+        .unwrap_or(requested_dir);
     if !std::path::Path::new(&dir).is_dir() {
         return Err(format!("not a directory: {dir}"));
     }
@@ -919,6 +937,9 @@ pub(crate) fn start_session(name: String, dir: String, cmd: String) -> Result<bo
     init_deck_server();
     if !cmd.trim().is_empty() {
         tmux(&["send-keys", "-t", &pane_target(&name), &cmd, "Enter"])?;
+    }
+    if let Some(snapshot) = recovery {
+        crate::shell_state::note_recovered(&snapshot);
     }
     Ok(true)
 }
@@ -1564,7 +1585,10 @@ pub(crate) fn write_clipboard(text: String) -> Result<(), String> {
 #[tauri::command]
 pub(crate) fn kill_session(name: String) -> Result<(), String> {
     validate_session_name(&name)?;
-    idempotent_kill_result(tmux(&["kill-session", "-t", &session_target(&name)]))
+    idempotent_kill_result(tmux(&["kill-session", "-t", &session_target(&name)]))?;
+    // Closing a card is also a privacy deletion: its transcript, backup and
+    // quarantined recovery copies must not outlive the card.
+    crate::shell_state::clear_snapshot(&name)
 }
 
 pub(crate) fn idempotent_kill_result(result: Result<String, String>) -> Result<(), String> {
@@ -1592,6 +1616,9 @@ pub(crate) struct SessInfo {
     /// foreground process in the pane (zsh, claude, node, …) — lets the
     /// frontend record shell commands but not agent prompts
     fg: Option<String>,
+    /// live pane cwd; the frontend persists changes into the card so even a
+    /// disabled transcript checkpoint still restarts in the right directory
+    cwd: Option<String>,
     /// pane is in tmux copy-mode: the VISIBLE frame is frozen scrollback,
     /// not live output — the UI must say so (a silently frozen agent TUI
     /// reads as a hung session)
@@ -1653,17 +1680,28 @@ const TAIL_MARK: &str = "\u{1}deck-tail\u{1}";
 /// One pane-listing line → (session, pane pid, activity epoch, in copy-mode,
 /// fg command). Every tmux session has at least one pane, so this listing
 /// doubles as the liveness set — no separate `list-sessions` round-trip.
-pub(crate) fn parse_panes(text: &str) -> HashMap<String, (u32, u64, bool, String)> {
-    let mut panes: HashMap<String, (u32, u64, bool, String)> = HashMap::new();
+pub(crate) fn parse_panes(text: &str) -> HashMap<String, (u32, u64, bool, String, String)> {
+    let mut panes: HashMap<String, (u32, u64, bool, String, String)> = HashMap::new();
     for line in text.lines() {
         let mut it = line.split('\t');
-        if let (Some(s), Some(pid), Some(act), Some(mode), Some(fg)) =
-            (it.next(), it.next(), it.next(), it.next(), it.next())
-        {
+        if let (Some(s), Some(pid), Some(act), Some(mode), Some(fg), Some(cwd)) = (
+            it.next(),
+            it.next(),
+            it.next(),
+            it.next(),
+            it.next(),
+            it.next(),
+        ) {
             if let (Ok(pid), Ok(act)) = (pid.parse(), act.parse()) {
-                panes
-                    .entry(s.to_string())
-                    .or_insert((pid, act, mode == "1", fg.to_string()));
+                if !cwd.is_empty() && !cwd.chars().any(char::is_control) {
+                    panes.entry(s.to_string()).or_insert((
+                        pid,
+                        act,
+                        mode == "1",
+                        fg.to_string(),
+                        cwd.to_string(),
+                    ));
+                }
             }
         }
     }
@@ -1728,13 +1766,17 @@ pub(crate) fn capture_tails(names: &[&String], lines: usize) -> HashMap<String, 
 /// 5/20/50 sessions — old pattern 14/45/108 ms with 7/22/52 subprocesses;
 /// batched pattern 4.3/4.6/5.1 ms with a constant 2 (+1 ps here).
 #[tauri::command]
-pub(crate) fn poll_sessions(names: Vec<String>, tail_for: Vec<String>) -> Vec<SessInfo> {
+pub(crate) fn poll_sessions(
+    names: Vec<String>,
+    tail_for: Vec<String>,
+    checkpoint_shells: bool,
+) -> Vec<SessInfo> {
     // one listing supplies liveness + activity + pid + fg for every session
     let listing = tmux(&[
         "list-panes",
         "-a",
         "-F",
-        "#{session_name}\t#{pane_pid}\t#{window_activity}\t#{pane_in_mode}\t#{pane_current_command}",
+        "#{session_name}\t#{pane_pid}\t#{window_activity}\t#{pane_in_mode}\t#{pane_current_command}\t#{pane_current_path}",
     ]);
     // a failing listing silently reads as "everything is dead" — log the
     // failure and the recovery, once per transition (tmux errors carry no
@@ -1761,7 +1803,7 @@ pub(crate) fn poll_sessions(names: Vec<String>, tail_for: Vec<String>) -> Vec<Se
 
     let roots: HashMap<String, u32> = names
         .iter()
-        .filter_map(|n| panes.get(n).map(|(pid, _, _, _)| (n.clone(), *pid)))
+        .filter_map(|n| panes.get(n).map(|(pid, _, _, _, _)| (n.clone(), *pid)))
         .collect();
     let mem = tree_mem(&roots);
 
@@ -1781,17 +1823,35 @@ pub(crate) fn poll_sessions(names: Vec<String>, tail_for: Vec<String>) -> Vec<Se
     let mut tails = capture_tails(&want_tails, 2);
     let now = now_epoch();
 
+    // Snapshot work is throttled and runs off-thread; this call only selects
+    // the small fair batch.  No pane content enters logs or the poll payload.
+    crate::shell_state::schedule_checkpoints(
+        panes
+            .iter()
+            .map(|(session, (_, activity, _, foreground, cwd))| {
+                crate::shell_state::ShellObservation {
+                    session: session.clone(),
+                    activity: *activity,
+                    cwd: cwd.clone(),
+                    foreground: foreground.clone(),
+                }
+            })
+            .collect(),
+        checkpoint_shells,
+    );
+
     names
         .into_iter()
         .map(|name| {
             let pane = panes.get(&name);
             SessInfo {
                 alive: pane.is_some(),
-                idle_secs: pane.map(|(_, act, _, _)| now.saturating_sub(*act)),
+                idle_secs: pane.map(|(_, act, _, _, _)| now.saturating_sub(*act)),
                 mem_mb: mem.get(&name).copied(),
                 tail: tails.remove(&name).unwrap_or_default(),
-                fg: pane.map(|(_, _, _, fg)| fg.clone()),
-                scrolled: pane.map(|(_, _, m, _)| *m),
+                fg: pane.map(|(_, _, _, fg, _)| fg.clone()),
+                cwd: pane.map(|(_, _, _, _, cwd)| cwd.clone()),
+                scrolled: pane.map(|(_, _, m, _, _)| *m),
                 name,
             }
         })
@@ -2067,13 +2127,16 @@ mod tests {
 
     #[test]
     fn parse_panes_basic_and_malformed() {
-        let text = "alpha\t100\t1700000000\t0\tzsh\nbeta\t200\t1700000005\t1\tclaude\njunk-line\nempty\t\t\t\t\n";
+        let text = "alpha\t100\t1700000000\t0\tzsh\t/tmp/a\nbeta\t200\t1700000005\t1\tclaude\t/tmp/b\njunk-line\nempty\t\t\t\t\t\n";
         let p = parse_panes(text);
         assert_eq!(p.len(), 2);
-        assert_eq!(p["alpha"], (100, 1700000000, false, "zsh".into()));
+        assert_eq!(
+            p["alpha"],
+            (100, 1700000000, false, "zsh".into(), "/tmp/a".into())
+        );
         assert_eq!(
             p["beta"],
-            (200, 1700000005, true, "claude".into()),
+            (200, 1700000005, true, "claude".into(), "/tmp/b".into()),
             "copy-mode pane reported as scrolled"
         );
     }
@@ -2081,8 +2144,11 @@ mod tests {
     #[test]
     fn parse_panes_first_pane_wins() {
         // multi-pane session: the first listed pane is the representative one
-        let text = "s\t10\t111\t0\tzsh\ns\t20\t222\t1\tvim\n";
-        assert_eq!(parse_panes(text)["s"], (10, 111, false, "zsh".into()));
+        let text = "s\t10\t111\t0\tzsh\t/tmp/one\ns\t20\t222\t1\tvim\t/tmp/two\n";
+        assert_eq!(
+            parse_panes(text)["s"],
+            (10, 111, false, "zsh".into(), "/tmp/one".into())
+        );
     }
 
     #[test]
@@ -2399,6 +2465,9 @@ mod tests {
         );
         assert!(serde_json::from_str::<SettingsDoc>(r#"{"editor":123}"#).is_err());
         assert!(serde_json::from_str::<SettingsDoc>(r#"{"debug":"yes"}"#).is_err());
+        assert!(serde_json::from_str::<SettingsDoc>(r#"{"sessionRestore":true}"#).is_ok());
+        assert!(serde_json::from_str::<SettingsDoc>(r#"{"sessionRestore":false}"#).is_ok());
+        assert!(serde_json::from_str::<SettingsDoc>(r#"{"sessionRestore":"yes"}"#).is_err());
         for locale in ["system", "en", "zh-Hans"] {
             assert!(
                 serde_json::from_str::<SettingsDoc>(&format!(r#"{{"locale":"{locale}"}}"#)).is_ok()

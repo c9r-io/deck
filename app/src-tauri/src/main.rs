@@ -10,6 +10,7 @@ mod context;
 mod history;
 mod pty;
 mod scheduler;
+mod shell_state;
 mod smoke_faults;
 mod storage;
 mod terminal_scroll;
@@ -277,6 +278,8 @@ fn main() {
             commands::terminal_metrics,
             commands::write_clipboard,
             commands::poll_sessions,
+            shell_state::load_shell_snapshot,
+            shell_state::shell_snapshots_clear,
             pty::attach_session,
             pty::pty_write,
             pty::pty_ack,

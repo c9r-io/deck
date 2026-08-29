@@ -55,7 +55,8 @@ globalThis.document = fakeDocument;
 globalThis.window = { __TAURI__: null, __DECK_DEBUG: false };
 
 const {
-  cfmDone, inlineRename, persistUpdateChannelChoice, promptDialog, persistThemeChoice,
+  cfmDone, inlineRename, persistSessionRestoreChoice, persistUpdateChannelChoice,
+  promptDialog, persistThemeChoice,
 } = await import('../js/dialogs.js');
 const { store } = await import('../js/state.js');
 const { flushBoardMutations, mutateBoard, mutateBoardDebounced } = await import('../js/persistence.js');
@@ -205,4 +206,21 @@ test('channel save failure rolls back and Stable switch never invokes install', 
   assert.equal(calls.includes('install_update'), false);
   assert.equal(globalThis.settings.updateChannel, 'nightly');
   assert.equal(fakeDocument.getElementById('set-channel').value, 'nightly');
+});
+
+test('disabling shell recovery persists first and then clears every snapshot', async () => {
+  globalThis.settings = {
+    editor: '', debug: false, locale: 'system', theme: 'deck-dark', accent: 'teal',
+    updateChannel: 'stable', sessionRestore: true,
+  };
+  fakeDocument.getElementById('set-session-restore').checked = false;
+  const calls = [];
+  window.__TAURI__ = { core: { invoke: async (cmd, args) => {
+    calls.push(cmd);
+    if (cmd === 'save_settings') assert.equal(JSON.parse(args.data).sessionRestore, false);
+  } } };
+  await persistSessionRestoreChoice();
+  assert.deepEqual(calls, ['save_settings', 'shell_snapshots_clear']);
+  assert.equal(globalThis.settings.sessionRestore, false);
+  assert.equal(fakeDocument.getElementById('set-session-restore').disabled, false);
 });

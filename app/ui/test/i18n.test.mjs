@@ -111,8 +111,10 @@ test('default Boards localize only at creation and existing names never change',
 test('old settings migrate to system locale and unknown fields round-trip', () => {
   const old = parseSettings('{"editor":"Zed","debug":true,"future":{"kept":1}}');
   assert.equal(old.locale, 'system');
+  assert.equal(old.sessionRestore, true, 'recovery defaults on for existing installs');
   assert.deepEqual(old.future, { kept: 1 });
-  const saved = JSON.parse(serializeSettings({ ...old, locale: 'zh-Hans' }));
+  const saved = JSON.parse(serializeSettings({ ...old, locale: 'zh-Hans', sessionRestore: false }));
   assert.equal(saved.locale, 'zh-Hans');
+  assert.equal(saved.sessionRestore, false);
   assert.deepEqual(saved.future, { kept: 1 });
 });
