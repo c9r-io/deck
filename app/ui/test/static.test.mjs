@@ -86,19 +86,28 @@ test('production terminal path wires the token-bound frozen selection coordinato
   assert.match(selection, /terminal_selection_finish/);
   assert.match(selection, /terminal_selection_scroll/);
   assert.match(selection, /terminalSelectionOverlayRows/);
+  assert.match(selection, /updateAt\(currentToken, finalPoint, false\)/,
+    'pointerup must position exactly at the pointer without another edge scroll');
+  assert.match(selection, /grid: \{ cols: pane\.term\.cols, rows: pane\.term\.rows \}/);
+  assert.match(layout, /term\.hasSelection\(\)[\s\S]{0,80}e\.preventDefault\(\)/,
+    'xterm-native Command-C must suppress WebKit default copy');
+  assert.match(layout, /createTerminalResizeCoordinator/);
+  assert.match(layout, /pane\.syncSize = \(\) => resize\.sync/);
   assert.match(layout, /createTerminalWheelAccumulator/);
   assert.match(layout, /requestAnimationFrame[\s\S]*?wheelInFlight/);
   assert.doesNotMatch(layout, /wheelTimer[\s\S]*?50/);
   assert.match(backend, /copy-mode/);
   assert.match(backend, /terminal_scroll::args/);
   assert.match(backendScroll, /if-shell[\s\S]*?display-message/);
-  assert.match(read('app/ui/test/wk-smoke.mjs'), /selection-repeat[\s\S]*?scroll-frame/);
+  assert.match(read('app/ui/test/wk-smoke.mjs'),
+    /selection-repeat[\s\S]*?selection-resize[\s\S]*?scroll-frame/);
   assert.match(backend, /selection_start_y/);
   assert.match(backend, /dims\.selection_present[\s\S]*?clear-selection/);
   assert.match(backend, /if !before\.active \{/);
   assert.match(backend, /snapshot_selection/);
   assert.match(backend, /TerminalSelectionLease::Frozen/);
   assert.match(backend, /selection_token_matches/);
+  assert.match(backend, /selection-dimensions-changed/);
   assert.match(backendSelection, /copy-selection-no-clear/);
   assert.match(backendSelection, /show-buffer/);
   assert.match(backendSelection, /delete-buffer/);

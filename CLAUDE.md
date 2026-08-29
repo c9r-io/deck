@@ -90,7 +90,11 @@ Frontend gates: `node --check` (syntax) · `ui/test/*.mjs` (node:test)
   viewport, and installs one immutable backend lease (bytes + absolute content
   coordinates). A plain overlay derived from public `.xterm-screen`, cols and
   rows renders that lease; selection wheel commands only update viewport
-  status, so endpoints and copy bytes cannot drift. ⌘C waits for the whole
+  status, so endpoints and copy bytes cannot drift. Pointerup positions the
+  final cell with edge scrolling disabled. Every pointer coordinate uses a
+  frontend grid confirmed by `pty_resize`; the backend serializes resize reflow
+  with selection operations and rejects stale dimensions instead of clamping.
+  ⌘C waits for the whole
   chain and reads only the current token. Escape, input/composition, blur,
   visibility, focus change, detach and disposal revoke the lease. Never add a
   transparent textarea or xterm `._core` dependency.

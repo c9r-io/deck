@@ -24,8 +24,9 @@ tagging a release; 3 minutes total.
       overlay's public row geometry changes with viewport offset.
 - [x] Real-WK smoke verifies provider `activate` (not merely menu item
       construction), a 20+ line native clipboard oracle, immediate copy after
-      pointerup, reverse/repeated selection, frozen scroll, overlay movement,
-      split/detach/resize/cancel and composition shortcut bypass. Synthetic
+      pointerup, exact single-line Command-C, reverse/repeated selection,
+      frozen scroll, overlay movement, split/detach/cancel, and an exact
+      resize-to-selection grid race (92/92 characters). Synthetic
       events still do not prove `isTrusted`, a physical system Command-C, or a
       real IME candidate window.
 - [x] User physical check in the isolated packaged candidate: real path click,

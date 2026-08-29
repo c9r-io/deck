@@ -38,6 +38,8 @@ const copyFailureCode = error => {
   return 'snapshot-failed';
 };
 
+const dimensionsChanged = error => String(error || '').includes('selection-dimensions-changed');
+
 function terminalSelectionController(pane, onModeChange) {
   const model = createTerminalSelectionModel();
   let gesture = null;
@@ -142,6 +144,63 @@ function terminalSelectionController(pane, onModeChange) {
     }, 45);
   };
 
+  const synchronizeSize = async () => {
+    if (pane.syncSize && !(await pane.syncSize())) {
+      throw new Error('selection-dimensions-changed');
+    }
+    if (!pane.term.cols || !pane.term.rows) throw new Error('selection-dimensions-changed');
+    return { grid: { cols: pane.term.cols, rows: pane.term.rows } };
+  };
+
+  const invalidateSynchronizedSize = () => {
+    pane.invalidateSize?.();
+  };
+
+  const startAt = async (currentToken, anchorPoint, activePoint) => {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const dimensions = await synchronizeSize();
+      const anchor = terminalCell(pane, anchorPoint.x, anchorPoint.y);
+      const active = terminalCell(pane, activePoint.x, activePoint.y);
+      if (!anchor || !active) throw new Error('selection-missing');
+      try {
+        const status = await inv('terminal_selection_start', {
+          name: pane.session, token: currentToken,
+          anchorRow: anchor.row, anchorCol: anchor.col,
+          activeRow: active.row, activeCol: active.col,
+          ...dimensions,
+        });
+        return { status, active };
+      } catch (error) {
+        if (!dimensionsChanged(error) || attempt === 2) throw error;
+        invalidateSynchronizedSize();
+      }
+    }
+    throw new Error('selection-dimensions-changed');
+  };
+
+  const updateAt = async (currentToken, point, allowEdgeScroll) => {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const dimensions = await synchronizeSize();
+      const cell = terminalCell(pane, point.x, point.y);
+      if (!cell) throw new Error('selection-missing');
+      const edgeLines = allowEdgeScroll ? terminalSelectionEdgeLines({
+        pointerY: point.y, top: cell.rect.top, bottom: cell.rect.bottom,
+      }) : 0;
+      try {
+        const status = await inv('terminal_selection_update', {
+          name: pane.session, token: currentToken,
+          row: cell.row, col: cell.col, edgeLines,
+          ...dimensions,
+        });
+        return { status, cell, edgeLines, dimensions };
+      } catch (error) {
+        if (!dimensionsChanged(error) || attempt === 2) throw error;
+        invalidateSynchronizedSize();
+      }
+    }
+    throw new Error('selection-dimensions-changed');
+  };
+
   const requestUpdate = () => {
     if (!gesture || !gesture.promoted || disposed) return;
     updateDirty = true;
@@ -151,19 +210,13 @@ function terminalSelectionController(pane, onModeChange) {
       while (updateDirty && gesture && gesture.promoted && !disposed) {
         updateDirty = false;
         const current = gesture;
-        const cell = terminalCell(pane, current.x, current.y);
-        if (!cell) break;
-        model.move({ row: cell.row, col: cell.col });
-        const edgeLines = terminalSelectionEdgeLines({
-          pointerY: current.y, top: cell.rect.top, bottom: cell.rect.bottom,
-        });
+        const point = { x: current.x, y: current.y };
         const generation = model.snapshot().generation;
         const currentToken = token;
         try {
-          const status = await queue(() => inv('terminal_selection_update', {
-            name: pane.session, token: currentToken,
-            row: cell.row, col: cell.col, edgeLines,
-          }));
+          const result = await queue(() => updateAt(currentToken, point, true));
+          const { status, cell, edgeLines } = result;
+          model.move({ row: cell.row, col: cell.col });
           if (currentToken !== token || !model.apply(generation, status)) continue;
           lastStatus = status;
           if (status.history_at_limit && status.at_top && edgeLines < 0 && !limitNoticeShown) {
@@ -189,6 +242,7 @@ function terminalSelectionController(pane, onModeChange) {
     const anchor = terminalCell(pane, gesture.startX, gesture.startY);
     const active = terminalCell(pane, gesture.x, gesture.y);
     if (!anchor || !active) return;
+    if (anchor.row === active.row && anchor.col === active.col) return;
     gesture.promoted = true;
     ownerTrace.promoted = 1;
     token = nextSelectionToken++;
@@ -201,11 +255,11 @@ function terminalSelectionController(pane, onModeChange) {
     if (pane.body.setPointerCapture) {
       try { pane.body.setPointerCapture(gesture.pointerId); } catch (e) { /* document capture remains */ }
     }
-    queue(() => inv('terminal_selection_start', {
-      name: pane.session, token: currentToken,
-      anchorRow: anchor.row, anchorCol: anchor.col,
-      activeRow: active.row, activeCol: active.col,
-    })).then(status => {
+    const anchorPoint = { x: gesture.startX, y: gesture.startY };
+    const activePoint = { x: gesture.x, y: gesture.y };
+    queue(() => startAt(currentToken, anchorPoint, activePoint)).then(result => {
+      const { status, active: synchronizedActive } = result;
+      model.move({ row: synchronizedActive.row, col: synchronizedActive.col });
       if (currentToken !== token || !model.apply(generation, status)) return;
       lastStatus = status;
       requestUpdate();
@@ -271,28 +325,30 @@ function terminalSelectionController(pane, onModeChange) {
     model.finish();
     const generation = model.snapshot().generation;
     const currentToken = token;
-    const cell = terminalCell(pane, ended.x, ended.y);
-    const edgeLines = cell ? terminalSelectionEdgeLines({
-      pointerY: ended.y, top: cell.rect.top, bottom: cell.rect.bottom,
-    }) : 0;
+    const finalPoint = { x: ended.x, y: ended.y };
     queue(async () => {
-      if (cell) {
-        const updated = await inv('terminal_selection_update', {
-          name: pane.session, token: currentToken,
-          row: cell.row, col: cell.col, edgeLines,
-        });
-        if (currentToken !== token || !model.apply(generation, updated)) {
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const finalUpdate = await updateAt(currentToken, finalPoint, false);
+        model.move({ row: finalUpdate.cell.row, col: finalUpdate.cell.col });
+        if (currentToken !== token || !model.apply(generation, finalUpdate.status)) {
           throw new Error('selection-missing');
         }
-        lastStatus = updated;
+        lastStatus = finalUpdate.status;
+        try {
+          const status = await inv('terminal_selection_finish', {
+            name: pane.session, token: currentToken,
+            ...finalUpdate.dimensions,
+          });
+          if (currentToken !== token || disposed || model.snapshot().generation !== generation) return;
+          lastStatus = status;
+          frozen = true;
+          renderOverlay();
+          return;
+        } catch (error) {
+          if (!dimensionsChanged(error) || attempt === 2) throw error;
+          invalidateSynchronizedSize();
+        }
       }
-      const status = await inv('terminal_selection_finish', {
-        name: pane.session, token: currentToken,
-      });
-      if (currentToken !== token || disposed || model.snapshot().generation !== generation) return;
-      lastStatus = status;
-      frozen = true;
-      renderOverlay();
     }).catch(error => {
       if (currentToken === token && !disposed) {
         uev('terminal-copy', copyFailureCode(error));

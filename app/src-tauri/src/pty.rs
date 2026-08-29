@@ -682,6 +682,12 @@ pub(crate) fn pty_resize(
     cols: u16,
     rows: u16,
 ) -> Result<(), String> {
+    // tmux reflows the pane synchronously when the PTY changes size. Keep
+    // that reflow out of the status -> capture row -> cursor movement window
+    // used by terminal selection commands.
+    let _selection_operation = crate::commands::terminal_selection_operation_lock()
+        .lock()
+        .unwrap();
     let map = state.map.lock().unwrap();
     let entry = map.get(&name).ok_or("not attached")?;
     entry

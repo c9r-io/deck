@@ -5,7 +5,7 @@ import { inlineRename, toast } from './dialogs.js';
 import { t } from './i18n.js';
 import { TERM_THEME, panes, pollNow, provider, render, renderSidebar, activeProject } from './board.js';
 import { SHELL_FG, acceptGhost, feedMirror, maybeRecordCommand, mountQuickBar, nextShellTitle, renderSuggest, resetSuggest, showLinkCtx, updateGhost, writeClipboard } from './terminal.js';
-import { createTerminalWheelAccumulator, isComposingKeyEvent, isPlainShiftKeydown, shouldRouteImeKeydownThroughInput, shQuote, tokenizeTerminalLinks, terminalWheelLines } from './pure.js';
+import { createTerminalResizeCoordinator, createTerminalWheelAccumulator, isComposingKeyEvent, isPlainShiftKeydown, shouldRouteImeKeydownThroughInput, shQuote, terminalCopyRoute, tokenizeTerminalLinks, terminalWheelLines } from './pure.js';
 import { toggleQueuePanel } from './scheduler.js';
 import { cancelAllTerminalSelections, cancelTerminalSelection, copyTerminalSelection, hasTerminalSelection, wireTerminalSelection } from './selection.js';
 
@@ -188,6 +188,10 @@ export function createPane(card) {
   }
   /* echo arrives asynchronously — reposition after each parsed write */
   const pane = { sid: card.id, session, el, body, term, fit, seps: [] };
+  const resize = createTerminalResizeCoordinator((cols, rows) =>
+    inv('pty_resize', { name: pane.session, cols, rows }));
+  pane.syncSize = () => resize.sync(pane.term.cols, pane.term.rows);
+  pane.invalidateSize = () => resize.invalidate();
   wireTerminalSelection(pane, active => {
     const current = provider.get(pane.sid);
     if (!current) return;
@@ -456,8 +460,8 @@ export function wireTerminalInput(pane, term, host) {
       cancelTerminalSelection(pane);
       return false;
     }
-    if (e.type === 'keydown' && e.metaKey && e.key.toLowerCase() === 'c'
-        && hasTerminalSelection(pane)) {
+    const copyRoute = terminalCopyRoute(e, hasTerminalSelection(pane), term.hasSelection());
+    if (copyRoute === 'deck') {
       e.preventDefault();
       copyTerminalSelection(pane)
         .then(text => text == null ? null : writeClipboard(text)
@@ -469,8 +473,14 @@ export function wireTerminalInput(pane, term, host) {
         .catch(() => toast(t('error.copy')));
       return false;
     }
-    if (e.type === 'keydown' && e.metaKey && e.key === 'c' && term.hasSelection()) {
-      writeClipboard(term.getSelection()).catch(() => toast(t('error.copy')));
+    if (copyRoute === 'native') {
+      e.preventDefault();
+      writeClipboard(term.getSelection())
+        .then(() => uev('terminal-copy', 'success'))
+        .catch(() => {
+          uev('terminal-copy', 'clipboard-write-failed');
+          toast(t('error.copy'));
+        });
       return false;
     }
     /* ghost suggestion: Tab or → applies it in place; Esc dismisses */
@@ -594,7 +604,7 @@ export function fitAll() {
     panes.forEach(p => {
       try {
         p.fit.fit();
-        inv('pty_resize', { name: p.session, cols: p.term.cols, rows: p.term.rows }).catch(() => {});
+        p.syncSize().catch(() => {});
         if (p.selection) p.selection.resize();
       } catch (e) { /* pane mid-teardown */ }
     });

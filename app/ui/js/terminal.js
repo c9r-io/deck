@@ -376,7 +376,7 @@ function refitQuickBarPane(pane, followedBottom, generation) {
   if (!pane || generation !== quickBarGeneration || !pane.el.isConnected) return;
   try {
     pane.fit.fit();
-    inv('pty_resize', { name: pane.session, cols: pane.term.cols, rows: pane.term.rows }).catch(() => {});
+    pane.syncSize?.().catch(() => {});
     if (followedBottom) pane.term.scrollToBottom();
     if (pane.selection) pane.selection.resize();
   } catch (e) { /* pane was destroyed during the frame */ }

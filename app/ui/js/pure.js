@@ -360,6 +360,59 @@ export async function copyExact(text, writer) {
   return text.length;
 }
 
+/** Resolve Command-C ownership without depending on xterm or the DOM. Deck's
+ * token selection wins while present; otherwise xterm's native word/line
+ * selection may supply the clipboard text. */
+export function terminalCopyRoute(event, hasDeckSelection, hasNativeSelection) {
+  if (!event || event.type !== 'keydown' || !event.metaKey
+      || String(event.key || '').toLowerCase() !== 'c') return null;
+  if (hasDeckSelection) return 'deck';
+  if (hasNativeSelection) return 'native';
+  return null;
+}
+
+/** Serialize PTY resizes and remember only the newest confirmed grid. A
+ * failed or explicitly invalidated grid is retryable instead of becoming a
+ * permanent false confirmation. */
+export function createTerminalResizeCoordinator(send) {
+  let epoch = 0;
+  let confirmed = null;
+  let target = null;
+  let chain = Promise.resolve(true);
+  return {
+    sync(cols, rows) {
+      cols = Math.trunc(Number(cols));
+      rows = Math.trunc(Number(rows));
+      if (cols < 1 || rows < 1) return Promise.resolve(false);
+      if (confirmed?.cols === cols && confirmed?.rows === rows) return Promise.resolve(true);
+      if (target?.cols === cols && target?.rows === rows) return target.promise;
+      const currentEpoch = ++epoch;
+      const promise = chain.catch(() => false)
+        .then(() => send(cols, rows))
+        .then(() => {
+          if (epoch === currentEpoch) confirmed = { cols, rows };
+          return true;
+        })
+        .catch(() => {
+          if (epoch === currentEpoch) target = null;
+          return false;
+        });
+      chain = promise;
+      target = { cols, rows, promise };
+      return promise;
+    },
+    invalidate() {
+      epoch++;
+      confirmed = null;
+      target = null;
+    },
+    snapshot: () => ({
+      confirmed: confirmed && { ...confirmed },
+      target: target && { cols: target.cols, rows: target.rows },
+    }),
+  };
+}
+
 export function linkMenuItems(kind) {
   return kind === 'url'
     ? [

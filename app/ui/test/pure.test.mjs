@@ -9,7 +9,8 @@ import {
   nextFire, groupQueue, groupSteps, itemDead, blockedBy,
   chainQuietHint, contextStatusKey, CHAIN_QUIET_SECS, shQuote, quickBarLayout, rectsOverlap,
   createExitRetirementTracker, createSerialTransactionQueue, deleteSessionsTransaction, sidebarGroups,
-  copyExact, createTerminalSelectionModel, terminalSelectionEdgeLines,
+  copyExact, createTerminalResizeCoordinator, createTerminalSelectionModel,
+  terminalCopyRoute, terminalSelectionEdgeLines,
   isComposingKeyEvent, isPlainShiftKeydown, shouldRouteImeKeydownThroughInput,
   terminalSelectionOverlayRows,
   tokenizeTerminalLinks,
@@ -406,6 +407,61 @@ test('terminal selection model keeps anchor, reverses, clamps boundaries, and re
   assert.equal(model.apply(first, { absolute_row: 5 }), false, 'old gesture cannot mutate new anchor');
   model.finish();
   assert.equal(model.snapshot().phase, 'selected');
+});
+
+test('Command-C routes token selections before native xterm word and line selections', () => {
+  const commandC = { type: 'keydown', key: 'c', metaKey: true };
+  assert.equal(terminalCopyRoute(commandC, true, true), 'deck');
+  assert.equal(terminalCopyRoute({ ...commandC, key: 'C' }, false, true), 'native');
+  assert.equal(terminalCopyRoute(commandC, false, false), null);
+  assert.equal(terminalCopyRoute({ ...commandC, type: 'keyup' }, true, true), null);
+  assert.equal(terminalCopyRoute({ ...commandC, metaKey: false }, true, true), null);
+});
+
+test('terminal resize confirmations serialize, deduplicate, invalidate, and retry failures', async () => {
+  const calls = [];
+  const releases = [];
+  let failNext = false;
+  const resize = createTerminalResizeCoordinator((cols, rows) => {
+    calls.push([cols, rows]);
+    if (failNext) {
+      failNext = false;
+      return Promise.reject(new Error('resize failed'));
+    }
+    return new Promise(resolve => releases.push(resolve));
+  });
+
+  const first = resize.sync(80, 24);
+  assert.equal(resize.sync(80, 24), first, 'same pending grid is one request');
+  const second = resize.sync(100, 30);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(calls, [[80, 24]], 'new grid waits behind the first resize');
+  releases.shift()();
+  assert.equal(await first, true);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(calls, [[80, 24], [100, 30]]);
+  releases.shift()();
+  assert.equal(await second, true);
+  assert.deepEqual(resize.snapshot().confirmed, { cols: 100, rows: 30 });
+  assert.equal(await resize.sync(100, 30), true);
+  assert.equal(calls.length, 2, 'confirmed grid is not resent');
+
+  resize.invalidate();
+  const resent = resize.sync(100, 30);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(calls.length, 3, 'backend rejection invalidates the confirmation');
+  releases.shift()();
+  assert.equal(await resent, true);
+
+  resize.invalidate();
+  failNext = true;
+  assert.equal(await resize.sync(120, 40), false);
+  assert.equal(resize.snapshot().target, null, 'failure stays retryable');
+  const retried = resize.sync(120, 40);
+  await new Promise(resolve => setImmediate(resolve));
+  releases.shift()();
+  assert.equal(await retried, true);
+  assert.deepEqual(resize.snapshot().confirmed, { cols: 120, rows: 40 });
 });
 
 test('frozen selection overlay follows content coordinates, not viewport pixels', () => {

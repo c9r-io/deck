@@ -42,6 +42,11 @@
   the input method (`macOptionIsMeta: false`).
 - Add exact path grammar, overlay geometry, IME routing, frozen-scroll tmux
   contract and real-WKWebView provider/clipboard/scroll smoke coverage.
+- Make native xterm word/line selections use the same prevented, case-insensitive
+  Command-C clipboard path as tmux drag selections.
+- Freeze a drag at the pointer cell without one final edge-scroll step, and
+  synchronize/validate xterm and tmux dimensions so resize reflow cannot shift
+  selection endpoints by characters or rows.
 
 ## 0.4.34 — 2026-08-29
 

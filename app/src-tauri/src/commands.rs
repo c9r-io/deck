@@ -110,6 +110,7 @@ const SMOKE_CHECKS: &[&str] = &[
     "selection-repeat",
     "selection-scroll-stable",
     "selection-overlay",
+    "selection-resize",
     "scroll-frame",
     "link-activate",
     "link-classify",
@@ -775,6 +776,12 @@ pub(crate) struct TerminalSelectionStatus {
     selection_end_col: u32,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize)]
+pub(crate) struct TerminalSelectionGrid {
+    cols: u32,
+    rows: u32,
+}
+
 #[derive(Clone, Debug)]
 enum TerminalSelectionLease {
     Cancelled {
@@ -810,7 +817,7 @@ fn terminal_selection_leases() -> &'static Mutex<HashMap<String, TerminalSelecti
     LEASES.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn terminal_selection_operation_lock() -> &'static Mutex<()> {
+pub(crate) fn terminal_selection_operation_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
 }
@@ -909,6 +916,19 @@ fn terminal_selection_status_for(target: &str) -> Result<TerminalSelectionStatus
     })
 }
 
+fn require_terminal_selection_dimensions(
+    actual_cols: u32,
+    actual_rows: u32,
+    expected_cols: u32,
+    expected_rows: u32,
+) -> Result<(), String> {
+    if actual_cols == expected_cols && actual_rows == expected_rows {
+        Ok(())
+    } else {
+        Err("selection-dimensions-changed".into())
+    }
+}
+
 fn push_tmux_command(batch: &mut Vec<String>, command: &[String]) {
     if !batch.is_empty() {
         batch.push(";".into());
@@ -991,6 +1011,7 @@ pub(crate) fn terminal_selection_start(
     anchor_col: u32,
     active_row: u32,
     active_col: u32,
+    grid: TerminalSelectionGrid,
 ) -> Result<TerminalSelectionStatus, String> {
     let _operation = terminal_selection_operation_lock().lock().unwrap();
     validate_session_name(&name)?;
@@ -1004,6 +1025,7 @@ pub(crate) fn terminal_selection_start(
     }
     let target = pane_target(&name);
     let dims = terminal_selection_status_for(&target)?;
+    require_terminal_selection_dimensions(dims.pane_cols, dims.pane_rows, grid.cols, grid.rows)?;
     let clamp_row = |row: u32| row.min(dims.pane_rows.saturating_sub(1));
     let clamp_col = |col: u32| col.min(dims.pane_cols.saturating_sub(1));
     let anchor_row = clamp_row(anchor_row);
@@ -1071,6 +1093,7 @@ pub(crate) fn terminal_selection_update(
     row: u32,
     col: u32,
     edge_lines: i32,
+    grid: TerminalSelectionGrid,
 ) -> Result<TerminalSelectionStatus, String> {
     let _operation = terminal_selection_operation_lock().lock().unwrap();
     validate_session_name(&name)?;
@@ -1079,6 +1102,12 @@ pub(crate) fn terminal_selection_update(
     }
     let target = pane_target(&name);
     let before = terminal_selection_status_for(&target)?;
+    require_terminal_selection_dimensions(
+        before.pane_cols,
+        before.pane_rows,
+        grid.cols,
+        grid.rows,
+    )?;
     // A freshly begun selection has no selected cells until its cursor first
     // leaves the anchor, so selection_present=0 is valid while a drag is
     // still inside that cell. Moving the copy cursor is what makes it present.
@@ -1146,6 +1175,7 @@ pub(crate) struct TerminalSelectionCopy {
 pub(crate) fn terminal_selection_finish(
     name: String,
     token: u64,
+    grid: TerminalSelectionGrid,
 ) -> Result<TerminalSelectionStatus, String> {
     let _operation = terminal_selection_operation_lock().lock().unwrap();
     validate_session_name(&name)?;
@@ -1154,6 +1184,12 @@ pub(crate) fn terminal_selection_finish(
     }
     let target = pane_target(&name);
     let status = terminal_selection_status_for(&target)?;
+    require_terminal_selection_dimensions(
+        status.pane_cols,
+        status.pane_rows,
+        grid.cols,
+        grid.rows,
+    )?;
     if !status.active || !status.selection_present {
         return Err("selection-missing".into());
     }
@@ -1772,6 +1808,19 @@ pub(crate) fn regex_strip_lineno(path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn terminal_selection_rejects_a_stale_frontend_grid_instead_of_clamping_it() {
+        assert!(require_terminal_selection_dimensions(80, 24, 80, 24).is_ok());
+        assert_eq!(
+            require_terminal_selection_dimensions(79, 24, 80, 24).unwrap_err(),
+            "selection-dimensions-changed"
+        );
+        assert_eq!(
+            require_terminal_selection_dimensions(80, 23, 80, 24).unwrap_err(),
+            "selection-dimensions-changed"
+        );
+    }
 
     #[test]
     fn parse_panes_basic_and_malformed() {

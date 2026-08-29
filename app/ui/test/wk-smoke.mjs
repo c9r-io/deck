@@ -317,20 +317,47 @@ async function selectionSmoke(card) {
   physicalClick(73, 3);
   const tripleLine = pane.term.hasSelection()
     && pane.term.getSelection().length >= wordLength;
+  const nativeExpected = pane.term.getSelection();
+  const nativeExpectedBytes = new TextEncoder().encode(nativeExpected).length;
+  const nativeExpectedNewlines = (nativeExpected.match(/\n/g) || []).length;
+  const nativeExpectedHash = fnv1a64(nativeExpected);
+  pane.term.textarea.dispatchEvent(new KeyboardEvent('keydown', {
+    key: 'C', metaKey: true, bubbles: true, cancelable: true,
+  }));
+  const nativeCopiedByKey = nativeExpected.length > 0 && await waitFor(async () => {
+    const metrics = await inv('smoke_clipboard_metrics');
+    return metrics.bytes === nativeExpectedBytes
+      && metrics.newlines === nativeExpectedNewlines
+      && metrics.hash === nativeExpectedHash;
+  }, 3000);
   const rightUntouched = screen.dispatchEvent(pointer('pointerdown', 74, clickX, clickY, 2));
   pane.term.clearSelection();
   const singleAnchorRow = Math.max(2, pane.term.rows - 6);
   screen.dispatchEvent(pointer('pointerdown', 75, cellX, rowY(singleAnchorRow)));
   document.dispatchEvent(pointer('pointermove', 75,
-    rect.left + rect.width / pane.term.cols * 8.2, rowY(singleAnchorRow + 1)));
+    rect.left + rect.width / pane.term.cols * 8.2, rowY(singleAnchorRow)));
   const singleStarted = await waitFor(() => pane.selection.hasSelection(), 3000);
   document.dispatchEvent(pointer('pointerup', 75,
-    rect.left + rect.width / pane.term.cols * 8.2, rowY(singleAnchorRow + 1)));
+    rect.left + rect.width / pane.term.cols * 8.2, rowY(singleAnchorRow)));
+  await pane.selection.idle();
+  const singleText = singleStarted ? await copyTerminalSelection(pane) : null;
+  const singleExpected = visibleTerminalLine(pane, singleAnchorRow).slice(0, 8);
+  const singleExpectedBytes = new TextEncoder().encode(singleExpected).length;
+  pane.term.textarea.dispatchEvent(new KeyboardEvent('keydown', {
+    key: 'c', metaKey: true, bubbles: true, cancelable: true,
+  }));
+  const singleCopiedByKey = singleExpected.length > 0 && await waitFor(async () => {
+    const metrics = await inv('smoke_clipboard_metrics');
+    return metrics.bytes === singleExpectedBytes && metrics.newlines === 0
+      && metrics.hash === fnv1a64(singleExpected);
+  }, 3000);
   const singleOwned = singleStarted && pane.selection.ownership().promoted === 1
-    && !pane.selection.ownership().xtermSelection;
+    && !pane.selection.ownership().xtermSelection
+    && singleText === singleExpected && !singleText.includes('\n');
   const gestureMask = (tapPlain ? 1 : 0) | (doubleWord ? 2 : 0)
-    | (tripleLine ? 4 : 0) | (rightUntouched && singleOwned ? 8 : 0);
-  await report('selection-gestures', gestureMask === 15, gestureMask, wordLength);
+    | (tripleLine ? 4 : 0) | (rightUntouched && singleOwned ? 8 : 0)
+    | (nativeCopiedByKey ? 16 : 0) | (singleCopiedByKey ? 32 : 0);
+  await report('selection-gestures', gestureMask === 63, gestureMask, wordLength);
 
   /* Regression: start a second drag while tmux still owns the completed first
      selection. begin-selection is a toggle, so production must explicitly
@@ -369,6 +396,57 @@ async function selectionSmoke(card) {
   await report('selection-overlay', overlayMovedWithContent,
     overlayBefore.size, overlayAfter.size);
 
+  await cancelTerminalSelection(pane);
+  await inv('scroll_bottom', { name: card.session });
+
+  /* Start a real pointer drag as soon as xterm observes a resize. This races
+     the webview grid against the PTY confirmation and exercises the handshake
+     that prevents coordinates from being applied to a stale tmux grid. The
+     expected bytes come from visible fixture rows, independently of copy(). */
+  rect = screen.getBoundingClientRect();
+  const sidebarBeforeResize = document.body.classList.contains('side-collapsed');
+  const resizeStartGrid = `${pane.term.cols}x${pane.term.rows}`;
+  toggleSidebar();
+  const xtermResized = await waitFor(() =>
+    `${pane.term.cols}x${pane.term.rows}` !== resizeStartGrid, 5000);
+  rect = screen.getBoundingClientRect();
+  const resizeRows = pane.term.rows;
+  const resizeAnchorRow = Math.max(2, resizeRows - 8);
+  const resizeActiveRow = Math.max(resizeAnchorRow + 1, resizeRows - 5);
+  const resizeLines = Array.from(
+    { length: resizeActiveRow - resizeAnchorRow + 1 },
+    (_, offset) => visibleTerminalLine(pane, resizeAnchorRow + offset),
+  );
+  const resizeFixtureReady = resizeLines.every(line => /^R7C-\d{4}\|/.test(line));
+  const resizeExpected = resizeLines.slice(0, -1).join('\n') + '\n'
+    + resizeLines.at(-1).slice(0, 8);
+  const resizeStartX = rect.left + rect.width / pane.term.cols * 0.2;
+  const resizeEndX = rect.left + rect.width / pane.term.cols * 8.2;
+  screen.dispatchEvent(pointer('pointerdown', 77, resizeStartX, rowY(resizeAnchorRow)));
+  document.dispatchEvent(pointer('pointermove', 77, resizeEndX, rowY(resizeActiveRow)));
+  const resizeStarted = await waitFor(() => pane.selection.hasSelection(), 3000);
+  await pane.selection.idle();
+  const resizeSynced = await waitFor(async () => {
+    const metrics = await inv('terminal_metrics', { name: card.session });
+    return metrics.pane_cols === pane.term.cols && metrics.pane_rows === pane.term.rows;
+  }, 5000);
+  document.dispatchEvent(pointer('pointerup', 77, resizeEndX, rowY(resizeActiveRow)));
+  await pane.selection.idle();
+  const resizeStatus = pane.selection.status();
+  const resizeText = resizeStarted ? await copyTerminalSelection(pane) : null;
+  const resizeExact = xtermResized && resizeFixtureReady && resizeStarted && resizeSynced
+    && resizeStatus?.selection_present && resizeText === resizeExpected;
+  if (document.body.classList.contains('side-collapsed') !== sidebarBeforeResize) {
+    const resizedGrid = `${pane.term.cols}x${pane.term.rows}`;
+    toggleSidebar();
+    await waitFor(async () => {
+      const metrics = await inv('terminal_metrics', { name: card.session });
+      return `${pane.term.cols}x${pane.term.rows}` !== resizedGrid
+        && metrics.pane_cols === pane.term.cols && metrics.pane_rows === pane.term.rows;
+    }, 5000);
+  }
+  await report('selection-resize', resizeExact,
+    resizeText?.length || 0, resizeExpected.length);
   await cancelTerminalSelection(pane);
   await inv('scroll_bottom', { name: card.session });
 
