@@ -1,6 +1,20 @@
 # Changelog
 
-## Unreleased — terminal interaction reliability
+## 0.4.35 — 2026-08-29
+
+- Add complete English and Simplified Chinese UI localization with immediate
+  runtime switching, system-locale detection, native menu localization and
+  strict dictionary/static coverage.
+- Automatically bind scheduled work to its card and full tmux
+  server/session/window/pane/pid identity, with an optional foreground
+  executable derived from the launch command or live non-shell pane.
+- Remove readiness hooks and user-configured safety policies: an exact pane is
+  always required, an automatically captured process must match, and items
+  without one retain same-pane compatibility delivery.
+- Replace the fixed boot sleep with bounded cancellable target polling and
+  atomically guard both identity and optional process at literal paste time.
+  Context waiting consumes no attempts; process mismatch has a one-shot
+  pointer-confirmed send, while identity replacement requires explicit rebind.
 
 - Route printable macOS IME `keyCode=229` events through the final native
   `InputEvent` path, avoiding xterm's deferred keydown fallback that could
@@ -31,16 +45,6 @@
 
 ## 0.4.34 — 2026-08-29
 
-- Automatically bind scheduled work to its card and full tmux
-  server/session/window/pane/pid identity, with an optional foreground
-  executable derived from the launch command or live non-shell pane.
-- Remove readiness hooks and user-configured safety policies: an exact pane is
-  always required, an automatically captured process must match, and items
-  without one retain same-pane compatibility delivery.
-- Replace the fixed boot sleep with bounded cancellable target polling and
-  atomically guard both identity and optional process at literal paste time.
-  Context waiting consumes no attempts; process mismatch has a one-shot
-  pointer-confirmed send, while identity replacement requires explicit rebind.
 - Make repeated terminal drags replace the prior tmux selection reliably,
   accept the valid zero-cell anchor state, and invalidate late gesture replies.
 - Coalesce each burst of PTY repaint bytes before handing it to xterm so tmux
