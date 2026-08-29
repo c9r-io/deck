@@ -7,9 +7,11 @@
   drop the first Pinyin punctuation press in WKWebView.
 - Keep modifier-only Shift keydowns out of xterm's byte path so its transient
   keydown flag cannot suppress the first Pinyin InputEvent of each Shift chord.
-- Exclude IPv4 addresses, ports and dotted numeric versions from bare-file
-  link detection instead of turning an address prefix such as `192.168` into
-  a path action menu.
+- Replace the overlapping terminal-link regex with a single-pass tokenizer:
+  complete HTTP(S) URLs own their interval across soft wraps, while path-like
+  tokens only become links after the backend resolves a real local target in
+  the pane cwd. IPv4 addresses, nonexistent log filenames and URL `/api`
+  fragments no longer open path menus.
 - Keep real pointer clicks on xterm's trusted link state machine, remove
   synthetic click replay, prevent the compatibility click after mouseup from
   immediately closing the path menu, and recognize wrapped/Unicode/quoted,

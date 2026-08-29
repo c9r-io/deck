@@ -487,9 +487,12 @@ async function pathSmoke(card) {
   const pane = panes.get(card.session);
   const fixture = '"空 格😀/code.rs":12:3';
   const addressFixture = '192.168.31.120:6443';
+  const missingFixture = 'memcache.go:265';
+  const url = `https://node100.gitski.work:6443/api?timeout=32s&trace=${'a'.repeat(pane.term.cols + 12)}`;
+  const urlLine = `E0829 memcache.go:265] err=\\"${url}\\": connect failed`;
   await inv('pty_write', {
     name: card.session,
-    dataB64: strToB64(`printf '%s\\n' '${fixture}' '${addressFixture}'\r`),
+    dataB64: strToB64(`mkdir -p '空 格😀' && : > '空 格😀/code.rs'; printf '%s\\n' '${fixture}' '${addressFixture}' '${missingFixture}' '${urlLine}'\r`),
   });
   const fixtureReady = await waitFor(() => {
     for (let row = 0; row < pane.term.rows; row++) {
@@ -510,6 +513,7 @@ async function pathSmoke(card) {
   screen.dispatchEvent(new MouseEvent('mousemove', {
     bubbles: true, clientX: linkX, clientY: linkY,
   }));
+  await waitFor(() => pane.body.querySelector('.xterm')?.classList.contains('xterm-cursor-pointer'), 3000);
   screen.dispatchEvent(pointer('pointerdown', 31, linkX, linkY));
   screen.dispatchEvent(new MouseEvent('mousedown', {
     bubbles: true, cancelable: true, button: 0, buttons: 1,
@@ -527,10 +531,12 @@ async function pathSmoke(card) {
   const serviceOpened = fixtureReady && $('ctx').style.display === 'block'
     && $('ctx').querySelector('.ctx-value')?.textContent === fixture;
   $('ctx').style.display = 'none';
-  let providerLink = null;
-  pane.linkProvider.provideLinks(pane.term.buffer.active.viewportY + fixtureRow + 1, links => {
-    providerLink = links?.find(link => link.text === fixture) || null;
+  const linksAt = row => new Promise(resolve => {
+    pane.linkProvider.provideLinks(pane.term.buffer.active.viewportY + row + 1,
+      links => resolve(links || []));
   });
+  const fixtureLinks = await linksAt(fixtureRow);
+  const providerLink = fixtureLinks.find(link => link.text === fixture) || null;
   providerLink?.activate(eventAt(linkX, linkY), providerLink.text);
   const providerOpened = $('ctx').style.display === 'block'
     && $('ctx').querySelector('.ctx-value')?.textContent === fixture;
@@ -547,18 +553,40 @@ async function pathSmoke(card) {
       break;
     }
   }
-  let addressLinks = null;
+  let addressLinks = [];
   if (addressRow >= 0) {
-    pane.linkProvider.provideLinks(pane.term.buffer.active.viewportY + addressRow + 1, links => {
-      addressLinks = links || [];
-    });
+    addressLinks = await linksAt(addressRow);
   }
-  const addressUnlinked = addressRow >= 0 && addressLinks?.length === 0;
+  const addressUnlinked = addressRow >= 0 && addressLinks.length === 0;
   const linkMask = (fixtureReady ? 1 : 0) | (providerLink ? 2 : 0)
     | (providerOpened ? 4 : 0) | (survivedOpeningClick ? 8 : 0)
     | (serviceOpened ? 16 : 0) | (addressUnlinked ? 32 : 0);
   await report('link-activate', linkMask === 63 && $('ctx').style.display === 'none',
     linkMask, fixture.length);
+
+  const urlReady = await waitFor(() => {
+    let visible = '';
+    for (let row = 0; row < pane.term.rows; row++) visible += visibleTerminalLine(pane, row);
+    return visible.includes(url);
+  }, 5000);
+  let missingRow = -1, urlRow = -1;
+  for (let row = 0; row < pane.term.rows; row++) {
+    const line = visibleTerminalLine(pane, row);
+    if (line.includes(missingFixture) && !line.includes('E0829')) missingRow = row;
+    if (line.includes('https://node100')) urlRow = row;
+  }
+  const missingLinks = missingRow >= 0 ? await linksAt(missingRow) : [];
+  const urlLinks = urlRow >= 0 ? await linksAt(urlRow) : [];
+  const wrappedUrl = urlLinks.find(link => link.text === url) || null;
+  wrappedUrl?.activate(eventAt(linkX, linkY), wrappedUrl.text);
+  const exactUrlMenu = $('ctx').style.display === 'block'
+    && $('ctx').querySelector('.ctx-value')?.textContent === url;
+  const tokenizerMask = (urlReady ? 1 : 0)
+    | (missingRow >= 0 && missingLinks.length === 0 ? 2 : 0)
+    | (wrappedUrl && urlLinks.length === 1 ? 4 : 0)
+    | (exactUrlMenu ? 8 : 0);
+  $('ctx').style.display = 'none';
+  await report('link-classify', tokenizerMask === 15, tokenizerMask, url.length);
 
   const focus = document.createElement('button');
   focus.textContent = 'focus';

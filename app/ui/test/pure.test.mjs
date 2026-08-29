@@ -12,7 +12,7 @@ import {
   copyExact, createTerminalSelectionModel, terminalSelectionEdgeLines,
   isComposingKeyEvent, isPlainShiftKeydown, shouldRouteImeKeydownThroughInput,
   terminalSelectionOverlayRows,
-  terminalLinkMatches,
+  tokenizeTerminalLinks,
   createTerminalWheelAccumulator, terminalWheelLines,
   linkMenuItems,
   inlineRenameValue, persistOptimistically,
@@ -508,32 +508,51 @@ test('path menu adds parent actions while the URL menu remains unchanged', () =>
   ]);
 });
 
-test('terminal link grammar covers relative, quoted, Unicode and line suffix paths', () => {
+test('terminal link tokenizer covers relative, quoted, Unicode and line suffix path candidates', () => {
   const line = [
     '/tmp/code.rs', './file.rs:42', '../src/main.rs:42:7', '~/.deck/settings.json',
     'file.rs:9', '目录/组合é/😀.txt', '"/tmp/space name.rs":12:3',
     "'../空 格/emoji😀.md':5", 'https://example.com/a',
   ].join(' | ');
-  const links = terminalLinkMatches(line);
+  const links = tokenizeTerminalLinks(line);
   assert.deepEqual(links.map(link => link.value), [
     '/tmp/code.rs', './file.rs:42', '../src/main.rs:42:7', '~/.deck/settings.json',
     'file.rs:9', '目录/组合é/😀.txt', '"/tmp/space name.rs":12:3',
     "'../空 格/emoji😀.md':5", 'https://example.com/a',
   ]);
   assert.equal(links.at(-1).kind, 'url');
-  assert.deepEqual(terminalLinkMatches('missing.rs), ordinary_word, foo.').map(x => x.value),
+  assert.deepEqual(tokenizeTerminalLinks('missing.rs), ordinary_word, foo.').map(x => x.value),
     ['missing.rs'], 'line punctuation is excluded and plain words are ignored');
-  assert.deepEqual(terminalLinkMatches([
+  assert.deepEqual(tokenizeTerminalLinks([
     'connect 192.168.31.120:6443 failed',
     'localhost 127.0.0.1:8080',
     'version 1.2.3 and v2.4',
     'numeric 12.34',
   ].join(' | ')), [], 'IPv4, ports and dotted versions are not file paths');
-  assert.deepEqual(terminalLinkMatches('http://192.168.31.120:6443/a file.123 report.rs'), [
-    { kind: 'url', value: 'http://192.168.31.120:6443/a', index: 0 },
-    { kind: 'path', value: 'file.123', index: 29 },
-    { kind: 'path', value: 'report.rs', index: 38 },
+  assert.deepEqual(tokenizeTerminalLinks('http://192.168.31.120:6443/a file.123 report.rs'), [
+    { kind: 'url', value: 'http://192.168.31.120:6443/a', index: 0, end: 28 },
+    { kind: 'path', value: 'file.123', index: 29, end: 37 },
+    { kind: 'path', value: 'report.rs', index: 38, end: 47 },
   ], 'URLs and plausible filenames retain their existing ownership');
+});
+
+test('URL tokens own their complete interval and escaped log quotes stay outside it', () => {
+  const url = 'https://node100.gitski.work:6443/api?timeout=32s';
+  const line = `err=\\"${url}\\": dial tcp 192.168.31.120:6443`;
+  assert.deepEqual(tokenizeTerminalLinks(line), [{
+    kind: 'url', value: url, index: 6, end: 6 + url.length,
+  }]);
+  assert.deepEqual(tokenizeTerminalLinks(url).map(token => token.value), [url],
+    'the URL path is not emitted as a second path candidate');
+  assert.equal(tokenizeTerminalLinks(`see (${url}).`)[0].value, url,
+    'prose wrappers and punctuation stay outside the URL');
+  assert.deepEqual(tokenizeTerminalLinks(`url=${url}; file=src/main.rs`).map(token => token.value),
+    [url, 'src/main.rs'], 'assignment punctuation starts a fresh token');
+
+  const wrapAt = 31;
+  const visuallyWrapped = line.slice(0, wrapAt) + line.slice(wrapAt);
+  assert.deepEqual(tokenizeTerminalLinks(visuallyWrapped), tokenizeTerminalLinks(line),
+    'soft wrapping inserts no data and cannot truncate the URL token');
 });
 
 test('rename Enter/Escape/empty semantics and persistence rollback are deterministic', async () => {

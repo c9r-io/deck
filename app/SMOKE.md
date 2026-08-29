@@ -45,6 +45,10 @@ tagging a release; 3 minutes total.
       Shift keydown. Keeping modifier-only Shift out of xterm's byte path made
       the first chord work across repeated Shift release/press cycles; the
       user confirmed the packaged candidate behaves normally.
+- [x] The follow-up link classifier smoke rejects nonexistent log tokens such
+      as `memcache.go:265`, preserves one exact long HTTP(S) URL over soft wrap,
+      and proves that the URL's `/api` segment is not exposed as a second path
+      link (15/15 in the real bundled WKWebView).
 
 ## v0.4.32 post-review automated candidate — 2026-08-29
 
@@ -197,6 +201,10 @@ physical-input blocker are recorded in `RELEASE_REPORT_v0.4.32.md`.
       Open/Copy; file entries include Open, Reveal, Copy, Open parent folder in
       editor, and New session in parent folder. Arrow/Home/End/Escape navigation
       and focus restoration work.
+- [ ] Print a nonexistent log token (`memcache.go:265`), an IPv4 address with
+      port, and a long HTTP(S) URL that soft-wraps through its `/api` segment.
+      The first two have no link; every wrapped URL row resolves to one exact
+      URL value and never exposes `/api` as a file path.
 - [ ] Open parent uses the configured editor with the directory as an argument;
       New session starts in the canonical parent and follows the normal project/
       Board placement rules. Repeated clicks create at most one session. Missing,

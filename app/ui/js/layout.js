@@ -5,7 +5,7 @@ import { inlineRename, toast } from './dialogs.js';
 import { t } from './i18n.js';
 import { TERM_THEME, panes, pollNow, provider, render, renderSidebar, activeProject } from './board.js';
 import { SHELL_FG, acceptGhost, feedMirror, maybeRecordCommand, mountQuickBar, nextShellTitle, renderSuggest, resetSuggest, showLinkCtx, updateGhost, writeClipboard } from './terminal.js';
-import { createTerminalWheelAccumulator, isComposingKeyEvent, isPlainShiftKeydown, shouldRouteImeKeydownThroughInput, shQuote, terminalLinkMatches, terminalWheelLines } from './pure.js';
+import { createTerminalWheelAccumulator, isComposingKeyEvent, isPlainShiftKeydown, shouldRouteImeKeydownThroughInput, shQuote, tokenizeTerminalLinks, terminalWheelLines } from './pure.js';
 import { toggleQueuePanel } from './scheduler.js';
 import { cancelAllTerminalSelections, cancelTerminalSelection, copyTerminalSelection, hasTerminalSelection, wireTerminalSelection } from './selection.js';
 
@@ -482,25 +482,40 @@ export function wireTerminalInput(pane, term, host) {
       const logical = terminalLogicalLine(term, lineNo);
       const { text, positions } = logical;
       if (!text) return cb(undefined);
-      const links = [];
-      for (const match of terminalLinkMatches(text)) {
-        const { value, kind } = match;
-        const start = positions[match.index];
-        const end = positions[match.index + value.length - 1];
-        if (!start || !end) continue;
-        links.push({
-          range: { start: { x: start.x, y: start.y }, end: { x: end.endX, y: end.y } },
-          text: value,
-          activate: (e, txt) => {
-            if (!pane.selection?.allowLinkActivation()) return;
-            e.stopPropagation();
-            try { term.clearSelection(); } catch (e2) { /* fine */ }
-            const c = card();
-            showLinkCtx(e, kind, txt, c ? c.dir : HOME, c ? c.id : null);
-          },
-        });
-      }
-      cb(links);
+      const matches = tokenizeTerminalLinks(text);
+      if (!matches.length) return cb(undefined);
+      const c = card();
+      const cwd = c ? c.dir : HOME;
+      const pathMatches = matches.filter(match => match.kind === 'path');
+      const validation = pathMatches.length
+        ? inv('terminal_paths_exist', { values: pathMatches.map(match => match.value), cwd })
+          .catch(() => pathMatches.map(() => false))
+        : Promise.resolve([]);
+      validation.then(pathResults => {
+        if (!host.isConnected) return cb(undefined);
+        const validPaths = new Map(pathMatches.map((match, index) => [match, !!pathResults[index]]));
+        const links = [];
+        for (const match of matches) {
+          if (match.kind === 'path' && !validPaths.get(match)) continue;
+          const { value, kind } = match;
+          const start = positions[match.index];
+          const end = positions[match.index + value.length - 1];
+          if (!start || !end) continue;
+          if (lineNo < start.y || lineNo > end.y) continue;
+          links.push({
+            range: { start: { x: start.x, y: start.y }, end: { x: end.endX, y: end.y } },
+            text: value,
+            activate: (e, txt) => {
+              if (!pane.selection?.allowLinkActivation()) return;
+              e.stopPropagation();
+              try { term.clearSelection(); } catch (e2) { /* fine */ }
+              const c = card();
+              showLinkCtx(e, kind, txt, c ? c.dir : HOME, c ? c.id : null);
+            },
+          });
+        }
+        cb(links.length ? links : undefined);
+      });
     },
   };
   pane.linkProvider = linkProvider; // public smoke seam: provider activate, not menu helper

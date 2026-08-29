@@ -16,33 +16,145 @@ export function shQuote(p) {
   return /^[A-Za-z0-9_/.~-]+$/.test(s) ? s : "'" + s.replace(/'/g, "'\\''") + "'";
 }
 
-/* Terminal link grammar. Quoted paths may contain spaces; unquoted paths
-   must be explicitly relative/absolute/home-prefixed or look like a file. */
-export const TERMINAL_LINK_RE = /(https?:\/\/[^\s"'`)\]]+)|((?:"[^"\n]+"|'[^'\n]+'|(?:~\/|\/|\.{1,2}\/)[^\s"'`]+|(?:[\p{L}\p{N}\p{M}\p{S}_.\-]+\/)*[\p{L}\p{N}\p{M}\p{S}_\-]+\.[\p{L}\p{N}]{1,8})(?::\d+(?::\d+)?)?)/gu;
+/* Terminal links are tokenized before they are classified. A URL consumes
+   its complete interval first, so `/api` inside it can never become a path.
+   Path tokens are only candidates here: the provider asks the backend to
+   confirm that they exist relative to the pane cwd before making them links. */
+const URL_SCHEMES = ['https://', 'http://'];
+const PATH_START_DELIMS = '=:([{<,;|';
+const TOKEN_END_DELIMS = '"\'`<>|\\';
+const PATH_HARD_END_DELIMS = '=,;';
+const PATH_TRAILING = '.,;!?)}]';
 
-export function looksLikeTerminalPath(value) {
-  const raw = value.replace(/^(['"])(.*)\1(?=:\d|$)/, '$2');
-  const withoutLocation = raw.replace(/:\d+(?::\d+)?$/, '');
-  // Dotted numeric addresses/versions are not filenames. This also rejects
-  // partial IPv4 matches such as `192.168` inside `192.168.31.120:6443`.
-  if (/^v?\d+(?:\.\d+)+$/i.test(withoutLocation)) return false;
-  if (/^(~\/|\.{1,2}\/|\/)/.test(raw)) return true;
-  if (raw.split('/').length > 2) return true;
-  return /\.[A-Za-z0-9]{1,8}(?::\d+(?::\d+)?)?$/.test(raw.split('/').pop());
+const isSpace = ch => !!ch && ch.trim() === '';
+const isAsciiDigit = ch => ch >= '0' && ch <= '9';
+const allAsciiDigits = value => !!value && [...value].every(isAsciiDigit);
+const isStartBoundary = ch => !ch || isSpace(ch) || PATH_START_DELIMS.includes(ch)
+  || TOKEN_END_DELIMS.includes(ch);
+const isTokenEnd = ch => !ch || isSpace(ch) || TOKEN_END_DELIMS.includes(ch);
+
+function withoutLineLocation(value) {
+  let end = value.length;
+  for (let count = 0; count < 2; count++) {
+    const colon = value.lastIndexOf(':', end - 1);
+    if (colon < 0 || !allAsciiDigits(value.slice(colon + 1, end))) break;
+    end = colon;
+  }
+  return value.slice(0, end);
 }
 
-export function terminalLinkMatches(text) {
+function isDottedNumber(value) {
+  let candidate = value;
+  if ((candidate[0] === 'v' || candidate[0] === 'V') && isAsciiDigit(candidate[1])) {
+    candidate = candidate.slice(1);
+  }
+  const parts = candidate.split('.');
+  return parts.length > 1 && parts.every(allAsciiDigits);
+}
+
+export function looksLikeTerminalPathCandidate(value) {
+  let raw = String(value);
+  if ((raw[0] === '"' || raw[0] === '\'') && raw.lastIndexOf(raw[0]) > 0) {
+    const close = raw.lastIndexOf(raw[0]);
+    raw = raw.slice(1, close) + raw.slice(close + 1);
+  }
+  const path = withoutLineLocation(raw);
+  if (!path || isDottedNumber(path)) return false;
+  const lower = path.toLowerCase();
+  if (URL_SCHEMES.some(prefix => lower.startsWith(prefix))) return false;
+  if (path === '~' || path.startsWith('~/') || path.startsWith('/')
+      || path.startsWith('./') || path.startsWith('../')) return true;
+  if (path.includes('/')) return true;
+  if (path.startsWith('.') && path.length > 1 && !path.endsWith('.')) return true;
+  const dot = path.lastIndexOf('.');
+  return dot > 0 && dot < path.length - 1;
+}
+
+function urlAt(text, index) {
+  if (!isStartBoundary(text[index - 1])) return null;
+  const scheme = URL_SCHEMES.find(prefix =>
+    text.slice(index, index + prefix.length).toLowerCase() === prefix);
+  if (!scheme) return null;
+  let end = index + scheme.length;
+  while (end < text.length && !isTokenEnd(text[end])) end++;
+  let value = text.slice(index, end);
+
+  // Closing prose punctuation is not part of a URL. Keep balanced brackets,
+  // which are valid in paths and queries, but remove unmatched closers.
+  const bracketPairs = [['(', ')'], ['[', ']'], ['{', '}']];
+  let trimming = true;
+  while (value && trimming) {
+    trimming = false;
+    if ('.,;!:'.includes(value.at(-1))) {
+      value = value.slice(0, -1);
+      trimming = true;
+      continue;
+    }
+    const pair = bracketPairs.find(([, close]) => value.endsWith(close));
+    if (pair) {
+      const [open, close] = pair;
+      const opens = [...value].filter(ch => ch === open).length;
+      const closes = [...value].filter(ch => ch === close).length;
+      if (closes > opens) {
+        value = value.slice(0, -1);
+        trimming = true;
+      }
+    }
+  }
+  try {
+    const parsed = new URL(value);
+    if (!URL_SCHEMES.some(prefix => parsed.protocol === prefix.slice(0, -2))
+        || !parsed.hostname) return null;
+  } catch (_) {
+    return null;
+  }
+  return { kind: 'url', value, index, end: index + value.length };
+}
+
+function quotedPathAt(text, index) {
+  const quote = text[index];
+  if ((quote !== '"' && quote !== '\'') || !isStartBoundary(text[index - 1])) return null;
+  const close = text.indexOf(quote, index + 1);
+  if (close < 0) return null;
+  let end = close + 1;
+  for (let locations = 0; locations < 2 && text[end] === ':'; locations++) {
+    let digitEnd = end + 1;
+    while (isAsciiDigit(text[digitEnd])) digitEnd++;
+    if (digitEnd === end + 1) break;
+    end = digitEnd;
+  }
+  const value = text.slice(index, end);
+  return looksLikeTerminalPathCandidate(value)
+    ? { kind: 'path', value, index, end }
+    : null;
+}
+
+function unquotedPathAt(text, index) {
+  if (!isStartBoundary(text[index - 1]) || isTokenEnd(text[index])
+      || PATH_START_DELIMS.includes(text[index])) return null;
+  let end = index;
+  while (end < text.length && !isTokenEnd(text[end])
+         && !PATH_HARD_END_DELIMS.includes(text[end])) end++;
+  let value = text.slice(index, end);
+  while (value && PATH_TRAILING.includes(value.at(-1))) value = value.slice(0, -1);
+  if (!looksLikeTerminalPathCandidate(value)) return null;
+  return { kind: 'path', value, index, end: index + value.length };
+}
+
+export function tokenizeTerminalLinks(input) {
+  const text = String(input);
   const links = [];
-  TERMINAL_LINK_RE.lastIndex = 0;
-  let match;
-  while ((match = TERMINAL_LINK_RE.exec(String(text))) !== null) {
-    let value = match[0];
-    while (/[.,;:!?)}\]]$/.test(value)) value = value.slice(0, -1);
-    const kind = match[1] ? 'url' : 'path';
-    if (kind === 'path' && !looksLikeTerminalPath(value)) continue;
-    const after = String(text).slice(match.index + match[0].length);
-    if (kind === 'path' && /^\.\d/.test(after)) continue;
-    links.push({ kind, value, index: match.index });
+  let index = 0;
+  while (index < text.length) {
+    const token = urlAt(text, index)
+      || quotedPathAt(text, index)
+      || unquotedPathAt(text, index);
+    if (token) {
+      links.push(token);
+      index = token.end;
+    } else {
+      index++;
+    }
   }
   return links;
 }

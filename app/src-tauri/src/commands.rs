@@ -112,6 +112,7 @@ const SMOKE_CHECKS: &[&str] = &[
     "selection-overlay",
     "scroll-frame",
     "link-activate",
+    "link-classify",
     "ime-routing",
     "path-menu",
     "path-editor",
@@ -1651,6 +1652,31 @@ pub(crate) fn resolve_parent_dir(value: String, cwd: String) -> Result<ResolvedP
     resolve_clicked_parent(&value, &cwd)
 }
 
+/// Link discovery is intentionally stricter than token discovery: a path-like
+/// token only becomes interactive when it resolves to a real local target in
+/// the pane's working directory. Actions resolve it again to avoid TOCTOU.
+fn terminal_path_exists(value: &str, cwd: &str) -> bool {
+    const MAX_PATH_TOKEN: usize = 4096;
+    if value.is_empty()
+        || value.len() > MAX_PATH_TOKEN
+        || cwd.is_empty()
+        || cwd.len() > MAX_PATH_TOKEN
+    {
+        return false;
+    }
+    resolve_clicked_parent(value, cwd).is_ok()
+}
+
+#[tauri::command]
+pub(crate) fn terminal_paths_exist(values: Vec<String>, cwd: String) -> Vec<bool> {
+    const MAX_CANDIDATES: usize = 128;
+    values
+        .iter()
+        .enumerate()
+        .map(|(index, value)| index < MAX_CANDIDATES && terminal_path_exists(value, &cwd))
+        .collect()
+}
+
 /// What open_target is allowed to hand to `open`, decided BEFORE any
 /// subprocess spawns. `open` treats its argument as a URL when it parses as
 /// one — an unvalidated "url" click could reach file:// or an arbitrary app
@@ -1894,6 +1920,18 @@ mod tests {
         }
         assert!(resolve_clicked_parent("missing.txt", &root.to_string_lossy()).is_err());
         assert!(resolve_clicked_parent("file.txt", "/definitely/missing/deck-cwd").is_err());
+        let cwd = root.to_string_lossy().into_owned();
+        assert_eq!(
+            terminal_paths_exist(
+                vec![
+                    "\"空 格😀/code.rs\":12:3".into(),
+                    "memcache.go:265".into(),
+                    "x".repeat(4097),
+                ],
+                cwd,
+            ),
+            vec![true, false, false]
+        );
         std::fs::remove_dir_all(&root).unwrap();
     }
 

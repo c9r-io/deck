@@ -97,6 +97,11 @@ Frontend gates: `node --check` (syntax) · `ui/test/*.mjs` (node:test)
   Selection never sets `disableStdin`; composition/dead-key events bypass all
   Deck shortcuts, and `macOptionIsMeta` is false so Option remains owned by
   macOS text input.
+  Terminal links use `tokenizeTerminalLinks`, not an overlapping global regex:
+  an HTTP(S) URL consumes its whole logical-line interval before path candidates
+  are considered. `terminal_paths_exist` then resolves candidates against the
+  pane cwd in one bounded backend call; nonexistent or inaccessible local paths
+  never become interactive. Link actions resolve again before opening.
   History is 50,000 rows and clipboard extraction is explicitly capped at
   64 MiB without truncation. During selection tmux freezes the reading frame
   while the PTY stream continues through its bounded ACK gate.

@@ -39,8 +39,9 @@ quitting deck (or it crashing) never kills your agents. Reopen and everything
 is exactly where you left it. Closing a card (corner ✕, or Ctrl+D in the
 shell) is the only way a session ends.
 
-**A real terminal.** Full xterm with truecolor, ⌘C/⌘V, and clickable file
-paths / URLs. Drag directly over terminal cells; holding at either vertical
+**A real terminal.** Full xterm with truecolor, ⌘C/⌘V, clickable existing
+local file paths, and complete HTTP(S) URLs even across terminal soft wraps.
+Drag directly over terminal cells; holding at either vertical
 edge continuously extends the same selection through tmux history, including
 reverse shrinking across screens. A path can open in the editor, reveal in
 Finder, open its parent in the configured editor, or start a new session in

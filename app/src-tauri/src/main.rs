@@ -282,6 +282,7 @@ fn main() {
             pty::detach_session,
             commands::open_target,
             commands::resolve_parent_dir,
+            commands::terminal_paths_exist,
             history::recent_commands,
             history::record_command,
             history::history_clear,
