@@ -14,9 +14,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::commands::start_session;
+use crate::context::{self, ContextCheck, ContextCode, ContextStatus, PaneIdentity, ProbeResult};
 use crate::storage;
 use crate::storage::{applog, now_epoch};
-use crate::tmux::{pane_target, tmux};
+use crate::tmux::{tmux, tmux_owned};
 
 // ---------- scheduled prompts ----------------------------------------------------
 // Queue prompts to be typed into a session later — the rate-limit workflow:
@@ -28,6 +29,9 @@ use crate::tmux::{pane_target, tmux};
 pub(crate) struct QueueItem {
     id: String,
     session: String,
+    /// Stable Board identity chosen when the task was created.
+    #[serde(default)]
+    card_id: String,
     dir: String,
     cmd: String,
     text: String,
@@ -94,6 +98,19 @@ pub(crate) struct QueueItem {
     /// crash recovery can finalize the exact same delivery idempotently.
     #[serde(default)]
     delivery: Option<String>,
+    /// Sanitized executable basename only; never written to logs.
+    #[serde(default)]
+    expected_process: Option<String>,
+    /// tmux generation binding. Exact pane targeting prevents a recreated
+    /// session with the same user-facing name from inheriting permission.
+    #[serde(default)]
+    binding: Option<PaneIdentity>,
+    /// Closed result only: no foreground string or terminal contents.
+    #[serde(default)]
+    last_context: Option<ContextCheck>,
+    /// Incremented by edits that invalidate an in-progress readiness wait.
+    #[serde(default)]
+    revision: u64,
 }
 
 pub(crate) fn default_state() -> String {
@@ -325,7 +342,29 @@ pub(crate) fn load_queue() -> QueueState {
         }
     };
     migrate_groups(&mut q);
+    migrate_context(&mut q);
     q
+}
+
+/// Compatibility migration ignores all legacy policy/agent/hook authority.
+/// Serde discards those unknown fields and the next save cleans them from
+/// disk. Preserve scheduling/delivery state, derive only a sanitized process
+/// basename when possible, and clear stale hook-derived context results.
+pub(crate) fn migrate_context(q: &mut QueueState) {
+    for item in q
+        .items
+        .iter_mut()
+        .chain(q.pending.iter_mut().map(|pending| &mut pending.snapshot))
+    {
+        if item.expected_process.is_none() {
+            item.expected_process = context::expected_from_command(&item.cmd);
+        }
+        if item.last_context.as_ref().is_some_and(|check| {
+            check.status == ContextStatus::Unknown || check.code == ContextCode::Unknown
+        }) {
+            item.last_context = None;
+        }
+    }
 }
 
 /// Compatibility migration: pre-group queue files expressed chains purely by
@@ -377,6 +416,87 @@ pub(crate) fn save_queue(q: &QueueState) -> Result<(), String> {
 #[tauri::command]
 pub(crate) fn queue_list(state: State<'_, Queues>) -> QueueState {
     state.q.lock().unwrap().clone()
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ContextProbeView {
+    status: ContextStatus,
+    code: ContextCode,
+    expected_process: Option<String>,
+    current_process: Option<String>,
+}
+
+/// User-requested observation for the queue UI. It is metadata-only and does
+/// not start a session, mutate the queue, consume an attempt, or capture pane
+/// contents.
+#[tauri::command]
+pub(crate) fn queue_probe_context(
+    state: State<'_, Queues>,
+    id: String,
+) -> Result<ContextProbeView, String> {
+    let item = state
+        .q
+        .lock()
+        .unwrap()
+        .items
+        .iter()
+        .find(|i| i.id == id)
+        .cloned()
+        .ok_or("scheduled prompt not found")?;
+    let result = final_context_probe(&item);
+    persist_context_result(&state.q, &save_queue, &item, &result)?
+        .ok_or("scheduled prompt changed while probing")?;
+    Ok(ContextProbeView {
+        status: result.status,
+        code: result.code,
+        expected_process: item.expected_process,
+        current_process: result.current_process,
+    })
+}
+
+/// Explicitly bind an identity-changed item to the pane currently owned by
+/// its card. This is a persisted target change, never an implicit override.
+#[tauri::command]
+pub(crate) fn queue_rebind(
+    state: State<'_, Queues>,
+    app: AppHandle,
+    id: String,
+) -> Result<(), String> {
+    let source = state
+        .q
+        .lock()
+        .unwrap()
+        .items
+        .iter()
+        .find(|i| i.id == id)
+        .cloned()
+        .ok_or("scheduled prompt not found")?;
+    let raw = context::raw_probe(&source.session)?;
+    with_queue(&state.q, &save_queue, |q| {
+        firing_conflict(q, &id)?;
+        let item = q
+            .items
+            .iter_mut()
+            .find(|i| i.id == id)
+            .ok_or("scheduled prompt not found")?;
+        if item.revision != source.revision {
+            return Err("scheduled prompt changed while rebinding".into());
+        }
+        item.binding = Some(raw.identity.clone());
+        if item.expected_process.is_none() && !context::shell_process(raw.foreground.as_deref()) {
+            item.expected_process = raw.foreground.clone();
+        }
+        item.revision = item.revision.wrapping_add(1);
+        item.last_context = Some(ContextCheck {
+            status: ContextStatus::Ready,
+            code: ContextCode::TargetChecked,
+            checked_at: now_epoch(),
+        });
+        Ok(())
+    })?;
+    let _ = app.emit("queue-changed", ());
+    Ok(())
 }
 
 #[tauri::command]
@@ -431,6 +551,8 @@ pub(crate) fn smoke_flush_queue(state: State<'_, Queues>) -> Result<bool, String
 #[serde(rename_all = "camelCase")]
 pub(crate) struct QueueAddArgs {
     session: String,
+    #[serde(default)]
+    card_id: String,
     dir: String,
     cmd: String,
     text: String,
@@ -482,6 +604,15 @@ pub(crate) fn validate_add(a: &QueueAddArgs) -> Result<(), String> {
     if a.session.trim().is_empty() {
         return Err("missing session".into());
     }
+    if a.card_id.is_empty()
+        || a.card_id.len() > 128
+        || !a
+            .card_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-'))
+    {
+        return Err("scheduled prompt needs a valid card identity".into());
+    }
     Ok(())
 }
 
@@ -505,7 +636,19 @@ pub(crate) fn next_queue_id(existing: &[QueueItem]) -> String {
 
 /// Pure core of queue_add: append one already-validated item to the
 /// candidate state (never to the shared state directly — see `with_queue`).
+#[cfg(test)]
 pub(crate) fn add_item(q: &mut QueueState, args: QueueAddArgs, text: String) -> Result<(), String> {
+    let expected_process = context::expected_from_command(&args.cmd);
+    add_item_bound(q, args, text, None, expected_process)
+}
+
+fn add_item_bound(
+    q: &mut QueueState,
+    args: QueueAddArgs,
+    text: String,
+    binding: Option<PaneIdentity>,
+    expected_process: Option<String>,
+) -> Result<(), String> {
     // Scheduling for a session again means it is alive again (the UI can
     // only add prompts from a live card), so a stale tombstone from an
     // earlier card of the same name must not silently swallow the schedule.
@@ -541,6 +684,7 @@ pub(crate) fn add_item(q: &mut QueueState, args: QueueAddArgs, text: String) -> 
     q.items.push(QueueItem {
         id,
         session: args.session,
+        card_id: args.card_id,
         dir: args.dir,
         cmd: args.cmd,
         text,
@@ -567,6 +711,10 @@ pub(crate) fn add_item(q: &mut QueueState, args: QueueAddArgs, text: String) -> 
         seq,
         rule: None,
         delivery: None,
+        expected_process,
+        binding,
+        last_context: None,
+        revision: 0,
     });
     Ok(())
 }
@@ -583,7 +731,10 @@ pub(crate) fn queue_add(
         return Err("empty prompt".into());
     }
     // never let the scheduler act on an item the disk doesn't know about
-    with_queue(&state.q, &save_queue, |q| add_item(q, args, text))?;
+    let creation = context::creation_context(&args.session, &args.cmd);
+    with_queue(&state.q, &save_queue, |q| {
+        add_item_bound(q, args, text, creation.binding, creation.expected_process)
+    })?;
     let _ = app.emit("queue-changed", ());
     Ok(())
 }
@@ -612,6 +763,8 @@ pub(crate) fn update_text(q: &mut QueueState, id: &str, text: String) -> Result<
     firing_conflict(q, id)?;
     if let Some(item) = q.items.iter_mut().find(|i| i.id == id) {
         item.text = text;
+        item.revision = item.revision.wrapping_add(1);
+        item.last_context = None;
     }
     Ok(())
 }
@@ -853,30 +1006,179 @@ pub(crate) struct QueueFired {
     session: String,
 }
 
-/// Inject one prompt into its session, starting the session if needed.
+/// Inject one prompt into the exact pane approved by the context probe.
 ///
-/// The injection is ONE atomic tmux command: the literal text with a
-/// trailing CR (byte-identical to pressing Enter) in a single `send-keys -l`.
-/// There is no window where the text landed but Enter did not — the server
-/// either executes the whole command (exit 0) or refuses it (non-zero, e.g.
-/// the session died between the liveness check and the send), so a failure
-/// here means NOT SENT and retrying cannot duplicate the prompt. Queue text
-/// has \r/\n stripped at add/update time, so the CR we append is the only
-/// one. (Residual ambiguity: the tmux client being externally SIGKILLed
-/// after the server executed would read as a failure — deck never does this
-/// and it is the same class of window as a power loss mid-send.)
+/// The injection is one tmux server command queue: store the literal prompt
+/// plus CR in a private buffer, compare the full server/session/window/pane
+/// generation plus the optional expected foreground process, and paste only
+/// on an exact match. There is no window where
+/// the text landed but Enter did not. Queue text has \r/\n stripped at
+/// add/update time, so the appended CR is the only one. (Residual ambiguity:
+/// an externally killed tmux client after the server pasted could still read
+/// as a failure; deck never does that, and it is the same class of window as
+/// a power loss mid-send.)
 pub(crate) fn fire_item(item: &QueueItem) -> Result<(), String> {
-    let alive: HashSet<String> = tmux(&["list-sessions", "-F", "#{session_name}"])
-        .map(|o| o.lines().map(|s| s.to_string()).collect())
-        .unwrap_or_default();
-    if !alive.contains(&item.session) {
-        start_session(item.session.clone(), item.dir.clone(), item.cmd.clone())?;
-        // boot wait blocks only THIS session's worker, never other sessions
-        std::thread::sleep(std::time::Duration::from_millis(2500));
+    let pane = item.binding.as_ref().ok_or("context binding is missing")?;
+    let delivery = item
+        .delivery
+        .as_deref()
+        .ok_or("delivery identity is missing")?;
+    if !delivery
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-')
+    {
+        return Err("delivery identity is invalid".into());
     }
     let line = format!("{}\r", item.text);
-    tmux(&["send-keys", "-t", &pane_target(&item.session), "-l", &line])?;
-    Ok(())
+    let buffer = format!("deck-send-{delivery}");
+    // Pane/session ids can be reused after the entire tmux server exits. Put
+    // the bytes in a uniquely named tmux buffer, then compare the FULL
+    // generation and paste them in the same server command queue. `-F`
+    // evaluates synchronously (no shell); the inner commands contain only
+    // deck-generated ids, never user text. paste-buffer is byte-literal, so
+    // prompt + CR remain one indivisible terminal input.
+    let actual = "#{pid}:#{session_id}:#{window_id}:#{pane_id}:#{pane_pid}";
+    let expected = format!(
+        "{}:{}:{}:{}:{}",
+        pane.server_pid, pane.session_id, pane.window_id, pane.pane_id, pane.pane_pid
+    );
+    let identity_condition = format!("#{{==:{actual},{expected}}}");
+    let condition = match item.expected_process.as_deref() {
+        Some(process) => {
+            format!("#{{&&:{identity_condition},#{{==:#{{pane_current_command}},{process}}}}}")
+        }
+        None => identity_condition,
+    };
+    let yes = format!("paste-buffer -b {buffer} -d -t {}", pane.pane_id);
+    let no = format!("delete-buffer -b {buffer}; display-message -p deck-context-refused");
+    let out = tmux_owned(&[
+        "set-buffer".into(),
+        "-b".into(),
+        buffer.clone(),
+        line,
+        ";".into(),
+        "if-shell".into(),
+        "-F".into(),
+        "-t".into(),
+        pane.pane_id.clone(),
+        condition,
+        yes,
+        no,
+    ]);
+    if out.as_ref().is_ok_and(|stdout| {
+        !stdout
+            .lines()
+            .any(|line| line.trim() == "deck-context-refused")
+    }) {
+        return Ok(());
+    }
+    // A vanished target can abort the command queue before its refusal
+    // branch deletes the private buffer. Never leave prompt bytes behind in
+    // tmux after a refused/indeterminate injection.
+    let _ = tmux(&["delete-buffer", "-b", &buffer]);
+    Err("context identity or foreground changed before literal send".into())
+}
+
+pub(crate) const READY_PROBE_INTERVAL_MS: u64 = 250;
+pub(crate) const READY_PROBE_TIMEOUT_MS: u64 = 15_000;
+
+pub(crate) fn poll_readiness(
+    max_polls: usize,
+    cancelled: &dyn Fn() -> bool,
+    probe: &mut dyn FnMut(Option<&PaneIdentity>) -> ProbeResult,
+    wait: &mut dyn FnMut(),
+) -> ProbeResult {
+    let mut started_identity: Option<PaneIdentity> = None;
+    let polls = max_polls.max(1);
+    for index in 0..polls {
+        if cancelled() {
+            return ProbeResult::blocked(
+                ContextStatus::Unavailable,
+                ContextCode::CancelledOrRevised,
+            );
+        }
+        let result = probe(started_identity.as_ref());
+        if result.status == ContextStatus::SessionReplaced {
+            return result;
+        }
+        if let Some(identity) = &result.identity {
+            if started_identity.is_none() {
+                started_identity = Some(identity.clone());
+            }
+        }
+        if result.is_ready() {
+            return result;
+        }
+        if index + 1 == polls {
+            return ProbeResult {
+                status: result.status,
+                code: ContextCode::StartupTimeout,
+                identity: result.identity,
+                current_process: result.current_process,
+            };
+        }
+        wait();
+    }
+    unreachable!()
+}
+
+/// Production readiness probe. Existing live sessions are checked once.
+/// A dead session is started once, then polled with a bounded timeout. The
+/// cancellation callback is consulted between every probe and sleep, so a
+/// pause/edit/delete does not wait for the timeout.
+pub(crate) fn prepare_context(item: &QueueItem, cancelled: &dyn Fn() -> bool) -> ProbeResult {
+    if cancelled() {
+        return ProbeResult::blocked(ContextStatus::Unavailable, ContextCode::CancelledOrRevised);
+    }
+    let existed = tmux(&[
+        "has-session",
+        "-t",
+        &crate::tmux::session_target(&item.session),
+    ])
+    .is_ok();
+    if existed {
+        return context::probe(
+            &item.session,
+            item.binding.as_ref(),
+            item.expected_process.as_deref(),
+        );
+    }
+    match start_session(item.session.clone(), item.dir.clone(), item.cmd.clone()) {
+        Ok(true) => {}
+        // Another actor won the race between our outer existence check and
+        // start_session's idempotent inner check. It is not a deck-created
+        // generation and therefore must never inherit permission to send.
+        Ok(false) => {
+            return ProbeResult::blocked(
+                ContextStatus::SessionReplaced,
+                ContextCode::IdentityChanged,
+            );
+        }
+        Err(_) => {
+            return ProbeResult::blocked(ContextStatus::Unavailable, ContextCode::StartupFailed);
+        }
+    }
+
+    let interval = std::time::Duration::from_millis(READY_PROBE_INTERVAL_MS);
+    let polls = (READY_PROBE_TIMEOUT_MS / READY_PROBE_INTERVAL_MS) as usize + 1;
+    poll_readiness(
+        polls,
+        cancelled,
+        &mut |identity| {
+            // A deck-initiated restart is allowed to acquire a new binding.
+            // Once observed, another generation change is rejected.
+            context::probe(&item.session, identity, item.expected_process.as_deref())
+        },
+        &mut || std::thread::sleep(interval),
+    )
+}
+
+pub(crate) fn final_context_probe(item: &QueueItem) -> ProbeResult {
+    context::probe(
+        &item.session,
+        item.binding.as_ref(),
+        item.expected_process.as_deref(),
+    )
 }
 
 /// Best-effort kill of a session deck must not leave running (already dead
@@ -1009,6 +1311,51 @@ pub(crate) fn select_for_session(
         .cloned()
 }
 
+/// Explicit manual-now selection skips only the schedule clock/quiet/window.
+/// It retains every ordering and exclusivity invariant: pause/ambiguous/dead,
+/// tombstone, session gap, group head and one-active-rule-iteration.
+fn select_requested(q: &QueueState, session: &str, id: &str, now: u64) -> Option<QueueItem> {
+    let item = q
+        .items
+        .iter()
+        .find(|i| i.id == id && i.session == session)?;
+    if item.paused
+        || matches!(item.state.as_str(), "firing" | "ambiguous")
+        || item_dead(item)
+        || is_cancelled(q, session)
+        || q.last_fired
+            .get(session)
+            .is_some_and(|t| now < t + SESSION_MIN_GAP_SECS)
+    {
+        return None;
+    }
+    if item.mode != "every" && group_head(q, item).is_some_and(|head| head.id != item.id) {
+        return None;
+    }
+    if item.mode == "every"
+        && q.items
+            .iter()
+            .any(|other| other.rule.as_deref() == Some(item.id.as_str()))
+    {
+        return None;
+    }
+    Some(item.clone())
+}
+
+fn select_for_request(
+    q: &QueueState,
+    session: &str,
+    now: u64,
+    now_min: u32,
+    activity: &HashMap<String, u64>,
+    requested: Option<&str>,
+) -> Option<QueueItem> {
+    match requested {
+        Some(id) => select_requested(q, session, id, now),
+        None => select_for_session(q, session, now, now_min, activity),
+    }
+}
+
 /// Pure per-tick candidate selection (unit-tested; the thread only adds IO):
 /// at most ONE candidate per session, sessions independent of each other.
 pub(crate) fn select_due(
@@ -1130,6 +1477,7 @@ pub(crate) fn finalize_delivery(
                 q.items.push(QueueItem {
                     id,
                     session: item.session.clone(),
+                    card_id: item.card_id.clone(),
                     dir: item.dir.clone(),
                     cmd: item.cmd.clone(),
                     text: step.clone(),
@@ -1156,6 +1504,10 @@ pub(crate) fn finalize_delivery(
                     seq: Some(k as u32 + 2),
                     rule: Some(item.id.clone()),
                     delivery: None,
+                    expected_process: item.expected_process.clone(),
+                    binding: item.binding.clone(),
+                    last_context: None,
+                    revision: 0,
                 });
             }
         }
@@ -1243,6 +1595,13 @@ pub(crate) enum SendResult {
         session: String,
         gave_up: bool,
     },
+    /// Due, but automatic identity/process protection blocked the target.
+    /// This is not a delivery attempt and never creates firing ambiguity.
+    Blocked {
+        session: String,
+        status: ContextStatus,
+        code: ContextCode,
+    },
     /// pre-fire persist failed — the intent never reached disk, nothing sent
     NotPersisted,
 }
@@ -1254,6 +1613,19 @@ pub(crate) struct SendHooks<'a> {
     pub(crate) persist: &'a (dyn Fn(&QueueState) -> Result<(), String> + Sync),
     /// kill a session whose card was deleted DURING this send
     pub(crate) kill: &'a (dyn Fn(&str) + Sync),
+}
+
+pub(crate) struct ContextHooks<'a> {
+    pub(crate) prepare: &'a (dyn Fn(&QueueItem, &dyn Fn() -> bool) -> ProbeResult + Sync),
+    pub(crate) final_probe: &'a (dyn Fn(&QueueItem) -> ProbeResult + Sync),
+}
+
+#[derive(Clone, Copy)]
+struct SendRequest<'a> {
+    session: &'a str,
+    now_min: u32,
+    activity: &'a HashMap<String, u64>,
+    requested: Option<&'a str>,
 }
 
 /// Closing the last hole in "a deleted card leaves nothing running": the
@@ -1289,6 +1661,7 @@ fn reap_if_cancelled(cancelled: bool, session: &str, h: &SendHooks) {
 ///
 /// The queue lock is held only for state transitions and their persists —
 /// never across `fire` (tmux + a possible session-boot wait).
+#[cfg(test)]
 pub(crate) fn send_one(
     qm: &Mutex<QueueState>,
     dirty: &AtomicBool,
@@ -1297,6 +1670,27 @@ pub(crate) fn send_one(
     activity: &HashMap<String, u64>,
     h: &SendHooks,
 ) -> SendResult {
+    send_one_guarded(
+        qm,
+        dirty,
+        SendRequest {
+            session,
+            now_min,
+            activity,
+            requested: None,
+        },
+        h,
+        None,
+    )
+}
+
+fn send_one_guarded(
+    qm: &Mutex<QueueState>,
+    dirty: &AtomicBool,
+    request: SendRequest<'_>,
+    h: &SendHooks,
+    expected: Option<(&str, u64, &PaneIdentity)>,
+) -> SendResult {
     let persist = h.persist;
     // Persist the firing intent (delivery id + ledger snapshot) BEFORE
     // injecting — this ordering preserves an honest ambiguity record across
@@ -1304,9 +1698,21 @@ pub(crate) fn send_one(
     let pre = with_queue(qm, persist, |q| {
         // fresh re-selection under the lock: a pause, edit or removal since
         // the tick began is honored here
-        let Some(sel) = select_for_session(q, session, now_epoch(), now_min, activity) else {
+        let Some(sel) = select_for_request(
+            q,
+            request.session,
+            now_epoch(),
+            request.now_min,
+            request.activity,
+            request.requested,
+        ) else {
             return Err(TX_NOOP.into());
         };
+        if expected.is_some_and(|(id, revision, binding)| {
+            sel.id != id || sel.revision != revision || sel.binding.as_ref() != Some(binding)
+        }) {
+            return Err(TX_NOOP.into());
+        }
         let delivery = next_delivery_id();
         let Some(it) = q.items.iter_mut().find(|i| i.id == sel.id) else {
             return Err(TX_NOOP.into());
@@ -1382,6 +1788,274 @@ pub(crate) fn send_one(
                 gave_up,
             }
         }
+    }
+}
+
+fn context_check(result: &ProbeResult) -> ContextCheck {
+    ContextCheck {
+        status: result.status,
+        code: result.code,
+        checked_at: now_epoch(),
+    }
+}
+
+/// Persist a closed context observation without entering the delivery state
+/// machine. A stale worker (item edited/paused/removed while probing) is a
+/// no-op. The first valid observation binds an unbound legacy/newly-started
+/// item even while its expected process is still pending; identity mismatch
+/// observations never rewrite an existing target.
+fn persist_context_result(
+    qm: &Mutex<QueueState>,
+    persist: &dyn Fn(&QueueState) -> Result<(), String>,
+    selected: &QueueItem,
+    result: &ProbeResult,
+) -> Result<Option<QueueItem>, String> {
+    with_queue(qm, persist, |q| {
+        if is_cancelled(q, &selected.session) {
+            return Err(TX_NOOP.into());
+        }
+        let Some(item) = q.items.iter_mut().find(|i| i.id == selected.id) else {
+            return Err(TX_NOOP.into());
+        };
+        if item.revision != selected.revision
+            || item.paused
+            || matches!(item.state.as_str(), "firing" | "ambiguous")
+        {
+            return Err(TX_NOOP.into());
+        }
+        item.last_context = Some(context_check(result));
+        if item.binding.is_none() && result.status != ContextStatus::SessionReplaced {
+            item.binding = result.identity.clone();
+        }
+        if result.is_ready() {
+            let Some(identity) = result.identity.clone() else {
+                return Err("ready context has no pane identity".into());
+            };
+            item.binding = Some(identity);
+        }
+        Ok(Some(item.clone()))
+    })
+    .or_else(|e| if e == TX_NOOP { Ok(None) } else { Err(e) })
+}
+
+/// A delete can land after a dead-session readiness worker's first
+/// cancellation check but before that worker starts tmux. The deleting path
+/// cannot kill a session that does not exist yet, so the worker must inspect
+/// the tombstone after its probe and reap anything it may have just started.
+fn reap_probe_start_after_delete(qm: &Mutex<QueueState>, session: &str, h: &SendHooks) -> bool {
+    let cancelled = is_cancelled(&qm.lock().unwrap(), session);
+    reap_if_cancelled(cancelled, session, h);
+    cancelled
+}
+
+/// Context-safe front half of one send. No firing intent or delivery attempt
+/// exists until both readiness and a final exact-identity probe pass.
+pub(crate) fn send_one_safe(
+    qm: &Mutex<QueueState>,
+    dirty: &AtomicBool,
+    session: &str,
+    now_min: u32,
+    activity: &HashMap<String, u64>,
+    h: &SendHooks,
+    context_hooks: &ContextHooks,
+) -> SendResult {
+    send_one_safe_requested(
+        qm,
+        dirty,
+        SendRequest {
+            session,
+            now_min,
+            activity,
+            requested: None,
+        },
+        h,
+        context_hooks,
+    )
+}
+
+fn send_one_safe_requested(
+    qm: &Mutex<QueueState>,
+    dirty: &AtomicBool,
+    request: SendRequest<'_>,
+    h: &SendHooks,
+    context_hooks: &ContextHooks,
+) -> SendResult {
+    let selected = {
+        let q = qm.lock().unwrap();
+        select_for_request(
+            &q,
+            request.session,
+            now_epoch(),
+            request.now_min,
+            request.activity,
+            request.requested,
+        )
+    };
+    let Some(selected) = selected else {
+        return SendResult::Nothing;
+    };
+    let cancelled = || {
+        let q = qm.lock().unwrap();
+        is_cancelled(&q, &selected.session)
+            || !q.items.iter().any(|i| {
+                i.id == selected.id
+                    && i.revision == selected.revision
+                    && !i.paused
+                    && !matches!(i.state.as_str(), "firing" | "ambiguous")
+            })
+    };
+    let prepared = (context_hooks.prepare)(&selected, &cancelled);
+    if reap_probe_start_after_delete(qm, &selected.session, h) {
+        return SendResult::Nothing;
+    }
+    if !prepared.is_ready() {
+        return match persist_context_result(qm, h.persist, &selected, &prepared) {
+            Ok(Some(_)) => SendResult::Blocked {
+                session: selected.session,
+                status: prepared.status,
+                code: prepared.code,
+            },
+            Ok(None) => {
+                reap_probe_start_after_delete(qm, &selected.session, h);
+                SendResult::Nothing
+            }
+            Err(e) => {
+                applog(&format!(
+                    "[queue] persist (context-blocked) FAILED ({})",
+                    storage::err_code(&e)
+                ));
+                SendResult::NotPersisted
+            }
+        };
+    }
+    let bound = match persist_context_result(qm, h.persist, &selected, &prepared) {
+        Ok(Some(item)) => item,
+        Ok(None) => {
+            reap_probe_start_after_delete(qm, &selected.session, h);
+            return SendResult::Nothing;
+        }
+        Err(e) => {
+            applog(&format!(
+                "[queue] persist (context-ready) FAILED ({}) — not sending this tick",
+                storage::err_code(&e)
+            ));
+            return SendResult::NotPersisted;
+        }
+    };
+
+    // Re-read metadata immediately before opening the irreversible firing
+    // window. Exact pane targeting below closes the name-reuse race.
+    let final_result = (context_hooks.final_probe)(&bound);
+    if !final_result.is_ready() {
+        return match persist_context_result(qm, h.persist, &bound, &final_result) {
+            Ok(Some(_)) => SendResult::Blocked {
+                session: bound.session,
+                status: final_result.status,
+                code: final_result.code,
+            },
+            Ok(None) => {
+                reap_probe_start_after_delete(qm, &bound.session, h);
+                SendResult::Nothing
+            }
+            Err(e) => {
+                applog(&format!(
+                    "[queue] persist (context-final) FAILED ({})",
+                    storage::err_code(&e)
+                ));
+                SendResult::NotPersisted
+            }
+        };
+    }
+    let identity = bound.binding.as_ref().expect("ready binding persisted");
+    send_one_guarded(
+        qm,
+        dirty,
+        request,
+        h,
+        Some((&bound.id, bound.revision, identity)),
+    )
+}
+
+/// Immediate delivery is one-shot. It can bypass only a freshly proven
+/// foreground mismatch; exact identity remains mandatory in both probes and
+/// the atomic paste guard. No persisted protection is weakened.
+#[tauri::command]
+pub(crate) fn queue_send_now(
+    state: State<'_, Queues>,
+    app: AppHandle,
+    id: String,
+    accept_process_mismatch: bool,
+) -> Result<(), String> {
+    let item = state
+        .q
+        .lock()
+        .unwrap()
+        .items
+        .iter()
+        .find(|i| i.id == id)
+        .cloned()
+        .ok_or("scheduled prompt not found")?;
+    let observed = final_context_probe(&item);
+    if observed.status == ContextStatus::SessionReplaced {
+        return Err("context identity changed; rebind or reschedule before sending".into());
+    }
+    if accept_process_mismatch && observed.status != ContextStatus::ForegroundDifferent {
+        return Err("one-shot process bypass requires a current foreground mismatch".into());
+    }
+    if !claim_session(&state.busy, &item.session) {
+        return Err("this session already has a scheduled send in progress".into());
+    }
+    let prepare_once = |source: &QueueItem, cancelled: &dyn Fn() -> bool| {
+        let mut one_shot = source.clone();
+        if accept_process_mismatch {
+            one_shot.expected_process = None;
+        }
+        prepare_context(&one_shot, cancelled)
+    };
+    let final_once = |source: &QueueItem| {
+        let mut one_shot = source.clone();
+        if accept_process_mismatch {
+            one_shot.expected_process = None;
+        }
+        final_context_probe(&one_shot)
+    };
+    let fire_once = |source: &QueueItem| {
+        let mut one_shot = source.clone();
+        if accept_process_mismatch {
+            one_shot.expected_process = None;
+        }
+        fire_item(&one_shot)
+    };
+    let result = send_one_safe_requested(
+        &state.q,
+        &state.dirty,
+        SendRequest {
+            session: &item.session,
+            now_min: local_minutes(),
+            activity: &HashMap::new(),
+            requested: Some(&id),
+        },
+        &SendHooks {
+            fire: &fire_once,
+            persist: &save_queue,
+            kill: &kill_session_quietly,
+        },
+        &ContextHooks {
+            prepare: &prepare_once,
+            final_probe: &final_once,
+        },
+    );
+    release_session(&state.busy, &item.session);
+    match result {
+        SendResult::Sent { session } => {
+            let _ = app.emit("queue-fired", QueueFired { session });
+            let _ = app.emit("queue-changed", ());
+            Ok(())
+        }
+        SendResult::Blocked { .. } => Err("target context is unavailable".into()),
+        SendResult::Nothing => Err("prompt is no longer eligible to send".into()),
+        SendResult::NotPersisted => Err("delivery intent could not be saved".into()),
+        SendResult::Failed { .. } => Err("tmux refused the literal send".into()),
     }
 }
 
@@ -1493,7 +2167,7 @@ pub(crate) fn spawn_scheduler(app: AppHandle) {
             let act = activity.clone();
             std::thread::spawn(move || {
                 let state = app2.state::<Queues>();
-                let res = send_one(
+                let res = send_one_safe(
                     &state.q,
                     &state.dirty,
                     &session,
@@ -1504,6 +2178,10 @@ pub(crate) fn spawn_scheduler(app: AppHandle) {
                         persist: &save_queue,
                         kill: &kill_session_quietly,
                     },
+                    &ContextHooks {
+                        prepare: &prepare_context,
+                        final_probe: &final_context_probe,
+                    },
                 );
                 release_session(&state.busy, &session);
                 match res {
@@ -1511,7 +2189,7 @@ pub(crate) fn spawn_scheduler(app: AppHandle) {
                         let _ = app2.emit("queue-fired", QueueFired { session });
                         let _ = app2.emit("queue-changed", ());
                     }
-                    SendResult::Failed { .. } => {
+                    SendResult::Failed { .. } | SendResult::Blocked { .. } => {
                         let _ = app2.emit("queue-changed", ());
                     }
                     SendResult::Nothing | SendResult::NotPersisted => {}
@@ -1529,6 +2207,7 @@ mod tests {
         QueueItem {
             id: id.into(),
             session: "s".into(),
+            card_id: "card-s".into(),
             dir: String::new(),
             cmd: String::new(),
             text: "x".into(),
@@ -1555,6 +2234,10 @@ mod tests {
             seq: None,
             rule: None,
             delivery: None,
+            expected_process: Some("codex".into()),
+            binding: None,
+            last_context: None,
+            revision: 0,
         }
     }
 
@@ -1980,6 +2663,7 @@ mod tests {
     fn add_validation_rejects_bad_combinations() {
         let base = || QueueAddArgs {
             session: "s".into(),
+            card_id: "card-s".into(),
             dir: String::new(),
             cmd: String::new(),
             text: "x".into(),
@@ -2580,6 +3264,406 @@ mod tests {
         assert_eq!(res, SendResult::Nothing);
     }
 
+    fn pane(n: u32) -> PaneIdentity {
+        PaneIdentity {
+            server_pid: 90 + n,
+            session_id: format!("${n}"),
+            window_id: format!("@{n}"),
+            pane_id: format!("%{n}"),
+            pane_pid: 100 + n,
+        }
+    }
+
+    fn probe_result(status: ContextStatus, code: ContextCode, identity: u32) -> ProbeResult {
+        ProbeResult {
+            status,
+            code,
+            identity: Some(pane(identity)),
+            current_process: Some("codex".into()),
+        }
+    }
+
+    fn send_safe_test(
+        qm: &Mutex<QueueState>,
+        fire: &(dyn Fn(&QueueItem) -> Result<(), String> + Sync),
+        prepare: &(dyn Fn(&QueueItem, &dyn Fn() -> bool) -> ProbeResult + Sync),
+        final_probe: &(dyn Fn(&QueueItem) -> ProbeResult + Sync),
+    ) -> SendResult {
+        let kill = |_: &str| {};
+        send_one_safe(
+            qm,
+            &AtomicBool::new(false),
+            "s",
+            720,
+            &HashMap::new(),
+            &SendHooks {
+                fire,
+                persist: &ok_persist,
+                kill: &kill,
+            },
+            &ContextHooks {
+                prepare,
+                final_probe,
+            },
+        )
+    }
+
+    #[test]
+    fn safe_ready_context_sends_exactly_once() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        let qm = Mutex::new(qs(vec![due_at("a", "s")]));
+        let sends = AtomicU32::new(0);
+        let ready = |_: &QueueItem, _: &dyn Fn() -> bool| {
+            probe_result(ContextStatus::Ready, ContextCode::ProcessMatched, 1)
+        };
+        let final_ready = |i: &QueueItem| {
+            assert_eq!(i.binding.as_ref(), Some(&pane(1)));
+            probe_result(ContextStatus::Ready, ContextCode::ProcessMatched, 1)
+        };
+        let result = send_safe_test(
+            &qm,
+            &|i: &QueueItem| {
+                assert_eq!(i.binding.as_ref(), Some(&pane(1)));
+                sends.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            },
+            &ready,
+            &final_ready,
+        );
+        assert!(matches!(result, SendResult::Sent { .. }));
+        assert_eq!(sends.load(Ordering::SeqCst), 1);
+        assert_eq!(qm.lock().unwrap().deliveries.len(), 1);
+    }
+
+    #[test]
+    fn unsafe_contexts_block_without_attempt_or_ledger() {
+        for (status, code) in [
+            (
+                ContextStatus::ForegroundDifferent,
+                ContextCode::ForegroundDifferent,
+            ),
+            (ContextStatus::Unavailable, ContextCode::ProbeFailed),
+        ] {
+            let qm = Mutex::new(qs(vec![due_at("a", "s")]));
+            let prepare = move |_: &QueueItem, _: &dyn Fn() -> bool| probe_result(status, code, 1);
+            let result = send_safe_test(
+                &qm,
+                &|_: &QueueItem| panic!("blocked context must never send"),
+                &prepare,
+                &|_: &QueueItem| panic!("blocked context has no final probe"),
+            );
+            assert!(matches!(result, SendResult::Blocked { status: s, .. } if s == status));
+            let q = qm.lock().unwrap();
+            assert_eq!(q.items[0].attempts, 0);
+            assert_eq!(q.items[0].state, "pending");
+            assert!(q.pending.is_empty() && q.deliveries.is_empty());
+            assert_eq!(q.items[0].last_context.as_ref().unwrap().status, status);
+        }
+    }
+
+    #[test]
+    fn replacement_between_probe_and_send_is_rejected_without_attempt() {
+        let qm = Mutex::new(qs(vec![due_at("a", "s")]));
+        let result = send_safe_test(
+            &qm,
+            &|_: &QueueItem| panic!("replacement must never receive input"),
+            &|_: &QueueItem, _: &dyn Fn() -> bool| {
+                probe_result(ContextStatus::Ready, ContextCode::ProcessMatched, 1)
+            },
+            &|_: &QueueItem| {
+                probe_result(
+                    ContextStatus::SessionReplaced,
+                    ContextCode::IdentityChanged,
+                    2,
+                )
+            },
+        );
+        assert!(matches!(
+            result,
+            SendResult::Blocked {
+                status: ContextStatus::SessionReplaced,
+                ..
+            }
+        ));
+        let q = qm.lock().unwrap();
+        assert_eq!(q.items[0].attempts, 0);
+        assert!(q.pending.is_empty());
+    }
+
+    #[test]
+    fn foreground_change_between_probe_and_send_is_rejected_without_attempt() {
+        let qm = Mutex::new(qs(vec![due_at("a", "s")]));
+        let result = send_safe_test(
+            &qm,
+            &|_: &QueueItem| panic!("changed foreground must never receive input"),
+            &|_: &QueueItem, _: &dyn Fn() -> bool| {
+                probe_result(ContextStatus::Ready, ContextCode::ProcessMatched, 1)
+            },
+            &|_: &QueueItem| {
+                probe_result(
+                    ContextStatus::ForegroundDifferent,
+                    ContextCode::ForegroundDifferent,
+                    1,
+                )
+            },
+        );
+        assert!(matches!(
+            result,
+            SendResult::Blocked {
+                status: ContextStatus::ForegroundDifferent,
+                ..
+            }
+        ));
+        let q = qm.lock().unwrap();
+        assert_eq!(q.items[0].attempts, 0);
+        assert!(q.pending.is_empty());
+    }
+
+    #[test]
+    fn pause_edit_and_delete_during_probe_cancel_the_worker() {
+        for action in ["pause", "edit", "delete"] {
+            let qm = Mutex::new(qs(vec![due_at("a", "s")]));
+            let prepare = |_: &QueueItem, _: &dyn Fn() -> bool| {
+                let mut q = qm.lock().unwrap();
+                match action {
+                    "pause" => q.items[0].paused = true,
+                    "edit" => {
+                        q.items[0].text = "changed".into();
+                        q.items[0].revision += 1;
+                    }
+                    "delete" => clear_session_items(&mut q, "s"),
+                    _ => unreachable!(),
+                }
+                probe_result(ContextStatus::Ready, ContextCode::ProcessMatched, 1)
+            };
+            let result = send_safe_test(
+                &qm,
+                &|_: &QueueItem| panic!("stale worker must not send"),
+                &prepare,
+                &|_: &QueueItem| panic!("stale worker has no final probe"),
+            );
+            assert_eq!(result, SendResult::Nothing, "{action}");
+            assert!(qm
+                .lock()
+                .unwrap()
+                .items
+                .first()
+                .is_none_or(|i| i.attempts == 0));
+        }
+    }
+
+    #[test]
+    fn delete_during_probe_reaps_a_session_the_worker_may_have_started() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        let qm = Mutex::new(qs(vec![due_at("a", "s")]));
+        let kills = AtomicU32::new(0);
+        let kill = |session: &str| {
+            assert_eq!(session, "s");
+            kills.fetch_add(1, Ordering::SeqCst);
+        };
+        let result = send_one_safe(
+            &qm,
+            &AtomicBool::new(false),
+            "s",
+            720,
+            &HashMap::new(),
+            &SendHooks {
+                fire: &|_: &QueueItem| panic!("deleted prompt must not send"),
+                persist: &ok_persist,
+                kill: &kill,
+            },
+            &ContextHooks {
+                prepare: &|_: &QueueItem, _: &dyn Fn() -> bool| {
+                    clear_session_items(&mut qm.lock().unwrap(), "s");
+                    probe_result(
+                        ContextStatus::Unavailable,
+                        ContextCode::CancelledOrRevised,
+                        1,
+                    )
+                },
+                final_probe: &|_: &QueueItem| panic!("deleted prompt has no final probe"),
+            },
+        );
+        assert_eq!(result, SendResult::Nothing);
+        assert_eq!(kills.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn startup_poll_succeeds_times_out_and_detects_replacement_deterministically() {
+        let mut calls = 0;
+        let success = poll_readiness(
+            3,
+            &|| false,
+            &mut |_| {
+                calls += 1;
+                if calls == 3 {
+                    probe_result(ContextStatus::Ready, ContextCode::ProcessMatched, 1)
+                } else {
+                    probe_result(
+                        ContextStatus::ForegroundDifferent,
+                        ContextCode::ForegroundDifferent,
+                        1,
+                    )
+                }
+            },
+            &mut || {},
+        );
+        assert!(success.is_ready());
+        assert_eq!(calls, 3);
+
+        let timeout = poll_readiness(
+            2,
+            &|| false,
+            &mut |_| {
+                probe_result(
+                    ContextStatus::ForegroundDifferent,
+                    ContextCode::ForegroundDifferent,
+                    1,
+                )
+            },
+            &mut || {},
+        );
+        assert_eq!(timeout.status, ContextStatus::ForegroundDifferent);
+        assert_eq!(timeout.code, ContextCode::StartupTimeout);
+
+        let mut calls = 0;
+        let replaced = poll_readiness(
+            4,
+            &|| false,
+            &mut |bound| {
+                calls += 1;
+                if bound.is_some() {
+                    probe_result(
+                        ContextStatus::SessionReplaced,
+                        ContextCode::IdentityChanged,
+                        2,
+                    )
+                } else {
+                    probe_result(
+                        ContextStatus::ForegroundDifferent,
+                        ContextCode::ForegroundDifferent,
+                        1,
+                    )
+                }
+            },
+            &mut || {},
+        );
+        assert_eq!(replaced.status, ContextStatus::SessionReplaced);
+        assert_eq!(calls, 2);
+    }
+
+    #[test]
+    fn one_sessions_context_wait_does_not_block_another_session() {
+        use std::sync::Barrier;
+        let qm = Mutex::new(qs(vec![due_at("a", "slow"), due_at("b", "fast")]));
+        let entered = Barrier::new(2);
+        let release = Barrier::new(2);
+        std::thread::scope(|scope| {
+            let qm_ref = &qm;
+            let (entered_ref, release_ref) = (&entered, &release);
+            scope.spawn(move || {
+                let kill = |_: &str| {};
+                let result = send_one_safe(
+                    qm_ref,
+                    &AtomicBool::new(false),
+                    "slow",
+                    720,
+                    &HashMap::new(),
+                    &SendHooks {
+                        fire: &|_: &QueueItem| Ok(()),
+                        persist: &ok_persist,
+                        kill: &kill,
+                    },
+                    &ContextHooks {
+                        prepare: &|_: &QueueItem, _: &dyn Fn() -> bool| {
+                            entered_ref.wait();
+                            release_ref.wait();
+                            probe_result(ContextStatus::Ready, ContextCode::ProcessMatched, 1)
+                        },
+                        final_probe: &|_: &QueueItem| {
+                            probe_result(ContextStatus::Ready, ContextCode::ProcessMatched, 1)
+                        },
+                    },
+                );
+                assert!(matches!(result, SendResult::Sent { .. }));
+            });
+            entered.wait();
+            let kill = |_: &str| {};
+            let fast = send_one_safe(
+                &qm,
+                &AtomicBool::new(false),
+                "fast",
+                720,
+                &HashMap::new(),
+                &SendHooks {
+                    fire: &|_: &QueueItem| Ok(()),
+                    persist: &ok_persist,
+                    kill: &kill,
+                },
+                &ContextHooks {
+                    prepare: &|_: &QueueItem, _: &dyn Fn() -> bool| {
+                        probe_result(ContextStatus::Ready, ContextCode::ProcessMatched, 2)
+                    },
+                    final_probe: &|_: &QueueItem| {
+                        probe_result(ContextStatus::Ready, ContextCode::ProcessMatched, 2)
+                    },
+                },
+            );
+            assert!(matches!(fast, SendResult::Sent { .. }));
+            assert!(!qm.lock().unwrap().items.iter().any(|i| i.session == "fast"));
+            release.wait();
+        });
+        assert_eq!(qm.lock().unwrap().deliveries.len(), 2);
+    }
+
+    #[test]
+    fn legacy_policy_variants_are_ignored_and_cleaned() {
+        for policy in ["agent-ready", "foreground-match", "force-generic"] {
+            let mut value = serde_json::to_value(qs(vec![due_at("a", "s")])).unwrap();
+            let item = value["items"][0].as_object_mut().unwrap();
+            item.remove("expected_process");
+            item.insert("safety_policy".into(), serde_json::json!(policy));
+            item.insert("expected_agent".into(), serde_json::json!("codex"));
+            item.insert(
+                "last_context".into(),
+                serde_json::json!({"status":"working","code":"hook-working","checked_at":1}),
+            );
+            item.insert("cmd".into(), serde_json::json!("codex --full-auto"));
+            let mut loaded: QueueState = serde_json::from_value(value).unwrap();
+            migrate_context(&mut loaded);
+            let item = &loaded.items[0];
+            assert_eq!(item.expected_process.as_deref(), Some("codex"), "{policy}");
+            assert!(item.last_context.is_none(), "{policy}");
+            let saved = serde_json::to_string(&loaded).unwrap();
+            assert!(!saved.contains("safety_policy"), "{policy}");
+            assert!(!saved.contains("expected_agent"), "{policy}");
+            assert!(!saved.contains("hook-working"), "{policy}");
+        }
+    }
+
+    #[test]
+    fn manual_now_bypasses_only_time_not_ordering_or_gap() {
+        let mut future = due_at("future", "s");
+        future.at = Some(u64::MAX);
+        let mut q = qs(vec![future]);
+        assert!(select_for_session(&q, "s", NOW, 720, &HashMap::new()).is_none());
+        assert_eq!(
+            select_requested(&q, "s", "future", NOW).unwrap().id,
+            "future"
+        );
+        let mut tail = qi("tail", "chain");
+        tail.group = Some("g".into());
+        tail.seq = Some(2);
+        let mut head = qi("head", "chain");
+        head.group = Some("g".into());
+        head.seq = Some(1);
+        q.items.extend([head, tail]);
+        assert!(select_requested(&q, "s", "tail", NOW).is_none());
+        q.last_fired.insert("s".into(), NOW - 1);
+        assert!(select_requested(&q, "s", "future", NOW).is_none());
+    }
+
     #[test]
     fn a_firing_item_is_never_selected_again() {
         let mut a = due_at("a", "s");
@@ -2692,6 +3776,7 @@ mod tests {
     fn add_args(session: &str, text: &str) -> QueueAddArgs {
         QueueAddArgs {
             session: session.into(),
+            card_id: format!("card-{session}"),
             dir: String::new(),
             cmd: String::new(),
             text: text.into(),

@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import {
   sessionName, fmtMem, fmtEvery, minToHM, hmToMin, winHas, hasWindow,
   nextFire, groupQueue, groupSteps, itemDead, blockedBy,
-  chainQuietHint, CHAIN_QUIET_SECS, shQuote, quickBarLayout, rectsOverlap,
+  chainQuietHint, contextStatusKey, CHAIN_QUIET_SECS, shQuote, quickBarLayout, rectsOverlap,
   createExitRetirementTracker, createSerialTransactionQueue, deleteSessionsTransaction, sidebarGroups,
   copyExact, createTerminalSelectionModel, terminalSelectionEdgeLines,
   createTerminalWheelAccumulator, terminalWheelLines,
@@ -109,7 +109,14 @@ test('chainQuietHint tracks the quiet window', () => {
   assert.equal(chainQuietHint(180, true), ' · quiet ✓');
   assert.equal(chainQuietHint(9999, true), ' · quiet ✓', 'capped, no runaway counter');
   assert.equal(chainQuietHint(null, true), '', 'no poll data yet — no hint');
-  assert.equal(chainQuietHint(null, false), ' · ready', 'dead session counts as quiet');
+  assert.equal(chainQuietHint(null, false), ' · session stopped', 'dead is not mislabeled ready');
+});
+
+test('scheduler context states stay closed and UI-localized', () => {
+  assert.equal(contextStatusKey('ready'), 'queue.context.ready');
+  assert.equal(contextStatusKey('foreground-different'), 'queue.context.differentProcess');
+  assert.equal(contextStatusKey('session-replaced'), 'queue.context.replaced');
+  assert.equal(contextStatusKey('unexpected-future-value'), 'queue.context.unknown');
 });
 
 const item = (id, mode, extra = {}) =>

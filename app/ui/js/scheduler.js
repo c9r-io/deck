@@ -1,9 +1,9 @@
 // scheduler.js — scheduled prompts: queue groups, recurring rules, templates
 // Part of deck's no-build frontend: native ES modules, no bundler.
 import { $, inv, listen, state, uev } from './state.js';
-import { blockedBy, chainQuietHint, fmtEvery, groupQueue, groupSteps, hasWindow, hmToMin, itemDead, minToHM, nextFire, winHas } from './pure.js';
-export { blockedBy, chainQuietHint, fmtEvery, groupQueue, groupSteps, hasWindow, hmToMin, itemDead, minToHM, nextFire, winHas };
-import { confirmDialog, inlineRename, toast, promptDialog } from './dialogs.js';
+import { blockedBy, chainQuietHint, contextStatusKey, fmtEvery, groupQueue, groupSteps, hasWindow, hmToMin, itemDead, minToHM, nextFire, winHas } from './pure.js';
+export { blockedBy, chainQuietHint, contextStatusKey, fmtEvery, groupQueue, groupSteps, hasWindow, hmToMin, itemDead, minToHM, nextFire, winHas };
+import { confirmDangerDialog, confirmDialog, inlineRename, toast, promptDialog } from './dialogs.js';
 import { pollNow, provider } from './board.js';
 import { strToB64 } from './layout.js';
 import { formatDateTime, formatInterval, formatNumber, t } from './i18n.js';
@@ -37,11 +37,55 @@ export function fmtWhen(i) {
 }
 
 export function localizedChainQuietHint(idleSecs, alive) {
-  if (!alive) return t('queue.quiet.ready');
+  if (!alive) return t('queue.quiet.stopped');
   if (idleSecs == null) return '';
   const total = 180;
   const seconds = Math.min(Math.floor(idleSecs), total);
   return seconds >= total ? t('queue.quiet.done') : t('queue.quiet.progress', { seconds, total });
+}
+
+export const contextLabel = item => {
+  const check = item?.last_context || item;
+  if (!check) return '';
+  if (check.status === 'foreground-different') {
+    return t('queue.context.differentProcess', { process: item.expected_process || '?' });
+  }
+  return t(contextStatusKey(check.status));
+};
+
+async function refreshItemProbe(item) {
+  const result = await inv('queue_probe_context', { id: item.id });
+  await refreshQueue();
+  return result;
+}
+
+async function manualSendNow(item) {
+  let probe;
+  try { probe = await refreshItemProbe(item); }
+  catch (e) { toast(t('queue.context.probeFailed')); return; }
+  if (probe.status === 'session-replaced') {
+    toast(t('queue.context.replaced'));
+    return;
+  }
+  if (probe.status === 'unavailable' || probe.status === 'starting' || probe.status === 'unknown') {
+    toast(t(contextStatusKey(probe.status)));
+    return;
+  }
+  const mismatch = probe.status === 'foreground-different';
+  const target = probe.current_process || t('queue.context.noProcess');
+  const message = mismatch
+    ? t('queue.manualMismatchConfirm', { expected: probe.expected_process || '?', current: target })
+    : t('queue.manualReadyConfirm', { current: target });
+  const accepted = mismatch ? await confirmDangerDialog(message) : await confirmDialog(message);
+  if (!accepted) return;
+  inv('queue_send_now', { id: item.id, acceptProcessMismatch: mismatch })
+    .catch(() => toast(t('error.operation', { operation: t('queue.manualNow') })));
+}
+
+async function rebindItem(item) {
+  if (!(await confirmDangerDialog(t('queue.rebindConfirm')))) return;
+  inv('queue_rebind', { id: item.id })
+    .catch(() => toast(t('error.operation', { operation: t('queue.rebind') })));
 }
 
 const chainWhenSuffix = (i, card) =>
@@ -145,7 +189,14 @@ export function groupEl(g, card) {
     row.className = 'qg-row' + (r.item ? '' : ' ro');
     const dead = r.item && itemDead(r.item);
     const ambiguous = r.item && r.item.state === 'ambiguous';
+    const contextBlocked = r.item && r.item.last_context && r.item.last_context.status !== 'ready'
+      && !ambiguous && r.item.state !== 'firing';
+    const replaced = r.item?.last_context?.status === 'session-replaced';
+    const manualAllowed = r.item && !ambiguous && r.item.state !== 'firing' && !dead && !replaced;
     row.innerHTML = '<span class="tree"></span><span class="q-text"></span><span class="row-meta"></span>'
+      + (contextBlocked ? '<button class="q-wait"></button>' : '')
+      + (replaced ? '<button class="q-rebind"></button>' : '')
+      + (manualAllowed ? '<button class="q-now"></button>' : '')
       + (ambiguous ? '<button class="q-ack"></button><button class="q-risk-retry"></button>' : '')
       + (dead ? '<button class="q-retry">↻</button><button class="q-skip">⏭</button>' : '')
       + (r.item ? '<button class="q-del">✕</button>' : '');
@@ -168,6 +219,23 @@ export function groupEl(g, card) {
       const del = row.querySelector('.q-del');
       del.title = t('queue.removePrompt');
       del.onclick = () => inv('queue_remove', { id: i.id }).catch(() => toast(t('error.operation', { operation: t('common.delete') })));
+      const wait = row.querySelector('.q-wait');
+      if (wait) {
+        wait.textContent = t('queue.keepWaiting');
+        wait.onclick = () => refreshItemProbe(i)
+          .then(() => toast(t('queue.waitingContinues')))
+          .catch(() => toast(t('queue.context.probeFailed')));
+      }
+      const rebind = row.querySelector('.q-rebind');
+      if (rebind) {
+        rebind.textContent = t('queue.rebind');
+        rebind.onclick = () => rebindItem(i);
+      }
+      const now = row.querySelector('.q-now');
+      if (now) {
+        now.textContent = t('queue.manualNow');
+        now.onclick = () => manualSendNow(i);
+      }
       const rb = row.querySelector('.q-retry');
       if (rb) { rb.title = t('queue.retryStep'); rb.onclick = () => inv('queue_retry', { id: i.id }).catch(() => toast(t('error.operation', { operation: t('queue.riskRetry') }))); }
       const ack = row.querySelector('.q-ack');
@@ -190,6 +258,8 @@ export function groupEl(g, card) {
         bits.push(t('queue.ambiguousDetail'));
       } else if (i.state === 'failed' && i.mode !== 'every') {
         bits.push('⚠ ' + t(itemDead(i) ? 'queue.gaveUp' : 'queue.failedRetrying'));
+      } else if (i.last_context && i.last_context.status !== 'ready') {
+        bits.push('⏸ ' + contextLabel(i));
       } else if (blockedBy(i, g.rows)) {
         bits.push(t('queue.blocked'));
       }
@@ -390,7 +460,9 @@ $('q-add-btn').onclick = async () => {
   } else {
     at = Math.floor(Date.now() / 1000) + parseInt(w, 10) * 60;
   }
-  const base = { session: card.session, dir: card.dir, cmd: card.cmd };
+  const base = {
+    session: card.session, cardId: card.id, dir: card.dir, cmd: card.cmd,
+  };
   try {
     if (qTpl) {
       const steps = qTpl.steps.slice();

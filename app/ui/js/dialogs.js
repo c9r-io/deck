@@ -6,16 +6,31 @@ import { applyTranslations, setLocale, t, translateNotice } from './i18n.js';
 import { parseSettings, serializeSettings } from './settings-model.js';
 
 /* ---------- confirm dialog (window.confirm is a silent no-op in WKWebView) ---------- */
+let confirmPointerOnly = false;
 export function confirmDialog(msg) {
   return new Promise(resolve => {
+    confirmPointerOnly = false;
     cfmResolve = resolve;
     $('cfm-msg').textContent = msg;
     $('cfm').style.display = 'flex';
     $('cfm-yes').focus();
   });
 }
+/* High-risk scheduler actions must not be accepted by an ordinary Enter or
+   blur. The safe button receives focus and only an explicit activation of
+   the confirm button can accept. */
+export function confirmDangerDialog(msg) {
+  return new Promise(resolve => {
+    confirmPointerOnly = true;
+    cfmResolve = resolve;
+    $('cfm-msg').textContent = msg;
+    $('cfm').style.display = 'flex';
+    $('cfm-no').focus();
+  });
+}
 export function cfmDone(v) {
   $('cfm').style.display = 'none';
+  confirmPointerOnly = false;
   if (cfmResolve) { cfmResolve(v); cfmResolve = null; }
 }
 $('cfm-yes').onclick = () => cfmDone(true);
@@ -23,7 +38,10 @@ $('cfm-no').onclick = () => cfmDone(false);
 $('cfm').addEventListener('mousedown', e => { if (e.target === $('cfm')) cfmDone(false); });
 document.addEventListener('keydown', e => {
   if ($('cfm').style.display !== 'flex') return;
-  if (e.key === 'Enter') { e.stopPropagation(); e.preventDefault(); cfmDone(true); }
+  if (e.key === 'Enter') {
+    e.stopPropagation(); e.preventDefault();
+    if (!confirmPointerOnly) cfmDone(true);
+  }
   if (e.key === 'Escape') { e.stopPropagation(); e.preventDefault(); cfmDone(false); }
 }, true);
 

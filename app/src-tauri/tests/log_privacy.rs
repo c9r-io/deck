@@ -230,6 +230,27 @@ fn every_write_path_runs_through_the_sanitizer() {
     );
 }
 
+#[test]
+fn scheduler_context_probe_is_metadata_only_and_content_free() {
+    let context = std::fs::read_to_string(manifest("src/context.rs")).unwrap();
+    assert!(context.contains("#{pane_current_command}"));
+    assert!(
+        !context.contains("@deck_agent_"),
+        "production probe must not read user hook options"
+    );
+    assert!(
+        !context.contains("\"capture-pane\""),
+        "context probe must not invoke terminal capture"
+    );
+    assert!(
+        !context.contains("applog("),
+        "raw probe metadata must never be logged"
+    );
+    let scheduler = std::fs::read_to_string(manifest("src/scheduler.rs")).unwrap();
+    assert!(scheduler.contains("last_context: Option<ContextCheck>"));
+    assert!(!scheduler.contains("terminal_tail"));
+}
+
 // File-permission guarantees are BEHAVIORAL tests now, not source scans:
 // storage.rs (every_saved_artifact_is_user_only, harden_migrates_legacy_modes_
 // idempotently, quarantined_corrupt_file_is_user_only, concurrent_saves_stay_

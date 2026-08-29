@@ -387,11 +387,10 @@ fn send_keys_literal_is_byte_for_byte() {
     );
 }
 
-/// The scheduler injects a prompt as ONE atomic tmux command: literal text
-/// with a trailing CR in a single `send-keys -l`. This is what removes the
-/// "text landed but Enter didn't" partial-send window — the command either
-/// executes wholly (the shell runs the line) or is refused. The CR byte must
-/// behave exactly like pressing Enter.
+/// A trailing CR in one literal tmux input operation removes the "text landed
+/// but Enter didn't" partial-send window. The scheduler's guarded buffer paste
+/// uses the same byte contract; this lower-level check proves CR behaves like
+/// pressing Enter.
 #[test]
 fn single_send_keys_with_trailing_cr_executes_the_line() {
     let s = Server::new("atomic");
@@ -432,6 +431,136 @@ fn poll_formats_exist() {
         ["sh", "bash", "zsh", "dash"].contains(&fg.as_str()),
         "pane_current_command should report the fg shell, got {fg:?}"
     );
+}
+
+/// Scheduled context protection depends only on stable tmux generation ids
+/// and the optional foreground basename. It must work without pane hooks.
+/// The final command checks foreground and identity in the same server queue.
+#[test]
+fn scheduler_context_identity_process_and_hookless_compatibility_contract() {
+    let s = Server::new("context");
+    let format =
+        "#{pid}\t#{session_id}\t#{window_id}\t#{pane_id}\t#{pane_pid}\t#{pane_current_command}";
+    let first = s.run(&["display-message", "-p", "-t", "=t:", format]);
+    let fields: Vec<&str> = first.split('\t').collect();
+    assert_eq!(fields.len(), 6, "all context fields: {first:?}");
+    assert!(fields[0].parse::<u32>().is_ok());
+    assert!(fields[1].starts_with('$'));
+    assert!(fields[2].starts_with('@'));
+    assert!(fields[3].starts_with('%'));
+    assert!(fields[4].parse::<u32>().is_ok());
+    let old_pane = fields[3].to_string();
+    let old_identity = fields[..5].join(":");
+
+    // A foreground change after an earlier probe takes the refusal branch;
+    // no prompt bytes reach the otherwise still-identical pane.
+    let mismatch_buffer = "deck-contract-process";
+    let identity = format!(
+        "#{{==:#{{pid}}:#{{session_id}}:#{{window_id}}:#{{pane_id}}:#{{pane_pid}},{old_identity}}}"
+    );
+    let process_condition =
+        format!("#{{&&:{identity},#{{==:#{{pane_current_command}},not-the-current-process}}}}");
+    let out = s
+        .run_owned(&[
+            "set-buffer".into(),
+            "-b".into(),
+            mismatch_buffer.into(),
+            "echo process-mismatch-must-not-land\r".into(),
+            ";".into(),
+            "if-shell".into(),
+            "-F".into(),
+            "-t".into(),
+            old_pane.clone(),
+            process_condition,
+            format!("paste-buffer -b {mismatch_buffer} -d -t {old_pane}"),
+            format!("delete-buffer -b {mismatch_buffer}; display-message -p deck-context-refused"),
+        ])
+        .expect("foreground-guarded literal command");
+    assert!(
+        out.contains("deck-context-refused"),
+        "guard result: {out:?}"
+    );
+    assert!(!s
+        .run(&["capture-pane", "-p", "-t", "=t:"])
+        .contains("process-mismatch-must-not-land"));
+
+    // With no expected process, exact identity alone is the compatibility
+    // contract; no hook is configured or consulted.
+    let compat_buffer = "deck-contract-compat";
+    let out = s
+        .run_owned(&[
+            "set-buffer".into(),
+            "-b".into(),
+            compat_buffer.into(),
+            "echo hookless-compat-landed\r".into(),
+            ";".into(),
+            "if-shell".into(),
+            "-F".into(),
+            "-t".into(),
+            old_pane.clone(),
+            identity,
+            format!("paste-buffer -b {compat_buffer} -d -t {old_pane}"),
+            format!("delete-buffer -b {compat_buffer}; display-message -p deck-context-refused"),
+        ])
+        .expect("identity-only compatibility command");
+    assert!(
+        !out.contains("deck-context-refused"),
+        "guard result: {out:?}"
+    );
+    sleep(Duration::from_millis(200));
+    assert!(s
+        .run(&["capture-pane", "-p", "-t", "=t:"])
+        .contains("hookless-compat-landed"));
+
+    s.run(&["kill-session", "-t", "=t"]);
+    s.run(&[
+        "new-session",
+        "-d",
+        "-s",
+        "t",
+        "-x",
+        "80",
+        "-y",
+        "12",
+        "/bin/sh",
+    ]);
+    sleep(Duration::from_millis(300));
+    let second = s.run(&["display-message", "-p", "-t", "=t:", format]);
+    let next: Vec<&str> = second.split('\t').collect();
+    assert_ne!(fields[0], next[0], "server pid is the outer generation");
+
+    // The numeric pane id itself may be reused by the new server. The
+    // production guarded-literal pattern compares the whole generation and
+    // therefore takes the refusal branch even in that case.
+    let buffer = "deck-contract-send";
+    let condition = format!(
+        "#{{==:#{{pid}}:#{{session_id}}:#{{window_id}}:#{{pane_id}}:#{{pane_pid}},{old_identity}}}"
+    );
+    let yes =
+        format!("paste-buffer -b {buffer} -d -t {old_pane}; display-message -p deck-context-sent");
+    let no = format!("delete-buffer -b {buffer}; display-message -p deck-context-refused");
+    let out = s
+        .run_owned(&[
+            "set-buffer".into(),
+            "-b".into(),
+            buffer.into(),
+            "echo must-not-land\r".into(),
+            ";".into(),
+            "if-shell".into(),
+            "-F".into(),
+            "-t".into(),
+            old_pane,
+            condition,
+            yes,
+            no,
+        ])
+        .expect("guarded literal command");
+    assert!(
+        out.contains("deck-context-refused"),
+        "guard result: {out:?}"
+    );
+    let screen = s.run(&["capture-pane", "-p", "-t", "=t:"]);
+    assert!(!screen.contains("must-not-land"));
 }
 
 /// poll_sessions batches every visible card's preview into ONE tmux

@@ -6,6 +6,7 @@
 //! (atomic persistence + logs), history (completion), commands (the rest).
 
 mod commands;
+mod context;
 mod history;
 mod pty;
 mod scheduler;
@@ -285,6 +286,7 @@ fn main() {
             commands::ui_event,
             commands::ping_event,
             scheduler::queue_list,
+            scheduler::queue_probe_context,
             scheduler::smoke_seed_ambiguous,
             scheduler::smoke_queue_state,
             scheduler::smoke_flush_queue,
@@ -295,6 +297,8 @@ fn main() {
             scheduler::queue_retry,
             scheduler::queue_acknowledge,
             scheduler::queue_skip,
+            scheduler::queue_send_now,
+            scheduler::queue_rebind,
             commands::storage_warnings,
             scheduler::queue_clear_session,
             scheduler::queue_clear_sessions,

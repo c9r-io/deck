@@ -69,11 +69,20 @@ export const CHAIN_QUIET_SECS = 180;
    output (including the user typing in the pane) resets it — that's the
    product semantics, and exactly why the wait deserves a visible counter. */
 export function chainQuietHint(idleSecs, alive) {
-  if (!alive) return ' · ready'; // dead session counts as quiet; fires next tick
+  if (!alive) return ' · session stopped'; // quiet/due is not context readiness
   if (idleSecs == null) return '';
   const q = Math.min(Math.floor(idleSecs), CHAIN_QUIET_SECS);
   return q >= CHAIN_QUIET_SECS ? ' · quiet ✓' : ` · quiet ${q}s/${CHAIN_QUIET_SECS}s`;
 }
+
+export const contextStatusKey = status => ({
+  ready: 'queue.context.ready',
+  'foreground-different': 'queue.context.differentProcess',
+  'session-replaced': 'queue.context.replaced',
+  unavailable: 'queue.context.unavailable',
+  starting: 'queue.context.starting',
+  unknown: 'queue.context.unknown',
+}[status] || 'queue.context.unknown');
 
 /* ---------- queue grouping (mirrors the backend's group semantics) ---------- */
 /* items carry an explicit group id (assigned by the backend, which is also

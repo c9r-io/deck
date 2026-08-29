@@ -86,6 +86,10 @@ test('scheduler Chinese copy preserves sent, failed, blocked, ambiguous and quie
   assert.match(t('queue.meta.ambiguous'), /无法确认是否已发送/);
   assert.match(t('queue.quiet.progress', { seconds: 10, total: 180 }), /安静/);
   assert.doesNotMatch(t('queue.quiet.progress', { seconds: 10, total: 180 }), /等待输入|已完成/);
+  assert.match(t('queue.explainer'), /shell/);
+  assert.match(t('queue.context.replaced'), /替换/);
+  assert.match(t('queue.context.differentProcess', { process: 'codex' }), /codex.*前台/);
+  assert.doesNotMatch(t('queue.quiet.done'), /就绪|可发送/);
 });
 
 test('default Boards localize only at creation and existing names never change', () => {

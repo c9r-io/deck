@@ -27,7 +27,7 @@ test('i18n owns visible copy and translation parameters never enter innerHTML', 
 test('the canonical dictionary has no unused keys outside documented dynamic families', () => {
   const source = ['app/ui/index.html', 'app/ui/js/app.js', 'app/ui/js/board.js',
     'app/ui/js/dialogs.js', 'app/ui/js/i18n.js', 'app/ui/js/layout.js',
-    'app/ui/js/scheduler.js', 'app/ui/js/selection.js', 'app/ui/js/state.js',
+    'app/ui/js/pure.js', 'app/ui/js/scheduler.js', 'app/ui/js/selection.js', 'app/ui/js/state.js',
     'app/ui/js/terminal.js'].map(read).join('\n');
   const dynamic = /^(?:board\.default|board\.hint|session\.status|notice)\./;
   const unused = Object.keys(en).filter(key => !dynamic.test(key) && !source.includes(key));
@@ -41,6 +41,17 @@ test('minimum-window layout keeps long localized panels bounded and scrollable',
   assert.match(html, /#cfm-box, #ppd-box \{[^}]*max-height: 84vh;[^}]*overflow-y: auto;/);
   assert.match(html, /#queue-panel \{[^}]*max-height: 55vh;/);
   assert.match(html, /\.qg-row \.row-meta \{[^}]*white-space: normal;/);
+});
+
+test('high-risk scheduler confirmation cannot be accepted by ordinary Enter', () => {
+  const dialogs = read('app/ui/js/dialogs.js');
+  assert.match(dialogs, /confirmDangerDialog/);
+  assert.match(dialogs, /if \(!confirmPointerOnly\) cfmDone\(true\)/);
+  const scheduler = read('app/ui/js/scheduler.js');
+  assert.match(scheduler, /confirmDangerDialog\(message\)/);
+  assert.match(scheduler, /acceptProcessMismatch: mismatch/);
+  assert.doesNotMatch(scheduler, /queue_set_policy|safetyPolicy|acceptRisk/);
+  assert.doesNotMatch(read('app/ui/index.html'), /id="q-policy"/);
 });
 
 test('removed long-output panel cannot return through DOM, routes, or backend registration', () => {

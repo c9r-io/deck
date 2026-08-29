@@ -125,6 +125,7 @@ const SMOKE_CHECKS: &[&str] = &[
     "natural-fault",
     "completion-owner",
     "ambiguous-boot",
+    "scheduler-context",
     "rename-restart",
     "done",
 ];

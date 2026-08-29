@@ -704,11 +704,45 @@ export async function run() {
     await naturalExitFaultSmoke(project, column);
     stage = 11;
     await inv('queue_add', { args: {
-      session: main.session, dir: main.dir, cmd: main.cmd,
+      session: main.session, cardId: main.id, dir: main.dir, cmd: main.cmd,
       text: 'deterministic smoke delivery', mode: 'at',
       at: Math.floor(Date.now() / 1000) + 3600,
       every: null, winFrom: null, winTo: null, untilN: null, untilAt: null,
     } });
+    await openSession(main.id);
+    toggleQueuePanel(true);
+    await refreshQueue();
+    const contextItem = (await inv('queue_list')).items?.find(item => item.card_id === main.id);
+    const probe = contextItem && await inv('queue_probe_context', { id: contextItem.id });
+    await refreshQueue();
+    const hooklessReady = contextItem?.expected_process == null
+      && contextItem?.attempts === 0 && probe?.status === 'ready';
+    await inv('queue_send_now', { id: contextItem.id, acceptProcessMismatch: false });
+    const compatibilitySent = !(await inv('queue_list')).items?.some(item => item.id === contextItem.id);
+    const noPolicy = !$('q-policy') && !document.querySelector('#queue-list .q-policy');
+    await inv('queue_add', { args: {
+      session: main.session, cardId: main.id, dir: main.dir, cmd: 'codex',
+      text: 'must remain queued during mismatch smoke', mode: 'at',
+      at: Math.floor(Date.now() / 1000) + 3600,
+      every: null, winFrom: null, winTo: null, untilN: null, untilAt: null,
+    } });
+    await refreshQueue();
+    const mismatchItem = (await inv('queue_list')).items?.find(item => item.card_id === main.id);
+    const mismatchProbe = mismatchItem && await inv('queue_probe_context', { id: mismatchItem.id });
+    await refreshQueue();
+    document.querySelector('#queue-list .q-now')?.click();
+    const dangerShown = await waitFor(() => $('cfm').style.display === 'flex', 2000);
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    await pause(100);
+    const enterRejected = $('cfm').style.display === 'flex';
+    $('cfm-no')?.click();
+    await pause(100);
+    const mismatchWaits = mismatchProbe?.status === 'foreground-different'
+      && (await inv('queue_list')).items?.some(item => item.id === mismatchItem?.id && item.attempts === 0);
+    const mask = (hooklessReady ? 1 : 0) | (compatibilitySent ? 2 : 0)
+      | (noPolicy ? 4 : 0) | (mismatchWaits ? 8 : 0)
+      | (dangerShown ? 16 : 0) | (enterRejected ? 32 : 0);
+    await report('scheduler-context', mask === 63, mask, 63);
     await inv('smoke_seed_ambiguous');
     await report('done', !smokeFailed, 1, 0);
   } catch (error) {

@@ -64,8 +64,14 @@ row, and xterm plus the underlying PTY are refit together.
 **Scheduled prompts.** The quota-window workflow: queue prompts on a session
 and have them typed in later — at a set time ("in 5 h, when my Claude window
 resets") or chained ("after the previous one goes quiet for 3 minutes" — quiet
-means no output; it may also be a prompt waiting for you). Works while detached; dead sessions are started automatically; the
-queue survives restarts. The app must be running for prompts to fire.
+means no output, not that the program is ready). Before delivery deck always
+checks the exact tmux server/session/window/pane/process generation. When the
+card launch command identifies a program, deck also waits for that executable
+to return to the foreground; otherwise it sends to the same pane in
+compatibility mode, where input may be interpreted by a shell. Context waiting
+does not consume a delivery attempt. Works while detached; dead sessions are
+started and probed with a bounded wait; the queue survives restarts. The app
+must be running for prompts to fire.
 
 **Recurring rules.** A prompt can repeat — *every 5/15/30 min, 1/2 h* —
 optionally only inside a daily time window ("only 09:00–18:00"; 20:00–08:00
@@ -75,8 +81,10 @@ at a set time. Outside the window a rule sleeps and resumes by itself.
 
 **Delivery you can reason about.** One prompt per session at a time, at least
 a minute apart; different sessions run independently (a session that needs a
-2.5 s boot never delays another session's prompt). The text and its Enter go
-in as one atomic tmux command. If deck crashes in the narrow delivery window,
+startup wait never delays another session's prompt). Immediately before
+delivery, deck rechecks the automatically captured target identity and optional
+foreground executable. Prompt + Enter are literal-pasted only if both still
+match. If deck crashes in the narrow delivery window,
 the queue shows the prompt as **ambiguous** instead of claiming success or
 silently sending it again: acknowledge it as sent, or explicitly retry while
 accepting the possible duplicate. While a prompt is mid-send (a window of
@@ -114,8 +122,10 @@ waiting for you. Memory chips show the *whole process tree* of a session
 ## Data
 
 Everything lives in `~/.deck/` as plain JSON you can inspect or edit:
-`deck.json` (boards & cards) · `queue.json` (scheduled prompts, incl. a
-short delivery audit) · `history.json` (command history; wipeable from
+`deck.json` (boards & cards) · `queue.json` (scheduled prompts, incl. card/tmux
+identity, an optional sanitized executable basename, a content-free last
+context result, and a short
+delivery audit) · `history.json` (command history; wipeable from
 Settings) · `settings.json` · `app.log` (diagnostics — event codes and
 counts only, never what you type; errors appear as categories, never as
 raw paths, and session names as a per-run tag rather than the name itself).

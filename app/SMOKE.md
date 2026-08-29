@@ -181,19 +181,44 @@ physical-input blocker are recorded in `RELEASE_REPORT_v0.4.32.md`.
 - [ ] deck menu → Check for Updates… reports up-to-date (or offers install)
 
 ## Scheduler queue & templates
-- [ ] Add an `at` prompt 1 min out on a harmless card (`while true; do date;
-      sleep 1; done`) → fires once and its row disappears (there is no
-      "fired" UI; the send is recorded in queue.json's `deliveries` audit
-      list, capped at 200 entries)
+- [ ] Add an `at` prompt 1 min out on a harmless shell card whose launch command
+      is empty → deck automatically binds the exact pane and fires once in
+      compatibility mode; its row disappears (there is no "fired" UI; the send is
+      recorded in queue.json's `deliveries` audit list, capped at 200 entries)
+- [ ] Start a Codex/Claude/OpenCode card with an explicit launch command, queue
+      a prompt, then put another program in the foreground → the row says it is
+      waiting for the expected executable and attempts remain 0. Return that
+      executable to the foreground → exactly one send lands. Do not configure
+      any tmux pane hook for this test.
+- [ ] Queue while a manually started agent is already foregrounded on a card
+      with an empty launch command → deck captures that executable and waits if
+      it later changes. Queue before the agent starts on the same kind of card
+      → no process is captured; the prompt still sends to the exact same pane.
+- [ ] Kill a scheduled session before it is due. On the next tick deck starts
+      it and polls pane/process metadata rather than sleeping a fixed 2.5s. The
+      expected executable appearing succeeds; a mismatch reaches the bounded
+      timeout and remains blocked.
+      While polling, separately pause, edit and delete items; each stops without
+      a firing intent, delivery attempt, or ambiguous record.
+- [ ] With one session blocked in boot readiness, a due prompt on a second
+      session still advances independently.
 - [ ] Add a chain of 2 prompts → they fire in order, second only after the
       first target went quiet (~3 min; "quiet" ≠ "done" — the UI must say
       quiet) and ≥60s after the first send (per-session min gap)
 - [ ] Two prompts due at once on the SAME session → they arrive one per
       20s-tick, a minute apart — never both in one tick
-- [ ] Schedule onto a card whose directory was deleted → the row shows
-      "⚠ send failed, retrying"; after retries exhaust it shows "gave up —
-      blocks later steps" with ↻ retry and ⏭ skip; a queued follow-up in
-      the same group shows "⏸ waiting" and does NOT fire until skip/retry
+- [ ] Schedule onto a stopped card whose directory was deleted → the row shows
+      context unavailable/waiting, attempts do not increase, no firing intent
+      is created, and a queued follow-up does not run past it. Separately force
+      a real post-intent tmux refusal to retain the existing backoff/gave-up,
+      retry ↻, skip ⏭ and group-blocking behavior.
+- [ ] For a process-mismatch row choose keep waiting and cancel in turn.
+      “Send now…” shows the expected and current processes; Enter and blur
+      cannot accept its high-risk dialog, while an explicit click performs one
+      process-only override without changing the saved expected executable.
+- [ ] Replace a scheduled session/pane under the same name → immediate send is
+      refused even after the danger confirmation path. Explicitly rebind to the
+      new pane (or reschedule/cancel), then verify the new identity is persisted.
 - [ ] Save a template from the queue group header → re-add it on another card
 - [ ] Pause a recurring rule → skipped while paused; resume → fires again
 

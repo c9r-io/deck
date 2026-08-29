@@ -489,6 +489,8 @@ pub(crate) fn err_code(e: &str) -> &'static str {
         "disk-full"
     } else if l.contains("newer deck") {
         "newer-schema"
+    } else if l.contains("context identity changed") {
+        "context-changed"
     } else if l.contains("invalid json")
         || l.contains("wrong structure")
         || l.contains("refusing to save")

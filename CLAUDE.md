@@ -129,22 +129,41 @@ Frontend gates: `node --check` (syntax) · `ui/test/*.mjs` (node:test)
   NEWER gen (the first event can beat the attach invoke's resolution).
 - Scheduled prompts: Rust-side scheduler thread (NOT webview timers — App Nap
   freezes those), 20s tick, queue persisted at `~/.deck/queue.json` and loaded at
-  boot. Injection = ONE atomic tmux command: literal text + trailing CR in a
-  single `send-keys -l` (no "text landed but Enter didn't" window), no attach
-  needed; dead sessions are started first. "chain" mode fires after
+  boot. Every item persists its card id, optional full tmux
+  server/session/window/pane/pid binding, optional sanitized executable
+  basename, revision and a closed last-context result (never terminal text,
+  arguments or paths). Context protection is automatic and has no saved/UI/API
+  policy: exact pane identity is always required; an executable derived from
+  the explicit card launch command is required in the foreground, otherwise a
+  live non-shell foreground is captured at creation, otherwise same-pane
+  compatibility delivery is allowed. Hooks, agent class, output activity and
+  quiet time never gate delivery. Legacy policy/AgentClass/hook fields are
+  ignored and cleaned on the next save without changing schedule/delivery
+  state. `context.rs` owns metadata-only probing and sanitization.
+  Injection loads literal text + trailing CR into a uniquely named tmux buffer,
+  then one synchronous tmux command queue compares the full generation plus
+  optional foreground executable and byte-literal-pastes only on a match (no
+  attach and no "text landed but Enter didn't" window). Numeric tmux ids alone are insufficient because a restarted
+  server reuses them; server pid is part of the binding. Dead sessions are
+  started once and use bounded 250ms/15s target polling that cancels on
+  pause/edit/delete/revision; timeout blocks without consuming an attempt.
+  Manual immediate delivery may pointer-confirm a one-shot process mismatch
+  bypass, but identity mismatch can only be resolved by explicit rebind,
+  reschedule or cancellation. "chain" mode fires after
   `window_activity` has been quiet ≥180s (a permission prompt also counts as
   quiet — documented behavior; quiet NEVER means "the agent finished").
   Round-2/3 semantics (scheduler.rs is the reference, all unit-tested):
   - at most ONE candidate per session per tick, ≥60s between any two
     injections into the same session; each due session gets its own
     short-lived worker thread claimed via a busy-set, so sessions are truly
-    independent (a 2.5s session-boot wait delays only its own session), the
+    independent (a startup wait delays only its own session), the
     same session never has two concurrent sends, and a worker outliving its
     tick can't collide with the next tick;
   - deterministic priority: backoff-elapsed retry → earliest-due `at` →
     cadence-due `every` → chain; a future `at` never blocks a due one;
   - each worker re-selects from fresh state under the lock (`send_one` is
-    the whole firing state machine, testable with fake fire/persist);
+    the delivery state machine and `send_one_safe` is its context-safe front
+    half, both testable with fake probe/fire/persist);
     chain steps carry explicit `group`/`seq` (legacy files migrate from
     array adjacency);
   - the firing contract: while an item is mid-send, queue remove/update/
@@ -179,7 +198,9 @@ Frontend gates: `node --check` (syntax) · `ui/test/*.mjs` (node:test)
   - a recurring rule has at most one active iteration (its spawned steps,
     keyed `rule`/`group`=delivery id) — iterations never interleave;
   - firing intent + delivery id + a full item snapshot (the `pending` ledger)
-    is persisted BEFORE injection. A live confirmed success uses idempotent
+    is persisted only AFTER readiness, binding persistence, fresh re-selection
+    and a final probe, and still BEFORE injection. Blocked context never
+    increments attempts, creates a ledger or becomes ambiguous. A live confirmed success uses idempotent
     `finalize_delivery` (fired count, until-N retirement, template-step spawn,
     audit record — `deliveries`, capped 200). A persisted `firing` found after
     a crash becomes `ambiguous`: it is never auto-retried or silently counted.
