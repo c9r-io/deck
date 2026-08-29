@@ -6,7 +6,7 @@ name: release
 #   1. tag push          — the normal path
 #   2. schedule (hourly) — resilience: builds the newest v* tag that has no
 #                          release yet (covers platform event-delivery outages)
-#   3. workflow_dispatch — manual fallback, same resolve logic
+#   3. workflow_dispatch — manual fallback or surgical DMG repair
 
 on:
   push:
@@ -14,13 +14,19 @@ on:
       - 'v*'
   schedule:
     - cron: '7 * * * *'
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      repair_dmg_tag:
+        description: 'Existing release tag whose DMG should be notarized, stapled, and replaced'
+        required: false
+        type: string
 
 permissions:
   contents: write
 
 jobs:
   resolve:
+    if: github.event_name != 'workflow_dispatch' || inputs.repair_dmg_tag == ''
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.pick.outputs.tag }}
@@ -95,3 +101,60 @@ jobs:
             certificate — no Gatekeeper prompts.
           releaseDraft: false
           prerelease: false
+
+      # Tauri notarizes/staples deck.app before creating the DMG, then signs
+      # the final DMG. Submit that final carrier separately so Gatekeeper can
+      # validate both the downloaded image and the app inside it.
+      - name: Notarize, staple, and replace DMG
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          RELEASE_TAG: ${{ needs.resolve.outputs.tag }}
+        run: |
+          set -euo pipefail
+          trap 'gh release delete-asset "$RELEASE_TAG" latest.json -R "$GITHUB_REPOSITORY" -y || true' ERR
+          dmg=(app/src-tauri/target/release/bundle/dmg/*.dmg)
+          test "${#dmg[@]}" -eq 1
+          codesign --verify --verbose=2 "${dmg[0]}"
+          xcrun notarytool submit "${dmg[0]}" \
+            --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" --wait
+          xcrun stapler staple "${dmg[0]}"
+          xcrun stapler validate "${dmg[0]}"
+          spctl -a -vv -t install "${dmg[0]}"
+          gh release upload "$RELEASE_TAG" "${dmg[0]}" \
+            -R "$GITHUB_REPOSITORY" --clobber
+          trap - ERR
+
+  repair-dmg:
+    if: github.event_name == 'workflow_dispatch' && inputs.repair_dmg_tag != ''
+    runs-on: macos-latest
+    steps:
+      - name: Download, notarize, staple, and replace published DMG
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          RELEASE_TAG: ${{ inputs.repair_dmg_tag }}
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          trap 'gh release delete-asset "$RELEASE_TAG" latest.json -R "$GITHUB_REPOSITORY" -y || true' ERR
+          mkdir artifact
+          gh release download "$RELEASE_TAG" -R "$GITHUB_REPOSITORY" \
+            --pattern '*.dmg' --dir artifact
+          dmg=(artifact/*.dmg)
+          test "${#dmg[@]}" -eq 1
+          codesign --verify --verbose=2 "${dmg[0]}"
+          xcrun notarytool submit "${dmg[0]}" \
+            --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" --wait
+          xcrun stapler staple "${dmg[0]}"
+          xcrun stapler validate "${dmg[0]}"
+          spctl -a -vv -t install "${dmg[0]}"
+          gh release upload "$RELEASE_TAG" "${dmg[0]}" \
+            -R "$GITHUB_REPOSITORY" --clobber
+          trap - ERR
