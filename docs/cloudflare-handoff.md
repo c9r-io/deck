@@ -29,33 +29,49 @@ authorization during the 2026-08-30 session.
   shares nothing with `orchestrator-docs` beyond the account.
 - A production deployment is live at `https://deck-site.pages.dev` and passed
   the online verification below.
-- `deck.c9r.io` is registered as a Pages custom domain
-  (`a76170bd-a356-476a-ab98-79545c06243b`) and is **pending**: the zone still
-  has no `deck` record, so validation cannot complete.
-- GitHub Actions secret `CLOUDFLARE_ACCOUNT_ID` is set.
-  `CLOUDFLARE_API_TOKEN` is **not** set yet.
+- `deck.c9r.io` is a Pages custom domain
+  (`a76170bd-a356-476a-ab98-79545c06243b`), **active**, with a Google-issued
+  certificate. The zone holds `CNAME deck -> deck-site.pages.dev`, proxied,
+  matching how `docs` is configured.
+- A Configuration Rule named `deck.c9r.io — no Web Analytics RUM injection`
+  matches `http.host eq "deck.c9r.io"` and disables RUM. See "Zone-inherited
+  analytics" below — this rule is load-bearing for deck's privacy claims.
+- GitHub Actions secrets `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN`
+  are both set. The token is `deck-site pages deploy`, scoped to
+  Account -> Cloudflare Pages -> Edit on that one account only: no DNS edit,
+  no zone access, no other account.
 - GitHub Environment `website-production` exists with a required human
   reviewer.
 - No app Release, tag, updater feed or community post was touched.
 
-## Remaining owner actions
+Every later deployment now goes through the manual `site-deploy` workflow
+rather than a developer shell.
 
-Neither can be done by an agent: the wrangler OAuth session carries
-`pages:write` but not DNS edit or API-token creation.
+## Zone-inherited analytics
 
-1. In the `c9r.io` zone, add `CNAME deck -> deck-site.pages.dev`, proxied.
-   The custom domain moves from `pending` to `active` on its own afterwards.
-2. Create a custom API token scoped to **Account -> Cloudflare Pages -> Edit**
-   on that one account, and add it to the deck repository as the
-   `CLOUDFLARE_API_TOKEN` Actions secret. Do not give it DNS Edit; step 1 is
-   handled by hand precisely so the recurring deploy token never needs it.
+`c9r.io` has an account-level Web Analytics site (created for the Orchestrator
+docs) whose configured hostname is the apex `c9r.io` with automatic JS
+injection. Cloudflare therefore injected
+`static.cloudflareinsights.com/beacon.min.js` into `deck.c9r.io` responses the
+moment the hostname went live, purely by zone inheritance. deck's CSP blocked
+the script from executing, but the served HTML still contained a third-party
+analytics tag, which contradicts the privacy page.
 
-Once both exist, every later deployment goes through the manual `site-deploy`
-workflow rather than a developer shell.
+That Web Analytics site offers no per-hostname exclusion: every option there
+is zone-wide and would change what the Orchestrator collects. The fix is
+therefore a Configuration Rule scoped to `deck.c9r.io` alone, which disables
+RUM for that hostname and leaves `docs.c9r.io` untouched. Verified after
+deployment: `deck.c9r.io` serves zero script tags, `docs.c9r.io` still serves
+its beacon.
+
+If deck ever moves to another zone or another zone-wide feature is enabled,
+re-check the served HTML for injected third-party scripts. A passing CSP is
+not sufficient evidence — request the page with a browser `Accept` and
+`User-Agent`, because Cloudflare only injects for browser-shaped requests.
 
 ## Account setup (completed 2026-08-30)
 
-Steps 1-5 are done; they are kept here because a rebuild or a second
+All steps are done; they are kept here because a rebuild or a second
 environment has to repeat them.
 
 1. Sign in to the correct Cloudflare account. (`wrangler login` is enough; it
@@ -66,8 +82,10 @@ environment has to repeat them.
 4. Perform one reviewed deployment to `deck-site.pages.dev` before binding the
    custom domain.
 5. Register custom domain `deck.c9r.io` on the Pages project.
-6. Add the zone CNAME (see "Remaining owner actions") and wait for the domain
-   status and TLS certificate to become active.
+6. Add `CNAME deck -> deck-site.pages.dev` (proxied) in the zone and wait for
+   the domain status and TLS certificate to become active.
+7. Add the Configuration Rule that disables RUM for the hostname, then confirm
+   no third-party script is injected.
 
 Cloudflare requires the domain to be associated through the Pages custom-domain
 flow, and that association separately requires the zone record. Neither half is
@@ -83,7 +101,8 @@ the dashboard so the recurring deployment token does not need DNS Edit.
 Add the token directly to the deck GitHub repository Actions secrets; never
 paste it into chat, issue text, logs or repository files:
 
-- `CLOUDFLARE_API_TOKEN` — still owed.
+- `CLOUDFLARE_API_TOKEN` — set, and verified `active` against
+  `/user/tokens/verify` before storing.
 - `CLOUDFLARE_ACCOUNT_ID` — set. This is an account identifier rather than a
   credential, but it is kept as a secret so the workflow reads both the same
   way.
@@ -115,18 +134,18 @@ does not create or modify the app Stable/Nightly releases.
 
 ## Online verification
 
-Verified on `https://deck-site.pages.dev` on 2026-08-30: all four routes
-returned 200, an unknown path returned the deck 404 page, the three
-trailing-slash redirects returned 301 to their canonical paths, `favicon.ico`,
-`icon.svg`, `icon-180.png`, `og.png`, `sitemap.xml` and `robots.txt` served
-with correct content types, every security header was present, the browser
-console was clean, and the only network requests were the same-origin document,
-stylesheet and icon. Canonical and Open Graph URLs correctly point at
-`https://deck.c9r.io` even while served from `pages.dev`.
+Verified on `https://deck.c9r.io` on 2026-08-30: all four routes returned 200,
+an unknown path returned the deck 404 page, the three trailing-slash redirects
+returned 301 to their canonical paths, HTTP redirected to HTTPS on a valid
+certificate, `favicon.ico`, `icon.svg`, `icon-180.png`, `og.png`, `sitemap.xml`
+and `robots.txt` served with correct content types, every security header was
+present, the browser console was clean, and the only network requests were the
+same-origin document, stylesheet and icon. Desktop 1440x900 and mobile 390x844
+both render without horizontal overflow.
 
-Still to check once `deck.c9r.io` resolves: certificate validity, the HTTP to
-HTTPS redirect, and the social link preview. Repeat the full list below on the
-custom domain:
+Still to check: how a specific social platform renders the Open Graph card.
+
+Repeat this list after any hosting change:
 
 - `/`, `/zh/`, `/privacy/`, `/zh/privacy/` return 200;
 - unknown paths show the deck 404 page;

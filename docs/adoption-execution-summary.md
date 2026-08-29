@@ -41,21 +41,24 @@ personally completed the Cloudflare browser sign-in.
   <https://github.com/c9r-io/deck/pull/1>. Nothing was merged to `main`.
 - Created the independent Cloudflare Pages project `deck-site` (production
   branch `main`), unrelated to `orchestrator-docs`.
-- Deployed and verified the site at <https://deck-site.pages.dev>.
-- Registered `deck.c9r.io` as a Pages custom domain. It is `pending` until the
-  zone CNAME exists.
-- Set the `CLOUDFLARE_ACCOUNT_ID` Actions secret and created the
-  `website-production` GitHub Environment with a required human reviewer.
+- Deployed and verified the site at <https://deck-site.pages.dev>, then bound
+  and verified <https://deck.c9r.io> with a valid certificate.
+- Added `CNAME deck -> deck-site.pages.dev` (proxied) to the `c9r.io` zone.
+- Added a Configuration Rule scoped to `deck.c9r.io` that disables Web
+  Analytics RUM injection. The zone inherited an analytics beacon from an
+  existing account-level Web Analytics site; the rule removes it for deck only
+  and leaves `docs.c9r.io` untouched.
+- Set the `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` Actions secrets
+  and created the `website-production` GitHub Environment with a required human
+  reviewer. The token is scoped to Cloudflare Pages Edit on one account only.
 
 No app Release, tag, updater feed, community post, email or survey was created.
 
 ## Pending external work
 
-- Add the `c9r.io` CNAME for `deck` and create the least-privilege
-  `CLOUDFLARE_API_TOKEN` secret; both need dashboard access the deployment
-  session does not have. See `docs/cloudflare-handoff.md`.
-- Verify TLS, the HTTP-to-HTTPS redirect and the social link preview on
-  `deck.c9r.io` once it resolves.
+- Confirm how a specific social platform renders the Open Graph card.
+- Merge <https://github.com/c9r-io/deck/pull/1>. The site is already live; the
+  branch is what a future `site-deploy` run would deploy from.
 - Capture privacy-safe product screenshots and record the 90-second
   demonstration, then enable its CTA. Attempted on 2026-08-30 with an isolated
   synthetic board (separate data directory and tmux socket, 8 cards across 2
@@ -84,7 +87,7 @@ Completed on 2026-08-30:
   returned HTTP 200.
 
 Browser QA completed on 2026-08-30 against the local preview and the live
-`pages.dev` deployment:
+`deck.c9r.io` site:
 
 - desktop 1440x900 and mobile 390x844 for the English and Chinese routes, with
   no horizontal overflow at either width;
@@ -97,5 +100,12 @@ Browser QA completed on 2026-08-30 against the local preview and the live
 
 The site ships no JavaScript at all, so no-JavaScript usability is structural
 rather than a fallback. Open Graph tags and the preview image were reviewed
-locally; how a specific social platform renders the card can only be confirmed
-once `deck.c9r.io` resolves.
+locally; how a specific social platform renders the card is still unconfirmed.
+
+One defect was found only in production: Cloudflare injected a Web Analytics
+beacon into `deck.c9r.io` by zone inheritance. It was blocked by the CSP and
+never executed, but its presence in the served HTML contradicted the privacy
+page, so it was removed with a hostname-scoped Configuration Rule. The served
+HTML now contains no script tags at all. Note that the injection is only
+visible on requests carrying a browser `Accept` and `User-Agent`; a plain
+`fetch` of the same URL showed nothing.
