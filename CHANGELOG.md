@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.38 — Unreleased
+
+- Publish a Nightly-only version bump for validating the Stable-to-Nightly
+  updater path after `v0.4.37`; application behavior is otherwise unchanged.
+
 ## 0.4.37 — 2026-08-29
 
 - Add opt-in Stable/Nightly update channels with Stable-safe settings
