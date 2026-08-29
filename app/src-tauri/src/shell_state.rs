@@ -361,9 +361,9 @@ pub(crate) fn schedule_checkpoints(observations: Vec<ShellObservation>, enabled:
         tracker.last_schedule = now;
         let mut dirty: Vec<_> = observations
             .into_iter()
-            .filter(|o| checkpoint_eligible(o))
+            .filter(checkpoint_eligible)
             .filter(|o| {
-                tracker.saved.get(&o.session).map_or(true, |saved| {
+                tracker.saved.get(&o.session).is_none_or(|saved| {
                     saved.activity != o.activity
                         || saved.cwd != o.cwd
                         || !snapshot_path(&o.session)
