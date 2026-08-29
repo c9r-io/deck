@@ -2,3 +2,6 @@ target/
 node_modules/
 .DS_Store
 .playwright-cli/
+
+# wrangler CLI local cache — holds account metadata, never committed
+.wrangler/
