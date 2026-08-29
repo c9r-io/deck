@@ -1,0 +1,34 @@
+name: site-check
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'site/**'
+      - '.github/ISSUE_TEMPLATE/feedback.yml'
+      - '.github/workflows/site-check.yml'
+      - '.github/workflows/site-deploy.yml'
+  pull_request:
+    paths:
+      - 'site/**'
+      - '.github/ISSUE_TEMPLATE/feedback.yml'
+      - '.github/workflows/site-check.yml'
+      - '.github/workflows/site-deploy.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Test and build static site
+        working-directory: site
+        run: |
+          npm test
+          npm run build

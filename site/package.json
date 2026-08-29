@@ -1,0 +1,10 @@
+{
+  "name": "deck-landing",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "preview": "node scripts/preview.mjs",
+    "test": "node --test test/*.test.mjs"
+  }
+}

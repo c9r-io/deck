@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>deck — A macOS command center for persistent CLI sessions</title>
+  <meta name="description" content="See active, quiet, and stopped CLI agent sessions in one native macOS app. Sessions survive the app, stay local, and work with any CLI.">
+  <meta name="theme-color" content="#0d1117">
+  <link rel="icon" href="/favicon.ico" sizes="32x32">
+  <link rel="icon" href="/assets/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/assets/icon-180.png">
+  <link rel="canonical" href="{{SITE_URL}}/">
+  <link rel="alternate" hreflang="en" href="{{SITE_URL}}/">
+  <link rel="alternate" hreflang="zh-Hans" href="{{SITE_URL}}/zh/">
+  <link rel="alternate" hreflang="x-default" href="{{SITE_URL}}/">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="deck">
+  <meta property="og:title" content="deck — Keep every CLI agent session in view">
+  <meta property="og:description" content="A native macOS command center for persistent terminal agent sessions.">
+  <meta property="og:url" content="{{SITE_URL}}/">
+  <meta property="og:image" content="{{SITE_URL}}/assets/og.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="deck wordmark beside a four-column session board with green, amber, and gray status signals">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="deck — Keep every CLI agent session in view">
+  <meta name="twitter:description" content="A native macOS command center for persistent terminal agent sessions.">
+  <meta name="twitter:image" content="{{SITE_URL}}/assets/og.png">
+  <link rel="stylesheet" href="/assets/site.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site-header">
+    <nav class="shell nav" aria-label="Main navigation">
+      <a class="brand" href="/" aria-label="deck home"><span class="brand-mark" aria-hidden="true">▦</span><span>deck</span></a>
+      <div class="nav-links">
+        <a href="#capabilities">Capabilities</a>
+        <a href="#privacy">Privacy</a>
+        <a href="#faq">FAQ</a>
+        <a class="language-link" href="/zh/" lang="zh-Hans">中文</a>
+        <a class="button primary" href="{{DOWNLOAD_URL}}">Download</a>
+      </div>
+    </nav>
+  </header>
+
+  <main id="main">
+    <section class="shell hero" aria-labelledby="hero-title">
+      <div>
+        <p class="eyebrow">Native macOS · Apple Silicon</p>
+        <h1 id="hero-title">Keep every CLI agent session <span class="accent">in view.</span></h1>
+        <p class="hero-copy">deck is a native command center for Claude Code, Codex, OpenCode, and any long-running CLI. See what is active, quiet, or stopped—without giving up your terminal.</p>
+        <div class="hero-actions">
+          <a class="button primary" href="{{DOWNLOAD_URL}}">Download {{RELEASE_LABEL}}</a>
+          <a class="button" href="{{GITHUB_URL}}">View on GitHub</a>
+        </div>
+        <p class="hero-note"><strong>Signed &amp; notarized DMG.</strong> MIT licensed. No account. Apple Silicon only.</p>
+      </div>
+
+      <div class="app-window" role="img" aria-label="A deck board showing active, quiet, and stopped terminal sessions across four attention columns">
+        <div class="window-bar"><span class="traffic"></span><span class="traffic"></span><span class="traffic"></span><span class="window-title">deck · local sessions</span></div>
+        <div class="app-body">
+          <aside class="sidebar" aria-hidden="true">
+            <div class="side-brand">▦ deck</div>
+            <div class="side-label">Projects</div>
+            <div class="side-item active">● product-app</div>
+            <div class="side-item">○ api-service</div>
+            <div class="side-label">Sessions</div>
+            <div class="side-item"><span class="dot live"></span>fix tests</div>
+            <div class="side-item"><span class="dot quiet"></span>review diff</div>
+            <div class="side-item"><span class="dot"></span>release notes</div>
+          </aside>
+          <div class="board" aria-hidden="true">
+            <div class="board-head"><strong>product-app</strong><span>6 sessions · local tmux</span></div>
+            <div class="columns">
+              <div class="column"><p class="column-title"><span>Attention</span><span>2</span></p><div class="card"><div class="card-title"><span class="dot quiet"></span>review diff</div><div class="card-detail">quiet · inspect when ready</div></div><div class="card"><div class="card-title"><span class="dot quiet"></span>migration plan</div><div class="card-detail">quiet · 812 MB</div></div></div>
+              <div class="column"><p class="column-title"><span>Working</span><span>2</span></p><div class="card"><div class="card-title"><span class="dot live"></span>fix tests</div><div class="card-detail">cargo test …</div></div><div class="card"><div class="card-title"><span class="dot live"></span>refactor UI</div><div class="card-detail">editing modules …</div></div></div>
+              <div class="column"><p class="column-title"><span>Queued</span><span>1</span></p><div class="card"><div class="card-title"><span class="dot"></span>security pass</div><div class="card-detail">session stopped</div></div></div>
+              <div class="column"><p class="column-title"><span>Parked</span><span>1</span></p><div class="card"><div class="card-title"><span class="dot"></span>release notes</div><div class="card-detail">session stopped</div></div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <div class="shell proof-strip" aria-label="Product facts">
+      <div class="proof"><strong>Real tmux sessions</strong><span>Not simulated terminals</span></div>
+      <div class="proof"><strong>Local by design</strong><span>Terminal content stays on your Mac</span></div>
+      <div class="proof"><strong>Any CLI</strong><span>No model vendor lock-in</span></div>
+      <div class="proof"><strong>Zero account</strong><span>Install and start working</span></div>
+    </div>
+
+    <section class="shell section" id="capabilities">
+      <div class="section-head"><p class="eyebrow">One place for long-running work</p><h2>Less terminal switching. Fewer forgotten sessions.</h2><p>deck keeps the terminal as the source of truth and adds only the control surface you need around it.</p></div>
+      <div class="feature-grid">
+        <article class="feature"><span class="feature-number">01 · SURVIVAL</span><h3>Sessions outlive the app</h3><p>Every card is backed by deck’s private tmux server. Quit deck, reopen it later, and your shells and agents are still there.</p></article>
+        <article class="feature"><span class="feature-number">02 · SIGNALS</span><h3>See activity without reading every pane</h3><p>Green means recent output, amber means quiet, and gray means stopped. The signals are intentionally simple—you decide what deserves attention.</p><div class="signal-row"><span class="signal"><span class="dot live"></span>active</span><span class="signal"><span class="dot quiet"></span>quiet</span><span class="signal"><span class="dot"></span>stopped</span></div></article>
+        <article class="feature"><span class="feature-number">03 · ORGANIZATION</span><h3>Boards for attention, projects for context</h3><p>Group sessions by project, arrange them across customizable Boards, and move cards yourself. deck never invents a workflow or moves work behind your back.</p></article>
+        <article class="feature"><span class="feature-number">04 · SPLIT VIEW</span><h3>Inspect several real terminals together</h3><p>Nest horizontal and vertical splits, resize them, and close a pane without killing its session. Each pane remains a full terminal.</p></article>
+      </div>
+    </section>
+
+    <section class="shell section">
+      <div class="boundary">
+        <div><p class="eyebrow">Scheduled prompts, with boundaries</p><h2>Queue work you can reason about.</h2><p class="hero-copy">Schedule a prompt for later, chain it after a quiet period, or repeat it on a cadence. deck records delivery state and makes ambiguous outcomes visible.</p></div>
+        <div class="boundary-list">
+          <div class="boundary-item"><strong>CONTEXT CHECKED</strong><span>Before sending, deck rechecks the exact tmux server, session, window, pane, process generation, and—when known—the foreground executable.</span></div>
+          <div class="boundary-item"><strong>QUIET IS NOT READY</strong><span>A quiet session may be waiting for input, running a silent task, or doing nothing. deck does not read terminal content to decide.</span></div>
+          <div class="boundary-item"><strong>APP MUST BE RUNNING</strong><span>The queue survives restarts, but deck must be open for a scheduled prompt to fire. The underlying tmux sessions survive independently.</span></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="privacy-band" id="privacy">
+      <div class="shell section privacy-grid">
+        <div><p class="eyebrow">Local-first means local</p><h2>Your terminal is not telemetry.</h2><p class="hero-copy">deck is useful because it can see your local sessions—not because it sends them elsewhere.</p></div>
+        <div class="privacy-points">
+          <div class="privacy-point"><strong>No account</strong><span>No sign-in or cloud workspace.</span></div>
+          <div class="privacy-point"><strong>No terminal upload</strong><span>Prompts and output stay on your Mac.</span></div>
+          <div class="privacy-point"><strong>Inspect your data</strong><span>State is stored as local JSON in <code>~/.deck</code>.</span></div>
+          <div class="privacy-point"><strong>MIT licensed</strong><span>Read, build, modify, and audit the source.</span></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="shell install" id="download">
+      <p class="eyebrow">Ready when your agents are</p>
+      <h2>Install deck in under a minute.</h2>
+      <p>Download the signed and notarized DMG, drag deck to Applications, and create your first persistent session. tmux is included.</p>
+      <div class="hero-actions centered">
+        <a class="button primary" href="{{DOWNLOAD_URL}}">Download {{RELEASE_LABEL}}</a>
+        <a class="button" href="{{FEEDBACK_URL}}">Share feedback</a>
+      </div>
+    </section>
+
+    <section class="shell section faq" id="faq">
+      <div><p class="eyebrow">Questions</p><h2>What deck does—and doesn’t do.</h2></div>
+      <div class="faq-list">
+        <article class="faq-item"><h3>Does deck upload my code, prompts, or terminal output?</h3><p>No. deck has no account or cloud workspace, and terminal content stays on your Mac. The website also ships without analytics or third-party scripts in this first version.</p></article>
+        <article class="faq-item"><h3>How do sessions survive when deck quits?</h3><p>deck runs a private tmux server. Closing the app detaches its terminal view; it does not stop the tmux session. Closing a card or exiting its shell ends that session.</p></article>
+        <article class="faq-item"><h3>Does amber mean an agent needs my input?</h3><p>No. Amber means the session has been quiet for at least 15 seconds. It is a cue to inspect, not a claim that deck understands the agent’s state.</p></article>
+        <article class="faq-item"><h3>Which CLI tools are supported?</h3><p>Any interactive CLI that runs in a macOS terminal, including Claude Code, Codex, OpenCode, build tools, shells, and your own scripts.</p></article>
+        <article class="faq-item"><h3>Why not the Mac App Store?</h3><p>deck uses direct Developer ID distribution so its terminal and tmux integration can work without an App Store sandbox redesign. Releases are signed, notarized, and update in-app.</p></article>
+        <article class="faq-item"><h3>Which Macs are supported?</h3><p>The current build supports Apple Silicon Macs. Intel Macs are not supported today.</p></article>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer"><div class="shell footer"><a class="brand" href="/"><span class="brand-mark" aria-hidden="true">▦</span><span>deck</span></a><span>Persistent local CLI sessions for macOS.</span><div class="footer-links"><a href="{{GITHUB_URL}}">GitHub</a><a href="/privacy/">Privacy</a><a href="{{LICENSE_URL}}">MIT License</a><a href="/zh/" lang="zh-Hans">中文</a></div></div></footer>
+</body>
+</html>
