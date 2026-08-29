@@ -10,6 +10,8 @@ import {
   chainQuietHint, contextStatusKey, CHAIN_QUIET_SECS, shQuote, quickBarLayout, rectsOverlap,
   createExitRetirementTracker, createSerialTransactionQueue, deleteSessionsTransaction, sidebarGroups,
   copyExact, createTerminalSelectionModel, terminalSelectionEdgeLines,
+  isComposingKeyEvent, terminalSelectionOverlayRows,
+  terminalLinkMatches,
   createTerminalWheelAccumulator, terminalWheelLines,
   linkMenuItems,
   inlineRenameValue, persistOptimistically,
@@ -405,6 +407,34 @@ test('terminal selection model keeps anchor, reverses, clamps boundaries, and re
   assert.equal(model.snapshot().phase, 'selected');
 });
 
+test('frozen selection overlay follows content coordinates, not viewport pixels', () => {
+  const base = {
+    startRow: 100, startCol: 4, endRow: 102, endCol: 7,
+    rows: 10, cols: 80,
+  };
+  const before = terminalSelectionOverlayRows({ ...base, viewportTop: 96 });
+  assert.deepEqual(before.map(x => [x.row, x.col, x.width, x.absoluteRow]), [
+    [4, 4, 76, 100], [5, 0, 80, 101], [6, 0, 7, 102],
+  ]);
+  const after = terminalSelectionOverlayRows({ ...base, viewportTop: 99 });
+  assert.deepEqual(after.map(x => [x.row, x.absoluteRow]), [[1, 100], [2, 101], [3, 102]]);
+  assert.deepEqual(terminalSelectionOverlayRows({ ...base, viewportTop: 103 }), [],
+    'highlight disappears when its content is outside the viewport');
+  const reverse = terminalSelectionOverlayRows({
+    startRow: 102, startCol: 7, endRow: 100, endCol: 4,
+    viewportTop: 99, rows: 10, cols: 80,
+  });
+  assert.deepEqual(reverse, after, 'reverse endpoints normalize to the same content spans');
+});
+
+test('IME/dead-key events bypass every Deck keyboard shortcut', () => {
+  for (const event of [
+    { key: 'Process' }, { key: 'Dead' }, { key: 'Compose' },
+    { key: '[', isComposing: true }, { key: '?', keyCode: 229 },
+  ]) assert.equal(isComposingKeyEvent(event), true, JSON.stringify(event));
+  assert.equal(isComposingKeyEvent({ key: '[', isComposing: false, keyCode: 219 }), false);
+});
+
 test('terminal wheel input preserves fractions and normalizes browser delta modes', () => {
   assert.equal(terminalWheelLines(28, 0, 24), 2);
   assert.equal(terminalWheelLines(3, 1, 24), 3);
@@ -456,6 +486,23 @@ test('path menu adds parent actions while the URL menu remains unchanged', () =>
   assert.deepEqual(linkMenuItems('path').map(x => x.action), [
     'editor', 'editor-parent', 'session-parent', 'reveal', 'copy',
   ]);
+});
+
+test('terminal link grammar covers relative, quoted, Unicode and line suffix paths', () => {
+  const line = [
+    '/tmp/code.rs', './file.rs:42', '../src/main.rs:42:7', '~/.deck/settings.json',
+    'file.rs:9', '目录/组合é/😀.txt', '"/tmp/space name.rs":12:3',
+    "'../空 格/emoji😀.md':5", 'https://example.com/a',
+  ].join(' | ');
+  const links = terminalLinkMatches(line);
+  assert.deepEqual(links.map(link => link.value), [
+    '/tmp/code.rs', './file.rs:42', '../src/main.rs:42:7', '~/.deck/settings.json',
+    'file.rs:9', '目录/组合é/😀.txt', '"/tmp/space name.rs":12:3',
+    "'../空 格/emoji😀.md':5", 'https://example.com/a',
+  ]);
+  assert.equal(links.at(-1).kind, 'url');
+  assert.deepEqual(terminalLinkMatches('missing.rs), ordinary_word, foo.').map(x => x.value),
+    ['missing.rs'], 'line punctuation is excluded and plain words are ignored');
 });
 
 test('rename Enter/Escape/empty semantics and persistence rollback are deterministic', async () => {

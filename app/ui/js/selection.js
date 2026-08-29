@@ -1,15 +1,20 @@
-// selection.js — direct cross-screen selection inside terminal panes.
-// tmux copy-mode owns the selection and repaint; this module owns only the
-// pointer lifecycle, public cell geometry, and stale async cancellation.
-import { inv } from './state.js';
+// selection.js — one coordinator for pointer ownership and terminal selection.
+// A physical click stays on xterm's trusted mouse/link path. Once movement
+// crosses the drag threshold, ownership transfers to tmux. At pointerup the
+// tmux range is frozen into an immutable token-bound backend snapshot and a
+// public-geometry overlay; later wheel movement changes only the viewport.
+import { inv, uev } from './state.js';
 import { toast } from './dialogs.js';
-import { createTerminalSelectionModel, terminalSelectionEdgeLines } from './pure.js';
+import {
+  createTerminalSelectionModel,
+  terminalSelectionEdgeLines,
+  terminalSelectionOverlayRows,
+} from './pure.js';
 import { formatNumber, t } from './i18n.js';
 
 let nextSelectionToken = 1;
 const controllers = new Set();
 let physicalPointerOwner = null;
-let lateCompatibilityOwner = null;
 
 function terminalCell(pane, clientX, clientY) {
   const screen = pane.body.querySelector('.xterm-screen');
@@ -27,12 +32,18 @@ function terminalCell(pane, clientX, clientY) {
   };
 }
 
+const copyFailureCode = error => {
+  const value = String(error || '');
+  if (value.includes('selection-missing')) return 'selection-missing';
+  return 'snapshot-failed';
+};
+
 function terminalSelectionController(pane, onModeChange) {
   const model = createTerminalSelectionModel();
   let gesture = null;
   let selected = false;
+  let frozen = false;
   let disposed = false;
-  let previousDisableStdin = false;
   let opChain = Promise.resolve();
   let updateRunning = false;
   let updateDirty = false;
@@ -40,27 +51,16 @@ function terminalSelectionController(pane, onModeChange) {
   let lastStatus = null;
   let limitNoticeShown = false;
   let token = 0;
-  let replayingClick = false;
-  let blockCompatibilityUntil = 0;
-  let previousClick = null;
+  let suppressLinkUntil = 0;
   let ownerTrace = {
-    pointerDown: 0, promoted: 0, compatibilityBlocked: 0,
-    clickReplayed: 0, ended: 0,
+    pointerDown: 0, promoted: 0, trustedClick: 0,
+    compatibilityBlocked: 0, ended: 0,
   };
 
   const queue = operation => {
     const pending = opChain.catch(() => {}).then(operation);
     opChain = pending;
     return pending;
-  };
-
-  const setInputSuppressed = suppress => {
-    if (suppress) {
-      previousDisableStdin = !!pane.term.options.disableStdin;
-      pane.term.options.disableStdin = true;
-    } else {
-      pane.term.options.disableStdin = previousDisableStdin;
-    }
   };
 
   const clearEdgeTimer = () => {
@@ -73,9 +73,57 @@ function terminalSelectionController(pane, onModeChange) {
     if (onModeChange) onModeChange(value, lastStatus);
   };
 
-  const releaseCapture = () => {
-    if (!gesture || !pane.body.releasePointerCapture) return;
-    try { pane.body.releasePointerCapture(gesture.pointerId); } catch (e) { /* already released */ }
+  const releaseCapture = current => {
+    if (!current || !pane.body.releasePointerCapture) return;
+    try { pane.body.releasePointerCapture(current.pointerId); } catch (e) { /* already released */ }
+  };
+
+  const overlay = () => {
+    const screen = pane.body.querySelector('.xterm-screen');
+    if (!screen) return null;
+    let layer = screen.querySelector(':scope > .deck-selection-overlay');
+    if (!layer) {
+      layer = document.createElement('div');
+      layer.className = 'deck-selection-overlay';
+      screen.appendChild(layer);
+    }
+    return layer;
+  };
+
+  const clearOverlay = () => {
+    const layer = pane.body.querySelector('.deck-selection-overlay');
+    if (layer) layer.replaceChildren();
+  };
+
+  const renderOverlay = () => {
+    const layer = overlay();
+    if (!layer) return;
+    layer.replaceChildren();
+    if (!selected || !frozen || !lastStatus) return;
+    const screen = pane.body.querySelector('.xterm-screen');
+    const rect = screen.getBoundingClientRect();
+    const viewportTop = lastStatus.history_rows - lastStatus.scroll_position;
+    const spans = terminalSelectionOverlayRows({
+      startRow: lastStatus.selection_start_row,
+      startCol: lastStatus.selection_start_col,
+      endRow: lastStatus.selection_end_row,
+      endCol: lastStatus.selection_end_col,
+      viewportTop,
+      rows: pane.term.rows,
+      cols: pane.term.cols,
+    });
+    const cellWidth = rect.width / pane.term.cols;
+    const cellHeight = rect.height / pane.term.rows;
+    for (const span of spans) {
+      const band = document.createElement('div');
+      band.className = 'deck-selection-band';
+      band.dataset.absoluteRow = String(span.absoluteRow);
+      band.style.left = `${span.col * cellWidth}px`;
+      band.style.top = `${span.row * cellHeight}px`;
+      band.style.width = `${span.width * cellWidth}px`;
+      band.style.height = `${cellHeight}px`;
+      layer.appendChild(band);
+    }
   };
 
   const scheduleEdge = () => {
@@ -102,31 +150,28 @@ function terminalSelectionController(pane, onModeChange) {
     const run = async () => {
       while (updateDirty && gesture && gesture.promoted && !disposed) {
         updateDirty = false;
-        const point = { x: gesture.x, y: gesture.y };
-        const cell = terminalCell(pane, point.x, point.y);
+        const current = gesture;
+        const cell = terminalCell(pane, current.x, current.y);
         if (!cell) break;
         model.move({ row: cell.row, col: cell.col });
         const edgeLines = terminalSelectionEdgeLines({
-          pointerY: point.y, top: cell.rect.top, bottom: cell.rect.bottom,
+          pointerY: current.y, top: cell.rect.top, bottom: cell.rect.bottom,
         });
         const generation = model.snapshot().generation;
+        const currentToken = token;
         try {
           const status = await queue(() => inv('terminal_selection_update', {
-            name: pane.session, row: cell.row, col: cell.col, edgeLines,
+            name: pane.session, token: currentToken,
+            row: cell.row, col: cell.col, edgeLines,
           }));
-          if (!model.apply(generation, status)) continue;
+          if (currentToken !== token || !model.apply(generation, status)) continue;
           lastStatus = status;
-          // Pane resize can report one transient selection_present=0 while
-          // tmux redraws copy-mode. Once text has been selected, retain local
-          // ownership until an explicit cancel/error so Escape cannot strand
-          // the pane in backend copy-mode.
-          setMode(selected || !!status.selection_present);
           if (status.history_at_limit && status.at_top && edgeLines < 0 && !limitNoticeShown) {
             limitNoticeShown = true;
             toast(t('selection.limit', { count: formatNumber(status.history_limit) }));
           }
         } catch (e) {
-          if (model.snapshot().generation === generation) {
+          if (currentToken === token && model.snapshot().generation === generation) {
             await cancel(false);
             toast(t('error.selectionChanged'));
           }
@@ -147,23 +192,25 @@ function terminalSelectionController(pane, onModeChange) {
     gesture.promoted = true;
     ownerTrace.promoted = 1;
     token = nextSelectionToken++;
+    frozen = false;
+    const currentToken = token;
     const generation = model.begin({ row: anchor.row, col: anchor.col });
     model.move({ row: active.row, col: active.col });
+    setMode(true);
     try { pane.term.clearSelection(); } catch (e) { /* already empty */ }
     if (pane.body.setPointerCapture) {
       try { pane.body.setPointerCapture(gesture.pointerId); } catch (e) { /* document capture remains */ }
     }
     queue(() => inv('terminal_selection_start', {
-      name: pane.session,
+      name: pane.session, token: currentToken,
       anchorRow: anchor.row, anchorCol: anchor.col,
       activeRow: active.row, activeCol: active.col,
     })).then(status => {
-      if (!model.apply(generation, status)) return;
+      if (currentToken !== token || !model.apply(generation, status)) return;
       lastStatus = status;
-      setMode(selected || !!status.selection_present);
       requestUpdate();
     }).catch(() => {
-      if (model.snapshot().generation === generation) {
+      if (currentToken === token && model.snapshot().generation === generation) {
         cancel(false);
         toast(t('error.selectionStart'));
       }
@@ -173,42 +220,24 @@ function terminalSelectionController(pane, onModeChange) {
   const pointerDown = event => {
     if (disposed || event.button !== 0) return;
     if (!terminalCell(pane, event.clientX, event.clientY)) return;
-    /* Own the physical gesture before xterm sees pointerdown/mousedown.
-       A drag is rendered by tmux; a sub-threshold click is replayed to xterm
-       after pointerup. This prevents xterm's internal mouse service and the
-       tmux coordinator from ever starting the same physical drag. */
-    event.preventDefault();
-    event.stopImmediatePropagation();
-    // Always invalidate an older generation, even when its start reply is
-    // still in flight and `selected` has not become true yet. The backend
-    // start command independently replaces any tmux selection it encounters.
+    // Keep the physical compatibility sequence trusted for click/link. A
+    // later threshold crossing explicitly transfers ownership to tmux.
     cancel(false);
-    try { pane.term.clearSelection(); } catch (e) { /* already empty */ }
-    clearEdgeTimer();
     ownerTrace = {
-      pointerDown: 1, promoted: 0, compatibilityBlocked: 0,
-      clickReplayed: 0, ended: 0,
+      pointerDown: 1, promoted: 0, trustedClick: 0,
+      compatibilityBlocked: 0, ended: 0,
     };
     gesture = {
       pointerId: event.pointerId,
       startX: event.clientX, startY: event.clientY,
       x: event.clientX, y: event.clientY,
-      target: event.target,
-      modifiers: {
-        altKey: event.altKey, ctrlKey: event.ctrlKey,
-        metaKey: event.metaKey, shiftKey: event.shiftKey,
-      },
       promoted: false,
     };
-    lateCompatibilityOwner = null;
     physicalPointerOwner = api;
-    setInputSuppressed(true);
   };
 
   const pointerMove = event => {
     if (!gesture || event.pointerId !== gesture.pointerId) return;
-    event.preventDefault();
-    event.stopImmediatePropagation();
     gesture.x = event.clientX;
     gesture.y = event.clientY;
     if (!gesture.promoted) {
@@ -217,135 +246,162 @@ function terminalSelectionController(pane, onModeChange) {
       promote();
     }
     if (gesture.promoted) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
       requestUpdate();
-    }
-  };
-
-  const clickCount = ended => {
-    const now = Date.now();
-    const close = previousClick && now - previousClick.time <= 500
-      && Math.hypot(ended.x - previousClick.x, ended.y - previousClick.y) <= 5;
-    const count = close ? Math.min(3, previousClick.count + 1) : 1;
-    previousClick = { time: now, x: ended.x, y: ended.y, count };
-    return count;
-  };
-
-  const replayClick = ended => {
-    const screen = pane.body.querySelector('.xterm-screen');
-    const target = ended.target?.isConnected && pane.body.contains(ended.target)
-      ? ended.target : screen;
-    if (!target) return;
-    const detail = clickCount(ended);
-    const init = {
-      bubbles: true, cancelable: true, composed: true, view: window,
-      button: 0, buttons: 0, detail,
-      clientX: ended.x, clientY: ended.y,
-      ...ended.modifiers,
-    };
-    replayingClick = true;
-    try {
-      target.dispatchEvent(new MouseEvent('mousedown', { ...init, buttons: 1 }));
-      target.dispatchEvent(new MouseEvent('mouseup', init));
-      target.dispatchEvent(new MouseEvent('click', init));
-      if (detail === 2) target.dispatchEvent(new MouseEvent('dblclick', init));
-      ownerTrace.clickReplayed = 1;
-    } finally {
-      replayingClick = false;
     }
   };
 
   const pointerEnd = event => {
     if (!gesture || (event.pointerId != null && event.pointerId !== gesture.pointerId)) return;
-    event.preventDefault();
-    event.stopImmediatePropagation();
-    const ended = {
-      ...gesture,
-      x: event.clientX ?? gesture.x,
-      y: event.clientY ?? gesture.y,
-    };
-    const promoted = gesture.promoted;
-    if (promoted) {
-      model.finish();
-    }
+    const ended = gesture;
+    ended.x = event.clientX ?? ended.x;
+    ended.y = event.clientY ?? ended.y;
     clearEdgeTimer();
-    releaseCapture();
+    releaseCapture(ended);
     gesture = null;
-    blockCompatibilityUntil = Date.now() + 100;
     if (physicalPointerOwner === api) physicalPointerOwner = null;
-    lateCompatibilityOwner = api;
-    setInputSuppressed(false);
     ownerTrace.ended = 1;
-    if (!promoted) replayClick(ended);
+    if (!ended.promoted) {
+      ownerTrace.trustedClick = 1;
+      return;
+    }
+
+    suppressLinkUntil = Date.now() + 250;
+    model.finish();
+    const generation = model.snapshot().generation;
+    const currentToken = token;
+    const cell = terminalCell(pane, ended.x, ended.y);
+    const edgeLines = cell ? terminalSelectionEdgeLines({
+      pointerY: ended.y, top: cell.rect.top, bottom: cell.rect.bottom,
+    }) : 0;
+    queue(async () => {
+      if (cell) {
+        const updated = await inv('terminal_selection_update', {
+          name: pane.session, token: currentToken,
+          row: cell.row, col: cell.col, edgeLines,
+        });
+        if (currentToken !== token || !model.apply(generation, updated)) {
+          throw new Error('selection-missing');
+        }
+        lastStatus = updated;
+      }
+      const status = await inv('terminal_selection_finish', {
+        name: pane.session, token: currentToken,
+      });
+      if (currentToken !== token || disposed || model.snapshot().generation !== generation) return;
+      lastStatus = status;
+      frozen = true;
+      renderOverlay();
+    }).catch(error => {
+      if (currentToken === token && !disposed) {
+        uev('terminal-copy', copyFailureCode(error));
+        cancel(false);
+        toast(t('error.selectionChanged'));
+      }
+    });
+    setTimeout(() => {
+      if (currentToken === token) {
+        try { pane.term.clearSelection(); } catch (e) { /* disposed */ }
+      }
+    }, 0);
   };
+
   const pointerCancel = event => {
     if (!gesture || (event.pointerId != null && event.pointerId !== gesture.pointerId)) return;
     event.preventDefault();
     event.stopImmediatePropagation();
-    blockCompatibilityUntil = Date.now() + 100;
-    lateCompatibilityOwner = api;
+    suppressLinkUntil = Date.now() + 250;
     cancel();
   };
 
-  const compatibilityMouse = event => {
-    const owns = physicalPointerOwner === api
-      || (lateCompatibilityOwner === api && Date.now() < blockCompatibilityUntil);
-    if (replayingClick || !owns) return;
+  const compatibilityMove = event => {
+    if (!gesture?.promoted || physicalPointerOwner !== api) return;
     ownerTrace.compatibilityBlocked++;
     event.preventDefault();
     event.stopImmediatePropagation();
   };
 
   async function cancel(clearNative = true) {
-    const hadTmuxSelection = selected || gesture?.promoted;
-    if (gesture) {
-      blockCompatibilityUntil = Date.now() + 100;
-      lateCompatibilityOwner = api;
-      ownerTrace.ended = 1;
-    }
+    const oldToken = token;
+    const hadSelection = selected || !!gesture?.promoted;
+    const currentGesture = gesture;
     clearEdgeTimer();
-    releaseCapture();
+    releaseCapture(currentGesture);
     gesture = null;
     if (physicalPointerOwner === api) physicalPointerOwner = null;
     updateDirty = false;
+    token = 0;
+    frozen = false;
     const cancelGeneration = model.cancel();
-    setInputSuppressed(false);
     lastStatus = null;
     setMode(false);
+    clearOverlay();
+    // Repair disableStdin left by an older controller, but pointer selection
+    // itself never owns keyboard input in this state machine.
+    pane.term.options.disableStdin = false;
     if (clearNative) {
       try { pane.term.clearSelection(); } catch (e) { /* pane may be disposing */ }
     }
-    if (hadTmuxSelection) {
-      await queue(() => inv('terminal_selection_cancel', { name: pane.session }).catch(() => {}));
+    if (hadSelection && oldToken) {
+      await queue(() => inv('terminal_selection_cancel', {
+        name: pane.session, token: oldToken,
+      }).catch(() => {}));
     }
     if (model.snapshot().generation === cancelGeneration) model.reset();
   }
 
   const copy = async () => {
-    if (!selected) return null;
     const copyToken = token;
+    if (!selected || !copyToken) return null;
     await opChain.catch(() => {});
     if (!selected || token !== copyToken || disposed) return null;
-    const result = await inv('terminal_selection_copy', { name: pane.session, token: copyToken });
-    if (!selected || token !== copyToken || disposed) return null;
-    return result.text;
+    try {
+      const result = await inv('terminal_selection_copy', {
+        name: pane.session, token: copyToken,
+      });
+      if (!selected || token !== copyToken || disposed) return null;
+      return result.text;
+    } catch (error) {
+      uev('terminal-copy', copyFailureCode(error));
+      throw error;
+    }
+  };
+
+  const scroll = async lines => {
+    const scrollToken = token;
+    if (!selected || !frozen || !scrollToken) return null;
+    const status = await queue(() => inv('terminal_selection_scroll', {
+      name: pane.session, token: scrollToken, lines,
+    }));
+    if (!selected || token !== scrollToken || disposed) return null;
+    lastStatus = status;
+    renderOverlay();
+    return status;
+  };
+
+  const prepareInput = () => {
+    if (!selected && !gesture) {
+      pane.term.options.disableStdin = false;
+      return Promise.resolve();
+    }
+    return cancel();
   };
 
   const resize = () => {
     if (gesture?.promoted) requestUpdate();
+    renderOverlay();
   };
 
   const dispose = () => {
     if (disposed) return;
     disposed = true;
     cancel(false);
-    if (lateCompatibilityOwner === api) lateCompatibilityOwner = null;
     pane.body.removeEventListener('pointerdown', pointerDown, true);
     document.removeEventListener('pointermove', pointerMove, true);
     document.removeEventListener('pointerup', pointerEnd, true);
     document.removeEventListener('pointercancel', pointerCancel, true);
-    for (const type of ['mousedown', 'mousemove', 'mouseup', 'click', 'dblclick']) {
-      document.removeEventListener(type, compatibilityMouse, true);
-    }
+    document.removeEventListener('mousemove', compatibilityMove, true);
     window.removeEventListener('blur', blur);
     document.removeEventListener('visibilitychange', visibility);
     controllers.delete(api);
@@ -357,21 +413,24 @@ function terminalSelectionController(pane, onModeChange) {
   document.addEventListener('pointermove', pointerMove, true);
   document.addEventListener('pointerup', pointerEnd, true);
   document.addEventListener('pointercancel', pointerCancel, true);
-  for (const type of ['mousedown', 'mousemove', 'mouseup', 'click', 'dblclick']) {
-    document.addEventListener(type, compatibilityMouse, true);
-  }
+  document.addEventListener('mousemove', compatibilityMove, true);
   window.addEventListener('blur', blur);
   document.addEventListener('visibilitychange', visibility);
 
   const api = {
-    copy, cancel, dispose, resize,
+    copy, cancel, dispose, prepareInput, resize, scroll, render: renderOverlay,
     hasSelection: () => selected,
     isDragging: () => !!gesture?.promoted,
+    isFrozen: () => frozen,
+    allowLinkActivation: () => !gesture?.promoted && Date.now() >= suppressLinkUntil,
     status: () => lastStatus,
     ownership: () => ({
       ...ownerTrace,
-      owner: gesture ? 'coordinator' : 'none',
+      owner: gesture?.promoted ? 'drag-selection'
+        : gesture ? 'pointer-pending'
+          : selected ? 'frozen-selection' : 'xterm',
       xtermSelection: !!pane.term.hasSelection?.(),
+      frozen,
     }),
     idle: () => opChain.catch(() => {}),
   };

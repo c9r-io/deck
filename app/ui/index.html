@@ -343,6 +343,14 @@
     white-space: pre;
   }
   #terminal, #terminal * { user-select: text; -webkit-user-select: text; }
+  .deck-selection-overlay {
+    position: absolute; inset: 0; z-index: 8; pointer-events: none;
+    overflow: hidden;
+  }
+  .deck-selection-band {
+    position: absolute; background: rgba(79, 214, 190, 0.34);
+    mix-blend-mode: screen; pointer-events: none;
+  }
   /* IME preedit overlay — xterm leaves it unstyled, which is invisible on a
      dark background */
   #terminal .composition-view {

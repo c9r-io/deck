@@ -71,7 +71,7 @@ test('removed long-output panel cannot return through DOM, routes, or backend re
   }
 });
 
-test('production terminal path wires the tmux-owned selection coordinator', () => {
+test('production terminal path wires the token-bound frozen selection coordinator', () => {
   const layout = read('app/ui/js/layout.js');
   const selection = read('app/ui/js/selection.js');
   const backend = read('app/src-tauri/src/commands.rs');
@@ -80,10 +80,12 @@ test('production terminal path wires the tmux-owned selection coordinator', () =
   assert.match(layout, /wireTerminalSelection\(pane/);
   assert.match(selection, /terminal_selection_start/);
   assert.match(selection, /terminal_selection_update/);
-  assert.match(selection, /pointerDown[\s\S]*?preventDefault\(\)[\s\S]*?stopImmediatePropagation\(\)/);
-  assert.match(selection, /\['mousedown', 'mousemove', 'mouseup', 'click', 'dblclick'\]/);
+  assert.doesNotMatch(selection, /replayClick|new MouseEvent\(['"]mousedown/);
+  assert.match(selection, /trustedClick/);
   assert.match(selection, /compatibilityBlocked/);
-  assert.match(selection, /setMode\(selected \|\| !!status\.selection_present\)/);
+  assert.match(selection, /terminal_selection_finish/);
+  assert.match(selection, /terminal_selection_scroll/);
+  assert.match(selection, /terminalSelectionOverlayRows/);
   assert.match(layout, /createTerminalWheelAccumulator/);
   assert.match(layout, /requestAnimationFrame[\s\S]*?wheelInFlight/);
   assert.doesNotMatch(layout, /wheelTimer[\s\S]*?50/);
@@ -95,11 +97,16 @@ test('production terminal path wires the tmux-owned selection coordinator', () =
   assert.match(backend, /dims\.selection_present[\s\S]*?clear-selection/);
   assert.match(backend, /if !before\.active \{/);
   assert.match(backend, /snapshot_selection/);
+  assert.match(backend, /TerminalSelectionLease::Frozen/);
+  assert.match(backend, /selection_token_matches/);
   assert.match(backendSelection, /copy-selection-no-clear/);
   assert.match(backendSelection, /show-buffer/);
   assert.match(backendSelection, /delete-buffer/);
   assert.doesNotMatch(backend, /extract_terminal_selection/);
   assert.doesNotMatch(selection, /\._core/);
+  assert.doesNotMatch(selection, /options\.disableStdin\s*=\s*true/);
+  assert.match(layout, /isComposingKeyEvent\(e\)/);
+  assert.match(layout, /macOptionIsMeta: false/);
 });
 
 test('WK clipboard expected value is generated independently of production copy', () => {

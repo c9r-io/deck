@@ -6,6 +6,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter};
 
@@ -107,7 +108,11 @@ const SMOKE_CHECKS: &[&str] = &[
     "selection-owner",
     "selection-gestures",
     "selection-repeat",
+    "selection-scroll-stable",
+    "selection-overlay",
     "scroll-frame",
+    "link-activate",
+    "ime-routing",
     "path-menu",
     "path-editor",
     "path-session-relative",
@@ -160,6 +165,15 @@ const UI_EVENT_SPECS: &[(&str, DetailPolicy)] = &[
     ("pty-rx", DetailPolicy::None),
     ("keydown", DetailPolicy::Closed(KEY_CLASSES)),
     ("composition", DetailPolicy::Closed(&["start", "end"])),
+    (
+        "terminal-copy",
+        DetailPolicy::Closed(&[
+            "success",
+            "selection-missing",
+            "snapshot-failed",
+            "clipboard-write-failed",
+        ]),
+    ),
     ("record", DetailPolicy::None),
     ("record-skip", DetailPolicy::Closed(FG_CLASSES)),
     ("record-fail", DetailPolicy::None),
@@ -760,6 +774,87 @@ pub(crate) struct TerminalSelectionStatus {
     selection_end_col: u32,
 }
 
+#[derive(Clone, Debug)]
+enum TerminalSelectionLease {
+    Cancelled {
+        token: u64,
+    },
+    Dragging {
+        token: u64,
+    },
+    Frozen {
+        token: u64,
+        text: String,
+        bytes: u64,
+        history_limit: u32,
+        selection_start_row: u32,
+        selection_start_col: u32,
+        selection_end_row: u32,
+        selection_end_col: u32,
+    },
+}
+
+impl TerminalSelectionLease {
+    fn token(&self) -> u64 {
+        match self {
+            Self::Cancelled { token } | Self::Dragging { token } | Self::Frozen { token, .. } => {
+                *token
+            }
+        }
+    }
+}
+
+fn terminal_selection_leases() -> &'static Mutex<HashMap<String, TerminalSelectionLease>> {
+    static LEASES: OnceLock<Mutex<HashMap<String, TerminalSelectionLease>>> = OnceLock::new();
+    LEASES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn terminal_selection_operation_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+fn selection_token_matches(name: &str, token: u64, frozen: bool) -> bool {
+    let leases = terminal_selection_leases().lock().unwrap();
+    matches!(
+        leases.get(name),
+        Some(TerminalSelectionLease::Dragging { token: current })
+            if !frozen && *current == token
+    ) || matches!(
+        leases.get(name),
+        Some(TerminalSelectionLease::Frozen { token: current, .. })
+            if frozen && *current == token
+    )
+}
+
+fn frozen_selection_status(
+    name: &str,
+    token: u64,
+    mut status: TerminalSelectionStatus,
+) -> Result<TerminalSelectionStatus, String> {
+    let leases = terminal_selection_leases().lock().unwrap();
+    let Some(TerminalSelectionLease::Frozen {
+        token: current,
+        selection_start_row,
+        selection_start_col,
+        selection_end_row,
+        selection_end_col,
+        ..
+    }) = leases.get(name)
+    else {
+        return Err("selection-missing".into());
+    };
+    if *current != token {
+        return Err("selection-missing".into());
+    }
+    status.selection_present = true;
+    status.selection_start_row = *selection_start_row;
+    status.selection_start_col = *selection_start_col;
+    status.selection_end_row = *selection_end_row;
+    status.selection_end_col = *selection_end_col;
+    Ok(status)
+}
+
 fn parse_u32_or_zero(raw: Option<&str>) -> u32 {
     raw.and_then(|s| s.parse().ok()).unwrap_or(0)
 }
@@ -890,12 +985,22 @@ fn copy_cursor_steps(
 #[tauri::command]
 pub(crate) fn terminal_selection_start(
     name: String,
+    token: u64,
     anchor_row: u32,
     anchor_col: u32,
     active_row: u32,
     active_col: u32,
 ) -> Result<TerminalSelectionStatus, String> {
+    let _operation = terminal_selection_operation_lock().lock().unwrap();
     validate_session_name(&name)?;
+    if terminal_selection_leases()
+        .lock()
+        .unwrap()
+        .get(&name)
+        .is_some_and(|lease| lease.token() >= token)
+    {
+        return Err("selection-missing".into());
+    }
     let target = pane_target(&name);
     let dims = terminal_selection_status_for(&target)?;
     let clamp_row = |row: u32| row.min(dims.pane_rows.saturating_sub(1));
@@ -950,17 +1055,27 @@ pub(crate) fn terminal_selection_start(
             storage::err_code(&e)
         )
     })?;
-    terminal_selection_status_for(&target)
+    let status = terminal_selection_status_for(&target)?;
+    terminal_selection_leases()
+        .lock()
+        .unwrap()
+        .insert(name, TerminalSelectionLease::Dragging { token });
+    Ok(status)
 }
 
 #[tauri::command]
 pub(crate) fn terminal_selection_update(
     name: String,
+    token: u64,
     row: u32,
     col: u32,
     edge_lines: i32,
 ) -> Result<TerminalSelectionStatus, String> {
+    let _operation = terminal_selection_operation_lock().lock().unwrap();
     validate_session_name(&name)?;
+    if !selection_token_matches(&name, token, false) {
+        return Err("selection-missing".into());
+    }
     let target = pane_target(&name);
     let before = terminal_selection_status_for(&target)?;
     // A freshly begun selection has no selected cells until its cursor first
@@ -998,6 +1113,9 @@ pub(crate) fn terminal_selection_update(
             storage::err_code(&e)
         )
     })?;
+    if !selection_token_matches(&name, token, false) {
+        return Err("selection-missing".into());
+    }
     terminal_selection_status_for(&target)
 }
 
@@ -1024,40 +1142,139 @@ pub(crate) struct TerminalSelectionCopy {
 }
 
 #[tauri::command]
-pub(crate) fn terminal_selection_copy(
+pub(crate) fn terminal_selection_finish(
     name: String,
     token: u64,
-) -> Result<TerminalSelectionCopy, String> {
+) -> Result<TerminalSelectionStatus, String> {
+    let _operation = terminal_selection_operation_lock().lock().unwrap();
     validate_session_name(&name)?;
+    if !selection_token_matches(&name, token, false) {
+        return Err("selection-missing".into());
+    }
     let target = pane_target(&name);
     let status = terminal_selection_status_for(&target)?;
     if !status.active || !status.selection_present {
-        return Err("there is no terminal selection".into());
+        return Err("selection-missing".into());
     }
     let prefix = terminal_selection_buffer_prefix(token);
     let text = crate::terminal_selection::snapshot_selection(&target, &prefix, tmux_owned)
-        .map_err(|e| {
-            format!(
-                "terminal selection could not be copied ({})",
-                storage::err_code(&e)
-            )
-        })?;
+        .map_err(|_| "snapshot-failed".to_string())?;
     let bytes = text.len() as u64;
     if bytes > MAX_TERMINAL_SELECTION_BYTES {
         return Err(
             "terminal selection exceeds the 64 MiB clipboard limit; narrow the selection".into(),
         );
     }
-    Ok(TerminalSelectionCopy {
-        text,
-        bytes,
-        history_limit: status.history_limit,
-    })
+    if !selection_token_matches(&name, token, false) {
+        return Err("selection-missing".into());
+    }
+    // The snapshot above is the immutable selection authority from now on.
+    // Clear tmux's cursor-bound highlight but keep copy-mode and its viewport;
+    // the frontend renders the frozen content coordinates with public cell
+    // geometry, so later scroll commands cannot move either endpoint.
+    tmux(&["send-keys", "-t", &target, "-X", "clear-selection"])
+        .map_err(|_| "snapshot-failed".to_string())?;
+    terminal_selection_leases().lock().unwrap().insert(
+        name.clone(),
+        TerminalSelectionLease::Frozen {
+            token,
+            text,
+            bytes,
+            history_limit: status.history_limit,
+            selection_start_row: status.selection_start_row,
+            selection_start_col: status.selection_start_col,
+            selection_end_row: status.selection_end_row,
+            selection_end_col: status.selection_end_col,
+        },
+    );
+    let viewport = terminal_selection_status_for(&target)?;
+    frozen_selection_status(&name, token, viewport)
 }
 
 #[tauri::command]
-pub(crate) fn terminal_selection_cancel(name: String) -> Result<(), String> {
+pub(crate) fn terminal_selection_copy(
+    name: String,
+    token: u64,
+) -> Result<TerminalSelectionCopy, String> {
+    let _operation = terminal_selection_operation_lock().lock().unwrap();
     validate_session_name(&name)?;
+    let lease = terminal_selection_leases()
+        .lock()
+        .unwrap()
+        .get(&name)
+        .cloned();
+    match lease {
+        Some(TerminalSelectionLease::Frozen {
+            token: current,
+            text,
+            bytes,
+            history_limit,
+            ..
+        }) if current == token => Ok(TerminalSelectionCopy {
+            text,
+            bytes,
+            history_limit,
+        }),
+        Some(TerminalSelectionLease::Dragging { token: current }) if current == token => {
+            let target = pane_target(&name);
+            let status = terminal_selection_status_for(&target)?;
+            if !status.active || !status.selection_present {
+                return Err("selection-missing".into());
+            }
+            let prefix = terminal_selection_buffer_prefix(token);
+            let text = crate::terminal_selection::snapshot_selection(&target, &prefix, tmux_owned)
+                .map_err(|_| "snapshot-failed".to_string())?;
+            let bytes = text.len() as u64;
+            if bytes > MAX_TERMINAL_SELECTION_BYTES {
+                return Err("snapshot-failed".into());
+            }
+            Ok(TerminalSelectionCopy {
+                text,
+                bytes,
+                history_limit: status.history_limit,
+            })
+        }
+        _ => Err("selection-missing".into()),
+    }
+}
+
+#[tauri::command]
+pub(crate) fn terminal_selection_scroll(
+    name: String,
+    token: u64,
+    lines: i32,
+) -> Result<TerminalSelectionStatus, String> {
+    let _operation = terminal_selection_operation_lock().lock().unwrap();
+    validate_session_name(&name)?;
+    if !selection_token_matches(&name, token, true) {
+        return Err("selection-missing".into());
+    }
+    let target = pane_target(&name);
+    tmux_owned(&crate::terminal_scroll::args(&target, lines))?;
+    let viewport = terminal_selection_status_for(&target)?;
+    frozen_selection_status(&name, token, viewport)
+}
+
+#[tauri::command]
+pub(crate) fn terminal_selection_cancel(name: String, token: u64) -> Result<(), String> {
+    let _operation = terminal_selection_operation_lock().lock().unwrap();
+    validate_session_name(&name)?;
+    let should_cancel = {
+        let mut leases = terminal_selection_leases().lock().unwrap();
+        let matches = match leases.get(&name) {
+            Some(TerminalSelectionLease::Dragging { token: current })
+            | Some(TerminalSelectionLease::Frozen { token: current, .. }) => *current == token,
+            Some(TerminalSelectionLease::Cancelled { .. }) => false,
+            None => false,
+        };
+        if matches {
+            leases.insert(name.clone(), TerminalSelectionLease::Cancelled { token });
+        }
+        matches
+    };
+    if !should_cancel {
+        return Ok(());
+    }
     let _ = tmux(&["send-keys", "-t", &pane_target(&name), "-X", "cancel"]);
     Ok(())
 }
@@ -1097,20 +1314,20 @@ pub(crate) fn write_clipboard(text: String) -> Result<(), String> {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-        .map_err(|_| "native clipboard is unavailable".to_string())?;
+        .map_err(|_| "clipboard-write-failed".to_string())?;
     child
         .stdin
         .take()
-        .ok_or("native clipboard input is unavailable")?
+        .ok_or("clipboard-write-failed")?
         .write_all(text.as_bytes())
-        .map_err(|_| "native clipboard write failed".to_string())?;
+        .map_err(|_| "clipboard-write-failed".to_string())?;
     let status = child
         .wait()
-        .map_err(|_| "native clipboard completion failed".to_string())?;
+        .map_err(|_| "clipboard-write-failed".to_string())?;
     if status.success() {
         Ok(())
     } else {
-        Err("native clipboard write failed".into())
+        Err("clipboard-write-failed".into())
     }
 }
 
@@ -1948,6 +2165,10 @@ mod tests {
             format_ui_event("update-avail", Some("0.4.27"), None, None).unwrap(),
             "[ui] update-avail 0.4.27"
         );
+        assert_eq!(
+            format_ui_event("terminal-copy", Some("snapshot-failed"), None, None).unwrap(),
+            "[ui] terminal-copy snapshot-failed"
+        );
         // anything that could carry prose, prompts, paths, URLs or a
         // token-SHAPED slug (the old loophole) is redacted per event code
         for bad in [
@@ -1963,7 +2184,13 @@ mod tests {
             "line1\nline2",
             "词语",
         ] {
-            for code in ["js-error", "keydown", "record-skip", "separator"] {
+            for code in [
+                "js-error",
+                "keydown",
+                "record-skip",
+                "separator",
+                "terminal-copy",
+            ] {
                 let line = format_ui_event(code, Some(bad), None, None).unwrap();
                 assert_eq!(line, format!("[ui] {code} <redacted>"), "leaked: {bad}");
                 assert!(!line.contains("secret") && !line.contains("ghp_"));

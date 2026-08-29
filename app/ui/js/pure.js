@@ -16,6 +16,31 @@ export function shQuote(p) {
   return /^[A-Za-z0-9_/.~-]+$/.test(s) ? s : "'" + s.replace(/'/g, "'\\''") + "'";
 }
 
+/* Terminal link grammar. Quoted paths may contain spaces; unquoted paths
+   must be explicitly relative/absolute/home-prefixed or look like a file. */
+export const TERMINAL_LINK_RE = /(https?:\/\/[^\s"'`)\]]+)|((?:"[^"\n]+"|'[^'\n]+'|(?:~\/|\/|\.{1,2}\/)[^\s"'`]+|(?:[\p{L}\p{N}\p{M}\p{S}_.\-]+\/)*[\p{L}\p{N}\p{M}\p{S}_\-]+\.[\p{L}\p{N}]{1,8})(?::\d+(?::\d+)?)?)/gu;
+
+export function looksLikeTerminalPath(value) {
+  const raw = value.replace(/^(['"])(.*)\1(?=:\d|$)/, '$2');
+  if (/^(~\/|\.{1,2}\/|\/)/.test(raw)) return true;
+  if (raw.split('/').length > 2) return true;
+  return /\.[A-Za-z0-9]{1,8}(?::\d+(?::\d+)?)?$/.test(raw.split('/').pop());
+}
+
+export function terminalLinkMatches(text) {
+  const links = [];
+  TERMINAL_LINK_RE.lastIndex = 0;
+  let match;
+  while ((match = TERMINAL_LINK_RE.exec(String(text))) !== null) {
+    let value = match[0];
+    while (/[.,;:!?)}\]]$/.test(value)) value = value.slice(0, -1);
+    const kind = match[1] ? 'url' : 'path';
+    if (kind === 'path' && !looksLikeTerminalPath(value)) continue;
+    links.push({ kind, value, index: match.index });
+  }
+  return links;
+}
+
 /* ---------- formatting ---------- */
 export function fmtMem(mb) {
   return mb >= 1024 ? (mb / 1024).toFixed(1) + 'G' : Math.round(mb) + 'M';
@@ -244,6 +269,39 @@ export function terminalSelectionEdgeLines({ pointerY, top, bottom, hotZone = 48
     return Math.max(1, Math.round(maxLines * depth * depth));
   }
   return 0;
+}
+
+/** Deck shortcuts must never interpret a key that belongs to an IME/dead-key
+ * composition. The final text arrives through xterm's composition/input path. */
+export const isComposingKeyEvent = event => !!event && (
+  event.isComposing || event.keyCode === 229
+  || /^(Process|Dead|Compose)$/.test(event.key || '')
+);
+
+/** Visible row/column spans for an immutable half-open content selection.
+ * tmux rows are absolute buffer rows; only viewportTop changes while scrolling. */
+export function terminalSelectionOverlayRows({
+  startRow, startCol, endRow, endCol, viewportTop, rows, cols,
+}) {
+  if (![startRow, startCol, endRow, endCol, viewportTop, rows, cols].every(Number.isFinite)
+      || rows <= 0 || cols <= 0) return [];
+  let a = { row: Math.trunc(startRow), col: Math.trunc(startCol) };
+  let b = { row: Math.trunc(endRow), col: Math.trunc(endCol) };
+  if (a.row > b.row || (a.row === b.row && a.col > b.col)) [a, b] = [b, a];
+  const out = [];
+  const first = Math.max(a.row, Math.trunc(viewportTop));
+  const last = Math.min(b.row, Math.trunc(viewportTop) + Math.trunc(rows) - 1);
+  for (let absoluteRow = first; absoluteRow <= last; absoluteRow++) {
+    const from = absoluteRow === a.row ? a.col : 0;
+    const to = absoluteRow === b.row ? b.col : cols;
+    const left = Math.max(0, Math.min(cols, from));
+    const right = Math.max(left, Math.min(cols, to));
+    if (right > left) out.push({
+      row: absoluteRow - Math.trunc(viewportTop), col: left, width: right - left,
+      absoluteRow,
+    });
+  }
+  return out;
 }
 
 /** Normalize browser wheel units into fractional terminal lines. */

@@ -235,9 +235,9 @@ async function selectionSmoke(card) {
   const anchorRow = pane.term.rows - 3;
   const cellX = rect.left + rect.width / pane.term.cols * 0.2;
   const rowY = row => rect.top + (row + 0.5) * rect.height / pane.term.rows;
-  const downOwned = anchorRow >= 0
-    && !screen.dispatchEvent(pointer('pointerdown', 61, cellX, rowY(anchorRow)));
-  const compatDownBlocked = !screen.dispatchEvent(new MouseEvent('mousedown', {
+  const downTrusted = anchorRow >= 0
+    && screen.dispatchEvent(pointer('pointerdown', 61, cellX, rowY(anchorRow)));
+  const compatDownReachedXterm = !screen.dispatchEvent(new MouseEvent('mousedown', {
     bubbles: true, cancelable: true, button: 0, buttons: 1,
     clientX: cellX, clientY: rowY(Math.max(0, anchorRow)),
   }));
@@ -257,17 +257,18 @@ async function selectionSmoke(card) {
     ? Array.from({ length: 399 - activeId }, (_, offset) => fixtureClipboardLine(activeId + offset)).join('\n') + '\n'
     : '';
   document.dispatchEvent(pointer('pointerup', 61, cellX, rowY(activeRow)));
-  const lateMouseupBlocked = !screen.dispatchEvent(new MouseEvent('mouseup', {
+  const lateMouseupTrusted = screen.dispatchEvent(new MouseEvent('mouseup', {
     bubbles: true, cancelable: true, button: 0, buttons: 0,
     clientX: cellX, clientY: rowY(activeRow),
   }));
+  await pane.selection.idle();
   const ownership = pane.selection.ownership();
-  const ownerMask = (downOwned ? 1 : 0) | (compatDownBlocked ? 2 : 0)
-    | (lateMouseupBlocked ? 4 : 0) | (ownership.promoted === 1 ? 8 : 0)
-    | (!ownership.xtermSelection && ownership.owner === 'none'
-      && ownership.clickReplayed === 0 && ownership.ended === 1 ? 16 : 0);
+  const ownerMask = (downTrusted ? 1 : 0) | (compatDownReachedXterm ? 2 : 0)
+    | (lateMouseupTrusted ? 4 : 0) | (ownership.promoted === 1 ? 8 : 0)
+    | (!ownership.xtermSelection && ownership.owner === 'frozen-selection'
+      && ownership.trustedClick === 0 && ownership.ended === 1 && ownership.frozen ? 16 : 0);
   await report('selection-owner', fixtureVisible && exactStarted && exactCrossed
-    && ownerMask === 31 && ownership.compatibilityBlocked >= 2,
+    && ownerMask === 31,
   ownerMask, ownership.compatibilityBlocked);
 
   const expectedBytes = new TextEncoder().encode(expected).length;
@@ -292,17 +293,28 @@ async function selectionSmoke(card) {
   const clickRow = Math.max(2, pane.term.rows - 3);
   const clickX = rect.left + rect.width / pane.term.cols * 4.2;
   const clickY = rowY(clickRow);
-  const replayPointerClick = id => {
-    const down = !screen.dispatchEvent(pointer('pointerdown', id, clickX, clickY));
-    const up = !document.dispatchEvent(pointer('pointerup', id, clickX, clickY));
-    return down && up;
+  const physicalClick = (id, detail) => {
+    screen.dispatchEvent(pointer('pointerdown', id, clickX, clickY));
+    screen.dispatchEvent(new MouseEvent('mousedown', {
+      bubbles: true, cancelable: true, button: 0, buttons: 1,
+      clientX: clickX, clientY: clickY, detail,
+    }));
+    document.dispatchEvent(pointer('pointerup', id, clickX, clickY));
+    screen.dispatchEvent(new MouseEvent('mouseup', {
+      bubbles: true, cancelable: true, button: 0, buttons: 0,
+      clientX: clickX, clientY: clickY, detail,
+    }));
+    screen.dispatchEvent(new MouseEvent('click', {
+      bubbles: true, cancelable: true, button: 0,
+      clientX: clickX, clientY: clickY, detail,
+    }));
   };
-  const tapOwned = replayPointerClick(71);
-  const tapPlain = tapOwned && !pane.term.hasSelection();
-  replayPointerClick(72);
+  physicalClick(71, 1);
+  const tapPlain = !pane.term.hasSelection();
+  physicalClick(72, 2);
   const doubleWord = pane.term.hasSelection() && pane.term.getSelection().length > 0;
   const wordLength = pane.term.getSelection().length;
-  replayPointerClick(73);
+  physicalClick(73, 3);
   const tripleLine = pane.term.hasSelection()
     && pane.term.getSelection().length >= wordLength;
   const rightUntouched = screen.dispatchEvent(pointer('pointerdown', 74, clickX, clickY, 2));
@@ -332,6 +344,30 @@ async function selectionSmoke(card) {
   const repeatedText = repeated ? await copyTerminalSelection(pane) : null;
   await report('selection-repeat', repeated && typeof repeatedText === 'string'
     && repeatedText.length > 0, repeatedText?.length || 0, 0);
+
+  await pane.selection.idle();
+  const stableBefore = pane.selection.status();
+  const overlayBefore = new Map([...pane.body.querySelectorAll('.deck-selection-band')]
+    .map(band => [band.dataset.absoluteRow, Number.parseFloat(band.style.top)]));
+  const bytesBeforeScroll = await copyTerminalSelection(pane);
+  await pane.selection.scroll(-3);
+  const stableAfter = pane.selection.status();
+  const bytesAfterScroll = await copyTerminalSelection(pane);
+  const overlayAfter = new Map([...pane.body.querySelectorAll('.deck-selection-band')]
+    .map(band => [band.dataset.absoluteRow, Number.parseFloat(band.style.top)]));
+  const sameCoordinates = stableBefore.selection_start_row === stableAfter.selection_start_row
+    && stableBefore.selection_start_col === stableAfter.selection_start_col
+    && stableBefore.selection_end_row === stableAfter.selection_end_row
+    && stableBefore.selection_end_col === stableAfter.selection_end_col;
+  await report('selection-scroll-stable', sameCoordinates
+    && bytesBeforeScroll === bytesAfterScroll, bytesAfterScroll?.length || 0,
+  stableAfter.scroll_position - stableBefore.scroll_position);
+  const commonOverlayRows = [...overlayBefore.keys()]
+    .filter(row => overlayAfter.has(row));
+  const overlayMovedWithContent = commonOverlayRows.some(row =>
+    overlayBefore.get(row) !== overlayAfter.get(row));
+  await report('selection-overlay', overlayMovedWithContent,
+    overlayBefore.size, overlayAfter.size);
 
   await cancelTerminalSelection(pane);
   await inv('scroll_bottom', { name: card.session });
@@ -388,9 +424,13 @@ async function selectionSmoke(card) {
   const downText = startedDown ? await copyTerminalSelection(pane) : '';
   selectionStage = 8;
   document.dispatchEvent(pointer('pointerup', 42, rect.left + 60, rect.bottom + 32));
-  await report('selection-down', downMetrics.scroll_position > pane.term.rows * 10
-    && crossedDown && downText.length > 1000 && downStart >= 2500,
-    downText.split('\n').length, downText.length);
+  const crossedDownEvidence = crossedDown
+    || downText.split('\n').length > pane.term.rows * 3;
+  const downMask = (downMetrics.scroll_position > pane.term.rows * 10 ? 1 : 0)
+    | (startedDown ? 2 : 0) | (crossedDownEvidence ? 4 : 0)
+    | (downText.length > 1000 ? 8 : 0) | (downStart >= 2500 ? 16 : 0);
+  await report('selection-down', downMask === 31,
+    downText.split('\n').length, downMask);
 
   await cancelTerminalSelection(pane);
   screen.dispatchEvent(pointer('pointerdown', 43, rect.left + 60, rect.bottom - 6));
@@ -443,6 +483,68 @@ async function selectionSmoke(card) {
 }
 
 async function pathSmoke(card) {
+  await openSession(card.id);
+  const pane = panes.get(card.session);
+  const fixture = '"空 格😀/code.rs":12:3';
+  await inv('pty_write', {
+    name: card.session,
+    dataB64: strToB64(`printf '%s\\n' '${fixture}'\r`),
+  });
+  const fixtureReady = await waitFor(() => {
+    for (let row = 0; row < pane.term.rows; row++) {
+      if (visibleTerminalLine(pane, row).trim() === fixture) return true;
+    }
+    return false;
+  }, 5000);
+  const screen = pane.body.querySelector('.xterm-screen');
+  const rect = screen.getBoundingClientRect();
+  let fixtureRow = -1, fixtureCol = -1;
+  for (let row = 0; row < pane.term.rows; row++) {
+    const line = visibleTerminalLine(pane, row);
+    const col = line.trim() === fixture ? line.indexOf(fixture) : -1;
+    if (col >= 0) { fixtureRow = row; fixtureCol = col; break; }
+  }
+  const linkX = rect.left + (fixtureCol + 1.5) * rect.width / pane.term.cols;
+  const linkY = rect.top + (fixtureRow + 0.5) * rect.height / pane.term.rows;
+  screen.dispatchEvent(new MouseEvent('mousemove', {
+    bubbles: true, clientX: linkX, clientY: linkY,
+  }));
+  screen.dispatchEvent(pointer('pointerdown', 31, linkX, linkY));
+  screen.dispatchEvent(new MouseEvent('mousedown', {
+    bubbles: true, cancelable: true, button: 0, buttons: 1,
+    clientX: linkX, clientY: linkY, detail: 1,
+  }));
+  document.dispatchEvent(pointer('pointerup', 31, linkX, linkY));
+  screen.dispatchEvent(new MouseEvent('mouseup', {
+    bubbles: true, cancelable: true, button: 0, buttons: 0,
+    clientX: linkX, clientY: linkY, detail: 1,
+  }));
+  screen.dispatchEvent(new MouseEvent('click', {
+    bubbles: true, cancelable: true, button: 0,
+    clientX: linkX, clientY: linkY, detail: 1,
+  }));
+  const serviceOpened = fixtureReady && $('ctx').style.display === 'block'
+    && $('ctx').querySelector('.ctx-value')?.textContent === fixture;
+  $('ctx').style.display = 'none';
+  let providerLink = null;
+  pane.linkProvider.provideLinks(pane.term.buffer.active.viewportY + fixtureRow + 1, links => {
+    providerLink = links?.find(link => link.text === fixture) || null;
+  });
+  providerLink?.activate(eventAt(linkX, linkY), providerLink.text);
+  const providerOpened = $('ctx').style.display === 'block'
+    && $('ctx').querySelector('.ctx-value')?.textContent === fixture;
+  screen.dispatchEvent(new MouseEvent('click', {
+    bubbles: true, cancelable: true, button: 0,
+    clientX: linkX, clientY: linkY, detail: 1,
+  }));
+  const survivedOpeningClick = $('ctx').style.display === 'block';
+  $('ctx').querySelector('[data-a="copy"]')?.click();
+  const linkMask = (fixtureReady ? 1 : 0) | (providerLink ? 2 : 0)
+    | (providerOpened ? 4 : 0) | (survivedOpeningClick ? 8 : 0)
+    | (serviceOpened ? 16 : 0);
+  await report('link-activate', (linkMask & 15) === 15 && $('ctx').style.display === 'none',
+    linkMask, fixture.length);
+
   const focus = document.createElement('button');
   focus.textContent = 'focus';
   document.body.appendChild(focus);
@@ -450,7 +552,7 @@ async function pathSmoke(card) {
   showLinkCtx(eventAt(), 'url', 'https://example.com', card.dir, card.id);
   const urlActions = [...$('ctx').querySelectorAll('button')].map(b => b.dataset.a).join(',');
   $('ctx').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
-  showLinkCtx(eventAt(), 'path', '"空 格😀/code.rs":12:3', card.dir, card.id);
+  showLinkCtx(eventAt(), 'path', fixture, card.dir, card.id);
   const pathActions = [...$('ctx').querySelectorAll('button')].map(b => b.dataset.a).join(',');
   const first = $('ctx').querySelector('button');
   first.focus();
@@ -464,13 +566,13 @@ async function pathSmoke(card) {
   await inv('save_settings', { data: JSON.stringify({ editor: 'Cursor', debug: false }) });
   let editorOpened = false;
   try {
-    await inv('open_target', { kind: 'editor-parent', value: '"空 格😀/code.rs":12:3', cwd: card.dir });
+    await inv('open_target', { kind: 'editor-parent', value: fixture, cwd: card.dir });
     editorOpened = true;
   } catch (e) { /* report false */ }
   await report('path-editor', editorOpened, 1, 0);
 
   const beforeRelative = store.cards.length;
-  showLinkCtx(eventAt(), 'path', '"空 格😀/code.rs":12:3', card.dir, card.id);
+  showLinkCtx(eventAt(), 'path', fixture, card.dir, card.id);
   $('ctx').querySelector('[data-a="session-parent"]').click();
   const relativeMade = await waitFor(() => store.cards.length > beforeRelative, 10000);
   const relative = store.cards.at(-1);
@@ -484,6 +586,48 @@ async function pathSmoke(card) {
   const absolute = store.cards.at(-1);
   await report('path-session-absolute', absoluteMade && absolute?.dir.endsWith('/空 格😀'), 1, 0);
   focus.remove();
+}
+
+async function imeRoutingSmoke(card) {
+  await openSession(card.id);
+  const pane = panes.get(card.session);
+  const screen = pane.body.querySelector('.xterm-screen');
+  await waitFor(() => {
+    const ready = screen.getBoundingClientRect();
+    return ready.width > 100 && ready.height > 100;
+  }, 3000);
+  const rect = screen.getBoundingClientRect();
+  const x = rect.left + 40;
+  const y0 = rect.top + rect.height * 0.35;
+  const y1 = rect.top + rect.height * 0.55;
+  screen.dispatchEvent(pointer('pointerdown', 35, x, y0));
+  document.dispatchEvent(pointer('pointermove', 35, x + 20, y1));
+  const selectionStarted = await waitFor(() => pane.selection.hasSelection(), 3000);
+  document.dispatchEvent(pointer('pointerup', 35, x + 20, y1));
+  await pane.selection.idle();
+  const hadSelection = selectionStarted && pane.selection.hasSelection();
+  const sidebarBefore = document.body.classList.contains('side-collapsed');
+  const composingShortcut = new KeyboardEvent('keydown', {
+    key: 'b', keyCode: 229, metaKey: true, isComposing: true,
+    bubbles: true, cancelable: true,
+  });
+  pane.term.textarea.dispatchEvent(composingShortcut);
+  const shortcutBypassed = document.body.classList.contains('side-collapsed') === sidebarBefore;
+  pane.term.textarea.dispatchEvent(new CompositionEvent('compositionstart', {
+    data: '', bubbles: true, cancelable: true,
+  }));
+  await (pane.liveQ || Promise.resolve());
+  const cleaned = !pane.selection.hasSelection() && pane.term.options.disableStdin === false;
+  for (const key of ['Process', 'Dead', 'Compose', '[', ']', '?', '(', ')']) {
+    pane.term.textarea.dispatchEvent(new KeyboardEvent('keydown', {
+      key, keyCode: 229, isComposing: true, bubbles: true, cancelable: true,
+    }));
+  }
+  pane.term.textarea.dispatchEvent(new CompositionEvent('compositionend', {
+    data: '', bubbles: true, cancelable: true,
+  }));
+  await report('ime-routing', hadSelection && shortcutBypassed && cleaned,
+    shortcutBypassed ? 1 : 0, cleaned ? 1 : 0);
 }
 
 async function completionSmoke(card, project, column) {
@@ -699,10 +843,12 @@ export async function run() {
     stage = 8;
     await selectionSmoke(main);
     stage = 9;
-    await completionOwnerSmoke(main);
+    await imeRoutingSmoke(main);
     stage = 10;
-    await naturalExitFaultSmoke(project, column);
+    await completionOwnerSmoke(main);
     stage = 11;
+    await naturalExitFaultSmoke(project, column);
+    stage = 12;
     await inv('queue_add', { args: {
       session: main.session, cardId: main.id, dir: main.dir, cmd: main.cmd,
       text: 'deterministic smoke delivery', mode: 'at',

@@ -145,11 +145,15 @@ data with an empty default. A file written by a NEWER deck (or one whose
 version header deck cannot read) is left byte-for-byte alone instead of
 being overwritten.
 
-Terminal selection is tmux-owned: tmux copy-mode holds the anchor, active
-endpoint, scroll position, wrapping semantics and visible highlight while xterm
-renders the repainted frame. Holding a drag at the pane's top or bottom edge
-continuously crosses screens without leaving the terminal. ⌘C copies only the
-highlighted logical text; with no selection it leaves the clipboard untouched.
+Terminal drag selection has one explicit owner. tmux copy-mode tracks the
+anchor and active endpoint while the pointer is down; at pointerup deck freezes
+the exact tmux bytes and content coordinates under a generation token. A small
+public-geometry overlay then follows those content rows while tmux scrolls the
+viewport, so scrolling cannot move the completed range. Holding a drag at the
+pane's top or bottom edge continuously crosses screens without leaving the
+terminal. ⌘C waits for the freeze and copies only that immutable logical text
+through the native macOS clipboard; with no selection it leaves the clipboard
+untouched.
 Hard newlines and real blank lines are retained, soft wraps are rejoined, and
 ANSI drawing sequences are excluded. Each pane keeps a 50,000-row tmux history;
 deck reports when that reachable history limit is hit and refuses a clipboard

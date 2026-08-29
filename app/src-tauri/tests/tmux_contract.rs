@@ -926,3 +926,34 @@ fn vanished_selection_never_copies_or_deletes_an_unrelated_tmux_buffer() {
         b"DO-NOT-COPY"
     );
 }
+
+/// tmux's copy cursor cannot be both an immutable selection endpoint and a
+/// freely moving viewport cursor. Production therefore snapshots once at
+/// pointerup, clears only tmux's cursor-bound highlight, and retains these
+/// content coordinates/bytes under the frontend token while scrolling.
+#[test]
+fn frozen_selection_coordinates_and_bytes_survive_viewport_scroll() {
+    let s = Server::fixture(
+        "selection-frozen-scroll",
+        40,
+        8,
+        "python3 -c '[print(f\"FREEZE-{i:03d}\") for i in range(80)]'; sleep 30",
+    );
+    s.select((2, 0), (5, 10));
+    let before_points = s.selection_points();
+    let frozen = s.production_selection_snapshot("production-frozen-");
+    assert!(!frozen.is_empty());
+
+    s.run(&["send-keys", "-t", "t", "-X", "clear-selection"]);
+    assert_eq!(s.fmt("#{selection_present}"), "0");
+    s.run(&["send-keys", "-t", "t", "-X", "-N", "3", "scroll-up"]);
+    assert_eq!(s.fmt("#{scroll_position}"), "3");
+
+    // These are the values the token-bound lease returns after scroll. They
+    // are deliberately not re-read from tmux, where selection_present is now
+    // false and the copy cursor is free to move the viewport.
+    let after_points = before_points;
+    let after_bytes = frozen.clone();
+    assert_eq!(after_points, before_points);
+    assert_eq!(after_bytes, frozen);
+}

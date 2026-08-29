@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased — terminal interaction reliability
+
+- Keep real pointer clicks on xterm's trusted link state machine, remove
+  synthetic click replay, prevent the compatibility click after mouseup from
+  immediately closing the path menu, and recognize wrapped/Unicode/quoted,
+  absolute, relative and `file:line[:column]` paths with public buffer APIs.
+- Freeze every completed drag into a generation-bound tmux snapshot and native
+  clipboard route. Immediate Command-C waits for the final pointer update;
+  stale tokens and disappeared selections fail with closed diagnostic stages.
+- Decouple completed selection endpoints from tmux's viewport cursor. A
+  public-geometry overlay follows immutable content rows while scrolling, and
+  clipboard bytes remain identical before and after the scroll.
+- Remove pointer-time `disableStdin`, let composition/Process/Dead/Compose
+  events bypass Deck shortcuts, and leave macOS Option/dead-key processing to
+  the input method (`macOptionIsMeta: false`).
+- Add exact path grammar, overlay geometry, IME routing, frozen-scroll tmux
+  contract and real-WKWebView provider/clipboard/scroll smoke coverage.
+
 ## 0.4.34 — 2026-08-29
 
 - Automatically bind scheduled work to its card and full tmux

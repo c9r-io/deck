@@ -5,7 +5,7 @@ import { inlineRename, toast } from './dialogs.js';
 import { t } from './i18n.js';
 import { TERM_THEME, panes, pollNow, provider, render, renderSidebar, activeProject } from './board.js';
 import { SHELL_FG, acceptGhost, feedMirror, maybeRecordCommand, mountQuickBar, nextShellTitle, renderSuggest, resetSuggest, showLinkCtx, updateGhost, writeClipboard } from './terminal.js';
-import { createTerminalWheelAccumulator, shQuote, terminalWheelLines } from './pure.js';
+import { createTerminalWheelAccumulator, isComposingKeyEvent, shQuote, terminalLinkMatches, terminalWheelLines } from './pure.js';
 import { toggleQueuePanel } from './scheduler.js';
 import { cancelAllTerminalSelections, cancelTerminalSelection, copyTerminalSelection, hasTerminalSelection, wireTerminalSelection } from './selection.js';
 
@@ -56,12 +56,32 @@ export function strToB64(str) {
   return btoa(bin);
 }
 
-export const LINK_RE = /(https?:\/\/[^\s"'`)\]]+)|((?:"(?:~\/|\/|\.{1,2}\/)[^"\n]+"|'(?:~\/|\/|\.{1,2}\/)[^'\n]+'|(?:~\/|\.{0,2}\/)?[\p{L}\p{N}_.\-]+(?:\/[\p{L}\p{N}_.\-]+)+|~\/[\p{L}\p{N}_.\-]+)(?::\d+(?::\d+)?)?)/gu;
-export function looksLikePath(v) {
-  const raw = v.replace(/^['"]|['"](?=:\d|$)/g, '');
-  if (/^(~\/|\.{1,2}\/|\/)/.test(raw)) return true;
-  if (raw.split('/').length > 2) return true;
-  return /\.[A-Za-z0-9]{1,8}(?::\d+(?::\d+)?)?$/.test(raw.split('/').pop());
+/* Build one wrapped logical line with UTF-16-offset → terminal-cell mapping,
+   using only xterm's public BufferLine/BufferCell APIs. This keeps provider
+   ranges correct for wide Unicode cells and paths split by terminal wrap. */
+export function terminalLogicalLine(term, requestedLine) {
+  const buffer = term.buffer.active;
+  let first = requestedLine - 1;
+  while (first > 0 && buffer.getLine(first)?.isWrapped) first--;
+  let last = requestedLine - 1;
+  while (last + 1 < buffer.length && buffer.getLine(last + 1)?.isWrapped) last++;
+  let text = '';
+  const positions = [];
+  for (let y = first; y <= last; y++) {
+    const line = buffer.getLine(y);
+    if (!line) continue;
+    for (let x = 0; x < term.cols; x++) {
+      const cell = line.getCell(x);
+      if (!cell || cell.getWidth() === 0) continue;
+      const chars = cell.getChars() || ' ';
+      const pos = { x: x + 1, endX: x + Math.max(1, cell.getWidth()), y: y + 1 };
+      text += chars;
+      for (let i = 0; i < chars.length; i++) positions.push(pos);
+    }
+  }
+  const trimmed = text.trimEnd();
+  positions.length = trimmed.length;
+  return { text: trimmed, positions };
 }
 
 /* ----- file drop / image paste → path insertion (Warp-style) ----- */
@@ -119,7 +139,9 @@ export function createPane(card) {
     fontSize: 12.5,
     lineHeight: 1.7,
     cursorBlink: true,
-    macOptionIsMeta: true,
+    // Preserve macOS text-input/dead-key semantics. Option is not rewritten
+    // to Meta/ESC; terminal Meta remains available through Command shortcuts.
+    macOptionIsMeta: false,
     scrollback: 5000,
     allowProposedApi: true,   // registerDecoration (input separators)
     theme: TERM_THEME,
@@ -148,6 +170,7 @@ export function createPane(card) {
   term.onWriteParsed(() => {
     if (ghostRemainder && attachedName === session) updateGhost();
     positionSeparators(pane);
+    pane.selection?.render();
   });
   term.onScroll(() => positionSeparators(pane));
   panes.set(session, pane);
@@ -369,6 +392,7 @@ export function wireTerminalInput(pane, term, host) {
   /* app shortcuts pass through; ⌘C/⌘V are handled here because a menu-less
      macOS app gets no standard edit actions in the webview */
   term.attachCustomKeyEventHandler(e => {
+    if (isComposingKeyEvent(e)) return true;
     if (e.metaKey && e.key === 'b') return false;
     /* split shortcuts (方案 B): ⌘D right, ⌘⇧D down */
     if (e.type === 'keydown' && e.metaKey && (e.key === 'd' || e.key === 'D')) {
@@ -390,7 +414,12 @@ export function wireTerminalInput(pane, term, host) {
         && hasTerminalSelection(pane)) {
       e.preventDefault();
       copyTerminalSelection(pane)
-        .then(text => text == null ? null : writeClipboard(text))
+        .then(text => text == null ? null : writeClipboard(text)
+          .then(() => uev('terminal-copy', 'success'))
+          .catch(error => {
+            uev('terminal-copy', 'clipboard-write-failed');
+            throw error;
+          }))
         .catch(() => toast(t('error.copy')));
       return false;
     }
@@ -422,33 +451,31 @@ export function wireTerminalInput(pane, term, host) {
     return true;
   });
 
+  /* Composition owns the complete preedit→commit chain. Cancel selection
+     synchronously in the frontend, serialize backend cleanup before onData,
+     and never derive committed characters from KeyboardEvent.key. */
+  term.textarea.addEventListener('compositionstart', () => {
+    pane.liveQ = pane.selection?.prepareInput() || Promise.resolve();
+  }, true);
+
   /* clickable paths and URLs in terminal output */
-  term.registerLinkProvider({
+  const linkProvider = {
     provideLinks(lineNo, cb) {
-      const line = term.buffer.active.getLine(lineNo - 1);
-      if (!line) return cb(undefined);
-      const text = line.translateToString(true);
+      const logical = terminalLogicalLine(term, lineNo);
+      const { text, positions } = logical;
+      if (!text) return cb(undefined);
       const links = [];
-      LINK_RE.lastIndex = 0;
-      let m;
-      while ((m = LINK_RE.exec(text)) !== null) {
-        let value = m[0];
-        while (/[.,;:]$/.test(value)) value = value.slice(0, -1);
-        const kind = m[1] ? 'url' : 'path';
-        if (kind === 'path' && !looksLikePath(value)) continue;
+      for (const match of terminalLinkMatches(text)) {
+        const { value, kind } = match;
+        const start = positions[match.index];
+        const end = positions[match.index + value.length - 1];
+        if (!start || !end) continue;
         links.push({
-          range: { start: { x: m.index + 1, y: lineNo }, end: { x: m.index + value.length, y: lineNo } },
+          range: { start: { x: start.x, y: start.y }, end: { x: end.endX, y: end.y } },
           text: value,
           activate: (e, txt) => {
+            if (!pane.selection?.allowLinkActivation()) return;
             e.stopPropagation();
-            /* the menu swallows the mouseup, leaving xterm's selection
-               tracker in drag mode — end the gesture synthetically */
-            const scr = host.querySelector('.xterm-screen');
-            if (scr) {
-              scr.dispatchEvent(new MouseEvent('mouseup', {
-                bubbles: true, clientX: e.clientX, clientY: e.clientY,
-              }));
-            }
             try { term.clearSelection(); } catch (e2) { /* fine */ }
             const c = card();
             showLinkCtx(e, kind, txt, c ? c.dir : HOME, c ? c.id : null);
@@ -457,13 +484,15 @@ export function wireTerminalInput(pane, term, host) {
       }
       cb(links);
     },
-  });
+  };
+  pane.linkProvider = linkProvider; // public smoke seam: provider activate, not menu helper
+  term.registerLinkProvider(linkProvider);
 
-  /* Wheel handling, deck-driven: tmux mouse mode stays OFF so xterm keeps
-     its native local selection (drag + ⌘C). Fractional trackpad deltas are
-     consumed on display frames, with one backend request in flight; tmux
-     remains the scrollback authority without imposing the old 50ms/20fps
-     timer or dropping each batch's sub-line remainder. */
+  /* Wheel handling, deck-driven: tmux mouse mode stays OFF. xterm owns
+     click/double/triple-click selection; the coordinator owns promoted drags.
+     Fractional trackpad deltas are consumed on display frames, with one
+     backend request in flight; tmux remains the scrollback authority without
+     imposing the old 50ms/20fps timer or dropping each batch's remainder. */
   const wheel = createTerminalWheelAccumulator();
   let wheelFrame = null, wheelInFlight = false;
   const scheduleWheel = () => {
@@ -474,7 +503,11 @@ export function wireTerminalInput(pane, term, host) {
       const lines = wheel.take();
       if (!lines) return;
       wheelInFlight = true;
-      inv('scroll_session', { name: session, lines }).then(inMode => {
+      const request = hasTerminalSelection(pane) && pane.selection.isFrozen()
+        ? pane.selection.scroll(lines)
+        : inv('scroll_session', { name: session, lines });
+      request.then(result => {
+        const inMode = typeof result === 'object' ? result?.active : result;
         const c = card();
         if (c && !!c.scrolled !== !!inMode) { c.scrolled = !!inMode; updatePaneChrome(c); }
       }).catch(() => {}).finally(() => {

@@ -7,6 +7,42 @@ while the real webview fails (that is how every regression in this list
 originally shipped). Run through them in the `app/run.sh` build before
 tagging a release; 3 minutes total.
 
+## Prompt 05 automated candidate — 2026-08-29
+
+- [x] Baseline and fixed candidates ran in real bundled WKWebView with fresh
+      absolute smoke data directories and distinct private tmux sockets.
+- [x] Environment recorded: macOS 26.6 (25G72), `@xterm/xterm` 5.5.0
+      (vendored SHA-256
+      `1f991ac3b4b283ebf96e60ae23a00a52765dd3a2e46fa6fdda9f1aab032f7495`),
+      tmux 3.7c. The initial capture reported ABC as the current/only selected
+      source; the final capture reported Pinyin (`SCIM.ITABC`) as current after
+      an external input-source change. The smoke did not drive a system IME
+      candidate window, so neither observation completes the physical gate.
+- [x] Independent tmux reproduction proved the old scroll command changed a
+      completed range from `75:0→78:8` to `75:0→75:0` and removed its snapshot.
+      The fixed token lease keeps start/end and bytes unchanged while the
+      overlay's public row geometry changes with viewport offset.
+- [x] Real-WK smoke verifies provider `activate` (not merely menu item
+      construction), a 20+ line native clipboard oracle, immediate copy after
+      pointerup, reverse/repeated selection, frozen scroll, overlay movement,
+      split/detach/resize/cancel and composition shortcut bypass. Synthetic
+      events still do not prove `isTrusted`, a physical system Command-C, or a
+      real IME candidate window.
+- [x] User physical check in the isolated packaged candidate: real path click,
+      mouse selection, multi-line external paste and post-selection scroll were
+      reported basically OK. The exact byte/newline/hash oracle remains the
+      independently generated WK smoke result above.
+- [ ] Enable macOS Simplified Chinese Pinyin and, in the packaged app, enter
+      ordinary Chinese plus half/full-width `[ ] ? ( ) { } < >`; verify Enter,
+      Escape, Backspace and arrows during preedit, then switch back to ABC and
+      repeat shifted punctuation. Record the macOS/input-source/keyboard-layout
+      values with the release evidence. Do not mark these two physical gates
+      complete from synthetic composition events.
+- [ ] User Pinyin check found one remaining failure: special punctuation such
+      as `?` is absent on the first physical keypress and appears on the second.
+      Keep this gate open until the first press works after a fresh focus/input
+      source transition.
+
 ## v0.4.32 post-review automated candidate — 2026-08-29
 
 The round-seven automated and WKWebView portions below have been executed.
@@ -48,6 +84,8 @@ physical-input blocker are recorded in `RELEASE_REPORT_v0.4.32.md`.
 ## Input & rename
 - [ ] New session → type `ls` → characters echo, Enter runs it (TSM/IMK alive)
 - [ ] Chinese IME: type 中文, composition window appears, Enter commits
+- [ ] With Simplified Chinese Pinyin and ABC in turn, type `[ ] ? ( ) { } < >`,
+      shifted variants and full-width punctuation; no key silently disappears
 - [ ] ⌘V pastes into the shell; ⌘C copies a selection out
 - [ ] Rename a non-active session from the sidebar: Enter removes the editor
       immediately, persists exactly once, and updates Board/sidebar/open-pane

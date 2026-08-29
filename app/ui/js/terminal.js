@@ -1,7 +1,7 @@
 // terminal.js — context menus & link opening, ghost completion, chrome wiring
 // Part of deck's no-build frontend: native ES modules, no bundler.
 import { $, duev, inv, state, uev } from './state.js';
-import { copyExact, linkMenuItems } from './pure.js';
+import { copyExact, isComposingKeyEvent, linkMenuItems } from './pure.js';
 import { confirmDialog, inlineRename, toast, promptDialog } from './dialogs.js';
 import { closeSession, panes, provider, renameTab, render, switchProject, activeProject } from './board.js';
 import { backToBoard, openSession, strToB64 } from './layout.js';
@@ -110,10 +110,14 @@ export function showProjectCtx(e, pid) {
 }
 
 let linkActionGeneration = 0;
+let ignoreLinkOpeningClickUntil = 0;
 
 export function showLinkCtx(e, kind, value, cwd, sid = null) {
   const ctx = $('ctx');
   linkActionGeneration++; // invalidate any older path resolution
+  // xterm activates providers on mouseup. The browser's compatibility click
+  // follows immediately; it opened this menu and must not also close it.
+  ignoreLinkOpeningClickUntil = Date.now() + 120;
   const restoreFocus = document.activeElement;
   ctx.innerHTML = '<span class="ctx-value"></span>' + linkMenuItems(kind)
     .map(item => `<button data-a="${item.action}"></button>`).join('');
@@ -171,7 +175,9 @@ export function showLinkCtx(e, kind, value, cwd, sid = null) {
   if (first) first.focus();
 }
 
-document.addEventListener('click', () => {
+document.addEventListener('click', event => {
+  if (Date.now() < ignoreLinkOpeningClickUntil) return;
+  if ($('ctx').contains(event.target)) return;
   linkActionGeneration++;
   $('ctx').style.display = 'none';
 });
@@ -497,6 +503,7 @@ $('sess-col').addEventListener('change', async e => {
   toast(t('board.movedTo', { name: c.name }));
 });
 document.addEventListener('keydown', e => {
+  if (isComposingKeyEvent(e)) return;
   if ((e.metaKey || e.ctrlKey) && e.key === 'b') { e.preventDefault(); toggleSidebar(); return; }
   if (e.key === 'Escape') {
     if ($('ctx').style.display === 'block') { $('ctx').style.display = 'none'; return; }

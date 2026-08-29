@@ -43,6 +43,9 @@ Frontend gates: `node --check` (syntax) · `ui/test/*.mjs` (node:test)
   `.corrupt-*`, log, exports); `harden_data_dir()` re-migrates legacy modes
   at every boot.
 - PTY smoke test (headless): `cargo run --example pty_smoke`
+- The unchanged vendored terminal is `@xterm/xterm` 5.5.0 (the local
+  `xterm.js` is byte-identical to the published 5.5.0 artifact, SHA-256
+  `1f991ac3b4b283ebf96e60ae23a00a52765dd3a2e46fa6fdda9f1aab032f7495`).
 - WKWebView release regression (debug bundles only): launch with a fresh
   absolute `DECK_SMOKE_DATA_DIR`, unique `DECK_SMOKE_TMUX_SOCKET`, and
   `DECK_SMOKE_WKWEBVIEW=1 app/run.sh`. The production modules run inside the
@@ -77,19 +80,23 @@ Frontend gates: `node --check` (syntax) · `ui/test/*.mjs` (node:test)
   fractional / negative / null version, or a version without data, is
   damage → recovery), and `save` refuses to overwrite a malformed or future
   envelope.
-- Terminal selection has one authority: tmux copy-mode owns anchor, active
-  endpoint, history position, highlight and hard/soft-wrap semantics; PTY
-  repaint makes that highlight visible in xterm. `selection.js` owns a primary
-  gesture at pointerdown (blocking its compatible mouse sequence), promotes
-  drags to tmux, and replays only a sub-threshold click to xterm. It translates
-  pointer coordinates using only the public `.xterm-screen` rectangle and
-  public xterm cols/rows, coalesces IPC updates, holds pointer capture through
-  edge scrolling, and cancels on Escape, blur, visibility, pane detach or
-  disposal. tmux endpoints are directional and end-exclusive; cell columns
-  must be converted to grapheme steps before cursor movement. Never add a
-  mirror document, transparent textarea, or xterm `._core` dependency. ⌘C
-  asks tmux for exactly the current logical selection
-  and writes it through native `pbcopy`; no selection is a clipboard no-op.
+- Terminal gesture and selection authority is explicit. A sub-threshold
+  physical gesture stays on xterm's trusted mouse/link path; no synthetic
+  compatibility click is replayed. Crossing the threshold transfers the drag
+  to `selection.js`/tmux and clears speculative xterm selection. tmux owns the
+  directional, end-exclusive endpoints only while dragging. Pointerup queues
+  the final update, atomically snapshots tmux into a unique buffer, validates
+  the pane token, clears tmux's cursor-bound highlight without moving the
+  viewport, and installs one immutable backend lease (bytes + absolute content
+  coordinates). A plain overlay derived from public `.xterm-screen`, cols and
+  rows renders that lease; selection wheel commands only update viewport
+  status, so endpoints and copy bytes cannot drift. ⌘C waits for the whole
+  chain and reads only the current token. Escape, input/composition, blur,
+  visibility, focus change, detach and disposal revoke the lease. Never add a
+  transparent textarea or xterm `._core` dependency.
+  Selection never sets `disableStdin`; composition/dead-key events bypass all
+  Deck shortcuts, and `macOptionIsMeta` is false so Option remains owned by
+  macOS text input.
   History is 50,000 rows and clipboard extraction is explicitly capped at
   64 MiB without truncation. During selection tmux freezes the reading frame
   while the PTY stream continues through its bounded ACK gate.
