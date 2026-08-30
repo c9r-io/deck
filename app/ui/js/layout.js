@@ -233,8 +233,8 @@ export function createPane(card) {
     inv('pty_resize', { name: pane.session, cols, rows }));
   pane.syncSize = () => resize.sync(pane.term.cols, pane.term.rows);
   pane.invalidateSize = () => resize.invalidate();
-  wireTerminalSelection(pane, active => {
-    if (active) setScrollCursorVisible(pane, true);
+  wireTerminalSelection(pane, (active, status) => {
+    setScrollCursorVisible(pane, !active || status?.cursor_visible !== false);
     const current = provider.get(pane.sid);
     if (!current) return;
     current.scrolled = active;

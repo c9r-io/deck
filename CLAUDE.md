@@ -163,7 +163,11 @@ Frontend gates: `node --check` (syntax) · `ui/test/*.mjs` (node:test)
   with selection operations and rejects stale dimensions instead of clamping.
   A completed-selection scroll treats tmux status and xterm `onWriteParsed` as
   unordered: if the frame arrived first, the status completion renders; if the
-  status arrived first, the next parsed frame renders. While Deck owns a
+  status arrived first, the next parsed frame renders. Because the immutable
+  lease no longer depends on tmux's copy cursor, scrolling re-anchors that
+  cursor to the live input row and publishes `cursor_visible`; xterm removes
+  its cursor marker once the input row is outside the viewport instead of
+  leaving it fixed on the selected cell. While Deck owns a
   promoted drag, `onSelectionChange` clears any late compatibility-mouse xterm
   selection so a second viewport-fixed highlight cannot survive.
   ⌘C waits for the whole

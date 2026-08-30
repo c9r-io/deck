@@ -5,6 +5,7 @@ pub(crate) const CURSOR_ROW_OPTION: &str = "@deck-scroll-cursor-row";
 /// Build one tmux invocation that conditionally enters copy-mode, scrolls,
 /// and prints the resulting mode. `target` is produced only after deck's
 /// strict session-name validation, so it is safe inside nested tmux commands.
+#[cfg(test)]
 pub(crate) fn args(target: &str, lines: i32) -> Vec<String> {
     build_args(target, lines, false)
 }
@@ -180,8 +181,9 @@ mod tests {
         assert!(joined.contains("cursor-up"));
         assert!(up.last().is_some_and(|report| report.contains('\t')));
 
-        // Selection scrolling deliberately retains tmux's copy cursor: moving
-        // it here would mutate the user's selection endpoint.
+        // Drag-time selection movement deliberately retains tmux's copy
+        // cursor because it is still the mutable endpoint. Completed ranges
+        // use cursor_following_args after their endpoints have been frozen.
         let selection = args("=deck-card:", -3).join(" ");
         assert!(!selection.contains(CURSOR_ROW_OPTION));
         assert!(!selection.contains("cursor-down"));

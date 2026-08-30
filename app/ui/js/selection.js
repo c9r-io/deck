@@ -512,6 +512,10 @@ function terminalSelectionController(pane, onModeChange) {
     });
     if (!selected || token !== scrollToken || disposed) return null;
     lastStatus = status;
+    // Selection scrolls share the ordinary scroll cursor contract. Notify
+    // even though selection mode itself did not change so the host can hide
+    // xterm's copy cursor after the real input row leaves the viewport.
+    if (onModeChange) onModeChange(true, lastStatus);
     // The tmux status reply and its PTY repaint have no fixed ordering. If a
     // frame was already parsed, render the new coordinates now; otherwise
     // writeParsed() will render them when the repaint reaches xterm.

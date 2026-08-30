@@ -159,6 +159,8 @@ test('production terminal path wires the token-bound frozen selection coordinato
   assert.match(selection, /compatibilityBlocked/);
   assert.match(selection, /terminal_selection_finish/);
   assert.match(selection, /terminal_selection_scroll/);
+  assert.match(selection, /onModeChange\(true, lastStatus\)/,
+    'a frozen-selection scroll must publish live-cursor visibility');
   assert.match(selection, /terminalSelectionOverlayRows/);
   assert.match(selection, /status reply and its PTY repaint have no fixed ordering/,
     'selection scrolling must handle either tmux-status/xterm-frame ordering');
@@ -190,7 +192,9 @@ test('production terminal path wires the token-bound frozen selection coordinato
     'a busy wheel frame must remain armed instead of waiting for Promise completion');
   assert.doesNotMatch(layout, /wheelTimer[\s\S]*?50/);
   assert.match(backend, /copy-mode/);
-  assert.match(backend, /terminal_scroll::args/);
+  assert.match(backend,
+    /terminal_selection_scroll[\s\S]*?terminal_scroll::cursor_following_args/,
+    'frozen-selection scrolling must re-anchor the copy cursor to live input');
   assert.match(backendScroll, /if-shell[\s\S]*?display-message/);
   assert.match(read('app/ui/test/wk-smoke.mjs'),
     /selection-repeat[\s\S]*?selection-resize[\s\S]*?scroll-frame/);

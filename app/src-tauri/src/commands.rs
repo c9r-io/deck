@@ -1033,15 +1033,8 @@ pub(crate) struct TerminalScrollResult {
     cursor_visible: bool,
 }
 
-#[tauri::command]
-pub(crate) fn scroll_session(name: String, lines: i32) -> Result<TerminalScrollResult, String> {
-    validate_session_name(&name)?;
-    let t = pane_target(&name);
-    // State test, optional copy-mode entry, movement and post-state report all
-    // execute in one tmux server command list. This removes two to three
-    // process/IPC round trips from every display-frame scroll update.
-    let after = tmux_owned(&crate::terminal_scroll::cursor_following_args(&t, lines))?;
-    let mut fields = after.trim_end().split('\t');
+fn parse_terminal_scroll_result(raw: &str) -> Result<TerminalScrollResult, String> {
+    let mut fields = raw.trim_end().split('\t');
     let active = fields.next().ok_or("scroll-status-invalid")? == "1";
     let cursor_visible = fields.next().ok_or("scroll-status-invalid")? == "1";
     if fields.next().is_some() {
@@ -1051,6 +1044,17 @@ pub(crate) fn scroll_session(name: String, lines: i32) -> Result<TerminalScrollR
         active,
         cursor_visible,
     })
+}
+
+#[tauri::command]
+pub(crate) fn scroll_session(name: String, lines: i32) -> Result<TerminalScrollResult, String> {
+    validate_session_name(&name)?;
+    let t = pane_target(&name);
+    // State test, optional copy-mode entry, movement and post-state report all
+    // execute in one tmux server command list. This removes two to three
+    // process/IPC round trips from every display-frame scroll update.
+    let after = tmux_owned(&crate::terminal_scroll::cursor_following_args(&t, lines))?;
+    parse_terminal_scroll_result(&after)
 }
 
 /// Leave copy-mode and return to the live view (typing, the scrollback
@@ -1090,6 +1094,7 @@ pub(crate) fn clear_history(name: String) {
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct TerminalSelectionStatus {
     active: bool,
+    cursor_visible: bool,
     selection_present: bool,
     history_rows: u32,
     history_limit: u32,
@@ -1229,6 +1234,7 @@ fn terminal_selection_status_for(target: &str) -> Result<TerminalSelectionStatus
     let last_row = history_rows as u64 + pane_rows.saturating_sub(1) as u64;
     Ok(TerminalSelectionStatus {
         active,
+        cursor_visible: true,
         selection_present,
         history_rows,
         history_limit,
@@ -1603,8 +1609,18 @@ pub(crate) fn terminal_selection_scroll(
         return Err("selection-missing".into());
     }
     let target = pane_target(&name);
-    tmux_owned(&crate::terminal_scroll::args(&target, lines))?;
-    let viewport = terminal_selection_status_for(&target)?;
+    // Pointerup froze the selection's bytes and absolute endpoints, so the
+    // copy cursor is no longer selection state. Re-anchor it to the live
+    // input row just like ordinary wheel scrolling; otherwise it stays on
+    // the selected cell while the viewport moves and appears as a detached,
+    // fixed cursor. The visibility bit lets xterm hide it once that live row
+    // has left the viewport.
+    let after = tmux_owned(&crate::terminal_scroll::cursor_following_args(
+        &target, lines,
+    ))?;
+    let scroll = parse_terminal_scroll_result(&after)?;
+    let mut viewport = terminal_selection_status_for(&target)?;
+    viewport.cursor_visible = scroll.cursor_visible;
     frozen_selection_status(&name, token, viewport)
 }
 

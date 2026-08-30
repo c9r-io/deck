@@ -1171,8 +1171,16 @@ fn frozen_selection_coordinates_and_bytes_survive_viewport_scroll() {
 
     s.run(&["send-keys", "-t", "t", "-X", "clear-selection"]);
     assert_eq!(s.fmt("#{selection_present}"), "0");
-    s.run(&["send-keys", "-t", "t", "-X", "-N", "3", "scroll-up"]);
+    let scrolled = s
+        .run_owned(&terminal_scroll::cursor_following_args("t", -3))
+        .expect("frozen-selection viewport scroll");
+    assert_eq!(scrolled.trim(), "1\t0");
     assert_eq!(s.fmt("#{scroll_position}"), "3");
+    assert_eq!(
+        s.fmt("#{copy_cursor_y}"),
+        "7",
+        "the former selection endpoint must move to the live-input edge"
+    );
 
     // These are the values the token-bound lease returns after scroll. They
     // are deliberately not re-read from tmux, where selection_present is now

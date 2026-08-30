@@ -59,6 +59,9 @@
   A one-use private bootstrap writes only to pane stdout, marks the restart
   boundary, then execs the login shell; command-shaped text never reaches
   stdin, and ordinary tmux scrolling, selection and copy work immediately.
+- Keep the terminal cursor attached to the agent's live input row while a
+  frozen text selection is scrolled. Once that row leaves the viewport the
+  cursor is hidden, instead of remaining fixed on an unrelated selected cell.
 
 ## 0.4.38 — Nightly candidate, 2026-08-29
 
