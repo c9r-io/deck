@@ -349,6 +349,7 @@ pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
 fn save_checked(
     path: &Path,
     payload: &str,
+    keep_backup: bool,
     validate_existing: impl Fn(&serde_json::Value) -> Result<(), String>,
 ) -> Result<(), String> {
     // Scheduler workers and UI commands can save concurrently. Serialize the
@@ -401,15 +402,28 @@ fn save_checked(
 
     let dir = path.parent().ok_or("data path has no parent directory")?;
     create_private_dir(dir)?;
-    if let Some(cur) = existing {
-        atomic_write(&bak_path(path), &cur).map_err(|e| format!("backup failed: {e}"))?;
+    if keep_backup {
+        if let Some(cur) = existing {
+            atomic_write(&bak_path(path), &cur).map_err(|e| format!("backup failed: {e}"))?;
+        }
+    } else {
+        match std::fs::remove_file(bak_path(path)) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!(
+                    "could not remove transient backup ({})",
+                    error.kind()
+                ))
+            }
+        }
     }
     atomic_write(path, out.as_bytes())
 }
 
 #[allow(dead_code)] // low-level envelope tests intentionally exercise this directly
 pub fn save(path: &Path, payload: &str) -> Result<(), String> {
-    save_checked(path, payload, |_| Ok(()))
+    save_checked(path, payload, true, |_| Ok(()))
 }
 
 /// Typed save used by every app data file. It validates both the new payload
@@ -418,7 +432,23 @@ pub fn save(path: &Path, payload: &str) -> Result<(), String> {
 pub(crate) fn save_typed<T: DeserializeOwned>(path: &Path, payload: &str) -> Result<(), String> {
     serde_json::from_str::<T>(payload)
         .map_err(|e| format!("refusing to save wrong structure: {e}"))?;
-    save_checked(path, payload, |existing| {
+    save_checked(path, payload, true, |existing| {
+        serde_json::from_value::<T>(existing.clone())
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    })
+}
+
+/// Typed atomic save for bounded, disposable privacy-sensitive state. It
+/// retains all structure/future-schema checks but deliberately creates no
+/// `.bak`, and removes a legacy backup before replacing the main file.
+pub(crate) fn save_typed_ephemeral<T: DeserializeOwned>(
+    path: &Path,
+    payload: &str,
+) -> Result<(), String> {
+    serde_json::from_str::<T>(payload)
+        .map_err(|e| format!("refusing to save wrong structure: {e}"))?;
+    save_checked(path, payload, false, |existing| {
         serde_json::from_value::<T>(existing.clone())
             .map(|_| ())
             .map_err(|e| e.to_string())
@@ -574,7 +604,7 @@ fn credential_assignment(line: &str, start: usize) -> Option<(usize, usize)> {
         return None;
     }
     let key = line[start..key_end].to_ascii_lowercase();
-    if !matches!(
+    let sensitive_key = matches!(
         key.as_str(),
         "token"
             | "password"
@@ -586,7 +616,23 @@ fn credential_assignment(line: &str, start: usize) -> Option<(usize, usize)> {
             | "authorization"
             | "credential"
             | "cookie"
-    ) {
+            | "private_key"
+            | "database_url"
+    ) || [
+        "_token",
+        "_password",
+        "_passwd",
+        "_secret",
+        "_api_key",
+        "_apikey",
+        "_access_key",
+        "_private_key",
+        "_credential",
+        "_cookie",
+    ]
+    .iter()
+    .any(|suffix| key.ends_with(suffix));
+    if !sensitive_key {
         return None;
     }
     let mut i = key_end;
@@ -618,6 +664,53 @@ fn credential_assignment(line: &str, start: usize) -> Option<(usize, usize)> {
         end = value_end(bytes, j);
     }
     (end > i).then_some((i, end))
+}
+
+fn credential_token_end(line: &str, start: usize) -> Option<usize> {
+    let bytes = line.as_bytes();
+    let rest = &line[start..];
+    if SECRET_PREFIXES
+        .iter()
+        .any(|prefix| rest.starts_with(prefix))
+    {
+        return Some(value_end(bytes, start));
+    }
+    let end = token_end(bytes, start);
+    if end > start {
+        let run = &line[start..end];
+        let opaque = run.len() >= 24
+            && run.bytes().any(|c| c.is_ascii_digit())
+            && run.bytes().any(|c| c.is_ascii_alphabetic());
+        if opaque {
+            return Some(end);
+        }
+    }
+    None
+}
+
+/// Redact likely credentials without removing ordinary paths and URLs. Shell
+/// recovery uses this narrower policy because its output remains useful only
+/// if directories and links survive, while obvious secret values must not.
+pub(crate) fn redact_credentials(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut i = 0;
+    while i < line.len() {
+        if let Some((value_start, end)) = credential_assignment(line, i) {
+            out.push_str(&line[i..value_start]);
+            out.push_str("<redacted>");
+            i = end;
+            continue;
+        }
+        if let Some(end) = credential_token_end(line, i) {
+            out.push_str("<redacted>");
+            i = end;
+            continue;
+        }
+        let ch = line[i..].chars().next().unwrap();
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
 }
 
 /// Return the end of a sensitive value beginning exactly at `start`.

@@ -32,6 +32,7 @@ const MAX_TRANSCRIPT_LINES: usize = 3000;
 const CHECKPOINT_INTERVAL_SECS: u64 = 15;
 const MAX_CHECKPOINTS_PER_TICK: usize = 2;
 const MAX_SNAPSHOT_FILES: usize = 128;
+const MAX_SNAPSHOT_AGE_SECS: u64 = 7 * 24 * 60 * 60;
 const RESTORE_BOUNDARY: &[u8] = b"\n---------------- deck restart ----------------\n";
 static BOOTSTRAP_NONCE: AtomicU64 = AtomicU64::new(0);
 pub(crate) const RESTORE_EXECUTABLE: &str = "/bin/sh";
@@ -140,7 +141,25 @@ pub(crate) fn sanitize_transcript(raw: &str) -> String {
         .collect();
     let mut lines: Vec<&str> = printable.rsplit('\n').take(MAX_TRANSCRIPT_LINES).collect();
     lines.reverse();
-    bound_tail(&lines.join("\n"), MAX_TRANSCRIPT_BYTES)
+    let mut private_key_block = false;
+    let redacted = lines
+        .into_iter()
+        .filter_map(|line| {
+            if line.contains("-----BEGIN ") && line.contains(" PRIVATE KEY-----") {
+                private_key_block = true;
+                return Some("<redacted private key block>".to_string());
+            }
+            if private_key_block {
+                if line.contains("-----END ") && line.contains(" PRIVATE KEY-----") {
+                    private_key_block = false;
+                }
+                return None;
+            }
+            Some(storage::redact_credentials(line))
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    bound_tail(&redacted, MAX_TRANSCRIPT_BYTES)
 }
 
 fn bound_tail(text: &str, max: usize) -> String {
@@ -168,6 +187,12 @@ fn load_snapshot_from(path: &Path) -> Result<Option<ShellSnapshot>, String> {
     }
     let snapshot: ShellSnapshot =
         serde_json::from_str(&outcome.payload).map_err(|e| e.to_string())?;
+    if now_epoch().saturating_sub(snapshot.updated) > MAX_SNAPSHOT_AGE_SECS {
+        if let Some(dir) = path.parent() {
+            remove_snapshot_files_in(dir, &snapshot.session)?;
+        }
+        return Ok(None);
+    }
     Ok(Some(snapshot))
 }
 
@@ -305,7 +330,9 @@ pub(crate) fn prepare_bootstrap(snapshot: &ShellSnapshot) -> Result<ShellBootstr
 /// Compatibility cleanup for one-use `.restore-*` files left by deck <=
 /// 0.5.1. New recovery uses an in-memory tmux buffer and creates no temp file.
 pub(crate) fn cleanup_restore_temps() {
-    let Ok(entries) = std::fs::read_dir(snapshot_dir()) else {
+    let dir = snapshot_dir();
+    storage::prune_old_files(&dir, MAX_SNAPSHOT_AGE_SECS);
+    let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
     for entry in entries.flatten() {
@@ -425,7 +452,7 @@ fn save_snapshot(snapshot: &ShellSnapshot, epoch: u64) -> Result<bool, String> {
         prune_snapshot_count(dir, &path);
     }
     let raw = serde_json::to_string(snapshot).map_err(|e| e.to_string())?;
-    storage::save_typed::<ShellSnapshot>(&path, &raw)?;
+    storage::save_typed_ephemeral::<ShellSnapshot>(&path, &raw)?;
     Ok(true)
 }
 
@@ -566,6 +593,28 @@ mod tests {
     }
 
     #[test]
+    fn transcript_redacts_credentials_but_keeps_useful_paths_and_urls() {
+        let raw = concat!(
+            "cwd=/Users/example/project\n",
+            "docs=https://example.com/guide\n",
+            "OPENAI_API_KEY=sk-example12345678901234567890\n",
+            "Authorization: Bearer github_pat_example12345678901234567890\n",
+            "-----BEGIN OPENSSH PRIVATE KEY-----\n",
+            "private-material-12345678901234567890\n",
+            "-----END OPENSSH PRIVATE KEY-----\n",
+            "done\n",
+        );
+        let clean = sanitize_transcript(raw);
+        assert!(clean.contains("/Users/example/project"));
+        assert!(clean.contains("https://example.com/guide"));
+        assert!(!clean.contains("sk-example"));
+        assert!(!clean.contains("github_pat_"));
+        assert!(!clean.contains("private-material"));
+        assert!(clean.contains("<redacted private key block>"));
+        assert!(clean.ends_with("done\n"));
+    }
+
+    #[test]
     fn bootstrap_buffer_is_bounded_sanitized_and_argument_safe() {
         let snapshot = ShellSnapshot {
             session: "deck-shell-test".into(),
@@ -617,6 +666,48 @@ mod tests {
         assert!(!backup_path(&path).exists());
         assert!(!corrupt.exists());
         assert!(!restore.exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn ephemeral_snapshot_save_removes_legacy_backup() {
+        let dir = temp_dir("ephemeral");
+        let path = snapshot_path_in(&dir, "deck-shell-test").unwrap();
+        let snapshot = ShellSnapshot {
+            session: "deck-shell-test".into(),
+            cwd: "/tmp".into(),
+            transcript: "one".into(),
+            updated: now_epoch(),
+        };
+        let raw = serde_json::to_string(&snapshot).unwrap();
+        storage::save_typed::<ShellSnapshot>(&path, &raw).unwrap();
+        storage::save_typed::<ShellSnapshot>(&path, &raw).unwrap();
+        assert!(backup_path(&path).exists());
+        storage::save_typed_ephemeral::<ShellSnapshot>(&path, &raw).unwrap();
+        assert!(path.exists());
+        assert!(!backup_path(&path).exists());
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn expired_snapshot_is_removed_instead_of_restored() {
+        let dir = temp_dir("expired");
+        let path = snapshot_path_in(&dir, "deck-shell-test").unwrap();
+        let snapshot = ShellSnapshot {
+            session: "deck-shell-test".into(),
+            cwd: "/tmp".into(),
+            transcript: "old output".into(),
+            updated: now_epoch().saturating_sub(MAX_SNAPSHOT_AGE_SECS + 1),
+        };
+        storage::save_typed_ephemeral::<ShellSnapshot>(
+            &path,
+            &serde_json::to_string(&snapshot).unwrap(),
+        )
+        .unwrap();
+        assert!(load_snapshot_from(&path).unwrap().is_none());
+        assert!(!path.exists());
         let _ = std::fs::remove_dir_all(dir);
     }
 

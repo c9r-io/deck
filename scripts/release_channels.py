@@ -25,6 +25,7 @@ BUNDLE_ID = "io.c9r.deck"
 ARCHIVE = "deck_aarch64.app.tar.gz"
 SIGNATURE = f"{ARCHIVE}.sig"
 IMMUTABLE_KINDS = ("dmg", "archive", "signature", "manifest")
+UPDATER_KEY_EPOCHS = {"legacy-stable-v1", "nightly-v1"}
 FORBIDDEN_PROMOTION = re.compile(
     r"\b(?:cargo\s+(?:build|run|install)|tauri(?:-action|\s+build)|npm\s+run\s+build|xcodebuild)\b",
     re.IGNORECASE,
@@ -155,7 +156,7 @@ def verify_provenance(
     version, _, tag_sha = parse_candidate_tag(tag)
     if not FULL_SHA_RE.fullmatch(commit) or not commit.startswith(tag_sha):
         raise ReleaseError("candidate tag and full commit disagree")
-    if provenance.get("schema") != 1 or provenance.get("app_version") != version:
+    if provenance.get("schema") != 2 or provenance.get("app_version") != version:
         raise ReleaseError("provenance version/schema mismatch")
     if provenance.get("commit") != commit or provenance.get("candidate_tag") != tag:
         raise ReleaseError("provenance tag/commit mismatch")
@@ -163,6 +164,8 @@ def verify_provenance(
         raise ReleaseError("provenance bundle/target mismatch")
     if provenance.get("test_gate") != "passed":
         raise ReleaseError("candidate test gate did not pass")
+    if provenance.get("updater_key_epoch") not in UPDATER_KEY_EPOCHS:
+        raise ReleaseError("candidate updater signing key is unknown")
     verification = provenance.get("verification")
     if not isinstance(verification, dict) or any(
         verification.get(key) != "passed" for key in ("codesign", "notarization", "stapler", "gatekeeper")
@@ -226,6 +229,7 @@ def create_provenance(
     built_at: str,
     team_id: str,
     identity: str,
+    updater_key_epoch: str,
 ) -> dict[str, object]:
     expected_version, _, tag_sha = parse_candidate_tag(tag)
     if expected_version != version or not FULL_SHA_RE.fullmatch(commit) or not commit.startswith(tag_sha):
@@ -234,6 +238,8 @@ def create_provenance(
         raise ReleaseError("public signing Team ID has an unsafe shape")
     if not identity or len(identity) > 120 or any(c in identity for c in "\r\n"):
         raise ReleaseError("public signing identity label has an unsafe shape")
+    if updater_key_epoch not in UPDATER_KEY_EPOCHS:
+        raise ReleaseError("unknown updater signing key epoch")
     artifacts = [
         {"kind": "dmg", **asset_record(directory / dmg_name)},
         {"kind": "archive", **asset_record(directory / ARCHIVE)},
@@ -241,13 +247,14 @@ def create_provenance(
         {"kind": "manifest", **asset_record(directory / "candidate.json")},
     ]
     return {
-        "schema": 1,
+        "schema": 2,
         "app_version": version,
         "commit": commit,
         "candidate_tag": tag,
         "workflow": {"run_id": run_id, "run_attempt": run_attempt, "built_at": built_at},
         "bundle_identifier": BUNDLE_ID,
         "updater_target": TARGET,
+        "updater_key_epoch": updater_key_epoch,
         "test_gate": "passed",
         "signing": {"team_id": team_id, "identity": identity},
         "verification": {
@@ -334,6 +341,7 @@ def cli() -> int:
     provenance.add_argument("--built-at", required=True)
     provenance.add_argument("--team-id", required=True)
     provenance.add_argument("--identity", required=True)
+    provenance.add_argument("--updater-key-epoch", required=True, choices=sorted(UPDATER_KEY_EPOCHS))
     provenance.add_argument("--output", type=Path, required=True)
     verify_candidate = sub.add_parser("verify-candidate")
     verify_candidate.add_argument("--dir", type=Path, required=True)
@@ -371,6 +379,7 @@ def cli() -> int:
             data = create_provenance(
                 args.dir, args.dmg, args.version, args.tag, args.commit,
                 args.run_id, args.run_attempt, args.built_at, args.team_id, args.identity,
+                args.updater_key_epoch,
             )
             args.output.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
         elif args.command == "verify-candidate":

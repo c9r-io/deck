@@ -93,14 +93,17 @@ match appears as gray ghost text at the cursor — **Tab or →** applies it; mo
 candidates sit in a reserved row below. Only the focused pane gives up that
 row, and xterm plus the underlying PTY are refit together.
 
-**Bounded shell recovery.** While a pane is back at a shell prompt, deck
-checkpoints its current directory and up to 256 KB of plain recent output.
+**Bounded shell recovery.** This opt-in feature is off by default. While a pane
+is back at a shell prompt, deck checkpoints its current directory and up to
+256 KB of recent plain output after redacting common credential shapes.
 After a machine/tmux restart, opening the card starts a new shell in that
 directory and places the old text directly in that pane's tmux scrollback,
 above a clear restart boundary and the new live prompt. The text is written
 only to pane output, never shell input, so commands are not replayed; processes,
-jobs, environment variables and agent TUIs are not restored. Checkpointing can
-be disabled—and all copies cleared—from Settings.
+jobs, environment variables and agent TUIs are not restored. Snapshots are
+private 0600 files, have no backup copy, expire after seven days, and are
+cleared when recovery is disabled. Redaction is best-effort, so the consent
+prompt still warns that terminal output may contain secrets.
 
 **Scheduled prompts.** The quota-window workflow: queue prompts on a session
 and have them typed in later — at a set time ("in 5 h, when my Claude window
@@ -167,8 +170,8 @@ Everything lives in `~/.deck/` as plain JSON you can inspect or edit:
 identity, an optional sanitized executable basename, a content-free last
 context result, and a short
 delivery audit) · `history.json` (command history; wipeable from
-Settings) · `shell-state/*.json` (bounded shell transcript snapshots; wipeable
-or disableable from Settings) · `settings.json` (including locale, theme,
+Settings) · `shell-state/*.json` (opt-in, redacted, seven-day shell transcript
+snapshots; wipeable or disableable from Settings) · `settings.json` (including locale, theme,
 accent, shell recovery and update channel) · `app.log` (diagnostics — event codes and
 counts only, never what you type; errors appear as categories, never as
 raw paths, and session names as a per-run tag rather than the name itself).

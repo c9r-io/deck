@@ -23,7 +23,7 @@ jobs:
       sha: ${{ steps.verify.outputs.sha }}
       stable_tag: ${{ steps.verify.outputs.stable_tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
       - id: verify
@@ -95,7 +95,7 @@ jobs:
       CANDIDATE_SHA: ${{ needs.resolve.outputs.sha }}
       STABLE_TAG: ${{ needs.resolve.outputs.stable_tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
           ref: ${{ needs.resolve.outputs.sha }}
@@ -120,8 +120,14 @@ jobs:
           import base64, json, pathlib
           root = pathlib.Path('candidate')
           root.joinpath('signature.minisig').write_bytes(base64.b64decode(root.joinpath('deck_aarch64.app.tar.gz.sig').read_text().strip(), validate=True))
-          config = json.loads(pathlib.Path('app/src-tauri/tauri.conf.json').read_text())
-          root.joinpath('updater.pub').write_bytes(base64.b64decode(config['plugins']['updater']['pubkey'], validate=True))
+          epoch = json.loads(root.joinpath('provenance.json').read_text()).get('updater_key_epoch')
+          if epoch == 'legacy-stable-v1':
+              encoded = json.loads(pathlib.Path('app/src-tauri/tauri.conf.json').read_text())['plugins']['updater']['pubkey']
+          elif epoch == 'nightly-v1':
+              encoded = pathlib.Path('app/src-tauri/updater/nightly.pub.b64').read_text().strip()
+          else:
+              raise SystemExit('candidate uses an unknown updater key')
+          root.joinpath('updater.pub').write_bytes(base64.b64decode(encoded, validate=True))
           PY
           minisign -Vm candidate/deck_aarch64.app.tar.gz \
             -x candidate/signature.minisig -p candidate/updater.pub
@@ -131,7 +137,7 @@ jobs:
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app_path/Contents/Info.plist")" = "$VERSION"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app_path/Contents/Info.plist")" = "$VERSION"
           test "$(/usr/libexec/PlistBuddy -c 'Print :NSLocalNetworkUsageDescription' "$app_path/Contents/Info.plist")" = \
-            "Terminal tools running in deck may connect to local services and devices you choose."
+            "Shell commands, CLIs, and agents launched or restored by deck can access devices and services on your local network."
           executable=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app_path/Contents/Info.plist")
           test -n "$executable"
           test -f "$app_path/Contents/MacOS/$executable"
@@ -148,6 +154,46 @@ jobs:
           codesign --verify --verbose=2 "${dmg[0]}"
           xcrun stapler validate "${dmg[0]}"
           spctl -a -vv -t install "${dmg[0]}"
+      - name: Sign the unchanged archive with the production-only Stable key
+        env:
+          STABLE_TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          STABLE_TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          mkdir stable-signature
+          python3 - <<'PY'
+          import base64, os, pathlib
+          path = pathlib.Path('stable-signature/stable.minisign.key')
+          path.write_bytes(base64.b64decode(os.environ['STABLE_TAURI_SIGNING_PRIVATE_KEY'].strip(), validate=True))
+          path.chmod(0o600)
+          PY
+          /usr/bin/expect <<'EXPECT'
+          set timeout 120
+          spawn minisign -S -s stable-signature/stable.minisign.key \
+            -m candidate/deck_aarch64.app.tar.gz \
+            -x stable-signature/deck_aarch64.app.tar.gz.minisig \
+            -c "signature from tauri secret key"
+          expect "Password:"
+          send -- "$env(STABLE_TAURI_SIGNING_PRIVATE_KEY_PASSWORD)\r"
+          expect eof
+          catch wait result
+          exit [lindex $result 3]
+          EXPECT
+          python3 - <<'PY'
+          import base64, json, pathlib
+          root = pathlib.Path('stable-signature')
+          raw = root.joinpath('deck_aarch64.app.tar.gz.minisig').read_bytes()
+          root.joinpath('deck_aarch64.app.tar.gz.sig').write_text(base64.b64encode(raw).decode() + '\n')
+          root.joinpath('stable.minisign.key').unlink()
+          config = json.loads(pathlib.Path('app/src-tauri/tauri.conf.json').read_text())
+          root.joinpath('stable.pub').write_bytes(base64.b64decode(config['plugins']['updater']['pubkey'], validate=True))
+          PY
+          minisign -Vm candidate/deck_aarch64.app.tar.gz \
+            -x stable-signature/deck_aarch64.app.tar.gz.minisig \
+            -p stable-signature/stable.pub
+          scripts/release_channels.py verify-manifest \
+            --file candidate/candidate.json --version "$VERSION" --tag "$CANDIDATE_TAG" \
+            --signature-file candidate/deck_aarch64.app.tar.gz.sig
       - name: Require a successful test workflow for the candidate commit
         env:
           GH_TOKEN: ${{ github.token }}
@@ -166,20 +212,26 @@ jobs:
           dmg_name=$(basename "${dmg[0]}")
           cp "${dmg[0]}" "stable/$dmg_name"
           cp candidate/deck_aarch64.app.tar.gz stable/deck_aarch64.app.tar.gz
-          cp candidate/deck_aarch64.app.tar.gz.sig stable/deck_aarch64.app.tar.gz.sig
+          cp stable-signature/deck_aarch64.app.tar.gz.sig stable/deck_aarch64.app.tar.gz.sig
           scripts/release_channels.py write-sums --dir stable --output stable/SHA256SUMS \
             "$dmg_name" deck_aarch64.app.tar.gz deck_aarch64.app.tar.gz.sig
           python3 - <<'PY'
           import json, os, pathlib
           source = json.loads(pathlib.Path('candidate/provenance.json').read_text())
           evidence = {
-              'schema': 1,
+              'schema': 2,
               'stable_tag': os.environ['STABLE_TAG'],
               'candidate_tag': os.environ['CANDIDATE_TAG'],
               'commit': os.environ['CANDIDATE_SHA'],
               'nightly_test_period': os.environ['TESTED_SINCE'],
               'workflow': {'run_id': os.environ['GITHUB_RUN_ID'], 'run_attempt': os.environ['GITHUB_RUN_ATTEMPT']},
-              'copied_artifacts': [item for item in source['artifacts'] if item['kind'] in ('dmg', 'archive', 'signature')],
+              'candidate_updater_key_epoch': source['updater_key_epoch'],
+              'copied_artifacts': [item for item in source['artifacts'] if item['kind'] in ('dmg', 'archive')],
+              'stable_signature': {
+                  'name': 'deck_aarch64.app.tar.gz.sig',
+                  'bytes': pathlib.Path('stable/deck_aarch64.app.tar.gz.sig').stat().st_size,
+                  'sha256': __import__('hashlib').sha256(pathlib.Path('stable/deck_aarch64.app.tar.gz.sig').read_bytes()).hexdigest(),
+              },
           }
           pathlib.Path('stable/promotion.json').write_text(json.dumps(evidence, indent=2, ensure_ascii=False) + '\n')
           PY
@@ -187,7 +239,7 @@ jobs:
             printf 'Promoted without rebuilding from `%s`.\n\n' "$CANDIDATE_TAG"
             printf 'Commit: `%s`\n\n' "$CANDIDATE_SHA"
             printf 'Nightly test period: %s\n\n' "$TESTED_SINCE"
-            printf 'DMG, updater archive and signature are byte-identical to the candidate. See `promotion.json` and `SHA256SUMS`.\n'
+            printf 'DMG and updater archive are byte-identical to the candidate. The detached updater signature was generated inside the protected production environment with the Stable-only key. See `promotion.json` and `SHA256SUMS`.\n'
           } > stable/release-notes.md
           built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           scripts/release_channels.py manifest --version "$VERSION" --tag "$STABLE_TAG" \

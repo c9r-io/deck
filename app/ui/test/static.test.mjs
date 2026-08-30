@@ -33,6 +33,9 @@ test('update channels are backend-owned, isolated and never trigger downgrade', 
   assert.match(app, /inv\('check_for_update', \{ channel: settings\.updateChannel \}\)/);
   assert.match(backend, /STABLE_UPDATE_ENDPOINT[\s\S]*releases\/latest\/download\/latest\.json/);
   assert.match(backend, /NIGHTLY_UPDATE_ENDPOINT[\s\S]*releases\/download\/nightly-feed\/latest\.json/);
+  assert.match(backend, /NIGHTLY_UPDATE_PUBKEY[\s\S]*\.pubkey\(pubkey\)/,
+    'Nightly overrides the Stable updater key with its own trust root');
+  assert.match(read('app/src-tauri/updater/nightly.pub.b64'), /^[A-Za-z0-9+/]+=*\n$/);
   assert.match(backend, /\.endpoints\(vec!\[endpoint\]\)/, 'each check has exactly one endpoint');
   assert.doesNotMatch(dialogs, /install_update|allow_downgrade|allowDowngrade/);
   assert.match(backend, /download_and_install/, 'Tauri retains download, verification and install ownership');
@@ -65,6 +68,9 @@ test('tmux upgrades preserve occupied servers until explicit pointer confirmatio
   }
   assert.match(lifecycle, /should_auto_replace\(state, snapshot\.sessions\.len\(\)\)/);
   assert.match(lifecycle, /snapshot\.pid != expected_pid[\s\S]*snapshot\.started_at != expected_started_at[\s\S]*snapshot\.sessions\.len\(\) as u32 != expected_session_count[\s\S]*snapshot\.pane_count\(\) != expected_pane_count/);
+  assert.match(lifecycle, /snapshot\.impact_token != expected_impact_token/,
+    'restart executes only against the exact reviewed session/pane identity set');
+  assert.match(app, /expectedImpactToken: status\.impactToken/);
   assert.match(lifecycle, /pty_state\.detach_all\(\)[\s\S]*complete_restart/);
   assert.match(lifecycle, /fresh\.pid == old\.pid[\s\S]*CompatibleCurrentBuild/);
   assert.match(lifecycle, /APP_UPDATE_INSTALLING\.load\(Ordering::Acquire\)/);
@@ -84,7 +90,7 @@ test('tmux upgrades preserve occupied servers until explicit pointer confirmatio
   assert.match(run, /BUNDLE_ID=io\.c9r\.deck\.dev/);
   assert.match(run, /deck-smoke\*/);
   assert.match(plist, /NSLocalNetworkUsageDescription/);
-  assert.match(plist, /Terminal tools running in deck may connect to local services and devices you choose\./);
+  assert.match(plist, /Shell commands, CLIs, and agents launched or restored by deck can access devices and services on your local network\./);
   assert.doesNotMatch(plist, /scan/i);
 });
 

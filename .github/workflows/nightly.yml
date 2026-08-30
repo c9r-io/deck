@@ -21,6 +21,14 @@ on:
         required: true
         default: true
         type: boolean
+      signing_epoch:
+        description: 'Updater signing key (legacy is permitted only for the v0.5.4 migration)'
+        required: true
+        default: nightly-v1
+        type: choice
+        options:
+          - nightly-v1
+          - legacy-stable-v1
 
 permissions:
   contents: read
@@ -36,8 +44,9 @@ jobs:
       sha: ${{ steps.resolve.outputs.sha }}
       tag: ${{ steps.resolve.outputs.tag }}
       version: ${{ steps.resolve.outputs.version }}
+      signing_epoch: ${{ steps.resolve.outputs.signing_epoch }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
           ref: ${{ inputs.ref }}
@@ -46,11 +55,22 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           CANDIDATE_REF: ${{ inputs.ref }}
           CANDIDATE_VERSION: ${{ inputs.version }}
+          SIGNING_EPOCH: ${{ inputs.signing_epoch }}
         run: |
           set -euo pipefail
           [[ "$CANDIDATE_REF" =~ ^[A-Za-z0-9._/-]{1,160}$ ]]
           [[ ! "$CANDIDATE_REF" =~ (^|/)\.\.?(/|$) ]]
           scripts/release_channels.py validate-version "$CANDIDATE_VERSION"
+          case "$SIGNING_EPOCH" in
+            nightly-v1) ;;
+            legacy-stable-v1)
+              test "$CANDIDATE_VERSION" = 0.5.4 || {
+                echo "the legacy Stable updater key is permitted only for the v0.5.4 migration" >&2
+                exit 1
+              }
+              ;;
+            *) echo "unknown updater signing key epoch" >&2; exit 1 ;;
+          esac
           sha=$(git rev-parse --verify "${CANDIDATE_REF}^{commit}")
           [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
           git fetch --no-tags origin main:refs/remotes/origin/main
@@ -88,18 +108,19 @@ jobs:
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
           echo "tag=$candidate_tag" >> "$GITHUB_OUTPUT"
           echo "version=$CANDIDATE_VERSION" >> "$GITHUB_OUTPUT"
+          echo "signing_epoch=$SIGNING_EPOCH" >> "$GITHUB_OUTPUT"
 
   test:
     needs: resolve
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ needs.resolve.outputs.sha }}
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
         with:
           components: clippy, rustfmt
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: |
             .
@@ -121,27 +142,29 @@ jobs:
           python3 -m unittest scripts/test_release_tools.py
           scripts/check-workflows
 
-  build-publish:
+  build-sign:
     needs: [resolve, test]
     runs-on: macos-14
     environment: nightly
     permissions:
-      contents: write
+      contents: read
     env:
       CANDIDATE_SHA: ${{ needs.resolve.outputs.sha }}
       CANDIDATE_TAG: ${{ needs.resolve.outputs.tag }}
       CANDIDATE_VERSION: ${{ needs.resolve.outputs.version }}
       CANDIDATE_NOTES: ${{ inputs.notes }}
       PUBLISH_FEED: ${{ inputs.publish_feed }}
+      SIGNING_EPOCH: ${{ needs.resolve.outputs.signing_epoch }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
           ref: ${{ needs.resolve.outputs.sha }}
-      - uses: dtolnay/rust-toolchain@stable
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
         with:
           targets: aarch64-apple-darwin
-      - uses: actions/cache@v4
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
             ~/.cargo/registry
@@ -149,7 +172,7 @@ jobs:
             app/src-tauri/target
           key: ${{ runner.os }}-nightly-cargo-${{ hashFiles('app/src-tauri/Cargo.lock') }}
       - name: Build, sign, notarize app and updater archive
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0
         env:
           DECK_BUILD_COMMIT: ${{ needs.resolve.outputs.sha }}
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
@@ -158,8 +181,8 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ needs.resolve.outputs.signing_epoch == 'legacy-stable-v1' && secrets.LEGACY_TAURI_SIGNING_PRIVATE_KEY || secrets.NIGHTLY_TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ needs.resolve.outputs.signing_epoch == 'legacy-stable-v1' && secrets.LEGACY_TAURI_SIGNING_PRIVATE_KEY_PASSWORD || secrets.NIGHTLY_TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           projectPath: app
           args: --target aarch64-apple-darwin
@@ -189,7 +212,7 @@ jobs:
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app_path/Contents/Info.plist")" = "$CANDIDATE_VERSION"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app_path/Contents/Info.plist")" = "$CANDIDATE_VERSION"
           test "$(/usr/libexec/PlistBuddy -c 'Print :NSLocalNetworkUsageDescription' "$app_path/Contents/Info.plist")" = \
-            "Terminal tools running in deck may connect to local services and devices you choose."
+            "Shell commands, CLIs, and agents launched or restored by deck can access devices and services on your local network."
           executable=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app_path/Contents/Info.plist")
           test -n "$executable"
           test -f "$app_path/Contents/MacOS/$executable"
@@ -221,22 +244,80 @@ jobs:
             --dmg "deck_${CANDIDATE_VERSION}_aarch64.dmg" --version "$CANDIDATE_VERSION" \
             --tag "$CANDIDATE_TAG" --commit "$CANDIDATE_SHA" --run-id "$GITHUB_RUN_ID" \
             --run-attempt "$GITHUB_RUN_ATTEMPT" --built-at "$built_at" \
-            --team-id "$team_id" --identity "$identity" --output candidate/provenance.json
+            --team-id "$team_id" --identity "$identity" --updater-key-epoch "$SIGNING_EPOCH" \
+            --output candidate/provenance.json
           scripts/release_channels.py write-sums --dir candidate --output candidate/SHA256SUMS \
             "deck_${CANDIDATE_VERSION}_aarch64.dmg" deck_aarch64.app.tar.gz \
             deck_aarch64.app.tar.gz.sig candidate.json
           scripts/release_channels.py verify-candidate --dir candidate \
             --tag "$CANDIDATE_TAG" --commit "$CANDIDATE_SHA"
       - name: Verify updater minisign signature
+        env:
+          SIGNING_EPOCH: ${{ needs.resolve.outputs.signing_epoch }}
         run: |
           set -euo pipefail
           brew install minisign
           python3 - <<'PY'
-          import base64, json, pathlib
+          import base64, json, os, pathlib
           root = pathlib.Path('candidate')
           root.joinpath('signature.minisig').write_bytes(base64.b64decode(root.joinpath('deck_aarch64.app.tar.gz.sig').read_text().strip(), validate=True))
-          config = json.loads(pathlib.Path('app/src-tauri/tauri.conf.json').read_text())
-          root.joinpath('updater.pub').write_bytes(base64.b64decode(config['plugins']['updater']['pubkey'], validate=True))
+          if os.environ['SIGNING_EPOCH'] == 'legacy-stable-v1':
+              encoded = json.loads(pathlib.Path('app/src-tauri/tauri.conf.json').read_text())['plugins']['updater']['pubkey']
+          elif os.environ['SIGNING_EPOCH'] == 'nightly-v1':
+              encoded = pathlib.Path('app/src-tauri/updater/nightly.pub.b64').read_text().strip()
+          else:
+              raise SystemExit('unknown updater signing key epoch')
+          root.joinpath('updater.pub').write_bytes(base64.b64decode(encoded, validate=True))
+          PY
+          minisign -Vm candidate/deck_aarch64.app.tar.gz \
+            -x candidate/signature.minisig -p candidate/updater.pub
+      - name: Hand signed candidate to the no-secret publisher
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: signed-nightly-candidate
+          path: candidate
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+  publish:
+    needs: [resolve, build-sign]
+    runs-on: macos-14
+    permissions:
+      contents: write
+    env:
+      CANDIDATE_SHA: ${{ needs.resolve.outputs.sha }}
+      CANDIDATE_TAG: ${{ needs.resolve.outputs.tag }}
+      CANDIDATE_VERSION: ${{ needs.resolve.outputs.version }}
+      SIGNING_EPOCH: ${{ needs.resolve.outputs.signing_epoch }}
+      PUBLISH_FEED: ${{ inputs.publish_feed }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.resolve.outputs.sha }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: signed-nightly-candidate
+          path: candidate
+      - name: Independently verify the signed handoff
+        run: |
+          set -euo pipefail
+          scripts/release_channels.py verify-candidate --dir candidate \
+            --tag "$CANDIDATE_TAG" --commit "$CANDIDATE_SHA"
+          test "$(jq -r .updater_key_epoch candidate/provenance.json)" = "$SIGNING_EPOCH"
+          brew install minisign
+          python3 - <<'PY'
+          import base64, json, os, pathlib
+          root = pathlib.Path('candidate')
+          root.joinpath('signature.minisig').write_bytes(base64.b64decode(root.joinpath('deck_aarch64.app.tar.gz.sig').read_text().strip(), validate=True))
+          if os.environ['SIGNING_EPOCH'] == 'legacy-stable-v1':
+              encoded = json.loads(pathlib.Path('app/src-tauri/tauri.conf.json').read_text())['plugins']['updater']['pubkey']
+          elif os.environ['SIGNING_EPOCH'] == 'nightly-v1':
+              encoded = pathlib.Path('app/src-tauri/updater/nightly.pub.b64').read_text().strip()
+          else:
+              raise SystemExit('unknown updater signing key epoch')
+          root.joinpath('updater.pub').write_bytes(base64.b64decode(encoded, validate=True))
           PY
           minisign -Vm candidate/deck_aarch64.app.tar.gz \
             -x candidate/signature.minisig -p candidate/updater.pub

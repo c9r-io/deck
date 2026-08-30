@@ -564,11 +564,15 @@ const STABLE_UPDATE_ENDPOINT: &str =
     "https://github.com/c9r-io/deck/releases/latest/download/latest.json";
 const NIGHTLY_UPDATE_ENDPOINT: &str =
     "https://github.com/c9r-io/deck/releases/download/nightly-feed/latest.json";
+const NIGHTLY_UPDATE_PUBKEY: &str = include_str!("../updater/nightly.pub.b64");
 
-fn update_endpoint(channel: &str) -> Result<&'static str, String> {
+fn update_source(channel: &str) -> Result<(&'static str, Option<&'static str>), String> {
     match channel {
-        "stable" => Ok(STABLE_UPDATE_ENDPOINT),
-        "nightly" => Ok(NIGHTLY_UPDATE_ENDPOINT),
+        // Stable keeps using the key from tauri.conf.json. Nightly overrides
+        // it with a separately generated key so compromise of the candidate
+        // pipeline cannot mint an update accepted by Stable clients.
+        "stable" => Ok((STABLE_UPDATE_ENDPOINT, None)),
+        "nightly" => Ok((NIGHTLY_UPDATE_ENDPOINT, Some(NIGHTLY_UPDATE_PUBKEY.trim()))),
         _ => Err("update channel must be stable or nightly".into()),
     }
 }
@@ -587,13 +591,18 @@ async fn update_for_channel(
     app: &AppHandle,
     channel: &str,
 ) -> Result<Option<tauri_plugin_updater::Update>, String> {
-    let endpoint = update_endpoint(channel)?
+    let (endpoint, pubkey) = update_source(channel)?;
+    let endpoint = endpoint
         .parse()
         .map_err(|_| "configured update endpoint is invalid".to_string())?;
-    let updater = app
+    let mut builder = app
         .updater_builder()
         .endpoints(vec![endpoint])
-        .map_err(|_| "configured update endpoint was rejected".to_string())?
+        .map_err(|_| "configured update endpoint was rejected".to_string())?;
+    if let Some(pubkey) = pubkey {
+        builder = builder.pubkey(pubkey);
+    }
+    let updater = builder
         .build()
         .map_err(|_| "updater could not be initialized".to_string())?;
     updater
@@ -2671,11 +2680,20 @@ mod tests {
 
     #[test]
     fn update_channel_endpoints_are_a_closed_single_choice() {
-        assert_eq!(update_endpoint("stable").unwrap(), STABLE_UPDATE_ENDPOINT);
-        assert_eq!(update_endpoint("nightly").unwrap(), NIGHTLY_UPDATE_ENDPOINT);
+        assert_eq!(
+            update_source("stable").unwrap(),
+            (STABLE_UPDATE_ENDPOINT, None)
+        );
+        let nightly = update_source("nightly").unwrap();
+        assert_eq!(nightly.0, NIGHTLY_UPDATE_ENDPOINT);
+        assert_eq!(nightly.1, Some(NIGHTLY_UPDATE_PUBKEY.trim()));
+        assert_ne!(
+            nightly.1,
+            Some("dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEM1MUFGNDJGODA1MEJENTMKUldSVHZWQ0FML1FheGJ0MDJEQ2ZKNFUxUnNpTlFjYlJmMmdpNlBDUUV4U29jd1ZXcmR0d3RPTGQK")
+        );
         assert_ne!(STABLE_UPDATE_ENDPOINT, NIGHTLY_UPDATE_ENDPOINT);
         for invalid in ["", "beta", "night", "https://example.com/latest.json"] {
-            assert!(update_endpoint(invalid).is_err());
+            assert!(update_source(invalid).is_err());
         }
     }
 

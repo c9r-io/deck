@@ -125,7 +125,7 @@ export async function openSettings() {
   $('set-theme').value = settings.theme || 'deck-dark';
   $('set-accent').value = settings.accent || 'teal';
   $('set-channel').value = settings.updateChannel || 'stable';
-  $('set-session-restore').checked = settings.sessionRestore !== false;
+  $('set-session-restore').checked = !!settings.sessionRestore;
   $('set-ver').textContent = 'deck ' + ($('app-ver').textContent || 'v?');
   $('set-upd-status').textContent = '';
   $('settings-modal').style.display = 'flex';
@@ -223,8 +223,15 @@ export async function persistUpdateChannelChoice() {
 let shellRestoreSavePending = false;
 export async function persistSessionRestoreChoice() {
   if (shellRestoreSavePending) return;
-  const previous = settings.sessionRestore !== false;
+  const previous = !!settings.sessionRestore;
   const desired = $('set-session-restore').checked;
+  if (desired && !previous) {
+    const accepted = await confirmDialog(t('settings.shellRecoveryEnableConfirm'));
+    if (!accepted) {
+      $('set-session-restore').checked = false;
+      return;
+    }
+  }
   const candidate = normalizeSettings({ ...settings, sessionRestore: desired });
   shellRestoreSavePending = true;
   $('set-session-restore').disabled = true;

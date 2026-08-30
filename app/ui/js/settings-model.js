@@ -4,7 +4,7 @@ const UPDATE_CHANNELS = new Set(['stable', 'nightly']);
 
 export const DEFAULT_SETTINGS = Object.freeze({
   editor: '', locale: 'system', theme: 'deck-dark', accent: 'teal',
-  updateChannel: 'stable', sessionRestore: true,
+  updateChannel: 'stable', sessionRestore: false,
 });
 
 export function normalizeSettings(value) {

@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import importlib.util
 import json
+import re
 import runpy
 import tempfile
 import unittest
@@ -78,13 +79,14 @@ class ReleaseChannelTests(unittest.TestCase):
         ]
         rc.write_sums(directory, [str(item["name"]) for item in artifacts], directory / "SHA256SUMS")
         provenance: dict[str, object] = {
-            "schema": 1,
+            "schema": 2,
             "app_version": self.version,
             "commit": self.sha,
             "candidate_tag": self.tag,
             "workflow": {"run_id": "123", "run_attempt": "1", "built_at": "2026-08-29T00:00:00Z"},
             "bundle_identifier": rc.BUNDLE_ID,
             "updater_target": rc.TARGET,
+            "updater_key_epoch": "nightly-v1",
             "test_gate": "passed",
             "signing": {"team_id": "Y8ZG3D692W", "identity": "Developer ID Application"},
             "verification": {
@@ -103,6 +105,9 @@ class ReleaseChannelTests(unittest.TestCase):
         bad = dict(provenance, commit="b" * 40)
         with self.assertRaises(rc.ReleaseError):
             rc.verify_provenance(bad, self.tag, self.sha, directory)
+        bad_key = dict(provenance, updater_key_epoch="unknown")
+        with self.assertRaises(rc.ReleaseError):
+            rc.verify_provenance(bad_key, self.tag, self.sha, directory)
 
     def test_missing_asset_and_wrong_hash_fail(self) -> None:
         directory, provenance = self.candidate_fixture()
@@ -185,6 +190,17 @@ class ReleaseChannelTests(unittest.TestCase):
                         promote.index('gh release edit "$STABLE_TAG" --draft=false'))
         self.assertNotIn("gh release upload nightly-feed", promote)
         self.assertNotIn("gh release edit nightly-feed", promote)
+        self.assertIn("build-sign:", nightly)
+        self.assertRegex(nightly, r"build-sign:[\s\S]*permissions:\n\s+contents: read")
+        self.assertRegex(nightly, r"publish:[\s\S]*permissions:\n\s+contents: write")
+        self.assertIn("NIGHTLY_TAURI_SIGNING_PRIVATE_KEY", nightly)
+        self.assertIn("legacy Stable updater key is permitted only for the v0.5.4 migration", nightly)
+        self.assertIn("Stable-only key", promote)
+        site = (ROOT / ".github/workflows/site-deploy.yml").read_text()
+        self.assertNotIn("gitHubToken", site)
+        for path in (ROOT / ".github/workflows").glob("*.yml"):
+            for action_ref in re.findall(r"uses:\s+[^@\s]+@([^\s#]+)", path.read_text()):
+                self.assertRegex(action_ref, r"^[0-9a-f]{40}$", f"unpinned action in {path.name}")
         for workflow in (nightly, promote):
             self.assertIn("Print :CFBundleExecutable", workflow)
             self.assertIn('grep -aFq "$CANDIDATE_SHA"', workflow)

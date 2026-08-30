@@ -741,7 +741,7 @@
       <input type="checkbox" id="set-session-restore">
       <button class="btn" id="set-clear-shell" style="margin-left:auto" data-i18n="common.clear">Clear</button>
     </div>
-    <div class="set-hint" data-i18n="settings.shellRecoveryHint">Every 15 seconds, deck may save the current directory and up to 256 KB of plain shell output in private 0600 files. Commands are never replayed; processes, environment and agent screens are not restored.</div>
+    <div class="set-hint" data-i18n="settings.shellRecoveryHint">Off by default. If enabled, deck may save the current directory and up to 256 KB of redacted plain shell output for at most 7 days in private 0600 files without backups. Commands are never replayed. Restored shells and their tools share deck’s Local Network permission.</div>
     <div class="set-sep"></div>
     <div class="set-row">
       <label for="set-channel" data-i18n="settings.updateChannel">Update channel</label>

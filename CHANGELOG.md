@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.5.4 — 2026-08-30
+
+- Separate Stable and Nightly updater trust roots. Nightly signing now runs in
+  a read-only secret-bearing job and hands verified artifacts to a no-secret
+  publisher; promotion keeps tested DMG/archive bytes and creates a new Stable
+  detached signature inside the protected production environment. v0.5.4 is
+  the single legacy-key bootstrap candidate for existing clients.
+- Pin every GitHub Action to a full commit SHA. Scope Cloudflare deployment
+  credentials to `website-production`, remove its GitHub token, and keep the
+  site job read-only toward the repository.
+- Make shell recovery opt-in, redact common credential values and private-key
+  blocks, expire snapshots after seven days, and stop creating transcript
+  backups. Existing explicit preferences are preserved and disabling remains
+  a race-safe wipe of all recovery files.
+- Bind destructive tmux restart confirmation to a backend-generated token over
+  the exact server socket, session identities, pane IDs/PIDs and foreground
+  commands, so equal counts cannot authorize a replacement session.
+- Clarify that shell commands, CLIs and agents launched or restored by deck
+  inherit its macOS Local Network permission.
+
 ## 0.5.2 — 2026-08-30
 
 - Fix restored shell sessions losing access to local-network destinations

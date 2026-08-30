@@ -30,10 +30,12 @@ requirement that the short version is three period-separated integers and lets
 Tauri retain its normal monotonic semver comparison.
 
 Nightly and Stable deliberately share product name `deck`, bundle identifier
-`io.c9r.deck`, Developer ID, updater key, `~/.deck`, scheduler queue and tmux
-socket. Nightly replaces the installed Stable application; the two must not run
-at once. This is how a candidate exercises real upgrades, migrations, tmux
-survival and scheduler data before the exact same binary is promoted.
+`io.c9r.deck`, Developer ID, `~/.deck`, scheduler queue and tmux socket, but
+they use separate updater minisign keys. The backend selects both the closed
+HTTPS endpoint and its matching committed public key. Nightly replaces the
+installed Stable application; the two must not run at once. This is how a
+candidate exercises real upgrades, migrations, tmux survival and scheduler
+data without placing the Stable updater trust root in the Nightly pipeline.
 
 The shared production tmux socket does not mean an old helper is compatible
 forever. Each server records the creating bundle, selected channel, app version,
@@ -81,8 +83,8 @@ notes and `publish_feed`. The workflow:
 2. verifies source versions and strict monotonicity against every Stable and
    candidate Release, checks tag/Release conflicts, then runs the complete test
    workflow gate;
-3. builds Apple Silicon exactly once using the same Developer ID, Apple
-   notarization credentials and updater minisign key as Stable;
+3. builds Apple Silicon exactly once using the shared Developer ID carrier
+   identity but the Nightly-only updater minisign key;
 4. notarizes and staples the final DMG, then runs codesign, stapler and
    Gatekeeper verification;
 5. creates an annotated candidate tag at the resolved SHA and a draft
@@ -93,9 +95,11 @@ notes and `publish_feed`. The workflow:
 
 The provenance records version, full commit, tag, workflow run/attempt and UTC
 time; filename, byte size and SHA-256 for every immutable artifact; bundle ID,
-updater target, test result, public Team ID/identity label and the three Apple
-verification results. It never records credentials, tokens, local paths or user
-data.
+updater target, updater-key epoch, test result, public Team ID/identity label
+and the Apple verification results. It never records credentials, tokens,
+local paths or user data. The secret-bearing build/sign job has read-only
+repository permission and hands an immutable Actions artifact to a separate
+publisher job that has repository write permission but no signing secrets.
 
 If `publish_feed` is true, feed publication happens last. The workflow first
 uploads and verifies a versioned `latest-VERSION.json` asset on the mutable
@@ -124,15 +128,14 @@ verification and required test run all agree. It also refuses an existing
 Stable tag or Release.
 
 The promotion job contains a static policy gate forbidding Cargo, Tauri and app
-build commands. It downloads the candidate assets, verifies them, creates an
-annotated `vVERSION` tag at the identical full commit, and creates a draft
-Stable Release. It uploads byte-identical DMG/archive/signature assets, verifies
-the copies by downloading them again, and generates only Stable metadata and a
-Stable `latest.json` whose URL names `vVERSION`. Version and signature remain
-unchanged. `latest.json` is uploaded last and the draft is published only after
-that completeness marker passes. Release notes record the candidate, commit,
-test period and hashes. Candidate assets remain untouched; promotion evidence
-is added as a separate candidate asset rather than editing provenance.
+build commands. It downloads the candidate assets, verifies their Nightly
+signature, and signs the unchanged updater archive with the Stable-only key
+inside the protected `production` Environment. It then creates an annotated
+`vVERSION` tag at the identical full commit and a draft Stable Release. The DMG
+and archive remain byte-identical; only the detached updater signature and
+Stable metadata are production-specific. `latest.json` is uploaded last and
+the draft is published only after that completeness marker passes. Promotion
+evidence records both the candidate key epoch and Stable signature hash.
 
 The direct `vVERSION` source-build workflow remains an emergency path. Its tag
 resolver accepts only the strict Stable shape, ignores candidate/feed tags, and
@@ -146,6 +149,15 @@ Before installing Nightly, verify that important `~/.deck` data is backed up.
 Select **Settings → Update channel → Nightly**, accept the one-time risk prompt,
 then check for updates. Include the displayed version and commit when reporting
 a problem.
+
+### Updater-key migration
+
+v0.5.4 is the one bounded transition candidate: its archive is signed with the
+legacy Stable key so v0.5.3 and older installations can install it, but the app
+already contains and selects the independent Nightly public key. The workflow
+rejects `legacy-stable-v1` for every other version. After v0.5.4 completes a
+real Nightly test period and is promoted to Stable, remove the legacy key from
+the Nightly Environment; all later Nightly candidates use `nightly-v1`.
 
 Switching back to Stable changes only future checks and never downgrades the
 installed app. If the installed Nightly version is newer than the latest
@@ -169,9 +181,10 @@ Recovery is deliberately non-destructive:
 
 GitHub hosts metadata and bytes but is not allowed to choose an endpoint or
 bypass signature verification. The Developer ID and Apple notarization ticket
-establish the macOS carrier identity. Tauri's committed public key verifies the
-updater archive; its private key remains only in the protected GitHub
-Environment. Promotion verifies and copies already signed/notarized bytes.
+establish the macOS carrier identity. Separate committed Stable and Nightly
+public keys verify updater archives. Their private keys live in separate,
+protected GitHub Environments. Promotion verifies the tested carrier/archive
+bytes and creates a new detached signature using the Stable-only key.
 
 Authoritative constraints used by this design:
 
@@ -186,8 +199,8 @@ Authoritative constraints used by this design:
 Stable 是所有新老用户的默认通道，只读取正式 `latest.json`；Nightly 必须
 在设置中主动选择，只读取独立的 `nightly-feed`。Nightly 使用正常三段数字
 版本，候选标识只写入 tag/Release。两条通道共用同一个 app、数据目录、tmux
-服务、Developer ID 与 updater 签名，因此 Nightly 会替换 Stable，不能并行
-运行。
+服务与 Developer ID，因此 Nightly 会替换 Stable，不能并行运行；两条通道的
+updater 密钥彼此独立，Nightly 无法签出 Stable 客户端信任的更新。
 
 安装 Nightly 前请确认重要数据已有备份。切回 Stable 只影响之后的更新检查，
 不会自动降级；如果 Nightly 版本更高，需要重新安装 Stable DMG，并继续遵守
@@ -195,5 +208,6 @@ future-schema/data compatibility 规则。反馈问题时请附上设置页显�
 和短 commit。
 
 候选发布会完成与 Stable 相同的测试、签名、公证、staple、Gatekeeper 和
-updater 签名检查。晋升只复制已经测试过的 DMG、archive 与 `.sig`，禁止重新
-构建；候选与正式资产的 SHA-256、commit 和 bundle 身份必须完全一致。
+updater 签名检查。晋升禁止重新构建，保持已经测试过的 DMG 与 archive 字节
+完全一致，并在受保护的 production 环境中用 Stable 专用密钥重新生成独立的
+`.sig`；commit、bundle 身份及载体哈希必须一致。

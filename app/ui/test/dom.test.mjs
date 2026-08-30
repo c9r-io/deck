@@ -224,3 +224,25 @@ test('disabling shell recovery persists first and then clears every snapshot', a
   assert.equal(globalThis.settings.sessionRestore, false);
   assert.equal(fakeDocument.getElementById('set-session-restore').disabled, false);
 });
+
+test('enabling shell recovery is opt-in and saves only after disclosure', async () => {
+  globalThis.settings = {
+    editor: '', locale: 'system', theme: 'deck-dark', accent: 'teal',
+    updateChannel: 'stable', sessionRestore: false,
+  };
+  fakeDocument.getElementById('set-session-restore').checked = true;
+  const calls = [];
+  window.__TAURI__ = { core: { invoke: async (cmd, args) => {
+    calls.push(cmd);
+    assert.equal(cmd, 'save_settings');
+    assert.equal(JSON.parse(args.data).sessionRestore, true);
+  } } };
+  const pending = persistSessionRestoreChoice();
+  await tick();
+  assert.equal(fakeDocument.getElementById('cfm').style.display, 'flex');
+  assert.deepEqual(calls, [], 'no recovery preference is written before consent');
+  cfmDone(true);
+  await pending;
+  assert.deepEqual(calls, ['save_settings']);
+  assert.equal(globalThis.settings.sessionRestore, true);
+});

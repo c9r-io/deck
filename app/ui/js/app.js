@@ -167,6 +167,7 @@ async function restartTmuxServer() {
     tmuxServerStatus = await inv('restart_tmux_server', {
       expectedPid: status.serverPid || 0,
       expectedStartedAt: status.serverStartedAt || 0,
+      expectedImpactToken: status.impactToken || '',
       expectedSessionCount: status.sessionCount || 0,
       expectedPaneCount: status.paneCount || 0,
       force: !status.pendingRestart,

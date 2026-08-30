@@ -5,6 +5,8 @@
 //! be reused and the only place allowed to replace it.
 
 use serde::{Deserialize, Serialize};
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -94,6 +96,7 @@ pub(crate) struct ServerStatus {
     server_build: Option<ServerMetadata>,
     server_pid: Option<u32>,
     server_started_at: Option<u64>,
+    impact_token: Option<String>,
     session_count: u32,
     pane_count: u32,
     attached_session_count: u32,
@@ -111,6 +114,7 @@ struct ServerSnapshot {
     socket_inode: u64,
     metadata: MetadataRead,
     sessions: Vec<SessionImpact>,
+    impact_token: String,
 }
 
 impl ServerSnapshot {
@@ -143,6 +147,7 @@ struct RestartIntent {
     old_socket_inode: u64,
     session_count: u32,
     pane_count: u32,
+    impact_token: String,
     phase: RestartPhase,
 }
 
@@ -378,8 +383,39 @@ fn should_prompt_for_restart(
 fn restart_intent_still_matches(intent: &RestartIntent, snapshot: &ServerSnapshot) -> bool {
     snapshot.pid == intent.old_pid
         && snapshot.started_at == intent.old_started_at
+        && snapshot.socket_device == intent.old_socket_device
+        && snapshot.socket_inode == intent.old_socket_inode
         && snapshot.sessions.len() as u32 == intent.session_count
         && snapshot.pane_count() == intent.pane_count
+        && snapshot.impact_token == intent.impact_token
+}
+
+fn impact_token(
+    pid: u32,
+    started_at: u64,
+    socket_device: u64,
+    socket_inode: u64,
+    sessions: &[SessionImpact],
+    panes: &[(String, String, u32, String)],
+) -> String {
+    let mut hasher = DefaultHasher::new();
+    "deck-tmux-impact-v1".hash(&mut hasher);
+    pid.hash(&mut hasher);
+    started_at.hash(&mut hasher);
+    socket_device.hash(&mut hasher);
+    socket_inode.hash(&mut hasher);
+    let mut sorted_sessions = sessions.to_vec();
+    sorted_sessions.sort_by(|a, b| a.name.cmp(&b.name));
+    for session in sorted_sessions {
+        session.name.hash(&mut hasher);
+        session.pane_count.hash(&mut hasher);
+        session.attached_clients.hash(&mut hasher);
+        session.has_foreground_process.hash(&mut hasher);
+    }
+    let mut sorted_panes = panes.to_vec();
+    sorted_panes.sort();
+    sorted_panes.hash(&mut hasher);
+    format!("impact-v1-{:016x}", hasher.finish())
 }
 
 fn absent_error(error: &str) -> bool {
@@ -457,18 +493,35 @@ fn probe_server() -> Probe {
         });
     }
 
+    let mut pane_identities = Vec::new();
     if !sessions.is_empty() {
         let panes = match tmux(&[
             "list-panes",
             "-a",
             "-F",
-            "#{session_name}\t#{pane_current_command}",
+            "#{session_name}\t#{pane_id}\t#{pane_pid}\t#{pane_current_command}",
         ]) {
             Ok(value) => value,
             Err(_) => return Probe::Unreachable,
         };
         for line in panes.lines() {
-            let Some((name, foreground)) = line.split_once('\t') else {
+            let mut fields = line.split('\t');
+            let (Some(name), Some(pane_id), Some(pane_pid), Some(foreground), None) = (
+                fields.next(),
+                fields.next(),
+                fields.next(),
+                fields.next(),
+                fields.next(),
+            ) else {
+                return Probe::Unreachable;
+            };
+            if !pane_id
+                .strip_prefix('%')
+                .is_some_and(|value| !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit()))
+            {
+                return Probe::Unreachable;
+            }
+            let Ok(pane_pid) = pane_pid.parse::<u32>() else {
                 return Probe::Unreachable;
             };
             let Some(session) = sessions.iter_mut().find(|session| session.name == name) else {
@@ -478,20 +531,37 @@ fn probe_server() -> Probe {
             if !is_shell_process(foreground) {
                 session.has_foreground_process = true;
             }
+            pane_identities.push((
+                name.to_string(),
+                pane_id.to_string(),
+                pane_pid,
+                foreground.to_string(),
+            ));
         }
         if sessions.iter().any(|session| session.pane_count == 0) {
             return Probe::Unreachable;
         }
     }
 
+    let socket_device = socket_metadata.dev();
+    let socket_inode = socket_metadata.ino();
+    let impact_token = impact_token(
+        pid,
+        started_at,
+        socket_device,
+        socket_inode,
+        &sessions,
+        &pane_identities,
+    );
     Probe::Reachable(Box::new(ServerSnapshot {
         pid,
         started_at,
         socket_path,
-        socket_device: socket_metadata.dev(),
-        socket_inode: socket_metadata.ino(),
+        socket_device,
+        socket_inode,
         metadata,
         sessions,
+        impact_token,
     }))
 }
 
@@ -638,6 +708,7 @@ fn complete_restart(
         old_socket_inode: old.socket_inode,
         session_count: old.sessions.len() as u32,
         pane_count: old.pane_count(),
+        impact_token: old.impact_token.clone(),
         phase: RestartPhase::Stopping,
     });
     write_disk(&disk)?;
@@ -707,6 +778,7 @@ fn status_from_probe(build: CurrentBuildIdentity, probe: Probe) -> ServerStatus 
             server_build: None,
             server_pid: None,
             server_started_at: None,
+            impact_token: None,
             session_count: 0,
             pane_count: 0,
             attached_session_count: 0,
@@ -726,6 +798,7 @@ fn status_from_probe(build: CurrentBuildIdentity, probe: Probe) -> ServerStatus 
             server_build: None,
             server_pid: None,
             server_started_at: None,
+            impact_token: None,
             session_count: 0,
             pane_count: 0,
             attached_session_count: 0,
@@ -760,6 +833,7 @@ fn status_from_probe(build: CurrentBuildIdentity, probe: Probe) -> ServerStatus 
                 server_build,
                 server_pid: Some(snapshot.pid),
                 server_started_at: Some(snapshot.started_at),
+                impact_token: Some(snapshot.impact_token.clone()),
                 session_count: snapshot.sessions.len() as u32,
                 pane_count: snapshot.pane_count(),
                 attached_session_count: snapshot
@@ -960,6 +1034,7 @@ pub(crate) fn restart_tmux_server(
     pty_state: tauri::State<'_, crate::pty::PtyState>,
     expected_pid: u32,
     expected_started_at: u64,
+    expected_impact_token: String,
     expected_session_count: u32,
     expected_pane_count: u32,
     force: bool,
@@ -994,6 +1069,7 @@ pub(crate) fn restart_tmux_server(
         || snapshot.started_at != expected_started_at
         || snapshot.sessions.len() as u32 != expected_session_count
         || snapshot.pane_count() != expected_pane_count
+        || snapshot.impact_token != expected_impact_token
     {
         return Err("tmux-server-impact-changed".into());
     }
@@ -1406,6 +1482,7 @@ mod tests {
                     old_socket_inode: 2,
                     session_count: 3,
                     pane_count: 4,
+                    impact_token: "impact-v1-deadbeef".into(),
                     phase,
                 }),
                 notice: None,
@@ -1436,6 +1513,7 @@ mod tests {
                 has_foreground_process: true,
                 recently_active: true,
             }],
+            impact_token: "impact-v1-deadbeef".into(),
         };
         let mut intent = RestartIntent {
             build_key: "current".into(),
@@ -1445,6 +1523,7 @@ mod tests {
             old_socket_inode: 2,
             session_count: 1,
             pane_count: 2,
+            impact_token: "impact-v1-deadbeef".into(),
             phase: RestartPhase::Stopping,
         };
         assert!(restart_intent_still_matches(&intent, &snapshot));
@@ -1459,5 +1538,50 @@ mod tests {
         intent.old_pid = 42;
         intent.old_started_at = 11;
         assert!(!restart_intent_still_matches(&intent, &snapshot));
+        intent.old_started_at = 10;
+        intent.old_socket_inode = 3;
+        assert!(!restart_intent_still_matches(&intent, &snapshot));
+        intent.old_socket_inode = 2;
+        intent.impact_token = "impact-v1-replaced".into();
+        assert!(!restart_intent_still_matches(&intent, &snapshot));
+    }
+
+    #[test]
+    fn impact_token_detects_identity_replacement_even_when_counts_match() {
+        let sessions = vec![SessionImpact {
+            name: "reviewed".into(),
+            pane_count: 1,
+            attached_clients: 0,
+            has_foreground_process: true,
+            recently_active: true,
+        }];
+        let reviewed = impact_token(
+            42,
+            10,
+            1,
+            2,
+            &sessions,
+            &[("reviewed".into(), "%1".into(), 100, "codex".into())],
+        );
+        let replacement = impact_token(
+            42,
+            10,
+            1,
+            2,
+            &sessions,
+            &[("reviewed".into(), "%2".into(), 101, "codex".into())],
+        );
+        assert_ne!(reviewed, replacement);
+        assert_eq!(
+            reviewed,
+            impact_token(
+                42,
+                10,
+                1,
+                2,
+                &sessions,
+                &[("reviewed".into(), "%1".into(), 100, "codex".into(),)]
+            )
+        );
     }
 }

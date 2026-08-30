@@ -1,3 +1,4 @@
 /* Native bundle metadata for signed distribution. */
 "CFBundleDisplayName" = "deck";
 "CFBundleName" = "deck";
+"NSLocalNetworkUsageDescription" = "Shell commands, CLIs, and agents launched or restored by deck can access devices and services on your local network.";

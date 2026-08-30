@@ -36,8 +36,8 @@ authorization during the 2026-08-30 session.
 - A Configuration Rule named `deck.c9r.io — no Web Analytics RUM injection`
   matches `http.host eq "deck.c9r.io"` and disables RUM. See "Zone-inherited
   analytics" below — this rule is load-bearing for deck's privacy claims.
-- GitHub Actions secrets `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN`
-  are both set. The token is `deck-site pages deploy`, scoped to
+- GitHub `website-production` Environment secrets `CLOUDFLARE_ACCOUNT_ID` and
+  `CLOUDFLARE_API_TOKEN` are both set. The token is `deck-site pages deploy`, scoped to
   Account -> Cloudflare Pages -> Edit on that one account only: no DNS edit,
   no zone access, no other account.
 - GitHub Environment `website-production` exists with a required human
@@ -98,7 +98,7 @@ The token should be restricted to the intended account and have Cloudflare
 Pages Edit/Write. Handle the first custom-domain/DNS association manually in
 the dashboard so the recurring deployment token does not need DNS Edit.
 
-Add the token directly to the deck GitHub repository Actions secrets; never
+Add the token directly to the protected `website-production` Environment; never
 paste it into chat, issue text, logs or repository files:
 
 - `CLOUDFLARE_API_TOKEN` — set, and verified `active` against
@@ -109,7 +109,8 @@ paste it into chat, issue text, logs or repository files:
 
 The GitHub Environment `website-production` exists and requires a human
 reviewer, so a `site-deploy` run waits for an approval before it can reach
-Cloudflare.
+Cloudflare. The pinned Wrangler action receives no GitHub token, and the job
+has only `contents: read` repository permission.
 
 ## First deployment
 

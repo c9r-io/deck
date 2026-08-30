@@ -3,6 +3,6 @@
 <plist version="1.0">
 <dict>
   <key>NSLocalNetworkUsageDescription</key>
-  <string>Terminal tools running in deck may connect to local services and devices you choose.</string>
+  <string>Shell commands, CLIs, and agents launched or restored by deck can access devices and services on your local network.</string>
 </dict>
 </plist>

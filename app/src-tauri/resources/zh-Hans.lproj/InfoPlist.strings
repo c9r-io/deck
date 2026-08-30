@@ -1,3 +1,4 @@
 /* 用于签名发行的原生 bundle 元数据。 */
 "CFBundleDisplayName" = "deck";
 "CFBundleName" = "deck";
+"NSLocalNetworkUsageDescription" = "由 deck 启动或恢复的 shell 命令、CLI 和 agent 可以访问你本地网络中的设备与服务。";
