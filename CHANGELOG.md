@@ -54,6 +54,11 @@
   (blank top rows, wide characters, wrapped rows, styled blanks, scrolled
   viewports), asserting endpoints and copied bytes; the contract suite now
   drives the production placement instead of its own copy of the rules.
+- Restore bounded shell output directly into the new pane's real tmux
+  scrollback instead of blocking the live terminal with a read-only overlay.
+  A one-use private bootstrap writes only to pane stdout, marks the restart
+  boundary, then execs the login shell; command-shaped text never reaches
+  stdin, and ordinary tmux scrolling, selection and copy work immediately.
 
 ## 0.4.38 — Nightly candidate, 2026-08-29
 

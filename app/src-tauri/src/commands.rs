@@ -920,7 +920,15 @@ pub(crate) fn tmux_available() -> bool {
         .unwrap_or(false)
 }
 
-/// Idempotent start: returns true only when it actually CREATED the session.
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct StartSessionResult {
+    pub(crate) created: bool,
+    pub(crate) restored: bool,
+}
+
+/// Idempotent start: `created` is true only when this call actually created
+/// the session; `restored` additionally means a saved transcript was emitted
+/// into the new pane's real tmux history before its login shell started.
 /// "Enter card" means "make sure it's running, then attach" — if the session
 /// already lives (stale frontend status, click before the first poll, another
 /// window), that is success-without-side-effects: never a duplicate-session
@@ -931,17 +939,23 @@ pub(crate) fn start_session(
     dir: String,
     cmd: String,
     restore_shell: bool,
-) -> Result<bool, String> {
+) -> Result<StartSessionResult, String> {
     validate_session_name(&name)?;
     if tmux(&["has-session", "-t", &session_target(&name)]).is_ok() {
-        return Ok(false);
+        return Ok(StartSessionResult {
+            created: false,
+            restored: false,
+        });
     }
     // Serialize every server-creating path with upgrade replacement. The
     // second existence check closes the race with another creator while the
     // lifecycle gate was being acquired.
     let _lifecycle_guard = crate::tmux_lifecycle::session_creation_guard()?;
     if tmux(&["has-session", "-t", &session_target(&name)]).is_ok() {
-        return Ok(false);
+        return Ok(StartSessionResult {
+            created: false,
+            restored: false,
+        });
     }
     // A checkpoint is consulted only for a command-less, user-opened shell.
     // Its cwd may have advanced far beyond the card's original launch dir.
@@ -956,16 +970,56 @@ pub(crate) fn start_session(
     if !std::path::Path::new(&dir).is_dir() {
         return Err(format!("not a directory: {dir}"));
     }
-    tmux(&["new-session", "-d", "-s", &name, "-c", &dir])?;
+    let bootstrap = recovery
+        .as_ref()
+        .filter(|snapshot| !snapshot.transcript.trim().is_empty())
+        .and_then(
+            |snapshot| match crate::shell_state::prepare_bootstrap(snapshot) {
+                Ok(bootstrap) => Some(bootstrap),
+                Err(error) => {
+                    applog(&format!(
+                        "[shell-state] bootstrap unavailable for {} ({})",
+                        storage::session_tag(&name),
+                        storage::err_code(&error)
+                    ));
+                    None
+                }
+            },
+        );
+    let start = if let Some(bootstrap) = bootstrap.as_ref() {
+        tmux(&[
+            "new-session",
+            "-d",
+            "-s",
+            &name,
+            "-c",
+            &dir,
+            &bootstrap.executable,
+            crate::shell_state::BOOTSTRAP_ARG,
+            &bootstrap.payload,
+            &bootstrap.shell,
+        ])
+    } else {
+        tmux(&["new-session", "-d", "-s", &name, "-c", &dir])
+    };
+    if let Err(error) = start {
+        if let Some(bootstrap) = bootstrap.as_ref() {
+            bootstrap.cleanup();
+        }
+        return Err(error);
+    }
     // belt & suspenders for servers started by older deck versions
     init_deck_server();
     if !cmd.trim().is_empty() {
         tmux(&["send-keys", "-t", &pane_target(&name), &cmd, "Enter"])?;
     }
-    if let Some(snapshot) = recovery {
-        crate::shell_state::note_recovered(&snapshot);
+    if recovery.is_some() {
+        crate::shell_state::note_recovered(&name);
     }
-    Ok(true)
+    Ok(StartSessionResult {
+        created: true,
+        restored: bootstrap.is_some(),
+    })
 }
 
 /// Server-wide defaults for the deck tmux server. Idempotent; called at app

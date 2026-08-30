@@ -1149,11 +1149,11 @@ pub(crate) fn prepare_context(item: &QueueItem, cancelled: &dyn Fn() -> bool) ->
         item.cmd.clone(),
         false,
     ) {
-        Ok(true) => {}
+        Ok(result) if result.created => {}
         // Another actor won the race between our outer existence check and
         // start_session's idempotent inner check. It is not a deck-created
         // generation and therefore must never inherit permission to send.
-        Ok(false) => {
+        Ok(_) => {
             return ProbeResult::blocked(
                 ContextStatus::SessionReplaced,
                 ContextCode::IdentityChanged,

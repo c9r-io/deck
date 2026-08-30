@@ -6,6 +6,7 @@
 
 use std::fs::OpenOptions;
 use std::io::Write;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
 use std::process::Command;
 use std::thread::sleep;
@@ -329,6 +330,83 @@ impl Drop for Server {
             .args(["-L", &self.0, "kill-server"])
             .output();
     }
+}
+
+/// Restored text is pane OUTPUT, never shell INPUT. The real signed app
+/// executable runs its hidden bootstrap mode, prints the one-use payload,
+/// then execs a harmless long-lived process. tmux must retain the text in its
+/// own scrollback and a command-shaped line must remain literal.
+#[test]
+fn shell_restore_bootstrap_becomes_tmux_history_without_executing_text() {
+    let s = Server(format!(
+        "deck-test-restore-bootstrap-{}",
+        std::process::id()
+    ));
+    let root = std::env::temp_dir().join(format!("deck-restore-contract-{}", std::process::id()));
+    let dir = root.join("shell-state");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&dir).expect("create restore fixture dir");
+    let payload = dir.join(".restore-deck-contract-1.txt");
+    let executed = root.join("must-not-exist");
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&payload)
+        .expect("create private restore payload");
+    writeln!(file, "deck-shell-restore-v1").unwrap();
+    for line in 0..40 {
+        writeln!(file, "restored-contract-{line:02}").unwrap();
+    }
+    writeln!(file, "touch {}", executed.display()).unwrap();
+    file.flush().unwrap();
+
+    let deck = PathBuf::from(env!("CARGO_BIN_EXE_deck-app"));
+    let deck = deck.to_str().expect("deck test binary path utf8");
+    let payload_arg = payload.to_str().expect("payload path utf8");
+    s.run_raw_checked(&[
+        "start-server",
+        ";",
+        "set-option",
+        "-g",
+        "history-limit",
+        "50000",
+        ";",
+        "new-session",
+        "-d",
+        "-s",
+        "t",
+        "-x",
+        "80",
+        "-y",
+        "12",
+        deck,
+        "--deck-shell-bootstrap",
+        payload_arg,
+        "/bin/cat",
+    ]);
+
+    let mut captured = String::new();
+    for _ in 0..200 {
+        captured = s.run(&["capture-pane", "-p", "-J", "-S", "-100", "-t", "=t:"]);
+        if captured.contains("deck restart") && s.fmt("#{pane_current_command}") == "cat" {
+            break;
+        }
+        sleep(Duration::from_millis(10));
+    }
+    assert!(captured.contains("restored-contract-00"), "{captured}");
+    assert!(captured.contains("restored-contract-39"), "{captured}");
+    assert!(captured.contains(&format!("touch {}", executed.display())));
+    assert!(
+        !executed.exists(),
+        "command-shaped history must not execute"
+    );
+    assert!(!payload.exists(), "bootstrap payload must be one-use");
+    assert!(
+        s.fmt("#{history_size}").parse::<u32>().unwrap_or(0) > 0,
+        "restored output must live in tmux scrollback"
+    );
+    let _ = std::fs::remove_dir_all(root);
 }
 
 /// v0.4.12: resize reflow pushes blank lines into history, so "empty" shells

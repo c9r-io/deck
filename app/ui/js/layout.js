@@ -753,13 +753,6 @@ export function updatePaneChrome(card) {
   if (dot) { dot.className = 'dot ' + card.status; dot.title = dotTitle(card.status); }
   const name = p.el.querySelector('.spane-head .name');
   if (name && name.textContent !== card.title) name.textContent = card.title;
-  if (p.recovery) {
-    p.recovery.label.textContent = t('session.restoredTranscript');
-    p.recovery.close.textContent = t('session.recoveryClose');
-    p.recovery.chip.textContent = t('session.recoveryHistory');
-    p.recovery.chip.title = t('session.recoveryHistoryTitle');
-    p.recovery.layer.setAttribute('aria-label', t('session.recoveryHistory'));
-  }
   /* scrollback chip: the ONLY visual clue that the view is frozen history
      (the tmux position badge is deliberately off) */
   let chip = p.el.querySelector('.spane-head .scrollchip');
@@ -777,52 +770,6 @@ export function updatePaneChrome(card) {
   } else if (chip) {
     chip.remove();
   }
-}
-
-/* A tmux client may use the terminal's alternate screen, whose active buffer
-   does not expose xterm's normal scrollback. Keep recovery text in a plain,
-   inert DOM layer instead: it cannot affect the tmux cursor or become shell
-   input, remains selectable, and can be reopened from the pane header. */
-export function installShellRecovery(pane, snapshot) {
-  if (!pane || !snapshot || !snapshot.transcript) return;
-  const layer = document.createElement('section');
-  layer.className = 'shell-recovery';
-  layer.setAttribute('aria-label', t('session.recoveryHistory'));
-  const head = document.createElement('div');
-  head.className = 'shell-recovery-head';
-  const label = document.createElement('span');
-  label.textContent = t('session.restoredTranscript');
-  const close = document.createElement('button');
-  close.className = 'btn';
-  close.textContent = t('session.recoveryClose');
-  const output = document.createElement('pre');
-  output.textContent = snapshot.transcript;
-  head.append(label, close);
-  layer.append(head, output);
-  pane.body.appendChild(layer);
-
-  const chip = document.createElement('button');
-  chip.className = 'recoverychip';
-  chip.textContent = t('session.recoveryHistory');
-  chip.title = t('session.recoveryHistoryTitle');
-  pane.el.querySelector('.spane-head .px').before(chip);
-  const show = visible => {
-    layer.style.display = visible ? 'flex' : 'none';
-    chip.classList.toggle('active', visible);
-    pane.recovery.visible = visible;
-    if (visible) requestAnimationFrame(() => {
-      output.scrollTop = output.scrollHeight;
-      close.focus();
-    });
-    else pane.term.focus();
-  };
-  close.onclick = () => show(false);
-  chip.onclick = e => { e.stopPropagation(); show(layer.style.display === 'none'); };
-  layer.addEventListener('keydown', e => {
-    if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); show(false); }
-  });
-  pane.recovery = { layer, chip, label, close, show, visible: false };
-  show(true);
 }
 
 /* leave copy-mode → live view; clears the chip immediately (the poll would
@@ -851,44 +798,36 @@ export function focusPane(session) {
   if (ghostEl && ghostEl.parentElement !== p.body) p.body.appendChild(ghostEl);
   renderSessionView();
   renderSidebar();
-  if (p.recovery?.visible) p.recovery.close.focus();
-  else p.term.focus();
+  p.term.focus();
 }
 
-/* Returns true only when the session was actually CREATED here (backend is
-   idempotent: an already-live session is success, not an error). Callers use
-   that to decide fresh-shell behaviors — clearing history on a session that
-   merely LOOKED stopped would eat a live agent's scrollback. */
+/* Returns explicit created/restored state (backend is idempotent: an
+   already-live session is success, not an error). Callers use it to decide
+   fresh-shell cleanup — clearing history on a restored or merely-live session
+   would eat real scrollback. */
 export async function ensureAttached(pane) {
   const card = provider.get(pane.sid);
-  if (!card) return false;
-  let created = false;
+  const outcome = { created: false, restored: false };
+  if (!card) return outcome;
   try {
     if (card.status === 'stopped') {
-      created = await inv('start_session', {
+      const started = await inv('start_session', {
         name: card.session, dir: card.dir, cmd: card.cmd,
         restoreShell: !!settings.sessionRestore,
       });
-      /* Snapshot text goes into an inert read-only layer, never xterm/stdin.
-         The live tmux cursor remains authoritative and no old command can
-         execute. Launch-command/agent cards are never restored. */
-      if (created && settings.sessionRestore && !card.cmd.trim()) {
-        const snapshot = await inv('load_shell_snapshot', { name: card.session }).catch(() => null);
-        if (snapshot && snapshot.transcript) {
-          installShellRecovery(pane, snapshot);
-          toast(t('session.restored'));
-        }
-      }
+      outcome.created = !!started.created;
+      outcome.restored = !!started.restored;
     }
     const gen = await inv('attach_session', { name: card.session, cols: pane.term.cols, rows: pane.term.rows });
     /* max(): the first pty-data event can arrive BEFORE this invoke resolves;
        the handler below already advanced ptyGens then, and regressing it
        would make us drop (and never ACK) the current stream */
     ptyGens.set(card.session, Math.max(ptyGens.get(card.session) || 0, gen));
+    if (outcome.restored) toast(t('session.restored'));
   } catch (e) {
     toast(t('error.attach'));
   }
-  return created;
+  return outcome;
 }
 
 export async function addSplit(targetSid, dir, before, newSid) {
@@ -908,8 +847,8 @@ export async function addSplit(targetSid, dir, before, newSid) {
   const pane = createPane(card);
   layout = splitAt(layout, targetSid, dir, newSid, before);
   renderLayout();
-  const created = await ensureAttached(pane);
-  if (created) setTimeout(() => inv('clear_history', { name: card.session }).catch(() => {}), 900);
+  const { created, restored } = await ensureAttached(pane);
+  if (created && !restored) setTimeout(() => inv('clear_history', { name: card.session }).catch(() => {}), 900);
   freshShell = created && !card.cmd.trim();
   focusPane(card.session);
   pollNow();
@@ -1051,8 +990,8 @@ export async function openSession(sid) {
   const pane = createPane(card);
   layout = leafOf(sid);
   renderLayout();
-  const created = await ensureAttached(pane);
-  if (created) setTimeout(() => inv('clear_history', { name: card.session }).catch(() => {}), 900);
+  const { created, restored } = await ensureAttached(pane);
+  if (created && !restored) setTimeout(() => inv('clear_history', { name: card.session }).catch(() => {}), 900);
   freshShell = created && !card.cmd.trim();
   focusPane(card.session);
   /* history feeds both the fresh-shell chips and typed-prefix completion */

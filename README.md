@@ -95,10 +95,11 @@ row, and xterm plus the underlying PTY are refit together.
 **Bounded shell recovery.** While a pane is back at a shell prompt, deck
 checkpoints its current directory and up to 256 KB of plain recent output.
 After a machine/tmux restart, opening the card starts a new shell in that
-directory and shows the old text in an inert, read-only history layer. Commands are
-never replayed, and processes, jobs, environment variables and agent TUIs are
-not restored. Checkpointing can be disabled—and all copies cleared—from
-Settings.
+directory and places the old text directly in that pane's tmux scrollback,
+above a clear restart boundary and the new live prompt. The text is written
+only to pane output, never shell input, so commands are not replayed; processes,
+jobs, environment variables and agent TUIs are not restored. Checkpointing can
+be disabled—and all copies cleared—from Settings.
 
 **Scheduled prompts.** The quota-window workflow: queue prompts on a session
 and have them typed in later — at a set time ("in 5 h, when my Claude window

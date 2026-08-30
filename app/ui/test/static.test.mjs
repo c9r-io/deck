@@ -124,6 +124,27 @@ test('removed long-output panel cannot return through DOM, routes, or backend re
   }
 });
 
+test('shell restart recovery is real tmux history, never a blocking webview layer', () => {
+  const layout = read('app/ui/js/layout.js');
+  const html = read('app/ui/index.html');
+  const main = read('app/src-tauri/src/main.rs');
+  const commands = read('app/src-tauri/src/commands.rs');
+  const recovery = read('app/src-tauri/src/shell_state.rs');
+  const production = layout + html + main;
+
+  assert.doesNotMatch(production, /shell-recovery|recoverychip|load_shell_snapshot/);
+  assert.match(layout, /outcome\.restored = !!started\.restored/);
+  assert.match(layout, /if \(created && !restored\)[^\n]*clear_history/,
+    'restored tmux history must survive the fresh-shell cleanup');
+  assert.match(commands, /prepare_bootstrap/);
+  assert.match(commands, /BOOTSTRAP_ARG/);
+  assert.match(recovery, /out\.write_all\(transcript\.as_bytes\(\)\)/);
+  assert.match(recovery, /Command::new\(shell\)\.arg0\(login_name\)\.exec\(\)/);
+  assert.match(recovery, /custom_flags\(libc::O_NOFOLLOW\)/);
+  assert.doesNotMatch(recovery, /recovered_prefixes|merge_transcripts/,
+    'a transcript already in tmux must not be appended out of band again');
+});
+
 test('production terminal path wires the token-bound frozen selection coordinator', () => {
   const layout = read('app/ui/js/layout.js');
   const selection = read('app/ui/js/selection.js');

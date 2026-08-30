@@ -117,6 +117,13 @@ fn set_native_locale(locale: String, menu: tauri::State<'_, NativeMenu>) -> Resu
 // ---------- main ---------------------------------------------------------------
 
 fn main() {
+    // A restored pane starts this same signed executable in a tiny helper
+    // mode. It must run before storage, logging, single-instance enforcement
+    // or any Tauri/AppKit initialization, then replace itself with the user's
+    // login shell.
+    if let Some(code) = shell_state::maybe_run_bootstrap() {
+        std::process::exit(code);
+    }
     let deck_dir = storage::deck_dir();
     // idempotent permission migration BEFORE anything touches the data files:
     // ~/.deck → 0700, every file an older deck may have left 0644 → 0600.
@@ -150,6 +157,7 @@ fn main() {
         let _ = Command::new("osascript").args(["-e", &script]).status();
         std::process::exit(0);
     }
+    shell_state::cleanup_restore_temps();
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
@@ -286,7 +294,6 @@ fn main() {
             commands::terminal_metrics,
             commands::write_clipboard,
             commands::poll_sessions,
-            shell_state::load_shell_snapshot,
             shell_state::shell_snapshots_clear,
             pty::attach_session,
             pty::pty_write,
