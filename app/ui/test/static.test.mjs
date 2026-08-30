@@ -90,7 +90,9 @@ test('the canonical dictionary has no unused keys outside documented dynamic fam
 test('minimum-window layout keeps long localized panels bounded and scrollable', () => {
   const html = read('app/ui/index.html');
   assert.match(html, /@media \(max-width: 800px\), \(max-height: 540px\)/);
-  assert.match(html, /#settings-box \{[^}]*max-height: 92vh;[^}]*overflow-y: auto;/);
+  assert.match(html, /#settings-modal \{[^}]*align-items: center;[^}]*padding: 20px;/);
+  assert.match(html, /#settings-box \{[^}]*width: 560px;[^}]*max-height: 100%;[^}]*overflow-y: auto;/,
+    'settings stay inside every viewport and scroll independently at any window height');
   assert.match(html, /#cfm-box, #ppd-box \{[^}]*max-height: 84vh;[^}]*overflow-y: auto;/);
   assert.match(html, /#queue-panel \{[^}]*max-height: 55vh;/);
   assert.match(html, /\.qg-row \.row-meta \{[^}]*white-space: normal;/);
@@ -159,9 +161,19 @@ test('production terminal path wires the token-bound frozen selection coordinato
   assert.match(selection, /compatibilityBlocked/);
   assert.match(selection, /terminal_selection_finish/);
   assert.match(selection, /terminal_selection_scroll/);
-  assert.match(selection, /onModeChange\(true, lastStatus\)/,
+  assert.match(selection, /onModeChange\(true, lastStatus,/,
     'a frozen-selection scroll must publish live-cursor visibility');
   assert.match(selection, /terminalSelectionOverlayRows/);
+  assert.match(selection, /if \(!selected \|\| !lastStatus\) return;/,
+    'the stable overlay must paint while dragging as well as after pointerup');
+  assert.match(selection, /lastStatus = status;[\s\S]{0,280}renderOverlay\(\);/,
+    'each settled drag reply must publish its overlay geometry');
+  assert.match(read('app/src-tauri/src/tmux.rs'),
+    /mode-style 'none'[\s\S]*copy-mode-selection-style 'none'/,
+    'tmux intermediate selection frames must stay visually empty');
+  assert.match(backend,
+    /copy-mode-selection-style", "none"[\s\S]*copy-mode-position-style/,
+    'existing servers receive the non-flashing selection style too');
   assert.match(selection, /status reply and its PTY repaint have no fixed ordering/,
     'selection scrolling must handle either tmux-status/xterm-frame ordering');
   assert.match(selection, /pane\.term\.onSelectionChange/,
@@ -197,8 +209,8 @@ test('production terminal path wires the token-bound frozen selection coordinato
     'frozen-selection scrolling must re-anchor the copy cursor to live input');
   assert.match(backendScroll, /if-shell[\s\S]*?display-message/);
   assert.match(read('app/ui/test/wk-smoke.mjs'),
-    /selection-scroll-stable[\s\S]*?selection-scroll-cursor[\s\S]*?selection-overlay[\s\S]*?selection-repeat[\s\S]*?selection-resize[\s\S]*?scroll-frame/,
-    'real WKWebView smoke must verify frozen-selection cursor position, visibility and DOM cleanup');
+    /selection-drag-overlay[\s\S]*?selection-scroll-stable[\s\S]*?selection-scroll-cursor[\s\S]*?selection-overlay[\s\S]*?selection-repeat[\s\S]*?selection-resize[\s\S]*?scroll-frame/,
+    'real WKWebView smoke must verify drag/frozen selection paint, cursor visibility and DOM cleanup');
   assert.match(backend, /selection_start_y/);
   assert.match(backend, /dims\.selection_present[\s\S]*?clear-selection/);
   assert.match(backend, /if !before\.active \{/);

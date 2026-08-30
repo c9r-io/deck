@@ -98,7 +98,9 @@ pub(crate) fn tmux_conf() -> String {
              set -g status off\n\
              set -g set-clipboard on\n\
              set -g history-limit 50000\n\
-             set -g mode-style 'reverse'\n\
+             set -g mode-style 'none'\n\
+             set -g copy-mode-selection-style 'none'\n\
+             set -g copy-mode-position-style 'reverse'\n\
              set -g copy-mode-position-format ''\n\
              set-environment -g COLORTERM truecolor\n"
                 .as_bytes(),
@@ -226,7 +228,14 @@ pub(crate) fn init_deck_server() {
     let _ = tmux(&["set", "-g", "mouse", "off"]);
     let _ = tmux(&["set", "-g", "set-clipboard", "on"]);
     let _ = tmux(&["set", "-g", "history-limit", "50000"]);
-    let _ = tmux(&["set", "-g", "mode-style", "reverse"]);
+    // Deck paints selection geometry in one DOM layer after each settled
+    // backend update. Hiding tmux's transient selection prevents its
+    // top-line/cursor motion steps from flashing large history regions.
+    // Keep mode-style empty as the compatibility fallback while the bundled
+    // tmux exposes separate selection and position styles.
+    let _ = tmux(&["set", "-g", "mode-style", "none"]);
+    let _ = tmux(&["set", "-g", "copy-mode-selection-style", "none"]);
+    let _ = tmux(&["set", "-g", "copy-mode-position-style", "reverse"]);
     let _ = tmux(&["set", "-g", "copy-mode-position-format", ""]);
 }
 

@@ -113,6 +113,7 @@ const SMOKE_CHECKS: &[&str] = &[
     "selection-scroll-stable",
     "selection-scroll-cursor",
     "selection-overlay",
+    "selection-drag-overlay",
     "selection-native-scroll",
     "selection-resize",
     "scroll-frame",
@@ -135,6 +136,7 @@ const SMOKE_CHECKS: &[&str] = &[
     "board-fault",
     "theme-switch",
     "theme-rollback",
+    "settings-viewport",
     "natural-fault",
     "completion-owner",
     "ambiguous-boot",
@@ -826,10 +828,12 @@ fn validated_palette_color(value: &str) -> bool {
         && value[1..].bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
-/// Keep tmux's transient copy-mode highlight aligned with the same closed JS
-/// registry that owns CSS and xterm. Values never come from a free-form UI;
-/// the strict shape check also prevents option/format injection if the webview
-/// is compromised.
+/// Keep tmux's copy cursor aligned with the same closed JS registry that owns
+/// CSS and xterm. The selection itself stays visually empty because the
+/// frontend paints only settled selection geometry; this prevents tmux's
+/// intermediate cursor motions from flashing across the terminal. Values
+/// never come from a free-form UI; the strict shape check also prevents
+/// option/format injection if the webview is compromised.
 #[tauri::command]
 pub(crate) fn set_terminal_mode_style(
     foreground: String,
@@ -839,7 +843,9 @@ pub(crate) fn set_terminal_mode_style(
         return Err("terminal palette colors must be six-digit hex values".into());
     }
     let style = format!("fg={foreground},bg={background}");
-    crate::tmux::tmux(&["set", "-g", "mode-style", &style]).map(|_| ())
+    crate::tmux::tmux(&["set", "-g", "mode-style", "none"])?;
+    crate::tmux::tmux(&["set", "-g", "copy-mode-selection-style", "none"])?;
+    crate::tmux::tmux(&["set", "-g", "copy-mode-position-style", &style]).map(|_| ())
 }
 
 pub(crate) fn editor_app() -> Option<String> {
@@ -1089,9 +1095,9 @@ pub(crate) fn clear_history(name: String) {
     let _ = tmux(&["clear-history", "-t", &t]);
 }
 
-/// tmux copy-mode is the sole authority for cross-screen selection. The
-/// attached PTY repaints tmux's own highlighted frame into xterm; no second
-/// scrollback document or private xterm API is involved.
+/// tmux copy-mode is the sole byte and cross-screen geometry authority. The
+/// frontend paints its settled coordinates over xterm; no second scrollback
+/// document or private xterm API is involved.
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct TerminalSelectionStatus {
     active: bool,

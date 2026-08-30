@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.0 — 2026-08-30
+
+- Stop restored, history-heavy panes from flashing through tmux's intermediate
+  copy-mode frames while dragging a selection. tmux remains the exact byte and
+  history-coordinate authority, while deck paints only each settled range in
+  one stable overlay and hides the internal drag cursor.
+- Keep Settings inside the window at every supported size: the dialog is wider
+  when space allows, vertically centered, bounded by the viewport, and scrolls
+  its own contents when the full localized form is taller than the window.
+
 ## 0.4.42 — 2026-08-30
 
 - Restore bounded shell output directly into the new pane's real tmux

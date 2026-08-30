@@ -75,7 +75,7 @@ function terminalSelectionController(pane, onModeChange) {
 
   const setMode = value => {
     selected = value;
-    if (onModeChange) onModeChange(value, lastStatus);
+    if (onModeChange) onModeChange(value, lastStatus, { dragging: !!gesture?.promoted, frozen });
   };
 
   const releaseCapture = current => {
@@ -104,7 +104,7 @@ function terminalSelectionController(pane, onModeChange) {
     const layer = overlay();
     if (!layer) return;
     layer.replaceChildren();
-    if (!selected || !frozen || !lastStatus) return;
+    if (!selected || !lastStatus) return;
     const screen = pane.body.querySelector('.xterm-screen');
     const rect = screen.getBoundingClientRect();
     const viewportTop = lastStatus.history_rows - lastStatus.scroll_position;
@@ -241,6 +241,11 @@ function terminalSelectionController(pane, onModeChange) {
           model.move({ row: cell.row, col: cell.col });
           if (currentToken !== token || !model.apply(generation, status)) continue;
           lastStatus = status;
+          // tmux retains the byte-accurate selection, but its native
+          // selection paint is disabled: drawing one settled DOM overlay
+          // avoids exposing every intermediate top-line/cursor motion as a
+          // full terminal flash on restored, history-heavy panes.
+          renderOverlay();
           if (status.history_at_limit && status.at_top && edgeLines < 0 && !limitNoticeShown) {
             limitNoticeShown = true;
             toast(t('selection.limit', { count: formatNumber(status.history_limit) }));
@@ -284,6 +289,7 @@ function terminalSelectionController(pane, onModeChange) {
       model.move({ row: synchronizedActive.row, col: synchronizedActive.col });
       if (currentToken !== token || !model.apply(generation, status)) return;
       lastStatus = status;
+      renderOverlay();
       requestUpdate();
     }).catch(() => {
       if (currentToken === token && model.snapshot().generation === generation) {
@@ -368,6 +374,7 @@ function terminalSelectionController(pane, onModeChange) {
           lastStatus = status;
           frozen = true;
           renderOverlay();
+          if (onModeChange) onModeChange(true, lastStatus, { dragging: false, frozen: true });
           return;
         } catch (error) {
           if (!dimensionsChanged(error) || attempt === 2) throw error;
@@ -515,7 +522,7 @@ function terminalSelectionController(pane, onModeChange) {
     // Selection scrolls share the ordinary scroll cursor contract. Notify
     // even though selection mode itself did not change so the host can hide
     // xterm's copy cursor after the real input row leaves the viewport.
-    if (onModeChange) onModeChange(true, lastStatus);
+    if (onModeChange) onModeChange(true, lastStatus, { dragging: false, frozen: true });
     // The tmux status reply and its PTY repaint have no fixed ordering. If a
     // frame was already parsed, render the new coordinates now; otherwise
     // writeParsed() will render them when the repaint reaches xterm.

@@ -143,6 +143,20 @@ async function themeSmoke(card) {
     && document.documentElement.dataset.theme === originalTheme
     && pane.term.options.theme.background === activateTheme(settings).terminal.background;
   await report('theme-rollback', rolledBack, rolledBack ? 1 : 0, panes.size);
+
+  $('settings-btn').click();
+  const settingsOpened = await waitFor(() => $('settings-modal').style.display === 'flex', 3000);
+  const settingsBox = $('settings-box');
+  const settingsRect = settingsBox.getBoundingClientRect();
+  const settingsStyle = getComputedStyle(settingsBox);
+  const settingsBounded = settingsOpened
+    && settingsRect.top >= 0 && settingsRect.left >= 0
+    && settingsRect.bottom <= innerHeight && settingsRect.right <= innerWidth
+    && settingsStyle.overflowY === 'auto'
+    && settingsBox.clientHeight <= innerHeight - 40;
+  await report('settings-viewport', settingsBounded,
+    Math.round(settingsBox.clientHeight), Math.round(innerHeight));
+  $('set-close').click();
 }
 
 async function renameSmoke(card) {
@@ -216,6 +230,13 @@ async function selectionSmoke(card) {
     await report('selection-up', false, 0, metrics.in_copy_mode ? 1 : 0);
     return;
   }
+  const stableDragPaint = await waitFor(() =>
+    pane.selection.isDragging()
+      && pane.body.querySelectorAll('.deck-selection-band').length > 0
+      && !pane.body.querySelector('.xterm-cursor'), 3000);
+  await report('selection-drag-overlay', stableDragPaint,
+    pane.body.querySelectorAll('.deck-selection-band').length,
+    pane.body.querySelector('.xterm-cursor') ? 1 : 0);
   const crossedUp = await waitFor(() => pane.selection.status()?.scroll_position > 120, 8000);
   const liveHistoryBefore = pane.selection.status()?.history_rows || 0;
   selectionStage = 4;
