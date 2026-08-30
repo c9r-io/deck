@@ -14,8 +14,8 @@ use tauri_plugin_updater::UpdaterExt;
 use crate::storage;
 use crate::storage::{applog, now_epoch};
 use crate::tmux::{
-    expand_tilde, init_deck_server, pane_target, session_target, tmux, tmux_bin, tmux_owned,
-    validate_session_name,
+    expand_tilde, init_deck_server, pane_target, session_target, socket, tmux, tmux_bin,
+    tmux_owned, tmux_with_stdin, validate_session_name,
 };
 
 /// Per-event detail policy: which detail strings an event code may log.
@@ -1000,28 +1000,50 @@ pub(crate) fn start_session(
                 }
             },
         );
-    let start = if let Some(bootstrap) = bootstrap.as_ref() {
-        tmux(&[
-            "new-session",
-            "-d",
-            "-s",
-            &name,
-            "-c",
-            &dir,
-            &bootstrap.executable,
-            crate::shell_state::BOOTSTRAP_ARG,
-            &bootstrap.payload,
-            &bootstrap.shell,
-        ])
-    } else {
-        tmux(&["new-session", "-d", "-s", &name, "-c", &dir])
-    };
-    if let Err(error) = start {
-        if let Some(bootstrap) = bootstrap.as_ref() {
-            bootstrap.cleanup();
+    let (start, restored) = if let Some(bootstrap) = bootstrap.as_ref() {
+        let restored_start = tmux_with_stdin(
+            &[
+                "start-server",
+                ";",
+                "load-buffer",
+                "-b",
+                &bootstrap.buffer,
+                "-",
+                ";",
+                "new-session",
+                "-d",
+                "-s",
+                &name,
+                "-c",
+                &dir,
+                crate::shell_state::RESTORE_EXECUTABLE,
+                "-c",
+                crate::shell_state::RESTORE_SCRIPT,
+                "deck-shell-restore",
+                tmux_bin(),
+                socket(),
+                &bootstrap.buffer,
+                &bootstrap.shell,
+                &bootstrap.login_name,
+            ],
+            &bootstrap.output,
+        );
+        match restored_start {
+            Ok(output) => (Ok(output), true),
+            Err(error) => {
+                let _ = tmux(&["delete-buffer", "-b", &bootstrap.buffer]);
+                applog(&format!(
+                    "[shell-state] restore start unavailable for {} ({}); starting a clean shell",
+                    storage::session_tag(&name),
+                    storage::err_code(&error)
+                ));
+                (tmux(&["new-session", "-d", "-s", &name, "-c", &dir]), false)
+            }
         }
-        return Err(error);
-    }
+    } else {
+        (tmux(&["new-session", "-d", "-s", &name, "-c", &dir]), false)
+    };
+    start?;
     // belt & suspenders for servers started by older deck versions
     init_deck_server();
     if !cmd.trim().is_empty() {
@@ -1032,7 +1054,7 @@ pub(crate) fn start_session(
     }
     Ok(StartSessionResult {
         created: true,
-        restored: bootstrap.is_some(),
+        restored,
     })
 }
 

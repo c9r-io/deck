@@ -1,7 +1,8 @@
 //! tmux backend: sidecar discovery, the private `deck` server, config, and
 //! raw command execution. Everything deck knows about tmux lives here.
 
-use std::process::Command;
+use std::io::Write;
+use std::process::{Command, Stdio};
 
 use crate::applog;
 
@@ -128,6 +129,49 @@ pub(crate) fn tmux(args: &[&str]) -> Result<String, String> {
         .env("LANG", "en_US.UTF-8")
         .output()
         .map_err(|e| format!("tmux not runnable: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "tmux {} failed: {}",
+            args.first().unwrap_or(&""),
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// Run tmux with bounded caller-owned bytes on stdin. This is used for shell
+/// recovery so private scrollback never appears in argv, an environment
+/// variable, or a temporary file. `start-server ; load-buffer ... - ;
+/// new-session ...` may be submitted as one batch, which also keeps a newly
+/// spawned zero-session server alive until the restored pane exists.
+pub(crate) fn tmux_with_stdin(args: &[&str], input: &[u8]) -> Result<String, String> {
+    let conf = tmux_conf();
+    let mut child = Command::new(tmux_bin())
+        .args(["-f", &conf, "-L", socket()])
+        .args(args)
+        .env("LANG", "en_US.UTF-8")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("tmux not runnable: {e}"))?;
+    let write_result = child
+        .stdin
+        .as_mut()
+        .ok_or_else(|| "tmux stdin unavailable".to_string())
+        .and_then(|stdin| {
+            stdin
+                .write_all(input)
+                .map_err(|e| format!("tmux stdin failed: {e}"))
+        });
+    drop(child.stdin.take());
+    if let Err(error) = write_result {
+        let _ = child.wait();
+        return Err(error);
+    }
+    let out = child
+        .wait_with_output()
+        .map_err(|e| format!("tmux wait failed: {e}"))?;
     if !out.status.success() {
         return Err(format!(
             "tmux {} failed: {}",

@@ -117,13 +117,6 @@ fn set_native_locale(locale: String, menu: tauri::State<'_, NativeMenu>) -> Resu
 // ---------- main ---------------------------------------------------------------
 
 fn main() {
-    // A restored pane starts this same signed executable in a tiny helper
-    // mode. It must run before storage, logging, single-instance enforcement
-    // or any Tauri/AppKit initialization, then replace itself with the user's
-    // login shell.
-    if let Some(code) = shell_state::maybe_run_bootstrap() {
-        std::process::exit(code);
-    }
     let deck_dir = storage::deck_dir();
     // idempotent permission migration BEFORE anything touches the data files:
     // ~/.deck → 0700, every file an older deck may have left 0644 → 0600.

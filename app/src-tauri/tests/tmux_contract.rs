@@ -6,9 +6,8 @@
 
 use std::fs::OpenOptions;
 use std::io::Write;
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::thread::sleep;
 use std::time::Duration;
 
@@ -68,6 +67,31 @@ impl Server {
             .args(args)
             .output()
             .expect("tmux spawn");
+        assert!(
+            out.status.success(),
+            "tmux {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&out.stderr)
+        );
+        out.stdout
+    }
+    fn run_with_stdin_checked(&self, args: &[&str], input: &[u8]) -> Vec<u8> {
+        let mut child = Command::new(tmux_bin())
+            .args(["-f", "/dev/null", "-L", &self.0])
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("tmux spawn");
+        child
+            .stdin
+            .as_mut()
+            .expect("tmux stdin")
+            .write_all(input)
+            .expect("write tmux stdin");
+        drop(child.stdin.take());
+        let out = child.wait_with_output().expect("tmux wait");
         assert!(
             out.status.success(),
             "tmux {:?} failed: {}",
@@ -332,10 +356,11 @@ impl Drop for Server {
     }
 }
 
-/// Restored text is pane OUTPUT, never shell INPUT. The real signed app
-/// executable runs its hidden bootstrap mode, prints the one-use payload,
-/// then execs a harmless long-lived process. tmux must retain the text in its
-/// own scrollback and a command-shaped line must remain literal.
+/// Restored text is pane OUTPUT, never shell INPUT. The same batch starts an
+/// initially empty server, loads a private buffer, and creates the pane. Its
+/// system-shell bootstrap prints and deletes that buffer before execing a
+/// harmless long-lived process. deck-app must never become the pane's initial
+/// executable, while tmux must retain the text in its own scrollback.
 #[test]
 fn shell_restore_bootstrap_becomes_tmux_history_without_executing_text() {
     let s = Server(format!(
@@ -343,65 +368,81 @@ fn shell_restore_bootstrap_becomes_tmux_history_without_executing_text() {
         std::process::id()
     ));
     let root = std::env::temp_dir().join(format!("deck-restore-contract-{}", std::process::id()));
-    let dir = root.join("shell-state");
     let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(&dir).expect("create restore fixture dir");
-    let payload = dir.join(".restore-deck-contract-1.txt");
+    std::fs::create_dir_all(&root).expect("create restore fixture dir");
     let executed = root.join("must-not-exist");
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(&payload)
-        .expect("create private restore payload");
-    writeln!(file, "deck-shell-restore-v1").unwrap();
+    let mut payload = Vec::new();
     for line in 0..40 {
-        writeln!(file, "restored-contract-{line:02}").unwrap();
+        writeln!(payload, "restored-contract-{line:02}").unwrap();
     }
-    writeln!(file, "touch {}", executed.display()).unwrap();
-    file.flush().unwrap();
+    writeln!(payload, "touch {}", executed.display()).unwrap();
+    writeln!(payload, "\n---------------- deck restart ----------------").unwrap();
 
-    let deck = PathBuf::from(env!("CARGO_BIN_EXE_deck-app"));
-    let deck = deck.to_str().expect("deck test binary path utf8");
-    let payload_arg = payload.to_str().expect("payload path utf8");
-    s.run_raw_checked(&[
-        "start-server",
-        ";",
-        "set-option",
-        "-g",
-        "history-limit",
-        "50000",
-        ";",
-        "new-session",
-        "-d",
-        "-s",
-        "t",
-        "-x",
-        "80",
-        "-y",
-        "12",
-        deck,
-        "--deck-shell-bootstrap",
-        payload_arg,
-        "/bin/cat",
-    ]);
+    let tmux = tmux_bin();
+    let tmux = tmux.to_str().expect("tmux path utf8");
+    let buffer = "deck-restore-contract";
+    let restore_script = include_str!("../src/shell_restore.sh");
+    s.run_with_stdin_checked(
+        &[
+            "start-server",
+            ";",
+            "load-buffer",
+            "-b",
+            buffer,
+            "-",
+            ";",
+            "new-session",
+            "-d",
+            "-s",
+            "t",
+            "-x",
+            "80",
+            "-y",
+            "12",
+            "/bin/sh",
+            "-c",
+            restore_script,
+            "deck-shell-restore",
+            tmux,
+            &s.0,
+            buffer,
+            "/bin/sh",
+            "-sh",
+        ],
+        &payload,
+    );
 
     let mut captured = String::new();
     for _ in 0..200 {
         captured = s.run(&["capture-pane", "-p", "-J", "-S", "-100", "-t", "=t:"]);
-        if captured.contains("deck restart") && s.fmt("#{pane_current_command}") == "cat" {
+        if captured.contains("deck restart") && s.fmt("#{pane_current_command}") == "sh" {
             break;
         }
         sleep(Duration::from_millis(10));
     }
-    assert!(captured.contains("restored-contract-00"), "{captured}");
+    let current_command = s.fmt("#{pane_current_command}");
+    let start_command = s.fmt("#{pane_start_command}");
+    assert!(
+        captured.contains("restored-contract-00"),
+        "captured={captured:?} current={current_command:?} start={start_command:?}"
+    );
     assert!(captured.contains("restored-contract-39"), "{captured}");
     assert!(captured.contains(&format!("touch {}", executed.display())));
     assert!(
         !executed.exists(),
         "command-shaped history must not execute"
     );
-    assert!(!payload.exists(), "bootstrap payload must be one-use");
+    assert!(start_command.starts_with("/bin/sh"), "{start_command}");
+    assert!(!start_command.contains("deck-app"), "{start_command}");
+    assert!(
+        !start_command.contains("restored-contract"),
+        "private history must not appear in argv: {start_command}"
+    );
+    assert!(
+        !s.run(&["list-buffers", "-F", "#{buffer_name}"])
+            .contains(buffer),
+        "restore buffer must be one-use"
+    );
     assert!(
         s.fmt("#{history_size}").parse::<u32>().unwrap_or(0) > 0,
         "restored output must live in tmux scrollback"

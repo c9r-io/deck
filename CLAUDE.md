@@ -127,13 +127,18 @@ Frontend gates: `node --check` (syntax) · `ui/test/*.mjs` (node:test)
   whose foreground process is a shell, at most every 15s and two panes per
   pass, into separate 0600 typed files (≤256 KiB / 3000 plain-text lines;
   control characters stripped). On a user-opened command-less card,
-  `start_session` may use the saved cwd and starts a one-use bootstrap process
-  that writes the sanitized transcript to the NEW pane's stdout before it
-  execs the user's login shell. The text is therefore ordinary tmux history
-  (not an xterm/DOM overlay), but is never sent to stdin; no command,
-  environment, job, process or agent TUI is restored. The bootstrap reads a
-  magic-tagged 0600 payload through `O_NOFOLLOW`, verifies owner/mode/size,
-  unlinks it before exec, and runs before Tauri/logging/single-instance setup.
+  `start_session` may use the saved cwd and submits one tmux batch that starts
+  an empty server if needed, loads sanitized bytes from Deck's stdin into a
+  uniquely named private tmux buffer, then creates the pane with `/bin/sh`.
+  That system-shell bootstrap writes the buffer to the NEW pane's stdout,
+  deletes it, and execs the user's login shell. The signed `deck-app` binary
+  must NEVER be a pane executable: after reboot macOS Local Network Privacy
+  can otherwise attribute the exec-replaced shell and all of its descendants
+  to Deck while a fresh tmux-created shell works. The text is ordinary tmux
+  history (not an xterm/DOM overlay), never argv, a new temp payload, or shell
+  stdin; no command, environment, job, process or agent TUI is restored.
+  Startup failure degrades to a clean shell, and boot still removes legacy
+  `.restore-*` payloads left by deck ≤0.5.1.
   Later checkpoints capture the restored pane output directly—never merge an
   out-of-band prefix, which would duplicate it. Closing a card removes
   main/backup/quarantine/temporary copies; Settings can disable capture and

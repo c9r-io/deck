@@ -24,6 +24,30 @@ attached to it. This preserved sessions but also preserved the old helper's
 code/signing identity, which is the wrong boundary for upgrades and macOS
 Local Network Privacy.
 
+### Restored-pane Local Network attribution
+
+Server identity was not the whole Local Network Privacy failure. After a full
+machine restart, both a failing restored shell and a working fresh shell were
+created by the same production socket, tmux 3.7c process and bundled image.
+Their decisive difference was `pane_start_command`: the restored pane started
+the signed `deck-app --deck-shell-bootstrap ...` helper and that helper called
+`exec` into the login shell, while the fresh pane was created directly by tmux.
+The macOS privacy log then recorded a local-network block for Deck's bundle
+identity. An `exec` changes the executable but does not reliably erase the
+responsible-code attribution inherited from the signed app, so `kubectl` and
+other descendants in only the restored pane failed with `no route to host`.
+
+Shell recovery therefore has a separate process-boundary invariant: Deck may
+prepare inert history, but it must never be a pane executable. The current
+path sends sanitized bounded bytes to the private tmux server over client
+stdin, using one command batch to `start-server`, load a uniquely named buffer,
+and create the pane. `/bin/sh` writes that buffer to pane stdout, deletes it,
+and replaces itself with the login shell. This preserves the visible history
+and restart boundary without replaying commands, placing history in shell
+stdin or argv, creating a new restore payload file, or putting Deck in the
+pane's responsible process chain. Fresh and restored sessions now have the
+same tmux-to-system-shell trust boundary.
+
 ## Identity and compatibility
 
 The authoritative identity is a versioned JSON value in a tmux global server

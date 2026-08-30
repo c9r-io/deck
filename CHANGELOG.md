@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.5.2 — 2026-08-30
+
+- Fix restored shell sessions losing access to local-network destinations
+  after a machine or tmux-server restart. The old recovery path made the
+  signed `deck-app` executable the pane bootstrap, so macOS Local Network
+  Privacy could keep attributing the replacement login shell and commands such
+  as `kubectl` to Deck even though a fresh session on the same server worked.
+- Preserve the same bounded history display without putting Deck in the pane
+  process chain: recovery now streams sanitized output through a one-use
+  private tmux buffer, a system shell writes it only to pane stdout, deletes
+  the buffer, and execs the user's login shell. No history is replayed, exposed
+  in argv, or written to a new temporary payload file.
+- Add a real-tmux regression contract that starts from an empty private server
+  and proves restored text becomes scrollback, command-shaped text stays
+  inert, the buffer is deleted, and `pane_start_command` contains no
+  `deck-app` executable.
+
 ## 0.5.1 — 2026-08-30
 
 - Keep sidebar navigation stable: Boards remain grouped in Board order, while
