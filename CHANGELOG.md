@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.42 — 2026-08-30
+
+- Restore bounded shell output directly into the new pane's real tmux
+  scrollback instead of blocking the live terminal with a read-only overlay.
+  A one-use private bootstrap writes only to pane stdout, marks the restart
+  boundary, then execs the login shell; command-shaped text never reaches
+  stdin, and ordinary tmux scrolling, selection and copy work immediately.
+- Keep the terminal cursor attached to the agent's live input row while a
+  frozen text selection is scrolled. Once that row leaves the viewport the
+  cursor is hidden, instead of remaining fixed on an unrelated selected cell.
+
 ## 0.4.41 — 2026-08-30
 
 - Add an upgrade-aware lifecycle for deck's private tmux server. Quitting,
@@ -54,15 +65,6 @@
   (blank top rows, wide characters, wrapped rows, styled blanks, scrolled
   viewports), asserting endpoints and copied bytes; the contract suite now
   drives the production placement instead of its own copy of the rules.
-- Restore bounded shell output directly into the new pane's real tmux
-  scrollback instead of blocking the live terminal with a read-only overlay.
-  A one-use private bootstrap writes only to pane stdout, marks the restart
-  boundary, then execs the login shell; command-shaped text never reaches
-  stdin, and ordinary tmux scrolling, selection and copy work immediately.
-- Keep the terminal cursor attached to the agent's live input row while a
-  frozen text selection is scrolled. Once that row leaves the viewport the
-  cursor is hidden, instead of remaining fixed on an unrelated selected cell.
-
 ## 0.4.38 — Nightly candidate, 2026-08-29
 
 - Publish a Nightly-only version bump for validating the Stable-to-Nightly
