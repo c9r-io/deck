@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.1 — 2026-08-30
 
 - Keep sidebar navigation stable: Boards remain grouped in Board order, while
   sessions retain durable card order instead of moving whenever polling flips
