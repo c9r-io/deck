@@ -163,6 +163,22 @@ jobs:
           releaseDraft: true
           prerelease: false
 
+      - name: Verify app, helper, UUIDs, and Local Network usage metadata
+        run: |
+          set -euo pipefail
+          app_path=app/src-tauri/target/release/bundle/macos/deck.app
+          test -d "$app_path"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app_path/Contents/Info.plist")" = io.c9r.deck
+          test "$(/usr/libexec/PlistBuddy -c 'Print :NSLocalNetworkUsageDescription' "$app_path/Contents/Info.plist")" = \
+            "Terminal tools running in deck may connect to local services and devices you choose."
+          executable=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app_path/Contents/Info.plist")
+          test -f "$app_path/Contents/MacOS/$executable"
+          test -f "$app_path/Contents/MacOS/tmux"
+          codesign --verify --deep --strict --verbose=2 "$app_path"
+          codesign --verify --strict --verbose=2 "$app_path/Contents/MacOS/tmux"
+          test "$(dwarfdump --uuid "$app_path/Contents/MacOS/$executable" | wc -l | tr -d ' ')" = 1
+          test "$(dwarfdump --uuid "$app_path/Contents/MacOS/tmux" | wc -l | tr -d ' ')" = 1
+
       # Tauri notarizes/staples deck.app before creating the DMG, then signs
       # the final DMG. Submit that final carrier separately so Gatekeeper can
       # validate both the downloaded image and the app inside it.

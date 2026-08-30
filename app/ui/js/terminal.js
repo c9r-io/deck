@@ -195,6 +195,12 @@ export function nextShellTitle(p) {
 }
 
 export async function newSession(dir, opts = {}) {
+  if (tmuxRestarting || (tmuxServerStatus && tmuxServerStatus.pendingRestart)) {
+    const error = new Error('tmux server restart required');
+    if (opts.requireStart) throw error;
+    toast(t(tmuxRestarting ? 'tmux.restarting' : 'tmux.createBlocked'));
+    return;
+  }
   if (creatingSession) {
     if (opts.requireStart) throw new Error('a session is already being created');
     return;

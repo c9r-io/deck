@@ -33,6 +33,18 @@ socket. Nightly replaces the installed Stable application; the two must not run
 at once. This is how a candidate exercises real upgrades, migrations, tmux
 survival and scheduler data before the exact same binary is promoted.
 
+The shared production tmux socket does not mean an old helper is compatible
+forever. Each server records the creating bundle, selected channel, app version,
+immutable commit, helper version, lifecycle protocol, source category and
+creation time. An exact candidate promoted to Stable remains current because
+the archive is byte-identical. A different release build requires server
+replacement: empty servers are replaced automatically; occupied servers require
+explicit user confirmation because every process inside them ends. Development
+and smoke builds use separate bundle IDs and sockets. During updater install the
+old process is embargoed from server creation before Tauri moves its app bundle
+to the temporary backup, and the relaunched installed app performs lifecycle
+reconciliation before scheduler or UI session work.
+
 Prepare a candidate commit with:
 
 ```sh

@@ -9,7 +9,8 @@ import './terminal.js';
 import './scheduler.js';
 import { $, genId, inv, listen, state, store, uev } from './state.js';
 import { loadSettings, toast } from './dialogs.js';
-import { migrateColumnSemantics, provider, render, startPolling, stopPolling } from './board.js';
+import { markSessionsStoppedForServerRestart, migrateColumnSemantics, provider, render, startPolling, stopPolling } from './board.js';
+import { leaveSessionView } from './layout.js';
 import { refreshQueue } from './scheduler.js';
 import { onLocaleChange, setLocale, t, translateNotice } from './i18n.js';
 import { activateTheme, revealThemedWindow } from './theme.js';
@@ -36,6 +37,181 @@ export function renderBuildIdentity(identity = buildIdentity) {
   $('app-ver').textContent = `v${version} · ${channelLabel()} · ${commit}`;
   if ($('settings-modal').style.display === 'flex') $('set-ver').textContent = `deck ${$('app-ver').textContent}`;
 }
+
+/* ---------- upgrade-aware tmux server lifecycle ---------- */
+function tmuxStateText(status) {
+  if (!status) return t('tmux.state.unavailable');
+  if (status.status === 'CompatibleCurrentBuild' || status.status === 'CompatibleDifferentBuild') {
+    return t('tmux.state.current');
+  }
+  if (status.status === 'LegacyUnknown') return t('tmux.state.legacy');
+  if (status.status === 'SourceUnstable') return t('tmux.state.sourceUnstable');
+  if (status.status === 'CorruptOrUnreachable') return t('tmux.state.unavailable');
+  return t('tmux.state.restartRequired');
+}
+
+function tmuxBuildText(build) {
+  if (!build) return t('tmux.buildUnknown');
+  return `${build.appVersion || '?'} · ${build.buildIdentifier || '?'} · ${build.source || '?'}`;
+}
+
+function renderTmuxDiagnostics(status = tmuxServerStatus) {
+  if (!status) return;
+  const pending = !!status.pendingRestart;
+  const side = $('tmux-restart-btn');
+  side.style.display = pending ? 'flex' : 'none';
+  side.disabled = !!tmuxRestarting;
+  side.title = t('tmux.pendingTitle', { count: status.sessionCount || 0 });
+  $('side-new').disabled = pending || tmuxRestarting;
+  $('board-new').disabled = pending || tmuxRestarting;
+
+  $('set-tmux-state').textContent = tmuxStateText(status);
+  $('set-tmux-restart').disabled = !status.canRestart || tmuxRestarting;
+  const current = tmuxBuildText(status.currentBuild);
+  const server = status.serverBuild ? tmuxBuildText(status.serverBuild) : t('tmux.buildUnknown');
+  const pid = status.serverPid == null ? '—' : String(status.serverPid);
+  const started = status.serverStartedAt
+    ? new Date(status.serverStartedAt * 1000).toLocaleString() : '—';
+  $('set-tmux-details').textContent = t('tmux.diagnostics', {
+    current, server, pid, started,
+  });
+}
+
+function renderImpactList(status) {
+  const list = $('tmux-impact-list');
+  list.replaceChildren();
+  for (const session of status.sessions || []) {
+    const row = document.createElement('div');
+    row.className = 'tmux-impact-row';
+    const name = document.createElement('div');
+    name.textContent = session.name;
+    const meta = document.createElement('div');
+    meta.className = 'tmux-impact-meta';
+    const parts = [t(session.attachedClients > 0 ? 'tmux.session.attached' : 'tmux.session.detached')];
+    parts.push(t('tmux.session.panes', { count: session.paneCount }));
+    if (session.hasForegroundProcess) parts.push(t('tmux.session.foreground'));
+    if (session.recentlyActive) parts.push(t('tmux.session.recent'));
+    meta.textContent = parts.join(' · ');
+    row.append(name, meta);
+    list.appendChild(row);
+  }
+  list.style.display = 'none';
+  $('tmux-view-sessions').style.display = status.sessionCount > 0 ? '' : 'none';
+  $('tmux-view-sessions').textContent = t('tmux.viewSessions');
+}
+
+function showTmuxLifecycle(status, manual = false) {
+  if (!status) return;
+  tmuxServerStatus = status;
+  const count = status.sessionCount || 0;
+  $('tmux-lifecycle-title').textContent = t(manual && !status.pendingRestart
+    ? 'tmux.manualTitle' : 'tmux.title');
+  $('tmux-lifecycle-message').textContent = t(manual && !status.pendingRestart
+    ? 'tmux.manualMessage' : 'tmux.upgradeMessage', {
+      count,
+      attached: status.attachedSessionCount || 0,
+      active: status.foregroundSessionCount || 0,
+    });
+  renderImpactList(status);
+  $('tmux-lifecycle-modal').dataset.manual = manual && !status.pendingRestart ? 'true' : 'false';
+  $('tmux-lifecycle-modal').style.display = 'flex';
+  // The destructive action is never the default focus and Enter has no
+  // acceptance path for this modal.
+  $('tmux-later').focus();
+}
+
+async function refreshTmuxLifecycle({ prompt = false } = {}) {
+  if (!window.__TAURI__) return null;
+  try {
+    tmuxServerStatus = await inv('tmux_server_status');
+    renderTmuxDiagnostics();
+    if (tmuxServerStatus.notice) {
+      toast(t(`tmux.notice.${tmuxServerStatus.notice}`));
+      inv('acknowledge_tmux_lifecycle_notice').catch(() => {});
+      tmuxServerStatus.notice = null;
+    }
+    if (prompt && tmuxServerStatus.shouldPrompt) showTmuxLifecycle(tmuxServerStatus, false);
+    return tmuxServerStatus;
+  } catch (_) {
+    return null;
+  }
+}
+
+async function deferTmuxRestart() {
+  $('tmux-lifecycle-modal').style.display = 'none';
+  if (!tmuxServerStatus?.pendingRestart) return;
+  try {
+    tmuxServerStatus = await inv('defer_tmux_restart');
+    renderTmuxDiagnostics();
+  } catch (_) {
+    toast(t('tmux.deferFailed'));
+  }
+}
+
+async function restartTmuxServer() {
+  const status = tmuxServerStatus;
+  if (!status || tmuxRestarting) return;
+  tmuxRestarting = true;
+  renderTmuxDiagnostics(status);
+  $('tmux-restart').disabled = true;
+  $('tmux-later').disabled = true;
+  $('tmux-view-sessions').disabled = true;
+  $('tmux-restart').textContent = t('tmux.restarting');
+  stopPolling();
+  leaveSessionView();
+  state.view = 'board';
+  state.sessionId = null;
+  markSessionsStoppedForServerRestart();
+  render();
+  try {
+    tmuxServerStatus = await inv('restart_tmux_server', {
+      expectedPid: status.serverPid || 0,
+      expectedStartedAt: status.serverStartedAt || 0,
+      expectedSessionCount: status.sessionCount || 0,
+      expectedPaneCount: status.paneCount || 0,
+      force: !status.pendingRestart,
+    });
+    $('tmux-lifecycle-modal').style.display = 'none';
+    toast(t('tmux.restartComplete'));
+    inv('acknowledge_tmux_lifecycle_notice').catch(() => {});
+  } catch (error) {
+    const changed = String(error).includes('impact-changed');
+    toast(t(changed ? 'tmux.impactChanged' : 'tmux.restartFailed'));
+    await refreshTmuxLifecycle();
+    if (tmuxServerStatus?.pendingRestart) showTmuxLifecycle(tmuxServerStatus, false);
+  } finally {
+    tmuxRestarting = false;
+    $('tmux-restart').disabled = false;
+    $('tmux-later').disabled = false;
+    $('tmux-view-sessions').disabled = false;
+    $('tmux-restart').textContent = t('tmux.restart');
+    renderTmuxDiagnostics();
+    startPolling();
+  }
+}
+
+$('tmux-restart-btn').onclick = async () => {
+  const status = await refreshTmuxLifecycle();
+  if (status) showTmuxLifecycle(status, false);
+};
+$('set-tmux-restart').onclick = async () => {
+  const status = await refreshTmuxLifecycle();
+  if (status) showTmuxLifecycle(status, true);
+};
+$('tmux-later').onclick = deferTmuxRestart;
+$('tmux-restart').onclick = restartTmuxServer;
+$('tmux-view-sessions').onclick = () => {
+  const list = $('tmux-impact-list');
+  const showing = list.style.display === 'block';
+  list.style.display = showing ? 'none' : 'block';
+  $('tmux-view-sessions').textContent = t(showing ? 'tmux.viewSessions' : 'tmux.hideSessions');
+};
+document.addEventListener('keydown', event => {
+  if ($('tmux-lifecycle-modal').style.display !== 'flex') return;
+  if (event.key === 'Enter') { event.preventDefault(); event.stopPropagation(); }
+  if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); deferTmuxRestart(); }
+}, true);
+window.addEventListener('deck-settings-opened', () => refreshTmuxLifecycle());
 
 /* ---------- in-app updates (tauri-plugin-updater) ---------- */
 export async function checkForUpdate() {
@@ -108,6 +284,7 @@ export async function boot() {
     buildIdentity = await inv('build_identity');
   } catch (e) { /* label stays empty */ }
   renderBuildIdentity();
+  await refreshTmuxLifecycle({ prompt: true });
   window.addEventListener('deck-update-channel-changed', () => {
     pendingUpdate = null;
     $('update-btn').style.display = 'none';
@@ -184,6 +361,7 @@ export async function boot() {
 onLocaleChange(() => {
   renderPendingUpdate();
   renderBuildIdentity();
+  renderTmuxDiagnostics();
   render();
   refreshQueue();
 });

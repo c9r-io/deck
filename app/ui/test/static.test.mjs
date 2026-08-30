@@ -40,12 +40,49 @@ test('update channels are backend-owned, isolated and never trigger downgrade', 
     'the webview has no direct updater command permission');
 });
 
+test('tmux upgrades preserve occupied servers until explicit pointer confirmation', () => {
+  const lifecycle = read('app/src-tauri/src/tmux_lifecycle.rs');
+  const commands = read('app/src-tauri/src/commands.rs');
+  const app = read('app/ui/js/app.js');
+  const html = read('app/ui/index.html');
+  const run = read('app/run.sh');
+  const plist = read('app/src-tauri/Info.plist');
+
+  for (const field of ['schema_version', 'protocol_version', 'channel', 'bundle_identifier',
+    'app_version', 'build_identifier', 'helper_version', 'created_at', 'source']) {
+    assert.match(lifecycle, new RegExp(`\\b${field}\\b`), `server metadata includes ${field}`);
+  }
+  assert.match(lifecycle, /should_auto_replace\(state, snapshot\.sessions\.len\(\)\)/);
+  assert.match(lifecycle, /snapshot\.pid != expected_pid[\s\S]*snapshot\.started_at != expected_started_at[\s\S]*snapshot\.sessions\.len\(\) as u32 != expected_session_count[\s\S]*snapshot\.pane_count\(\) != expected_pane_count/);
+  assert.match(lifecycle, /pty_state\.detach_all\(\)[\s\S]*complete_restart/);
+  assert.match(lifecycle, /fresh\.pid == old\.pid[\s\S]*CompatibleCurrentBuild/);
+  assert.match(lifecycle, /APP_UPDATE_INSTALLING\.load\(Ordering::Acquire\)/);
+  assert.match(lifecycle, /fn begin_app_update_install\(\)[\s\S]*?try_operation\(\)\?[\s\S]*?APP_UPDATE_INSTALLING\.store\(true/,
+    'updater installation serializes with restart and session creation');
+  assert.match(lifecycle, /fn restart_tmux_server\([\s\S]*?APP_UPDATE_INSTALLING\.load\(Ordering::Acquire\)/,
+    'manual replacement cannot start from an updater-relocated process');
+  assert.ok(commands.indexOf('begin_app_update_install') < commands.indexOf('.download_and_install('),
+    'old updater process is embargoed before Tauri relocates the app');
+
+  assert.match(html, /id="tmux-later"[\s\S]*id="tmux-restart"/);
+  assert.match(app, /\$\('tmux-later'\)\.focus\(\)/);
+  assert.match(app, /if \(event\.key === 'Enter'\) \{ event\.preventDefault\(\); event\.stopPropagation\(\); \}/);
+  assert.match(app, /defer_tmux_restart/);
+  assert.match(app, /markSessionsStoppedForServerRestart\(\)[\s\S]*restart_tmux_server/);
+
+  assert.match(run, /BUNDLE_ID=io\.c9r\.deck\.dev/);
+  assert.match(run, /deck-smoke\*/);
+  assert.match(plist, /NSLocalNetworkUsageDescription/);
+  assert.match(plist, /Terminal tools running in deck may connect to local services and devices you choose\./);
+  assert.doesNotMatch(plist, /scan/i);
+});
+
 test('the canonical dictionary has no unused keys outside documented dynamic families', () => {
   const source = ['app/ui/index.html', 'app/ui/js/app.js', 'app/ui/js/board.js',
     'app/ui/js/dialogs.js', 'app/ui/js/i18n.js', 'app/ui/js/layout.js',
     'app/ui/js/pure.js', 'app/ui/js/scheduler.js', 'app/ui/js/selection.js', 'app/ui/js/state.js',
     'app/ui/js/terminal.js'].map(read).join('\n');
-  const dynamic = /^(?:board\.default|board\.hint|session\.status|notice)\./;
+  const dynamic = /^(?:board\.default|board\.hint|session\.status|notice|tmux\.notice)\./;
   const unused = Object.keys(en).filter(key => !dynamic.test(key) && !source.includes(key));
   assert.deepEqual(unused, []);
 });

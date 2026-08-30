@@ -16,6 +16,7 @@ mod storage;
 mod terminal_scroll;
 mod terminal_selection;
 mod tmux;
+mod tmux_lifecycle;
 
 pub(crate) use storage::applog;
 
@@ -155,7 +156,10 @@ fn main() {
         .manage(pty::PtyState::default())
         .manage(scheduler::boot_queues())
         .setup(|app| {
-            std::thread::spawn(tmux::init_deck_server);
+            // This must finish before the scheduler or webview can create a
+            // session. It reuses an exact current server, records an occupied
+            // legacy/old server as pending, and replaces only an empty one.
+            tmux_lifecycle::reconcile_on_boot();
             scheduler::spawn_scheduler(app.handle().clone());
             // Update-check heartbeat from a Rust thread: webview timers are
             // frozen by App Nap when the app is backgrounded, so a JS
@@ -257,6 +261,10 @@ fn main() {
             commands::load_settings,
             commands::save_settings,
             commands::build_identity,
+            tmux_lifecycle::tmux_server_status,
+            tmux_lifecycle::defer_tmux_restart,
+            tmux_lifecycle::acknowledge_tmux_lifecycle_notice,
+            tmux_lifecycle::restart_tmux_server,
             commands::check_for_update,
             commands::install_update,
             commands::set_terminal_mode_style,

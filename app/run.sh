@@ -9,9 +9,10 @@ cd "$(dirname "$0")/src-tauri"
 
 cargo build
 
-APP=target/debug/deck.app
-BUNDLE_NAME=deck
-BUNDLE_ID=io.c9r.deck
+APP=target/debug/deck-dev.app
+BUNDLE_NAME="deck dev"
+BUNDLE_ID=io.c9r.deck.dev
+LEGACY_DEBUG_APP=target/debug/deck.app
 if [ -n "${DECK_SMOKE_DATA_DIR:-}" ]; then
   # Smoke must coexist with the user's normal deck. Give LaunchServices a
   # separate bundle identity/path and never run the normal-instance pkill.
@@ -24,6 +25,9 @@ else
   pkill -x deck 2>/dev/null || true
   pkill -f "deck.app/Contents/MacOS" 2>/dev/null || true
   sleep 0.3
+  # Older source builds registered a debug app as io.c9r.deck. Remove only
+  # that generated target bundle so future launches use the dedicated dev ID.
+  rm -rf "$LEGACY_DEBUG_APP"
 fi
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
@@ -50,6 +54,7 @@ cat > "$APP/Contents/Info.plist" <<EOF
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>LSMinimumSystemVersion</key><string>11.0</string>
+  <key>NSLocalNetworkUsageDescription</key><string>Terminal tools running in deck may connect to local services and devices you choose.</string>
 </dict>
 </plist>
 EOF
@@ -59,7 +64,11 @@ if [ -n "${DECK_SMOKE_DATA_DIR:-}" ]; then
     /*) ;;
     *) echo "DECK_SMOKE_DATA_DIR must be absolute" >&2; exit 2 ;;
   esac
-  DECK_SMOKE_TMUX_SOCKET=${DECK_SMOKE_TMUX_SOCKET:-deck-smoke}
+  DECK_SMOKE_TMUX_SOCKET=${DECK_SMOKE_TMUX_SOCKET:-deck-smoke-$$}
+  case "$DECK_SMOKE_TMUX_SOCKET" in
+    deck-smoke*) ;;
+    *) echo "DECK_SMOKE_TMUX_SOCKET must start with deck-smoke" >&2; exit 2 ;;
+  esac
   if [ -n "${DECK_SMOKE_WKWEBVIEW:-}" ]; then
     SMOKE_MODE=$DECK_SMOKE_WKWEBVIEW
     case "$SMOKE_MODE" in

@@ -92,7 +92,7 @@
     color: var(--muted); white-space: nowrap;
   }
   .side-new:hover { color: var(--accent); border-color: var(--accent-dim); }
-  #update-btn {
+  #update-btn, #tmux-restart-btn {
     display: none; margin: 0 10px; padding: 7px 10px;
     align-items: center; justify-content: center; gap: 6px;
     border-radius: 6px; white-space: nowrap;
@@ -100,9 +100,10 @@
     color: var(--accent); font-size: 12px;
   }
   #update-btn:hover { filter: brightness(1.15); }
-  #update-btn[disabled] { opacity: 0.7; cursor: default; }
-  body.side-collapsed #update-btn { padding: 7px 0; margin: 0 8px; }
-  body.side-collapsed #update-btn .label { display: none; }
+  #tmux-restart-btn:hover { filter: brightness(1.15); }
+  #update-btn[disabled], #tmux-restart-btn[disabled] { opacity: 0.7; cursor: default; }
+  body.side-collapsed #update-btn, body.side-collapsed #tmux-restart-btn { padding: 7px 0; margin: 0 8px; }
+  body.side-collapsed #update-btn .label, body.side-collapsed #tmux-restart-btn .label { display: none; }
 
   body.side-collapsed #sidebar { width: 50px; }
   body.side-collapsed .side-top { padding: 14px 0 10px; justify-content: center; }
@@ -531,6 +532,28 @@
   #cfm-msg { font-size: 13px; line-height: 1.5; margin-bottom: 16px; }
   .cfm-actions { display: flex; gap: 8px; justify-content: flex-end; }
 
+  #tmux-lifecycle-modal {
+    position: fixed; inset: 0; z-index: 72; display: none;
+    background: var(--modal-overlay); align-items: flex-start; justify-content: center;
+  }
+  #tmux-lifecycle-box {
+    margin-top: 12vh; width: 520px; max-width: calc(100vw - 40px);
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 12px; padding: 18px; box-shadow: 0 16px 48px var(--shadow-modal);
+  }
+  #tmux-lifecycle-title { font-size: 15px; font-weight: 600; margin-bottom: 9px; }
+  #tmux-lifecycle-message { color: var(--muted); font-size: 13px; line-height: 1.55; }
+  #tmux-impact-list {
+    display: none; max-height: 190px; overflow-y: auto; margin: 12px 0;
+    border: 1px solid var(--border-soft); border-radius: 7px; padding: 5px 10px;
+  }
+  .tmux-impact-row { padding: 7px 0; border-bottom: 1px solid var(--border-soft); font-size: 12px; }
+  .tmux-impact-row:last-child { border-bottom: 0; }
+  .tmux-impact-meta { color: var(--muted); font-size: 11px; margin-top: 2px; }
+  .tmux-lifecycle-actions { display: flex; align-items: center; gap: 8px; margin-top: 16px; }
+  #tmux-view-sessions { margin-right: auto; }
+  .tmux-diag { font-family: var(--mono); font-size: 10.5px; color: var(--muted); line-height: 1.55; overflow-wrap: anywhere; }
+
   #settings-modal {
     position: fixed; inset: 0; z-index: 70; display: none;
     background: var(--modal-overlay);
@@ -580,6 +603,7 @@
     #queue-panel { max-height: 55vh; padding: 8px; }
     #settings-box { margin-top: 4vh; max-height: 92vh; overflow-y: auto; }
     #cfm-box, #ppd-box { margin-top: 8vh; max-height: 84vh; overflow-y: auto; }
+    #tmux-lifecycle-box { margin-top: 8vh; max-height: 84vh; overflow-y: auto; }
     .qg-row { align-items: flex-start; flex-wrap: wrap; }
     .qg-row .row-meta { flex-basis: calc(100% - 20px); margin-left: 20px; white-space: normal; }
   }
@@ -604,6 +628,7 @@
     </button>
     <div class="side-group"><span data-i18n="app.sessions">Sessions</span><span id="side-count"></span></div>
     <div class="side-list" id="side-list"></div>
+    <button id="tmux-restart-btn"><span>⚠</span><span class="label" data-i18n="tmux.pendingShort">Shell service restart required</span></button>
     <button id="update-btn"><span>⬆</span><span class="label"></span></button>
     <button class="side-new" id="side-new" title="New session" data-i18n-title="app.newSession"><span>＋</span><span class="label" data-i18n="app.newSession">New session</span></button>
     <button class="side-new" id="settings-btn" title="Settings" data-i18n-title="app.settings"><span><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" style="vertical-align:-2px"><circle cx="8" cy="8" r="2.3"/><path d="M8 1.6v2.1M8 12.3v2.1M1.6 8h2.1M12.3 8h2.1M3.5 3.5l1.5 1.5M11 11l1.5 1.5M12.5 3.5 11 5M5 11l-1.5 1.5"/></svg></span><span class="label" data-i18n="app.settings">Settings</span></button>
@@ -755,7 +780,26 @@
       <button class="btn" id="set-check" style="margin-left:auto" data-i18n="settings.checkUpdates">Check for updates</button>
     </div>
     <div class="set-hint" id="set-upd-status"></div>
+    <div class="set-sep"></div>
+    <div class="set-row">
+      <label data-i18n="tmux.service">Shell service</label>
+      <span id="set-tmux-state" style="color:var(--muted)"></span>
+      <button class="btn" id="set-tmux-restart" style="margin-left:auto" data-i18n="tmux.restart">Restart service</button>
+    </div>
+    <div class="set-hint tmux-diag" id="set-tmux-details"></div>
     <div class="set-actions"><button class="btn" id="set-close" data-i18n="common.done">Done</button></div>
+  </div>
+</div>
+<div id="tmux-lifecycle-modal">
+  <div id="tmux-lifecycle-box" role="dialog" aria-modal="true" aria-labelledby="tmux-lifecycle-title">
+    <div id="tmux-lifecycle-title" data-i18n="tmux.title">Shell service restart required</div>
+    <div id="tmux-lifecycle-message"></div>
+    <div id="tmux-impact-list"></div>
+    <div class="tmux-lifecycle-actions">
+      <button class="btn" id="tmux-view-sessions" data-i18n="tmux.viewSessions">View affected sessions</button>
+      <button class="btn" id="tmux-later" data-i18n="tmux.later">Later</button>
+      <button class="btn cfm-danger" id="tmux-restart" data-i18n="tmux.restart">Restart service</button>
+    </div>
   </div>
 </div>
 <div id="ppd">

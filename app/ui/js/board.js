@@ -397,6 +397,22 @@ export function stopPolling() {
   exitRetirement.clear();
 }
 
+/// Intentional whole-server replacement is not a set of natural shell exits.
+/// Move every card to the already-supported stopped state before polling the
+/// fresh empty server, so exit retirement cannot delete durable card metadata.
+export function markSessionsStoppedForServerRestart() {
+  exitRetirement.clear();
+  for (const card of store.cards) {
+    card.status = 'stopped';
+    card.mem = null;
+    card.idle = null;
+    card.fg = null;
+    card.scrolled = false;
+    emit('status', card);
+    emit('mem', card);
+  }
+}
+
 /* ---------- sidebar ---------- */
 export function renderSidebar() {
   const list = $('side-list');

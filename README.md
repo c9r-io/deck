@@ -52,6 +52,15 @@ quitting deck (or it crashing) never kills your agents. Reopen and everything
 is exactly where you left it. Closing a card (corner ✕, or Ctrl+D in the
 shell) is the only way a session ends.
 
+**Upgrades have an explicit process boundary.** Reopening the same deck build
+keeps the same tmux server PID and every running process. After deck itself is
+upgraded, an empty old server is replaced automatically; if it still owns
+sessions, deck asks before restarting the background shell service and shows
+what will be affected. You can choose Later and keep using existing sessions,
+but finishing the restart ends their commands and agents—Unix processes cannot
+be migrated into a new tmux server. The pending action remains in the sidebar
+and Settings.
+
 **A real terminal.** Full xterm with truecolor, ⌘C/⌘V, clickable existing
 local file paths, and complete HTTP(S) URLs even across terminal soft wraps.
 Drag directly over terminal cells; holding at either vertical
@@ -203,9 +212,11 @@ A later close, rename, move, project edit, or debounced description is computed
 from the latest committed state when its turn begins, so concurrent UI actions
 cannot resurrect a card or silently overwrite each other.
 
-Sessions live on a dedicated tmux socket: `tmux -L deck ls` shows them,
+Production sessions live on a dedicated tmux socket: `tmux -L deck ls` shows them,
 `tmux -L deck attach -t <name>` attaches from any terminal — deck never
-touches your personal tmux server.
+touches your personal tmux server. Source builds use `deck-dev`; packaged smoke
+tests require a `deck-smoke*` socket, so they cannot attach to production by
+accident.
 
 ## Building from source
 

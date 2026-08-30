@@ -644,7 +644,8 @@ pub(crate) async fn install_update(
     }
     let progress_app = app.clone();
     let finish_app = app.clone();
-    update
+    crate::tmux_lifecycle::begin_app_update_install()?;
+    let result = update
         .download_and_install(
             move |chunk_length, content_length| {
                 let _ = progress_app.emit(
@@ -667,7 +668,11 @@ pub(crate) async fn install_update(
                 );
             },
         )
-        .await
+        .await;
+    if result.is_err() {
+        crate::tmux_lifecycle::cancel_app_update_install();
+    }
+    result
         .map_err(|_| "update download, signature verification, or installation failed".to_string())
 }
 
@@ -860,6 +865,17 @@ pub(crate) fn locale_setting() -> String {
         .unwrap_or_else(|| "system".into())
 }
 
+pub(crate) fn update_channel_setting() -> String {
+    let raw = storage::load_typed::<SettingsDoc>(&settings_path())
+        .ok()
+        .flatten()
+        .map(|outcome| outcome.payload);
+    raw.and_then(|value| serde_json::from_str::<serde_json::Value>(&value).ok())
+        .and_then(|value| value.get("updateChannel")?.as_str().map(str::to_owned))
+        .filter(|value| matches!(value.as_str(), "stable" | "nightly"))
+        .unwrap_or_else(|| "stable".into())
+}
+
 /// Developer editors present in /Applications or ~/Applications, offered in
 /// the Settings editor picker. Names double as `open -a` targets.
 #[tauri::command]
@@ -917,6 +933,13 @@ pub(crate) fn start_session(
     restore_shell: bool,
 ) -> Result<bool, String> {
     validate_session_name(&name)?;
+    if tmux(&["has-session", "-t", &session_target(&name)]).is_ok() {
+        return Ok(false);
+    }
+    // Serialize every server-creating path with upgrade replacement. The
+    // second existence check closes the race with another creator while the
+    // lifecycle gate was being acquired.
+    let _lifecycle_guard = crate::tmux_lifecycle::session_creation_guard()?;
     if tmux(&["has-session", "-t", &session_target(&name)]).is_ok() {
         return Ok(false);
     }

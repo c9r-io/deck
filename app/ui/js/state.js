@@ -20,6 +20,8 @@ Object.assign(globalThis, {
   lineBuf: '',
   nextIdCounter: 1,
   pendingUpdate: null,
+  tmuxServerStatus: null,
+  tmuxRestarting: false,
   updateDownloadBytes: 0,
   lastPollError: null,
   pollTimer: null,

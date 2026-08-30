@@ -26,6 +26,28 @@ Frontend gates: `node --check` (syntax) · `ui/test/*.mjs` (node:test)
   never falls back. Tauri 2.10.1 still owns semver comparison, archive download,
   minisign verification and install. Build identity is only numeric version +
   a bounded hex commit from `build.rs`.
+- `tmux_lifecycle.rs` owns the server boundary. It inspects a versioned JSON
+  server option before scheduler/webview startup, reuses only a compatible
+  server, automatically replaces an empty old/legacy server, and persists a
+  content-free pending/restart transaction when sessions exist. Never write
+  current metadata onto an unknown existing server: that would relabel old
+  code as current. Session creation must hold `session_creation_guard`; attach
+  to an existing pending session remains allowed. The restart command rechecks
+  PID/start-time/session/pane counts under the same gate, detaches PTYs, kills
+  and waits, validates a stale socket against its captured device/inode, starts
+  from the current sidecar, then requires a new PID and read-back identity.
+  The updater takes the same gate before setting its creation embargo. Cards
+  are marked stopped before polling so a
+  whole-server restart is not mistaken for natural card exits.
+- Production Stable/Nightly intentionally share socket `deck` because
+  promotion copies identical candidate bytes. Debug development uses
+  `deck-dev` and bundle ID `io.c9r.deck.dev`; smoke requires `deck-smoke*` and
+  `io.c9r.deck.smoke`. Release creation is allowed only from
+  `/Applications/deck.app` or `~/Applications/deck.app` with the adjacent
+  bundled helper. Updater installation sets a process-local creation embargo
+  before Tauri renames the running app into `tauri_current_app`; a failed
+  install clears it, a successful install exits/relaunches from the stable app.
+  Increment `SERVER_PROTOCOL` only for a true compatibility break.
 - Release operation is documented in `docs/release-channels.md`.
   `scripts/release-version` synchronizes the three numeric source/lock entries;
   `scripts/release_channels.py` is the shared manifest/hash/provenance validator;
@@ -185,7 +207,8 @@ Frontend gates: `node --check` (syntax) · `ui/test/*.mjs` (node:test)
   bundled+signed via tauri `externalBin`). `tmux_bin()` prefers the sidecar,
   then Homebrew/MacPorts probes. deck talks to its OWN server (`-L deck`
   socket) — never version-clashes with a user tmux, and deck sessions don't
-  appear in the user's `tmux ls`. Debug: `tmux -L deck ls`.
+  appear in the user's `tmux ls`. Production debug: `tmux -L deck ls`;
+  source bundles use `tmux -L deck-dev ls`.
 - Attach = `tmux attach` inside a portable-pty, bytes streamed as base64 over the
   `pty-data` event to xterm.js; detach kills only the tmux *client*. Reader threads
   carry a generation counter so a stale thread never removes a newer attachment.

@@ -63,13 +63,21 @@ pub(crate) fn tmux_kind() -> &'static str {
 pub(crate) fn socket() -> &'static str {
     static SOCKET: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     SOCKET.get_or_init(|| {
-        crate::storage::debug_arg("--smoke-tmux-socket")
-            .filter(|s| {
-                !s.is_empty()
-                    && s.len() <= 48
-                    && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
-            })
-            .unwrap_or_else(|| "deck".into())
+        if crate::storage::debug_arg("--smoke-data-dir").is_some() {
+            return crate::storage::debug_arg("--smoke-tmux-socket")
+                .filter(|s| {
+                    s.starts_with("deck-smoke")
+                        && !s.is_empty()
+                        && s.len() <= 48
+                        && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+                })
+                .unwrap_or_else(|| "deck-smoke".into());
+        }
+        if cfg!(debug_assertions) {
+            "deck-dev".into()
+        } else {
+            "deck".into()
+        }
     })
 }
 
@@ -254,5 +262,11 @@ mod tests {
     fn fmt_escape_doubles_hashes() {
         assert_eq!(fmt_escape("a#b##c"), "a##b####c");
         assert_eq!(fmt_escape("plain"), "plain");
+    }
+
+    #[test]
+    fn production_and_debug_socket_names_are_reserved() {
+        assert_ne!("deck", "deck-dev");
+        assert!("deck-smoke-123".starts_with("deck-smoke"));
     }
 }

@@ -311,7 +311,7 @@ pub fn load_typed<T: DeserializeOwned>(path: &Path) -> Result<Option<LoadOutcome
 /// fsync → rename → fsync of the parent directory (so the rename itself
 /// survives power loss). Unique temp names keep concurrent saves of the
 /// same file from trampling each other's temp file.
-fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
+pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
     static SEQ: AtomicU64 = AtomicU64::new(0);
     let dir = path.parent().ok_or("data path has no parent directory")?;
     let tmp = dir.join(format!(

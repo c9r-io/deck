@@ -1,7 +1,29 @@
 # Changelog
 
-## 0.4.39 — Unreleased
+## 0.4.41 — 2026-08-30
 
+- Add an upgrade-aware lifecycle for deck's private tmux server. Quitting,
+  crashing, and reopening the same build still reuse the existing PID and
+  processes; a different release build now detects the old helper before
+  attaching indefinitely.
+- Store versioned creator/build/helper/protocol/source metadata in the tmux
+  server, classify current/different/legacy/corrupt states centrally, and keep
+  Stable/Nightly, development, and smoke sockets from accidentally crossing.
+- Automatically replace only an empty incompatible server. An occupied old or
+  legacy server stays usable until the user reviews the affected session/pane
+  counts and explicitly confirms that restarting the background shell service
+  ends its commands and agents. “Later” is durable and remains discoverable in
+  the sidebar and Settings without repeated prompts.
+- Make replacement a serialized, recoverable transaction with a fresh impact
+  check, PTY detach, orderly stop, bounded wait, validated stale-socket cleanup,
+  current-helper start, metadata read-back, PID/identity verification and
+  content-free diagnostics. Cards and bounded shell snapshots remain, but
+  running Unix processes are never described as migrated.
+- Prevent the updater's relocated old process and release apps running from
+  transient/DMG paths from creating a long-lived server. Add an accurate Local
+  Network usage description for user-chosen services reached by terminal tools.
+- Add isolated real-tmux lifecycle contracts plus manual signed updater,
+  responsible-code and Local Network Privacy smoke steps.
 - Keep terminal wheel work armed on every display frame while preserving the
   single in-flight tmux mutation. Real bundled WKWebView verification improves
   sustained scroll updates from about 40 Hz to 60 Hz without losing fractional
@@ -33,7 +55,7 @@
   viewports), asserting endpoints and copied bytes; the contract suite now
   drives the production placement instead of its own copy of the rules.
 
-## 0.4.38 — Unreleased
+## 0.4.38 — Nightly candidate, 2026-08-29
 
 - Publish a Nightly-only version bump for validating the Stable-to-Nightly
   updater path after `v0.4.37`; application behavior is otherwise unchanged.

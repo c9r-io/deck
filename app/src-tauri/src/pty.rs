@@ -148,6 +148,20 @@ pub(crate) struct PtyState {
     counter: Mutex<u64>,
 }
 
+impl PtyState {
+    /// Detach every GUI tmux client before an intentional server restart.
+    /// The tmux sessions still belong to the server until the lifecycle
+    /// transaction kills it; this only prevents stale PTY-exit events and
+    /// releases all ACK waiters.
+    pub(crate) fn detach_all(&self) {
+        let mut entries = self.map.lock().unwrap();
+        for (_, mut entry) in entries.drain() {
+            entry.gate.close();
+            let _ = entry.child.kill();
+        }
+    }
+}
+
 #[derive(Clone, Serialize)]
 pub(crate) struct PtyData {
     name: String,

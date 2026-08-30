@@ -35,6 +35,97 @@ tagging a release; 3 minutes total.
       Stable through `/releases/latest/`. No public Nightly, feed or Stable
       promotion is authorized merely by this checklist.
 
+## Upgrade-aware tmux lifecycle
+
+All automated tests use `deck-smoke*` sockets. Never point a smoke command at
+`-L deck`, never delete `~/.deck`, and do not use a production card/session as
+a fixture.
+
+### Isolated same-build and failure recovery
+
+- [ ] Launch a debug smoke bundle with a fresh absolute data directory and a
+      unique `DECK_SMOKE_TMUX_SOCKET=deck-smoke-lifecycle-...`. Create a shell
+      running a harmless counter. Record server PID, pane PID and metadata:
+
+      ```sh
+      tmux -L deck-smoke-lifecycle-UNIQUE display -p '#{pid} #{start_time} #{socket_path}'
+      tmux -L deck-smoke-lifecycle-UNIQUE show -gqv @deck-server-metadata
+      tmux -L deck-smoke-lifecycle-UNIQUE list-panes -a -F '#{session_name} #{pane_pid} #{pane_current_command}'
+      ```
+
+- [ ] Quit/reopen the same bundle, then force-quit it once and reopen. The
+      server PID, pane PID, session and counter continue; no upgrade modal or
+      pending sidebar action appears.
+- [ ] On the isolated server only, replace the metadata option with a fixture
+      carrying an older release identity. With a live session, relaunch does
+      not kill it. “Later” closes the modal, existing sessions remain usable,
+      the sidebar/Settings still say Restart required, refreshing the UI does
+      not re-open the modal, and another app relaunch remembers the deferral.
+- [ ] Remove the metadata option to model legacy, then repeat with malformed
+      JSON. A live session is preserved and reported as Legacy/unknown or
+      unavailable; an empty server is safely replaced and reports a new PID
+      with current metadata.
+- [ ] In the confirmation window, create another session before clicking
+      restart. The backend refuses the stale confirmation and returns an
+      updated affected list. Double-click Restart and try opening a new card
+      during the operation; there is one replacement server and no new session
+      can enter the old generation.
+- [ ] In a disposable WK smoke run, arm `smoke_fault_set` in turn with
+      `tmux-after-stop`, `tmux-after-socket`, `tmux-before-start`, and
+      `tmux-after-metadata`, then confirm restart. Reopen after each injected
+      interruption: a matching
+      persisted intent resumes to one current server; an unexpected different
+      PID is never killed under the prior confirmation and requires review.
+      `tmux-lifecycle.json` contains phase/PID/start/socket device+inode/count/
+      build fields only—no socket path, session names, commands, prompts,
+      terminal text, or project paths.
+
+### Signed updater and responsible-code gate
+
+- [ ] Use two authorized, increasing, signed/notarized candidate builds from
+      `/Applications/deck.app`. Start sessions on the first and record app
+      version/commit, tmux PID, `codesign -dv --verbose=4` identifier/Team ID,
+      and `otool -l`/`dwarfdump --uuid` UUIDs for the main executable and
+      bundled tmux. Confirm there is one main executable and the helper is
+      inside the signed app.
+- [ ] Install the second through deck's updater. Before confirmation, `ps`
+      may still show the original launch argument, but `lsof -p OLD_TMUX_PID`
+      is the kernel-image authority and may show the deleted
+      `tauri_current_app/.../current_app` image. The new deck must report the
+      old build as Restart required and must not create another server from
+      that backup, `/tmp`, a DMG mount or App Translocation.
+- [ ] Choose Later and verify the old process/session continues and the prompt
+      does not loop. Then save work and confirm restart. Observe: old PID exits;
+      the socket is usable; new PID differs; `show -gqv
+      @deck-server-metadata` matches the installed version/commit/helper/
+      protocol/source; `lsof -p NEW_TMUX_PID` resolves the executable image
+      under the final installed `deck.app`, not a deleted updater directory.
+      Cards remain stopped/restartable, while old shell/agent PIDs are gone.
+- [ ] Repeat the update with no sessions. Replacement is automatic, produces a
+      current PID/metadata and only a non-blocking result toast.
+- [ ] Verify Settings shows current deck identity, server identity, PID/start
+      time and Current/Restart required/Legacy status. Manual Restart uses the
+      same destructive copy and safe default focus as the upgrade path.
+
+### Local Network Privacy
+
+- [ ] Confirm the signed app's final `Info.plist` contains the exact
+      `NSLocalNetworkUsageDescription` explaining that terminal tools may
+      access user-chosen local services; it must not claim deck scans the
+      network. Do not run `tccutil reset`, modify privacy databases, or add a
+      system route/privileged daemon for this test.
+- [ ] From a session owned by the new server, access a user-controlled LAN test
+      service directly. If macOS prompts, the prompt belongs to the installed
+      current deck identity. After allowing it, direct access works without an
+      SSH/loopback workaround and `lsof` attributes the connection to the new
+      helper image. Record OS version, app/helper UUID, Team ID/CDHash, server
+      PID/metadata and prompt ownership; do not record service addresses,
+      commands, terminal output or project/session names.
+- [ ] Check Launch Services does not retain newly generated debug/smoke apps
+      under `io.c9r.deck`: dev is `io.c9r.deck.dev`, smoke is
+      `io.c9r.deck.smoke`. Stable and Nightly still replace one installed app
+      and keep the same Developer ID identity.
+
 ## Theme system candidate — 2026-08-29
 
 - [x] Static/unit gates cover all four themes × four accent presets, require

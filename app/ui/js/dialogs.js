@@ -131,6 +131,9 @@ export async function openSettings() {
   $('set-ver').textContent = 'deck ' + ($('app-ver').textContent || 'v?');
   $('set-upd-status').textContent = '';
   $('settings-modal').style.display = 'flex';
+  if (typeof window.dispatchEvent === 'function' && typeof Event === 'function') {
+    window.dispatchEvent(new Event('deck-settings-opened'));
+  }
 }
 
 $('settings-btn').onclick = openSettings;
