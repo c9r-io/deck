@@ -719,6 +719,15 @@ pub(crate) fn log_path(dir: &Path) -> PathBuf {
     dir.join("app.log")
 }
 
+/// Exact boolean launch flag. Unlike the isolated smoke arguments below,
+/// --debug-logging is intentionally available in release builds so a
+/// maintainer can reproduce a packaged WKWebView/input problem without
+/// exposing a developer control in Settings.
+pub(crate) fn command_flag(name: &str) -> bool {
+    let expected = std::ffi::OsStr::new(name);
+    std::env::args_os().any(|arg| arg.as_os_str() == expected)
+}
+
 /// Debug bundles accept an isolated data root for packaged WKWebView smoke
 /// tests. Release builds ignore this argument completely.
 pub(crate) fn debug_arg(name: &str) -> Option<String> {

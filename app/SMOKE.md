@@ -476,8 +476,8 @@ physical-input blocker are recorded in `RELEASE_REPORT_v0.4.32.md`.
       string into a session, schedule a prompt containing the marker, export
       logs. `grep <marker> ~/.deck/app.log ~/.deck/exports/*` → ZERO hits.
       Bytes/counts/session names in logs are fine; user content is not.
-- [ ] With Settings → debug logging ON, repeat — including ⌘V-pasting the
-      marker into the shell (bracketed paste) and typing it through the IME:
+- [ ] Relaunch with `app/run.sh --debug-logging`, then repeat — including
+      ⌘V-pasting the marker into the shell (bracketed paste) and typing it through the IME:
       marker still absent (debug adds volume, never content; the frontend
       can only emit whitelisted event codes, per-code closed detail values
       and numbers)

@@ -278,6 +278,7 @@ $('update-btn').onclick = async () => {
 
 /* ---------- boot ---------- */
 export async function boot() {
+  window.__DECK_DEBUG = await inv('debug_logging_enabled').catch(() => false);
   await loadSettings();
   await revealThemedWindow();
   try {

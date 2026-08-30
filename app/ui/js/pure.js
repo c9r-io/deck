@@ -699,13 +699,11 @@ export function createTerminalSelectionModel() {
 /* ---------- sidebar grouping ---------- */
 export function sidebarGroups(project, cards) {
   if (!project) return [];
-  const rank = { waiting: 0, running: 1, stopped: 2 };
   return project.columns.map(column => {
-    const sessions = cards
-      .map((card, index) => ({ card, index }))
-      .filter(x => x.card.columnId === column.id)
-      .sort((a, b) => (rank[a.card.status] ?? 3) - (rank[b.card.status] ?? 3) || a.index - b.index)
-      .map(x => x.card);
+    /* `cards` is the durable Board array. Preserve that order inside each
+       Board: status is volatile (and often changes when a session is opened),
+       so using it as a sort key makes the navigation move under the user. */
+    const sessions = cards.filter(card => card.columnId === column.id);
     return { column, sessions, count: sessions.length };
   }).filter(group => group.count > 0);
 }

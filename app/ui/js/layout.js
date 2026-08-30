@@ -3,7 +3,7 @@
 import { $, dotTitle, duev, inv, listen, setMemChip, state, store, uev } from './state.js';
 import { inlineRename, toast } from './dialogs.js';
 import { t } from './i18n.js';
-import { panes, pollNow, provider, render, renderSidebar, activeProject } from './board.js';
+import { panes, pollNow, provider, render, renderSidebar, updateSidebarSelection, activeProject } from './board.js';
 import { SHELL_FG, acceptGhost, feedMirror, maybeRecordCommand, mountQuickBar, nextShellTitle, renderSuggest, resetSuggest, showLinkCtx, updateGhost, writeClipboard } from './terminal.js';
 import { AGENT_HISTORY_VERTICAL_UP, createTerminalResizeCoordinator, createTerminalWheelAccumulator, createTerminalWheelFrameScheduler, isComposingKeyEvent, isPlainShiftKeydown, shouldRouteImeKeydownThroughInput, shQuote, terminalAgentComposerGeometry, terminalAgentHistoryUpRoute, terminalCopyRoute, terminalSelectionWheelRoute, tokenizeTerminalLinks, terminalWheelLines } from './pure.js';
 import { toggleQueuePanel } from './scheduler.js';
@@ -801,7 +801,7 @@ export function focusPane(session) {
   else mountQuickBar(p);
   if (ghostEl && ghostEl.parentElement !== p.body) p.body.appendChild(ghostEl);
   renderSessionView();
-  renderSidebar();
+  updateSidebarSelection();
   p.term.focus();
 }
 

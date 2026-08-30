@@ -78,14 +78,20 @@ if [ -n "${DECK_SMOKE_DATA_DIR:-}" ]; then
     open -n "$APP" --args \
       --smoke-data-dir "$DECK_SMOKE_DATA_DIR" \
       --smoke-tmux-socket "$DECK_SMOKE_TMUX_SOCKET" \
-      --smoke-wkwebview "$SMOKE_MODE"
+      --smoke-wkwebview "$SMOKE_MODE" \
+      "$@"
   else
     open -n "$APP" --args \
       --smoke-data-dir "$DECK_SMOKE_DATA_DIR" \
-      --smoke-tmux-socket "$DECK_SMOKE_TMUX_SOCKET"
+      --smoke-tmux-socket "$DECK_SMOKE_TMUX_SOCKET" \
+      "$@"
   fi
   echo "deck smoke bundle launched with isolated data and tmux socket"
 else
-  open "$APP"
+  if [ "$#" -gt 0 ]; then
+    open "$APP" --args "$@"
+  else
+    open "$APP"
+  fi
   echo "deck launched. logs: ~/.deck/app.log"
 fi

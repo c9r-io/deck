@@ -179,18 +179,27 @@ fn backend_logs_carry_no_user_content() {
     }
 }
 
-/// The verbose diagnostics gate must stay default-off, and even debug mode
-/// must go through the structured channel (duev), not free-form strings.
+/// Verbose diagnostics are maintainer-only: they must stay default-off, derive
+/// from the launch flag rather than user settings, and use the structured
+/// channel (duev), not free-form strings.
 #[test]
-fn debug_logging_defaults_off_and_stays_structured() {
+fn debug_logging_is_command_line_only_and_stays_structured() {
     let all: String = frontend_sources().into_iter().map(|(_, s)| s).collect();
     assert!(
-        all.contains("window.__DECK_DEBUG = !!settings.debug"),
-        "debug flag must derive from settings.debug"
+        all.contains("window.__DECK_DEBUG = false"),
+        "verbose diagnostics must default off before boot"
     );
     assert!(
-        all.contains("debug: false"),
-        "settings.debug must default to false"
+        all.contains("inv('debug_logging_enabled')"),
+        "verbose diagnostics must derive from the backend launch flag"
+    );
+    assert!(
+        !all.contains("set-debug"),
+        "Settings must not expose a debug control"
+    );
+    assert!(
+        !all.contains("settings.debug"),
+        "settings.json must not enable diagnostics"
     );
     assert!(
         all.contains("if (window.__DECK_DEBUG) uev("),

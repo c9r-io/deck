@@ -112,8 +112,6 @@ const dictionary = {
   'settings.openFiles': 'Open files in',
   'settings.systemEditor': 'System default (TextEdit)',
   'settings.editorHint': 'Used by “Open in editor” on file links in the terminal. Editors are auto-detected from /Applications.',
-  'settings.debug': 'Debug logging',
-  'settings.debugHint': 'verbose diagnostics in app.log (never records what you type)',
   'settings.history': 'Command history',
   'settings.historyHint': 'deck keeps commands typed in its shells (for the completion chips) in ~/.deck/history.json, readable only by you. Avoid typing secrets directly into command lines; Clear wipes the file and its backup.',
   'settings.shellRecovery': 'Shell recovery',

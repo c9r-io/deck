@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Keep sidebar navigation stable: Boards remain grouped in Board order, while
+  sessions retain durable card order instead of moving whenever polling flips
+  them between live, quiet and stopped states. Focus and status changes now
+  update the existing sidebar entries in place.
+- Remove verbose diagnostics from user Settings. Maintainers can launch with
+  `--debug-logging`; structured event allowlists, redaction, private log files
+  and ordinary always-on diagnostics remain unchanged.
+
 ## 0.5.0 — 2026-08-30
 
 - Stop restored, history-heavy panes from flashing through tmux's intermediate

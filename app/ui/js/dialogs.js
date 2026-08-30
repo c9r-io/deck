@@ -105,7 +105,6 @@ export async function loadSettings() {
   setLocale(settings.locale);
   activateTheme(settings);
   inv('set_native_locale', { locale: settings.locale }).catch(() => {});
-  window.__DECK_DEBUG = !!settings.debug;
 }
 
 export function persistSettings() {
@@ -126,7 +125,6 @@ export async function openSettings() {
   $('set-theme').value = settings.theme || 'deck-dark';
   $('set-accent').value = settings.accent || 'teal';
   $('set-channel').value = settings.updateChannel || 'stable';
-  $('set-debug').checked = !!settings.debug;
   $('set-session-restore').checked = settings.sessionRestore !== false;
   $('set-ver').textContent = 'deck ' + ($('app-ver').textContent || 'v?');
   $('set-upd-status').textContent = '';
@@ -141,11 +139,6 @@ $('set-close').onclick = () => { $('settings-modal').style.display = 'none'; };
 $('settings-modal').addEventListener('mousedown', e => {
   if (e.target === $('settings-modal')) $('settings-modal').style.display = 'none';
 });
-$('set-debug').onchange = () => {
-  settings.debug = $('set-debug').checked;
-  window.__DECK_DEBUG = settings.debug;
-  persistSettings();
-};
 $('set-editor').onchange = () => {
   settings.editor = $('set-editor').value;
   persistSettings();
@@ -175,7 +168,7 @@ export async function persistThemeChoice() {
     accent: $('set-accent').value,
   });
   themeSavePending = true;
-  const locked = ['set-theme', 'set-accent', 'set-channel', 'set-locale', 'set-editor', 'set-debug', 'set-session-restore'].map($);
+  const locked = ['set-theme', 'set-accent', 'set-channel', 'set-locale', 'set-editor', 'set-session-restore'].map($);
   locked.forEach(control => { control.disabled = true; });
   activateTheme(candidate); // immediate preview; commit only after durable save
   try {
@@ -207,7 +200,7 @@ export async function persistUpdateChannelChoice() {
   }
   const candidate = normalizeSettings({ ...settings, updateChannel: desired });
   channelSavePending = true;
-  const locked = ['set-theme', 'set-accent', 'set-channel', 'set-locale', 'set-editor', 'set-debug', 'set-session-restore'].map($);
+  const locked = ['set-theme', 'set-accent', 'set-channel', 'set-locale', 'set-editor', 'set-session-restore'].map($);
   locked.forEach(control => { control.disabled = true; });
   try {
     await inv('save_settings', { data: serializeSettings(candidate) });

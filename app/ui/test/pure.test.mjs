@@ -157,7 +157,7 @@ test('itemDead / blockedBy mirror the backend blocking rule', () => {
   assert.equal(blockedBy(item('solo', 'chain'), []), null, 'ungrouped never blocks');
 });
 
-test('sidebar groups follow board order, count, and stable status order', () => {
+test('sidebar groups follow durable board/card order regardless of runtime status', () => {
   const project = { columns: [
     { id: 'working', name: 'Working' },
     { id: 'attention', name: 'A very long Attention board name' },
@@ -172,7 +172,12 @@ test('sidebar groups follow board order, count, and stable status order', () => 
   ];
   const groups = sidebarGroups(project, cards);
   assert.deepEqual(groups.map(g => [g.column.id, g.count]), [['working', 4], ['attention', 1]]);
-  assert.deepEqual(groups[0].sessions.map(c => c.id), ['c', 'e', 'd', 'b']);
+  assert.deepEqual(groups[0].sessions.map(c => c.id), ['b', 'c', 'd', 'e']);
+  cards[1].status = 'waiting';
+  cards[2].status = 'stopped';
+  cards[4].status = 'running';
+  assert.deepEqual(sidebarGroups(project, cards)[0].sessions.map(c => c.id), ['b', 'c', 'd', 'e'],
+    'polling transitions must not move sidebar navigation');
   // moving a session changes groups immediately without relying on its title
   cards[1].columnId = 'attention';
   const moved = sidebarGroups(project, cards);

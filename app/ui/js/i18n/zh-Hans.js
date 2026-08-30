@@ -111,8 +111,6 @@ const dictionary = {
   'settings.openFiles': '文件打开方式',
   'settings.systemEditor': '系统默认（TextEdit）',
   'settings.editorHint': '用于打开终端中的文件链接。编辑器会从 /Applications 自动检测。',
-  'settings.debug': '调试日志',
-  'settings.debugHint': '在 app.log 中记录详细诊断信息（绝不记录输入内容）',
   'settings.history': '命令历史',
   'settings.historyHint': 'deck 将 shell 中输入的命令保存在仅你可读的 ~/.deck/history.json 中，用于补全建议。请勿直接在命令行输入密钥；“清除”会删除主文件及备份。',
   'settings.shellRecovery': 'Shell 恢复',

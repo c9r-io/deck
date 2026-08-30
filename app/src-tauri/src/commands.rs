@@ -236,6 +236,11 @@ pub(crate) fn ui_event(code: String, detail: Option<String>, a: Option<i64>, b: 
     }
 }
 
+#[tauri::command]
+pub(crate) fn debug_logging_enabled() -> bool {
+    storage::command_flag("--debug-logging")
+}
+
 /// Build the export text. EVERY line — the environment header and the log
 /// body alike — goes through the log sanitizer on the way out: an export is
 /// meant to be mailed to someone, so it must not be able to inherit anything
@@ -499,6 +504,8 @@ pub(crate) struct SettingsDocRaw {
     editor: Option<String>,
     #[serde(default)]
     #[allow(dead_code)]
+    // Legacy compatibility only. The frontend removes this retired user
+    // setting; verbose diagnostics now use the --debug-logging launch flag.
     debug: Option<bool>,
     #[serde(default)]
     #[serde(rename = "sessionRestore")]

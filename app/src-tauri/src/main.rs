@@ -136,6 +136,9 @@ fn main() {
     // appends to app.log, rewrites in place 0600, keeps no raw copy.
     let cleaned = storage::sanitize_existing_logs(&deck_dir);
     storage::rotate_log();
+    if storage::command_flag("--debug-logging") {
+        applog("[boot] verbose diagnostics enabled");
+    }
     if cleaned > 0 {
         applog(&format!(
             "[boot] redacted {cleaned} pre-existing log/export file(s)"
@@ -306,6 +309,7 @@ fn main() {
             history::recent_commands,
             history::record_command,
             history::history_clear,
+            commands::debug_logging_enabled,
             commands::ui_event,
             commands::ping_event,
             scheduler::queue_list,

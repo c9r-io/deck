@@ -35,7 +35,7 @@ Object.assign(globalThis, {
   saveTimer: null,
   sepLogged: 0,
   settings: {
-    editor: '', debug: false, locale: 'system', theme: 'deck-dark', accent: 'teal',
+    editor: '', locale: 'system', theme: 'deck-dark', accent: 'teal',
     updateChannel: 'stable', sessionRestore: true,
   },
   buildIdentity: { version: '', commit: 'dev' },
@@ -74,7 +74,9 @@ export const uev = (code, detail, a, b) => inv('ui_event', {
   a: a == null ? null : Math.trunc(Number(a)),
   b: b == null ? null : Math.trunc(Number(b)),
 }).catch(() => {});
-/* verbose diagnostics: OFF unless settings.debug (same structured contract) */
+/* Verbose diagnostics are maintainer-only and enabled at launch with
+   --debug-logging. They retain the same structured/privacy contract. */
+window.__DECK_DEBUG = false;
 export const duev = (code, detail, a, b) => { if (window.__DECK_DEBUG) uev(code, detail, a, b); };
 /* error CLASS only — the message can quote user input, so it stays out */
 export const errClass = e => {

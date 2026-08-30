@@ -152,7 +152,7 @@ test('production debounce is flushed before an immediate destructive Board barri
 
 test('failed theme persistence restores the prior palette and selectors', async () => {
   globalThis.settings = {
-    editor: '', debug: false, locale: 'system', theme: 'deck-dark', accent: 'teal', future: { kept: 1 },
+    editor: '', locale: 'system', theme: 'deck-dark', accent: 'teal', future: { kept: 1 },
   };
   fakeDocument.getElementById('set-theme').value = 'light';
   fakeDocument.getElementById('set-accent').value = 'purple';
@@ -170,7 +170,7 @@ test('failed theme persistence restores the prior palette and selectors', async 
 
 test('Nightly requires confirmation before a durable closed-enum save', async () => {
   globalThis.settings = {
-    editor: '', debug: false, locale: 'system', theme: 'deck-dark', accent: 'teal',
+    editor: '', locale: 'system', theme: 'deck-dark', accent: 'teal',
     updateChannel: 'stable', future: { kept: 1 },
   };
   fakeDocument.getElementById('set-channel').value = 'nightly';
@@ -192,7 +192,7 @@ test('Nightly requires confirmation before a durable closed-enum save', async ()
 
 test('channel save failure rolls back and Stable switch never invokes install', async () => {
   globalThis.settings = {
-    editor: '', debug: false, locale: 'system', theme: 'deck-dark', accent: 'teal',
+    editor: '', locale: 'system', theme: 'deck-dark', accent: 'teal',
     updateChannel: 'nightly',
   };
   fakeDocument.getElementById('set-channel').value = 'stable';
@@ -210,7 +210,7 @@ test('channel save failure rolls back and Stable switch never invokes install', 
 
 test('disabling shell recovery persists first and then clears every snapshot', async () => {
   globalThis.settings = {
-    editor: '', debug: false, locale: 'system', theme: 'deck-dark', accent: 'teal',
+    editor: '', locale: 'system', theme: 'deck-dark', accent: 'teal',
     updateChannel: 'stable', sessionRestore: true,
   };
   fakeDocument.getElementById('set-session-restore').checked = false;

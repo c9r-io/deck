@@ -83,8 +83,9 @@ Only the closed presets can be selected—there is no free-form color input—an
 the previous palette is restored if settings cannot be saved.
 
 **Board-grouped sidebar.** Sessions in the current project are grouped under
-their Board names, in Board order, with counts in each group. Waiting sessions
-come first within a Board, followed by running and stopped sessions.
+their Board names, in Board order, with counts in each group. Sessions retain
+their durable card order within a Board even as live/quiet/stopped status
+changes, so navigation never moves merely because a session was opened.
 
 **Command completion, Warp-style.** deck records the commands you run in its
 shells (agent prompts are never recorded) and suggests as you type: the first
@@ -223,9 +224,15 @@ accident.
 
 ```bash
 app/run.sh                                # build + launch the dev bundle
+app/run.sh --debug-logging                # add structured verbose diagnostics
 cd app/src-tauri && cargo run --example pty_smoke   # headless PTY test
 app/src-tauri/binaries/build-tmux.sh      # rebuild the static tmux sidecar
 ```
+
+Verbose frontend diagnostics are maintainer-only and remain structured and
+redacted. For an installed build, quit deck first and launch it with
+`open -n /Applications/deck.app --args --debug-logging`; omitting the flag
+keeps verbose events off.
 
 Requires a Rust toolchain. The frontend (`app/ui/`) is plain HTML + native
 ES modules — no Node runtime, no bundler (Node is used only for dev-time

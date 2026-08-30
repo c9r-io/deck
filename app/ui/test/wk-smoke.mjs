@@ -871,7 +871,7 @@ async function pathSmoke(card) {
     && pathActions === 'editor,editor-parent,session-parent,reveal,copy'
     && keyboard && document.activeElement === focus, 2, 5);
 
-  await inv('save_settings', { data: JSON.stringify({ editor: 'Cursor', debug: false }) });
+  await inv('save_settings', { data: JSON.stringify({ editor: 'Cursor' }) });
   let editorOpened = false;
   try {
     await inv('open_target', { kind: 'editor-parent', value: fixture, cwd: card.dir });

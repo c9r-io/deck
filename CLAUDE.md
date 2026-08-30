@@ -62,7 +62,9 @@ Frontend gates: `node --check` (syntax) · `ui/test/*.mjs` (node:test)
   `open`. NEVER run the bare binary from a background shell: outside the GUI
   login session the process can't reach macOS text-input services (TSM/IMK) —
   window and mouse work, keyboard is silently dead. `~/.deck/app.log` (0600)
-  collects backend + frontend diagnostics. Frontend logging is STRUCTURED
+  collects backend + frontend diagnostics. Maintainer-only verbose frontend
+  events are enabled at launch with `app/run.sh --debug-logging`; there is no
+  user setting for them. Frontend logging is STRUCTURED
   ONLY: the `ui_event` command takes a whitelisted code + a detail vetted by
   that code's OWN closed policy (enum values / version pattern — no generic
   slug rule) + two ints, and redacts everything else — never add a free-form

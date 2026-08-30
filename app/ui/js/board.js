@@ -457,6 +457,24 @@ export function renderSidebar() {
   $('home-btn').classList.toggle('active', state.view === 'board');
 }
 
+/* Focus and status are runtime-only presentation changes. Update them in
+   place so clicks, hover and drag ownership are not discarded by a complete
+   sidebar rebuild. Structural Board changes still call renderSidebar(). */
+export function updateSidebarSelection() {
+  document.querySelectorAll('#side-list .side-item[data-sid]').forEach(el => {
+    el.classList.toggle('active', state.view === 'session' && el.dataset.sid === state.sessionId);
+  });
+  $('home-btn').classList.toggle('active', state.view === 'board');
+}
+
+export function updateSidebarStatus(card) {
+  if (!card) return;
+  const el = [...document.querySelectorAll('#side-list .side-item[data-sid]')]
+    .find(item => item.dataset.sid === card.id);
+  const dot = el && el.querySelector('.dot');
+  if (dot) dot.className = 'dot ' + card.status;
+}
+
 /* ---------- project tabs ---------- */
 export function renderTabs() {
   const bar = $('tabs');
@@ -734,7 +752,7 @@ provider.subscribe((ev, s) => {
   }
   if (ev === 'status') {
     renderTabs();
-    renderSidebar();
+    updateSidebarStatus(s);
     updatePaneChrome(s);
     if (state.view === 'session' && s.id === state.sessionId) renderSessionView();
     else if (state.view === 'board' && s.projectId === state.projectId) {
