@@ -9,6 +9,7 @@ mod commands;
 mod context;
 mod history;
 mod pty;
+mod relaunch;
 mod scheduler;
 mod shell_state;
 mod smoke_faults;
@@ -117,6 +118,10 @@ fn set_native_locale(locale: String, menu: tauri::State<'_, NativeMenu>) -> Resu
 // ---------- main ---------------------------------------------------------------
 
 fn main() {
+    if let Some(code) = relaunch::run_helper_from_args() {
+        std::process::exit(code);
+    }
+    relaunch::capture_current_target();
     let deck_dir = storage::deck_dir();
     // idempotent permission migration BEFORE anything touches the data files:
     // ~/.deck → 0700, every file an older deck may have left 0644 → 0600.
@@ -153,10 +158,16 @@ fn main() {
         let _ = Command::new("osascript").args(["-e", &script]).status();
         std::process::exit(0);
     }
+    // Releases through 0.5.2 used Tauri's in-process restart. A replacement
+    // launched that way inherits the vanished app's process group and macOS
+    // responsible-code identity. Heal before tmux or the scheduler can create
+    // a process carrying that identity.
+    if relaunch::heal_inherited_process_group() {
+        std::process::exit(0);
+    }
     shell_state::cleanup_restore_temps();
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .plugin(tauri_plugin_process::init())
         .manage(pty::PtyState::default())
         .manage(scheduler::boot_queues())
         .setup(|app| {
@@ -271,6 +282,7 @@ fn main() {
             tmux_lifecycle::restart_tmux_server,
             commands::check_for_update,
             commands::install_update,
+            relaunch::relaunch_after_update,
             commands::set_terminal_mode_style,
             set_native_locale,
             commands::detect_editors,

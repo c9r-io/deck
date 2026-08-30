@@ -116,6 +116,13 @@ a fixture.
       `tauri_current_app/.../current_app` image. The new deck must report the
       old build as Restart required and must not create another server from
       that backup, `/tmp`, a DMG mount or App Translocation.
+- [ ] Exercise the transition from a signed 0.5.2 install as well as an update
+      between two fixed candidates. After each update settles, verify the final
+      deck process has `PPID=1` and `PGID=PID`; the prior deck PID/PGID is gone,
+      `launchctl list` has no `io.c9r.deck.relaunch.*` job, and `app.log`
+      contains either the legacy inherited-identity self-heal or the direct
+      clean-relaunch event. A transient intermediate process must not reach
+      tmux/session creation.
 - [ ] Choose Later and verify the old process/session continues and the prompt
       does not loop. Then save work and confirm restart. Observe: old PID exits;
       the socket is usable; new PID differs; `show -gqv
@@ -143,6 +150,10 @@ a fixture.
       helper image. Record OS version, app/helper UUID, Team ID/CDHash, server
       PID/metadata and prompt ownership; do not record service addresses,
       commands, terminal output or project/session names.
+- [ ] Create the LAN-test session through the signed deck UI/backend command,
+      never through an external tmux client. Check the macOS Local Network log
+      around creation and the TCP probe: it must not report the prior deck PID,
+      prior executable UUID, `bundle_id: (null)`, or a blocked notification.
 - [ ] Check Launch Services does not retain newly generated debug/smoke apps
       under `io.c9r.deck`: dev is `io.c9r.deck.dev`, smoke is
       `io.c9r.deck.smoke`. Stable and Nightly still replace one installed app

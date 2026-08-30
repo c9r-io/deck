@@ -267,7 +267,7 @@ $('update-btn').onclick = async () => {
       expectedVersion: pendingUpdate.version,
     });
     label.textContent = t('update.restarting');
-    await window.__TAURI__.process.relaunch();
+    await inv('relaunch_after_update');
   } catch (e) {
     btn.disabled = false;
     label.textContent = t('update.failedRetry');

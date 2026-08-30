@@ -36,8 +36,19 @@ test('update channels are backend-owned, isolated and never trigger downgrade', 
   assert.match(backend, /\.endpoints\(vec!\[endpoint\]\)/, 'each check has exactly one endpoint');
   assert.doesNotMatch(dialogs, /install_update|allow_downgrade|allowDowngrade/);
   assert.match(backend, /download_and_install/, 'Tauri retains download, verification and install ownership');
+  assert.match(app, /inv\('relaunch_after_update'\)/,
+    'verified installs cross a backend-owned clean relaunch boundary');
+  assert.doesNotMatch(app, /process\.relaunch|__TAURI__\.process/,
+    'the updater must not inherit the replaced app process group');
+  const relaunch = read('app/src-tauri/src/relaunch.rs');
+  assert.match(relaunch, /launchctl[\s\S]*submit[\s\S]*HELPER_FLAG/);
+  assert.match(relaunch, /\/usr\/bin\/open[\s\S]*"-n"/);
+  assert.match(relaunch, /heal_inherited_process_group/,
+    'the first update from a legacy release self-heals before tmux starts');
   assert.doesNotMatch(read('app/src-tauri/capabilities/default.json'), /updater:/,
     'the webview has no direct updater command permission');
+  assert.doesNotMatch(read('app/src-tauri/capabilities/default.json'), /process:/,
+    'the webview cannot invoke the generic Tauri restart path');
 });
 
 test('tmux upgrades preserve occupied servers until explicit pointer confirmation', () => {

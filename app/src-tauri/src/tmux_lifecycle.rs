@@ -924,6 +924,10 @@ pub(crate) fn cancel_app_update_install() {
     APP_UPDATE_INSTALLING.store(false, Ordering::Release);
 }
 
+pub(crate) fn app_update_installing() -> bool {
+    APP_UPDATE_INSTALLING.load(Ordering::Acquire)
+}
+
 #[tauri::command]
 pub(crate) fn tmux_server_status() -> ServerStatus {
     status_from_probe(current_build(), probe_server())

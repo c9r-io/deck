@@ -519,7 +519,7 @@ dependencies = [
 
 [[package]]
 name = "deck-app"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "base64 0.22.1",
  "dirs 5.0.1",
@@ -529,7 +529,6 @@ dependencies = [
  "serde_json",
  "tauri",
  "tauri-build",
- "tauri-plugin-process",
  "tauri-plugin-updater",
  "unicode-segmentation",
  "unicode-width",
@@ -3656,16 +3655,6 @@ dependencies = [
  "serde_json",
  "tauri-utils",
  "walkdir",
-]
-
-[[package]]
-name = "tauri-plugin-process"
-version = "2.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d55511a7bf6cd70c8767b02c97bf8134fa434daf3926cfc1be0a0f94132d165a"
-dependencies = [
- "tauri",
- "tauri-plugin",
 ]
 
 [[package]]
