@@ -197,7 +197,8 @@ test('production terminal path wires the token-bound frozen selection coordinato
     'frozen-selection scrolling must re-anchor the copy cursor to live input');
   assert.match(backendScroll, /if-shell[\s\S]*?display-message/);
   assert.match(read('app/ui/test/wk-smoke.mjs'),
-    /selection-repeat[\s\S]*?selection-resize[\s\S]*?scroll-frame/);
+    /selection-scroll-stable[\s\S]*?selection-scroll-cursor[\s\S]*?selection-overlay[\s\S]*?selection-repeat[\s\S]*?selection-resize[\s\S]*?scroll-frame/,
+    'real WKWebView smoke must verify frozen-selection cursor position, visibility and DOM cleanup');
   assert.match(backend, /selection_start_y/);
   assert.match(backend, /dims\.selection_present[\s\S]*?clear-selection/);
   assert.match(backend, /if !before\.active \{/);

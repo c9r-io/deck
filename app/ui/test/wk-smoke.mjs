@@ -380,6 +380,10 @@ async function selectionSmoke(card) {
   const singleEndCol = 8;
   const singleStartX = rect.left + cellWidth * singleEndCol - 1;
   const singleEndX = rect.left + cellWidth * singleEndCol + 1;
+  // Native xterm selection does not move the terminal cursor. Capture the
+  // agent/shell input row before Deck promotes the drag and tmux replaces it
+  // with a copy cursor at the selection endpoint.
+  const liveCursorRowBeforeSingle = pane.term.buffer.active.cursorY;
   screen.dispatchEvent(pointer('pointerdown', 75, singleStartX, rowY(singleAnchorRow)));
   screen.dispatchEvent(new MouseEvent('mousedown', {
     bubbles: true, cancelable: true, button: 0, buttons: 1,
@@ -445,6 +449,17 @@ async function selectionSmoke(card) {
   await report('selection-scroll-stable', sameCoordinates
     && bytesBeforeScroll === bytesAfterScroll, bytesAfterScroll?.length || 0,
   stableAfter.scroll_position - stableBefore.scroll_position);
+  const liveCursorContentRow = liveCursorRowBeforeSingle + stableAfter.scroll_position;
+  const expectedCursorRow = Math.min(pane.term.rows - 1, liveCursorContentRow);
+  const expectedCursorVisible = liveCursorContentRow < pane.term.rows;
+  const hiddenCursorStayedGone = expectedCursorVisible || await waitFor(() =>
+    !pane.body.querySelector('.xterm-cursor'), 3000);
+  const cursorFollowed = stableAfter.cursor_row === expectedCursorRow
+    && stableAfter.cursor_visible === expectedCursorVisible
+    && pane.scrollCursorVisible === expectedCursorVisible
+    && hiddenCursorStayedGone;
+  await report('selection-scroll-cursor', cursorFollowed,
+    stableAfter.cursor_row, expectedCursorRow);
   await report('selection-overlay', overlayMovedWithContent
     && !pane.term.hasSelection(), overlayBefore.size, overlayAfter.size);
 
@@ -1138,14 +1153,20 @@ export async function run() {
     const project = provider.projects()[0];
     const column = project.columns.find(c => c.semantic === 'working') || project.columns[0];
     stage = 2;
-    await boardConcurrency(project, column);
-    stage = 3;
-    await boardFaultSmoke(project, column);
-    stage = 4;
+    // Keep one harmless pane alive before exercising delete transactions.
+    // A fresh lazy tmux server has no socket yet, so kill_session correctly
+    // distinguishes that server-level failure from an already-missing pane.
+    // Starting the main fixture first makes this smoke self-contained on a
+    // machine with no pre-existing deck-smoke server or fixture directory.
     const main = await provider.create({
-      projectId: project.id, columnId: column.id, title: 'wk-smoke', cmd: '', dir: '/tmp/deck-r6-path',
+      projectId: project.id, columnId: column.id, title: 'wk-smoke', cmd: '', dir: '/tmp',
     });
     render();
+    await openSession(main.id);
+    stage = 3;
+    await boardConcurrency(project, column);
+    stage = 4;
+    await boardFaultSmoke(project, column);
     stage = 5;
     await renameSmoke(main);
     stage = 6;

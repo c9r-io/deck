@@ -7,6 +7,28 @@ while the real webview fails (that is how every regression in this list
 originally shipped). Run through them in the `app/run.sh` build before
 tagging a release; 3 minutes total.
 
+## v0.4.42 shell recovery and selection cursor — 2026-08-30
+
+- [x] A user tested the isolated `deck smoke` bundle with real agent task-text
+      selection and scrolling, and confirmed the cursor no longer detaches or
+      remains fixed on an unrelated cell. The instance used a private data
+      directory and `deck-smoke*` tmux socket and was removed afterwards.
+- [x] The real-tmux contract freezes selection coordinates and bytes, clears
+      tmux's mutable highlight, then verifies the former endpoint follows the
+      live input edge and reports the cursor hidden after that row leaves the
+      viewport. The full Rust suite passed 185 unit, 7 privacy and 36 bundled
+      tmux contract tests.
+- [x] A fresh real-WKWebView production-module run reported
+      `selection-scroll-stable=1/3`, `selection-scroll-cursor=24/24`,
+      `selection-overlay=1/1` and final `done=1`. The cursor check derives the
+      expected row and visibility from xterm's live cursor before selection,
+      then verifies backend status, frontend visibility state and removal of
+      any offscreen `.xterm-cursor` marker after the frozen range scrolls.
+- [x] The same fresh run exposed and removed an older smoke-only assumption
+      that a tmux server and cwd fixture already existed. The harness now opens
+      its harmless main pane before delete transactions and uses an existing
+      cwd, so an empty machine reaches the terminal regressions deterministically.
+
 ## Nightly release channel candidate — 2026-08-29
 
 - [x] Unit/static fixtures cover strict/invalid versions, source mismatch,

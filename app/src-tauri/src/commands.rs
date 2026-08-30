@@ -111,6 +111,7 @@ const SMOKE_CHECKS: &[&str] = &[
     "selection-gestures",
     "selection-repeat",
     "selection-scroll-stable",
+    "selection-scroll-cursor",
     "selection-overlay",
     "selection-native-scroll",
     "selection-resize",
