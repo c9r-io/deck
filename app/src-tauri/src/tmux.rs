@@ -322,4 +322,25 @@ mod tests {
         assert_ne!("deck", "deck-dev");
         assert!("deck-smoke-123".starts_with("deck-smoke"));
     }
+
+    #[test]
+    fn binary_kinds_targets_socket_and_paths_are_classified_without_guessing() {
+        assert_eq!(tmux_kind_of("tmux"), "PATH");
+        assert_eq!(tmux_kind_of("/opt/homebrew/bin/tmux"), "homebrew");
+        assert_eq!(tmux_kind_of("/usr/local/bin/tmux"), "homebrew");
+        assert_eq!(tmux_kind_of("/opt/local/bin/tmux"), "macports");
+        assert_eq!(
+            tmux_kind_of("/Applications/deck.app/Contents/MacOS/tmux"),
+            "sidecar"
+        );
+
+        assert_eq!(session_target("deck-card-ab12"), "=deck-card-ab12");
+        assert_eq!(pane_target("deck-card-ab12"), "=deck-card-ab12:");
+        assert_eq!(expand_tilde("/tmp/project"), "/tmp/project");
+        assert!(expand_tilde("~/project").ends_with("/project"));
+        assert_eq!(socket(), "deck-dev");
+        let binary = tmux_bin();
+        assert!(!binary.is_empty());
+        assert_eq!(tmux_kind(), tmux_kind_of(binary));
+    }
 }

@@ -90,8 +90,11 @@ pub(crate) fn usable_command(cmd: &str) -> bool {
 
 /// Candidates for the quick-command chips: commands deck itself launched
 /// (most recent first), then the user's shell history, deduped.
-#[tauri::command]
-pub(crate) fn recent_commands(limit: usize) -> Vec<String> {
+fn merge_recent_commands(
+    mut own: Vec<HistEntry>,
+    shell_history: Option<&[u8]>,
+    limit: usize,
+) -> Vec<String> {
     let mut seen = HashSet::new();
     let mut out = Vec::new();
     let mut push = |cmd: &str| {
@@ -101,29 +104,32 @@ pub(crate) fn recent_commands(limit: usize) -> Vec<String> {
         }
     };
 
-    let mut own = read_deck_history();
     own.sort_by_key(|e| std::cmp::Reverse(hist_score(e)));
     for e in own {
         push(&e.cmd);
     }
-    if let Some(home) = dirs::home_dir() {
-        for file in [".zsh_history", ".bash_history"] {
-            // zsh history can contain non-UTF-8 (metafied) bytes — read lossily
-            if let Ok(bytes) = std::fs::read(home.join(file)) {
-                let text = String::from_utf8_lossy(&bytes);
-                // newest entries are at the end; skip continuation lines
-                for line in text.lines().rev().take(400) {
-                    if line.ends_with('\\') || line.contains('\u{fffd}') {
-                        continue;
-                    }
-                    push(strip_zsh_prefix(line));
-                }
-                break;
+    if let Some(bytes) = shell_history {
+        let text = String::from_utf8_lossy(bytes);
+        // newest entries are at the end; skip continuation lines
+        for line in text.lines().rev().take(400) {
+            if line.ends_with('\\') || line.contains('\u{fffd}') {
+                continue;
             }
+            push(strip_zsh_prefix(line));
         }
     }
     out.truncate(limit.max(1));
     out
+}
+
+#[tauri::command]
+pub(crate) fn recent_commands(limit: usize) -> Vec<String> {
+    let shell_history = dirs::home_dir().and_then(|home| {
+        [".zsh_history", ".bash_history"]
+            .into_iter()
+            .find_map(|file| std::fs::read(home.join(file)).ok())
+    });
+    merge_recent_commands(read_deck_history(), shell_history.as_deref(), limit)
 }
 
 /// Record a command run in a deck shell (typed, completed, or injected).
@@ -229,5 +235,67 @@ mod tests {
         let v = read_history_from(&p);
         assert_eq!(v.len(), 2);
         assert!(v.iter().all(|e| e.n == 1));
+    }
+
+    #[test]
+    fn recent_candidates_rank_dedupe_filter_and_bound_shell_history() {
+        let own = vec![
+            HistEntry {
+                cmd: "cargo test".into(),
+                n: 1,
+                last: 10,
+            },
+            HistEntry {
+                cmd: "git status".into(),
+                n: 3,
+                last: 1,
+            },
+            HistEntry {
+                cmd: "x".into(),
+                n: 99,
+                last: 99,
+            },
+        ];
+        let shell = b"old command\n: 1756000000:0;cargo test\ncontinued\\\n\xffbad\nnew command\n";
+        let merged = merge_recent_commands(own, Some(shell), 4);
+        assert_eq!(
+            merged,
+            ["git status", "cargo test", "new command", "old command"]
+        );
+        assert_eq!(
+            merge_recent_commands(Vec::new(), None, 0),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn history_syntax_and_scoring_are_closed_and_duplicate_records_accumulate() {
+        assert_eq!(strip_zsh_prefix(": 1756000000:0;cargo test"), "cargo test");
+        assert_eq!(strip_zsh_prefix(": malformed"), ": malformed");
+        assert_eq!(strip_zsh_prefix("plain"), "plain");
+        assert!(usable_command("ok"));
+        assert!(!usable_command("x"));
+        assert!(!usable_command("line one\nline two"));
+        assert!(!usable_command(&"x".repeat(121)));
+        assert_eq!(
+            hist_score(&HistEntry {
+                cmd: "x".into(),
+                n: 2,
+                last: 10,
+            }),
+            7210
+        );
+
+        let dir = std::env::temp_dir().join(format!("deck-history-dup-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("history.json");
+        record_into(&path, "cargo test").unwrap();
+        record_into(&path, "cargo test").unwrap();
+        let loaded = read_history_from(&path);
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].cmd, "cargo test");
+        assert_eq!(loaded[0].n, 2);
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

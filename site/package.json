@@ -5,6 +5,6 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "preview": "node scripts/preview.mjs",
-    "test": "node --test test/*.test.mjs"
+    "test": "node --test --experimental-test-coverage --test-coverage-lines=70 --test-coverage-branches=70 --test-coverage-functions=70 test/*.test.mjs"
   }
 }

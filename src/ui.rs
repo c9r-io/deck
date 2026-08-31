@@ -185,3 +185,128 @@ fn draw_bottom(f: &mut Frame, app: &App, area: Rect) {
     };
     f.render_widget(Paragraph::new(line), area);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{Board, Card};
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    fn card() -> Card {
+        Card {
+            id: "a".into(),
+            title: "test card".into(),
+            command: "cargo test".into(),
+            dir: "/tmp/project".into(),
+            column: 0,
+            session: "deck-test-a".into(),
+            created_at: 1,
+        }
+    }
+
+    fn app(cards: Vec<Card>) -> App {
+        App::test_with_board(Board {
+            cards,
+            archived: Vec::new(),
+        })
+    }
+
+    fn render(app: &App) -> String {
+        let backend = TestBackend::new(120, 25);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| draw(frame, app)).unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<Vec<_>>()
+            .join("")
+    }
+
+    #[test]
+    fn empty_and_stopped_boards_explain_the_next_action() {
+        let empty = render(&app(Vec::new()));
+        assert!(empty.contains("empty column"));
+        assert!(empty.contains("ready"));
+
+        let stopped = render(&app(vec![card()]));
+        assert!(stopped.contains("test card"));
+        assert!(stopped.contains("stopped"));
+        assert!(stopped.contains("no live session"));
+        assert!(stopped.contains("deck-test-a"));
+    }
+
+    #[test]
+    fn live_card_renders_tail_and_running_state() {
+        let mut app = app(vec![card()]);
+        app.live_sessions.insert("deck-test-a".into());
+        app.tail = vec!["first output".into(), "second output".into()];
+        let screen = render(&app);
+        assert!(screen.contains("running"));
+        assert!(screen.contains("live output"));
+        assert!(screen.contains("first output"));
+        assert!(screen.contains("second output"));
+    }
+
+    #[test]
+    fn every_input_prompt_has_a_specific_label() {
+        let cases = [
+            (InputKind::NewTitle, "new card · title"),
+            (
+                InputKind::NewCommand {
+                    title: "title".into(),
+                },
+                "new card · command",
+            ),
+            (
+                InputKind::NewDir {
+                    title: "title".into(),
+                    command: "cmd".into(),
+                },
+                "new card · directory",
+            ),
+            (
+                InputKind::EditTitle {
+                    card_id: "a".into(),
+                },
+                "edit title",
+            ),
+            (
+                InputKind::EditCommand {
+                    card_id: "a".into(),
+                },
+                "edit command",
+            ),
+        ];
+        for (kind, expected) in cases {
+            let mut app = app(vec![card()]);
+            app.mode = Mode::Input {
+                kind,
+                buffer: "typed".into(),
+            };
+            let screen = render(&app);
+            assert!(screen.contains(expected), "missing prompt {expected}");
+            assert!(screen.contains("typed"));
+        }
+    }
+
+    #[test]
+    fn confirmations_distinguish_delete_live_delete_and_kill() {
+        let mut app = app(vec![card()]);
+        app.mode = Mode::Confirm(ConfirmKind::DeleteCard {
+            card_id: "a".into(),
+        });
+        assert!(render(&app).contains("delete card?"));
+
+        app.live_sessions.insert("deck-test-a".into());
+        assert!(render(&app).contains("delete card AND kill its live session?"));
+
+        app.mode = Mode::Confirm(ConfirmKind::KillSession {
+            card_id: "a".into(),
+        });
+        assert!(render(&app).contains("kill this card's tmux session?"));
+    }
+}

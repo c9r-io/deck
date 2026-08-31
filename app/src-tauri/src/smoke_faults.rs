@@ -51,13 +51,13 @@ pub(crate) fn take(kind: &str) -> bool {
     true
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 pub(crate) struct SmokeFaultState {
     kind: String,
     remaining: u8,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 pub(crate) struct SmokeClipboardMetrics {
     bytes: usize,
     newlines: usize,
@@ -126,5 +126,22 @@ mod tests {
     fn clipboard_hash_is_stable_and_byte_oriented() {
         assert_eq!(fnv1a64(b"DEFG"), 0xbab10472a66bfe51);
         assert_ne!(fnv1a64("中".as_bytes()), fnv1a64(b"?"));
+    }
+
+    #[test]
+    fn normal_test_process_cannot_arm_or_consume_packaged_smoke_hooks() {
+        assert!(!enabled());
+        for kind in KINDS {
+            assert!(!take(kind));
+            assert_eq!(
+                smoke_fault_set((*kind).to_string(), 1).unwrap_err(),
+                "smoke fault hooks are unavailable"
+            );
+        }
+        assert!(!take("unknown"));
+        assert_eq!(
+            smoke_clipboard_metrics().unwrap_err(),
+            "smoke clipboard metrics are unavailable"
+        );
     }
 }

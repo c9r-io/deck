@@ -741,4 +741,123 @@ mod tests {
         assert!(!checkpoint_eligible(&observation("claude", "/tmp")));
         assert!(!checkpoint_eligible(&observation("zsh", "relative")));
     }
+
+    #[test]
+    fn snapshot_paths_tail_bounds_and_shell_detection_are_defensive() {
+        let dir = temp_dir("paths");
+        assert_eq!(
+            snapshot_path_in(&dir, "deck-shell-safe").unwrap(),
+            dir.join("deck-shell-safe.json")
+        );
+        for bad in ["", "../escape", "has:colon", "has space"] {
+            assert!(snapshot_path_in(&dir, bad).is_err(), "accepted {bad:?}");
+        }
+        for bad in [
+            "",
+            "relative",
+            "/tmp/line\nbreak",
+            &format!("/{}", "x".repeat(4096)),
+        ] {
+            assert!(!valid_cwd(bad), "accepted cwd {bad:?}");
+        }
+        assert!(valid_cwd("/tmp/project"));
+
+        assert_eq!(bound_tail("short", 10), "short");
+        assert_eq!(bound_tail("old line\nnew line", 9), "new line");
+        let unicode = bound_tail("prefix\nαβγδε", 9);
+        assert!(std::str::from_utf8(unicode.as_bytes()).is_ok());
+        assert!(unicode.len() <= 9);
+
+        assert!(executable_shell(Path::new("/bin/sh")));
+        let plain = dir.join("plain");
+        std::fs::write(&plain, "not executable").unwrap();
+        assert!(!executable_shell(&plain));
+        assert!(!executable_shell(Path::new("relative")));
+        let name = restore_buffer_name(42);
+        assert!(name.starts_with("deck-restore-"));
+        assert!(name.ends_with("-2a"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn current_snapshot_round_trips_and_missing_snapshot_is_none() {
+        let dir = temp_dir("load");
+        let path = snapshot_path_in(&dir, "deck-shell-current").unwrap();
+        assert!(load_snapshot_from(&path).unwrap().is_none());
+        let snapshot = ShellSnapshot {
+            session: "deck-shell-current".into(),
+            cwd: "/tmp".into(),
+            transcript: "recent output".into(),
+            updated: now_epoch(),
+        };
+        storage::save_typed_ephemeral::<ShellSnapshot>(
+            &path,
+            &serde_json::to_string(&snapshot).unwrap(),
+        )
+        .unwrap();
+        let loaded = load_snapshot_from(&path).unwrap().unwrap();
+        assert_eq!(loaded.session, snapshot.session);
+        assert_eq!(loaded.cwd, snapshot.cwd);
+        assert_eq!(loaded.transcript, snapshot.transcript);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn snapshot_pruning_keeps_the_directory_strictly_bounded() {
+        let dir = temp_dir("prune");
+        let keep = dir.join("keep.json");
+        std::fs::write(&keep, "keep").unwrap();
+        for index in 0..MAX_SNAPSHOT_FILES + 3 {
+            std::fs::write(dir.join(format!("snapshot-{index:03}.json")), "x").unwrap();
+        }
+        std::fs::write(dir.join("ignored.txt"), "x").unwrap();
+        prune_snapshot_count(&dir, &keep);
+        let json_count = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .filter(|entry| entry.path().extension().and_then(|x| x.to_str()) == Some("json"))
+            .count();
+        assert!(json_count <= MAX_SNAPSHOT_FILES);
+        assert!(keep.exists(), "the in-flight destination is never pruned");
+        assert!(dir.join("ignored.txt").exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn recovered_sessions_are_removed_from_checkpoint_deduplication() {
+        let name = format!("deck-shell-recovered-{}", std::process::id());
+        TRACKER.lock().unwrap().saved.insert(
+            name.clone(),
+            SavedObservation {
+                activity: 1,
+                cwd: "/tmp".into(),
+                at: 1,
+            },
+        );
+        note_recovered(&name);
+        assert!(!TRACKER.lock().unwrap().saved.contains_key(&name));
+    }
+
+    #[test]
+    fn recovery_short_circuits_before_global_io_when_disabled_or_inapplicable() {
+        assert!(snapshot_for_start("deck-shell-safe", "", false).is_none());
+        assert!(snapshot_for_start("deck-shell-safe", "codex", true).is_none());
+        assert!(clear_snapshot("bad:name").is_err());
+
+        let empty = ShellSnapshot {
+            session: "deck-shell-safe".into(),
+            cwd: "/tmp".into(),
+            transcript: "\n\t".into(),
+            updated: now_epoch(),
+        };
+        assert_eq!(
+            prepare_bootstrap(&empty).err().unwrap(),
+            "shell snapshot transcript is empty"
+        );
+
+        let missing =
+            std::env::temp_dir().join(format!("deck-shell-no-prune-dir-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&missing);
+        prune_snapshot_count(&missing, &missing.join("keep.json"));
+    }
 }

@@ -80,3 +80,14 @@ pub fn switch_client(name: &str) -> Result<()> {
     run(&["switch-client", "-t", &session_target(name)])?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exact_targets_cannot_be_reinterpreted_as_prefixes_or_flags() {
+        assert_eq!(session_target("deck-card-abcd"), "=deck-card-abcd");
+        assert_eq!(pane_target("deck-card-abcd"), "=deck-card-abcd:");
+    }
+}

@@ -417,4 +417,106 @@ mod tests {
         assert!(process_group_needs_reentry(501, 500));
         assert!(!process_group_needs_reentry(501, 0));
     }
+
+    #[test]
+    fn preserved_arguments_reject_partial_relative_and_unbounded_values() {
+        assert!(valid_smoke_data_dir(OsStr::new("/tmp/deck-smoke")));
+        assert!(!valid_smoke_data_dir(OsStr::new("relative")));
+        assert!(valid_smoke_socket(OsStr::new("deck-smoke-safe")));
+        assert!(!valid_smoke_socket(OsStr::new("deck-dev")));
+        assert!(!valid_smoke_socket(OsStr::new(&format!(
+            "deck-smoke-{}",
+            "x".repeat(129)
+        ))));
+
+        assert!(valid_preserved_args(&[
+            os("--debug-logging"),
+            os("--smoke-data-dir"),
+            os("/tmp/deck-smoke"),
+            os("--smoke-tmux-socket"),
+            os("deck-smoke-safe"),
+        ]));
+        for bad in [
+            vec![os("--smoke-data-dir")],
+            vec![os("--smoke-data-dir"), os("relative")],
+            vec![os("--smoke-tmux-socket"), os("deck-dev")],
+            vec![os("--unknown")],
+        ] {
+            assert!(!valid_preserved_args(&bad));
+        }
+
+        let filtered = preserved_app_args([
+            os("deck"),
+            os("--smoke-data-dir"),
+            os("relative"),
+            os("--smoke-tmux-socket"),
+            os("deck-dev"),
+            os("--debug-logging"),
+        ]);
+        assert_eq!(filtered, vec![os("--debug-logging")]);
+    }
+
+    #[test]
+    fn helper_parser_distinguishes_normal_launches_from_malformed_helpers() {
+        assert_eq!(
+            parse_helper_request([os("deck"), os("--debug-logging")]),
+            Ok(None)
+        );
+        let base = |pid: &str, label: &str, bundle: &str| {
+            vec![os("deck"), os(HELPER_FLAG), os(pid), os(label), os(bundle)]
+        };
+        for bad in [
+            base("0", "io.c9r.deck.relaunch.1", "/Applications/deck.app"),
+            base("nope", "io.c9r.deck.relaunch.1", "/Applications/deck.app"),
+            base("12", "wrong.label", "/Applications/deck.app"),
+            base("12", "io.c9r.deck.relaunch.bad!", "/Applications/deck.app"),
+            base("12", "io.c9r.deck.relaunch.12", "relative.app"),
+            base("12", "io.c9r.deck.relaunch.12", "/Applications/deck.txt"),
+        ] {
+            assert_eq!(parse_helper_request(bad), Err(()));
+        }
+    }
+
+    #[test]
+    fn captured_and_resolved_targets_stay_inside_the_original_bundle() {
+        let executable = PathBuf::from("/Applications/deck.app/Contents/MacOS/deck-app");
+        let target = capture_target_from(
+            executable.clone(),
+            [os("deck"), os("--debug-logging"), os("--ignored")],
+        )
+        .unwrap();
+        assert_eq!(target.app_bundle, PathBuf::from("/Applications/deck.app"));
+        assert_eq!(target.preferred_executable, os("deck-app"));
+        assert_eq!(target.preserved_args, vec![os("--debug-logging")]);
+        assert!(capture_target_from(PathBuf::from("relative/deck"), [os("deck")]).is_none());
+
+        let dir = std::env::temp_dir().join(format!("deck-relaunch-{}", std::process::id()));
+        let bundle = dir.join("deck.app");
+        let macos = bundle.join("Contents/MacOS");
+        std::fs::create_dir_all(&macos).unwrap();
+        let preferred = macos.join("deck-app");
+        std::fs::write(&preferred, "binary").unwrap();
+        let local = RelaunchTarget {
+            app_bundle: bundle,
+            preferred_executable: os("deck-app"),
+            preserved_args: Vec::new(),
+        };
+        assert_eq!(resolved_installed_executable(&local), Some(preferred));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn relaunch_identifiers_and_missing_install_state_fail_closed() {
+        let label = unique_label(42);
+        assert!(label.starts_with("io.c9r.deck.relaunch.42."));
+        assert!(label
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'.'));
+        assert!(process_exists(std::process::id()));
+        assert!(!process_exists(2_000_000_000));
+        assert_eq!(
+            schedule_clean_relaunch().unwrap_err(),
+            "installed application path is unavailable"
+        );
+    }
 }

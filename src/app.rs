@@ -2,6 +2,7 @@ use crate::model::{self, Board, Card, COLUMNS};
 use crate::tmux;
 use anyhow::Result;
 use std::collections::HashSet;
+use std::path::PathBuf;
 
 pub enum Mode {
     Normal,
@@ -40,10 +41,12 @@ pub struct App {
     pub tail: Vec<String>,
     pub quit: bool,
     pending: Option<Action>,
+    data_dir: PathBuf,
 }
 
 impl App {
     pub fn load() -> Result<Self> {
+        let data_dir = model::data_dir();
         let board = Board::load()?;
         let mut app = App {
             board,
@@ -55,9 +58,26 @@ impl App {
             tail: Vec::new(),
             quit: false,
             pending: None,
+            data_dir,
         };
         app.refresh();
         Ok(app)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_with_board(board: Board) -> Self {
+        App {
+            board,
+            sel_col: 0,
+            sel_row: 0,
+            mode: Mode::Normal,
+            status: "ready".into(),
+            live_sessions: HashSet::new(),
+            tail: Vec::new(),
+            quit: false,
+            pending: None,
+            data_dir: std::env::temp_dir(),
+        }
     }
 
     pub fn take_action(&mut self) -> Option<Action> {
@@ -95,7 +115,7 @@ impl App {
     }
 
     fn save(&mut self) {
-        if let Err(e) = self.board.save() {
+        if let Err(e) = self.board.save_to(&self.data_dir) {
             self.status = format!("save failed: {e}");
         }
     }
@@ -427,3 +447,235 @@ fn expand_tilde(path: &str) -> String {
 }
 
 pub use ratatui::crossterm::event::KeyCode;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_DIR: AtomicU64 = AtomicU64::new(1);
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "deck-app-test-{tag}-{}-{}",
+            std::process::id(),
+            NEXT_DIR.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    fn card(id: &str, column: usize) -> Card {
+        Card {
+            id: id.into(),
+            title: format!("card {id}"),
+            command: "echo ready".into(),
+            dir: "/tmp".into(),
+            column,
+            session: format!("deck-card-{id}"),
+            created_at: 1,
+        }
+    }
+
+    fn test_app(tag: &str, cards: Vec<Card>) -> App {
+        App {
+            board: Board {
+                cards,
+                archived: Vec::new(),
+            },
+            sel_col: 0,
+            sel_row: 0,
+            mode: Mode::Normal,
+            status: "ready".into(),
+            live_sessions: HashSet::new(),
+            tail: Vec::new(),
+            quit: false,
+            pending: None,
+            data_dir: temp_dir(tag),
+        }
+    }
+
+    fn set_input(app: &mut App, value: &str) {
+        let Mode::Input { buffer, .. } = &mut app.mode else {
+            panic!("expected input mode")
+        };
+        *buffer = value.into();
+    }
+
+    #[test]
+    fn navigation_clamps_to_each_column_and_quit_is_explicit() {
+        let mut app = test_app("navigation", vec![card("a", 0), card("b", 0), card("c", 1)]);
+
+        assert_eq!(app.selected_card().unwrap().id, "a");
+        app.on_key(KeyCode::Down);
+        assert_eq!(app.selected_card().unwrap().id, "b");
+        app.on_key(KeyCode::Char('j'));
+        assert_eq!(app.sel_row, 1, "selection stops at the end of a column");
+        app.on_key(KeyCode::Char('k'));
+        assert_eq!(app.sel_row, 0);
+
+        app.sel_row = 1;
+        app.on_key(KeyCode::Right);
+        assert_eq!((app.sel_col, app.sel_row), (1, 0));
+        assert_eq!(app.selected_card().unwrap().id, "c");
+        app.on_key(KeyCode::Char('l'));
+        assert_eq!((app.sel_col, app.sel_row), (2, 0));
+        assert!(app.selected_card().is_none());
+        app.on_key(KeyCode::Left);
+        app.on_key(KeyCode::Char('h'));
+        assert_eq!(app.sel_col, 0);
+
+        app.on_key(KeyCode::Char('q'));
+        assert!(app.quit);
+    }
+
+    #[test]
+    fn new_card_wizard_validates_and_persists_every_stage() {
+        let mut app = test_app("new-card", Vec::new());
+
+        app.on_key(KeyCode::Char('n'));
+        app.on_key(KeyCode::Enter);
+        assert_eq!(app.status, "title required");
+
+        for ch in "draftx".chars() {
+            app.on_key(KeyCode::Char(ch));
+        }
+        app.on_key(KeyCode::Backspace);
+        app.on_key(KeyCode::Enter);
+        assert!(matches!(
+            app.mode,
+            Mode::Input {
+                kind: InputKind::NewCommand { .. },
+                ..
+            }
+        ));
+
+        set_input(&mut app, "codex");
+        app.on_key(KeyCode::Enter);
+        assert!(matches!(
+            app.mode,
+            Mode::Input {
+                kind: InputKind::NewDir { .. },
+                ..
+            }
+        ));
+
+        set_input(&mut app, "");
+        app.on_key(KeyCode::Enter);
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(app.board.cards.len(), 1);
+        let created = &app.board.cards[0];
+        assert_eq!(created.title, "draft");
+        assert_eq!(created.command, "codex");
+        assert_eq!(created.dir, expand_tilde("~"));
+        assert!(app.data_dir.join("board.json").is_file());
+        assert!(app.status.starts_with("created: draft"));
+    }
+
+    #[test]
+    fn editing_can_commit_empty_commands_and_cancel_titles() {
+        let mut app = test_app("editing", vec![card("a", 0)]);
+
+        app.on_key(KeyCode::Char('e'));
+        set_input(&mut app, "discarded");
+        app.on_key(KeyCode::Esc);
+        assert_eq!(app.board.cards[0].title, "card a");
+        assert_eq!(app.status, "cancelled");
+
+        app.on_key(KeyCode::Char('e'));
+        set_input(&mut app, "renamed");
+        app.on_key(KeyCode::Enter);
+        assert_eq!(app.board.cards[0].title, "renamed");
+
+        app.on_key(KeyCode::Char('c'));
+        set_input(&mut app, "");
+        app.on_key(KeyCode::Enter);
+        assert!(app.board.cards[0].command.is_empty());
+        assert!(matches!(app.mode, Mode::Normal));
+    }
+
+    #[test]
+    fn move_and_reorder_follow_the_card_without_crossing_bounds() {
+        let mut app = test_app(
+            "moving",
+            vec![card("a", 0), card("b", 0), card("c", 0), card("z", 1)],
+        );
+
+        app.on_key(KeyCode::Char('K'));
+        assert_eq!(app.sel_row, 0);
+        app.on_key(KeyCode::Char('J'));
+        assert_eq!(app.sel_row, 1);
+        assert_eq!(app.selected_card().unwrap().id, "a");
+        app.on_key(KeyCode::Char('K'));
+        assert_eq!(app.sel_row, 0);
+
+        app.on_key(KeyCode::Char('H'));
+        assert_eq!(app.board.cards[0].column, 0);
+        app.on_key(KeyCode::Char('L'));
+        assert_eq!((app.sel_col, app.sel_row), (1, 0));
+        assert_eq!(app.selected_card().unwrap().id, "a");
+        app.on_key(KeyCode::Char(']'));
+        assert_eq!(app.sel_col, 2);
+        app.on_key(KeyCode::Char('['));
+        assert_eq!(app.sel_col, 1);
+    }
+
+    #[test]
+    fn actions_and_confirmations_are_tokened_to_the_selected_card() {
+        let mut app = test_app("actions", vec![card("a", 0), card("b", 0)]);
+        app.live_sessions.insert("deck-card-a".into());
+
+        app.on_key(KeyCode::Enter);
+        match app.take_action() {
+            Some(Action::Attach { session }) => assert_eq!(session, "deck-card-a"),
+            _ => panic!("attach action was not queued"),
+        }
+        assert!(app.take_action().is_none());
+
+        app.on_key(KeyCode::Char('s'));
+        assert_eq!(app.status, "session already running");
+        app.on_key(KeyCode::Char('o'));
+        match app.take_action() {
+            Some(Action::EditNotes { card_id }) => assert_eq!(card_id, "a"),
+            _ => panic!("notes action was not queued"),
+        }
+
+        app.on_key(KeyCode::Char('x'));
+        assert!(matches!(
+            app.mode,
+            Mode::Confirm(ConfirmKind::KillSession { .. })
+        ));
+        app.on_key(KeyCode::Char('n'));
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(app.status, "cancelled");
+
+        app.live_sessions.clear();
+        app.on_key(KeyCode::Char('x'));
+        assert_eq!(app.status, "no live session");
+        app.on_key(KeyCode::Char('d'));
+        assert!(matches!(
+            app.mode,
+            Mode::Confirm(ConfirmKind::DeleteCard { .. })
+        ));
+        app.on_key(KeyCode::Char('Y'));
+        assert_eq!(app.board.cards.len(), 1);
+        assert_eq!(app.board.archived.len(), 1);
+        assert_eq!(app.board.archived[0].id, "a");
+        assert_eq!(app.status, "deleted: card a");
+    }
+
+    #[test]
+    fn refresh_clears_stale_tail_when_the_selected_session_is_absent() {
+        let mut app = test_app("refresh", vec![card("definitely-not-live", 0)]);
+        app.tail = vec!["stale".into()];
+        app.refresh();
+        assert!(app.tail.is_empty());
+    }
+
+    #[test]
+    fn tilde_expansion_preserves_ordinary_paths() {
+        assert_eq!(expand_tilde("/tmp/project"), "/tmp/project");
+        assert!(expand_tilde("~/project").ends_with("/project"));
+    }
+}

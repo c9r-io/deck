@@ -1097,7 +1097,7 @@ pub(crate) fn start_session(
 /// stays off), and deck translates wheel deltas into tmux copy-mode
 /// Returns copy-mode and live-cursor visibility AFTER the scroll, so the UI
 /// can update both without waiting for the next poll.
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 pub(crate) struct TerminalScrollResult {
     active: bool,
     cursor_visible: bool,
@@ -2943,6 +2943,183 @@ mod tests {
         assert!(out.contains("deck 0.4.29") && out.contains("tmux: sidecar"));
         assert!(out.contains("===== app.log ====="));
         assert!(out.contains("[poll] session listing recovered"), "{out}");
+    }
+
+    #[test]
+    fn command_adapters_preserve_closed_status_and_notice_models() {
+        assert_eq!(
+            debug_logging_enabled(),
+            storage::command_flag("--debug-logging")
+        );
+        let identity = build_identity();
+        assert_eq!(identity.version, env!("CARGO_PKG_VERSION"));
+
+        let none = to_loaded(None);
+        assert_eq!(none.data, "");
+        assert_eq!(none.source, "none");
+        assert!(none.warning.is_none());
+
+        let recovered = to_loaded(Some(storage::LoadOutcome {
+            payload: "{\"ok\":true}".into(),
+            source: "backup",
+            warning: Some("interrupted deliveries were recovered".into()),
+        }));
+        assert_eq!(recovered.source, "backup");
+        assert_eq!(recovered.warning.unwrap().code, "queue.interrupted");
+
+        let notices = [
+            ("privacy hardening failed", "storage.privacy"),
+            ("scheduled prompts could not be saved", "queue.persist"),
+            ("scheduled prompts could not be loaded", "queue.load"),
+            ("command history could not be loaded", "history.load"),
+            ("ordinary recovery", "storage.recovered"),
+        ];
+        for (note, code) in notices {
+            assert_eq!(notice_from(note).code, code);
+        }
+
+        storage::WARNINGS.lock().unwrap().clear();
+        storage::warn("privacy hardening failed".into());
+        let drained = storage_warnings();
+        assert_eq!(drained.len(), 1);
+        assert_eq!(drained[0].code, "storage.privacy");
+        assert!(storage_warnings().is_empty());
+    }
+
+    #[test]
+    fn terminal_scroll_parser_rejects_truncated_and_extra_state() {
+        let active = parse_terminal_scroll_result("1\t0\n").unwrap();
+        assert!(active.active);
+        assert!(!active.cursor_visible);
+        let bottom = parse_terminal_scroll_result("0\t1").unwrap();
+        assert!(!bottom.active);
+        assert!(bottom.cursor_visible);
+        for bad in ["", "1", "1\t0\textra"] {
+            assert_eq!(
+                parse_terminal_scroll_result(bad).unwrap_err(),
+                "scroll-status-invalid"
+            );
+        }
+    }
+
+    #[test]
+    fn command_boundaries_reject_invalid_sessions_before_any_tmux_effect() {
+        let bad = "bad:name".to_string();
+        assert!(start_session(bad.clone(), "/tmp".into(), "".into(), false).is_err());
+        assert!(scroll_session(bad.clone(), 1).is_err());
+        assert!(scroll_bottom(bad.clone()).is_err());
+        clear_history(bad.clone());
+        assert!(terminal_metrics(bad.clone()).is_err());
+        assert!(kill_session(bad.clone()).is_err());
+
+        let grid = TerminalSelectionGrid { cols: 80, rows: 24 };
+        assert!(terminal_selection_start(bad.clone(), 1, 0, 0, 0, 0, grid).is_err());
+        assert!(terminal_selection_update(bad.clone(), 1, 0, 0, 0, grid).is_err());
+        assert!(terminal_selection_finish(bad.clone(), 1, grid).is_err());
+        assert!(terminal_selection_copy(bad.clone(), 1).is_err());
+        assert!(terminal_selection_scroll(bad.clone(), 1, 1).is_err());
+        assert!(terminal_selection_cancel(bad, 1).is_err());
+    }
+
+    #[test]
+    fn frozen_selection_lease_is_copyable_and_keeps_absolute_endpoints() {
+        let name = format!("deck-selection-unit-{}", std::process::id());
+        let lease = TerminalSelectionLease::Frozen {
+            token: 77,
+            text: "exact\ntext".into(),
+            bytes: 10,
+            history_limit: 50000,
+            selection_start_row: 11,
+            selection_start_col: 2,
+            selection_end_row: 13,
+            selection_end_col: 7,
+        };
+        terminal_selection_leases()
+            .lock()
+            .unwrap()
+            .insert(name.clone(), lease);
+        assert!(selection_token_matches(&name, 77, true));
+        assert!(!selection_token_matches(&name, 76, true));
+
+        let copy = terminal_selection_copy(name.clone(), 77).unwrap();
+        assert_eq!(copy.text, "exact\ntext");
+        assert_eq!(copy.bytes, 10);
+        assert_eq!(copy.history_limit, 50000);
+
+        let status = TerminalSelectionStatus {
+            active: true,
+            cursor_visible: false,
+            selection_present: false,
+            history_rows: 100,
+            history_limit: 50000,
+            pane_rows: 24,
+            pane_cols: 80,
+            scroll_position: 10,
+            cursor_row: 1,
+            cursor_col: 2,
+            absolute_row: 91,
+            at_top: false,
+            at_bottom: false,
+            history_at_limit: false,
+            selection_start_row: 0,
+            selection_start_col: 0,
+            selection_end_row: 0,
+            selection_end_col: 0,
+        };
+        let frozen = frozen_selection_status(&name, 77, status).unwrap();
+        assert!(frozen.selection_present);
+        assert_eq!(
+            (
+                frozen.selection_start_row,
+                frozen.selection_start_col,
+                frozen.selection_end_row,
+                frozen.selection_end_col,
+            ),
+            (11, 2, 13, 7)
+        );
+        assert!(
+            frozen_selection_status(&name, 76, TerminalSelectionStatus { ..frozen.clone() })
+                .is_err()
+        );
+        terminal_selection_leases().lock().unwrap().remove(&name);
+        assert!(terminal_selection_cancel(name, 77).is_ok());
+    }
+
+    #[test]
+    fn filesystem_command_adapters_bound_candidates_and_resolve_parents() {
+        let dir = std::env::temp_dir().join(format!("deck-path-command-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("nested")).unwrap();
+        std::fs::write(dir.join("nested/file.rs"), "fn main() {}\n").unwrap();
+
+        let resolved =
+            resolve_parent_dir("nested/file.rs:12:3".into(), dir.display().to_string()).unwrap();
+        assert_eq!(
+            std::path::Path::new(&resolved.directory),
+            std::fs::canonicalize(dir.join("nested")).unwrap()
+        );
+        assert!(!resolved.target_is_directory);
+
+        let mut candidates = vec!["nested/file.rs".to_string(), "missing.rs".to_string()];
+        candidates.extend((0..128).map(|_| "nested".to_string()));
+        let exists = terminal_paths_exist(candidates, dir.display().to_string());
+        assert!(exists[0]);
+        assert!(!exists[1]);
+        assert!(exists[127]);
+        assert!(!exists[128]);
+        assert!(!exists[129]);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn process_tree_memory_reports_each_requested_root() {
+        let mut roots = HashMap::new();
+        roots.insert("self".to_string(), std::process::id());
+        roots.insert("missing".to_string(), u32::MAX);
+        let memory = tree_mem(&roots);
+        assert_eq!(memory.len(), 2);
+        assert!(memory["self"] > 0.0);
+        assert_eq!(memory["missing"], 0.0);
     }
 
     /// The backend log-side error classifier: raw io/tmux/storage errors map
