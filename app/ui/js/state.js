@@ -36,7 +36,12 @@ Object.assign(globalThis, {
   sepLogged: 0,
   settings: {
     editor: '', locale: 'system', theme: 'deck-dark', accent: 'teal',
-    updateChannel: 'stable', sessionRestore: false,
+    updateChannel: 'stable', sessionRestore: false, fontScale: 1,
+    shortcuts: {
+      newSession: 'Meta+KeyN', toggleSidebar: 'Meta+KeyB',
+      splitRight: 'Meta+KeyD', splitDown: 'Meta+Shift+KeyD',
+      fontIncrease: 'Meta+Equal', fontDecrease: 'Meta+Minus', fontReset: 'Meta+Digit0',
+    },
   },
   buildIdentity: { version: '', commit: 'dev' },
   term: null,

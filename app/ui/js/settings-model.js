@@ -2,9 +2,55 @@ const THEMES = new Set(['deck-dark', 'light', 'system', 'high-contrast']);
 const ACCENTS = new Set(['teal', 'blue', 'purple', 'orange']);
 const UPDATE_CHANNELS = new Set(['stable', 'nightly']);
 
+export const FONT_SCALE_MIN = 0.8;
+export const FONT_SCALE_MAX = 1.6;
+export const FONT_SCALE_STEP = 0.1;
+
+export const SHORTCUT_ACTIONS = Object.freeze([
+  Object.freeze({ id: 'newSession', defaultBinding: 'Meta+KeyN' }),
+  Object.freeze({ id: 'toggleSidebar', defaultBinding: 'Meta+KeyB' }),
+  Object.freeze({ id: 'splitRight', defaultBinding: 'Meta+KeyD' }),
+  Object.freeze({ id: 'splitDown', defaultBinding: 'Meta+Shift+KeyD' }),
+  Object.freeze({ id: 'fontIncrease', defaultBinding: 'Meta+Equal' }),
+  Object.freeze({ id: 'fontDecrease', defaultBinding: 'Meta+Minus' }),
+  Object.freeze({ id: 'fontReset', defaultBinding: 'Meta+Digit0' }),
+]);
+
+export const DEFAULT_SHORTCUTS = Object.freeze(Object.fromEntries(
+  SHORTCUT_ACTIONS.map(action => [action.id, action.defaultBinding]),
+));
+
+const MODIFIER_ORDER = Object.freeze(['Meta', 'Control', 'Alt', 'Shift']);
+const KEY_CODE = /^(?:Key[A-Z]|Digit[0-9]|F(?:[1-9]|1[0-2])|Equal|Minus|Bracket(?:Left|Right)|Backslash|Semicolon|Quote|Comma|Period|Slash|Backquote|Arrow(?:Up|Down|Left|Right)|Home|End|Page(?:Up|Down)|Space|Enter|Tab|Backspace|Delete)$/;
+
+export function normalizeShortcutBinding(value, fallback = '') {
+  if (value === '') return '';
+  if (typeof value !== 'string' || value.length > 64) return fallback;
+  const parts = value.split('+');
+  const code = parts.pop();
+  if (!KEY_CODE.test(code || '')) return fallback;
+  const seen = new Set();
+  for (const modifier of parts) {
+    if (!MODIFIER_ORDER.includes(modifier) || seen.has(modifier)) return fallback;
+    seen.add(modifier);
+  }
+  // The runtime intentionally treats Command+= and Command++ as one binding.
+  // A separately stored Shift+Equal binding could therefore never match.
+  if (code === 'Equal' && seen.has('Shift')) return fallback;
+  const canonical = [...MODIFIER_ORDER.filter(modifier => seen.has(modifier)), code].join('+');
+  return canonical === value ? canonical : fallback;
+}
+
+export function normalizeFontScale(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < FONT_SCALE_MIN || number > FONT_SCALE_MAX) return 1;
+  return Number((Math.round(number / FONT_SCALE_STEP) * FONT_SCALE_STEP).toFixed(1));
+}
+
 export const DEFAULT_SETTINGS = Object.freeze({
   editor: '', locale: 'system', theme: 'deck-dark', accent: 'teal',
-  updateChannel: 'stable', sessionRestore: false,
+  updateChannel: 'stable', sessionRestore: false, fontScale: 1,
+  shortcuts: DEFAULT_SHORTCUTS,
 });
 
 export function normalizeSettings(value) {
@@ -18,6 +64,15 @@ export function normalizeSettings(value) {
   if (!ACCENTS.has(merged.accent)) merged.accent = DEFAULT_SETTINGS.accent;
   if (!UPDATE_CHANNELS.has(merged.updateChannel)) merged.updateChannel = DEFAULT_SETTINGS.updateChannel;
   if (typeof merged.sessionRestore !== 'boolean') merged.sessionRestore = DEFAULT_SETTINGS.sessionRestore;
+  merged.fontScale = normalizeFontScale(merged.fontScale);
+  const rawShortcuts = raw.shortcuts && typeof raw.shortcuts === 'object' && !Array.isArray(raw.shortcuts)
+    ? raw.shortcuts : {};
+  const shortcuts = Object.fromEntries(Object.entries(rawShortcuts)
+    .filter(([key, value]) => key.length <= 64 && typeof value === 'string' && value.length <= 64));
+  for (const action of SHORTCUT_ACTIONS) {
+    shortcuts[action.id] = normalizeShortcutBinding(rawShortcuts[action.id], action.defaultBinding);
+  }
+  merged.shortcuts = shortcuts;
   return merged;
 }
 

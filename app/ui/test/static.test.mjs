@@ -99,7 +99,7 @@ test('the canonical dictionary has no unused keys outside documented dynamic fam
     'app/ui/js/dialogs.js', 'app/ui/js/i18n.js', 'app/ui/js/layout.js',
     'app/ui/js/pure.js', 'app/ui/js/scheduler.js', 'app/ui/js/selection.js', 'app/ui/js/state.js',
     'app/ui/js/terminal.js'].map(read).join('\n');
-  const dynamic = /^(?:board\.default|board\.hint|session\.status|notice|tmux\.notice)\./;
+  const dynamic = /^(?:board\.default|board\.hint|session\.status|settings\.shortcut|notice|tmux\.notice)\./;
   const unused = Object.keys(en).filter(key => !dynamic.test(key) && !source.includes(key));
   assert.deepEqual(unused, []);
 });

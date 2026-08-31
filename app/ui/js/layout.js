@@ -9,8 +9,14 @@ import { AGENT_HISTORY_VERTICAL_UP, createTerminalResizeCoordinator, createTermi
 import { toggleQueuePanel } from './scheduler.js';
 import { cancelAllTerminalSelections, cancelTerminalSelection, copyTerminalSelection, hasTerminalSelection, wireTerminalSelection } from './selection.js';
 import { getTerminalTheme, onThemeChange, syncThemeIntegrations } from './theme.js';
+import { getFontScale, onFontScaleChange, TERMINAL_BASE_FONT_SIZE } from './font-scale.js';
+import { registerShortcutAction } from './shortcuts.js';
 
 onThemeChange(({ terminal }) => panes.forEach(pane => { pane.term.options.theme = terminal; }));
+onFontScaleChange(scale => {
+  panes.forEach(pane => { pane.term.options.fontSize = TERMINAL_BASE_FONT_SIZE * scale; });
+  fitAll();
+});
 
 /* ----- layout tree helpers ----- */
 export const leafOf = sid => ({ type: 'leaf', sid });
@@ -205,7 +211,7 @@ export function createPane(card) {
 
   const term = new Terminal({
     fontFamily: 'ui-monospace, "SF Mono", Menlo, monospace',
-    fontSize: 12.5,
+    fontSize: TERMINAL_BASE_FONT_SIZE * getFontScale(),
     lineHeight: 1.7,
     cursorBlink: true,
     // Preserve macOS text-input/dead-key semantics. Option is not rewritten
@@ -522,13 +528,6 @@ export function wireTerminalInput(pane, term, host) {
       if (route === 'history') agentHistoryBrowsing = true;
     } else if (e.type === 'keydown' && !/^(?:ArrowUp|ArrowDown|Shift|Control|Alt|Meta)$/.test(e.key)) {
       agentHistoryBrowsing = false;
-    }
-    if (e.metaKey && e.key === 'b') return false;
-    /* split shortcuts (方案 B): ⌘D right, ⌘⇧D down */
-    if (e.type === 'keydown' && e.metaKey && (e.key === 'd' || e.key === 'D')) {
-      e.preventDefault();
-      showSplitPicker(e.shiftKey ? 'col' : 'row');
-      return false;
     }
     /* ⌘V: returning false skips xterm's key handling; the browser then fires
        a native paste event, which xterm's textarea handler feeds into the
@@ -940,6 +939,8 @@ export function showSplitPicker(dir) {
 }
 $('split-right').onclick = e => { e.stopPropagation(); showSplitPicker('row'); };
 $('split-down').onclick = e => { e.stopPropagation(); showSplitPicker('col'); };
+registerShortcutAction('splitRight', () => showSplitPicker('row'));
+registerShortcutAction('splitDown', () => showSplitPicker('col'));
 
 /* NOTE: listen() requires the core:event permission in
    src-tauri/capabilities/default.json — without it registration is refused

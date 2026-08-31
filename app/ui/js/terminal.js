@@ -5,7 +5,8 @@ import { copyExact, isComposingKeyEvent, linkMenuItems } from './pure.js';
 import { confirmDialog, inlineRename, toast, promptDialog } from './dialogs.js';
 import { closeSession, panes, provider, renameTab, render, switchProject, activeProject } from './board.js';
 import { backToBoard, openSession, strToB64 } from './layout.js';
-import { formatNumber, t } from './i18n.js';
+import { formatNumber, onLocaleChange, t } from './i18n.js';
+import { formatShortcut, registerShortcutAction } from './shortcuts.js';
 
 /* ---------- context menus ---------- */
 export function placeCtx(e) {
@@ -500,14 +501,24 @@ export async function writeClipboard(text) {
 export function toggleSidebar() {
   document.body.classList.toggle('side-collapsed');
   const collapsed = document.body.classList.contains('side-collapsed');
-  $('collapse-btn').title = t(collapsed ? 'app.expandSidebar' : 'app.collapseSidebar');
+  refreshShortcutChrome();
   $('collapse-btn').firstElementChild.style.transform = collapsed ? 'scaleX(-1)' : '';
+}
+export function refreshShortcutChrome() {
+  const collapsed = document.body.classList.contains('side-collapsed');
+  $('collapse-btn').title = t(collapsed ? 'app.expandSidebar' : 'app.collapseSidebar', {
+    shortcut: formatShortcut(settings.shortcuts.toggleSidebar),
+  });
+  $('split-right').title = t('session.splitRight', { shortcut: formatShortcut(settings.shortcuts.splitRight) });
+  $('split-down').title = t('session.splitDown', { shortcut: formatShortcut(settings.shortcuts.splitDown) });
 }
 $('collapse-btn').onclick = toggleSidebar;
 $('home-btn').onclick = backToBoard;
 $('back-btn').onclick = backToBoard;
 $('board-new').onclick = () => newSession(HOME);
 $('side-new').onclick = () => newSession(HOME);
+registerShortcutAction('newSession', () => newSession(HOME));
+registerShortcutAction('toggleSidebar', toggleSidebar);
 $('sess-close').onclick = () => closeSession(state.sessionId, true);
 $('sess-col').addEventListener('change', async e => {
   await provider.move(state.sessionId, e.target.value);
@@ -516,7 +527,6 @@ $('sess-col').addEventListener('change', async e => {
 });
 document.addEventListener('keydown', e => {
   if (isComposingKeyEvent(e)) return;
-  if ((e.metaKey || e.ctrlKey) && e.key === 'b') { e.preventDefault(); toggleSidebar(); return; }
   if (e.key === 'Escape') {
     if ($('ctx').style.display === 'block') { $('ctx').style.display = 'none'; return; }
     /* Esc inside the terminal belongs to the terminal (agents use it) */
@@ -525,3 +535,6 @@ document.addEventListener('keydown', e => {
     }
   }
 });
+window.addEventListener('deck-shortcuts-changed', refreshShortcutChrome);
+onLocaleChange(refreshShortcutChrome);
+refreshShortcutChrome();

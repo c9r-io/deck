@@ -10,6 +10,7 @@ import {
   chainQuietHint, contextStatusKey, CHAIN_QUIET_SECS, shQuote, quickBarLayout, rectsOverlap,
   createExitRetirementTracker, createSerialTransactionQueue, deleteSessionsTransaction, sidebarGroups,
   copyExact, createTerminalResizeCoordinator, createTerminalSelectionModel,
+  reorderById,
   terminalCopyRoute, terminalSelectionEdgeLines,
   isComposingKeyEvent, isPlainShiftKeydown, shouldRouteImeKeydownThroughInput,
   AGENT_HISTORY_VERTICAL_UP, terminalAgentComposerGeometry, terminalAgentHistoryUpRoute,
@@ -19,6 +20,14 @@ import {
   linkMenuItems,
   inlineRenameValue, persistOptimistically,
 } from '../js/pure.js';
+
+test('id-addressed reorder supports before/after and ignores stale drag payloads', () => {
+  const items = [{ id: 'a' }, { id: 'b' }, { id: 'c' }];
+  assert.deepEqual(reorderById(items, 'a', 'c', true).map(item => item.id), ['b', 'c', 'a']);
+  assert.deepEqual(reorderById(items, 'c', 'a', false).map(item => item.id), ['c', 'a', 'b']);
+  assert.equal(reorderById(items, 'a', 'a'), items);
+  assert.equal(reorderById(items, 'missing', 'a'), items);
+});
 
 test('the completion bar reserves a non-overlapping row in only its pane', () => {
   const shown = quickBarLayout({ width: 800, height: 600, barHeight: 42, visible: true });

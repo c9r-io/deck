@@ -360,6 +360,21 @@ export async function copyExact(text, writer) {
   return text.length;
 }
 
+/** Return a new array with one id-addressed item inserted immediately before
+ * or after another. Invalid/self moves are no-ops, which makes stale drag
+ * payloads harmless when another Board transaction completed first. */
+export function reorderById(items, movingId, targetId, after = false) {
+  if (!Array.isArray(items) || !movingId || !targetId || movingId === targetId) return items;
+  const from = items.findIndex(item => item?.id === movingId);
+  const target = items.findIndex(item => item?.id === targetId);
+  if (from < 0 || target < 0) return items;
+  const next = items.slice();
+  const [moving] = next.splice(from, 1);
+  const targetNow = next.findIndex(item => item?.id === targetId);
+  next.splice(targetNow + (after ? 1 : 0), 0, moving);
+  return next.every((item, index) => item === items[index]) ? items : next;
+}
+
 /** Resolve Command-C ownership without depending on xterm or the DOM. Deck's
  * token selection wins while present; otherwise xterm's native word/line
  * selection may supply the clipboard text. */

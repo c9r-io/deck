@@ -2,7 +2,7 @@
 // Part of deck's no-build frontend: native ES modules, no bundler.
 import { $, columnHint, dotTitle, POLL_MS, QUIET_SECS, emit, genId, inv, listeners, sessionName, setMemChip, state, store, uev } from './state.js';
 import { mutateBoard, mutateBoardDebounced } from './persistence.js';
-import { createExitRetirementTracker, sidebarGroups } from './pure.js';
+import { createExitRetirementTracker, reorderById, sidebarGroups } from './pure.js';
 import { confirmDialog, inlineRename, toast } from './dialogs.js';
 import { clearSeparators, closePaneBySid, leaveSessionView, openSession, renderSessionView, updatePaneChrome } from './layout.js';
 import { SHELL_FG, showProjectCtx, showSessionCtx } from './terminal.js';
@@ -42,6 +42,17 @@ export const provider = {
       p.name = name;
     });
     emit('projects');
+  },
+  async reorderProject(pid, targetId, after = false) {
+    let changed = false;
+    await mutateBoard(draft => {
+      const next = reorderById(draft.projects, pid, targetId, after);
+      if (next === draft.projects) return { noop: true };
+      draft.projects = next;
+      changed = true;
+    });
+    if (changed) emit('projects');
+    return changed;
   },
   /* Deleting a card or a project means "cancel every future scheduling of
      its session(s), permanently". That cancellation must be PERSISTED
@@ -478,10 +489,13 @@ export function updateSidebarStatus(card) {
 /* ---------- project tabs ---------- */
 export function renderTabs() {
   const bar = $('tabs');
+  const scrollLeft = bar.scrollLeft;
   bar.innerHTML = '';
   for (const p of provider.projects()) {
     const el = document.createElement('div');
     el.className = 'tab' + (p.id === state.projectId ? ' active' : '');
+    el.dataset.pid = p.id;
+    el.draggable = true;
     el.innerHTML = `<span class="name"></span>`;
     el.querySelector('.name').textContent = p.name;
     if (p.id !== state.projectId &&
@@ -494,6 +508,37 @@ export function renderTabs() {
     el.onclick = () => switchProject(p.id);
     el.ondblclick = () => renameTab(el, p);
     el.oncontextmenu = e => showProjectCtx(e, p.id);
+    el.addEventListener('dragstart', event => {
+      event.dataTransfer.effectAllowed = 'move';
+      event.dataTransfer.setData('text/deck-project', p.id);
+      el.classList.add('dragging');
+    });
+    el.addEventListener('dragover', event => {
+      if (!Array.from(event.dataTransfer.types || []).includes('text/deck-project')) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = 'move';
+      const after = event.clientX >= el.getBoundingClientRect().left + el.offsetWidth / 2;
+      bar.querySelectorAll('.tab.drag-before, .tab.drag-after').forEach(tab => {
+        tab.classList.remove('drag-before', 'drag-after');
+      });
+      el.classList.add(after ? 'drag-after' : 'drag-before');
+    });
+    el.addEventListener('dragleave', event => {
+      if (!el.contains(event.relatedTarget)) el.classList.remove('drag-before', 'drag-after');
+    });
+    el.addEventListener('drop', async event => {
+      event.preventDefault();
+      const movingId = event.dataTransfer.getData('text/deck-project');
+      const after = el.classList.contains('drag-after');
+      bar.querySelectorAll('.tab').forEach(tab => tab.classList.remove('drag-before', 'drag-after'));
+      if (movingId) {
+        try { await provider.reorderProject(movingId, p.id, after); }
+        catch (_) { toast(t('error.projectOrderSave')); }
+      }
+    });
+    el.addEventListener('dragend', () => {
+      bar.querySelectorAll('.tab').forEach(tab => tab.classList.remove('dragging', 'drag-before', 'drag-after'));
+    });
     bar.appendChild(el);
   }
   const add = document.createElement('button');
@@ -507,9 +552,11 @@ export function renderTabs() {
     if (tab) renameTab(tab, p);
   };
   bar.appendChild(add);
+  bar.scrollLeft = scrollLeft;
 }
 
 export function renameTab(el, p) {
+  el.draggable = false;
   inlineRename(el, p.name, async v => {
     if (v) await provider.renameProject(p.id, v);
     render();

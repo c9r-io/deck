@@ -2,9 +2,16 @@
 // Part of deck's no-build frontend: native ES modules, no bundler.
 import { $, inv, uev } from './state.js';
 import { inlineRenameValue } from './pure.js';
-import { applyTranslations, setLocale, t, translateNotice } from './i18n.js';
-import { normalizeSettings, parseSettings, serializeSettings } from './settings-model.js';
+import { applyTranslations, onLocaleChange, setLocale, t, translateNotice } from './i18n.js';
+import {
+  FONT_SCALE_MAX, FONT_SCALE_MIN, FONT_SCALE_STEP, SHORTCUT_ACTIONS,
+  normalizeSettings, parseSettings, serializeSettings,
+} from './settings-model.js';
 import { activateTheme } from './theme.js';
+import { applyFontScale } from './font-scale.js';
+import {
+  formatShortcut, isSafeShortcut, registerShortcutAction, shortcutConflict, shortcutFromEvent,
+} from './shortcuts.js';
 
 /* ---------- confirm dialog (window.confirm is a silent no-op in WKWebView) ---------- */
 let confirmPointerOnly = false;
@@ -104,13 +111,157 @@ export async function loadSettings() {
   }
   setLocale(settings.locale);
   activateTheme(settings);
+  applyFontScale(settings.fontScale);
+  announceShortcutChange();
   inv('set_native_locale', { locale: settings.locale }).catch(() => {});
 }
 
-export function persistSettings() {
-  inv('save_settings', { data: serializeSettings(settings) })
-    .catch(() => uev('settings-save-fail'));
+let settingsWriteChain = Promise.resolve();
+function saveSettingsCandidate(candidate) {
+  const data = serializeSettings(candidate);
+  const operation = settingsWriteChain.catch(() => {}).then(() => inv('save_settings', { data }));
+  settingsWriteChain = operation;
+  return operation;
 }
+
+export function persistSettings() {
+  return saveSettingsCandidate(settings).catch(() => uev('settings-save-fail'));
+}
+
+function renderFontScale() {
+  $('set-font-value').textContent = `${Math.round(settings.fontScale * 100)}%`;
+  $('set-font-down').disabled = settings.fontScale <= FONT_SCALE_MIN;
+  $('set-font-up').disabled = settings.fontScale >= FONT_SCALE_MAX;
+  $('set-font-reset').disabled = settings.fontScale === 1;
+}
+
+function shortcutLabel(actionId) { return t(`settings.shortcut.${actionId}`); }
+
+export function renderShortcutSettings() {
+  const list = $('set-shortcuts');
+  list.replaceChildren();
+  for (const action of SHORTCUT_ACTIONS) {
+    const row = document.createElement('div');
+    row.className = 'shortcut-row';
+    const label = document.createElement('span');
+    label.textContent = shortcutLabel(action.id);
+    const capture = document.createElement('button');
+    capture.className = 'shortcut-capture';
+    capture.dataset.action = action.id;
+    capture.textContent = formatShortcut(settings.shortcuts[action.id]);
+    capture.title = t('settings.shortcutCapture');
+    capture.addEventListener('focus', () => {
+      capture.classList.add('capturing');
+      capture.textContent = t('settings.shortcutRecording');
+    });
+    capture.addEventListener('blur', () => {
+      capture.classList.remove('capturing');
+      capture.textContent = formatShortcut(settings.shortcuts[action.id]);
+    });
+    capture.addEventListener('keydown', event => {
+      if (event.key === 'Tab' && !event.metaKey && !event.ctrlKey && !event.altKey) return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.key === 'Escape') { capture.blur(); return; }
+      if ((event.key === 'Backspace' || event.key === 'Delete')
+          && !event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey) {
+        setShortcut(action.id, '');
+        capture.blur();
+        return;
+      }
+      const binding = shortcutFromEvent(event);
+      if (!isSafeShortcut(binding)) { toast(t('settings.shortcutUnsafe')); return; }
+      const conflict = shortcutConflict(settings.shortcuts, action.id, binding);
+      if (conflict) {
+        toast(t('settings.shortcutConflict', { action: shortcutLabel(conflict) }));
+        return;
+      }
+      setShortcut(action.id, binding);
+      capture.blur();
+    });
+    row.append(label, capture);
+    list.appendChild(row);
+  }
+}
+
+function announceShortcutChange() {
+  if (typeof window.dispatchEvent === 'function' && typeof Event === 'function') {
+    window.dispatchEvent(new Event('deck-shortcuts-changed'));
+  }
+}
+
+let fontGeneration = 0;
+export async function setFontScale(value) {
+  const generation = ++fontGeneration;
+  const previous = settings;
+  const bounded = Math.min(FONT_SCALE_MAX, Math.max(FONT_SCALE_MIN, Number(value)));
+  const candidate = normalizeSettings({ ...settings, fontScale: bounded });
+  if (candidate.fontScale === settings.fontScale) return;
+  settings = candidate;
+  applyFontScale(candidate.fontScale);
+  renderFontScale();
+  try {
+    await saveSettingsCandidate(candidate);
+  } catch (_) {
+    if (generation !== fontGeneration) return;
+    settings = previous;
+    applyFontScale(previous.fontScale);
+    renderFontScale();
+    toast(t('error.fontSave'));
+    uev('settings-save-fail');
+  }
+}
+
+let shortcutGeneration = 0;
+export async function setShortcut(actionId, binding) {
+  const generation = ++shortcutGeneration;
+  const previous = settings;
+  const candidate = normalizeSettings({
+    ...settings, shortcuts: { ...settings.shortcuts, [actionId]: binding },
+  });
+  settings = candidate;
+  renderShortcutSettings();
+  announceShortcutChange();
+  try {
+    await saveSettingsCandidate(candidate);
+  } catch (_) {
+    if (generation !== shortcutGeneration) return;
+    settings = previous;
+    renderShortcutSettings();
+    announceShortcutChange();
+    toast(t('error.shortcutSave'));
+    uev('settings-save-fail');
+  }
+}
+
+export async function resetShortcuts() {
+  const generation = ++shortcutGeneration;
+  const previous = settings;
+  const known = new Set(SHORTCUT_ACTIONS.map(action => action.id));
+  const extensions = Object.fromEntries(Object.entries(settings.shortcuts)
+    .filter(([actionId]) => !known.has(actionId)));
+  const candidate = normalizeSettings({ ...settings, shortcuts: extensions });
+  settings = candidate;
+  renderShortcutSettings();
+  announceShortcutChange();
+  try {
+    await saveSettingsCandidate(candidate);
+  } catch (_) {
+    if (generation !== shortcutGeneration) return;
+    settings = previous;
+    renderShortcutSettings();
+    announceShortcutChange();
+    toast(t('error.shortcutSave'));
+    uev('settings-save-fail');
+  }
+}
+
+registerShortcutAction('fontIncrease', () => setFontScale(settings.fontScale + FONT_SCALE_STEP));
+registerShortcutAction('fontDecrease', () => setFontScale(settings.fontScale - FONT_SCALE_STEP));
+registerShortcutAction('fontReset', () => setFontScale(1));
+onLocaleChange(() => {
+  if ($('settings-modal').style.display === 'flex') renderShortcutSettings();
+});
 
 export async function openSettings() {
   const sel = $('set-editor');
@@ -126,6 +277,8 @@ export async function openSettings() {
   $('set-accent').value = settings.accent || 'teal';
   $('set-channel').value = settings.updateChannel || 'stable';
   $('set-session-restore').checked = !!settings.sessionRestore;
+  renderFontScale();
+  renderShortcutSettings();
   $('set-ver').textContent = 'deck ' + ($('app-ver').textContent || 'v?');
   $('set-upd-status').textContent = '';
   $('settings-modal').style.display = 'flex';
@@ -157,6 +310,10 @@ $('set-theme').onchange = () => persistThemeChoice();
 $('set-accent').onchange = () => persistThemeChoice();
 $('set-channel').onchange = () => persistUpdateChannelChoice();
 $('set-session-restore').onchange = () => persistSessionRestoreChoice();
+$('set-font-down').onclick = () => setFontScale(settings.fontScale - FONT_SCALE_STEP);
+$('set-font-up').onclick = () => setFontScale(settings.fontScale + FONT_SCALE_STEP);
+$('set-font-reset').onclick = () => setFontScale(1);
+$('set-shortcuts-reset').onclick = resetShortcuts;
 
 let themeSavePending = false;
 export async function persistThemeChoice() {
@@ -172,7 +329,7 @@ export async function persistThemeChoice() {
   locked.forEach(control => { control.disabled = true; });
   activateTheme(candidate); // immediate preview; commit only after durable save
   try {
-    await inv('save_settings', { data: serializeSettings(candidate) });
+    await saveSettingsCandidate(candidate);
     settings = candidate;
   } catch (_) {
     activateTheme({ ...settings, ...previous });
@@ -203,7 +360,7 @@ export async function persistUpdateChannelChoice() {
   const locked = ['set-theme', 'set-accent', 'set-channel', 'set-locale', 'set-editor', 'set-session-restore'].map($);
   locked.forEach(control => { control.disabled = true; });
   try {
-    await inv('save_settings', { data: serializeSettings(candidate) });
+    await saveSettingsCandidate(candidate);
     settings = candidate;
     toast(t(candidate.updateChannel === 'nightly'
       ? 'settings.channelNightlyEnabled' : 'settings.channelStableEnabled'));
@@ -239,7 +396,7 @@ export async function persistSessionRestoreChoice() {
   try {
     // Persist the privacy preference first. A failed disable keeps the old
     // behavior visible instead of claiming recovery is off when it is not.
-    await inv('save_settings', { data: serializeSettings(candidate) });
+    await saveSettingsCandidate(candidate);
     settings = candidate;
     if (!desired) {
       try {

@@ -517,6 +517,11 @@ pub(crate) struct SettingsDocRaw {
     theme: Option<String>,
     #[serde(default, deserialize_with = "deserialize_present_string")]
     accent: Option<String>,
+    #[serde(default)]
+    #[serde(rename = "fontScale")]
+    font_scale: Option<f64>,
+    #[serde(default)]
+    shortcuts: Option<HashMap<String, String>>,
     // Deliberately accept any JSON value on load: older/corrupt/unknown values
     // migrate to Stable in the frontend rather than making all settings
     // unreadable. Every deck-authored save serializes the closed enum.
@@ -554,6 +559,22 @@ impl TryFrom<SettingsDocRaw> for SettingsDoc {
         if let Some(accent) = &raw.accent {
             if !matches!(accent.as_str(), "teal" | "blue" | "purple" | "orange") {
                 return Err("accent must be teal, blue, purple, or orange".into());
+            }
+        }
+        if let Some(scale) = raw.font_scale {
+            if !scale.is_finite() || !(0.8..=1.6).contains(&scale) {
+                return Err("fontScale must be between 0.8 and 1.6".into());
+            }
+        }
+        if let Some(shortcuts) = &raw.shortcuts {
+            if shortcuts.len() > 64 {
+                return Err("too many shortcut entries".into());
+            }
+            if shortcuts
+                .iter()
+                .any(|(key, value)| key.is_empty() || key.len() > 64 || value.len() > 64)
+            {
+                return Err("shortcut names and bindings must be bounded strings".into());
             }
         }
         Ok(SettingsDoc(raw))
@@ -2662,6 +2683,20 @@ mod tests {
         assert!(serde_json::from_str::<SettingsDoc>(r#"{"theme":false}"#).is_err());
         assert!(serde_json::from_str::<SettingsDoc>(r#"{"accent":"red"}"#).is_err());
         assert!(serde_json::from_str::<SettingsDoc>(r#"{"accent":null}"#).is_err());
+        for scale in [0.8, 1.0, 1.6] {
+            assert!(
+                serde_json::from_str::<SettingsDoc>(&format!(r#"{{"fontScale":{scale}}}"#)).is_ok()
+            );
+        }
+        assert!(serde_json::from_str::<SettingsDoc>(r#"{"fontScale":"large"}"#).is_err());
+        assert!(serde_json::from_str::<SettingsDoc>(r#"{"fontScale":0.7}"#).is_err());
+        assert!(serde_json::from_str::<SettingsDoc>(r#"{"fontScale":1.7}"#).is_err());
+        assert!(serde_json::from_str::<SettingsDoc>(
+            r#"{"shortcuts":{"newSession":"Meta+KeyN","fontIncrease":""}}"#
+        )
+        .is_ok());
+        assert!(serde_json::from_str::<SettingsDoc>(r#"{"shortcuts":[]}"#).is_err());
+        assert!(serde_json::from_str::<SettingsDoc>(r#"{"shortcuts":{"x":1}}"#).is_err());
         assert!(serde_json::from_str::<SettingsDoc>(r#"[1,2]"#).is_err());
         for channel in [
             r#""stable""#,
