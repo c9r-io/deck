@@ -92,7 +92,10 @@ window.onerror = (msg, src, line) => uev('js-error', errClass(msg), line);
 /* keydown CATEGORY only — raw key names never cross into the log (the
    backend's closed allowlist would redact them anyway) */
 const keyClass = k =>
-  k.length === 1 ? 'char'
+  /^[+＋]$/.test(k) ? 'plus'
+  : /^[=＝]$/.test(k) ? 'equal'
+  : /^[-−－]$/.test(k) ? 'minus'
+  : k.length === 1 ? 'char'
   : /^(Enter|Backspace|Delete|Tab|Escape)$/.test(k) ? k.toLowerCase()
   : k.startsWith('Arrow') ? 'arrow'
   : /^(Shift|Control|Alt|Meta|CapsLock)$/.test(k) ? 'mod'
@@ -100,10 +103,18 @@ const keyClass = k =>
   : /^(Home|End|PageUp|PageDown)$/.test(k) ? 'nav'
   : /^(Dead|Process|Compose)/.test(k) ? 'compose'
   : 'other';
+// Debug-only, closed numeric categories: modifier flags are
+// Meta=1, Control=2, Alt=4, Shift=8, composing=16; physical codes are
+// Equal=1, Minus=2, Semicolon=3, NumpadAdd=4, NumpadSubtract=5.
+const keyFlags = e => (e.metaKey ? 1 : 0) | (e.ctrlKey ? 2 : 0)
+  | (e.altKey ? 4 : 0) | (e.shiftKey ? 8 : 0) | (e.isComposing ? 16 : 0);
+const keyCodeClass = code => ({
+  Equal: 1, Minus: 2, Semicolon: 3, NumpadAdd: 4, NumpadSubtract: 5,
+})[code] || 0;
 document.addEventListener('keydown', e => {
-  if (kdLogged < 20) {
+  if (kdLogged < 40) {
     kdLogged++;
-    duev('keydown', keyClass(e.key), e.isComposing ? 1 : 0);
+    duev('keydown', keyClass(e.key), keyFlags(e), keyCodeClass(e.code));
   }
 }, true);
 document.addEventListener('compositionstart', e => duev('composition', 'start', (e.data || '').length), true);

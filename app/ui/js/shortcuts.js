@@ -8,8 +8,14 @@ const MODIFIERS = ['Meta', 'Control', 'Alt', 'Shift'];
 
 function eventCode(event) {
   const key = String(event?.key || '');
-  if (key === '+' || key === '=') return 'Equal';
-  if (key === '-') return 'Minus';
+  // A Japanese JIS keyboard produces `+` with Shift+Semicolon. WKWebView
+  // keeps reporting the physical Semicolon code/key while Command is held,
+  // so recognize that command gesture as the conventional Equal/Plus zoom
+  // binding before the ordinary punctuation mapping below.
+  if ((event?.metaKey || event?.ctrlKey) && event?.shiftKey
+      && event?.code === 'Semicolon') return 'Equal';
+  if (/^[+=＋＝]$/.test(key)) return 'Equal';
+  if (/^[-−－]$/.test(key)) return 'Minus';
   if (/^[a-z]$/i.test(key)) return `Key${key.toUpperCase()}`;
   if (/^[0-9]$/.test(key)) return `Digit${key}`;
   const names = {
@@ -18,11 +24,24 @@ function eventCode(event) {
     Backspace: 'Backspace', Delete: 'Delete', '[': 'BracketLeft', ']': 'BracketRight', '\\': 'Backslash',
     ';': 'Semicolon', "'": 'Quote', ',': 'Comma', '.': 'Period', '/': 'Slash', '`': 'Backquote',
   };
-  return names[key] || String(event?.code || '');
+  const code = names[key] || String(event?.code || '');
+  if (code) return code;
+  // WKWebView can hide the logical key as Process/Unidentified while a
+  // macOS IME is active. Retain a narrow legacy fallback for the conventional
+  // zoom keys when `code` is unavailable; do not derive arbitrary text from
+  // keyCode because the final composed text belongs to InputEvent.
+  return ({ 48: 'Digit0', 61: 'Equal', 107: 'Equal', 109: 'Minus', 187: 'Equal', 189: 'Minus' })[
+    Number(event?.keyCode)
+  ] || '';
 }
 
 export function shortcutFromEvent(event) {
-  if (!event || event.type !== 'keydown' || isComposingKeyEvent(event)) return null;
+  if (!event || event.type !== 'keydown') return null;
+  // Command/Control chords are commands, not composed text. In particular,
+  // Chinese input sources can report macOS Command++ (Shift+=) as keyCode 229
+  // or key=Process. Let a usable physical code reach shortcut matching while
+  // continuing to keep unmodified, Shift-only, and Option-only IME input out.
+  if (isComposingKeyEvent(event) && !event.metaKey && !event.ctrlKey) return null;
   const code = eventCode(event);
   if (!code || /^(?:Meta|Control|Alt|Shift)(?:Left|Right)?$/.test(code)) return null;
   const parts = [];
@@ -79,7 +98,7 @@ function modalOpen() {
 
 if (typeof document !== 'undefined') {
   document.addEventListener('keydown', event => {
-    if (event.target?.closest?.('.shortcut-capture') || isComposingKeyEvent(event)) return;
+    if (event.target?.closest?.('.shortcut-capture')) return;
     const action = shortcutActionForEvent(event, globalThis.settings?.shortcuts);
     const handler = action && handlers.get(action);
     if (!handler) return;

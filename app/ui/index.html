@@ -187,13 +187,13 @@
   .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-contrast); font-weight: 600; }
   .btn.primary:hover { filter: brightness(1.08); }
   .btn.danger:hover { border-color: var(--danger); color: var(--danger); }
-  /* session header: every control sits on the same 28px line; the split /
-     schedule buttons are fixed-width icon squares (the ⏰ emoji used to
-     render at its own size and threw the whole row off) */
-  .sess-head .btn, .sess-head .col-select { height: 28px; box-sizing: border-box; }
+  /* Session controls scale with the text. Fixed pixel heights clip their line
+     boxes once the root font grows, which makes the row appear to wrap inside
+     itself instead of asking the flex layout for another row. */
+  .sess-head .btn, .sess-head .col-select { min-height: 2.15385rem; box-sizing: border-box; }
   .sess-head .btn { padding: 0 12px; }
-  .sess-head .btn.icon-btn { width: 32px; padding: 0; justify-content: center; flex: none; font-size: 1rem; }
-  .sess-head .mem-chip { height: 28px; display: inline-flex; align-items: center; box-sizing: border-box; padding: 0 9px; }
+  .sess-head .btn.icon-btn { width: 2.46154rem; padding: 0; justify-content: center; flex: none; font-size: 1rem; }
+  .sess-head .mem-chip { min-height: 2.15385rem; display: inline-flex; align-items: center; box-sizing: border-box; padding: 0 9px; }
 
   #columns { flex: 1; display: flex; gap: 12px; padding: 4px 20px 20px; overflow-x: auto; min-height: 0; }
   .column {
@@ -260,7 +260,7 @@
     margin-top: 5px; display: flex; gap: 8px; align-items: center;
     font-family: var(--mono); font-size: 0.846154rem; color: var(--muted);
     white-space: nowrap; overflow: hidden;
-    height: 20px;   /* constant, with or without chips */
+    min-height: 1.53846rem;   /* constant, with or without chips; scales with text */
   }
   .card-meta .cmd { color: var(--accent); flex: none; }
   .card-meta .dir { overflow: hidden; text-overflow: ellipsis; color: var(--faint); flex: 1; }
@@ -276,9 +276,9 @@
     font-family: var(--mono); font-size: 0.846154rem; line-height: 1.5;
     color: var(--muted);
     white-space: nowrap; overflow: hidden;
-    height: 47px;   /* always two lines — cards keep a constant shape */
+    height: calc(2.53846rem + 14px);   /* two scaled lines + fixed padding */
   }
-  .card-tail div { overflow: hidden; text-overflow: ellipsis; height: 16.5px; }
+  .card-tail div { overflow: hidden; text-overflow: ellipsis; height: 1.26923rem; }
 
   /* ---------- session view ---------- */
   #session-view { flex: 1; display: none; flex-direction: column; min-height: 0; position: relative; }
@@ -441,7 +441,7 @@
   .q-item.rule { border-color: var(--accent-dim); }
   .q-item.rule .q-when { color: var(--accent); }
   .q-item.paused { opacity: 0.55; }
-  #q-src { flex: none; padding: 0 10px; height: 30px; }
+  #q-src { flex: none; padding: 0 10px; min-height: 2.30769rem; }
   #q-src.tpl { color: var(--accent); border-color: var(--accent-dim); }
   #tpl-pop {
     position: absolute; display: none; background: var(--raised);
@@ -559,7 +559,8 @@
   .set-title { font-size: 1.07692rem; font-weight: 600; margin-bottom: 14px; }
   .set-row { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; font-size: 1rem; }
   .set-row label { color: var(--muted); width: 96px; flex: none; }
-  .set-row select { flex: 1; }
+  .set-row select { flex: 1; min-width: 0; }
+  .set-row input[type=checkbox] { width: auto; flex: none; }
   .font-controls { display: flex; align-items: center; gap: 6px; margin-left: auto; }
   .font-controls .btn { min-width: 34px; justify-content: center; padding-inline: 9px; }
   #set-font-value { min-width: 46px; text-align: center; font-family: var(--mono); color: var(--muted); }
@@ -567,7 +568,7 @@
   .shortcut-row { display: grid; grid-template-columns: minmax(0, 1fr) 150px; align-items: center; gap: 10px; }
   .shortcut-row > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .shortcut-capture {
-    min-height: 30px; padding: 5px 9px; border-radius: 6px;
+    min-height: 2.30769rem; padding: 5px 9px; border-radius: 6px;
     background: var(--raised); border: 1px solid var(--border); color: var(--text);
     font-family: var(--mono); text-align: center;
   }
@@ -577,6 +578,30 @@
   .set-actions { display: flex; justify-content: flex-end; margin-top: 4px; }
   .btn.cfm-danger { background: var(--danger); border-color: var(--danger); color: var(--danger-contrast); font-weight: 600; }
   .btn.cfm-danger:hover { filter: brightness(1.1); }
+
+  /* At 140% and above, reflow dense chrome by semantic rows. Scaling glyphs
+     inside fixed one-line tracks clips controls and produces accidental word
+     wraps; these rules instead give each group an explicit full-width row. */
+  html.font-scale-large #settings-box { width: 680px; }
+  html.font-scale-large .set-row { align-items: flex-start; flex-wrap: wrap; }
+  html.font-scale-large .set-row > label { width: 100%; }
+  html.font-scale-large .set-row > select { flex-basis: 100%; }
+  html.font-scale-large .set-row > .btn { margin-left: 0 !important; }
+  html.font-scale-large .font-controls { margin-left: 0; flex-wrap: wrap; }
+  html.font-scale-large .set-hint,
+  html.font-scale-large .shortcut-list { margin-left: 0; }
+  html.font-scale-large .shortcut-row { grid-template-columns: minmax(0, 1fr); gap: 4px; }
+  html.font-scale-large .shortcut-capture { width: 100%; }
+  html.font-scale-large .board-head { flex-wrap: wrap; }
+  html.font-scale-large .board-head .hint,
+  html.font-scale-large .sess-path { display: none; }
+  html.font-scale-large .sess-head { flex-wrap: wrap; }
+  html.font-scale-large .sess-title { flex: 1 1 12rem; }
+  html.font-scale-large .sess-spacer { display: none; }
+  html.font-scale-large .q-item,
+  html.font-scale-large .q-add,
+  html.font-scale-large .qg-row,
+  html.font-scale-large .tmux-lifecycle-actions { align-items: flex-start; flex-wrap: wrap; }
 
   /* ---------- toast / banner ---------- */
   #toasts { position: fixed; bottom: 18px; right: 18px; z-index: 60; display: flex; flex-direction: column; gap: 8px; }

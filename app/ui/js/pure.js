@@ -457,8 +457,9 @@ export function terminalSelectionEdgeLines({ pointerY, top, bottom, hotZone = 48
   return 0;
 }
 
-/** Deck shortcuts must never interpret a key that belongs to an IME/dead-key
- * composition. The final text arrives through xterm's composition/input path. */
+/** Identify a key owned by IME/dead-key composition. Text-input callers must
+ * defer it to the final InputEvent; shortcut routing may separately recognize
+ * an explicit Command/Control chord from its physical code. */
 export const isComposingKeyEvent = event => !!event && (
   event.isComposing || event.keyCode === 229
   || /^(Process|Dead|Compose)$/.test(event.key || '')

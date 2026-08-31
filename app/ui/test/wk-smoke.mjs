@@ -7,7 +7,7 @@ let renameCardInline, renderSuggest, resetSuggest;
 let showLinkCtx, toggleSidebar, addSplit, backToBoard, openSession, strToB64;
 let closePaneBySid, focusPane, cancelTerminalSelection, copyTerminalSelection;
 let refreshQueue, toggleQueuePanel;
-let activateTheme, persistThemeChoice;
+let activateTheme, persistThemeChoice, applyFontScale, getFontScale;
 let terminalLogicalLine, tokenizeTerminalLinks;
 if (typeof window !== 'undefined') {
   ({ $, inv, state, store } = await import('../js/state.js'));
@@ -23,6 +23,7 @@ if (typeof window !== 'undefined') {
   ({ refreshQueue, toggleQueuePanel } = await import('../js/scheduler.js'));
   ({ activateTheme } = await import('../js/theme.js'));
   ({ persistThemeChoice } = await import('../js/dialogs.js'));
+  ({ applyFontScale, getFontScale } = await import('../js/font-scale.js'));
 }
 
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -144,6 +145,15 @@ async function themeSmoke(card) {
     && pane.term.options.theme.background === activateTheme(settings).terminal.background;
   await report('theme-rollback', rolledBack, rolledBack ? 1 : 0, panes.size);
 
+  const scaleBeforeShortcut = settings.fontScale;
+  document.dispatchEvent(new KeyboardEvent('keydown', {
+    key: ';', code: 'Semicolon', metaKey: true, shiftKey: true,
+    bubbles: true, cancelable: true,
+  }));
+  const jisIncreased = await waitFor(() => settings.fontScale
+    === Math.min(1.6, Number((scaleBeforeShortcut + 0.1).toFixed(1))), 3000);
+  applyFontScale(1.6);
+  await pause(80);
   $('settings-btn').click();
   const settingsOpened = await waitFor(() => $('settings-modal').style.display === 'flex', 3000);
   const settingsBox = $('settings-box');
@@ -156,7 +166,28 @@ async function themeSmoke(card) {
     && settingsBox.clientHeight <= innerHeight - 40;
   await report('settings-viewport', settingsBounded,
     Math.round(settingsBox.clientHeight), Math.round(innerHeight));
+  const shortcutIds = [...settingsBox.querySelectorAll('.shortcut-capture')]
+    .map(button => button.dataset.action).join(',');
+  const fixedFontHidden = shortcutIds === 'newSession,toggleSidebar,splitRight,splitDown';
+  const rowsStacked = [...settingsBox.querySelectorAll('.set-row')].every(row => {
+    const label = row.querySelector(':scope > label');
+    if (!label) return true;
+    const rowRect = row.getBoundingClientRect();
+    const labelRect = label.getBoundingClientRect();
+    return labelRect.width >= rowRect.width - 1;
+  });
+  const textControlsFit = [...settingsBox.querySelectorAll(
+    '.font-controls .btn, .shortcut-capture, .set-row > .btn',
+  )].every(control => control.scrollHeight <= control.clientHeight + 1);
+  const sessionReflows = getComputedStyle(document.querySelector('.sess-head')).flexWrap === 'wrap'
+    && getComputedStyle($('sess-path')).display === 'none';
+  const fontLayoutMask = (jisIncreased ? 1 : 0) | (fixedFontHidden ? 2 : 0)
+    | (document.documentElement.classList.contains('font-scale-large') ? 4 : 0)
+    | (settingsBounded ? 8 : 0) | (rowsStacked ? 16 : 0)
+    | (textControlsFit ? 32 : 0) | (sessionReflows ? 64 : 0);
+  await report('font-layout', fontLayoutMask === 127, fontLayoutMask, 127);
   $('set-close').click();
+  applyFontScale(settings.fontScale);
 }
 
 async function renameSmoke(card) {

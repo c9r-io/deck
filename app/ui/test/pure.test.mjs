@@ -606,7 +606,7 @@ test('agent Up routing is a one-shot escape from recalled multiline history', ()
   }), 'passthrough', 'no visible composer geometry means no interception');
 });
 
-test('IME/dead-key events bypass every Deck keyboard shortcut', () => {
+test('IME/dead-key events are detected before text-input or shortcut routing', () => {
   for (const event of [
     { key: 'Process' }, { key: 'Dead' }, { key: 'Compose' },
     { key: '[', isComposing: true }, { key: '?', keyCode: 229 },

@@ -80,6 +80,9 @@ const LISTEN_TARGETS: &[&str] = &[
 /// name (let alone typed text) never crosses the bridge.
 const KEY_CLASSES: &[&str] = &[
     "char",
+    "plus",
+    "equal",
+    "minus",
     "enter",
     "backspace",
     "delete",
@@ -137,6 +140,7 @@ const SMOKE_CHECKS: &[&str] = &[
     "theme-switch",
     "theme-rollback",
     "settings-viewport",
+    "font-layout",
     "natural-fault",
     "completion-owner",
     "ambiguous-boot",
@@ -562,8 +566,8 @@ impl TryFrom<SettingsDocRaw> for SettingsDoc {
             }
         }
         if let Some(scale) = raw.font_scale {
-            if !scale.is_finite() || !(0.8..=1.6).contains(&scale) {
-                return Err("fontScale must be between 0.8 and 1.6".into());
+            if !scale.is_finite() || !(0.5..=1.6).contains(&scale) {
+                return Err("fontScale must be between 0.5 and 1.6".into());
             }
         }
         if let Some(shortcuts) = &raw.shortcuts {
@@ -2683,13 +2687,13 @@ mod tests {
         assert!(serde_json::from_str::<SettingsDoc>(r#"{"theme":false}"#).is_err());
         assert!(serde_json::from_str::<SettingsDoc>(r#"{"accent":"red"}"#).is_err());
         assert!(serde_json::from_str::<SettingsDoc>(r#"{"accent":null}"#).is_err());
-        for scale in [0.8, 1.0, 1.6] {
+        for scale in [0.5, 1.0, 1.6] {
             assert!(
                 serde_json::from_str::<SettingsDoc>(&format!(r#"{{"fontScale":{scale}}}"#)).is_ok()
             );
         }
         assert!(serde_json::from_str::<SettingsDoc>(r#"{"fontScale":"large"}"#).is_err());
-        assert!(serde_json::from_str::<SettingsDoc>(r#"{"fontScale":0.7}"#).is_err());
+        assert!(serde_json::from_str::<SettingsDoc>(r#"{"fontScale":0.4}"#).is_err());
         assert!(serde_json::from_str::<SettingsDoc>(r#"{"fontScale":1.7}"#).is_err());
         assert!(serde_json::from_str::<SettingsDoc>(
             r#"{"shortcuts":{"newSession":"Meta+KeyN","fontIncrease":""}}"#

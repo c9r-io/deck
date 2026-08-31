@@ -2,19 +2,23 @@ const THEMES = new Set(['deck-dark', 'light', 'system', 'high-contrast']);
 const ACCENTS = new Set(['teal', 'blue', 'purple', 'orange']);
 const UPDATE_CHANNELS = new Set(['stable', 'nightly']);
 
-export const FONT_SCALE_MIN = 0.8;
+export const FONT_SCALE_MIN = 0.5;
 export const FONT_SCALE_MAX = 1.6;
 export const FONT_SCALE_STEP = 0.1;
 
 export const SHORTCUT_ACTIONS = Object.freeze([
-  Object.freeze({ id: 'newSession', defaultBinding: 'Meta+KeyN' }),
-  Object.freeze({ id: 'toggleSidebar', defaultBinding: 'Meta+KeyB' }),
-  Object.freeze({ id: 'splitRight', defaultBinding: 'Meta+KeyD' }),
-  Object.freeze({ id: 'splitDown', defaultBinding: 'Meta+Shift+KeyD' }),
-  Object.freeze({ id: 'fontIncrease', defaultBinding: 'Meta+Equal' }),
-  Object.freeze({ id: 'fontDecrease', defaultBinding: 'Meta+Minus' }),
-  Object.freeze({ id: 'fontReset', defaultBinding: 'Meta+Digit0' }),
+  Object.freeze({ id: 'newSession', defaultBinding: 'Meta+KeyN', customizable: true }),
+  Object.freeze({ id: 'toggleSidebar', defaultBinding: 'Meta+KeyB', customizable: true }),
+  Object.freeze({ id: 'splitRight', defaultBinding: 'Meta+KeyD', customizable: true }),
+  Object.freeze({ id: 'splitDown', defaultBinding: 'Meta+Shift+KeyD', customizable: true }),
+  Object.freeze({ id: 'fontIncrease', defaultBinding: 'Meta+Equal', customizable: false }),
+  Object.freeze({ id: 'fontDecrease', defaultBinding: 'Meta+Minus', customizable: false }),
+  Object.freeze({ id: 'fontReset', defaultBinding: 'Meta+Digit0', customizable: false }),
 ]);
+
+export const CUSTOMIZABLE_SHORTCUT_ACTIONS = Object.freeze(
+  SHORTCUT_ACTIONS.filter(action => action.customizable),
+);
 
 export const DEFAULT_SHORTCUTS = Object.freeze(Object.fromEntries(
   SHORTCUT_ACTIONS.map(action => [action.id, action.defaultBinding]),
@@ -70,7 +74,9 @@ export function normalizeSettings(value) {
   const shortcuts = Object.fromEntries(Object.entries(rawShortcuts)
     .filter(([key, value]) => key.length <= 64 && typeof value === 'string' && value.length <= 64));
   for (const action of SHORTCUT_ACTIONS) {
-    shortcuts[action.id] = normalizeShortcutBinding(rawShortcuts[action.id], action.defaultBinding);
+    shortcuts[action.id] = action.customizable
+      ? normalizeShortcutBinding(rawShortcuts[action.id], action.defaultBinding)
+      : action.defaultBinding;
   }
   merged.shortcuts = shortcuts;
   return merged;

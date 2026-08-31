@@ -4,7 +4,7 @@ import { $, inv, uev } from './state.js';
 import { inlineRenameValue } from './pure.js';
 import { applyTranslations, onLocaleChange, setLocale, t, translateNotice } from './i18n.js';
 import {
-  FONT_SCALE_MAX, FONT_SCALE_MIN, FONT_SCALE_STEP, SHORTCUT_ACTIONS,
+  CUSTOMIZABLE_SHORTCUT_ACTIONS, FONT_SCALE_MAX, FONT_SCALE_MIN, FONT_SCALE_STEP, SHORTCUT_ACTIONS,
   normalizeSettings, parseSettings, serializeSettings,
 } from './settings-model.js';
 import { activateTheme } from './theme.js';
@@ -140,7 +140,7 @@ function shortcutLabel(actionId) { return t(`settings.shortcut.${actionId}`); }
 export function renderShortcutSettings() {
   const list = $('set-shortcuts');
   list.replaceChildren();
-  for (const action of SHORTCUT_ACTIONS) {
+  for (const action of CUSTOMIZABLE_SHORTCUT_ACTIONS) {
     const row = document.createElement('div');
     row.className = 'shortcut-row';
     const label = document.createElement('span');

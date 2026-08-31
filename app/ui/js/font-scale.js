@@ -9,8 +9,10 @@ const listeners = new Set();
 
 export function applyFontScale(value, documentRef = globalThis.document) {
   current = normalizeFontScale(value);
-  if (documentRef?.documentElement?.style) {
-    documentRef.documentElement.style.fontSize = `${APP_BASE_FONT_SIZE * current}px`;
+  const root = documentRef?.documentElement;
+  if (root?.style) {
+    root.style.fontSize = `${APP_BASE_FONT_SIZE * current}px`;
+    root.classList?.toggle('font-scale-large', current >= 1.4);
   }
   listeners.forEach(listener => listener(current));
   return current;

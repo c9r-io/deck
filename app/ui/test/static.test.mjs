@@ -115,6 +115,22 @@ test('minimum-window layout keeps long localized panels bounded and scrollable',
   assert.match(html, /\.qg-row \.row-meta \{[^}]*white-space: normal;/);
 });
 
+test('large font scaling reflows dense rows instead of clipping scaled line boxes', () => {
+  const html = read('app/ui/index.html');
+  const fontScale = read('app/ui/js/font-scale.js');
+  const dialogs = read('app/ui/js/dialogs.js');
+  assert.match(fontScale, /classList\?\.toggle\('font-scale-large', current >= 1\.4\)/);
+  assert.match(html, /html\.font-scale-large \.set-row \{[^}]*flex-wrap: wrap;/);
+  assert.match(html, /html\.font-scale-large \.shortcut-row \{[^}]*grid-template-columns: minmax\(0, 1fr\);/);
+  assert.match(html, /html\.font-scale-large \.sess-head \{[^}]*flex-wrap: wrap;/);
+  assert.match(html, /html\.font-scale-large \.q-item,[\s\S]*?flex-wrap: wrap;/);
+  assert.match(html, /\.card-meta \{[\s\S]*?min-height: 1\.53846rem;/);
+  assert.match(html, /\.card-tail \{[\s\S]*?height: calc\(2\.53846rem \+ 14px\);/);
+  assert.doesNotMatch(html, /(?:\.card-meta|\.card-tail|\.sess-head \.btn)[^{]*\{[^}]*(?:height: 20px|height: 47px|height: 28px)/);
+  assert.match(dialogs, /for \(const action of CUSTOMIZABLE_SHORTCUT_ACTIONS\)/,
+    'fixed US/JIS font gestures stay out of the shortcut editor');
+});
+
 test('high-risk scheduler confirmation cannot be accepted by ordinary Enter', () => {
   const dialogs = read('app/ui/js/dialogs.js');
   assert.match(dialogs, /confirmDangerDialog/);
