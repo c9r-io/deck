@@ -9,7 +9,7 @@ import {
   nextFire, groupQueue, groupSteps, itemDead, blockedBy,
   chainQuietHint, contextStatusKey, CHAIN_QUIET_SECS, shQuote, quickBarLayout, rectsOverlap,
   createExitRetirementTracker, createSerialTransactionQueue, deleteSessionsTransaction, sidebarGroups,
-  copyExact, createTerminalResizeCoordinator, createTerminalSelectionModel,
+  copyExact, createTerminalPasteTrace, createTerminalResizeCoordinator, createTerminalSelectionModel,
   reorderById,
   terminalCopyRoute, terminalSelectionEdgeLines,
   isComposingKeyEvent, isPlainShiftKeydown, shouldRouteImeKeydownThroughInput,
@@ -20,6 +20,49 @@ import {
   linkMenuItems,
   CARD_PREVIEW_ROWS, cardPreviewRows, inlineRenameValue, persistOptimistically,
 } from '../js/pure.js';
+
+test('terminal paste trace identifies every silent handoff without recording content', async () => {
+  let nextTimer = 1;
+  const timers = new Map();
+  const events = [];
+  const trace = createTerminalPasteTrace({
+    emit: (detail, length, id) => events.push([detail, length, id]),
+    schedule: callback => { const id = nextTimer++; timers.set(id, callback); return id; },
+    cancel: id => timers.delete(id),
+  });
+  const flushTimers = () => {
+    const callbacks = [...timers.values()];
+    timers.clear();
+    callbacks.forEach(callback => callback());
+  };
+
+  trace.keyCapture();
+  trace.keyHandler();
+  trace.event('event-text', 12);
+  const id = trace.onData(24);
+  trace.write(id, true);
+  assert.deepEqual(events, [
+    ['key-capture', undefined, 1], ['key-handler', undefined, 1], ['event-text', 12, 1],
+    ['ondata', 24, 1], ['pty-success', undefined, 1],
+  ]);
+  assert.equal(timers.size, 0);
+
+  trace.keyCapture();
+  flushTimers();
+  trace.keyHandler();
+  flushTimers();
+  trace.event('event-text', 3);
+  flushTimers();
+  assert.deepEqual(events.slice(-6), [
+    ['key-capture', undefined, 2], ['handler-missing', undefined, 2],
+    ['key-handler', undefined, 3], ['event-missing', undefined, 3],
+    ['event-text', 3, 4], ['ondata-missing', undefined, 4],
+  ]);
+
+  trace.event('event-file', 2);
+  assert.equal(trace.onData(99), null, 'file paste expects path insertion, not xterm onData');
+  trace.dispose();
+});
 
 test('card preview keeps the newest rows bottom-aligned', () => {
   assert.equal(CARD_PREVIEW_ROWS, 6);

@@ -373,6 +373,76 @@ export async function copyExact(text, writer) {
   return text.length;
 }
 
+/** Privacy-safe stage tracker for native text paste. It records only closed
+ * lifecycle labels and byte/character counts, never clipboard contents. */
+export function createTerminalPasteTrace({ emit, schedule = setTimeout,
+  cancel = clearTimeout, timeoutMs = 750 }) {
+  const eventDetails = new Set(['event-text', 'event-empty', 'event-file', 'event-unavailable']);
+  let nextId = 1;
+  let current = null;
+
+  const clearDeadline = trace => {
+    if (trace?.timer != null) cancel(trace.timer);
+    if (trace) trace.timer = null;
+  };
+  const fresh = () => ({ id: nextId++, stage: null, timer: null });
+  const take = (...stages) => current && stages.includes(current.stage) ? current : fresh();
+  const arm = (trace, stage, missing) => {
+    clearDeadline(trace);
+    trace.stage = stage;
+    current = trace;
+    trace.timer = schedule(() => {
+      if (current !== trace || trace.stage !== stage) return;
+      emit(missing, undefined, trace.id);
+      current = null;
+    }, timeoutMs);
+  };
+
+  return {
+    keyCapture() {
+      clearDeadline(current);
+      const trace = fresh();
+      emit('key-capture', undefined, trace.id);
+      arm(trace, 'capture', 'handler-missing');
+    },
+    keyHandler() {
+      const trace = take('capture');
+      clearDeadline(trace);
+      emit('key-handler', undefined, trace.id);
+      arm(trace, 'handler', 'event-missing');
+    },
+    event(detail, length = 0) {
+      const trace = take('capture', 'handler');
+      clearDeadline(trace);
+      const safeDetail = eventDetails.has(detail) ? detail : 'event-unavailable';
+      const safeLength = Math.max(0, Math.trunc(Number(length) || 0));
+      emit(safeDetail, safeLength, trace.id);
+      if (safeDetail === 'event-text' && safeLength > 0) {
+        arm(trace, 'event', 'ondata-missing');
+      } else {
+        current = null;
+      }
+    },
+    onData(length) {
+      if (!current || current.stage !== 'event') return null;
+      const trace = current;
+      clearDeadline(trace);
+      trace.stage = 'write';
+      emit('ondata', Math.max(0, Math.trunc(Number(length) || 0)), trace.id);
+      return trace.id;
+    },
+    write(id, ok) {
+      if (!id) return;
+      emit(ok ? 'pty-success' : 'pty-failed', undefined, id);
+      if (current?.id === id) current = null;
+    },
+    dispose() {
+      clearDeadline(current);
+      current = null;
+    },
+  };
+}
+
 /** Return a new array with one id-addressed item inserted immediately before
  * or after another. Invalid/self moves are no-ops, which makes stale drag
  * payloads harmless when another Board transaction completed first. */

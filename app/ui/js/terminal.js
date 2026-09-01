@@ -490,10 +490,23 @@ export function resetSuggest(nextPane = null) {
 
 export async function writeClipboard(text) {
   try {
-    return await copyExact(text, value => inv('write_clipboard', { text: value }));
+    const result = await copyExact(text, value => inv('write_clipboard', { text: value }));
+    uev('clipboard-write', 'pbcopy-success', text.length);
+    return result;
   } catch (nativeError) {
-    if (!navigator.clipboard || !navigator.clipboard.writeText) throw nativeError;
-    return copyExact(text, value => navigator.clipboard.writeText(value));
+    uev('clipboard-write', 'pbcopy-failed', text.length);
+    if (!navigator.clipboard || !navigator.clipboard.writeText) {
+      uev('clipboard-write', 'web-unavailable', text.length);
+      throw nativeError;
+    }
+    try {
+      const result = await copyExact(text, value => navigator.clipboard.writeText(value));
+      uev('clipboard-write', 'web-success', text.length);
+      return result;
+    } catch (webError) {
+      uev('clipboard-write', 'web-failed', text.length);
+      throw webError;
+    }
   }
 }
 

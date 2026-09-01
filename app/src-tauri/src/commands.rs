@@ -182,10 +182,42 @@ const UI_EVENT_SPECS: &[(&str, DetailPolicy)] = &[
     (
         "terminal-copy",
         DetailPolicy::Closed(&[
+            "key-capture",
+            "keydown-deck",
+            "keydown-native",
+            "keydown-none",
             "success",
+            "selection-vanished",
             "selection-missing",
             "snapshot-failed",
             "clipboard-write-failed",
+        ]),
+    ),
+    (
+        "terminal-paste",
+        DetailPolicy::Closed(&[
+            "key-capture",
+            "key-handler",
+            "handler-missing",
+            "event-text",
+            "event-empty",
+            "event-file",
+            "event-unavailable",
+            "event-missing",
+            "ondata",
+            "ondata-missing",
+            "pty-success",
+            "pty-failed",
+        ]),
+    ),
+    (
+        "clipboard-write",
+        DetailPolicy::Closed(&[
+            "pbcopy-success",
+            "pbcopy-failed",
+            "web-success",
+            "web-failed",
+            "web-unavailable",
         ]),
     ),
     ("record", DetailPolicy::None),
@@ -2888,6 +2920,14 @@ mod tests {
             format_ui_event("terminal-copy", Some("snapshot-failed"), None, None).unwrap(),
             "[ui] terminal-copy snapshot-failed"
         );
+        assert_eq!(
+            format_ui_event("terminal-paste", Some("ondata"), Some(42), None).unwrap(),
+            "[ui] terminal-paste ondata a=42"
+        );
+        assert_eq!(
+            format_ui_event("clipboard-write", Some("pbcopy-success"), Some(42), None).unwrap(),
+            "[ui] clipboard-write pbcopy-success a=42"
+        );
         // anything that could carry prose, prompts, paths, URLs or a
         // token-SHAPED slug (the old loophole) is redacted per event code
         for bad in [
@@ -2909,6 +2949,8 @@ mod tests {
                 "record-skip",
                 "separator",
                 "terminal-copy",
+                "terminal-paste",
+                "clipboard-write",
             ] {
                 let line = format_ui_event(code, Some(bad), None, None).unwrap();
                 assert_eq!(line, format!("[ui] {code} <redacted>"), "leaked: {bad}");

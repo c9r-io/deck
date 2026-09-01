@@ -83,6 +83,13 @@ Frontend gates: `node --check` (syntax) · `ui/test/*.mjs` (node:test)
   (dir 0700, every file created 0600 — atomic-write temps, `.bak`,
   `.corrupt-*`, log, exports); `harden_data_dir()` re-migrates legacy modes
   at every boot.
+- Clipboard diagnostics are always structured and content-free. Copy records
+  terminal key capture, Deck/native/no-selection routing, snapshot loss and
+  the `pbcopy`/Web Clipboard writer result. Text paste records the closed chain
+  key capture → xterm key handler → native paste event → xterm `onData` → PTY
+  write, with bounded missing-stage timers. Only fixed labels and character or
+  file counts enter `app.log`; clipboard text, errors and session names never
+  do. Per-pane timers are disposed with the pane.
 - PTY smoke test (headless): `cargo run --example pty_smoke`
 - The unchanged vendored terminal is `@xterm/xterm` 5.5.0 (the local
   `xterm.js` is byte-identical to the published 5.5.0 artifact, SHA-256

@@ -237,7 +237,7 @@ test('production terminal path wires the token-bound frozen selection coordinato
   assert.match(selection, /updateAt\(currentToken, finalPoint, false\)/,
     'pointerup must position exactly at the pointer without another edge scroll');
   assert.match(selection, /grid: \{ cols: pane\.term\.cols, rows: pane\.term\.rows \}/);
-  assert.match(layout, /term\.hasSelection\(\)[\s\S]{0,80}e\.preventDefault\(\)/,
+  assert.match(layout, /if \(copyRoute === 'native'\) \{\s*e\.preventDefault\(\)/,
     'xterm-native Command-C must suppress WebKit default copy');
   assert.match(layout, /createTerminalResizeCoordinator/);
   assert.match(layout, /pane\.syncSize = \(\) => resize\.sync/);
@@ -286,4 +286,20 @@ test('WK clipboard expected value is generated independently of production copy'
   assert.match(smoke, /fixtureClipboardLine/);
   assert.match(smoke, /expectedHash = fnv1a64\(expected\)/);
   assert.doesNotMatch(smoke, /keySelection\s*=\s*await copyTerminalSelection/);
+});
+
+test('clipboard diagnostics cover every copy and paste handoff without content', () => {
+  const layout = read('app/ui/js/layout.js');
+  const terminal = read('app/ui/js/terminal.js');
+  const backend = read('app/src-tauri/src/commands.rs');
+  for (const stage of [
+    'pasteTrace.keyCapture()', 'pasteTrace.keyHandler()', 'pasteTrace.event(',
+    'pasteTrace.onData(', 'pasteTrace.write(',
+  ]) assert.ok(layout.includes(stage), `missing paste diagnostic handoff: ${stage}`);
+  for (const stage of ['key-capture', 'keydown-deck', 'keydown-native', 'keydown-none',
+    'selection-vanished']) assert.ok(layout.includes(stage), `missing copy diagnostic: ${stage}`);
+  for (const stage of ['pbcopy-success', 'pbcopy-failed', 'web-success', 'web-failed',
+    'web-unavailable']) assert.ok(terminal.includes(stage), `missing clipboard writer diagnostic: ${stage}`);
+  assert.match(backend, /"terminal-paste",[\s\S]*?"ondata-missing"[\s\S]*?"pty-failed"/);
+  assert.match(backend, /"clipboard-write",[\s\S]*?"pbcopy-success"[\s\S]*?"web-unavailable"/);
 });
