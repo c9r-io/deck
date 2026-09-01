@@ -16,6 +16,19 @@ export function shQuote(p) {
   return /^[A-Za-z0-9_/.~-]+$/.test(s) ? s : "'" + s.replace(/'/g, "'\\''") + "'";
 }
 
+/* ---------- card preview ---------- */
+export const CARD_PREVIEW_ROWS = 6;
+
+/** Keep the newest terminal rows in natural reading order and pad above them
+ * so a short tail stays anchored to the bottom of the fixed-height preview. */
+export function cardPreviewRows(lines, rows = CARD_PREVIEW_ROWS) {
+  const requested = Number(rows);
+  const count = Number.isFinite(requested) ? Math.max(0, Math.trunc(requested)) : 0;
+  if (!count) return [];
+  const tail = (Array.isArray(lines) ? lines : []).slice(-count);
+  return Array(count - tail.length).fill('').concat(tail);
+}
+
 /* Terminal links are tokenized before they are classified. A URL consumes
    its complete interval first, so `/api` inside it can never become a path.
    Path tokens are only candidates here: the provider asks the backend to

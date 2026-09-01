@@ -2,7 +2,7 @@
 // Part of deck's no-build frontend: native ES modules, no bundler.
 import { $, columnHint, dotTitle, POLL_MS, QUIET_SECS, emit, genId, inv, listeners, sessionName, setMemChip, state, store, uev } from './state.js';
 import { mutateBoard, mutateBoardDebounced } from './persistence.js';
-import { createExitRetirementTracker, reorderById, sidebarGroups } from './pure.js';
+import { CARD_PREVIEW_ROWS, cardPreviewRows, createExitRetirementTracker, reorderById, sidebarGroups } from './pure.js';
 import { confirmDialog, inlineRename, toast } from './dialogs.js';
 import { clearSeparators, closePaneBySid, leaveSessionView, openSession, renderSessionView, updatePaneChrome } from './layout.js';
 import { SHELL_FG, showProjectCtx, showSessionCtx } from './terminal.js';
@@ -685,14 +685,14 @@ export function cardEl(s) {
   el.dataset.sid = s.id;
   el.draggable = true;
 
-  const tail = (s.tail || []).slice(-2);
-  /* fixed shape: the tail box is always present (2 lines) and there are no
+  const tail = cardPreviewRows(s.tail);
+  /* fixed shape: the tail box is always present (6 lines) and there are no
      hover-only rows — cards never change size under the pointer */
   el.innerHTML = `
     <div class="card-top"><span class="dot ${s.status}"></span><span class="card-title"></span><button class="card-x">✕</button></div>
     <div class="card-meta"><span class="cmd"></span><span class="dir"></span><span class="q-chip"></span><span class="mem-chip"></span></div>
     ${s.desc ? '<div class="card-desc"></div>' : ''}
-    <div class="card-tail"><div></div><div></div></div>`;
+    <div class="card-tail">${Array.from({ length: CARD_PREVIEW_ROWS }, () => '<div></div>').join('')}</div>`;
   el.querySelector('.card-title').textContent = s.title;
   el.querySelector('.dot').title = dotTitle(s.status);
   el.querySelector('.card-x').title = t('session.closeTitle');
@@ -730,9 +730,9 @@ export function cardEl(s) {
 export function updateCardInPlace(s) {
   const el = document.querySelector(`.card[data-sid="${s.id}"]`);
   if (!el) return;
-  const tail = (s.tail || []).slice(-2);
+  const tail = cardPreviewRows(s.tail);
   const tailDivs = el.querySelectorAll('.card-tail div');
-  tailDivs.forEach((d, i) => { d.textContent = tail[i] || ''; });
+  tailDivs.forEach((d, i) => { d.textContent = tail[i]; });
   const dot = el.querySelector('.dot');
   if (dot) { dot.className = 'dot ' + s.status; dot.title = dotTitle(s.status); }
   el.classList.toggle('waiting', s.status === 'waiting');

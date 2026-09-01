@@ -210,9 +210,10 @@ Frontend gates: `node --check` (syntax) · `ui/test/*.mjs` (node:test)
   mount new owner, refit new owner. Stale RAF work must not resize a newer
   owner, and each pane preserves its own bottom-follow/scrollback position.
 - One poll command (`poll_sessions`) returns liveness + `#{window_activity}` recency +
-  process-tree RSS (pane_pid → ps tree walk) + tail previews. Frontend polls every
-  2.5s and diffs into granular UI events (status/mem/output) — never full re-renders
-  on output.
+  process-tree RSS (pane_pid → ps tree walk) + the last six non-empty pane rows
+  for fixed-height, bottom-aligned card previews. Frontend polls every 2.5s and
+  diffs into granular UI events (status/mem/output) — never full re-renders on
+  output.
 - Status semantics: green = output <15s ago; amber "waiting" = alive but quiet ≥15s
   (honest heuristic — may be waiting for input, may be a silent build); gray = no
   session.

@@ -125,10 +125,20 @@ test('large font scaling reflows dense rows instead of clipping scaled line boxe
   assert.match(html, /html\.font-scale-large \.sess-head \{[^}]*flex-wrap: wrap;/);
   assert.match(html, /html\.font-scale-large \.q-item,[\s\S]*?flex-wrap: wrap;/);
   assert.match(html, /\.card-meta \{[\s\S]*?min-height: 1\.53846rem;/);
-  assert.match(html, /\.card-tail \{[\s\S]*?height: calc\(2\.53846rem \+ 14px\);/);
+  assert.match(html, /\.card-tail \{[\s\S]*?height: calc\(7\.61538rem \+ 14px\);/);
   assert.doesNotMatch(html, /(?:\.card-meta|\.card-tail|\.sess-head \.btn)[^{]*\{[^}]*(?:height: 20px|height: 47px|height: 28px)/);
   assert.match(dialogs, /for \(const action of CUSTOMIZABLE_SHORTCUT_ACTIONS\)/,
     'fixed US/JIS font gestures stay out of the shortcut editor');
+});
+
+test('card preview depth stays synchronized across capture and rendering', () => {
+  const commands = read('app/src-tauri/src/commands.rs');
+  const pure = read('app/ui/js/pure.js');
+  const board = read('app/ui/js/board.js');
+  assert.match(commands, /const CARD_PREVIEW_LINES: usize = 6;/);
+  assert.match(commands, /capture_tails\(&want_tails, CARD_PREVIEW_LINES\)/);
+  assert.match(pure, /export const CARD_PREVIEW_ROWS = 6;/);
+  assert.match(board, /cardPreviewRows\(s\.tail\)/);
 });
 
 test('high-risk scheduler confirmation cannot be accepted by ordinary Enter', () => {

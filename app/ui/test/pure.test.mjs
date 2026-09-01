@@ -18,8 +18,20 @@ import {
   tokenizeTerminalLinks,
   createTerminalWheelAccumulator, createTerminalWheelFrameScheduler, terminalWheelLines,
   linkMenuItems,
-  inlineRenameValue, persistOptimistically,
+  CARD_PREVIEW_ROWS, cardPreviewRows, inlineRenameValue, persistOptimistically,
 } from '../js/pure.js';
+
+test('card preview keeps the newest rows bottom-aligned', () => {
+  assert.equal(CARD_PREVIEW_ROWS, 6);
+  assert.deepEqual(cardPreviewRows(['answer tail', 'prompt']), [
+    '', '', '', '', 'answer tail', 'prompt',
+  ]);
+  assert.deepEqual(cardPreviewRows(['old', 'one', 'two', 'three'], 3), [
+    'one', 'two', 'three',
+  ]);
+  assert.deepEqual(cardPreviewRows(null, 2), ['', '']);
+  assert.deepEqual(cardPreviewRows(['ignored'], 0), []);
+});
 
 test('id-addressed reorder supports before/after and ignores stale drag payloads', () => {
   const items = [{ id: 'a' }, { id: 'b' }, { id: 'c' }];

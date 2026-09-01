@@ -1870,6 +1870,10 @@ pub(crate) fn tree_mem(roots: &HashMap<String, u32>) -> HashMap<String, f64> {
 /// cards in board order, so the truncation is stable, not flickering).
 const MAX_TAIL_SESSIONS: usize = 16;
 
+/// Enough terminal context to show the end of an agent response above the
+/// input/status rows that occupy the bottom of most full-screen agent UIs.
+const CARD_PREVIEW_LINES: usize = 6;
+
 /// Marker line separating per-session segments in a batched capture. \x01 is
 /// never produced by capture-pane for ordinary pane text lines.
 const TAIL_MARK: &str = "\u{1}deck-tail\u{1}";
@@ -2017,7 +2021,7 @@ pub(crate) fn poll_sessions(
             tail_for.len()
         ));
     }
-    let mut tails = capture_tails(&want_tails, 2);
+    let mut tails = capture_tails(&want_tails, CARD_PREVIEW_LINES);
     let now = now_epoch();
 
     // Snapshot work is throttled and runs off-thread; this call only selects
