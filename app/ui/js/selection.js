@@ -57,10 +57,25 @@ function terminalSelectionController(pane, onModeChange) {
   let limitNoticeShown = false;
   let token = 0;
   let suppressLinkUntil = 0;
+  let promotedAt = 0;
   let ownerTrace = {
     pointerDown: 0, promoted: 0, trustedClick: 0,
     compatibilityBlocked: 0, ended: 0,
   };
+
+  /* Selection lifecycle diagnostics. ⌘C only ever reports what it FOUND;
+     without these, a copy that logs `terminal-copy keydown-none` cannot be
+     told apart from a drag that never promoted, a selection tmux refused to
+     start, and a live selection some later event revoked. Same contract as
+     the rest of frontend logging: a closed label plus two integers —
+     `a` is a per-label count (rows spanned, or 1 when a FROZEN selection was
+     destroyed) and `b` is milliseconds since promotion, -1 when never
+     promoted. No terminal text, session name or error text can enter. */
+  const sev = (detail, a = 0) =>
+    uev('terminal-selection', detail, a, promotedAt ? Date.now() - promotedAt : -1);
+  const statusRows = status => (status
+    ? Math.abs(status.selection_end_row - status.selection_start_row) + 1
+    : 0);
 
   const queue = operation => {
     const pending = opChain.catch(() => {}).then(operation);
@@ -149,13 +164,18 @@ function terminalSelectionController(pane, onModeChange) {
 
   const synchronizeSize = async () => {
     if (pane.syncSize && !(await pane.syncSize())) {
+      sev('dimensions-changed');
       throw new Error('selection-dimensions-changed');
     }
-    if (!pane.term.cols || !pane.term.rows) throw new Error('selection-dimensions-changed');
+    if (!pane.term.cols || !pane.term.rows) {
+      sev('dimensions-changed');
+      throw new Error('selection-dimensions-changed');
+    }
     return { grid: { cols: pane.term.cols, rows: pane.term.rows } };
   };
 
   const invalidateSynchronizedSize = () => {
+    sev('dimensions-changed');
     pane.invalidateSize?.();
   };
 
@@ -252,7 +272,8 @@ function terminalSelectionController(pane, onModeChange) {
           }
         } catch (e) {
           if (currentToken === token && model.snapshot().generation === generation) {
-            await cancel(false);
+            sev('update-failed');
+            await cancel(false, null);
             toast(t('error.selectionChanged'));
           }
           break;
@@ -274,6 +295,8 @@ function terminalSelectionController(pane, onModeChange) {
     ownerTrace.promoted = 1;
     token = nextSelectionToken++;
     frozen = false;
+    promotedAt = Date.now();
+    sev('promote', Math.abs(active.row - anchor.row) + 1);
     const currentToken = token;
     const generation = model.begin({ row: anchor.row, col: anchor.col });
     model.move({ row: active.row, col: active.col });
@@ -289,11 +312,13 @@ function terminalSelectionController(pane, onModeChange) {
       model.move({ row: synchronizedActive.row, col: synchronizedActive.col });
       if (currentToken !== token || !model.apply(generation, status)) return;
       lastStatus = status;
+      sev('start-ok', statusRows(status));
       renderOverlay();
       requestUpdate();
     }).catch(() => {
       if (currentToken === token && model.snapshot().generation === generation) {
-        cancel(false);
+        sev('start-failed');
+        cancel(false, null);
         toast(t('error.selectionStart'));
       }
     });
@@ -304,7 +329,7 @@ function terminalSelectionController(pane, onModeChange) {
     if (!terminalCell(pane, event.clientX, event.clientY)) return;
     // Keep the physical compatibility sequence trusted for click/link. A
     // later terminal-cell transition explicitly transfers ownership to tmux.
-    cancel(false);
+    cancel(false, 'pointer');
     ownerTrace = {
       pointerDown: 1, promoted: 0, trustedClick: 0,
       compatibilityBlocked: 0, ended: 0,
@@ -373,6 +398,7 @@ function terminalSelectionController(pane, onModeChange) {
           if (currentToken !== token || disposed || model.snapshot().generation !== generation) return;
           lastStatus = status;
           frozen = true;
+          sev('finish-ok', statusRows(status));
           renderOverlay();
           if (onModeChange) onModeChange(true, lastStatus, { dragging: false, frozen: true });
           return;
@@ -384,7 +410,8 @@ function terminalSelectionController(pane, onModeChange) {
     }).catch(error => {
       if (currentToken === token && !disposed) {
         uev('terminal-copy', copyFailureCode(error));
-        cancel(false);
+        sev('finish-failed');
+        cancel(false, null);
         toast(t('error.selectionChanged'));
       }
     });
@@ -400,7 +427,7 @@ function terminalSelectionController(pane, onModeChange) {
     event.preventDefault();
     event.stopImmediatePropagation();
     suppressLinkUntil = Date.now() + 250;
-    cancel();
+    cancel(true, 'pointer-cancel');
   };
 
   const compatibilityMove = event => {
@@ -419,9 +446,14 @@ function terminalSelectionController(pane, onModeChange) {
     requestUpdate();
   };
 
-  async function cancel(clearNative = true) {
+  /* `reason` is a closed label naming what revoked the selection. It is
+     logged ONLY when something real was destroyed, so an ordinary click —
+     which cancels an empty controller on every pointerdown — stays silent.
+     Callers that already logged a more specific failure pass null. */
+  async function cancel(clearNative = true, reason = 'other') {
     const oldToken = token;
     const hadSelection = selected || !!gesture?.promoted;
+    if (hadSelection && reason) sev(`cancel-${reason}`, frozen ? 1 : 0);
     const currentGesture = gesture;
     clearEdgeTimer();
     releaseCapture(currentGesture);
@@ -430,6 +462,11 @@ function terminalSelectionController(pane, onModeChange) {
     updateDirty = false;
     token = 0;
     frozen = false;
+    /* with the rest of the synchronous teardown, never after the awaited
+       backend cancel below: a promote that lands while this cancel is still
+       in flight owns `promotedAt`, and a late reset would report the new
+       selection's whole life as "never promoted". */
+    promotedAt = 0;
     const cancelGeneration = model.cancel();
     lastStatus = null;
     setMode(false);
@@ -477,6 +514,7 @@ function terminalSelectionController(pane, onModeChange) {
 
     token = nextSelectionToken++;
     frozen = false;
+    promotedAt = Date.now();
     const currentToken = token;
     const generation = model.begin(anchor);
     model.move(active);
@@ -496,11 +534,15 @@ function terminalSelectionController(pane, onModeChange) {
           || model.snapshot().generation !== generation) return false;
       lastStatus = status;
       frozen = true;
+      sev('freeze-ok', statusRows(status));
       pane.term.clearSelection();
       renderOverlay();
       return true;
     } catch (error) {
-      if (currentToken === token && !disposed) await cancel();
+      if (currentToken === token && !disposed) {
+        sev('freeze-failed');
+        await cancel(true, null);
+      }
       return false;
     }
   };
@@ -540,7 +582,7 @@ function terminalSelectionController(pane, onModeChange) {
       pane.term.options.disableStdin = false;
       return Promise.resolve();
     }
-    return cancel();
+    return cancel(true, 'input');
   };
 
   const resize = () => {
@@ -551,7 +593,7 @@ function terminalSelectionController(pane, onModeChange) {
   const dispose = () => {
     if (disposed) return;
     disposed = true;
-    cancel(false);
+    cancel(false, 'dispose');
     nativeSelectionDisposable?.dispose();
     nativeSelectionDisposable = null;
     pane.body.removeEventListener('pointerdown', pointerDown, true);
@@ -563,8 +605,8 @@ function terminalSelectionController(pane, onModeChange) {
     document.removeEventListener('visibilitychange', visibility);
     controllers.delete(api);
   };
-  const blur = () => cancel();
-  const visibility = () => { if (document.hidden) cancel(); };
+  const blur = () => cancel(true, 'blur');
+  const visibility = () => { if (document.hidden) cancel(true, 'hidden'); };
 
   pane.body.addEventListener('pointerdown', pointerDown, true);
   document.addEventListener('pointermove', pointerMove, true);
@@ -612,7 +654,8 @@ export function wireTerminalSelection(pane, onModeChange) {
 
 export const hasTerminalSelection = pane => !!pane?.selection?.hasSelection();
 export const copyTerminalSelection = pane => pane?.selection?.copy();
-export const cancelTerminalSelection = pane => pane?.selection?.cancel();
-export const cancelAllTerminalSelections = () => {
-  for (const controller of [...controllers]) controller.cancel();
+export const cancelTerminalSelection = (pane, reason = 'other') =>
+  pane?.selection?.cancel(true, reason);
+export const cancelAllTerminalSelections = (reason = 'leave') => {
+  for (const controller of [...controllers]) controller.cancel(true, reason);
 };

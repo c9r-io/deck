@@ -90,6 +90,19 @@ Frontend gates: `node --check` (syntax) · `ui/test/*.mjs` (node:test)
   write, with bounded missing-stage timers. Only fixed labels and character or
   file counts enter `app.log`; clipboard text, errors and session names never
   do. Per-pane timers are disposed with the pane.
+  ⌘C can only report what it FOUND, so `terminal-selection` records the
+  selection's own life: `promote` / `start-ok` / `finish-ok` (or
+  `start-failed` / `update-failed` / `finish-failed` / `freeze-failed`,
+  which previously cancelled behind nothing but a toast), plus one
+  `cancel-<reason>` naming every revoke — pointer, pointer-cancel, blur,
+  hidden, input, escape, focus, live, exit, leave, dispose. That is what
+  separates a `terminal-copy keydown-none` caused by a drag that never
+  promoted from one caused by a live selection something took away. A cancel
+  with nothing to destroy stays silent, so ordinary clicks do not flood the
+  log; a caller that already logged a specific failure passes a null reason
+  instead of a second anonymous line. The two integers are a per-label count
+  (rows spanned, or 1 when a FROZEN selection died) and the selection's age in
+  milliseconds — never text, coordinates of content, or an error string.
 - PTY smoke test (headless): `cargo run --example pty_smoke`
 - The unchanged vendored terminal is `@xterm/xterm` 5.5.0 (the local
   `xterm.js` is byte-identical to the published 5.5.0 artifact, SHA-256

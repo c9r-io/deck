@@ -149,6 +149,35 @@ const SMOKE_CHECKS: &[&str] = &[
     "done",
 ];
 
+/// Terminal selection lifecycle. `terminal-copy` can only report what ⌘C
+/// FOUND; these say how the selection got there or what took it away, so a
+/// `keydown-none` copy can be attributed to a drag that never promoted, a
+/// start tmux refused, or a specific later revoke. Labels only — no terminal
+/// text, session name or error string is representable here.
+const SELECTION_EVENTS: &[&str] = &[
+    "promote",
+    "start-ok",
+    "start-failed",
+    "finish-ok",
+    "finish-failed",
+    "update-failed",
+    "dimensions-changed",
+    "freeze-ok",
+    "freeze-failed",
+    "cancel-pointer",
+    "cancel-pointer-cancel",
+    "cancel-blur",
+    "cancel-hidden",
+    "cancel-input",
+    "cancel-escape",
+    "cancel-focus",
+    "cancel-live",
+    "cancel-exit",
+    "cancel-leave",
+    "cancel-dispose",
+    "cancel-other",
+];
+
 /// The only frontend diagnostic codes the backend will log, each with its
 /// closed detail policy. Anything else is dropped, so no free-form frontend
 /// string (keystrokes, prompts, paths, URLs, error messages, token-shaped
@@ -210,6 +239,7 @@ const UI_EVENT_SPECS: &[(&str, DetailPolicy)] = &[
             "pty-failed",
         ]),
     ),
+    ("terminal-selection", DetailPolicy::Closed(SELECTION_EVENTS)),
     (
         "clipboard-write",
         DetailPolicy::Closed(&[
@@ -2941,6 +2971,25 @@ mod tests {
             format_ui_event("clipboard-write", Some("pbcopy-success"), Some(42), None).unwrap(),
             "[ui] clipboard-write pbcopy-success a=42"
         );
+        assert_eq!(
+            format_ui_event("terminal-selection", Some("promote"), Some(3), Some(0)).unwrap(),
+            "[ui] terminal-selection promote a=3 b=0"
+        );
+        assert_eq!(
+            format_ui_event(
+                "terminal-selection",
+                Some("cancel-blur"),
+                Some(1),
+                Some(4200)
+            )
+            .unwrap(),
+            "[ui] terminal-selection cancel-blur a=1 b=4200"
+        );
+        // a revoke reason the frontend never defines must not become a log line
+        assert_eq!(
+            format_ui_event("terminal-selection", Some("cancel-"), None, None).unwrap(),
+            "[ui] terminal-selection <redacted>"
+        );
         // anything that could carry prose, prompts, paths, URLs or a
         // token-SHAPED slug (the old loophole) is redacted per event code
         for bad in [
@@ -2963,6 +3012,7 @@ mod tests {
                 "separator",
                 "terminal-copy",
                 "terminal-paste",
+                "terminal-selection",
                 "clipboard-write",
             ] {
                 let line = format_ui_event(code, Some(bad), None, None).unwrap();

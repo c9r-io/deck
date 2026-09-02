@@ -316,3 +316,47 @@ test('clipboard diagnostics cover every copy and paste handoff without content',
   assert.match(backend, /"terminal-paste",[\s\S]*?"ondata-missing"[\s\S]*?"pty-failed"/);
   assert.match(backend, /"clipboard-write",[\s\S]*?"pbcopy-success"[\s\S]*?"web-unavailable"/);
 });
+
+test('every way a terminal selection dies is attributable in the log', () => {
+  const selection = read('app/ui/js/selection.js');
+  const layout = read('app/ui/js/layout.js');
+  const backend = read('app/src-tauri/src/commands.rs');
+  // ⌘C can only report what it FOUND. Without a lifecycle record, a
+  // `terminal-copy keydown-none` is indistinguishable from a drag that never
+  // promoted, a start tmux refused, and a live selection something revoked.
+  for (const stage of ['promote', 'start-ok', 'start-failed', 'finish-ok', 'finish-failed',
+    'update-failed', 'dimensions-changed', 'freeze-ok', 'freeze-failed'])
+    assert.ok(selection.includes(`sev('${stage}'`), `selection stage never logged: ${stage}`);
+  // The two paths that used to cancel behind nothing but a toast.
+  assert.match(selection, /sev\('start-failed'\);\s*cancel\(false, null\);/,
+    'a refused selection start must be logged, not only toasted');
+  assert.match(selection, /sev\('update-failed'\);\s*await cancel\(false, null\);/,
+    'a failed drag update must be logged, not only toasted');
+  // No cancel may reach the log as an anonymous one: either it names the
+  // revoke, or the caller already logged a more specific failure (null).
+  assert.doesNotMatch(selection, /(?:^|[^.\w])cancel\(\s*(?:true|false)?\s*\)/,
+    'every selection cancel must carry a reason label or an explicit null');
+  assert.match(selection, /if \(hadSelection && reason\) sev\(`cancel-\$\{reason\}`/,
+    'a cancel with nothing to destroy must stay silent so ordinary clicks do not flood the log');
+  // The age reset belongs to the synchronous teardown. Left after the awaited
+  // backend cancel it lands on whatever selection promoted meanwhile, which
+  // reported a live drag's entire lifetime as "never promoted" (b=-1).
+  assert.match(selection, /frozen = false;[\s\S]{0,320}?promotedAt = 0;[\s\S]{0,200}?const cancelGeneration/,
+    'promotedAt must reset before cancel awaits anything');
+  const reasons = new Set();
+  for (const source of [selection, layout])
+    for (const [, r] of source.matchAll(/cancel(?:TerminalSelection|AllTerminalSelections)?\(\s*(?:pane|previous|p|true|false)?\s*,?\s*'([a-z-]+)'\s*\)/g))
+      reasons.add(r);
+  for (const r of ['pointer', 'pointer-cancel', 'blur', 'hidden', 'input', 'escape',
+    'focus', 'live', 'exit', 'leave', 'dispose'])
+    assert.ok(reasons.has(r), `revoke reason never wired: ${r}`);
+  // Every label the frontend can emit must exist in the backend's closed set,
+  // or the diagnostic silently degrades to `<redacted>`.
+  const vocabulary = /const SELECTION_EVENTS: &\[&str\] = &\[([\s\S]*?)\];/.exec(backend);
+  assert.ok(vocabulary, 'backend must own a closed selection vocabulary');
+  const allowed = new Set([...vocabulary[1].matchAll(/"([a-z-]+)"/g)].map(m => m[1]));
+  for (const r of reasons)
+    assert.ok(allowed.has(`cancel-${r}`), `backend would redact cancel-${r}`);
+  assert.ok(allowed.has('cancel-other'), 'the default reason must be loggable too');
+  assert.match(backend, /"terminal-selection",\s*DetailPolicy::Closed\(SELECTION_EVENTS\)/);
+});

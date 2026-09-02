@@ -520,7 +520,7 @@ export function wireTerminalInput(pane, term, host) {
       });
     const cc = card();
     if (!isAutoReply && hasTerminalSelection(pane)) {
-      pane.liveQ = cancelTerminalSelection(pane);
+      pane.liveQ = cancelTerminalSelection(pane, 'input');
     }
     if (!isAutoReply && cc && cc.scrolled) {
       pane.liveQ = goLive(session);
@@ -566,7 +566,7 @@ export function wireTerminalInput(pane, term, host) {
     }
     if (e.type === 'keydown' && e.key === 'Escape' && hasTerminalSelection(pane)) {
       e.preventDefault();
-      cancelTerminalSelection(pane);
+      cancelTerminalSelection(pane, 'escape');
       return false;
     }
     const copyRoute = terminalCopyRoute(e, hasTerminalSelection(pane), term.hasSelection());
@@ -825,7 +825,7 @@ export function goLive(session) {
   if (p) setScrollCursorVisible(p, true);
   const c = p && provider.get(p.sid);
   if (c && c.scrolled) { c.scrolled = false; updatePaneChrome(c); }
-  if (p && hasTerminalSelection(p)) return cancelTerminalSelection(p);
+  if (p && hasTerminalSelection(p)) return cancelTerminalSelection(p, 'live');
   return inv('scroll_bottom', { name: session }).catch(() => {});
 }
 
@@ -834,7 +834,7 @@ export function focusPane(session) {
   if (!p) return;
   const changed = attachedName !== session;
   const previous = changed && attachedName ? panes.get(attachedName) : null;
-  if (previous && hasTerminalSelection(previous)) cancelTerminalSelection(previous);
+  if (previous && hasTerminalSelection(previous)) cancelTerminalSelection(previous, 'focus');
   attachedName = session;
   term = p.term;
   panes.forEach(q => q.el.classList.toggle('focus', q === p));
@@ -1015,7 +1015,7 @@ listen('pty-data', ev => {
 listen('pty-exit', ev => {
   const pane = panes.get(ev.payload.name);
   if (pane) {
-    cancelTerminalSelection(pane);
+    cancelTerminalSelection(pane, 'exit');
     toast(t('session.ended'));
     pollNow();
   }
@@ -1051,7 +1051,7 @@ export async function openSession(sid) {
 }
 
 export function leaveSessionView() {
-  cancelAllTerminalSelections();
+  cancelAllTerminalSelections('leave');
   resetSuggest(null);
   toggleQueuePanel(false);
   const quickBar = $('quick-bar');
