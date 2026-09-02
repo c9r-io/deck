@@ -154,6 +154,17 @@ test('important-card marks are durable and visible on cards and in the sidebar',
   assert.match(html, /\.card-pin\.active \{ color: var\(--wait\); \}/);
 });
 
+test('cards can change Boards only from the Board view', () => {
+  const html = read('app/ui/index.html');
+  const layout = read('app/ui/js/layout.js');
+  const terminal = read('app/ui/js/terminal.js');
+  const board = read('app/ui/js/board.js');
+  assert.doesNotMatch(html + layout + terminal, /sess-col|session\.moveBoard/,
+    'the card session header has no Board selector or move handler');
+  assert.match(board, /provider\.move\(sid, c\.id\)/,
+    'Board drag-and-drop remains the supported placement control');
+});
+
 test('high-risk scheduler confirmation cannot be accepted by ordinary Enter', () => {
   const dialogs = read('app/ui/js/dialogs.js');
   assert.match(dialogs, /confirmDangerDialog/);

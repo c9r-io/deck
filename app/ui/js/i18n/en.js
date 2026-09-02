@@ -36,7 +36,6 @@ const dictionary = {
   'session.memory': 'Memory of the whole session process tree: shell + agent + spawned children',
   'session.splitRight': 'Split right ({shortcut})',
   'session.splitDown': 'Split down ({shortcut})',
-  'session.moveBoard': 'Move to Board',
   'session.close': 'Close',
   'session.closeTitle': 'Close session (terminates the shell and removes the card)',
   'session.closePane': 'Close pane (session keeps running)',

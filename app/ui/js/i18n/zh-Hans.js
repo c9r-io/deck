@@ -35,7 +35,6 @@ const dictionary = {
   'session.memory': '整个 session 进程树的内存：shell、agent 及其子进程',
   'session.splitRight': '向右拆分（{shortcut}）',
   'session.splitDown': '向下拆分（{shortcut}）',
-  'session.moveBoard': '移到 Board',
   'session.close': '关闭',
   'session.closeTitle': '关闭 session（终止 shell 并移除卡片）',
   'session.closePane': '关闭窗格（session 继续运行）',

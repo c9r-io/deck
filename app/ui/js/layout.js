@@ -1099,10 +1099,4 @@ export function renderSessionView() {
   };
   setMemChip($('sess-mem'), s);
   $('sess-path').textContent = (s.cmd ? '$ ' + s.cmd + '  ·  ' : '') + s.dir;
-
-  const proj = activeProject();
-  const sel = $('sess-col');
-  sel.innerHTML = proj.columns.map(c =>
-    `<option value="${c.id}" ${c.id === s.columnId ? 'selected' : ''}></option>`).join('');
-  [...sel.options].forEach((o, i) => { o.textContent = proj.columns[i].name; });
 }

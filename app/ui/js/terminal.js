@@ -533,11 +533,6 @@ $('side-new').onclick = () => newSession(HOME);
 registerShortcutAction('newSession', () => newSession(HOME));
 registerShortcutAction('toggleSidebar', toggleSidebar);
 $('sess-close').onclick = () => closeSession(state.sessionId, true);
-$('sess-col').addEventListener('change', async e => {
-  await provider.move(state.sessionId, e.target.value);
-  const c = activeProject().columns.find(c => c.id === e.target.value);
-  toast(t('board.movedTo', { name: c.name }));
-});
 document.addEventListener('keydown', e => {
   if (isComposingKeyEvent(e)) return;
   if (e.key === 'Escape') {
