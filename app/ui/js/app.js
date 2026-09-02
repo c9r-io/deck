@@ -325,7 +325,10 @@ export async function boot() {
   if (doc && doc.data) {
     const data = JSON.parse(doc.data);   // backend already validated the shape
     store.projects = migrateColumnSemantics(data.projects || []);
-    store.cards = (data.cards || []).map(c => ({ ...c, status: 'stopped', mem: null, tail: [], idle: null }));
+    store.cards = (data.cards || []).map(c => ({
+      ...c, pinned: c.pinned === true,
+      status: 'stopped', mem: null, tail: [], idle: null,
+    }));
   }
   if (loadErr) {
     toast(t('error.boardLoad'));

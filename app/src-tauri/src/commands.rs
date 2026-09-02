@@ -464,6 +464,9 @@ pub(crate) struct BoardCard {
     column_id: String,
     #[allow(dead_code)]
     title: String,
+    #[allow(dead_code)]
+    #[serde(default)]
+    pinned: bool,
     /// runtime fields the UI cannot operate a card without
     #[allow(dead_code)]
     cmd: String,
@@ -2614,14 +2617,19 @@ mod tests {
     fn board_validation_accepts_real_shape_and_unknown_extensions() {
         let ok = board(&card("s1", "P1", "C1", "deck-t-ab12"));
         assert!(serde_json::from_str::<BoardDoc>(&ok).is_ok());
-        // future extension fields anywhere must not break loading
+        // The persisted important-card mark is optional for legacy boards;
+        // unrelated future extension fields anywhere must not break loading.
         let extended = ok
             .replacen(
                 "{\"projects\"",
                 "{\"futureTopLevel\":{\"x\":1},\"projects\"",
                 1,
             )
-            .replacen("\"title\":\"t\"", "\"title\":\"t\",\"pinned\":true", 1);
+            .replacen(
+                "\"title\":\"t\"",
+                "\"title\":\"t\",\"pinned\":true,\"futureCard\":true",
+                1,
+            );
         assert!(
             serde_json::from_str::<BoardDoc>(&extended).is_ok(),
             "unknown fields are tolerated"
@@ -2643,6 +2651,11 @@ mod tests {
         let no_session =
             board(r#"{"id":"s1","projectId":"P1","columnId":"C1","title":"t","cmd":"","dir":""}"#);
         fail(&no_session, "missing session", "session");
+        let bad_pinned = board(
+            &card("s1", "P1", "C1", "deck-a-1111")
+                .replacen("\"title\":\"t\"", "\"title\":\"t\",\"pinned\":\"yes\"", 1),
+        );
+        fail(&bad_pinned, "non-boolean important mark", "boolean");
         // duplicate project id
         let dup_proj = r#"{"projects":[
             {"id":"P1","name":"a","columns":[{"id":"C1","name":"x"}]},

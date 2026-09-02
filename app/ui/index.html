@@ -78,6 +78,7 @@
   .side-item:hover { background: var(--hover); }
   .side-item.active { background: var(--sel); }
   .side-item .name { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+  .side-pin { flex: none; color: var(--wait); font-size: 0.846154rem; line-height: 1; }
   .side-board-group {
     display: flex; align-items: center; gap: 8px; min-width: 0;
     padding: 10px 14px 3px; color: var(--muted); font-size: 0.769231rem;
@@ -241,6 +242,13 @@
   .card.dragging { opacity: 0.45; }
   .card-top { display: flex; align-items: center; gap: 8px; }
   .card-title { font-weight: 600; flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .card-pin {
+    flex: none; padding: 1px 4px; border-radius: 4px;
+    font-size: 1.076923rem; line-height: 1; color: var(--faint);
+  }
+  .card-pin:hover { color: var(--text); background: var(--hover); }
+  .card-pin.active { color: var(--wait); }
+  .card-pin[disabled] { opacity: 0.55; cursor: wait; }
   .card-x {
     flex: none; padding: 1px 5px; border-radius: 4px;
     font-size: 0.923077rem; line-height: 1; color: transparent;

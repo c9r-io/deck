@@ -151,6 +151,7 @@ export const provider = {
     const card = {
       id, projectId, columnId, title, cmd, dir, desc,
       session: sessionName(title, id),
+      pinned: false,
       status: 'stopped', mem: null, tail: [],
     };
     let sideEffect;
@@ -259,6 +260,23 @@ export const provider = {
     });
     const c = this.get(sid);
     if (c) emit('list', c);
+  },
+  async togglePinned(sid) {
+    let applied = false;
+    try {
+      await mutateBoard(draft => {
+        const c = draft.cards.find(x => x.id === sid);
+        if (!c) return { noop: true };
+        c.pinned = c.pinned !== true;
+        applied = true;
+      });
+    } catch (_) {
+      toast(t('error.importantSave'));
+      return false;
+    }
+    const c = this.get(sid);
+    if (applied && c) emit('list', c);
+    return applied;
   },
   observeDir(sid, dir) {
     const live = this.get(sid);
@@ -453,6 +471,14 @@ export function renderSidebar() {
     el.title = s.title;
     el.innerHTML = `<span class="dot ${s.status}"></span><span class="name"></span>`;
     el.querySelector('.name').textContent = s.title;
+    if (s.pinned === true) {
+      const pin = document.createElement('span');
+      pin.className = 'side-pin';
+      pin.textContent = '★';
+      pin.title = t('card.important');
+      pin.setAttribute('aria-label', t('card.important'));
+      el.appendChild(pin);
+    }
     el.onclick = () => openSession(s.id);
     el.oncontextmenu = e => showSessionCtx(e, s.id);
     /* sidebar items are drag sources for split (方案 A) */
@@ -689,12 +715,19 @@ export function cardEl(s) {
   /* fixed shape: the tail box is always present (6 lines) and there are no
      hover-only rows — cards never change size under the pointer */
   el.innerHTML = `
-    <div class="card-top"><span class="dot ${s.status}"></span><span class="card-title"></span><button class="card-x">✕</button></div>
+    <div class="card-top"><span class="dot ${s.status}"></span><span class="card-title"></span><button class="card-pin" type="button"></button><button class="card-x" type="button">✕</button></div>
     <div class="card-meta"><span class="cmd"></span><span class="dir"></span><span class="q-chip"></span><span class="mem-chip"></span></div>
     ${s.desc ? '<div class="card-desc"></div>' : ''}
     <div class="card-tail">${Array.from({ length: CARD_PREVIEW_ROWS }, () => '<div></div>').join('')}</div>`;
   el.querySelector('.card-title').textContent = s.title;
   el.querySelector('.dot').title = dotTitle(s.status);
+  const pin = el.querySelector('.card-pin');
+  const pinLabel = t(s.pinned === true ? 'card.unmarkImportant' : 'card.markImportant');
+  pin.textContent = s.pinned === true ? '★' : '☆';
+  pin.classList.toggle('active', s.pinned === true);
+  pin.title = pinLabel;
+  pin.setAttribute('aria-label', pinLabel);
+  pin.setAttribute('aria-pressed', s.pinned === true ? 'true' : 'false');
   el.querySelector('.card-x').title = t('session.closeTitle');
   el.querySelector('.mem-chip').title = t('session.memory');
   setMemChip(el.querySelector('.mem-chip'), s);
@@ -718,9 +751,15 @@ export function cardEl(s) {
     e.stopPropagation();
     closeSession(s.id);
   };
+  pin.onclick = async e => {
+    e.stopPropagation();
+    pin.disabled = true;
+    const saved = await provider.togglePinned(s.id);
+    if (!saved && pin.isConnected) pin.disabled = false;
+  };
   el.addEventListener('click', e => {
     e.stopPropagation();   // don't toggle the board selection underneath
-    if (e.target.closest('.card-x')) return;
+    if (e.target.closest('.card-x, .card-pin')) return;
     openSession(s.id);
   });
   el.oncontextmenu = e => showSessionCtx(e, s.id);

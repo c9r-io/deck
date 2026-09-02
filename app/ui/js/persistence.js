@@ -4,7 +4,7 @@ import { inv, store } from './state.js';
 import { createSerialTransactionQueue } from './pure.js';
 
 const PERSISTED_CARD_KEYS = new Set([
-  'id', 'projectId', 'columnId', 'title', 'desc', 'cmd', 'dir', 'session',
+  'id', 'projectId', 'columnId', 'title', 'desc', 'cmd', 'dir', 'session', 'pinned',
 ]);
 
 export function boardData(projects = store.projects, cards = store.cards) {
@@ -13,6 +13,7 @@ export function boardData(projects = store.projects, cards = store.cards) {
     cards: cards.map(c => ({
       id: c.id, projectId: c.projectId, columnId: c.columnId,
       title: c.title, desc: c.desc || '', cmd: c.cmd, dir: c.dir, session: c.session,
+      pinned: c.pinned === true,
     })),
   };
 }

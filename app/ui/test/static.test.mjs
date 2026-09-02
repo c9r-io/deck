@@ -141,6 +141,19 @@ test('card preview depth stays synchronized across capture and rendering', () =>
   assert.match(board, /cardPreviewRows\(s\.tail\)/);
 });
 
+test('important-card marks are durable and visible on cards and in the sidebar', () => {
+  const persistence = read('app/ui/js/persistence.js');
+  const board = read('app/ui/js/board.js');
+  const app = read('app/ui/js/app.js');
+  const html = read('app/ui/index.html');
+  assert.match(persistence, /pinned: c\.pinned === true/);
+  assert.match(app, /pinned: c\.pinned === true/);
+  assert.match(board, /async togglePinned\(sid\)/);
+  assert.match(board, /className = 'side-pin'/);
+  assert.match(board, /class="card-pin"/);
+  assert.match(html, /\.card-pin\.active \{ color: var\(--wait\); \}/);
+});
+
 test('high-risk scheduler confirmation cannot be accepted by ordinary Enter', () => {
   const dialogs = read('app/ui/js/dialogs.js');
   assert.match(dialogs, /confirmDangerDialog/);

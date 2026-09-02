@@ -59,7 +59,7 @@ const {
   promptDialog, persistThemeChoice,
 } = await import('../js/dialogs.js');
 const { store } = await import('../js/state.js');
-const { flushBoardMutations, mutateBoard, mutateBoardDebounced } = await import('../js/persistence.js');
+const { boardData, flushBoardMutations, mutateBoard, mutateBoardDebounced } = await import('../js/persistence.js');
 
 const tick = () => new Promise(resolve => setTimeout(resolve, 0));
 
@@ -137,8 +137,8 @@ test('production debounce is flushed before an immediate destructive Board barri
   } } };
   store.projects = [{ id: 'p', name: 'p', columns: [{ id: 'c', name: 'c' }] }];
   store.cards = [
-    { id: 'a', projectId: 'p', columnId: 'c', title: 'A', desc: '', cmd: '', dir: '/tmp', session: 'deck-a-0001' },
-    { id: 'b', projectId: 'p', columnId: 'c', title: 'B', desc: '', cmd: '', dir: '/tmp', session: 'deck-b-0002' },
+    { id: 'a', projectId: 'p', columnId: 'c', title: 'A', desc: '', cmd: '', dir: '/tmp', session: 'deck-a-0001', pinned: true },
+    { id: 'b', projectId: 'p', columnId: 'c', title: 'B', desc: '', cmd: '', dir: '/tmp', session: 'deck-b-0002', pinned: false },
   ];
   mutateBoardDebounced(draft => { draft.projects[0].selected = 'c'; }, { delay: 10_000 });
   await mutateBoard(draft => { draft.cards = draft.cards.filter(c => c.id !== 'a'); });
@@ -148,6 +148,18 @@ test('production debounce is flushed before an immediate destructive Board barri
   assert.equal(final.projects[0].selected, 'c');
   assert.deepEqual(final.cards.map(c => c.id), ['b']);
   assert.deepEqual(final, JSON.parse(JSON.stringify({ projects: store.projects, cards: store.cards })));
+});
+
+test('Board serialization persists important marks and excludes runtime card state', () => {
+  const cards = [{
+    id: 'a', projectId: 'p', columnId: 'c', title: 'A', desc: '', cmd: '', dir: '/tmp',
+    session: 'deck-a-0001', pinned: true, status: 'running', mem: 42, tail: ['private output'],
+  }];
+  const serialized = boardData([], cards);
+  assert.equal(serialized.cards[0].pinned, true);
+  assert.equal('status' in serialized.cards[0], false);
+  assert.equal('mem' in serialized.cards[0], false);
+  assert.equal('tail' in serialized.cards[0], false);
 });
 
 test('failed theme persistence restores the prior palette and selectors', async () => {
