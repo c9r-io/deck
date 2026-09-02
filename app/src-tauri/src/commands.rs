@@ -2681,10 +2681,11 @@ mod tests {
         let no_session =
             board(r#"{"id":"s1","projectId":"P1","columnId":"C1","title":"t","cmd":"","dir":""}"#);
         fail(&no_session, "missing session", "session");
-        let bad_pinned = board(
-            &card("s1", "P1", "C1", "deck-a-1111")
-                .replacen("\"title\":\"t\"", "\"title\":\"t\",\"pinned\":\"yes\"", 1),
-        );
+        let bad_pinned = board(&card("s1", "P1", "C1", "deck-a-1111").replacen(
+            "\"title\":\"t\"",
+            "\"title\":\"t\",\"pinned\":\"yes\"",
+            1,
+        ));
         fail(&bad_pinned, "non-boolean important mark", "boolean");
         // duplicate project id
         let dup_proj = r#"{"projects":[
