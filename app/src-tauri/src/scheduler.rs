@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::Mutex;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::commands::start_session;
@@ -985,14 +985,18 @@ pub(crate) fn fire_item(item: &QueueItem) -> Result<(), String> {
     {
         return Err("delivery identity is invalid".into());
     }
-    let line = format!("{}\r", item.text);
+    let line = item.text.clone();
     let buffer = format!("deck-send-{delivery}");
     // Pane/session ids can be reused after the entire tmux server exits. Put
     // the bytes in a uniquely named tmux buffer, then compare the FULL
     // generation and paste them in the same server command queue. `-F`
     // evaluates synchronously (no shell); the inner commands contain only
-    // deck-generated ids, never user text. paste-buffer is byte-literal, so
-    // prompt + CR remain one indivisible terminal input.
+    // deck-generated ids, never user text. paste-buffer is byte-literal and
+    // `-p` wraps the bytes in bracketed-paste marks only for an application
+    // that asked for them, so an agent TUI sees one paste, not keystrokes.
+    // Enter follows as a SEPARATE key after a short pause: a CR inside the
+    // same burst is treated by agent inputs (Claude Code, Codex) as a
+    // pasted newline and the prompt sits unsent in the input box.
     let actual = "#{pid}:#{session_id}:#{window_id}:#{pane_id}:#{pane_pid}";
     let expected = format!(
         "{}:{}:{}:{}:{}",
@@ -1021,7 +1025,7 @@ pub(crate) fn fire_item(item: &QueueItem) -> Result<(), String> {
         }
         None => identity_condition,
     };
-    let yes = format!("paste-buffer -b {buffer} -d -t {}", pane.pane_id);
+    let yes = format!("paste-buffer -p -b {buffer} -d -t {}", pane.pane_id);
     let no = format!("delete-buffer -b {buffer}; display-message -p deck-context-refused");
     let out = tmux_owned(&[
         "set-buffer".into(),
@@ -1033,23 +1037,40 @@ pub(crate) fn fire_item(item: &QueueItem) -> Result<(), String> {
         "-F".into(),
         "-t".into(),
         pane.pane_id.clone(),
-        condition,
+        condition.clone(),
         yes,
         no,
     ]);
-    if out.as_ref().is_ok_and(|stdout| {
-        !stdout
-            .lines()
-            .any(|line| line.trim() == "deck-context-refused")
-    }) {
-        return Ok(());
+    let refused = |stdout: &String| stdout.lines().any(|line| line.trim() == "deck-context-refused");
+    if !out.as_ref().is_ok_and(|stdout| !refused(stdout)) {
+        // A vanished target can abort the command queue before its refusal
+        // branch deletes the private buffer. Never leave prompt bytes behind
+        // in tmux after a refused/indeterminate injection.
+        let _ = tmux(&["delete-buffer", "-b", &buffer]);
+        return Err("context identity or foreground changed before literal send".into());
     }
-    // A vanished target can abort the command queue before its refusal
-    // branch deletes the private buffer. Never leave prompt bytes behind in
-    // tmux after a refused/indeterminate injection.
-    let _ = tmux(&["delete-buffer", "-b", &buffer]);
-    Err("context identity or foreground changed before literal send".into())
+    std::thread::sleep(Duration::from_millis(ENTER_DELAY_MS));
+    let enter = format!("send-keys -t {} Enter", pane.pane_id);
+    let out = tmux_owned(&[
+        "if-shell".into(),
+        "-F".into(),
+        "-t".into(),
+        pane.pane_id.clone(),
+        condition,
+        enter,
+        "display-message -p deck-context-refused".into(),
+    ]);
+    if !out.as_ref().is_ok_and(|stdout| !refused(stdout)) {
+        // The text is already in the pane; the user sees it and can submit
+        // it. Counting this as sent keeps the audit honest about the bytes
+        // that landed, and the log names the one thing that did not.
+        applog("[queue] Enter refused after paste — prompt left in the input");
+    }
+    Ok(())
 }
+
+/// Long enough for an agent input to close its paste burst before Enter.
+const ENTER_DELAY_MS: u64 = 300;
 
 pub(crate) const READY_PROBE_INTERVAL_MS: u64 = 250;
 pub(crate) const READY_PROBE_TIMEOUT_MS: u64 = 15_000;

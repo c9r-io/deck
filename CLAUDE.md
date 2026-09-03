@@ -361,10 +361,19 @@ Frontend gates: `node --check` (syntax) · `ui/test/*.mjs` (node:test)
   quiet time never gate delivery. Legacy policy/AgentClass/hook fields are
   ignored and cleaned on the next save without changing schedule/delivery
   state. `context.rs` owns metadata-only probing and sanitization.
-  Injection loads literal text + trailing CR into a uniquely named tmux buffer,
-  then one synchronous tmux command queue compares the full generation plus
-  optional foreground executable and byte-literal-pastes only on a match (no
-  attach and no "text landed but Enter didn't" window). The persisted binding
+  Injection loads the literal text into a uniquely named tmux buffer, then
+  one synchronous tmux command queue compares the full generation plus
+  optional foreground executable and byte-literal-pastes only on a match
+  (`paste-buffer -p`: bracketed only for an application that asked). Enter
+  is sent 300ms later as a SEPARATE key under the same condition — a CR
+  inside the paste burst is a pasted newline to agent inputs (Claude Code,
+  Codex) and the prompt sat unsent in the box; a refused Enter is logged and
+  the delivery still counts, because the bytes are visibly in the pane. The
+  foreground check matches tmux's `pane_current_command` OR the argv name of
+  the tty's foreground process group (`ps … stat=+`): a launcher symlink to a
+  versioned binary (Claude Code's `claude → versions/2.1.259`) reports the
+  version to tmux and the command to ps, and the atomic paste pins the tmux
+  name it observed for the recognized process. The persisted binding
   is a GENERATION STAMP that must hold within ONE delivery, never a permanent
   target: `current_context_probe` re-observes the card's own pane (deck's own
   name on deck's own socket, and a deleted card tombstones its items), the
