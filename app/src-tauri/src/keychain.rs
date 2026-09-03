@@ -7,12 +7,21 @@
 // prompt for a new binary. Callers receive the bytes; nothing here logs,
 // returns or interpolates a token into any error string.
 
+use security_framework::item::{ItemClass, ItemSearchOptions};
 use security_framework::passwords::{
     delete_generic_password, get_generic_password, set_generic_password,
 };
+use std::sync::Mutex;
 
 const SERVICE: &str = "io.c9r.deck";
 const MAX_LEN: usize = 512;
+
+/// Process-local copy of each slot after its first successful read. macOS
+/// asks the user before an app may read a Keychain item's DATA (and asks
+/// again after every rebuild of an unsigned development binary), so the
+/// pollers read each slot once per process instead of every 30 seconds.
+/// Presence checks never touch the data at all (`has`).
+static CACHE: Mutex<[Option<String>; 2]> = Mutex::new([None, None]);
 
 /// Closed set of credential slots. Adding a source means adding its slots
 /// here — never accept an account name from the webview.
@@ -53,14 +62,49 @@ pub(crate) fn accepts(slot: Slot, value: &str) -> bool {
     slot.accepts(value)
 }
 
-pub(crate) fn get(slot: Slot) -> Option<String> {
-    let bytes = get_generic_password(SERVICE, slot.account()).ok()?;
-    let value = String::from_utf8(bytes).ok()?;
-    slot.accepts(&value).then_some(value)
+fn cache_slot(slot: Slot) -> usize {
+    match slot {
+        Slot::SlackUserToken => 0,
+        Slot::SlackAppToken => 1,
+    }
 }
 
+fn cache_put(slot: Slot, value: Option<String>) {
+    if let Ok(mut c) = CACHE.lock() {
+        c[cache_slot(slot)] = value;
+    }
+}
+
+pub(crate) fn get(slot: Slot) -> Option<String> {
+    if let Ok(c) = CACHE.lock() {
+        if let Some(v) = &c[cache_slot(slot)] {
+            return Some(v.clone());
+        }
+    }
+    let bytes = get_generic_password(SERVICE, slot.account()).ok()?;
+    let value = String::from_utf8(bytes).ok()?;
+    let value = slot.accepts(&value).then_some(value)?;
+    cache_put(slot, Some(value.clone()));
+    Some(value)
+}
+
+/// Attribute-only lookup: answers "is there an item?" without reading its
+/// data, so it never triggers the Keychain access prompt.
 pub(crate) fn has(slot: Slot) -> bool {
-    get(slot).is_some()
+    if let Ok(c) = CACHE.lock() {
+        if c[cache_slot(slot)].is_some() {
+            return true;
+        }
+    }
+    ItemSearchOptions::new()
+        .class(ItemClass::generic_password())
+        .service(SERVICE)
+        .account(slot.account())
+        .limit(1)
+        .load_attributes(true)
+        .search()
+        .map(|items| !items.is_empty())
+        .unwrap_or(false)
 }
 
 /// Store or clear one slot. An empty value clears it. Errors carry only a
@@ -73,10 +117,13 @@ pub(crate) fn set(slot: Slot, value: &str) -> Result<(), String> {
     if !slot.accepts(value) {
         return Err("shape".into());
     }
-    set_generic_password(SERVICE, slot.account(), value.as_bytes()).map_err(|_| "keychain".to_string())
+    set_generic_password(SERVICE, slot.account(), value.as_bytes()).map_err(|_| "keychain".to_string())?;
+    cache_put(slot, Some(value.to_string()));
+    Ok(())
 }
 
 pub(crate) fn clear(slot: Slot) -> Result<(), String> {
+    cache_put(slot, None);
     match delete_generic_password(SERVICE, slot.account()) {
         Ok(()) => Ok(()),
         // errSecItemNotFound: nothing to clear is success.
