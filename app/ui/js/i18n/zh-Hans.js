@@ -161,7 +161,7 @@ const dictionary = {
   'error.inboundTokenShape': '这不是该槽位的 token（user token 以 xoxp- 开头，app token 以 xapp- 开头）',
   'error.inboundTokenAuth': 'Slack 拒绝了这枚 token，请回应用页面重新复制',
   'error.inboundTokenNetwork': '联系不上 Slack，无法校验，未保存',
-  'error.inboundTokenSlack': 'Slack 拒绝了校验；若是 app token，请确认 Socket Mode 已开启',
+  'error.inboundTokenSlack': 'Slack 拒绝了校验（{code}）；若是 app token，请确认 Socket Mode 已开启',
   'settings.inboundUserToken': 'User token',
   'settings.inboundAppToken': 'App token',
   'settings.inboundSlackHint': '两枚 token 保存在 macOS 钥匙串，不进 ~/.deck，也不会再在这里显示。User token 负责搜索你打过标记的消息（索引约慢一分钟）；App token 负责即时收到新标记。只有你本人的反应才算数。token 无法绕过“自己安装应用”这一步：Slack 不允许 OAuth 回调到本机应用，也没有生成 app-level token 的接口。',

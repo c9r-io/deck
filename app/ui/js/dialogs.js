@@ -663,7 +663,9 @@ async function storeInboundSecret(slot, inputId) {
     await inv('inbound_set_secret', { slot, value });
     toast(t('settings.inboundTokenStored'));
   } catch (e) {
-    toast(t(INBOUND_TOKEN_ERRORS[String(e)] || 'error.inboundToken'));
+    const code = String(e);
+    if (code.startsWith('slack:')) toast(t('error.inboundTokenSlack', { code: code.slice(6) || '?' }));
+    else toast(t(INBOUND_TOKEN_ERRORS[code] || 'error.inboundToken'));
   } finally {
     box.disabled = false;
     renderInboundSettings();

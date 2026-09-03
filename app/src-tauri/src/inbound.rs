@@ -535,10 +535,14 @@ pub(crate) fn inbound_set_secret(slot: String, value: String) -> Result<(), Stri
         if !keychain::accepts(slot, trimmed) {
             return Err("shape".into());
         }
-        crate::inbound_slack::verify(slot, trimmed).map_err(|code| match code {
-            "auth" => "auth".to_string(),
-            "network" | "timeout" | "http" => "network".to_string(),
-            _ => "slack".to_string(),
+        crate::inbound_slack::verify(slot, trimmed).map_err(|code| {
+            let slack_error = crate::inbound_slack::last_slack_error();
+            applog(&format!("[inbound] credential verify FAILED ({code}:{slack_error})"));
+            match code {
+                "auth" => "auth".to_string(),
+                "network" | "timeout" | "http" => "network".to_string(),
+                _ => format!("slack:{slack_error}"),
+            }
         })?;
     }
     keychain::set(slot, &value).map_err(|code| match code.as_str() {

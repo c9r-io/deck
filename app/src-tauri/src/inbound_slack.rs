@@ -52,11 +52,31 @@ fn client() -> &'static reqwest::Client {
     })
 }
 
-/// One Slack Web API call. `Err` is a closed code suitable for logs.
+/// Slack's own error names are a closed, lowercase vocabulary. Keep the
+/// last one seen (bounded, charset-checked) so a verification failure can
+/// name it in the log and the toast without ever carrying content.
+static LAST_SLACK_ERROR: Mutex<String> = Mutex::new(String::new());
+
+pub(crate) fn last_slack_error() -> String {
+    LAST_SLACK_ERROR.lock().map(|e| e.clone()).unwrap_or_default()
+}
+
+fn note_slack_error(name: &str) {
+    let clean: String = name.chars().filter(|c| c.is_ascii_lowercase() || *c == '_').take(48).collect();
+    if let Ok(mut e) = LAST_SLACK_ERROR.lock() {
+        *e = clean;
+    }
+}
+
+/// One Slack Web API call — always POST with a form body, as every method
+/// documents. `Err` is a closed code suitable for logs.
 fn call(method: &str, token: &str, params: &[(&str, &str)]) -> Result<Value, &'static str> {
-    let qs: Vec<String> = params.iter().map(|(k, v)| format!("{}={}", encode(k), encode(v))).collect();
-    let url = if qs.is_empty() { format!("{API}{method}") } else { format!("{API}{method}?{}", qs.join("&")) };
-    let req = client().get(&url).bearer_auth(token);
+    let form: Vec<String> = params.iter().map(|(k, v)| format!("{}={}", encode(k), encode(v))).collect();
+    let req = client()
+        .post(format!("{API}{method}"))
+        .bearer_auth(token)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .body(form.join("&"));
     let body: Value = tauri::async_runtime::block_on(async move {
         let resp = req.send().await.map_err(|e| if e.is_timeout() { "timeout" } else { "network" })?;
         if resp.status().as_u16() == 429 {
@@ -68,7 +88,9 @@ fn call(method: &str, token: &str, params: &[(&str, &str)]) -> Result<Value, &'s
         resp.json::<Value>().await.map_err(|_| "parse")
     })?;
     if body.get("ok").and_then(Value::as_bool) != Some(true) {
-        return Err(match body.get("error").and_then(Value::as_str).unwrap_or("") {
+        let name = body.get("error").and_then(Value::as_str).unwrap_or("");
+        note_slack_error(name);
+        return Err(match name {
             "invalid_auth" | "not_authed" | "token_revoked" | "token_expired" | "account_inactive" => "auth",
             "missing_scope" => "scope",
             "ratelimited" => "ratelimited",

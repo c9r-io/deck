@@ -162,7 +162,7 @@ const dictionary = {
   'error.inboundTokenShape': 'that is not a token for this slot (user tokens start with xoxp-, app tokens with xapp-)',
   'error.inboundTokenAuth': 'Slack rejected the token — copy it again from the app page',
   'error.inboundTokenNetwork': 'could not reach Slack to check the token — nothing stored',
-  'error.inboundTokenSlack': 'Slack refused the check — for the app token, make sure Socket Mode is on',
+  'error.inboundTokenSlack': 'Slack refused the check ({code}) — for the app token, make sure Socket Mode is on',
   'settings.inboundUserToken': 'User token',
   'settings.inboundAppToken': 'App token',
   'settings.inboundSlackHint': 'Tokens are kept in your macOS Keychain, never under ~/.deck, and are never shown again here. The user token finds your badged messages (search, about a minute behind); the app token hears new badges instantly. Only your own reactions count. There is no token without installing the app yourself: Slack has no OAuth redirect to a local app and no API that mints app-level tokens.',
