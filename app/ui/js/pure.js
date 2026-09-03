@@ -842,3 +842,64 @@ export async function persistOptimistically({ apply, persist, rollback }) {
     return false;
   }
 }
+
+/* ---------- inbound (自动响应): pure decisions, no DOM, no Tauri ---------- */
+
+/* Source-neutral placeholders. Unknown ones stay literal so a typo is
+   visible in the prompt instead of silently vanishing. Prompts are one
+   line: the queue pastes a literal buffer and a raw newline would submit
+   the prompt early in most agents, so message newlines become spaces. */
+export const INBOUND_PLACEHOLDERS = ['text', 'from', 'where', 'link'];
+export function fillInboundTemplate(step, msg) {
+  const filled = String(step).replace(/\{\{\s*msg\.([a-z]+)\s*\}\}/g, (m, name) =>
+    INBOUND_PLACEHOLDERS.includes(name) ? String(msg[name] ?? '') : m);
+  return filled.replace(/\s*[\r\n]+\s*/g, ' ').replace(/[ \t]{2,}/g, ' ').trim();
+}
+
+export function inboundTitle(text, max = 40) {
+  const line = String(text).split(/\r?\n/).map(l => l.trim()).find(Boolean) || '';
+  const chars = Array.from(line);
+  return chars.length > max ? chars.slice(0, max - 1).join('') + '…' : line;
+}
+
+export const INBOUND_BADGE_RE = /^[a-z0-9_+-]{1,64}$/;
+
+/* Decide what to do with one pending item against the current Board.
+   Returns { outcome, ...details }. `outcome` is one of the closed codes the
+   backend accepts for `uev('inbound', …)`: duplicate | no-rule-target |
+   no-template | create. */
+export function planInbound(item, { cards, projects, home }) {
+  const { event, rule } = item;
+  const dup = cards.find(c => c.origin
+    && c.origin.source === event.source && c.origin.key === event.key && c.origin.badge === event.badge);
+  if (dup) return { outcome: 'duplicate', card: dup };
+  const project = projects.find(p => p.id === rule.projectId);
+  const column = project && project.columns.find(c => c.id === rule.columnId);
+  if (!project || !column) return { outcome: 'no-rule-target' };
+  const template = (project.templates || []).find(tp => tp.name === rule.template);
+  const msg = { text: event.text, from: event.from, where: event.where, link: event.link };
+  const steps = template ? template.steps.map(s => fillInboundTemplate(s, msg)).filter(Boolean) : [];
+  if (!steps.length) return { outcome: 'no-template', template: rule.template };
+  const dir = expandHome(rule.dir, home);
+  return {
+    outcome: 'create',
+    card: {
+      projectId: project.id, columnId: column.id,
+      title: inboundTitle(event.text) || `:${event.badge}:`,
+      cmd: rule.cmd || '',
+      dir,
+      desc: [`:${event.badge}:`, event.where, event.from].filter(Boolean).join(' · '),
+      origin: { source: event.source, key: event.key, badge: event.badge },
+    },
+    steps,
+    template: template.name,
+  };
+}
+
+export function expandHome(dir, home) {
+  const d = String(dir || '').trim();
+  if (!d) return home;
+  if (d === '~') return home;
+  if (d.startsWith('~/')) return home.replace(/\/+$/, '') + d.slice(1);
+  return d;
+}

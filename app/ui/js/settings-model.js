@@ -51,10 +51,54 @@ export function normalizeFontScale(value) {
   return Number((Math.round(number / FONT_SCALE_STEP) * FONT_SCALE_STEP).toFixed(1));
 }
 
+export const INBOUND_SOURCES = Object.freeze(['slack']);
+const INBOUND_BADGE = /^[a-z0-9_+-]{1,64}$/;
+const INBOUND_ID = /^[A-Za-z0-9_-]{1,128}$/;
+const MAX_INBOUND_RULES = 32;
+
+export const DEFAULT_INBOUND = Object.freeze({
+  sources: Object.freeze({ slack: Object.freeze({ enabled: false }) }),
+  rules: Object.freeze([]),
+});
+
+/* Mirrors the backend's structural validation (inbound::validate_settings):
+   a rule that would be refused on save is dropped here so the UI never
+   shows a rule the poller will not honor. Referential checks against the
+   Board happen at dispatch time. */
+export function normalizeInbound(value) {
+  const raw = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  const sources = {};
+  for (const name of INBOUND_SOURCES) {
+    const src = raw.sources && typeof raw.sources === 'object' ? raw.sources[name] : null;
+    sources[name] = { enabled: !!(src && src.enabled === true) };
+  }
+  const seenPair = new Set(), seenId = new Set(), rules = [];
+  for (const r of Array.isArray(raw.rules) ? raw.rules : []) {
+    if (!r || typeof r !== 'object') continue;
+    const rule = {
+      id: String(r.id ?? ''), source: String(r.source ?? ''), badge: String(r.badge ?? ''),
+      projectId: String(r.projectId ?? ''), columnId: String(r.columnId ?? ''),
+      cmd: String(r.cmd ?? ''), template: String(r.template ?? ''), dir: String(r.dir ?? ''),
+    };
+    if (!INBOUND_ID.test(rule.id) || rule.id.length > 64) continue;
+    if (!INBOUND_SOURCES.includes(rule.source) || !INBOUND_BADGE.test(rule.badge)) continue;
+    if (!INBOUND_ID.test(rule.projectId) || !INBOUND_ID.test(rule.columnId)) continue;
+    if (rule.cmd.length > 200 || /[\r\n]/.test(rule.cmd)) continue;
+    if (!rule.template || rule.template.length > 120) continue;
+    if (rule.dir.length > 1024 || /[\r\n\0]/.test(rule.dir)) continue;
+    const pair = rule.source + '/' + rule.badge;
+    if (seenPair.has(pair) || seenId.has(rule.id)) continue;
+    seenPair.add(pair); seenId.add(rule.id);
+    rules.push(rule);
+    if (rules.length >= MAX_INBOUND_RULES) break;
+  }
+  return { sources, rules };
+}
+
 export const DEFAULT_SETTINGS = Object.freeze({
   editor: '', locale: 'system', theme: 'deck-dark', accent: 'teal',
   updateChannel: 'stable', sessionRestore: false, fontScale: 1,
-  shortcuts: DEFAULT_SHORTCUTS,
+  shortcuts: DEFAULT_SHORTCUTS, inbound: DEFAULT_INBOUND,
 });
 
 export function normalizeSettings(value) {
@@ -79,6 +123,7 @@ export function normalizeSettings(value) {
       : action.defaultBinding;
   }
   merged.shortcuts = shortcuts;
+  merged.inbound = normalizeInbound(raw.inbound);
   return merged;
 }
 

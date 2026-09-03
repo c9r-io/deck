@@ -64,6 +64,17 @@ const CSP_DIRECTIVES: &[&str] = &[
 ];
 
 /// Rust→JS event names the frontend registers listeners for.
+/// What the webview did with an inbound item — never what the item was.
+const INBOUND_OUTCOMES: &[&str] = &[
+    "created",
+    "duplicate",
+    "no-rule-target",
+    "no-template",
+    "create-fail",
+    "queue-fail",
+    "ack-fail",
+];
+
 const LISTEN_TARGETS: &[&str] = &[
     "deck-ping",
     "update-check",
@@ -74,6 +85,7 @@ const LISTEN_TARGETS: &[&str] = &[
     "queue-fired",
     "pty-data",
     "pty-exit",
+    "inbound-changed",
 ];
 
 /// Keydown CATEGORIES — the frontend classifies before sending; a raw key
@@ -207,6 +219,7 @@ const UI_EVENT_SPECS: &[(&str, DetailPolicy)] = &[
     ("board-load-fail", DetailPolicy::None),
     ("settings-load-fail", DetailPolicy::None),
     ("settings-save-fail", DetailPolicy::None),
+    ("inbound", DetailPolicy::Closed(INBOUND_OUTCOMES)),
     ("poll-fail", DetailPolicy::None),
     ("poll-recovered", DetailPolicy::None),
     ("clipboard-addon-fail", DetailPolicy::None),
@@ -611,6 +624,11 @@ pub(crate) struct SettingsDocRaw {
     #[serde(rename = "updateChannel")]
     #[allow(dead_code)]
     update_channel: Option<serde_json::Value>,
+    // Validated structurally by the inbound module (closed source names,
+    // bounded rule fields, one rule per badge); referential checks against
+    // the Board are the webview's.
+    #[serde(default)]
+    inbound: Option<serde_json::Value>,
 }
 
 #[derive(serde::Deserialize)]
@@ -658,6 +676,9 @@ impl TryFrom<SettingsDocRaw> for SettingsDoc {
             {
                 return Err("shortcut names and bindings must be bounded strings".into());
             }
+        }
+        if let Some(inbound) = &raw.inbound {
+            crate::inbound::validate_settings(inbound)?;
         }
         Ok(SettingsDoc(raw))
     }

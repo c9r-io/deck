@@ -7,11 +7,13 @@ import './board.js';
 import './layout.js';
 import './terminal.js';
 import './scheduler.js';
+import './inbound.js';
 import { $, genId, inv, listen, state, store, uev } from './state.js';
 import { loadSettings, toast } from './dialogs.js';
 import { markSessionsStoppedForServerRestart, migrateColumnSemantics, provider, render, startPolling, stopPolling } from './board.js';
 import { leaveSessionView } from './layout.js';
 import { refreshQueue } from './scheduler.js';
+import { drainInbound } from './inbound.js';
 import { onLocaleChange, setLocale, t, translateNotice } from './i18n.js';
 import { activateTheme, revealThemedWindow } from './theme.js';
 
@@ -358,6 +360,7 @@ export async function boot() {
   render();
   startPolling();
   refreshQueue();
+  drainInbound();
   setTimeout(checkForUpdate, 4000);
   /* runtime cadence comes from a Rust thread (App Nap freezes JS timers) */
   listen('update-check', checkForUpdate).catch(() => uev('listen-fail', 'update-check'));

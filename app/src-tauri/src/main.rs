@@ -9,6 +9,9 @@ mod agent_status;
 mod commands;
 mod context;
 mod history;
+mod inbound;
+mod inbound_slack;
+mod keychain;
 mod pty;
 mod relaunch;
 mod scheduler;
@@ -177,6 +180,7 @@ fn main() {
             // legacy/old server as pending, and replaces only an empty one.
             tmux_lifecycle::reconcile_on_boot();
             scheduler::spawn_scheduler(app.handle().clone());
+            inbound::spawn_inbound(app.handle().clone());
             // Agent-status socket: content-free state words from agent hooks
             // (see agent_status.rs). Keeps an already-installed helper copy
             // current with this build; never installs hooks by itself.
@@ -342,6 +346,11 @@ fn main() {
             commands::save_dropped_file,
             agent_status::agent_hooks_status,
             agent_status::agent_hooks_set,
+            inbound::inbound_status,
+            inbound::inbound_pending,
+            inbound::inbound_ack,
+            inbound::inbound_set_secret,
+            inbound::inbound_check_now,
             smoke_faults::smoke_fault_set,
             smoke_faults::smoke_clipboard_metrics,
         ])

@@ -42,6 +42,7 @@ Object.assign(globalThis, {
       splitRight: 'Meta+KeyD', splitDown: 'Meta+Shift+KeyD',
       fontIncrease: 'Meta+Equal', fontDecrease: 'Meta+Minus', fontReset: 'Meta+Digit0',
     },
+    inbound: { sources: { slack: { enabled: false } }, rules: [] },
   },
   buildIdentity: { version: '', commit: 'dev' },
   term: null,

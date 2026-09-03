@@ -4,8 +4,19 @@ import { inv, store } from './state.js';
 import { createSerialTransactionQueue } from './pure.js';
 
 const PERSISTED_CARD_KEYS = new Set([
-  'id', 'projectId', 'columnId', 'title', 'desc', 'cmd', 'dir', 'session', 'pinned',
+  'id', 'projectId', 'columnId', 'title', 'desc', 'cmd', 'dir', 'session', 'pinned', 'origin',
 ]);
+
+/* A card created by 自动响应 remembers which external item it came from, so
+   the same badge on the same message can never create a second card. Only
+   identifiers are kept — never the message. */
+export function cardOrigin(c) {
+  const o = c && c.origin;
+  if (!o || typeof o !== 'object') return undefined;
+  const { source, key, badge } = o;
+  if (typeof source !== 'string' || typeof key !== 'string' || typeof badge !== 'string') return undefined;
+  return { source, key, badge };
+}
 
 export function boardData(projects = store.projects, cards = store.cards) {
   return {
@@ -14,6 +25,7 @@ export function boardData(projects = store.projects, cards = store.cards) {
       id: c.id, projectId: c.projectId, columnId: c.columnId,
       title: c.title, desc: c.desc || '', cmd: c.cmd, dir: c.dir, session: c.session,
       pinned: c.pinned === true,
+      ...(cardOrigin(c) ? { origin: cardOrigin(c) } : {}),
     })),
   };
 }

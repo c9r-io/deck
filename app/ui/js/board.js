@@ -146,12 +146,13 @@ export const provider = {
     return result;
   },
 
-  async create({ projectId, columnId, title, cmd, dir, desc = '' }, opts = {}) {
+  async create({ projectId, columnId, title, cmd, dir, desc = '', origin }, opts = {}) {
     const id = genId('S');
     const card = {
       id, projectId, columnId, title, cmd, dir, desc,
       session: sessionName(title, id),
       pinned: false,
+      ...(origin ? { origin } : {}),
       status: 'stopped', mem: null, tail: [],
     };
     let sideEffect;
