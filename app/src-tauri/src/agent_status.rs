@@ -1,0 +1,725 @@
+//! agent_status.rs — modular, content-free agent state for cards.
+//!
+//! Agent CLIs (Claude Code today; Codex etc. as later modules) run hooks
+//! inside deck's tmux panes. Each hook invokes the bundled
+//! `deck-status-helper`, which forwards ONE closed status word plus the pane
+//! identity it inherited from `$TMUX`/`$TMUX_PANE` to a local unix socket in
+//! the deck data dir. This module owns that socket, the closed vocabulary,
+//! the pane→session resolution, and the reconciliation that clears state
+//! when the agent process leaves the pane's foreground.
+//!
+//! Design rules (mirror the scheduler's context philosophy):
+//! - The state is a CLOSED enum. Prompt text, notification messages and hook
+//!   payloads never enter this module — the helper already discarded them.
+//! - What decides whether a state is still valid is the pane's observed
+//!   foreground process, captured AT EVENT TIME (`expected_fg`), never a
+//!   hard-coded per-agent executable list.
+//! - No automatic card movement. This is presentation-only input for the
+//!   board's status dot; the poll merge in `commands.rs` is the sole reader.
+//!
+//! Adding an agent module = one entry in `SOURCES` + an installer that
+//! registers that agent's own hook/notify config to call the same helper
+//! with its own source word. The socket protocol and store are shared.
+
+use std::collections::HashMap;
+use std::io::Read;
+use std::os::unix::net::{UnixListener, UnixStream};
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::time::Duration;
+
+use crate::applog;
+use crate::storage;
+
+/// Registered agent modules. Phase 2 adds "codex".
+const SOURCES: &[&str] = &["claude-code"];
+
+/// Closed state vocabulary — the only words that ever reach the frontend.
+const STATES: &[&str] = &["working", "needs-input", "turn-done"];
+
+#[derive(Debug, PartialEq)]
+pub(crate) struct Event {
+    source: String,
+    state: &'static str,
+    socket: String,
+    server_pid: u32,
+    pane: String,
+}
+
+struct Entry {
+    state: &'static str,
+    /// Foreground executable observed when the event arrived. The agent
+    /// process name varies by install (claude/node/bun), so the entry
+    /// self-calibrates instead of trusting a per-agent list.
+    expected_fg: String,
+}
+
+static AGENTS: Mutex<Option<HashMap<String, Entry>>> = Mutex::new(None);
+
+fn with_agents<R>(f: impl FnOnce(&mut HashMap<String, Entry>) -> R) -> R {
+    let mut guard = AGENTS.lock().unwrap();
+    f(guard.get_or_insert_with(HashMap::new))
+}
+
+// ---------- event parsing (closed validation at the trust boundary) ---------
+
+/// Tiny hand validation instead of serde structs: every field is checked
+/// against a closed shape, and anything else — extra fields, wrong types,
+/// content — is a categorized drop.
+pub(crate) fn parse_event(line: &str) -> Result<Event, &'static str> {
+    let value: serde_json::Value = serde_json::from_str(line).map_err(|_| "bad-json")?;
+    let obj = value.as_object().ok_or("bad-json")?;
+    if obj.get("v").and_then(|v| v.as_u64()) != Some(1) {
+        return Err("bad-version");
+    }
+    let source = obj
+        .get("source")
+        .and_then(|v| v.as_str())
+        .filter(|s| SOURCES.contains(s))
+        .ok_or("unknown-source")?;
+    let state = STATES
+        .iter()
+        .find(|s| Some(**s) == obj.get("state").and_then(|v| v.as_str()))
+        .ok_or("unknown-state")?;
+    let socket = obj
+        .get("socket")
+        .and_then(|v| v.as_str())
+        .filter(|s| *s == crate::tmux::socket())
+        .ok_or("other-server")?;
+    let server_pid = obj
+        .get("server_pid")
+        .and_then(|v| v.as_u64())
+        .and_then(|v| u32::try_from(v).ok())
+        .ok_or("bad-pid")?;
+    let pane = obj
+        .get("pane")
+        .and_then(|v| v.as_str())
+        .filter(|p| {
+            p.len() >= 2
+                && p.len() <= 10
+                && p.starts_with('%')
+                && p[1..].bytes().all(|b| b.is_ascii_digit())
+        })
+        .ok_or("bad-pane")?;
+    Ok(Event {
+        source: source.to_string(),
+        state,
+        socket: socket.to_string(),
+        server_pid,
+        pane: pane.to_string(),
+    })
+}
+
+// ---------- pane → session resolution --------------------------------------
+
+/// Parse a `#{pid}\t#{pane_id}\t#{session_name}\t#{pane_current_command}`
+/// listing and return the (session, foreground) for `pane` — but only if the
+/// listing's server pid matches the event's generation stamp (a restarted
+/// server reuses numeric pane ids; pid is what tells generations apart).
+pub(crate) fn resolve_in(listing: &str, pane: &str, server_pid: u32) -> Option<(String, String)> {
+    for line in listing.lines() {
+        let mut fields = line.split('\t');
+        let (Some(pid), Some(id), Some(session), Some(fg)) =
+            (fields.next(), fields.next(), fields.next(), fields.next())
+        else {
+            continue;
+        };
+        if id != pane {
+            continue;
+        }
+        if pid.parse::<u32>().ok() != Some(server_pid) {
+            return None;
+        }
+        if crate::tmux::validate_session_name(session).is_err() {
+            return None;
+        }
+        return Some((session.to_string(), fg.to_string()));
+    }
+    None
+}
+
+fn tmux_resolve(pane: &str, server_pid: u32) -> Option<(String, String)> {
+    let listing = crate::tmux::tmux(&[
+        "list-panes",
+        "-a",
+        "-F",
+        "#{pid}\t#{pane_id}\t#{session_name}\t#{pane_current_command}",
+    ])
+    .ok()?;
+    resolve_in(&listing, pane, server_pid)
+}
+
+/// Validate one wire line and commit it to the store. `resolve` is injected
+/// so tests exercise the full path without a live tmux server.
+pub(crate) fn ingest(
+    line: &str,
+    resolve: impl Fn(&str, u32) -> Option<(String, String)>,
+) -> Result<(), &'static str> {
+    let event = parse_event(line)?;
+    let (session, fg) = resolve(&event.pane, event.server_pid).ok_or("no-such-pane")?;
+    // An agent hook while a plain shell owns the pane foreground has no
+    // process to bind the state's lifetime to — refuse rather than flicker.
+    if crate::context::shell_process(Some(&fg)) {
+        return Err("shell-foreground");
+    }
+    applog(&format!(
+        "[agent-status] {} {} s={}",
+        event.source,
+        event.state,
+        storage::session_tag(&session)
+    ));
+    with_agents(|agents| {
+        agents.insert(
+            session,
+            Entry {
+                state: event.state,
+                expected_fg: fg,
+            },
+        );
+    });
+    Ok(())
+}
+
+// ---------- poll integration ------------------------------------------------
+
+/// Called from every `poll_sessions` with the fresh pane map
+/// (session → (pid, activity, mode, foreground, cwd)). Clears state whose
+/// session is gone or whose pane foreground no longer matches the process
+/// observed when the state was reported — the agent exited or was replaced.
+pub(crate) fn reconcile(panes: &HashMap<String, (u32, u64, bool, String, String)>) {
+    with_agents(|agents| {
+        agents.retain(|session, entry| {
+            let Some((_, _, _, fg, _)) = panes.get(session) else {
+                return false;
+            };
+            !crate::context::shell_process(Some(fg)) && *fg == entry.expected_fg
+        });
+    });
+}
+
+/// The state word for one session, if an agent module reported one.
+pub(crate) fn current(session: &str) -> Option<&'static str> {
+    with_agents(|agents| agents.get(session).map(|e| e.state))
+}
+
+#[cfg(test)]
+pub(crate) fn reset_for_tests() {
+    with_agents(|agents| agents.clear());
+}
+
+// ---------- socket listener --------------------------------------------------
+
+const MAX_LINE: usize = 8 * 1024;
+
+fn read_first_line(stream: &mut UnixStream) -> Option<String> {
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+    let mut buf = Vec::new();
+    let mut chunk = [0u8; 1024];
+    loop {
+        match stream.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => {
+                buf.extend_from_slice(&chunk[..n]);
+                if buf.len() > MAX_LINE {
+                    return None;
+                }
+                if buf.contains(&b'\n') {
+                    break;
+                }
+            }
+            Err(_) => break,
+        }
+    }
+    let line = buf.split(|b| *b == b'\n').next().unwrap_or(&[]);
+    String::from_utf8(line.to_vec()).ok()
+}
+
+fn handle_stream(mut stream: UnixStream, drops: &mut u32) {
+    let Some(line) = read_first_line(&mut stream) else {
+        return;
+    };
+    if line.is_empty() {
+        return;
+    }
+    if let Err(reason) = ingest(&line, tmux_resolve) {
+        // categorized, content-free, and bounded — a hostile local writer
+        // must not be able to grow app.log without limit
+        *drops += 1;
+        if *drops <= 20 {
+            applog(&format!("[agent-status] dropped ({reason})"));
+        } else if *drops == 21 {
+            applog("[agent-status] further drops suppressed");
+        }
+    }
+}
+
+pub(crate) fn listen_at(path: &Path) -> Result<UnixListener, String> {
+    let _ = std::fs::remove_file(path); // stale socket from a previous run
+    let listener = UnixListener::bind(path).map_err(|e| format!("bind failed: {e}"))?;
+    // the data dir is already 0700; keep the socket itself private too
+    use std::os::unix::fs::PermissionsExt;
+    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    Ok(listener)
+}
+
+/// Accept loop for the status socket. One deck instance owns the data dir
+/// (instance lock), so one listener owns this socket.
+pub(crate) fn spawn_listener() {
+    let path = storage::deck_dir().join("status.sock");
+    std::thread::spawn(move || {
+        let listener = match listen_at(&path) {
+            Ok(l) => l,
+            Err(e) => {
+                applog(&format!(
+                    "[agent-status] socket unavailable ({})",
+                    storage::err_code(&e)
+                ));
+                return;
+            }
+        };
+        let mut drops = 0u32;
+        for stream in listener.incoming() {
+            match stream {
+                Ok(stream) => handle_stream(stream, &mut drops),
+                Err(_) => std::thread::sleep(Duration::from_secs(1)),
+            }
+        }
+    });
+}
+
+// ---------- Claude Code hook installation ------------------------------------
+
+/// Marker every deck-authored hook command carries; install/uninstall touch
+/// only entries containing it, byte-preserving everything else in the file.
+const HELPER_MARKER: &str = ".deck/bin/deck-status-helper";
+
+const HELPER_NAME: &str = "deck-status-helper";
+
+/// (hook event, optional matcher, state word). `Notification` matches only
+/// the attention-worthy kinds; `Stop` does not fire on user interrupt
+/// (documented Claude Code behavior) — foreground reconciliation and the
+/// next `UserPromptSubmit` heal that gap.
+const CLAUDE_HOOKS: &[(&str, Option<&str>, &str)] = &[
+    ("UserPromptSubmit", None, "working"),
+    (
+        "Notification",
+        Some("permission_prompt|idle_prompt"),
+        "needs-input",
+    ),
+    ("Stop", None, "turn-done"),
+];
+
+fn helper_command(state: &str) -> String {
+    format!("\"$HOME/{HELPER_MARKER}\" claude-code {state}")
+}
+
+fn entry_is_ours(entry: &serde_json::Value) -> bool {
+    entry
+        .get("hooks")
+        .and_then(|h| h.as_array())
+        .is_some_and(|hooks| {
+            hooks.iter().any(|hook| {
+                hook.get("command")
+                    .and_then(|c| c.as_str())
+                    .is_some_and(|c| c.contains(HELPER_MARKER))
+            })
+        })
+}
+
+/// Add deck's hook entries to a parsed settings document. Everything the
+/// user wrote — other hooks, unknown keys, other events — is preserved;
+/// only entries carrying the helper marker are replaced.
+pub(crate) fn hooks_with_install(mut root: serde_json::Value) -> Result<serde_json::Value, String> {
+    let obj = root
+        .as_object_mut()
+        .ok_or("settings file is not a JSON object")?;
+    let hooks = obj
+        .entry("hooks")
+        .or_insert_with(|| serde_json::json!({}))
+        .as_object_mut()
+        .ok_or("the hooks key is not a JSON object")?;
+    for (event, matcher, state) in CLAUDE_HOOKS {
+        let list = hooks
+            .entry(*event)
+            .or_insert_with(|| serde_json::json!([]))
+            .as_array_mut()
+            .ok_or("a hook event entry is not a JSON array")?;
+        list.retain(|entry| !entry_is_ours(entry));
+        let mut entry = serde_json::json!({
+            "hooks": [{ "type": "command", "command": helper_command(state), "timeout": 10 }]
+        });
+        if let Some(matcher) = matcher {
+            entry["matcher"] = serde_json::json!(matcher);
+        }
+        list.push(entry);
+    }
+    Ok(root)
+}
+
+/// Remove every deck-authored entry, pruning emptied arrays/objects.
+pub(crate) fn hooks_with_uninstall(mut root: serde_json::Value) -> serde_json::Value {
+    if let Some(hooks) = root.get_mut("hooks").and_then(|h| h.as_object_mut()) {
+        for (_, list) in hooks.iter_mut() {
+            if let Some(list) = list.as_array_mut() {
+                list.retain(|entry| !entry_is_ours(entry));
+            }
+        }
+        hooks.retain(|_, list| list.as_array().map(|l| !l.is_empty()).unwrap_or(true));
+    }
+    if root
+        .get("hooks")
+        .and_then(|h| h.as_object())
+        .is_some_and(|h| h.is_empty())
+    {
+        if let Some(obj) = root.as_object_mut() {
+            obj.remove("hooks");
+        }
+    }
+    root
+}
+
+/// Installed = every deck hook event carries a marker entry; a partial
+/// install reads as OFF so re-enabling repairs it.
+pub(crate) fn hooks_installed(root: &serde_json::Value) -> bool {
+    let Some(hooks) = root.get("hooks").and_then(|h| h.as_object()) else {
+        return false;
+    };
+    CLAUDE_HOOKS.iter().all(|(event, _, _)| {
+        hooks
+            .get(*event)
+            .and_then(|l| l.as_array())
+            .is_some_and(|list| list.iter().any(entry_is_ours))
+    })
+}
+
+fn claude_settings_path() -> Option<PathBuf> {
+    dirs::home_dir().map(|home| home.join(".claude").join("settings.json"))
+}
+
+fn read_settings_value(path: &Path) -> Result<serde_json::Value, String> {
+    match std::fs::read(path) {
+        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|_| {
+            "the Claude Code settings file is not valid JSON — not modifying it".to_string()
+        }),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(serde_json::json!({})),
+        Err(e) => Err(format!(
+            "could not read Claude Code settings ({})",
+            e.kind()
+        )),
+    }
+}
+
+/// Atomic replace that PRESERVES the file's existing permissions (this file
+/// belongs to Claude Code, not deck — 0600 is only the default for a file
+/// deck itself creates).
+fn write_settings_value(path: &Path, value: &serde_json::Value) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    let mode = std::fs::metadata(path)
+        .map(|m| m.permissions().mode() & 0o777)
+        .unwrap_or(0o600);
+    if let Some(dir) = path.parent() {
+        if !dir.exists() {
+            return Err("Claude Code has never run on this Mac — nothing to configure".into());
+        }
+    }
+    let bytes = format!(
+        "{}\n",
+        serde_json::to_string_pretty(value).map_err(|e| e.to_string())?
+    );
+    storage::atomic_write(path, bytes.as_bytes())?;
+    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode));
+    Ok(())
+}
+
+/// Where the helper is installed for hook commands to call. ALWAYS the real
+/// `~/.deck/bin`, never the (possibly isolated/smoke) data dir: the hook
+/// entry in ~/.claude/settings.json references `$HOME/.deck/bin`, hooks are
+/// user-global, and which INSTANCE receives the events is routed per pane by
+/// `DECK_STATUS_SOCK` (tmux.rs), not by the binary's location.
+fn helper_install_dir() -> Result<PathBuf, String> {
+    Ok(dirs::home_dir()
+        .ok_or("no home directory")?
+        .join(".deck")
+        .join("bin"))
+}
+
+/// Copy the bundled helper sidecar to `~/.deck/bin` (0700). The hook command
+/// references this STABLE path, so the entry survives app moves, channel
+/// switches and updates; the copy is refreshed at boot and on every enable.
+fn install_helper_binary() -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let sidecar = exe
+        .parent()
+        .map(|dir| dir.join(HELPER_NAME))
+        .filter(|p| p.exists())
+        .ok_or("the bundled status helper is missing from this build")?;
+    let bin_dir = helper_install_dir()?;
+    storage::create_private_dir(&bin_dir)?;
+    let bytes =
+        std::fs::read(&sidecar).map_err(|e| format!("could not read helper ({})", e.kind()))?;
+    let target = bin_dir.join(HELPER_NAME);
+    storage::atomic_write(&target, &bytes)?;
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o700))
+        .map_err(|e| e.to_string())
+}
+
+/// Boot refresh: if the helper was ever installed, keep it current with this
+/// build. Never installs hooks by itself.
+pub(crate) fn refresh_helper_on_boot() {
+    let installed = helper_install_dir()
+        .map(|dir| dir.join(HELPER_NAME).exists())
+        .unwrap_or(false);
+    if installed {
+        if let Err(e) = install_helper_binary() {
+            applog(&format!(
+                "[agent-hooks] helper refresh FAILED ({})",
+                storage::err_code(&e)
+            ));
+        }
+    }
+}
+
+#[tauri::command]
+pub(crate) fn agent_hooks_status() -> Result<bool, String> {
+    let Some(path) = claude_settings_path() else {
+        return Ok(false);
+    };
+    Ok(read_settings_value(&path)
+        .map(|v| hooks_installed(&v))
+        .unwrap_or(false))
+}
+
+/// The ONLY writer of the user's Claude Code settings, and only ever from an
+/// explicit Settings toggle. Never called at boot or from the poller.
+#[tauri::command]
+pub(crate) fn agent_hooks_set(enable: bool) -> Result<(), String> {
+    let path = claude_settings_path().ok_or("no home directory")?;
+    let result = (|| {
+        let value = read_settings_value(&path)?;
+        let next = if enable {
+            install_helper_binary()?;
+            hooks_with_install(value)?
+        } else {
+            if !path.exists() {
+                return Ok(());
+            }
+            hooks_with_uninstall(value)
+        };
+        write_settings_value(&path, &next)
+    })();
+    match &result {
+        Ok(()) => applog(&format!(
+            "[agent-hooks] claude-code {}",
+            if enable { "installed" } else { "removed" }
+        )),
+        Err(e) => applog(&format!(
+            "[agent-hooks] claude-code {} FAILED ({})",
+            if enable { "install" } else { "remove" },
+            storage::err_code(e)
+        )),
+    }
+    result
+}
+
+// ---------- tests -------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The two tests below mutate the process-global AGENTS store; hold this
+    /// across each so the default parallel test runner cannot interleave them.
+    static STORE_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    fn event_line(state: &str, pane: &str) -> String {
+        format!(
+            "{{\"v\":1,\"source\":\"claude-code\",\"state\":\"{state}\",\"socket\":\"{}\",\"server_pid\":42,\"pane\":\"{pane}\"}}",
+            crate::tmux::socket()
+        )
+    }
+
+    #[test]
+    fn events_are_validated_as_a_closed_shape() {
+        assert!(parse_event(&event_line("working", "%3")).is_ok());
+        assert_eq!(parse_event("not json"), Err("bad-json"));
+        assert_eq!(parse_event("[1,2]"), Err("bad-json"));
+        assert_eq!(
+            parse_event(&event_line("working", "%3").replace("\"v\":1", "\"v\":2")),
+            Err("bad-version")
+        );
+        assert_eq!(
+            parse_event(&event_line("working", "%3").replace("claude-code", "mystery-agent")),
+            Err("unknown-source")
+        );
+        assert_eq!(
+            parse_event(&event_line("working", "%3").replace("working", "exfiltrate")),
+            Err("unknown-state")
+        );
+        // an event from another deck server generation/socket is not ours
+        assert_eq!(
+            parse_event(&event_line("working", "%3").replace(crate::tmux::socket(), "deck-other")),
+            Err("other-server")
+        );
+        assert_eq!(parse_event(&event_line("working", "%x")), Err("bad-pane"));
+        assert_eq!(parse_event(&event_line("working", "3")), Err("bad-pane"));
+    }
+
+    #[test]
+    fn pane_resolution_requires_the_server_generation() {
+        let listing = "42\t%3\tdeck-card-ab12\tclaude\n42\t%5\tdeck-card-cd34\tzsh\n";
+        assert_eq!(
+            resolve_in(listing, "%3", 42),
+            Some(("deck-card-ab12".into(), "claude".into()))
+        );
+        // same pane id, different server pid → a restarted server reused it
+        assert_eq!(resolve_in(listing, "%3", 43), None);
+        assert_eq!(resolve_in(listing, "%9", 42), None);
+        // a session name outside the tmux alphabet never enters the store
+        assert_eq!(resolve_in("42\t%3\tbad name\tclaude\n", "%3", 42), None);
+    }
+
+    #[test]
+    fn ingest_reconcile_and_current_follow_the_pane_foreground() {
+        let _guard = STORE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_for_tests();
+        let resolve = |pane: &str, _pid: u32| {
+            (pane == "%3").then(|| ("deck-card-ab12".to_string(), "claude".to_string()))
+        };
+        assert!(ingest(&event_line("needs-input", "%3"), resolve).is_ok());
+        assert_eq!(current("deck-card-ab12"), Some("needs-input"));
+        assert_eq!(current("deck-card-other"), None);
+        assert_eq!(
+            ingest(&event_line("working", "%9"), resolve),
+            Err("no-such-pane")
+        );
+
+        let pane = |fg: &str| (7u32, 0u64, false, fg.to_string(), "/".to_string());
+        // same foreground → state survives the poll
+        let mut panes = HashMap::new();
+        panes.insert("deck-card-ab12".to_string(), pane("claude"));
+        reconcile(&panes);
+        assert_eq!(current("deck-card-ab12"), Some("needs-input"));
+        // foreground fell back to a shell → the agent exited → state cleared
+        panes.insert("deck-card-ab12".to_string(), pane("zsh"));
+        reconcile(&panes);
+        assert_eq!(current("deck-card-ab12"), None);
+
+        // a replaced foreground (different program) also clears
+        assert!(ingest(&event_line("working", "%3"), resolve).is_ok());
+        panes.insert("deck-card-ab12".to_string(), pane("vim"));
+        reconcile(&panes);
+        assert_eq!(current("deck-card-ab12"), None);
+
+        // a vanished session clears
+        assert!(ingest(&event_line("working", "%3"), resolve).is_ok());
+        reconcile(&HashMap::new());
+        assert_eq!(current("deck-card-ab12"), None);
+
+        // a shell foreground at event time is refused outright
+        let shell_resolve =
+            |_: &str, _: u32| Some(("deck-card-ab12".to_string(), "zsh".to_string()));
+        assert_eq!(
+            ingest(&event_line("working", "%3"), shell_resolve),
+            Err("shell-foreground")
+        );
+        assert_eq!(current("deck-card-ab12"), None);
+        reset_for_tests();
+    }
+
+    #[test]
+    fn listener_accepts_a_real_socket_line() {
+        use std::io::Write;
+        let _guard = STORE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_for_tests();
+        let dir = std::env::temp_dir().join(format!("deck-status-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("status.sock");
+        let listener = listen_at(&path).unwrap();
+        let line = event_line("turn-done", "%3");
+        let mut client = UnixStream::connect(&path).unwrap();
+        writeln!(client, "{line}").unwrap();
+        drop(client);
+        let (stream, _) = listener.accept().unwrap();
+        // the real read path; a fake resolver stands in for the tmux server
+        let mut stream = stream;
+        let read = read_first_line(&mut stream).unwrap();
+        assert_eq!(read, line);
+        assert!(ingest(&read, |_, _| Some((
+            "deck-card-ab12".into(),
+            "claude".into()
+        )))
+        .is_ok());
+        assert_eq!(current("deck-card-ab12"), Some("turn-done"));
+        // rebinding over a stale socket file must work (previous run crashed)
+        drop(listener);
+        let listener2 = listen_at(&path).unwrap();
+        drop(listener2);
+        let _ = std::fs::remove_dir_all(&dir);
+        reset_for_tests();
+    }
+
+    #[test]
+    fn hook_install_is_idempotent_and_preserves_foreign_config() {
+        let user = serde_json::json!({
+            "model": "opus",
+            "hooks": {
+                "Stop": [
+                    { "hooks": [{ "type": "command", "command": "afplay /System/Library/Sounds/Glass.aiff" }] }
+                ],
+                "PreToolUse": [
+                    { "matcher": "Bash", "hooks": [{ "type": "command", "command": "my-guard" }] }
+                ]
+            }
+        });
+        let installed = hooks_with_install(user.clone()).unwrap();
+        assert!(hooks_installed(&installed));
+        assert_eq!(installed["model"], "opus");
+        // the user's own Stop hook and PreToolUse guard survive
+        assert_eq!(installed["hooks"]["Stop"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            installed["hooks"]["PreToolUse"].as_array().unwrap().len(),
+            1
+        );
+        assert!(
+            installed["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"]
+                .as_str()
+                .unwrap()
+                .contains("deck-status-helper\" claude-code working")
+        );
+        assert_eq!(
+            installed["hooks"]["Notification"][0]["matcher"],
+            "permission_prompt|idle_prompt"
+        );
+
+        // installing twice does not duplicate
+        let twice = hooks_with_install(installed.clone()).unwrap();
+        assert_eq!(twice["hooks"]["Stop"].as_array().unwrap().len(), 2);
+
+        // uninstall restores the user's document exactly
+        let removed = hooks_with_uninstall(twice);
+        assert!(!hooks_installed(&removed));
+        assert_eq!(removed, user);
+
+        // uninstalling a never-installed file is a no-op
+        let empty = hooks_with_uninstall(serde_json::json!({ "model": "opus" }));
+        assert_eq!(empty, serde_json::json!({ "model": "opus" }));
+
+        // a hooks-only file empties back to no hooks key at all
+        let only_ours = hooks_with_install(serde_json::json!({})).unwrap();
+        assert_eq!(hooks_with_uninstall(only_ours), serde_json::json!({}));
+    }
+
+    #[test]
+    fn hook_install_refuses_malformed_documents() {
+        assert!(hooks_with_install(serde_json::json!([1, 2])).is_err());
+        assert!(hooks_with_install(serde_json::json!({ "hooks": "nope" })).is_err());
+        assert!(hooks_with_install(serde_json::json!({ "hooks": { "Stop": "nope" } })).is_err());
+        // partial installs read as OFF so re-enabling repairs them
+        let partial = serde_json::json!({
+            "hooks": { "Stop": [{ "hooks": [{ "type": "command",
+                "command": "\"$HOME/.deck/bin/deck-status-helper\" claude-code turn-done" }] }] }
+        });
+        assert!(!hooks_installed(&partial));
+    }
+}

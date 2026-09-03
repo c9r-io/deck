@@ -5,6 +5,7 @@
 //! tmux (server/exec), pty (attach bridge), scheduler (prompts), storage
 //! (atomic persistence + logs), history (completion), commands (the rest).
 
+mod agent_status;
 mod commands;
 mod context;
 mod history;
@@ -176,6 +177,11 @@ fn main() {
             // legacy/old server as pending, and replaces only an empty one.
             tmux_lifecycle::reconcile_on_boot();
             scheduler::spawn_scheduler(app.handle().clone());
+            // Agent-status socket: content-free state words from agent hooks
+            // (see agent_status.rs). Keeps an already-installed helper copy
+            // current with this build; never installs hooks by itself.
+            agent_status::refresh_helper_on_boot();
+            agent_status::spawn_listener();
             // Update-check heartbeat from a Rust thread: webview timers are
             // frozen by App Nap when the app is backgrounded, so a JS
             // setInterval would effectively never fire. One latest.json
@@ -334,6 +340,8 @@ fn main() {
             scheduler::queue_clear_session,
             scheduler::queue_clear_sessions,
             commands::save_dropped_file,
+            agent_status::agent_hooks_status,
+            agent_status::agent_hooks_set,
             smoke_faults::smoke_fault_set,
             smoke_faults::smoke_clipboard_metrics,
         ])

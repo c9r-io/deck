@@ -122,12 +122,19 @@
   .dot.stopped { background: transparent; border: 2px solid var(--stop); }
   .dot.running { background: var(--run); box-shadow: 0 0 6px var(--run-glow); }
   .dot.waiting { background: var(--wait); border-radius: 1px; transform: rotate(45deg); animation: pulse 1.6s ease-in-out infinite; }
+  /* agent-hook states (agent_status.rs): attention = the agent asked for
+     input (the one state worth interrupting a human for); done = the turn
+     finished and awaits review — calm, no animation */
+  .dot.attention { background: var(--attn); border-radius: 1px; transform: rotate(45deg); animation: pulse 0.9s ease-in-out infinite; box-shadow: 0 0 6px var(--attn); }
+  .dot.done { background: var(--done); }
   .split-status.running { color: var(--run); }
   .split-status.waiting { color: var(--wait); }
+  .split-status.attention { color: var(--attn); }
+  .split-status.done { color: var(--done); }
   .split-status.stopped { color: var(--stop); }
   @keyframes pulse { 50% { opacity: 0.35; } }
   @media (prefers-reduced-motion: reduce) {
-    .dot.waiting { animation: none; }
+    .dot.waiting, .dot.attention { animation: none; }
     * { transition: none !important; }
   }
 
@@ -239,6 +246,8 @@
   .card:hover { border-color: var(--card-hover-border); }
   .card.waiting { border-color: var(--waiting-border); }
   .card.waiting:hover { border-color: var(--waiting-border-hover); }
+  .card.attention { border-color: var(--attn-border); }
+  .card.attention:hover { border-color: var(--attn-border-hover); }
   .card.dragging { opacity: 0.45; }
   .card-top { display: flex; align-items: center; gap: 8px; }
   .card-title { font-weight: 600; flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -558,7 +567,7 @@
     padding: 20px;
   }
   #settings-box {
-    width: 560px; max-width: 100%; max-height: 100%; overflow-y: auto;
+    width: 640px; max-width: 100%; max-height: 100%; overflow-y: auto;
     overscroll-behavior: contain; scrollbar-gutter: stable;
     background: var(--panel); border: 1px solid var(--border);
     border-radius: 12px; padding: 18px;
@@ -566,13 +575,13 @@
   }
   .set-title { font-size: 1.07692rem; font-weight: 600; margin-bottom: 14px; }
   .set-row { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; font-size: 1rem; }
-  .set-row label { color: var(--muted); width: 96px; flex: none; }
+  .set-row label { color: var(--muted); width: 128px; flex: none; }
   .set-row select { flex: 1; min-width: 0; }
   .set-row input[type=checkbox] { width: auto; flex: none; }
   .font-controls { display: flex; align-items: center; gap: 6px; margin-left: auto; }
   .font-controls .btn { min-width: 34px; justify-content: center; padding-inline: 9px; }
   #set-font-value { min-width: 46px; text-align: center; font-family: var(--mono); color: var(--muted); }
-  .shortcut-list { margin: 4px 0 8px 106px; display: grid; gap: 5px; }
+  .shortcut-list { margin: 4px 0 8px 138px; display: grid; gap: 5px; }
   .shortcut-row { display: grid; grid-template-columns: minmax(0, 1fr) 150px; align-items: center; gap: 10px; }
   .shortcut-row > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .shortcut-capture {
@@ -581,7 +590,7 @@
     font-family: var(--mono); text-align: center;
   }
   .shortcut-capture:hover, .shortcut-capture.capturing { background: var(--hover); border-color: var(--accent-dim); }
-  .set-hint { font-size: 0.884615rem; color: var(--muted); margin: 2px 0 14px 106px; line-height: 1.5; min-height: 1em; }
+  .set-hint { font-size: 0.884615rem; color: var(--muted); margin: 2px 0 14px 138px; line-height: 1.5; min-height: 1em; }
   .set-sep { border-top: 1px solid var(--border-soft); margin: 4px 0 14px; }
   .set-actions { display: flex; justify-content: flex-end; margin-top: 4px; }
   .btn.cfm-danger { background: var(--danger); border-color: var(--danger); color: var(--danger-contrast); font-weight: 600; }
@@ -590,7 +599,7 @@
   /* At 140% and above, reflow dense chrome by semantic rows. Scaling glyphs
      inside fixed one-line tracks clips controls and produces accidental word
      wraps; these rules instead give each group an explicit full-width row. */
-  html.font-scale-large #settings-box { width: 680px; }
+  html.font-scale-large #settings-box { width: 720px; }
   html.font-scale-large .set-row { align-items: flex-start; flex-wrap: wrap; }
   html.font-scale-large .set-row > label { width: 100%; }
   html.font-scale-large .set-row > select { flex-basis: 100%; }
@@ -812,6 +821,11 @@
       <button class="btn" id="set-clear-shell" style="margin-left:auto" data-i18n="common.clear">Clear</button>
     </div>
     <div class="set-hint" data-i18n="settings.shellRecoveryHint">Off by default. If enabled, deck may save the current directory and up to 256 KB of redacted plain shell output for at most 7 days in private 0600 files without backups. Commands are never replayed. Restored shells and their tools share deck’s Local Network permission.</div>
+    <div class="set-row">
+      <label for="set-agent-hooks" data-i18n="settings.agentHooks">Agent status (Claude Code)</label>
+      <input type="checkbox" id="set-agent-hooks">
+    </div>
+    <div class="set-hint" data-i18n="settings.agentHooksHint">Off by default. If enabled, deck adds three hooks to ~/.claude/settings.json so cards can show “needs input” and “turn finished” precisely. Hooks send only a fixed status word and the pane id — never prompts, output, or paths. Turning this off removes exactly those hooks.</div>
     <div class="set-sep"></div>
     <div class="set-row">
       <label for="set-channel" data-i18n="settings.updateChannel">Update channel</label>

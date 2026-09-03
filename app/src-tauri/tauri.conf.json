@@ -28,7 +28,7 @@
   "bundle": {
     "active": true,
     "targets": ["app", "dmg"],
-    "externalBin": ["binaries/tmux"],
+    "externalBin": ["binaries/tmux", "binaries/deck-status-helper"],
     "icon": ["icons/icon.icns", "icons/icon.png"],
     "createUpdaterArtifacts": true,
     "macOS": {

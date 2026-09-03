@@ -108,7 +108,7 @@ test('minimum-window layout keeps long localized panels bounded and scrollable',
   const html = read('app/ui/index.html');
   assert.match(html, /@media \(max-width: 800px\), \(max-height: 540px\)/);
   assert.match(html, /#settings-modal \{[^}]*align-items: center;[^}]*padding: 20px;/);
-  assert.match(html, /#settings-box \{[^}]*width: 560px;[^}]*max-height: 100%;[^}]*overflow-y: auto;/,
+  assert.match(html, /#settings-box \{[^}]*width: 640px;[^}]*max-height: 100%;[^}]*overflow-y: auto;/,
     'settings stay inside every viewport and scroll independently at any window height');
   assert.match(html, /#cfm-box, #ppd-box \{[^}]*max-height: 84vh;[^}]*overflow-y: auto;/);
   assert.match(html, /#queue-panel \{[^}]*max-height: 55vh;/);

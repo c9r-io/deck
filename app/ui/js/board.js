@@ -2,7 +2,7 @@
 // Part of deck's no-build frontend: native ES modules, no bundler.
 import { $, columnHint, dotTitle, POLL_MS, QUIET_SECS, emit, genId, inv, listeners, sessionName, setMemChip, state, store, uev } from './state.js';
 import { mutateBoard, mutateBoardDebounced } from './persistence.js';
-import { CARD_PREVIEW_ROWS, cardPreviewRows, createExitRetirementTracker, reorderById, sidebarGroups } from './pure.js';
+import { CARD_PREVIEW_ROWS, attentionStatus, cardPreviewRows, createExitRetirementTracker, effectiveCardStatus, reorderById, sidebarGroups } from './pure.js';
 import { confirmDialog, inlineRename, toast } from './dialogs.js';
 import { clearSeparators, closePaneBySid, leaveSessionView, openSession, renderSessionView, updatePaneChrome } from './layout.js';
 import { SHELL_FG, showProjectCtx, showSessionCtx } from './terminal.js';
@@ -371,12 +371,12 @@ export async function pollNow() {
     /* the shell exited (Ctrl+D etc.) → the card has nothing left to hold;
        close it without ceremony. Only live→dead transitions count, so cards
        that were already stopped (e.g. after an app restart) stay. */
-    if (!info.alive && (c.status === 'running' || c.status === 'waiting')) {
+    if (!info.alive && c.status !== 'stopped') {
       exitRetirement.observe(c.id);
       continue;
     }
-    const status = !info.alive ? 'stopped'
-      : (info.idle_secs != null && info.idle_secs >= QUIET_SECS) ? 'waiting' : 'running';
+    const status = effectiveCardStatus(info.alive, info.agent,
+      info.idle_secs != null && info.idle_secs >= QUIET_SECS);
     const mem = info.alive && info.mem_mb != null ? info.mem_mb : null;
     const tail = info.tail || [];
     const prevFg = c.fg;
@@ -525,7 +525,7 @@ export function renderTabs() {
     el.innerHTML = `<span class="name"></span>`;
     el.querySelector('.name').textContent = p.name;
     if (p.id !== state.projectId &&
-        provider.list(p.id).some(s => s.status === 'waiting')) {
+        provider.list(p.id).some(s => attentionStatus(s.status))) {
       const wait = document.createElement('span');
       wait.className = 'wait-dot';
       wait.title = t('session.quietTab');
@@ -707,7 +707,7 @@ export function renderBoard() {
 
 export function cardEl(s) {
   const el = document.createElement('div');
-  el.className = 'card' + (s.status === 'waiting' ? ' waiting' : '');
+  el.className = 'card' + (s.status === 'waiting' ? ' waiting' : s.status === 'attention' ? ' attention' : '');
   el.dataset.sid = s.id;
   el.draggable = true;
 
@@ -775,6 +775,7 @@ export function updateCardInPlace(s) {
   const dot = el.querySelector('.dot');
   if (dot) { dot.className = 'dot ' + s.status; dot.title = dotTitle(s.status); }
   el.classList.toggle('waiting', s.status === 'waiting');
+  el.classList.toggle('attention', s.status === 'attention');
 }
 
 export async function closeSession(sid, needConfirm = false) {

@@ -277,6 +277,10 @@ export async function openSettings() {
   $('set-accent').value = settings.accent || 'teal';
   $('set-channel').value = settings.updateChannel || 'stable';
   $('set-session-restore').checked = !!settings.sessionRestore;
+  $('set-agent-hooks').checked = false;
+  inv('agent_hooks_status')
+    .then(installed => { $('set-agent-hooks').checked = !!installed; })
+    .catch(() => {});
   renderFontScale();
   renderShortcutSettings();
   $('set-ver').textContent = 'deck ' + ($('app-ver').textContent || 'v?');
@@ -416,6 +420,34 @@ export async function persistSessionRestoreChoice() {
     $('set-clear-shell').disabled = false;
   }
 }
+
+/* Agent-status hooks: the checkbox reflects ~/.claude/settings.json itself
+   (the backend derives it), so there is no second copy of the state to keep
+   in sync and a manual edit of that file shows up here truthfully. */
+let agentHooksPending = false;
+export async function persistAgentHooksChoice() {
+  if (agentHooksPending) return;
+  const box = $('set-agent-hooks');
+  const desired = box.checked;
+  if (desired && !(await confirmDialog(t('settings.agentHooksEnableConfirm')))) {
+    box.checked = false;
+    return;
+  }
+  agentHooksPending = true;
+  box.disabled = true;
+  try {
+    await inv('agent_hooks_set', { enable: desired });
+    toast(t(desired ? 'settings.agentHooksEnabled' : 'settings.agentHooksDisabled'));
+  } catch (_) {
+    box.checked = !desired;
+    toast(t('error.agentHooks'));
+    uev('settings-save-fail');
+  } finally {
+    agentHooksPending = false;
+    box.disabled = false;
+  }
+}
+$('set-agent-hooks').onchange = () => persistAgentHooksChoice();
 
 /* set-check's click handler is wired by app.js (which owns update checks) —
    keeps dialogs.js from importing app.js back (no module cycle) */

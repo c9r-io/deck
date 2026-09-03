@@ -217,6 +217,24 @@ export function nextFire(i, now = Math.floor(Date.now() / 1000)) {
   return t;
 }
 
+/* ---------- card status ---------- */
+/* One place decides what a card's status word is. `agent` is the closed
+   agent-hook state from poll_sessions ("working" | "needs-input" |
+   "turn-done", agent_status.rs) and OUTRANKS the output-recency heuristic:
+   a hook said what the agent is actually doing, so a long silent tool run
+   stays "running" instead of drifting to the ambiguous amber "waiting".
+   Without agent state the classic heuristic applies unchanged. */
+export function effectiveCardStatus(alive, agent, quiet) {
+  if (!alive) return 'stopped';
+  if (agent === 'needs-input') return 'attention';
+  if (agent === 'turn-done') return 'done';
+  if (agent === 'working') return 'running';
+  return quiet ? 'waiting' : 'running';
+}
+
+/* the statuses that mean "a human look would help" — drives the tab hint */
+export const attentionStatus = status => status === 'waiting' || status === 'attention';
+
 /* how long a session must stay quiet before a chain prompt fires —
    keep in sync with CHAIN_QUIET_SECS in scheduler.rs */
 export const CHAIN_QUIET_SECS = 180;

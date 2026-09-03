@@ -934,7 +934,7 @@ export function showSplitPicker(dir) {
   const targetSid = state.sessionId;
   const openSids = new Set(collectLeaves(layout));
   const candidates = store.cards.filter(c => !openSids.has(c.id));
-  const order = { running: 0, waiting: 0, stopped: 1 };
+  const order = { attention: 0, done: 1, running: 1, waiting: 1, stopped: 2 };
   candidates.sort((a, b) => order[a.status] - order[b.status]);
   const ctx = $('ctx');
   ctx.replaceChildren();
@@ -947,7 +947,8 @@ export function showSplitPicker(dir) {
     button.dataset.sid = c.id;
     const status = document.createElement('span');
     status.className = `split-status ${c.status}`;
-    status.textContent = c.status === 'stopped' ? '○' : c.status === 'waiting' ? '◆' : '●';
+    status.textContent = c.status === 'stopped' ? '○'
+      : (c.status === 'waiting' || c.status === 'attention') ? '◆' : '●';
     status.title = dotTitle(c.status);
     button.append(status, document.createTextNode(' ' + c.title));
     ctx.appendChild(button);

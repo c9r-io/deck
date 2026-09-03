@@ -237,6 +237,38 @@ Frontend gates: `node --check` (syntax) · `ui/test/*.mjs` (node:test)
 - Status semantics: green = output <15s ago; amber "waiting" = alive but quiet ≥15s
   (honest heuristic — may be waiting for input, may be a silent build); gray = no
   session.
+- Agent status hooks (`agent_status.rs`, opt-in): agent CLIs report a CLOSED
+  state word (`working | needs-input | turn-done`) via the bundled
+  `deck-status-helper` (`app/status-helper/`, standalone zero-dep crate;
+  `build.rs` builds it into `binaries/` for tauri `externalBin` on every
+  build, and it is copied to `~/.deck/bin` at enable/boot so hook entries
+  reference one stable path). Hooks inherit `$TMUX`/`$TMUX_PANE`; the helper
+  drains and DISCARDS the hook stdin payload, charset-validates every field,
+  and writes one JSON line to the instance's `status.sock` (0600) — routed
+  per pane by `DECK_STATUS_SOCK`, which each deck exports into its own tmux
+  server env (tmux.rs), falling back to `~/.deck/status.sock`; so an
+  isolated/smoke instance receives its own events and never production's.
+  The helper can never carry content, exits 0 always, and silently does
+  nothing outside a deck tmux pane. The backend listener validates source/state against the module
+  registry, requires the event's socket name AND tmux server pid (generation
+  stamp — restarted servers reuse pane ids) before resolving pane→session,
+  refuses shell-foreground panes, and records the observed foreground
+  executable; `poll_sessions` reconciles so the state dies with the process
+  that reported it — no TTLs and no per-agent executable lists. Frontend:
+  `effectiveCardStatus` (pure.js) — agent state OUTRANKS the 15s heuristic
+  (card statuses `attention`/`done`; a working agent never shows amber). The
+  Settings toggle is the ONLY writer of `~/.claude/settings.json` (three
+  entries: UserPromptSubmit→working, Notification matcher
+  `permission_prompt|idle_prompt`→needs-input, Stop→turn-done); install and
+  uninstall touch only entries containing `.deck/bin/deck-status-helper`,
+  preserve everything else including file mode, and never modify a malformed
+  file. The toggle state is DERIVED from that file — never stored twice.
+  Claude Code's Stop does not fire on Esc-interrupt; foreground
+  reconciliation and the next UserPromptSubmit heal that. Codex (Phase 2):
+  its `notify` emits only `agent-turn-complete` (one JSON argv, includes
+  message text the helper must keep ignoring) → maps to turn-done only.
+  Adding an agent module = one `SOURCES` entry + its own hook/notify
+  installer calling the same helper with its own source word.
 - tmux ships INSIDE the app: a statically linked binary (see
   `binaries/build-tmux.sh`, committed as `binaries/tmux-aarch64-apple-darwin`,
   bundled+signed via tauri `externalBin`). `tmux_bin()` prefers the sidecar,

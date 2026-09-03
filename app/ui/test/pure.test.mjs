@@ -19,7 +19,28 @@ import {
   createTerminalWheelAccumulator, createTerminalWheelFrameScheduler, terminalWheelLines,
   linkMenuItems,
   CARD_PREVIEW_ROWS, cardPreviewRows, inlineRenameValue, persistOptimistically,
+  effectiveCardStatus, attentionStatus,
 } from '../js/pure.js';
+
+test('agent-hook state outranks the output-recency heuristic', () => {
+  // no agent state: the classic trichotomy is unchanged
+  assert.equal(effectiveCardStatus(false, null, false), 'stopped');
+  assert.equal(effectiveCardStatus(true, null, false), 'running');
+  assert.equal(effectiveCardStatus(true, null, true), 'waiting');
+  // hook states map 1:1 and suppress the ambiguous amber while working
+  assert.equal(effectiveCardStatus(true, 'needs-input', false), 'attention');
+  assert.equal(effectiveCardStatus(true, 'turn-done', true), 'done');
+  assert.equal(effectiveCardStatus(true, 'working', true), 'running');
+  // a dead pane wins over any stale agent word; unknown words fall through
+  assert.equal(effectiveCardStatus(false, 'needs-input', false), 'stopped');
+  assert.equal(effectiveCardStatus(true, 'mystery', true), 'waiting');
+  // the tab hint covers exactly the "look at me" statuses
+  assert.equal(attentionStatus('waiting'), true);
+  assert.equal(attentionStatus('attention'), true);
+  assert.equal(attentionStatus('done'), false);
+  assert.equal(attentionStatus('running'), false);
+  assert.equal(attentionStatus('stopped'), false);
+});
 
 test('terminal paste trace identifies every silent handoff without recording content', async () => {
   let nextTimer = 1;

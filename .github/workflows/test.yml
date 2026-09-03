@@ -32,11 +32,15 @@ jobs:
         run: cargo fmt --all -- --check
       - name: cargo fmt (app backend)
         run: cargo fmt --all --check --manifest-path app/src-tauri/Cargo.toml
+      - name: cargo fmt (status helper)
+        run: cargo fmt --all --check --manifest-path app/status-helper/Cargo.toml
 
       - name: cargo clippy -D warnings (TUI crate)
         run: cargo clippy --all-targets --all-features --locked -- -D warnings
       - name: cargo clippy -D warnings (app backend)
         run: cargo clippy --all-targets --all-features --locked --manifest-path app/src-tauri/Cargo.toml -- -D warnings
+      - name: cargo clippy -D warnings (status helper)
+        run: cargo clippy --all-targets --all-features --locked --manifest-path app/status-helper/Cargo.toml -- -D warnings
 
       - name: cargo test + coverage (TUI crate)
         run: cargo llvm-cov --all-targets --all-features --locked --fail-under-lines 70 --fail-under-functions 70
@@ -44,6 +48,9 @@ jobs:
       # tests share process-wide state (throwaway tmux servers, env)
       - name: cargo test + coverage (app backend — unit, storage/scheduler recovery, log privacy, tmux contract)
         run: cargo llvm-cov --all-targets --all-features --locked --fail-under-lines 70 --fail-under-functions 70 --manifest-path app/src-tauri/Cargo.toml -- --test-threads=1
+      # no coverage gate: a ~150-line sidecar whose main() is an OS boundary
+      - name: cargo test (status helper)
+        run: cargo test --locked --manifest-path app/status-helper/Cargo.toml
 
       # no-build frontend, three gates:
       # 1. real syntax check of every module (node --check)

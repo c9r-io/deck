@@ -38,6 +38,10 @@ cp icons/icon.icns "$APP/Contents/Resources/deck.icns"
 if [ -f binaries/tmux-aarch64-apple-darwin ]; then
   cp binaries/tmux-aarch64-apple-darwin "$APP/Contents/MacOS/tmux"
 fi
+# agent-hook status helper, built by build.rs into binaries/ (dmg parity)
+if [ -f binaries/deck-status-helper-aarch64-apple-darwin ]; then
+  cp binaries/deck-status-helper-aarch64-apple-darwin "$APP/Contents/MacOS/deck-status-helper"
+fi
 VER=$(python3 -c "import json;print(json.load(open('tauri.conf.json'))['version'])")
 cat > "$APP/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>

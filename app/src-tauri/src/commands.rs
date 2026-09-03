@@ -1885,6 +1885,9 @@ pub(crate) struct SessInfo {
     /// not live output — the UI must say so (a silently frozen agent TUI
     /// reads as a hung session)
     scrolled: Option<bool>,
+    /// closed agent-hook state word ("working" | "needs-input" |
+    /// "turn-done"), if an agent module reported one (agent_status.rs)
+    agent: Option<&'static str>,
 }
 
 pub(crate) fn tree_mem(roots: &HashMap<String, u32>) -> HashMap<String, f64> {
@@ -2066,6 +2069,9 @@ pub(crate) fn poll_sessions(
         }
     }
     let panes = parse_panes(&listing.unwrap_or_default());
+    // agent-hook state lives exactly as long as the foreground process that
+    // reported it — clear entries whose pane moved on before they render
+    crate::agent_status::reconcile(&panes);
 
     let roots: HashMap<String, u32> = names
         .iter()
@@ -2118,6 +2124,7 @@ pub(crate) fn poll_sessions(
                 fg: pane.map(|(_, _, _, fg, _)| fg.clone()),
                 cwd: pane.map(|(_, _, _, _, cwd)| cwd.clone()),
                 scrolled: pane.map(|(_, _, m, _, _)| *m),
+                agent: pane.and_then(|_| crate::agent_status::current(&name)),
                 name,
             }
         })

@@ -1,0 +1,15 @@
+[package]
+name = "deck-status-helper"
+version = "0.1.0"
+edition = "2021"
+description = "deck — tiny agent-hook forwarder (writes one status line to deck's local socket)"
+license = "MIT"
+
+# Standalone on purpose: zero dependencies, its own workspace root. The binary
+# runs inside the user's tmux panes (spawned by agent hooks), so it must stay
+# minimal, offline, and must never link the deck app itself.
+[workspace]
+
+[profile.release]
+lto = true
+strip = true
