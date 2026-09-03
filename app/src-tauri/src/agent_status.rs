@@ -663,6 +663,19 @@ mod tests {
     }
 
     #[test]
+    fn hook_status_command_returns_both_closed_agent_fields() {
+        let status = serde_json::to_value(agent_hooks_status()).unwrap();
+        let object = status.as_object().unwrap();
+        assert_eq!(object.len(), 2);
+        assert!(object
+            .get("claude")
+            .is_some_and(serde_json::Value::is_boolean));
+        assert!(object
+            .get("codex")
+            .is_some_and(serde_json::Value::is_boolean));
+    }
+
+    #[test]
     fn codex_hooks_install_covers_all_events_async_and_coexists() {
         // a user hooks.json with its own Stop hook and a description key
         let user = serde_json::json!({
