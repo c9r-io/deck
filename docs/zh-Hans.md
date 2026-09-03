@@ -1,6 +1,6 @@
 # deck 简体中文指南
 
-deck 是用于管理终端 agent session 的原生 macOS 应用。每张卡片都对应一个真实、持久的 tmux session；Board 用于表达当前需要关注的工作，而不是自动改变任务状态。
+deck 是用于管理终端 agent session 的原生 macOS 控制台。每张卡片都对应一个真实、持久的 tmux session；Board 用于表达当前需要关注的工作，而不是自动改变任务状态。
 
 ## 快速开始
 
