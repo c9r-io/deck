@@ -264,11 +264,20 @@ Frontend gates: `node --check` (syntax) · `ui/test/*.mjs` (node:test)
   preserve everything else including file mode, and never modify a malformed
   file. The toggle state is DERIVED from that file — never stored twice.
   Claude Code's Stop does not fire on Esc-interrupt; foreground
-  reconciliation and the next UserPromptSubmit heal that. Codex (Phase 2):
-  its `notify` emits only `agent-turn-complete` (one JSON argv, includes
-  message text the helper must keep ignoring) → maps to turn-done only.
-  Adding an agent module = one `SOURCES` entry + its own hook/notify
-  installer calling the same helper with its own source word.
+  reconciliation and the next UserPromptSubmit heal that. The Codex module
+  uses lifecycle hooks in `$CODEX_HOME/hooks.json` (same document shape as
+  Claude's, so ONE marker-based JSON merge engine serves both via per-agent
+  spec tables): UserPromptSubmit→working, PermissionRequest→needs-input,
+  Stop→turn-done, Interrupt→turn-done, all `"async": true` so the helper can
+  never block a turn. Multiple hooks per event coexist, so this never
+  conflicts with the user's own hooks or `notify` program — the earlier
+  notify/`config.toml` route was DROPPED for exactly that conflict (Codex
+  allows one notify program only; chain-forwarding it was rejected as too
+  much surface). Known caveat: Codex's Stop fires when the model ATTEMPTS to
+  stop, so another Stop hook forcing continuation makes "done" slightly
+  early. Adding an agent module = one `SOURCES` entry + its own installer
+  spec calling the same helper with its own source word, behind its own
+  Settings toggle.
 - tmux ships INSIDE the app: a statically linked binary (see
   `binaries/build-tmux.sh`, committed as `binaries/tmux-aarch64-apple-darwin`,
   bundled+signed via tauri `externalBin`). `tmux_bin()` prefers the sidecar,

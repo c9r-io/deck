@@ -278,8 +278,12 @@ export async function openSettings() {
   $('set-channel').value = settings.updateChannel || 'stable';
   $('set-session-restore').checked = !!settings.sessionRestore;
   $('set-agent-hooks').checked = false;
+  $('set-codex-hooks').checked = false;
   inv('agent_hooks_status')
-    .then(installed => { $('set-agent-hooks').checked = !!installed; })
+    .then(status => {
+      $('set-agent-hooks').checked = !!(status && status.claude);
+      $('set-codex-hooks').checked = !!(status && status.codex);
+    })
     .catch(() => {});
   renderFontScale();
   renderShortcutSettings();
@@ -425,18 +429,18 @@ export async function persistSessionRestoreChoice() {
    (the backend derives it), so there is no second copy of the state to keep
    in sync and a manual edit of that file shows up here truthfully. */
 let agentHooksPending = false;
-export async function persistAgentHooksChoice() {
+export async function persistAgentHooksChoice(agent, boxId, confirmKey) {
   if (agentHooksPending) return;
-  const box = $('set-agent-hooks');
+  const box = $(boxId);
   const desired = box.checked;
-  if (desired && !(await confirmDialog(t('settings.agentHooksEnableConfirm')))) {
+  if (desired && !(await confirmDialog(t(confirmKey)))) {
     box.checked = false;
     return;
   }
   agentHooksPending = true;
   box.disabled = true;
   try {
-    await inv('agent_hooks_set', { enable: desired });
+    await inv('agent_hooks_set', { agent, enable: desired });
     toast(t(desired ? 'settings.agentHooksEnabled' : 'settings.agentHooksDisabled'));
   } catch (_) {
     box.checked = !desired;
@@ -447,7 +451,10 @@ export async function persistAgentHooksChoice() {
     box.disabled = false;
   }
 }
-$('set-agent-hooks').onchange = () => persistAgentHooksChoice();
+$('set-agent-hooks').onchange = () =>
+  persistAgentHooksChoice('claude-code', 'set-agent-hooks', 'settings.agentHooksEnableConfirm');
+$('set-codex-hooks').onchange = () =>
+  persistAgentHooksChoice('codex', 'set-codex-hooks', 'settings.codexHooksEnableConfirm');
 
 /* set-check's click handler is wired by app.js (which owns update checks) —
    keeps dialogs.js from importing app.js back (no module cycle) */

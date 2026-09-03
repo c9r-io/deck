@@ -31,8 +31,8 @@ use std::time::Duration;
 use crate::applog;
 use crate::storage;
 
-/// Registered agent modules. Phase 2 adds "codex".
-const SOURCES: &[&str] = &["claude-code"];
+/// Registered agent modules.
+const SOURCES: &[&str] = &["claude-code", "codex"];
 
 /// Closed state vocabulary — the only words that ever reach the frontend.
 const STATES: &[&str] = &["working", "needs-input", "turn-done"];
@@ -287,7 +287,12 @@ pub(crate) fn spawn_listener() {
     });
 }
 
-// ---------- Claude Code hook installation ------------------------------------
+// ---------- hook installation (shared JSON machinery) -------------------------
+//
+// Claude Code (~/.claude/settings.json) and Codex ($CODEX_HOME/hooks.json)
+// use the same hooks document shape: hooks → EventName →
+// [{matcher?, hooks: [{type: "command", command, …}]}]. One marker-based
+// merge engine serves both; each agent contributes only its spec table.
 
 /// Marker every deck-authored hook command carries; install/uninstall touch
 /// only entries containing it, byte-preserving everything else in the file.
@@ -295,11 +300,13 @@ const HELPER_MARKER: &str = ".deck/bin/deck-status-helper";
 
 const HELPER_NAME: &str = "deck-status-helper";
 
-/// (hook event, optional matcher, state word). `Notification` matches only
-/// the attention-worthy kinds; `Stop` does not fire on user interrupt
-/// (documented Claude Code behavior) — foreground reconciliation and the
-/// next `UserPromptSubmit` heal that gap.
-const CLAUDE_HOOKS: &[(&str, Option<&str>, &str)] = &[
+/// One deck hook: (event, optional matcher, state word).
+type HookSpec = (&'static str, Option<&'static str>, &'static str);
+
+/// Claude Code: `Notification` matches only the attention-worthy kinds;
+/// `Stop` does not fire on user interrupt (documented behavior) — foreground
+/// reconciliation and the next `UserPromptSubmit` heal that gap.
+const CLAUDE_HOOKS: &[HookSpec] = &[
     ("UserPromptSubmit", None, "working"),
     (
         "Notification",
@@ -309,8 +316,20 @@ const CLAUDE_HOOKS: &[(&str, Option<&str>, &str)] = &[
     ("Stop", None, "turn-done"),
 ];
 
-fn helper_command(state: &str) -> String {
-    format!("\"$HOME/{HELPER_MARKER}\" claude-code {state}")
+/// Codex lifecycle hooks (hooks.json; several hooks per event may coexist,
+/// so this never conflicts with a user's own hooks or `notify` program).
+/// `Stop` fires when the model attempts to stop — another Stop hook may
+/// force continuation, so "done" can be slightly early; `Interrupt` maps to
+/// turn-done so an Esc-interrupted card settles instead of staying "working".
+const CODEX_HOOKS: &[HookSpec] = &[
+    ("UserPromptSubmit", None, "working"),
+    ("PermissionRequest", None, "needs-input"),
+    ("Stop", None, "turn-done"),
+    ("Interrupt", None, "turn-done"),
+];
+
+fn helper_command(source: &str, state: &str) -> String {
+    format!("\"$HOME/{HELPER_MARKER}\" {source} {state}")
 }
 
 fn entry_is_ours(entry: &serde_json::Value) -> bool {
@@ -326,10 +345,16 @@ fn entry_is_ours(entry: &serde_json::Value) -> bool {
         })
 }
 
-/// Add deck's hook entries to a parsed settings document. Everything the
-/// user wrote — other hooks, unknown keys, other events — is preserved;
-/// only entries carrying the helper marker are replaced.
-pub(crate) fn hooks_with_install(mut root: serde_json::Value) -> Result<serde_json::Value, String> {
+/// Add deck's hook entries to a parsed hooks document. Everything the user
+/// wrote — other hooks, unknown keys, other events — is preserved; only
+/// entries carrying the helper marker are replaced. `mark_async` adds
+/// Codex's `"async": true` so the fire-and-forget helper never blocks a turn.
+pub(crate) fn hooks_with_install(
+    mut root: serde_json::Value,
+    specs: &[HookSpec],
+    source: &str,
+    mark_async: bool,
+) -> Result<serde_json::Value, String> {
     let obj = root
         .as_object_mut()
         .ok_or("settings file is not a JSON object")?;
@@ -338,16 +363,20 @@ pub(crate) fn hooks_with_install(mut root: serde_json::Value) -> Result<serde_js
         .or_insert_with(|| serde_json::json!({}))
         .as_object_mut()
         .ok_or("the hooks key is not a JSON object")?;
-    for (event, matcher, state) in CLAUDE_HOOKS {
+    for (event, matcher, state) in specs {
         let list = hooks
             .entry(*event)
             .or_insert_with(|| serde_json::json!([]))
             .as_array_mut()
             .ok_or("a hook event entry is not a JSON array")?;
         list.retain(|entry| !entry_is_ours(entry));
-        let mut entry = serde_json::json!({
-            "hooks": [{ "type": "command", "command": helper_command(state), "timeout": 10 }]
+        let mut hook = serde_json::json!({
+            "type": "command", "command": helper_command(source, state), "timeout": 10
         });
+        if mark_async {
+            hook["async"] = serde_json::json!(true);
+        }
+        let mut entry = serde_json::json!({ "hooks": [hook] });
         if let Some(matcher) = matcher {
             entry["matcher"] = serde_json::json!(matcher);
         }
@@ -380,11 +409,11 @@ pub(crate) fn hooks_with_uninstall(mut root: serde_json::Value) -> serde_json::V
 
 /// Installed = every deck hook event carries a marker entry; a partial
 /// install reads as OFF so re-enabling repairs it.
-pub(crate) fn hooks_installed(root: &serde_json::Value) -> bool {
+pub(crate) fn hooks_installed(root: &serde_json::Value, specs: &[HookSpec]) -> bool {
     let Some(hooks) = root.get("hooks").and_then(|h| h.as_object()) else {
         return false;
     };
-    CLAUDE_HOOKS.iter().all(|(event, _, _)| {
+    specs.iter().all(|(event, _, _)| {
         hooks
             .get(*event)
             .and_then(|l| l.as_array())
@@ -396,37 +425,44 @@ fn claude_settings_path() -> Option<PathBuf> {
     dirs::home_dir().map(|home| home.join(".claude").join("settings.json"))
 }
 
+/// Codex hooks live in a dedicated `$CODEX_HOME/hooks.json` (same document
+/// shape as Claude's). Several hooks per event may coexist, so deck's
+/// entries never conflict with the user's own hooks or `notify` program.
+/// `CODEX_HOME` is honored when visible; a GUI launch usually doesn't see a
+/// shell-exported value, which matches Codex's own default of `~/.codex`.
+fn codex_hooks_path() -> Option<PathBuf> {
+    std::env::var_os("CODEX_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(|| dirs::home_dir().map(|home| home.join(".codex")))
+        .map(|dir| dir.join("hooks.json"))
+}
+
 fn read_settings_value(path: &Path) -> Result<serde_json::Value, String> {
     match std::fs::read(path) {
         Ok(bytes) => serde_json::from_slice(&bytes).map_err(|_| {
-            "the Claude Code settings file is not valid JSON — not modifying it".to_string()
+            "the agent settings file is not valid JSON — not modifying it".to_string()
         }),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(serde_json::json!({})),
-        Err(e) => Err(format!(
-            "could not read Claude Code settings ({})",
-            e.kind()
-        )),
+        Err(e) => Err(format!("could not read agent settings ({})", e.kind())),
     }
 }
 
-/// Atomic replace that PRESERVES the file's existing permissions (this file
-/// belongs to Claude Code, not deck — 0600 is only the default for a file
-/// deck itself creates).
-fn write_settings_value(path: &Path, value: &serde_json::Value) -> Result<(), String> {
+/// Atomic replace that PRESERVES the file's existing permissions (these
+/// config files belong to the agent CLI, not deck — 0600 is only the default
+/// for a file deck itself creates). Refuses to create the agent's config
+/// DIRECTORY: a missing one means the agent never ran on this Mac.
+fn write_agent_config(path: &Path, bytes: &[u8], never_ran: &str) -> Result<(), String> {
     use std::os::unix::fs::PermissionsExt;
     let mode = std::fs::metadata(path)
         .map(|m| m.permissions().mode() & 0o777)
         .unwrap_or(0o600);
     if let Some(dir) = path.parent() {
         if !dir.exists() {
-            return Err("Claude Code has never run on this Mac — nothing to configure".into());
+            return Err(never_ran.into());
         }
     }
-    let bytes = format!(
-        "{}\n",
-        serde_json::to_string_pretty(value).map_err(|e| e.to_string())?
-    );
-    storage::atomic_write(path, bytes.as_bytes())?;
+    storage::atomic_write(path, bytes)?;
     let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode));
     Ok(())
 }
@@ -480,41 +516,81 @@ pub(crate) fn refresh_helper_on_boot() {
     }
 }
 
-#[tauri::command]
-pub(crate) fn agent_hooks_status() -> Result<bool, String> {
-    let Some(path) = claude_settings_path() else {
-        return Ok(false);
+/// Shared enable/disable for one agent's hooks document.
+fn hooks_set(
+    path: &Path,
+    specs: &[HookSpec],
+    source: &str,
+    mark_async: bool,
+    enable: bool,
+    never_ran: &str,
+) -> Result<(), String> {
+    let value = read_settings_value(path)?;
+    let next = if enable {
+        install_helper_binary()?;
+        hooks_with_install(value, specs, source, mark_async)?
+    } else {
+        if !path.exists() {
+            return Ok(());
+        }
+        hooks_with_uninstall(value)
     };
-    Ok(read_settings_value(&path)
-        .map(|v| hooks_installed(&v))
-        .unwrap_or(false))
+    let bytes = format!(
+        "{}\n",
+        serde_json::to_string_pretty(&next).map_err(|e| e.to_string())?
+    );
+    write_agent_config(path, bytes.as_bytes(), never_ran)
 }
 
-/// The ONLY writer of the user's Claude Code settings, and only ever from an
-/// explicit Settings toggle. Never called at boot or from the poller.
+#[derive(serde::Serialize)]
+pub(crate) struct AgentHooksStatus {
+    claude: bool,
+    codex: bool,
+}
+
 #[tauri::command]
-pub(crate) fn agent_hooks_set(enable: bool) -> Result<(), String> {
-    let path = claude_settings_path().ok_or("no home directory")?;
-    let result = (|| {
-        let value = read_settings_value(&path)?;
-        let next = if enable {
-            install_helper_binary()?;
-            hooks_with_install(value)?
-        } else {
-            if !path.exists() {
-                return Ok(());
-            }
-            hooks_with_uninstall(value)
-        };
-        write_settings_value(&path, &next)
-    })();
+pub(crate) fn agent_hooks_status() -> AgentHooksStatus {
+    let installed = |path: Option<PathBuf>, specs: &[HookSpec]| {
+        path.and_then(|p| read_settings_value(&p).ok())
+            .map(|v| hooks_installed(&v, specs))
+            .unwrap_or(false)
+    };
+    AgentHooksStatus {
+        claude: installed(claude_settings_path(), CLAUDE_HOOKS),
+        codex: installed(codex_hooks_path(), CODEX_HOOKS),
+    }
+}
+
+/// The ONLY writer of the user's agent CLI config files, and only ever from
+/// an explicit Settings toggle. Never called at boot or from the poller.
+#[tauri::command]
+pub(crate) fn agent_hooks_set(agent: String, enable: bool) -> Result<(), String> {
+    let result = match agent.as_str() {
+        "claude-code" => hooks_set(
+            &claude_settings_path().ok_or("no home directory")?,
+            CLAUDE_HOOKS,
+            "claude-code",
+            false,
+            enable,
+            "Claude Code has never run on this Mac — nothing to configure",
+        ),
+        "codex" => hooks_set(
+            &codex_hooks_path().ok_or("no home directory")?,
+            CODEX_HOOKS,
+            "codex",
+            true,
+            enable,
+            "Codex has never run on this Mac — nothing to configure",
+        ),
+        _ => return Err("unknown agent".into()),
+    };
     match &result {
         Ok(()) => applog(&format!(
-            "[agent-hooks] claude-code {}",
+            "[agent-hooks] {agent} {}",
             if enable { "installed" } else { "removed" }
         )),
         Err(e) => applog(&format!(
-            "[agent-hooks] claude-code {} FAILED ({})",
+            "[agent-hooks] {agent} {} FAILED ({})",
             if enable { "install" } else { "remove" },
             storage::err_code(e)
         )),
@@ -577,6 +653,54 @@ mod tests {
         assert_eq!(resolve_in(listing, "%9", 42), None);
         // a session name outside the tmux alphabet never enters the store
         assert_eq!(resolve_in("42\t%3\tbad name\tclaude\n", "%3", 42), None);
+    }
+
+    #[test]
+    fn codex_events_are_a_registered_source() {
+        assert!(
+            parse_event(&event_line("turn-done", "%3").replace("claude-code", "codex")).is_ok()
+        );
+    }
+
+    #[test]
+    fn codex_hooks_install_covers_all_events_async_and_coexists() {
+        // a user hooks.json with its own Stop hook and a description key
+        let user = serde_json::json!({
+            "description": "my hooks",
+            "hooks": {
+                "Stop": [
+                    { "hooks": [{ "type": "command", "command": "terminal-notifier -message done" }] }
+                ]
+            }
+        });
+        let installed = hooks_with_install(user.clone(), CODEX_HOOKS, "codex", true).unwrap();
+        assert!(hooks_installed(&installed, CODEX_HOOKS));
+        assert_eq!(installed["description"], "my hooks");
+        // the user's own Stop hook coexists with ours — no notify-style conflict
+        assert_eq!(installed["hooks"]["Stop"].as_array().unwrap().len(), 2);
+        let permission = &installed["hooks"]["PermissionRequest"][0]["hooks"][0];
+        assert_eq!(
+            permission["command"].as_str().unwrap(),
+            "\"$HOME/.deck/bin/deck-status-helper\" codex needs-input"
+        );
+        // fire-and-forget: every deck entry is async so it can never block a turn
+        assert_eq!(permission["async"], serde_json::json!(true));
+        assert_eq!(
+            installed["hooks"]["Interrupt"][0]["hooks"][0]["command"]
+                .as_str()
+                .unwrap(),
+            "\"$HOME/.deck/bin/deck-status-helper\" codex turn-done"
+        );
+
+        // idempotent install, exact uninstall
+        let twice = hooks_with_install(installed, CODEX_HOOKS, "codex", true).unwrap();
+        assert_eq!(twice["hooks"]["Stop"].as_array().unwrap().len(), 2);
+        assert_eq!(hooks_with_uninstall(twice), user);
+
+        // claude's spec set does not read as installed for codex and vice versa
+        let claude_only =
+            hooks_with_install(serde_json::json!({}), CLAUDE_HOOKS, "claude-code", false).unwrap();
+        assert!(!hooks_installed(&claude_only, CODEX_HOOKS));
     }
 
     #[test]
@@ -672,8 +796,9 @@ mod tests {
                 ]
             }
         });
-        let installed = hooks_with_install(user.clone()).unwrap();
-        assert!(hooks_installed(&installed));
+        let installed =
+            hooks_with_install(user.clone(), CLAUDE_HOOKS, "claude-code", false).unwrap();
+        assert!(hooks_installed(&installed, CLAUDE_HOOKS));
         assert_eq!(installed["model"], "opus");
         // the user's own Stop hook and PreToolUse guard survive
         assert_eq!(installed["hooks"]["Stop"].as_array().unwrap().len(), 2);
@@ -693,12 +818,13 @@ mod tests {
         );
 
         // installing twice does not duplicate
-        let twice = hooks_with_install(installed.clone()).unwrap();
+        let twice =
+            hooks_with_install(installed.clone(), CLAUDE_HOOKS, "claude-code", false).unwrap();
         assert_eq!(twice["hooks"]["Stop"].as_array().unwrap().len(), 2);
 
         // uninstall restores the user's document exactly
         let removed = hooks_with_uninstall(twice);
-        assert!(!hooks_installed(&removed));
+        assert!(!hooks_installed(&removed, CLAUDE_HOOKS));
         assert_eq!(removed, user);
 
         // uninstalling a never-installed file is a no-op
@@ -706,20 +832,22 @@ mod tests {
         assert_eq!(empty, serde_json::json!({ "model": "opus" }));
 
         // a hooks-only file empties back to no hooks key at all
-        let only_ours = hooks_with_install(serde_json::json!({})).unwrap();
+        let only_ours =
+            hooks_with_install(serde_json::json!({}), CLAUDE_HOOKS, "claude-code", false).unwrap();
         assert_eq!(hooks_with_uninstall(only_ours), serde_json::json!({}));
     }
 
     #[test]
     fn hook_install_refuses_malformed_documents() {
-        assert!(hooks_with_install(serde_json::json!([1, 2])).is_err());
-        assert!(hooks_with_install(serde_json::json!({ "hooks": "nope" })).is_err());
-        assert!(hooks_with_install(serde_json::json!({ "hooks": { "Stop": "nope" } })).is_err());
+        let install = |v| hooks_with_install(v, CLAUDE_HOOKS, "claude-code", false);
+        assert!(install(serde_json::json!([1, 2])).is_err());
+        assert!(install(serde_json::json!({ "hooks": "nope" })).is_err());
+        assert!(install(serde_json::json!({ "hooks": { "Stop": "nope" } })).is_err());
         // partial installs read as OFF so re-enabling repairs them
         let partial = serde_json::json!({
             "hooks": { "Stop": [{ "hooks": [{ "type": "command",
                 "command": "\"$HOME/.deck/bin/deck-status-helper\" claude-code turn-done" }] }] }
         });
-        assert!(!hooks_installed(&partial));
+        assert!(!hooks_installed(&partial, CLAUDE_HOOKS));
     }
 }
