@@ -23,14 +23,16 @@ before any further external write.
 The account-level setup below was performed with the owner's explicit
 authorization during the 2026-08-30 session.
 
-- Cloudflare account `Gpgkd906@gmail.com's Account`
-  (`1d89dd5127009d5f489abfcf33c57674`); the `c9r.io` zone is active in it.
+- The `c9r.io` zone is active in the project's Cloudflare account. The account
+  id and owner are deliberately not recorded here: this file is public, and the
+  pair names both the account that controls the zone and the mailbox to phish
+  for it. Read the id from the dashboard sidebar, or from the
+  `CLOUDFLARE_ACCOUNT_ID` environment secret.
 - Independent Pages project `deck-site` exists, production branch `main`. It
   shares nothing with `orchestrator-docs` beyond the account.
 - A production deployment is live at `https://deck-site.pages.dev` and passed
   the online verification below.
-- `deck.c9r.io` is a Pages custom domain
-  (`a76170bd-a356-476a-ab98-79545c06243b`), **active**, with a Google-issued
+- `deck.c9r.io` is a Pages custom domain, **active**, with a Google-issued
   certificate. The zone holds `CNAME deck -> deck-site.pages.dev`, proxied,
   matching how `docs` is configured.
 - A Configuration Rule named `deck.c9r.io — no Web Analytics RUM injection`
