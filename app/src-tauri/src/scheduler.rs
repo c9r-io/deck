@@ -1070,7 +1070,7 @@ pub(crate) fn fire_item(item: &QueueItem) -> Result<(), String> {
 }
 
 /// Long enough for an agent input to close its paste burst before Enter.
-const ENTER_DELAY_MS: u64 = 300;
+const ENTER_DELAY_MS: u64 = 600;
 
 pub(crate) const READY_PROBE_INTERVAL_MS: u64 = 250;
 pub(crate) const READY_PROBE_TIMEOUT_MS: u64 = 15_000;
@@ -1148,7 +1148,7 @@ pub(crate) fn prepare_context(item: &QueueItem, cancelled: &dyn Fn() -> bool) ->
 
     let interval = std::time::Duration::from_millis(READY_PROBE_INTERVAL_MS);
     let polls = (READY_PROBE_TIMEOUT_MS / READY_PROBE_INTERVAL_MS) as usize + 1;
-    poll_readiness(
+    let ready = poll_readiness(
         polls,
         cancelled,
         &mut |identity| {
@@ -1157,8 +1157,25 @@ pub(crate) fn prepare_context(item: &QueueItem, cancelled: &dyn Fn() -> bool) ->
             context::probe(&item.session, identity, item.expected_process.as_deref())
         },
         &mut || std::thread::sleep(interval),
-    )
+    );
+    if ready.status != ContextStatus::Ready {
+        return ready;
+    }
+    // The process is in the foreground the instant it execs, while its TUI
+    // is still booting and not yet reading stdin. Bytes pasted now queue in
+    // the pty and are read together with the Enter that follows — one burst,
+    // which agent inputs treat as a paste with a trailing newline. Give a
+    // fresh start a moment to settle, then confirm it is still the same pane.
+    std::thread::sleep(std::time::Duration::from_millis(FRESH_START_SETTLE_MS));
+    if cancelled() {
+        return ProbeResult::blocked(ContextStatus::Unavailable, ContextCode::CancelledOrRevised);
+    }
+    context::probe(&item.session, ready.identity.as_ref(), item.expected_process.as_deref())
 }
+
+/// Grace between "the agent is in the foreground" and the first paste into a
+/// session the scheduler started itself.
+pub(crate) const FRESH_START_SETTLE_MS: u64 = 2500;
 
 /// Observe the pane the card owns right now. A tmux generation change (the
 /// server was replaced by an upgrade, a crash or a reboot) is adopted rather
