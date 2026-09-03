@@ -1008,17 +1008,18 @@ pub(crate) fn fire_item(item: &QueueItem) -> Result<(), String> {
     // symlink to a versioned binary — tmux says `2.1.259`, ps says `claude`),
     // pin the paste to the exact tmux name observed for that very process,
     // so the atomic check still means "the verified process is still here".
-    let condition_process = item.expected_process.as_deref().map(|expected| {
-        match context::raw_probe(&item.session) {
-            Ok(raw)
-                if raw.foreground.as_deref() != Some(expected)
-                    && raw.foreground_argv.as_deref() == Some(expected) =>
-            {
-                raw.foreground.unwrap_or_else(|| expected.to_string())
-            }
-            _ => expected.to_string(),
-        }
-    });
+    let condition_process =
+        item.expected_process
+            .as_deref()
+            .map(|expected| match context::raw_probe(&item.session) {
+                Ok(raw)
+                    if raw.foreground.as_deref() != Some(expected)
+                        && raw.foreground_argv.as_deref() == Some(expected) =>
+                {
+                    raw.foreground.unwrap_or_else(|| expected.to_string())
+                }
+                _ => expected.to_string(),
+            });
     let condition = match condition_process.as_deref() {
         Some(process) => {
             format!("#{{&&:{identity_condition},#{{==:#{{pane_current_command}},{process}}}}}")
@@ -1041,7 +1042,11 @@ pub(crate) fn fire_item(item: &QueueItem) -> Result<(), String> {
         yes,
         no,
     ]);
-    let refused = |stdout: &String| stdout.lines().any(|line| line.trim() == "deck-context-refused");
+    let refused = |stdout: &String| {
+        stdout
+            .lines()
+            .any(|line| line.trim() == "deck-context-refused")
+    };
     if !out.as_ref().is_ok_and(|stdout| !refused(stdout)) {
         // A vanished target can abort the command queue before its refusal
         // branch deletes the private buffer. Never leave prompt bytes behind
@@ -1170,7 +1175,11 @@ pub(crate) fn prepare_context(item: &QueueItem, cancelled: &dyn Fn() -> bool) ->
     if cancelled() {
         return ProbeResult::blocked(ContextStatus::Unavailable, ContextCode::CancelledOrRevised);
     }
-    context::probe(&item.session, ready.identity.as_ref(), item.expected_process.as_deref())
+    context::probe(
+        &item.session,
+        ready.identity.as_ref(),
+        item.expected_process.as_deref(),
+    )
 }
 
 /// Grace between "the agent is in the foreground" and the first paste into a
@@ -2110,7 +2119,8 @@ pub(crate) fn boot_queues() -> Queues {
 /// The tick sleeps on a condition so an event that made work due right now
 /// (an inbound card with its prompts just queued) can start the scan at once
 /// instead of waiting out the remainder of the period.
-static TICK_WAKE: std::sync::OnceLock<(Mutex<bool>, std::sync::Condvar)> = std::sync::OnceLock::new();
+static TICK_WAKE: std::sync::OnceLock<(Mutex<bool>, std::sync::Condvar)> =
+    std::sync::OnceLock::new();
 pub(crate) const TICK_SECS: u64 = 20;
 
 fn tick_wake() -> &'static (Mutex<bool>, std::sync::Condvar) {
@@ -2137,7 +2147,9 @@ fn sleep_until_tick() {
         if left.is_zero() {
             break;
         }
-        let Ok((g, _)) = cv.wait_timeout(f, left) else { return };
+        let Ok((g, _)) = cv.wait_timeout(f, left) else {
+            return;
+        };
         f = g;
     }
     *f = false;

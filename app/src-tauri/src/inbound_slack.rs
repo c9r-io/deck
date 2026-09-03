@@ -58,11 +58,18 @@ fn client() -> &'static reqwest::Client {
 static LAST_SLACK_ERROR: Mutex<String> = Mutex::new(String::new());
 
 pub(crate) fn last_slack_error() -> String {
-    LAST_SLACK_ERROR.lock().map(|e| e.clone()).unwrap_or_default()
+    LAST_SLACK_ERROR
+        .lock()
+        .map(|e| e.clone())
+        .unwrap_or_default()
 }
 
 fn note_slack_error(name: &str) {
-    let clean: String = name.chars().filter(|c| c.is_ascii_lowercase() || *c == '_').take(48).collect();
+    let clean: String = name
+        .chars()
+        .filter(|c| c.is_ascii_lowercase() || *c == '_')
+        .take(48)
+        .collect();
     if let Ok(mut e) = LAST_SLACK_ERROR.lock() {
         *e = clean;
     }
@@ -71,14 +78,20 @@ fn note_slack_error(name: &str) {
 /// One Slack Web API call — always POST with a form body, as every method
 /// documents. `Err` is a closed code suitable for logs.
 fn call(method: &str, token: &str, params: &[(&str, &str)]) -> Result<Value, &'static str> {
-    let form: Vec<String> = params.iter().map(|(k, v)| format!("{}={}", encode(k), encode(v))).collect();
+    let form: Vec<String> = params
+        .iter()
+        .map(|(k, v)| format!("{}={}", encode(k), encode(v)))
+        .collect();
     let req = client()
         .post(format!("{API}{method}"))
         .bearer_auth(token)
         .header("Content-Type", "application/x-www-form-urlencoded")
         .body(form.join("&"));
     let body: Value = tauri::async_runtime::block_on(async move {
-        let resp = req.send().await.map_err(|e| if e.is_timeout() { "timeout" } else { "network" })?;
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| if e.is_timeout() { "timeout" } else { "network" })?;
         if resp.status().as_u16() == 429 {
             return Err("ratelimited");
         }
@@ -91,7 +104,8 @@ fn call(method: &str, token: &str, params: &[(&str, &str)]) -> Result<Value, &'s
         let name = body.get("error").and_then(Value::as_str).unwrap_or("");
         note_slack_error(name);
         return Err(match name {
-            "invalid_auth" | "not_authed" | "token_revoked" | "token_expired" | "account_inactive" => "auth",
+            "invalid_auth" | "not_authed" | "token_revoked" | "token_expired"
+            | "account_inactive" => "auth",
             "missing_scope" => "scope",
             "ratelimited" => "ratelimited",
             _ => "slack",
@@ -114,7 +128,10 @@ pub(crate) fn encode(s: &str) -> String {
 }
 
 fn now_secs() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 /// `YYYY-MM-DD` for Slack's `after:` modifier, `days` back from now (UTC).
@@ -161,9 +178,9 @@ pub(crate) fn plain_text(s: &str) -> String {
         } else if let Some(id) = target.strip_prefix('#') {
             out.push('#');
             out.push_str(label.unwrap_or(id));
-        } else if target.starts_with('!') {
+        } else if let Some(id) = target.strip_prefix('!') {
             out.push('@');
-            out.push_str(label.unwrap_or(&target[1..]));
+            out.push_str(label.unwrap_or(id));
         } else if target.contains("://") || target.starts_with("mailto:") {
             match label {
                 Some(l) if !l.is_empty() && l != target => {
@@ -182,11 +199,16 @@ pub(crate) fn plain_text(s: &str) -> String {
         rest = &after[end + 1..];
     }
     out.push_str(rest);
-    out.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
+    out.replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&amp;", "&")
 }
 
 fn clip(s: &str) -> String {
-    let s: String = plain_text(s).chars().filter(|c| !c.is_control() || *c == '\n' || *c == '\t').collect();
+    let s: String = plain_text(s)
+        .chars()
+        .filter(|c| !c.is_control() || *c == '\n' || *c == '\t')
+        .collect();
     if s.len() <= MAX_TEXT {
         return s;
     }
@@ -203,15 +225,29 @@ pub(crate) fn plain_badge(reaction: &str) -> &str {
 }
 
 fn where_label(channel: &Value) -> String {
-    let is_im = channel.get("is_im").and_then(Value::as_bool).unwrap_or(false);
-    let is_mpim = channel.get("is_mpim").and_then(Value::as_bool).unwrap_or(false);
+    let is_im = channel
+        .get("is_im")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let is_mpim = channel
+        .get("is_mpim")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     let name = channel.get("name").and_then(Value::as_str).unwrap_or("");
-    if is_im || name.starts_with('D') && name.len() > 8 && name.bytes().all(|b| b.is_ascii_alphanumeric()) {
+    if is_im
+        || name.starts_with('D')
+            && name.len() > 8
+            && name.bytes().all(|b| b.is_ascii_alphanumeric())
+    {
         "DM".to_string()
     } else if is_mpim || name.starts_with("mpdm-") {
         "group DM".to_string()
     } else if name.is_empty() {
-        channel.get("id").and_then(Value::as_str).unwrap_or("?").to_string()
+        channel
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or("?")
+            .to_string()
     } else {
         format!("#{name}")
     }
@@ -220,12 +256,16 @@ fn where_label(channel: &Value) -> String {
 /// Build the events one `search.messages` response page yields.
 pub(crate) fn events_from_search(body: &Value, badge: &str) -> Vec<Event> {
     let mut out = Vec::new();
-    let Some(matches) = body.pointer("/messages/matches").and_then(Value::as_array) else { return out };
+    let Some(matches) = body.pointer("/messages/matches").and_then(Value::as_array) else {
+        return out;
+    };
     for m in matches {
         let (Some(ts), Some(channel)) = (
             m.get("ts").and_then(Value::as_str),
             m.pointer("/channel/id").and_then(Value::as_str),
-        ) else { continue };
+        ) else {
+            continue;
+        };
         let text = m.get("text").and_then(Value::as_str).unwrap_or("");
         let from = m
             .get("username")
@@ -240,14 +280,21 @@ pub(crate) fn events_from_search(body: &Value, badge: &str) -> Vec<Event> {
             text: clip(text),
             from: from.to_string(),
             where_: where_label(m.get("channel").unwrap_or(&Value::Null)),
-            link: m.get("permalink").and_then(Value::as_str).unwrap_or("").to_string(),
+            link: m
+                .get("permalink")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
         });
     }
     out
 }
 
 fn search_badge(token: &str, badge: &str) -> Result<Vec<Event>, &'static str> {
-    let query = format!("hasmy::{badge}: after:{}", after_date(now_secs(), inbound::LOOKBACK_DAYS));
+    let query = format!(
+        "hasmy::{badge}: after:{}",
+        after_date(now_secs(), inbound::LOOKBACK_DAYS)
+    );
     let count = SEARCH_PAGE.to_string();
     let mut events = Vec::new();
     let mut page = 1u32;
@@ -256,10 +303,19 @@ fn search_badge(token: &str, badge: &str) -> Result<Vec<Event>, &'static str> {
         let body = call(
             "search.messages",
             token,
-            &[("query", &query), ("sort", "timestamp"), ("sort_dir", "desc"), ("count", &count), ("page", &p)],
+            &[
+                ("query", &query),
+                ("sort", "timestamp"),
+                ("sort_dir", "desc"),
+                ("count", &count),
+                ("page", &p),
+            ],
         )?;
         events.extend(events_from_search(&body, badge));
-        let pages = body.pointer("/messages/pagination/page_count").and_then(Value::as_u64).unwrap_or(1) as u32;
+        let pages = body
+            .pointer("/messages/pagination/page_count")
+            .and_then(Value::as_u64)
+            .unwrap_or(1) as u32;
         page += 1;
         if page > pages || page > SEARCH_MAX_PAGES {
             break;
@@ -309,7 +365,10 @@ pub(crate) fn manifest() -> Value {
 }
 
 pub(crate) fn setup_url() -> String {
-    format!("https://api.slack.com/apps?new_app=1&manifest_json={}", encode(&manifest().to_string()))
+    format!(
+        "https://api.slack.com/apps?new_app=1&manifest_json={}",
+        encode(&manifest().to_string())
+    )
 }
 
 /// Prove a pasted token is the right kind and alive before it is stored:
@@ -338,8 +397,15 @@ fn user_name(token: &str, names: &mut Names, id: &str) -> String {
         .ok()
         .and_then(|b| {
             let u = b.get("user")?;
-            let pick = |p: &str| u.pointer(p).and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_string);
-            pick("/profile/display_name").or_else(|| pick("/real_name")).or_else(|| pick("/name"))
+            let pick = |p: &str| {
+                u.pointer(p)
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+            };
+            pick("/profile/display_name")
+                .or_else(|| pick("/real_name"))
+                .or_else(|| pick("/name"))
         })
         .unwrap_or_else(|| id.to_string());
     names.users.insert(id.to_string(), name.clone());
@@ -362,19 +428,33 @@ fn message_text(token: &str, channel: &str, ts: &str) -> Result<String, &'static
     let body = call(
         "conversations.history",
         token,
-        &[("channel", channel), ("latest", ts), ("oldest", ts), ("inclusive", "true"), ("limit", "1")],
+        &[
+            ("channel", channel),
+            ("latest", ts),
+            ("oldest", ts),
+            ("inclusive", "true"),
+            ("limit", "1"),
+        ],
     )?;
     if let Some(m) = body
         .get("messages")
         .and_then(Value::as_array)
-        .and_then(|a| a.iter().find(|m| m.get("ts").and_then(Value::as_str) == Some(ts)))
+        .and_then(|a| {
+            a.iter()
+                .find(|m| m.get("ts").and_then(Value::as_str) == Some(ts))
+        })
     {
-        return Ok(m.get("text").and_then(Value::as_str).unwrap_or("").to_string());
+        return Ok(m
+            .get("text")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string());
     }
     // A thread reply is only reachable through the thread.
     let mut cursor = String::new();
     for _ in 0..3 {
-        let mut params: Vec<(&str, &str)> = vec![("channel", channel), ("ts", ts), ("limit", "200")];
+        let mut params: Vec<(&str, &str)> =
+            vec![("channel", channel), ("ts", ts), ("limit", "200")];
         if !cursor.is_empty() {
             params.push(("cursor", &cursor));
         }
@@ -382,9 +462,16 @@ fn message_text(token: &str, channel: &str, ts: &str) -> Result<String, &'static
         if let Some(m) = body
             .get("messages")
             .and_then(Value::as_array)
-            .and_then(|a| a.iter().find(|m| m.get("ts").and_then(Value::as_str) == Some(ts)))
+            .and_then(|a| {
+                a.iter()
+                    .find(|m| m.get("ts").and_then(Value::as_str) == Some(ts))
+            })
         {
-            return Ok(m.get("text").and_then(Value::as_str).unwrap_or("").to_string());
+            return Ok(m
+                .get("text")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string());
         }
         cursor = body
             .pointer("/response_metadata/next_cursor")
@@ -399,20 +486,39 @@ fn message_text(token: &str, channel: &str, ts: &str) -> Result<String, &'static
 }
 
 fn permalink(token: &str, channel: &str, ts: &str) -> String {
-    call("chat.getPermalink", token, &[("channel", channel), ("message_ts", ts)])
-        .ok()
-        .and_then(|b| b.get("permalink").and_then(Value::as_str).map(str::to_string))
-        .unwrap_or_default()
+    call(
+        "chat.getPermalink",
+        token,
+        &[("channel", channel), ("message_ts", ts)],
+    )
+    .ok()
+    .and_then(|b| {
+        b.get("permalink")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    })
+    .unwrap_or_default()
 }
 
 /// Parse one Socket Mode envelope. Returns (envelope_id, own reaction hit).
-pub(crate) fn parse_envelope(text: &str, self_id: &str, badges: &[String]) -> (Option<String>, Option<(String, String, String)>) {
-    let Ok(v) = serde_json::from_str::<Value>(text) else { return (None, None) };
-    let envelope = v.get("envelope_id").and_then(Value::as_str).map(str::to_string);
+pub(crate) fn parse_envelope(
+    text: &str,
+    self_id: &str,
+    badges: &[String],
+) -> (Option<String>, Option<(String, String, String)>) {
+    let Ok(v) = serde_json::from_str::<Value>(text) else {
+        return (None, None);
+    };
+    let envelope = v
+        .get("envelope_id")
+        .and_then(Value::as_str)
+        .map(str::to_string);
     if v.get("type").and_then(Value::as_str) != Some("events_api") {
         return (envelope, None);
     }
-    let Some(ev) = v.pointer("/payload/event") else { return (envelope, None) };
+    let Some(ev) = v.pointer("/payload/event") else {
+        return (envelope, None);
+    };
     if ev.get("type").and_then(Value::as_str) != Some("reaction_added") {
         return (envelope, None);
     }
@@ -429,8 +535,13 @@ pub(crate) fn parse_envelope(text: &str, self_id: &str, badges: &[String]) -> (O
     let (Some(channel), Some(ts)) = (
         ev.pointer("/item/channel").and_then(Value::as_str),
         ev.pointer("/item/ts").and_then(Value::as_str),
-    ) else { return (envelope, None) };
-    (envelope, Some((channel.to_string(), ts.to_string(), badge.to_string())))
+    ) else {
+        return (envelope, None);
+    };
+    (
+        envelope,
+        Some((channel.to_string(), ts.to_string(), badge.to_string())),
+    )
 }
 
 /* ---------- the socket thread ---------- */
@@ -456,14 +567,23 @@ impl Default for Live {
     }
 }
 
-fn socket_loop(app: AppHandle, epoch: Arc<AtomicU64>, my_epoch: u64, badges: Arc<Mutex<Vec<String>>>, connected: Arc<Mutex<bool>>) {
+fn socket_loop(
+    app: AppHandle,
+    epoch: Arc<AtomicU64>,
+    my_epoch: u64,
+    badges: Arc<Mutex<Vec<String>>>,
+    connected: Arc<Mutex<bool>>,
+) {
     use tungstenite::stream::MaybeTlsStream;
     use tungstenite::Message;
     let mut backoff = 1u64;
     let mut names = Names::default();
     let mut failures = 0u32;
     while epoch.load(Ordering::SeqCst) == my_epoch {
-        let (Some(user), Some(app_token)) = (keychain::get(Slot::SlackUserToken), keychain::get(Slot::SlackAppToken)) else {
+        let (Some(user), Some(app_token)) = (
+            keychain::get(Slot::SlackUserToken),
+            keychain::get(Slot::SlackAppToken),
+        ) else {
             std::thread::sleep(Duration::from_secs(5));
             continue;
         };
@@ -530,7 +650,9 @@ fn socket_loop(app: AppHandle, epoch: Arc<AtomicU64>, my_epoch: u64, badges: Arc
                                 Err(code) => {
                                     failures = failures.saturating_add(1);
                                     if failures <= 20 {
-                                        applog(&format!("[inbound] slack live fetch FAILED ({code})"));
+                                        applog(&format!(
+                                            "[inbound] slack live fetch FAILED ({code})"
+                                        ));
                                     }
                                 }
                             }
@@ -543,7 +665,10 @@ fn socket_loop(app: AppHandle, epoch: Arc<AtomicU64>, my_epoch: u64, badges: Arc
                     Ok(Message::Close(_)) => break Err("closed"),
                     Ok(_) => {}
                     Err(tungstenite::Error::Io(e))
-                        if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) =>
+                        if matches!(
+                            e.kind(),
+                            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                        ) =>
                     {
                         idle += 1;
                         if idle > 1 || ws.send(Message::Ping(Vec::new().into())).is_err() {
@@ -561,7 +686,9 @@ fn socket_loop(app: AppHandle, epoch: Arc<AtomicU64>, my_epoch: u64, badges: Arc
             Ok(()) => {}
             Err(code) => {
                 if code != "reconnect" {
-                    applog(&format!("[inbound] slack live dropped ({code}); retry in {backoff}s"));
+                    applog(&format!(
+                        "[inbound] slack live dropped ({code}); retry in {backoff}s"
+                    ));
                 }
                 if epoch.load(Ordering::SeqCst) != my_epoch {
                     break;
@@ -618,8 +745,12 @@ impl Source for Slack {
         let can = wanted && keychain::has(Slot::SlackAppToken);
         if can && !self.live.running {
             let my_epoch = self.live.epoch.fetch_add(1, Ordering::SeqCst) + 1;
-            let (app, epoch, badges, connected) =
-                (app.clone(), self.live.epoch.clone(), self.live.badges.clone(), self.live.connected.clone());
+            let (app, epoch, badges, connected) = (
+                app.clone(),
+                self.live.epoch.clone(),
+                self.live.badges.clone(),
+                self.live.connected.clone(),
+            );
             std::thread::spawn(move || socket_loop(app, epoch, my_epoch, badges, connected));
             self.live.running = true;
         } else if !can && self.live.running {
@@ -630,7 +761,11 @@ impl Source for Slack {
 
     fn status(&self) -> SourceStatus {
         SourceStatus {
-            live: *self.live.connected.lock().unwrap_or_else(|p| p.into_inner()),
+            live: *self
+                .live
+                .connected
+                .lock()
+                .unwrap_or_else(|p| p.into_inner()),
             last_poll: self.last_poll,
             last_error: self.last_error,
         }
@@ -653,7 +788,10 @@ mod tests {
 
     #[test]
     fn query_components_are_percent_encoded() {
-        assert_eq!(encode("hasmy::deck: after:2026-08-05"), "hasmy%3A%3Adeck%3A%20after%3A2026-08-05");
+        assert_eq!(
+            encode("hasmy::deck: after:2026-08-05"),
+            "hasmy%3A%3Adeck%3A%20after%3A2026-08-05"
+        );
         assert_eq!(encode("+1"), "%2B1");
         assert_eq!(encode("a_b-c.d~e"), "a_b-c.d~e");
     }
@@ -669,7 +807,10 @@ mod tests {
             let mut i = 0;
             while i < bytes.len() {
                 if bytes[i] == b'%' {
-                    out.push(u8::from_str_radix(std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap(), 16).unwrap());
+                    out.push(
+                        u8::from_str_radix(std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap(), 16)
+                            .unwrap(),
+                    );
                     i += 3;
                 } else {
                     out.push(bytes[i]);
@@ -680,9 +821,19 @@ mod tests {
         };
         let m: Value = serde_json::from_str(&decoded).unwrap();
         assert_eq!(m, manifest());
-        assert_eq!(m.pointer("/settings/socket_mode_enabled"), Some(&Value::Bool(true)));
-        assert_eq!(m.pointer("/settings/event_subscriptions/user_events/0").and_then(Value::as_str), Some("reaction_added"));
-        let scopes = m.pointer("/oauth_config/scopes/user").and_then(Value::as_array).unwrap();
+        assert_eq!(
+            m.pointer("/settings/socket_mode_enabled"),
+            Some(&Value::Bool(true))
+        );
+        assert_eq!(
+            m.pointer("/settings/event_subscriptions/user_events/0")
+                .and_then(Value::as_str),
+            Some("reaction_added")
+        );
+        let scopes = m
+            .pointer("/oauth_config/scopes/user")
+            .and_then(Value::as_array)
+            .unwrap();
         assert_eq!(scopes.len(), USER_SCOPES.len());
         assert!(m.get("features").is_none(), "no bot user");
         assert!(m.pointer("/oauth_config/scopes/bot").is_none());
@@ -721,8 +872,10 @@ mod tests {
 
     #[test]
     fn mrkdwn_becomes_plain_text() {
-        assert_eq!(plain_text("<@U1|alice> see <#C1|dev> and <https://x.y/z|the doc> or <https://a.b>"),
-            "@alice see #dev and the doc (https://x.y/z) or https://a.b");
+        assert_eq!(
+            plain_text("<@U1|alice> see <#C1|dev> and <https://x.y/z|the doc> or <https://a.b>"),
+            "@alice see #dev and the doc (https://x.y/z) or https://a.b"
+        );
         assert_eq!(plain_text("<@U1>"), "@U1");
         assert_eq!(plain_text("<!here> a &lt;b&gt; &amp; c"), "@here a <b> & c");
         assert_eq!(plain_text("x < y > z"), "x < y > z");
@@ -743,18 +896,46 @@ mod tests {
         let mk = |user: &str, reaction: &str, item_type: &str| {
             json!({"envelope_id": "E1", "type": "events_api", "payload": {"event": {
                 "type": "reaction_added", "user": user, "reaction": reaction,
-                "item": {"type": item_type, "channel": "C1", "ts": "1.2"}}}}).to_string()
+                "item": {"type": item_type, "channel": "C1", "ts": "1.2"}}}})
+            .to_string()
         };
         assert_eq!(
             parse_envelope(&mk("U_ME", "deck", "message"), "U_ME", &badges),
-            (Some("E1".into()), Some(("C1".into(), "1.2".into(), "deck".into())))
+            (
+                Some("E1".into()),
+                Some(("C1".into(), "1.2".into(), "deck".into()))
+            )
         );
-        assert_eq!(parse_envelope(&mk("U_ME", "deck::skin-tone-3", "message"), "U_ME", &badges).1.map(|h| h.2), Some("deck".into()));
-        assert_eq!(parse_envelope(&mk("U_OTHER", "deck", "message"), "U_ME", &badges), (Some("E1".into()), None));
-        assert_eq!(parse_envelope(&mk("U_ME", "eyes", "message"), "U_ME", &badges), (Some("E1".into()), None));
-        assert_eq!(parse_envelope(&mk("U_ME", "deck", "file"), "U_ME", &badges), (Some("E1".into()), None));
-        assert_eq!(parse_envelope(r#"{"type":"hello"}"#, "U_ME", &badges), (None, None));
-        assert_eq!(parse_envelope(r#"{"envelope_id":"E2","type":"slash_commands"}"#, "U_ME", &badges), (Some("E2".into()), None));
+        assert_eq!(
+            parse_envelope(&mk("U_ME", "deck::skin-tone-3", "message"), "U_ME", &badges)
+                .1
+                .map(|h| h.2),
+            Some("deck".into())
+        );
+        assert_eq!(
+            parse_envelope(&mk("U_OTHER", "deck", "message"), "U_ME", &badges),
+            (Some("E1".into()), None)
+        );
+        assert_eq!(
+            parse_envelope(&mk("U_ME", "eyes", "message"), "U_ME", &badges),
+            (Some("E1".into()), None)
+        );
+        assert_eq!(
+            parse_envelope(&mk("U_ME", "deck", "file"), "U_ME", &badges),
+            (Some("E1".into()), None)
+        );
+        assert_eq!(
+            parse_envelope(r#"{"type":"hello"}"#, "U_ME", &badges),
+            (None, None)
+        );
+        assert_eq!(
+            parse_envelope(
+                r#"{"envelope_id":"E2","type":"slash_commands"}"#,
+                "U_ME",
+                &badges
+            ),
+            (Some("E2".into()), None)
+        );
         assert_eq!(parse_envelope("not json", "U_ME", &badges), (None, None));
     }
 }

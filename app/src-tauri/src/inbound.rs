@@ -79,21 +79,26 @@ impl Config {
         v
     }
     fn rule_for(&self, source: &str, badge: &str) -> Option<&Rule> {
-        self.rules.iter().find(|r| r.source == source && r.badge == badge)
+        self.rules
+            .iter()
+            .find(|r| r.source == source && r.badge == badge)
     }
 }
 
 fn bounded_id(s: &str, max: usize) -> bool {
     !s.is_empty()
         && s.len() <= max
-        && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
 /// Emoji names as Slack spells them: `deck`, `white_check_mark`, `+1`.
 pub(crate) fn valid_badge(s: &str) -> bool {
     !s.is_empty()
         && s.len() <= 64
-        && s.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'_' | b'-' | b'+'))
+        && s.bytes().all(|b| {
+            b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'_' | b'-' | b'+')
+        })
 }
 
 /// Structural validation of `settings.inbound`, run by SettingsDoc on load AND
@@ -103,12 +108,16 @@ pub(crate) fn valid_badge(s: &str) -> bool {
 pub(crate) fn validate_settings(v: &Value) -> Result<(), String> {
     let obj = v.as_object().ok_or("inbound must be an object")?;
     if let Some(sources) = obj.get("sources") {
-        let sources = sources.as_object().ok_or("inbound.sources must be an object")?;
+        let sources = sources
+            .as_object()
+            .ok_or("inbound.sources must be an object")?;
         for (name, cfg) in sources {
             if !SOURCES.contains(&name.as_str()) {
                 return Err("inbound.sources names an unknown source".into());
             }
-            let cfg = cfg.as_object().ok_or("inbound source config must be an object")?;
+            let cfg = cfg
+                .as_object()
+                .ok_or("inbound source config must be an object")?;
             if let Some(e) = cfg.get("enabled") {
                 if !e.is_boolean() {
                     return Err("inbound source enabled must be a boolean".into());
@@ -161,7 +170,9 @@ pub(crate) fn validate_settings(v: &Value) -> Result<(), String> {
 /// Lenient read for the poller: an unreadable or invalid settings file
 /// yields the empty config (nothing enabled), never a panic or a guess.
 pub(crate) fn read_config() -> Config {
-    let raw = match storage::load_typed::<crate::commands::SettingsDoc>(&crate::commands::settings_path()) {
+    let raw = match storage::load_typed::<crate::commands::SettingsDoc>(
+        &crate::commands::settings_path(),
+    ) {
         Ok(Some(doc)) => doc.payload,
         _ => return Config::default(),
     };
@@ -184,9 +195,16 @@ pub(crate) fn config_from_value(v: Option<&Value>) -> Config {
     let rules = v
         .get("rules")
         .and_then(Value::as_array)
-        .map(|a| a.iter().filter_map(|r| serde_json::from_value(r.clone()).ok()).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|r| serde_json::from_value(r.clone()).ok())
+                .collect()
+        })
         .unwrap_or_default();
-    Config { slack_enabled, rules }
+    Config {
+        slack_enabled,
+        rules,
+    }
 }
 
 /* ---------- the event ---------- */
@@ -252,11 +270,18 @@ impl InboundDoc {
         if self.has(source, key, badge) {
             return false;
         }
-        self.seen.push(Seen { source: source.into(), key: key.into(), badge: badge.into(), at: now });
+        self.seen.push(Seen {
+            source: source.into(),
+            key: key.into(),
+            badge: badge.into(),
+            at: now,
+        });
         true
     }
     fn is_baselined(&self, source: &str, badge: &str) -> bool {
-        self.baselined.iter().any(|b| b == &format!("{source}/{badge}"))
+        self.baselined
+            .iter()
+            .any(|b| b == &format!("{source}/{badge}"))
     }
     fn baseline(&mut self, source: &str, badge: &str) {
         let tag = format!("{source}/{badge}");
@@ -265,7 +290,8 @@ impl InboundDoc {
         }
     }
     fn prune(&mut self, now: u64) {
-        self.seen.retain(|s| now.saturating_sub(s.at) <= SEEN_TTL_SECS);
+        self.seen
+            .retain(|s| now.saturating_sub(s.at) <= SEEN_TTL_SECS);
         if self.seen.len() > MAX_SEEN {
             let drop = self.seen.len() - MAX_SEEN;
             self.seen.drain(..drop);
@@ -278,7 +304,10 @@ fn doc_path() -> PathBuf {
 }
 
 fn now_secs() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 /* ---------- runtime ---------- */
@@ -337,7 +366,10 @@ fn load_doc() -> InboundDoc {
         Err(e) => {
             // Not a first run — but for a dedupe ledger the safe degradation
             // is "re-baseline everything", which an empty doc does.
-            applog(&format!("[inbound] ledger unreadable ({}) — re-baselining", storage::err_code(&e)));
+            applog(&format!(
+                "[inbound] ledger unreadable ({}) — re-baselining",
+                storage::err_code(&e)
+            ));
             InboundDoc::default()
         }
     }
@@ -352,7 +384,10 @@ fn persist(rt: &mut Runtime) {
         Ok(()) => rt.dirty = false,
         Err(e) => {
             rt.dirty = true;
-            applog(&format!("[inbound] ledger save FAILED ({}) — will retry", storage::err_code(&e)));
+            applog(&format!(
+                "[inbound] ledger save FAILED ({}) — will retry",
+                storage::err_code(&e)
+            ));
         }
     }
 }
@@ -367,15 +402,17 @@ pub(crate) fn offer(app: &AppHandle, cfg: &Config, events: Vec<Event>, live: boo
     with_rt(|rt| {
         let mut newly_baselined: Vec<(String, String)> = Vec::new();
         for ev in events {
-            let Some(rule) = cfg.rule_for(&ev.source, &ev.badge) else { continue };
+            let Some(rule) = cfg.rule_for(&ev.source, &ev.badge) else {
+                continue;
+            };
             if rt.doc.has(&ev.source, &ev.key, &ev.badge) {
                 continue;
             }
-            if rt
-                .pending
-                .iter()
-                .any(|p| p.view.event.source == ev.source && p.view.event.key == ev.key && p.view.event.badge == ev.badge)
-            {
+            if rt.pending.iter().any(|p| {
+                p.view.event.source == ev.source
+                    && p.view.event.key == ev.key
+                    && p.view.event.badge == ev.badge
+            }) {
                 continue;
             }
             if !live && !rt.doc.is_baselined(&ev.source, &ev.badge) {
@@ -387,7 +424,11 @@ pub(crate) fn offer(app: &AppHandle, cfg: &Config, events: Vec<Event>, live: boo
             let id = rt.next_id;
             rt.next_id += 1;
             rt.pending.push(Pending {
-                view: PendingView { id, event: ev, rule: rule.clone() },
+                view: PendingView {
+                    id,
+                    event: ev,
+                    rule: rule.clone(),
+                },
                 emitted_at: Instant::now(),
             });
             fresh += 1;
@@ -466,8 +507,14 @@ pub(crate) fn inbound_status() -> InboundStatus {
                 .unwrap_or_default();
             let secrets = match *id {
                 "slack" => vec![
-                    SecretView { slot: "slack-user-token", present: keychain::has(keychain::Slot::SlackUserToken) },
-                    SecretView { slot: "slack-app-token", present: keychain::has(keychain::Slot::SlackAppToken) },
+                    SecretView {
+                        slot: "slack-user-token",
+                        present: keychain::has(keychain::Slot::SlackUserToken),
+                    },
+                    SecretView {
+                        slot: "slack-app-token",
+                        present: keychain::has(keychain::Slot::SlackAppToken),
+                    },
                 ],
                 _ => Vec::new(),
             };
@@ -479,7 +526,11 @@ pub(crate) fn inbound_status() -> InboundStatus {
                 secrets,
             });
         }
-        InboundStatus { sources, pending: rt.pending.len(), seen: rt.doc.seen.len() }
+        InboundStatus {
+            sources,
+            pending: rt.pending.len(),
+            seen: rt.doc.seen.len(),
+        }
     })
 }
 
@@ -497,13 +548,22 @@ pub(crate) fn inbound_ack(id: u64, outcome: String) -> Result<(), String> {
         return Err("outcome must be done or skipped".into());
     }
     with_rt(|rt| {
-        let Some(pos) = rt.pending.iter().position(|p| p.view.id == id) else { return };
+        let Some(pos) = rt.pending.iter().position(|p| p.view.id == id) else {
+            return;
+        };
         let p = rt.pending.remove(pos);
         let ev = &p.view.event;
         rt.doc.mark(&ev.source, &ev.key, &ev.badge, now_secs());
         rt.doc.prune(now_secs());
         persist(rt);
-        applog(&format!("[inbound] item {}", if outcome == "done" { "created" } else { "skipped" }));
+        applog(&format!(
+            "[inbound] item {}",
+            if outcome == "done" {
+                "created"
+            } else {
+                "skipped"
+            }
+        ));
     });
     if outcome == "done" {
         // The card's prompts are queued and due now; do not wait out the tick.
@@ -520,7 +580,10 @@ pub(crate) fn inbound_setup(source: String) -> Result<(), String> {
         "slack" => crate::inbound_slack::setup_url(),
         _ => return Err("unknown source".into()),
     };
-    let status = std::process::Command::new("open").arg(&url).status().map_err(|_| "could not open the browser".to_string())?;
+    let status = std::process::Command::new("open")
+        .arg(&url)
+        .status()
+        .map_err(|_| "could not open the browser".to_string())?;
     if !status.success() {
         return Err("could not open the browser".into());
     }
@@ -541,7 +604,9 @@ pub(crate) fn inbound_set_secret(slot: String, value: String) -> Result<(), Stri
         }
         crate::inbound_slack::verify(slot, trimmed).map_err(|code| {
             let slack_error = crate::inbound_slack::last_slack_error();
-            applog(&format!("[inbound] credential verify FAILED ({code}:{slack_error})"));
+            applog(&format!(
+                "[inbound] credential verify FAILED ({code}:{slack_error})"
+            ));
             match code {
                 "auth" => "auth".to_string(),
                 "network" | "timeout" | "http" => "network".to_string(),
@@ -553,7 +618,10 @@ pub(crate) fn inbound_set_secret(slot: String, value: String) -> Result<(), Stri
         "shape" => "shape".to_string(),
         _ => "keychain".to_string(),
     })?;
-    applog(&format!("[inbound] credential {}", if clearing { "cleared" } else { "stored" }));
+    applog(&format!(
+        "[inbound] credential {}",
+        if clearing { "cleared" } else { "stored" }
+    ));
     inbound_check_now();
     Ok(())
 }
@@ -581,7 +649,9 @@ fn wait_for_tick(d: Duration) {
         if left.is_zero() {
             break;
         }
-        let Ok((g, _)) = cv.wait_timeout(f, left) else { return };
+        let Ok((g, _)) = cv.wait_timeout(f, left) else {
+            return;
+        };
         f = g;
     }
     *f = false;
@@ -589,7 +659,8 @@ fn wait_for_tick(d: Duration) {
 
 pub(crate) fn spawn_inbound(app: AppHandle) {
     std::thread::spawn(move || {
-        let mut sources: Vec<Box<dyn Source>> = vec![Box::new(crate::inbound_slack::Slack::default())];
+        let mut sources: Vec<Box<dyn Source>> =
+            vec![Box::new(crate::inbound_slack::Slack::default())];
         let mut failures = 0u32;
         wait_for_tick(Duration::from_secs(5));
         loop {
@@ -607,7 +678,7 @@ pub(crate) fn spawn_inbound(app: AppHandle) {
                         }
                         Err(code) => {
                             failures = failures.saturating_add(1);
-                            if failures <= 20 || failures % 120 == 0 {
+                            if failures <= 20 || failures.is_multiple_of(120) {
                                 applog(&format!("[inbound] poll FAILED ({code}) ×{failures}"));
                             }
                         }
@@ -623,7 +694,10 @@ pub(crate) fn spawn_inbound(app: AppHandle) {
                 if rt.dirty {
                     persist(rt);
                 }
-                let stale = rt.pending.iter().any(|p| p.emitted_at.elapsed() >= RE_EMIT_AFTER);
+                let stale = rt
+                    .pending
+                    .iter()
+                    .any(|p| p.emitted_at.elapsed() >= RE_EMIT_AFTER);
                 if stale {
                     for p in rt.pending.iter_mut() {
                         p.emitted_at = Instant::now();
@@ -653,7 +727,10 @@ mod tests {
     #[test]
     fn settings_shape_is_closed() {
         assert!(validate_settings(&json!({})).is_ok());
-        assert!(validate_settings(&json!({"sources": {"slack": {"enabled": true}}, "rules": [rule("deck")]})).is_ok());
+        assert!(validate_settings(
+            &json!({"sources": {"slack": {"enabled": true}}, "rules": [rule("deck")]})
+        )
+        .is_ok());
         assert!(validate_settings(&json!([])).is_err());
         assert!(validate_settings(&json!({"sources": {"notion": {}}})).is_err());
         assert!(validate_settings(&json!({"sources": {"slack": {"enabled": "yes"}}})).is_err());
@@ -690,21 +767,36 @@ mod tests {
         for ok in ["deck", "white_check_mark", "+1", "bug-fix", "a1"] {
             assert!(valid_badge(ok), "{ok}");
         }
-        for bad in ["", "Deck", ":deck:", "deck badge", "deck::skin-tone-2", &"a".repeat(65)] {
+        for bad in [
+            "",
+            "Deck",
+            ":deck:",
+            "deck badge",
+            "deck::skin-tone-2",
+            &"a".repeat(65),
+        ] {
             assert!(!valid_badge(bad), "{bad}");
         }
     }
 
     #[test]
     fn config_reads_enabled_flag_and_rules_and_rejects_invalid_wholesale() {
-        let v = json!({"sources": {"slack": {"enabled": true}}, "rules": [rule("deck"), rule("bug")]});
+        let v =
+            json!({"sources": {"slack": {"enabled": true}}, "rules": [rule("deck"), rule("bug")]});
         let cfg = config_from_value(Some(&v));
         assert!(cfg.slack_enabled);
-        assert_eq!(cfg.badges("slack"), vec!["bug".to_string(), "deck".to_string()]);
-        assert_eq!(cfg.rule_for("slack", "bug").map(|r| r.id.as_str()), Some("R-bug"));
+        assert_eq!(
+            cfg.badges("slack"),
+            vec!["bug".to_string(), "deck".to_string()]
+        );
+        assert_eq!(
+            cfg.rule_for("slack", "bug").map(|r| r.id.as_str()),
+            Some("R-bug")
+        );
         assert!(cfg.rule_for("slack", "nope").is_none());
         assert_eq!(config_from_value(None), Config::default());
-        let invalid = json!({"sources": {"slack": {"enabled": true}}, "rules": [rule("deck"), rule("deck")]});
+        let invalid =
+            json!({"sources": {"slack": {"enabled": true}}, "rules": [rule("deck"), rule("deck")]});
         assert_eq!(config_from_value(Some(&invalid)), Config::default());
     }
 

@@ -77,10 +77,13 @@ impl RawProbe {
     /// The most recognizable name for the foreground process, for display
     /// and for capturing an expectation from a live pane.
     pub(crate) fn foreground_name(&self) -> Option<String> {
-        self.foreground_argv.clone().or_else(|| self.foreground.clone())
+        self.foreground_argv
+            .clone()
+            .or_else(|| self.foreground.clone())
     }
     pub(crate) fn foreground_is(&self, expected: &str) -> bool {
-        self.foreground.as_deref() == Some(expected) || self.foreground_argv.as_deref() == Some(expected)
+        self.foreground.as_deref() == Some(expected)
+            || self.foreground_argv.as_deref() == Some(expected)
     }
 }
 
@@ -89,7 +92,9 @@ impl RawProbe {
 pub(crate) fn parse_ps_foreground(output: &str) -> Option<String> {
     for line in output.lines() {
         let mut f = line.split_whitespace();
-        let (Some(pid), Some(pgid), Some(stat)) = (f.next(), f.next(), f.next()) else { continue };
+        let (Some(pid), Some(pgid), Some(stat)) = (f.next(), f.next(), f.next()) else {
+            continue;
+        };
         if pid != pgid || !stat.contains('+') {
             continue;
         }
@@ -273,8 +278,8 @@ pub(crate) fn raw_probe(session: &str) -> Result<RawProbe, String> {
     ])?;
     let trimmed = raw.trim_end_matches(['\r', '\n']);
     let (meta, tty) = trimmed.rsplit_once('\t').unwrap_or((trimmed, ""));
-    let mut probe =
-        parse_raw_probe(meta).ok_or_else(|| "tmux returned malformed context metadata".to_string())?;
+    let mut probe = parse_raw_probe(meta)
+        .ok_or_else(|| "tmux returned malformed context metadata".to_string())?;
     probe.foreground_argv = foreground_from_tty(tty);
     Ok(probe)
 }
@@ -370,10 +375,25 @@ mod tests {
     fn ps_foreground_is_the_group_leader_marked_plus_by_argv_name() {
         let out = "98777 98777 Ss   -zsh\n99160 99160 S+   claude\n99191 99160 S+   unity\n";
         assert_eq!(parse_ps_foreground(out), Some("claude".into()));
-        assert_eq!(parse_ps_foreground("1 1 Ss -zsh\n"), None, "no foreground group");
-        assert_eq!(parse_ps_foreground("5 5 S+ /Users/x/.local/bin/claude\n"), Some("claude".into()));
-        assert_eq!(parse_ps_foreground("5 5 S+ /opt/My App/bin/thing\n"), Some("thing".into()), "basename only");
-        assert_eq!(parse_ps_foreground("5 5 S+ /x/bad name\n"), None, "unsanitizable name is no name");
+        assert_eq!(
+            parse_ps_foreground("1 1 Ss -zsh\n"),
+            None,
+            "no foreground group"
+        );
+        assert_eq!(
+            parse_ps_foreground("5 5 S+ /Users/x/.local/bin/claude\n"),
+            Some("claude".into())
+        );
+        assert_eq!(
+            parse_ps_foreground("5 5 S+ /opt/My App/bin/thing\n"),
+            Some("thing".into()),
+            "basename only"
+        );
+        assert_eq!(
+            parse_ps_foreground("5 5 S+ /x/bad name\n"),
+            None,
+            "unsanitizable name is no name"
+        );
         assert_eq!(parse_ps_foreground(""), None);
     }
 
@@ -391,7 +411,10 @@ mod tests {
         assert_eq!(other.status, ContextStatus::ForegroundDifferent);
         // without the argv view the version alone still does not match
         let bare = raw("2.1.259");
-        assert_eq!(evaluate(&bare, None, Some("claude")).status, ContextStatus::ForegroundDifferent);
+        assert_eq!(
+            evaluate(&bare, None, Some("claude")).status,
+            ContextStatus::ForegroundDifferent
+        );
         // a live pane with no explicit command captures the recognizable name
         let ctx = creation_from_probe("", Some(probe));
         assert_eq!(ctx.expected_process.as_deref(), Some("claude"));

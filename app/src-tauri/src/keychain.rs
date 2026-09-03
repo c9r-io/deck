@@ -49,7 +49,9 @@ impl Slot {
     /// the door so the poller never spends requests on garbage.
     fn accepts(self, value: &str) -> bool {
         let body_ok = value.len() <= MAX_LEN
-            && value.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
+            && value
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
         body_ok
             && match self {
                 Slot::SlackUserToken => value.starts_with("xoxp-"),
@@ -117,7 +119,8 @@ pub(crate) fn set(slot: Slot, value: &str) -> Result<(), String> {
     if !slot.accepts(value) {
         return Err("shape".into());
     }
-    set_generic_password(SERVICE, slot.account(), value.as_bytes()).map_err(|_| "keychain".to_string())?;
+    set_generic_password(SERVICE, slot.account(), value.as_bytes())
+        .map_err(|_| "keychain".to_string())?;
     cache_put(slot, Some(value.to_string()));
     Ok(())
 }
