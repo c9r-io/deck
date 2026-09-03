@@ -62,7 +62,56 @@ pub(crate) struct ContextCheck {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct RawProbe {
     pub(crate) identity: PaneIdentity,
+    /// tmux's `pane_current_command`: the kernel's name of the foreground
+    /// process, i.e. the basename of the file that was exec'd. For a
+    /// launcher symlink such as Claude Code's `claude →
+    /// versions/2.1.259` this is the VERSION, not the command.
     pub(crate) foreground: Option<String>,
+    /// The same foreground process as `ps` names it (argv[0] basename),
+    /// read from the pane tty's foreground process group. `claude` for the
+    /// case above. Either name may match the expected process.
+    pub(crate) foreground_argv: Option<String>,
+}
+
+impl RawProbe {
+    /// The most recognizable name for the foreground process, for display
+    /// and for capturing an expectation from a live pane.
+    pub(crate) fn foreground_name(&self) -> Option<String> {
+        self.foreground_argv.clone().or_else(|| self.foreground.clone())
+    }
+    pub(crate) fn foreground_is(&self, expected: &str) -> bool {
+        self.foreground.as_deref() == Some(expected) || self.foreground_argv.as_deref() == Some(expected)
+    }
+}
+
+/// From `ps -t <tty> -o pid=,pgid=,stat=,comm=`: the group leader of the
+/// tty's foreground process group (`+` in STAT), by its argv[0] basename.
+pub(crate) fn parse_ps_foreground(output: &str) -> Option<String> {
+    for line in output.lines() {
+        let mut f = line.split_whitespace();
+        let (Some(pid), Some(pgid), Some(stat)) = (f.next(), f.next(), f.next()) else { continue };
+        if pid != pgid || !stat.contains('+') {
+            continue;
+        }
+        let comm: Vec<&str> = f.collect();
+        if comm.is_empty() {
+            continue;
+        }
+        return sanitize_process(&comm.join(" "));
+    }
+    None
+}
+
+fn foreground_from_tty(tty: &str) -> Option<String> {
+    let name = tty.strip_prefix("/dev/")?;
+    if name.is_empty() || !name.bytes().all(|b| b.is_ascii_alphanumeric()) {
+        return None;
+    }
+    let out = std::process::Command::new("ps")
+        .args(["-t", name, "-o", "pid=,pgid=,stat=,comm="])
+        .output()
+        .ok()?;
+    parse_ps_foreground(&String::from_utf8_lossy(&out.stdout))
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -208,6 +257,7 @@ pub(crate) fn parse_raw_probe(raw: &str) -> Option<RawProbe> {
             pane_pid,
         },
         foreground,
+        foreground_argv: None,
     })
 }
 
@@ -219,9 +269,14 @@ pub(crate) fn raw_probe(session: &str) -> Result<RawProbe, String> {
         "-p",
         "-t",
         &pane_target(session),
-        "#{pid}\t#{session_id}\t#{window_id}\t#{pane_id}\t#{pane_pid}\t#{pane_current_command}",
+        "#{pid}\t#{session_id}\t#{window_id}\t#{pane_id}\t#{pane_pid}\t#{pane_current_command}\t#{pane_tty}",
     ])?;
-    parse_raw_probe(&raw).ok_or_else(|| "tmux returned malformed context metadata".into())
+    let trimmed = raw.trim_end_matches(['\r', '\n']);
+    let (meta, tty) = trimmed.rsplit_once('\t').unwrap_or((trimmed, ""));
+    let mut probe =
+        parse_raw_probe(meta).ok_or_else(|| "tmux returned malformed context metadata".to_string())?;
+    probe.foreground_argv = foreground_from_tty(tty);
+    Ok(probe)
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -237,14 +292,14 @@ pub(crate) fn creation_context(session: &str, command: &str) -> CreationContext 
 fn creation_from_probe(command: &str, raw: Option<RawProbe>) -> CreationContext {
     let explicit = expected_from_command(command);
     match raw {
-        Some(raw) => CreationContext {
-            binding: Some(raw.identity),
-            expected_process: explicit.or_else(|| {
-                (!shell_process(raw.foreground.as_deref()))
-                    .then_some(raw.foreground)
-                    .flatten()
-            }),
-        },
+        Some(raw) => {
+            let name = raw.foreground_name();
+            CreationContext {
+                binding: Some(raw.identity),
+                expected_process: explicit
+                    .or_else(|| (!shell_process(name.as_deref())).then_some(name).flatten()),
+            }
+        }
         None => CreationContext {
             binding: None,
             expected_process: explicit,
@@ -264,11 +319,11 @@ pub(crate) fn evaluate(
             status: ContextStatus::SessionReplaced,
             code: ContextCode::IdentityChanged,
             identity: Some(raw.identity.clone()),
-            current_process: raw.foreground.clone(),
+            current_process: raw.foreground_name(),
         };
     }
     let (status, code) = match expected_process {
-        Some(expected) if raw.foreground.as_deref() == Some(expected) => {
+        Some(expected) if raw.foreground_is(expected) => {
             (ContextStatus::Ready, ContextCode::ProcessMatched)
         }
         Some(_) => (
@@ -281,7 +336,7 @@ pub(crate) fn evaluate(
         status,
         code,
         identity: Some(raw.identity.clone()),
-        current_process: raw.foreground.clone(),
+        current_process: raw.foreground_name(),
     }
 }
 
@@ -309,6 +364,37 @@ mod tests {
 
     fn raw(fg: &str) -> RawProbe {
         parse_raw_probe(&format!("99\t$1\t@2\t%3\t44\t{fg}\n")).unwrap()
+    }
+
+    #[test]
+    fn ps_foreground_is_the_group_leader_marked_plus_by_argv_name() {
+        let out = "98777 98777 Ss   -zsh\n99160 99160 S+   claude\n99191 99160 S+   unity\n";
+        assert_eq!(parse_ps_foreground(out), Some("claude".into()));
+        assert_eq!(parse_ps_foreground("1 1 Ss -zsh\n"), None, "no foreground group");
+        assert_eq!(parse_ps_foreground("5 5 S+ /Users/x/.local/bin/claude\n"), Some("claude".into()));
+        assert_eq!(parse_ps_foreground("5 5 S+ /opt/My App/bin/thing\n"), Some("thing".into()), "basename only");
+        assert_eq!(parse_ps_foreground("5 5 S+ /x/bad name\n"), None, "unsanitizable name is no name");
+        assert_eq!(parse_ps_foreground(""), None);
+    }
+
+    #[test]
+    fn a_versioned_launcher_binary_matches_by_its_argv_name() {
+        // Claude Code: `claude` is a symlink to versions/2.1.259; tmux reports
+        // the version, ps reports the launcher name.
+        let mut probe = raw("2.1.259");
+        probe.foreground_argv = Some("claude".into());
+        let result = evaluate(&probe, None, Some("claude"));
+        assert_eq!(result.status, ContextStatus::Ready);
+        assert_eq!(result.code, ContextCode::ProcessMatched);
+        assert_eq!(result.current_process.as_deref(), Some("claude"));
+        let other = evaluate(&probe, None, Some("codex"));
+        assert_eq!(other.status, ContextStatus::ForegroundDifferent);
+        // without the argv view the version alone still does not match
+        let bare = raw("2.1.259");
+        assert_eq!(evaluate(&bare, None, Some("claude")).status, ContextStatus::ForegroundDifferent);
+        // a live pane with no explicit command captures the recognizable name
+        let ctx = creation_from_probe("", Some(probe));
+        assert_eq!(ctx.expected_process.as_deref(), Some("claude"));
     }
 
     #[test]

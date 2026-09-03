@@ -999,7 +999,23 @@ pub(crate) fn fire_item(item: &QueueItem) -> Result<(), String> {
         pane.server_pid, pane.session_id, pane.window_id, pane.pane_id, pane.pane_pid
     );
     let identity_condition = format!("#{{==:{actual},{expected}}}");
-    let condition = match item.expected_process.as_deref() {
+    // tmux can only compare its own `pane_current_command` atomically. When
+    // the expected process was recognized through its argv name (a launcher
+    // symlink to a versioned binary — tmux says `2.1.259`, ps says `claude`),
+    // pin the paste to the exact tmux name observed for that very process,
+    // so the atomic check still means "the verified process is still here".
+    let condition_process = item.expected_process.as_deref().map(|expected| {
+        match context::raw_probe(&item.session) {
+            Ok(raw)
+                if raw.foreground.as_deref() != Some(expected)
+                    && raw.foreground_argv.as_deref() == Some(expected) =>
+            {
+                raw.foreground.unwrap_or_else(|| expected.to_string())
+            }
+            _ => expected.to_string(),
+        }
+    });
+    let condition = match condition_process.as_deref() {
         Some(process) => {
             format!("#{{&&:{identity_condition},#{{==:#{{pane_current_command}},{process}}}}}")
         }
