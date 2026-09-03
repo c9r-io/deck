@@ -508,13 +508,42 @@ pub(crate) fn inbound_ack(id: u64, outcome: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Open the source's prefilled "create an app" page in the browser. The URL
+/// is compiled into deck (never user input) and carries no credential.
+#[tauri::command]
+pub(crate) fn inbound_setup(source: String) -> Result<(), String> {
+    let url = match source.as_str() {
+        "slack" => crate::inbound_slack::setup_url(),
+        _ => return Err("unknown source".into()),
+    };
+    let status = std::process::Command::new("open").arg(&url).status().map_err(|_| "could not open the browser".to_string())?;
+    if !status.success() {
+        return Err("could not open the browser".into());
+    }
+    applog("[inbound] setup page opened");
+    Ok(())
+}
+
+/// Store a credential after proving it is the right kind and alive. The
+/// error is a short sentence for the toast; the token never appears in it.
 #[tauri::command]
 pub(crate) fn inbound_set_secret(slot: String, value: String) -> Result<(), String> {
     let slot = keychain::Slot::parse(&slot).ok_or("unknown credential slot")?;
     let clearing = value.trim().is_empty();
+    if !clearing {
+        let trimmed = value.trim();
+        if !keychain::accepts(slot, trimmed) {
+            return Err("shape".into());
+        }
+        crate::inbound_slack::verify(slot, trimmed).map_err(|code| match code {
+            "auth" => "auth".to_string(),
+            "network" | "timeout" | "http" => "network".to_string(),
+            _ => "slack".to_string(),
+        })?;
+    }
     keychain::set(slot, &value).map_err(|code| match code.as_str() {
-        "shape" => "that does not look like a token for this slot".to_string(),
-        _ => "the Keychain refused the change".to_string(),
+        "shape" => "shape".to_string(),
+        _ => "keychain".to_string(),
     })?;
     applog(&format!("[inbound] credential {}", if clearing { "cleared" } else { "stored" }));
     inbound_check_now();

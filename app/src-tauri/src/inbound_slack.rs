@@ -246,6 +246,60 @@ fn search_badge(token: &str, badge: &str) -> Result<Vec<Event>, &'static str> {
     Ok(events)
 }
 
+/* ---------- setup: one prefilled "Create an app" page ---------- */
+
+/// The user scopes both paths need. Kept in one place so the manifest, the
+/// Settings hint and the docs cannot drift apart.
+pub(crate) const USER_SCOPES: &[&str] = &[
+    "search:read",
+    "reactions:read",
+    "channels:history",
+    "groups:history",
+    "im:history",
+    "mpim:history",
+    "users:read",
+    "channels:read",
+    "groups:read",
+    "im:read",
+    "mpim:read",
+];
+
+/// Slack's manifest for a personal, user-scoped, Socket Mode app: no bot
+/// user, no public URL, one user event. `apps?new_app=1&manifest_json=…`
+/// opens the Create page prefilled; the user only picks a workspace.
+/// Tokens still have to be copied back by hand — Slack offers no OAuth
+/// redirect to a local app and no API that mints app-level tokens.
+pub(crate) fn manifest() -> Value {
+    serde_json::json!({
+        "display_information": {
+            "name": "deck",
+            "description": "Badges you add in Slack start sessions in deck on your Mac.",
+            "background_color": "#101318"
+        },
+        "oauth_config": { "scopes": { "user": USER_SCOPES } },
+        "settings": {
+            "socket_mode_enabled": true,
+            "event_subscriptions": { "user_events": ["reaction_added"] },
+            "org_deploy_enabled": false,
+            "token_rotation_enabled": false
+        }
+    })
+}
+
+pub(crate) fn setup_url() -> String {
+    format!("https://api.slack.com/apps?new_app=1&manifest_json={}", encode(&manifest().to_string()))
+}
+
+/// Prove a pasted token is the right kind and alive before it is stored:
+/// `auth.test` for the user token, `apps.connections.open` for the
+/// app-level token (the only call it can make). Returns a closed code.
+pub(crate) fn verify(slot: Slot, value: &str) -> Result<(), &'static str> {
+    match slot {
+        Slot::SlackUserToken => call("auth.test", value, &[]).map(|_| ()),
+        Slot::SlackAppToken => call("apps.connections.open", value, &[]).map(|_| ()),
+    }
+}
+
 /* ---------- live path helpers (need the user token) ---------- */
 
 #[derive(Default)]
@@ -580,6 +634,37 @@ mod tests {
         assert_eq!(encode("hasmy::deck: after:2026-08-05"), "hasmy%3A%3Adeck%3A%20after%3A2026-08-05");
         assert_eq!(encode("+1"), "%2B1");
         assert_eq!(encode("a_b-c.d~e"), "a_b-c.d~e");
+    }
+
+    #[test]
+    fn setup_link_carries_the_whole_manifest_and_nothing_secret() {
+        let url = setup_url();
+        assert!(url.starts_with("https://api.slack.com/apps?new_app=1&manifest_json=%7B"));
+        let encoded = url.split("manifest_json=").nth(1).unwrap();
+        let decoded: String = {
+            let bytes = encoded.as_bytes();
+            let mut out = Vec::new();
+            let mut i = 0;
+            while i < bytes.len() {
+                if bytes[i] == b'%' {
+                    out.push(u8::from_str_radix(std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap(), 16).unwrap());
+                    i += 3;
+                } else {
+                    out.push(bytes[i]);
+                    i += 1;
+                }
+            }
+            String::from_utf8(out).unwrap()
+        };
+        let m: Value = serde_json::from_str(&decoded).unwrap();
+        assert_eq!(m, manifest());
+        assert_eq!(m.pointer("/settings/socket_mode_enabled"), Some(&Value::Bool(true)));
+        assert_eq!(m.pointer("/settings/event_subscriptions/user_events/0").and_then(Value::as_str), Some("reaction_added"));
+        let scopes = m.pointer("/oauth_config/scopes/user").and_then(Value::as_array).unwrap();
+        assert_eq!(scopes.len(), USER_SCOPES.len());
+        assert!(m.get("features").is_none(), "no bot user");
+        assert!(m.pointer("/oauth_config/scopes/bot").is_none());
+        assert!(m.pointer("/oauth_config/redirect_urls").is_none());
     }
 
     #[test]

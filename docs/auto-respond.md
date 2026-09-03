@@ -8,22 +8,22 @@ automatically and deck never writes anything back to Slack.
 ## One-time Slack setup
 
 Every Slack token comes from an app you create and install for yourself;
-there is no token without that step. Bot users and channel invites are not
-needed.
+there is no token without that step (Slack allows no OAuth redirect to a
+local app and has no API that mints app-level tokens). Bot users and
+channel invites are not needed. deck does everything it can:
 
-1. https://api.slack.com/apps → **Create New App → From scratch**, any name,
-   your workspace.
-2. **OAuth & Permissions → User Token Scopes**, add:
-   `search:read reactions:read channels:history groups:history im:history
-   mpim:history users:read channels:read groups:read im:read mpim:read`.
-3. **Socket Mode → Enable**, and generate an **app-level token** with
-   `connections:write` (starts with `xapp-`).
-4. **Event Subscriptions → Enable Events → Subscribe to events on behalf of
-   users**, add `reaction_added`. Save.
-5. **Install App → Install to Workspace** (some workspaces route this through
-   an admin approval). Copy the **User OAuth Token** (starts with `xoxp-`).
-6. In deck → Settings → Auto-respond: paste both tokens (they go to your
-   macOS Keychain, never under `~/.deck`), tick **Slack**, add rules.
+1. Settings → Auto-respond → **Create the Slack app…** opens Slack's
+   "Create an app" page with the manifest prefilled: name, the user scopes,
+   Socket Mode, the `reaction_added` user event. Pick a workspace, **Create**.
+2. **Install App → Install to Workspace → Allow** (some workspaces route
+   this through an admin approval). Copy the **User OAuth Token**
+   (`xoxp-…`) into deck's *User token* field.
+3. **Basic Information → App-Level Tokens → Generate Token and Scopes**,
+   add `connections:write`, generate, copy the `xapp-…` token into deck's
+   *App token* field.
+
+deck checks each token with Slack before storing it in your macOS Keychain
+(never under `~/.deck`). Then tick **Slack** and add rules.
 
 The app token is optional: without it deck only searches every 30 seconds,
 and Slack's search index lags a fresh reaction by about a minute. With it,

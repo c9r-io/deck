@@ -49,6 +49,10 @@ impl Slot {
     }
 }
 
+pub(crate) fn accepts(slot: Slot, value: &str) -> bool {
+    slot.accepts(value)
+}
+
 pub(crate) fn get(slot: Slot) -> Option<String> {
     let bytes = get_generic_password(SERVICE, slot.account()).ok()?;
     let value = String::from_utf8(bytes).ok()?;

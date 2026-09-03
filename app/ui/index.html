@@ -859,7 +859,9 @@
     <div class="set-row">
       <label for="set-inbound-slack" data-i18n="settings.inboundSlack">Slack</label>
       <input type="checkbox" id="set-inbound-slack">
+      <button class="btn" id="set-inbound-setup" style="margin-left:auto" data-i18n="settings.inboundSetup">Create the Slack app…</button>
     </div>
+    <div class="set-hint" data-i18n="settings.inboundSetupHint">Opens Slack’s “Create an app” page with everything prefilled (name, user scopes, Socket Mode, the reaction event). Pick a workspace and create it, then: Install App → Install to Workspace → Allow, copy the User OAuth Token below; Basic Information → App-Level Tokens → Generate with connections:write, copy it below. Each token is checked with Slack before it is stored.</div>
     <div class="set-row">
       <label for="set-inbound-slack-user" data-i18n="settings.inboundUserToken">User token</label>
       <input type="password" id="set-inbound-slack-user" autocomplete="off" spellcheck="false" placeholder="xoxp-…">
@@ -870,7 +872,7 @@
       <input type="password" id="set-inbound-slack-app" autocomplete="off" spellcheck="false" placeholder="xapp-…">
       <button class="btn" id="set-inbound-slack-app-clear" data-i18n="common.clear">Clear</button>
     </div>
-    <div class="set-hint" data-i18n="settings.inboundSlackHint">Both tokens come from a Slack app you create for yourself and install with user scopes (search:read, reactions:read, channels:history, groups:history, im:history, mpim:history, users:read, channels:read, groups:read, im:read, mpim:read) plus Socket Mode with an app-level token (connections:write). They are kept in your macOS Keychain, never under ~/.deck. The user token finds your badged messages (search, about a minute behind); the app token hears new badges instantly. Only your own reactions count.</div>
+    <div class="set-hint" data-i18n="settings.inboundSlackHint">Tokens are kept in your macOS Keychain, never under ~/.deck, and are never shown again here. The user token finds your badged messages (search, about a minute behind); the app token hears new badges instantly. Only your own reactions count. There is no token without installing the app yourself: Slack has no OAuth redirect to a local app and no API that mints app-level tokens.</div>
     <div class="set-row" style="align-items:flex-start">
       <label data-i18n="settings.inboundRules">Rules</label>
       <div id="set-inbound-rules" class="inbound-rules"></div>

@@ -351,6 +351,7 @@ fn main() {
             inbound::inbound_ack,
             inbound::inbound_set_secret,
             inbound::inbound_check_now,
+            inbound::inbound_setup,
             smoke_faults::smoke_fault_set,
             smoke_faults::smoke_clipboard_metrics,
         ])

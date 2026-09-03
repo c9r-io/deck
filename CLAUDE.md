@@ -315,9 +315,15 @@ Frontend gates: `node --check` (syntax) · `ui/test/*.mjs` (node:test)
   lost ledger degrades to a re-baseline, never a flood. Credentials live in
   the macOS Keychain under closed slots (`keychain.rs`); they are never
   written under `~/.deck`, never logged, never in an error string, and never
-  read back into the webview (status reports presence only). Cards are never
-  moved and deck never writes to Slack. Adding a source = one `Source` impl
-  + one Settings row; rules/templates/dispatch do not change.
+  read back into the webview (status reports presence only); a pasted token
+  is verified with Slack (`auth.test` / `apps.connections.open`) before it is
+  stored. Setup is one compiled deep link
+  (`api.slack.com/apps?new_app=1&manifest_json=…`, `inbound_slack::manifest`)
+  that prefills the Create page — the user picks a workspace, installs, and
+  copies two tokens back; nothing shorter exists because Slack has no OAuth
+  redirect to a local app and no API that mints app-level tokens. Cards are
+  never moved and deck never writes to Slack. Adding a source = one `Source`
+  impl + one Settings row; rules/templates/dispatch do not change.
 - tmux ships INSIDE the app: a statically linked binary (see
   `binaries/build-tmux.sh`, committed as `binaries/tmux-aarch64-apple-darwin`,
   bundled+signed via tauri `externalBin`). `tmux_bin()` prefers the sidecar,

@@ -653,6 +653,7 @@ export async function persistInboundSlackChoice() {
   if (ok) toast(t(desired ? 'settings.inboundEnabled' : 'settings.inboundDisabled'));
 }
 
+const INBOUND_TOKEN_ERRORS = { shape: 'error.inboundTokenShape', auth: 'error.inboundTokenAuth', network: 'error.inboundTokenNetwork', slack: 'error.inboundTokenSlack', keychain: 'error.inboundToken' };
 async function storeInboundSecret(slot, inputId) {
   const box = $(inputId);
   const value = box.value.trim();
@@ -661,8 +662,8 @@ async function storeInboundSecret(slot, inputId) {
   try {
     await inv('inbound_set_secret', { slot, value });
     toast(t('settings.inboundTokenStored'));
-  } catch (_) {
-    toast(t('error.inboundToken'));
+  } catch (e) {
+    toast(t(INBOUND_TOKEN_ERRORS[String(e)] || 'error.inboundToken'));
   } finally {
     box.disabled = false;
     renderInboundSettings();
@@ -681,6 +682,10 @@ async function clearInboundSecret(slot) {
 }
 
 $('set-inbound-slack').onchange = persistInboundSlackChoice;
+$('set-inbound-setup').onclick = async () => {
+  try { await inv('inbound_setup', { source: 'slack' }); }
+  catch (_) { toast(t('error.inboundSetup')); }
+};
 $('set-inbound-slack-user').addEventListener('change', () => storeInboundSecret('slack-user-token', 'set-inbound-slack-user'));
 $('set-inbound-slack-app').addEventListener('change', () => storeInboundSecret('slack-app-token', 'set-inbound-slack-app'));
 $('set-inbound-slack-user-clear').onclick = () => clearInboundSecret('slack-user-token');
