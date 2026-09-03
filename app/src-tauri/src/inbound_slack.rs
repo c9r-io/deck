@@ -34,6 +34,9 @@ const SEARCH_MAX_PAGES: u32 = 3;
 const SOCKET_READ_TIMEOUT: Duration = Duration::from_secs(90);
 const MAX_TEXT: usize = 16 * 1024;
 
+#[cfg(test)]
+static TEST_API: Mutex<Option<String>> = Mutex::new(None);
+
 /* ---------- HTTP ---------- */
 
 fn client() -> &'static reqwest::Client {
@@ -50,6 +53,14 @@ fn client() -> &'static reqwest::Client {
             .build()
             .expect("reqwest client")
     })
+}
+
+fn endpoint(method: &str) -> String {
+    #[cfg(test)]
+    if let Some(base) = TEST_API.lock().unwrap().clone() {
+        return format!("{base}{method}");
+    }
+    format!("{API}{method}")
 }
 
 /// Slack's own error names are a closed, lowercase vocabulary. Keep the
@@ -83,7 +94,7 @@ fn call(method: &str, token: &str, params: &[(&str, &str)]) -> Result<Value, &'s
         .map(|(k, v)| format!("{}={}", encode(k), encode(v)))
         .collect();
     let req = client()
-        .post(format!("{API}{method}"))
+        .post(endpoint(method))
         .bearer_auth(token)
         .header("Content-Type", "application/x-www-form-urlencoded")
         .body(form.join("&"));
@@ -776,6 +787,69 @@ impl Source for Slack {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
+
+    fn with_responses<T>(responses: Vec<(u16, &str)>, f: impl FnOnce() -> T) -> (T, Vec<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}/", listener.local_addr().unwrap());
+        let responses: Vec<(u16, String)> = responses
+            .into_iter()
+            .map(|(status, body)| (status, body.to_string()))
+            .collect();
+        let worker = thread::spawn(move || {
+            let mut requests = Vec::new();
+            for (status, body) in responses {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                let mut raw = Vec::new();
+                let mut chunk = [0u8; 4096];
+                loop {
+                    let n = stream.read(&mut chunk).unwrap();
+                    if n == 0 {
+                        break;
+                    }
+                    raw.extend_from_slice(&chunk[..n]);
+                    let Some(header_end) = raw.windows(4).position(|w| w == b"\r\n\r\n") else {
+                        continue;
+                    };
+                    let headers = String::from_utf8_lossy(&raw[..header_end]);
+                    let content_length = headers
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().ok())
+                                .flatten()
+                        })
+                        .unwrap_or(0);
+                    if raw.len() >= header_end + 4 + content_length {
+                        break;
+                    }
+                }
+                requests.push(String::from_utf8(raw).unwrap());
+                let reason = match status {
+                    200 => "OK",
+                    429 => "Too Many Requests",
+                    _ => "Server Error",
+                };
+                write!(
+                    stream,
+                    "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .unwrap();
+            }
+            requests
+        });
+        *TEST_API.lock().unwrap() = Some(base);
+        let value = f();
+        *TEST_API.lock().unwrap() = None;
+        (value, worker.join().unwrap())
+    }
 
     #[test]
     fn after_date_is_civil_utc() {
@@ -937,5 +1011,142 @@ mod tests {
             (Some("E2".into()), None)
         );
         assert_eq!(parse_envelope("not json", "U_ME", &badges), (None, None));
+    }
+
+    #[test]
+    fn web_api_transport_errors_pagination_and_live_helpers_are_closed() {
+        let (body, requests) = with_responses(vec![(200, r#"{"ok":true,"value":7}"#)], || {
+            call("auth.test", "secret", &[("query", "a b"), ("badge", "+1")]).unwrap()
+        });
+        assert_eq!(body["value"], 7);
+        assert!(requests[0].starts_with("POST /auth.test HTTP/1.1\r\n"));
+        assert!(requests[0].contains("authorization: Bearer secret\r\n"));
+        assert!(requests[0].ends_with("query=a%20b&badge=%2B1"));
+
+        let (errors, _) = with_responses(
+            vec![
+                (200, r#"{"ok":false,"error":"invalid_auth"}"#),
+                (200, r#"{"ok":false,"error":"missing_scope"}"#),
+                (200, r#"{"ok":false,"error":"ratelimited"}"#),
+                (200, r#"{"ok":false,"error":"strange.error-42"}"#),
+                (429, "{}"),
+                (500, "{}"),
+                (200, "not json"),
+            ],
+            || {
+                [
+                    call("one", "t", &[]).unwrap_err(),
+                    call("two", "t", &[]).unwrap_err(),
+                    call("three", "t", &[]).unwrap_err(),
+                    call("four", "t", &[]).unwrap_err(),
+                    call("five", "t", &[]).unwrap_err(),
+                    call("six", "t", &[]).unwrap_err(),
+                    call("seven", "t", &[]).unwrap_err(),
+                ]
+            },
+        );
+        assert_eq!(
+            errors,
+            [
+                "auth",
+                "scope",
+                "ratelimited",
+                "slack",
+                "ratelimited",
+                "http",
+                "parse"
+            ]
+        );
+        assert_eq!(last_slack_error(), "strangeerror");
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let unused = listener.local_addr().unwrap();
+        drop(listener);
+        *TEST_API.lock().unwrap() = Some(format!("http://{unused}/"));
+        assert_eq!(call("offline", "t", &[]), Err("network"));
+        *TEST_API.lock().unwrap() = None;
+
+        let (verified, _) = with_responses(
+            vec![(200, r#"{"ok":true}"#), (200, r#"{"ok":true}"#)],
+            || {
+                (
+                    verify(Slot::SlackUserToken, "xoxp-test"),
+                    verify(Slot::SlackAppToken, "xapp-test"),
+                )
+            },
+        );
+        assert_eq!(verified, (Ok(()), Ok(())));
+
+        let page_one = r#"{"ok":true,"messages":{"matches":[{"ts":"1.0","text":"first","username":"alice","channel":{"id":"C1","name":"dev"}}],"pagination":{"page_count":2}}}"#;
+        let page_two = r#"{"ok":true,"messages":{"matches":[{"ts":"2.0","text":"second","user":"U2","channel":{"id":"C2","name":"ops"}}],"pagination":{"page_count":2}}}"#;
+        let (events, requests) = with_responses(vec![(200, page_one), (200, page_two)], || {
+            search_badge("xoxp-test", "deck").unwrap()
+        });
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].key, "C1/1.0");
+        assert_eq!(events[1].key, "C2/2.0");
+        assert!(requests[0].contains("page=1"));
+        assert!(requests[1].contains("page=2"));
+        assert!(requests[0].contains("query=hasmy%3A%3Adeck%3A%20after%3A"));
+
+        let responses = vec![
+            (
+                200,
+                r#"{"ok":true,"user":{"profile":{"display_name":""},"real_name":"Alice","name":"alice"}}"#,
+            ),
+            (200, r#"{"ok":true,"channel":{"id":"C1","name":"dev"}}"#),
+            (
+                200,
+                r#"{"ok":true,"messages":[{"ts":"1.0","text":"root"}]}"#,
+            ),
+            (200, r#"{"ok":true,"messages":[]}"#),
+            (
+                200,
+                r#"{"ok":true,"messages":[{"ts":"2.0","text":"reply"}],"response_metadata":{"next_cursor":""}}"#,
+            ),
+            (
+                200,
+                r#"{"ok":true,"permalink":"https://example.slack.com/p2"}"#,
+            ),
+        ];
+        let (resolved, requests) = with_responses(responses, || {
+            let mut names = Names::default();
+            let user = user_name("xoxp-test", &mut names, "U1");
+            let cached_user = user_name("no-network", &mut names, "U1");
+            let channel = channel_label("xoxp-test", &mut names, "C1");
+            let cached_channel = channel_label("no-network", &mut names, "C1");
+            (
+                user,
+                cached_user,
+                channel,
+                cached_channel,
+                message_text("xoxp-test", "C1", "1.0"),
+                message_text("xoxp-test", "C1", "2.0"),
+                permalink("xoxp-test", "C1", "2.0"),
+            )
+        });
+        assert_eq!(resolved.0, "Alice");
+        assert_eq!(resolved.1, "Alice");
+        assert_eq!(resolved.2, "#dev");
+        assert_eq!(resolved.3, "#dev");
+        assert_eq!(resolved.4, Ok("root".into()));
+        assert_eq!(resolved.5, Ok("reply".into()));
+        assert_eq!(resolved.6, "https://example.slack.com/p2");
+        assert_eq!(requests.len(), 6, "cached names issue no second request");
+
+        assert_eq!(where_label(&json!({"is_im": true})), "DM");
+        assert_eq!(where_label(&json!({"is_mpim": true})), "group DM");
+        assert_eq!(where_label(&json!({"id": "C9"})), "C9");
+        assert_eq!(where_label(&Value::Null), "?");
+
+        let slack = Slack::default();
+        assert_eq!(slack.id(), "slack");
+        assert!(!slack.enabled(&Config::default()));
+        let status = slack.status();
+        assert!(!status.live);
+        assert!(status.last_poll.is_none());
+        assert!(status.last_error.is_none());
+        assert!(now_secs() > 0);
+        let _ = client();
     }
 }

@@ -158,4 +158,19 @@ mod tests {
         let long = format!("xoxp-{}", "a".repeat(MAX_LEN));
         assert!(!Slot::SlackUserToken.accepts(&long));
     }
+
+    #[test]
+    fn cached_credentials_serve_reads_and_presence_without_keychain_io() {
+        cache_put(Slot::SlackUserToken, Some("xoxp-cached".into()));
+        cache_put(Slot::SlackAppToken, Some("xapp-cached".into()));
+        assert_eq!(Slot::SlackUserToken.account(), "slack-user-token");
+        assert_eq!(Slot::SlackAppToken.account(), "slack-app-token");
+        assert!(accepts(Slot::SlackUserToken, "xoxp-valid"));
+        assert_eq!(get(Slot::SlackUserToken).as_deref(), Some("xoxp-cached"));
+        assert_eq!(get(Slot::SlackAppToken).as_deref(), Some("xapp-cached"));
+        assert!(has(Slot::SlackUserToken));
+        assert!(has(Slot::SlackAppToken));
+        cache_put(Slot::SlackUserToken, None);
+        cache_put(Slot::SlackAppToken, None);
+    }
 }

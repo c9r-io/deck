@@ -300,6 +300,10 @@ impl InboundDoc {
 }
 
 fn doc_path() -> PathBuf {
+    #[cfg(test)]
+    if let Some(path) = TEST_DOC_PATH.lock().unwrap().clone() {
+        return path;
+    }
     storage::deck_dir().join("inbound.json")
 }
 
@@ -336,6 +340,8 @@ struct Runtime {
 
 static RT: Mutex<Option<Runtime>> = Mutex::new(None);
 static WAKE: OnceLock<(Mutex<bool>, Condvar)> = OnceLock::new();
+#[cfg(test)]
+static TEST_DOC_PATH: Mutex<Option<PathBuf>> = Mutex::new(None);
 
 fn wake() -> &'static (Mutex<bool>, Condvar) {
     WAKE.get_or_init(|| (Mutex::new(false), Condvar::new()))
@@ -395,7 +401,12 @@ fn persist(rt: &mut Runtime) {
 /// Sources hand events here. Returns how many became pending. `live` events
 /// bypass the baseline gate; polled events for a badge seen for the first
 /// time are swallowed into the baseline.
-pub(crate) fn offer(app: &AppHandle, cfg: &Config, events: Vec<Event>, live: bool) -> usize {
+pub(crate) fn offer<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    cfg: &Config,
+    events: Vec<Event>,
+    live: bool,
+) -> usize {
     let now = now_secs();
     let mut fresh = 0usize;
     let mut baselined = 0usize;
@@ -718,10 +729,23 @@ pub(crate) fn spawn_inbound(app: AppHandle) {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::fs;
 
     fn rule(badge: &str) -> Value {
         json!({"id": format!("R-{badge}"), "source": "slack", "badge": badge,
                "projectId": "P1", "columnId": "C1", "cmd": "claude", "template": "triage"})
+    }
+
+    fn event(key: &str, badge: &str) -> Event {
+        Event {
+            source: "slack".into(),
+            key: key.into(),
+            badge: badge.into(),
+            text: "Please investigate".into(),
+            from: "alice".into(),
+            where_: "#dev".into(),
+            link: "https://example.slack.com/archives/C1/p1".into(),
+        }
     }
 
     #[test]
@@ -830,5 +854,83 @@ mod tests {
         let s = serde_json::to_string(&d).unwrap();
         assert!(!s.contains("text"), "ledger carries no content fields");
         assert_eq!(serde_json::from_str::<InboundDoc>(&s).unwrap(), d);
+    }
+
+    #[test]
+    fn runtime_baselines_dedupes_emits_lists_and_acknowledges() {
+        let dir = std::env::temp_dir().join(format!(
+            "deck-inbound-runtime-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("inbound.json");
+        *TEST_DOC_PATH.lock().unwrap() = Some(path.clone());
+        *RT.lock().unwrap() = Some(Runtime {
+            doc: InboundDoc::default(),
+            dirty: false,
+            pending: Vec::new(),
+            next_id: 1,
+            poll_wanted: false,
+            statuses: Vec::new(),
+        });
+
+        let app = tauri::test::mock_app();
+        let cfg = config_from_value(Some(&json!({
+            "sources": {"slack": {"enabled": true}},
+            "rules": [rule("deck"), rule("bug")]
+        })));
+
+        assert_eq!(
+            offer(app.handle(), &cfg, vec![event("C/ignored", "eyes")], true),
+            0
+        );
+        assert_eq!(
+            offer(app.handle(), &cfg, vec![event("C/old", "deck")], false),
+            0
+        );
+        assert!(path.exists(), "the baseline is durable");
+        assert_eq!(
+            offer(app.handle(), &cfg, vec![event("C/old", "deck")], true),
+            0
+        );
+
+        note_baselined("slack", &["deck".into(), "bug".into()]);
+        note_baselined("slack", &["deck".into(), "bug".into()]);
+        assert_eq!(
+            offer(app.handle(), &cfg, vec![event("C/new", "deck")], true),
+            1
+        );
+        assert_eq!(
+            offer(app.handle(), &cfg, vec![event("C/new", "deck")], true),
+            0
+        );
+        let pending = inbound_pending();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].id, 1);
+        assert_eq!(pending[0].event.key, "C/new");
+        assert!(inbound_ack(1, "later".into()).is_err());
+        assert!(inbound_ack(999, "skipped".into()).is_ok());
+        assert!(inbound_ack(1, "skipped".into()).is_ok());
+        assert!(inbound_pending().is_empty());
+
+        assert_eq!(
+            offer(app.handle(), &cfg, vec![event("C/done", "bug")], true),
+            1
+        );
+        assert!(inbound_ack(2, "done".into()).is_ok());
+        assert!(inbound_pending().is_empty());
+        let loaded = load_doc();
+        assert!(loaded.has("slack", "C/new", "deck"));
+        assert!(loaded.has("slack", "C/done", "bug"));
+
+        inbound_check_now();
+        wait_for_tick(Duration::from_secs(1));
+        wait_for_tick(Duration::from_millis(1));
+
+        *RT.lock().unwrap() = None;
+        *TEST_DOC_PATH.lock().unwrap() = None;
+        let _ = fs::remove_dir_all(dir);
     }
 }
