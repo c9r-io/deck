@@ -267,23 +267,32 @@ Frontend gates: `node --check` (syntax) · `ui/test/*.mjs` (node:test)
   server/session/window/pane/pid binding, optional sanitized executable
   basename, revision and a closed last-context result (never terminal text,
   arguments or paths). Context protection is automatic and has no saved/UI/API
-  policy: exact pane identity is always required; an executable derived from
-  the explicit card launch command is required in the foreground, otherwise a
-  live non-shell foreground is captured at creation, otherwise same-pane
-  compatibility delivery is allowed. Hooks, agent class, output activity and
+  policy: an executable derived from the explicit card launch command is
+  required in the foreground, otherwise a live non-shell foreground is
+  captured at creation, otherwise same-pane compatibility delivery is
+  allowed. Hooks, agent class, output activity and
   quiet time never gate delivery. Legacy policy/AgentClass/hook fields are
   ignored and cleaned on the next save without changing schedule/delivery
   state. `context.rs` owns metadata-only probing and sanitization.
   Injection loads literal text + trailing CR into a uniquely named tmux buffer,
   then one synchronous tmux command queue compares the full generation plus
   optional foreground executable and byte-literal-pastes only on a match (no
-  attach and no "text landed but Enter didn't" window). Numeric tmux ids alone are insufficient because a restarted
-  server reuses them; server pid is part of the binding. Dead sessions are
-  started once and use bounded 250ms/15s target polling that cancels on
-  pause/edit/delete/revision; timeout blocks without consuming an attempt.
-  Manual immediate delivery may pointer-confirm a one-shot process mismatch
-  bypass, but identity mismatch can only be resolved by explicit rebind,
-  reschedule or cancellation. "chain" mode fires after
+  attach and no "text landed but Enter didn't" window). The persisted binding
+  is a GENERATION STAMP that must hold within ONE delivery, never a permanent
+  target: `current_context_probe` re-observes the card's own pane (deck's own
+  name on deck's own socket, and a deleted card tombstones its items), the
+  readiness probe persists whatever generation it finds, and startup polling,
+  the final probe and the atomic paste then require THAT generation — numeric
+  tmux ids alone are insufficient there because a restarted server reuses
+  them, so server pid is part of the stamp. What decides whether the target is
+  the right one is `expected_process`, not the stamp. Never restore a hard
+  block on a changed generation: every production upgrade replaces the tmux
+  server, so it fired on every item after every update, stalled whole chain
+  groups behind their head, rewrote queue.json on each tick and taught the
+  user to click a rebind button that only ever confirmed the pane deck had
+  already picked. Manual immediate delivery may pointer-confirm a one-shot
+  process mismatch bypass; the process comparison is the only thing it can
+  bypass. "chain" mode fires after
   `window_activity` has been quiet ≥180s (a permission prompt also counts as
   quiet — documented behavior; quiet NEVER means "the agent finished").
   Round-2/3 semantics (scheduler.rs is the reference, all unit-tested):

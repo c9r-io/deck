@@ -33,18 +33,19 @@ Every delivery uses the following order:
    revision changes.
 2. If the session is absent, start it once and perform a bounded, cancellable
    metadata probe until the pane and any expected foreground process appear.
-3. Compare the full tmux identity. A mismatch is a hard block and can never be
-   overridden by an immediate-send action.
+3. Persist the identity the probe just observed. The stored binding is a
+   generation stamp, not a permanent target: a pane that returns under the
+   same deck-owned session name with a new generation is adopted.
 4. When `expected_process` exists, require the current sanitized foreground
    basename to match. A mismatch waits without consuming an attempt.
-5. When `expected_process` is absent, a matching identity is sufficient. A
+5. When `expected_process` is absent, a resolvable pane is sufficient. A
    shell, an agent without hooks, output activity, quiet output and unknown
    agent type do not block compatibility delivery.
 6. Re-select and probe again immediately before persisting firing intent.
 7. After intent, one synchronous tmux command queue loads prompt plus CR into
-   a private buffer and atomically checks the exact identity and, when present,
-   the foreground process before literal paste. The refusal branch deletes the
-   buffer and sends nothing.
+   a private buffer and atomically checks the identity persisted in step 3
+   and, when present, the foreground process before literal paste. The
+   refusal branch deletes the buffer and sends nothing.
 
 Only the transition into `firing` increments attempts and creates the pending
 ledger. Context waiting cannot become ambiguous after a crash. Existing
@@ -53,21 +54,27 @@ unchanged.
 
 ## Closed outcomes and recovery
 
-The scheduler persists only concrete outcomes: target checked, foreground
-different, identity changed, session missing, startup failed/timeout, probe
-failed, or cancelled/revised. It does not infer agent readiness from terminal
+The scheduler persists only concrete outcomes: process matched, compatibility
+target, foreground different, identity changed, session missing, startup
+failed/timeout, probe failed, or cancelled/revised. It does not infer agent readiness from terminal
 text, quiet time, output activity or hooks.
 
 - Foreground mismatch: keep waiting, cancel/reschedule, or request a one-shot
   immediate send. The latter requires a pointer-confirmed warning and bypasses
   only the process comparison for that send.
-- Identity mismatch: never send. The user must explicitly rebind to the current
-  pane, reschedule onto another card, or cancel.
+- Identity mismatch: only reachable while deck is waiting for a session it
+  just started. The pane is churning, so the item keeps waiting and the next
+  pass re-observes it.
 - Session/startup unavailable: keep the item pending with its exact reason and
   retry on a later scheduler pass.
 
-Rebinding reads a fresh complete identity and is an explicit persisted
-mutation. It never converts an identity mismatch into an implicit override.
+Adopting a new generation is not an override of the safety model. The target
+is located by deck's own session name on deck's own private socket, a deleted
+card tombstones every item of that session, and `expected_process` — not the
+generation stamp — is what decides whether the pane is running the right
+thing. A hard block there was instead a guaranteed false positive: every
+production upgrade replaces the tmux server, so every item of every card was
+blocked after every update, with chain groups stalled behind their head step.
 
 ## Race audit
 
@@ -75,7 +82,8 @@ mutation. It never converts an identity mismatch into an implicit override.
 | --- | --- |
 | Tick selection -> worker | Fresh selection honours pause/edit/remove/delete. |
 | During startup probing | Cancellation/revision check stops promptly; no attempt exists. |
-| Session or pane recreated | Full identity mismatch blocks; numeric id reuse is insufficient because server pid is included. |
+| Session or pane recreated between deliveries | The new generation is observed and persisted; `expected_process` still gates the send. |
+| Pane replaced while deck waits for the session it started | Startup polling stops on the mismatch without an attempt. |
 | Probe passed -> intent | Fresh item and revision comparison, then a second metadata probe. |
 | Final probe -> paste | The synchronous tmux condition checks both exact identity and optional foreground process; either change takes the refusal branch. |
 | Intent persisted -> accepted send | Existing pending-ledger and ambiguous-on-crash contract applies. |
@@ -84,8 +92,11 @@ mutation. It never converts an identity mismatch into an implicit override.
 ## Self-audit
 
 No hook, agent class, readiness label, quiet state or output heuristic is a
-necessary condition for delivery. Exact pane identity is always necessary.
-Foreground equality is necessary only when deck captured an expected executable
-automatically. Compatibility delivery with no expected process deliberately
-retains the residual risk that literal input can be interpreted by a shell;
-the UI explains that fact without asking the user to configure a policy.
+necessary condition for delivery. A resolvable pane owned by the card is
+always necessary, and the identity read from it must stay stable from the
+readiness probe through the atomic paste. Foreground equality is necessary
+only when deck captured an expected executable automatically. Compatibility
+delivery with no expected process deliberately retains the residual risk that
+literal input can be interpreted by a shell — including by a shell that came
+back after a restart before the user relaunched their agent; the UI explains
+that fact without asking the user to configure a policy.

@@ -25,6 +25,8 @@ pub(crate) enum ContextStatus {
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum ContextCode {
+    /// Only written by deck <= 0.5.8 (explicit rebind). Kept so an existing
+    /// queue.json round-trips instead of degrading to `Unknown`.
     TargetChecked,
     ProcessMatched,
     CompatibilityTarget,

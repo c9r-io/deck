@@ -108,8 +108,11 @@ prompt still warns that terminal output may contain secrets.
 **Scheduled prompts.** The quota-window workflow: queue prompts on a session
 and have them typed in later — at a set time ("in 5 h, when my Claude window
 resets") or chained ("after the previous one goes quiet for 3 minutes" — quiet
-means no output, not that the program is ready). Before delivery deck always
-checks the exact tmux server/session/window/pane/process generation. When the
+means no output, not that the program is ready). Before delivery deck
+resolves the pane the card owns and pins the exact tmux
+server/session/window/pane/process generation it just read — a pane that came
+back with a new generation (after an update, a crash or a reboot) is adopted
+automatically, so a schedule never needs re-pointing. When the
 card launch command identifies a program, deck also waits for that executable
 to return to the foreground; otherwise it sends to the same pane in
 compatibility mode, where input may be interpreted by a shell. Context waiting

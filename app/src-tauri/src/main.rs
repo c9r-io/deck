@@ -330,7 +330,6 @@ fn main() {
             scheduler::queue_acknowledge,
             scheduler::queue_skip,
             scheduler::queue_send_now,
-            scheduler::queue_rebind,
             commands::storage_warnings,
             scheduler::queue_clear_session,
             scheduler::queue_clear_sessions,

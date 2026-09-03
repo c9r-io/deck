@@ -458,9 +458,10 @@ physical-input blocker are recorded in `RELEASE_REPORT_v0.4.32.md`.
       “Send now…” shows the expected and current processes; Enter and blur
       cannot accept its high-risk dialog, while an explicit click performs one
       process-only override without changing the saved expected executable.
-- [ ] Replace a scheduled session/pane under the same name → immediate send is
-      refused even after the danger confirmation path. Explicitly rebind to the
-      new pane (or reschedule/cancel), then verify the new identity is persisted.
+- [ ] Replace a scheduled session/pane under the same name (kill the tmux
+      server, or update the app, then reopen the card) → the next pass adopts
+      the new identity, persists it, and delivers without any user action; a
+      card whose launch command names an agent still waits for that executable.
 - [ ] Save a template from the queue group header → re-add it on another card
 - [ ] Pause a recurring rule → skipped while paused; resume → fires again
 

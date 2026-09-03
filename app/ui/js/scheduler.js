@@ -63,15 +63,11 @@ async function manualSendNow(item) {
   let probe;
   try { probe = await refreshItemProbe(item); }
   catch (e) { toast(t('queue.context.probeFailed')); return; }
-  if (probe.status === 'session-replaced') {
-    toast(t('queue.context.replaced'));
-    return;
-  }
-  if (probe.status === 'unavailable' || probe.status === 'starting' || probe.status === 'unknown') {
+  const mismatch = probe.status === 'foreground-different';
+  if (probe.status !== 'ready' && !mismatch) {
     toast(t(contextStatusKey(probe.status)));
     return;
   }
-  const mismatch = probe.status === 'foreground-different';
   const target = probe.current_process || t('queue.context.noProcess');
   const message = mismatch
     ? t('queue.manualMismatchConfirm', { expected: probe.expected_process || '?', current: target })
@@ -80,12 +76,6 @@ async function manualSendNow(item) {
   if (!accepted) return;
   inv('queue_send_now', { id: item.id, acceptProcessMismatch: mismatch })
     .catch(() => toast(t('error.operation', { operation: t('queue.manualNow') })));
-}
-
-async function rebindItem(item) {
-  if (!(await confirmDangerDialog(t('queue.rebindConfirm')))) return;
-  inv('queue_rebind', { id: item.id })
-    .catch(() => toast(t('error.operation', { operation: t('queue.rebind') })));
 }
 
 const chainWhenSuffix = (i, card) =>
@@ -191,11 +181,9 @@ export function groupEl(g, card) {
     const ambiguous = r.item && r.item.state === 'ambiguous';
     const contextBlocked = r.item && r.item.last_context && r.item.last_context.status !== 'ready'
       && !ambiguous && r.item.state !== 'firing';
-    const replaced = r.item?.last_context?.status === 'session-replaced';
-    const manualAllowed = r.item && !ambiguous && r.item.state !== 'firing' && !dead && !replaced;
+    const manualAllowed = r.item && !ambiguous && r.item.state !== 'firing' && !dead;
     row.innerHTML = '<span class="tree"></span><span class="q-text"></span><span class="row-meta"></span>'
       + (contextBlocked ? '<button class="q-wait"></button>' : '')
-      + (replaced ? '<button class="q-rebind"></button>' : '')
       + (manualAllowed ? '<button class="q-now"></button>' : '')
       + (ambiguous ? '<button class="q-ack"></button><button class="q-risk-retry"></button>' : '')
       + (dead ? '<button class="q-retry">↻</button><button class="q-skip">⏭</button>' : '')
@@ -225,11 +213,6 @@ export function groupEl(g, card) {
         wait.onclick = () => refreshItemProbe(i)
           .then(() => toast(t('queue.waitingContinues')))
           .catch(() => toast(t('queue.context.probeFailed')));
-      }
-      const rebind = row.querySelector('.q-rebind');
-      if (rebind) {
-        rebind.textContent = t('queue.rebind');
-        rebind.onclick = () => rebindItem(i);
       }
       const now = row.querySelector('.q-now');
       if (now) {

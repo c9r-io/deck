@@ -444,7 +444,7 @@ pub(crate) fn queue_probe_context(
         .find(|i| i.id == id)
         .cloned()
         .ok_or("scheduled prompt not found")?;
-    let result = final_context_probe(&item);
+    let result = current_context_probe(&item);
     persist_context_result(&state.q, &save_queue, &item, &result)?
         .ok_or("scheduled prompt changed while probing")?;
     Ok(ContextProbeView {
@@ -453,50 +453,6 @@ pub(crate) fn queue_probe_context(
         expected_process: item.expected_process,
         current_process: result.current_process,
     })
-}
-
-/// Explicitly bind an identity-changed item to the pane currently owned by
-/// its card. This is a persisted target change, never an implicit override.
-#[tauri::command]
-pub(crate) fn queue_rebind(
-    state: State<'_, Queues>,
-    app: AppHandle,
-    id: String,
-) -> Result<(), String> {
-    let source = state
-        .q
-        .lock()
-        .unwrap()
-        .items
-        .iter()
-        .find(|i| i.id == id)
-        .cloned()
-        .ok_or("scheduled prompt not found")?;
-    let raw = context::raw_probe(&source.session)?;
-    with_queue(&state.q, &save_queue, |q| {
-        firing_conflict(q, &id)?;
-        let item = q
-            .items
-            .iter_mut()
-            .find(|i| i.id == id)
-            .ok_or("scheduled prompt not found")?;
-        if item.revision != source.revision {
-            return Err("scheduled prompt changed while rebinding".into());
-        }
-        item.binding = Some(raw.identity.clone());
-        if item.expected_process.is_none() && !context::shell_process(raw.foreground.as_deref()) {
-            item.expected_process = raw.foreground.clone();
-        }
-        item.revision = item.revision.wrapping_add(1);
-        item.last_context = Some(ContextCheck {
-            status: ContextStatus::Ready,
-            code: ContextCode::TargetChecked,
-            checked_at: now_epoch(),
-        });
-        Ok(())
-    })?;
-    let _ = app.emit("queue-changed", ());
-    Ok(())
 }
 
 #[tauri::command]
@@ -1137,28 +1093,17 @@ pub(crate) fn prepare_context(item: &QueueItem, cancelled: &dyn Fn() -> bool) ->
     ])
     .is_ok();
     if existed {
-        return context::probe(
-            &item.session,
-            item.binding.as_ref(),
-            item.expected_process.as_deref(),
-        );
+        return current_context_probe(item);
     }
+    // A session that appeared between the existence check and start_session's
+    // idempotent inner check is probed like any other live one.
     match start_session(
         item.session.clone(),
         item.dir.clone(),
         item.cmd.clone(),
         false,
     ) {
-        Ok(result) if result.created => {}
-        // Another actor won the race between our outer existence check and
-        // start_session's idempotent inner check. It is not a deck-created
-        // generation and therefore must never inherit permission to send.
-        Ok(_) => {
-            return ProbeResult::blocked(
-                ContextStatus::SessionReplaced,
-                ContextCode::IdentityChanged,
-            );
-        }
+        Ok(_) => {}
         Err(_) => {
             return ProbeResult::blocked(ContextStatus::Unavailable, ContextCode::StartupFailed);
         }
@@ -1170,14 +1115,25 @@ pub(crate) fn prepare_context(item: &QueueItem, cancelled: &dyn Fn() -> bool) ->
         polls,
         cancelled,
         &mut |identity| {
-            // A deck-initiated restart is allowed to acquire a new binding.
-            // Once observed, another generation change is rejected.
+            // The first observation acquires the binding; a pane replaced
+            // again while deck is still waiting for startup is rejected.
             context::probe(&item.session, identity, item.expected_process.as_deref())
         },
         &mut || std::thread::sleep(interval),
     )
 }
 
+/// Observe the pane the card owns right now. A tmux generation change (the
+/// server was replaced by an upgrade, a crash or a reboot) is adopted rather
+/// than blocked: the pane is located by deck's own session name on deck's own
+/// socket, a deleted card tombstones its items, and `expected_process` — not
+/// the generation stamp — is what decides whether the target is the right one.
+pub(crate) fn current_context_probe(item: &QueueItem) -> ProbeResult {
+    context::probe(&item.session, None, item.expected_process.as_deref())
+}
+
+/// Immediately before opening the irreversible firing window, the identity
+/// persisted by the readiness probe must still be the live one.
 pub(crate) fn final_context_probe(item: &QueueItem) -> ProbeResult {
     context::probe(
         &item.session,
@@ -2000,10 +1956,7 @@ pub(crate) fn queue_send_now(
         .find(|i| i.id == id)
         .cloned()
         .ok_or("scheduled prompt not found")?;
-    let observed = final_context_probe(&item);
-    if observed.status == ContextStatus::SessionReplaced {
-        return Err("context identity changed; rebind or reschedule before sending".into());
-    }
+    let observed = current_context_probe(&item);
     if accept_process_mismatch && observed.status != ContextStatus::ForegroundDifferent {
         return Err("one-shot process bypass requires a current foreground mismatch".into());
     }
@@ -3364,6 +3317,39 @@ mod tests {
             assert!(q.pending.is_empty() && q.deliveries.is_empty());
             assert_eq!(q.items[0].last_context.as_ref().unwrap().status, status);
         }
+    }
+
+    /// An upgrade, a tmux crash or a reboot replaces the whole server, so the
+    /// card's pane comes back under the same deck-owned name with an entirely
+    /// new generation. That stale binding is adopted from the readiness probe
+    /// and used for the atomic paste guard — it never blocks delivery.
+    #[test]
+    fn a_new_tmux_generation_under_the_same_name_is_adopted_not_blocked() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        let mut stale = due_at("a", "s");
+        stale.binding = Some(pane(1));
+        let qm = Mutex::new(qs(vec![stale]));
+        let sends = AtomicU32::new(0);
+        let result = send_safe_test(
+            &qm,
+            &|i: &QueueItem| {
+                assert_eq!(i.binding.as_ref(), Some(&pane(2)));
+                sends.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            },
+            &|_: &QueueItem, _: &dyn Fn() -> bool| {
+                probe_result(ContextStatus::Ready, ContextCode::ProcessMatched, 2)
+            },
+            &|i: &QueueItem| {
+                assert_eq!(i.binding.as_ref(), Some(&pane(2)));
+                probe_result(ContextStatus::Ready, ContextCode::ProcessMatched, 2)
+            },
+        );
+        assert!(matches!(result, SendResult::Sent { .. }));
+        assert_eq!(sends.load(Ordering::SeqCst), 1);
+        let q = qm.lock().unwrap();
+        assert_eq!(q.items.len(), 0);
+        assert_eq!(q.deliveries.len(), 1);
     }
 
     #[test]
