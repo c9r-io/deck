@@ -154,6 +154,12 @@ const SMOKE_CHECKS: &[&str] = &[
 /// `keydown-none` copy can be attributed to a drag that never promoted, a
 /// start tmux refused, or a specific later revoke. Labels only — no terminal
 /// text, session name or error string is representable here.
+///
+/// `revoker-*` pairs with `cancel-pointer` and classifies the pointerdown
+/// that destroyed a live selection: `synthetic` is an untrusted event, the
+/// rest are the trusted pointerType. `native-cleared` records an xterm
+/// selection appearing (and being cleared) while Deck owned the drag — the
+/// signature of WKWebView's late compatibility mouse replay.
 const SELECTION_EVENTS: &[&str] = &[
     "promote",
     "start-ok",
@@ -164,6 +170,12 @@ const SELECTION_EVENTS: &[&str] = &[
     "dimensions-changed",
     "freeze-ok",
     "freeze-failed",
+    "native-cleared",
+    "revoker-mouse",
+    "revoker-touch",
+    "revoker-pen",
+    "revoker-unknown",
+    "revoker-synthetic",
     "cancel-pointer",
     "cancel-pointer-cancel",
     "cancel-blur",
@@ -215,6 +227,7 @@ const UI_EVENT_SPECS: &[(&str, DetailPolicy)] = &[
             "keydown-deck",
             "keydown-native",
             "keydown-none",
+            "keydown-elsewhere",
             "success",
             "selection-vanished",
             "selection-missing",

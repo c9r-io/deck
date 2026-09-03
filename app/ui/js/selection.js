@@ -16,6 +16,12 @@ import { formatNumber, t } from './i18n.js';
 let nextSelectionToken = 1;
 const controllers = new Set();
 let physicalPointerOwner = null;
+/* Forensics for `revoker-*`: when the last pointerup was seen anywhere. A
+   trailing pointerdown that kills a frozen selection is classified by how
+   long after the finishing release it arrived — a replayed/synthetic event
+   lands within tens of ms, a trackpad lift-off tap within a few hundred, a
+   deliberate re-click later. */
+let lastPointerUpAt = 0;
 
 function terminalCell(pane, clientX, clientY) {
   const screen = pane.body.querySelector('.xterm-screen');
@@ -327,6 +333,22 @@ function terminalSelectionController(pane, onModeChange) {
   const pointerDown = event => {
     if (disposed || event.button !== 0) return;
     if (!terminalCell(pane, event.clientX, event.clientY)) return;
+    /* This pointerdown is about to revoke a live selection (the paired
+       `cancel-pointer` follows). Attribute WHERE it came from so a failed
+       ⌘C can be traced to a synthetic/replayed event, a trackpad lift-off
+       tap, or a real re-click: the label classifies isTrusted + pointerType,
+       `a` is the click count, `b` is ms since the last pointerup anywhere.
+       Ordinary clicks with nothing to destroy stay silent, like cancel. */
+    if (selected || gesture?.promoted) {
+      const label = !event.isTrusted ? 'revoker-synthetic'
+        : event.pointerType === 'mouse' ? 'revoker-mouse'
+          : event.pointerType === 'touch' ? 'revoker-touch'
+            : event.pointerType === 'pen' ? 'revoker-pen' : 'revoker-unknown';
+      const sinceUp = lastPointerUpAt
+        ? Math.min(Date.now() - lastPointerUpAt, 3600000) : -1;
+      uev('terminal-selection', label,
+        Math.max(0, Math.min(9, event.detail || 0)), sinceUp);
+    }
     // Keep the physical compatibility sequence trusted for click/link. A
     // later terminal-cell transition explicitly transfers ownership to tmux.
     cancel(false, 'pointer');
@@ -359,6 +381,7 @@ function terminalSelectionController(pane, onModeChange) {
   };
 
   const pointerEnd = event => {
+    lastPointerUpAt = Date.now();
     if (!gesture || (event.pointerId != null && event.pointerId !== gesture.pointerId)) return;
     const ended = gesture;
     ended.x = event.clientX ?? ended.x;
@@ -622,6 +645,7 @@ function terminalSelectionController(pane, onModeChange) {
     hasSelection: () => selected,
     isDragging: () => !!gesture?.promoted,
     isFrozen: () => frozen,
+    ageMs: () => (promotedAt ? Date.now() - promotedAt : -1),
     allowLinkActivation: () => !gesture?.promoted && Date.now() >= suppressLinkUntil,
     status: () => lastStatus,
     ownership: () => ({
@@ -639,6 +663,13 @@ function terminalSelectionController(pane, onModeChange) {
   // event must not leave a second, viewport-fixed xterm selection behind.
   nativeSelectionDisposable = pane.term.onSelectionChange?.(() => {
     if ((gesture?.promoted || selected) && pane.term.hasSelection?.()) {
+      /* Direct evidence that WKWebView replayed the drag as late
+         compatibility mouse events: an xterm selection appeared while Deck
+         still owns one. `a` is the rows the doomed native range spanned. */
+      const position = pane.term.getSelectionPosition?.();
+      const span = Number.isFinite(position?.start?.y) && Number.isFinite(position?.end?.y)
+        ? Math.abs(position.end.y - position.start.y) + 1 : 0;
+      sev('native-cleared', span);
       try { pane.term.clearSelection(); } catch (e) { /* pane may be disposing */ }
     }
   });
@@ -658,4 +689,21 @@ export const cancelTerminalSelection = (pane, reason = 'other') =>
   pane?.selection?.cancel(true, reason);
 export const cancelAllTerminalSelections = (reason = 'leave') => {
   for (const controller of [...controllers]) controller.cancel(true, reason);
+};
+
+/* ⌘C forensics: a `keydown-none` in the focused pane is ambiguous while
+   another pane still holds a live Deck selection — that split is what
+   separates "the selection was revoked" from "⌘C went to the wrong pane
+   because the drag never moved keyboard focus". Returns how many OTHER
+   panes hold one and the youngest one's age in ms (-1 when none). */
+export const terminalSelectionElsewhere = pane => {
+  let count = 0;
+  let ageMs = -1;
+  for (const controller of controllers) {
+    if (controller === pane?.selection || !controller.hasSelection()) continue;
+    count++;
+    const age = controller.ageMs();
+    if (age >= 0 && (ageMs < 0 || age < ageMs)) ageMs = age;
+  }
+  return { count, ageMs };
 };

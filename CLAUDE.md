@@ -103,6 +103,16 @@ Frontend gates: `node --check` (syntax) · `ui/test/*.mjs` (node:test)
   instead of a second anonymous line. The two integers are a per-label count
   (rows spanned, or 1 when a FROZEN selection died) and the selection's age in
   milliseconds — never text, coordinates of content, or an error string.
+  Three forensic labels attribute the dominant field failure (a completed
+  selection revoked before ⌘C arrives): `revoker-<class>` pairs with
+  `cancel-pointer` and classifies the destroying pointerdown by provenance
+  (trusted pointerType mouse/touch/pen/unknown, or synthetic when isTrusted
+  is false; its ints are click count and ms since the last pointerup — the
+  one label whose `b` is not selection age); `native-cleared` marks an xterm
+  selection appearing while Deck owned the drag (WKWebView's late
+  compatibility-mouse replay); and `terminal-copy keydown-elsewhere` replaces
+  `keydown-none` when another pane still holds a live Deck selection (count +
+  its age), separating "revoked" from "⌘C reached the wrong pane".
 - PTY smoke test (headless): `cargo run --example pty_smoke`
 - The unchanged vendored terminal is `@xterm/xterm` 5.5.0 (the local
   `xterm.js` is byte-identical to the published 5.5.0 artifact, SHA-256

@@ -369,5 +369,23 @@ test('every way a terminal selection dies is attributable in the log', () => {
   for (const r of reasons)
     assert.ok(allowed.has(`cancel-${r}`), `backend would redact cancel-${r}`);
   assert.ok(allowed.has('cancel-other'), 'the default reason must be loggable too');
+  // Revoker forensics: the pointerdown that destroys a live selection is
+  // classified by provenance (trusted pointerType, or synthetic when
+  // isTrusted is false) so a failed ⌘C can be attributed to a replayed
+  // event, a trackpad lift-off tap, or a real re-click.
+  for (const label of ['revoker-mouse', 'revoker-touch', 'revoker-pen',
+    'revoker-unknown', 'revoker-synthetic']) {
+    assert.ok(selection.includes(`'${label}'`), `revoker class never wired: ${label}`);
+    assert.ok(allowed.has(label), `backend would redact ${label}`);
+  }
+  assert.match(selection, /'revoker-unknown'[\s\S]{0,400}?cancel\(false, 'pointer'\)/,
+    'revoker attribution must run before the pointer cancel destroys the evidence');
+  assert.ok(selection.includes("sev('native-cleared'"),
+    'a late compatibility-mouse xterm selection must leave replay evidence');
+  assert.ok(allowed.has('native-cleared'), 'backend would redact native-cleared');
+  // The empty-handed ⌘C split: a live Deck selection in another pane (focus
+  // never followed the drag) must be told apart from nothing anywhere.
+  assert.ok(layout.includes("'keydown-elsewhere'"), '⌘C wrong-pane attribution never wired');
+  assert.match(backend, /"keydown-elsewhere"/);
   assert.match(backend, /"terminal-selection",\s*DetailPolicy::Closed\(SELECTION_EVENTS\)/);
 });

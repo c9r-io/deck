@@ -7,7 +7,7 @@ import { panes, pollNow, provider, render, renderSidebar, updateSidebarSelection
 import { SHELL_FG, acceptGhost, feedMirror, maybeRecordCommand, mountQuickBar, nextShellTitle, renderSuggest, resetSuggest, showLinkCtx, updateGhost, writeClipboard } from './terminal.js';
 import { AGENT_HISTORY_VERTICAL_UP, createTerminalPasteTrace, createTerminalResizeCoordinator, createTerminalWheelAccumulator, createTerminalWheelFrameScheduler, isComposingKeyEvent, isPlainShiftKeydown, shouldRouteImeKeydownThroughInput, shQuote, terminalAgentComposerGeometry, terminalAgentHistoryUpRoute, terminalCopyRoute, terminalSelectionWheelRoute, tokenizeTerminalLinks, terminalWheelLines } from './pure.js';
 import { toggleQueuePanel } from './scheduler.js';
-import { cancelAllTerminalSelections, cancelTerminalSelection, copyTerminalSelection, hasTerminalSelection, wireTerminalSelection } from './selection.js';
+import { cancelAllTerminalSelections, cancelTerminalSelection, copyTerminalSelection, hasTerminalSelection, terminalSelectionElsewhere, wireTerminalSelection } from './selection.js';
 import { getTerminalTheme, onThemeChange, syncThemeIntegrations } from './theme.js';
 import { getFontScale, onFontScaleChange, TERMINAL_BASE_FONT_SIZE } from './font-scale.js';
 import { registerShortcutAction } from './shortcuts.js';
@@ -571,9 +571,20 @@ export function wireTerminalInput(pane, term, host) {
     }
     const copyRoute = terminalCopyRoute(e, hasTerminalSelection(pane), term.hasSelection());
     if (e.type === 'keydown' && e.metaKey && String(e.key || '').toLowerCase() === 'c') {
-      const detail = copyRoute === 'deck' ? 'keydown-deck'
-        : copyRoute === 'native' ? 'keydown-native' : 'keydown-none';
-      uev('terminal-copy', detail);
+      if (copyRoute === 'deck' || copyRoute === 'native') {
+        uev('terminal-copy', copyRoute === 'deck' ? 'keydown-deck' : 'keydown-native');
+      } else {
+        /* Empty-handed ⌘C: say whether a live Deck selection exists in some
+           OTHER pane (focus never followed the drag) or nowhere at all.
+           `a` counts the other panes holding one, `b` is the youngest one's
+           age in ms. Attribution only — the copy still does nothing. */
+        const elsewhere = terminalSelectionElsewhere(pane);
+        if (elsewhere.count > 0) {
+          uev('terminal-copy', 'keydown-elsewhere', elsewhere.count, elsewhere.ageMs);
+        } else {
+          uev('terminal-copy', 'keydown-none');
+        }
+      }
     }
     if (copyRoute === 'deck') {
       e.preventDefault();
