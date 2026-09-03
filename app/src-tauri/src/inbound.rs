@@ -505,6 +505,10 @@ pub(crate) fn inbound_ack(id: u64, outcome: String) -> Result<(), String> {
         persist(rt);
         applog(&format!("[inbound] item {}", if outcome == "done" { "created" } else { "skipped" }));
     });
+    if outcome == "done" {
+        // The card's prompts are queued and due now; do not wait out the tick.
+        crate::scheduler::wake_scheduler();
+    }
     Ok(())
 }
 

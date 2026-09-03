@@ -2107,9 +2107,45 @@ pub(crate) fn boot_queues() -> Queues {
     boot_queues_with(load_queue(), &save_queue)
 }
 
+/// The tick sleeps on a condition so an event that made work due right now
+/// (an inbound card with its prompts just queued) can start the scan at once
+/// instead of waiting out the remainder of the period.
+static TICK_WAKE: std::sync::OnceLock<(Mutex<bool>, std::sync::Condvar)> = std::sync::OnceLock::new();
+pub(crate) const TICK_SECS: u64 = 20;
+
+fn tick_wake() -> &'static (Mutex<bool>, std::sync::Condvar) {
+    TICK_WAKE.get_or_init(|| (Mutex::new(false), std::sync::Condvar::new()))
+}
+
+pub(crate) fn wake_scheduler() {
+    let (flag, cv) = tick_wake();
+    if let Ok(mut f) = flag.lock() {
+        *f = true;
+    }
+    cv.notify_all();
+}
+
+fn sleep_until_tick() {
+    let (flag, cv) = tick_wake();
+    let Ok(mut f) = flag.lock() else {
+        std::thread::sleep(Duration::from_secs(TICK_SECS));
+        return;
+    };
+    let deadline = std::time::Instant::now() + Duration::from_secs(TICK_SECS);
+    while !*f {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
+            break;
+        }
+        let Ok((g, _)) = cv.wait_timeout(f, left) else { return };
+        f = g;
+    }
+    *f = false;
+}
+
 pub(crate) fn spawn_scheduler(app: AppHandle) {
     std::thread::spawn(move || loop {
-        std::thread::sleep(std::time::Duration::from_secs(20));
+        sleep_until_tick();
         let state = app.state::<Queues>();
         // A post-send transition can be the last once item. Flush before the
         // empty-queue fast path so dirty state never loses its retry driver.

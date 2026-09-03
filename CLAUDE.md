@@ -349,8 +349,9 @@ Frontend gates: `node --check` (syntax) · `ui/test/*.mjs` (node:test)
   events whose gen is older than the current attachment, and accepts+adopts a
   NEWER gen (the first event can beat the attach invoke's resolution).
 - Scheduled prompts: Rust-side scheduler thread (NOT webview timers — App Nap
-  freezes those), 20s tick, queue persisted at `~/.deck/queue.json` and loaded at
-  boot. Every item persists its card id, optional full tmux
+  freezes those), 20s tick that sleeps on a condition so `wake_scheduler()`
+  (called when an inbound card's prompts are queued) starts a scan at once,
+  queue persisted at `~/.deck/queue.json` and loaded at boot. Every item persists its card id, optional full tmux
   server/session/window/pane/pid binding, optional sanitized executable
   basename, revision and a closed last-context result (never terminal text,
   arguments or paths). Context protection is automatic and has no saved/UI/API
