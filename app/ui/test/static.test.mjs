@@ -221,7 +221,6 @@ test('shell restart recovery is real tmux history, never a blocking webview laye
   const main = read('app/src-tauri/src/main.rs');
   const commands = read('app/src-tauri/src/commands.rs');
   const recovery = read('app/src-tauri/src/shell_state.rs');
-  const bootstrap = read('app/src-tauri/src/shell_restore.sh');
   const production = layout + html + main;
 
   assert.doesNotMatch(production, /shell-recovery|recoverychip|load_shell_snapshot/);
@@ -232,10 +231,11 @@ test('shell restart recovery is real tmux history, never a blocking webview laye
   assert.match(commands, /tmux_with_stdin/);
   assert.match(commands, /"start-server"[\s\S]*"load-buffer"[\s\S]*"new-session"/,
     'the first restored card must keep an empty tmux server alive through buffer loading');
-  assert.match(recovery, /RESTORE_EXECUTABLE: &str = "\/bin\/sh"/);
-  assert.match(bootstrap, /save-buffer/);
-  assert.match(bootstrap, /delete-buffer/);
-  assert.match(bootstrap, /exec -a "\$login_name" "\$shell"/);
+  assert.match(recovery, /RESTORE_TTY_FORMAT: &str = "#\{pane_tty\}"/);
+  assert.match(commands, /"new-session"[\s\S]*"save-buffer"[\s\S]*RESTORE_TTY_FORMAT[\s\S]*"delete-buffer"/,
+    'the tmux server writes the private buffer to the new pane tty and discards it');
+  assert.doesNotMatch(commands + recovery, /shell_restore|RESTORE_SCRIPT|"\/bin\/sh"|"-sh"|login_shell/,
+    'no shell script and no shell argv on the restore path (EDR inline-script signature)');
   assert.doesNotMatch(commands + main + recovery,
     /BOOTSTRAP_ARG|--deck-shell-bootstrap|maybe_run_bootstrap|bootstrap\.executable|bootstrap\.payload/,
     'the signed deck executable must never bootstrap a restored pane');

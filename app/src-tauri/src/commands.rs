@@ -14,8 +14,8 @@ use tauri_plugin_updater::UpdaterExt;
 use crate::storage;
 use crate::storage::{applog, now_epoch};
 use crate::tmux::{
-    expand_tilde, init_deck_server, pane_target, session_target, socket, tmux, tmux_bin,
-    tmux_owned, tmux_with_stdin, validate_session_name,
+    expand_tilde, init_deck_server, pane_target, session_target, tmux, tmux_bin, tmux_owned,
+    tmux_with_stdin, validate_session_name,
 };
 
 /// Per-event detail policy: which detail strings an event code may log.
@@ -1134,6 +1134,11 @@ pub(crate) fn start_session(
             },
         );
     let (start, restored) = if let Some(bootstrap) = bootstrap.as_ref() {
+        // One sequence: the pane is created exactly like a clean shell
+        // (tmux's own login shell, no command), then the SERVER writes the
+        // private buffer to that pane's tty and discards it. The write
+        // follows the fork immediately, so it lands before the shell's
+        // first prompt; a slow rc file can only reorder text, never run it.
         let restored_start = tmux_with_stdin(
             &[
                 "start-server",
@@ -1149,15 +1154,15 @@ pub(crate) fn start_session(
                 &name,
                 "-c",
                 &dir,
-                crate::shell_state::RESTORE_EXECUTABLE,
-                "-c",
-                crate::shell_state::RESTORE_SCRIPT,
-                "deck-shell-restore",
-                tmux_bin(),
-                socket(),
+                ";",
+                "save-buffer",
+                "-b",
                 &bootstrap.buffer,
-                &bootstrap.shell,
-                &bootstrap.login_name,
+                crate::shell_state::RESTORE_TTY_FORMAT,
+                ";",
+                "delete-buffer",
+                "-b",
+                &bootstrap.buffer,
             ],
             &bootstrap.output,
         );
@@ -1170,7 +1175,12 @@ pub(crate) fn start_session(
                     storage::session_tag(&name),
                     storage::err_code(&error)
                 ));
-                (tmux(&["new-session", "-d", "-s", &name, "-c", &dir]), false)
+                // the sequence may have failed after the pane already existed
+                if tmux(&["has-session", "-t", &session_target(&name)]).is_ok() {
+                    (Ok(String::new()), false)
+                } else {
+                    (tmux(&["new-session", "-d", "-s", &name, "-c", &dir]), false)
+                }
             }
         }
     } else {

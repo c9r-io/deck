@@ -16,9 +16,6 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::ffi::CStr;
-use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{LazyLock, Mutex};
@@ -35,8 +32,15 @@ const MAX_SNAPSHOT_FILES: usize = 128;
 const MAX_SNAPSHOT_AGE_SECS: u64 = 7 * 24 * 60 * 60;
 const RESTORE_BOUNDARY: &[u8] = b"\n---------------- deck restart ----------------\n";
 static BOOTSTRAP_NONCE: AtomicU64 = AtomicU64::new(0);
-pub(crate) const RESTORE_EXECUTABLE: &str = "/bin/sh";
-pub(crate) const RESTORE_SCRIPT: &str = include_str!("shell_restore.sh");
+/// Where the restored bytes go: the tmux SERVER writes the private buffer to
+/// the new pane's tty with `save-buffer`, in the same command sequence that
+/// created the pane, so the text becomes ordinary pane output/history. No
+/// `/bin/sh -c` script, no deck pane executable, nothing typed into the
+/// shell (an inline shell script that execs another shell is an endpoint
+/// security signature). After `new-session -d` in one sequence this format
+/// resolves to the pane just created, even on a busy server — pinned by
+/// `tmux_contract`.
+pub(crate) const RESTORE_TTY_FORMAT: &str = "#{pane_tty}";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(try_from = "ShellSnapshotRaw")]
@@ -238,48 +242,6 @@ pub(crate) fn note_recovered(session: &str) {
 pub(crate) struct ShellBootstrap {
     pub(crate) buffer: String,
     pub(crate) output: Vec<u8>,
-    pub(crate) shell: String,
-    pub(crate) login_name: String,
-}
-
-fn executable_shell(path: &Path) -> bool {
-    path.is_absolute()
-        && path
-            .metadata()
-            .map(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
-            .unwrap_or(false)
-}
-
-fn passwd_shell() -> Option<PathBuf> {
-    unsafe {
-        let mut entry: libc::passwd = std::mem::zeroed();
-        let mut result: *mut libc::passwd = std::ptr::null_mut();
-        let mut buffer = vec![0 as libc::c_char; 16 * 1024];
-        if libc::getpwuid_r(
-            libc::geteuid(),
-            &mut entry,
-            buffer.as_mut_ptr(),
-            buffer.len(),
-            &mut result,
-        ) != 0
-            || result.is_null()
-            || entry.pw_shell.is_null()
-        {
-            return None;
-        }
-        let bytes = CStr::from_ptr(entry.pw_shell).to_bytes();
-        (!bytes.is_empty()).then(|| PathBuf::from(std::ffi::OsStr::from_bytes(bytes)))
-    }
-}
-
-fn login_shell() -> Result<PathBuf, String> {
-    let inherited = std::env::var_os("SHELL").map(PathBuf::from);
-    inherited
-        .into_iter()
-        .chain(passwd_shell())
-        .chain([PathBuf::from("/bin/zsh"), PathBuf::from("/bin/sh")])
-        .find(|path| executable_shell(path))
-        .ok_or_else(|| "could not find an executable login shell".into())
 }
 
 fn restore_buffer_name(attempt: u64) -> String {
@@ -301,17 +263,6 @@ pub(crate) fn prepare_bootstrap(snapshot: &ShellSnapshot) -> Result<ShellBootstr
     if transcript.trim().is_empty() {
         return Err("shell snapshot transcript is empty".into());
     }
-    let to_utf8 = |path: PathBuf, kind: &str| {
-        path.into_os_string()
-            .into_string()
-            .map_err(|_| format!("{kind} path is not UTF-8"))
-    };
-    let shell = to_utf8(login_shell()?, "shell")?;
-    let login_name = Path::new(&shell)
-        .file_name()
-        .and_then(|name| name.to_str())
-        .map(|name| format!("-{name}"))
-        .unwrap_or_else(|| "-sh".into());
     let mut output = Vec::with_capacity(transcript.len() + RESTORE_BOUNDARY.len() + 1);
     output.extend_from_slice(transcript.as_bytes());
     if !transcript.ends_with('\n') {
@@ -322,8 +273,6 @@ pub(crate) fn prepare_bootstrap(snapshot: &ShellSnapshot) -> Result<ShellBootstr
     Ok(ShellBootstrap {
         buffer: restore_buffer_name(nonce),
         output,
-        shell,
-        login_name,
     })
 }
 
@@ -633,8 +582,6 @@ mod tests {
             .buffer
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '-'));
-        assert_eq!(bootstrap.shell, login_shell().unwrap().to_string_lossy());
-        assert!(bootstrap.login_name.starts_with('-'));
     }
 
     #[test]
@@ -768,11 +715,6 @@ mod tests {
         assert!(std::str::from_utf8(unicode.as_bytes()).is_ok());
         assert!(unicode.len() <= 9);
 
-        assert!(executable_shell(Path::new("/bin/sh")));
-        let plain = dir.join("plain");
-        std::fs::write(&plain, "not executable").unwrap();
-        assert!(!executable_shell(&plain));
-        assert!(!executable_shell(Path::new("relative")));
         let name = restore_buffer_name(42);
         assert!(name.starts_with("deck-restore-"));
         assert!(name.ends_with("-2a"));

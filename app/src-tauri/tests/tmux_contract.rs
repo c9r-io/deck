@@ -356,11 +356,12 @@ impl Drop for Server {
     }
 }
 
-/// Restored text is pane OUTPUT, never shell INPUT. The same batch starts an
-/// initially empty server, loads a private buffer, and creates the pane. Its
-/// system-shell bootstrap prints and deletes that buffer before execing a
-/// harmless long-lived process. deck-app must never become the pane's initial
-/// executable, while tmux must retain the text in its own scrollback.
+/// Restored text is pane OUTPUT, never shell INPUT. The same sequence starts
+/// an initially empty server, loads a private buffer, creates the pane, and
+/// has the SERVER write the buffer to `#{pane_tty}` — which must resolve to
+/// the pane just created even when older, busier sessions exist — before
+/// deleting it. No shell script, no deck executable, no argv carrying text;
+/// tmux retains the text in its own scrollback.
 #[test]
 fn shell_restore_bootstrap_becomes_tmux_history_without_executing_text() {
     let s = Server(format!(
@@ -378,14 +379,34 @@ fn shell_restore_bootstrap_becomes_tmux_history_without_executing_text() {
     writeln!(payload, "touch {}", executed.display()).unwrap();
     writeln!(payload, "\n---------------- deck restart ----------------").unwrap();
 
-    let tmux = tmux_bin();
-    let tmux = tmux.to_str().expect("tmux path utf8");
     let buffer = "deck-restore-contract";
-    let restore_script = include_str!("../src/shell_restore.sh");
+    // two older sessions, the second one active, so a wrong "current pane"
+    // resolution would write the history somewhere else
+    s.run_raw_checked(&[
+        "new-session",
+        "-d",
+        "-s",
+        "older",
+        "-x",
+        "80",
+        "-y",
+        "12",
+        "/bin/cat",
+    ]);
+    s.run_raw_checked(&[
+        "new-session",
+        "-d",
+        "-s",
+        "busy",
+        "-x",
+        "80",
+        "-y",
+        "12",
+        "/bin/cat",
+    ]);
+    s.run_raw_checked(&["send-keys", "-t", "=busy:", "activity", "Enter"]);
     s.run_with_stdin_checked(
         &[
-            "start-server",
-            ";",
             "load-buffer",
             "-b",
             buffer,
@@ -399,15 +420,16 @@ fn shell_restore_bootstrap_becomes_tmux_history_without_executing_text() {
             "80",
             "-y",
             "12",
-            "/bin/sh",
-            "-c",
-            restore_script,
-            "deck-shell-restore",
-            tmux,
-            &s.0,
+            "/bin/cat",
+            ";",
+            "save-buffer",
+            "-b",
             buffer,
-            "/bin/sh",
-            "-sh",
+            "#{pane_tty}",
+            ";",
+            "delete-buffer",
+            "-b",
+            buffer,
         ],
         &payload,
     );
@@ -415,13 +437,41 @@ fn shell_restore_bootstrap_becomes_tmux_history_without_executing_text() {
     let mut captured = String::new();
     for _ in 0..200 {
         captured = s.run(&["capture-pane", "-p", "-J", "-S", "-100", "-t", "=t:"]);
-        if captured.contains("deck restart") && s.fmt("#{pane_current_command}") == "sh" {
+        if captured.contains("deck restart") {
             break;
         }
         sleep(Duration::from_millis(10));
     }
-    let current_command = s.fmt("#{pane_current_command}");
-    let start_command = s.fmt("#{pane_start_command}");
+    let current_command = s.run(&[
+        "display-message",
+        "-p",
+        "-t",
+        "=t:",
+        "#{pane_current_command}",
+    ]);
+    let start_command = s.run(&[
+        "display-message",
+        "-p",
+        "-t",
+        "=t:",
+        "#{pane_start_command}",
+    ]);
+    let start_command = start_command.trim().to_string();
+    for other in ["older", "busy"] {
+        let elsewhere = s.run(&[
+            "capture-pane",
+            "-p",
+            "-J",
+            "-S",
+            "-100",
+            "-t",
+            &format!("={other}:"),
+        ]);
+        assert!(
+            !elsewhere.contains("restored-contract"),
+            "history leaked into session {other}: {elsewhere}"
+        );
+    }
     assert!(
         captured.contains("restored-contract-00"),
         "captured={captured:?} current={current_command:?} start={start_command:?}"
@@ -432,8 +482,10 @@ fn shell_restore_bootstrap_becomes_tmux_history_without_executing_text() {
         !executed.exists(),
         "command-shaped history must not execute"
     );
-    assert!(start_command.starts_with("/bin/sh"), "{start_command}");
-    assert!(!start_command.contains("deck-app"), "{start_command}");
+    assert_eq!(
+        start_command, "/bin/cat",
+        "no shell, no script, no deck executable"
+    );
     assert!(
         !start_command.contains("restored-contract"),
         "private history must not appear in argv: {start_command}"
@@ -444,7 +496,11 @@ fn shell_restore_bootstrap_becomes_tmux_history_without_executing_text() {
         "restore buffer must be one-use"
     );
     assert!(
-        s.fmt("#{history_size}").parse::<u32>().unwrap_or(0) > 0,
+        s.run(&["display-message", "-p", "-t", "=t:", "#{history_size}"])
+            .trim()
+            .parse::<u32>()
+            .unwrap_or(0)
+            > 0,
         "restored output must live in tmux scrollback"
     );
     let _ = std::fs::remove_dir_all(root);

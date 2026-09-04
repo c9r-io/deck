@@ -172,9 +172,17 @@ Frontend gates: `node --check` (syntax) · `ui/test/*.mjs` (node:test)
   control characters stripped). On a user-opened command-less card,
   `start_session` may use the saved cwd and submits one tmux batch that starts
   an empty server if needed, loads sanitized bytes from Deck's stdin into a
-  uniquely named private tmux buffer, then creates the pane with `/bin/sh`.
-  That system-shell bootstrap writes the buffer to the NEW pane's stdout,
-  deletes it, and execs the user's login shell. The signed `deck-app` binary
+  uniquely named private tmux buffer, creates the pane the ORDINARY way
+  (tmux's own login shell, no command), and in the same sequence has the
+  tmux SERVER `save-buffer` the bytes to `#{pane_tty}` — the new pane's
+  tty — then deletes the buffer. No `/bin/sh -c`, no script, no shell argv:
+  the earlier inline-script bootstrap was an EDR signature. The write
+  follows the fork inside one tmux process, so it lands before the shell's
+  first prompt in practice; a slow rc file can only reorder text. After
+  `new-session -d` in one sequence the format resolves to the pane just
+  created even on a busy server (pinned by `tmux_contract`). A sequence
+  failure after the pane exists keeps that pane as a clean, unrestored
+  shell. The signed `deck-app` binary
   must NEVER be a pane executable: after reboot macOS Local Network Privacy
   can otherwise attribute the exec-replaced shell and all of its descendants
   to Deck while a fresh tmux-created shell works. The text is ordinary tmux
