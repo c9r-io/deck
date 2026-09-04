@@ -3,23 +3,32 @@
 //! Tauri's in-process restart starts the replacement executable inside the
 //! old application's process group. macOS can retain that group's responsible
 //! code identity for descendants, so terminal TCP connections may be charged
-//! to an executable UUID that disappeared during the update. A launchd-owned
-//! helper waits for the old process to exit and asks LaunchServices to open the
-//! installed bundle. The resulting GUI process has a fresh process group and
-//! responsible-code boundary.
+//! to an executable UUID that disappeared during the update. Instead, the
+//! exiting process detaches one short-lived waiter (this same signed
+//! executable in helper mode, in its own session via `setsid`) that waits for
+//! the old process to exit and asks LaunchServices to open the installed
+//! bundle. LaunchServices starts the GUI process itself, so the new deck is
+//! never a child of the waiter or of the replaced process and leads its own
+//! process group.
+//!
+//! deck never registers anything with the system service manager: no
+//! submitted jobs, no agent/daemon plists, no login items. Endpoint security
+//! tooling treats a third-party job submission as a persistence signature, and
+//! a corporate EDR alert on that path is what removed it (CLAUDE.md keeps the
+//! rule; the static test forbids the strings).
 
 use std::ffi::{OsStr, OsString};
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::OnceLock;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use tauri::AppHandle;
 
 use crate::storage::applog;
 
-const HELPER_FLAG: &str = "--deck-launchd-relauncher";
-const LABEL_PREFIX: &str = "io.c9r.deck.relaunch.";
+const HELPER_FLAG: &str = "--deck-relauncher";
 const WAIT_ATTEMPTS: usize = 600;
 const WAIT_INTERVAL: Duration = Duration::from_millis(50);
 
@@ -33,7 +42,6 @@ struct RelaunchTarget {
 #[derive(Debug, PartialEq, Eq)]
 struct HelperRequest {
     old_pid: u32,
-    label: String,
     app_bundle: PathBuf,
     preserved_args: Vec<OsString>,
 }
@@ -152,17 +160,6 @@ fn parse_helper_request(
         .and_then(|value| value.to_str().and_then(|value| value.parse::<u32>().ok()))
         .filter(|pid| *pid > 1)
         .ok_or(())?;
-    let label = args
-        .next()
-        .and_then(|value| value.into_string().ok())
-        .filter(|value| {
-            value.starts_with(LABEL_PREFIX)
-                && value.len() <= 128
-                && value
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-'))
-        })
-        .ok_or(())?;
     let app_bundle = args
         .next()
         .map(PathBuf::from)
@@ -176,7 +173,6 @@ fn parse_helper_request(
     }
     Ok(Some(HelperRequest {
         old_pid,
-        label,
         app_bundle,
         preserved_args,
     }))
@@ -193,12 +189,6 @@ fn process_exists(_pid: u32) -> bool {
     false
 }
 
-fn cleanup_job(label: &str) {
-    let _ = Command::new("/bin/launchctl")
-        .args(["remove", label])
-        .status();
-}
-
 fn run_helper(request: HelperRequest) -> i32 {
     for _ in 0..WAIT_ATTEMPTS {
         if !process_exists(request.old_pid) {
@@ -208,16 +198,14 @@ fn run_helper(request: HelperRequest) -> i32 {
                 open.arg("--args").args(&request.preserved_args);
             }
             let success = open.status().is_ok_and(|status| status.success());
-            cleanup_job(&request.label);
             return if success { 0 } else { 1 };
         }
         std::thread::sleep(WAIT_INTERVAL);
     }
-    cleanup_job(&request.label);
     1
 }
 
-/// The launchd helper uses the same signed executable but exits before Tauri,
+/// The waiter uses the same signed executable but exits before Tauri,
 /// storage, the instance lock, or tmux are initialized.
 pub(crate) fn run_helper_from_args() -> Option<i32> {
     match parse_helper_request(std::env::args_os()) {
@@ -249,12 +237,28 @@ fn resolved_installed_executable(target: &RelaunchTarget) -> Option<PathBuf> {
     executable.is_file().then_some(executable)
 }
 
-fn unique_label(pid: u32) -> String {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    format!("{LABEL_PREFIX}{pid}.{nanos}")
+/// Build the detached waiter command: the installed executable in helper
+/// mode, in its own session (`setsid`), with no inherited stdio.
+fn helper_command(executable: PathBuf, target: &RelaunchTarget, pid: u32) -> Command {
+    let mut command = Command::new(executable);
+    command
+        .arg(HELPER_FLAG)
+        .arg(pid.to_string())
+        .arg(&target.app_bundle)
+        .args(&target.preserved_args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    // SAFETY: setsid is async-signal-safe and touches no Rust state.
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    command
 }
 
 fn schedule_clean_relaunch() -> Result<(), String> {
@@ -265,60 +269,12 @@ fn schedule_clean_relaunch() -> Result<(), String> {
     let executable = resolved_installed_executable(target)
         .ok_or_else(|| "installed application executable is unavailable".to_string())?;
     let pid = std::process::id();
-    let label = unique_label(pid);
-    let mut command = Command::new("/bin/launchctl");
-    command
-        .args(["submit", "-l", &label, "--"])
-        .arg(executable)
-        .arg(HELPER_FLAG)
-        .arg(pid.to_string())
-        .arg(&label)
-        .arg(&target.app_bundle)
-        .args(&target.preserved_args);
-    let status = command
-        .status()
-        .map_err(|_| "clean application relaunch could not be scheduled".to_string())?;
-    if !status.success() {
-        return Err("clean application relaunch could not be scheduled".into());
-    }
-    Ok(())
-}
-
-#[cfg(target_os = "macos")]
-fn process_group_needs_reentry(pid: u32, process_group: i32) -> bool {
-    process_group > 1 && process_group as u32 != pid
-}
-
-#[cfg(not(target_os = "macos"))]
-fn process_group_needs_reentry(_pid: u32, _process_group: i32) -> bool {
-    false
-}
-
-/// Heal the first upgrade from a release that still used Tauri's in-process
-/// restart. LaunchServices GUI applications normally lead their own process
-/// group; inheriting another group is the observable signature of that path.
-pub(crate) fn heal_inherited_process_group() -> bool {
-    #[cfg(target_os = "macos")]
-    let process_group = unsafe { libc::getpgrp() };
-    #[cfg(not(target_os = "macos"))]
-    let process_group = std::process::id() as i32;
-
-    if !process_group_needs_reentry(std::process::id(), process_group) {
-        return false;
-    }
-    match schedule_clean_relaunch() {
-        Ok(()) => {
-            applog("[update] inherited process identity detected; clean relaunch scheduled");
-            true
-        }
-        Err(error) => {
-            applog(&format!(
-                "[update] clean relaunch unavailable ({})",
-                crate::storage::err_code(&error)
-            ));
-            false
-        }
-    }
+    // The child is deliberately not waited on: once this process exits it is
+    // reparented to launchd and finishes on its own.
+    helper_command(executable, target, pid)
+        .spawn()
+        .map(drop)
+        .map_err(|_| "clean application relaunch could not be scheduled".to_string())
 }
 
 /// Future updates never use Tauri's child-process restart. The command is
@@ -389,7 +345,6 @@ mod tests {
             os("deck-app"),
             os(HELPER_FLAG),
             os("123"),
-            os("io.c9r.deck.relaunch.123.456"),
             os("/Applications/deck.app"),
             os("--smoke-data-dir"),
             os("/tmp/deck-smoke"),
@@ -404,18 +359,10 @@ mod tests {
             os("deck-app"),
             os(HELPER_FLAG),
             os("123"),
-            os("io.c9r.deck.relaunch.123.456"),
             os("/Applications/deck.app"),
             os("--arbitrary"),
         ];
         assert_eq!(parse_helper_request(invalid), Err(()));
-    }
-
-    #[test]
-    fn inherited_group_requires_clean_reentry() {
-        assert!(!process_group_needs_reentry(500, 500));
-        assert!(process_group_needs_reentry(501, 500));
-        assert!(!process_group_needs_reentry(501, 0));
     }
 
     #[test]
@@ -462,16 +409,13 @@ mod tests {
             parse_helper_request([os("deck"), os("--debug-logging")]),
             Ok(None)
         );
-        let base = |pid: &str, label: &str, bundle: &str| {
-            vec![os("deck"), os(HELPER_FLAG), os(pid), os(label), os(bundle)]
-        };
+        let base = |pid: &str, bundle: &str| vec![os("deck"), os(HELPER_FLAG), os(pid), os(bundle)];
         for bad in [
-            base("0", "io.c9r.deck.relaunch.1", "/Applications/deck.app"),
-            base("nope", "io.c9r.deck.relaunch.1", "/Applications/deck.app"),
-            base("12", "wrong.label", "/Applications/deck.app"),
-            base("12", "io.c9r.deck.relaunch.bad!", "/Applications/deck.app"),
-            base("12", "io.c9r.deck.relaunch.12", "relative.app"),
-            base("12", "io.c9r.deck.relaunch.12", "/Applications/deck.txt"),
+            base("0", "/Applications/deck.app"),
+            base("1", "/Applications/deck.app"),
+            base("nope", "/Applications/deck.app"),
+            base("12", "relative.app"),
+            base("12", "/Applications/deck.txt"),
         ] {
             assert_eq!(parse_helper_request(bad), Err(()));
         }
@@ -506,12 +450,29 @@ mod tests {
     }
 
     #[test]
-    fn relaunch_identifiers_and_missing_install_state_fail_closed() {
-        let label = unique_label(42);
-        assert!(label.starts_with("io.c9r.deck.relaunch.42."));
-        assert!(label
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'.'));
+    fn helper_command_is_the_installed_executable_with_closed_arguments() {
+        let target = RelaunchTarget {
+            app_bundle: PathBuf::from("/Applications/deck.app"),
+            preferred_executable: os("deck-app"),
+            preserved_args: vec![os("--debug-logging")],
+        };
+        let executable = PathBuf::from("/Applications/deck.app/Contents/MacOS/deck-app");
+        let command = helper_command(executable.clone(), &target, 42);
+        assert_eq!(command.get_program(), executable.as_os_str());
+        let args: Vec<_> = command.get_args().map(OsStr::to_os_string).collect();
+        assert_eq!(
+            args,
+            vec![
+                os(HELPER_FLAG),
+                os("42"),
+                os("/Applications/deck.app"),
+                os("--debug-logging")
+            ]
+        );
+    }
+
+    #[test]
+    fn missing_install_state_fails_closed() {
         assert!(process_exists(std::process::id()));
         assert!(!process_exists(2_000_000_000));
         assert_eq!(

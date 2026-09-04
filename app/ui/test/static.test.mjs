@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { en } from '../js/i18n/en.js';
@@ -44,10 +44,13 @@ test('update channels are backend-owned, isolated and never trigger downgrade', 
   assert.doesNotMatch(app, /process\.relaunch|__TAURI__\.process/,
     'the updater must not inherit the replaced app process group');
   const relaunch = read('app/src-tauri/src/relaunch.rs');
-  assert.match(relaunch, /launchctl[\s\S]*submit[\s\S]*HELPER_FLAG/);
+  assert.match(relaunch, /libc::setsid\(\)[\s\S]*HELPER_FLAG|HELPER_FLAG[\s\S]*libc::setsid\(\)/,
+    'the relaunch waiter is a setsid-detached child of the exiting app');
   assert.match(relaunch, /\/usr\/bin\/open[\s\S]*"-n"/);
-  assert.match(relaunch, /heal_inherited_process_group/,
-    'the first update from a legacy release self-heals before tmux starts');
+  for (const file of readdirSync(resolve(root, 'app/src-tauri/src')).filter((f) => f.endsWith('.rs'))) {
+    assert.doesNotMatch(read(`app/src-tauri/src/${file}`), /launchctl|LaunchAgents|LaunchDaemons|SMAppService/,
+      `${file}: deck never registers anything with launchd (corporate EDR flags it)`);
+  }
   assert.doesNotMatch(read('app/src-tauri/capabilities/default.json'), /updater:/,
     'the webview has no direct updater command permission');
   assert.doesNotMatch(read('app/src-tauri/capabilities/default.json'), /process:/,

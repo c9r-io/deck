@@ -48,6 +48,13 @@ Frontend gates: `node --check` (syntax) · `ui/test/*.mjs` (node:test)
   before Tauri renames the running app into `tauri_current_app`; a failed
   install clears it, a successful install exits/relaunches from the stable app.
   Increment `SERVER_PROTOCOL` only for a true compatibility break.
+- deck NEVER touches launchd: no `launchctl` (not even a one-shot
+  `submit`), no LaunchAgents/LaunchDaemons, no login items. A corporate EDR
+  flagged the old `launchctl submit` relaunch helper as a persistence
+  signature and IT demanded the app be stopped. Post-update relaunch is a
+  `setsid`-detached waiter (`relaunch.rs`) that waits for the old PID and
+  `open -n`s the installed bundle; the static test forbids the strings in
+  `src-tauri/src`.
 - Release operation is documented in `docs/release-channels.md`.
   `scripts/release-version` synchronizes the three numeric source/lock entries;
   `scripts/release_channels.py` is the shared manifest/hash/provenance validator;

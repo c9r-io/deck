@@ -162,13 +162,6 @@ fn main() {
         let _ = Command::new("osascript").args(["-e", &script]).status();
         std::process::exit(0);
     }
-    // Releases through 0.5.2 used Tauri's in-process restart. A replacement
-    // launched that way inherits the vanished app's process group and macOS
-    // responsible-code identity. Heal before tmux or the scheduler can create
-    // a process carrying that identity.
-    if relaunch::heal_inherited_process_group() {
-        std::process::exit(0);
-    }
     shell_state::cleanup_restore_temps();
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())

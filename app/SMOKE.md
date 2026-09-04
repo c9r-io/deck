@@ -116,13 +116,13 @@ a fixture.
       `tauri_current_app/.../current_app` image. The new deck must report the
       old build as Restart required and must not create another server from
       that backup, `/tmp`, a DMG mount or App Translocation.
-- [ ] Exercise the transition from a signed 0.5.2 install as well as an update
-      between two fixed candidates. After each update settles, verify the final
-      deck process has `PPID=1` and `PGID=PID`; the prior deck PID/PGID is gone,
-      `launchctl list` has no `io.c9r.deck.relaunch.*` job, and `app.log`
-      contains either the legacy inherited-identity self-heal or the direct
-      clean-relaunch event. A transient intermediate process must not reach
-      tmux/session creation.
+- [ ] Exercise an update between two fixed candidates. After each update
+      settles, verify the final deck process has `PPID=1` and `PGID=PID`; the
+      prior deck PID/PGID is gone, no `deck-app --deck-relauncher` waiter
+      remains in `ps`, `launchctl list` shows only the ordinary
+      `application.io.c9r.deck.*` entry (deck never submits a launchd job), and
+      `app.log` contains the clean-relaunch event. A transient intermediate
+      process must not reach tmux/session creation.
 - [ ] Choose Later and verify the old process/session continues and the prompt
       does not loop. Then save work and confirm restart. Observe: old PID exits;
       the socket is usable; new PID differs; `show -gqv

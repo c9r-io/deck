@@ -16,8 +16,12 @@ constructs one Tauri updater with exactly one endpoint, so a missing or damaged
 Nightly feed is an error and never falls through to Stable or an unverified
 source. Download, minisign verification and installation continue to use
 Tauri's updater implementation. Relaunch is deliberately backend-owned on
-macOS: a one-shot launchd helper waits for the replaced process to exit and
-asks LaunchServices to open the installed bundle as a new application process.
+macOS: the exiting process detaches one short-lived waiter (its own signed
+executable in helper mode, in a new session via `setsid`) that waits for the
+replaced process to exit and asks LaunchServices to open the installed bundle
+as a new application process. deck never calls `launchctl` or registers
+anything with launchd; corporate endpoint security treats that as a
+persistence signature.
 
 ## Version and identity model
 
@@ -46,13 +50,9 @@ replacement: empty servers are replaced automatically; occupied servers require
 explicit user confirmation because every process inside them ends. Development
 and smoke builds use separate bundle IDs and sockets. During updater install the
 old process is embargoed from server creation before Tauri moves its app bundle
-to the temporary backup. It then exits through the launchd/LaunchServices
+to the temporary backup. It then exits through the detached-waiter/LaunchServices
 re-entry boundary instead of spawning its replacement. The installed app
-performs lifecycle reconciliation before scheduler or UI session work. As a
-transition guard for releases through 0.5.2, an app that boots inside another
-process's group performs that clean re-entry before it can touch tmux; this
-prevents terminal descendants from retaining a disappeared executable's macOS
-responsible-code identity.
+performs lifecycle reconciliation before scheduler or UI session work.
 
 Prepare a candidate commit with:
 
