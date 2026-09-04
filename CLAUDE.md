@@ -298,7 +298,11 @@ Frontend gates: `node --check` (syntax) · `ui/test/*.mjs` (node:test)
   (card statuses `attention`/`done`; a working agent never shows amber). The
   Settings toggle is the user-driven writer of `~/.claude/settings.json`
   (three entries: UserPromptSubmit→working, Notification matcher
-  `permission_prompt|idle_prompt`→needs-input, Stop→turn-done), and the
+  `permission_prompt|idle_prompt`→needs-input, Stop→turn-done, written in
+  Claude Code's EXEC form — bare helper path in `command`, words in
+  `args` — so Claude Code spawns the signed helper directly and no `sh -c`
+  runs per event; Codex stays shell-form + `async`, exec form being
+  undocumented there), and the
   release-only boot migration is the sole other one; install, migrate and
   uninstall touch only entries containing `deck.app/Contents/MacOS/deck-status-helper` (or the legacy `.deck/bin/deck-status-helper`),
   preserve everything else including file mode, and never modify a malformed

@@ -336,8 +336,29 @@ const CODEX_HOOKS: &[HookSpec] = &[
     ("Interrupt", None, "turn-done"),
 ];
 
-fn helper_command(helper: &str, source: &str, state: &str) -> String {
-    format!("\"{helper}\" {source} {state}")
+/// How an agent runs a hook command.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum HookStyle {
+    /// Claude Code exec form: with `args` present the helper is spawned
+    /// directly, so no `sh -c` runs per event (one process less for
+    /// endpoint security to look at).
+    Exec,
+    /// Codex shell form with `"async": true` so the fire-and-forget helper
+    /// never blocks a turn; exec form is not documented there.
+    ShellAsync,
+}
+
+/// One deck hook object in the agent's document shape.
+fn hook_value(style: HookStyle, helper: &str, source: &str, state: &str) -> serde_json::Value {
+    match style {
+        HookStyle::Exec => serde_json::json!({
+            "type": "command", "command": helper, "args": [source, state], "timeout": 10
+        }),
+        HookStyle::ShellAsync => serde_json::json!({
+            "type": "command", "command": format!("\"{helper}\" {source} {state}"),
+            "timeout": 10, "async": true
+        }),
+    }
 }
 
 fn command_is_ours(command: &str) -> bool {
@@ -357,11 +378,16 @@ fn entry_is_ours(entry: &serde_json::Value) -> bool {
     entry_commands(entry).any(command_is_ours)
 }
 
-/// Every deck-authored command in the document names exactly `helper`.
-/// False for a legacy `~/.deck/bin` entry or a bundle that has since moved,
-/// which is what boot migration repairs.
-pub(crate) fn hooks_reference(root: &serde_json::Value, helper: &str) -> bool {
+/// Every deck-authored command in the document names exactly `helper` in
+/// the agent's current `style`. False for a legacy `~/.deck/bin` entry, a
+/// bundle that has since moved, or a shell-form entry where exec form is
+/// expected — each of which boot migration repairs.
+pub(crate) fn hooks_reference(root: &serde_json::Value, helper: &str, style: HookStyle) -> bool {
     let prefix = format!("\"{helper}\" ");
+    let current = |command: &str| match style {
+        HookStyle::Exec => command == helper,
+        HookStyle::ShellAsync => command.starts_with(&prefix),
+    };
     root.get("hooks")
         .and_then(|h| h.as_object())
         .into_iter()
@@ -370,18 +396,17 @@ pub(crate) fn hooks_reference(root: &serde_json::Value, helper: &str) -> bool {
         .flatten()
         .flat_map(entry_commands)
         .filter(|command| command_is_ours(command))
-        .all(|command| command.starts_with(&prefix))
+        .all(current)
 }
 
 /// Add deck's hook entries to a parsed hooks document. Everything the user
 /// wrote — other hooks, unknown keys, other events — is preserved; only
-/// entries carrying the helper marker are replaced. `mark_async` adds
-/// Codex's `"async": true` so the fire-and-forget helper never blocks a turn.
+/// entries carrying the helper marker are replaced, in the agent's `style`.
 pub(crate) fn hooks_with_install(
     mut root: serde_json::Value,
     specs: &[HookSpec],
     source: &str,
-    mark_async: bool,
+    style: HookStyle,
     helper: &str,
 ) -> Result<serde_json::Value, String> {
     let obj = root
@@ -399,13 +424,7 @@ pub(crate) fn hooks_with_install(
             .as_array_mut()
             .ok_or("a hook event entry is not a JSON array")?;
         list.retain(|entry| !entry_is_ours(entry));
-        let mut hook = serde_json::json!({
-            "type": "command", "command": helper_command(helper, source, state), "timeout": 10
-        });
-        if mark_async {
-            hook["async"] = serde_json::json!(true);
-        }
-        let mut entry = serde_json::json!({ "hooks": [hook] });
+        let mut entry = serde_json::json!({ "hooks": [hook_value(style, helper, source, state)] });
         if let Some(matcher) = matcher {
             entry["matcher"] = serde_json::json!(matcher);
         }
@@ -537,13 +556,13 @@ fn write_hooks(path: &Path, next: &serde_json::Value, never_ran: &str) -> Result
     write_agent_config(path, bytes.as_bytes(), never_ran)
 }
 
-/// Each agent module: config path, spec table, source word, async flag,
+/// Each agent module: config path, spec table, source word, hook style,
 /// never-ran message.
 type AgentModule = (
     Option<PathBuf>,
     &'static [HookSpec],
     &'static str,
-    bool,
+    HookStyle,
     &'static str,
 );
 
@@ -553,14 +572,14 @@ fn agent_modules() -> [AgentModule; 2] {
             claude_settings_path(),
             CLAUDE_HOOKS,
             "claude-code",
-            false,
+            HookStyle::Exec,
             "Claude Code has never run on this Mac — nothing to configure",
         ),
         (
             codex_hooks_path(),
             CODEX_HOOKS,
             "codex",
-            true,
+            HookStyle::ShellAsync,
             "Codex has never run on this Mac — nothing to configure",
         ),
     ]
@@ -576,7 +595,7 @@ pub(crate) fn migrate_hooks_on_boot() {
         return;
     };
     let mut legacy_referenced = false;
-    for (path, specs, source, mark_async, never_ran) in agent_modules() {
+    for (path, specs, source, style, never_ran) in agent_modules() {
         let Some(path) = path else { continue };
         let Ok(value) = read_settings_value(&path) else {
             continue;
@@ -584,10 +603,10 @@ pub(crate) fn migrate_hooks_on_boot() {
         if !hooks_installed(&value, specs) {
             continue;
         }
-        if hooks_reference(&value, &helper) {
+        if hooks_reference(&value, &helper, style) {
             continue;
         }
-        let result = hooks_with_install(value.clone(), specs, source, mark_async, &helper)
+        let result = hooks_with_install(value.clone(), specs, source, style, &helper)
             .and_then(|next| write_hooks(&path, &next, never_ran));
         match result {
             Ok(()) => applog(&format!(
@@ -635,14 +654,14 @@ fn hooks_set(
     path: &Path,
     specs: &[HookSpec],
     source: &str,
-    mark_async: bool,
+    style: HookStyle,
     enable: bool,
     never_ran: &str,
 ) -> Result<(), String> {
     let value = read_settings_value(path)?;
     let next = if enable {
         let helper = installed_helper_path()?;
-        hooks_with_install(value, specs, source, mark_async, &helper)?
+        hooks_with_install(value, specs, source, style, &helper)?
     } else {
         if !path.exists() {
             return Ok(());
@@ -680,12 +699,12 @@ pub(crate) fn agent_hooks_set(agent: String, enable: bool) -> Result<(), String>
         .into_iter()
         .find(|(_, _, source, _, _)| *source == agent)
         .ok_or("unknown agent")?;
-    let (path, specs, source, mark_async, never_ran) = module;
+    let (path, specs, source, style, never_ran) = module;
     let result = hooks_set(
         &path.ok_or("no home directory")?,
         specs,
         source,
-        mark_async,
+        style,
         enable,
         never_ran,
     );
@@ -793,8 +812,14 @@ mod tests {
                 ]
             }
         });
-        let installed =
-            hooks_with_install(user.clone(), CODEX_HOOKS, "codex", true, HELPER).unwrap();
+        let installed = hooks_with_install(
+            user.clone(),
+            CODEX_HOOKS,
+            "codex",
+            HookStyle::ShellAsync,
+            HELPER,
+        )
+        .unwrap();
         assert!(hooks_installed(&installed, CODEX_HOOKS));
         assert_eq!(installed["description"], "my hooks");
         // the user's own Stop hook coexists with ours — no notify-style conflict
@@ -814,7 +839,14 @@ mod tests {
         );
 
         // idempotent install, exact uninstall
-        let twice = hooks_with_install(installed, CODEX_HOOKS, "codex", true, HELPER).unwrap();
+        let twice = hooks_with_install(
+            installed,
+            CODEX_HOOKS,
+            "codex",
+            HookStyle::ShellAsync,
+            HELPER,
+        )
+        .unwrap();
         assert_eq!(twice["hooks"]["Stop"].as_array().unwrap().len(), 2);
         assert_eq!(hooks_with_uninstall(twice), user);
 
@@ -823,7 +855,7 @@ mod tests {
             serde_json::json!({}),
             CLAUDE_HOOKS,
             "claude-code",
-            false,
+            HookStyle::Exec,
             HELPER,
         )
         .unwrap();
@@ -923,8 +955,14 @@ mod tests {
                 ]
             }
         });
-        let installed =
-            hooks_with_install(user.clone(), CLAUDE_HOOKS, "claude-code", false, HELPER).unwrap();
+        let installed = hooks_with_install(
+            user.clone(),
+            CLAUDE_HOOKS,
+            "claude-code",
+            HookStyle::Exec,
+            HELPER,
+        )
+        .unwrap();
         assert!(hooks_installed(&installed, CLAUDE_HOOKS));
         assert_eq!(installed["model"], "opus");
         // the user's own Stop hook and PreToolUse guard survive
@@ -933,12 +971,16 @@ mod tests {
             installed["hooks"]["PreToolUse"].as_array().unwrap().len(),
             1
         );
-        assert!(
-            installed["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"]
-                .as_str()
-                .unwrap()
-                .contains("deck-status-helper\" claude-code working")
+        // exec form: the helper path alone in `command`, words in `args`,
+        // so Claude Code spawns the helper without a shell
+        let submit = &installed["hooks"]["UserPromptSubmit"][0]["hooks"][0];
+        assert_eq!(submit["command"], HELPER);
+        assert_eq!(
+            submit["args"],
+            serde_json::json!(["claude-code", "working"])
         );
+        assert_eq!(submit["type"], "command");
+        assert!(submit.get("async").is_none());
         assert_eq!(
             installed["hooks"]["Notification"][0]["matcher"],
             "permission_prompt|idle_prompt"
@@ -949,7 +991,7 @@ mod tests {
             installed.clone(),
             CLAUDE_HOOKS,
             "claude-code",
-            false,
+            HookStyle::Exec,
             HELPER,
         )
         .unwrap();
@@ -969,7 +1011,7 @@ mod tests {
             serde_json::json!({}),
             CLAUDE_HOOKS,
             "claude-code",
-            false,
+            HookStyle::Exec,
             HELPER,
         )
         .unwrap();
@@ -978,7 +1020,8 @@ mod tests {
 
     #[test]
     fn hook_install_refuses_malformed_documents() {
-        let install = |v| hooks_with_install(v, CLAUDE_HOOKS, "claude-code", false, HELPER);
+        let install =
+            |v| hooks_with_install(v, CLAUDE_HOOKS, "claude-code", HookStyle::Exec, HELPER);
         assert!(install(serde_json::json!([1, 2])).is_err());
         assert!(install(serde_json::json!({ "hooks": "nope" })).is_err());
         assert!(install(serde_json::json!({ "hooks": { "Stop": "nope" } })).is_err());
@@ -1007,12 +1050,18 @@ mod tests {
         });
         // a legacy install still reads as installed, but not as current
         assert!(hooks_installed(&legacy, CLAUDE_HOOKS));
-        assert!(!hooks_reference(&legacy, HELPER));
+        assert!(!hooks_reference(&legacy, HELPER, HookStyle::Exec));
 
         // migration = the ordinary install over the legacy document
-        let migrated =
-            hooks_with_install(legacy.clone(), CLAUDE_HOOKS, "claude-code", false, HELPER).unwrap();
-        assert!(hooks_reference(&migrated, HELPER));
+        let migrated = hooks_with_install(
+            legacy.clone(),
+            CLAUDE_HOOKS,
+            "claude-code",
+            HookStyle::Exec,
+            HELPER,
+        )
+        .unwrap();
+        assert!(hooks_reference(&migrated, HELPER, HookStyle::Exec));
         assert_eq!(migrated["model"], "opus");
         assert_eq!(migrated["hooks"]["Stop"].as_array().unwrap().len(), 2);
         let text = serde_json::to_string(&migrated).unwrap();
@@ -1021,19 +1070,49 @@ mod tests {
 
         // a bundle that moved is equally not current
         let moved = "/Users/x/Applications/deck.app/Contents/MacOS/deck-status-helper";
-        assert!(!hooks_reference(&migrated, moved));
+        assert!(!hooks_reference(&migrated, moved, HookStyle::Exec));
         assert!(hooks_reference(
-            &hooks_with_install(migrated.clone(), CLAUDE_HOOKS, "claude-code", false, moved)
-                .unwrap(),
-            moved
+            &hooks_with_install(
+                migrated.clone(),
+                CLAUDE_HOOKS,
+                "claude-code",
+                HookStyle::Exec,
+                moved
+            )
+            .unwrap(),
+            moved,
+            HookStyle::Exec
         ));
+
+        // a shell-form entry with the right path is not current for Claude
+        // Code (exec form expected) but is for Codex
+        let shell_form = hooks_with_install(
+            serde_json::json!({}),
+            CLAUDE_HOOKS,
+            "claude-code",
+            HookStyle::ShellAsync,
+            HELPER,
+        )
+        .unwrap();
+        assert!(!hooks_reference(&shell_form, HELPER, HookStyle::Exec));
+        assert!(hooks_reference(&shell_form, HELPER, HookStyle::ShellAsync));
+        let exec_form = hooks_with_install(
+            shell_form,
+            CLAUDE_HOOKS,
+            "claude-code",
+            HookStyle::Exec,
+            HELPER,
+        )
+        .unwrap();
+        assert!(hooks_reference(&exec_form, HELPER, HookStyle::Exec));
+        assert!(!serde_json::to_string(&exec_form).unwrap().contains("\\\""));
 
         // uninstall removes legacy and current entries alike
         let removed = hooks_with_uninstall(legacy);
         assert_eq!(removed["hooks"]["Stop"].as_array().unwrap().len(), 1);
         assert!(!hooks_installed(&removed, CLAUDE_HOOKS));
         // a document with no deck entries is trivially current
-        assert!(hooks_reference(&removed, HELPER));
+        assert!(hooks_reference(&removed, HELPER, HookStyle::Exec));
     }
 
     #[test]
@@ -1048,8 +1127,12 @@ mod tests {
         assert!(helper.ends_with("/deck.app/Contents/MacOS/deck-status-helper"));
         assert!(helper.contains(HELPER_MARKER));
         assert_eq!(
-            helper_command(&helper, "claude-code", "working"),
-            format!("\"{helper}\" claude-code working")
+            hook_value(HookStyle::ShellAsync, &helper, "codex", "working")["command"],
+            format!("\"{helper}\" codex working")
+        );
+        assert_eq!(
+            hook_value(HookStyle::Exec, &helper, "claude-code", "working")["command"],
+            helper
         );
 
         let quoted = dir.join("we\"ird").join("deck.app");

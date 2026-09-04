@@ -61,6 +61,8 @@ test('update channels are backend-owned, isolated and never trigger downgrade', 
     'deck never drops an executable into the home directory');
   assert.match(hooks, /stable_installed_bundle\(bundle\)/,
     'only a release-location install may register hooks');
+  assert.match(hooks, /"command": helper, "args": \[source, state\]/,
+    'Claude Code entries use exec form so no sh -c runs per hook event');
   assert.doesNotMatch(read('app/src-tauri/capabilities/default.json'), /updater:/,
     'the webview has no direct updater command permission');
   assert.doesNotMatch(read('app/src-tauri/capabilities/default.json'), /process:/,
