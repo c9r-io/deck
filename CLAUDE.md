@@ -48,13 +48,19 @@ Frontend gates: `node --check` (syntax) · `ui/test/*.mjs` (node:test)
   before Tauri renames the running app into `tauri_current_app`; a failed
   install clears it, a successful install exits/relaunches from the stable app.
   Increment `SERVER_PROTOCOL` only for a true compatibility break.
-- deck NEVER touches launchd: no `launchctl` (not even a one-shot
-  `submit`), no LaunchAgents/LaunchDaemons, no login items. A corporate EDR
-  flagged the old `launchctl submit` relaunch helper as a persistence
-  signature and IT demanded the app be stopped. Post-update relaunch is a
+- deck is EDR-QUIET by rule (a corporate EDR flagged it and IT demanded the
+  app be stopped; the static test enforces each point):
+  never touches launchd — no `launchctl` (not even a one-shot `submit`), no
+  LaunchAgents/LaunchDaemons, no login items; post-update relaunch is a
   `setsid`-detached waiter (`relaunch.rs`) that waits for the old PID and
-  `open -n`s the installed bundle; the static test forbids the strings in
-  `src-tauri/src`.
+  `open -n`s the installed bundle. Never spawns `ps`, `date`, `osascript`
+  or a shell: process facts (pid/ppid/RSS/tty/foreground group/argv[0])
+  come from libproc + `KERN_PROCARGS2` in `procinfo.rs`, local time from
+  `localtime_r`, and a duplicate instance just logs and exits. Never
+  writes an executable under `~`: hook commands name the helper INSIDE the
+  signed bundle (see agent hooks). Remaining spawns are low-frequency,
+  fixed-argument system tools (`open`, `plutil`, `pbcopy`, `defaults`,
+  `sw_vers`, `uname`) plus the bundled tmux.
 - Release operation is documented in `docs/release-channels.md`.
   `scripts/release-version` synchronizes the three numeric source/lock entries;
   `scripts/release_channels.py` is the shared manifest/hash/provenance validator;
@@ -258,8 +264,16 @@ Frontend gates: `node --check` (syntax) · `ui/test/*.mjs` (node:test)
   state word (`working | needs-input | turn-done`) via the bundled
   `deck-status-helper` (`app/status-helper/`, standalone zero-dep crate;
   `build.rs` builds it into `binaries/` for tauri `externalBin` on every
-  build, and it is copied to `~/.deck/bin` at enable/boot so hook entries
-  reference one stable path). Hooks inherit `$TMUX`/`$TMUX_PANE`; the helper
+  build). Hook entries name the helper INSIDE the installed bundle
+  (`/Applications/deck.app/Contents/MacOS/deck-status-helper` or the
+  `~/Applications` twin) — never a copy under `~/.deck/bin`: that copy was
+  an EDR persistence signature, and a dev build once overwrote it with an
+  ad-hoc-signed binary that Claude Code then executed on every event. Only
+  a release-location install can enable hooks; dev/smoke builds get an
+  error and never touch agent config. `migrate_hooks_on_boot` (release
+  installs only) re-points installed entries that name another helper
+  (legacy copy, moved bundle) and deletes the legacy copy once nothing
+  references it. Hooks inherit `$TMUX`/`$TMUX_PANE`; the helper
   drains and DISCARDS the hook stdin payload, charset-validates every field,
   and writes one JSON line to the instance's `status.sock` (0600) — routed
   per pane by `DECK_STATUS_SOCK`, which each deck exports into its own tmux
@@ -274,10 +288,11 @@ Frontend gates: `node --check` (syntax) · `ui/test/*.mjs` (node:test)
   that reported it — no TTLs and no per-agent executable lists. Frontend:
   `effectiveCardStatus` (pure.js) — agent state OUTRANKS the 15s heuristic
   (card statuses `attention`/`done`; a working agent never shows amber). The
-  Settings toggle is the ONLY writer of `~/.claude/settings.json` (three
-  entries: UserPromptSubmit→working, Notification matcher
-  `permission_prompt|idle_prompt`→needs-input, Stop→turn-done); install and
-  uninstall touch only entries containing `.deck/bin/deck-status-helper`,
+  Settings toggle is the user-driven writer of `~/.claude/settings.json`
+  (three entries: UserPromptSubmit→working, Notification matcher
+  `permission_prompt|idle_prompt`→needs-input, Stop→turn-done), and the
+  release-only boot migration is the sole other one; install, migrate and
+  uninstall touch only entries containing `deck.app/Contents/MacOS/deck-status-helper` (or the legacy `.deck/bin/deck-status-helper`),
   preserve everything else including file mode, and never modify a malformed
   file. The toggle state is DERIVED from that file — never stored twice.
   Claude Code's Stop does not fire on Esc-interrupt; foreground

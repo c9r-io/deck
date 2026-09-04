@@ -87,36 +87,18 @@ impl RawProbe {
     }
 }
 
-/// From `ps -t <tty> -o pid=,pgid=,stat=,comm=`: the group leader of the
-/// tty's foreground process group (`+` in STAT), by its argv[0] basename.
-pub(crate) fn parse_ps_foreground(output: &str) -> Option<String> {
-    for line in output.lines() {
-        let mut f = line.split_whitespace();
-        let (Some(pid), Some(pgid), Some(stat)) = (f.next(), f.next(), f.next()) else {
-            continue;
-        };
-        if pid != pgid || !stat.contains('+') {
-            continue;
-        }
-        let comm: Vec<&str> = f.collect();
-        if comm.is_empty() {
-            continue;
-        }
-        return sanitize_process(&comm.join(" "));
-    }
-    None
-}
-
+/// The group leader of the tty's foreground process group (what `ps -t`
+/// marks `+`), by its argv[0] basename — read through libproc/sysctl, never
+/// by spawning `ps`.
 fn foreground_from_tty(tty: &str) -> Option<String> {
     let name = tty.strip_prefix("/dev/")?;
     if name.is_empty() || !name.bytes().all(|b| b.is_ascii_alphanumeric()) {
         return None;
     }
-    let out = std::process::Command::new("ps")
-        .args(["-t", name, "-o", "pid=,pgid=,stat=,comm="])
-        .output()
-        .ok()?;
-    parse_ps_foreground(&String::from_utf8_lossy(&out.stdout))
+    let device = crate::procinfo::tty_device(tty)?;
+    let table = crate::procinfo::processes();
+    let leader = crate::procinfo::foreground_leader(&table, device)?;
+    sanitize_process(&crate::procinfo::argv0(leader)?)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -372,29 +354,24 @@ mod tests {
     }
 
     #[test]
-    fn ps_foreground_is_the_group_leader_marked_plus_by_argv_name() {
-        let out = "98777 98777 Ss   -zsh\n99160 99160 S+   claude\n99191 99160 S+   unity\n";
-        assert_eq!(parse_ps_foreground(out), Some("claude".into()));
+    fn foreground_argv_names_are_sanitized_basenames() {
+        assert_eq!(sanitize_process("-zsh"), Some("zsh".into()));
         assert_eq!(
-            parse_ps_foreground("1 1 Ss -zsh\n"),
-            None,
-            "no foreground group"
-        );
-        assert_eq!(
-            parse_ps_foreground("5 5 S+ /Users/x/.local/bin/claude\n"),
+            sanitize_process("/Users/x/.local/bin/claude"),
             Some("claude".into())
         );
         assert_eq!(
-            parse_ps_foreground("5 5 S+ /opt/My App/bin/thing\n"),
+            sanitize_process("/opt/My App/bin/thing"),
             Some("thing".into()),
             "basename only"
         );
         assert_eq!(
-            parse_ps_foreground("5 5 S+ /x/bad name\n"),
+            sanitize_process("/x/bad name"),
             None,
             "unsanitizable name is no name"
         );
-        assert_eq!(parse_ps_foreground(""), None);
+        assert_eq!(foreground_from_tty("/dev/../etc/passwd"), None);
+        assert_eq!(foreground_from_tty("not-a-tty"), None);
     }
 
     #[test]

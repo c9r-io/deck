@@ -12,6 +12,7 @@ mod history;
 mod inbound;
 mod inbound_slack;
 mod keychain;
+mod procinfo;
 mod pty;
 mod relaunch;
 mod scheduler;
@@ -34,8 +35,6 @@ struct NativeStrings {
     export_logs: &'static str,
     check_updates: &'static str,
     terminal: &'static str,
-    already_title: &'static str,
-    already_message: &'static str,
 }
 
 const NATIVE_EN: NativeStrings = NativeStrings {
@@ -43,18 +42,12 @@ const NATIVE_EN: NativeStrings = NativeStrings {
     export_logs: "Export Logs…",
     check_updates: "Check for Updates…",
     terminal: "Terminal",
-    already_title: "deck is already running",
-    already_message:
-        "Another deck instance owns this Mac's sessions. Use the running one (check the Dock).",
 };
 const NATIVE_ZH_HANS: NativeStrings = NativeStrings {
     clear: "清除",
     export_logs: "导出日志…",
     check_updates: "检查更新…",
     terminal: "终端",
-    already_title: "deck 已在运行",
-    already_message:
-        "另一个 deck 实例正在管理这台 Mac 上的 session。请使用已运行的实例（查看程序坞）。",
 };
 
 fn resolve_native_locale(preference: &str, system_languages: &str) -> &'static str {
@@ -154,12 +147,9 @@ fn main() {
             "[boot] instance lock unavailable ({}) — exiting",
             storage::err_code(&e)
         ));
-        let s = native_strings(&commands::locale_setting());
-        let script = format!(
-            "display alert {:?} message {:?}",
-            s.already_title, s.already_message
-        );
-        let _ = Command::new("osascript").args(["-e", &script]).status();
+        // No alert: the only way to show one without a dialog plugin is
+        // `osascript`, and AppleScript execution from a third-party app is
+        // an EDR signature. The running instance stays where it is.
         std::process::exit(0);
     }
     shell_state::cleanup_restore_temps();
@@ -175,9 +165,10 @@ fn main() {
             scheduler::spawn_scheduler(app.handle().clone());
             inbound::spawn_inbound(app.handle().clone());
             // Agent-status socket: content-free state words from agent hooks
-            // (see agent_status.rs). Keeps an already-installed helper copy
-            // current with this build; never installs hooks by itself.
-            agent_status::refresh_helper_on_boot();
+            // (see agent_status.rs). Re-points already-installed hook
+            // entries at this install's bundled helper and retires the
+            // legacy ~/.deck/bin copy; never installs hooks by itself.
+            agent_status::migrate_hooks_on_boot();
             agent_status::spawn_listener();
             // Update-check heartbeat from a Rust thread: webview timers are
             // frozen by App Nap when the app is backgrounded, so a JS

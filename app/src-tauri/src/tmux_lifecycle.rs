@@ -209,7 +209,7 @@ fn write_disk(disk: &LifecycleDisk) -> Result<(), String> {
     storage::atomic_write(&lifecycle_path(), &bytes)
 }
 
-fn app_bundle_root(executable: &Path) -> Option<&Path> {
+pub(crate) fn app_bundle_root(executable: &Path) -> Option<&Path> {
     let macos = executable.parent()?;
     if macos.file_name()?.to_str()? != "MacOS" {
         return None;
@@ -225,7 +225,7 @@ fn app_bundle_root(executable: &Path) -> Option<&Path> {
     Some(app)
 }
 
-fn stable_installed_bundle(app: &Path) -> bool {
+pub(crate) fn stable_installed_bundle(app: &Path) -> bool {
     if app == Path::new("/Applications/deck.app") {
         return true;
     }

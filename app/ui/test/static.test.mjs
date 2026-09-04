@@ -48,9 +48,19 @@ test('update channels are backend-owned, isolated and never trigger downgrade', 
     'the relaunch waiter is a setsid-detached child of the exiting app');
   assert.match(relaunch, /\/usr\/bin\/open[\s\S]*"-n"/);
   for (const file of readdirSync(resolve(root, 'app/src-tauri/src')).filter((f) => f.endsWith('.rs'))) {
-    assert.doesNotMatch(read(`app/src-tauri/src/${file}`), /launchctl|LaunchAgents|LaunchDaemons|SMAppService/,
+    const source = read(`app/src-tauri/src/${file}`);
+    assert.doesNotMatch(source, /launchctl|LaunchAgents|LaunchDaemons|SMAppService/,
       `${file}: deck never registers anything with launchd (corporate EDR flags it)`);
+    assert.doesNotMatch(source, /Command::new\("(?:ps|date|osascript|sh|bash|zsh)"\)/,
+      `${file}: process facts come from libproc/sysctl and no AppleScript or shell is spawned (EDR noise)`);
   }
+  const hooks = read('app/src-tauri/src/agent_status.rs');
+  assert.match(hooks, /const HELPER_MARKER: &str = "deck\.app\/Contents\/MacOS\/deck-status-helper"/,
+    'hook commands run the helper inside the signed bundle');
+  assert.doesNotMatch(hooks, /fn install_helper_binary|atomic_write\(&target/,
+    'deck never drops an executable into the home directory');
+  assert.match(hooks, /stable_installed_bundle\(bundle\)/,
+    'only a release-location install may register hooks');
   assert.doesNotMatch(read('app/src-tauri/capabilities/default.json'), /updater:/,
     'the webview has no direct updater command permission');
   assert.doesNotMatch(read('app/src-tauri/capabilities/default.json'), /process:/,

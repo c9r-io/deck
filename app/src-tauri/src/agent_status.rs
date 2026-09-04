@@ -294,9 +294,17 @@ pub(crate) fn spawn_listener() {
 // [{matcher?, hooks: [{type: "command", command, …}]}]. One marker-based
 // merge engine serves both; each agent contributes only its spec table.
 
-/// Marker every deck-authored hook command carries; install/uninstall touch
-/// only entries containing it, byte-preserving everything else in the file.
-const HELPER_MARKER: &str = ".deck/bin/deck-status-helper";
+/// Markers every deck-authored hook command carries; install/uninstall touch
+/// only entries containing one, byte-preserving everything else in the file.
+/// Current entries run the helper INSIDE the installed, signed, notarized
+/// bundle — deck never drops an executable into the home directory (an app
+/// writing a binary under `~` and registering it in another program's hook
+/// config is an endpoint-security persistence signature, and a development
+/// build once overwrote that copy with an ad-hoc-signed one). The legacy
+/// marker is the pre-0.5.12 `~/.deck/bin` copy, still recognized so
+/// uninstall and boot migration can retire it.
+const HELPER_MARKER: &str = "deck.app/Contents/MacOS/deck-status-helper";
+const LEGACY_HELPER_MARKER: &str = ".deck/bin/deck-status-helper";
 
 const HELPER_NAME: &str = "deck-status-helper";
 
@@ -328,21 +336,41 @@ const CODEX_HOOKS: &[HookSpec] = &[
     ("Interrupt", None, "turn-done"),
 ];
 
-fn helper_command(source: &str, state: &str) -> String {
-    format!("\"$HOME/{HELPER_MARKER}\" {source} {state}")
+fn helper_command(helper: &str, source: &str, state: &str) -> String {
+    format!("\"{helper}\" {source} {state}")
 }
 
-fn entry_is_ours(entry: &serde_json::Value) -> bool {
+fn command_is_ours(command: &str) -> bool {
+    command.contains(HELPER_MARKER) || command.contains(LEGACY_HELPER_MARKER)
+}
+
+fn entry_commands(entry: &serde_json::Value) -> impl Iterator<Item = &str> {
     entry
         .get("hooks")
         .and_then(|h| h.as_array())
-        .is_some_and(|hooks| {
-            hooks.iter().any(|hook| {
-                hook.get("command")
-                    .and_then(|c| c.as_str())
-                    .is_some_and(|c| c.contains(HELPER_MARKER))
-            })
-        })
+        .into_iter()
+        .flatten()
+        .filter_map(|hook| hook.get("command").and_then(|c| c.as_str()))
+}
+
+fn entry_is_ours(entry: &serde_json::Value) -> bool {
+    entry_commands(entry).any(command_is_ours)
+}
+
+/// Every deck-authored command in the document names exactly `helper`.
+/// False for a legacy `~/.deck/bin` entry or a bundle that has since moved,
+/// which is what boot migration repairs.
+pub(crate) fn hooks_reference(root: &serde_json::Value, helper: &str) -> bool {
+    let prefix = format!("\"{helper}\" ");
+    root.get("hooks")
+        .and_then(|h| h.as_object())
+        .into_iter()
+        .flat_map(|hooks| hooks.values())
+        .filter_map(|list| list.as_array())
+        .flatten()
+        .flat_map(entry_commands)
+        .filter(|command| command_is_ours(command))
+        .all(|command| command.starts_with(&prefix))
 }
 
 /// Add deck's hook entries to a parsed hooks document. Everything the user
@@ -354,6 +382,7 @@ pub(crate) fn hooks_with_install(
     specs: &[HookSpec],
     source: &str,
     mark_async: bool,
+    helper: &str,
 ) -> Result<serde_json::Value, String> {
     let obj = root
         .as_object_mut()
@@ -371,7 +400,7 @@ pub(crate) fn hooks_with_install(
             .ok_or("a hook event entry is not a JSON array")?;
         list.retain(|entry| !entry_is_ours(entry));
         let mut hook = serde_json::json!({
-            "type": "command", "command": helper_command(source, state), "timeout": 10
+            "type": "command", "command": helper_command(helper, source, state), "timeout": 10
         });
         if mark_async {
             hook["async"] = serde_json::json!(true);
@@ -467,52 +496,137 @@ fn write_agent_config(path: &Path, bytes: &[u8], never_ran: &str) -> Result<(), 
     Ok(())
 }
 
-/// Where the helper is installed for hook commands to call. ALWAYS the real
-/// `~/.deck/bin`, never the (possibly isolated/smoke) data dir: the hook
-/// entry in ~/.claude/settings.json references `$HOME/.deck/bin`, hooks are
-/// user-global, and which INSTANCE receives the events is routed per pane by
-/// `DECK_STATUS_SOCK` (tmux.rs), not by the binary's location.
-fn helper_install_dir() -> Result<PathBuf, String> {
-    Ok(dirs::home_dir()
-        .ok_or("no home directory")?
-        .join(".deck")
-        .join("bin"))
+/// The helper a hook command may name: the sidecar inside `bundle`, which
+/// must exist and must be quotable as one double-quoted shell word.
+fn helper_path_in(bundle: &Path) -> Result<String, String> {
+    let helper = bundle.join("Contents").join("MacOS").join(HELPER_NAME);
+    if !helper.is_file() {
+        return Err("the bundled status helper is missing from this build".into());
+    }
+    let text = helper
+        .to_str()
+        .ok_or("the application path is not valid UTF-8")?;
+    if text
+        .bytes()
+        .any(|b| b < 0x20 || b == 0x7f || matches!(b, b'"' | b'$' | b'`' | b'\\' | b'!'))
+    {
+        return Err("the application path contains characters a hook command cannot quote".into());
+    }
+    Ok(text.to_string())
 }
 
-/// Copy the bundled helper sidecar to `~/.deck/bin` (0700). The hook command
-/// references this STABLE path, so the entry survives app moves, channel
-/// switches and updates; the copy is refreshed at boot and on every enable.
-fn install_helper_binary() -> Result<(), String> {
+/// The helper of THIS install, only when deck runs from a release location
+/// (`/Applications/deck.app` or `~/Applications/deck.app`). Development and
+/// smoke bundles live at temporary paths and are ad-hoc signed; a hook that
+/// named one would break when the path vanished and would make the agent
+/// CLI execute an unsigned binary. Such builds cannot install hooks and
+/// never touch the agent's config at boot.
+fn installed_helper_path() -> Result<String, String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let sidecar = exe
-        .parent()
-        .map(|dir| dir.join(HELPER_NAME))
-        .filter(|p| p.exists())
-        .ok_or("the bundled status helper is missing from this build")?;
-    let bin_dir = helper_install_dir()?;
-    storage::create_private_dir(&bin_dir)?;
-    let bytes =
-        std::fs::read(&sidecar).map_err(|e| format!("could not read helper ({})", e.kind()))?;
-    let target = bin_dir.join(HELPER_NAME);
-    storage::atomic_write(&target, &bytes)?;
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o700))
-        .map_err(|e| e.to_string())
+    let bundle = crate::tmux_lifecycle::app_bundle_root(&exe)
+        .filter(|bundle| crate::tmux_lifecycle::stable_installed_bundle(bundle))
+        .ok_or("agent status hooks can only be installed from /Applications/deck.app or ~/Applications/deck.app")?;
+    helper_path_in(bundle)
 }
 
-/// Boot refresh: if the helper was ever installed, keep it current with this
-/// build. Never installs hooks by itself.
-pub(crate) fn refresh_helper_on_boot() {
-    let installed = helper_install_dir()
-        .map(|dir| dir.join(HELPER_NAME).exists())
-        .unwrap_or(false);
-    if installed {
-        if let Err(e) = install_helper_binary() {
-            applog(&format!(
-                "[agent-hooks] helper refresh FAILED ({})",
-                storage::err_code(&e)
-            ));
+fn write_hooks(path: &Path, next: &serde_json::Value, never_ran: &str) -> Result<(), String> {
+    let bytes = format!(
+        "{}\n",
+        serde_json::to_string_pretty(next).map_err(|e| e.to_string())?
+    );
+    write_agent_config(path, bytes.as_bytes(), never_ran)
+}
+
+/// Each agent module: config path, spec table, source word, async flag,
+/// never-ran message.
+type AgentModule = (
+    Option<PathBuf>,
+    &'static [HookSpec],
+    &'static str,
+    bool,
+    &'static str,
+);
+
+fn agent_modules() -> [AgentModule; 2] {
+    [
+        (
+            claude_settings_path(),
+            CLAUDE_HOOKS,
+            "claude-code",
+            false,
+            "Claude Code has never run on this Mac — nothing to configure",
+        ),
+        (
+            codex_hooks_path(),
+            CODEX_HOOKS,
+            "codex",
+            true,
+            "Codex has never run on this Mac — nothing to configure",
+        ),
+    ]
+}
+
+/// Boot migration, the one write outside the Settings toggle: when hooks
+/// are installed but name a helper other than this install's (the legacy
+/// `~/.deck/bin` copy, or a bundle that moved), rewrite ONLY deck's entries
+/// to the current bundle path, then delete the legacy copy once nothing
+/// references it. A non-release build returns before reading anything.
+pub(crate) fn migrate_hooks_on_boot() {
+    let Ok(helper) = installed_helper_path() else {
+        return;
+    };
+    let mut legacy_referenced = false;
+    for (path, specs, source, mark_async, never_ran) in agent_modules() {
+        let Some(path) = path else { continue };
+        let Ok(value) = read_settings_value(&path) else {
+            continue;
+        };
+        if !hooks_installed(&value, specs) {
+            continue;
         }
+        if hooks_reference(&value, &helper) {
+            continue;
+        }
+        let result = hooks_with_install(value.clone(), specs, source, mark_async, &helper)
+            .and_then(|next| write_hooks(&path, &next, never_ran));
+        match result {
+            Ok(()) => applog(&format!(
+                "[agent-hooks] {source} re-pointed at the bundled helper"
+            )),
+            Err(e) => {
+                legacy_referenced |= serde_json::to_string(&value)
+                    .is_ok_and(|text| text.contains(LEGACY_HELPER_MARKER));
+                applog(&format!(
+                    "[agent-hooks] {source} migration FAILED ({})",
+                    storage::err_code(&e)
+                ));
+            }
+        }
+    }
+    if !legacy_referenced {
+        retire_legacy_helper_copy();
+    }
+}
+
+/// Remove the pre-0.5.12 `~/.deck/bin/deck-status-helper` copy (and the
+/// directory if that left it empty). Nothing references it any more.
+fn retire_legacy_helper_copy() {
+    let Some(bin) = dirs::home_dir().map(|home| home.join(".deck").join("bin")) else {
+        return;
+    };
+    let file = bin.join(HELPER_NAME);
+    if !file.exists() {
+        return;
+    }
+    match std::fs::remove_file(&file) {
+        Ok(()) => {
+            let _ = std::fs::remove_dir(&bin);
+            applog("[agent-hooks] legacy helper copy removed");
+        }
+        Err(e) => applog(&format!(
+            "[agent-hooks] legacy helper copy removal FAILED ({})",
+            storage::err_code(&e.to_string())
+        )),
     }
 }
 
@@ -527,19 +641,15 @@ fn hooks_set(
 ) -> Result<(), String> {
     let value = read_settings_value(path)?;
     let next = if enable {
-        install_helper_binary()?;
-        hooks_with_install(value, specs, source, mark_async)?
+        let helper = installed_helper_path()?;
+        hooks_with_install(value, specs, source, mark_async, &helper)?
     } else {
         if !path.exists() {
             return Ok(());
         }
         hooks_with_uninstall(value)
     };
-    let bytes = format!(
-        "{}\n",
-        serde_json::to_string_pretty(&next).map_err(|e| e.to_string())?
-    );
-    write_agent_config(path, bytes.as_bytes(), never_ran)
+    write_hooks(path, &next, never_ran)
 }
 
 #[derive(serde::Serialize)]
@@ -561,29 +671,24 @@ pub(crate) fn agent_hooks_status() -> AgentHooksStatus {
     }
 }
 
-/// The ONLY writer of the user's agent CLI config files, and only ever from
-/// an explicit Settings toggle. Never called at boot or from the poller.
+/// The user-driven writer of the agent CLI config files, from an explicit
+/// Settings toggle. The only other writer is `migrate_hooks_on_boot`, which
+/// rewrites deck's own entries and nothing else.
 #[tauri::command]
 pub(crate) fn agent_hooks_set(agent: String, enable: bool) -> Result<(), String> {
-    let result = match agent.as_str() {
-        "claude-code" => hooks_set(
-            &claude_settings_path().ok_or("no home directory")?,
-            CLAUDE_HOOKS,
-            "claude-code",
-            false,
-            enable,
-            "Claude Code has never run on this Mac — nothing to configure",
-        ),
-        "codex" => hooks_set(
-            &codex_hooks_path().ok_or("no home directory")?,
-            CODEX_HOOKS,
-            "codex",
-            true,
-            enable,
-            "Codex has never run on this Mac — nothing to configure",
-        ),
-        _ => return Err("unknown agent".into()),
-    };
+    let module = agent_modules()
+        .into_iter()
+        .find(|(_, _, source, _, _)| *source == agent)
+        .ok_or("unknown agent")?;
+    let (path, specs, source, mark_async, never_ran) = module;
+    let result = hooks_set(
+        &path.ok_or("no home directory")?,
+        specs,
+        source,
+        mark_async,
+        enable,
+        never_ran,
+    );
     match &result {
         Ok(()) => applog(&format!(
             "[agent-hooks] {agent} {}",
@@ -607,6 +712,8 @@ mod tests {
     /// The two tests below mutate the process-global AGENTS store; hold this
     /// across each so the default parallel test runner cannot interleave them.
     static STORE_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    const HELPER: &str = "/Applications/deck.app/Contents/MacOS/deck-status-helper";
 
     fn event_line(state: &str, pane: &str) -> String {
         format!(
@@ -686,7 +793,8 @@ mod tests {
                 ]
             }
         });
-        let installed = hooks_with_install(user.clone(), CODEX_HOOKS, "codex", true).unwrap();
+        let installed =
+            hooks_with_install(user.clone(), CODEX_HOOKS, "codex", true, HELPER).unwrap();
         assert!(hooks_installed(&installed, CODEX_HOOKS));
         assert_eq!(installed["description"], "my hooks");
         // the user's own Stop hook coexists with ours — no notify-style conflict
@@ -694,7 +802,7 @@ mod tests {
         let permission = &installed["hooks"]["PermissionRequest"][0]["hooks"][0];
         assert_eq!(
             permission["command"].as_str().unwrap(),
-            "\"$HOME/.deck/bin/deck-status-helper\" codex needs-input"
+            "\"/Applications/deck.app/Contents/MacOS/deck-status-helper\" codex needs-input"
         );
         // fire-and-forget: every deck entry is async so it can never block a turn
         assert_eq!(permission["async"], serde_json::json!(true));
@@ -702,17 +810,23 @@ mod tests {
             installed["hooks"]["Interrupt"][0]["hooks"][0]["command"]
                 .as_str()
                 .unwrap(),
-            "\"$HOME/.deck/bin/deck-status-helper\" codex turn-done"
+            "\"/Applications/deck.app/Contents/MacOS/deck-status-helper\" codex turn-done"
         );
 
         // idempotent install, exact uninstall
-        let twice = hooks_with_install(installed, CODEX_HOOKS, "codex", true).unwrap();
+        let twice = hooks_with_install(installed, CODEX_HOOKS, "codex", true, HELPER).unwrap();
         assert_eq!(twice["hooks"]["Stop"].as_array().unwrap().len(), 2);
         assert_eq!(hooks_with_uninstall(twice), user);
 
         // claude's spec set does not read as installed for codex and vice versa
-        let claude_only =
-            hooks_with_install(serde_json::json!({}), CLAUDE_HOOKS, "claude-code", false).unwrap();
+        let claude_only = hooks_with_install(
+            serde_json::json!({}),
+            CLAUDE_HOOKS,
+            "claude-code",
+            false,
+            HELPER,
+        )
+        .unwrap();
         assert!(!hooks_installed(&claude_only, CODEX_HOOKS));
     }
 
@@ -810,7 +924,7 @@ mod tests {
             }
         });
         let installed =
-            hooks_with_install(user.clone(), CLAUDE_HOOKS, "claude-code", false).unwrap();
+            hooks_with_install(user.clone(), CLAUDE_HOOKS, "claude-code", false, HELPER).unwrap();
         assert!(hooks_installed(&installed, CLAUDE_HOOKS));
         assert_eq!(installed["model"], "opus");
         // the user's own Stop hook and PreToolUse guard survive
@@ -831,8 +945,14 @@ mod tests {
         );
 
         // installing twice does not duplicate
-        let twice =
-            hooks_with_install(installed.clone(), CLAUDE_HOOKS, "claude-code", false).unwrap();
+        let twice = hooks_with_install(
+            installed.clone(),
+            CLAUDE_HOOKS,
+            "claude-code",
+            false,
+            HELPER,
+        )
+        .unwrap();
         assert_eq!(twice["hooks"]["Stop"].as_array().unwrap().len(), 2);
 
         // uninstall restores the user's document exactly
@@ -845,14 +965,20 @@ mod tests {
         assert_eq!(empty, serde_json::json!({ "model": "opus" }));
 
         // a hooks-only file empties back to no hooks key at all
-        let only_ours =
-            hooks_with_install(serde_json::json!({}), CLAUDE_HOOKS, "claude-code", false).unwrap();
+        let only_ours = hooks_with_install(
+            serde_json::json!({}),
+            CLAUDE_HOOKS,
+            "claude-code",
+            false,
+            HELPER,
+        )
+        .unwrap();
         assert_eq!(hooks_with_uninstall(only_ours), serde_json::json!({}));
     }
 
     #[test]
     fn hook_install_refuses_malformed_documents() {
-        let install = |v| hooks_with_install(v, CLAUDE_HOOKS, "claude-code", false);
+        let install = |v| hooks_with_install(v, CLAUDE_HOOKS, "claude-code", false, HELPER);
         assert!(install(serde_json::json!([1, 2])).is_err());
         assert!(install(serde_json::json!({ "hooks": "nope" })).is_err());
         assert!(install(serde_json::json!({ "hooks": { "Stop": "nope" } })).is_err());
@@ -862,5 +988,79 @@ mod tests {
                 "command": "\"$HOME/.deck/bin/deck-status-helper\" claude-code turn-done" }] }] }
         });
         assert!(!hooks_installed(&partial, CLAUDE_HOOKS));
+    }
+
+    #[test]
+    fn legacy_home_copy_entries_are_ours_and_get_re_pointed_at_the_bundle() {
+        let legacy_command =
+            |state: &str| format!("\"$HOME/.deck/bin/deck-status-helper\" claude-code {state}");
+        let legacy = serde_json::json!({
+            "model": "opus",
+            "hooks": {
+                "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": legacy_command("working"), "timeout": 10 }] }],
+                "Notification": [{ "matcher": "permission_prompt|idle_prompt", "hooks": [{ "type": "command", "command": legacy_command("needs-input"), "timeout": 10 }] }],
+                "Stop": [
+                    { "hooks": [{ "type": "command", "command": "afplay /System/Library/Sounds/Glass.aiff" }] },
+                    { "hooks": [{ "type": "command", "command": legacy_command("turn-done"), "timeout": 10 }] }
+                ]
+            }
+        });
+        // a legacy install still reads as installed, but not as current
+        assert!(hooks_installed(&legacy, CLAUDE_HOOKS));
+        assert!(!hooks_reference(&legacy, HELPER));
+
+        // migration = the ordinary install over the legacy document
+        let migrated =
+            hooks_with_install(legacy.clone(), CLAUDE_HOOKS, "claude-code", false, HELPER).unwrap();
+        assert!(hooks_reference(&migrated, HELPER));
+        assert_eq!(migrated["model"], "opus");
+        assert_eq!(migrated["hooks"]["Stop"].as_array().unwrap().len(), 2);
+        let text = serde_json::to_string(&migrated).unwrap();
+        assert!(!text.contains(".deck/bin"), "no legacy path survives");
+        assert!(text.contains(HELPER));
+
+        // a bundle that moved is equally not current
+        let moved = "/Users/x/Applications/deck.app/Contents/MacOS/deck-status-helper";
+        assert!(!hooks_reference(&migrated, moved));
+        assert!(hooks_reference(
+            &hooks_with_install(migrated.clone(), CLAUDE_HOOKS, "claude-code", false, moved)
+                .unwrap(),
+            moved
+        ));
+
+        // uninstall removes legacy and current entries alike
+        let removed = hooks_with_uninstall(legacy);
+        assert_eq!(removed["hooks"]["Stop"].as_array().unwrap().len(), 1);
+        assert!(!hooks_installed(&removed, CLAUDE_HOOKS));
+        // a document with no deck entries is trivially current
+        assert!(hooks_reference(&removed, HELPER));
+    }
+
+    #[test]
+    fn helper_path_requires_a_present_quotable_sidecar_in_a_release_location() {
+        let dir = std::env::temp_dir().join(format!("deck-hooks-{}", std::process::id()));
+        let bundle = dir.join("deck.app");
+        let macos = bundle.join("Contents").join("MacOS");
+        std::fs::create_dir_all(&macos).unwrap();
+        assert!(helper_path_in(&bundle).is_err(), "missing sidecar");
+        std::fs::write(macos.join(HELPER_NAME), "binary").unwrap();
+        let helper = helper_path_in(&bundle).unwrap();
+        assert!(helper.ends_with("/deck.app/Contents/MacOS/deck-status-helper"));
+        assert!(helper.contains(HELPER_MARKER));
+        assert_eq!(
+            helper_command(&helper, "claude-code", "working"),
+            format!("\"{helper}\" claude-code working")
+        );
+
+        let quoted = dir.join("we\"ird").join("deck.app");
+        let quoted_macos = quoted.join("Contents").join("MacOS");
+        std::fs::create_dir_all(&quoted_macos).unwrap();
+        std::fs::write(quoted_macos.join(HELPER_NAME), "binary").unwrap();
+        assert!(helper_path_in(&quoted).is_err(), "unquotable path");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // the test binary is not a release install: no hook may name it
+        let error = installed_helper_path().unwrap_err();
+        assert!(error.contains("/Applications/deck.app"));
     }
 }

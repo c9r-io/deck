@@ -1925,44 +1925,7 @@ pub(crate) struct SessInfo {
 }
 
 pub(crate) fn tree_mem(roots: &HashMap<String, u32>) -> HashMap<String, f64> {
-    let mut result = HashMap::new();
-    let Ok(out) = Command::new("ps")
-        .args(["-axo", "pid=,ppid=,rss="])
-        .output()
-    else {
-        return result;
-    };
-    let text = String::from_utf8_lossy(&out.stdout);
-    let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
-    let mut rss: HashMap<u32, u64> = HashMap::new();
-    for line in text.lines() {
-        let mut it = line.split_whitespace();
-        let (Some(pid), Some(ppid), Some(kb)) = (it.next(), it.next(), it.next()) else {
-            continue;
-        };
-        let (Ok(pid), Ok(ppid), Ok(kb)) = (pid.parse(), ppid.parse::<u32>(), kb.parse::<u64>())
-        else {
-            continue;
-        };
-        children.entry(ppid).or_default().push(pid);
-        rss.insert(pid, kb);
-    }
-    for (session, root) in roots {
-        let mut sum = 0u64;
-        let mut stack = vec![*root];
-        let mut seen = HashSet::new();
-        while let Some(pid) = stack.pop() {
-            if !seen.insert(pid) {
-                continue;
-            }
-            sum += rss.get(&pid).copied().unwrap_or(0);
-            if let Some(kids) = children.get(&pid) {
-                stack.extend(kids);
-            }
-        }
-        result.insert(session.clone(), sum as f64 / 1024.0);
-    }
-    result
+    crate::procinfo::tree_memory(roots)
 }
 
 /// Per-poll ceiling on `capture-pane` targets. Every capture is pane-content

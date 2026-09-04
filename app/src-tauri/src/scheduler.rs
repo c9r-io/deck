@@ -7,7 +7,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -292,17 +291,7 @@ pub(crate) fn in_window(now_min: u32, from: Option<u32>, to: Option<u32>) -> boo
 }
 
 pub(crate) fn local_minutes() -> u32 {
-    // std has no timezone support; /bin/date is always there on macOS
-    Command::new("date")
-        .arg("+%H %M")
-        .output()
-        .ok()
-        .and_then(|o| {
-            let t = String::from_utf8_lossy(&o.stdout);
-            let mut it = t.split_whitespace();
-            Some(it.next()?.parse::<u32>().ok()? * 60 + it.next()?.parse::<u32>().ok()?)
-        })
-        .unwrap_or(720)
+    crate::procinfo::local_minutes()
 }
 
 /// Whether an "every" rule has reached its cadence (window/stop-aware).
