@@ -128,16 +128,12 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: |
-            .
             app/src-tauri
       - name: Full release gate
         run: |
           set -euo pipefail
-          cargo fmt --all -- --check
           cargo fmt --all --check --manifest-path app/src-tauri/Cargo.toml
-          cargo clippy --all-targets --all-features --locked -- -D warnings
           cargo clippy --all-targets --all-features --locked --manifest-path app/src-tauri/Cargo.toml -- -D warnings
-          cargo llvm-cov --all-targets --all-features --locked --fail-under-lines 70 --fail-under-functions 70
           cargo llvm-cov --all-targets --all-features --locked --fail-under-lines 70 --fail-under-functions 70 --manifest-path app/src-tauri/Cargo.toml -- --test-threads=1
           for file in app/ui/js/*.js app/ui/js/i18n/*.js app/ui/js/*.mjs app/ui/test/*.mjs; do
             node --check "$file"

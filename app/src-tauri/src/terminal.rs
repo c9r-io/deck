@@ -657,6 +657,8 @@ pub(crate) fn terminal_selection_cancel(name: String, token: u64) -> Result<(), 
 }
 
 #[derive(Serialize)]
+/// Read-only pane metrics for the real-WKWebView smoke (`ui/test/wk-smoke.mjs`);
+/// the production frontend never calls this.
 pub(crate) struct TerminalMetrics {
     history_rows: u32,
     history_limit: u32,

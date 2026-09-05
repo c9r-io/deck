@@ -75,7 +75,7 @@
 //!   failed write sets `Queues.dirty`, warns the user, and is retried by
 //!   `flush_dirty` every tick — that retry is what stops a definitively
 //!   NOT-sent prompt from being counted as delivered after a restart;
-//! - deleting a card/project is PERMANENT cancellation: `queue_clear_session(s)`
+//! - deleting a card/project is PERMANENT cancellation: `queue_clear_sessions`
 //!   tombstones the session (`cancelled`, capped 500) and drops ALL its items
 //!   INCLUDING one mid-send — that delivery still finalizes from the
 //!   pending-ledger snapshot (the audit completes), but no rule is restored,

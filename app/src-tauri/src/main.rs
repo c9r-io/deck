@@ -337,7 +337,6 @@ fn main() {
             scheduler::queue_skip,
             scheduler::queue_send_now,
             documents::storage_warnings,
-            scheduler::queue_clear_session,
             scheduler::queue_clear_sessions,
             drops::save_dropped_file,
             agent_status::agent_hooks_status,

@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Internal: split `commands.rs` and `scheduler.rs` into focused modules; move
+  each subsystem's contract from CLAUDE.md into its module header; replace
+  source-grepping tests with behavioural seams (`restore_start_args`,
+  `tmux_conf_text`, the frontend event-label contract, `tests/edr_quiet.rs`);
+  frontend runtime slots become an explicit `ctx` object and DOM wiring runs
+  at boot; the stylesheet moves to `ui/style.css`; poisoned locks are
+  recovered instead of cascading; the legacy v0.1 TUI, the stale GUI mock and
+  the unused `queue_clear_session` command are removed; one-off documents are
+  archived under `docs/archive/`.
+
 ## 0.5.13 — 2026-09-05 (Nightly)
 
 - Prevent Force Touch on buttons from opening the macOS Look Up popover.

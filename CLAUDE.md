@@ -109,7 +109,6 @@ Status semantics (card colour) are documented on `effectiveCardStatus` in
   real bundled WKWebView; results are closed numeric `smoke-check` events in
   that isolated directory's `app.log`. Release builds ignore these debug-only
   arguments, and the harness must never point at `~/.deck`.
-- The GUI design reference (mock, same UI with fake data) lives in `gui/index.html`.
 
 ### WKWebView / Tauri gotchas (each cost a real bug)
 
@@ -148,41 +147,9 @@ Status semantics (card colour) are documented on `effectiveCardStatus` in
   everything else looks healthy. The boot-time deck-ping self-test in ui/index.html
   catches this class of failure; keep it. Always `.catch(ulog)` on listen().
 
-## TUI (v0.1, legacy) — `src/`
-
-- `src/model.rs` — `Board`/`Card` structs, JSON persistence in `~/.deck/board.json`,
-  id/session-name generation. Columns are the fixed `COLUMNS` array; a card's
-  `column` is an index into it. The TUI holds the SAME privacy/durability
-  contract as the app backend (its own small copy, not a dependency): dirs
-  0700 and files 0600 at CREATION, boot-time idempotent migration
-  (`harden_data_dir`), atomic + durable saves (unique temp → fsync → rename →
-  parent-dir fsync) keeping `board.json.bak`, `.bak` fallback for a damaged
-  main file, and notes created by deck — never by `$EDITOR` under the ambient
-  umask — behind a card-id alphabet check so a note can never escape
-  `notes/`. Path-taking variants (`load_from` / `save_to` / `notes_path_in` /
-  `prepare_notes`) exist so no test touches the real `~/.deck`.
-- `src/tmux.rs` — all tmux subprocess calls. Every call captures stdout/stderr
-  (never inherit — stray tmux stderr corrupts the TUI). Pane-level targets
-  (`send-keys`, `capture-pane`) need `=name:`; session-level targets need `=name`
-  (tmux 3.7 parses a bare `=name` pane target as a lookup failure).
-- `src/app.rs` — state machine. `Mode` (Normal / Input / Confirm) drives key routing.
-  Actions that need the real terminal (attach, $EDITOR) are queued as `Action` and
-  executed by the main loop, which suspends/reinits ratatui around them.
-- `src/ui.rs` — rendering only, no state changes.
-- `src/main.rs` — event loop; polls keys at 200ms, refreshes tmux state at 1s.
-
 ## Invariants
 
 - Sessions are started with a plain shell + `send-keys` of the command, NOT by exec'ing
   the command, so the session survives agent exit and scrollback stays inspectable.
-- Deleted cards are moved to `board.archived`, never dropped.
-- `crossterm` comes via `ratatui::crossterm` re-export — don't add a separate
-  crossterm dependency (version-mismatch hazard).
-
-## Testing
-
-Headless smoke test: run deck itself inside tmux and drive it with send-keys:
-
-```bash
-tmux new-session -d -s deck-test -x 180 -y 40 target/debug/deck
-tmux send-keys -t deck-test s        # press a key
+- Use harmless card commands (e.g. `while true; do date; sleep 1; done`) when
+  testing — a card whose command is `claude` will really launch Claude Code.

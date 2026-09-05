@@ -546,16 +546,6 @@ pub(crate) fn queue_clear_sessions(
     Ok(())
 }
 
-/// Single-session form of `queue_clear_sessions`.
-#[tauri::command]
-pub(crate) fn queue_clear_session(
-    state: State<'_, Queues>,
-    app: AppHandle,
-    session: String,
-) -> Result<(), String> {
-    queue_clear_sessions(state, app, vec![session])
-}
-
 /// Immediate delivery is one-shot. It can bypass only a freshly proven
 /// foreground mismatch; exact identity remains mandatory in both probes and
 /// the atomic paste guard. No persisted protection is weakened.
