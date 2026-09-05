@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.5.14 — 2026-09-06 (Nightly)
+
 - Internal: split `commands.rs` and `scheduler.rs` into focused modules; move
   each subsystem's contract from CLAUDE.md into its module header; replace
   source-grepping tests with behavioural seams (`restore_start_args`,
