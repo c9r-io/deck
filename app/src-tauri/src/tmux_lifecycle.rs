@@ -638,7 +638,6 @@ fn start_current_server(build: &CurrentBuildIdentity) -> Result<ServerSnapshot, 
         metadata,
     ];
     tmux_owned(&args)?;
-    tmux::init_deck_server();
     match probe_server() {
         Probe::Reachable(snapshot)
             if compatible_state(build, &snapshot.metadata)

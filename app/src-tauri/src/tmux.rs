@@ -303,10 +303,12 @@ pub(crate) fn expand_tilde(path: &str) -> String {
 
 // ---------- session lifecycle ------------------------------------------------
 
-/// Start a detached session: login shell in `dir`, then type `cmd` into it,
+/// Apply the server defaults to an ALREADY RUNNING server that a previous
+/// deck build started (`-f tmux.conf` covers every server this build
+/// spawns). Called once per boot by `tmux_lifecycle::reconcile_on_boot`
+/// when it reuses a compatible server — never per session: each `set` is
+/// one tmux exec, and an endpoint-security agent taxes every exec.
 pub(crate) fn init_deck_server() {
-    // config file covers fresh servers; these cover an ALREADY RUNNING
-    // server (e.g. started by an older deck before an update)
     let _ = tmux(&["set-environment", "-g", "COLORTERM", "truecolor"]);
     // Panes tell the status helper (agent_status.rs) which instance's socket
     // to write to, so an isolated/smoke instance receives its own events.

@@ -248,6 +248,7 @@ pub(crate) fn attach_session(
         error
     })?;
     drop(pair.slave);
+    let attached_at = std::time::Instant::now();
     applog(&format!(
         "[pty] attached {} ({cols}x{rows})",
         crate::applog::session_tag(&name)
@@ -337,7 +338,13 @@ pub(crate) fn attach_session(
                     },
                 );
                 if emits == 1 {
-                    applog(&format!("[pty] first emit result: {:?}", r.is_ok()));
+                    // time from attach to the first byte the webview sees:
+                    // for a fresh pane this is the login shell's startup
+                    applog(&format!(
+                        "[pty] first emit result: {:?} after {}ms",
+                        r.is_ok(),
+                        attached_at.elapsed().as_millis()
+                    ));
                 }
                 // a failed emit ends the pump (see pump_gated) — the webview
                 // can never ACK an event it never received

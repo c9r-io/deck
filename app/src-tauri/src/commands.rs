@@ -20,7 +20,7 @@ use crate::datadir::now_epoch;
 use crate::error::{DeckError, ErrorKind};
 use crate::sync::LockRecover;
 use crate::tmux::{
-    expand_tilde, init_deck_server, pane_target, session_target, tmux, tmux_bin, tmux_with_stdin,
+    expand_tilde, pane_target, session_target, tmux, tmux_bin, tmux_with_stdin,
     validate_session_name,
 };
 
@@ -118,6 +118,13 @@ pub(crate) struct StartSessionResult {
 /// already lives (stale frontend status, click before the first poll, another
 /// window), that is success-without-side-effects: never a duplicate-session
 /// error, and never re-typing the boot cmd into a running shell.
+/// A created session logs one `[start]` line with per-phase milliseconds
+/// (lifecycle gate, pane creation, boot cmd, total): every tmux client here
+/// is one exec, and an endpoint-security agent taxes each exec (measured
+/// 3ms vs 29ms per call, 2026-09-06), so the line shows whether a slow
+/// "new shell" is deck's doing or the login shell's rc files. Server
+/// defaults come from `-f tmux.conf` at server spawn; nothing is re-set
+/// per session.
 /// The restored-shell start as ONE tmux server sequence: keep an empty server
 /// alive, load the sanitized transcript from stdin into a private buffer,
 /// create the pane the ORDINARY way (tmux's own login shell, no command),
@@ -164,6 +171,7 @@ pub(crate) fn start_session(
     cmd: String,
     restore_shell: bool,
 ) -> Result<StartSessionResult, DeckError> {
+    let t0 = std::time::Instant::now();
     validate_session_name(&name)?;
     if tmux(&["has-session", "-t", &session_target(&name)]).is_ok() {
         return Ok(StartSessionResult {
@@ -181,6 +189,7 @@ pub(crate) fn start_session(
             restored: false,
         });
     }
+    let gate_ms = t0.elapsed().as_millis();
     // A checkpoint is consulted only for a command-less, user-opened shell.
     // Its cwd may have advanced far beyond the card's original launch dir.
     // Missing directories fall back safely to the persisted card path.
@@ -243,14 +252,20 @@ pub(crate) fn start_session(
         (tmux(&["new-session", "-d", "-s", &name, "-c", &dir]), false)
     };
     start?;
-    // belt & suspenders for servers started by older deck versions
-    init_deck_server();
+    let created_ms = t0.elapsed().as_millis();
     if !cmd.trim().is_empty() {
         tmux(&["send-keys", "-t", &pane_target(&name), &cmd, "Enter"])?;
     }
     if recovery.is_some() {
         crate::shell_state::note_recovered(&name);
     }
+    let total_ms = t0.elapsed().as_millis();
+    applog(&format!(
+        "[start] created {} gate={gate_ms}ms create={}ms cmd={}ms total={total_ms}ms restored={restored}",
+        crate::applog::session_tag(&name),
+        created_ms - gate_ms,
+        total_ms - created_ms
+    ));
     Ok(StartSessionResult {
         created: true,
         restored,

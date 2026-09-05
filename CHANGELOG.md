@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Faster new shells under endpoint security: `start_session` no longer
+  re-applies the ten server defaults per session (`-f tmux.conf` covers
+  every server this build spawns; the once-per-boot reconcile still covers a
+  server left by an older build), cutting ~16 tmux execs to ~6. app.log now
+  records per-phase milliseconds for each created session (`[start]`) and
+  attach-to-first-byte (`[pty] first emit … after Nms`), so a slow "new
+  shell" can be attributed to deck or to the login shell's rc files.
 - Internal (tech-debt round, 2026-09-06): `SMOKE.md` is a live checklist
   again (run logs archived) and the `ime-routing` regression is fixed —
   composing Command chords reach only the zoom actions; release bundles no
