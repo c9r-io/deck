@@ -34,8 +34,44 @@ fn build_status_helper() {
     std::fs::copy(&built, &dest).expect("failed to place status-helper sidecar");
 }
 
+/// Stage the no-build frontend for `tauri::generate_context!`: a fresh copy
+/// of `../ui` under `ui-dist/` (gitignored). Release profiles drop `ui/test`
+/// — the node:test carriers and the WKWebView smoke are development assets
+/// and must not ship inside the signed bundle. Debug profiles keep it because
+/// `main.rs` imports `./test/wk-smoke.mjs` from the served bundle for the
+/// isolated smoke run. Staging from scratch also drops files deleted from
+/// `ui/`, which an in-place copy would leave in the bundle.
+fn stage_frontend() {
+    fn copy_tree(src: &std::path::Path, dst: &std::path::Path, skip: Option<&str>) {
+        std::fs::create_dir_all(dst).expect("create ui-dist directory");
+        for entry in std::fs::read_dir(src).expect("read ui directory") {
+            let entry = entry.expect("ui entry");
+            let name = entry.file_name();
+            if skip.is_some_and(|s| name == s) {
+                continue;
+            }
+            let from = entry.path();
+            let to = dst.join(&name);
+            if from.is_dir() {
+                copy_tree(&from, &to, None);
+            } else {
+                std::fs::copy(&from, &to).expect("copy frontend file");
+            }
+        }
+    }
+    let release = std::env::var("PROFILE").as_deref() == Ok("release");
+    let dist = std::path::Path::new("ui-dist");
+    let _ = std::fs::remove_dir_all(dist);
+    copy_tree(
+        std::path::Path::new("../ui"),
+        dist,
+        if release { Some("test") } else { None },
+    );
+}
+
 fn main() {
     build_status_helper();
+    stage_frontend();
     println!("cargo:rerun-if-env-changed=DECK_BUILD_COMMIT");
     let supplied = std::env::var("DECK_BUILD_COMMIT").ok();
     let discovered = std::process::Command::new("git")
@@ -52,8 +88,9 @@ fn main() {
         })
         .unwrap_or_else(|| "dev".into());
     println!("cargo:rustc-env=DECK_BUILD_COMMIT={commit}");
-    // The frontend is embedded into the binary at compile time; without these,
-    // cargo doesn't know about it and UI-only edits silently ship stale.
+    // The frontend is staged into ui-dist/ and embedded into the binary at
+    // compile time; without these, cargo doesn't know about it and UI-only
+    // edits silently ship stale.
     println!("cargo:rerun-if-changed=../ui/index.html");
     println!("cargo:rerun-if-changed=../ui/style.css");
     println!("cargo:rerun-if-changed=../ui/vendor");

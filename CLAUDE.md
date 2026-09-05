@@ -142,6 +142,9 @@ Status semantics (card colour) are documented on `effectiveCardStatus` in
   the `cargo:rerun-if-changed=../ui/...` lines in build.rs, UI-only edits build
   in 1s as a no-op and the app silently runs the previous UI. (Bit us: command
   capture appeared broken because the binary shipped a stale frontend.)
+  build.rs stages `ui/` into the gitignored `src-tauri/ui-dist/` that
+  `frontendDist` points at; release profiles leave `ui/test` out of the
+  bundle, debug profiles keep it for the WKWebView smoke. Never edit `ui-dist`.
 - Tauri v2 requires `src-tauri/capabilities/default.json` granting `core:default`
   or `event.listen` is REFUSED with a silent promise rejection — invoke (JS→Rust)
   works, events (Rust→JS) never arrive, so the terminal receives no output while

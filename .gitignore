@@ -7,3 +7,5 @@ app/src-tauri/binaries/deck-status-helper-*
 
 # wrangler CLI local cache — holds account metadata, never committed
 .wrangler/
+# staged by app/src-tauri/build.rs from app/ui (release drops ui/test)
+app/src-tauri/ui-dist/

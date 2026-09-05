@@ -4,7 +4,7 @@
   "version": "0.5.14",
   "identifier": "io.c9r.deck",
   "build": {
-    "frontendDist": "../ui"
+    "frontendDist": "ui-dist"
   },
   "app": {
     "withGlobalTauri": true,
