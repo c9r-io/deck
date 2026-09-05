@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Internal (tech-debt round, 2026-09-06): `SMOKE.md` is a live checklist
+  again (run logs archived) and the `ime-routing` regression is fixed —
+  composing Command chords reach only the zoom actions; release bundles no
+  longer ship `ui/test` (build.rs stages `ui-dist`); one cargo workspace
+  with the status helper under `src-tauri/`, toolchain pinned by
+  `rust-toolchain.toml`; `storage.rs` split into `datadir`, `applog`,
+  `redact`, `instance_lock`, `launch_args` with no module cycle; one shared
+  Board fixture pins the persisted schema in JS and Rust; selection and
+  terminal-input logic that needs no DOM moved to `pure.js` with tests; one
+  `DeckError` type with a closed `ErrorKind` replaces `Result<_, String>`.
+
 ## 0.5.14 — 2026-09-06 (Nightly)
 
 - Internal: split `commands.rs` and `scheduler.rs` into focused modules; move
