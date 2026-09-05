@@ -26,6 +26,7 @@ use tauri::AppHandle;
 use crate::inbound::{self, Config, Event, Source, SourceStatus};
 use crate::keychain::{self, Slot};
 use crate::storage::applog;
+use crate::sync::LockRecover;
 
 const API: &str = "https://slack.com/api/";
 const HTTP_TIMEOUT: Duration = Duration::from_secs(20);
@@ -57,7 +58,7 @@ fn client() -> &'static reqwest::Client {
 
 fn endpoint(method: &str) -> String {
     #[cfg(test)]
-    if let Some(base) = TEST_API.lock().unwrap().clone() {
+    if let Some(base) = TEST_API.lock_or_recover().clone() {
         return format!("{base}{method}");
     }
     format!("{API}{method}")
@@ -616,7 +617,7 @@ fn socket_loop(
             if let MaybeTlsStream::Rustls(s) = ws.get_mut() {
                 let _ = s.get_mut().set_read_timeout(Some(SOCKET_READ_TIMEOUT));
             }
-            *connected.lock().unwrap_or_else(|p| p.into_inner()) = true;
+            *connected.lock_or_recover() = true;
             applog("[inbound] slack live connected");
             backoff = 1;
             let mut idle = 0u32;
@@ -628,7 +629,7 @@ fn socket_loop(
                 match ws.read() {
                     Ok(Message::Text(t)) => {
                         idle = 0;
-                        let current = badges.lock().unwrap_or_else(|p| p.into_inner()).clone();
+                        let current = badges.lock_or_recover().clone();
                         let (envelope, hit) = parse_envelope(&t, &self_id, &current);
                         if let Some(id) = envelope {
                             let ack = serde_json::json!({ "envelope_id": id }).to_string();
@@ -689,10 +690,10 @@ fn socket_loop(
                     Err(_) => break Err("socket"),
                 }
             };
-            *connected.lock().unwrap_or_else(|p| p.into_inner()) = false;
+            *connected.lock_or_recover() = false;
             result
         })();
-        *connected.lock().unwrap_or_else(|p| p.into_inner()) = false;
+        *connected.lock_or_recover() = false;
         match attempt {
             Ok(()) => {}
             Err(code) => {
@@ -752,7 +753,7 @@ impl Source for Slack {
     }
 
     fn set_live(&mut self, app: &AppHandle, wanted: bool, badges: &[String]) {
-        *self.live.badges.lock().unwrap_or_else(|p| p.into_inner()) = badges.to_vec();
+        *self.live.badges.lock_or_recover() = badges.to_vec();
         let can = wanted && keychain::has(Slot::SlackAppToken);
         if can && !self.live.running {
             let my_epoch = self.live.epoch.fetch_add(1, Ordering::SeqCst) + 1;

@@ -2,6 +2,7 @@
 //! Hooks arm only when both smoke arguments select an isolated data root;
 //! normal and release launches cannot trigger them.
 
+use crate::sync::LockRecover;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
@@ -42,7 +43,7 @@ pub(crate) fn take(kind: &str) -> bool {
     let Some(kind) = canonical(kind) else {
         return false;
     };
-    let mut counts = COUNTS.lock().unwrap();
+    let mut counts = COUNTS.lock_or_recover();
     let count = counts.entry(kind).or_default();
     if *count == 0 {
         return false;
@@ -79,7 +80,7 @@ pub(crate) fn smoke_fault_set(kind: String, count: u8) -> Result<SmokeFaultState
     if count > 8 {
         return Err("smoke fault count must be between 0 and 8".into());
     }
-    COUNTS.lock().unwrap().insert(kind, count);
+    COUNTS.lock_or_recover().insert(kind, count);
     Ok(SmokeFaultState {
         kind: kind.to_string(),
         remaining: count,

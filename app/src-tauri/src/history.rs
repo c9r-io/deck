@@ -9,6 +9,7 @@ use std::sync::Mutex;
 
 use crate::storage;
 use crate::storage::now_epoch;
+use crate::sync::LockRecover;
 
 /// history.json is read-modify-write; without this in-process lock two quick
 /// successive commands could each read the same base and lose an update.
@@ -136,7 +137,7 @@ pub(crate) fn recent_commands(limit: usize) -> Vec<String> {
 /// deck owns its history: shells inside tmux sessions stay alive, so the
 /// user's ~/.zsh_history only fills on shell exit — too late for completion.
 pub(crate) fn record_into(path: &Path, cmd: &str) -> Result<(), String> {
-    let _g = HIST_LOCK.lock().unwrap(); // serialize read-modify-write
+    let _g = HIST_LOCK.lock_or_recover(); // serialize read-modify-write
     let mut hist = read_history_from(path);
     if let Some(e) = hist.iter_mut().find(|e| e.cmd == cmd) {
         e.n += 1;
@@ -167,7 +168,7 @@ pub(crate) fn record_command(cmd: String) -> Result<(), String> {
 /// Wipe history at `path`: empty the main file AND delete the .bak (which
 /// still holds the old commands — clearing means clearing).
 pub(crate) fn clear_into(path: &Path) -> Result<(), String> {
-    let _g = HIST_LOCK.lock().unwrap();
+    let _g = HIST_LOCK.lock_or_recover();
     storage::save_typed::<Vec<HistEntry>>(path, "[]")?;
     let mut bak = path.as_os_str().to_owned();
     bak.push(".bak");

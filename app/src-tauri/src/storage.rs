@@ -56,6 +56,7 @@
 //! damage → recovery), and `save` refuses to overwrite a malformed or future
 //! envelope.
 
+use crate::sync::LockRecover;
 use serde::de::DeserializeOwned;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -162,7 +163,7 @@ pub static WARNINGS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 /// serde detail and quarantine file names, which stay out of app.log.
 pub fn warn(note: String) {
     applog(&format!("[storage] warning ({})", err_code(&note)));
-    WARNINGS.lock().unwrap().push(note);
+    WARNINGS.lock_or_recover().push(note);
 }
 
 /// A successful load: the payload plus where it came from and, when it came
@@ -386,7 +387,7 @@ fn save_checked(
     // Scheduler workers and UI commands can save concurrently. Serialize the
     // validate → backup → replace sequence so one writer cannot validate
     // bytes another writer replaces before its backup is taken.
-    let _save_guard = SAVE_LOCK.lock().unwrap();
+    let _save_guard = SAVE_LOCK.lock_or_recover();
     let data: serde_json::Value =
         serde_json::from_str(payload).map_err(|e| format!("refusing to save invalid JSON: {e}"))?;
     // Never clobber a file this build does not understand. `load_typed`

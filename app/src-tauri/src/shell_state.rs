@@ -56,6 +56,7 @@ use std::sync::{LazyLock, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::storage::{self, applog, now_epoch};
+use crate::sync::LockRecover;
 use crate::tmux::{pane_target, tmux, validate_session_name};
 
 pub(crate) const MAX_TRANSCRIPT_BYTES: usize = 256 * 1024;
@@ -267,7 +268,7 @@ pub(crate) fn snapshot_for_start(session: &str, cmd: &str, enabled: bool) -> Opt
 }
 
 pub(crate) fn note_recovered(session: &str) {
-    let mut tracker = TRACKER.lock().unwrap();
+    let mut tracker = TRACKER.lock_or_recover();
     // The tmux generation is new even if activity happens to reuse the same
     // epoch second.  Force its first shell checkpoint.
     tracker.saved.remove(session);
@@ -367,11 +368,11 @@ fn remove_snapshot_files_in(dir: &Path, session: &str) -> Result<(), String> {
 pub(crate) fn clear_snapshot(session: &str) -> Result<(), String> {
     validate_session_name(session)?;
     {
-        let mut tracker = TRACKER.lock().unwrap();
+        let mut tracker = TRACKER.lock_or_recover();
         tracker.epoch = tracker.epoch.wrapping_add(1);
         tracker.saved.remove(session);
     }
-    let _io = SNAPSHOT_IO.lock().unwrap();
+    let _io = SNAPSHOT_IO.lock_or_recover();
     remove_snapshot_files_in(&snapshot_dir(), session)
 }
 
@@ -379,11 +380,11 @@ pub(crate) fn clear_snapshot(session: &str) -> Result<(), String> {
 /// epoch + IO lock makes disabling race-safe with an already-running capture.
 pub(crate) fn clear_all() -> Result<(), String> {
     {
-        let mut tracker = TRACKER.lock().unwrap();
+        let mut tracker = TRACKER.lock_or_recover();
         tracker.epoch = tracker.epoch.wrapping_add(1);
         tracker.saved.clear();
     }
-    let _io = SNAPSHOT_IO.lock().unwrap();
+    let _io = SNAPSHOT_IO.lock_or_recover();
     let dir = snapshot_dir();
     let Ok(entries) = std::fs::read_dir(&dir) else {
         return Ok(());
@@ -426,8 +427,8 @@ fn prune_snapshot_count(dir: &Path, keep: &Path) {
 
 fn save_snapshot(snapshot: &ShellSnapshot, epoch: u64) -> Result<bool, String> {
     let path = snapshot_path(&snapshot.session)?;
-    let _io = SNAPSHOT_IO.lock().unwrap();
-    if TRACKER.lock().unwrap().epoch != epoch {
+    let _io = SNAPSHOT_IO.lock_or_recover();
+    if TRACKER.lock_or_recover().epoch != epoch {
         return Ok(false); // disabled/cleared/closed while capture was running
     }
     if let Some(dir) = path.parent() {
@@ -468,7 +469,7 @@ pub(crate) fn schedule_checkpoints(observations: Vec<ShellObservation>, enabled:
     }
     let now = now_epoch();
     let (epoch, work): (u64, Vec<ShellObservation>) = {
-        let mut tracker = TRACKER.lock().unwrap();
+        let mut tracker = TRACKER.lock_or_recover();
         if tracker.busy || now.saturating_sub(tracker.last_schedule) < CHECKPOINT_INTERVAL_SECS {
             return;
         }
@@ -525,7 +526,7 @@ pub(crate) fn schedule_checkpoints(observations: Vec<ShellObservation>, enabled:
                 )),
             }
         }
-        let mut tracker = TRACKER.lock().unwrap();
+        let mut tracker = TRACKER.lock_or_recover();
         if tracker.epoch == epoch {
             for (observation, at) in saved_observations {
                 tracker.saved.insert(

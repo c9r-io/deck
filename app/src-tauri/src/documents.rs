@@ -7,6 +7,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use crate::storage;
+use crate::sync::LockRecover;
 
 // ---------- board persistence ------------------------------------------------
 
@@ -303,7 +304,7 @@ pub(crate) fn save_board(data: String) -> Result<(), String> {
 /// frontend to surface as toasts.
 #[tauri::command]
 pub(crate) fn storage_warnings() -> Vec<UiNotice> {
-    std::mem::take(&mut *storage::WARNINGS.lock().unwrap())
+    std::mem::take(&mut *storage::WARNINGS.lock_or_recover())
         .iter()
         .map(|note| notice_from(note))
         .collect()

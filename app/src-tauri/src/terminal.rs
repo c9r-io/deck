@@ -10,6 +10,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::storage;
+use crate::sync::LockRecover;
 use crate::tmux::{pane_target, tmux, tmux_owned, validate_session_name};
 
 /// Wheel scrolling is deck-driven: xterm keeps LOCAL selection (mouse mode
@@ -149,7 +150,7 @@ pub(crate) fn terminal_selection_operation_lock() -> &'static Mutex<()> {
 }
 
 fn selection_token_matches(name: &str, token: u64, frozen: bool) -> bool {
-    let leases = terminal_selection_leases().lock().unwrap();
+    let leases = terminal_selection_leases().lock_or_recover();
     matches!(
         leases.get(name),
         Some(TerminalSelectionLease::Dragging { token: current })
@@ -166,7 +167,7 @@ fn frozen_selection_status(
     token: u64,
     mut status: TerminalSelectionStatus,
 ) -> Result<TerminalSelectionStatus, String> {
-    let leases = terminal_selection_leases().lock().unwrap();
+    let leases = terminal_selection_leases().lock_or_recover();
     let Some(TerminalSelectionLease::Frozen {
         token: current,
         selection_start_row,
@@ -325,7 +326,7 @@ pub(crate) fn terminal_selection_start(
     active_col: u32,
     grid: TerminalSelectionGrid,
 ) -> Result<TerminalSelectionStatus, String> {
-    let _operation = terminal_selection_operation_lock().lock().unwrap();
+    let _operation = terminal_selection_operation_lock().lock_or_recover();
     validate_session_name(&name)?;
     if terminal_selection_leases()
         .lock()
@@ -406,7 +407,7 @@ pub(crate) fn terminal_selection_update(
     edge_lines: i32,
     grid: TerminalSelectionGrid,
 ) -> Result<TerminalSelectionStatus, String> {
-    let _operation = terminal_selection_operation_lock().lock().unwrap();
+    let _operation = terminal_selection_operation_lock().lock_or_recover();
     validate_session_name(&name)?;
     if !selection_token_matches(&name, token, false) {
         return Err("selection-missing".into());
@@ -488,7 +489,7 @@ pub(crate) fn terminal_selection_finish(
     token: u64,
     grid: TerminalSelectionGrid,
 ) -> Result<TerminalSelectionStatus, String> {
-    let _operation = terminal_selection_operation_lock().lock().unwrap();
+    let _operation = terminal_selection_operation_lock().lock_or_recover();
     validate_session_name(&name)?;
     if !selection_token_matches(&name, token, false) {
         return Err("selection-missing".into());
@@ -531,7 +532,7 @@ pub(crate) fn terminal_selection_finish(
     // geometry, so later scroll commands cannot move either endpoint.
     tmux(&["send-keys", "-t", &target, "-X", "clear-selection"])
         .map_err(|_| "snapshot-failed".to_string())?;
-    terminal_selection_leases().lock().unwrap().insert(
+    terminal_selection_leases().lock_or_recover().insert(
         name.clone(),
         TerminalSelectionLease::Frozen {
             token,
@@ -553,7 +554,7 @@ pub(crate) fn terminal_selection_copy(
     name: String,
     token: u64,
 ) -> Result<TerminalSelectionCopy, String> {
-    let _operation = terminal_selection_operation_lock().lock().unwrap();
+    let _operation = terminal_selection_operation_lock().lock_or_recover();
     validate_session_name(&name)?;
     let lease = terminal_selection_leases()
         .lock()
@@ -601,7 +602,7 @@ pub(crate) fn terminal_selection_scroll(
     token: u64,
     lines: i32,
 ) -> Result<TerminalSelectionStatus, String> {
-    let _operation = terminal_selection_operation_lock().lock().unwrap();
+    let _operation = terminal_selection_operation_lock().lock_or_recover();
     validate_session_name(&name)?;
     if !selection_token_matches(&name, token, true) {
         return Err("selection-missing".into());
@@ -624,10 +625,10 @@ pub(crate) fn terminal_selection_scroll(
 
 #[tauri::command]
 pub(crate) fn terminal_selection_cancel(name: String, token: u64) -> Result<(), String> {
-    let _operation = terminal_selection_operation_lock().lock().unwrap();
+    let _operation = terminal_selection_operation_lock().lock_or_recover();
     validate_session_name(&name)?;
     let should_cancel = {
-        let mut leases = terminal_selection_leases().lock().unwrap();
+        let mut leases = terminal_selection_leases().lock_or_recover();
         let matches = match leases.get(&name) {
             Some(TerminalSelectionLease::Dragging { token: current })
             | Some(TerminalSelectionLease::Frozen { token: current, .. }) => *current == token,

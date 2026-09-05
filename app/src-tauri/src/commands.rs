@@ -17,6 +17,7 @@ use tauri::{AppHandle, Emitter};
 
 use crate::storage;
 use crate::storage::{applog, now_epoch};
+use crate::sync::LockRecover;
 use crate::tmux::{
     expand_tilde, init_deck_server, pane_target, session_target, tmux, tmux_bin, tmux_with_stdin,
     validate_session_name,
@@ -462,7 +463,7 @@ pub(crate) fn poll_sessions(
     // user content)
     static POLL_BROKEN: std::sync::Mutex<bool> = std::sync::Mutex::new(false);
     {
-        let mut broken = POLL_BROKEN.lock().unwrap();
+        let mut broken = POLL_BROKEN.lock_or_recover();
         match &listing {
             Err(e) if !*broken => {
                 *broken = true;

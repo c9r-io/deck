@@ -23,6 +23,7 @@ mod scheduler;
 mod shell_state;
 mod smoke_faults;
 mod storage;
+mod sync;
 mod terminal;
 mod terminal_scroll;
 mod terminal_selection;

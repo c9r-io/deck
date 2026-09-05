@@ -14,6 +14,7 @@ use crate::commands::start_session;
 use crate::context::{self, ContextCheck, ContextCode, ContextStatus, PaneIdentity, ProbeResult};
 use crate::storage;
 use crate::storage::{applog, now_epoch};
+use crate::sync::LockRecover;
 use crate::tmux::{tmux, tmux_owned};
 
 /// Note: deliberately carries no prompt text — the UI only toasts the
@@ -658,7 +659,7 @@ fn send_one_guarded(
                 item.text.len(),
                 item.mode
             ));
-            let mut q = qm.lock().unwrap();
+            let mut q = qm.lock_or_recover();
             finalize_delivery(&mut q, &item.id, &delivery, now_epoch(), false);
             let cancelled = is_cancelled(&q, &item.session);
             if let Err(e) = persist(&q) {
@@ -671,7 +672,7 @@ fn send_one_guarded(
             }
         }
         Err(e) => {
-            let mut q = qm.lock().unwrap();
+            let mut q = qm.lock_or_recover();
             note_failed(&mut q, &item.id, &delivery, &e);
             let gave_up = q.items.iter().any(|i| i.id == item.id && item_dead(i));
             let cancelled = is_cancelled(&q, &item.session);
@@ -753,7 +754,7 @@ pub(super) fn persist_context_result(
 /// cannot kill a session that does not exist yet, so the worker must inspect
 /// the tombstone after its probe and reap anything it may have just started.
 fn reap_probe_start_after_delete(qm: &Mutex<QueueState>, session: &str, h: &SendHooks) -> bool {
-    let cancelled = is_cancelled(&qm.lock().unwrap(), session);
+    let cancelled = is_cancelled(&qm.lock_or_recover(), session);
     reap_if_cancelled(cancelled, session, h);
     cancelled
 }
@@ -791,7 +792,7 @@ pub(super) fn send_one_safe_requested(
     context_hooks: &ContextHooks,
 ) -> SendResult {
     let selected = {
-        let q = qm.lock().unwrap();
+        let q = qm.lock_or_recover();
         select_for_request(
             &q,
             request.session,
@@ -805,7 +806,7 @@ pub(super) fn send_one_safe_requested(
         return SendResult::Nothing;
     };
     let cancelled = || {
-        let q = qm.lock().unwrap();
+        let q = qm.lock_or_recover();
         is_cancelled(&q, &selected.session)
             || !q.items.iter().any(|i| {
                 i.id == selected.id

@@ -10,6 +10,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use super::*;
 use crate::storage;
 use crate::storage::{applog, now_epoch};
+use crate::sync::LockRecover;
 use crate::tmux::tmux;
 
 /// Boot migration is unusual: the interrupted send is an irreversible fact,
@@ -30,7 +31,7 @@ pub(super) fn boot_queues_with(
         let notes = recover_interrupted(&mut loaded);
         notes.into_iter().for_each(storage::warn);
         let queues = Queues::new(loaded);
-        let q = queues.q.lock().unwrap();
+        let q = queues.q.lock_or_recover();
         if let Err(e) = persist(&q) {
             queues.dirty.store(true, AtomicOrdering::Relaxed);
             storage::warn(format!(
@@ -79,10 +80,7 @@ fn sleep_until_tick() {
         if left.is_zero() {
             break;
         }
-        let Ok((g, _)) = cv.wait_timeout(f, left) else {
-            return;
-        };
-        f = g;
+        f = crate::sync::wait_timeout_or_recover(cv, f, left);
     }
     *f = false;
 }
@@ -94,7 +92,7 @@ pub(crate) fn spawn_scheduler(app: AppHandle) {
         // A post-send transition can be the last once item. Flush before the
         // empty-queue fast path so dirty state never loses its retry driver.
         flush_dirty(&state.q, &state.dirty, &save_queue);
-        if state.q.lock().unwrap().items.is_empty() {
+        if state.q.lock_or_recover().items.is_empty() {
             continue;
         }
         // pane activity for chain-mode quiet checks (one snapshot per tick)
@@ -141,7 +139,7 @@ pub(crate) fn spawn_scheduler(app: AppHandle) {
         // candidates only tell us WHICH sessions to serve — each worker
         // re-selects from FRESH state under the lock before sending.
         let sessions: Vec<String> = {
-            let q = state.q.lock().unwrap();
+            let q = state.q.lock_or_recover();
             select_due(&q, now_epoch(), local_minutes(), &activity)
                 .into_iter()
                 .map(|i| i.session)

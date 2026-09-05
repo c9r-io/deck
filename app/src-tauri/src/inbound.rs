@@ -74,6 +74,7 @@ use tauri::{AppHandle, Emitter};
 
 use crate::keychain;
 use crate::storage::{self, applog};
+use crate::sync::LockRecover;
 
 pub(crate) const SOURCES: &[&str] = &["slack"];
 const MAX_RULES: usize = 32;
@@ -343,7 +344,7 @@ impl InboundDoc {
 
 fn doc_path() -> PathBuf {
     #[cfg(test)]
-    if let Some(path) = TEST_DOC_PATH.lock().unwrap().clone() {
+    if let Some(path) = TEST_DOC_PATH.lock_or_recover().clone() {
         return path;
     }
     storage::deck_dir().join("inbound.json")
@@ -390,7 +391,7 @@ fn wake() -> &'static (Mutex<bool>, Condvar) {
 }
 
 fn with_rt<R>(f: impl FnOnce(&mut Runtime) -> R) -> R {
-    let mut guard = RT.lock().unwrap_or_else(|p| p.into_inner());
+    let mut guard = RT.lock_or_recover();
     let rt = guard.get_or_insert_with(|| Runtime {
         doc: load_doc(),
         dirty: false,
@@ -702,10 +703,7 @@ fn wait_for_tick(d: Duration) {
         if left.is_zero() {
             break;
         }
-        let Ok((g, _)) = cv.wait_timeout(f, left) else {
-            return;
-        };
-        f = g;
+        f = crate::sync::wait_timeout_or_recover(cv, f, left);
     }
     *f = false;
 }

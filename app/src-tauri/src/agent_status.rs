@@ -97,6 +97,7 @@ use std::time::Duration;
 
 use crate::applog;
 use crate::storage;
+use crate::sync::LockRecover;
 
 /// Registered agent modules.
 const SOURCES: &[&str] = &["claude-code", "codex"];
@@ -124,7 +125,7 @@ struct Entry {
 static AGENTS: Mutex<Option<HashMap<String, Entry>>> = Mutex::new(None);
 
 fn with_agents<R>(f: impl FnOnce(&mut HashMap<String, Entry>) -> R) -> R {
-    let mut guard = AGENTS.lock().unwrap();
+    let mut guard = AGENTS.lock_or_recover();
     f(guard.get_or_insert_with(HashMap::new))
 }
 

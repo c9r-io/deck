@@ -49,6 +49,7 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::storage::applog;
+use crate::sync::LockRecover;
 use crate::tmux::{session_target, socket, tmux_bin, tmux_conf};
 
 // ---------- ACK window ---------------------------------------------------------
@@ -92,7 +93,7 @@ impl AckGate {
     /// a regressed ack, a duplicate, or an ack after close is ignored and
     /// can never expand the in-flight window past MAX_INFLIGHT_BATCHES.
     pub(crate) fn ack(&self, seq: u64) {
-        let mut g = self.inner.lock().unwrap();
+        let mut g = self.inner.lock_or_recover();
         if !g.closed && seq > g.acked && seq <= g.emitted {
             g.acked = seq;
             self.cv.notify_all();
@@ -103,7 +104,7 @@ impl AckGate {
     /// becomes visible to the frontend, so a fast ACK is never rejected as
     /// "future" — pump_gated calls this between admit() and the emit.
     pub(crate) fn mark_emitted(&self, seq: u64) {
-        let mut g = self.inner.lock().unwrap();
+        let mut g = self.inner.lock_or_recover();
         if seq > g.emitted {
             g.emitted = seq;
         }
@@ -112,7 +113,7 @@ impl AckGate {
     /// (acked, emitted, closed) — test observability.
     #[cfg(test)]
     pub(crate) fn state(&self) -> (u64, u64, bool) {
-        let g = self.inner.lock().unwrap();
+        let g = self.inner.lock_or_recover();
         (g.acked, g.emitted, g.closed)
     }
 
@@ -120,7 +121,7 @@ impl AckGate {
     /// called on detach, on replacement by a newer attachment, and is the
     /// answer to "the webview will never ACK again".
     pub(crate) fn close(&self) {
-        let mut g = self.inner.lock().unwrap();
+        let mut g = self.inner.lock_or_recover();
         g.closed = true;
         self.cv.notify_all();
     }
@@ -129,7 +130,7 @@ impl AckGate {
     /// closed (false). Logs once per stall episode so a wedged webview is
     /// visible in app.log while memory stays bounded.
     pub(crate) fn admit(&self, seq: u64, window: u64) -> bool {
-        let mut g = self.inner.lock().unwrap();
+        let mut g = self.inner.lock_or_recover();
         let mut stalled = false;
         loop {
             if g.closed {
@@ -146,7 +147,7 @@ impl AckGate {
                     g.acked
                 ));
             }
-            g = self.cv.wait(g).unwrap();
+            g = crate::sync::wait_or_recover(&self.cv, g);
         }
     }
 }
@@ -173,7 +174,7 @@ impl PtyState {
     /// transaction kills it; this only prevents stale PTY-exit events and
     /// releases all ACK waiters.
     pub(crate) fn detach_all(&self) {
-        let mut entries = self.map.lock().unwrap();
+        let mut entries = self.map.lock_or_recover();
         for (_, mut entry) in entries.drain() {
             entry.gate.close();
             let _ = entry.child.kill();
@@ -207,7 +208,7 @@ pub(crate) fn attach_session(
     crate::tmux::validate_session_name(&name)?;
     // replace any previous attachment for this session; closing its gate
     // releases an emitter that may be waiting on ACKs that will never come
-    if let Some(mut old) = state.map.lock().unwrap().remove(&name) {
+    if let Some(mut old) = state.map.lock_or_recover().remove(&name) {
         old.gate.close();
         let _ = old.child.kill();
     }
@@ -255,12 +256,12 @@ pub(crate) fn attach_session(
     let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
 
     let generation = {
-        let mut c = state.counter.lock().unwrap();
+        let mut c = state.counter.lock_or_recover();
         *c += 1;
         *c
     };
     let gate = AckGate::new(name.clone());
-    state.map.lock().unwrap().insert(
+    state.map.lock_or_recover().insert(
         name.clone(),
         PtyEntry {
             writer,
@@ -338,7 +339,7 @@ pub(crate) fn attach_session(
         );
         // clean up only if this attachment is still the current one
         let state = thread_app.state::<PtyState>();
-        let mut map = state.map.lock().unwrap();
+        let mut map = state.map.lock_or_recover();
         if map.get(&thread_name).map(|e| e.generation) == Some(generation) {
             map.remove(&thread_name);
             drop(map);

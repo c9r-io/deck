@@ -12,10 +12,11 @@ use super::*;
 use crate::context::{self, ContextCode, ContextStatus, PaneIdentity};
 use crate::storage;
 use crate::storage::{applog, now_epoch};
+use crate::sync::LockRecover;
 
 #[tauri::command]
 pub(crate) fn queue_list(state: State<'_, Queues>) -> QueueState {
-    state.q.lock().unwrap().clone()
+    state.q.lock_or_recover().clone()
 }
 
 #[derive(Serialize)]
@@ -60,7 +61,7 @@ pub(crate) fn smoke_seed_ambiguous(state: State<'_, Queues>) -> Result<(), Strin
     if !crate::smoke_faults::enabled() {
         return Err("smoke queue hooks are unavailable".into());
     }
-    let mut q = state.q.lock().unwrap();
+    let mut q = state.q.lock_or_recover();
     let item = q.items.first_mut().ok_or("smoke queue is empty")?;
     let delivery = "smoke-delivery".to_string();
     item.state = "firing".into();
@@ -85,7 +86,7 @@ pub(crate) fn smoke_queue_state(state: State<'_, Queues>) -> Result<SmokeQueueSt
     if !crate::smoke_faults::enabled() {
         return Err("smoke queue hooks are unavailable".into());
     }
-    let q = state.q.lock().unwrap().clone();
+    let q = state.q.lock_or_recover().clone();
     let disk =
         storage::load_typed::<QueueState>(&queue_path())?.ok_or("smoke queue file is missing")?;
     let disk: QueueState = serde_json::from_str(&disk.payload).map_err(|e| e.to_string())?;
