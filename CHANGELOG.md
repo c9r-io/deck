@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.15 — 2026-09-06 (Nightly)
 
 - Faster new shells under endpoint security: `start_session` no longer
   re-applies the ten server defaults per session (`-f tmux.conf` covers
