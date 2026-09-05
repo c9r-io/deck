@@ -11,7 +11,9 @@
   `redact`, `instance_lock`, `launch_args` with no module cycle; one shared
   Board fixture pins the persisted schema in JS and Rust; selection and
   terminal-input logic that needs no DOM moved to `pure.js` with tests; one
-  `DeckError` type with a closed `ErrorKind` replaces `Result<_, String>`.
+  `DeckError` type with a closed `ErrorKind` replaces `Result<_, String>`;
+  there is no `From<String>`, so every message names its kind at the call
+  site and only foreign text (tmux stderr, library errors) is classified.
 
 ## 0.5.14 — 2026-09-06 (Nightly)
 

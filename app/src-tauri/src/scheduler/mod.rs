@@ -131,7 +131,7 @@ use std::sync::Mutex;
 
 use crate::applog::applog;
 use crate::context::{self, ContextCheck, ContextCode, ContextStatus, PaneIdentity};
-use crate::error::DeckError;
+use crate::error::{DeckError, ErrorKind};
 use crate::storage;
 
 // ---------- scheduled prompts ----------------------------------------------------
@@ -512,7 +512,10 @@ pub(crate) fn migrate_groups(q: &mut QueueState) {
 /// injecting a prompt) when this fails.
 pub(crate) fn save_queue(q: &QueueState) -> Result<(), DeckError> {
     if crate::smoke_faults::take("queue-save") {
-        return Err("injected queue save failure".into());
+        return Err(DeckError::new(
+            ErrorKind::Other,
+            "injected queue save failure",
+        ));
     }
     let raw = serde_json::to_string(q).map_err(DeckError::from)?;
     storage::save_typed::<QueueState>(&queue_path(), &raw)

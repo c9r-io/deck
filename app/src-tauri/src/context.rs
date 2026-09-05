@@ -7,7 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::DeckError;
+use crate::error::{DeckError, ErrorKind};
 use crate::tmux::{pane_target, tmux};
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -261,8 +261,9 @@ pub(crate) fn raw_probe(session: &str) -> Result<RawProbe, DeckError> {
     ])?;
     let trimmed = raw.trim_end_matches(['\r', '\n']);
     let (meta, tty) = trimmed.rsplit_once('\t').unwrap_or((trimmed, ""));
-    let mut probe = parse_raw_probe(meta)
-        .ok_or_else(|| "tmux returned malformed context metadata".to_string())?;
+    let mut probe = parse_raw_probe(meta).ok_or_else(|| {
+        DeckError::new(ErrorKind::Tmux, "tmux returned malformed context metadata")
+    })?;
     probe.foreground_argv = foreground_from_tty(tty);
     Ok(probe)
 }

@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::error::DeckError;
+use crate::error::{DeckError, ErrorKind};
 use crate::sync::LockRecover;
 use crate::tmux::{pane_target, tmux, tmux_owned, validate_session_name};
 
@@ -25,10 +25,16 @@ pub(crate) struct TerminalScrollResult {
 
 fn parse_terminal_scroll_result(raw: &str) -> Result<TerminalScrollResult, DeckError> {
     let mut fields = raw.trim_end().split('\t');
-    let active = fields.next().ok_or("scroll-status-invalid")? == "1";
-    let cursor_visible = fields.next().ok_or("scroll-status-invalid")? == "1";
+    let active = fields
+        .next()
+        .ok_or(DeckError::new(ErrorKind::Other, "scroll-status-invalid"))?
+        == "1";
+    let cursor_visible = fields
+        .next()
+        .ok_or(DeckError::new(ErrorKind::Other, "scroll-status-invalid"))?
+        == "1";
     if fields.next().is_some() {
-        return Err("scroll-status-invalid".into());
+        return Err(DeckError::new(ErrorKind::Other, "scroll-status-invalid"));
     }
     Ok(TerminalScrollResult {
         active,
@@ -177,10 +183,10 @@ fn frozen_selection_status(
         ..
     }) = leases.get(name)
     else {
-        return Err("selection-missing".into());
+        return Err(DeckError::new(ErrorKind::Other, "selection-missing"));
     };
     if *current != token {
-        return Err("selection-missing".into());
+        return Err(DeckError::new(ErrorKind::Other, "selection-missing"));
     }
     status.selection_present = true;
     status.selection_start_row = *selection_start_row;
@@ -217,7 +223,10 @@ fn terminal_selection_status_for(target: &str) -> Result<TerminalSelectionStatus
     let selection_end_row = parse_u32_or_zero(f.next());
     let selection_end_col = parse_u32_or_zero(f.next());
     if pane_rows == 0 || pane_cols == 0 {
-        return Err("tmux returned invalid terminal dimensions".into());
+        return Err(DeckError::new(
+            ErrorKind::Tmux,
+            "tmux returned invalid terminal dimensions",
+        ));
     }
     let visible_start = history_rows.saturating_sub(scroll_position) as u64;
     let absolute_row = visible_start.saturating_add(cursor_row as u64);
@@ -253,7 +262,10 @@ fn require_terminal_selection_dimensions(
     if actual_cols == expected_cols && actual_rows == expected_rows {
         Ok(())
     } else {
-        Err("selection-dimensions-changed".into())
+        Err(DeckError::new(
+            ErrorKind::Other,
+            "selection-dimensions-changed",
+        ))
     }
 }
 
@@ -334,7 +346,7 @@ pub(crate) fn terminal_selection_start(
         .get(&name)
         .is_some_and(|lease| lease.token() >= token)
     {
-        return Err("selection-missing".into());
+        return Err(DeckError::new(ErrorKind::Other, "selection-missing"));
     }
     let target = pane_target(&name);
     let dims = terminal_selection_status_for(&target)?;
@@ -384,7 +396,12 @@ pub(crate) fn terminal_selection_start(
         ],
     );
     push_copy_cursor(&mut batch, &target, &rows, active_row, active_col);
-    tmux_owned(&batch).map_err(|e| format!("terminal selection could not start ({})", e.code()))?;
+    tmux_owned(&batch).map_err(|e| {
+        DeckError::new(
+            e.kind(),
+            format!("terminal selection could not start ({})", e.code()),
+        )
+    })?;
     let status = terminal_selection_status_for(&target)?;
     terminal_selection_leases()
         .lock()
@@ -405,7 +422,7 @@ pub(crate) fn terminal_selection_update(
     let _operation = terminal_selection_operation_lock().lock_or_recover();
     validate_session_name(&name)?;
     if !selection_token_matches(&name, token, false) {
-        return Err("selection-missing".into());
+        return Err(DeckError::new(ErrorKind::Other, "selection-missing"));
     }
     let target = pane_target(&name);
     let before = terminal_selection_status_for(&target)?;
@@ -419,7 +436,10 @@ pub(crate) fn terminal_selection_update(
     // leaves the anchor, so selection_present=0 is valid while a drag is
     // still inside that cell. Moving the copy cursor is what makes it present.
     if !before.active {
-        return Err("terminal selection is no longer active".into());
+        return Err(DeckError::new(
+            ErrorKind::Other,
+            "terminal selection is no longer active",
+        ));
     }
     let row = row.min(before.pane_rows.saturating_sub(1));
     let col = col.min(before.pane_cols.saturating_sub(1));
@@ -444,9 +464,14 @@ pub(crate) fn terminal_selection_update(
             ],
         );
     }
-    tmux_owned(&batch).map_err(|e| format!("terminal selection could not move ({})", e.code()))?;
+    tmux_owned(&batch).map_err(|e| {
+        DeckError::new(
+            e.kind(),
+            format!("terminal selection could not move ({})", e.code()),
+        )
+    })?;
     if !selection_token_matches(&name, token, false) {
-        return Err("selection-missing".into());
+        return Err(DeckError::new(ErrorKind::Other, "selection-missing"));
     }
     terminal_selection_status_for(&target)
 }
@@ -482,7 +507,7 @@ pub(crate) fn terminal_selection_finish(
     let _operation = terminal_selection_operation_lock().lock_or_recover();
     validate_session_name(&name)?;
     if !selection_token_matches(&name, token, false) {
-        return Err("selection-missing".into());
+        return Err(DeckError::new(ErrorKind::Other, "selection-missing"));
     }
     let target = pane_target(&name);
     let status = terminal_selection_status_for(&target)?;
@@ -499,31 +524,38 @@ pub(crate) fn terminal_selection_finish(
     // `selection-missing` to the caller; the suffix only feeds the closed
     // `finish-failed` reason code in the log.
     if !status.active {
-        return Err("selection-missing-inactive".into());
+        return Err(DeckError::new(
+            ErrorKind::Other,
+            "selection-missing-inactive",
+        ));
     }
     if !status.selection_present {
-        return Err("selection-missing-cleared".into());
+        return Err(DeckError::new(
+            ErrorKind::Other,
+            "selection-missing-cleared",
+        ));
     }
     let prefix = terminal_selection_buffer_prefix(token);
     let text = crate::terminal_selection::snapshot_selection(&target, &prefix, |args| {
         tmux_owned(args).map_err(String::from)
     })
-    .map_err(|_| DeckError::from("snapshot-failed"))?;
+    .map_err(|_| DeckError::new(ErrorKind::Other, "snapshot-failed"))?;
     let bytes = text.len() as u64;
     if bytes > MAX_TERMINAL_SELECTION_BYTES {
-        return Err(
-            "terminal selection exceeds the 64 MiB clipboard limit; narrow the selection".into(),
-        );
+        return Err(DeckError::new(
+            ErrorKind::Other,
+            "terminal selection exceeds the 64 MiB clipboard limit; narrow the selection",
+        ));
     }
     if !selection_token_matches(&name, token, false) {
-        return Err("selection-missing".into());
+        return Err(DeckError::new(ErrorKind::Other, "selection-missing"));
     }
     // The snapshot above is the immutable selection authority from now on.
     // Clear tmux's cursor-bound highlight but keep copy-mode and its viewport;
     // the frontend renders the frozen content coordinates with public cell
     // geometry, so later scroll commands cannot move either endpoint.
     tmux(&["send-keys", "-t", &target, "-X", "clear-selection"])
-        .map_err(|_| DeckError::from("snapshot-failed"))?;
+        .map_err(|_| DeckError::new(ErrorKind::Other, "snapshot-failed"))?;
     terminal_selection_leases().lock_or_recover().insert(
         name.clone(),
         TerminalSelectionLease::Frozen {
@@ -569,16 +601,16 @@ pub(crate) fn terminal_selection_copy(
             let target = pane_target(&name);
             let status = terminal_selection_status_for(&target)?;
             if !status.active || !status.selection_present {
-                return Err("selection-missing".into());
+                return Err(DeckError::new(ErrorKind::Other, "selection-missing"));
             }
             let prefix = terminal_selection_buffer_prefix(token);
             let text = crate::terminal_selection::snapshot_selection(&target, &prefix, |args| {
                 tmux_owned(args).map_err(String::from)
             })
-            .map_err(|_| DeckError::from("snapshot-failed"))?;
+            .map_err(|_| DeckError::new(ErrorKind::Other, "snapshot-failed"))?;
             let bytes = text.len() as u64;
             if bytes > MAX_TERMINAL_SELECTION_BYTES {
-                return Err("snapshot-failed".into());
+                return Err(DeckError::new(ErrorKind::Other, "snapshot-failed"));
             }
             Ok(TerminalSelectionCopy {
                 text,
@@ -586,7 +618,7 @@ pub(crate) fn terminal_selection_copy(
                 history_limit: status.history_limit,
             })
         }
-        _ => Err("selection-missing".into()),
+        _ => Err(DeckError::new(ErrorKind::Other, "selection-missing")),
     }
 }
 
@@ -599,7 +631,7 @@ pub(crate) fn terminal_selection_scroll(
     let _operation = terminal_selection_operation_lock().lock_or_recover();
     validate_session_name(&name)?;
     if !selection_token_matches(&name, token, true) {
-        return Err("selection-missing".into());
+        return Err(DeckError::new(ErrorKind::Other, "selection-missing"));
     }
     let target = pane_target(&name);
     // Pointerup froze the selection's bytes and absolute endpoints, so the

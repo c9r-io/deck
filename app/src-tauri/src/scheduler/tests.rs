@@ -849,7 +849,7 @@ fn boot_persist_failure_keeps_ambiguous_memory_dirty_until_flush() {
     let disk = Mutex::new(String::new());
     let persist = |q: &QueueState| {
         if fail.load(AtomicOrdering::Relaxed) {
-            Err("disk unavailable".into())
+            Err(DeckError::classified("disk unavailable"))
         } else {
             *disk.lock().unwrap() = serde_json::to_string(q).unwrap();
             Ok(())
@@ -881,15 +881,15 @@ fn orphan_ledger_boot_failure_is_immediately_decidable_and_ack_is_transactional(
         id: "d1".into(),
         snapshot,
     });
-    let queues = boot_queues_with(loaded, &|_| Err("read only".into()));
+    let queues = boot_queues_with(loaded, &|_| Err(DeckError::classified("read only")));
     let before = serde_json::to_string(&*queues.q.lock().unwrap()).unwrap();
     assert!(before.contains("ambiguous"));
-    assert!(
-        with_queue(&queues.q, &|_| Err("still read only".into()), |q| {
-            acknowledge_ambiguous(q, "a")
-        })
-        .is_err()
-    );
+    assert!(with_queue(
+        &queues.q,
+        &|_| Err(DeckError::classified("still read only")),
+        |q| { acknowledge_ambiguous(q, "a") }
+    )
+    .is_err());
     assert_eq!(
         serde_json::to_string(&*queues.q.lock().unwrap()).unwrap(),
         before
@@ -977,7 +977,7 @@ fn send_one_failure_is_retryable_and_never_audited() {
         "s",
         720,
         &HashMap::new(),
-        &|_: &QueueItem| Err("injection refused".into()),
+        &|_: &QueueItem| Err(DeckError::classified("injection refused")),
         &ok_persist,
     );
     assert_eq!(
@@ -1006,7 +1006,7 @@ fn retry_after_failure_sends_the_full_text_exactly_once() {
         "s",
         720,
         &HashMap::new(),
-        &|_: &QueueItem| Err("refused".into()),
+        &|_: &QueueItem| Err(DeckError::classified("refused")),
         &ok_persist,
     );
     qm.lock().unwrap().items[0].last_attempt_at = Some(0); // backoff elapsed
@@ -1039,7 +1039,7 @@ fn send_one_persist_failure_rolls_back_the_intent() {
         720,
         &HashMap::new(),
         &|_: &QueueItem| panic!("must not inject when the intent never hit disk"),
-        &|_: &QueueState| Err("disk full".into()),
+        &|_: &QueueState| Err(DeckError::classified("disk full")),
     );
     assert_eq!(res, SendResult::NotPersisted);
     let q = qm.lock().unwrap();
@@ -1594,7 +1594,9 @@ impl FakeDisk {
     }
     fn persist(&self, q: &QueueState) -> Result<(), DeckError> {
         if self.fail.load(AtomicOrdering::Relaxed) {
-            return Err("No space left on device (os error 28)".into());
+            return Err(DeckError::classified(
+                "No space left on device (os error 28)",
+            ));
         }
         self.writes
             .lock()
@@ -1742,7 +1744,7 @@ fn a_failed_pre_fire_save_sends_nothing_and_changes_nothing() {
         720,
         &HashMap::new(),
         &|_: &QueueItem| panic!("must not inject when the intent never hit disk"),
-        &|_: &QueueState| Err("No space left on device".into()),
+        &|_: &QueueState| Err(DeckError::classified("No space left on device")),
     );
     assert_eq!(res, SendResult::NotPersisted);
     assert_eq!(
@@ -1809,7 +1811,9 @@ fn a_definitively_refused_send_that_cannot_be_saved_is_retried_not_forgotten() {
         &HashMap::new(),
         &|_: &QueueItem| {
             disk.fail.store(true, AtomicOrdering::Relaxed);
-            Err("tmux send-keys failed: can't find session: x".into())
+            Err(DeckError::classified(
+                "tmux send-keys failed: can't find session: x",
+            ))
         },
         &persist,
     );
@@ -1849,7 +1853,7 @@ fn crash_before_dirty_flush_recovers_old_firing_disk_as_ambiguous() {
         &HashMap::new(),
         &|_: &QueueItem| {
             disk.fail.store(true, AtomicOrdering::Relaxed);
-            Err("tmux send-keys refused".into())
+            Err(DeckError::classified("tmux send-keys refused"))
         },
         &persist,
     );

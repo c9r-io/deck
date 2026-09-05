@@ -39,7 +39,7 @@ mod updater;
 
 pub(crate) use applog::applog;
 
-use crate::error::DeckError;
+use crate::error::{DeckError, ErrorKind};
 use std::process::Command;
 use tauri::{Emitter, Manager};
 
@@ -111,17 +111,21 @@ struct NativeMenu {
 #[tauri::command]
 fn set_native_locale(locale: String, menu: tauri::State<'_, NativeMenu>) -> Result<(), DeckError> {
     if !matches!(locale.as_str(), "system" | "en" | "zh-Hans") {
-        return Err("invalid locale".into());
+        return Err(DeckError::new(ErrorKind::Other, "invalid locale"));
     }
     let s = native_strings(&locale);
-    menu.clear.set_text(s.clear).map_err(DeckError::text)?;
+    menu.clear
+        .set_text(s.clear)
+        .map_err(|e| DeckError::classified(e.to_string()))?;
     menu.export_logs
         .set_text(s.export_logs)
-        .map_err(DeckError::text)?;
+        .map_err(|e| DeckError::classified(e.to_string()))?;
     menu.check_updates
         .set_text(s.check_updates)
-        .map_err(DeckError::text)?;
-    menu.terminal.set_text(s.terminal).map_err(DeckError::text)
+        .map_err(|e| DeckError::classified(e.to_string()))?;
+    menu.terminal
+        .set_text(s.terminal)
+        .map_err(|e| DeckError::classified(e.to_string()))
 }
 
 // ---------- main ---------------------------------------------------------------

@@ -14,7 +14,7 @@ use crate::applog::applog;
 use crate::commands::start_session;
 use crate::context::{self, ContextCheck, ContextCode, ContextStatus, PaneIdentity, ProbeResult};
 use crate::datadir::now_epoch;
-use crate::error::DeckError;
+use crate::error::{DeckError, ErrorKind};
 use crate::sync::LockRecover;
 use crate::tmux::{tmux, tmux_owned};
 
@@ -37,16 +37,22 @@ pub(crate) struct QueueFired {
 /// as a failure; deck never does that, and it is the same class of window as
 /// a power loss mid-send.)
 pub(crate) fn fire_item(item: &QueueItem) -> Result<(), DeckError> {
-    let pane = item.binding.as_ref().ok_or("context binding is missing")?;
-    let delivery = item
-        .delivery
-        .as_deref()
-        .ok_or("delivery identity is missing")?;
+    let pane = item.binding.as_ref().ok_or(DeckError::new(
+        ErrorKind::Other,
+        "context binding is missing",
+    ))?;
+    let delivery = item.delivery.as_deref().ok_or(DeckError::new(
+        ErrorKind::Other,
+        "delivery identity is missing",
+    ))?;
     if !delivery
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || c == '-')
     {
-        return Err("delivery identity is invalid".into());
+        return Err(DeckError::new(
+            ErrorKind::Other,
+            "delivery identity is invalid",
+        ));
     }
     let line = item.text.clone();
     let buffer = format!("deck-send-{delivery}");
@@ -115,7 +121,10 @@ pub(crate) fn fire_item(item: &QueueItem) -> Result<(), DeckError> {
         // branch deletes the private buffer. Never leave prompt bytes behind
         // in tmux after a refused/indeterminate injection.
         let _ = tmux(&["delete-buffer", "-b", &buffer]);
-        return Err("context identity or foreground changed before literal send".into());
+        return Err(DeckError::new(
+            ErrorKind::Other,
+            "context identity or foreground changed before literal send",
+        ));
     }
     std::thread::sleep(Duration::from_millis(ENTER_DELAY_MS));
     let enter = format!("send-keys -t {} Enter", pane.pane_id);
@@ -618,16 +627,16 @@ fn send_one_guarded(
             request.activity,
             request.requested,
         ) else {
-            return Err(TX_NOOP.into());
+            return Err(DeckError::new(ErrorKind::Other, TX_NOOP));
         };
         if expected.is_some_and(|(id, revision, binding)| {
             sel.id != id || sel.revision != revision || sel.binding.as_ref() != Some(binding)
         }) {
-            return Err(TX_NOOP.into());
+            return Err(DeckError::new(ErrorKind::Other, TX_NOOP));
         }
         let delivery = next_delivery_id();
         let Some(it) = q.items.iter_mut().find(|i| i.id == sel.id) else {
-            return Err(TX_NOOP.into());
+            return Err(DeckError::new(ErrorKind::Other, TX_NOOP));
         };
         it.state = "firing".into();
         it.attempts += 1;
@@ -724,16 +733,16 @@ pub(super) fn persist_context_result(
 ) -> Result<Option<QueueItem>, DeckError> {
     with_queue(qm, persist, |q| {
         if is_cancelled(q, &selected.session) {
-            return Err(TX_NOOP.into());
+            return Err(DeckError::new(ErrorKind::Other, TX_NOOP));
         }
         let Some(item) = q.items.iter_mut().find(|i| i.id == selected.id) else {
-            return Err(TX_NOOP.into());
+            return Err(DeckError::new(ErrorKind::Other, TX_NOOP));
         };
         if item.revision != selected.revision
             || item.paused
             || matches!(item.state.as_str(), "firing" | "ambiguous")
         {
-            return Err(TX_NOOP.into());
+            return Err(DeckError::new(ErrorKind::Other, TX_NOOP));
         }
         item.last_context = Some(context_check(result));
         if item.binding.is_none() && result.status != ContextStatus::SessionReplaced {
@@ -741,7 +750,10 @@ pub(super) fn persist_context_result(
         }
         if result.is_ready() {
             let Some(identity) = result.identity.clone() else {
-                return Err("ready context has no pane identity".into());
+                return Err(DeckError::new(
+                    ErrorKind::Other,
+                    "ready context has no pane identity",
+                ));
             };
             item.binding = Some(identity);
         }

@@ -50,7 +50,10 @@ pub(crate) fn set_terminal_mode_style(
     background: String,
 ) -> Result<(), DeckError> {
     if !validated_palette_color(&foreground) || !validated_palette_color(&background) {
-        return Err("terminal palette colors must be six-digit hex values".into());
+        return Err(DeckError::new(
+            ErrorKind::Other,
+            "terminal palette colors must be six-digit hex values",
+        ));
     }
     let style = format!("fg={foreground},bg={background}");
     crate::tmux::tmux(&["set", "-g", "mode-style", "none"])?;
@@ -189,7 +192,10 @@ pub(crate) fn start_session(
         .filter(|cwd| std::path::Path::new(cwd).is_dir())
         .unwrap_or(requested_dir);
     if !std::path::Path::new(&dir).is_dir() {
-        return Err(format!("not a directory: {dir}").into());
+        return Err(DeckError::new(
+            ErrorKind::NotDir,
+            format!("not a directory: {dir}"),
+        ));
     }
     let bootstrap = recovery
         .as_ref()
@@ -276,20 +282,20 @@ pub(crate) fn write_clipboard(text: String) -> Result<(), DeckError> {
     use std::io::Write as _;
     let mut child = pbcopy_command()
         .spawn()
-        .map_err(|_| DeckError::from("clipboard-write-failed"))?;
+        .map_err(|_| DeckError::new(ErrorKind::Other, "clipboard-write-failed"))?;
     child
         .stdin
         .take()
-        .ok_or("clipboard-write-failed")?
+        .ok_or(DeckError::new(ErrorKind::Other, "clipboard-write-failed"))?
         .write_all(text.as_bytes())
-        .map_err(|_| DeckError::from("clipboard-write-failed"))?;
+        .map_err(|_| DeckError::new(ErrorKind::Other, "clipboard-write-failed"))?;
     let status = child
         .wait()
-        .map_err(|_| DeckError::from("clipboard-write-failed"))?;
+        .map_err(|_| DeckError::new(ErrorKind::Other, "clipboard-write-failed"))?;
     if status.success() {
         Ok(())
     } else {
-        Err("clipboard-write-failed".into())
+        Err(DeckError::new(ErrorKind::Other, "clipboard-write-failed"))
     }
 }
 
@@ -669,10 +675,11 @@ mod tests {
             "tmux kill-session failed: no server running",
             "tmux kill-session failed: error connecting to socket (No such file or directory)",
         ] {
-            assert!(idempotent_kill_result(Err(missing.into())).is_ok());
+            assert!(idempotent_kill_result(Err(DeckError::classified(missing))).is_ok());
         }
-        let real =
-            idempotent_kill_result(Err("tmux kill-session failed: permission denied".into()));
+        let real = idempotent_kill_result(Err(DeckError::classified(
+            "tmux kill-session failed: permission denied",
+        )));
         assert!(real.is_err());
         assert!(idempotent_kill_result(Ok(String::new())).is_ok());
     }

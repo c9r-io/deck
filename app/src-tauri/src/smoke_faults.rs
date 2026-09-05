@@ -2,7 +2,7 @@
 //! Hooks arm only when both smoke arguments select an isolated data root;
 //! normal and release launches cannot trigger them.
 
-use crate::error::DeckError;
+use crate::error::{DeckError, ErrorKind};
 use crate::sync::LockRecover;
 use serde::Serialize;
 use std::collections::HashMap;
@@ -75,11 +75,17 @@ fn fnv1a64(bytes: &[u8]) -> u64 {
 #[tauri::command]
 pub(crate) fn smoke_fault_set(kind: String, count: u8) -> Result<SmokeFaultState, DeckError> {
     if !enabled() {
-        return Err("smoke fault hooks are unavailable".into());
+        return Err(DeckError::new(
+            ErrorKind::Other,
+            "smoke fault hooks are unavailable",
+        ));
     }
-    let kind = canonical(&kind).ok_or("unknown smoke fault")?;
+    let kind = canonical(&kind).ok_or(DeckError::new(ErrorKind::Other, "unknown smoke fault"))?;
     if count > 8 {
-        return Err("smoke fault count must be between 0 and 8".into());
+        return Err(DeckError::new(
+            ErrorKind::Other,
+            "smoke fault count must be between 0 and 8",
+        ));
     }
     COUNTS.lock_or_recover().insert(kind, count);
     Ok(SmokeFaultState {
@@ -91,13 +97,16 @@ pub(crate) fn smoke_fault_set(kind: String, count: u8) -> Result<SmokeFaultState
 #[tauri::command]
 pub(crate) fn smoke_clipboard_metrics() -> Result<SmokeClipboardMetrics, DeckError> {
     if !enabled() {
-        return Err("smoke clipboard metrics are unavailable".into());
+        return Err(DeckError::new(
+            ErrorKind::Other,
+            "smoke clipboard metrics are unavailable",
+        ));
     }
     let out = std::process::Command::new("pbpaste")
         .output()
-        .map_err(|_| "clipboard reader unavailable")?;
+        .map_err(|_| DeckError::new(ErrorKind::Other, "clipboard reader unavailable"))?;
     if !out.status.success() {
-        return Err("clipboard reader failed".into());
+        return Err(DeckError::new(ErrorKind::Other, "clipboard reader failed"));
     }
     Ok(SmokeClipboardMetrics {
         bytes: out.stdout.len(),

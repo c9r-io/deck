@@ -49,7 +49,7 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::applog::applog;
-use crate::error::DeckError;
+use crate::error::{DeckError, ErrorKind};
 use crate::sync::LockRecover;
 use crate::tmux::{session_target, socket, tmux_bin, tmux_conf};
 
@@ -222,7 +222,7 @@ pub(crate) fn attach_session(
             pixel_width: 0,
             pixel_height: 0,
         })
-        .map_err(DeckError::text)?;
+        .map_err(|e| DeckError::classified(e.to_string()))?;
 
     let conf = tmux_conf();
     let mut cmd = CommandBuilder::new(tmux_bin());
@@ -239,13 +239,13 @@ pub(crate) fn attach_session(
     cmd.env("LANG", "en_US.UTF-8");
     let child = pair.slave.spawn_command(cmd).map_err(|e| {
         // the raw error (may embed the tmux path) goes to the caller only
-        let msg = e.to_string();
+        let error = DeckError::classified(e.to_string());
         applog(&format!(
             "[pty] attach spawn failed for {} ({})",
             crate::applog::session_tag(&name),
-            crate::error::err_code(&msg)
+            error.code()
         ));
-        msg
+        error
     })?;
     drop(pair.slave);
     applog(&format!(
@@ -253,8 +253,14 @@ pub(crate) fn attach_session(
         crate::applog::session_tag(&name)
     ));
 
-    let mut reader = pair.master.try_clone_reader().map_err(DeckError::text)?;
-    let writer = pair.master.take_writer().map_err(DeckError::text)?;
+    let mut reader = pair
+        .master
+        .try_clone_reader()
+        .map_err(|e| DeckError::classified(e.to_string()))?;
+    let writer = pair
+        .master
+        .take_writer()
+        .map_err(|e| DeckError::classified(e.to_string()))?;
 
     let generation = {
         let mut c = state.counter.lock_or_recover();
@@ -335,7 +341,7 @@ pub(crate) fn attach_session(
                 }
                 // a failed emit ends the pump (see pump_gated) — the webview
                 // can never ACK an event it never received
-                r.map_err(DeckError::text)
+                r.map_err(|e| DeckError::classified(e.to_string()))
             },
         );
         // clean up only if this attachment is still the current one
@@ -412,6 +418,7 @@ pub(crate) fn pump_gated<F: FnMut(u64, Vec<u8>) -> Result<(), DeckError>>(
 #[cfg(test)]
 mod tests {
     use super::{pump_gated, AckGate, MAX_INFLIGHT_BATCHES};
+    use crate::error::DeckError;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::mpsc::sync_channel;
     use std::sync::Arc;
@@ -625,7 +632,7 @@ mod tests {
         let mut calls = 0u32;
         pump_gated(&rx, 16, &gate, MAX_INFLIGHT_BATCHES, |_, _| {
             calls += 1;
-            Err("event bus broken".into())
+            Err(DeckError::classified("event bus broken"))
         });
         assert_eq!(calls, 1, "pump stops at the first failed emit");
         assert!(gate.state().2, "gate closed so nothing can wait forever");
@@ -700,11 +707,21 @@ pub(crate) fn pty_write(
     name: String,
     data_b64: String,
 ) -> Result<(), DeckError> {
-    let bytes = B64.decode(data_b64).map_err(DeckError::text)?;
+    let bytes = B64
+        .decode(data_b64)
+        .map_err(|e| DeckError::classified(e.to_string()))?;
     let mut map = state.map.lock().unwrap();
-    let entry = map.get_mut(&name).ok_or("not attached")?;
-    entry.writer.write_all(&bytes).map_err(DeckError::text)?;
-    entry.writer.flush().map_err(DeckError::text)
+    let entry = map
+        .get_mut(&name)
+        .ok_or(DeckError::new(ErrorKind::Other, "not attached"))?;
+    entry
+        .writer
+        .write_all(&bytes)
+        .map_err(|e| DeckError::classified(e.to_string()))?;
+    entry
+        .writer
+        .flush()
+        .map_err(|e| DeckError::classified(e.to_string()))
 }
 
 #[tauri::command]
@@ -721,7 +738,9 @@ pub(crate) fn pty_resize(
         .lock()
         .unwrap();
     let map = state.map.lock().unwrap();
-    let entry = map.get(&name).ok_or("not attached")?;
+    let entry = map
+        .get(&name)
+        .ok_or(DeckError::new(ErrorKind::Other, "not attached"))?;
     entry
         .master
         .resize(PtySize {
@@ -730,7 +749,7 @@ pub(crate) fn pty_resize(
             pixel_width: 0,
             pixel_height: 0,
         })
-        .map_err(DeckError::text)
+        .map_err(|e| DeckError::classified(e.to_string()))
 }
 
 /// Webview confirmation that everything up to `seq` of attachment `gen`

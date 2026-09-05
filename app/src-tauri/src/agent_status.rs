@@ -96,7 +96,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use crate::applog;
-use crate::error::DeckError;
+use crate::error::{DeckError, ErrorKind};
 use crate::sync::LockRecover;
 
 /// Registered agent modules.
@@ -324,7 +324,7 @@ fn handle_stream(mut stream: UnixStream, drops: &mut u32) {
 pub(crate) fn listen_at(path: &Path) -> Result<UnixListener, DeckError> {
     let _ = std::fs::remove_file(path); // stale socket from a previous run
     let listener =
-        UnixListener::bind(path).map_err(|e| DeckError::from(format!("bind failed: {e}")))?;
+        UnixListener::bind(path).map_err(|e| DeckError::classified(format!("bind failed: {e}")))?;
     // the data dir is already 0700; keep the socket itself private too
     use std::os::unix::fs::PermissionsExt;
     let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
@@ -515,14 +515,18 @@ pub(crate) fn hooks_with_install(
     style: HookStyle,
     helper: &str,
 ) -> Result<serde_json::Value, DeckError> {
-    let obj = root
-        .as_object_mut()
-        .ok_or("settings file is not a JSON object")?;
+    let obj = root.as_object_mut().ok_or(DeckError::new(
+        ErrorKind::Other,
+        "settings file is not a JSON object",
+    ))?;
     let hooks = obj
         .entry("hooks")
         .or_insert_with(|| serde_json::json!({}))
         .as_object_mut()
-        .ok_or("the hooks key is not a JSON object")?;
+        .ok_or(DeckError::new(
+            ErrorKind::Other,
+            "the hooks key is not a JSON object",
+        ))?;
     let mut emptied = Vec::new();
     for (event, list) in hooks.iter_mut() {
         let Some(list) = list.as_array_mut() else {
@@ -544,7 +548,10 @@ pub(crate) fn hooks_with_install(
             .entry(spec.0)
             .or_insert_with(|| serde_json::json!([]))
             .as_array_mut()
-            .ok_or("a hook event entry is not a JSON array")?;
+            .ok_or(DeckError::new(
+                ErrorKind::Other,
+                "a hook event entry is not a JSON array",
+            ))?;
         list.push(spec_entry(style, helper, source, spec));
     }
     Ok(root)
@@ -606,10 +613,16 @@ fn codex_hooks_path() -> Option<PathBuf> {
 fn read_settings_value(path: &Path) -> Result<serde_json::Value, DeckError> {
     match std::fs::read(path) {
         Ok(bytes) => serde_json::from_slice(&bytes).map_err(|_| {
-            DeckError::from("the agent settings file is not valid JSON — not modifying it")
+            DeckError::new(
+                ErrorKind::Other,
+                "the agent settings file is not valid JSON — not modifying it",
+            )
         }),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(serde_json::json!({})),
-        Err(e) => Err(format!("could not read agent settings ({})", e.kind()).into()),
+        Err(e) => Err(DeckError::new(
+            ErrorKind::io(e.kind()),
+            format!("could not read agent settings ({})", e.kind()),
+        )),
     }
 }
 
@@ -624,7 +637,7 @@ fn write_agent_config(path: &Path, bytes: &[u8], never_ran: &str) -> Result<(), 
         .unwrap_or(0o600);
     if let Some(dir) = path.parent() {
         if !dir.exists() {
-            return Err(never_ran.into());
+            return Err(DeckError::new(ErrorKind::Missing, never_ran));
         }
     }
     crate::datadir::atomic_write(path, bytes)?;
@@ -637,16 +650,23 @@ fn write_agent_config(path: &Path, bytes: &[u8], never_ran: &str) -> Result<(), 
 fn helper_path_in(bundle: &Path) -> Result<String, DeckError> {
     let helper = bundle.join("Contents").join("MacOS").join(HELPER_NAME);
     if !helper.is_file() {
-        return Err("the bundled status helper is missing from this build".into());
+        return Err(DeckError::new(
+            ErrorKind::Other,
+            "the bundled status helper is missing from this build",
+        ));
     }
-    let text = helper
-        .to_str()
-        .ok_or("the application path is not valid UTF-8")?;
+    let text = helper.to_str().ok_or(DeckError::new(
+        ErrorKind::Other,
+        "the application path is not valid UTF-8",
+    ))?;
     if text
         .bytes()
         .any(|b| b < 0x20 || b == 0x7f || matches!(b, b'"' | b'$' | b'`' | b'\\' | b'!'))
     {
-        return Err("the application path contains characters a hook command cannot quote".into());
+        return Err(DeckError::new(
+            ErrorKind::Other,
+            "the application path contains characters a hook command cannot quote",
+        ));
     }
     Ok(text.to_string())
 }
@@ -661,7 +681,7 @@ fn installed_helper_path() -> Result<String, DeckError> {
     let exe = std::env::current_exe().map_err(DeckError::from)?;
     let bundle = crate::tmux_lifecycle::app_bundle_root(&exe)
         .filter(|bundle| crate::tmux_lifecycle::stable_installed_bundle(bundle))
-        .ok_or("agent status hooks can only be installed from /Applications/deck.app or ~/Applications/deck.app")?;
+        .ok_or(DeckError::new(ErrorKind::Other, "agent status hooks can only be installed from /Applications/deck.app or ~/Applications/deck.app"))?;
     helper_path_in(bundle)
 }
 
@@ -819,10 +839,10 @@ pub(crate) fn agent_hooks_set(agent: String, enable: bool) -> Result<(), DeckErr
     let module = agent_modules()
         .into_iter()
         .find(|(_, _, source, _, _)| *source == agent)
-        .ok_or("unknown agent")?;
+        .ok_or(DeckError::new(ErrorKind::Other, "unknown agent"))?;
     let (path, specs, source, style, never_ran) = module;
     let result = hooks_set(
-        &path.ok_or("no home directory")?,
+        &path.ok_or(DeckError::new(ErrorKind::Other, "no home directory"))?,
         specs,
         source,
         style,

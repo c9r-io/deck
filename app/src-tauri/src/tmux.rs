@@ -149,12 +149,11 @@ pub(crate) fn tmux(args: &[&str]) -> Result<String, DeckError> {
         .output()
         .map_err(|e| DeckError::new(ErrorKind::TmuxMissing, format!("tmux not runnable: {e}")))?;
     if !out.status.success() {
-        return Err(format!(
+        return Err(DeckError::classified(format!(
             "tmux {} failed: {}",
             args.first().unwrap_or(&""),
             String::from_utf8_lossy(&out.stderr).trim()
-        )
-        .into());
+        )));
     }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
@@ -178,11 +177,11 @@ pub(crate) fn tmux_with_stdin(args: &[&str], input: &[u8]) -> Result<String, Dec
     let write_result = child
         .stdin
         .as_mut()
-        .ok_or_else(|| DeckError::from("tmux stdin unavailable"))
+        .ok_or_else(|| DeckError::new(ErrorKind::Tmux, "tmux stdin unavailable"))
         .and_then(|stdin| {
             stdin
                 .write_all(input)
-                .map_err(|e| DeckError::from(format!("tmux stdin failed: {e}")))
+                .map_err(|e| DeckError::classified(format!("tmux stdin failed: {e}")))
         });
     drop(child.stdin.take());
     if let Err(error) = write_result {
@@ -191,14 +190,13 @@ pub(crate) fn tmux_with_stdin(args: &[&str], input: &[u8]) -> Result<String, Dec
     }
     let out = child
         .wait_with_output()
-        .map_err(|e| DeckError::from(format!("tmux wait failed: {e}")))?;
+        .map_err(|e| DeckError::classified(format!("tmux wait failed: {e}")))?;
     if !out.status.success() {
-        return Err(format!(
+        return Err(DeckError::classified(format!(
             "tmux {} failed: {}",
             args.first().unwrap_or(&""),
             String::from_utf8_lossy(&out.stderr).trim()
-        )
-        .into());
+        )));
     }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
@@ -215,12 +213,11 @@ pub(crate) fn tmux_owned(args: &[String]) -> Result<String, DeckError> {
         .output()
         .map_err(|e| DeckError::new(ErrorKind::TmuxMissing, format!("tmux not runnable: {e}")))?;
     if !out.status.success() {
-        return Err(format!(
+        return Err(DeckError::classified(format!(
             "tmux {} failed: {}",
             args.first().map(String::as_str).unwrap_or(""),
             String::from_utf8_lossy(&out.stderr).trim()
-        )
-        .into());
+        )));
     }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
@@ -264,16 +261,25 @@ pub(crate) fn fmt_escape(s: &str) -> String {
 /// (no `#`). deck itself only generates `deck-<a-z0-9-slug>-<id>`.
 pub(crate) fn validate_session_name(name: &str) -> Result<(), DeckError> {
     if name.is_empty() || name.len() > 64 {
-        return Err("session name must be 1–64 characters".into());
+        return Err(DeckError::new(
+            ErrorKind::Other,
+            "session name must be 1–64 characters",
+        ));
     }
     if name.starts_with('-') {
-        return Err("session name must not start with '-'".into());
+        return Err(DeckError::new(
+            ErrorKind::Other,
+            "session name must not start with '-'",
+        ));
     }
     if !name
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '@'))
     {
-        return Err("session name may only contain letters, digits, _ - @".into());
+        return Err(DeckError::new(
+            ErrorKind::Other,
+            "session name may only contain letters, digits, _ - @",
+        ));
     }
     Ok(())
 }

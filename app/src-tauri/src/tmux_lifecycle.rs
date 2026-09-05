@@ -39,7 +39,7 @@ use std::sync::{Mutex, MutexGuard, OnceLock, TryLockError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::applog::applog;
-use crate::error::DeckError;
+use crate::error::{DeckError, ErrorKind};
 use crate::tmux::{self, tmux, tmux_owned};
 
 const METADATA_OPTION: &str = "@deck-server-metadata";
@@ -231,7 +231,8 @@ fn read_disk() -> LifecycleDisk {
 
 fn write_disk(disk: &LifecycleDisk) -> Result<(), DeckError> {
     crate::datadir::create_private_dir(&crate::datadir::deck_dir())?;
-    let bytes = serde_json::to_vec(disk).map_err(|_| DeckError::from("lifecycle-state-encode"))?;
+    let bytes = serde_json::to_vec(disk)
+        .map_err(|_| DeckError::new(ErrorKind::Other, "lifecycle-state-encode"))?;
     crate::datadir::atomic_write(&lifecycle_path(), &bytes)
 }
 
@@ -616,10 +617,13 @@ fn source_can_create(build: &CurrentBuildIdentity) -> bool {
 
 fn start_current_server(build: &CurrentBuildIdentity) -> Result<ServerSnapshot, DeckError> {
     if !source_can_create(build) {
-        return Err("tmux-server-source-unstable".into());
+        return Err(DeckError::new(
+            ErrorKind::Tmux,
+            "tmux-server-source-unstable",
+        ));
     }
     let metadata = serde_json::to_string(&metadata_for_current(build))
-        .map_err(|_| DeckError::from("tmux-metadata-encode"))?;
+        .map_err(|_| DeckError::new(ErrorKind::Tmux, "tmux-metadata-encode"))?;
     let args = vec![
         "start-server".into(),
         ";".into(),
@@ -642,7 +646,10 @@ fn start_current_server(build: &CurrentBuildIdentity) -> Result<ServerSnapshot, 
         {
             Ok(*snapshot)
         }
-        _ => Err("tmux-server-verification-failed".into()),
+        _ => Err(DeckError::new(
+            ErrorKind::Tmux,
+            "tmux-server-verification-failed",
+        )),
     }
 }
 
@@ -681,9 +688,13 @@ fn clean_confirmed_intent_socket(intent: &RestartIntent) -> Result<(), DeckError
         intent.old_socket_device,
         intent.old_socket_inode,
     ) {
-        return Err("tmux-server-socket-not-safe".into());
+        return Err(DeckError::new(
+            ErrorKind::Tmux,
+            "tmux-server-socket-not-safe",
+        ));
     }
-    std::fs::remove_file(path).map_err(|_| DeckError::from("tmux-server-stale-socket"))
+    std::fs::remove_file(path)
+        .map_err(|_| DeckError::new(ErrorKind::Tmux, "tmux-server-stale-socket"))
 }
 
 fn wait_for_old_server_exit(old: &ServerSnapshot) -> Result<(), DeckError> {
@@ -693,7 +704,10 @@ fn wait_for_old_server_exit(old: &ServerSnapshot) -> Result<(), DeckError> {
             Probe::Reachable(snapshot)
                 if snapshot.pid != old.pid || snapshot.started_at != old.started_at =>
             {
-                return Err("tmux-server-replaced-concurrently".into())
+                return Err(DeckError::new(
+                    ErrorKind::Tmux,
+                    "tmux-server-replaced-concurrently",
+                ))
             }
             Probe::Unreachable => {}
             Probe::Reachable(_) => {}
@@ -702,7 +716,7 @@ fn wait_for_old_server_exit(old: &ServerSnapshot) -> Result<(), DeckError> {
     }
     if matches!(probe_server(), Probe::Reachable(snapshot) if snapshot.pid == old.pid && snapshot.started_at == old.started_at)
     {
-        return Err("tmux-server-stop-timeout".into());
+        return Err(DeckError::new(ErrorKind::Tmux, "tmux-server-stop-timeout"));
     }
     if old.socket_path.exists() {
         if !safe_stale_socket(
@@ -711,10 +725,13 @@ fn wait_for_old_server_exit(old: &ServerSnapshot) -> Result<(), DeckError> {
             old.socket_device,
             old.socket_inode,
         ) {
-            return Err("tmux-server-socket-not-safe".into());
+            return Err(DeckError::new(
+                ErrorKind::Tmux,
+                "tmux-server-socket-not-safe",
+            ));
         }
         std::fs::remove_file(&old.socket_path)
-            .map_err(|_| DeckError::from("tmux-server-stale-socket"))?;
+            .map_err(|_| DeckError::new(ErrorKind::Tmux, "tmux-server-stale-socket"))?;
     }
     Ok(())
 }
@@ -742,32 +759,44 @@ fn complete_restart(
     match tmux(&["kill-server"]) {
         Ok(_) => {}
         Err(error) if absent_error(error.message()) => {}
-        Err(_) => return Err("tmux-server-stop-failed".into()),
+        Err(_) => return Err(DeckError::new(ErrorKind::Tmux, "tmux-server-stop-failed")),
     }
     if crate::smoke_faults::take("tmux-after-stop") {
-        return Err("injected-tmux-after-stop".into());
+        return Err(DeckError::new(ErrorKind::Tmux, "injected-tmux-after-stop"));
     }
     wait_for_old_server_exit(old)?;
     if crate::smoke_faults::take("tmux-after-socket") {
-        return Err("injected-tmux-after-socket".into());
+        return Err(DeckError::new(
+            ErrorKind::Tmux,
+            "injected-tmux-after-socket",
+        ));
     }
 
     disk.operation.as_mut().unwrap().phase = RestartPhase::Starting;
     write_disk(&disk)?;
     if crate::smoke_faults::take("tmux-before-start") {
-        return Err("injected-tmux-before-start".into());
+        return Err(DeckError::new(
+            ErrorKind::Tmux,
+            "injected-tmux-before-start",
+        ));
     }
     let fresh = start_current_server(build)?;
 
     disk.operation.as_mut().unwrap().phase = RestartPhase::Verifying;
     write_disk(&disk)?;
     if crate::smoke_faults::take("tmux-after-metadata") {
-        return Err("injected-tmux-after-metadata".into());
+        return Err(DeckError::new(
+            ErrorKind::Tmux,
+            "injected-tmux-after-metadata",
+        ));
     }
     if fresh.pid == old.pid
         || compatible_state(build, &fresh.metadata) != CompatibilityState::CompatibleCurrentBuild
     {
-        return Err("tmux-server-verification-failed".into());
+        return Err(DeckError::new(
+            ErrorKind::Tmux,
+            "tmux-server-verification-failed",
+        ));
     }
 
     disk.operation = None;
@@ -885,8 +914,14 @@ fn status_from_probe(build: CurrentBuildIdentity, probe: Probe) -> ServerStatus 
 fn try_operation() -> Result<MutexGuard<'static, ()>, DeckError> {
     match OPERATION.try_lock() {
         Ok(guard) => Ok(guard),
-        Err(TryLockError::WouldBlock) => Err("tmux-server-restart-in-progress".into()),
-        Err(TryLockError::Poisoned(_)) => Err("tmux-server-lifecycle-unavailable".into()),
+        Err(TryLockError::WouldBlock) => Err(DeckError::new(
+            ErrorKind::Tmux,
+            "tmux-server-restart-in-progress",
+        )),
+        Err(TryLockError::Poisoned(_)) => Err(DeckError::new(
+            ErrorKind::Tmux,
+            "tmux-server-lifecycle-unavailable",
+        )),
     }
 }
 
@@ -989,7 +1024,7 @@ pub(crate) fn reconcile_on_boot() {
 /// attachable after “later”, but no new session is added to the old helper.
 pub(crate) fn session_creation_guard() -> Result<MutexGuard<'static, ()>, DeckError> {
     if APP_UPDATE_INSTALLING.load(Ordering::Acquire) {
-        return Err("app-update-installing".into());
+        return Err(DeckError::new(ErrorKind::Other, "app-update-installing"));
     }
     let guard = try_operation()?;
     let build = current_build();
@@ -1003,10 +1038,22 @@ pub(crate) fn session_creation_guard() -> Result<MutexGuard<'static, ()>, DeckEr
             state if should_auto_replace(state, snapshot.sessions.len()) => {
                 complete_restart(&build, &snapshot, "emptyServerReplaced")?;
             }
-            CompatibilityState::SourceUnstable => return Err("tmux-server-source-unstable".into()),
-            _ => return Err("tmux-server-restart-required".into()),
+            CompatibilityState::SourceUnstable => {
+                return Err(DeckError::new(
+                    ErrorKind::Tmux,
+                    "tmux-server-source-unstable",
+                ))
+            }
+            _ => {
+                return Err(DeckError::new(
+                    ErrorKind::Tmux,
+                    "tmux-server-restart-required",
+                ))
+            }
         },
-        Probe::Unreachable => return Err("tmux-server-unreachable".into()),
+        Probe::Unreachable => {
+            return Err(DeckError::new(ErrorKind::Tmux, "tmux-server-unreachable"))
+        }
     }
     Ok(guard)
 }
@@ -1037,7 +1084,7 @@ pub(crate) fn tmux_server_status() -> ServerStatus {
 pub(crate) fn defer_tmux_restart() -> Result<ServerStatus, DeckError> {
     let _guard = try_operation()?;
     if APP_UPDATE_INSTALLING.load(Ordering::Acquire) {
-        return Err("app-update-installing".into());
+        return Err(DeckError::new(ErrorKind::Other, "app-update-installing"));
     }
     let build = current_build();
     let mut disk = read_disk();
@@ -1067,11 +1114,14 @@ pub(crate) fn restart_tmux_server(
 ) -> Result<ServerStatus, DeckError> {
     let _guard = try_operation()?;
     if APP_UPDATE_INSTALLING.load(Ordering::Acquire) {
-        return Err("app-update-installing".into());
+        return Err(DeckError::new(ErrorKind::Other, "app-update-installing"));
     }
     let build = current_build();
     if !source_can_create(&build) {
-        return Err("tmux-server-source-unstable".into());
+        return Err(DeckError::new(
+            ErrorKind::Tmux,
+            "tmux-server-source-unstable",
+        ));
     }
     let snapshot = match probe_server() {
         Probe::Reachable(snapshot) => snapshot,
@@ -1079,7 +1129,9 @@ pub(crate) fn restart_tmux_server(
             start_current_server(&build)?;
             return Ok(status_from_probe(build, probe_server()));
         }
-        Probe::Unreachable => return Err("tmux-server-unreachable".into()),
+        Probe::Unreachable => {
+            return Err(DeckError::new(ErrorKind::Tmux, "tmux-server-unreachable"))
+        }
     };
     let state = compatible_state(&build, &snapshot.metadata);
     if !force
@@ -1097,7 +1149,10 @@ pub(crate) fn restart_tmux_server(
         || snapshot.pane_count() != expected_pane_count
         || snapshot.impact_token != expected_impact_token
     {
-        return Err("tmux-server-impact-changed".into());
+        return Err(DeckError::new(
+            ErrorKind::Tmux,
+            "tmux-server-impact-changed",
+        ));
     }
     pty_state.detach_all();
     complete_restart(&build, &snapshot, "restartCompleted")?;

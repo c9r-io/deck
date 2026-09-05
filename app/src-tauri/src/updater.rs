@@ -11,7 +11,7 @@
 //! minisign verification and install. Build identity is only numeric version +
 //! a bounded hex commit from `build.rs`.
 
-use crate::error::DeckError;
+use crate::error::{DeckError, ErrorKind};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 use tauri_plugin_updater::UpdaterExt;
@@ -29,7 +29,10 @@ fn update_source(channel: &str) -> Result<(&'static str, Option<&'static str>), 
         // pipeline cannot mint an update accepted by Stable clients.
         "stable" => Ok((STABLE_UPDATE_ENDPOINT, None)),
         "nightly" => Ok((NIGHTLY_UPDATE_ENDPOINT, Some(NIGHTLY_UPDATE_PUBKEY.trim()))),
-        _ => Err("update channel must be stable or nightly".into()),
+        _ => Err(DeckError::new(
+            ErrorKind::Other,
+            "update channel must be stable or nightly",
+        )),
     }
 }
 
@@ -50,21 +53,21 @@ async fn update_for_channel(
     let (endpoint, pubkey) = update_source(channel)?;
     let endpoint = endpoint
         .parse()
-        .map_err(|_| DeckError::from("configured update endpoint is invalid"))?;
+        .map_err(|_| DeckError::new(ErrorKind::Other, "configured update endpoint is invalid"))?;
     let mut builder = app
         .updater_builder()
         .endpoints(vec![endpoint])
-        .map_err(|_| DeckError::from("configured update endpoint was rejected"))?;
+        .map_err(|_| DeckError::new(ErrorKind::Other, "configured update endpoint was rejected"))?;
     if let Some(pubkey) = pubkey {
         builder = builder.pubkey(pubkey);
     }
     let updater = builder
         .build()
-        .map_err(|_| DeckError::from("updater could not be initialized"))?;
+        .map_err(|_| DeckError::new(ErrorKind::Other, "updater could not be initialized"))?;
     updater
         .check()
         .await
-        .map_err(|_| DeckError::from("update check failed"))
+        .map_err(|_| DeckError::new(ErrorKind::Other, "update check failed"))
 }
 
 #[derive(Serialize)]
@@ -109,13 +112,22 @@ pub(crate) async fn install_update(
     expected_version: String,
 ) -> Result<(), DeckError> {
     if !strict_release_version(&expected_version) {
-        return Err("expected update version is invalid".into());
+        return Err(DeckError::new(
+            ErrorKind::InvalidDoc,
+            "expected update version is invalid",
+        ));
     }
-    let update = update_for_channel(&app, &channel)
-        .await?
-        .ok_or_else(|| "the selected update is no longer available".to_string())?;
+    let update = update_for_channel(&app, &channel).await?.ok_or_else(|| {
+        DeckError::new(
+            ErrorKind::Other,
+            "the selected update is no longer available",
+        )
+    })?;
     if update.version != expected_version {
-        return Err("the selected update changed; check again".into());
+        return Err(DeckError::new(
+            ErrorKind::Other,
+            "the selected update changed; check again",
+        ));
     }
     let progress_app = app.clone();
     let finish_app = app.clone();
@@ -148,7 +160,10 @@ pub(crate) async fn install_update(
         crate::tmux_lifecycle::cancel_app_update_install();
     }
     result.map_err(|_| {
-        DeckError::from("update download, signature verification, or installation failed")
+        DeckError::new(
+            ErrorKind::Other,
+            "update download, signature verification, or installation failed",
+        )
     })
 }
 

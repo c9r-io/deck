@@ -57,7 +57,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::applog::applog;
 use crate::datadir::now_epoch;
-use crate::error::DeckError;
+use crate::error::{DeckError, ErrorKind};
 use crate::storage;
 use crate::sync::LockRecover;
 use crate::tmux::{pane_target, tmux, validate_session_name};
@@ -103,7 +103,10 @@ impl TryFrom<ShellSnapshotRaw> for ShellSnapshot {
     fn try_from(raw: ShellSnapshotRaw) -> Result<Self, DeckError> {
         validate_session_name(&raw.session)?;
         if !valid_cwd(&raw.cwd) {
-            return Err("snapshot cwd must be a bounded absolute path without controls".into());
+            return Err(DeckError::new(
+                ErrorKind::Other,
+                "snapshot cwd must be a bounded absolute path without controls",
+            ));
         }
         if raw.transcript.len() > MAX_TRANSCRIPT_BYTES
             || raw
@@ -111,7 +114,10 @@ impl TryFrom<ShellSnapshotRaw> for ShellSnapshot {
                 .chars()
                 .any(|c| c.is_control() && !matches!(c, '\n' | '\t'))
         {
-            return Err("snapshot transcript is unsafe or exceeds its size limit".into());
+            return Err(DeckError::new(
+                ErrorKind::Other,
+                "snapshot transcript is unsafe or exceeds its size limit",
+            ));
         }
         Ok(Self {
             session: raw.session,
@@ -245,7 +251,10 @@ pub(crate) fn load_snapshot(session: &str) -> Result<Option<ShellSnapshot>, Deck
         .map(|saved| saved.session.as_str() != session)
         .unwrap_or(false)
     {
-        return Err("shell snapshot belongs to a different session".into());
+        return Err(DeckError::new(
+            ErrorKind::Other,
+            "shell snapshot belongs to a different session",
+        ));
     }
     Ok(snapshot)
 }
@@ -299,7 +308,10 @@ fn restore_buffer_name(attempt: u64) -> String {
 pub(crate) fn prepare_bootstrap(snapshot: &ShellSnapshot) -> Result<ShellBootstrap, DeckError> {
     let transcript = sanitize_transcript(&snapshot.transcript);
     if transcript.trim().is_empty() {
-        return Err("shell snapshot transcript is empty".into());
+        return Err(DeckError::new(
+            ErrorKind::Other,
+            "shell snapshot transcript is empty",
+        ));
     }
     let mut output = Vec::with_capacity(transcript.len() + RESTORE_BOUNDARY.len() + 1);
     output.extend_from_slice(transcript.as_bytes());
@@ -348,7 +360,12 @@ fn remove_snapshot_files_in(dir: &Path, session: &str) -> Result<(), DeckError> 
         match std::fs::remove_file(path) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(format!("could not remove shell snapshot ({})", e.kind()).into()),
+            Err(e) => {
+                return Err(DeckError::new(
+                    ErrorKind::io(e.kind()),
+                    format!("could not remove shell snapshot ({})", e.kind()),
+                ))
+            }
         }
     }
     // Also erase quarantined copies for this session.  They can contain the
@@ -397,7 +414,10 @@ pub(crate) fn clear_all() -> Result<(), DeckError> {
             continue; // never follow a symlink out of the private directory
         }
         std::fs::remove_file(entry.path()).map_err(|e| {
-            DeckError::from(format!("could not clear shell snapshots ({})", e.kind()))
+            DeckError::new(
+                ErrorKind::io(e.kind()),
+                format!("could not clear shell snapshots ({})", e.kind()),
+            )
         })?;
     }
     Ok(())

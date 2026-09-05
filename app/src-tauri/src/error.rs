@@ -7,13 +7,14 @@
 //! io/tmux/serde messages can embed absolute paths, directories or file
 //! contents.
 //!
-//! Construction: `DeckError::new(kind, message)` names the kind explicitly;
-//! `From<io::Error>` derives it from the io kind; `From<String>` / `From<&str>`
-//! classify the text with the same closed rules `err_code` always applied,
-//! so an existing `Err("…".into())` keeps working while call sites migrate
-//! to explicit kinds; serde and UTF-8 errors convert as `InvalidDoc`. Other
-//! library errors go through `.to_string()` at the boundary on purpose: a
-//! blanket `From<E: Error>` cannot coexist with `From<String>`.
+//! Construction: `DeckError::new(kind, message)` names the kind; there is
+//! deliberately no `From<String>`, so every message written in deck names
+//! its kind at the call site. `From<io::Error>` derives the kind from the io
+//! kind (`ErrorKind::io` does the same for a hand-written message); serde
+//! and UTF-8 errors convert as `InvalidDoc`. `DeckError::classified` is the
+//! one place text is classified, for text deck did not write: a foreign
+//! library error, tmux's stderr — the same closed rules `err_code` applies
+//! to free text in logs.
 
 use serde::Serialize;
 use std::fmt;
@@ -99,6 +100,11 @@ impl ErrorKind {
         }
     }
 
+    /// The kind an io error maps to; `Other` when the io kind says nothing.
+    pub(crate) fn io(kind: std::io::ErrorKind) -> ErrorKind {
+        ErrorKind::from_io(kind).unwrap_or(ErrorKind::Other)
+    }
+
     fn from_io(kind: std::io::ErrorKind) -> Option<ErrorKind> {
         use std::io::ErrorKind as Io;
         Some(match kind {
@@ -125,9 +131,14 @@ impl DeckError {
         }
     }
 
-    /// For library errors with no `From` impl: classify their text.
-    pub(crate) fn text(e: impl std::fmt::Display) -> Self {
-        DeckError::from(e.to_string())
+    /// For text whose kind is only knowable at runtime: a foreign library
+    /// error, tmux's stderr. Literal messages name their kind with `new`.
+    pub(crate) fn classified(message: impl Into<String>) -> Self {
+        let message = message.into();
+        DeckError {
+            kind: ErrorKind::classify(&message),
+            message,
+        }
     }
 
     pub(crate) fn kind(&self) -> ErrorKind {
@@ -168,21 +179,6 @@ impl PartialEq<str> for DeckError {
 impl PartialEq<&str> for DeckError {
     fn eq(&self, other: &&str) -> bool {
         self.message == *other
-    }
-}
-
-impl From<String> for DeckError {
-    fn from(message: String) -> Self {
-        DeckError {
-            kind: ErrorKind::classify(&message),
-            message,
-        }
-    }
-}
-
-impl From<&str> for DeckError {
-    fn from(message: &str) -> Self {
-        DeckError::from(message.to_string())
     }
 }
 
@@ -236,7 +232,7 @@ mod tests {
             "a named kind is never re-classified"
         );
         assert_eq!(typed.to_string(), "permission denied inside the text");
-        let text: DeckError = "tmux: no server running".into();
+        let text = DeckError::classified("tmux: no server running");
         assert_eq!(text.code(), "no-session");
         assert_eq!(err_code("refusing to save wrong structure"), "invalid-doc");
         assert_eq!(err_code("plain"), "other");

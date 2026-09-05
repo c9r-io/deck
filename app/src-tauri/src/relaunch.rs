@@ -27,7 +27,7 @@ use std::time::Duration;
 use tauri::AppHandle;
 
 use crate::applog::applog;
-use crate::error::DeckError;
+use crate::error::{DeckError, ErrorKind};
 
 const HELPER_FLAG: &str = "--deck-relauncher";
 const WAIT_ATTEMPTS: usize = 600;
@@ -263,19 +263,30 @@ fn helper_command(executable: PathBuf, target: &RelaunchTarget, pid: u32) -> Com
 }
 
 fn schedule_clean_relaunch() -> Result<(), DeckError> {
-    let target = TARGET
-        .get()
-        .and_then(Option::as_ref)
-        .ok_or_else(|| "installed application path is unavailable".to_string())?;
-    let executable = resolved_installed_executable(target)
-        .ok_or_else(|| "installed application executable is unavailable".to_string())?;
+    let target = TARGET.get().and_then(Option::as_ref).ok_or_else(|| {
+        DeckError::new(
+            ErrorKind::Other,
+            "installed application path is unavailable",
+        )
+    })?;
+    let executable = resolved_installed_executable(target).ok_or_else(|| {
+        DeckError::new(
+            ErrorKind::Other,
+            "installed application executable is unavailable",
+        )
+    })?;
     let pid = std::process::id();
     // The child is deliberately not waited on: once this process exits it is
     // reparented to launchd and finishes on its own.
     helper_command(executable, target, pid)
         .spawn()
         .map(drop)
-        .map_err(|_| DeckError::from("clean application relaunch could not be scheduled"))
+        .map_err(|_| {
+            DeckError::new(
+                ErrorKind::Other,
+                "clean application relaunch could not be scheduled",
+            )
+        })
 }
 
 /// Future updates never use Tauri's child-process restart. The command is
@@ -283,7 +294,10 @@ fn schedule_clean_relaunch() -> Result<(), DeckError> {
 #[tauri::command]
 pub(crate) fn relaunch_after_update(app: AppHandle) -> Result<(), DeckError> {
     if !crate::tmux_lifecycle::app_update_installing() {
-        return Err("no installed update is awaiting relaunch".into());
+        return Err(DeckError::new(
+            ErrorKind::Other,
+            "no installed update is awaiting relaunch",
+        ));
     }
     schedule_clean_relaunch()?;
     applog("[update] clean relaunch scheduled");

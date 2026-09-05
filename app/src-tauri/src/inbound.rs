@@ -73,7 +73,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter};
 
 use crate::applog::applog;
-use crate::error::DeckError;
+use crate::error::{DeckError, ErrorKind};
 use crate::keychain;
 use crate::storage;
 use crate::sync::LockRecover;
@@ -151,61 +151,103 @@ pub(crate) fn valid_badge(s: &str) -> bool {
 /// Referential checks (project/column/template exist) are the webview's,
 /// because only it holds the Board; a dangling rule is skipped at dispatch.
 pub(crate) fn validate_settings(v: &Value) -> Result<(), DeckError> {
-    let obj = v.as_object().ok_or("inbound must be an object")?;
+    let obj = v.as_object().ok_or(DeckError::new(
+        ErrorKind::Other,
+        "inbound must be an object",
+    ))?;
     if let Some(sources) = obj.get("sources") {
-        let sources = sources
-            .as_object()
-            .ok_or("inbound.sources must be an object")?;
+        let sources = sources.as_object().ok_or(DeckError::new(
+            ErrorKind::Other,
+            "inbound.sources must be an object",
+        ))?;
         for (name, cfg) in sources {
             if !SOURCES.contains(&name.as_str()) {
-                return Err("inbound.sources names an unknown source".into());
+                return Err(DeckError::new(
+                    ErrorKind::Other,
+                    "inbound.sources names an unknown source",
+                ));
             }
-            let cfg = cfg
-                .as_object()
-                .ok_or("inbound source config must be an object")?;
+            let cfg = cfg.as_object().ok_or(DeckError::new(
+                ErrorKind::Other,
+                "inbound source config must be an object",
+            ))?;
             if let Some(e) = cfg.get("enabled") {
                 if !e.is_boolean() {
-                    return Err("inbound source enabled must be a boolean".into());
+                    return Err(DeckError::new(
+                        ErrorKind::Other,
+                        "inbound source enabled must be a boolean",
+                    ));
                 }
             }
         }
     }
     if let Some(rules) = obj.get("rules") {
-        let rules = rules.as_array().ok_or("inbound.rules must be an array")?;
+        let rules = rules.as_array().ok_or(DeckError::new(
+            ErrorKind::Other,
+            "inbound.rules must be an array",
+        ))?;
         if rules.len() > MAX_RULES {
-            return Err("too many inbound rules".into());
+            return Err(DeckError::new(ErrorKind::Other, "too many inbound rules"));
         }
         let mut pairs = HashSet::new();
         let mut ids = HashSet::new();
         for r in rules {
-            let rule: Rule = serde_json::from_value(r.clone())
-                .map_err(|_| DeckError::from("inbound rule has the wrong shape"))?;
+            let rule: Rule = serde_json::from_value(r.clone()).map_err(|_| {
+                DeckError::new(ErrorKind::Other, "inbound rule has the wrong shape")
+            })?;
             if !bounded_id(&rule.id, 64) {
-                return Err("inbound rule id must be a bounded identifier".into());
+                return Err(DeckError::new(
+                    ErrorKind::Other,
+                    "inbound rule id must be a bounded identifier",
+                ));
             }
             if !SOURCES.contains(&rule.source.as_str()) {
-                return Err("inbound rule names an unknown source".into());
+                return Err(DeckError::new(
+                    ErrorKind::Other,
+                    "inbound rule names an unknown source",
+                ));
             }
             if !valid_badge(&rule.badge) {
-                return Err("inbound rule badge must be an emoji name".into());
+                return Err(DeckError::new(
+                    ErrorKind::Other,
+                    "inbound rule badge must be an emoji name",
+                ));
             }
             if !bounded_id(&rule.project_id, 128) || !bounded_id(&rule.column_id, 128) {
-                return Err("inbound rule must reference bounded project and column ids".into());
+                return Err(DeckError::new(
+                    ErrorKind::Other,
+                    "inbound rule must reference bounded project and column ids",
+                ));
             }
             if rule.cmd.len() > 200 || rule.cmd.contains(['\n', '\r']) {
-                return Err("inbound rule command must be one bounded line".into());
+                return Err(DeckError::new(
+                    ErrorKind::Other,
+                    "inbound rule command must be one bounded line",
+                ));
             }
             if rule.template.is_empty() || rule.template.len() > 120 {
-                return Err("inbound rule template name must be a bounded string".into());
+                return Err(DeckError::new(
+                    ErrorKind::Other,
+                    "inbound rule template name must be a bounded string",
+                ));
             }
             if rule.dir.len() > 1024 || rule.dir.contains(['\n', '\r', '\0']) {
-                return Err("inbound rule directory must be one bounded line".into());
+                return Err(DeckError::new(
+                    ErrorKind::Other,
+                    "inbound rule directory must be one bounded line",
+                ));
             }
             if !ids.insert(rule.id.clone()) {
-                return Err("inbound rule ids must be unique".into());
+                return Err(DeckError::new(
+                    ErrorKind::Other,
+                    "inbound rule ids must be unique",
+                ));
             }
             if !pairs.insert((rule.source.clone(), rule.badge.clone())) {
-                return Err("one badge per source maps to one rule".into());
+                return Err(DeckError::new(
+                    ErrorKind::Other,
+                    "one badge per source maps to one rule",
+                ));
             }
         }
     }
@@ -601,7 +643,10 @@ pub(crate) fn inbound_pending() -> Vec<PendingView> {
 #[tauri::command]
 pub(crate) fn inbound_ack(id: u64, outcome: String) -> Result<(), DeckError> {
     if !matches!(outcome.as_str(), "done" | "skipped") {
-        return Err("outcome must be done or skipped".into());
+        return Err(DeckError::new(
+            ErrorKind::Other,
+            "outcome must be done or skipped",
+        ));
     }
     with_rt(|rt| {
         let Some(pos) = rt.pending.iter().position(|p| p.view.id == id) else {
@@ -634,14 +679,17 @@ pub(crate) fn inbound_ack(id: u64, outcome: String) -> Result<(), DeckError> {
 pub(crate) fn inbound_setup(source: String) -> Result<(), DeckError> {
     let url = match source.as_str() {
         "slack" => crate::inbound_slack::setup_url(),
-        _ => return Err("unknown source".into()),
+        _ => return Err(DeckError::new(ErrorKind::Other, "unknown source")),
     };
     let status = std::process::Command::new("open")
         .arg(&url)
         .status()
-        .map_err(|_| DeckError::from("could not open the browser"))?;
+        .map_err(|_| DeckError::new(ErrorKind::Other, "could not open the browser"))?;
     if !status.success() {
-        return Err("could not open the browser".into());
+        return Err(DeckError::new(
+            ErrorKind::Other,
+            "could not open the browser",
+        ));
     }
     applog("[inbound] setup page opened");
     Ok(())
@@ -651,28 +699,38 @@ pub(crate) fn inbound_setup(source: String) -> Result<(), DeckError> {
 /// error is a short sentence for the toast; the token never appears in it.
 #[tauri::command]
 pub(crate) fn inbound_set_secret(slot: String, value: String) -> Result<(), DeckError> {
-    let slot = keychain::Slot::parse(&slot).ok_or("unknown credential slot")?;
+    let slot = keychain::Slot::parse(&slot)
+        .ok_or(DeckError::new(ErrorKind::Other, "unknown credential slot"))?;
     let clearing = value.trim().is_empty();
     if !clearing {
         let trimmed = value.trim();
         if !keychain::accepts(slot, trimmed) {
-            return Err("shape".into());
+            return Err(DeckError::new(ErrorKind::Other, "shape"));
         }
         crate::inbound_slack::verify(slot, trimmed).map_err(|code| {
             let slack_error = crate::inbound_slack::last_slack_error();
             applog(&format!(
                 "[inbound] credential verify FAILED ({code}:{slack_error})"
             ));
-            match code {
-                "auth" => "auth".to_string(),
-                "network" | "timeout" | "http" => "network".to_string(),
-                _ => format!("slack:{slack_error}"),
-            }
+            // closed codes the frontend maps to messages, never Slack's text
+            DeckError::new(
+                ErrorKind::Other,
+                match code {
+                    "auth" => "auth".to_string(),
+                    "network" | "timeout" | "http" => "network".to_string(),
+                    _ => format!("slack:{slack_error}"),
+                },
+            )
         })?;
     }
-    keychain::set(slot, &value).map_err(|code| match code.message() {
-        "shape" => "shape".to_string(),
-        _ => "keychain".to_string(),
+    keychain::set(slot, &value).map_err(|code| {
+        DeckError::new(
+            ErrorKind::Other,
+            match code.message() {
+                "shape" => "shape",
+                _ => "keychain",
+            },
+        )
     })?;
     applog(&format!(
         "[inbound] credential {}",

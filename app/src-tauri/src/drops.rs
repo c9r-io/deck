@@ -15,7 +15,7 @@ use std::path::PathBuf;
 
 use crate::applog::applog;
 use crate::datadir::now_epoch;
-use crate::error::DeckError;
+use crate::error::{DeckError, ErrorKind};
 
 // ---------- dropped files -------------------------------------------------------
 
@@ -65,10 +65,13 @@ pub(crate) fn save_drop_into(
     bytes: &[u8],
 ) -> Result<PathBuf, DeckError> {
     if bytes.is_empty() {
-        return Err("empty file".into());
+        return Err(DeckError::new(ErrorKind::Other, "empty file"));
     }
     if bytes.len() > MAX_DROP_BYTES {
-        return Err("file too large (32MB max)".into());
+        return Err(DeckError::new(
+            ErrorKind::Other,
+            "file too large (32MB max)",
+        ));
     }
     crate::datadir::create_private_dir(dir)?;
     let safe = sanitize_drop_name(name);
@@ -92,7 +95,7 @@ pub(crate) fn save_dropped_file(name: String, data_b64: String) -> Result<String
     use base64::Engine;
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(data_b64)
-        .map_err(|_| DeckError::from("malformed file payload"))?;
+        .map_err(|_| DeckError::new(ErrorKind::Other, "malformed file payload"))?;
     let path = save_drop_into(&crate::datadir::deck_dir().join("drops"), &name, &bytes)?;
     applog(&format!("[drop] saved {}B", bytes.len()));
     Ok(path.display().to_string())

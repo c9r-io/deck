@@ -12,7 +12,7 @@ use super::*;
 use crate::applog::applog;
 use crate::context::{self, ContextCode, ContextStatus, PaneIdentity};
 use crate::datadir::now_epoch;
-use crate::error::DeckError;
+use crate::error::{DeckError, ErrorKind};
 use crate::storage;
 use crate::sync::LockRecover;
 
@@ -46,10 +46,15 @@ pub(crate) fn queue_probe_context(
         .iter()
         .find(|i| i.id == id)
         .cloned()
-        .ok_or("scheduled prompt not found")?;
+        .ok_or(DeckError::new(
+            ErrorKind::Missing,
+            "scheduled prompt not found",
+        ))?;
     let result = current_context_probe(&item);
-    persist_context_result(&state.q, &save_queue, &item, &result)?
-        .ok_or("scheduled prompt changed while probing")?;
+    persist_context_result(&state.q, &save_queue, &item, &result)?.ok_or(DeckError::new(
+        ErrorKind::Other,
+        "scheduled prompt changed while probing",
+    ))?;
     Ok(ContextProbeView {
         status: result.status,
         code: result.code,
@@ -61,10 +66,16 @@ pub(crate) fn queue_probe_context(
 #[tauri::command]
 pub(crate) fn smoke_seed_ambiguous(state: State<'_, Queues>) -> Result<(), DeckError> {
     if !crate::smoke_faults::enabled() {
-        return Err("smoke queue hooks are unavailable".into());
+        return Err(DeckError::new(
+            ErrorKind::Other,
+            "smoke queue hooks are unavailable",
+        ));
     }
     let mut q = state.q.lock_or_recover();
-    let item = q.items.first_mut().ok_or("smoke queue is empty")?;
+    let item = q
+        .items
+        .first_mut()
+        .ok_or(DeckError::new(ErrorKind::Other, "smoke queue is empty"))?;
     let delivery = "smoke-delivery".to_string();
     item.state = "firing".into();
     item.delivery = Some(delivery.clone());
@@ -86,11 +97,16 @@ pub(crate) struct SmokeQueueState {
 #[tauri::command]
 pub(crate) fn smoke_queue_state(state: State<'_, Queues>) -> Result<SmokeQueueState, DeckError> {
     if !crate::smoke_faults::enabled() {
-        return Err("smoke queue hooks are unavailable".into());
+        return Err(DeckError::new(
+            ErrorKind::Other,
+            "smoke queue hooks are unavailable",
+        ));
     }
     let q = state.q.lock_or_recover().clone();
-    let disk =
-        storage::load_typed::<QueueState>(&queue_path())?.ok_or("smoke queue file is missing")?;
+    let disk = storage::load_typed::<QueueState>(&queue_path())?.ok_or(DeckError::new(
+        ErrorKind::Other,
+        "smoke queue file is missing",
+    ))?;
     let disk: QueueState = serde_json::from_str(&disk.payload).map_err(DeckError::from)?;
     Ok(SmokeQueueState {
         dirty: state.dirty.load(AtomicOrdering::Relaxed),
@@ -101,7 +117,10 @@ pub(crate) fn smoke_queue_state(state: State<'_, Queues>) -> Result<SmokeQueueSt
 #[tauri::command]
 pub(crate) fn smoke_flush_queue(state: State<'_, Queues>) -> Result<bool, DeckError> {
     if !crate::smoke_faults::enabled() {
-        return Err("smoke queue hooks are unavailable".into());
+        return Err(DeckError::new(
+            ErrorKind::Other,
+            "smoke queue hooks are unavailable",
+        ));
     }
     Ok(flush_dirty(&state.q, &state.dirty, &save_queue))
 }
@@ -134,34 +153,60 @@ pub(crate) fn validate_add(a: &QueueAddArgs) -> Result<(), DeckError> {
     match a.mode.as_str() {
         "at" => {
             if a.at.is_none() {
-                return Err("a timed prompt needs its time".into());
+                return Err(DeckError::new(
+                    ErrorKind::Other,
+                    "a timed prompt needs its time",
+                ));
             }
         }
         "chain" => {}
         "every" => {
-            let e = a.every.ok_or("a recurring rule needs an interval")?;
+            let e = a.every.ok_or(DeckError::new(
+                ErrorKind::Other,
+                "a recurring rule needs an interval",
+            ))?;
             if e < 60 {
-                return Err("recurring interval must be at least 1 minute".into());
+                return Err(DeckError::new(
+                    ErrorKind::Other,
+                    "recurring interval must be at least 1 minute",
+                ));
             }
         }
-        m => return Err(format!("unknown schedule mode: {m}").into()),
+        m => {
+            return Err(DeckError::new(
+                ErrorKind::Other,
+                format!("unknown schedule mode: {m}"),
+            ))
+        }
     }
     if a.mode != "every" && (a.every.is_some() || a.steps.as_ref().is_some_and(|s| !s.is_empty())) {
-        return Err("interval/steps only make sense on a recurring rule".into());
+        return Err(DeckError::new(
+            ErrorKind::Other,
+            "interval/steps only make sense on a recurring rule",
+        ));
     }
     for w in [a.win_from, a.win_to] {
         if w.is_some_and(|m| m >= 1440) {
-            return Err("time-window minutes must be below 24h".into());
+            return Err(DeckError::new(
+                ErrorKind::Other,
+                "time-window minutes must be below 24h",
+            ));
         }
     }
     if a.win_from.is_some() != a.win_to.is_some() {
-        return Err("a time window needs both ends".into());
+        return Err(DeckError::new(
+            ErrorKind::Other,
+            "a time window needs both ends",
+        ));
     }
     if a.until_n.is_some_and(|n| n == 0) {
-        return Err("stop-after count must be at least 1".into());
+        return Err(DeckError::new(
+            ErrorKind::Other,
+            "stop-after count must be at least 1",
+        ));
     }
     if a.session.trim().is_empty() {
-        return Err("missing session".into());
+        return Err(DeckError::new(ErrorKind::Other, "missing session"));
     }
     if a.card_id.is_empty()
         || a.card_id.len() > 128
@@ -170,7 +215,10 @@ pub(crate) fn validate_add(a: &QueueAddArgs) -> Result<(), DeckError> {
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-'))
     {
-        return Err("scheduled prompt needs a valid card identity".into());
+        return Err(DeckError::new(
+            ErrorKind::Other,
+            "scheduled prompt needs a valid card identity",
+        ));
     }
     Ok(())
 }
@@ -291,7 +339,7 @@ pub(crate) fn queue_add(
     validate_add(&args)?;
     let text = args.text.replace(['\n', '\r'], " ").trim().to_string();
     if text.is_empty() {
-        return Err("empty prompt".into());
+        return Err(DeckError::new(ErrorKind::Other, "empty prompt"));
     }
     // never let the scheduler act on an item the disk doesn't know about
     let creation = context::creation_context(&args.session, &args.cmd);
@@ -310,12 +358,16 @@ pub(crate) fn queue_add(
 pub(crate) fn firing_conflict(q: &QueueState, id: &str) -> Result<(), DeckError> {
     if let Some(i) = q.items.iter().find(|i| i.id == id) {
         if i.state == "firing" {
-            return Err("this prompt is being sent right now — try again in a few seconds".into());
+            return Err(DeckError::new(
+                ErrorKind::Other,
+                "this prompt is being sent right now — try again in a few seconds",
+            ));
         }
         if i.state == "ambiguous" {
-            return Err(
-                "this prompt has an ambiguous delivery — acknowledge or retry it first".into(),
-            );
+            return Err(DeckError::new(
+                ErrorKind::Other,
+                "this prompt has an ambiguous delivery — acknowledge or retry it first",
+            ));
         }
     }
     Ok(())
@@ -352,7 +404,10 @@ pub(crate) fn pause_item(q: &mut QueueState, id: &str, paused: bool) -> Result<(
 /// Pure core of queue_retry.
 pub(crate) fn retry_item(q: &mut QueueState, id: &str) -> Result<(), DeckError> {
     if q.items.iter().any(|i| i.id == id && i.state == "firing") {
-        return Err("this prompt is being sent right now — try again in a few seconds".into());
+        return Err(DeckError::new(
+            ErrorKind::Other,
+            "this prompt is being sent right now — try again in a few seconds",
+        ));
     }
     let delivery = q
         .items
@@ -364,7 +419,10 @@ pub(crate) fn retry_item(q: &mut QueueState, id: &str) -> Result<(), DeckError> 
             item.state.as_str(),
             "firing" | "ambiguous" | "failed" | "pending"
         ) {
-            return Err("prompt has an unknown delivery state".into());
+            return Err(DeckError::new(
+                ErrorKind::Other,
+                "prompt has an unknown delivery state",
+            ));
         }
         item.state = default_state();
         item.attempts = 0;
@@ -388,14 +446,20 @@ pub(crate) fn acknowledge_ambiguous(q: &mut QueueState, id: &str) -> Result<(), 
         return if q.deliveries.iter().any(|d| d.item == id) {
             Ok(())
         } else {
-            Err("scheduled prompt not found".into())
+            Err(DeckError::new(
+                ErrorKind::Missing,
+                "scheduled prompt not found",
+            ))
         };
     };
     if item.state != "ambiguous" {
         return if item.delivery.is_none() && q.deliveries.iter().any(|d| d.item == id) {
             Ok(())
         } else {
-            Err("this prompt is not awaiting an ambiguous-delivery decision".into())
+            Err(DeckError::new(
+                ErrorKind::Other,
+                "this prompt is not awaiting an ambiguous-delivery decision",
+            ))
         };
     }
     let delivery = item.delivery.unwrap_or_else(|| format!("legacy-{id}"));
@@ -413,7 +477,7 @@ pub(crate) fn queue_update(
 ) -> Result<(), DeckError> {
     let text = text.replace(['\n', '\r'], " ").trim().to_string();
     if text.is_empty() {
-        return Err("empty prompt".into());
+        return Err(DeckError::new(ErrorKind::Other, "empty prompt"));
     }
     // a failed save must not leave the new text in memory: the scheduler
     // would then send a prompt the user was told was not saved
@@ -542,7 +606,10 @@ pub(crate) fn queue_clear_sessions(
     sessions: Vec<String>,
 ) -> Result<(), DeckError> {
     if crate::smoke_faults::take("queue-cancel") {
-        return Err("injected queue cancellation failure".into());
+        return Err(DeckError::new(
+            ErrorKind::Other,
+            "injected queue cancellation failure",
+        ));
     }
     with_queue(&state.q, &save_queue, |q| {
         clear_sessions(q, &sessions);
@@ -570,13 +637,22 @@ pub(crate) fn queue_send_now(
         .iter()
         .find(|i| i.id == id)
         .cloned()
-        .ok_or("scheduled prompt not found")?;
+        .ok_or(DeckError::new(
+            ErrorKind::Missing,
+            "scheduled prompt not found",
+        ))?;
     let observed = current_context_probe(&item);
     if accept_process_mismatch && observed.status != ContextStatus::ForegroundDifferent {
-        return Err("one-shot process bypass requires a current foreground mismatch".into());
+        return Err(DeckError::new(
+            ErrorKind::Other,
+            "one-shot process bypass requires a current foreground mismatch",
+        ));
     }
     if !claim_session(&state.busy, &item.session) {
-        return Err("this session already has a scheduled send in progress".into());
+        return Err(DeckError::new(
+            ErrorKind::Other,
+            "this session already has a scheduled send in progress",
+        ));
     }
     let prepare_once = |source: &QueueItem, cancelled: &dyn Fn() -> bool| {
         let mut one_shot = source.clone();
@@ -625,9 +701,21 @@ pub(crate) fn queue_send_now(
             let _ = app.emit("queue-changed", ());
             Ok(())
         }
-        SendResult::Blocked { .. } => Err("target context is unavailable".into()),
-        SendResult::Nothing => Err("prompt is no longer eligible to send".into()),
-        SendResult::NotPersisted => Err("delivery intent could not be saved".into()),
-        SendResult::Failed { .. } => Err("tmux refused the literal send".into()),
+        SendResult::Blocked { .. } => Err(DeckError::new(
+            ErrorKind::Other,
+            "target context is unavailable",
+        )),
+        SendResult::Nothing => Err(DeckError::new(
+            ErrorKind::Other,
+            "prompt is no longer eligible to send",
+        )),
+        SendResult::NotPersisted => Err(DeckError::new(
+            ErrorKind::Other,
+            "delivery intent could not be saved",
+        )),
+        SendResult::Failed { .. } => Err(DeckError::new(
+            ErrorKind::Tmux,
+            "tmux refused the literal send",
+        )),
     }
 }

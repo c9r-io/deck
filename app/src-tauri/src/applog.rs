@@ -10,7 +10,7 @@
 //! `applog` is a no-op under `cfg(test)`: unit tests never touch the real log.
 
 use crate::datadir::{atomic_write, create_private_dir, deck_dir, now_epoch, write_private};
-use crate::error::DeckError;
+use crate::error::{DeckError, ErrorKind};
 use crate::redact::sanitize_log;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -41,7 +41,7 @@ pub(crate) fn log_path(dir: &Path) -> PathBuf {
 pub(crate) fn reset_logs_at(dir: &Path) -> Result<(), DeckError> {
     let _guard = LOG_LOCK
         .lock()
-        .map_err(|_| DeckError::from("log lock unavailable"))?;
+        .map_err(|_| DeckError::new(ErrorKind::Other, "log lock unavailable"))?;
     create_private_dir(dir)?;
     atomic_write(&log_path(dir), b"")
 }
@@ -49,9 +49,12 @@ pub(crate) fn reset_logs_at(dir: &Path) -> Result<(), DeckError> {
 pub(crate) fn log_size_at(dir: &Path) -> Result<u64, DeckError> {
     match std::fs::metadata(log_path(dir)) {
         Ok(meta) if meta.is_file() => Ok(meta.len()),
-        Ok(_) => Err("log is not a file".into()),
+        Ok(_) => Err(DeckError::new(ErrorKind::Other, "log is not a file")),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(0),
-        Err(e) => Err(format!("could not read log size ({})", e.kind()).into()),
+        Err(e) => Err(DeckError::new(
+            ErrorKind::io(e.kind()),
+            format!("could not read log size ({})", e.kind()),
+        )),
     }
 }
 

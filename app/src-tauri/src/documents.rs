@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-use crate::error::DeckError;
+use crate::error::{DeckError, ErrorKind};
 use crate::storage;
 use crate::sync::LockRecover;
 
@@ -78,21 +78,36 @@ fn validate_board(b: &BoardDocRaw) -> Result<(), DeckError> {
     let mut project_ids = HashSet::new();
     for p in &b.projects {
         if p.id.trim().is_empty() {
-            return Err("a project has an empty id".into());
+            return Err(DeckError::new(
+                ErrorKind::Other,
+                "a project has an empty id",
+            ));
         }
         if !project_ids.insert(p.id.as_str()) {
-            return Err(format!("duplicate project id {}", p.id).into());
+            return Err(DeckError::new(
+                ErrorKind::Other,
+                format!("duplicate project id {}", p.id),
+            ));
         }
         if p.columns.is_empty() {
-            return Err(format!("project {} has no columns", p.id).into());
+            return Err(DeckError::new(
+                ErrorKind::Other,
+                format!("project {} has no columns", p.id),
+            ));
         }
         let mut col_ids = HashSet::new();
         for c in &p.columns {
             if c.id.trim().is_empty() {
-                return Err(format!("project {} has a column with an empty id", p.id).into());
+                return Err(DeckError::new(
+                    ErrorKind::Other,
+                    format!("project {} has a column with an empty id", p.id),
+                ));
             }
             if !col_ids.insert(c.id.as_str()) {
-                return Err(format!("duplicate column id {} in project {}", c.id, p.id).into());
+                return Err(DeckError::new(
+                    ErrorKind::Other,
+                    format!("duplicate column id {} in project {}", c.id, p.id),
+                ));
             }
         }
     }
@@ -100,26 +115,37 @@ fn validate_board(b: &BoardDocRaw) -> Result<(), DeckError> {
     let mut sessions = HashSet::new();
     for c in &b.cards {
         if c.id.trim().is_empty() {
-            return Err("a card has an empty id".into());
+            return Err(DeckError::new(ErrorKind::Other, "a card has an empty id"));
         }
         if !card_ids.insert(c.id.as_str()) {
-            return Err(format!("duplicate card id {}", c.id).into());
+            return Err(DeckError::new(
+                ErrorKind::Other,
+                format!("duplicate card id {}", c.id),
+            ));
         }
         // the SAME session-name rule the runtime enforces on start/attach
         crate::tmux::validate_session_name(&c.session)
-            .map_err(|e| DeckError::from(format!("card {}: {e}", c.id)))?;
+            .map_err(|e| DeckError::classified(format!("card {}: {e}", c.id)))?;
         if !sessions.insert(c.session.as_str()) {
-            return Err(format!("card {}: session name is already used", c.id).into());
+            return Err(DeckError::new(
+                ErrorKind::Other,
+                format!("card {}: session name is already used", c.id),
+            ));
         }
         let Some(project) = b.projects.iter().find(|p| p.id == c.project_id) else {
-            return Err(format!("card {} references a missing project", c.id).into());
+            return Err(DeckError::new(
+                ErrorKind::Other,
+                format!("card {} references a missing project", c.id),
+            ));
         };
         if !project.columns.iter().any(|col| col.id == c.column_id) {
-            return Err(format!(
-                "card {} references a column that is not in its project",
-                c.id
-            )
-            .into());
+            return Err(DeckError::new(
+                ErrorKind::Other,
+                format!(
+                    "card {} references a column that is not in its project",
+                    c.id
+                ),
+            ));
         }
     }
     Ok(())
@@ -181,12 +207,18 @@ impl TryFrom<SettingsDocRaw> for SettingsDoc {
     fn try_from(raw: SettingsDocRaw) -> Result<Self, DeckError> {
         if let Some(e) = &raw.editor {
             if e.len() > 200 {
-                return Err("editor name is unreasonably long".into());
+                return Err(DeckError::new(
+                    ErrorKind::Other,
+                    "editor name is unreasonably long",
+                ));
             }
         }
         if let Some(locale) = &raw.locale {
             if !matches!(locale.as_str(), "system" | "en" | "zh-Hans") {
-                return Err("locale must be system, en, or zh-Hans".into());
+                return Err(DeckError::new(
+                    ErrorKind::Other,
+                    "locale must be system, en, or zh-Hans",
+                ));
             }
         }
         if let Some(theme) = &raw.theme {
@@ -194,28 +226,43 @@ impl TryFrom<SettingsDocRaw> for SettingsDoc {
                 theme.as_str(),
                 "deck-dark" | "light" | "system" | "high-contrast"
             ) {
-                return Err("theme must be deck-dark, light, system, or high-contrast".into());
+                return Err(DeckError::new(
+                    ErrorKind::Other,
+                    "theme must be deck-dark, light, system, or high-contrast",
+                ));
             }
         }
         if let Some(accent) = &raw.accent {
             if !matches!(accent.as_str(), "teal" | "blue" | "purple" | "orange") {
-                return Err("accent must be teal, blue, purple, or orange".into());
+                return Err(DeckError::new(
+                    ErrorKind::Other,
+                    "accent must be teal, blue, purple, or orange",
+                ));
             }
         }
         if let Some(scale) = raw.font_scale {
             if !scale.is_finite() || !(0.5..=1.6).contains(&scale) {
-                return Err("fontScale must be between 0.5 and 1.6".into());
+                return Err(DeckError::new(
+                    ErrorKind::Other,
+                    "fontScale must be between 0.5 and 1.6",
+                ));
             }
         }
         if let Some(shortcuts) = &raw.shortcuts {
             if shortcuts.len() > 64 {
-                return Err("too many shortcut entries".into());
+                return Err(DeckError::new(
+                    ErrorKind::Other,
+                    "too many shortcut entries",
+                ));
             }
             if shortcuts
                 .iter()
                 .any(|(key, value)| key.is_empty() || key.len() > 64 || value.len() > 64)
             {
-                return Err("shortcut names and bindings must be bounded strings".into());
+                return Err(DeckError::new(
+                    ErrorKind::Other,
+                    "shortcut names and bindings must be bounded strings",
+                ));
             }
         }
         if let Some(inbound) = &raw.inbound {
@@ -291,14 +338,17 @@ pub(crate) fn save_validated<T: serde::de::DeserializeOwned>(
     what: &str,
 ) -> Result<(), DeckError> {
     serde_json::from_str::<T>(data)
-        .map_err(|e| DeckError::from(format!("refusing to save invalid {what}: {e}")))?;
+        .map_err(|e| DeckError::classified(format!("refusing to save invalid {what}: {e}")))?;
     storage::save_typed::<T>(path, data)
 }
 
 #[tauri::command]
 pub(crate) fn save_board(data: String) -> Result<(), DeckError> {
     if crate::smoke_faults::take("board-save") {
-        return Err("injected board save failure".into());
+        return Err(DeckError::new(
+            ErrorKind::Other,
+            "injected board save failure",
+        ));
     }
     save_validated::<BoardDoc>(&board_path(), &data, "board")
 }
@@ -329,15 +379,18 @@ pub(crate) fn load_settings() -> Result<LoadedDoc, DeckError> {
 #[tauri::command]
 pub(crate) fn save_settings(data: String) -> Result<(), DeckError> {
     if crate::smoke_faults::take("settings-save") {
-        return Err("injected settings save failure".into());
+        return Err(DeckError::new(
+            ErrorKind::Other,
+            "injected settings save failure",
+        ));
     }
     validate_saved_update_channel(&data)?;
     save_validated::<SettingsDoc>(&settings_path(), &data, "settings")
 }
 
 fn validate_saved_update_channel(data: &str) -> Result<(), DeckError> {
-    let value: serde_json::Value =
-        serde_json::from_str(data).map_err(|_| DeckError::from("settings must be valid JSON"))?;
+    let value: serde_json::Value = serde_json::from_str(data)
+        .map_err(|_| DeckError::new(ErrorKind::Other, "settings must be valid JSON"))?;
     match value.get("updateChannel") {
         None => Ok(()),
         Some(serde_json::Value::String(channel))
@@ -345,7 +398,10 @@ fn validate_saved_update_channel(data: &str) -> Result<(), DeckError> {
         {
             Ok(())
         }
-        Some(_) => Err("updateChannel must be stable or nightly".into()),
+        Some(_) => Err(DeckError::new(
+            ErrorKind::Other,
+            "updateChannel must be stable or nightly",
+        )),
     }
 }
 

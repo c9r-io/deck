@@ -6,7 +6,7 @@ use serde::Serialize;
 use std::path::PathBuf;
 use std::process::Command;
 
-use crate::error::DeckError;
+use crate::error::{DeckError, ErrorKind};
 use crate::tmux::expand_tilde;
 
 // ---------- open path / url ----------------------------------------------------
@@ -42,10 +42,17 @@ fn absolute_clicked_path(value: &str, cwd: &str) -> Result<PathBuf, DeckError> {
     if path.is_absolute() {
         return Ok(path);
     }
-    let cwd = std::fs::canonicalize(expand_tilde(cwd))
-        .map_err(|_| DeckError::from("the session working directory is unavailable"))?;
+    let cwd = std::fs::canonicalize(expand_tilde(cwd)).map_err(|_| {
+        DeckError::new(
+            ErrorKind::Other,
+            "the session working directory is unavailable",
+        )
+    })?;
     if !cwd.is_dir() {
-        return Err("the session working directory is unavailable".into());
+        return Err(DeckError::new(
+            ErrorKind::Other,
+            "the session working directory is unavailable",
+        ));
     }
     Ok(cwd.join(path))
 }
@@ -64,26 +71,44 @@ pub(crate) fn resolve_clicked_parent(
         Err(_) => {
             let stripped = regex_strip_lineno(&raw);
             if stripped == raw {
-                return Err("the selected path does not exist or cannot be accessed".into());
+                return Err(DeckError::new(
+                    ErrorKind::Other,
+                    "the selected path does not exist or cannot be accessed",
+                ));
             }
             std::fs::canonicalize(absolute_clicked_path(&stripped, cwd)?).map_err(|_| {
-                DeckError::from("the selected path does not exist or cannot be accessed")
+                DeckError::new(
+                    ErrorKind::Other,
+                    "the selected path does not exist or cannot be accessed",
+                )
             })?
         }
     };
-    let meta = std::fs::metadata(&resolved)
-        .map_err(|_| DeckError::from("the selected path does not exist or cannot be accessed"))?;
+    let meta = std::fs::metadata(&resolved).map_err(|_| {
+        DeckError::new(
+            ErrorKind::Other,
+            "the selected path does not exist or cannot be accessed",
+        )
+    })?;
     let target_is_directory = meta.is_dir();
     let directory = if target_is_directory {
         resolved
     } else {
         resolved
             .parent()
-            .ok_or_else(|| "the selected path has no usable parent folder".to_string())?
+            .ok_or_else(|| {
+                DeckError::new(
+                    ErrorKind::Other,
+                    "the selected path has no usable parent folder",
+                )
+            })?
             .to_path_buf()
     };
     if !directory.is_dir() {
-        return Err("the selected path has no usable parent folder".into());
+        return Err(DeckError::new(
+            ErrorKind::Other,
+            "the selected path has no usable parent folder",
+        ));
     }
     Ok(ResolvedPathTarget {
         directory: directory.to_string_lossy().into_owned(),
@@ -136,19 +161,31 @@ pub(crate) fn validate_open(kind: &str, value: &str, resolved: &str) -> Result<(
             if lower.starts_with("http://") || lower.starts_with("https://") {
                 Ok(())
             } else {
-                Err(format!("only http(s) links open externally: {value}").into())
+                Err(DeckError::new(
+                    ErrorKind::Other,
+                    format!("only http(s) links open externally: {value}"),
+                ))
             }
         }
         "editor" | "editor-parent" | "reveal" => {
             if !resolved.starts_with('/') {
-                return Err(format!("path did not resolve absolute: {resolved}").into());
+                return Err(DeckError::new(
+                    ErrorKind::Other,
+                    format!("path did not resolve absolute: {resolved}"),
+                ));
             }
             if !std::path::Path::new(resolved).exists() {
-                return Err(format!("no such path: {resolved}").into());
+                return Err(DeckError::new(
+                    ErrorKind::Missing,
+                    format!("no such path: {resolved}"),
+                ));
             }
             Ok(())
         }
-        _ => Err(format!("unknown kind: {kind}").into()),
+        _ => Err(DeckError::new(
+            ErrorKind::Other,
+            format!("unknown kind: {kind}"),
+        )),
     }
 }
 
@@ -167,7 +204,10 @@ pub(crate) fn open_target(kind: String, value: String, cwd: String) -> Result<()
                 let stripped = regex_strip_lineno(&raw);
                 std::fs::canonicalize(absolute_clicked_path(&stripped, &cwd)?)
                     .map_err(|_| {
-                        DeckError::from("the selected path does not exist or cannot be accessed")
+                        DeckError::new(
+                            ErrorKind::Other,
+                            "the selected path does not exist or cannot be accessed",
+                        )
                     })?
                     .to_string_lossy()
                     .into_owned()
@@ -179,7 +219,12 @@ pub(crate) fn open_target(kind: String, value: String, cwd: String) -> Result<()
         "url" => Command::new("open").arg(value.trim()).status(),
         "editor-parent" => match crate::documents::editor_app() {
             Some(app) => Command::new("open").args(["-a", &app, &resolved]).status(),
-            None => return Err("choose an editor in Settings before opening a folder".into()),
+            None => {
+                return Err(DeckError::new(
+                    ErrorKind::Other,
+                    "choose an editor in Settings before opening a folder",
+                ))
+            }
         },
         "editor" => match crate::documents::editor_app() {
             Some(app) => Command::new("open").args(["-a", &app, &resolved]).status(),
@@ -192,7 +237,10 @@ pub(crate) fn open_target(kind: String, value: String, cwd: String) -> Result<()
     if status.success() {
         Ok(())
     } else {
-        Err("the selected item could not be opened".into())
+        Err(DeckError::new(
+            ErrorKind::Other,
+            "the selected item could not be opened",
+        ))
     }
 }
 

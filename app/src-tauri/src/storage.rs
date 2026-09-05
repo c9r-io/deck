@@ -251,9 +251,10 @@ pub fn load_typed<T: DeserializeOwned>(path: &Path) -> Result<Option<LoadOutcome
                 format!(
             "{name} is unreadable ({main_err}) and its backup was written by a newer deck (schema v{n}) — update deck{kept_at}"
         ))),
-        Err(DocErr::Bad(bak_err)) => Err(format!(
-            "{name} is unreadable ({main_err}) and its backup is unusable ({bak_err}){kept_at}"
-        ).into()),
+        Err(DocErr::Bad(bak_err)) => Err(DeckError::new(
+            ErrorKind::Recovery,
+            format!("{name} is unreadable ({main_err}) and its backup is unusable ({bak_err}){kept_at}"),
+        )),
     }
 }
 
@@ -271,7 +272,7 @@ fn save_checked(
     // bytes another writer replaces before its backup is taken.
     let _save_guard = SAVE_LOCK.lock_or_recover();
     let data: serde_json::Value = serde_json::from_str(payload)
-        .map_err(|e| DeckError::from(format!("refusing to save invalid JSON: {e}")))?;
+        .map_err(|e| DeckError::classified(format!("refusing to save invalid JSON: {e}")))?;
     // Never clobber a file this build does not understand. `load_typed`
     // quarantines a damaged main file before anything can save over it, so
     // reaching here with a broken envelope means the file was never loaded
@@ -280,15 +281,22 @@ fn save_checked(
     let existing = match std::fs::read(path) {
         Ok(bytes) => {
             let raw = std::str::from_utf8(&bytes).map_err(|_| {
-                format!("refusing to overwrite {name} — the existing file is not valid UTF-8")
+                DeckError::new(
+                    ErrorKind::InvalidDoc,
+                    format!("refusing to overwrite {name} — the existing file is not valid UTF-8"),
+                )
             })?;
             let v = serde_json::from_str::<serde_json::Value>(raw).map_err(|_| {
-                format!("refusing to overwrite {name} — the existing file is invalid JSON")
+                DeckError::new(
+                    ErrorKind::InvalidDoc,
+                    format!("refusing to overwrite {name} — the existing file is invalid JSON"),
+                )
             })?;
             match envelope_payload(&v) {
                 Ok(existing_payload) => validate_existing(&existing_payload).map_err(|e| {
-                    format!(
-                        "refusing to overwrite {name} — the existing file has the wrong structure ({e})"
+                    DeckError::new(
+                        ErrorKind::InvalidDoc,
+                        format!("refusing to overwrite {name} — the existing file has the wrong structure ({e})"),
                     )
                 })?,
                 Err(DocErr::Newer(n)) => {
@@ -299,37 +307,44 @@ fn save_checked(
                     )))
                 }
                 Err(DocErr::Bad(e)) => {
-                    return Err(format!(
-                        "refusing to overwrite {name} — its version envelope is unreadable ({e}); move the file aside first"
-                    ).into())
+                    return Err(DeckError::new(
+                        ErrorKind::Recovery,
+                        format!("refusing to overwrite {name} — its version envelope is unreadable ({e}); move the file aside first"),
+                    ))
                 }
             }
             Some(bytes)
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
         Err(_) => {
-            return Err(format!(
-                "refusing to overwrite {name} — the existing file could not be read"
-            )
-            .into())
+            return Err(DeckError::new(
+                ErrorKind::Other,
+                format!("refusing to overwrite {name} — the existing file could not be read"),
+            ))
         }
     };
     let doc = serde_json::json!({ "schema_version": SCHEMA_VERSION, "data": data });
     let out = serde_json::to_string_pretty(&doc).map_err(DeckError::from)?;
 
-    let dir = path.parent().ok_or("data path has no parent directory")?;
+    let dir = path.parent().ok_or(DeckError::new(
+        ErrorKind::Other,
+        "data path has no parent directory",
+    ))?;
     create_private_dir(dir)?;
     if keep_backup {
         if let Some(cur) = existing {
             atomic_write(&bak_path(path), &cur)
-                .map_err(|e| DeckError::from(format!("backup failed: {e}")))?;
+                .map_err(|e| DeckError::classified(format!("backup failed: {e}")))?;
         }
     } else {
         match std::fs::remove_file(bak_path(path)) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => {
-                return Err(format!("could not remove transient backup ({})", error.kind()).into())
+                return Err(DeckError::new(
+                    ErrorKind::io(error.kind()),
+                    format!("could not remove transient backup ({})", error.kind()),
+                ))
             }
         }
     }
@@ -346,7 +361,7 @@ pub fn save(path: &Path, payload: &str) -> Result<(), DeckError> {
 /// so malformed business structure cannot be silently overwritten.
 pub(crate) fn save_typed<T: DeserializeOwned>(path: &Path, payload: &str) -> Result<(), DeckError> {
     serde_json::from_str::<T>(payload)
-        .map_err(|e| DeckError::from(format!("refusing to save wrong structure: {e}")))?;
+        .map_err(|e| DeckError::classified(format!("refusing to save wrong structure: {e}")))?;
     save_checked(path, payload, true, |existing| {
         serde_json::from_value::<T>(existing.clone())
             .map(|_| ())
@@ -362,7 +377,7 @@ pub(crate) fn save_typed_ephemeral<T: DeserializeOwned>(
     payload: &str,
 ) -> Result<(), DeckError> {
     serde_json::from_str::<T>(payload)
-        .map_err(|e| DeckError::from(format!("refusing to save wrong structure: {e}")))?;
+        .map_err(|e| DeckError::classified(format!("refusing to save wrong structure: {e}")))?;
     save_checked(path, payload, false, |existing| {
         serde_json::from_value::<T>(existing.clone())
             .map(|_| ())
