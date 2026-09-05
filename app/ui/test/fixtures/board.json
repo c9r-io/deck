@@ -1,0 +1,26 @@
+{
+  "projects": [
+    {
+      "id": "P1",
+      "name": "main",
+      "columns": [
+        { "id": "C1", "name": "Attention" },
+        { "id": "C2", "name": "Working" }
+      ]
+    }
+  ],
+  "cards": [
+    {
+      "id": "K1",
+      "projectId": "P1",
+      "columnId": "C1",
+      "title": "full card",
+      "desc": "every persisted key, nothing else",
+      "cmd": "claude",
+      "dir": "~/work",
+      "session": "deck-full-card-ab12",
+      "pinned": true,
+      "origin": { "source": "slack", "key": "C1:1.2", "badge": "eyes" }
+    }
+  ]
+}

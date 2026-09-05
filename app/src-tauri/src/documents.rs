@@ -403,6 +403,65 @@ mod tests {
         )
     }
 
+    /// The one Board document both sides pin. `dom.test.mjs` proves the
+    /// fixture is exactly what `persistence.js` writes; this test proves
+    /// what `BoardCard` requires of it and names every key it merely
+    /// tolerates. A new persisted key changes the fixture (the frontend test
+    /// forces that) and then fails here until it is either declared in
+    /// `BoardCard` or added to the tolerated list on purpose.
+    #[test]
+    fn board_fixture_pins_the_schema_on_both_sides() {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../ui/test/fixtures/board.json");
+        let raw = std::fs::read_to_string(path).expect("shared Board fixture");
+        assert!(
+            serde_json::from_str::<BoardDoc>(&raw).is_ok(),
+            "the frontend's shape loads"
+        );
+        let doc: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        let card = doc["cards"][0].as_object().unwrap();
+        let mut required = Vec::new();
+        let mut tolerated = Vec::new();
+        for key in card.keys() {
+            let mut without = doc.clone();
+            without["cards"][0].as_object_mut().unwrap().remove(key);
+            if serde_json::from_value::<BoardDoc>(without).is_ok() {
+                tolerated.push(key.as_str());
+            } else {
+                required.push(key.as_str());
+            }
+        }
+        assert_eq!(
+            required,
+            [
+                "cmd",
+                "columnId",
+                "dir",
+                "id",
+                "projectId",
+                "session",
+                "title"
+            ],
+            "every key BoardCard requires is one persistence.js always writes"
+        );
+        assert_eq!(
+            tolerated,
+            ["desc", "origin", "pinned"],
+            "pinned defaults to false; desc and origin are the frontend's alone"
+        );
+        for (key, wrong) in [
+            ("title", serde_json::json!(1)),
+            ("pinned", serde_json::json!("yes")),
+        ] {
+            let mut typed = doc.clone();
+            typed["cards"][0][key] = wrong;
+            assert!(
+                serde_json::from_value::<BoardDoc>(typed).is_err(),
+                "{key} is typed"
+            );
+        }
+    }
+
     #[test]
     fn board_validation_accepts_real_shape_and_unknown_extensions() {
         let ok = board(&card("s1", "P1", "C1", "deck-t-ab12"));

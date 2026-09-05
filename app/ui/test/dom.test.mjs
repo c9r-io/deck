@@ -178,6 +178,22 @@ test('Board serialization persists important marks and excludes runtime card sta
   assert.equal('tail' in serialized.cards[0], false);
 });
 
+test('the Board fixture is exactly the shape persistence.js writes', async () => {
+  // fixtures/board.json is the one document both sides pin: this test proves
+  // it is what the frontend serializes, documents.rs proves what the backend
+  // requires of it. Adding a persisted card key changes this fixture, and the
+  // Rust side then refuses to compile a guess.
+  const { readFileSync } = await import('node:fs');
+  const fixture = JSON.parse(readFileSync(new URL('./fixtures/board.json', import.meta.url), 'utf8'));
+  const full = {
+    ...fixture.cards[0], status: 'running', mem: 42, tail: ['runtime only'], idle: 3,
+    origin: { ...fixture.cards[0].origin, text: 'never persisted' },
+  };
+  const serialized = boardData(fixture.projects, [full]);
+  assert.deepEqual(Object.keys(serialized.cards[0]).sort(), Object.keys(fixture.cards[0]).sort());
+  assert.deepEqual(serialized, fixture);
+});
+
 test('an inbound card keeps its origin across Board writes, and only identifiers', () => {
   const base = { projectId: 'p', columnId: 'c', title: 'A', desc: '', cmd: '', dir: '/tmp' };
   const cards = [
