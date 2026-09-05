@@ -45,6 +45,17 @@ const copyFailureCode = error => {
   return 'snapshot-failed';
 };
 
+/* `finish-failed` reason code for the log's `a` slot: 1 = the pane had left
+   tmux copy-mode, 2 = copy-mode survived but its selection was cleared,
+   0 = anything else. Derived from the backend's closed error suffix, never
+   from error text. */
+const finishFailureReason = error => {
+  const value = String(error || '');
+  if (value.includes('selection-missing-inactive')) return 1;
+  if (value.includes('selection-missing-cleared')) return 2;
+  return 0;
+};
+
 const dimensionsChanged = error => String(error || '').includes('selection-dimensions-changed');
 
 function terminalSelectionController(pane, onModeChange) {
@@ -433,7 +444,7 @@ function terminalSelectionController(pane, onModeChange) {
     }).catch(error => {
       if (currentToken === token && !disposed) {
         uev('terminal-copy', copyFailureCode(error));
-        sev('finish-failed');
+        sev('finish-failed', finishFailureReason(error));
         cancel(false, null);
         toast(t('error.selectionChanged'));
       }

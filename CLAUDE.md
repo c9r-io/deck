@@ -98,7 +98,11 @@ Frontend gates: `node --check` (syntax) · `ui/test/*.mjs` (node:test)
   at every boot.
 - Clipboard diagnostics are always structured and content-free. Copy records
   terminal key capture, Deck/native/no-selection routing, snapshot loss and
-  the `pbcopy`/Web Clipboard writer result. Text paste records the closed chain
+  the `pbcopy`/Web Clipboard writer result. `pbcopy` is spawned with
+  `LANG=en_US.UTF-8` (`pbcopy_command`): a GUI-launched deck has no locale,
+  and under the C locale pbcopy writes an EMPTY pasteboard item for any
+  non-ASCII input while exiting 0 — every copy from an agent pane (Chinese,
+  box-drawing, `⏺`) "succeeded" and pasted nothing. Text paste records the closed chain
   key capture → xterm key handler → native paste event → xterm `onData` → PTY
   write, with bounded missing-stage timers. Only fixed labels and character or
   file counts enter `app.log`; clipboard text, errors and session names never
@@ -114,7 +118,10 @@ Frontend gates: `node --check` (syntax) · `ui/test/*.mjs` (node:test)
   with nothing to destroy stays silent, so ordinary clicks do not flood the
   log; a caller that already logged a specific failure passes a null reason
   instead of a second anonymous line. The two integers are a per-label count
-  (rows spanned, or 1 when a FROZEN selection died) and the selection's age in
+  (rows spanned, or 1 when a FROZEN selection died; for `finish-failed` a
+  reason code — 1 the pane had left copy-mode, 2 copy-mode kept but its
+  selection cleared, 0 other — from the backend's closed
+  `selection-missing-inactive|cleared` suffix) and the selection's age in
   milliseconds — never text, coordinates of content, or an error string.
   Three forensic labels attribute the dominant field failure (a completed
   selection revoked before ⌘C arrives): `revoker-<class>` pairs with

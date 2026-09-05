@@ -1691,8 +1691,17 @@ pub(crate) fn terminal_selection_finish(
         grid.cols,
         grid.rows,
     )?;
-    if !status.active || !status.selection_present {
-        return Err("selection-missing".into());
+    // Field logs show finishes failing ~100–250 ms after a successful start
+    // with the frontend token untouched, i.e. tmux itself dropped the
+    // selection. Say WHICH half went: the pane left copy-mode, or copy-mode
+    // survived with its selection cleared. Both still read as
+    // `selection-missing` to the caller; the suffix only feeds the closed
+    // `finish-failed` reason code in the log.
+    if !status.active {
+        return Err("selection-missing-inactive".into());
+    }
+    if !status.selection_present {
+        return Err("selection-missing-cleared".into());
     }
     let prefix = terminal_selection_buffer_prefix(token);
     let text = crate::terminal_selection::snapshot_selection(&target, &prefix, tmux_owned)
@@ -1862,14 +1871,28 @@ pub(crate) fn terminal_metrics(name: String) -> Result<TerminalMetrics, String> 
 
 /// Native clipboard path for WKWebView. Success means pbcopy consumed all
 /// bytes and exited zero; clipboard content never enters logs or errors.
+/// `pbcopy` decodes stdin under the process locale, and a GUI-launched deck
+/// has NONE (its environment is PATH and HOME). Under the C locale pbcopy
+/// writes an EMPTY `public.utf8-plain-text` item for any input containing a
+/// non-ASCII byte and still exits 0 — so a Chinese word, a box-drawing rule
+/// or a `⏺` from an agent pane copied "successfully" and pasted as nothing
+/// (the user-reported "copy often fails"; measured 2026-09-05). Pin the same
+/// UTF-8 locale tmux()/pty.rs already pin, for the same reason.
+fn pbcopy_command() -> Command {
+    use std::process::Stdio;
+    let mut command = Command::new("/usr/bin/pbcopy");
+    command
+        .env("LANG", "en_US.UTF-8")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    command
+}
+
 #[tauri::command]
 pub(crate) fn write_clipboard(text: String) -> Result<(), String> {
     use std::io::Write as _;
-    use std::process::Stdio;
-    let mut child = Command::new("/usr/bin/pbcopy")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
+    let mut child = pbcopy_command()
         .spawn()
         .map_err(|_| "clipboard-write-failed".to_string())?;
     child
@@ -2341,6 +2364,21 @@ pub(crate) fn regex_strip_lineno(path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A runtime check would clobber the developer's clipboard, so this pins
+    /// the configured spawn instead: without a UTF-8 locale pbcopy turns any
+    /// non-ASCII selection into an empty pasteboard item and exits 0.
+    #[test]
+    fn pbcopy_is_spawned_under_a_utf8_locale() {
+        let command = pbcopy_command();
+        assert_eq!(command.get_program(), std::ffi::OsStr::new("/usr/bin/pbcopy"));
+        let lang = command
+            .get_envs()
+            .find(|(key, _)| *key == std::ffi::OsStr::new("LANG"))
+            .and_then(|(_, value)| value)
+            .expect("pbcopy must not inherit the GUI session's missing locale");
+        assert_eq!(lang, std::ffi::OsStr::new("en_US.UTF-8"));
+    }
 
     #[test]
     fn terminal_selection_rejects_a_stale_frontend_grid_instead_of_clamping_it() {
