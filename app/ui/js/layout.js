@@ -5,7 +5,7 @@ import { inlineRename, toast } from './dialogs.js';
 import { t } from './i18n.js';
 import { panes, pollNow, provider, render, renderSidebar, updateSidebarSelection, activeProject } from './board.js';
 import { SHELL_FG, acceptGhost, feedMirror, maybeRecordCommand, mountQuickBar, nextShellTitle, renderSuggest, resetSuggest, showLinkCtx, updateGhost, writeClipboard } from './terminal.js';
-import { AGENT_HISTORY_VERTICAL_UP, createTerminalPasteTrace, createTerminalResizeCoordinator, createTerminalWheelAccumulator, createTerminalWheelFrameScheduler, isComposingKeyEvent, isPlainShiftKeydown, shouldRouteImeKeydownThroughInput, shQuote, terminalAgentComposerGeometry, terminalAgentHistoryUpRoute, terminalCopyRoute, terminalSelectionWheelRoute, tokenizeTerminalLinks, terminalWheelLines } from './pure.js';
+import { AGENT_HISTORY_VERTICAL_UP, createTerminalPasteTrace, createTerminalResizeCoordinator, createTerminalWheelAccumulator, createTerminalWheelFrameScheduler, isComposingKeyEvent, isPlainShiftKeydown, isTerminalAutoReply, scrollResultView, shouldRouteImeKeydownThroughInput, shQuote, terminalLinkRanges, terminalAgentComposerGeometry, terminalAgentHistoryUpRoute, terminalCopyRoute, terminalSelectionWheelRoute, tokenizeTerminalLinks, terminalWheelLines } from './pure.js';
 import { toggleQueuePanel } from './scheduler.js';
 import { cancelAllTerminalSelections, cancelTerminalSelection, copyTerminalSelection, hasTerminalSelection, terminalSelectionElsewhere, wireTerminalSelection } from './selection.js';
 import { getTerminalTheme, onThemeChange, syncThemeIntegrations } from './theme.js';
@@ -460,19 +460,10 @@ export function wireTerminalInput(pane, term, host) {
     }
   }, true);
 
-  /* xterm auto-answers terminal queries (DA `ESC[?..c`, DSR `ESC[..R`,
-     OSC `ESC]..BEL`) through onData. Those are not user input — without
-     this filter they desync the input mirror on every attach, and the
-     first command typed after attaching is never captured. */
-  /* Auto-replies, not user input:
-     - CSI with a ?/> prefix (DA1/DA2, DECRPM `$y`, mode reports …) — user
-       keys never carry those prefixes
-     - DSR cursor reports `ESC[..R`, focus events `ESC[I`/`ESC[O`
-     - OSC / DCS responses */
-  const AUTO_REPLY = /^(?:\x1b\[[?>][0-9;$]*[a-zA-Z]|\x1b\[[0-9;]*R|\x1b\[[IO]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1bP[^\x1b]*\x1b\\)+$/;
   let odLogged = 0, escLogged = 0;
   term.onData(d => {
-    const isAutoReply = AUTO_REPLY.test(d);
+    /* xterm's auto-answers to terminal queries are not user input */
+    const isAutoReply = isTerminalAutoReply(d);
     const pasteAttempt = isAutoReply ? null : pane.pasteTrace.onData(d.length);
     /* the input mirror / completion only tracks the focused pane */
     if (!isAutoReply && ctx.attachedName === session) {
@@ -659,26 +650,17 @@ export function wireTerminalInput(pane, term, host) {
       validation.then(pathResults => {
         if (!host.isConnected) return cb(undefined);
         const validPaths = new Map(pathMatches.map((match, index) => [match, !!pathResults[index]]));
-        const links = [];
-        for (const match of matches) {
-          if (match.kind === 'path' && !validPaths.get(match)) continue;
-          const { value, kind } = match;
-          const start = positions[match.index];
-          const end = positions[match.index + value.length - 1];
-          if (!start || !end) continue;
-          if (lineNo < start.y || lineNo > end.y) continue;
-          links.push({
-            range: { start: { x: start.x, y: start.y }, end: { x: end.endX, y: end.y } },
-            text: value,
-            activate: (e, txt) => {
-              if (!pane.selection?.allowLinkActivation()) return;
-              e.stopPropagation();
-              try { term.clearSelection(); } catch (e2) { /* fine */ }
-              const c = card();
-              showLinkCtx(e, kind, txt, c ? c.dir : ctx.HOME, c ? c.id : null);
-            },
-          });
-        }
+        const links = terminalLinkRanges({ matches, positions, lineNo, validPaths }).map(({ range, text, kind }) => ({
+          range,
+          text,
+          activate: (e, txt) => {
+            if (!pane.selection?.allowLinkActivation()) return;
+            e.stopPropagation();
+            try { term.clearSelection(); } catch (e2) { /* fine */ }
+            const c = card();
+            showLinkCtx(e, kind, txt, c ? c.dir : ctx.HOME, c ? c.id : null);
+          },
+        }));
         cb(links.length ? links : undefined);
       });
     },
@@ -711,8 +693,7 @@ export function wireTerminalInput(pane, term, host) {
             : inv('scroll_session', { name: session, lines }))
           : inv('scroll_session', { name: session, lines });
       request.then(result => {
-        const inMode = typeof result === 'object' ? result?.active : result;
-        const cursorVisible = typeof result === 'object' ? result?.cursor_visible : true;
+        const { inMode, cursorVisible } = scrollResultView(result);
         setScrollCursorVisible(pane, !inMode || cursorVisible !== false);
         const c = card();
         if (c && !!c.scrolled !== !!inMode) { c.scrolled = !!inMode; updatePaneChrome(c); }

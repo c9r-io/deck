@@ -69,9 +69,16 @@ import { inv, uev } from './state.js';
 import { toast } from './dialogs.js';
 import {
   createTerminalSelectionModel,
+  retryOnStaleGrid,
+  selectionCopyFailureCode,
+  selectionEdgeScrollLines,
+  selectionFinishFailureReason,
+  selectionOwnerLabel,
+  selectionStatusRows,
+  terminalCellAt,
   terminalNativeSelectionCells,
   terminalSelectionEdgeLines,
-  terminalSelectionOverlayRows,
+  terminalSelectionOverlayBands,
 } from './pure.js';
 import { formatNumber, t } from './i18n.js';
 
@@ -87,38 +94,11 @@ let lastPointerUpAt = 0;
 
 function terminalCell(pane, clientX, clientY) {
   const screen = pane.body.querySelector('.xterm-screen');
-  if (!screen || !pane.term.cols || !pane.term.rows) return null;
-  const rect = screen.getBoundingClientRect();
-  if (!rect.width || !rect.height) return null;
-  const x = Math.max(rect.left, Math.min(rect.right - 0.01, clientX));
-  const y = Math.max(rect.top, Math.min(rect.bottom - 0.01, clientY));
-  return {
-    row: Math.max(0, Math.min(pane.term.rows - 1,
-      Math.floor((y - rect.top) / (rect.height / pane.term.rows)))),
-    col: Math.max(0, Math.min(pane.term.cols - 1,
-      Math.floor((x - rect.left) / (rect.width / pane.term.cols)))),
-    rect,
-  };
+  if (!screen) return null;
+  return terminalCellAt({
+    rect: screen.getBoundingClientRect(), rows: pane.term.rows, cols: pane.term.cols, clientX, clientY,
+  });
 }
-
-const copyFailureCode = error => {
-  const value = String(error || '');
-  if (value.includes('selection-missing')) return 'selection-missing';
-  return 'snapshot-failed';
-};
-
-/* `finish-failed` reason code for the log's `a` slot: 1 = the pane had left
-   tmux copy-mode, 2 = copy-mode survived but its selection was cleared,
-   0 = anything else. Derived from the backend's closed error suffix, never
-   from error text. */
-const finishFailureReason = error => {
-  const value = String(error || '');
-  if (value.includes('selection-missing-inactive')) return 1;
-  if (value.includes('selection-missing-cleared')) return 2;
-  return 0;
-};
-
-const dimensionsChanged = error => String(error || '').includes('selection-dimensions-changed');
 
 function terminalSelectionController(pane, onModeChange) {
   const model = createTerminalSelectionModel();
@@ -152,9 +132,6 @@ function terminalSelectionController(pane, onModeChange) {
      promoted. No terminal text, session name or error text can enter. */
   const sev = (detail, a = 0) =>
     uev('terminal-selection', detail, a, promotedAt ? Date.now() - promotedAt : -1);
-  const statusRows = status => (status
-    ? Math.abs(status.selection_end_row - status.selection_start_row) + 1
-    : 0);
 
   const queue = operation => {
     const pending = opChain.catch(() => {}).then(operation);
@@ -200,27 +177,18 @@ function terminalSelectionController(pane, onModeChange) {
     layer.replaceChildren();
     if (!selected || !lastStatus) return;
     const screen = pane.body.querySelector('.xterm-screen');
-    const rect = screen.getBoundingClientRect();
-    const viewportTop = lastStatus.history_rows - lastStatus.scroll_position;
-    const spans = terminalSelectionOverlayRows({
-      startRow: lastStatus.selection_start_row,
-      startCol: lastStatus.selection_start_col,
-      endRow: lastStatus.selection_end_row,
-      endCol: lastStatus.selection_end_col,
-      viewportTop,
-      rows: pane.term.rows,
-      cols: pane.term.cols,
+    const bands = terminalSelectionOverlayBands({
+      status: lastStatus, rect: screen.getBoundingClientRect(),
+      rows: pane.term.rows, cols: pane.term.cols,
     });
-    const cellWidth = rect.width / pane.term.cols;
-    const cellHeight = rect.height / pane.term.rows;
-    for (const span of spans) {
+    for (const span of bands) {
       const band = document.createElement('div');
       band.className = 'deck-selection-band';
       band.dataset.absoluteRow = String(span.absoluteRow);
-      band.style.left = `${span.col * cellWidth}px`;
-      band.style.top = `${span.row * cellHeight}px`;
-      band.style.width = `${span.width * cellWidth}px`;
-      band.style.height = `${cellHeight}px`;
+      band.style.left = `${span.left}px`;
+      band.style.top = `${span.top}px`;
+      band.style.width = `${span.width}px`;
+      band.style.height = `${span.height}px`;
       layer.appendChild(band);
     }
   };
@@ -229,12 +197,7 @@ function terminalSelectionController(pane, onModeChange) {
     clearEdgeTimer();
     if (!gesture || !gesture.promoted || disposed) return;
     const cell = terminalCell(pane, gesture.x, gesture.y);
-    if (!cell) return;
-    const edge = terminalSelectionEdgeLines({
-      pointerY: gesture.y, top: cell.rect.top, bottom: cell.rect.bottom,
-    });
-    const stopped = edge < 0 ? lastStatus?.at_top : edge > 0 ? lastStatus?.at_bottom : false;
-    if (!edge || stopped) return;
+    if (!selectionEdgeScrollLines({ pointerY: gesture.y, cell, status: lastStatus })) return;
     edgeTimer = setTimeout(() => {
       edgeTimer = null;
       requestUpdate();
@@ -258,69 +221,59 @@ function terminalSelectionController(pane, onModeChange) {
     pane.invalidateSize?.();
   };
 
-  const startAt = async (currentToken, anchorPoint, activePoint) => {
-    for (let attempt = 0; attempt < 3; attempt++) {
+  /* Every grid-bound command goes through retryOnStaleGrid: size sync and
+     cell lookup fail fast, the backend call is retried while it rejects a
+     stale grid. The backend serializes resize reflow with these commands. */
+  const sendSelectionStart = (currentToken, anchor, active, dimensions) =>
+    inv('terminal_selection_start', {
+      name: pane.session, token: currentToken,
+      anchorRow: anchor.row, anchorCol: anchor.col,
+      activeRow: active.row, activeCol: active.col,
+      ...dimensions,
+    });
+
+  const startAt = (currentToken, anchorPoint, activePoint) => retryOnStaleGrid({
+    prepare: async () => {
       const dimensions = await synchronizeSize();
       const anchor = terminalCell(pane, anchorPoint.x, anchorPoint.y);
       const active = terminalCell(pane, activePoint.x, activePoint.y);
       if (!anchor || !active) throw new Error('selection-missing');
-      try {
-        const status = await inv('terminal_selection_start', {
-          name: pane.session, token: currentToken,
-          anchorRow: anchor.row, anchorCol: anchor.col,
-          activeRow: active.row, activeCol: active.col,
-          ...dimensions,
-        });
-        return { status, active };
-      } catch (error) {
-        if (!dimensionsChanged(error) || attempt === 2) throw error;
-        invalidateSynchronizedSize();
-      }
-    }
-    throw new Error('selection-dimensions-changed');
-  };
+      return { dimensions, anchor, active };
+    },
+    send: async ({ dimensions, anchor, active }) => ({
+      status: await sendSelectionStart(currentToken, anchor, active, dimensions), active,
+    }),
+    invalidate: invalidateSynchronizedSize,
+  });
 
-  const startCells = async (currentToken, anchor, active) => {
-    for (let attempt = 0; attempt < 3; attempt++) {
-      const dimensions = await synchronizeSize();
-      try {
-        const status = await inv('terminal_selection_start', {
-          name: pane.session, token: currentToken,
-          anchorRow: anchor.row, anchorCol: anchor.col,
-          activeRow: active.row, activeCol: active.col,
-          ...dimensions,
-        });
-        return { status, dimensions };
-      } catch (error) {
-        if (!dimensionsChanged(error) || attempt === 2) throw error;
-        invalidateSynchronizedSize();
-      }
-    }
-    throw new Error('selection-dimensions-changed');
-  };
+  const startCells = (currentToken, anchor, active) => retryOnStaleGrid({
+    prepare: synchronizeSize,
+    send: async dimensions => ({
+      status: await sendSelectionStart(currentToken, anchor, active, dimensions), dimensions,
+    }),
+    invalidate: invalidateSynchronizedSize,
+  });
 
-  const updateAt = async (currentToken, point, allowEdgeScroll) => {
-    for (let attempt = 0; attempt < 3; attempt++) {
+  const updateAt = (currentToken, point, allowEdgeScroll) => retryOnStaleGrid({
+    prepare: async () => {
       const dimensions = await synchronizeSize();
       const cell = terminalCell(pane, point.x, point.y);
       if (!cell) throw new Error('selection-missing');
       const edgeLines = allowEdgeScroll ? terminalSelectionEdgeLines({
         pointerY: point.y, top: cell.rect.top, bottom: cell.rect.bottom,
       }) : 0;
-      try {
-        const status = await inv('terminal_selection_update', {
-          name: pane.session, token: currentToken,
-          row: cell.row, col: cell.col, edgeLines,
-          ...dimensions,
-        });
-        return { status, cell, edgeLines, dimensions };
-      } catch (error) {
-        if (!dimensionsChanged(error) || attempt === 2) throw error;
-        invalidateSynchronizedSize();
-      }
-    }
-    throw new Error('selection-dimensions-changed');
-  };
+      return { dimensions, cell, edgeLines };
+    },
+    send: async ({ dimensions, cell, edgeLines }) => {
+      const status = await inv('terminal_selection_update', {
+        name: pane.session, token: currentToken,
+        row: cell.row, col: cell.col, edgeLines,
+        ...dimensions,
+      });
+      return { status, cell, edgeLines, dimensions };
+    },
+    invalidate: invalidateSynchronizedSize,
+  });
 
   const requestUpdate = () => {
     if (!gesture || !gesture.promoted || disposed) return;
@@ -391,7 +344,7 @@ function terminalSelectionController(pane, onModeChange) {
       model.move({ row: synchronizedActive.row, col: synchronizedActive.col });
       if (currentToken !== token || !model.apply(generation, status)) return;
       lastStatus = status;
-      sev('start-ok', statusRows(status));
+      sev('start-ok', selectionStatusRows(status));
       renderOverlay();
       requestUpdate();
     }).catch(() => {
@@ -478,35 +431,32 @@ function terminalSelectionController(pane, onModeChange) {
     const generation = model.snapshot().generation;
     const currentToken = token;
     const finalPoint = { x: ended.x, y: ended.y };
-    queue(async () => {
-      for (let attempt = 0; attempt < 3; attempt++) {
+    queue(() => retryOnStaleGrid({
+      prepare: async () => {
         const finalUpdate = await updateAt(currentToken, finalPoint, false);
         model.move({ row: finalUpdate.cell.row, col: finalUpdate.cell.col });
         if (currentToken !== token || !model.apply(generation, finalUpdate.status)) {
           throw new Error('selection-missing');
         }
         lastStatus = finalUpdate.status;
-        try {
-          const status = await inv('terminal_selection_finish', {
-            name: pane.session, token: currentToken,
-            ...finalUpdate.dimensions,
-          });
-          if (currentToken !== token || disposed || model.snapshot().generation !== generation) return;
-          lastStatus = status;
-          frozen = true;
-          sev('finish-ok', statusRows(status));
-          renderOverlay();
-          if (onModeChange) onModeChange(true, lastStatus, { dragging: false, frozen: true });
-          return;
-        } catch (error) {
-          if (!dimensionsChanged(error) || attempt === 2) throw error;
-          invalidateSynchronizedSize();
-        }
-      }
-    }).catch(error => {
+        return finalUpdate;
+      },
+      send: finalUpdate => inv('terminal_selection_finish', {
+        name: pane.session, token: currentToken,
+        ...finalUpdate.dimensions,
+      }),
+      invalidate: invalidateSynchronizedSize,
+    }).then(status => {
+      if (currentToken !== token || disposed || model.snapshot().generation !== generation) return;
+      lastStatus = status;
+      frozen = true;
+      sev('finish-ok', selectionStatusRows(status));
+      renderOverlay();
+      if (onModeChange) onModeChange(true, lastStatus, { dragging: false, frozen: true });
+    })).catch(error => {
       if (currentToken === token && !disposed) {
-        uev('terminal-copy', copyFailureCode(error));
-        sev('finish-failed', finishFailureReason(error));
+        uev('terminal-copy', selectionCopyFailureCode(error));
+        sev('finish-failed', selectionFinishFailureReason(error));
         cancel(false, null);
         toast(t('error.selectionChanged'));
       }
@@ -593,7 +543,7 @@ function terminalSelectionController(pane, onModeChange) {
       if (!selected || token !== copyToken || disposed) return null;
       return result.text;
     } catch (error) {
-      uev('terminal-copy', copyFailureCode(error));
+      uev('terminal-copy', selectionCopyFailureCode(error));
       throw error;
     }
   };
@@ -630,7 +580,7 @@ function terminalSelectionController(pane, onModeChange) {
           || model.snapshot().generation !== generation) return false;
       lastStatus = status;
       frozen = true;
-      sev('freeze-ok', statusRows(status));
+      sev('freeze-ok', selectionStatusRows(status));
       pane.term.clearSelection();
       renderOverlay();
       return true;
@@ -723,9 +673,7 @@ function terminalSelectionController(pane, onModeChange) {
     status: () => lastStatus,
     ownership: () => ({
       ...ownerTrace,
-      owner: gesture?.promoted ? 'drag-selection'
-        : gesture ? 'pointer-pending'
-          : selected ? 'frozen-selection' : 'xterm',
+      owner: selectionOwnerLabel({ promoted: !!gesture?.promoted, pending: !!gesture, selected }),
       xtermSelection: !!pane.term.hasSelection?.(),
       frozen,
     }),

@@ -15,6 +15,9 @@ import {
   isComposingKeyEvent, isPlainShiftKeydown, shouldRouteImeKeydownThroughInput,
   AGENT_HISTORY_VERTICAL_UP, terminalAgentComposerGeometry, terminalAgentHistoryUpRoute,
   terminalNativeSelectionCells, terminalSelectionOverlayRows, terminalSelectionWheelRoute,
+  terminalSelectionOverlayBands, terminalCellAt, selectionEdgeScrollLines, selectionStatusRows,
+  selectionOwnerLabel, selectionCopyFailureCode, selectionFinishFailureReason, selectionDimensionsChanged,
+  retryOnStaleGrid, isTerminalAutoReply, terminalLinkRanges, scrollResultView,
   tokenizeTerminalLinks,
   createTerminalWheelAccumulator, createTerminalWheelFrameScheduler, terminalWheelLines,
   linkMenuItems,
@@ -920,4 +923,125 @@ test('renaming or deleting a template counts the inbound rules that name it', ()
   assert.equal(inboundRulesUsingTemplate(rules, 'P1', 'release'), 1);
   assert.equal(inboundRulesUsingTemplate(rules, 'P1', 'unused'), 0);
   assert.equal(inboundRulesUsingTemplate(null, 'P1', 'morning'), 0);
+});
+
+/* ---------- selection / terminal-input helpers extracted from the WKWebView-bound modules ---------- */
+
+test('terminalCellAt clamps a client point into the public screen grid', () => {
+  const rect = { left: 100, top: 50, right: 300, bottom: 250, width: 200, height: 200 };
+  assert.deepEqual(terminalCellAt({ rect, rows: 10, cols: 20, clientX: 105, clientY: 55 }),
+    { row: 0, col: 0, rect });
+  assert.deepEqual(terminalCellAt({ rect, rows: 10, cols: 20, clientX: 299, clientY: 249 }).row, 9);
+  assert.equal(terminalCellAt({ rect, rows: 10, cols: 20, clientX: 5000, clientY: -5 }).col, 19,
+    'outside the rect lands on the nearest edge cell');
+  assert.equal(terminalCellAt({ rect, rows: 10, cols: 20, clientX: 5000, clientY: -5 }).row, 0);
+  assert.equal(terminalCellAt({ rect: { ...rect, width: 0 }, rows: 10, cols: 20, clientX: 1, clientY: 1 }), null);
+  assert.equal(terminalCellAt({ rect, rows: 0, cols: 20, clientX: 1, clientY: 1 }), null);
+});
+
+test('overlay bands are pixel spans of the visible lease rows only', () => {
+  const rect = { width: 400, height: 200 };
+  const status = {
+    selection_start_row: 98, selection_start_col: 2, selection_end_row: 101, selection_end_col: 3,
+    history_rows: 100, scroll_position: 0,
+  };
+  const bands = terminalSelectionOverlayBands({ status, rect, rows: 10, cols: 40 });
+  assert.deepEqual(bands.map(b => b.absoluteRow), [100, 101], 'rows above the viewport are not drawn');
+  assert.deepEqual(bands[0], { absoluteRow: 100, left: 0, top: 0, width: 400, height: 20 });
+  assert.deepEqual(bands[1], { absoluteRow: 101, left: 0, top: 20, width: 30, height: 20 });
+  assert.deepEqual(terminalSelectionOverlayBands({ status: null, rect, rows: 10, cols: 40 }), []);
+  assert.deepEqual(terminalSelectionOverlayBands({ status, rect: null, rows: 10, cols: 40 }), []);
+});
+
+test('edge scrolling stops at the end tmux already reached', () => {
+  const cell = { rect: { top: 100, bottom: 500 } };
+  assert.ok(selectionEdgeScrollLines({ pointerY: 90, cell, status: { at_top: false } }) < 0);
+  assert.equal(selectionEdgeScrollLines({ pointerY: 90, cell, status: { at_top: true } }), 0);
+  assert.ok(selectionEdgeScrollLines({ pointerY: 520, cell, status: { at_bottom: false } }) > 0);
+  assert.equal(selectionEdgeScrollLines({ pointerY: 520, cell, status: { at_bottom: true } }), 0);
+  assert.equal(selectionEdgeScrollLines({ pointerY: 300, cell, status: null }), 0, 'middle of the screen');
+  assert.equal(selectionEdgeScrollLines({ pointerY: 90, cell: null, status: null }), 0);
+});
+
+test('selection status rows, owner label and closed failure codes', () => {
+  assert.equal(selectionStatusRows({ selection_start_row: 7, selection_end_row: 3 }), 5);
+  assert.equal(selectionStatusRows(null), 0);
+  assert.equal(selectionOwnerLabel({ promoted: true, pending: true, selected: true }), 'drag-selection');
+  assert.equal(selectionOwnerLabel({ promoted: false, pending: true, selected: false }), 'pointer-pending');
+  assert.equal(selectionOwnerLabel({ promoted: false, pending: false, selected: true }), 'frozen-selection');
+  assert.equal(selectionOwnerLabel({ promoted: false, pending: false, selected: false }), 'xterm');
+  assert.equal(selectionCopyFailureCode(new Error('x selection-missing-inactive')), 'selection-missing');
+  assert.equal(selectionCopyFailureCode('anything else'), 'snapshot-failed');
+  assert.equal(selectionFinishFailureReason('… selection-missing-inactive'), 1);
+  assert.equal(selectionFinishFailureReason('… selection-missing-cleared'), 2);
+  assert.equal(selectionFinishFailureReason(null), 0);
+  assert.equal(selectionDimensionsChanged(new Error('selection-dimensions-changed')), true);
+  assert.equal(selectionDimensionsChanged('selection-missing'), false);
+});
+
+test('retryOnStaleGrid retries only a stale-grid rejection of the send step', async () => {
+  const log = [];
+  let rejections = 2;
+  const result = await retryOnStaleGrid({
+    prepare: async () => { log.push('prepare'); return 'grid'; },
+    send: async grid => {
+      log.push(`send:${grid}`);
+      if (rejections-- > 0) throw new Error('selection-dimensions-changed');
+      return 'ok';
+    },
+    invalidate: () => log.push('invalidate'),
+  });
+  assert.equal(result, 'ok');
+  assert.deepEqual(log, ['prepare', 'send:grid', 'invalidate', 'prepare', 'send:grid', 'invalidate', 'prepare', 'send:grid']);
+
+  await assert.rejects(retryOnStaleGrid({
+    prepare: async () => 'grid',
+    send: async () => { throw new Error('selection-dimensions-changed'); },
+    invalidate: () => {},
+  }), /selection-dimensions-changed/, 'the third stale rejection is final');
+
+  let sends = 0;
+  await assert.rejects(retryOnStaleGrid({
+    prepare: async () => 'grid',
+    send: async () => { sends++; throw new Error('selection-missing'); },
+    invalidate: () => assert.fail('never invalidates on another error'),
+  }), /selection-missing/);
+  assert.equal(sends, 1);
+
+  await assert.rejects(retryOnStaleGrid({
+    prepare: async () => { throw new Error('selection-dimensions-changed'); },
+    send: async () => assert.fail('prepare failures are final'),
+    invalidate: () => assert.fail('and never invalidate'),
+  }), /selection-dimensions-changed/);
+});
+
+test('terminal auto-replies are recognised; user bytes are not', () => {
+  for (const reply of ['\x1b[?1;2c', '\x1b[>0;276;0c', '\x1b[12;40R', '\x1b[I', '\x1b[O',
+    '\x1b]10;rgb:ffff/ffff/ffff\x07', '\x1bP1$r0 q\x1b\\', '\x1b[?1;2c\x1b[12;40R'])
+    assert.equal(isTerminalAutoReply(reply), true, JSON.stringify(reply));
+  for (const typed of ['ls\r', '\x1b[A', '\x1b', 'a\x1b[?1;2c', '\x1b[?1;2cx', ''])
+    assert.equal(isTerminalAutoReply(typed), false, JSON.stringify(typed));
+});
+
+test('link ranges keep confirmed paths and URLs on the rows the line covers', () => {
+  const positions = [];
+  for (let i = 0; i < 12; i++) positions.push({ x: (i % 6) + 1, endX: (i % 6) + 1, y: Math.floor(i / 6) });
+  const url = { kind: 'url', value: 'http://a', index: 0 };   // cells 0..7 → rows 0 and 1
+  const good = { kind: 'path', value: 'ok', index: 9 };       // row 1
+  const bad = { kind: 'path', value: 'no', index: 9 };
+  const cut = { kind: 'url', value: 'http://zzzz', index: 6 }; // runs past the known cells
+  const validPaths = new Map([[good, true], [bad, false]]);
+  const row0 = terminalLinkRanges({ matches: [url, good, bad, cut], positions, lineNo: 0, validPaths });
+  assert.deepEqual(row0.map(l => l.text), ['http://a'], 'the path lives on row 1, the cut match has no end cell');
+  assert.deepEqual(row0[0], { range: { start: { x: 1, y: 0 }, end: { x: 2, y: 1 } }, text: 'http://a', kind: 'url' });
+  const row1 = terminalLinkRanges({ matches: [url, good, bad], positions, lineNo: 1, validPaths });
+  assert.deepEqual(row1.map(l => l.text), ['http://a', 'ok'], 'a wrapped URL is offered on every row it spans');
+  assert.deepEqual(terminalLinkRanges({ matches: [url], positions, lineNo: 2, validPaths }), []);
+});
+
+test('scroll replies read the same way whether boolean or status object', () => {
+  assert.deepEqual(scrollResultView(true), { inMode: true, cursorVisible: true });
+  assert.deepEqual(scrollResultView(false), { inMode: false, cursorVisible: true });
+  assert.deepEqual(scrollResultView({ active: true, cursor_visible: false }), { inMode: true, cursorVisible: false });
+  assert.deepEqual(scrollResultView(null), { inMode: undefined, cursorVisible: undefined });
 });

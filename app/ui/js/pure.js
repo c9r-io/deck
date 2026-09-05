@@ -686,6 +686,120 @@ export function terminalSelectionOverlayRows({
   return out;
 }
 
+/** Pixel bands for the settled selection overlay: one per visible row of the
+ * immutable lease, derived only from public geometry (screen rect, grid). */
+export function terminalSelectionOverlayBands({ status, rect, rows, cols }) {
+  if (!status || !rect || !(rows > 0) || !(cols > 0)) return [];
+  const spans = terminalSelectionOverlayRows({
+    startRow: status.selection_start_row, startCol: status.selection_start_col,
+    endRow: status.selection_end_row, endCol: status.selection_end_col,
+    viewportTop: status.history_rows - status.scroll_position, rows, cols,
+  });
+  const cellWidth = rect.width / cols;
+  const cellHeight = rect.height / rows;
+  return spans.map(span => ({
+    absoluteRow: span.absoluteRow,
+    left: span.col * cellWidth, top: span.row * cellHeight,
+    width: span.width * cellWidth, height: cellHeight,
+  }));
+}
+
+/** The terminal cell under a client point, clamped into the screen rect;
+ * null when the screen has no geometry yet. */
+export function terminalCellAt({ rect, rows, cols, clientX, clientY }) {
+  if (!rect || !rect.width || !rect.height || !(rows > 0) || !(cols > 0)) return null;
+  const x = Math.max(rect.left, Math.min(rect.right - 0.01, clientX));
+  const y = Math.max(rect.top, Math.min(rect.bottom - 0.01, clientY));
+  return {
+    row: Math.max(0, Math.min(rows - 1, Math.floor((y - rect.top) / (rect.height / rows)))),
+    col: Math.max(0, Math.min(cols - 1, Math.floor((x - rect.left) / (rect.width / cols)))),
+    rect,
+  };
+}
+
+/** Edge-scroll lines for a promoted drag: the hot-zone amount, or 0 when the
+ * pointer is not in a hot zone or tmux already sits at that end of history. */
+export function selectionEdgeScrollLines({ pointerY, cell, status }) {
+  if (!cell?.rect) return 0;
+  const edge = terminalSelectionEdgeLines({ pointerY, top: cell.rect.top, bottom: cell.rect.bottom });
+  const stopped = edge < 0 ? !!status?.at_top : edge > 0 ? !!status?.at_bottom : false;
+  return !edge || stopped ? 0 : edge;
+}
+
+export const selectionStatusRows = status => (status
+  ? Math.abs(status.selection_end_row - status.selection_start_row) + 1
+  : 0);
+
+export const selectionOwnerLabel = ({ promoted, pending, selected }) => (promoted ? 'drag-selection'
+  : pending ? 'pointer-pending'
+    : selected ? 'frozen-selection' : 'xterm');
+
+/* Closed reason codes derived from the backend's error SUFFIXES, never from
+   error text, so they are safe to log. */
+export const selectionCopyFailureCode = error => (String(error || '').includes('selection-missing')
+  ? 'selection-missing' : 'snapshot-failed');
+/** `finish-failed` reason for the log's `a` slot: 1 = the pane had left tmux
+ * copy-mode, 2 = copy-mode survived but its selection was cleared, 0 = else. */
+export const selectionFinishFailureReason = error => {
+  const value = String(error || '');
+  if (value.includes('selection-missing-inactive')) return 1;
+  if (value.includes('selection-missing-cleared')) return 2;
+  return 0;
+};
+export const selectionDimensionsChanged = error => String(error || '').includes('selection-dimensions-changed');
+
+/** Run one grid-bound selection command. `prepare` (size sync, cell lookup)
+ * fails fast; `send` is retried after `invalidate` while the backend rejects
+ * stale dimensions, at most `attempts` times. Every other error is final. */
+export async function retryOnStaleGrid({ prepare, send, invalidate, attempts = 3 }) {
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    const prepared = await prepare();
+    try {
+      return await send(prepared);
+    } catch (error) {
+      if (!selectionDimensionsChanged(error) || attempt === attempts - 1) throw error;
+      invalidate();
+    }
+  }
+  throw new Error('selection-dimensions-changed');
+}
+
+/* xterm auto-answers terminal queries through onData. Those are not user
+   input — without this filter they desync the input mirror on every attach,
+   and the first command typed after attaching is never captured:
+   - CSI with a ?/> prefix (DA1/DA2, DECRPM `$y`, mode reports …) — user keys
+     never carry those prefixes
+   - DSR cursor reports `ESC[..R`, focus events `ESC[I`/`ESC[O`
+   - OSC / DCS responses */
+const TERMINAL_AUTO_REPLY = /^(?:\x1b\[[?>][0-9;$]*[a-zA-Z]|\x1b\[[0-9;]*R|\x1b\[[IO]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1bP[^\x1b]*\x1b\\)+$/;
+export const isTerminalAutoReply = data => TERMINAL_AUTO_REPLY.test(data);
+
+/** Link ranges for one xterm buffer line: every tokenized match whose start
+ * and end cells are known, restricted to the rows that line covers; path
+ * candidates the backend did not confirm are dropped. */
+export function terminalLinkRanges({ matches, positions, lineNo, validPaths }) {
+  const links = [];
+  for (const match of matches) {
+    if (match.kind === 'path' && !validPaths.get(match)) continue;
+    const start = positions[match.index];
+    const end = positions[match.index + match.value.length - 1];
+    if (!start || !end) continue;
+    if (lineNo < start.y || lineNo > end.y) continue;
+    links.push({
+      range: { start: { x: start.x, y: start.y }, end: { x: end.endX, y: end.y } },
+      text: match.value, kind: match.kind,
+    });
+  }
+  return links;
+}
+
+/** A scroll command's reply as the pane chrome reads it: `scroll_session`
+ * answers a boolean, selection scrolls answer a status object. */
+export const scrollResultView = result => ({
+  inMode: typeof result === 'object' ? result?.active : result,
+  cursorVisible: typeof result === 'object' ? result?.cursor_visible : true,
+});
+
 /** Normalize browser wheel units into fractional terminal lines. */
 export function terminalWheelLines(deltaY, deltaMode, rows, pixelsPerLine = 14) {
   if (![deltaY, deltaMode, rows, pixelsPerLine].every(Number.isFinite)
