@@ -311,16 +311,18 @@ const HELPER_NAME: &str = "deck-status-helper";
 /// One deck hook: (event, optional matcher, state word).
 type HookSpec = (&'static str, Option<&'static str>, &'static str);
 
-/// Claude Code: `Notification` matches only the attention-worthy kinds;
-/// `Stop` does not fire on user interrupt (documented behavior) — foreground
-/// reconciliation and the next `UserPromptSubmit` heal that gap.
+/// Claude Code: `Notification` matches ONLY `permission_prompt` — a question
+/// raised in the middle of a turn, which is the whole meaning of
+/// "needs-input". `idle_prompt` is deliberately NOT matched: Claude Code
+/// fires it ~60s after the prompt goes idle, so every finished card decayed
+/// from "done" into "needs-input" a minute later and the attention colour
+/// stopped meaning anything. An idle prompt after a turn is `turn-done`,
+/// which is already on screen. `Stop` does not fire on user interrupt
+/// (documented behavior) — foreground reconciliation and the next
+/// `UserPromptSubmit` heal that gap.
 const CLAUDE_HOOKS: &[HookSpec] = &[
     ("UserPromptSubmit", None, "working"),
-    (
-        "Notification",
-        Some("permission_prompt|idle_prompt"),
-        "needs-input",
-    ),
+    ("Notification", Some("permission_prompt"), "needs-input"),
     ("Stop", None, "turn-done"),
 ];
 
@@ -378,30 +380,68 @@ fn entry_is_ours(entry: &serde_json::Value) -> bool {
     entry_commands(entry).any(command_is_ours)
 }
 
-/// Every deck-authored command in the document names exactly `helper` in
-/// the agent's current `style`. False for a legacy `~/.deck/bin` entry, a
-/// bundle that has since moved, or a shell-form entry where exec form is
-/// expected — each of which boot migration repairs.
-pub(crate) fn hooks_reference(root: &serde_json::Value, helper: &str, style: HookStyle) -> bool {
-    let prefix = format!("\"{helper}\" ");
-    let current = |command: &str| match style {
-        HookStyle::Exec => command == helper,
-        HookStyle::ShellAsync => command.starts_with(&prefix),
+/// The complete document entry one spec must produce.
+fn spec_entry(
+    style: HookStyle,
+    helper: &str,
+    source: &str,
+    (_, matcher, state): &HookSpec,
+) -> serde_json::Value {
+    let mut entry = serde_json::json!({ "hooks": [hook_value(style, helper, source, state)] });
+    if let Some(matcher) = matcher {
+        entry["matcher"] = serde_json::json!(matcher);
+    }
+    entry
+}
+
+/// deck's entries in this document are EXACTLY what the current specs
+/// describe: one entry per spec event, byte-identical matcher, helper path,
+/// style and arguments, and no deck entry left under an event the specs no
+/// longer name. `hooks_installed` only asks whether SOME deck entry exists
+/// per event, so it cannot see a spec change — a narrowed matcher, a moved
+/// bundle, a legacy `~/.deck/bin` path, a shell-form entry where exec form
+/// is expected. This is the predicate boot migration repairs against.
+pub(crate) fn hooks_are_current(
+    root: &serde_json::Value,
+    specs: &[HookSpec],
+    source: &str,
+    style: HookStyle,
+    helper: &str,
+) -> bool {
+    let Some(hooks) = root.get("hooks").and_then(|h| h.as_object()) else {
+        return false;
     };
-    root.get("hooks")
-        .and_then(|h| h.as_object())
-        .into_iter()
-        .flat_map(|hooks| hooks.values())
-        .filter_map(|list| list.as_array())
-        .flatten()
-        .flat_map(entry_commands)
-        .filter(|command| command_is_ours(command))
-        .all(current)
+    let ours = |list: &serde_json::Value| {
+        list.as_array()
+            .into_iter()
+            .flatten()
+            .filter(|entry| entry_is_ours(entry))
+            .count()
+    };
+    // nothing of ours under a retired event
+    if hooks
+        .iter()
+        .any(|(event, list)| !specs.iter().any(|(e, _, _)| e == event) && ours(list) > 0)
+    {
+        return false;
+    }
+    specs.iter().all(|spec| {
+        let Some(list) = hooks.get(spec.0).and_then(|l| l.as_array()) else {
+            return false;
+        };
+        let mut mine = list.iter().filter(|entry| entry_is_ours(entry));
+        let Some(entry) = mine.next() else {
+            return false;
+        };
+        mine.next().is_none() && *entry == spec_entry(style, helper, source, spec)
+    })
 }
 
 /// Add deck's hook entries to a parsed hooks document. Everything the user
-/// wrote — other hooks, unknown keys, other events — is preserved; only
-/// entries carrying the helper marker are replaced, in the agent's `style`.
+/// wrote — other hooks, unknown keys, other events — is preserved; every
+/// entry carrying the helper marker is dropped first (document-wide, so an
+/// event a previous deck version registered and this one no longer does
+/// cannot linger) and the current specs are written in the agent's `style`.
 pub(crate) fn hooks_with_install(
     mut root: serde_json::Value,
     specs: &[HookSpec],
@@ -417,18 +457,29 @@ pub(crate) fn hooks_with_install(
         .or_insert_with(|| serde_json::json!({}))
         .as_object_mut()
         .ok_or("the hooks key is not a JSON object")?;
-    for (event, matcher, state) in specs {
+    let mut emptied = Vec::new();
+    for (event, list) in hooks.iter_mut() {
+        let Some(list) = list.as_array_mut() else {
+            continue;
+        };
+        let before = list.len();
+        list.retain(|entry| !entry_is_ours(entry));
+        if list.is_empty() && before > 0 {
+            emptied.push(event.clone());
+        }
+    }
+    // an event only this document's deck entry populated leaves no husk —
+    // but an empty array the USER wrote is left exactly as written
+    for event in emptied {
+        hooks.remove(&event);
+    }
+    for spec in specs {
         let list = hooks
-            .entry(*event)
+            .entry(spec.0)
             .or_insert_with(|| serde_json::json!([]))
             .as_array_mut()
             .ok_or("a hook event entry is not a JSON array")?;
-        list.retain(|entry| !entry_is_ours(entry));
-        let mut entry = serde_json::json!({ "hooks": [hook_value(style, helper, source, state)] });
-        if let Some(matcher) = matcher {
-            entry["matcher"] = serde_json::json!(matcher);
-        }
-        list.push(entry);
+        list.push(spec_entry(style, helper, source, spec));
     }
     Ok(root)
 }
@@ -585,11 +636,15 @@ fn agent_modules() -> [AgentModule; 2] {
     ]
 }
 
-/// Boot migration, the one write outside the Settings toggle: when hooks
-/// are installed but name a helper other than this install's (the legacy
-/// `~/.deck/bin` copy, or a bundle that moved), rewrite ONLY deck's entries
-/// to the current bundle path, then delete the legacy copy once nothing
-/// references it. A non-release build returns before reading anything.
+/// Boot migration, the one write outside the Settings toggle: when hooks are
+/// installed but are not what the CURRENT spec describes — a helper other
+/// than this install's (the legacy `~/.deck/bin` copy, or a bundle that
+/// moved), a matcher this deck version narrowed, an event it retired —
+/// rewrite ONLY deck's entries, then delete the legacy copy once nothing
+/// references it. Comparing the whole entry is what lets a spec change
+/// (`permission_prompt|idle_prompt` → `permission_prompt`) reach users who
+/// enabled the toggle under an older version without touching it again.
+/// A non-release build returns before reading anything.
 pub(crate) fn migrate_hooks_on_boot() {
     let Ok(helper) = installed_helper_path() else {
         return;
@@ -603,14 +658,14 @@ pub(crate) fn migrate_hooks_on_boot() {
         if !hooks_installed(&value, specs) {
             continue;
         }
-        if hooks_reference(&value, &helper, style) {
+        if hooks_are_current(&value, specs, source, style, &helper) {
             continue;
         }
         let result = hooks_with_install(value.clone(), specs, source, style, &helper)
             .and_then(|next| write_hooks(&path, &next, never_ran));
         match result {
             Ok(()) => applog(&format!(
-                "[agent-hooks] {source} re-pointed at the bundled helper"
+                "[agent-hooks] {source} entries rewritten to the current spec"
             )),
             Err(e) => {
                 legacy_referenced |= serde_json::to_string(&value)
@@ -981,9 +1036,11 @@ mod tests {
         );
         assert_eq!(submit["type"], "command");
         assert!(submit.get("async").is_none());
+        // only a mid-turn permission question is "needs-input"; an idle
+        // prompt after a finished turn stays turn-done
         assert_eq!(
             installed["hooks"]["Notification"][0]["matcher"],
-            "permission_prompt|idle_prompt"
+            "permission_prompt"
         );
 
         // installing twice does not duplicate
@@ -1034,7 +1091,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_home_copy_entries_are_ours_and_get_re_pointed_at_the_bundle() {
+    fn stale_entries_are_ours_and_get_rewritten_to_the_current_spec() {
         let legacy_command =
             |state: &str| format!("\"$HOME/.deck/bin/deck-status-helper\" claude-code {state}");
         let legacy = serde_json::json!({
@@ -1048,9 +1105,16 @@ mod tests {
                 ]
             }
         });
-        // a legacy install still reads as installed, but not as current
+        // a legacy install still reads as installed, but not as current:
+        // the helper path is stale AND the matcher predates the narrowing
         assert!(hooks_installed(&legacy, CLAUDE_HOOKS));
-        assert!(!hooks_reference(&legacy, HELPER, HookStyle::Exec));
+        assert!(!hooks_are_current(
+            &legacy,
+            CLAUDE_HOOKS,
+            "claude-code",
+            HookStyle::Exec,
+            HELPER
+        ));
 
         // migration = the ordinary install over the legacy document
         let migrated = hooks_with_install(
@@ -1061,17 +1125,35 @@ mod tests {
             HELPER,
         )
         .unwrap();
-        assert!(hooks_reference(&migrated, HELPER, HookStyle::Exec));
+        assert!(hooks_are_current(
+            &migrated,
+            CLAUDE_HOOKS,
+            "claude-code",
+            HookStyle::Exec,
+            HELPER
+        ));
         assert_eq!(migrated["model"], "opus");
         assert_eq!(migrated["hooks"]["Stop"].as_array().unwrap().len(), 2);
         let text = serde_json::to_string(&migrated).unwrap();
         assert!(!text.contains(".deck/bin"), "no legacy path survives");
         assert!(text.contains(HELPER));
+        // the stale wide matcher is gone — an idle prompt no longer decays a
+        // finished card into "needs-input"
+        assert_eq!(
+            migrated["hooks"]["Notification"][0]["matcher"],
+            "permission_prompt"
+        );
 
         // a bundle that moved is equally not current
         let moved = "/Users/x/Applications/deck.app/Contents/MacOS/deck-status-helper";
-        assert!(!hooks_reference(&migrated, moved, HookStyle::Exec));
-        assert!(hooks_reference(
+        assert!(!hooks_are_current(
+            &migrated,
+            CLAUDE_HOOKS,
+            "claude-code",
+            HookStyle::Exec,
+            moved
+        ));
+        assert!(hooks_are_current(
             &hooks_with_install(
                 migrated.clone(),
                 CLAUDE_HOOKS,
@@ -1080,8 +1162,10 @@ mod tests {
                 moved
             )
             .unwrap(),
-            moved,
-            HookStyle::Exec
+            CLAUDE_HOOKS,
+            "claude-code",
+            HookStyle::Exec,
+            moved
         ));
 
         // a shell-form entry with the right path is not current for Claude
@@ -1094,8 +1178,20 @@ mod tests {
             HELPER,
         )
         .unwrap();
-        assert!(!hooks_reference(&shell_form, HELPER, HookStyle::Exec));
-        assert!(hooks_reference(&shell_form, HELPER, HookStyle::ShellAsync));
+        assert!(!hooks_are_current(
+            &shell_form,
+            CLAUDE_HOOKS,
+            "claude-code",
+            HookStyle::Exec,
+            HELPER
+        ));
+        assert!(hooks_are_current(
+            &shell_form,
+            CLAUDE_HOOKS,
+            "claude-code",
+            HookStyle::ShellAsync,
+            HELPER
+        ));
         let exec_form = hooks_with_install(
             shell_form,
             CLAUDE_HOOKS,
@@ -1104,15 +1200,132 @@ mod tests {
             HELPER,
         )
         .unwrap();
-        assert!(hooks_reference(&exec_form, HELPER, HookStyle::Exec));
+        assert!(hooks_are_current(
+            &exec_form,
+            CLAUDE_HOOKS,
+            "claude-code",
+            HookStyle::Exec,
+            HELPER
+        ));
         assert!(!serde_json::to_string(&exec_form).unwrap().contains("\\\""));
 
         // uninstall removes legacy and current entries alike
         let removed = hooks_with_uninstall(legacy);
         assert_eq!(removed["hooks"]["Stop"].as_array().unwrap().len(), 1);
         assert!(!hooks_installed(&removed, CLAUDE_HOOKS));
-        // a document with no deck entries is trivially current
-        assert!(hooks_reference(&removed, HELPER, HookStyle::Exec));
+    }
+
+    /// Boot migration rewrites whenever the document is not current, so
+    /// install's OWN output must be current for every module — otherwise
+    /// deck would rewrite the user's agent config on every launch. One
+    /// spec event carrying two specs is exactly how that would happen.
+    #[test]
+    fn installing_any_module_leaves_a_document_the_migration_will_not_touch() {
+        for (specs, source, style) in [
+            (CLAUDE_HOOKS, "claude-code", HookStyle::Exec),
+            (CODEX_HOOKS, "codex", HookStyle::ShellAsync),
+        ] {
+            let mut events: Vec<&str> = specs.iter().map(|(e, _, _)| *e).collect();
+            events.sort_unstable();
+            let unique = events.len();
+            events.dedup();
+            assert_eq!(events.len(), unique, "{source}: one spec per event");
+
+            let doc = hooks_with_install(
+                serde_json::json!({ "model": "opus" }),
+                specs,
+                source,
+                style,
+                HELPER,
+            )
+            .unwrap();
+            assert!(hooks_installed(&doc, specs), "{source}");
+            assert!(
+                hooks_are_current(&doc, specs, source, style, HELPER),
+                "{source}: a fresh install must not be stale"
+            );
+        }
+    }
+
+    /// The migration's whole point after 0.5.13: a user who enabled the
+    /// toggle under an older spec gets the narrowed matcher without touching
+    /// the Settings switch, and a retired event leaves nothing behind.
+    #[test]
+    fn a_spec_change_alone_makes_installed_hooks_stale() {
+        let current = hooks_with_install(
+            serde_json::json!({}),
+            CLAUDE_HOOKS,
+            "claude-code",
+            HookStyle::Exec,
+            HELPER,
+        )
+        .unwrap();
+        let is_current = |doc: &serde_json::Value| {
+            hooks_are_current(doc, CLAUDE_HOOKS, "claude-code", HookStyle::Exec, HELPER)
+        };
+        assert!(is_current(&current));
+
+        // same helper, same events, only the matcher predates the narrowing
+        let mut wide = current.clone();
+        wide["hooks"]["Notification"][0]["matcher"] =
+            serde_json::json!("permission_prompt|idle_prompt");
+        assert!(hooks_installed(&wide, CLAUDE_HOOKS), "still installed");
+        assert!(!is_current(&wide), "a matcher change is a stale install");
+        assert!(is_current(
+            &hooks_with_install(wide, CLAUDE_HOOKS, "claude-code", HookStyle::Exec, HELPER)
+                .unwrap()
+        ));
+
+        // an event this deck version no longer registers: not current, and
+        // install drops the husk instead of leaving a dead hook behind
+        let mut retired = current.clone();
+        retired["hooks"]["SessionStart"] = serde_json::json!([spec_entry(
+            HookStyle::Exec,
+            HELPER,
+            "claude-code",
+            &("SessionStart", None, "working")
+        )]);
+        assert!(!is_current(&retired));
+        let repaired = hooks_with_install(
+            retired,
+            CLAUDE_HOOKS,
+            "claude-code",
+            HookStyle::Exec,
+            HELPER,
+        )
+        .unwrap();
+        assert!(is_current(&repaired));
+        assert!(repaired["hooks"].get("SessionStart").is_none());
+        assert_eq!(repaired, current);
+
+        // a duplicate deck entry (a hand-edited file) is stale, and install
+        // collapses it back to exactly one
+        let mut doubled = current.clone();
+        let entry = doubled["hooks"]["Stop"][0].clone();
+        doubled["hooks"]["Stop"].as_array_mut().unwrap().push(entry);
+        assert!(!is_current(&doubled));
+        assert_eq!(
+            hooks_with_install(
+                doubled,
+                CLAUDE_HOOKS,
+                "claude-code",
+                HookStyle::Exec,
+                HELPER
+            )
+            .unwrap(),
+            current
+        );
+
+        // an EMPTY array the user wrote is theirs — install never prunes it
+        let user_empty = hooks_with_install(
+            serde_json::json!({ "hooks": { "PreToolUse": [] } }),
+            CLAUDE_HOOKS,
+            "claude-code",
+            HookStyle::Exec,
+            HELPER,
+        )
+        .unwrap();
+        assert_eq!(user_empty["hooks"]["PreToolUse"], serde_json::json!([]));
     }
 
     #[test]

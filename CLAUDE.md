@@ -286,9 +286,15 @@ Frontend gates: `node --check` (syntax) · `ui/test/*.mjs` (node:test)
   ad-hoc-signed binary that Claude Code then executed on every event. Only
   a release-location install can enable hooks; dev/smoke builds get an
   error and never touch agent config. `migrate_hooks_on_boot` (release
-  installs only) re-points installed entries that name another helper
-  (legacy copy, moved bundle) and deletes the legacy copy once nothing
-  references it. Hooks inherit `$TMUX`/`$TMUX_PANE`; the helper
+  installs only) rewrites installed entries that are not what the CURRENT
+  spec describes — `hooks_are_current` compares the WHOLE entry (event,
+  matcher, helper path, style, args) and rejects a deck entry left under a
+  retired event, so a spec change (a narrowed matcher, a moved bundle, the
+  legacy copy) reaches users who enabled the toggle under an older version
+  without them touching the switch; installed-ness alone (`hooks_installed`)
+  cannot see that. It also deletes the legacy copy once nothing references
+  it. Install strips deck's entries document-wide before writing the specs,
+  but an EMPTY array the user wrote is left exactly as written. Hooks inherit `$TMUX`/`$TMUX_PANE`; the helper
   drains and DISCARDS the hook stdin payload, charset-validates every field,
   and writes one JSON line to the instance's `status.sock` (0600) — routed
   per pane by `DECK_STATUS_SOCK`, which each deck exports into its own tmux
@@ -305,7 +311,7 @@ Frontend gates: `node --check` (syntax) · `ui/test/*.mjs` (node:test)
   (card statuses `attention`/`done`; a working agent never shows amber). The
   Settings toggle is the user-driven writer of `~/.claude/settings.json`
   (three entries: UserPromptSubmit→working, Notification matcher
-  `permission_prompt|idle_prompt`→needs-input, Stop→turn-done, written in
+  `permission_prompt` ONLY→needs-input, Stop→turn-done, written in
   Claude Code's EXEC form — bare helper path in `command`, words in
   `args` — so Claude Code spawns the signed helper directly and no `sh -c`
   runs per event; Codex stays shell-form + `async`, exec form being
@@ -315,7 +321,12 @@ Frontend gates: `node --check` (syntax) · `ui/test/*.mjs` (node:test)
   preserve everything else including file mode, and never modify a malformed
   file. The toggle state is DERIVED from that file — never stored twice.
   Claude Code's Stop does not fire on Esc-interrupt; foreground
-  reconciliation and the next UserPromptSubmit heal that. The Codex module
+  reconciliation and the next UserPromptSubmit heal that. `idle_prompt` is
+  deliberately NOT matched: Claude Code fires it ~60s after the prompt goes
+  idle, so EVERY finished card decayed from `done` into `attention` a minute
+  later and the attention colour stopped meaning anything. needs-input means
+  a question raised DURING a turn; an idle prompt after a turn is `turn-done`,
+  which is already on screen. The Codex module
   uses lifecycle hooks in `$CODEX_HOME/hooks.json` (same document shape as
   Claude's, so ONE marker-based JSON merge engine serves both via per-agent
   spec tables): UserPromptSubmit→working, PermissionRequest→needs-input,
