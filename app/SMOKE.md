@@ -12,9 +12,9 @@ injection, poll formats); `scripts/ui-tests` covers the DOM-free modules.
 
 ## Known open regressions
 
-- `ime-routing` reports 5/7 in the full WKWebView smoke on an untouched HEAD
-  build (first seen 2026-09-05). It is a real regression, not a passing gate;
-  the release checklist is not green while this line exists.
+None. When the full WKWebView smoke reports a failing check on an untouched
+HEAD build, record it here with the first-seen date; the release checklist is
+not green while an entry exists.
 
 ## Settings navigation and diagnostic log reset
 

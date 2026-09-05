@@ -48,6 +48,21 @@ test('Command++ still routes when a macOS IME masks the logical key', () => {
   })), null, 'the same IME event without a command modifier remains text input');
 });
 
+test('a composing keydown reaches only the zoom actions, never sidebar or session chords', () => {
+  // The WKWebView smoke (`ime-routing` bit 2) dispatches exactly this event
+  // and expects the sidebar untouched.
+  const composingB = key('b', { keyCode: 229, metaKey: true, isComposing: true });
+  assert.equal(shortcutFromEvent(composingB), 'Meta+KeyB');
+  assert.equal(shortcutActionForEvent(composingB, DEFAULT_SHORTCUTS), null);
+  for (const [k, code] of [['n', 'KeyN'], ['d', 'KeyD']]) {
+    assert.equal(shortcutActionForEvent(key(k, { code, keyCode: 229, metaKey: true }), DEFAULT_SHORTCUTS), null);
+  }
+  assert.equal(shortcutActionForEvent(key('=', { code: 'Equal', keyCode: 229, metaKey: true, isComposing: true }),
+    DEFAULT_SHORTCUTS), 'fontIncrease');
+  assert.equal(shortcutActionForEvent(key('b', { code: 'KeyB', metaKey: true }), DEFAULT_SHORTCUTS), 'toggleSidebar',
+    'the ordinary chord is unaffected');
+});
+
 test('custom shortcut normalization is closed, safe and conflict-aware', () => {
   assert.equal(normalizeShortcutBinding('Meta+Shift+KeyK'), 'Meta+Shift+KeyK');
   assert.equal(normalizeShortcutBinding('Shift+Meta+KeyK', 'fallback'), 'fallback');

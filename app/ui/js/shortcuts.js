@@ -42,6 +42,7 @@ export function shortcutFromEvent(event) {
   // Chinese input sources can report macOS Command++ (Shift+=) as keyCode 229
   // or key=Process. Let a usable physical code reach shortcut matching while
   // continuing to keep unmodified, Shift-only, and Option-only IME input out.
+  // shortcutActionForEvent narrows composing chords to the zoom actions.
   if (isComposingKeyEvent(event) && !event.metaKey && !event.ctrlKey) return null;
   const code = eventCode(event);
   if (!code || /^(?:Meta|Control|Alt|Shift)(?:Left|Right)?$/.test(code)) return null;
@@ -67,7 +68,13 @@ export function shortcutMatches(event, binding) {
 
 export function shortcutActionForEvent(event, bindings = DEFAULT_SHORTCUTS) {
   for (const action of SHORTCUT_ACTIONS) {
-    if (shortcutMatches(event, bindings?.[action.id])) return action.id;
+    if (!shortcutMatches(event, bindings?.[action.id])) continue;
+    // While an IME owns the key (keyCode 229 / isComposing), only the zoom
+    // chords are commands: Chinese input sources report Command++ that way.
+    // Every other chord (⌘B, ⌘N, ⌘D…) stays with the composition, otherwise a
+    // composing keydown would flip the sidebar or open a session mid-preedit.
+    if (isComposingKeyEvent(event) && !FONT_ACTIONS.has(action.id)) return null;
+    return action.id;
   }
   return null;
 }
