@@ -505,6 +505,12 @@ Frontend gates: `node --check` (syntax) · `ui/test/*.mjs` (node:test)
 
 ### WKWebView / Tauri gotchas (each cost a real bug)
 
+- Force Touch can open macOS Look Up on button text despite `user-select:none`.
+  `app.js` cancels `webkitmouseforcewillbegin` for buttons and their descendants;
+  keep ordinary pointer/click events and editable/terminal text untouched.
+  App-surface `contextmenu` cancels WebKit's browser menu without stopping
+  propagation to Deck's own card/project context-menu handlers. Real form
+  fields retain native editing menus; xterm's hidden textarea does not.
 - `body { user-select: none }` makes WebKit refuse keyboard input in any
   textarea/input that inherits it — including xterm's hidden helper textarea
   (symptom: terminal renders, chips inject fine, typing does nothing). Keep the

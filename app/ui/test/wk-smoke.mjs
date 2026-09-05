@@ -1238,6 +1238,7 @@ async function settingsNavigationSmoke() {
 export async function verifySettings() {
   try {
     await settingsNavigationSmoke();
+    await buttonForceTouchSmoke();
     const { openSettings, selectSettingsSection } = await import('../js/dialogs.js');
     const { setLocale } = await import('../js/i18n.js');
     await openSettings();
@@ -1272,11 +1273,64 @@ export async function verifySettings() {
   }
 }
 
+async function buttonForceTouchSmoke() {
+  // Synthetic events verify production DOM routing in WKWebView. The native
+  // Look Up animation itself still needs a physical Force Touch trackpad.
+  const force = target => {
+    const event = new MouseEvent('webkitmouseforcewillbegin', { bubbles: true, cancelable: true });
+    target.dispatchEvent(event);
+    return event.defaultPrevented;
+  };
+  const button = document.createElement('button');
+  button.innerHTML = '<span>Force Touch smoke</span><svg><path /></svg>';
+  $('terminal').appendChild(button);
+  let clicks = 0;
+  button.onclick = () => clicks++;
+  const targets = [...document.querySelectorAll('button'), ...button.querySelectorAll('*')];
+  const blocked = targets.every(force);
+  const ordinary = ['pointerdown', 'mousedown', 'mouseup', 'click'].every(type =>
+    button.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true })));
+  let customMenus = 0;
+  button.oncontextmenu = () => { customMenus++; };
+  const menusBlocked = targets.every(target => [false, true].every(ctrlKey =>
+    !target.dispatchEvent(new MouseEvent('contextmenu', {
+      bubbles: true, cancelable: true, ctrlKey, button: ctrlKey ? 0 : 2,
+    }))));
+  const inputMenuPreserved = $('set-search').dispatchEvent(new MouseEvent('contextmenu', {
+    bubbles: true, cancelable: true,
+  }));
+  const inputPreserved = !force($('set-search'));
+  const terminalPreserved = !force($('terminal'));
+  button.remove();
+  await report('button-force-touch', blocked && ordinary && clicks === 1
+    && inputPreserved && terminalPreserved, targets.length);
+  await report('button-context-menu', menusBlocked && customMenus === 8
+    && inputMenuPreserved, targets.length, customMenus);
+  const surfaceTargets = [document.body, $('terminal'), $('side-list'), $('settings-box')];
+  const surfacesBlocked = surfaceTargets.every(target => !target.dispatchEvent(new MouseEvent('contextmenu', {
+    bubbles: true, cancelable: true,
+  })));
+  const terminalInput = document.createElement('textarea');
+  $('terminal').appendChild(terminalInput);
+  const terminalMenuBlocked = !terminalInput.dispatchEvent(new MouseEvent('contextmenu', {
+    bubbles: true, cancelable: true,
+  }));
+  terminalInput.remove();
+  const tab = document.querySelector('#tabs .tab');
+  tab.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+  const projectMenuPreserved = $('ctx').style.display !== 'none'
+    && !!$('ctx').querySelector('[data-a="rename"]') && !!$('ctx').querySelector('[data-a="remove"]');
+  $('ctx').style.display = 'none';
+  await report('surface-context-menu', surfacesBlocked && terminalMenuBlocked
+    && projectMenuPreserved && inputMenuPreserved, surfaceTargets.length);
+}
+
 export async function run() {
   let stage = 0;
   try {
     stage = 1;
     await settingsNavigationSmoke();
+    await buttonForceTouchSmoke();
     await waitFor(() => provider.projects().length > 0);
     const project = provider.projects()[0];
     const column = project.columns.find(c => c.semantic === 'working') || project.columns[0];

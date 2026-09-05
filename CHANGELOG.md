@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Prevent Force Touch on buttons from opening the macOS Look Up popover.
+- Suppress WebKit's browser menus (Reload, Inspect, Look Up) on app-surface
+  Control-click/right-click while retaining Deck's own context actions and
+  text-field editing menus.
 - Organize Settings into six searchable categories with fixed navigation and
   footer, independently scrolling content, and expandable detailed explanations.
 - Add diagnostic log size, export and confirmed reset under Data & logs. Reset

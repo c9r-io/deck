@@ -22,6 +22,24 @@ activateTheme({ theme: 'deck-dark', accent: 'teal' });
 
 window.addEventListener('beforeunload', stopPolling, { once: true });
 
+// A held trackpad click can become Force Touch and open macOS Look Up on
+// button text, even with user-select:none. Cancel WebKit's native action at
+// its preflight event; ordinary pointer/mouse/click events retain their defaults.
+// Delegation also covers nested labels/icons and buttons created after boot.
+document.addEventListener('webkitmouseforcewillbegin', event => {
+  if (event.target?.closest?.('button, [role="button"]')) event.preventDefault();
+}, { capture: true, passive: false });
+
+// Deck owns context menus throughout its app surface; WebKit's Reload/Inspect
+// and text-search menus are browser chrome. Keep native editing menus in real
+// form fields, but not xterm's hidden input. Never stop propagation: Deck's
+// card/project handlers must still receive the event and open their own menu.
+document.addEventListener('contextmenu', event => {
+  const editable = event.target?.closest?.('input, textarea, [contenteditable="true"]');
+  if (!editable || editable.closest('#terminal')
+      || event.target?.closest?.('button, [role="button"]')) event.preventDefault();
+}, { capture: true, passive: false });
+
 function renderPendingUpdate() {
   if (!pendingUpdate) return;
   const btn = $('update-btn');
