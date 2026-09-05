@@ -22,7 +22,7 @@
 // are bounded. Inbound rules name a template by NAME: renaming or deleting one
 // that a rule uses is confirmed with the count of affected rules — deck warns,
 // and never rewrites the user's rules for them.
-import { $, state } from './state.js';
+import { $, ctx, state } from './state.js';
 import { provider } from './board.js';
 import { confirmDialog, toast } from './dialogs.js';
 import {
@@ -44,7 +44,7 @@ const templates = () => {
   return (p && p.templates) || [];
 };
 const current = () => templates().find(tp => tp.name === selected) || null;
-const inboundRules = () => (settings && settings.inbound && settings.inbound.rules) || [];
+const inboundRules = () => (ctx.settings && ctx.settings.inbound && ctx.settings.inbound.rules) || [];
 
 export function openTemplates() {
   projectId = state.projectId;

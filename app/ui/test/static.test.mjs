@@ -37,7 +37,7 @@ test('the updater, relaunch and server restart stay backend-owned', () => {
   // updater.rs; the webview only asks for a check on the chosen channel.
   assert.doesNotMatch(app, /__TAURI__\.updater|\.updater\.check/);
   assert.doesNotMatch(app + dialogs, /https?:\/\//, 'the webview owns no updater endpoint');
-  assert.match(app, /inv\('check_for_update', \{ channel: settings\.updateChannel \}\)/);
+  assert.match(app, /inv\('check_for_update', \{ channel: ctx\.settings\.updateChannel \}\)/);
   assert.doesNotMatch(dialogs, /install_update|allow_downgrade|allowDowngrade/);
   assert.match(app, /inv\('relaunch_after_update'\)/,
     'verified installs cross a backend-owned clean relaunch boundary');

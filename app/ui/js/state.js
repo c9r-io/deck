@@ -1,11 +1,10 @@
 // state.js — shared helpers ($/inv/listen/log), the store, and the global mutable slots
 // Part of deck's no-build frontend: native ES modules, no bundler.
 
-/* Shared mutable runtime slots. Modules are strict-mode; these were
-   script-globals before the split and several are assigned from more than
-   one module, so they live on globalThis (bare names resolve to these
-   properties everywhere, exactly like the pre-split behavior). */
-Object.assign(globalThis, {
+/* Shared mutable runtime slots. One explicit object, imported as `ctx` by
+   the modules that read or assign a slot, so every cross-module dependency
+   is visible at the import site and check.mjs can flag a bare name. */
+export const ctx = {
   HOME: '~',
   attachedName: null,
   cfmResolve: null,
@@ -47,7 +46,7 @@ Object.assign(globalThis, {
   buildIdentity: { version: '', commit: 'dev' },
   term: null,
   wheelTimer: null,
-});
+};
 
 'use strict';
 /* ================================================================
@@ -82,14 +81,12 @@ export const uev = (code, detail, a, b) => inv('ui_event', {
 }).catch(() => {});
 /* Verbose diagnostics are maintainer-only and enabled at launch with
    --debug-logging. They retain the same structured/privacy contract. */
-window.__DECK_DEBUG = false;
-export const duev = (code, detail, a, b) => { if (window.__DECK_DEBUG) uev(code, detail, a, b); };
+export const duev = (code, detail, a, b) => { if (globalThis.window?.__DECK_DEBUG) uev(code, detail, a, b); };
 /* error CLASS only — the message can quote user input, so it stays out */
 export const errClass = e => {
   const m = /([A-Za-z]+Error)/.exec(String((e && e.name) || e || ''));
   return m ? m[1] : 'error';
 };
-window.onerror = (msg, src, line) => uev('js-error', errClass(msg), line);
 /* keydown CATEGORY only — raw key names never cross into the log (the
    backend's closed allowlist would redact them anyway) */
 const keyClass = k =>
@@ -131,7 +128,7 @@ export const state = {
   sessionId: null,
 };
 
-export const genId = p => p + Date.now().toString(36) + (nextIdCounter++).toString(36);
+export const genId = p => p + Date.now().toString(36) + (ctx.nextIdCounter++).toString(36);
 
 /* DOM-free logic lives in pure.js (node-testable); re-exported here so the
    rest of the app keeps one import point for shared helpers */
@@ -156,9 +153,11 @@ export const dotTitle = status => t(`session.status.${status}`);
 /* DOM wiring, run once at boot (app.js) so the module can be imported
    without a document. */
 export function initInputDiagnostics() {
+  window.__DECK_DEBUG = false;
+  window.onerror = (msg, src, line) => uev('js-error', errClass(msg), line);
   document.addEventListener('keydown', e => {
-    if (kdLogged < 40) {
-      kdLogged++;
+    if (ctx.kdLogged < 40) {
+      ctx.kdLogged++;
       duev('keydown', keyClass(e.key), keyFlags(e), keyCodeClass(e.code));
     }
   }, true);

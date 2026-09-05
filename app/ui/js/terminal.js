@@ -6,7 +6,7 @@
 // Its generation-based transition is: detach/hide old owner, refit old owner,
 // mount new owner, refit new owner. Stale RAF work must not resize a newer
 // owner, and each pane preserves its own bottom-follow/scrollback position.
-import { $, duev, inv, state, uev } from './state.js';
+import { $, ctx, duev, inv, state, uev } from './state.js';
 import { copyExact, isComposingKeyEvent, linkMenuItems } from './pure.js';
 import { confirmDialog, inlineRename, toast, promptDialog } from './dialogs.js';
 import { closeSession, panes, provider, renameTab, render, switchProject, activeProject } from './board.js';
@@ -154,7 +154,7 @@ export function showLinkCtx(e, kind, value, cwd, sid = null) {
       try {
         const origin = sid && provider.get(sid);
         if (!origin) throw new Error('the source session is no longer available');
-        const resolved = await inv('resolve_parent_dir', { value, cwd: cwd || HOME });
+        const resolved = await inv('resolve_parent_dir', { value, cwd: cwd || ctx.HOME });
         if (request !== linkActionGeneration || !provider.get(sid)) return;
         await newSession(resolved.directory, { projectId: origin.projectId, requireStart: true });
         toast(t('terminal.openedParent'));
@@ -162,7 +162,7 @@ export function showLinkCtx(e, kind, value, cwd, sid = null) {
         if (request === linkActionGeneration) toast(t('terminal.createPathFailed'));
       }
     } else {
-      inv('open_target', { kind: a, value, cwd: cwd || HOME })
+      inv('open_target', { kind: a, value, cwd: cwd || ctx.HOME })
         .then(() => toast(t(a === 'url' ? 'terminal.openBrowser' : a.startsWith('editor') ? 'terminal.openEditor' : 'terminal.revealFinder')))
         .catch(() => toast(t('terminal.openFailed')));
     }
@@ -195,17 +195,17 @@ export function nextShellTitle(p) {
 }
 
 export async function newSession(dir, opts = {}) {
-  if (tmuxRestarting || (tmuxServerStatus && tmuxServerStatus.pendingRestart)) {
+  if (ctx.tmuxRestarting || (ctx.tmuxServerStatus && ctx.tmuxServerStatus.pendingRestart)) {
     const error = new Error('tmux server restart required');
     if (opts.requireStart) throw error;
-    toast(t(tmuxRestarting ? 'tmux.restarting' : 'tmux.createBlocked'));
+    toast(t(ctx.tmuxRestarting ? 'tmux.restarting' : 'tmux.createBlocked'));
     return;
   }
-  if (creatingSession) {
+  if (ctx.creatingSession) {
     if (opts.requireStart) throw new Error('a session is already being created');
     return;
   }
-  creatingSession = true;
+  ctx.creatingSession = true;
   try {
     const p = opts.projectId ? provider.project(opts.projectId) : activeProject();
     if (!p) throw new Error('project no longer exists');
@@ -218,12 +218,12 @@ export async function newSession(dir, opts = {}) {
       projectId: p.id, columnId,
       title: nextShellTitle(p),
       cmd: '',
-      dir: dir || HOME,
+      dir: dir || ctx.HOME,
     }, opts.requireStart ? {
       beforePersist: async card => {
         const result = await inv('start_session', {
           name: card.session, dir: card.dir, cmd: card.cmd,
-          restoreShell: !!settings.sessionRestore,
+          restoreShell: !!ctx.settings.sessionRestore,
         });
         started = !!result.created;
         return started;
@@ -238,7 +238,7 @@ export async function newSession(dir, opts = {}) {
     if (opts.requireStart) throw error;
     toast(t('terminal.createFailed'));
   } finally {
-    creatingSession = false;
+    ctx.creatingSession = false;
   }
 }
 
@@ -253,18 +253,18 @@ export function feedMirror(d) {
   let completed = null;
   for (const ch of d) {
     if (ch === '\r' || ch === '\n') {
-      if (lineBuf && lineBuf.trim().length >= 2) completed = lineBuf.trim();
-      lineBuf = '';
-      freshShell = false;
+      if (ctx.lineBuf && ctx.lineBuf.trim().length >= 2) completed = ctx.lineBuf.trim();
+      ctx.lineBuf = '';
+      ctx.freshShell = false;
     } else if (ch === '\x03' || ch === '\x15') {
-      lineBuf = '';
-      freshShell = false;
+      ctx.lineBuf = '';
+      ctx.freshShell = false;
     } else if (ch === '\x7f') {
-      if (lineBuf !== null) lineBuf = lineBuf.slice(0, -1);
+      if (ctx.lineBuf !== null) ctx.lineBuf = ctx.lineBuf.slice(0, -1);
     } else if (ch === '\x1b' || ch === '\t') {
-      lineBuf = null;
-    } else if (lineBuf !== null && ch >= ' ') {
-      lineBuf += ch;
+      ctx.lineBuf = null;
+    } else if (ctx.lineBuf !== null && ch >= ' ') {
+      ctx.lineBuf += ch;
     }
   }
   return completed;
@@ -290,26 +290,26 @@ export function maybeRecordCommand(cmd) {
   if (!SHELL_FG.test(c.fg || '')) { duev('record-skip', fgClass(c.fg)); return; }
   duev('record', null, cmd.length);
   inv('record_command', { cmd }).catch(() => uev('record-fail'));
-  histCache = [cmd, ...histCache.filter(x => x !== cmd)];
+  ctx.histCache = [cmd, ...ctx.histCache.filter(x => x !== cmd)];
 }
 
 export function suggestions() {
-  if (lineBuf === null) return [];
-  if (lineBuf.length >= 2) {
-    return histCache.filter(c => c.startsWith(lineBuf) && c !== lineBuf).slice(0, 6);
+  if (ctx.lineBuf === null) return [];
+  if (ctx.lineBuf.length >= 2) {
+    return ctx.histCache.filter(c => c.startsWith(ctx.lineBuf) && c !== ctx.lineBuf).slice(0, 6);
   }
-  if (freshShell && lineBuf === '') return histCache.slice(0, 8);
+  if (ctx.freshShell && ctx.lineBuf === '') return ctx.histCache.slice(0, 8);
   return [];
 }
 
 export function acceptSuggestion(cmd) {
-  if (!attachedName) return;
-  inv('pty_write', { name: attachedName, dataB64: strToB64('\x15' + cmd) }).catch(() => {});
+  if (!ctx.attachedName) return;
+  inv('pty_write', { name: ctx.attachedName, dataB64: strToB64('\x15' + cmd) }).catch(() => {});
   inv('record_command', { cmd }).catch(() => {});
-  lineBuf = cmd;
-  freshShell = false;
+  ctx.lineBuf = cmd;
+  ctx.freshShell = false;
   renderSuggest();
-  if (term) term.focus();
+  if (ctx.term) ctx.term.focus();
 }
 
 /* ---------- inline ghost suggestion (Warp-style) ---------- */
@@ -318,52 +318,52 @@ export function acceptSuggestion(cmd) {
    API (deck code never touches _core). */
 export function ghostCellDims(host) {
   const screen = host.querySelector('.xterm-screen');
-  return { w: screen.clientWidth / term.cols, h: screen.clientHeight / term.rows };
+  return { w: screen.clientWidth / ctx.term.cols, h: screen.clientHeight / ctx.term.rows };
 }
 
 export function updateGhost() {
-  if (!term || !ghostEl) return;
+  if (!ctx.term || !ctx.ghostEl) return;
   const items = suggestions();
-  if (!(lineBuf && lineBuf.length >= 2 && items.length)) {
-    ghostRemainder = '';
-    ghostEl.style.display = 'none';
+  if (!(ctx.lineBuf && ctx.lineBuf.length >= 2 && items.length)) {
+    ctx.ghostRemainder = '';
+    ctx.ghostEl.style.display = 'none';
     return;
   }
-  ghostRemainder = items[0].slice(lineBuf.length);
-  const fp = attachedName && panes.get(attachedName);
-  if (!fp) { ghostEl.style.display = 'none'; return; }
+  ctx.ghostRemainder = items[0].slice(ctx.lineBuf.length);
+  const fp = ctx.attachedName && panes.get(ctx.attachedName);
+  if (!fp) { ctx.ghostEl.style.display = 'none'; return; }
   const host = fp.body;
   const screen = host.querySelector('.xterm-screen');
   if (!screen) return;
-  const buf = term.buffer.active;
+  const buf = ctx.term.buffer.active;
   const { w, h } = ghostCellDims(host);
   const hostRect = host.getBoundingClientRect();
   const sRect = screen.getBoundingClientRect();
-  ghostEl.textContent = ghostRemainder;
-  ghostEl.style.left = (sRect.left - hostRect.left + buf.cursorX * w) + 'px';
-  ghostEl.style.top = (sRect.top - hostRect.top + buf.cursorY * h) + 'px';
-  ghostEl.style.lineHeight = h + 'px';
-  ghostEl.style.display = 'block';
+  ctx.ghostEl.textContent = ctx.ghostRemainder;
+  ctx.ghostEl.style.left = (sRect.left - hostRect.left + buf.cursorX * w) + 'px';
+  ctx.ghostEl.style.top = (sRect.top - hostRect.top + buf.cursorY * h) + 'px';
+  ctx.ghostEl.style.lineHeight = h + 'px';
+  ctx.ghostEl.style.display = 'block';
 }
 
 /* Debounced ghost: echoes come back asynchronously, so painting on every
    keystroke uses a momentarily stale cursor and the ghost jitters during
    fast edits (backspace bursts). Hide instantly, settle after 150ms. */
 export function scheduleGhost() {
-  ghostRemainder = '';
-  if (ghostEl) ghostEl.style.display = 'none';
-  clearTimeout(ghostTimer);
-  ghostTimer = setTimeout(updateGhost, 150);
+  ctx.ghostRemainder = '';
+  if (ctx.ghostEl) ctx.ghostEl.style.display = 'none';
+  clearTimeout(ctx.ghostTimer);
+  ctx.ghostTimer = setTimeout(updateGhost, 150);
 }
 
 /* the mirror is append-only while synced, so completing = typing the rest */
 export function acceptGhost() {
-  if (!ghostRemainder || !attachedName) return;
-  const full = lineBuf + ghostRemainder;
-  inv('pty_write', { name: attachedName, dataB64: strToB64(ghostRemainder) }).catch(() => {});
+  if (!ctx.ghostRemainder || !ctx.attachedName) return;
+  const full = ctx.lineBuf + ctx.ghostRemainder;
+  inv('pty_write', { name: ctx.attachedName, dataB64: strToB64(ctx.ghostRemainder) }).catch(() => {});
   inv('record_command', { cmd: full }).catch(() => {});
-  histCache = [full, ...histCache.filter(x => x !== full)];
-  lineBuf = full;
+  ctx.histCache = [full, ...ctx.histCache.filter(x => x !== full)];
+  ctx.lineBuf = full;
   renderSuggest();
 }
 
@@ -434,7 +434,7 @@ export function mountQuickBar(pane) {
   if (paneHoldingQuickBar() !== pane) transitionQuickBar(pane, false);
 }
 
-function showQuickBar(show, pane = attachedName && panes.get(attachedName)) {
+function showQuickBar(show, pane = ctx.attachedName && panes.get(ctx.attachedName)) {
   const generation = transitionQuickBar(pane || null, show);
   if (show) {
     const frame = requestAnimationFrame(() => {
@@ -456,8 +456,8 @@ export function renderSuggest() {
   const bar = $('quick-bar');
   const items = suggestions();
   if (!items.length) { showQuickBar(false); return; }
-  const pane = attachedName && panes.get(attachedName);
-  const completing = lineBuf && lineBuf.length >= 2;
+  const pane = ctx.attachedName && panes.get(ctx.attachedName);
+  const completing = ctx.lineBuf && ctx.lineBuf.length >= 2;
   bar.innerHTML = '<span class="qb-label"></span>';
   bar.querySelector('.qb-label').textContent = t(completing ? 'terminal.quickTab' : 'terminal.quickRecent');
   items.forEach((c, i) => {
@@ -466,9 +466,9 @@ export function renderSuggest() {
     b.title = c;
     if (completing) {
       const bold = document.createElement('b');
-      bold.textContent = lineBuf;
+      bold.textContent = ctx.lineBuf;
       b.appendChild(bold);
-      b.appendChild(document.createTextNode(c.slice(lineBuf.length)));
+      b.appendChild(document.createTextNode(c.slice(ctx.lineBuf.length)));
     } else {
       b.textContent = c;
     }
@@ -479,11 +479,11 @@ export function renderSuggest() {
 }
 
 export function resetSuggest(nextPane = null) {
-  lineBuf = '';
-  freshShell = false;
-  ghostRemainder = '';
-  clearTimeout(ghostTimer);
-  if (ghostEl) ghostEl.style.display = 'none';
+  ctx.lineBuf = '';
+  ctx.freshShell = false;
+  ctx.ghostRemainder = '';
+  clearTimeout(ctx.ghostTimer);
+  if (ctx.ghostEl) ctx.ghostEl.style.display = 'none';
   showQuickBar(false, nextPane);
 }
 
@@ -519,10 +519,10 @@ export function toggleSidebar() {
 export function refreshShortcutChrome() {
   const collapsed = document.body.classList.contains('side-collapsed');
   $('collapse-btn').title = t(collapsed ? 'app.expandSidebar' : 'app.collapseSidebar', {
-    shortcut: formatShortcut(settings.shortcuts.toggleSidebar),
+    shortcut: formatShortcut(ctx.settings.shortcuts.toggleSidebar),
   });
-  $('split-right').title = t('session.splitRight', { shortcut: formatShortcut(settings.shortcuts.splitRight) });
-  $('split-down').title = t('session.splitDown', { shortcut: formatShortcut(settings.shortcuts.splitDown) });
+  $('split-right').title = t('session.splitRight', { shortcut: formatShortcut(ctx.settings.shortcuts.splitRight) });
+  $('split-down').title = t('session.splitDown', { shortcut: formatShortcut(ctx.settings.shortcuts.splitDown) });
 }
 
 /* DOM wiring, run once at boot (app.js) so the module can be imported
@@ -541,9 +541,9 @@ export function initTerminalChrome() {
 
   $('back-btn').onclick = backToBoard;
 
-  $('board-new').onclick = () => newSession(HOME);
+  $('board-new').onclick = () => newSession(ctx.HOME);
 
-  registerShortcutAction('newSession', () => newSession(HOME));
+  registerShortcutAction('newSession', () => newSession(ctx.HOME));
 
   registerShortcutAction('toggleSidebar', toggleSidebar);
 

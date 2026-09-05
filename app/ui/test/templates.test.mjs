@@ -81,7 +81,7 @@ globalThis.window = { __TAURI__: null, __DECK_DEBUG: false, addEventListener() {
 const { cfmDone } = await import('../js/dialogs.js');
 const { openTemplates, closeTemplates, initTemplates } = await import('../js/templates.js');
 initTemplates();
-const { state, store } = await import('../js/state.js');
+const { ctx, state, store } = await import('../js/state.js');
 const { flushBoardMutations } = await import('../js/persistence.js');
 
 const $ = id => fakeDocument.getElementById(id);
@@ -99,7 +99,7 @@ function seed(templates, rules = []) {
     if (cmd !== 'save_board') return null;
     writes.push(JSON.parse(args.data));
   } } };
-  globalThis.settings = { inbound: { sources: {}, rules } };
+  ctx.settings = { inbound: { sources: {}, rules } };
   store.projects = [{ id: 'P1', name: 'deck', columns: [{ id: 'C1', name: 'Working' }], templates }];
   store.cards = [];
   state.projectId = 'P1';

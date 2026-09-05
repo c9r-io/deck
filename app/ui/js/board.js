@@ -1,6 +1,6 @@
 // board.js — board CRUD provider, polling loop, sidebar/tabs/board rendering
 // Part of deck's no-build frontend: native ES modules, no bundler.
-import { $, columnHint, dotTitle, POLL_MS, QUIET_SECS, emit, genId, inv, listeners, sessionName, setMemChip, state, store, uev } from './state.js';
+import { $, columnHint, ctx, dotTitle, emit, genId, inv, listeners, POLL_MS, QUIET_SECS, sessionName, setMemChip, state, store, uev } from './state.js';
 import { mutateBoard, mutateBoardDebounced } from './persistence.js';
 import { CARD_PREVIEW_ROWS, attentionStatus, cardPreviewRows, createExitRetirementTracker, effectiveCardStatus, reorderById, sidebarGroups } from './pure.js';
 import { confirmDialog, inlineRename, toast } from './dialogs.js';
@@ -353,7 +353,7 @@ export async function pollNow() {
   let infos;
   try {
     infos = await inv('poll_sessions', {
-      names, tailFor, checkpointShells: !!settings.sessionRestore,
+      names, tailFor, checkpointShells: !!ctx.settings.sessionRestore,
     });
   } catch (e) {
     /* a silently dead poll leaves every card gray — log once per distinct
@@ -417,13 +417,13 @@ export async function pollNow() {
   });
 }
 export function startPolling() {
-  clearInterval(pollTimer);
-  pollTimer = setInterval(pollNow, POLL_MS);
+  clearInterval(ctx.pollTimer);
+  ctx.pollTimer = setInterval(pollNow, POLL_MS);
   pollNow();
 }
 export function stopPolling() {
-  clearInterval(pollTimer);
-  pollTimer = null;
+  clearInterval(ctx.pollTimer);
+  ctx.pollTimer = null;
   exitRetirement.clear();
 }
 

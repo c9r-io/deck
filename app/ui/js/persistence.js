@@ -1,6 +1,6 @@
 // persistence.js — one global Board transaction queue
 // Part of deck's no-build frontend: native ES modules, no bundler.
-import { inv, store } from './state.js';
+import { ctx, inv, store } from './state.js';
 import { createSerialTransactionQueue } from './pure.js';
 
 const PERSISTED_CARD_KEYS = new Set([
@@ -61,8 +61,8 @@ const transactions = createSerialTransactionQueue({
 let debounced = [];
 
 function enqueuePendingDebounced() {
-  clearTimeout(saveTimer);
-  saveTimer = null;
+  clearTimeout(ctx.saveTimer);
+  ctx.saveTimer = null;
   if (!debounced.length) return null;
   const batch = debounced;
   debounced = [];
@@ -86,8 +86,8 @@ export function mutateBoard(mutate) {
 
 export function mutateBoardDebounced(mutate, { delay = 300, onCommit, onError } = {}) {
   debounced.push({ mutate, onCommit, onError });
-  clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => {
+  clearTimeout(ctx.saveTimer);
+  ctx.saveTimer = setTimeout(() => {
     const pending = enqueuePendingDebounced();
     if (pending) pending.catch(() => {});
   }, delay);

@@ -1,6 +1,6 @@
 // dialogs.js — confirm/prompt dialogs, toasts, inline rename, settings modal
 // Part of deck's no-build frontend: native ES modules, no bundler.
-import { $, genId, inv, store, uev } from './state.js';
+import { $, ctx, genId, inv, store, uev } from './state.js';
 import { INBOUND_BADGE_RE, inlineRenameValue } from './pure.js';
 import { applyTranslations, formatNumber, onLocaleChange, setLocale, t, translateNotice } from './i18n.js';
 import {
@@ -18,7 +18,7 @@ let confirmPointerOnly = false;
 export function confirmDialog(msg) {
   return new Promise(resolve => {
     confirmPointerOnly = false;
-    cfmResolve = resolve;
+    ctx.cfmResolve = resolve;
     $('cfm-yes').textContent = t('common.confirm');
     $('cfm-msg').textContent = msg;
     $('cfm').style.display = 'flex';
@@ -31,7 +31,7 @@ export function confirmDialog(msg) {
 export function confirmDangerDialog(msg, confirmLabel = t('common.confirm')) {
   return new Promise(resolve => {
     confirmPointerOnly = true;
-    cfmResolve = resolve;
+    ctx.cfmResolve = resolve;
     $('cfm-yes').textContent = confirmLabel;
     $('cfm-msg').textContent = msg;
     $('cfm').style.display = 'flex';
@@ -41,7 +41,7 @@ export function confirmDangerDialog(msg, confirmLabel = t('common.confirm')) {
 export function cfmDone(v) {
   $('cfm').style.display = 'none';
   confirmPointerOnly = false;
-  if (cfmResolve) { cfmResolve(v); cfmResolve = null; }
+  if (ctx.cfmResolve) { ctx.cfmResolve(v); ctx.cfmResolve = null; }
 }
 
 /* ---------- toasts ---------- */
@@ -163,16 +163,16 @@ export async function loadSettings() {
   try {
     const doc = await inv('load_settings');
     if (doc && doc.warning) toast(translateNotice(doc.warning));
-    if (doc && doc.data) settings = parseSettings(doc.data);
+    if (doc && doc.data) ctx.settings = parseSettings(doc.data);
   } catch (e) {
     toast(t('error.settingsLoad'));   // NOT a first run — defaults stay in memory only
     uev('settings-load-fail');
   }
-  setLocale(settings.locale);
-  activateTheme(settings);
-  applyFontScale(settings.fontScale);
+  setLocale(ctx.settings.locale);
+  activateTheme(ctx.settings);
+  applyFontScale(ctx.settings.fontScale);
   announceShortcutChange();
-  inv('set_native_locale', { locale: settings.locale }).catch(() => {});
+  inv('set_native_locale', { locale: ctx.settings.locale }).catch(() => {});
 }
 
 let settingsWriteChain = Promise.resolve();
@@ -184,14 +184,14 @@ function saveSettingsCandidate(candidate) {
 }
 
 export function persistSettings() {
-  return saveSettingsCandidate(settings).catch(() => uev('settings-save-fail'));
+  return saveSettingsCandidate(ctx.settings).catch(() => uev('settings-save-fail'));
 }
 
 function renderFontScale() {
-  $('set-font-value').textContent = `${Math.round(settings.fontScale * 100)}%`;
-  $('set-font-down').disabled = settings.fontScale <= FONT_SCALE_MIN;
-  $('set-font-up').disabled = settings.fontScale >= FONT_SCALE_MAX;
-  $('set-font-reset').disabled = settings.fontScale === 1;
+  $('set-font-value').textContent = `${Math.round(ctx.settings.fontScale * 100)}%`;
+  $('set-font-down').disabled = ctx.settings.fontScale <= FONT_SCALE_MIN;
+  $('set-font-up').disabled = ctx.settings.fontScale >= FONT_SCALE_MAX;
+  $('set-font-reset').disabled = ctx.settings.fontScale === 1;
 }
 
 function shortcutLabel(actionId) { return t(`settings.shortcut.${actionId}`); }
@@ -207,7 +207,7 @@ export function renderShortcutSettings() {
     const capture = document.createElement('button');
     capture.className = 'shortcut-capture';
     capture.dataset.action = action.id;
-    capture.textContent = formatShortcut(settings.shortcuts[action.id]);
+    capture.textContent = formatShortcut(ctx.settings.shortcuts[action.id]);
     capture.title = t('settings.shortcutCapture');
     capture.addEventListener('focus', () => {
       capture.classList.add('capturing');
@@ -215,7 +215,7 @@ export function renderShortcutSettings() {
     });
     capture.addEventListener('blur', () => {
       capture.classList.remove('capturing');
-      capture.textContent = formatShortcut(settings.shortcuts[action.id]);
+      capture.textContent = formatShortcut(ctx.settings.shortcuts[action.id]);
     });
     capture.addEventListener('keydown', event => {
       if (event.key === 'Tab' && !event.metaKey && !event.ctrlKey && !event.altKey) return;
@@ -230,7 +230,7 @@ export function renderShortcutSettings() {
       }
       const binding = shortcutFromEvent(event);
       if (!isSafeShortcut(binding)) { toast(t('settings.shortcutUnsafe')); return; }
-      const conflict = shortcutConflict(settings.shortcuts, action.id, binding);
+      const conflict = shortcutConflict(ctx.settings.shortcuts, action.id, binding);
       if (conflict) {
         toast(t('settings.shortcutConflict', { action: shortcutLabel(conflict) }));
         return;
@@ -252,18 +252,18 @@ function announceShortcutChange() {
 let fontGeneration = 0;
 export async function setFontScale(value) {
   const generation = ++fontGeneration;
-  const previous = settings;
+  const previous = ctx.settings;
   const bounded = Math.min(FONT_SCALE_MAX, Math.max(FONT_SCALE_MIN, Number(value)));
-  const candidate = normalizeSettings({ ...settings, fontScale: bounded });
-  if (candidate.fontScale === settings.fontScale) return;
-  settings = candidate;
+  const candidate = normalizeSettings({ ...ctx.settings, fontScale: bounded });
+  if (candidate.fontScale === ctx.settings.fontScale) return;
+  ctx.settings = candidate;
   applyFontScale(candidate.fontScale);
   renderFontScale();
   try {
     await saveSettingsCandidate(candidate);
   } catch (_) {
     if (generation !== fontGeneration) return;
-    settings = previous;
+    ctx.settings = previous;
     applyFontScale(previous.fontScale);
     renderFontScale();
     toast(t('error.fontSave'));
@@ -274,18 +274,18 @@ export async function setFontScale(value) {
 let shortcutGeneration = 0;
 export async function setShortcut(actionId, binding) {
   const generation = ++shortcutGeneration;
-  const previous = settings;
+  const previous = ctx.settings;
   const candidate = normalizeSettings({
-    ...settings, shortcuts: { ...settings.shortcuts, [actionId]: binding },
+    ...ctx.settings, shortcuts: { ...ctx.settings.shortcuts, [actionId]: binding },
   });
-  settings = candidate;
+  ctx.settings = candidate;
   renderShortcutSettings();
   announceShortcutChange();
   try {
     await saveSettingsCandidate(candidate);
   } catch (_) {
     if (generation !== shortcutGeneration) return;
-    settings = previous;
+    ctx.settings = previous;
     renderShortcutSettings();
     announceShortcutChange();
     toast(t('error.shortcutSave'));
@@ -295,19 +295,19 @@ export async function setShortcut(actionId, binding) {
 
 export async function resetShortcuts() {
   const generation = ++shortcutGeneration;
-  const previous = settings;
+  const previous = ctx.settings;
   const known = new Set(SHORTCUT_ACTIONS.map(action => action.id));
-  const extensions = Object.fromEntries(Object.entries(settings.shortcuts)
+  const extensions = Object.fromEntries(Object.entries(ctx.settings.shortcuts)
     .filter(([actionId]) => !known.has(actionId)));
-  const candidate = normalizeSettings({ ...settings, shortcuts: extensions });
-  settings = candidate;
+  const candidate = normalizeSettings({ ...ctx.settings, shortcuts: extensions });
+  ctx.settings = candidate;
   renderShortcutSettings();
   announceShortcutChange();
   try {
     await saveSettingsCandidate(candidate);
   } catch (_) {
     if (generation !== shortcutGeneration) return;
-    settings = previous;
+    ctx.settings = previous;
     renderShortcutSettings();
     announceShortcutChange();
     toast(t('error.shortcutSave'));
@@ -322,13 +322,13 @@ export async function openSettings() {
   mk('', t('settings.systemEditor'));
   const eds = await inv('detect_editors').catch(() => []);
   eds.forEach(name => mk(name, name));
-  if (settings.editor && !eds.includes(settings.editor)) mk(settings.editor, t('common.notFound', { name: settings.editor }));
-  sel.value = settings.editor || '';
-  $('set-locale').value = settings.locale || 'system';
-  $('set-theme').value = settings.theme || 'deck-dark';
-  $('set-accent').value = settings.accent || 'teal';
-  $('set-channel').value = settings.updateChannel || 'stable';
-  $('set-session-restore').checked = !!settings.sessionRestore;
+  if (ctx.settings.editor && !eds.includes(ctx.settings.editor)) mk(ctx.settings.editor, t('common.notFound', { name: ctx.settings.editor }));
+  sel.value = ctx.settings.editor || '';
+  $('set-locale').value = ctx.settings.locale || 'system';
+  $('set-theme').value = ctx.settings.theme || 'deck-dark';
+  $('set-accent').value = ctx.settings.accent || 'teal';
+  $('set-channel').value = ctx.settings.updateChannel || 'stable';
+  $('set-session-restore').checked = !!ctx.settings.sessionRestore;
   $('set-agent-hooks').checked = false;
   $('set-codex-hooks').checked = false;
   inv('agent_hooks_status')
@@ -354,9 +354,9 @@ export async function openSettings() {
 let themeSavePending = false;
 export async function persistThemeChoice() {
   if (themeSavePending) return;
-  const previous = { theme: settings.theme, accent: settings.accent };
+  const previous = { theme: ctx.settings.theme, accent: ctx.settings.accent };
   const candidate = normalizeSettings({
-    ...settings,
+    ...ctx.settings,
     theme: $('set-theme').value,
     accent: $('set-accent').value,
   });
@@ -366,9 +366,9 @@ export async function persistThemeChoice() {
   activateTheme(candidate); // immediate preview; commit only after durable save
   try {
     await saveSettingsCandidate(candidate);
-    settings = candidate;
+    ctx.settings = candidate;
   } catch (_) {
-    activateTheme({ ...settings, ...previous });
+    activateTheme({ ...ctx.settings, ...previous });
     $('set-theme').value = previous.theme;
     $('set-accent').value = previous.accent;
     toast(t('error.themeSave'));
@@ -382,7 +382,7 @@ export async function persistThemeChoice() {
 let channelSavePending = false;
 export async function persistUpdateChannelChoice() {
   if (channelSavePending) return;
-  const previous = settings.updateChannel || 'stable';
+  const previous = ctx.settings.updateChannel || 'stable';
   const desired = $('set-channel').value;
   if (desired === 'nightly' && previous !== 'nightly') {
     const accepted = await confirmDialog(t('settings.channelNightlyConfirm'));
@@ -391,13 +391,13 @@ export async function persistUpdateChannelChoice() {
       return;
     }
   }
-  const candidate = normalizeSettings({ ...settings, updateChannel: desired });
+  const candidate = normalizeSettings({ ...ctx.settings, updateChannel: desired });
   channelSavePending = true;
   const locked = ['set-theme', 'set-accent', 'set-channel', 'set-locale', 'set-editor', 'set-session-restore'].map($);
   locked.forEach(control => { control.disabled = true; });
   try {
     await saveSettingsCandidate(candidate);
-    settings = candidate;
+    ctx.settings = candidate;
     toast(t(candidate.updateChannel === 'nightly'
       ? 'settings.channelNightlyEnabled' : 'settings.channelStableEnabled'));
     if (typeof window.dispatchEvent === 'function' && typeof Event === 'function') {
@@ -416,7 +416,7 @@ export async function persistUpdateChannelChoice() {
 let shellRestoreSavePending = false;
 export async function persistSessionRestoreChoice() {
   if (shellRestoreSavePending) return;
-  const previous = !!settings.sessionRestore;
+  const previous = !!ctx.settings.sessionRestore;
   const desired = $('set-session-restore').checked;
   if (desired && !previous) {
     const accepted = await confirmDialog(t('settings.shellRecoveryEnableConfirm'));
@@ -425,7 +425,7 @@ export async function persistSessionRestoreChoice() {
       return;
     }
   }
-  const candidate = normalizeSettings({ ...settings, sessionRestore: desired });
+  const candidate = normalizeSettings({ ...ctx.settings, sessionRestore: desired });
   shellRestoreSavePending = true;
   $('set-session-restore').disabled = true;
   $('set-clear-shell').disabled = true;
@@ -433,7 +433,7 @@ export async function persistSessionRestoreChoice() {
     // Persist the privacy preference first. A failed disable keeps the old
     // behavior visible instead of claiming recovery is off when it is not.
     await saveSettingsCandidate(candidate);
-    settings = candidate;
+    ctx.settings = candidate;
     if (!desired) {
       try {
         await inv('shell_snapshots_clear');
@@ -489,7 +489,7 @@ let inboundEditing = null;   // null | { id } (existing) | { id: null } (new)
 
 function inboundSlackStatusText(status) {
   const slack = (status && status.sources || []).find(s => s.id === 'slack');
-  if (!settings.inbound.sources.slack.enabled) return t('settings.inboundStatus.off');
+  if (!ctx.settings.inbound.sources.slack.enabled) return t('settings.inboundStatus.off');
   if (!slack) return '';
   const user = slack.secrets.find(x => x.slot === 'slack-user-token');
   if (!user || !user.present) return t('settings.inboundStatus.noToken');
@@ -506,7 +506,7 @@ function inboundSlackStatusText(status) {
 }
 
 export async function renderInboundSettings() {
-  $('set-inbound-slack').checked = !!settings.inbound.sources.slack.enabled;
+  $('set-inbound-slack').checked = !!ctx.settings.inbound.sources.slack.enabled;
   renderInboundRules();
   let status = null;
   try { status = await inv('inbound_status'); } catch (_) { status = null; }
@@ -529,7 +529,7 @@ function inboundTargetLabel(rule) {
 function renderInboundRules() {
   const box = $('set-inbound-rules');
   box.innerHTML = '';
-  const rules = settings.inbound.rules;
+  const rules = ctx.settings.inbound.rules;
   if (!rules.length) {
     const empty = document.createElement('div');
     empty.className = 'set-hint';
@@ -548,7 +548,7 @@ function renderInboundRules() {
     const sub = document.createElement('span');
     sub.className = 'ir-sub';
     sub.textContent = [inboundTargetLabel(rule), rule.cmd || t('settings.inboundRuleShellOnly'), rule.template].join(' · ');
-    sub.title = rule.dir || HOME;
+    sub.title = rule.dir || ctx.HOME;
     main.append(badge, sub);
     const edit = document.createElement('button');
     edit.textContent = '✎';
@@ -560,7 +560,7 @@ function renderInboundRules() {
     del.title = t('common.delete');
     del.onclick = async () => {
       if (!(await confirmDialog(t('settings.inboundRuleDelete', { badge: rule.badge })))) return;
-      await persistInbound({ ...settings.inbound, rules: settings.inbound.rules.filter(r => r.id !== rule.id) });
+      await persistInbound({ ...ctx.settings.inbound, rules: ctx.settings.inbound.rules.filter(r => r.id !== rule.id) });
     };
     row.append(main, edit, del);
     box.appendChild(row);
@@ -630,32 +630,32 @@ async function saveInboundEditor() {
   const cmd = $('set-inbound-cmd').value.trim();
   const dir = $('set-inbound-dir').value.trim();
   const id = inboundEditing.id || genId('R');
-  if (settings.inbound.rules.some(r => r.id !== id && r.source === 'slack' && r.badge === badge)) {
+  if (ctx.settings.inbound.rules.some(r => r.id !== id && r.source === 'slack' && r.badge === badge)) {
     toast(t('settings.inboundRuleDuplicate', { badge }));
     return;
   }
   const rule = { id, source: 'slack', badge, projectId, columnId, cmd, template, dir };
-  const rules = settings.inbound.rules.some(r => r.id === id)
-    ? settings.inbound.rules.map(r => (r.id === id ? rule : r))
-    : [...settings.inbound.rules, rule];
-  if (await persistInbound({ ...settings.inbound, rules })) closeInboundEditor();
+  const rules = ctx.settings.inbound.rules.some(r => r.id === id)
+    ? ctx.settings.inbound.rules.map(r => (r.id === id ? rule : r))
+    : [...ctx.settings.inbound.rules, rule];
+  if (await persistInbound({ ...ctx.settings.inbound, rules })) closeInboundEditor();
 }
 
 /* One durable write for every rule/source change; a failed save leaves the
    previous settings visible instead of a rule the poller never learned. */
 export async function persistInbound(inbound) {
   if (inboundSavePending) return false;
-  const previous = settings;
-  const candidate = normalizeSettings({ ...settings, inbound });
+  const previous = ctx.settings;
+  const candidate = normalizeSettings({ ...ctx.settings, inbound });
   inboundSavePending = true;
   try {
     await saveSettingsCandidate(candidate);
-    settings = candidate;
+    ctx.settings = candidate;
     inv('inbound_check_now').catch(() => {});
     renderInboundSettings();
     return true;
   } catch (_) {
-    settings = previous;
+    ctx.settings = previous;
     renderInboundSettings();
     toast(t('error.inboundSave'));
     uev('settings-save-fail');
@@ -667,12 +667,12 @@ export async function persistInbound(inbound) {
 
 export async function persistInboundSlackChoice() {
   const desired = $('set-inbound-slack').checked;
-  const previous = !!settings.inbound.sources.slack.enabled;
+  const previous = !!ctx.settings.inbound.sources.slack.enabled;
   if (desired && !previous && !(await confirmDialog(t('settings.inboundEnableConfirm')))) {
     $('set-inbound-slack').checked = false;
     return;
   }
-  const ok = await persistInbound({ ...settings.inbound, sources: { ...settings.inbound.sources, slack: { enabled: desired } } });
+  const ok = await persistInbound({ ...ctx.settings.inbound, sources: { ...ctx.settings.inbound.sources, slack: { enabled: desired } } });
   if (ok) toast(t(desired ? 'settings.inboundEnabled' : 'settings.inboundDisabled'));
 }
 
@@ -808,9 +808,9 @@ export function initDialogs() {
     }
   };
 
-  registerShortcutAction('fontIncrease', () => setFontScale(settings.fontScale + FONT_SCALE_STEP));
+  registerShortcutAction('fontIncrease', () => setFontScale(ctx.settings.fontScale + FONT_SCALE_STEP));
 
-  registerShortcutAction('fontDecrease', () => setFontScale(settings.fontScale - FONT_SCALE_STEP));
+  registerShortcutAction('fontDecrease', () => setFontScale(ctx.settings.fontScale - FONT_SCALE_STEP));
 
   registerShortcutAction('fontReset', () => setFontScale(1));
 
@@ -830,18 +830,18 @@ export function initDialogs() {
   });
 
   $('set-editor').onchange = () => {
-    settings.editor = $('set-editor').value;
+    ctx.settings.editor = $('set-editor').value;
     persistSettings();
-    toast(settings.editor ? t('settings.editorSelected', { editor: settings.editor }) : t('settings.editorSystem'));
+    toast(ctx.settings.editor ? t('settings.editorSelected', { editor: ctx.settings.editor }) : t('settings.editorSystem'));
   };
 
   $('set-locale').onchange = () => {
-    settings.locale = $('set-locale').value;
-    setLocale(settings.locale);
+    ctx.settings.locale = $('set-locale').value;
+    setLocale(ctx.settings.locale);
     applyTranslations();
     const firstEditor = $('set-editor').options && $('set-editor').options[0];
     if (firstEditor && firstEditor.value === '') firstEditor.textContent = t('settings.systemEditor');
-    inv('set_native_locale', { locale: settings.locale }).catch(() => {});
+    inv('set_native_locale', { locale: ctx.settings.locale }).catch(() => {});
     persistSettings();
   };
 
@@ -853,9 +853,9 @@ export function initDialogs() {
 
   $('set-session-restore').onchange = () => persistSessionRestoreChoice();
 
-  $('set-font-down').onclick = () => setFontScale(settings.fontScale - FONT_SCALE_STEP);
+  $('set-font-down').onclick = () => setFontScale(ctx.settings.fontScale - FONT_SCALE_STEP);
 
-  $('set-font-up').onclick = () => setFontScale(settings.fontScale + FONT_SCALE_STEP);
+  $('set-font-up').onclick = () => setFontScale(ctx.settings.fontScale + FONT_SCALE_STEP);
 
   $('set-font-reset').onclick = () => setFontScale(1);
 

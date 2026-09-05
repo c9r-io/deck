@@ -1,6 +1,6 @@
 // scheduler.js — scheduled prompts: queue groups, recurring rules, templates
 // Part of deck's no-build frontend: native ES modules, no bundler.
-import { $, inv, listen, state, uev } from './state.js';
+import { $, ctx, inv, listen, state, uev } from './state.js';
 import { blockedBy, chainQuietHint, contextStatusKey, fmtEvery, groupQueue, groupSteps, hasWindow, hmToMin, itemDead, minToHM, nextFire, winHas } from './pure.js';
 export { blockedBy, chainQuietHint, contextStatusKey, fmtEvery, groupQueue, groupSteps, hasWindow, hmToMin, itemDead, minToHM, nextFire, winHas };
 import { confirmDangerDialog, confirmDialog, inlineRename, toast, promptDialog } from './dialogs.js';
@@ -10,11 +10,11 @@ import { formatDateTime, formatInterval, formatNumber, t } from './i18n.js';
 
 /* ---------- scheduled prompts ---------- */
 export async function refreshQueue() {
-  try { queueCache = await inv('queue_list'); } catch (e) { return; }
+  try { ctx.queueCache = await inv('queue_list'); } catch (e) { return; }
   renderQueueUI();
 }
 
-export const sessionQueue = session => queueCache.items.filter(i => i.session === session);
+export const sessionQueue = session => ctx.queueCache.items.filter(i => i.session === session);
 
 export function setQueueChip(chip, card) {
   if (!chip) return;
@@ -85,7 +85,7 @@ const chainWhenSuffix = (i, card) =>
    open panel never gets its DOM (hover/click targets, inline edits) rebuilt.
    The panel is per-session, so every chain head shares one hint. */
 export function updateQuietHints() {
-  if (!queueOpen || state.view !== 'session') return;
+  if (!ctx.queueOpen || state.view !== 'session') return;
   const card = provider.get(state.sessionId);
   if (!card) return;
   const suffix = localizedChainQuietHint(card.idle, card.status !== 'stopped');
@@ -262,7 +262,7 @@ export function renderQueueUI() {
   if (card) {
     const q = sessionQueue(card.session);
     $('queue-cnt').textContent = q.length || '';
-    if (queueOpen) {
+    if (ctx.queueOpen) {
       const list = $('queue-list');
       list.innerHTML = '';
       for (const g of groupQueue(q)) list.appendChild(groupEl(g, card));
@@ -279,16 +279,16 @@ export function renderQueueUI() {
 }
 
 export function toggleQueuePanel(open) {
-  queueOpen = open !== undefined ? open : !queueOpen;
-  $('queue-panel').style.display = queueOpen ? 'flex' : 'none';
-  if (queueOpen) {
+  ctx.queueOpen = open !== undefined ? open : !ctx.queueOpen;
+  $('queue-panel').style.display = ctx.queueOpen ? 'flex' : 'none';
+  if (ctx.queueOpen) {
     const card = provider.get(state.sessionId);
     $('q-when').value = card && sessionQueue(card.session).length ? 'chain' : '300';
     syncSentence();
     renderQueueUI();
     $('q-text').focus();
-  } else if (term) {
-    term.focus();
+  } else if (ctx.term) {
+    ctx.term.focus();
   }
 }
 
@@ -318,7 +318,7 @@ export function projTemplates(card) {
 }
 
 export function setQSrc(tpl) {
-  qTpl = tpl;
+  ctx.qTpl = tpl;
   const btn = $('q-src'), inp = $('q-text');
   if (tpl) {
     btn.textContent = '📋';
@@ -352,7 +352,7 @@ export function showTplPop() {
   };
   const proj = provider.project(card.projectId);
   add('t-head').textContent = t('queue.templatesProject', { project: (proj && proj.name) || '' });
-  if (qTpl) {
+  if (ctx.qTpl) {
     const r = add('t-row', '<span class="t-name"></span>');
     r.querySelector('.t-name').textContent = t('queue.typePrompt');
     r.onclick = () => { setQSrc(null); hideTplPop(); $('q-text').focus(); };
@@ -375,14 +375,14 @@ export function showTplPop() {
       if (name && name !== template.name) {
         const oldName = template.name;
         await provider.renameTemplate(card.projectId, oldName, name);
-        if (qTpl === template) setQSrc({ ...template, name });
+        if (ctx.qTpl === template) setQSrc({ ...template, name });
       }
     };
     r.querySelector('.t-del').onclick = async e => {
       e.stopPropagation();
       if (!(await confirmDialog(t('queue.deleteTemplate', { name: template.name })))) return;
       await provider.deleteTemplate(card.projectId, template.name);
-      if (qTpl === template) setQSrc(null);
+      if (ctx.qTpl === template) setQSrc(null);
       hideTplPop();
     };
   }
@@ -454,18 +454,18 @@ export function initScheduler() {
       session: card.session, cardId: card.id, dir: card.dir, cmd: card.cmd,
     };
     try {
-      if (qTpl) {
-        const steps = qTpl.steps.slice();
+      if (ctx.qTpl) {
+        const steps = ctx.qTpl.steps.slice();
         if (mode === 'every') {
           /* one standing rule holds the whole template; steps 2..N re-enqueue
              as chain items on every fire */
           await inv('queue_add', { args: { ...base, text: steps[0], mode, at: null, every, winFrom, winTo, untilN, untilAt,
-            steps: steps.slice(1), tpl: qTpl.name, tplIdx: 1, tplTotal: steps.length } });
+            steps: steps.slice(1), tpl: ctx.qTpl.name, tplIdx: 1, tplTotal: steps.length } });
         } else {
           for (let k = 0; k < steps.length; k++) {
             await inv('queue_add', { args: { ...base, text: steps[k],
               mode: k === 0 ? mode : 'chain', at: k === 0 ? at : null,
-              tpl: qTpl.name, tplIdx: k + 1, tplTotal: steps.length } });
+              tpl: ctx.qTpl.name, tplIdx: k + 1, tplTotal: steps.length } });
           }
         }
         setQSrc(null);
@@ -485,9 +485,9 @@ export function initScheduler() {
   $('q-text').addEventListener('keydown', e => { if (e.key === 'Enter') $('q-add-btn').click(); });
 
   listen('menu-clear', () => {
-    if (state.view === 'session' && term) {
-      term.clear();
-      if (attachedName) inv('pty_write', { name: attachedName, dataB64: strToB64('\x0c') }).catch(() => {});
+    if (state.view === 'session' && ctx.term) {
+      ctx.term.clear();
+      if (ctx.attachedName) inv('pty_write', { name: ctx.attachedName, dataB64: strToB64('\x0c') }).catch(() => {});
     }
   }).catch(() => uev('listen-fail', 'menu-clear'));
 

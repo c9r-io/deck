@@ -2,8 +2,9 @@
 // Static UNRESOLVED-IDENTIFIER scan for deck's no-build ES modules — NOT a
 // syntax check (CI runs `node --check` for that) and not a behavior test
 // (CI runs `node --test` on ui/test/): every identifier a module uses must
-// be declared in it, imported, a shared globalThis slot (declared in
-// state.js), a vendor global, or a browser built-in. Catches the "forgot an
+// be declared in it, imported, a vendor global, or a browser built-in
+// (shared runtime slots are members of state.js's exported `ctx`, so a bare
+// slot name is exactly the kind of leftover this catches). Catches the "forgot an
 // import during refactor" class before the webview does. Also forbids
 // xterm private API (`._core`) in deck's own code.
 // Runs in CI (test.yml) and exits non-zero on violations.
@@ -107,10 +108,6 @@ function stripped(src) {
   return out.join('');
 }
 
-// shared slots come from state.js's Object.assign(globalThis, {...})
-const stateSrc = readFileSync(join(dir, 'state.js'), 'utf8');
-const slotBlock = stateSrc.match(/Object\.assign\(globalThis, \{([\s\S]*?)\}\);/);
-const SLOTS = new Set([...(slotBlock ? slotBlock[1].matchAll(/^\s*([A-Za-z_$][\w$]*):/gm) : [])].map(m => m[1]));
 
 let bad = 0;
 for (const f of files) {
@@ -173,7 +170,7 @@ for (const f of files) {
   const unknown = new Map();
   for (const m of src.matchAll(/(?<![.\w$])([A-Za-z_$][\w$]*)\b(?!\s*:)/g)) {
     const id = m[1];
-    if (KEYWORDS.has(id) || BROWSER.has(id) || SLOTS.has(id) || declared.has(id)) continue;
+    if (KEYWORDS.has(id) || BROWSER.has(id) || declared.has(id)) continue;
     unknown.set(id, (unknown.get(id) || 0) + 1);
   }
   if (unknown.size) {

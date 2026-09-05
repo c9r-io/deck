@@ -8,7 +8,7 @@
 // item; an item whose card could not be created is left pending and the
 // backend re-announces it, while a duplicate (card already exists) is acked
 // without a second card — so a retry can never double-create.
-import { inv, listen, store, uev } from './state.js';
+import { ctx, inv, listen, store, uev } from './state.js';
 import { provider } from './board.js';
 import { toast } from './dialogs.js';
 import { planInbound } from './pure.js';
@@ -39,7 +39,7 @@ async function ack(id, outcome, code) {
 }
 
 async function handleInbound(item) {
-  const plan = planInbound(item, { cards: store.cards, projects: store.projects, home: HOME });
+  const plan = planInbound(item, { cards: store.cards, projects: store.projects, home: ctx.HOME });
   const badge = item.event.badge;
   if (plan.outcome === 'duplicate') return ack(item.id, 'done', 'duplicate');
   if (plan.outcome === 'no-rule-target') {

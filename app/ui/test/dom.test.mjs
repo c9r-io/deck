@@ -73,7 +73,7 @@ const {
   cfmDone, confirmDangerDialog, confirmDialog, initDialogs, inlineRename, persistSessionRestoreChoice, persistUpdateChannelChoice,
   promptDialog, persistThemeChoice, filterSettings, selectSettingsSection, resetApplicationLogs, refreshLogSize,
 } = await import('../js/dialogs.js');
-const { store } = await import('../js/state.js');
+const { ctx, store } = await import('../js/state.js');
 const { boardData, flushBoardMutations, mutateBoard, mutateBoardDebounced } = await import('../js/persistence.js');
 initDialogs();
 
@@ -214,7 +214,7 @@ test('a high-risk confirmation cannot be accepted by Enter, an ordinary one can'
 });
 
 test('failed theme persistence restores the prior palette and selectors', async () => {
-  globalThis.settings = {
+  ctx.settings = {
     editor: '', locale: 'system', theme: 'deck-dark', accent: 'teal', future: { kept: 1 },
   };
   fakeDocument.getElementById('set-theme').value = 'light';
@@ -224,15 +224,15 @@ test('failed theme persistence restores the prior palette and selectors', async 
     throw new Error('disk full');
   } } };
   await persistThemeChoice();
-  assert.equal(globalThis.settings.theme, 'deck-dark');
-  assert.equal(globalThis.settings.accent, 'teal');
+  assert.equal(ctx.settings.theme, 'deck-dark');
+  assert.equal(ctx.settings.accent, 'teal');
   assert.equal(fakeDocument.getElementById('set-theme').value, 'deck-dark');
   assert.equal(fakeDocument.getElementById('set-accent').value, 'teal');
   assert.equal(fakeDocument.getElementById('set-theme').disabled, false);
 });
 
 test('Nightly requires confirmation before a durable closed-enum save', async () => {
-  globalThis.settings = {
+  ctx.settings = {
     editor: '', locale: 'system', theme: 'deck-dark', accent: 'teal',
     updateChannel: 'stable', future: { kept: 1 },
   };
@@ -248,13 +248,13 @@ test('Nightly requires confirmation before a durable closed-enum save', async ()
   assert.equal(saved, null, 'no Nightly setting is written before consent');
   cfmDone(true);
   await pending;
-  assert.equal(globalThis.settings.updateChannel, 'nightly');
+  assert.equal(ctx.settings.updateChannel, 'nightly');
   assert.equal(saved.updateChannel, 'nightly');
   assert.deepEqual(saved.future, { kept: 1 });
 });
 
 test('channel save failure rolls back and Stable switch never invokes install', async () => {
-  globalThis.settings = {
+  ctx.settings = {
     editor: '', locale: 'system', theme: 'deck-dark', accent: 'teal',
     updateChannel: 'nightly',
   };
@@ -267,12 +267,12 @@ test('channel save failure rolls back and Stable switch never invokes install', 
   await persistUpdateChannelChoice();
   assert.equal(calls.filter(cmd => cmd === 'save_settings').length, 1);
   assert.equal(calls.includes('install_update'), false);
-  assert.equal(globalThis.settings.updateChannel, 'nightly');
+  assert.equal(ctx.settings.updateChannel, 'nightly');
   assert.equal(fakeDocument.getElementById('set-channel').value, 'nightly');
 });
 
 test('disabling shell recovery persists first and then clears every snapshot', async () => {
-  globalThis.settings = {
+  ctx.settings = {
     editor: '', locale: 'system', theme: 'deck-dark', accent: 'teal',
     updateChannel: 'stable', sessionRestore: true,
   };
@@ -284,12 +284,12 @@ test('disabling shell recovery persists first and then clears every snapshot', a
   } } };
   await persistSessionRestoreChoice();
   assert.deepEqual(calls, ['save_settings', 'shell_snapshots_clear']);
-  assert.equal(globalThis.settings.sessionRestore, false);
+  assert.equal(ctx.settings.sessionRestore, false);
   assert.equal(fakeDocument.getElementById('set-session-restore').disabled, false);
 });
 
 test('enabling shell recovery is opt-in and saves only after disclosure', async () => {
-  globalThis.settings = {
+  ctx.settings = {
     editor: '', locale: 'system', theme: 'deck-dark', accent: 'teal',
     updateChannel: 'stable', sessionRestore: false,
   };
@@ -307,7 +307,7 @@ test('enabling shell recovery is opt-in and saves only after disclosure', async 
   cfmDone(true);
   await pending;
   assert.deepEqual(calls, ['save_settings']);
-  assert.equal(globalThis.settings.sessionRestore, true);
+  assert.equal(ctx.settings.sessionRestore, true);
 });
 
 

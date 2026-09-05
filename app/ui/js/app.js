@@ -2,7 +2,7 @@
 // Part of deck's no-build frontend: native ES modules, no bundler.
 import './persistence.js';
 import './board.js';
-import { $, genId, initInputDiagnostics, inv, listen, state, store, uev } from './state.js';
+import { $, ctx, genId, initInputDiagnostics, inv, listen, state, store, uev } from './state.js';
 import { initDialogs, loadSettings, toast } from './dialogs.js';
 import { markSessionsStoppedForServerRestart, migrateColumnSemantics, provider, render, startPolling, stopPolling } from './board.js';
 import { initLayout, leaveSessionView } from './layout.js';
@@ -27,17 +27,17 @@ activateTheme({ theme: 'deck-dark', accent: 'teal' });
 // card/project handlers must still receive the event and open their own menu.
 
 function renderPendingUpdate() {
-  if (!pendingUpdate) return;
+  if (!ctx.pendingUpdate) return;
   const btn = $('update-btn');
-  btn.querySelector('.label').textContent = t('update.available', { version: pendingUpdate.version });
-  btn.title = t('update.availableTitle', { version: pendingUpdate.version });
+  btn.querySelector('.label').textContent = t('update.available', { version: ctx.pendingUpdate.version });
+  btn.title = t('update.availableTitle', { version: ctx.pendingUpdate.version });
 }
 
-function channelLabel(channel = settings.updateChannel) {
+function channelLabel(channel = ctx.settings.updateChannel) {
   return t(channel === 'nightly' ? 'settings.channel.nightly' : 'settings.channel.stable');
 }
 
-export function renderBuildIdentity(identity = buildIdentity) {
+export function renderBuildIdentity(identity = ctx.buildIdentity) {
   const version = identity.version || '?';
   const commit = identity.commit || 'dev';
   $('app-ver').textContent = `v${version} · ${channelLabel()} · ${commit}`;
@@ -61,17 +61,17 @@ function tmuxBuildText(build) {
   return `${build.appVersion || '?'} · ${build.buildIdentifier || '?'} · ${build.source || '?'}`;
 }
 
-function renderTmuxDiagnostics(status = tmuxServerStatus) {
+function renderTmuxDiagnostics(status = ctx.tmuxServerStatus) {
   if (!status) return;
   const pending = !!status.pendingRestart;
   const side = $('tmux-restart-btn');
   side.style.display = pending ? 'flex' : 'none';
-  side.disabled = !!tmuxRestarting;
+  side.disabled = !!ctx.tmuxRestarting;
   side.title = t('tmux.pendingTitle', { count: status.sessionCount || 0 });
-  $('board-new').disabled = pending || tmuxRestarting;
+  $('board-new').disabled = pending || ctx.tmuxRestarting;
 
   $('set-tmux-state').textContent = tmuxStateText(status);
-  $('set-tmux-restart').disabled = !status.canRestart || tmuxRestarting;
+  $('set-tmux-restart').disabled = !status.canRestart || ctx.tmuxRestarting;
   const current = tmuxBuildText(status.currentBuild);
   const server = status.serverBuild ? tmuxBuildText(status.serverBuild) : t('tmux.buildUnknown');
   const pid = status.serverPid == null ? '—' : String(status.serverPid);
@@ -107,7 +107,7 @@ function renderImpactList(status) {
 
 function showTmuxLifecycle(status, manual = false) {
   if (!status) return;
-  tmuxServerStatus = status;
+  ctx.tmuxServerStatus = status;
   const count = status.sessionCount || 0;
   $('tmux-lifecycle-title').textContent = t(manual && !status.pendingRestart
     ? 'tmux.manualTitle' : 'tmux.title');
@@ -128,15 +128,15 @@ function showTmuxLifecycle(status, manual = false) {
 async function refreshTmuxLifecycle({ prompt = false } = {}) {
   if (!window.__TAURI__) return null;
   try {
-    tmuxServerStatus = await inv('tmux_server_status');
+    ctx.tmuxServerStatus = await inv('tmux_server_status');
     renderTmuxDiagnostics();
-    if (tmuxServerStatus.notice) {
-      toast(t(`tmux.notice.${tmuxServerStatus.notice}`));
+    if (ctx.tmuxServerStatus.notice) {
+      toast(t(`tmux.notice.${ctx.tmuxServerStatus.notice}`));
       inv('acknowledge_tmux_lifecycle_notice').catch(() => {});
-      tmuxServerStatus.notice = null;
+      ctx.tmuxServerStatus.notice = null;
     }
-    if (prompt && tmuxServerStatus.shouldPrompt) showTmuxLifecycle(tmuxServerStatus, false);
-    return tmuxServerStatus;
+    if (prompt && ctx.tmuxServerStatus.shouldPrompt) showTmuxLifecycle(ctx.tmuxServerStatus, false);
+    return ctx.tmuxServerStatus;
   } catch (_) {
     return null;
   }
@@ -144,9 +144,9 @@ async function refreshTmuxLifecycle({ prompt = false } = {}) {
 
 async function deferTmuxRestart() {
   $('tmux-lifecycle-modal').style.display = 'none';
-  if (!tmuxServerStatus?.pendingRestart) return;
+  if (!ctx.tmuxServerStatus?.pendingRestart) return;
   try {
-    tmuxServerStatus = await inv('defer_tmux_restart');
+    ctx.tmuxServerStatus = await inv('defer_tmux_restart');
     renderTmuxDiagnostics();
   } catch (_) {
     toast(t('tmux.deferFailed'));
@@ -154,9 +154,9 @@ async function deferTmuxRestart() {
 }
 
 async function restartTmuxServer() {
-  const status = tmuxServerStatus;
-  if (!status || tmuxRestarting) return;
-  tmuxRestarting = true;
+  const status = ctx.tmuxServerStatus;
+  if (!status || ctx.tmuxRestarting) return;
+  ctx.tmuxRestarting = true;
   renderTmuxDiagnostics(status);
   $('tmux-restart').disabled = true;
   $('tmux-later').disabled = true;
@@ -169,7 +169,7 @@ async function restartTmuxServer() {
   markSessionsStoppedForServerRestart();
   render();
   try {
-    tmuxServerStatus = await inv('restart_tmux_server', {
+    ctx.tmuxServerStatus = await inv('restart_tmux_server', {
       expectedPid: status.serverPid || 0,
       expectedStartedAt: status.serverStartedAt || 0,
       expectedImpactToken: status.impactToken || '',
@@ -184,9 +184,9 @@ async function restartTmuxServer() {
     const changed = String(error).includes('impact-changed');
     toast(t(changed ? 'tmux.impactChanged' : 'tmux.restartFailed'));
     await refreshTmuxLifecycle();
-    if (tmuxServerStatus?.pendingRestart) showTmuxLifecycle(tmuxServerStatus, false);
+    if (ctx.tmuxServerStatus?.pendingRestart) showTmuxLifecycle(ctx.tmuxServerStatus, false);
   } finally {
-    tmuxRestarting = false;
+    ctx.tmuxRestarting = false;
     $('tmux-restart').disabled = false;
     $('tmux-later').disabled = false;
     $('tmux-view-sessions').disabled = false;
@@ -201,9 +201,9 @@ export async function checkForUpdate() {
   if (!window.__TAURI__) return;
   if ($('update-btn').disabled) return;   // download/install in progress
   try {
-    const update = await inv('check_for_update', { channel: settings.updateChannel });
+    const update = await inv('check_for_update', { channel: ctx.settings.updateChannel });
     if (!update) return;
-    pendingUpdate = update;
+    ctx.pendingUpdate = update;
     const btn = $('update-btn');
     renderPendingUpdate();
     btn.style.display = 'flex';
@@ -220,15 +220,15 @@ export async function manualUpdateCheck() {
   if (!window.__TAURI__) { say(t('update.unavailableDev')); return; }
   say(t('update.checking'));
   try {
-    const update = await inv('check_for_update', { channel: settings.updateChannel });
+    const update = await inv('check_for_update', { channel: ctx.settings.updateChannel });
     if (update) {
-      pendingUpdate = update;
+      ctx.pendingUpdate = update;
       const btn = $('update-btn');
       btn.querySelector('.label').textContent = t('update.available', { version: update.version });
       btn.style.display = 'flex';
       say(t('update.installHint', { version: update.version }));
     } else {
-      say(t('update.current', { version: buildIdentity.version || '?' }));
+      say(t('update.current', { version: ctx.buildIdentity.version || '?' }));
     }
   } catch (e) {
     say(t('update.checkFailed'));
@@ -257,12 +257,12 @@ export async function boot() {
   await loadSettings();
   await revealThemedWindow();
   try {
-    buildIdentity = await inv('build_identity');
+    ctx.buildIdentity = await inv('build_identity');
   } catch (e) { /* label stays empty */ }
   renderBuildIdentity();
   await refreshTmuxLifecycle({ prompt: true });
   window.addEventListener('deck-update-channel-changed', () => {
-    pendingUpdate = null;
+    ctx.pendingUpdate = null;
     $('update-btn').style.display = 'none';
     renderBuildIdentity();
   });
@@ -273,11 +273,11 @@ export async function boot() {
       label.textContent = t('update.installing');
       return;
     }
-    updateDownloadBytes += Number(data.chunkLength) || 0;
+    ctx.updateDownloadBytes += Number(data.chunkLength) || 0;
     const total = Number(data.contentLength) || 0;
     label.textContent = total
-      ? t('update.downloadingPercent', { percent: Math.min(100, Math.round(updateDownloadBytes / total * 100)) })
-      : t('update.downloadingSize', { size: (updateDownloadBytes / 1048576).toFixed(1) });
+      ? t('update.downloadingPercent', { percent: Math.min(100, Math.round(ctx.updateDownloadBytes / total * 100)) })
+      : t('update.downloadingSize', { size: (ctx.updateDownloadBytes / 1048576).toFixed(1) });
   }).catch(() => uev('listen-fail', 'update-download-progress'));
   try {
     await listen('deck-ping', () => uev('ping-recv'));
@@ -286,7 +286,7 @@ export async function boot() {
     uev('ping-fail');
   }
   inv('storage_warnings').then(ws => (ws || []).forEach(w => toast(translateNotice(w)))).catch(() => {});
-  HOME = await inv('default_dir').catch(() => '~');
+  ctx.HOME = await inv('default_dir').catch(() => '~');
   const ok = await inv('tmux_available').catch(() => false);
   if (!ok) $('banner').style.display = 'block';
 
@@ -387,15 +387,15 @@ function wireChrome() {
   $('set-check').onclick = () => manualUpdateCheck();
 
   $('update-btn').onclick = async () => {
-    if (!pendingUpdate) return;
+    if (!ctx.pendingUpdate) return;
     const btn = $('update-btn');
     const label = btn.querySelector('.label');
     btn.disabled = true;
-    updateDownloadBytes = 0;
+    ctx.updateDownloadBytes = 0;
     try {
       await inv('install_update', {
-        channel: settings.updateChannel,
-        expectedVersion: pendingUpdate.version,
+        channel: ctx.settings.updateChannel,
+        expectedVersion: ctx.pendingUpdate.version,
       });
       label.textContent = t('update.restarting');
       await inv('relaunch_after_update');

@@ -166,7 +166,7 @@ fn debug_logging_is_command_line_only_and_stays_structured() {
         "settings.json must not enable diagnostics"
     );
     assert!(
-        all.contains("if (window.__DECK_DEBUG) uev("),
+        all.contains("if (globalThis.window?.__DECK_DEBUG) uev("),
         "debug logging must route through the structured event channel"
     );
 }

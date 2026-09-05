@@ -1,6 +1,6 @@
 // layout.js — split-tree layout, pane lifecycle, terminal creation, session view
 // Part of deck's no-build frontend: native ES modules, no bundler.
-import { $, dotTitle, duev, inv, listen, setMemChip, state, store, uev } from './state.js';
+import { $, ctx, dotTitle, duev, inv, listen, setMemChip, state, store, uev } from './state.js';
 import { inlineRename, toast } from './dialogs.js';
 import { t } from './i18n.js';
 import { panes, pollNow, provider, render, renderSidebar, updateSidebarSelection, activeProject } from './board.js';
@@ -223,9 +223,9 @@ export function createPane(card) {
   } catch (e) { uev('clipboard-addon-fail'); }
   term.open(body);
 
-  if (!ghostEl) {
-    ghostEl = document.createElement('div');
-    ghostEl.id = 'ghost';
+  if (!ctx.ghostEl) {
+    ctx.ghostEl = document.createElement('div');
+    ctx.ghostEl.id = 'ghost';
   }
   /* echo arrives asynchronously — reposition after each parsed write */
   const pane = { sid: card.id, session, el, body, term, fit, seps: [] };
@@ -250,7 +250,7 @@ export function createPane(card) {
 
   term.onWriteParsed(() => {
     if (pane.scrollCursorVisible === false) pane.stripScrollCursor?.();
-    if (ghostRemainder && attachedName === session) updateGhost();
+    if (ctx.ghostRemainder && ctx.attachedName === session) updateGhost();
     positionSeparators(pane);
     pane.selection?.writeParsed();
   });
@@ -272,7 +272,7 @@ export function createPane(card) {
     e.stopPropagation();
     closePaneBySid(pane.sid);
   };
-  body.addEventListener('mousedown', () => { if (attachedName !== session) focusPane(session); });
+  body.addEventListener('mousedown', () => { if (ctx.attachedName !== session) focusPane(session); });
 
   /* drag a card (from sidebar or board) onto a pane edge to split (方案 A);
      an EXTERNAL file drag (Finder, the screenshot floating thumbnail) is a
@@ -363,7 +363,7 @@ export function addInputSeparator(pane) {
   try {
     const t = pane.term;
     const marker = t.registerMarker(0);
-    if (!marker) { if (sepLogged < 5) { sepLogged++; uev('separator', 'no-marker'); } return; }
+    if (!marker) { if (ctx.sepLogged < 5) { ctx.sepLogged++; uev('separator', 'no-marker'); } return; }
     const el = document.createElement('div');
     el.style.cssText = 'position:absolute; left:0; right:0; height:1px;' +
       'background:var(--input-separator); pointer-events:none; z-index:4; display:none;';
@@ -380,10 +380,10 @@ export function addInputSeparator(pane) {
       const i = pane.seps.indexOf(entry);
       if (i >= 0) pane.seps.splice(i, 1);
     });
-    if (sepLogged < 5) { sepLogged++; uev('separator', 'at', marker.line); }
+    if (ctx.sepLogged < 5) { ctx.sepLogged++; uev('separator', 'at', marker.line); }
     positionSeparators(pane);
   } catch (e) {
-    if (sepLogged < 5) { sepLogged++; uev('separator', 'fail'); }
+    if (ctx.sepLogged < 5) { ctx.sepLogged++; uev('separator', 'fail'); }
   }
 }
 
@@ -475,14 +475,14 @@ export function wireTerminalInput(pane, term, host) {
     const isAutoReply = AUTO_REPLY.test(d);
     const pasteAttempt = isAutoReply ? null : pane.pasteTrace.onData(d.length);
     /* the input mirror / completion only tracks the focused pane */
-    if (!isAutoReply && attachedName === session) {
+    if (!isAutoReply && ctx.attachedName === session) {
       if (d.includes('\x1b') && escLogged < 5) {
         escLogged++;
         /* control replies (ESC-prefixed) are loggable; anything else could be
            typed/pasted user text — length only */
         duev('mirror-desync', d.startsWith('\x1b') ? 'esc' : 'plain', d.length);
       }
-      const preDesynced = lineBuf === null;
+      const preDesynced = ctx.lineBuf === null;
       const completed = feedMirror(d);
       if (completed) maybeRecordCommand(completed);
       /* separator on submit — SHELLS ONLY: markers assume append-scroll
@@ -496,7 +496,7 @@ export function wireTerminalInput(pane, term, host) {
       renderSuggest();
       if (odLogged < 3) {
         odLogged++;
-        duev('ondata', lineBuf === null ? 'desync' : 'ok', d.length, lineBuf === null ? -1 : lineBuf.length);
+        duev('ondata', ctx.lineBuf === null ? 'desync' : 'ok', d.length, ctx.lineBuf === null ? -1 : ctx.lineBuf.length);
       }
     }
     /* typing while the view is frozen in scrollback: leave copy-mode FIRST
@@ -611,23 +611,23 @@ export function wireTerminalInput(pane, term, host) {
       return false;
     }
     /* ghost suggestion: Tab or → applies it in place; Esc dismisses */
-    if (e.type === 'keydown' && ghostRemainder) {
+    if (e.type === 'keydown' && ctx.ghostRemainder) {
       if (e.key === 'Tab' || e.key === 'ArrowRight') {
         e.preventDefault();
         acceptGhost();
         return false;
       }
       if (e.key === 'Escape') {
-        lineBuf = null;
-        freshShell = false;
+        ctx.lineBuf = null;
+        ctx.freshShell = false;
         renderSuggest();
         return false;
       }
     }
     if (e.type === 'keydown' && e.key === 'Escape'
         && $('quick-bar').style.display === 'flex') {
-      lineBuf = null;
-      freshShell = false;
+      ctx.lineBuf = null;
+      ctx.freshShell = false;
       renderSuggest();
       return false;
     }
@@ -650,7 +650,7 @@ export function wireTerminalInput(pane, term, host) {
       const matches = tokenizeTerminalLinks(text);
       if (!matches.length) return cb(undefined);
       const c = card();
-      const cwd = c ? c.dir : HOME;
+      const cwd = c ? c.dir : ctx.HOME;
       const pathMatches = matches.filter(match => match.kind === 'path');
       const validation = pathMatches.length
         ? inv('terminal_paths_exist', { values: pathMatches.map(match => match.value), cwd })
@@ -675,7 +675,7 @@ export function wireTerminalInput(pane, term, host) {
               e.stopPropagation();
               try { term.clearSelection(); } catch (e2) { /* fine */ }
               const c = card();
-              showLinkCtx(e, kind, txt, c ? c.dir : HOME, c ? c.id : null);
+              showLinkCtx(e, kind, txt, c ? c.dir : ctx.HOME, c ? c.id : null);
             },
           });
         }
@@ -740,7 +740,7 @@ export function fitAll() {
         if (p.selection) p.selection.resize();
       } catch (e) { /* pane mid-teardown */ }
     });
-    if (ghostRemainder) updateGhost();
+    if (ctx.ghostRemainder) updateGhost();
     panes.forEach(positionSeparators);
   });
 }
@@ -788,7 +788,7 @@ export function buildNode(node, parent, grow) {
 export function renderLayout() {
   const host = $('terminal');
   host.innerHTML = '';
-  if (layout) buildNode(layout, host, 1);
+  if (ctx.layout) buildNode(ctx.layout, host, 1);
   fitAll();
 }
 
@@ -833,16 +833,16 @@ export function goLive(session) {
 export function focusPane(session) {
   const p = panes.get(session);
   if (!p) return;
-  const changed = attachedName !== session;
-  const previous = changed && attachedName ? panes.get(attachedName) : null;
+  const changed = ctx.attachedName !== session;
+  const previous = changed && ctx.attachedName ? panes.get(ctx.attachedName) : null;
   if (previous && hasTerminalSelection(previous)) cancelTerminalSelection(previous, 'focus');
-  attachedName = session;
-  term = p.term;
+  ctx.attachedName = session;
+  ctx.term = p.term;
   panes.forEach(q => q.el.classList.toggle('focus', q === p));
   state.sessionId = p.sid;
   if (changed) resetSuggest(p);
   else mountQuickBar(p);
-  if (ghostEl && ghostEl.parentElement !== p.body) p.body.appendChild(ghostEl);
+  if (ctx.ghostEl && ctx.ghostEl.parentElement !== p.body) p.body.appendChild(ctx.ghostEl);
   renderSessionView();
   updateSidebarSelection();
   p.term.focus();
@@ -860,7 +860,7 @@ export async function ensureAttached(pane) {
     if (card.status === 'stopped') {
       const started = await inv('start_session', {
         name: card.session, dir: card.dir, cmd: card.cmd,
-        restoreShell: !!settings.sessionRestore,
+        restoreShell: !!ctx.settings.sessionRestore,
       });
       outcome.created = !!started.created;
       outcome.restored = !!started.restored;
@@ -869,7 +869,7 @@ export async function ensureAttached(pane) {
     /* max(): the first pty-data event can arrive BEFORE this invoke resolves;
        the handler below already advanced ptyGens then, and regressing it
        would make us drop (and never ACK) the current stream */
-    ptyGens.set(card.session, Math.max(ptyGens.get(card.session) || 0, gen));
+    ctx.ptyGens.set(card.session, Math.max(ctx.ptyGens.get(card.session) || 0, gen));
     if (outcome.restored) toast(t('session.restored'));
   } catch (e) {
     toast(t('error.attach'));
@@ -879,24 +879,24 @@ export async function ensureAttached(pane) {
 
 export async function addSplit(targetSid, dir, before, newSid) {
   const card = provider.get(newSid);
-  if (!card || state.view !== 'session' || !layout) return;
+  if (!card || state.view !== 'session' || !ctx.layout) return;
   if (newSid === targetSid) return;
   /* already open in a pane → this is a MOVE: pluck the leaf and re-insert
      at the drop position; the terminal instance is reused untouched */
   if (panes.has(card.session)) {
-    if (!collectLeaves(layout).includes(newSid)) { focusPane(card.session); return; }
-    layout = removeFromLayout(layout, newSid);
-    layout = splitAt(layout, targetSid, dir, newSid, before);
+    if (!collectLeaves(ctx.layout).includes(newSid)) { focusPane(card.session); return; }
+    ctx.layout = removeFromLayout(ctx.layout, newSid);
+    ctx.layout = splitAt(ctx.layout, targetSid, dir, newSid, before);
     renderLayout();
     focusPane(card.session);
     return;
   }
   const pane = createPane(card);
-  layout = splitAt(layout, targetSid, dir, newSid, before);
+  ctx.layout = splitAt(ctx.layout, targetSid, dir, newSid, before);
   renderLayout();
   const { created, restored } = await ensureAttached(pane);
   if (created && !restored) setTimeout(() => inv('clear_history', { name: card.session }).catch(() => {}), 900);
-  freshShell = created && !card.cmd.trim();
+  ctx.freshShell = created && !card.cmd.trim();
   focusPane(card.session);
   pollNow();
 }
@@ -915,15 +915,15 @@ export function closePaneBySid(sid, opts = {}) {
   if (quickBar && entry.el.contains(quickBar)) $('session-view').appendChild(quickBar);
   entry.el.remove();
   panes.delete(entry.session);
-  ptyGens.delete(entry.session);
-  layout = removeFromLayout(layout, sid);
-  if (!layout || !collectLeaves(layout).length) {
+  ctx.ptyGens.delete(entry.session);
+  ctx.layout = removeFromLayout(ctx.layout, sid);
+  if (!ctx.layout || !collectLeaves(ctx.layout).length) {
     backToBoard();
     return;
   }
   renderLayout();
-  if (attachedName === entry.session) {
-    const nextSid = collectLeaves(layout)[0];
+  if (ctx.attachedName === entry.session) {
+    const nextSid = collectLeaves(ctx.layout)[0];
     const c = provider.get(nextSid);
     if (c) focusPane(c.session);
   }
@@ -933,7 +933,7 @@ export function closePaneBySid(sid, opts = {}) {
 export function showSplitPicker(dir) {
   if (state.view !== 'session' || !state.sessionId) return;
   const targetSid = state.sessionId;
-  const openSids = new Set(collectLeaves(layout));
+  const openSids = new Set(collectLeaves(ctx.layout));
   const candidates = store.cards.filter(c => !openSids.has(c.id));
   const order = { attention: 0, done: 1, running: 1, waiting: 1, stopped: 2 };
   candidates.sort((a, b) => order[a.status] - order[b.status]);
@@ -972,7 +972,7 @@ export function showSplitPicker(dir) {
         columnId: (p.columns.find(x => x.semantic === 'working') || p.columns[0]).id,
         title: nextShellTitle(p),
         cmd: '',
-        dir: focused ? focused.dir : HOME,
+        dir: focused ? focused.dir : ctx.HOME,
       });
       addSplit(targetSid, dir, false, c.id);
     }
@@ -1004,16 +1004,16 @@ export async function openSession(sid) {
   toggleQueuePanel(false);
   render();
   const pane = createPane(card);
-  layout = leafOf(sid);
+  ctx.layout = leafOf(sid);
   renderLayout();
   const { created, restored } = await ensureAttached(pane);
   if (created && !restored) setTimeout(() => inv('clear_history', { name: card.session }).catch(() => {}), 900);
-  freshShell = created && !card.cmd.trim();
+  ctx.freshShell = created && !card.cmd.trim();
   focusPane(card.session);
   /* history feeds both the fresh-shell chips and typed-prefix completion */
   inv('recent_commands', { limit: 50 })
-    .then(c => { histCache = c; renderSuggest(); })
-    .catch(() => { histCache = []; });
+    .then(c => { ctx.histCache = c; renderSuggest(); })
+    .catch(() => { ctx.histCache = []; });
   pollNow();
 }
 
@@ -1032,9 +1032,9 @@ export function leaveSessionView() {
     p.el.remove();
   });
   panes.clear();
-  layout = null;
-  attachedName = null;
-  term = null;
+  ctx.layout = null;
+  ctx.attachedName = null;
+  ctx.term = null;
 }
 
 export function backToBoard() {
@@ -1079,8 +1079,8 @@ export function initLayout() {
   });
 
   new ResizeObserver(() => {
-    clearTimeout(resizeTimer);
-    resizeTimer = setTimeout(fitAll, 80);
+    clearTimeout(ctx.resizeTimer);
+    ctx.resizeTimer = setTimeout(fitAll, 80);
   }).observe(document.getElementById('terminal'));
 
   $('split-right').onclick = e => { e.stopPropagation(); showSplitPicker('row'); };
@@ -1096,15 +1096,15 @@ export function initLayout() {
     /* flow control: drop a stale attachment's tail (its gate is already
        closed backend-side — no ACK owed); a NEWER gen means our attach invoke
        hasn't resolved yet — accept it and advance, or the first paint is lost */
-    const cur = ptyGens.get(name) || 0;
+    const cur = ctx.ptyGens.get(name) || 0;
     if (gen < cur) return;
-    if (gen > cur) ptyGens.set(name, gen);
+    if (gen > cur) ctx.ptyGens.set(name, gen);
     const p = panes.get(name);
     if (p) {
       const u8 = b64ToU8(data);
-      rxBytes += u8.length;
-      if (rxLogged < 3 || rxLogged % 200 === 0) uev('pty-rx', null, u8.length, rxBytes);
-      rxLogged++;
+      ctx.rxBytes += u8.length;
+      if (ctx.rxLogged < 3 || ctx.rxLogged % 200 === 0) uev('pty-rx', null, u8.length, ctx.rxBytes);
+      ctx.rxLogged++;
       /* ACK only after xterm has actually consumed the bytes — this is what
          bounds the backend's in-flight window (see pty.rs) */
       p.term.write(u8, () => inv('pty_ack', { name, gen, seq }).catch(() => {}));

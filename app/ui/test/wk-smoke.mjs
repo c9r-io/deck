@@ -2,7 +2,7 @@
 // app was launched with --smoke-wkwebview and an isolated --smoke-data-dir.
 // The release gate also runs `node --test app/ui/test/*.mjs`; defer production
 // DOM imports so Node can load this carrier without fabricating a browser.
-let $, inv, state, store, panes, provider, render, pollNow, boardData;
+let $, ctx, inv, state, store, panes, provider, render, pollNow, boardData;
 let renameCardInline, renderSuggest, resetSuggest;
 let showLinkCtx, toggleSidebar, addSplit, backToBoard, openSession, strToB64;
 let closePaneBySid, focusPane, cancelTerminalSelection, copyTerminalSelection;
@@ -10,7 +10,7 @@ let refreshQueue, toggleQueuePanel;
 let activateTheme, persistThemeChoice, applyFontScale, getFontScale;
 let terminalLogicalLine, tokenizeTerminalLinks;
 if (typeof window !== 'undefined') {
-  ({ $, inv, state, store } = await import('../js/state.js'));
+  ({ $, ctx, inv, state, store } = await import('../js/state.js'));
   ({ panes, provider, render, pollNow } = await import('../js/board.js'));
   ({ boardData } = await import('../js/persistence.js'));
   ({
@@ -132,25 +132,25 @@ async function themeSmoke(card) {
   }
   await report('theme-switch', mask === 7, mask, panes.size);
 
-  const originalTheme = settings.theme;
-  const originalAccent = settings.accent;
-  activateTheme(settings);
+  const originalTheme = ctx.settings.theme;
+  const originalAccent = ctx.settings.accent;
+  activateTheme(ctx.settings);
   $('set-theme').value = originalTheme === 'light' ? 'deck-dark' : 'light';
   $('set-accent').value = originalAccent === 'purple' ? 'teal' : 'purple';
   await inv('smoke_fault_set', { kind: 'settings-save', count: 1 });
   await persistThemeChoice();
-  const rolledBack = settings.theme === originalTheme && settings.accent === originalAccent
+  const rolledBack = ctx.settings.theme === originalTheme && ctx.settings.accent === originalAccent
     && $('set-theme').value === originalTheme && $('set-accent').value === originalAccent
     && document.documentElement.dataset.theme === originalTheme
-    && pane.term.options.theme.background === activateTheme(settings).terminal.background;
+    && pane.term.options.theme.background === activateTheme(ctx.settings).terminal.background;
   await report('theme-rollback', rolledBack, rolledBack ? 1 : 0, panes.size);
 
-  const scaleBeforeShortcut = settings.fontScale;
+  const scaleBeforeShortcut = ctx.settings.fontScale;
   document.dispatchEvent(new KeyboardEvent('keydown', {
     key: ';', code: 'Semicolon', metaKey: true, shiftKey: true,
     bubbles: true, cancelable: true,
   }));
-  const jisIncreased = await waitFor(() => settings.fontScale
+  const jisIncreased = await waitFor(() => ctx.settings.fontScale
     === Math.min(1.6, Number((scaleBeforeShortcut + 0.1).toFixed(1))), 3000);
   applyFontScale(1.6);
   await pause(80);
@@ -189,7 +189,7 @@ async function themeSmoke(card) {
     | (textControlsFit ? 32 : 0) | (sessionReflows ? 64 : 0);
   await report('font-layout', fontLayoutMask === 127, fontLayoutMask, 127);
   $('set-close').click();
-  applyFontScale(settings.fontScale);
+  applyFontScale(ctx.settings.fontScale);
 }
 
 async function renameSmoke(card) {
@@ -696,7 +696,7 @@ async function selectionSmoke(card) {
   const neighborAfter = neighbor && await inv('terminal_metrics', { name: neighbor.session });
   await report('selection-split', !neighbor || (!neighborBefore.in_copy_mode
     && !neighborAfter.in_copy_mode && neighborAfter.pane_rows === neighbor.term.rows
-    && attachedName === pane.session), neighborAfter?.pane_rows || 0, 0);
+    && ctx.attachedName === pane.session), neighborAfter?.pane_rows || 0, 0);
 
   const neighborSid = neighbor?.sid;
   rect = screen.getBoundingClientRect();
@@ -1045,9 +1045,9 @@ async function completionSmoke(card, project, column) {
   const rowsBefore = pane.term.rows;
   const historyPresent = historyMetrics.history_rows > 20;
   const promptAtBottom = pane.term.buffer.active.cursorY >= rowsBefore - 2;
-  globalThis.histCache = ['echo one', 'echo two', 'echo three'];
-  globalThis.lineBuf = 'ec';
-  globalThis.freshShell = false;
+  ctx.histCache = ['echo one', 'echo two', 'echo three'];
+  ctx.lineBuf = 'ec';
+  ctx.freshShell = false;
   renderSuggest();
   await pause(450);
   const bar = $('quick-bar').getBoundingClientRect();
@@ -1077,7 +1077,7 @@ async function completionSmoke(card, project, column) {
   resetSuggest();
   await pause(250);
   const scrollBefore = await inv('scroll_session', { name: card.session, lines: -12 });
-  globalThis.lineBuf = 'ec';
+  ctx.lineBuf = 'ec';
   renderSuggest();
   await pause(350);
   const scrollAfter = await inv('scroll_session', { name: card.session, lines: 0 });
@@ -1097,13 +1097,13 @@ async function completionSmoke(card, project, column) {
   await pause(350);
 
   const longPrefix = 'echo ' + '宽😀'.repeat(80);
-  globalThis.histCache = [longPrefix + ' tail'];
+  ctx.histCache = [longPrefix + ' tail'];
   for (let i = 0; i < 4; i++) {
-    globalThis.lineBuf = longPrefix;
+    ctx.lineBuf = longPrefix;
     renderSuggest();
     resetSuggest();
   }
-  globalThis.lineBuf = longPrefix;
+  ctx.lineBuf = longPrefix;
   renderSuggest();
   await pause(350);
   const longBar = $('quick-bar').getBoundingClientRect();
@@ -1132,9 +1132,9 @@ async function completionOwnerSmoke(card) {
   }
   const show = pane => {
     focusPane(pane.session);
-    globalThis.histCache = ['echo owner transition'];
-    globalThis.lineBuf = 'ec';
-    globalThis.freshShell = false;
+    ctx.histCache = ['echo owner transition'];
+    ctx.lineBuf = 'ec';
+    ctx.freshShell = false;
     renderSuggest();
   };
   show(paneA); show(paneB); show(paneA);
@@ -1264,8 +1264,8 @@ export async function verifySettings() {
     }
     await report('settings-viewport', passed === 24, passed, 24);
     box.style.width = ''; box.style.height = '';
-    applyFontScale(settings.fontScale);
-    setLocale(settings.locale);
+    applyFontScale(ctx.settings.fontScale);
+    setLocale(ctx.settings.locale);
     selectSettingsSection('data');
     await report('done', !smokeFailed);
   } catch (_) {

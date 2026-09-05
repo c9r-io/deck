@@ -1,4 +1,5 @@
 // shortcuts.js — customizable, layout-independent app shortcut routing.
+import { ctx } from './state.js';
 import { isComposingKeyEvent } from './pure.js';
 import { DEFAULT_SHORTCUTS, SHORTCUT_ACTIONS, normalizeShortcutBinding } from './settings-model.js';
 
@@ -99,7 +100,7 @@ function modalOpen() {
 if (typeof document !== 'undefined') {
   document.addEventListener('keydown', event => {
     if (event.target?.closest?.('.shortcut-capture')) return;
-    const action = shortcutActionForEvent(event, globalThis.settings?.shortcuts);
+    const action = shortcutActionForEvent(event, ctx.settings?.shortcuts);
     const handler = action && handlers.get(action);
     if (!handler) return;
     const editable = event.target?.closest?.('input, textarea, select, [contenteditable="true"]');
