@@ -12,12 +12,6 @@ import { getTerminalTheme, onThemeChange, syncThemeIntegrations } from './theme.
 import { getFontScale, onFontScaleChange, TERMINAL_BASE_FONT_SIZE } from './font-scale.js';
 import { registerShortcutAction } from './shortcuts.js';
 
-onThemeChange(({ terminal }) => panes.forEach(pane => { pane.term.options.theme = terminal; }));
-onFontScaleChange(scale => {
-  panes.forEach(pane => { pane.term.options.fontSize = TERMINAL_BASE_FONT_SIZE * scale; });
-  fitAll();
-});
-
 /* ----- layout tree helpers ----- */
 export const leafOf = sid => ({ type: 'leaf', sid });
 
@@ -750,10 +744,6 @@ export function fitAll() {
     panes.forEach(positionSeparators);
   });
 }
-new ResizeObserver(() => {
-  clearTimeout(resizeTimer);
-  resizeTimer = setTimeout(fitAll, 80);
-}).observe(document.getElementById('terminal'));
 
 export function buildNode(node, parent, grow) {
   if (node.type === 'leaf') {
@@ -993,45 +983,10 @@ export function showSplitPicker(dir) {
   ctx.style.left = Math.min(r.left, innerWidth - ctx.offsetWidth - 8) + 'px';
   ctx.style.top = (r.bottom + 6) + 'px';
 }
-$('split-right').onclick = e => { e.stopPropagation(); showSplitPicker('row'); };
-$('split-down').onclick = e => { e.stopPropagation(); showSplitPicker('col'); };
-registerShortcutAction('splitRight', () => showSplitPicker('row'));
-registerShortcutAction('splitDown', () => showSplitPicker('col'));
 
 /* NOTE: listen() requires the core:event permission in
    src-tauri/capabilities/default.json — without it registration is refused
    with a silent promise rejection and the terminal never receives output. */
-listen('pty-data', ev => {
-  const { name, gen, seq, data } = ev.payload;
-  /* flow control: drop a stale attachment's tail (its gate is already
-     closed backend-side — no ACK owed); a NEWER gen means our attach invoke
-     hasn't resolved yet — accept it and advance, or the first paint is lost */
-  const cur = ptyGens.get(name) || 0;
-  if (gen < cur) return;
-  if (gen > cur) ptyGens.set(name, gen);
-  const p = panes.get(name);
-  if (p) {
-    const u8 = b64ToU8(data);
-    rxBytes += u8.length;
-    if (rxLogged < 3 || rxLogged % 200 === 0) uev('pty-rx', null, u8.length, rxBytes);
-    rxLogged++;
-    /* ACK only after xterm has actually consumed the bytes — this is what
-       bounds the backend's in-flight window (see pty.rs) */
-    p.term.write(u8, () => inv('pty_ack', { name, gen, seq }).catch(() => {}));
-  } else {
-    /* pane already gone but the stream still current: ACK so the emitter
-       reaches its natural end instead of waiting on a window we'll never fill */
-    inv('pty_ack', { name, gen, seq }).catch(() => {});
-  }
-}).catch(() => uev('listen-fail', 'pty-data'));
-listen('pty-exit', ev => {
-  const pane = panes.get(ev.payload.name);
-  if (pane) {
-    cancelTerminalSelection(pane, 'exit');
-    toast(t('session.ended'));
-    pollNow();
-  }
-}).catch(() => uev('listen-fail', 'pty-exit'));
 
 /* ---------- session view ---------- */
 export async function openSession(sid) {
@@ -1111,4 +1066,61 @@ export function renderSessionView() {
   };
   setMemChip($('sess-mem'), s);
   $('sess-path').textContent = (s.cmd ? '$ ' + s.cmd + '  ·  ' : '') + s.dir;
+}
+
+/* DOM wiring, run once at boot (app.js) so the module can be imported
+   without a document. */
+export function initLayout() {
+  onThemeChange(({ terminal }) => panes.forEach(pane => { pane.term.options.theme = terminal; }));
+
+  onFontScaleChange(scale => {
+    panes.forEach(pane => { pane.term.options.fontSize = TERMINAL_BASE_FONT_SIZE * scale; });
+    fitAll();
+  });
+
+  new ResizeObserver(() => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(fitAll, 80);
+  }).observe(document.getElementById('terminal'));
+
+  $('split-right').onclick = e => { e.stopPropagation(); showSplitPicker('row'); };
+
+  $('split-down').onclick = e => { e.stopPropagation(); showSplitPicker('col'); };
+
+  registerShortcutAction('splitRight', () => showSplitPicker('row'));
+
+  registerShortcutAction('splitDown', () => showSplitPicker('col'));
+
+  listen('pty-data', ev => {
+    const { name, gen, seq, data } = ev.payload;
+    /* flow control: drop a stale attachment's tail (its gate is already
+       closed backend-side — no ACK owed); a NEWER gen means our attach invoke
+       hasn't resolved yet — accept it and advance, or the first paint is lost */
+    const cur = ptyGens.get(name) || 0;
+    if (gen < cur) return;
+    if (gen > cur) ptyGens.set(name, gen);
+    const p = panes.get(name);
+    if (p) {
+      const u8 = b64ToU8(data);
+      rxBytes += u8.length;
+      if (rxLogged < 3 || rxLogged % 200 === 0) uev('pty-rx', null, u8.length, rxBytes);
+      rxLogged++;
+      /* ACK only after xterm has actually consumed the bytes — this is what
+         bounds the backend's in-flight window (see pty.rs) */
+      p.term.write(u8, () => inv('pty_ack', { name, gen, seq }).catch(() => {}));
+    } else {
+      /* pane already gone but the stream still current: ACK so the emitter
+         reaches its natural end instead of waiting on a window we'll never fill */
+      inv('pty_ack', { name, gen, seq }).catch(() => {});
+    }
+  }).catch(() => uev('listen-fail', 'pty-data'));
+
+  listen('pty-exit', ev => {
+    const pane = panes.get(ev.payload.name);
+    if (pane) {
+      cancelTerminalSelection(pane, 'exit');
+      toast(t('session.ended'));
+      pollNow();
+    }
+  }).catch(() => uev('listen-fail', 'pty-exit'));
 }

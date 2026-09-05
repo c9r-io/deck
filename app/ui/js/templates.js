@@ -244,78 +244,89 @@ async function commitName() {
   renderTemplates();
 }
 
-$('board-tpl').onclick = () => openTemplates();
-$('tpl-done').onclick = () => closeTemplates();
-$('tpl-modal').addEventListener('mousedown', event => {
-  if (event.target === $('tpl-modal')) closeTemplates();
-});
-$('tpl-search').addEventListener('input', () => renderTemplates());
-$('tpl-name').addEventListener('change', () => commitName());
-$('tpl-step-add').onclick = () => addStep();
-$('tpl-step-text').addEventListener('keydown', event => {
-  if (event.key !== 'Enter') return;
-  if (event.isComposing || event.keyCode === 229) return;   // IME commit, not submit
-  addStep();
-});
-
-$('tpl-new').onclick = async () => {
-  const all = templates();
-  if (all.length >= TEMPLATES_MAX) {
-    toast(t('templates.maxTemplates', { max: formatNumber(TEMPLATES_MAX) }));
-    return;
-  }
-  const name = nextTemplateName(t('templates.newName'), all);
-  if (!(await persist(name, []))) return;
-  selected = name;
-  $('tpl-search').value = '';
-  renderTemplates();
-  $('tpl-name').focus();
-  $('tpl-name').select();
-};
-
-$('tpl-delete').onclick = async () => {
-  const tpl = current();
-  if (!tpl) return;
-  const used = inboundRulesUsingTemplate(inboundRules(), projectId, tpl.name);
-  const message = used
-    ? t('templates.inboundDelete', { name: tpl.name, count: formatNumber(used) })
-    : t('queue.deleteTemplate', { name: tpl.name });
-  if (!(await confirmDialog(message))) return;
-  try {
-    await provider.deleteTemplate(projectId, tpl.name);
-    selected = null;   // a failed delete keeps the template selected
-  } catch (_) {
-    toast(t('error.templateSave'));
-  }
-  renderTemplates();
-  $('tpl-new').focus();
-};
-
 /* Same modal contract as Settings: Escape closes (unless a confirm/prompt
    owns the keyboard), Tab stays inside the dialog. */
-$('tpl-box').addEventListener('keydown', event => {
-  if (['cfm', 'ppd'].some(id => $(id).style.display === 'flex')) return;
-  if (event.key === 'Escape') {
-    event.preventDefault();
-    event.stopPropagation();
-    if ($('tpl-search').value) {
-      $('tpl-search').value = '';
-      renderTemplates();
-      $('tpl-search').focus();
-    } else closeTemplates();
-  }
-  if (event.key === 'Tab') {
-    const controls = [...$('tpl-box').querySelectorAll('button, input, [tabindex="0"]')]
-      .filter(control => !control.disabled && control.getClientRects().length);
-    const first = controls[0], last = controls[controls.length - 1];
-    if (event.shiftKey && document.activeElement === first) {
-      event.preventDefault();
-      last.focus();
-    } else if (!event.shiftKey && document.activeElement === last) {
-      event.preventDefault();
-      first.focus();
-    }
-  }
-});
 
-onLocaleChange(() => renderTemplates());
+/* DOM wiring, run once at boot (app.js) so the module can be imported
+   without a document. */
+export function initTemplates() {
+  $('board-tpl').onclick = () => openTemplates();
+
+  $('tpl-done').onclick = () => closeTemplates();
+
+  $('tpl-modal').addEventListener('mousedown', event => {
+    if (event.target === $('tpl-modal')) closeTemplates();
+  });
+
+  $('tpl-search').addEventListener('input', () => renderTemplates());
+
+  $('tpl-name').addEventListener('change', () => commitName());
+
+  $('tpl-step-add').onclick = () => addStep();
+
+  $('tpl-step-text').addEventListener('keydown', event => {
+    if (event.key !== 'Enter') return;
+    if (event.isComposing || event.keyCode === 229) return;   // IME commit, not submit
+    addStep();
+  });
+
+  $('tpl-new').onclick = async () => {
+    const all = templates();
+    if (all.length >= TEMPLATES_MAX) {
+      toast(t('templates.maxTemplates', { max: formatNumber(TEMPLATES_MAX) }));
+      return;
+    }
+    const name = nextTemplateName(t('templates.newName'), all);
+    if (!(await persist(name, []))) return;
+    selected = name;
+    $('tpl-search').value = '';
+    renderTemplates();
+    $('tpl-name').focus();
+    $('tpl-name').select();
+  };
+
+  $('tpl-delete').onclick = async () => {
+    const tpl = current();
+    if (!tpl) return;
+    const used = inboundRulesUsingTemplate(inboundRules(), projectId, tpl.name);
+    const message = used
+      ? t('templates.inboundDelete', { name: tpl.name, count: formatNumber(used) })
+      : t('queue.deleteTemplate', { name: tpl.name });
+    if (!(await confirmDialog(message))) return;
+    try {
+      await provider.deleteTemplate(projectId, tpl.name);
+      selected = null;   // a failed delete keeps the template selected
+    } catch (_) {
+      toast(t('error.templateSave'));
+    }
+    renderTemplates();
+    $('tpl-new').focus();
+  };
+
+  $('tpl-box').addEventListener('keydown', event => {
+    if (['cfm', 'ppd'].some(id => $(id).style.display === 'flex')) return;
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+      if ($('tpl-search').value) {
+        $('tpl-search').value = '';
+        renderTemplates();
+        $('tpl-search').focus();
+      } else closeTemplates();
+    }
+    if (event.key === 'Tab') {
+      const controls = [...$('tpl-box').querySelectorAll('button, input, [tabindex="0"]')]
+        .filter(control => !control.disabled && control.getClientRects().length);
+      const first = controls[0], last = controls[controls.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    }
+  });
+
+  onLocaleChange(() => renderTemplates());
+}

@@ -184,13 +184,6 @@ export function showLinkCtx(e, kind, value, cwd, sid = null) {
   if (first) first.focus();
 }
 
-document.addEventListener('click', event => {
-  if (Date.now() < ignoreLinkOpeningClickUntil) return;
-  if ($('ctx').contains(event.target)) return;
-  linkActionGeneration++;
-  $('ctx').style.display = 'none';
-});
-
 /* ---------- new session: no modal — create a shell and enter it.
    Title is renamed on the board later; command is typed in the shell
    (with quick-command chips as a shortcut); dir defaults to $HOME. ---------- */
@@ -531,23 +524,45 @@ export function refreshShortcutChrome() {
   $('split-right').title = t('session.splitRight', { shortcut: formatShortcut(settings.shortcuts.splitRight) });
   $('split-down').title = t('session.splitDown', { shortcut: formatShortcut(settings.shortcuts.splitDown) });
 }
-$('collapse-btn').onclick = toggleSidebar;
-$('home-btn').onclick = backToBoard;
-$('back-btn').onclick = backToBoard;
-$('board-new').onclick = () => newSession(HOME);
-registerShortcutAction('newSession', () => newSession(HOME));
-registerShortcutAction('toggleSidebar', toggleSidebar);
-$('sess-close').onclick = () => closeSession(state.sessionId, true);
-document.addEventListener('keydown', e => {
-  if (isComposingKeyEvent(e)) return;
-  if (e.key === 'Escape') {
-    if ($('ctx').style.display === 'block') { $('ctx').style.display = 'none'; return; }
-    /* Esc inside the terminal belongs to the terminal (agents use it) */
-    if (state.view === 'session' && !(document.activeElement && document.activeElement.closest('#terminal'))) {
-      backToBoard();
+
+/* DOM wiring, run once at boot (app.js) so the module can be imported
+   without a document. */
+export function initTerminalChrome() {
+  document.addEventListener('click', event => {
+    if (Date.now() < ignoreLinkOpeningClickUntil) return;
+    if ($('ctx').contains(event.target)) return;
+    linkActionGeneration++;
+    $('ctx').style.display = 'none';
+  });
+
+  $('collapse-btn').onclick = toggleSidebar;
+
+  $('home-btn').onclick = backToBoard;
+
+  $('back-btn').onclick = backToBoard;
+
+  $('board-new').onclick = () => newSession(HOME);
+
+  registerShortcutAction('newSession', () => newSession(HOME));
+
+  registerShortcutAction('toggleSidebar', toggleSidebar);
+
+  $('sess-close').onclick = () => closeSession(state.sessionId, true);
+
+  document.addEventListener('keydown', e => {
+    if (isComposingKeyEvent(e)) return;
+    if (e.key === 'Escape') {
+      if ($('ctx').style.display === 'block') { $('ctx').style.display = 'none'; return; }
+      /* Esc inside the terminal belongs to the terminal (agents use it) */
+      if (state.view === 'session' && !(document.activeElement && document.activeElement.closest('#terminal'))) {
+        backToBoard();
+      }
     }
-  }
-});
-window.addEventListener('deck-shortcuts-changed', refreshShortcutChrome);
-onLocaleChange(refreshShortcutChrome);
-refreshShortcutChrome();
+  });
+
+  window.addEventListener('deck-shortcuts-changed', refreshShortcutChrome);
+
+  onLocaleChange(refreshShortcutChrome);
+
+  refreshShortcutChrome();
+}

@@ -112,14 +112,6 @@ const keyFlags = e => (e.metaKey ? 1 : 0) | (e.ctrlKey ? 2 : 0)
 const keyCodeClass = code => ({
   Equal: 1, Minus: 2, Semicolon: 3, NumpadAdd: 4, NumpadSubtract: 5,
 })[code] || 0;
-document.addEventListener('keydown', e => {
-  if (kdLogged < 40) {
-    kdLogged++;
-    duev('keydown', keyClass(e.key), keyFlags(e), keyCodeClass(e.code));
-  }
-}, true);
-document.addEventListener('compositionstart', e => duev('composition', 'start', (e.data || '').length), true);
-document.addEventListener('compositionend', e => duev('composition', 'end', (e.data || '').length), true);
 
 export const $ = id => document.getElementById(id);
 /* how long without output before a live session counts as "quiet" —
@@ -157,7 +149,21 @@ export function setMemChip(chip, s) {
   chip.classList.toggle('high', s.mem != null && s.mem > 1536);
 }
 
-
 import { t } from './i18n.js';
 export const columnHint = column => column?.semantic ? t(`board.hint.${column.semantic}`) : '';
 export const dotTitle = status => t(`session.status.${status}`);
+
+/* DOM wiring, run once at boot (app.js) so the module can be imported
+   without a document. */
+export function initInputDiagnostics() {
+  document.addEventListener('keydown', e => {
+    if (kdLogged < 40) {
+      kdLogged++;
+      duev('keydown', keyClass(e.key), keyFlags(e), keyCodeClass(e.code));
+    }
+  }, true);
+
+  document.addEventListener('compositionstart', e => duev('composition', 'start', (e.data || '').length), true);
+
+  document.addEventListener('compositionend', e => duev('composition', 'end', (e.data || '').length), true);
+}

@@ -43,17 +43,6 @@ export function cfmDone(v) {
   confirmPointerOnly = false;
   if (cfmResolve) { cfmResolve(v); cfmResolve = null; }
 }
-$('cfm-yes').onclick = () => cfmDone(true);
-$('cfm-no').onclick = () => cfmDone(false);
-$('cfm').addEventListener('mousedown', e => { if (e.target === $('cfm')) cfmDone(false); });
-document.addEventListener('keydown', e => {
-  if ($('cfm').style.display !== 'flex') return;
-  if (e.key === 'Enter') {
-    e.stopPropagation(); e.preventDefault();
-    if (!confirmPointerOnly) cfmDone(true);
-  }
-  if (e.key === 'Escape') { e.stopPropagation(); e.preventDefault(); cfmDone(false); }
-}, true);
 
 /* ---------- toasts ---------- */
 export function toast(msg) {
@@ -129,50 +118,10 @@ export function selectSettingsSection(id) {
   if (id === 'data') refreshLogSize();
 }
 
-for (const id of SETTINGS_SECTIONS) {
-  $('set-nav-' + id).onclick = () => selectSettingsSection(id);
-  $('set-nav-' + id).addEventListener('keydown', event => {
-    const keys = ['ArrowDown', 'ArrowUp', 'Home', 'End'];
-    if (!keys.includes(event.key)) return;
-    event.preventDefault();
-    const visible = SETTINGS_SECTIONS.filter(section => !$('set-nav-' + section).hidden);
-    const index = visible.indexOf(id);
-    const next = event.key === 'Home' ? 0 : event.key === 'End' ? visible.length - 1
-      : (index + (event.key === 'ArrowDown' ? 1 : -1) + visible.length) % visible.length;
-    selectSettingsSection(visible[next]);
-    $('set-nav-' + visible[next]).focus();
-  });
-}
-$('set-search').addEventListener('input', () => {
-  filterSettings();
-  $('set-content').scrollTop = 0;
-});
-
 function closeSettings() {
   $('settings-modal').style.display = 'none';
   $('settings-btn').focus();
 }
-$('settings-box').addEventListener('keydown', event => {
-  if (['cfm', 'ppd', 'tmux-lifecycle-modal'].some(id => $(id).style.display === 'flex')) return;
-  if (event.key === 'Escape') {
-    event.preventDefault(); event.stopPropagation();
-    if ($('set-search').value) {
-      $('set-search').value = '';
-      filterSettings();
-      $('set-search').focus();
-    } else closeSettings();
-  }
-  if (event.key === 'Tab') {
-    const controls = [...$('settings-box').querySelectorAll('button, input, select, summary, [tabindex="0"]')]
-      .filter(control => !control.disabled && control.getClientRects().length);
-    const first = controls[0], last = controls[controls.length - 1];
-    if (event.shiftKey && document.activeElement === first) {
-      event.preventDefault(); last.focus();
-    } else if (!event.shiftKey && document.activeElement === last) {
-      event.preventDefault(); first.focus();
-    }
-  }
-});
 
 let logOperationPending = false;
 let logSizeGeneration = 0;
@@ -209,22 +158,6 @@ export async function resetApplicationLogs() {
     $('set-reset-logs').focus();
   }
 }
-$('set-reset-logs').onclick = resetApplicationLogs;
-$('set-export-logs').onclick = async () => {
-  if (logOperationPending) return;
-  logOperationPending = true;
-  const buttons = ['set-reset-logs', 'set-export-logs'].map($);
-  buttons.forEach(button => { button.disabled = true; });
-  try {
-    await inv('export_logs');
-    toast(t('settings.logsExported'));
-  } catch (_) {
-    toast(t('settings.logsExportFailed'));
-  } finally {
-    logOperationPending = false;
-    buttons.forEach(button => { button.disabled = false; });
-  }
-};
 
 export async function loadSettings() {
   try {
@@ -382,16 +315,6 @@ export async function resetShortcuts() {
   }
 }
 
-registerShortcutAction('fontIncrease', () => setFontScale(settings.fontScale + FONT_SCALE_STEP));
-registerShortcutAction('fontDecrease', () => setFontScale(settings.fontScale - FONT_SCALE_STEP));
-registerShortcutAction('fontReset', () => setFontScale(1));
-onLocaleChange(() => {
-  if ($('settings-modal').style.display === 'flex') {
-    renderShortcutSettings();
-    filterSettings();
-  }
-});
-
 export async function openSettings() {
   const sel = $('set-editor');
   sel.innerHTML = '';
@@ -427,34 +350,6 @@ export async function openSettings() {
     window.dispatchEvent(new Event('deck-settings-opened'));
   }
 }
-
-$('settings-btn').onclick = openSettings;
-$('set-close').onclick = closeSettings;
-$('settings-modal').addEventListener('mousedown', e => {
-  if (e.target === $('settings-modal')) closeSettings();
-});
-$('set-editor').onchange = () => {
-  settings.editor = $('set-editor').value;
-  persistSettings();
-  toast(settings.editor ? t('settings.editorSelected', { editor: settings.editor }) : t('settings.editorSystem'));
-};
-$('set-locale').onchange = () => {
-  settings.locale = $('set-locale').value;
-  setLocale(settings.locale);
-  applyTranslations();
-  const firstEditor = $('set-editor').options && $('set-editor').options[0];
-  if (firstEditor && firstEditor.value === '') firstEditor.textContent = t('settings.systemEditor');
-  inv('set_native_locale', { locale: settings.locale }).catch(() => {});
-  persistSettings();
-};
-$('set-theme').onchange = () => persistThemeChoice();
-$('set-accent').onchange = () => persistThemeChoice();
-$('set-channel').onchange = () => persistUpdateChannelChoice();
-$('set-session-restore').onchange = () => persistSessionRestoreChoice();
-$('set-font-down').onclick = () => setFontScale(settings.fontScale - FONT_SCALE_STEP);
-$('set-font-up').onclick = () => setFontScale(settings.fontScale + FONT_SCALE_STEP);
-$('set-font-reset').onclick = () => setFontScale(1);
-$('set-shortcuts-reset').onclick = resetShortcuts;
 
 let themeSavePending = false;
 export async function persistThemeChoice() {
@@ -584,10 +479,6 @@ export async function persistAgentHooksChoice(agent, boxId, confirmKey) {
     box.disabled = false;
   }
 }
-$('set-agent-hooks').onchange = () =>
-  persistAgentHooksChoice('claude-code', 'set-agent-hooks', 'settings.agentHooksEnableConfirm');
-$('set-codex-hooks').onchange = () =>
-  persistAgentHooksChoice('codex', 'set-codex-hooks', 'settings.codexHooksEnableConfirm');
 
 /* ---------- 自动响应 (inbound): sources, credentials, rules ---------- */
 /* Rules live in settings.json (persist-then-commit like every other setting);
@@ -815,39 +706,8 @@ async function clearInboundSecret(slot) {
   renderInboundSettings();
 }
 
-$('set-inbound-slack').onchange = persistInboundSlackChoice;
-$('set-inbound-setup').onclick = async () => {
-  try { await inv('inbound_setup', { source: 'slack' }); }
-  catch (_) { toast(t('error.inboundSetup')); }
-};
-$('set-inbound-slack-user').addEventListener('change', () => storeInboundSecret('slack-user-token', 'set-inbound-slack-user'));
-$('set-inbound-slack-app').addEventListener('change', () => storeInboundSecret('slack-app-token', 'set-inbound-slack-app'));
-$('set-inbound-slack-user-clear').onclick = () => clearInboundSecret('slack-user-token');
-$('set-inbound-slack-app-clear').onclick = () => clearInboundSecret('slack-app-token');
-$('set-inbound-check').onclick = () => {
-  inv('inbound_check_now').catch(() => {});
-  setTimeout(renderInboundSettings, 4000);
-};
-$('set-inbound-project').addEventListener('change', () =>
-  fillInboundProjectSelects($('set-inbound-project').value, null, null));
-$('set-inbound-save').onclick = saveInboundEditor;
-$('set-inbound-cancel').onclick = closeInboundEditor;
-$('set-inbound-badge').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.isComposing && e.keyCode !== 229) saveInboundEditor(); });
-
 /* set-check's click handler is wired by app.js (which owns update checks) —
    keeps dialogs.js from importing app.js back (no module cycle) */
-$('set-clear-hist').onclick = async () => {
-  if (!(await confirmDialog(t('settings.clearHistoryConfirm')))) return;
-  inv('history_clear')
-    .then(() => toast(t('settings.historyCleared')))
-    .catch(() => toast(t('error.operation', { operation: t('common.clear') })));
-};
-$('set-clear-shell').onclick = async () => {
-  if (!(await confirmDialog(t('settings.clearShellRecoveryConfirm')))) return;
-  inv('shell_snapshots_clear')
-    .then(() => toast(t('settings.shellRecoveryCleared')))
-    .catch(() => toast(t('settings.shellRecoveryClearFailed')));
-};
 
 export function promptDialog(msg, initial = '') {
   return new Promise(res => {
@@ -868,4 +728,185 @@ export function promptDialog(msg, initial = '') {
       if (e.key === 'Escape') done(null);
     };
   });
+}
+
+/* DOM wiring, run once at boot (app.js) so the module can be imported
+   without a document. */
+export function initDialogs() {
+  $('cfm-yes').onclick = () => cfmDone(true);
+
+  $('cfm-no').onclick = () => cfmDone(false);
+
+  $('cfm').addEventListener('mousedown', e => { if (e.target === $('cfm')) cfmDone(false); });
+
+  document.addEventListener('keydown', e => {
+    if ($('cfm').style.display !== 'flex') return;
+    if (e.key === 'Enter') {
+      e.stopPropagation(); e.preventDefault();
+      if (!confirmPointerOnly) cfmDone(true);
+    }
+    if (e.key === 'Escape') { e.stopPropagation(); e.preventDefault(); cfmDone(false); }
+  }, true);
+
+  for (const id of SETTINGS_SECTIONS) {
+    $('set-nav-' + id).onclick = () => selectSettingsSection(id);
+    $('set-nav-' + id).addEventListener('keydown', event => {
+      const keys = ['ArrowDown', 'ArrowUp', 'Home', 'End'];
+      if (!keys.includes(event.key)) return;
+      event.preventDefault();
+      const visible = SETTINGS_SECTIONS.filter(section => !$('set-nav-' + section).hidden);
+      const index = visible.indexOf(id);
+      const next = event.key === 'Home' ? 0 : event.key === 'End' ? visible.length - 1
+        : (index + (event.key === 'ArrowDown' ? 1 : -1) + visible.length) % visible.length;
+      selectSettingsSection(visible[next]);
+      $('set-nav-' + visible[next]).focus();
+    });
+  }
+
+  $('set-search').addEventListener('input', () => {
+    filterSettings();
+    $('set-content').scrollTop = 0;
+  });
+
+  $('settings-box').addEventListener('keydown', event => {
+    if (['cfm', 'ppd', 'tmux-lifecycle-modal'].some(id => $(id).style.display === 'flex')) return;
+    if (event.key === 'Escape') {
+      event.preventDefault(); event.stopPropagation();
+      if ($('set-search').value) {
+        $('set-search').value = '';
+        filterSettings();
+        $('set-search').focus();
+      } else closeSettings();
+    }
+    if (event.key === 'Tab') {
+      const controls = [...$('settings-box').querySelectorAll('button, input, select, summary, [tabindex="0"]')]
+        .filter(control => !control.disabled && control.getClientRects().length);
+      const first = controls[0], last = controls[controls.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault(); last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault(); first.focus();
+      }
+    }
+  });
+
+  $('set-reset-logs').onclick = resetApplicationLogs;
+
+  $('set-export-logs').onclick = async () => {
+    if (logOperationPending) return;
+    logOperationPending = true;
+    const buttons = ['set-reset-logs', 'set-export-logs'].map($);
+    buttons.forEach(button => { button.disabled = true; });
+    try {
+      await inv('export_logs');
+      toast(t('settings.logsExported'));
+    } catch (_) {
+      toast(t('settings.logsExportFailed'));
+    } finally {
+      logOperationPending = false;
+      buttons.forEach(button => { button.disabled = false; });
+    }
+  };
+
+  registerShortcutAction('fontIncrease', () => setFontScale(settings.fontScale + FONT_SCALE_STEP));
+
+  registerShortcutAction('fontDecrease', () => setFontScale(settings.fontScale - FONT_SCALE_STEP));
+
+  registerShortcutAction('fontReset', () => setFontScale(1));
+
+  onLocaleChange(() => {
+    if ($('settings-modal').style.display === 'flex') {
+      renderShortcutSettings();
+      filterSettings();
+    }
+  });
+
+  $('settings-btn').onclick = openSettings;
+
+  $('set-close').onclick = closeSettings;
+
+  $('settings-modal').addEventListener('mousedown', e => {
+    if (e.target === $('settings-modal')) closeSettings();
+  });
+
+  $('set-editor').onchange = () => {
+    settings.editor = $('set-editor').value;
+    persistSettings();
+    toast(settings.editor ? t('settings.editorSelected', { editor: settings.editor }) : t('settings.editorSystem'));
+  };
+
+  $('set-locale').onchange = () => {
+    settings.locale = $('set-locale').value;
+    setLocale(settings.locale);
+    applyTranslations();
+    const firstEditor = $('set-editor').options && $('set-editor').options[0];
+    if (firstEditor && firstEditor.value === '') firstEditor.textContent = t('settings.systemEditor');
+    inv('set_native_locale', { locale: settings.locale }).catch(() => {});
+    persistSettings();
+  };
+
+  $('set-theme').onchange = () => persistThemeChoice();
+
+  $('set-accent').onchange = () => persistThemeChoice();
+
+  $('set-channel').onchange = () => persistUpdateChannelChoice();
+
+  $('set-session-restore').onchange = () => persistSessionRestoreChoice();
+
+  $('set-font-down').onclick = () => setFontScale(settings.fontScale - FONT_SCALE_STEP);
+
+  $('set-font-up').onclick = () => setFontScale(settings.fontScale + FONT_SCALE_STEP);
+
+  $('set-font-reset').onclick = () => setFontScale(1);
+
+  $('set-shortcuts-reset').onclick = resetShortcuts;
+
+  $('set-agent-hooks').onchange = () =>
+    persistAgentHooksChoice('claude-code', 'set-agent-hooks', 'settings.agentHooksEnableConfirm');
+
+  $('set-codex-hooks').onchange = () =>
+    persistAgentHooksChoice('codex', 'set-codex-hooks', 'settings.codexHooksEnableConfirm');
+
+  $('set-inbound-slack').onchange = persistInboundSlackChoice;
+
+  $('set-inbound-setup').onclick = async () => {
+    try { await inv('inbound_setup', { source: 'slack' }); }
+    catch (_) { toast(t('error.inboundSetup')); }
+  };
+
+  $('set-inbound-slack-user').addEventListener('change', () => storeInboundSecret('slack-user-token', 'set-inbound-slack-user'));
+
+  $('set-inbound-slack-app').addEventListener('change', () => storeInboundSecret('slack-app-token', 'set-inbound-slack-app'));
+
+  $('set-inbound-slack-user-clear').onclick = () => clearInboundSecret('slack-user-token');
+
+  $('set-inbound-slack-app-clear').onclick = () => clearInboundSecret('slack-app-token');
+
+  $('set-inbound-check').onclick = () => {
+    inv('inbound_check_now').catch(() => {});
+    setTimeout(renderInboundSettings, 4000);
+  };
+
+  $('set-inbound-project').addEventListener('change', () =>
+    fillInboundProjectSelects($('set-inbound-project').value, null, null));
+
+  $('set-inbound-save').onclick = saveInboundEditor;
+
+  $('set-inbound-cancel').onclick = closeInboundEditor;
+
+  $('set-inbound-badge').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.isComposing && e.keyCode !== 229) saveInboundEditor(); });
+
+  $('set-clear-hist').onclick = async () => {
+    if (!(await confirmDialog(t('settings.clearHistoryConfirm')))) return;
+    inv('history_clear')
+      .then(() => toast(t('settings.historyCleared')))
+      .catch(() => toast(t('error.operation', { operation: t('common.clear') })));
+  };
+
+  $('set-clear-shell').onclick = async () => {
+    if (!(await confirmDialog(t('settings.clearShellRecoveryConfirm')))) return;
+    inv('shell_snapshots_clear')
+      .then(() => toast(t('settings.shellRecoveryCleared')))
+      .catch(() => toast(t('settings.shellRecoveryClearFailed')));
+  };
 }

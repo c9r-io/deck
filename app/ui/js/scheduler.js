@@ -116,7 +116,6 @@ export function qMeta(i) {
   return parts.join(' · ');
 }
 
-
 export async function saveGroupAsTemplate(g) {
   const card = provider.get(state.sessionId);
   if (!card) return;
@@ -293,7 +292,6 @@ export function toggleQueuePanel(open) {
   }
 }
 
-$('queue-btn').onclick = () => toggleQueuePanel();
 export function syncSentence() {
   const w = $('q-when').value;
   $('q-time').style.display = w === 'custom' ? '' : 'none';
@@ -304,9 +302,6 @@ export function syncSentence() {
   for (const id of ['q-win-a', 'q-win-dash', 'q-win-b']) $(id).style.display = wc ? '' : 'none';
   $('q-until-t').style.display = rec && $('q-until').value === 't' ? '' : 'none';
 }
-$('q-when').addEventListener('change', syncSentence);
-$('q-win').addEventListener('change', syncSentence);
-$('q-until').addEventListener('change', syncSentence);
 export const nextEpochFor = t => {
   const [h, m] = t.split(':').map(Number);
   const d = new Date();
@@ -321,7 +316,6 @@ export function projTemplates(card) {
   if (!p) return [];
   return p.templates || [];
 }
-
 
 export function setQSrc(tpl) {
   qTpl = tpl;
@@ -401,91 +395,106 @@ export function showTplPop() {
   pop.style.display = 'block';
 }
 
-
-$('q-src').onclick = e => {
-  e.stopPropagation();
-  if ($('tpl-pop').style.display === 'block') hideTplPop(); else showTplPop();
-};
-document.addEventListener('click', e => {
-  if (!e.target.closest('#tpl-pop') && !e.target.closest('#q-src')) hideTplPop();
-});
-
-$('q-add-btn').onclick = async () => {
-  const card = provider.get(state.sessionId);
-  if (!card) return;
-  const w = $('q-when').value;
-  let mode = 'at', at = null, every = null, winFrom = null, winTo = null, untilN = null, untilAt = null;
-  if (w === 'chain') {
-    mode = 'chain';
-  } else if (w === 'custom') {
-    const startTime = $('q-time').value;
-    if (!startTime) { $('q-time').focus(); return; }
-    at = nextEpochFor(startTime);
-  } else if (w.startsWith('e')) {
-    mode = 'every';
-    every = parseInt(w.slice(1), 10) * 60;
-    const wv = $('q-win').value;
-    if (wv === 'custom') {
-      const a = $('q-win-a').value, b = $('q-win-b').value;
-      if (!a || !b) { toast(t('queue.setWindow')); return; }
-      winFrom = hmToMin(a);
-      winTo = hmToMin(b);
-    } else if (wv) {
-      [winFrom, winTo] = wv.split('-').map(Number);
-    }
-    const uv = $('q-until').value;
-    if (uv.startsWith('n')) untilN = parseInt(uv.slice(1), 10);
-    else if (uv === 't') {
-      const stopTime = $('q-until-t').value;
-      if (!stopTime) { toast(t('queue.setStop')); return; }
-      untilAt = nextEpochFor(stopTime);
-    }
-  } else {
-    at = Math.floor(Date.now() / 1000) + parseInt(w, 10) * 60;
-  }
-  const base = {
-    session: card.session, cardId: card.id, dir: card.dir, cmd: card.cmd,
-  };
-  try {
-    if (qTpl) {
-      const steps = qTpl.steps.slice();
-      if (mode === 'every') {
-        /* one standing rule holds the whole template; steps 2..N re-enqueue
-           as chain items on every fire */
-        await inv('queue_add', { args: { ...base, text: steps[0], mode, at: null, every, winFrom, winTo, untilN, untilAt,
-          steps: steps.slice(1), tpl: qTpl.name, tplIdx: 1, tplTotal: steps.length } });
-      } else {
-        for (let k = 0; k < steps.length; k++) {
-          await inv('queue_add', { args: { ...base, text: steps[k],
-            mode: k === 0 ? mode : 'chain', at: k === 0 ? at : null,
-            tpl: qTpl.name, tplIdx: k + 1, tplTotal: steps.length } });
-        }
-      }
-      setQSrc(null);
-    } else {
-      const text = $('q-text').value.trim();
-      if (!text) { $('q-text').focus(); return; }
-      await inv('queue_add', { args: { ...base, text, mode, at, every, winFrom, winTo, untilN, untilAt } });
-      $('q-text').value = '';
-    }
-    $('q-when').value = 'chain';   // natural default for the next one
-    syncSentence();
-  } catch (e) {
-    toast(t('error.operation', { operation: t('common.add') }));
-  }
-};
-$('q-text').addEventListener('keydown', e => { if (e.key === 'Enter') $('q-add-btn').click(); });
-
 /* native menu: Terminal → Clear (⌘K) */
-listen('menu-clear', () => {
-  if (state.view === 'session' && term) {
-    term.clear();
-    if (attachedName) inv('pty_write', { name: attachedName, dataB64: strToB64('\x0c') }).catch(() => {});
-  }
-}).catch(() => uev('listen-fail', 'menu-clear'));
 
-listen('queue-changed', refreshQueue).catch(() => uev('listen-fail', 'queue-changed'));
-listen('queue-fired', ev => {
-  toast(t('queue.sent', { session: ev.payload.session }));
-  pollNow();
-}).catch(() => uev('listen-fail', 'queue-fired'));
+/* DOM wiring, run once at boot (app.js) so the module can be imported
+   without a document. */
+export function initScheduler() {
+  $('queue-btn').onclick = () => toggleQueuePanel();
+
+  $('q-when').addEventListener('change', syncSentence);
+
+  $('q-win').addEventListener('change', syncSentence);
+
+  $('q-until').addEventListener('change', syncSentence);
+
+  $('q-src').onclick = e => {
+    e.stopPropagation();
+    if ($('tpl-pop').style.display === 'block') hideTplPop(); else showTplPop();
+  };
+
+  document.addEventListener('click', e => {
+    if (!e.target.closest('#tpl-pop') && !e.target.closest('#q-src')) hideTplPop();
+  });
+
+  $('q-add-btn').onclick = async () => {
+    const card = provider.get(state.sessionId);
+    if (!card) return;
+    const w = $('q-when').value;
+    let mode = 'at', at = null, every = null, winFrom = null, winTo = null, untilN = null, untilAt = null;
+    if (w === 'chain') {
+      mode = 'chain';
+    } else if (w === 'custom') {
+      const startTime = $('q-time').value;
+      if (!startTime) { $('q-time').focus(); return; }
+      at = nextEpochFor(startTime);
+    } else if (w.startsWith('e')) {
+      mode = 'every';
+      every = parseInt(w.slice(1), 10) * 60;
+      const wv = $('q-win').value;
+      if (wv === 'custom') {
+        const a = $('q-win-a').value, b = $('q-win-b').value;
+        if (!a || !b) { toast(t('queue.setWindow')); return; }
+        winFrom = hmToMin(a);
+        winTo = hmToMin(b);
+      } else if (wv) {
+        [winFrom, winTo] = wv.split('-').map(Number);
+      }
+      const uv = $('q-until').value;
+      if (uv.startsWith('n')) untilN = parseInt(uv.slice(1), 10);
+      else if (uv === 't') {
+        const stopTime = $('q-until-t').value;
+        if (!stopTime) { toast(t('queue.setStop')); return; }
+        untilAt = nextEpochFor(stopTime);
+      }
+    } else {
+      at = Math.floor(Date.now() / 1000) + parseInt(w, 10) * 60;
+    }
+    const base = {
+      session: card.session, cardId: card.id, dir: card.dir, cmd: card.cmd,
+    };
+    try {
+      if (qTpl) {
+        const steps = qTpl.steps.slice();
+        if (mode === 'every') {
+          /* one standing rule holds the whole template; steps 2..N re-enqueue
+             as chain items on every fire */
+          await inv('queue_add', { args: { ...base, text: steps[0], mode, at: null, every, winFrom, winTo, untilN, untilAt,
+            steps: steps.slice(1), tpl: qTpl.name, tplIdx: 1, tplTotal: steps.length } });
+        } else {
+          for (let k = 0; k < steps.length; k++) {
+            await inv('queue_add', { args: { ...base, text: steps[k],
+              mode: k === 0 ? mode : 'chain', at: k === 0 ? at : null,
+              tpl: qTpl.name, tplIdx: k + 1, tplTotal: steps.length } });
+          }
+        }
+        setQSrc(null);
+      } else {
+        const text = $('q-text').value.trim();
+        if (!text) { $('q-text').focus(); return; }
+        await inv('queue_add', { args: { ...base, text, mode, at, every, winFrom, winTo, untilN, untilAt } });
+        $('q-text').value = '';
+      }
+      $('q-when').value = 'chain';   // natural default for the next one
+      syncSentence();
+    } catch (e) {
+      toast(t('error.operation', { operation: t('common.add') }));
+    }
+  };
+
+  $('q-text').addEventListener('keydown', e => { if (e.key === 'Enter') $('q-add-btn').click(); });
+
+  listen('menu-clear', () => {
+    if (state.view === 'session' && term) {
+      term.clear();
+      if (attachedName) inv('pty_write', { name: attachedName, dataB64: strToB64('\x0c') }).catch(() => {});
+    }
+  }).catch(() => uev('listen-fail', 'menu-clear'));
+
+  listen('queue-changed', refreshQueue).catch(() => uev('listen-fail', 'queue-changed'));
+
+  listen('queue-fired', ev => {
+    toast(t('queue.sent', { session: ev.payload.session }));
+    pollNow();
+  }).catch(() => uev('listen-fail', 'queue-fired'));
+}

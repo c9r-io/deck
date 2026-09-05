@@ -1,45 +1,30 @@
 // app.js — in-app updates and boot
 // Part of deck's no-build frontend: native ES modules, no bundler.
-import './state.js';
 import './persistence.js';
-import './dialogs.js';
 import './board.js';
-import './layout.js';
-import './terminal.js';
-import './scheduler.js';
-import './templates.js';
-import './inbound.js';
-import { $, genId, inv, listen, state, store, uev } from './state.js';
-import { loadSettings, toast } from './dialogs.js';
+import { $, genId, initInputDiagnostics, inv, listen, state, store, uev } from './state.js';
+import { initDialogs, loadSettings, toast } from './dialogs.js';
 import { markSessionsStoppedForServerRestart, migrateColumnSemantics, provider, render, startPolling, stopPolling } from './board.js';
-import { leaveSessionView } from './layout.js';
-import { refreshQueue } from './scheduler.js';
-import { drainInbound } from './inbound.js';
+import { initLayout, leaveSessionView } from './layout.js';
+import { initTerminalChrome } from './terminal.js';
+import { initScheduler, refreshQueue } from './scheduler.js';
+import { initTemplates } from './templates.js';
+import { drainInbound, initInbound } from './inbound.js';
 import { onLocaleChange, setLocale, t, translateNotice } from './i18n.js';
 import { activateTheme, revealThemedWindow } from './theme.js';
 
 setLocale('system');
 activateTheme({ theme: 'deck-dark', accent: 'teal' });
 
-window.addEventListener('beforeunload', stopPolling, { once: true });
-
 // A held trackpad click can become Force Touch and open macOS Look Up on
 // button text, even with user-select:none. Cancel WebKit's native action at
 // its preflight event; ordinary pointer/mouse/click events retain their defaults.
 // Delegation also covers nested labels/icons and buttons created after boot.
-document.addEventListener('webkitmouseforcewillbegin', event => {
-  if (event.target?.closest?.('button, [role="button"]')) event.preventDefault();
-}, { capture: true, passive: false });
 
 // Deck owns context menus throughout its app surface; WebKit's Reload/Inspect
 // and text-search menus are browser chrome. Keep native editing menus in real
 // form fields, but not xterm's hidden input. Never stop propagation: Deck's
 // card/project handlers must still receive the event and open their own menu.
-document.addEventListener('contextmenu', event => {
-  const editable = event.target?.closest?.('input, textarea, [contenteditable="true"]');
-  if (!editable || editable.closest('#terminal')
-      || event.target?.closest?.('button, [role="button"]')) event.preventDefault();
-}, { capture: true, passive: false });
 
 function renderPendingUpdate() {
   if (!pendingUpdate) return;
@@ -211,29 +196,6 @@ async function restartTmuxServer() {
   }
 }
 
-$('tmux-restart-btn').onclick = async () => {
-  const status = await refreshTmuxLifecycle();
-  if (status) showTmuxLifecycle(status, false);
-};
-$('set-tmux-restart').onclick = async () => {
-  const status = await refreshTmuxLifecycle();
-  if (status) showTmuxLifecycle(status, true);
-};
-$('tmux-later').onclick = deferTmuxRestart;
-$('tmux-restart').onclick = restartTmuxServer;
-$('tmux-view-sessions').onclick = () => {
-  const list = $('tmux-impact-list');
-  const showing = list.style.display === 'block';
-  list.style.display = showing ? 'none' : 'block';
-  $('tmux-view-sessions').textContent = t(showing ? 'tmux.viewSessions' : 'tmux.hideSessions');
-};
-document.addEventListener('keydown', event => {
-  if ($('tmux-lifecycle-modal').style.display !== 'flex') return;
-  if (event.key === 'Enter') { event.preventDefault(); event.stopPropagation(); }
-  if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); deferTmuxRestart(); }
-}, true);
-window.addEventListener('deck-settings-opened', () => refreshTmuxLifecycle());
-
 /* ---------- in-app updates (tauri-plugin-updater) ---------- */
 export async function checkForUpdate() {
   if (!window.__TAURI__) return;
@@ -274,31 +236,23 @@ export async function manualUpdateCheck() {
   }
 }
 
-$('set-check').onclick = () => manualUpdateCheck();
-
-$('update-btn').onclick = async () => {
-  if (!pendingUpdate) return;
-  const btn = $('update-btn');
-  const label = btn.querySelector('.label');
-  btn.disabled = true;
-  updateDownloadBytes = 0;
-  try {
-    await inv('install_update', {
-      channel: settings.updateChannel,
-      expectedVersion: pendingUpdate.version,
-    });
-    label.textContent = t('update.restarting');
-    await inv('relaunch_after_update');
-  } catch (e) {
-    btn.disabled = false;
-    label.textContent = t('update.failedRetry');
-    toast(t('error.operation', { operation: t('settings.updates') }));
-    uev('update-install-fail');
-  }
-};
-
 /* ---------- boot ---------- */
+/* Every module wires its DOM once here, in dependency order, instead of at
+   import time: modules stay importable without a document (node tests), and
+   the order of side effects is explicit. */
+function initModules() {
+  initInputDiagnostics();
+  initDialogs();
+  initTerminalChrome();
+  initLayout();
+  initScheduler();
+  initTemplates();
+  initInbound();
+  wireChrome();
+}
+
 export async function boot() {
+  initModules();
   window.__DECK_DEBUG = await inv('debug_logging_enabled').catch(() => false);
   await loadSettings();
   await revealThemedWindow();
@@ -384,11 +338,80 @@ export async function boot() {
   listen('update-check', checkForUpdate).catch(() => uev('listen-fail', 'update-check'));
   listen('update-check-manual', manualUpdateCheck).catch(() => uev('listen-fail', 'update-check-manual'));
 }
-onLocaleChange(() => {
-  renderPendingUpdate();
-  renderBuildIdentity();
-  renderTmuxDiagnostics();
-  render();
-  refreshQueue();
-});
 boot();
+
+/* DOM wiring, run once at boot (app.js) so the module can be imported
+   without a document. */
+function wireChrome() {
+  window.addEventListener('beforeunload', stopPolling, { once: true });
+
+  document.addEventListener('webkitmouseforcewillbegin', event => {
+    if (event.target?.closest?.('button, [role="button"]')) event.preventDefault();
+  }, { capture: true, passive: false });
+
+  document.addEventListener('contextmenu', event => {
+    const editable = event.target?.closest?.('input, textarea, [contenteditable="true"]');
+    if (!editable || editable.closest('#terminal')
+        || event.target?.closest?.('button, [role="button"]')) event.preventDefault();
+  }, { capture: true, passive: false });
+
+  $('tmux-restart-btn').onclick = async () => {
+    const status = await refreshTmuxLifecycle();
+    if (status) showTmuxLifecycle(status, false);
+  };
+
+  $('set-tmux-restart').onclick = async () => {
+    const status = await refreshTmuxLifecycle();
+    if (status) showTmuxLifecycle(status, true);
+  };
+
+  $('tmux-later').onclick = deferTmuxRestart;
+
+  $('tmux-restart').onclick = restartTmuxServer;
+
+  $('tmux-view-sessions').onclick = () => {
+    const list = $('tmux-impact-list');
+    const showing = list.style.display === 'block';
+    list.style.display = showing ? 'none' : 'block';
+    $('tmux-view-sessions').textContent = t(showing ? 'tmux.viewSessions' : 'tmux.hideSessions');
+  };
+
+  document.addEventListener('keydown', event => {
+    if ($('tmux-lifecycle-modal').style.display !== 'flex') return;
+    if (event.key === 'Enter') { event.preventDefault(); event.stopPropagation(); }
+    if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); deferTmuxRestart(); }
+  }, true);
+
+  window.addEventListener('deck-settings-opened', () => refreshTmuxLifecycle());
+
+  $('set-check').onclick = () => manualUpdateCheck();
+
+  $('update-btn').onclick = async () => {
+    if (!pendingUpdate) return;
+    const btn = $('update-btn');
+    const label = btn.querySelector('.label');
+    btn.disabled = true;
+    updateDownloadBytes = 0;
+    try {
+      await inv('install_update', {
+        channel: settings.updateChannel,
+        expectedVersion: pendingUpdate.version,
+      });
+      label.textContent = t('update.restarting');
+      await inv('relaunch_after_update');
+    } catch (e) {
+      btn.disabled = false;
+      label.textContent = t('update.failedRetry');
+      toast(t('error.operation', { operation: t('settings.updates') }));
+      uev('update-install-fail');
+    }
+  };
+
+  onLocaleChange(() => {
+    renderPendingUpdate();
+    renderBuildIdentity();
+    renderTmuxDiagnostics();
+    render();
+    refreshQueue();
+  });
+}

@@ -76,4 +76,8 @@ async function handleInbound(item) {
   return ack(item.id, 'done', 'created');
 }
 
-listen('inbound-changed', drainInbound).catch(() => uev('listen-fail', 'inbound-changed'));
+/* DOM wiring, run once at boot (app.js) so the module can be imported
+   without a document. */
+export function initInbound() {
+  listen('inbound-changed', drainInbound).catch(() => uev('listen-fail', 'inbound-changed'));
+}

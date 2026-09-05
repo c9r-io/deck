@@ -70,11 +70,12 @@ globalThis.document = fakeDocument;
 globalThis.window = { __TAURI__: null, __DECK_DEBUG: false };
 
 const {
-  cfmDone, confirmDangerDialog, confirmDialog, inlineRename, persistSessionRestoreChoice, persistUpdateChannelChoice,
+  cfmDone, confirmDangerDialog, confirmDialog, initDialogs, inlineRename, persistSessionRestoreChoice, persistUpdateChannelChoice,
   promptDialog, persistThemeChoice, filterSettings, selectSettingsSection, resetApplicationLogs, refreshLogSize,
 } = await import('../js/dialogs.js');
 const { store } = await import('../js/state.js');
 const { boardData, flushBoardMutations, mutateBoard, mutateBoardDebounced } = await import('../js/persistence.js');
+initDialogs();
 
 const tick = () => new Promise(resolve => setTimeout(resolve, 0));
 
