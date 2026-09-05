@@ -84,7 +84,7 @@ test('the canonical dictionary has no unused keys outside documented dynamic fam
 });
 
 test('minimum-window layout keeps long localized panels bounded and scrollable', () => {
-  const html = read('app/ui/index.html');
+  const html = read('app/ui/style.css');
   assert.match(html, /@media \(max-width: 800px\), \(max-height: 540px\)/);
   assert.match(html, /#settings-modal, #tpl-modal \{[^}]*align-items: center;[^}]*padding: 20px;/);
   assert.match(html, /#settings-box, #tpl-box \{[^}]*width: 940px;[^}]*max-height: 100%;[^}]*overflow: hidden;/,
@@ -99,7 +99,7 @@ test('minimum-window layout keeps long localized panels bounded and scrollable',
 });
 
 test('large font scaling reflows dense rows instead of clipping scaled line boxes', () => {
-  const html = read('app/ui/index.html');
+  const html = read('app/ui/style.css');
   const fontScale = read('app/ui/js/font-scale.js');
   const dialogs = read('app/ui/js/dialogs.js');
   assert.match(fontScale, /classList\?\.toggle\('font-scale-large', current >= 1\.4\)/);

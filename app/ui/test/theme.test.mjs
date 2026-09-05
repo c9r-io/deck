@@ -123,7 +123,8 @@ test('production CSS and all pane lifecycle paths consume the registry', () => {
     'app/ui/js/layout.js', 'app/ui/js/scheduler.js', 'app/ui/js/selection.js',
     'app/ui/js/state.js', 'app/ui/js/terminal.js',
   ].map(read).join('\n');
-  assert.doesNotMatch(html, /#[0-9a-f]{3,8}\b|rgba?\(/i, 'component CSS must not own palette literals');
+  assert.doesNotMatch(html + read('app/ui/style.css'), /#[0-9a-f]{3,8}\b|rgba?\(/i,
+    'component CSS must not own palette literals');
   assert.doesNotMatch(frontendWithoutRegistry, /#[0-9a-f]{3,8}\b|rgba?\(/i,
     'dynamic component styles must not own palette literals');
   assert.doesNotMatch(board, /TERM_THEME/);
