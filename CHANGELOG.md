@@ -9,6 +9,10 @@
   records per-phase milliseconds for each created session (`[start]`) and
   attach-to-first-byte (`[pty] first emit … after Nms`), so a slow "new
   shell" can be attributed to deck or to the login shell's rc files.
+- Build: `tauri build` works again on a clean checkout — the CLI requires
+  `frontendDist` to exist before cargo runs, so `beforeBuildCommand` creates
+  the `ui-dist` directory that build.rs then stages (regression from 0.5.14's
+  ui-dist staging; only `app/run.sh` had been exercised).
 - Internal (tech-debt round, 2026-09-06): `SMOKE.md` is a live checklist
   again (run logs archived) and the `ime-routing` regression is fixed —
   composing Command chords reach only the zoom actions; release bundles no

@@ -4,6 +4,7 @@
   "version": "0.5.15",
   "identifier": "io.c9r.deck",
   "build": {
+    "beforeBuildCommand": "mkdir -p src-tauri/ui-dist",
     "frontendDist": "ui-dist"
   },
   "app": {

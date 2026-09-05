@@ -41,6 +41,11 @@ fn build_status_helper() {
 /// `main.rs` imports `./test/wk-smoke.mjs` from the served bundle for the
 /// isolated smoke run. Staging from scratch also drops files deleted from
 /// `ui/`, which an in-place copy would leave in the bundle.
+/// The tauri CLI checks that `frontendDist` EXISTS before it runs cargo, so
+/// `tauri build` on a clean checkout dies before this script can stage
+/// anything (the 0.5.15 nightly build did). `beforeBuildCommand` in
+/// tauri.conf.json therefore only `mkdir -p`s the directory; the content
+/// is owned here, and only here.
 fn stage_frontend() {
     fn copy_tree(src: &std::path::Path, dst: &std::path::Path, skip: Option<&str>) {
         std::fs::create_dir_all(dst).expect("create ui-dist directory");

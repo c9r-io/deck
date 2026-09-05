@@ -153,6 +153,10 @@ Status semantics (card colour) are documented on `effectiveCardStatus` in
   build.rs stages `ui/` into the gitignored `src-tauri/ui-dist/` that
   `frontendDist` points at; release profiles leave `ui/test` out of the
   bundle, debug profiles keep it for the WKWebView smoke. Never edit `ui-dist`.
+  The tauri CLI refuses to start cargo when `frontendDist` is missing, so
+  `beforeBuildCommand` is a bare `mkdir -p` of it (bit us: the first 0.5.15
+  nightly build failed on a clean runner while `app/run.sh`, which calls
+  cargo directly, never hit it).
 - Tauri v2 requires `src-tauri/capabilities/default.json` granting `core:default`
   or `event.listen` is REFUSED with a silent promise rejection — invoke (JS→Rust)
   works, events (Rust→JS) never arrive, so the terminal receives no output while
