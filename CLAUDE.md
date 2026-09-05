@@ -14,15 +14,19 @@ terminal selection · `terminal.js` completion/ghost ·
 `scheduler.js` queue UI · `templates.js` Board-level template manager ·
 `dialogs.js` · `persistence.js` · `app.js` boot),
 loaded by `ui/index.html`; xterm.js vendored in `app/ui/vendor/`. Backend
-`app/src-tauri/src/` is modular: `main.rs` (wiring) · `commands.rs` ·
-`scheduler.rs` · `storage.rs` · `pty.rs` · `tmux.rs` · `history.rs` ·
-`smoke_faults.rs` (debug/isolated-smoke only).
+`app/src-tauri/src/` is modular: `main.rs` (wiring) · `commands.rs`
+(session start/kill, poll, clipboard, editors) · `documents.rs` (typed
+Board/Settings docs + load/save) · `updater.rs` · `terminal.rs` (scroll +
+selection lease commands) · `links.rs` (path/URL open) · `diagnostics.rs`
+(`ui_event` whitelist, log export) · `drops.rs` · `scheduler.rs` ·
+`storage.rs` · `pty.rs` · `tmux.rs` · `history.rs` · `smoke_faults.rs`
+(debug/isolated-smoke only).
 Frontend gates: `node --check` (syntax) · `ui/test/*.mjs` (node:test)
 · `ui/js/check.mjs` (unresolved identifiers; forbids xterm `._core`).
 
 - Updates have a closed `stable | nightly` setting; missing, unknown or damaged
   values normalize to Stable. The webview owns no updater capability or URL.
-  `commands.rs` maps the enum to exactly one compiled HTTPS endpoint and uses
+  `updater.rs` maps the enum to exactly one compiled HTTPS endpoint and uses
   `UpdaterExt::updater_builder().endpoints(vec![endpoint])`; a Nightly failure
   never falls back. Tauri 2.10.1 still owns semver comparison, archive download,
   minisign verification and install. Build identity is only numeric version +

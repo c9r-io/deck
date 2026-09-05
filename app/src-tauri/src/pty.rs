@@ -699,7 +699,7 @@ pub(crate) fn pty_resize(
     // tmux reflows the pane synchronously when the PTY changes size. Keep
     // that reflow out of the status -> capture row -> cursor movement window
     // used by terminal selection commands.
-    let _selection_operation = crate::commands::terminal_selection_operation_lock()
+    let _selection_operation = crate::terminal::terminal_selection_operation_lock()
         .lock()
         .unwrap();
     let map = state.map.lock().unwrap();

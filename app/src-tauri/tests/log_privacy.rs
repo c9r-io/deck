@@ -3,7 +3,7 @@
 //! 1. The ONLY frontend→log channel is the `ui_event` command, whose backend
 //!    formatter admits nothing but a whitelisted code, a short slug (no
 //!    spaces/slashes → no prose, prompts, paths or URLs) and two integers —
-//!    that formatter is unit-tested in commands.rs
+//!    that formatter is unit-tested in diagnostics.rs
 //!    (`ui_events_admit_no_free_form_content`).
 //! 2. These tests pin the structure: no module may resurrect a free-form
 //!    log channel (`ui_log`/`ulog`/`dlog`), every event call site must use a
@@ -77,7 +77,7 @@ fn free_form_log_channel_stays_dead() {
 /// anything else is silently dropped as "unknown-event", i.e. dead code.
 #[test]
 fn every_event_call_site_uses_a_whitelisted_code() {
-    let commands = std::fs::read_to_string(manifest("src/commands.rs")).unwrap();
+    let commands = std::fs::read_to_string(manifest("src/diagnostics.rs")).unwrap();
     let list = commands
         .split("UI_EVENT_SPECS: &[(&str, DetailPolicy)] = &[")
         .nth(1)
@@ -223,7 +223,7 @@ fn every_write_path_runs_through_the_sanitizer() {
         applog.contains("sanitize_log(msg)"),
         "app.log lines must be sanitized as they are written"
     );
-    let commands = std::fs::read_to_string(manifest("src/commands.rs")).unwrap();
+    let commands = std::fs::read_to_string(manifest("src/diagnostics.rs")).unwrap();
     let export = commands
         .split("pub(crate) fn build_export(")
         .nth(1)

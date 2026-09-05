@@ -286,7 +286,7 @@ pub(crate) fn current_build() -> CurrentBuildIdentity {
     CurrentBuildIdentity {
         channel: match source {
             SourceCategory::Installed | SourceCategory::Transient => {
-                crate::commands::update_channel_setting()
+                crate::documents::update_channel_setting()
             }
             SourceCategory::Development => "development".into(),
             SourceCategory::Smoke => "smoke".into(),

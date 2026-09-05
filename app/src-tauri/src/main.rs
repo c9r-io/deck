@@ -8,10 +8,14 @@
 mod agent_status;
 mod commands;
 mod context;
+mod diagnostics;
+mod documents;
+mod drops;
 mod history;
 mod inbound;
 mod inbound_slack;
 mod keychain;
+mod links;
 mod procinfo;
 mod pty;
 mod relaunch;
@@ -19,10 +23,12 @@ mod scheduler;
 mod shell_state;
 mod smoke_faults;
 mod storage;
+mod terminal;
 mod terminal_scroll;
 mod terminal_selection;
 mod tmux;
 mod tmux_lifecycle;
+mod updater;
 
 pub(crate) use storage::applog;
 
@@ -184,7 +190,7 @@ fn main() {
             // Native menu: the default set restores all standard macOS
             // shortcuts (⌘C/V/A/Z/Q/H/M/W…); Terminal→Clear adds ⌘K.
             let handle = app.handle();
-            let strings = native_strings(&commands::locale_setting());
+            let strings = native_strings(&documents::locale_setting());
             let menu = tauri::menu::Menu::default(handle)?;
             let clear = tauri::menu::MenuItemBuilder::with_id("clear", strings.clear)
                 .accelerator("Cmd+K")
@@ -225,7 +231,7 @@ fn main() {
                 if e.id() == "export-logs" {
                     // never log the export's absolute path (it embeds the
                     // user's home directory) — Finder reveals it anyway
-                    match commands::export_logs() {
+                    match diagnostics::export_logs() {
                         Ok(_) => applog("[export] logs written"),
                         Err(err) => {
                             applog(&format!("[export] FAILED ({})", storage::err_code(&err)))
@@ -267,17 +273,17 @@ fn main() {
             }
         })
         .invoke_handler(tauri::generate_handler![
-            commands::load_board,
-            commands::save_board,
-            commands::load_settings,
-            commands::save_settings,
-            commands::build_identity,
+            documents::load_board,
+            documents::save_board,
+            documents::load_settings,
+            documents::save_settings,
+            updater::build_identity,
             tmux_lifecycle::tmux_server_status,
             tmux_lifecycle::defer_tmux_restart,
             tmux_lifecycle::acknowledge_tmux_lifecycle_notice,
             tmux_lifecycle::restart_tmux_server,
-            commands::check_for_update,
-            commands::install_update,
+            updater::check_for_update,
+            updater::install_update,
             relaunch::relaunch_after_update,
             commands::set_terminal_mode_style,
             set_native_locale,
@@ -286,16 +292,16 @@ fn main() {
             commands::tmux_available,
             commands::start_session,
             commands::kill_session,
-            commands::scroll_session,
-            commands::scroll_bottom,
-            commands::clear_history,
-            commands::terminal_selection_start,
-            commands::terminal_selection_update,
-            commands::terminal_selection_finish,
-            commands::terminal_selection_copy,
-            commands::terminal_selection_scroll,
-            commands::terminal_selection_cancel,
-            commands::terminal_metrics,
+            terminal::scroll_session,
+            terminal::scroll_bottom,
+            terminal::clear_history,
+            terminal::terminal_selection_start,
+            terminal::terminal_selection_update,
+            terminal::terminal_selection_finish,
+            terminal::terminal_selection_copy,
+            terminal::terminal_selection_scroll,
+            terminal::terminal_selection_cancel,
+            terminal::terminal_metrics,
             commands::write_clipboard,
             commands::poll_sessions,
             shell_state::shell_snapshots_clear,
@@ -304,17 +310,17 @@ fn main() {
             pty::pty_ack,
             pty::pty_resize,
             pty::detach_session,
-            commands::open_target,
-            commands::resolve_parent_dir,
-            commands::terminal_paths_exist,
+            links::open_target,
+            links::resolve_parent_dir,
+            links::terminal_paths_exist,
             history::recent_commands,
             history::record_command,
             history::history_clear,
-            commands::debug_logging_enabled,
-            commands::log_size,
-            commands::reset_logs,
-            commands::export_logs,
-            commands::ui_event,
+            diagnostics::debug_logging_enabled,
+            diagnostics::log_size,
+            diagnostics::reset_logs,
+            diagnostics::export_logs,
+            diagnostics::ui_event,
             commands::ping_event,
             scheduler::queue_list,
             scheduler::queue_probe_context,
@@ -329,10 +335,10 @@ fn main() {
             scheduler::queue_acknowledge,
             scheduler::queue_skip,
             scheduler::queue_send_now,
-            commands::storage_warnings,
+            documents::storage_warnings,
             scheduler::queue_clear_session,
             scheduler::queue_clear_sessions,
-            commands::save_dropped_file,
+            drops::save_dropped_file,
             agent_status::agent_hooks_status,
             agent_status::agent_hooks_set,
             inbound::inbound_status,

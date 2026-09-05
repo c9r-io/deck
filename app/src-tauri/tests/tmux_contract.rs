@@ -167,8 +167,8 @@ impl Server {
         s
     }
 
-    /// The production placement: `commands::push_copy_cursor` over
-    /// `commands::visible_rows_through`, so these contracts exercise the same
+    /// The production placement: `terminal::push_copy_cursor` over
+    /// `terminal::visible_rows_through`, so these contracts exercise the same
     /// motions the app sends and not a second copy of the rules.
     fn write_pane(&self, text: &str) {
         let tty = self.fmt("#{pane_tty}");

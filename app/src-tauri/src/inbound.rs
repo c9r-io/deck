@@ -170,8 +170,8 @@ pub(crate) fn validate_settings(v: &Value) -> Result<(), String> {
 /// Lenient read for the poller: an unreadable or invalid settings file
 /// yields the empty config (nothing enabled), never a panic or a guess.
 pub(crate) fn read_config() -> Config {
-    let raw = match storage::load_typed::<crate::commands::SettingsDoc>(
-        &crate::commands::settings_path(),
+    let raw = match storage::load_typed::<crate::documents::SettingsDoc>(
+        &crate::documents::settings_path(),
     ) {
         Ok(Some(doc)) => doc.payload,
         _ => return Config::default(),

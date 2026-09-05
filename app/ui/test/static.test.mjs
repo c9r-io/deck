@@ -27,7 +27,7 @@ test('i18n owns visible copy and translation parameters never enter innerHTML', 
 test('update channels are backend-owned, isolated and never trigger downgrade', () => {
   const app = read('app/ui/js/app.js');
   const dialogs = read('app/ui/js/dialogs.js');
-  const backend = read('app/src-tauri/src/commands.rs');
+  const backend = read('app/src-tauri/src/updater.rs');
   assert.doesNotMatch(app, /__TAURI__\.updater|\.updater\.check/);
   assert.doesNotMatch(app + dialogs, /https?:\/\//, 'the webview owns no updater endpoint');
   assert.match(app, /inv\('check_for_update', \{ channel: settings\.updateChannel \}\)/);
@@ -71,7 +71,7 @@ test('update channels are backend-owned, isolated and never trigger downgrade', 
 
 test('tmux upgrades preserve occupied servers until explicit pointer confirmation', () => {
   const lifecycle = read('app/src-tauri/src/tmux_lifecycle.rs');
-  const commands = read('app/src-tauri/src/commands.rs');
+  const commands = read('app/src-tauri/src/updater.rs');
   const app = read('app/ui/js/app.js');
   const html = read('app/ui/index.html');
   const run = read('app/run.sh');
@@ -212,6 +212,7 @@ test('removed long-output panel cannot return through DOM, routes, or backend re
     'app/ui/js/pure.js',
     'app/src-tauri/src/main.rs',
     'app/src-tauri/src/commands.rs',
+    'app/src-tauri/src/terminal.rs',
   ].map(read).join('\n');
   for (const forbidden of [
     'copybox', 'cb-body', 'Copy output', 'Copy all', 'openCopyPanel',
@@ -252,7 +253,7 @@ test('shell restart recovery is real tmux history, never a blocking webview laye
 test('production terminal path wires the token-bound frozen selection coordinator', () => {
   const layout = read('app/ui/js/layout.js');
   const selection = read('app/ui/js/selection.js');
-  const backend = read('app/src-tauri/src/commands.rs');
+  const backend = read('app/src-tauri/src/terminal.rs');
   const backendSelection = read('app/src-tauri/src/terminal_selection.rs');
   const backendScroll = read('app/src-tauri/src/terminal_scroll.rs');
   assert.match(layout, /wireTerminalSelection\(pane/);
@@ -273,7 +274,7 @@ test('production terminal path wires the token-bound frozen selection coordinato
   assert.match(read('app/src-tauri/src/tmux.rs'),
     /mode-style 'none'[\s\S]*copy-mode-selection-style 'none'/,
     'tmux intermediate selection frames must stay visually empty');
-  assert.match(backend,
+  assert.match(read('app/src-tauri/src/commands.rs'),
     /copy-mode-selection-style", "none"[\s\S]*copy-mode-position-style/,
     'existing servers receive the non-flashing selection style too');
   assert.match(selection, /status reply and its PTY repaint have no fixed ordering/,
@@ -343,7 +344,7 @@ test('WK clipboard expected value is generated independently of production copy'
 test('clipboard diagnostics cover every copy and paste handoff without content', () => {
   const layout = read('app/ui/js/layout.js');
   const terminal = read('app/ui/js/terminal.js');
-  const backend = read('app/src-tauri/src/commands.rs');
+  const backend = read('app/src-tauri/src/diagnostics.rs');
   for (const stage of [
     'pasteTrace.keyCapture()', 'pasteTrace.keyHandler()', 'pasteTrace.event(',
     'pasteTrace.onData(', 'pasteTrace.write(',
@@ -359,7 +360,7 @@ test('clipboard diagnostics cover every copy and paste handoff without content',
 test('every way a terminal selection dies is attributable in the log', () => {
   const selection = read('app/ui/js/selection.js');
   const layout = read('app/ui/js/layout.js');
-  const backend = read('app/src-tauri/src/commands.rs');
+  const backend = read('app/src-tauri/src/diagnostics.rs');
   // ⌘C can only report what it FOUND. Without a lifecycle record, a
   // `terminal-copy keydown-none` is indistinguishable from a drag that never
   // promoted, a start tmux refused, and a live selection something revoked.
