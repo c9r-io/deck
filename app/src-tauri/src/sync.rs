@@ -44,9 +44,9 @@ pub(crate) fn wait_timeout_or_recover<'a, T>(
 }
 
 fn recover<G>(poison: PoisonError<G>) -> G {
-    // Never touches the log lock: storage::applog takes LOG_LOCK with its
+    // Never touches the log lock: `applog` takes LOG_LOCK with its
     // own recovery, so a poisoned LOG_LOCK cannot recurse here.
-    crate::storage::applog("[sync] poisoned lock recovered");
+    crate::applog::applog("[sync] poisoned lock recovered");
     poison.into_inner()
 }
 

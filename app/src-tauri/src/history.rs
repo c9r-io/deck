@@ -7,8 +7,8 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+use crate::datadir::now_epoch;
 use crate::storage;
-use crate::storage::now_epoch;
 use crate::sync::LockRecover;
 
 /// history.json is read-modify-write; without this in-process lock two quick
@@ -18,7 +18,7 @@ static HIST_LOCK: Mutex<()> = Mutex::new(());
 // ---------- command history -----------------------------------------------------
 
 pub(crate) fn deck_history_path() -> PathBuf {
-    storage::deck_dir().join("history.json")
+    crate::datadir::deck_dir().join("history.json")
 }
 
 #[derive(Serialize, Deserialize, Clone)]

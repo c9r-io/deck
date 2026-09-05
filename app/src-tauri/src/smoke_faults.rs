@@ -19,7 +19,7 @@ const KINDS: &[&str] = &[
 ];
 static COUNTS: LazyLock<Mutex<HashMap<&'static str, u8>>> = LazyLock::new(|| {
     let mut counts = HashMap::new();
-    if let Some(kind) = crate::storage::debug_arg("--smoke-fault").and_then(|v| canonical(&v)) {
+    if let Some(kind) = crate::launch_args::debug_arg("--smoke-fault").and_then(|v| canonical(&v)) {
         counts.insert(kind, 1);
     }
     Mutex::new(counts)
@@ -27,8 +27,8 @@ static COUNTS: LazyLock<Mutex<HashMap<&'static str, u8>>> = LazyLock::new(|| {
 
 pub(crate) fn enabled() -> bool {
     cfg!(debug_assertions)
-        && crate::storage::debug_arg("--smoke-wkwebview").is_some()
-        && crate::storage::debug_arg("--smoke-data-dir")
+        && crate::launch_args::debug_arg("--smoke-wkwebview").is_some()
+        && crate::launch_args::debug_arg("--smoke-data-dir")
             .is_some_and(|root| std::path::Path::new(&root).is_absolute())
 }
 

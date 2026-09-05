@@ -247,7 +247,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!(
             "deck-parent-resolve-{}-{}",
             std::process::id(),
-            crate::storage::now_epoch()
+            crate::datadir::now_epoch()
         ));
         let dir = root.join("空 格😀");
         std::fs::create_dir_all(&dir).unwrap();

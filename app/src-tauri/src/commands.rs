@@ -15,8 +15,8 @@ use std::path::PathBuf;
 use std::process::Command;
 use tauri::{AppHandle, Emitter};
 
-use crate::storage;
-use crate::storage::{applog, now_epoch};
+use crate::applog::applog;
+use crate::datadir::now_epoch;
 use crate::sync::LockRecover;
 use crate::tmux::{
     expand_tilde, init_deck_server, pane_target, session_target, tmux, tmux_bin, tmux_with_stdin,
@@ -199,8 +199,8 @@ pub(crate) fn start_session(
                 Err(error) => {
                     applog(&format!(
                         "[shell-state] bootstrap unavailable for {} ({})",
-                        storage::session_tag(&name),
-                        storage::err_code(&error)
+                        crate::applog::session_tag(&name),
+                        crate::applog::err_code(&error)
                     ));
                     None
                 }
@@ -221,8 +221,8 @@ pub(crate) fn start_session(
                 let _ = tmux(&["delete-buffer", "-b", &bootstrap.buffer]);
                 applog(&format!(
                     "[shell-state] restore start unavailable for {} ({}); starting a clean shell",
-                    storage::session_tag(&name),
-                    storage::err_code(&error)
+                    crate::applog::session_tag(&name),
+                    crate::applog::err_code(&error)
                 ));
                 // the sequence may have failed after the pane already existed
                 if tmux(&["has-session", "-t", &session_target(&name)]).is_ok() {
@@ -306,7 +306,7 @@ pub(crate) fn idempotent_kill_result(result: Result<String, String>) -> Result<(
         Ok(_) => Ok(()),
         // Closing an already-gone session is the successful end state. This
         // also covers an empty deck tmux server ("no server running").
-        Err(e) if matches!(storage::err_code(&e), "no-session" | "missing") => Ok(()),
+        Err(e) if matches!(crate::applog::err_code(&e), "no-session" | "missing") => Ok(()),
         Err(e) => Err(e),
     }
 }
@@ -469,7 +469,7 @@ pub(crate) fn poll_sessions(
                 *broken = true;
                 applog(&format!(
                     "[poll] session listing FAILED ({})",
-                    storage::err_code(e)
+                    crate::applog::err_code(e)
                 ));
             }
             Ok(_) if *broken => {

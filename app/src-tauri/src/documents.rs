@@ -273,7 +273,7 @@ fn to_loaded(o: Option<storage::LoadOutcome>) -> LoadedDoc {
 }
 
 pub(crate) fn board_path() -> PathBuf {
-    storage::deck_dir().join("deck.json")
+    crate::datadir::deck_dir().join("deck.json")
 }
 
 #[tauri::command]
@@ -313,7 +313,7 @@ pub(crate) fn storage_warnings() -> Vec<UiNotice> {
 // ---------- settings ------------------------------------------------------------
 
 pub(crate) fn settings_path() -> PathBuf {
-    storage::deck_dir().join("settings.json")
+    crate::datadir::deck_dir().join("settings.json")
 }
 
 #[tauri::command]

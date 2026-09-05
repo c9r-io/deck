@@ -23,9 +23,9 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::AppHandle;
 
+use crate::applog::applog;
 use crate::inbound::{self, Config, Event, Source, SourceStatus};
 use crate::keychain::{self, Slot};
-use crate::storage::applog;
 use crate::sync::LockRecover;
 
 const API: &str = "https://slack.com/api/";

@@ -15,8 +15,8 @@
 //! slug rule) + two ints, and redacts everything else — never add a free-form
 //! frontend log channel (log_privacy tests enforce this). Backend log lines
 //! never interpolate raw error Display text or a raw session NAME:
-//! `storage::err_code()` maps errors to stable path-free categories (the full
-//! error goes only to the operation's caller) and `storage::session_tag()`
+//! `crate::applog::err_code()` maps errors to stable path-free categories (the full
+//! error goes only to the operation's caller) and `crate::applog::session_tag()`
 //! gives a per-RUN, non-reversible tag. Every line is redacted again by
 //! `sanitize_log` on its way to disk (absolute paths, `~/`, any `scheme://`,
 //! credential prefixes, long opaque tokens, session-name shapes →
@@ -70,8 +70,8 @@
 use std::path::PathBuf;
 use std::process::Command;
 
-use crate::storage;
-use crate::storage::{applog, now_epoch};
+use crate::applog::applog;
+use crate::datadir::now_epoch;
 use crate::tmux::tmux;
 
 /// Per-event detail policy: which detail strings an event code may log.
@@ -391,7 +391,7 @@ pub(crate) fn ui_event(code: String, detail: Option<String>, a: Option<i64>, b: 
 
 #[tauri::command]
 pub(crate) fn debug_logging_enabled() -> bool {
-    storage::command_flag("--debug-logging")
+    crate::launch_args::command_flag("--debug-logging")
 }
 
 /// Build the export text. EVERY line — the environment header and the log
@@ -401,12 +401,12 @@ pub(crate) fn debug_logging_enabled() -> bool {
 pub(crate) fn build_export(header: &str, log: &str) -> String {
     let mut out = String::with_capacity(header.len() + log.len() + 32);
     for line in header.lines() {
-        out.push_str(&storage::sanitize_log(line));
+        out.push_str(&crate::redact::sanitize_log(line));
         out.push('\n');
     }
     out.push_str("\n===== app.log =====\n");
     for line in log.lines() {
-        out.push_str(&storage::sanitize_log(line));
+        out.push_str(&crate::redact::sanitize_log(line));
         out.push('\n');
     }
     out
@@ -414,19 +414,19 @@ pub(crate) fn build_export(header: &str, log: &str) -> String {
 
 #[tauri::command]
 pub(crate) fn log_size() -> Result<u64, String> {
-    storage::log_size_at(&storage::deck_dir())
+    crate::applog::log_size_at(&crate::datadir::deck_dir())
 }
 
 #[tauri::command]
 pub(crate) fn reset_logs() -> Result<(), String> {
-    storage::reset_logs_at(&storage::deck_dir())
+    crate::applog::reset_logs_at(&crate::datadir::deck_dir())
 }
 
 #[tauri::command]
 pub(crate) fn export_logs() -> Result<PathBuf, String> {
-    let data_dir = storage::deck_dir();
+    let data_dir = crate::datadir::deck_dir();
     let dir = data_dir.join("exports");
-    storage::create_private_dir(&dir)?;
+    crate::datadir::create_private_dir(&dir)?;
     let name = format!("deck-log-{}.txt", now_epoch());
     let path = dir.join(name);
 
@@ -448,7 +448,7 @@ pub(crate) fn export_logs() -> Result<PathBuf, String> {
     ));
     let log = std::fs::read_to_string(data_dir.join("app.log")).unwrap_or_default();
     // created 0600 from the first byte — never world-readable-then-chmod
-    storage::write_private(&path, build_export(&header, &log).as_bytes())?;
+    crate::datadir::write_private(&path, build_export(&header, &log).as_bytes())?;
     let _ = Command::new("open").arg("-R").arg(&path).status();
     Ok(path)
 }
@@ -702,7 +702,7 @@ mod tests {
     fn debug_logging_is_the_launch_flag_and_nothing_else() {
         assert_eq!(
             debug_logging_enabled(),
-            storage::command_flag("--debug-logging")
+            crate::launch_args::command_flag("--debug-logging")
         );
     }
 
@@ -732,7 +732,7 @@ mod tests {
     /// survives into the returned category.
     #[test]
     fn err_codes_are_stable_and_path_free() {
-        use crate::storage::err_code;
+        use crate::applog::err_code;
         let real_io = std::fs::read_to_string("/no/such/deck-test-file")
             .unwrap_err()
             .to_string();
@@ -762,7 +762,7 @@ mod tests {
             ("something entirely different", "other"),
         ];
         for (input, want) in cases {
-            let got = crate::storage::err_code(input);
+            let got = crate::applog::err_code(input);
             assert_eq!(got, want, "{input}");
             // categories are single tokens, never echoing the input
             assert!(!got.contains('/') && got.len() <= 16);

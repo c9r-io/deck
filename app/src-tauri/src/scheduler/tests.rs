@@ -1683,7 +1683,7 @@ fn every_queue_mutation_is_all_or_nothing() {
         let disk_before = disk.on_disk();
         let err = with_queue(&qm, &|q| disk.persist(q), mutate)
             .expect_err(&format!("{name}: failed save must be an error"));
-        assert_eq!(storage::err_code(&err), "disk-full", "{name}: {err}");
+        assert_eq!(crate::applog::err_code(&err), "disk-full", "{name}: {err}");
         assert_eq!(
             serde_json::to_string(&*qm.lock().unwrap()).unwrap(),
             before,

@@ -129,9 +129,9 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::Mutex;
 
+use crate::applog::applog;
 use crate::context::{self, ContextCheck, ContextCode, ContextStatus, PaneIdentity};
 use crate::storage;
-use crate::storage::applog;
 
 // ---------- scheduled prompts ----------------------------------------------------
 // Queue prompts to be typed into a session later — the rate-limit workflow:
@@ -361,7 +361,7 @@ pub(crate) fn flush_dirty(
         Err(e) => {
             applog(&format!(
                 "[queue] deferred persist still FAILING ({})",
-                storage::err_code(&e)
+                crate::applog::err_code(&e)
             ));
             false
         }
@@ -374,7 +374,7 @@ fn note_persist_lag(dirty: &AtomicBool, stage: &str, e: &str) {
     dirty.store(true, AtomicOrdering::Relaxed);
     applog(&format!(
         "[queue] persist ({stage}) FAILED ({}) — memory is ahead of disk, retrying",
-        storage::err_code(e)
+        crate::applog::err_code(e)
     ));
     storage::warn(format!(
         "scheduled prompts could not be saved after a send ({stage}); deck keeps retrying — if this persists, free disk space or check permissions on ~/.deck"
@@ -428,7 +428,7 @@ pub(crate) const CHAIN_QUIET_SECS: u64 = 180;
 pub(crate) const SESSION_MIN_GAP_SECS: u64 = 60;
 
 pub(crate) fn queue_path() -> PathBuf {
-    storage::deck_dir().join("queue.json")
+    crate::datadir::deck_dir().join("queue.json")
 }
 
 pub(crate) fn load_queue() -> QueueState {

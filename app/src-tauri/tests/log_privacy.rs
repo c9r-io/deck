@@ -6,7 +6,7 @@
 //!    (`ui_events_admit_no_free_form_content`), every (code, detail) pair the
 //!    frontend can emit is pushed through it there
 //!    (`every_frontend_event_label_survives_the_formatter`), and the writer
-//!    and export sanitizers are exercised on real files in storage.rs and
+//!    and export sanitizers are exercised on real files in applog.rs and
 //!    diagnostics.rs.
 //! 2. These tests pin the remaining structure: no module may resurrect a
 //!    free-form log channel (`ui_log`/`ulog`/`dlog`), no event call may build
@@ -103,7 +103,7 @@ fn event_calls_carry_no_content_bearing_arguments() {
 
 /// Backend log lines must never interpolate user content — prompt text,
 /// command lines, a raw frontend string, or a raw tmux session name (which
-/// is derived from the card title): those go through storage::session_tag.
+/// is derived from the card title): those go through crate::applog::session_tag.
 #[test]
 fn backend_logs_carry_no_user_content() {
     let forbidden = [
@@ -115,7 +115,7 @@ fn backend_logs_carry_no_user_content() {
         "{cmd}",
         "{prompt}",
         ".stack",
-        // raw error Display / paths must go through storage::err_code or a
+        // raw error Display / paths must go through crate::applog::err_code or a
         // file_name() — never interpolated into a log line verbatim
         ": {e}",
         ": {err}",
@@ -190,7 +190,7 @@ fn scheduler_context_probe_is_metadata_only_and_content_free() {
 }
 
 // File-permission guarantees are BEHAVIORAL tests now, not source scans:
-// storage.rs (every_saved_artifact_is_user_only, harden_migrates_legacy_modes_
+// storage.rs / datadir.rs (every_saved_artifact_is_user_only, harden_migrates_legacy_modes_
 // idempotently, quarantined_corrupt_file_is_user_only, concurrent_saves_stay_
 // user_only) and history.rs (history_files_are_user_only_and_clear_removes_
 // backup) verify real filesystem metadata in temp dirs.

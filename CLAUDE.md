@@ -36,7 +36,7 @@ same commit as the behaviour it describes.
   `promote.yml` is copy-only: its static gate rejects application build
   commands, and Stable `latest.json` is the last completeness asset.
 - **Privacy by construction.** The whole `~/.deck` tree is 0700/0600; app.log is
-  structured and sanitized (`storage.rs`, `diagnostics.rs`); never add a
+  structured and sanitized (`applog.rs`, `redact.rs`, `diagnostics.rs`); never add a
   free-form frontend log channel (`tests/log_privacy.rs` and the formatter
   contract test in `diagnostics.rs` enforce this). Credentials live only in the
   macOS Keychain (`keychain.rs`).
@@ -65,7 +65,11 @@ loaded by `ui/index.html`; xterm.js vendored in `app/ui/vendor/`. Backend
 | Area | Module (contract in its header) |
 |---|---|
 | Board state, one persist-before-commit transaction queue | `ui/js/persistence.js`, `state.js` (shared slots), `pure.js` (DOM-free logic) |
-| Typed documents, atomic/durable writes, recovery, log sanitizer | `storage.rs`, `documents.rs` |
+| Typed documents, envelope, quarantine-first recovery | `storage.rs`, `documents.rs` |
+| Private data dir (0700/0600 by construction), atomic writes, pruning | `datadir.rs` |
+| app.log writer, error codes, session tags, log migration | `applog.rs` |
+| Log redaction scanner (`sanitize_log`, `redact_credentials`) | `redact.rs` |
+| Single-instance flock, launch flags / debug-only smoke args | `instance_lock.rs`, `launch_args.rs` |
 | Session start/kill, poll (status, RSS, preview rows), clipboard write | `commands.rs` |
 | tmux sidecar, socket, server conf | `tmux.rs` |
 | Server lifecycle: protocol metadata, reuse/replace, restart transaction, channel sockets | `tmux_lifecycle.rs` (+ `docs/tmux-server-lifecycle.md`) |

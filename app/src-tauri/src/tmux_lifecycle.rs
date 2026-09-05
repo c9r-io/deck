@@ -38,7 +38,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock, TryLockError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use crate::storage::{self, applog};
+use crate::applog::applog;
 use crate::tmux::{self, tmux, tmux_owned};
 
 const METADATA_OPTION: &str = "@deck-server-metadata";
@@ -215,7 +215,7 @@ fn now_epoch() -> u64 {
 }
 
 fn lifecycle_path() -> PathBuf {
-    storage::deck_dir().join(LIFECYCLE_FILE)
+    crate::datadir::deck_dir().join(LIFECYCLE_FILE)
 }
 
 fn read_disk() -> LifecycleDisk {
@@ -229,9 +229,9 @@ fn read_disk() -> LifecycleDisk {
 }
 
 fn write_disk(disk: &LifecycleDisk) -> Result<(), String> {
-    storage::create_private_dir(&storage::deck_dir())?;
+    crate::datadir::create_private_dir(&crate::datadir::deck_dir())?;
     let bytes = serde_json::to_vec(disk).map_err(|_| "lifecycle-state-encode".to_string())?;
-    storage::atomic_write(&lifecycle_path(), &bytes)
+    crate::datadir::atomic_write(&lifecycle_path(), &bytes)
 }
 
 pub(crate) fn app_bundle_root(executable: &Path) -> Option<&Path> {
@@ -261,7 +261,7 @@ pub(crate) fn stable_installed_bundle(app: &Path) -> bool {
 
 pub(crate) fn source_category() -> SourceCategory {
     if cfg!(debug_assertions) {
-        if storage::debug_arg("--smoke-data-dir").is_some() {
+        if crate::launch_args::debug_arg("--smoke-data-dir").is_some() {
             SourceCategory::Smoke
         } else {
             SourceCategory::Development
@@ -444,7 +444,7 @@ fn impact_token(
 }
 
 fn absent_error(error: &str) -> bool {
-    matches!(storage::err_code(error), "no-session" | "missing")
+    matches!(crate::applog::err_code(error), "no-session" | "missing")
         || error.contains("no server running")
         || error.contains("no sessions")
 }
@@ -914,7 +914,7 @@ pub(crate) fn reconcile_on_boot() {
                     if let Err(error) = clean_confirmed_intent_socket(&intent) {
                         applog(&format!(
                             "[tmux-lifecycle] restart socket recovery paused ({})",
-                            storage::err_code(&error)
+                            crate::applog::err_code(&error)
                         ));
                         return;
                     }
@@ -960,7 +960,7 @@ pub(crate) fn reconcile_on_boot() {
             if let Err(error) = start_current_server(&build) {
                 applog(&format!(
                     "[tmux-lifecycle] initial server start failed ({})",
-                    storage::err_code(&error)
+                    crate::applog::err_code(&error)
                 ));
             }
         }

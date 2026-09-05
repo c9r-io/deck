@@ -13,8 +13,8 @@
 
 use std::path::PathBuf;
 
-use crate::storage;
-use crate::storage::{applog, now_epoch};
+use crate::applog::applog;
+use crate::datadir::now_epoch;
 
 // ---------- dropped files -------------------------------------------------------
 
@@ -69,7 +69,7 @@ pub(crate) fn save_drop_into(
     if bytes.len() > MAX_DROP_BYTES {
         return Err("file too large (32MB max)".into());
     }
-    storage::create_private_dir(dir)?;
+    crate::datadir::create_private_dir(dir)?;
     let safe = sanitize_drop_name(name);
     let mut path = dir.join(format!("{}-{safe}", now_epoch()));
     let mut n = 0u32;
@@ -77,7 +77,7 @@ pub(crate) fn save_drop_into(
         n += 1;
         path = dir.join(format!("{}-{n}-{safe}", now_epoch()));
     }
-    storage::write_private(&path, bytes)?;
+    crate::datadir::write_private(&path, bytes)?;
     Ok(path)
 }
 
@@ -92,7 +92,7 @@ pub(crate) fn save_dropped_file(name: String, data_b64: String) -> Result<String
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(data_b64)
         .map_err(|_| "malformed file payload".to_string())?;
-    let path = save_drop_into(&storage::deck_dir().join("drops"), &name, &bytes)?;
+    let path = save_drop_into(&crate::datadir::deck_dir().join("drops"), &name, &bytes)?;
     applog(&format!("[drop] saved {}B", bytes.len()));
     Ok(path.display().to_string())
 }
@@ -160,10 +160,10 @@ mod tests {
             .args(["-t", "202001010000", old.to_str().unwrap()])
             .status()
             .unwrap();
-        crate::storage::prune_old_files(&d, 7 * 24 * 3600);
+        crate::datadir::prune_old_files(&d, 7 * 24 * 3600);
         assert!(!old.exists(), "week-old drop removed");
         assert!(fresh.exists(), "fresh drop kept");
         // missing dir is a no-op, not a panic
-        crate::storage::prune_old_files(&d.join("nope"), 60);
+        crate::datadir::prune_old_files(&d.join("nope"), 60);
     }
 }

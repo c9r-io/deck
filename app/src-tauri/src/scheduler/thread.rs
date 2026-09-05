@@ -8,8 +8,9 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
 
 use super::*;
+use crate::applog::applog;
+use crate::datadir::now_epoch;
 use crate::storage;
-use crate::storage::{applog, now_epoch};
 use crate::sync::LockRecover;
 use crate::tmux::tmux;
 
@@ -36,7 +37,7 @@ pub(super) fn boot_queues_with(
             queues.dirty.store(true, AtomicOrdering::Relaxed);
             storage::warn(format!(
                 "interrupted deliveries are available to acknowledge or retry now; their recovered state could not be saved yet ({}), so deck will keep retrying",
-                storage::err_code(&e)
+                crate::applog::err_code(&e)
             ));
         }
         drop(q);
@@ -131,7 +132,7 @@ pub(crate) fn spawn_scheduler(app: AppHandle) {
                 }
                 Err(e) => applog(&format!(
                     "[queue] persist (expiry purge) FAILED ({}) — rules kept",
-                    storage::err_code(&e)
+                    crate::applog::err_code(&e)
                 )),
             }
         }

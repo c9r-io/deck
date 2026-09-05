@@ -73,8 +73,8 @@ pub(crate) fn tmux_kind() -> &'static str {
 pub(crate) fn socket() -> &'static str {
     static SOCKET: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     SOCKET.get_or_init(|| {
-        if crate::storage::debug_arg("--smoke-data-dir").is_some() {
-            return crate::storage::debug_arg("--smoke-tmux-socket")
+        if crate::launch_args::debug_arg("--smoke-data-dir").is_some() {
+            return crate::launch_args::debug_arg("--smoke-tmux-socket")
                 .filter(|s| {
                     s.starts_with("deck-smoke")
                         && !s.is_empty()
@@ -98,12 +98,12 @@ pub(crate) fn socket() -> &'static str {
 pub(crate) fn tmux_conf() -> String {
     static CONF: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     CONF.get_or_init(|| {
-        let deck_dir = crate::storage::deck_dir();
+        let deck_dir = crate::datadir::deck_dir();
         let path = deck_dir.join("tmux.conf");
         if let Some(dir) = path.parent() {
-            let _ = crate::storage::create_private_dir(dir);
+            let _ = crate::datadir::create_private_dir(dir);
         }
-        let _ = crate::storage::write_private(&path, tmux_conf_text(&deck_dir).as_bytes());
+        let _ = crate::datadir::write_private(&path, tmux_conf_text(&deck_dir).as_bytes());
         path.display().to_string()
     })
     .clone()
@@ -300,7 +300,7 @@ pub(crate) fn init_deck_server() {
     let _ = tmux(&["set-environment", "-g", "COLORTERM", "truecolor"]);
     // Panes tell the status helper (agent_status.rs) which instance's socket
     // to write to, so an isolated/smoke instance receives its own events.
-    let sock = crate::storage::deck_dir().join("status.sock");
+    let sock = crate::datadir::deck_dir().join("status.sock");
     let _ = tmux(&[
         "set-environment",
         "-g",

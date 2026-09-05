@@ -9,9 +9,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, State};
 
 use super::*;
+use crate::applog::applog;
 use crate::context::{self, ContextCode, ContextStatus, PaneIdentity};
+use crate::datadir::now_epoch;
 use crate::storage;
-use crate::storage::{applog, now_epoch};
 use crate::sync::LockRecover;
 
 #[tauri::command]

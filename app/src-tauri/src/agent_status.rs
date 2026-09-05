@@ -96,7 +96,6 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use crate::applog;
-use crate::storage;
 use crate::sync::LockRecover;
 
 /// Registered agent modules.
@@ -234,7 +233,7 @@ pub(crate) fn ingest(
         "[agent-status] {} {} s={}",
         event.source,
         event.state,
-        storage::session_tag(&session)
+        crate::applog::session_tag(&session)
     ));
     with_agents(|agents| {
         agents.insert(
@@ -333,14 +332,14 @@ pub(crate) fn listen_at(path: &Path) -> Result<UnixListener, String> {
 /// Accept loop for the status socket. One deck instance owns the data dir
 /// (instance lock), so one listener owns this socket.
 pub(crate) fn spawn_listener() {
-    let path = storage::deck_dir().join("status.sock");
+    let path = crate::datadir::deck_dir().join("status.sock");
     std::thread::spawn(move || {
         let listener = match listen_at(&path) {
             Ok(l) => l,
             Err(e) => {
                 applog(&format!(
                     "[agent-status] socket unavailable ({})",
-                    storage::err_code(&e)
+                    crate::applog::err_code(&e)
                 ));
                 return;
             }
@@ -629,7 +628,7 @@ fn write_agent_config(path: &Path, bytes: &[u8], never_ran: &str) -> Result<(), 
             return Err(never_ran.into());
         }
     }
-    storage::atomic_write(path, bytes)?;
+    crate::datadir::atomic_write(path, bytes)?;
     let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode));
     Ok(())
 }
@@ -740,7 +739,7 @@ pub(crate) fn migrate_hooks_on_boot() {
                     .is_ok_and(|text| text.contains(LEGACY_HELPER_MARKER));
                 applog(&format!(
                     "[agent-hooks] {source} migration FAILED ({})",
-                    storage::err_code(&e)
+                    crate::applog::err_code(&e)
                 ));
             }
         }
@@ -767,7 +766,7 @@ fn retire_legacy_helper_copy() {
         }
         Err(e) => applog(&format!(
             "[agent-hooks] legacy helper copy removal FAILED ({})",
-            storage::err_code(&e.to_string())
+            crate::applog::err_code(&e.to_string())
         )),
     }
 }
@@ -839,7 +838,7 @@ pub(crate) fn agent_hooks_set(agent: String, enable: bool) -> Result<(), String>
         Err(e) => applog(&format!(
             "[agent-hooks] {agent} {} FAILED ({})",
             if enable { "install" } else { "remove" },
-            storage::err_code(e)
+            crate::applog::err_code(e)
         )),
     }
     result

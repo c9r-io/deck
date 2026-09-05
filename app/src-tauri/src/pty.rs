@@ -48,7 +48,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
 
-use crate::storage::applog;
+use crate::applog::applog;
 use crate::sync::LockRecover;
 use crate::tmux::{session_target, socket, tmux_bin, tmux_conf};
 
@@ -143,7 +143,7 @@ impl AckGate {
                 stalled = true;
                 applog(&format!(
                     "[pty] ack stall for {}: seq {seq} waiting on ack {} (webview not consuming)",
-                    crate::storage::session_tag(&self.name),
+                    crate::applog::session_tag(&self.name),
                     g.acked
                 ));
             }
@@ -241,15 +241,15 @@ pub(crate) fn attach_session(
         let msg = e.to_string();
         applog(&format!(
             "[pty] attach spawn failed for {} ({})",
-            crate::storage::session_tag(&name),
-            crate::storage::err_code(&msg)
+            crate::applog::session_tag(&name),
+            crate::applog::err_code(&msg)
         ));
         msg
     })?;
     drop(pair.slave);
     applog(&format!(
         "[pty] attached {} ({cols}x{rows})",
-        crate::storage::session_tag(&name)
+        crate::applog::session_tag(&name)
     ));
 
     let mut reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
@@ -286,7 +286,7 @@ pub(crate) fn attach_session(
     std::thread::spawn(move || {
         applog(&format!(
             "[pty] reader started for {}",
-            crate::storage::session_tag(&reader_name)
+            crate::applog::session_tag(&reader_name)
         ));
         let mut buf = [0u8; 8192];
         loop {
@@ -317,7 +317,7 @@ pub(crate) fn attach_session(
                     applog(&format!(
                         "[pty] emit #{emits} {}B to {}",
                         batch.len(),
-                        crate::storage::session_tag(&thread_name)
+                        crate::applog::session_tag(&thread_name)
                     ));
                 }
                 let r = thread_app.emit(
@@ -345,7 +345,7 @@ pub(crate) fn attach_session(
             drop(map);
             applog(&format!(
                 "[pty] stream ended for {}",
-                crate::storage::session_tag(&thread_name)
+                crate::applog::session_tag(&thread_name)
             ));
             let _ = thread_app.emit("pty-exit", PtyExit { name: thread_name });
         }
@@ -403,7 +403,7 @@ pub(crate) fn pump_gated<F: FnMut(u64, Vec<u8>) -> Result<(), String>>(
         if let Err(e) = emit(seq, batch) {
             applog(&format!(
                 "[pty] emit failed ({}) — ending stream",
-                crate::storage::err_code(&e)
+                crate::applog::err_code(&e)
             ));
             gate.close();
             return;

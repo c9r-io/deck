@@ -336,7 +336,7 @@ pub(crate) fn probe(
         Ok(raw) => evaluate(&raw, expected_identity, expected_process),
         Err(e) => ProbeResult::blocked(
             ContextStatus::Unavailable,
-            if crate::storage::err_code(&e) == "no-session" {
+            if crate::applog::err_code(&e) == "no-session" {
                 ContextCode::SessionMissing
             } else {
                 ContextCode::ProbeFailed

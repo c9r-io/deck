@@ -26,7 +26,7 @@ use std::time::Duration;
 
 use tauri::AppHandle;
 
-use crate::storage::applog;
+use crate::applog::applog;
 
 const HELPER_FLAG: &str = "--deck-relauncher";
 const WAIT_ATTEMPTS: usize = 600;

@@ -10,10 +10,10 @@ use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use super::*;
+use crate::applog::applog;
 use crate::commands::start_session;
 use crate::context::{self, ContextCheck, ContextCode, ContextStatus, PaneIdentity, ProbeResult};
-use crate::storage;
-use crate::storage::{applog, now_epoch};
+use crate::datadir::now_epoch;
 use crate::sync::LockRecover;
 use crate::tmux::{tmux, tmux_owned};
 
@@ -450,7 +450,7 @@ pub(crate) fn note_failed(q: &mut QueueState, id: &str, delivery: &str, err: &st
     if let Some(it) = q.items.iter_mut().find(|i| i.id == id) {
         it.delivery = None;
         it.state = "failed".into();
-        it.last_error = Some(format!("send failed ({})", storage::err_code(err)));
+        it.last_error = Some(format!("send failed ({})", crate::applog::err_code(err)));
     }
     q.pending.retain(|p| p.id != delivery);
 }
@@ -645,7 +645,7 @@ fn send_one_guarded(
         Err(e) => {
             applog(&format!(
                 "[queue] persist (pre-fire) FAILED ({}) — not sending this tick",
-                storage::err_code(&e)
+                crate::applog::err_code(&e)
             ));
             return SendResult::NotPersisted;
         }
@@ -655,7 +655,7 @@ fn send_one_guarded(
             // never log prompt contents — length only (privacy)
             applog(&format!(
                 "[queue] sent to {} ({}B, mode {})",
-                storage::session_tag(&item.session),
+                crate::applog::session_tag(&item.session),
                 item.text.len(),
                 item.mode
             ));
@@ -685,9 +685,9 @@ fn send_one_guarded(
             // can embed paths or raw session names.
             applog(&format!(
                 "[queue] send FAILED for {} (attempt {}, {}){}",
-                storage::session_tag(&item.session),
+                crate::applog::session_tag(&item.session),
                 item.attempts,
-                storage::err_code(&e),
+                crate::applog::err_code(&e),
                 if gave_up {
                     " — giving up"
                 } else {
@@ -833,7 +833,7 @@ pub(super) fn send_one_safe_requested(
             Err(e) => {
                 applog(&format!(
                     "[queue] persist (context-blocked) FAILED ({})",
-                    storage::err_code(&e)
+                    crate::applog::err_code(&e)
                 ));
                 SendResult::NotPersisted
             }
@@ -848,7 +848,7 @@ pub(super) fn send_one_safe_requested(
         Err(e) => {
             applog(&format!(
                 "[queue] persist (context-ready) FAILED ({}) — not sending this tick",
-                storage::err_code(&e)
+                crate::applog::err_code(&e)
             ));
             return SendResult::NotPersisted;
         }
@@ -871,7 +871,7 @@ pub(super) fn send_one_safe_requested(
             Err(e) => {
                 applog(&format!(
                     "[queue] persist (context-final) FAILED ({})",
-                    storage::err_code(&e)
+                    crate::applog::err_code(&e)
                 ));
                 SendResult::NotPersisted
             }

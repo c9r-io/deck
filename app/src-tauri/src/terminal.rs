@@ -9,7 +9,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::storage;
 use crate::sync::LockRecover;
 use crate::tmux::{pane_target, tmux, tmux_owned, validate_session_name};
 
@@ -387,7 +386,7 @@ pub(crate) fn terminal_selection_start(
     tmux_owned(&batch).map_err(|e| {
         format!(
             "terminal selection could not start ({})",
-            storage::err_code(&e)
+            crate::applog::err_code(&e)
         )
     })?;
     let status = terminal_selection_status_for(&target)?;
@@ -452,7 +451,7 @@ pub(crate) fn terminal_selection_update(
     tmux_owned(&batch).map_err(|e| {
         format!(
             "terminal selection could not move ({})",
-            storage::err_code(&e)
+            crate::applog::err_code(&e)
         )
     })?;
     if !selection_token_matches(&name, token, false) {

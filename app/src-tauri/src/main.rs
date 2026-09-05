@@ -6,18 +6,23 @@
 //! (atomic persistence + logs), history (completion), commands (the rest).
 
 mod agent_status;
+mod applog;
 mod commands;
 mod context;
+mod datadir;
 mod diagnostics;
 mod documents;
 mod drops;
 mod history;
 mod inbound;
 mod inbound_slack;
+mod instance_lock;
 mod keychain;
+mod launch_args;
 mod links;
 mod procinfo;
 mod pty;
+mod redact;
 mod relaunch;
 mod scheduler;
 mod shell_state;
@@ -31,7 +36,7 @@ mod tmux;
 mod tmux_lifecycle;
 mod updater;
 
-pub(crate) use storage::applog;
+pub(crate) use applog::applog;
 
 use std::process::Command;
 use tauri::{Emitter, Manager};
@@ -126,19 +131,19 @@ fn main() {
         std::process::exit(code);
     }
     relaunch::capture_current_target();
-    let deck_dir = storage::deck_dir();
+    let deck_dir = crate::datadir::deck_dir();
     // idempotent permission migration BEFORE anything touches the data files:
     // ~/.deck → 0700, every file an older deck may have left 0644 → 0600.
     // A failure is surfaced (log + boot toast), never silently ignored.
-    if let Err(e) = storage::harden_data_dir(&deck_dir) {
+    if let Err(e) = crate::datadir::harden_data_dir(&deck_dir) {
         storage::warn(format!("data privacy hardening incomplete: {e}"));
     }
     // one-time redaction of logs/exports an OLDER deck wrote (absolute
     // paths, URLs, token shapes, raw session names). Runs before anything
     // appends to app.log, rewrites in place 0600, keeps no raw copy.
-    let cleaned = storage::sanitize_existing_logs(&deck_dir);
-    storage::rotate_log();
-    if storage::command_flag("--debug-logging") {
+    let cleaned = crate::applog::sanitize_existing_logs(&deck_dir);
+    crate::applog::rotate_log();
+    if crate::launch_args::command_flag("--debug-logging") {
         applog("[boot] verbose diagnostics enabled");
     }
     if cleaned > 0 {
@@ -148,11 +153,11 @@ fn main() {
     }
     // dropped/pasted files only exist so their path could be typed into a
     // session — a week later nobody references them anymore
-    storage::prune_old_files(&deck_dir.join("drops"), 7 * 24 * 3600);
-    if let Err(e) = storage::acquire_instance_lock(&deck_dir) {
+    crate::datadir::prune_old_files(&deck_dir.join("drops"), 7 * 24 * 3600);
+    if let Err(e) = crate::instance_lock::acquire_instance_lock(&deck_dir) {
         applog(&format!(
             "[boot] instance lock unavailable ({}) — exiting",
-            storage::err_code(&e)
+            crate::applog::err_code(&e)
         ));
         // No alert: the only way to show one without a dialog plugin is
         // `osascript`, and AppleScript execution from a third-party app is
@@ -235,7 +240,7 @@ fn main() {
                     match diagnostics::export_logs() {
                         Ok(_) => applog("[export] logs written"),
                         Err(err) => {
-                            applog(&format!("[export] FAILED ({})", storage::err_code(&err)))
+                            applog(&format!("[export] FAILED ({})", crate::applog::err_code(&err)))
                         }
                     }
                 }
@@ -248,7 +253,7 @@ fn main() {
             // system light/dark) has been applied, preventing a first-frame
             // palette flash without duplicating settings into another store.
             if payload.event() == tauri::webview::PageLoadEvent::Finished {
-                if let Some(mode) = storage::debug_arg("--smoke-wkwebview") {
+                if let Some(mode) = crate::launch_args::debug_arg("--smoke-wkwebview") {
                     let entry = if mode == "restart" {
                         "m.verifyRestart()"
                     } else if mode == "ambiguous" {

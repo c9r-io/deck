@@ -72,8 +72,9 @@ use std::sync::{Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter};
 
+use crate::applog::applog;
 use crate::keychain;
-use crate::storage::{self, applog};
+use crate::storage;
 use crate::sync::LockRecover;
 
 pub(crate) const SOURCES: &[&str] = &["slack"];
@@ -347,7 +348,7 @@ fn doc_path() -> PathBuf {
     if let Some(path) = TEST_DOC_PATH.lock_or_recover().clone() {
         return path;
     }
-    storage::deck_dir().join("inbound.json")
+    crate::datadir::deck_dir().join("inbound.json")
 }
 
 fn now_secs() -> u64 {
@@ -417,7 +418,7 @@ fn load_doc() -> InboundDoc {
             // is "re-baseline everything", which an empty doc does.
             applog(&format!(
                 "[inbound] ledger unreadable ({}) — re-baselining",
-                storage::err_code(&e)
+                crate::applog::err_code(&e)
             ));
             InboundDoc::default()
         }
@@ -435,7 +436,7 @@ fn persist(rt: &mut Runtime) {
             rt.dirty = true;
             applog(&format!(
                 "[inbound] ledger save FAILED ({}) — will retry",
-                storage::err_code(&e)
+                crate::applog::err_code(&e)
             ));
         }
     }

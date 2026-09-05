@@ -55,7 +55,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{LazyLock, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::storage::{self, applog, now_epoch};
+use crate::applog::applog;
+use crate::datadir::now_epoch;
+use crate::storage;
 use crate::sync::LockRecover;
 use crate::tmux::{pane_target, tmux, validate_session_name};
 
@@ -146,7 +148,7 @@ static TRACKER: LazyLock<Mutex<Tracker>> = LazyLock::new(|| Mutex::new(Tracker::
 static SNAPSHOT_IO: Mutex<()> = Mutex::new(());
 
 fn snapshot_dir() -> PathBuf {
-    storage::deck_dir().join("shell-state")
+    crate::datadir::deck_dir().join("shell-state")
 }
 
 fn snapshot_path_in(dir: &Path, session: &str) -> Result<PathBuf, String> {
@@ -194,7 +196,7 @@ pub(crate) fn sanitize_transcript(raw: &str) -> String {
                 }
                 return None;
             }
-            Some(storage::redact_credentials(line))
+            Some(crate::redact::redact_credentials(line))
         })
         .collect::<Vec<_>>()
         .join("\n");
@@ -259,8 +261,8 @@ pub(crate) fn snapshot_for_start(session: &str, cmd: &str, enabled: bool) -> Opt
         Err(error) => {
             applog(&format!(
                 "[shell-state] recovery unavailable for {} ({})",
-                storage::session_tag(session),
-                storage::err_code(&error)
+                crate::applog::session_tag(session),
+                crate::applog::err_code(&error)
             ));
             None
         }
@@ -315,7 +317,7 @@ pub(crate) fn prepare_bootstrap(snapshot: &ShellSnapshot) -> Result<ShellBootstr
 /// 0.5.1. New recovery uses an in-memory tmux buffer and creates no temp file.
 pub(crate) fn cleanup_restore_temps() {
     let dir = snapshot_dir();
-    storage::prune_old_files(&dir, MAX_SNAPSHOT_AGE_SECS);
+    crate::datadir::prune_old_files(&dir, MAX_SNAPSHOT_AGE_SECS);
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
@@ -432,7 +434,7 @@ fn save_snapshot(snapshot: &ShellSnapshot, epoch: u64) -> Result<bool, String> {
         return Ok(false); // disabled/cleared/closed while capture was running
     }
     if let Some(dir) = path.parent() {
-        storage::create_private_dir(dir)?;
+        crate::datadir::create_private_dir(dir)?;
         prune_snapshot_count(dir, &path);
     }
     let raw = serde_json::to_string(snapshot).map_err(|e| e.to_string())?;
@@ -513,7 +515,7 @@ pub(crate) fn schedule_checkpoints(observations: Vec<ShellObservation>, enabled:
                 Ok((snapshot, true)) => {
                     applog(&format!(
                         "[shell-state] checkpointed {} bytes={}B",
-                        storage::session_tag(&snapshot.session),
+                        crate::applog::session_tag(&snapshot.session),
                         snapshot.transcript.len()
                     ));
                     saved_observations.push((observation, snapshot.updated));
@@ -521,8 +523,8 @@ pub(crate) fn schedule_checkpoints(observations: Vec<ShellObservation>, enabled:
                 Ok((_, false)) => break,
                 Err(error) => applog(&format!(
                     "[shell-state] checkpoint failed for {} ({})",
-                    storage::session_tag(&observation.session),
-                    storage::err_code(&error)
+                    crate::applog::session_tag(&observation.session),
+                    crate::applog::err_code(&error)
                 )),
             }
         }
