@@ -94,7 +94,8 @@ Status semantics (card colour) are documented on `effectiveCardStatus` in
   maintainer-only verbose frontend events are enabled with
   `app/run.sh --debug-logging` (no user setting). Production debug:
   `tmux -L deck ls`; source bundles use `tmux -L deck-dev ls`.
-- Frontend gates: `node --check` · `node --test ui/test/*.mjs` ·
+- Frontend gates: `node --check` · `scripts/ui-tests` (node:test + coverage
+  thresholds; WKWebView-bound modules are excluded and covered by the smoke) ·
   `node ui/js/check.mjs` (unresolved identifiers; forbids xterm `._core`).
   Backend gates: `cargo fmt`, `cargo clippy -D warnings`, `cargo test`
   (unit + `tests/tmux_contract.rs` against the bundled tmux +

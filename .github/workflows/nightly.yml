@@ -138,7 +138,7 @@ jobs:
           for file in app/ui/js/*.js app/ui/js/i18n/*.js app/ui/js/*.mjs app/ui/test/*.mjs; do
             node --check "$file"
           done
-          node --test --experimental-test-coverage --test-coverage-lines=70 --test-coverage-branches=70 --test-coverage-functions=70 app/ui/test/*.mjs
+          scripts/ui-tests
           node app/ui/js/check.mjs
           python3 -m unittest scripts/test_release_tools.py
           scripts/check-workflows

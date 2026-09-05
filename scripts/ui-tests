@@ -1,0 +1,16 @@
+#!/bin/sh
+# Headless frontend gate: node:test with coverage thresholds.
+#
+# Coverage is measured over the modules Node can actually execute. The
+# WKWebView-bound modules (app, board, layout, scheduler, selection,
+# terminal) drive xterm and the real document; their behaviour is verified by
+# the real-WKWebView smoke (app/SMOKE.md, ui/test/wk-smoke.mjs), not here, so
+# they are excluded from the threshold rather than dragging it to a number
+# that means nothing. The test carriers themselves are excluded too.
+set -eu
+cd "$(dirname "$0")/.."
+exec node --test --experimental-test-coverage \
+  --test-coverage-lines=70 --test-coverage-branches=70 --test-coverage-functions=70 \
+  --test-coverage-exclude='app/ui/test/**' \
+  --test-coverage-exclude='app/ui/js/{app,board,layout,scheduler,selection,terminal}.js' \
+  app/ui/test/*.mjs
