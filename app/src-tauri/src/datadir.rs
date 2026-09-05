@@ -238,6 +238,25 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&p).unwrap(), "new");
     }
 
+    /// Failures name the io kind only: the message reaches a toast and the
+    /// kind reaches the log, and neither may carry the path.
+    #[test]
+    fn private_writes_report_io_kinds_without_the_path() {
+        let d = tdir("permerr");
+        let missing_parent = d.join("no-such-dir").join("out.txt");
+        let e = write_private(&missing_parent, b"x").unwrap_err();
+        assert_eq!(e.kind(), crate::error::ErrorKind::Missing);
+        assert!(!e.to_string().contains("permerr"), "{e}");
+
+        let file = d.join("plain-file");
+        std::fs::write(&file, "x").unwrap();
+        let e = create_private_dir(&file.join("child")).unwrap_err();
+        assert_eq!(e.kind(), crate::error::ErrorKind::NotDir);
+        assert!(!e.to_string().contains("permerr"), "{e}");
+        assert!(create_private_dir(&d.join("fresh")).is_ok());
+        assert_eq!(mode_of(&d.join("fresh")), 0o700);
+    }
+
     #[test]
     fn harden_migrates_legacy_modes_idempotently() {
         let d = tdir("harden");

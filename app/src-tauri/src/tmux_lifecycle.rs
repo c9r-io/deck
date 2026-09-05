@@ -1165,6 +1165,37 @@ mod tests {
     use std::process::Command;
     use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
+    /// Release creation is allowed only from an installed `deck.app`; the
+    /// shape check must reject every other layout (a bare binary in
+    /// target/, a DMG mount, a renamed bundle) so a transient copy never
+    /// owns the shared production server.
+    #[test]
+    fn only_the_installed_bundle_layout_is_a_stable_release_source() {
+        let installed = Path::new("/Applications/deck.app/Contents/MacOS/deck-app");
+        assert_eq!(
+            app_bundle_root(installed),
+            Some(Path::new("/Applications/deck.app"))
+        );
+        for other in [
+            "/Users/x/deck/app/src-tauri/target/release/deck-app",
+            "/Volumes/deck/deck.app/Contents/Resources/deck-app",
+            "/Volumes/deck/deck.app/MacOS/deck-app",
+            "/Applications/deck/Contents/MacOS/deck-app",
+            "deck-app",
+        ] {
+            assert_eq!(app_bundle_root(Path::new(other)), None, "{other}");
+        }
+        assert!(stable_installed_bundle(Path::new("/Applications/deck.app")));
+        let home = dirs::home_dir().expect("home");
+        assert!(stable_installed_bundle(&home.join("Applications/deck.app")));
+        assert!(!stable_installed_bundle(Path::new(
+            "/Volumes/deck/deck.app"
+        )));
+        assert!(!stable_installed_bundle(Path::new(
+            "/Applications/deck-dev.app"
+        )));
+    }
+
     static TEST_SOCKET_SEQ: AtomicU64 = AtomicU64::new(0);
 
     struct IsolatedServer {

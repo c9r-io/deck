@@ -258,6 +258,58 @@ mod tests {
         );
     }
 
+    /// The log code is the whole content-free vocabulary app.log may carry
+    /// for an error; every kind has exactly one, and the free-text rules
+    /// (foreign text only) land on the same closed set.
+    #[test]
+    fn every_kind_has_one_log_code_and_foreign_text_lands_on_the_same_set() {
+        let table = [
+            (ErrorKind::Perm, "perm"),
+            (ErrorKind::Locked, "locked"),
+            (ErrorKind::NotDir, "not-dir"),
+            (ErrorKind::TmuxMissing, "tmux-missing"),
+            (ErrorKind::Missing, "missing"),
+            (ErrorKind::DiskFull, "disk-full"),
+            (ErrorKind::NewerSchema, "newer-schema"),
+            (ErrorKind::ContextChanged, "context-changed"),
+            (ErrorKind::InvalidDoc, "invalid-doc"),
+            (ErrorKind::NoSession, "no-session"),
+            (ErrorKind::Tmux, "tmux"),
+            (ErrorKind::Recovery, "recovery"),
+            (ErrorKind::Other, "other"),
+        ];
+        for (kind, code) in table {
+            assert_eq!(kind.as_str(), code);
+            assert_eq!(DeckError::new(kind, "x").code(), code);
+        }
+        for (text, code) in [
+            ("written by a newer deck", "newer-schema"),
+            ("context identity changed", "context-changed"),
+            ("invalid JSON at line 3", "invalid-doc"),
+            ("can't find session =x", "no-session"),
+            ("can't find pane %3", "no-session"),
+            ("no such session", "no-session"),
+            ("tmux new-session failed", "tmux"),
+            ("main file unreadable, backup used", "recovery"),
+            ("corrupt", "recovery"),
+        ] {
+            assert_eq!(DeckError::classified(text).code(), code, "{text}");
+        }
+    }
+
+    #[test]
+    fn io_kinds_map_to_the_closed_set_and_utf8_is_an_invalid_document() {
+        use std::io::ErrorKind as Io;
+        assert_eq!(ErrorKind::io(Io::ReadOnlyFilesystem), ErrorKind::Perm);
+        assert_eq!(ErrorKind::io(Io::NotADirectory), ErrorKind::NotDir);
+        assert_eq!(ErrorKind::io(Io::StorageFull), ErrorKind::DiskFull);
+        assert_eq!(ErrorKind::io(Io::QuotaExceeded), ErrorKind::DiskFull);
+        assert_eq!(ErrorKind::io(Io::Interrupted), ErrorKind::Other);
+        let e: DeckError = String::from_utf8(vec![0xff]).unwrap_err().into();
+        assert_eq!(e.kind(), ErrorKind::InvalidDoc);
+        assert!(DeckError::new(ErrorKind::Other, "same text") == *"same text");
+    }
+
     #[test]
     fn the_wire_format_is_the_message_string() {
         let e = DeckError::new(

@@ -164,6 +164,19 @@ pub(crate) fn restore_start_args(name: &str, dir: &str, buffer: &str) -> Vec<Str
     .collect()
 }
 
+/// The one `[start]` log line: cumulative marks after the lifecycle gate,
+/// after pane creation and at the end become per-phase durations. Only the
+/// hashed session tag, numbers and a flag — never the name, dir or cmd.
+fn start_timing_line(name: &str, marks_ms: [u128; 3], restored: bool) -> String {
+    let [gate, created, total] = marks_ms;
+    format!(
+        "[start] created {} gate={gate}ms create={}ms cmd={}ms total={total}ms restored={restored}",
+        crate::applog::session_tag(name),
+        created.saturating_sub(gate),
+        total.saturating_sub(created)
+    )
+}
+
 #[tauri::command]
 pub(crate) fn start_session(
     name: String,
@@ -259,12 +272,10 @@ pub(crate) fn start_session(
     if recovery.is_some() {
         crate::shell_state::note_recovered(&name);
     }
-    let total_ms = t0.elapsed().as_millis();
-    applog(&format!(
-        "[start] created {} gate={gate_ms}ms create={}ms cmd={}ms total={total_ms}ms restored={restored}",
-        crate::applog::session_tag(&name),
-        created_ms - gate_ms,
-        total_ms - created_ms
+    applog(&start_timing_line(
+        &name,
+        [gate_ms, created_ms, t0.elapsed().as_millis()],
+        restored,
     ));
     Ok(StartSessionResult {
         created: true,
@@ -581,6 +592,39 @@ mod tests {
             .and_then(|(_, value)| value)
             .expect("pbcopy must not inherit the GUI session's missing locale");
         assert_eq!(lang, std::ffi::OsStr::new("en_US.UTF-8"));
+    }
+
+    #[test]
+    fn start_timing_line_carries_phase_durations_and_no_session_name() {
+        let line = start_timing_line("deck-quarterly-report-ab12", [12, 40, 47], true);
+        assert!(line.starts_with("[start] created sess-"), "{line}");
+        assert!(line.ends_with(" gate=12ms create=28ms cmd=7ms total=47ms restored=true"));
+        assert!(
+            !line.contains("quarterly"),
+            "the card title never reaches the log"
+        );
+        assert_eq!(
+            crate::redact::sanitize_log(&line),
+            line,
+            "safe to log verbatim"
+        );
+    }
+
+    /// Both probes are read-only and answer from fixed roots: the editor
+    /// list is a subset of the closed candidate table, and each name is an
+    /// `open -a` target that really exists.
+    #[test]
+    fn editor_and_home_probes_answer_from_fixed_roots() {
+        let home = dirs::home_dir().expect("home");
+        assert_eq!(default_dir(), home.display().to_string());
+        for name in detect_editors() {
+            let app = format!("{name}.app");
+            assert!(
+                std::path::Path::new("/Applications").join(&app).exists()
+                    || home.join("Applications").join(&app).exists(),
+                "{name}"
+            );
+        }
     }
 
     #[test]

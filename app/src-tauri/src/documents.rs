@@ -405,12 +405,18 @@ fn validate_saved_update_channel(data: &str) -> Result<(), DeckError> {
     }
 }
 
-pub(crate) fn editor_app() -> Option<String> {
+/// The settings document as loose JSON, or None when it is absent or
+/// unreadable. Every reader below tolerates a missing/foreign value: settings
+/// are advisory, and a bad file must never stop the app from booting.
+fn settings_value() -> Option<serde_json::Value> {
     let raw = storage::load_typed::<SettingsDoc>(&settings_path())
         .ok()??
         .payload;
-    let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
-    let e = v.get("editor")?.as_str()?.trim().to_string();
+    serde_json::from_str(&raw).ok()
+}
+
+fn editor_from(settings: Option<&serde_json::Value>) -> Option<String> {
+    let e = settings?.get("editor")?.as_str()?.trim().to_string();
     if e.is_empty() {
         None
     } else {
@@ -418,31 +424,93 @@ pub(crate) fn editor_app() -> Option<String> {
     }
 }
 
-pub(crate) fn locale_setting() -> String {
-    let raw = storage::load_typed::<SettingsDoc>(&settings_path())
-        .ok()
-        .flatten()
-        .map(|o| o.payload);
-    raw.and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+fn locale_from(settings: Option<&serde_json::Value>) -> String {
+    settings
         .and_then(|v| v.get("locale")?.as_str().map(str::to_owned))
         .filter(|v| matches!(v.as_str(), "system" | "en" | "zh-Hans"))
         .unwrap_or_else(|| "system".into())
 }
 
-pub(crate) fn update_channel_setting() -> String {
-    let raw = storage::load_typed::<SettingsDoc>(&settings_path())
-        .ok()
-        .flatten()
-        .map(|outcome| outcome.payload);
-    raw.and_then(|value| serde_json::from_str::<serde_json::Value>(&value).ok())
-        .and_then(|value| value.get("updateChannel")?.as_str().map(str::to_owned))
-        .filter(|value| matches!(value.as_str(), "stable" | "nightly"))
+fn update_channel_from(settings: Option<&serde_json::Value>) -> String {
+    settings
+        .and_then(|v| v.get("updateChannel")?.as_str().map(str::to_owned))
+        .filter(|v| matches!(v.as_str(), "stable" | "nightly"))
         .unwrap_or_else(|| "stable".into())
+}
+
+pub(crate) fn editor_app() -> Option<String> {
+    editor_from(settings_value().as_ref())
+}
+
+pub(crate) fn locale_setting() -> String {
+    locale_from(settings_value().as_ref())
+}
+
+pub(crate) fn update_channel_setting() -> String {
+    update_channel_from(settings_value().as_ref())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---------- settings readers: closed values, advisory file ----------
+
+    /// Each reader accepts only its closed alphabet and falls back to the
+    /// default for a missing file, a missing key, a foreign type or an
+    /// unknown value — a hand-edited settings.json can never select an
+    /// endpoint, locale or editor deck does not know.
+    #[test]
+    fn settings_readers_accept_only_closed_values_and_default_otherwise() {
+        let v = |json: &str| serde_json::from_str::<serde_json::Value>(json).unwrap();
+        assert_eq!(update_channel_from(None), "stable", "no settings file");
+        assert_eq!(update_channel_from(Some(&v("{}"))), "stable");
+        assert_eq!(
+            update_channel_from(Some(&v(r#"{"updateChannel":"nightly"}"#))),
+            "nightly"
+        );
+        assert_eq!(
+            update_channel_from(Some(&v(r#"{"updateChannel":"https://evil"}"#))),
+            "stable",
+            "an unknown channel can never reach the updater"
+        );
+        assert_eq!(
+            update_channel_from(Some(&v(r#"{"updateChannel":1}"#))),
+            "stable"
+        );
+
+        assert_eq!(locale_from(None), "system");
+        assert_eq!(locale_from(Some(&v(r#"{"locale":"zh-Hans"}"#))), "zh-Hans");
+        assert_eq!(locale_from(Some(&v(r#"{"locale":"en"}"#))), "en");
+        assert_eq!(locale_from(Some(&v(r#"{"locale":"fr"}"#))), "system");
+
+        assert_eq!(editor_from(None), None);
+        assert_eq!(
+            editor_from(Some(&v(r#"{"editor":"  Zed "}"#))),
+            Some("Zed".into())
+        );
+        assert_eq!(
+            editor_from(Some(&v(r#"{"editor":"   "}"#))),
+            None,
+            "blank is unset"
+        );
+        assert_eq!(editor_from(Some(&v(r#"{"editor":3}"#))), None);
+    }
+
+    #[test]
+    fn saving_settings_refuses_an_unknown_update_channel_before_disk() {
+        assert!(validate_saved_update_channel(r#"{"editor":"Zed"}"#).is_ok());
+        assert!(validate_saved_update_channel(r#"{"updateChannel":"stable"}"#).is_ok());
+        assert!(validate_saved_update_channel(r#"{"updateChannel":"nightly"}"#).is_ok());
+        let e = validate_saved_update_channel(r#"{"updateChannel":"beta"}"#).unwrap_err();
+        assert_eq!(e.kind(), ErrorKind::Other);
+        assert_eq!(
+            validate_saved_update_channel("not json")
+                .unwrap_err()
+                .kind(),
+            ErrorKind::Other
+        );
+    }
 
     // ---------- board / settings business validation ----------
 
