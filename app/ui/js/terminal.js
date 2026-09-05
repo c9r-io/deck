@@ -529,7 +529,6 @@ $('collapse-btn').onclick = toggleSidebar;
 $('home-btn').onclick = backToBoard;
 $('back-btn').onclick = backToBoard;
 $('board-new').onclick = () => newSession(HOME);
-$('side-new').onclick = () => newSession(HOME);
 registerShortcutAction('newSession', () => newSession(HOME));
 registerShortcutAction('toggleSidebar', toggleSidebar);
 $('sess-close').onclick = () => closeSession(state.sessionId, true);

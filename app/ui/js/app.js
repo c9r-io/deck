@@ -83,7 +83,6 @@ function renderTmuxDiagnostics(status = tmuxServerStatus) {
   side.style.display = pending ? 'flex' : 'none';
   side.disabled = !!tmuxRestarting;
   side.title = t('tmux.pendingTitle', { count: status.sessionCount || 0 });
-  $('side-new').disabled = pending || tmuxRestarting;
   $('board-new').disabled = pending || tmuxRestarting;
 
   $('set-tmux-state').textContent = tmuxStateText(status);

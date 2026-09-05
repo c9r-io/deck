@@ -427,7 +427,6 @@
     </button>
     <div class="side-group"><span>Sessions</span><span id="side-count"></span></div>
     <div class="side-list" id="side-list"></div>
-    <button class="side-new" id="side-new" title="New session"><span>＋</span><span class="label">New session</span></button>
   </nav>
 
   <div id="main">
@@ -1314,7 +1313,6 @@ $('collapse-btn').onclick = toggleSidebar;
 $('home-btn').onclick = backToBoard;
 $('back-btn').onclick = backToBoard;
 $('board-new').onclick = () => openModal();
-$('side-new').onclick = () => openModal();
 $('sess-new-here').onclick = () => {
   const s = provider.get(state.sessionId);
   openModal({ dir: s ? s.dir : HOME });
