@@ -546,6 +546,7 @@ mod tests {
         let raw = concat!(
             "cwd=/Users/example/project\n",
             "docs=https://example.com/guide\n",
+            "claude --resume 0f3ab19c-4d2e-4a71-9b8c-1d2e3f4a5b6c\n",
             "OPENAI_API_KEY=sk-example12345678901234567890\n",
             "Authorization: Bearer github_pat_example12345678901234567890\n",
             "-----BEGIN OPENSSH PRIVATE KEY-----\n",
@@ -556,6 +557,7 @@ mod tests {
         let clean = sanitize_transcript(raw);
         assert!(clean.contains("/Users/example/project"));
         assert!(clean.contains("https://example.com/guide"));
+        assert!(clean.contains("--resume 0f3ab19c-4d2e-4a71-9b8c-1d2e3f4a5b6c"));
         assert!(!clean.contains("sk-example"));
         assert!(!clean.contains("github_pat_"));
         assert!(!clean.contains("private-material"));

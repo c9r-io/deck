@@ -667,6 +667,31 @@ fn credential_assignment(line: &str, start: usize) -> Option<(usize, usize)> {
     (end > i).then_some((i, end))
 }
 
+/// A canonical UUID (8-4-4-4-12 hex) standing as a WHOLE token. Shell
+/// recovery keeps these: an agent session identifier is exactly what a
+/// restored transcript exists to hand back (`claude --resume <id>`, a
+/// `.../<id>.jsonl` path), and the opaque-token rule below — 24+ chars with
+/// digits and letters — swallowed every one of them. A UUID-shaped secret
+/// assigned to a credential key is still redacted by
+/// `credential_assignment`, which runs first.
+fn uuid_token_end(line: &str, start: usize) -> Option<usize> {
+    let bytes = line.as_bytes();
+    if start > 0
+        && (bytes[start - 1].is_ascii_alphanumeric() || matches!(bytes[start - 1], b'_' | b'-'))
+    {
+        return None;
+    }
+    let end = token_end(bytes, start);
+    let run = &line[start..end];
+    let groups: Vec<&str> = run.split('-').collect();
+    let shaped = groups.len() == 5
+        && groups.iter().map(|g| g.len()).eq([8usize, 4, 4, 4, 12])
+        && groups
+            .iter()
+            .all(|g| g.bytes().all(|c| c.is_ascii_hexdigit()));
+    shaped.then_some(end)
+}
+
 fn credential_token_end(line: &str, start: usize) -> Option<usize> {
     let bytes = line.as_bytes();
     let rest = &line[start..];
@@ -699,6 +724,11 @@ pub(crate) fn redact_credentials(line: &str) -> String {
         if let Some((value_start, end)) = credential_assignment(line, i) {
             out.push_str(&line[i..value_start]);
             out.push_str("<redacted>");
+            i = end;
+            continue;
+        }
+        if let Some(end) = uuid_token_end(line, i) {
+            out.push_str(&line[i..end]); // an identifier, not a credential
             i = end;
             continue;
         }
@@ -1640,6 +1670,37 @@ mod tests {
         ] {
             assert_eq!(sanitize_log(line), line, "over-redacted: {line}");
         }
+    }
+
+    #[test]
+    fn shell_recovery_keeps_agent_session_ids_but_not_credentials() {
+        // A restored transcript exists so the user can pick their work back
+        // up; `claude --resume <uuid>` is the single most valuable line in
+        // it and the opaque-token rule used to erase the id.
+        let id = "0f3ab19c-4d2e-4a71-9b8c-1d2e3f4a5b6c";
+        for line in [
+            format!("$ claude --resume {id}"),
+            format!("$ codex resume {id}"),
+            format!("~/.claude/projects/deck/{id}.jsonl"),
+            format!("({id})"),
+        ] {
+            assert_eq!(redact_credentials(&line), line, "over-redacted: {line}");
+        }
+        // shape, boundary and credential rules still hold
+        for (line, keep) in [
+            (format!("API_TOKEN={id}"), false),
+            (format!("Authorization: Bearer {id}"), false),
+            (format!("sk-live-{id}"), false),
+            ("0f3ab19c-4d2e-4a71-9b8c-1d2e3f4a5b6c7d".to_string(), false),
+        ] {
+            assert_eq!(
+                redact_credentials(&line).contains(id),
+                keep,
+                "wrong verdict: {line}"
+            );
+        }
+        // app.log keeps the strict policy: it carries no user content at all
+        assert!(!sanitize_log(&format!("[ui] {id}")).contains(id));
     }
 
     #[test]
