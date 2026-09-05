@@ -43,9 +43,23 @@ class FakeElement {
 }
 
 const ids = new Map();
+const documentListeners = new Map();
 const fakeDocument = {
   activeElement: null,
-  addEventListener() {},
+  addEventListener(type, fn) {
+    const list = documentListeners.get(type) || [];
+    list.push(fn); documentListeners.set(type, list);
+  },
+  fire(type, extra = {}) {
+    const event = {
+      key: '', keyCode: 0, isComposing: false, prevented: 0, stopped: 0,
+      preventDefault() { this.prevented++; },
+      stopPropagation() { this.stopped++; },
+      ...extra,
+    };
+    for (const fn of documentListeners.get(type) || []) fn(event);
+    return event;
+  },
   createElement: tag => new FakeElement(tag),
   getElementById(id) {
     if (!ids.has(id)) ids.set(id, new FakeElement());
@@ -56,7 +70,7 @@ globalThis.document = fakeDocument;
 globalThis.window = { __TAURI__: null, __DECK_DEBUG: false };
 
 const {
-  cfmDone, inlineRename, persistSessionRestoreChoice, persistUpdateChannelChoice,
+  cfmDone, confirmDangerDialog, confirmDialog, inlineRename, persistSessionRestoreChoice, persistUpdateChannelChoice,
   promptDialog, persistThemeChoice, filterSettings, selectSettingsSection, resetApplicationLogs, refreshLogSize,
 } = await import('../js/dialogs.js');
 const { store } = await import('../js/state.js');
@@ -161,6 +175,41 @@ test('Board serialization persists important marks and excludes runtime card sta
   assert.equal('status' in serialized.cards[0], false);
   assert.equal('mem' in serialized.cards[0], false);
   assert.equal('tail' in serialized.cards[0], false);
+});
+
+test('an inbound card keeps its origin across Board writes, and only identifiers', () => {
+  const base = { projectId: 'p', columnId: 'c', title: 'A', desc: '', cmd: '', dir: '/tmp' };
+  const cards = [
+    { ...base, id: 'a', session: 'deck-a-0001',
+      origin: { source: 'slack', key: 'C1:1.2', badge: 'eyes', text: 'the message', from: 'alice' } },
+    { ...base, id: 'b', session: 'deck-b-0002', origin: { source: 'slack', key: 7 } },
+    { ...base, id: 'c', session: 'deck-c-0003' },
+  ];
+  const serialized = boardData([], cards);
+  assert.deepEqual(serialized.cards[0].origin, { source: 'slack', key: 'C1:1.2', badge: 'eyes' },
+    'the idempotency key survives; message content never does');
+  assert.equal('origin' in serialized.cards[1], false, 'a malformed origin is dropped, not persisted');
+  assert.equal('origin' in serialized.cards[2], false);
+});
+
+test('a high-risk confirmation cannot be accepted by Enter, an ordinary one can', async () => {
+  let settled = null;
+  const danger = confirmDangerDialog('bypass the process check?').then(v => { settled = v; });
+  assert.equal(fakeDocument.getElementById('cfm').style.display, 'flex');
+  const enter = fakeDocument.fire('keydown', { key: 'Enter' });
+  await tick();
+  assert.equal(settled, null, 'Enter must not accept a pointer-only confirmation');
+  assert.ok(enter.prevented && enter.stopped, 'Enter is swallowed rather than reaching the terminal');
+  fakeDocument.fire('keydown', { key: 'Escape' });
+  await danger;
+  assert.equal(settled, false, 'Escape still declines');
+
+  settled = null;
+  const ordinary = confirmDialog('close this card?').then(v => { settled = v; });
+  fakeDocument.fire('keydown', { key: 'Enter' });
+  await ordinary;
+  assert.equal(settled, true, 'an ordinary confirmation accepts Enter');
+  assert.equal(fakeDocument.getElementById('cfm').style.display, 'none');
 });
 
 test('failed theme persistence restores the prior palette and selectors', async () => {

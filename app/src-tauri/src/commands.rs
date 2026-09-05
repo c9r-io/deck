@@ -106,6 +106,45 @@ pub(crate) struct StartSessionResult {
 /// already lives (stale frontend status, click before the first poll, another
 /// window), that is success-without-side-effects: never a duplicate-session
 /// error, and never re-typing the boot cmd into a running shell.
+/// The restored-shell start as ONE tmux server sequence: keep an empty server
+/// alive, load the sanitized transcript from stdin into a private buffer,
+/// create the pane the ORDINARY way (tmux's own login shell, no command),
+/// have the SERVER write the buffer to the new pane's tty, then discard it.
+/// No `/bin/sh -c`, no script, no shell argv: the earlier inline-script
+/// bootstrap was an EDR signature, and the signed deck binary must never be
+/// a pane executable (macOS Local Network Privacy would attribute the shell
+/// tree to deck). `tmux_contract` proves the sequence against real tmux;
+/// the unit test pins its shape.
+pub(crate) fn restore_start_args(name: &str, dir: &str, buffer: &str) -> Vec<String> {
+    [
+        "start-server",
+        ";",
+        "load-buffer",
+        "-b",
+        buffer,
+        "-",
+        ";",
+        "new-session",
+        "-d",
+        "-s",
+        name,
+        "-c",
+        dir,
+        ";",
+        "save-buffer",
+        "-b",
+        buffer,
+        crate::shell_state::RESTORE_TTY_FORMAT,
+        ";",
+        "delete-buffer",
+        "-b",
+        buffer,
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
+}
+
 #[tauri::command]
 pub(crate) fn start_session(
     name: String,
@@ -165,33 +204,9 @@ pub(crate) fn start_session(
         // private buffer to that pane's tty and discards it. The write
         // follows the fork immediately, so it lands before the shell's
         // first prompt; a slow rc file can only reorder text, never run it.
-        let restored_start = tmux_with_stdin(
-            &[
-                "start-server",
-                ";",
-                "load-buffer",
-                "-b",
-                &bootstrap.buffer,
-                "-",
-                ";",
-                "new-session",
-                "-d",
-                "-s",
-                &name,
-                "-c",
-                &dir,
-                ";",
-                "save-buffer",
-                "-b",
-                &bootstrap.buffer,
-                crate::shell_state::RESTORE_TTY_FORMAT,
-                ";",
-                "delete-buffer",
-                "-b",
-                &bootstrap.buffer,
-            ],
-            &bootstrap.output,
-        );
+        let args = restore_start_args(&name, &dir, &bootstrap.buffer);
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let restored_start = tmux_with_stdin(&args, &bootstrap.output);
         match restored_start {
             Ok(output) => (Ok(output), true),
             Err(error) => {
@@ -565,6 +580,62 @@ mod tests {
             parse_panes(text)["s"],
             (10, 111, false, "zsh".into(), "/tmp/one".into())
         );
+    }
+
+    /// Pins the plan `tmux_contract::shell_restore_bootstrap_becomes_tmux_
+    /// history_without_executing_text` executes: the pane is created with no
+    /// command, the bytes travel stdin → private buffer → pane tty inside the
+    /// tmux server, and nothing on the path is a shell or a script.
+    #[test]
+    fn restore_start_is_one_tmux_sequence_with_no_shell_and_no_argv_payload() {
+        let args = restore_start_args("sess", "/tmp/dir", "deck-restore-7");
+        let steps: Vec<Vec<&str>> = args
+            .split(|a| a == ";")
+            .map(|step| step.iter().map(String::as_str).collect())
+            .collect();
+        assert_eq!(steps[0], ["start-server"]);
+        assert_eq!(
+            steps[1],
+            ["load-buffer", "-b", "deck-restore-7", "-"],
+            "bytes come from stdin"
+        );
+        assert_eq!(
+            steps[2],
+            ["new-session", "-d", "-s", "sess", "-c", "/tmp/dir"],
+            "the pane is created exactly like a clean shell: no command argument"
+        );
+        assert_eq!(
+            steps[3],
+            [
+                "save-buffer",
+                "-b",
+                "deck-restore-7",
+                crate::shell_state::RESTORE_TTY_FORMAT
+            ]
+        );
+        assert_eq!(steps[4], ["delete-buffer", "-b", "deck-restore-7"]);
+        assert_eq!(steps.len(), 5);
+        for forbidden in [
+            "sh",
+            "/bin/",
+            "send-keys",
+            "run-shell",
+            "if-shell",
+            "pipe-pane",
+            "deck-app",
+        ] {
+            assert!(
+                !args.iter().any(|a| a == forbidden || a.contains("/bin/")),
+                "{forbidden} on the restore path"
+            );
+        }
+    }
+
+    #[test]
+    fn card_preview_depth_matches_the_frontend_constant() {
+        // pure.js CARD_PREVIEW_ROWS pins the same value; the two must agree
+        // or fixed-height previews clip or pad.
+        assert_eq!(CARD_PREVIEW_LINES, 6);
     }
 
     #[test]

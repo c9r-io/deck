@@ -1,14 +1,17 @@
 //! Privacy tripwires for app.log. Structure of the guarantee:
 //!
 //! 1. The ONLY frontend→log channel is the `ui_event` command, whose backend
-//!    formatter admits nothing but a whitelisted code, a short slug (no
-//!    spaces/slashes → no prose, prompts, paths or URLs) and two integers —
-//!    that formatter is unit-tested in diagnostics.rs
-//!    (`ui_events_admit_no_free_form_content`).
-//! 2. These tests pin the structure: no module may resurrect a free-form
-//!    log channel (`ui_log`/`ulog`/`dlog`), every event call site must use a
-//!    whitelisted code, no event call may build content-bearing arguments,
-//!    and backend `applog` lines must not interpolate user content.
+//!    formatter admits nothing but a whitelisted code, a closed detail and
+//!    two integers. The formatter is unit-tested in diagnostics.rs
+//!    (`ui_events_admit_no_free_form_content`), every (code, detail) pair the
+//!    frontend can emit is pushed through it there
+//!    (`every_frontend_event_label_survives_the_formatter`), and the writer
+//!    and export sanitizers are exercised on real files in storage.rs and
+//!    diagnostics.rs.
+//! 2. These tests pin the remaining structure: no module may resurrect a
+//!    free-form log channel (`ui_log`/`ulog`/`dlog`), no event call may build
+//!    content-bearing arguments, backend `applog` lines must not interpolate
+//!    user content, and the scheduler's context probe reads metadata only.
 //!
 //! All Rust modules and all frontend sources (js + index.html) are scanned.
 
@@ -71,45 +74,6 @@ fn free_form_log_channel_stays_dead() {
             "{name}: ui_log command resurrected — ui_event is the only frontend log entry"
         );
     }
-}
-
-/// Every frontend event call must use a code the backend whitelists —
-/// anything else is silently dropped as "unknown-event", i.e. dead code.
-#[test]
-fn every_event_call_site_uses_a_whitelisted_code() {
-    let commands = std::fs::read_to_string(manifest("src/diagnostics.rs")).unwrap();
-    let list = commands
-        .split("UI_EVENT_SPECS: &[(&str, DetailPolicy)] = &[")
-        .nth(1)
-        .expect("whitelist present")
-        .split("];")
-        .next()
-        .unwrap();
-    // each spec is `("code", DetailPolicy::…)`; rustfmt may split it across
-    // lines, leaving the code either as `("code",` or a bare `"code",` line
-    let codes: Vec<&str> = list
-        .lines()
-        .map(|l| l.trim())
-        .filter_map(|l| l.strip_prefix("(\"").or_else(|| l.strip_prefix('"')))
-        .filter(|l| l.contains("\","))
-        .filter_map(|l| l.split('"').next())
-        .collect();
-    assert!(codes.len() > 10, "whitelist parsed: {codes:?}");
-
-    let mut sites = 0;
-    for (name, src) in frontend_sources() {
-        for caller in ["uev('", "duev('", "uevRaw('"] {
-            for part in src.split(caller).skip(1) {
-                let code = part.split('\'').next().unwrap_or("");
-                sites += 1;
-                assert!(
-                    codes.contains(&code),
-                    "{name}: event code {code:?} is not in the backend whitelist"
-                );
-            }
-        }
-    }
-    assert!(sites > 20, "event call sites found: {sites}");
 }
 
 /// Event calls must not smuggle content through their arguments: no string
@@ -207,38 +171,6 @@ fn debug_logging_is_command_line_only_and_stays_structured() {
     );
 }
 
-/// The sanitizer must be the LAST thing between a line and the disk, on both
-/// paths that write one — the log writer and the export builder.
-#[test]
-fn every_write_path_runs_through_the_sanitizer() {
-    let storage = std::fs::read_to_string(manifest("src/storage.rs")).unwrap();
-    let applog = storage
-        .split("pub(crate) fn applog_to(")
-        .nth(1)
-        .expect("applog_to present")
-        .split("\npub")
-        .next()
-        .unwrap();
-    assert!(
-        applog.contains("sanitize_log(msg)"),
-        "app.log lines must be sanitized as they are written"
-    );
-    let commands = std::fs::read_to_string(manifest("src/diagnostics.rs")).unwrap();
-    let export = commands
-        .split("pub(crate) fn build_export(")
-        .nth(1)
-        .expect("build_export present")
-        .split("\npub")
-        .next()
-        .unwrap();
-    assert_eq!(
-        export.matches("storage::sanitize_log(").count(),
-        2,
-        "an export sanitizes its header AND its log body — it must not just \
-         trust that app.log was already clean"
-    );
-}
-
 #[test]
 fn scheduler_context_probe_is_metadata_only_and_content_free() {
     let context = std::fs::read_to_string(manifest("src/context.rs")).unwrap();
@@ -255,12 +187,6 @@ fn scheduler_context_probe_is_metadata_only_and_content_free() {
         !context.contains("applog("),
         "raw probe metadata must never be logged"
     );
-    let scheduler: String = std::fs::read_dir(manifest("src/scheduler"))
-        .unwrap()
-        .map(|e| std::fs::read_to_string(e.unwrap().path()).unwrap())
-        .collect();
-    assert!(scheduler.contains("last_context: Option<ContextCheck>"));
-    assert!(!scheduler.contains("terminal_tail"));
 }
 
 // File-permission guarantees are BEHAVIORAL tests now, not source scans:

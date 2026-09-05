@@ -496,6 +496,143 @@ mod tests {
         }
     }
 
+    /// The cross-language contract behind every diagnostic line. Each
+    /// (code, detail) pair the frontend can emit is pushed through the REAL
+    /// formatter: the code must be whitelisted and the detail must survive,
+    /// because a label the backend redacts is a diagnostic that says nothing.
+    /// Call sites are harvested from the production modules; the checks run
+    /// against `format_ui_event`, not against source text.
+    #[test]
+    fn every_frontend_event_label_survives_the_formatter() {
+        let ui = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../ui/js");
+        let mut sources: Vec<(String, String)> = std::fs::read_dir(&ui)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .filter(|p| p.extension().is_some_and(|x| x == "js"))
+            .map(|p| {
+                (
+                    p.file_name().unwrap().to_string_lossy().into_owned(),
+                    std::fs::read_to_string(&p).unwrap(),
+                )
+            })
+            .collect();
+        sources.sort();
+        assert!(sources.len() > 10, "frontend modules found");
+
+        // `marker('code'` → the single-quoted literal that follows.
+        fn literal_after<'a>(text: &'a str, marker: &str) -> Vec<(&'a str, &'a str)> {
+            text.match_indices(marker)
+                .filter_map(|(at, _)| {
+                    let rest = &text[at + marker.len()..];
+                    let code = rest.split('\'').next()?;
+                    let after = rest[code.len() + 1..].trim_start_matches([',', ' ']);
+                    let detail = after.strip_prefix('\'').and_then(|d| d.split('\'').next());
+                    Some((code, detail.unwrap_or("")))
+                })
+                .collect()
+        }
+        let mut sites = 0;
+        let mut pairs: Vec<(String, String, String)> = Vec::new();
+        for (file, text) in &sources {
+            for marker in ["uev('", "duev('"] {
+                for (code, detail) in literal_after(text, marker) {
+                    sites += 1;
+                    let line = format_ui_event(code, None, None, None);
+                    assert!(
+                        line.is_some(),
+                        "{file}: event code {code:?} is not whitelisted"
+                    );
+                    if !detail.is_empty() {
+                        pairs.push((file.clone(), code.into(), detail.into()));
+                    }
+                }
+            }
+            // Labels that reach `uev` through a local wrapper or a builder.
+            let indirect: &[(&str, &str, &str)] = &[
+                ("selection.js", "sev('", "terminal-selection"),
+                ("pure.js", "emit('", "terminal-paste"),
+            ];
+            for (owner, marker, code) in indirect {
+                if file == owner {
+                    for (label, _) in literal_after(text, marker) {
+                        pairs.push((file.clone(), code.to_string(), label.into()));
+                    }
+                }
+            }
+            for (at, _) in text.match_indices("'revoker-") {
+                let word: String = text[at + 1..]
+                    .chars()
+                    .take_while(|c| c.is_ascii_lowercase() || *c == '-')
+                    .collect();
+                pairs.push((file.clone(), "terminal-selection".into(), word));
+            }
+            // `cancel(…, 'reason')` becomes the `cancel-<reason>` label.
+            for marker in [
+                "cancel(",
+                "cancelTerminalSelection(",
+                "cancelAllTerminalSelections(",
+            ] {
+                for (at, _) in text.match_indices(marker) {
+                    let call = &text[at..text.len().min(at + 90)];
+                    let Some(call) = call.split(')').next() else {
+                        continue;
+                    };
+                    let reason = call.rsplit('\'').nth(1).filter(|r| {
+                        !r.is_empty() && r.chars().all(|c| c.is_ascii_lowercase() || c == '-')
+                    });
+                    if let Some(reason) = reason {
+                        pairs.push((
+                            file.clone(),
+                            "terminal-selection".into(),
+                            format!("cancel-{reason}"),
+                        ));
+                    }
+                }
+            }
+            if file == "selection.js" {
+                for label in ["selection-missing", "snapshot-failed"] {
+                    assert!(text.contains(label), "copy failure code {label} vanished");
+                    pairs.push((file.clone(), "terminal-copy".into(), label.into()));
+                }
+            }
+        }
+        assert!(sites > 20, "event call sites found: {sites}");
+        assert!(pairs.len() > 40, "labelled sites found: {}", pairs.len());
+        for (file, code, detail) in &pairs {
+            let line = format_ui_event(code, Some(detail), None, None)
+                .unwrap_or_else(|| panic!("{file}: {code} is not whitelisted"));
+            assert!(
+                line.ends_with(&format!(" {detail}")),
+                "{file}: the backend would redact {code} {detail:?} → {line:?}"
+            );
+        }
+        for reason in [
+            "pointer",
+            "pointer-cancel",
+            "blur",
+            "hidden",
+            "input",
+            "escape",
+            "focus",
+            "live",
+            "exit",
+            "leave",
+            "dispose",
+            "other",
+        ] {
+            assert!(
+                format_ui_event(
+                    "terminal-selection",
+                    Some(&format!("cancel-{reason}")),
+                    None,
+                    None
+                )
+                .is_some_and(|l| !l.contains("<redacted>")),
+                "revoke reason cancel-{reason} must stay loggable"
+            );
+        }
+    }
+
     #[test]
     fn debug_logging_is_the_launch_flag_and_nothing_else() {
         assert_eq!(
