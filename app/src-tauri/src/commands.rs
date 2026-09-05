@@ -1,6 +1,13 @@
 //! The remaining Tauri command surface: event self-test, tmux mode style,
 //! editor discovery, session start/kill, clipboard write and the one poll
 //! command that feeds card status/memory/preview.
+//!
+//! # Contract
+//! One poll command (`poll_sessions`) returns liveness + `#{window_activity}` recency +
+//! process-tree RSS (pane_pid → ps tree walk) + the last six non-empty pane rows
+//! for fixed-height, bottom-aligned card previews. Frontend polls every 2.5s and
+//! diffs into granular UI events (status/mem/output) — never full re-renders on
+//! output.
 
 use serde::Serialize;
 use std::collections::HashMap;

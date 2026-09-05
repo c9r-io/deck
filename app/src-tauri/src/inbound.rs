@@ -1,3 +1,45 @@
+//! Auto-respond dispatcher: sources produce content-free events, the ledger
+//! dedupes them, rules pick a template, and the webview creates the card
+//! through the ordinary Board transaction.
+//!
+//! # Contract
+//! Auto-respond / 自动响应 (`inbound.rs`, `inbound_slack.rs`, `keychain.rs`,
+//! `ui/js/inbound.js`): an external badge starts a session. Three layers and
+//! only the top one knows a service. SOURCES produce a fixed
+//! `Event {source, key, badge, text, from, where, link}` and nothing else;
+//! the Slack source has two paths on ONE user token: catch-up via
+//! `search.messages` `hasmy::<badge>:` (one request per ruled badge, 30-day
+//! `after:` window, every 30s; NOT `reactions.list`, which has no time filter,
+//! returns every reaction ever and has undocumented order; Slack's search
+//! index lags a fresh reaction by ~1 minute, measured) and live via Socket
+//! Mode USER events `reaction_added` (app-level token; own reactions only;
+//! text fetched with `conversations.history`/`replies`; Slack retries an
+//! undelivered event only a few times, so the catch-up is the safety net).
+//! The DISPATCHER dedupes on `(source, key, badge)` in `~/.deck/inbound.json`
+//! (identifiers + time only, ephemeral save, no `.bak`), matches
+//! `settings.inbound.rules` (validated structurally by `SettingsDoc` on load
+//! AND save: closed source names, emoji-name badges, one rule per badge,
+//! bounded ids/cmd/dir), and announces with a CONTENT-FREE `inbound-changed`
+//! event; the webview pulls `inbound_pending`, `planInbound` (pure.js)
+//! decides, the card is created through the ordinary Board transaction with
+//! an `origin` field (persisted; the idempotency key), the template steps go
+//! through the ordinary `queue_add` (step 1 `at=now`, gated by the readiness
+//! probe; message newlines become spaces because the queue pastes one line),
+//! and `inbound_ack` retires the item. The first poll for a (source, badge)
+//! BASELINES — existing badges are recorded, never turned into cards — and a
+//! lost ledger degrades to a re-baseline, never a flood. Credentials live in
+//! the macOS Keychain under closed slots (`keychain.rs`); they are never
+//! written under `~/.deck`, never logged, never in an error string, and never
+//! read back into the webview (status reports presence only); a pasted token
+//! is verified with Slack (`auth.test` / `apps.connections.open`) before it is
+//! stored. Setup is one compiled deep link
+//! (`api.slack.com/apps?new_app=1&manifest_json=…`, `inbound_slack::manifest`)
+//! that prefills the Create page — the user picks a workspace, installs, and
+//! copies two tokens back; nothing shorter exists because Slack has no OAuth
+//! redirect to a local app and no API that mints app-level tokens. Cards are
+//! never moved and deck never writes to Slack. Adding a source = one `Source`
+//! impl + one Settings row; rules/templates/dispatch do not change.
+
 // inbound.rs — "自动响应": external services ask deck to start a session.
 //
 // Three layers, only the top one knows a service:

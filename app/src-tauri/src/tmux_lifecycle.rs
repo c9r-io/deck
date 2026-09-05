@@ -3,6 +3,31 @@
 //! The GUI process is intentionally disposable; the server is not. This
 //! module is the single authority that decides whether a reachable server can
 //! be reused and the only place allowed to replace it.
+//!
+//! # Contract
+//! `tmux_lifecycle.rs` owns the server boundary. It inspects a versioned JSON
+//! server option before scheduler/webview startup, reuses only a compatible
+//! server, automatically replaces an empty old/legacy server, and persists a
+//! content-free pending/restart transaction when sessions exist. Never write
+//! current metadata onto an unknown existing server: that would relabel old
+//! code as current. Session creation must hold `session_creation_guard`; attach
+//! to an existing pending session remains allowed. The restart command rechecks
+//! PID/start-time/session/pane counts under the same gate, detaches PTYs, kills
+//! and waits, validates a stale socket against its captured device/inode, starts
+//! from the current sidecar, then requires a new PID and read-back identity.
+//! The updater takes the same gate before setting its creation embargo. Cards
+//! are marked stopped before polling so a
+//! whole-server restart is not mistaken for natural card exits.
+//!
+//! Production Stable/Nightly intentionally share socket `deck` because
+//! promotion copies identical candidate bytes. Debug development uses
+//! `deck-dev` and bundle ID `io.c9r.deck.dev`; smoke requires `deck-smoke*` and
+//! `io.c9r.deck.smoke`. Release creation is allowed only from
+//! `/Applications/deck.app` or `~/Applications/deck.app` with the adjacent
+//! bundled helper. Updater installation sets a process-local creation embargo
+//! before Tauri renames the running app into `tauri_current_app`; a failed
+//! install clears it, a successful install exits/relaunches from the stable app.
+//! Increment `SERVER_PROTOCOL` only for a true compatibility break.
 
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;

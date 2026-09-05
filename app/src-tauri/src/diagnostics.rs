@@ -1,6 +1,71 @@
 //! Structured, content-free diagnostics: the closed `ui_event` whitelist
 //! (code + per-code detail policy + two ints), log size/reset, and sanitized
 //! exports. Nothing free-form from the webview ever reaches `app.log`.
+//!
+//! # Contract
+//! Run: `app/run.sh` — builds, wraps the binary in a minimal .app, launches via
+//! `open`. NEVER run the bare binary from a background shell: outside the GUI
+//! login session the process can't reach macOS text-input services (TSM/IMK) —
+//! window and mouse work, keyboard is silently dead. `~/.deck/app.log` (0600)
+//! collects backend + frontend diagnostics. Maintainer-only verbose frontend
+//! events are enabled at launch with `app/run.sh --debug-logging`; there is no
+//! user setting for them. Frontend logging is STRUCTURED
+//! ONLY: the `ui_event` command takes a whitelisted code + a detail vetted by
+//! that code's OWN closed policy (enum values / version pattern — no generic
+//! slug rule) + two ints, and redacts everything else — never add a free-form
+//! frontend log channel (log_privacy tests enforce this). Backend log lines
+//! never interpolate raw error Display text or a raw session NAME:
+//! `storage::err_code()` maps errors to stable path-free categories (the full
+//! error goes only to the operation's caller) and `storage::session_tag()`
+//! gives a per-RUN, non-reversible tag. Every line is redacted again by
+//! `sanitize_log` on its way to disk (absolute paths, `~/`, any `scheme://`,
+//! credential prefixes, long opaque tokens, session-name shapes →
+//! `<redacted>`); exports sanitize their own header AND body instead of
+//! trusting app.log; `sanitize_existing_logs` migrates logs/exports an older
+//! deck wrote, in place, at boot (atomic, 0600, no raw copy kept). The
+//! runtime privacy tests write REAL files through `applog_to` into temp dirs
+//! — never stub the writer and call it proven. The whole `~/.deck` tree is private by construction
+//! (dir 0700, every file created 0600 — atomic-write temps, `.bak`,
+//! `.corrupt-*`, log, exports); `harden_data_dir()` re-migrates legacy modes
+//! at every boot.
+//!
+//! Clipboard diagnostics are always structured and content-free. Copy records
+//! terminal key capture, Deck/native/no-selection routing, snapshot loss and
+//! the `pbcopy`/Web Clipboard writer result. `pbcopy` is spawned with
+//! `LANG=en_US.UTF-8` (`pbcopy_command`): a GUI-launched deck has no locale,
+//! and under the C locale pbcopy writes an EMPTY pasteboard item for any
+//! non-ASCII input while exiting 0 — every copy from an agent pane (Chinese,
+//! box-drawing, `⏺`) "succeeded" and pasted nothing. Text paste records the closed chain
+//! key capture → xterm key handler → native paste event → xterm `onData` → PTY
+//! write, with bounded missing-stage timers. Only fixed labels and character or
+//! file counts enter `app.log`; clipboard text, errors and session names never
+//! do. Per-pane timers are disposed with the pane.
+//! ⌘C can only report what it FOUND, so `terminal-selection` records the
+//! selection's own life: `promote` / `start-ok` / `finish-ok` (or
+//! `start-failed` / `update-failed` / `finish-failed` / `freeze-failed`,
+//! which previously cancelled behind nothing but a toast), plus one
+//! `cancel-<reason>` naming every revoke — pointer, pointer-cancel, blur,
+//! hidden, input, escape, focus, live, exit, leave, dispose. That is what
+//! separates a `terminal-copy keydown-none` caused by a drag that never
+//! promoted from one caused by a live selection something took away. A cancel
+//! with nothing to destroy stays silent, so ordinary clicks do not flood the
+//! log; a caller that already logged a specific failure passes a null reason
+//! instead of a second anonymous line. The two integers are a per-label count
+//! (rows spanned, or 1 when a FROZEN selection died; for `finish-failed` a
+//! reason code — 1 the pane had left copy-mode, 2 copy-mode kept but its
+//! selection cleared, 0 other — from the backend's closed
+//! `selection-missing-inactive|cleared` suffix) and the selection's age in
+//! milliseconds — never text, coordinates of content, or an error string.
+//! Three forensic labels attribute the dominant field failure (a completed
+//! selection revoked before ⌘C arrives): `revoker-<class>` pairs with
+//! `cancel-pointer` and classifies the destroying pointerdown by provenance
+//! (trusted pointerType mouse/touch/pen/unknown, or synthetic when isTrusted
+//! is false; its ints are click count and ms since the last pointerup — the
+//! one label whose `b` is not selection age); `native-cleared` marks an xterm
+//! selection appearing while Deck owned the drag (WKWebView's late
+//! compatibility-mouse replay); and `terminal-copy keydown-elsewhere` replaces
+//! `keydown-none` when another pane still holds a live Deck selection (count +
+//! its age), separating "revoked" from "⌘C reached the wrong pane".
 
 use std::path::PathBuf;
 use std::process::Command;

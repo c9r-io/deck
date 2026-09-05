@@ -13,6 +13,40 @@
 //! shell stdin. The signed deck executable is deliberately never a pane
 //! process: macOS Local Network Privacy would otherwise attribute the login
 //! shell and its descendants to deck after a machine restart.
+//!
+//! # Contract
+//! Shell restart recovery is deliberately a bounded projection, not process
+//! serialization. `poll_sessions` returns `pane_current_path` so the frontend
+//! persists cwd changes into the card. `shell_state.rs` checkpoints only panes
+//! whose foreground process is a shell, at most every 15s and two panes per
+//! pass, into separate 0600 typed files (≤256 KiB / 3000 plain-text lines;
+//! control characters stripped). On a user-opened command-less card,
+//! `start_session` may use the saved cwd and submits one tmux batch that starts
+//! an empty server if needed, loads sanitized bytes from Deck's stdin into a
+//! uniquely named private tmux buffer, creates the pane the ORDINARY way
+//! (tmux's own login shell, no command), and in the same sequence has the
+//! tmux SERVER `save-buffer` the bytes to `#{pane_tty}` — the new pane's
+//! tty — then deletes the buffer. No `/bin/sh -c`, no script, no shell argv:
+//! the earlier inline-script bootstrap was an EDR signature. The write
+//! follows the fork inside one tmux process, so it lands before the shell's
+//! first prompt in practice; a slow rc file can only reorder text. After
+//! `new-session -d` in one sequence the format resolves to the pane just
+//! created even on a busy server (pinned by `tmux_contract`). A sequence
+//! failure after the pane exists keeps that pane as a clean, unrestored
+//! shell. The signed `deck-app` binary
+//! must NEVER be a pane executable: after reboot macOS Local Network Privacy
+//! can otherwise attribute the exec-replaced shell and all of its descendants
+//! to Deck while a fresh tmux-created shell works. The text is ordinary tmux
+//! history (not an xterm/DOM overlay), never argv, a new temp payload, or shell
+//! stdin; no command, environment, job, process or agent TUI is restored.
+//! Startup failure degrades to a clean shell, and boot still removes legacy
+//! `.restore-*` payloads left by deck ≤0.5.1.
+//! Later checkpoints capture the restored pane output directly—never merge an
+//! out-of-band prefix, which would duplicate it. Closing a card removes
+//! main/backup/quarantine/temporary copies; Settings can disable capture and
+//! clear all snapshots, with an epoch+IO lock preventing an in-flight writer
+//! from resurrecting cleared data. Never turn this into command replay or raw
+//! PTY recording.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

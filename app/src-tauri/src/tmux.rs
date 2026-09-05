@@ -1,5 +1,14 @@
 //! tmux backend: sidecar discovery, the private `deck` server, config, and
 //! raw command execution. Everything deck knows about tmux lives here.
+//!
+//! # Contract
+//! tmux ships INSIDE the app: a statically linked binary (see
+//! `binaries/build-tmux.sh`, committed as `binaries/tmux-aarch64-apple-darwin`,
+//! bundled+signed via tauri `externalBin`). `tmux_bin()` prefers the sidecar,
+//! then Homebrew/MacPorts probes. deck talks to its OWN server (`-L deck`
+//! socket) — never version-clashes with a user tmux, and deck sessions don't
+//! appear in the user's `tmux ls`. Production debug: `tmux -L deck ls`;
+//! source bundles use `tmux -L deck-dev ls`.
 
 use std::io::Write;
 use std::process::{Command, Stdio};

@@ -3,6 +3,113 @@
 //! deliberately treated as ambiguous after a crash: deck neither claims it
 //! succeeded nor sends it again until the user resolves it. Tick logic is
 //! pure and unit-tested; the thread only adds IO.
+//!
+//! # Contract
+//! Scheduled prompts: Rust-side scheduler thread (NOT webview timers — App Nap
+//! freezes those), 20s tick that sleeps on a condition so `wake_scheduler()`
+//! (called when an inbound card's prompts are queued) starts a scan at once,
+//! queue persisted at `~/.deck/queue.json` and loaded at boot. Every item persists its card id, optional full tmux
+//! server/session/window/pane/pid binding, optional sanitized executable
+//! basename, revision and a closed last-context result (never terminal text,
+//! arguments or paths). Context protection is automatic and has no saved/UI/API
+//! policy: an executable derived from the explicit card launch command is
+//! required in the foreground, otherwise a live non-shell foreground is
+//! captured at creation, otherwise same-pane compatibility delivery is
+//! allowed. Hooks, agent class, output activity and
+//! quiet time never gate delivery. Legacy policy/AgentClass/hook fields are
+//! ignored and cleaned on the next save without changing schedule/delivery
+//! state. `context.rs` owns metadata-only probing and sanitization.
+//! Injection loads the literal text into a uniquely named tmux buffer, then
+//! one synchronous tmux command queue compares the full generation plus
+//! optional foreground executable and byte-literal-pastes only on a match
+//! (`paste-buffer -p`: bracketed only for an application that asked). Enter
+//! is sent 300ms later as a SEPARATE key under the same condition — a CR
+//! inside the paste burst is a pasted newline to agent inputs (Claude Code,
+//! Codex) and the prompt sat unsent in the box; a refused Enter is logged and
+//! the delivery still counts, because the bytes are visibly in the pane. The
+//! foreground check matches tmux's `pane_current_command` OR the argv name of
+//! the tty's foreground process group (`ps … stat=+`): a launcher symlink to a
+//! versioned binary (Claude Code's `claude → versions/2.1.259`) reports the
+//! version to tmux and the command to ps, and the atomic paste pins the tmux
+//! name it observed for the recognized process. The persisted binding
+//! is a GENERATION STAMP that must hold within ONE delivery, never a permanent
+//! target: `current_context_probe` re-observes the card's own pane (deck's own
+//! name on deck's own socket, and a deleted card tombstones its items), the
+//! readiness probe persists whatever generation it finds, and startup polling,
+//! the final probe and the atomic paste then require THAT generation — numeric
+//! tmux ids alone are insufficient there because a restarted server reuses
+//! them, so server pid is part of the stamp. What decides whether the target is
+//! the right one is `expected_process`, not the stamp. Never restore a hard
+//! block on a changed generation: every production upgrade replaces the tmux
+//! server, so it fired on every item after every update, stalled whole chain
+//! groups behind their head, rewrote queue.json on each tick and taught the
+//! user to click a rebind button that only ever confirmed the pane deck had
+//! already picked. Manual immediate delivery may pointer-confirm a one-shot
+//! process mismatch bypass; the process comparison is the only thing it can
+//! bypass. "chain" mode fires after
+//! `window_activity` has been quiet ≥180s (a permission prompt also counts as
+//! quiet — documented behavior; quiet NEVER means "the agent finished").
+//! Round-2/3 semantics (`scheduler/` is the reference, all unit-tested):
+//! - at most ONE candidate per session per tick, ≥60s between any two
+//!   injections into the same session; each due session gets its own
+//!   short-lived worker thread claimed via a busy-set, so sessions are truly
+//!   independent (a startup wait delays only its own session), the
+//!   same session never has two concurrent sends, and a worker outliving its
+//!   tick can't collide with the next tick;
+//! - deterministic priority: backoff-elapsed retry → earliest-due `at` →
+//!   cadence-due `every` → chain; a future `at` never blocks a due one;
+//! - each worker re-selects from fresh state under the lock (`send_one` is
+//!   the delivery state machine and `send_one_safe` is its context-safe front
+//!   half, both testable with fake probe/fire/persist);
+//!   chain steps carry explicit `group`/`seq` (legacy files migrate from
+//!   array adjacency);
+//! - the firing contract: while an item is mid-send, queue remove/update/
+//!   pause/retry/skip return a conflict error (UI toasts it) and the item
+//!   survives until finalize;
+//! - EVERY user-driven mutation goes through `with_queue` (persist-then-
+//!   commit): clone the state, mutate the CANDIDATE, persist, only then swap
+//!   it in — a rejected mutation or a failed save leaves memory byte-identical
+//!   to disk, so the scheduler never acts on a change the user was told
+//!   failed. The two POST-send transitions are deliberately the opposite: the
+//!   injection cannot be rolled back, so memory takes the new state and a
+//!   failed write sets `Queues.dirty`, warns the user, and is retried by
+//!   `flush_dirty` every tick — that retry is what stops a definitively
+//!   NOT-sent prompt from being counted as delivered after a restart;
+//! - deleting a card/project is PERMANENT cancellation: `queue_clear_session(s)`
+//!   tombstones the session (`cancelled`, capped 500) and drops ALL its items
+//!   INCLUDING one mid-send — that delivery still finalizes from the
+//!   pending-ledger snapshot (the audit completes), but no rule is restored,
+//!   no template step spawned, no cadence and no send-gap entry left behind,
+//!   and a tombstoned session is never eligible again (so `fire_item` cannot
+//!   restart it). A delete landing while a worker is inside its injection is
+//!   reaped afterwards (`SendHooks.kill`); scheduling for a session again
+//!   clears its tombstone. The frontend removes a card ONLY after that
+//!   cancellation is on disk — close, project delete (one atomic
+//!   `queue_clear_sessions`) and the shell-exited auto-retire share the path,
+//!   and a failure keeps the card with an explicit toast. The frontend then
+//!   kills every tmux session (already-missing is success) and persists the
+//!   candidate Board BEFORE committing removal; any kill/save failure keeps
+//!   the card/project and pane visible for retry;
+//! - a step that exhausts its 8 attempts BLOCKS its group until the user
+//!   retries/skips/removes it (queue_retry / queue_skip commands);
+//! - a recurring rule has at most one active iteration (its spawned steps,
+//!   keyed `rule`/`group`=delivery id) — iterations never interleave;
+//! - firing intent + delivery id + a full item snapshot (the `pending` ledger)
+//!   is persisted only AFTER readiness, binding persistence, fresh re-selection
+//!   and a final probe, and still BEFORE injection. Blocked context never
+//!   increments attempts, creates a ledger or becomes ambiguous. A live confirmed success uses idempotent
+//!   `finalize_delivery` (fired count, until-N retirement, template-step spawn,
+//!   audit record — `deliveries`, capped 200). A persisted `firing` found after
+//!   a crash becomes `ambiguous`: it is never auto-retried or silently counted.
+//!   User acknowledge finalizes it once; risk-accepting retry clears the ledger
+//!   and re-arms it, both persist-then-commit and idempotent. A definitively
+//!   refused atomic injection becomes retryable `failed`; if that post-failure
+//!   save and the process both fail, the old disk intent is honestly ambiguous.
+//!   Boot recovery installs every persisted `firing`/orphan ledger entry as
+//!   in-memory `ambiguous` BEFORE attempting the repair write. If that write
+//!   fails, the ambiguous actions remain available and unschedulable while
+//!   `dirty` retries the exact snapshot. `flush_dirty` runs before the
+//!   empty-queue fast path.
 
 mod delivery;
 mod ops;

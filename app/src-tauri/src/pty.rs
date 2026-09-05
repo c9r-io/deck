@@ -18,6 +18,25 @@
 //! ACKing sequences that were never sent cannot widen the window. A failed
 //! app.emit ends the pump and closes the gate (the webview can never ACK an
 //! event it never received); sequence overflow ends the stream cleanly.
+//!
+//! # Contract
+//! Attach = `tmux attach` inside a portable-pty, bytes streamed as base64 over the
+//! `pty-data` event to xterm.js; detach kills only the tmux *client*. Reader threads
+//! carry a generation counter so a stale thread never removes a newer attachment.
+//! Flow control is END-TO-END: pty-data events carry `gen`+`seq`; the frontend
+//! ACKs (`pty_ack`) only after xterm's write callback, and the emitter never
+//! runs more than MAX_INFLIGHT_BATCHES (4 × ≤256KB) past the last ACK — past
+//! that it waits on the attachment's AckGate (closed by detach/re-attach, which
+//! is what releases a stalled emitter; stalls are logged). The gate tracks an
+//! emitted HIGH-WATER mark: an ACK counts only for acked < seq ≤ emitted on an
+//! open gate, so a buggy/hostile webview ACKing sequences never sent cannot
+//! widen the window; a failed app.emit ends the pump and closes the gate (the
+//! webview can never ACK an event it never received); seq overflow ends the
+//! stream cleanly. A wedged webview
+//! therefore stalls emitter → bounded channel → kernel PTY → tmux client, with
+//! memory bounded at ~1.5MB per attachment. The frontend drops (without ACKing)
+//! events whose gen is older than the current attachment, and accepts+adopts a
+//! NEWER gen (the first event can beat the attach invoke's resolution).
 
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;

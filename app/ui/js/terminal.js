@@ -1,5 +1,11 @@
 // terminal.js — context menus & link opening, ghost completion, chrome wiring
 // Part of deck's no-build frontend: native ES modules, no bundler.
+//
+// # Contract
+// The completion bar is a real flex row inside one pane, never an overlay.
+// Its generation-based transition is: detach/hide old owner, refit old owner,
+// mount new owner, refit new owner. Stale RAF work must not resize a newer
+// owner, and each pane preserves its own bottom-follow/scrollback position.
 import { $, duev, inv, state, uev } from './state.js';
 import { copyExact, isComposingKeyEvent, linkMenuItems } from './pure.js';
 import { confirmDialog, inlineRename, toast, promptDialog } from './dialogs.js';

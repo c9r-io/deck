@@ -1,6 +1,15 @@
 //! Update channels: a closed `stable | nightly` choice mapped to exactly one
 //! compiled endpoint. Tauri owns semver comparison, download, minisign
 //! verification and install; build identity is version + bounded commit.
+//!
+//! # Contract
+//! Updates have a closed `stable | nightly` setting; missing, unknown or damaged
+//! values normalize to Stable. The webview owns no updater capability or URL.
+//! `updater.rs` maps the enum to exactly one compiled HTTPS endpoint and uses
+//! `UpdaterExt::updater_builder().endpoints(vec![endpoint])`; a Nightly failure
+//! never falls back. Tauri 2.10.1 still owns semver comparison, archive download,
+//! minisign verification and install. Build identity is only numeric version +
+//! a bounded hex commit from `build.rs`.
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};

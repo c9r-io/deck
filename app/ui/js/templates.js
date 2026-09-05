@@ -7,6 +7,21 @@
 // change goes through the ordinary Board transaction, one mutation at a
 // time, and a rejected write leaves the template exactly as it was on disk.
 // Nothing here starts a session, queues a prompt or moves a card.
+//
+// # Contract
+// Prompt templates (`{name, steps[]}`) live on the PROJECT inside the board
+// file, so the card queue (☆ / ✎) and the Board-level manager (`templates.js`,
+// the `◈ Templates` button in the board head) edit the same object through the
+// ordinary Board transaction — one mutation per user action, a failed write
+// leaves the template as it is on disk. The manager exists so a template can
+// be created and edited without owning a card; it never starts a session,
+// queues a prompt or moves a card. A step is ONE queued prompt flattened to a
+// single line (`normalizeTemplateStep`, same reason as inbound: the queue
+// pastes a literal buffer and a raw newline submits early), the name bound is
+// the one `settings-model` already enforces on an inbound rule, and both lists
+// are bounded. Inbound rules name a template by NAME: renaming or deleting one
+// that a rule uses is confirmed with the count of affected rules — deck warns,
+// and never rewrites the user's rules for them.
 import { $, state } from './state.js';
 import { provider } from './board.js';
 import { confirmDialog, toast } from './dialogs.js';

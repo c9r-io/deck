@@ -1,6 +1,11 @@
 // pure.js — DOM-free logic, tested headlessly with `node --test`
 // (../test/pure.test.mjs). Keep this module free of imports, window/document
 // access and Tauri APIs: everything here must run in bare Node.
+//
+// # Contract
+// Status semantics: green = output <15s ago; amber "waiting" = alive but quiet ≥15s
+// (honest heuristic — may be waiting for input, may be a silent build); gray = no
+// session.
 
 /* ---------- session naming ---------- */
 export function sessionName(title, id) {

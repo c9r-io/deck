@@ -5,58 +5,17 @@ board projection plus metadata. Resist adding session management features that t
 already provides. **No automatic card movement, ever** — the board surfaces
 information; the user makes every placement decision.
 
-## App (v0.2, primary) — `app/`
+This file is an index plus the rules that cut across modules. Each subsystem's
+full contract lives in the `//!` (Rust) or leading `//` (JS) header of the module
+that owns it — read that header before changing the module, and update it in the
+same commit as the behaviour it describes.
 
-Tauri 2 macOS app. Frontend `app/ui/` is a no-build set of native ES modules
-(`ui/js/state.js` shared slots/helpers · `pure.js` DOM-free logic, node-tested ·
-`board.js` · `layout.js` splits/terminal host · `selection.js` tmux-owned
-terminal selection · `terminal.js` completion/ghost ·
-`scheduler.js` queue UI · `templates.js` Board-level template manager ·
-`dialogs.js` · `persistence.js` · `app.js` boot),
-loaded by `ui/index.html`; xterm.js vendored in `app/ui/vendor/`. Backend
-`app/src-tauri/src/` is modular: `main.rs` (wiring) · `commands.rs`
-(session start/kill, poll, clipboard, editors) · `documents.rs` (typed
-Board/Settings docs + load/save) · `updater.rs` · `terminal.rs` (scroll +
-selection lease commands) · `links.rs` (path/URL open) · `diagnostics.rs`
-(`ui_event` whitelist, log export) · `drops.rs` · `scheduler/` (`mod.rs`
-queue model + persistence · `ops.rs` commands/mutations · `select.rs` ·
-`delivery.rs` state machine · `thread.rs` tick · `tests.rs`) ·
-`storage.rs` · `pty.rs` · `tmux.rs` · `history.rs` · `smoke_faults.rs`
-(debug/isolated-smoke only).
-Frontend gates: `node --check` (syntax) · `ui/test/*.mjs` (node:test)
-· `ui/js/check.mjs` (unresolved identifiers; forbids xterm `._core`).
+## Hard rules
 
-- Updates have a closed `stable | nightly` setting; missing, unknown or damaged
-  values normalize to Stable. The webview owns no updater capability or URL.
-  `updater.rs` maps the enum to exactly one compiled HTTPS endpoint and uses
-  `UpdaterExt::updater_builder().endpoints(vec![endpoint])`; a Nightly failure
-  never falls back. Tauri 2.10.1 still owns semver comparison, archive download,
-  minisign verification and install. Build identity is only numeric version +
-  a bounded hex commit from `build.rs`.
-- `tmux_lifecycle.rs` owns the server boundary. It inspects a versioned JSON
-  server option before scheduler/webview startup, reuses only a compatible
-  server, automatically replaces an empty old/legacy server, and persists a
-  content-free pending/restart transaction when sessions exist. Never write
-  current metadata onto an unknown existing server: that would relabel old
-  code as current. Session creation must hold `session_creation_guard`; attach
-  to an existing pending session remains allowed. The restart command rechecks
-  PID/start-time/session/pane counts under the same gate, detaches PTYs, kills
-  and waits, validates a stale socket against its captured device/inode, starts
-  from the current sidecar, then requires a new PID and read-back identity.
-  The updater takes the same gate before setting its creation embargo. Cards
-  are marked stopped before polling so a
-  whole-server restart is not mistaken for natural card exits.
-- Production Stable/Nightly intentionally share socket `deck` because
-  promotion copies identical candidate bytes. Debug development uses
-  `deck-dev` and bundle ID `io.c9r.deck.dev`; smoke requires `deck-smoke*` and
-  `io.c9r.deck.smoke`. Release creation is allowed only from
-  `/Applications/deck.app` or `~/Applications/deck.app` with the adjacent
-  bundled helper. Updater installation sets a process-local creation embargo
-  before Tauri renames the running app into `tauri_current_app`; a failed
-  install clears it, a successful install exits/relaunches from the stable app.
-  Increment `SERVER_PROTOCOL` only for a true compatibility break.
-- deck is EDR-QUIET by rule (a corporate EDR flagged it and IT demanded the
-  app be stopped; the static test enforces each point):
+- **No automatic card movement.** The board never moves a card; not on agent
+  state, not on inbound events, not on delivery.
+- **deck is EDR-QUIET by rule** (a corporate EDR flagged it and IT demanded the
+  app be stopped; `tests/edr_quiet.rs` enforces each point):
   never touches launchd — no `launchctl` (not even a one-shot `submit`), no
   LaunchAgents/LaunchDaemons, no login items; post-update relaunch is a
   `setsid`-detached waiter (`relaunch.rs`) that waits for the old PID and
@@ -68,78 +27,78 @@ Frontend gates: `node --check` (syntax) · `ui/test/*.mjs` (node:test)
   signed bundle (see agent hooks). Remaining spawns are low-frequency,
   fixed-argument system tools (`open`, `plutil`, `pbcopy`, `defaults`,
   `sw_vers`, `uname`) plus the bundled tmux.
-- Release operation is documented in `docs/release-channels.md`.
-  `scripts/release-version` synchronizes the three numeric source/lock entries;
+- **Never create a public candidate, Stable tag, feed update or promotion
+  without the user's explicit authorization.** Release operation is documented
+  in `docs/release-channels.md`. `scripts/release-version` synchronizes the three numeric source/lock entries;
   `scripts/release_channels.py` is the shared manifest/hash/provenance validator;
   `scripts/check-workflows` runs checksum-pinned actionlint. `nightly.yml`
   builds a signed/notarized immutable candidate and updates `nightly-feed` last.
   `promote.yml` is copy-only: its static gate rejects application build
-  commands, and Stable `latest.json` is the last completeness asset. Never
-  create a public candidate, Stable tag, feed update or promotion without the
-  user's explicit authorization.
+  commands, and Stable `latest.json` is the last completeness asset.
+- **Privacy by construction.** The whole `~/.deck` tree is 0700/0600; app.log is
+  structured and sanitized (`storage.rs`, `diagnostics.rs`); never add a
+  free-form frontend log channel (`tests/log_privacy.rs` and the formatter
+  contract test in `diagnostics.rs` enforce this). Credentials live only in the
+  macOS Keychain (`keychain.rs`).
+- **Persistence never guesses.** A load FAILURE is surfaced, never treated as a
+  first run; the UI must never auto-save defaults over an existing file; every
+  Board mutation goes through the one transaction queue (`persistence.js`);
+  future schema versions are refused untouched (`storage.rs`).
+- **The signed `deck-app` binary is never a pane executable**, and no
+  `/bin/sh -c`, script or shell argv appears on the shell-restore path
+  (`commands::restore_start_args`, `tests/edr_quiet.rs`).
+- **Never write current tmux server metadata onto an unknown existing server**;
+  session creation holds `session_creation_guard`; increment `SERVER_PROTOCOL`
+  only for a true compatibility break (`tmux_lifecycle.rs`).
+- **Selection never touches xterm internals**: no `._core`, no transparent
+  textarea, no `disableStdin` (`ui/js/check.mjs`, `selection.js`).
+- **NEVER run the bare binary from a background shell**: outside the GUI login
+  session the process can't reach macOS text-input services — window and mouse
+  work, keyboard is silently dead. Use `app/run.sh`.
+
+## App (v0.2, primary) — `app/`
+
+Tauri 2 macOS app. Frontend `app/ui/` is a no-build set of native ES modules
+loaded by `ui/index.html`; xterm.js vendored in `app/ui/vendor/`. Backend
+`app/src-tauri/src/`. The contract for each area is in the named module header.
+
+| Area | Module (contract in its header) |
+|---|---|
+| Board state, one persist-before-commit transaction queue | `ui/js/persistence.js`, `state.js` (shared slots), `pure.js` (DOM-free logic) |
+| Typed documents, atomic/durable writes, recovery, log sanitizer | `storage.rs`, `documents.rs` |
+| Session start/kill, poll (status, RSS, preview rows), clipboard write | `commands.rs` |
+| tmux sidecar, socket, server conf | `tmux.rs` |
+| Server lifecycle: protocol metadata, reuse/replace, restart transaction, channel sockets | `tmux_lifecycle.rs` (+ `docs/tmux-server-lifecycle.md`) |
+| PTY attach bridge with end-to-end flow control | `pty.rs` |
+| Terminal scroll + token-bound selection lease commands | `terminal.rs`, `terminal_selection.rs`, `terminal_scroll.rs` |
+| Pointer/selection authority, overlay, wheel routing (frontend) | `ui/js/selection.js`, `layout.js` |
+| Completion bar, links, context menus | `ui/js/terminal.js`, `links.rs` |
+| Scheduled prompts: queue model, selection, delivery state machine, tick | `scheduler/` (+ `docs/scheduler-context-safety.md`), `context.rs`, `ui/js/scheduler.js` |
+| Prompt templates | `ui/js/templates.js` |
+| Agent status hooks (closed state words, bundled helper) | `agent_status.rs`, `app/status-helper/` |
+| Auto-respond (inbound sources, dispatcher, Keychain) | `inbound.rs`, `inbound_slack.rs`, `keychain.rs`, `ui/js/inbound.js` (+ `docs/auto-respond.md`) |
+| Shell restart recovery (bounded transcript projection) | `shell_state.rs` |
+| Updates (closed stable/nightly, one endpoint each) | `updater.rs`, `relaunch.rs` |
+| Structured diagnostics, ui_event whitelist, exports | `diagnostics.rs` |
+| File drop / image paste | `drops.rs` |
+| Process facts without spawning `ps` | `procinfo.rs` |
+| Debug/isolated-smoke fault injection | `smoke_faults.rs` |
+
+Status semantics (card colour) are documented on `effectiveCardStatus` in
+`pure.js`: agent state outranks the 15s output heuristic.
+
+### Run and gates
 
 - Run: `app/run.sh` — builds, wraps the binary in a minimal .app, launches via
-  `open`. NEVER run the bare binary from a background shell: outside the GUI
-  login session the process can't reach macOS text-input services (TSM/IMK) —
-  window and mouse work, keyboard is silently dead. `~/.deck/app.log` (0600)
-  collects backend + frontend diagnostics. Maintainer-only verbose frontend
-  events are enabled at launch with `app/run.sh --debug-logging`; there is no
-  user setting for them. Frontend logging is STRUCTURED
-  ONLY: the `ui_event` command takes a whitelisted code + a detail vetted by
-  that code's OWN closed policy (enum values / version pattern — no generic
-  slug rule) + two ints, and redacts everything else — never add a free-form
-  frontend log channel (log_privacy tests enforce this). Backend log lines
-  never interpolate raw error Display text or a raw session NAME:
-  `storage::err_code()` maps errors to stable path-free categories (the full
-  error goes only to the operation's caller) and `storage::session_tag()`
-  gives a per-RUN, non-reversible tag. Every line is redacted again by
-  `sanitize_log` on its way to disk (absolute paths, `~/`, any `scheme://`,
-  credential prefixes, long opaque tokens, session-name shapes →
-  `<redacted>`); exports sanitize their own header AND body instead of
-  trusting app.log; `sanitize_existing_logs` migrates logs/exports an older
-  deck wrote, in place, at boot (atomic, 0600, no raw copy kept). The
-  runtime privacy tests write REAL files through `applog_to` into temp dirs
-  — never stub the writer and call it proven. The whole `~/.deck` tree is private by construction
-  (dir 0700, every file created 0600 — atomic-write temps, `.bak`,
-  `.corrupt-*`, log, exports); `harden_data_dir()` re-migrates legacy modes
-  at every boot.
-- Clipboard diagnostics are always structured and content-free. Copy records
-  terminal key capture, Deck/native/no-selection routing, snapshot loss and
-  the `pbcopy`/Web Clipboard writer result. `pbcopy` is spawned with
-  `LANG=en_US.UTF-8` (`pbcopy_command`): a GUI-launched deck has no locale,
-  and under the C locale pbcopy writes an EMPTY pasteboard item for any
-  non-ASCII input while exiting 0 — every copy from an agent pane (Chinese,
-  box-drawing, `⏺`) "succeeded" and pasted nothing. Text paste records the closed chain
-  key capture → xterm key handler → native paste event → xterm `onData` → PTY
-  write, with bounded missing-stage timers. Only fixed labels and character or
-  file counts enter `app.log`; clipboard text, errors and session names never
-  do. Per-pane timers are disposed with the pane.
-  ⌘C can only report what it FOUND, so `terminal-selection` records the
-  selection's own life: `promote` / `start-ok` / `finish-ok` (or
-  `start-failed` / `update-failed` / `finish-failed` / `freeze-failed`,
-  which previously cancelled behind nothing but a toast), plus one
-  `cancel-<reason>` naming every revoke — pointer, pointer-cancel, blur,
-  hidden, input, escape, focus, live, exit, leave, dispose. That is what
-  separates a `terminal-copy keydown-none` caused by a drag that never
-  promoted from one caused by a live selection something took away. A cancel
-  with nothing to destroy stays silent, so ordinary clicks do not flood the
-  log; a caller that already logged a specific failure passes a null reason
-  instead of a second anonymous line. The two integers are a per-label count
-  (rows spanned, or 1 when a FROZEN selection died; for `finish-failed` a
-  reason code — 1 the pane had left copy-mode, 2 copy-mode kept but its
-  selection cleared, 0 other — from the backend's closed
-  `selection-missing-inactive|cleared` suffix) and the selection's age in
-  milliseconds — never text, coordinates of content, or an error string.
-  Three forensic labels attribute the dominant field failure (a completed
-  selection revoked before ⌘C arrives): `revoker-<class>` pairs with
-  `cancel-pointer` and classifies the destroying pointerdown by provenance
-  (trusted pointerType mouse/touch/pen/unknown, or synthetic when isTrusted
-  is false; its ints are click count and ms since the last pointerup — the
-  one label whose `b` is not selection age); `native-cleared` marks an xterm
-  selection appearing while Deck owned the drag (WKWebView's late
-  compatibility-mouse replay); and `terminal-copy keydown-elsewhere` replaces
-  `keydown-none` when another pane still holds a live Deck selection (count +
-  its age), separating "revoked" from "⌘C reached the wrong pane".
+  `open`. `~/.deck/app.log` (0600) collects backend + frontend diagnostics;
+  maintainer-only verbose frontend events are enabled with
+  `app/run.sh --debug-logging` (no user setting). Production debug:
+  `tmux -L deck ls`; source bundles use `tmux -L deck-dev ls`.
+- Frontend gates: `node --check` · `node --test ui/test/*.mjs` ·
+  `node ui/js/check.mjs` (unresolved identifiers; forbids xterm `._core`).
+  Backend gates: `cargo fmt`, `cargo clippy -D warnings`, `cargo test`
+  (unit + `tests/tmux_contract.rs` against the bundled tmux +
+  `tests/log_privacy.rs` + `tests/edr_quiet.rs`).
 - PTY smoke test (headless): `cargo run --example pty_smoke`
 - The unchanged vendored terminal is `@xterm/xterm` 5.5.0 (the local
   `xterm.js` is byte-identical to the published 5.5.0 artifact, SHA-256
@@ -150,388 +109,6 @@ Frontend gates: `node --check` (syntax) · `ui/test/*.mjs` (node:test)
   real bundled WKWebView; results are closed numeric `smoke-check` events in
   that isolated directory's `app.log`. Release builds ignore these debug-only
   arguments, and the harness must never point at `~/.deck`.
-- Board persistence: `~/.deck/deck.json` (frontend owns the state). EVERY
-  mutation enters one global persist-before-commit transaction queue and builds
-  its candidate from the latest committed Board only when it reaches the head;
-  debounced mutations enter that same queue before an immediate-operation
-  barrier. A rejected mutation or failed write cannot poison the following
-  transaction, resurrect a removed card, or overwrite a concurrent rename/move.
-  Runtime-only card fields are merged from the newest live state at commit.
-  `storage.rs` is TYPED and durable for every persistent JSON document
-  (deck/queue/history/settings and per-session shell snapshots): JSON + version envelope + business-structure
-  validation on load — BoardDoc/SettingsDoc validate via `try_from`
-  (referential rules: unique ids, cards reference an existing project and a
-  column of that project, ≥1 column per project, runtime fields present,
-  session names by the same tmux rule the runtime enforces), and
-  save_board/save_settings run the SAME validation before touching disk;
-  unknown extension fields round-trip untouched. Damaged main quarantined to
-  a unique `.corrupt-<ts>`
-  BEFORE the fully-validated `.bak` is tried; recovery warnings returned
-  in-band (`LoadedDoc {data, source, warning}`); future schema versions
-  refused untouched (save refuses to overwrite them too); recovery never
-  writes; a load FAILURE is surfaced, never treated as a first run — the UI
-  must never auto-save defaults over an existing file. Writes: unique temp +
-  fsync + rename + parent-dir fsync, `.bak` written the same way. The
-  envelope is validated STRICTLY: only a document carrying neither
-  `schema_version` nor `data` is legacy v0; once either appears the file
-  must be a COMPLETE envelope with a non-negative INTEGER version (string /
-  fractional / negative / null version, or a version without data, is
-  damage → recovery), and `save` refuses to overwrite a malformed or future
-  envelope.
-- Shell restart recovery is deliberately a bounded projection, not process
-  serialization. `poll_sessions` returns `pane_current_path` so the frontend
-  persists cwd changes into the card. `shell_state.rs` checkpoints only panes
-  whose foreground process is a shell, at most every 15s and two panes per
-  pass, into separate 0600 typed files (≤256 KiB / 3000 plain-text lines;
-  control characters stripped). On a user-opened command-less card,
-  `start_session` may use the saved cwd and submits one tmux batch that starts
-  an empty server if needed, loads sanitized bytes from Deck's stdin into a
-  uniquely named private tmux buffer, creates the pane the ORDINARY way
-  (tmux's own login shell, no command), and in the same sequence has the
-  tmux SERVER `save-buffer` the bytes to `#{pane_tty}` — the new pane's
-  tty — then deletes the buffer. No `/bin/sh -c`, no script, no shell argv:
-  the earlier inline-script bootstrap was an EDR signature. The write
-  follows the fork inside one tmux process, so it lands before the shell's
-  first prompt in practice; a slow rc file can only reorder text. After
-  `new-session -d` in one sequence the format resolves to the pane just
-  created even on a busy server (pinned by `tmux_contract`). A sequence
-  failure after the pane exists keeps that pane as a clean, unrestored
-  shell. The signed `deck-app` binary
-  must NEVER be a pane executable: after reboot macOS Local Network Privacy
-  can otherwise attribute the exec-replaced shell and all of its descendants
-  to Deck while a fresh tmux-created shell works. The text is ordinary tmux
-  history (not an xterm/DOM overlay), never argv, a new temp payload, or shell
-  stdin; no command, environment, job, process or agent TUI is restored.
-  Startup failure degrades to a clean shell, and boot still removes legacy
-  `.restore-*` payloads left by deck ≤0.5.1.
-  Later checkpoints capture the restored pane output directly—never merge an
-  out-of-band prefix, which would duplicate it. Closing a card removes
-  main/backup/quarantine/temporary copies; Settings can disable capture and
-  clear all snapshots, with an epoch+IO lock preventing an in-flight writer
-  from resurrecting cleared data. Never turn this into command replay or raw
-  PTY recording.
-- Terminal gesture and selection authority is explicit. A sub-threshold
-  physical gesture stays on xterm's trusted mouse/link path; no synthetic
-  compatibility click is replayed. Crossing the threshold transfers the drag
-  to `selection.js`/tmux and clears speculative xterm selection. tmux owns the
-  directional, end-exclusive endpoints only while dragging. Endpoints are
-  placed with `top-line` + `cursor-down` + `cursor-right` ONLY
-  (`copy_cursor_moves`): `start-of-line`/`end-of-line`/`back-to-indentation`
-  walk to the ends of the WRAPPED logical line and `cursor-left` lands on a
-  wide grapheme's trailing column, so all four leave the visible row. Because
-  `cursor-down` snaps the column to a line end until the walk first steps off
-  a NON-EMPTY line, the plan descends to the last blank row above the frame's
-  first text, wraps out of it with one `cursor-right`, then descends the rest
-  — without that, a full-screen agent frame (blank rows on top) selected rows
-  the pointer never touched while a shell pane looked fine. Pointerup queues
-  the final update, atomically snapshots tmux into a unique buffer, validates
-  the pane token, clears tmux's cursor-bound highlight without moving the
-  viewport, and installs one immutable backend lease (bytes + absolute content
-  coordinates). A plain overlay derived from public `.xterm-screen`, cols and
-  rows renders that lease; selection wheel commands only update viewport
-  status, so endpoints and copy bytes cannot drift. Pointerup positions the
-  final cell with edge scrolling disabled. Every pointer coordinate uses a
-  frontend grid confirmed by `pty_resize`; the backend serializes resize reflow
-  with selection operations and rejects stale dimensions instead of clamping.
-  A completed-selection scroll treats tmux status and xterm `onWriteParsed` as
-  unordered: if the frame arrived first, the status completion renders; if the
-  status arrived first, the next parsed frame renders. Because the immutable
-  lease no longer depends on tmux's copy cursor, scrolling re-anchors that
-  cursor to the live input row and publishes `cursor_visible`; xterm removes
-  its cursor marker once the input row is outside the viewport instead of
-  leaving it fixed on the selected cell. While Deck owns a
-  promoted drag, `onSelectionChange` clears any late compatibility-mouse xterm
-  selection so a second viewport-fixed highlight cannot survive.
-  ⌘C waits for the whole
-  chain and reads only the current token. Escape, input/composition, blur,
-  visibility, focus change, detach and disposal revoke the lease. Never add a
-  transparent textarea or xterm `._core` dependency.
-  Gesture promotion is based on crossing a public terminal cell, never an
-  arbitrary CSS-pixel distance, and pointerup rechecks the final cell because
-  WebKit may coalesce the last pointermove. This is what keeps short one-row
-  drags on the same tmux/overlay path as multi-row drags while same-cell and
-  double/triple clicks remain native xterm operations. If a native xterm
-  word/line range survives until the first wheel frame, read only its public
-  `getSelectionPosition()` coordinates, convert visible absolute buffer rows
-  with `terminalNativeSelectionCells`, and freeze it in tmux before scrolling.
-  Wheel routing keeps an existing Deck token authoritative, adopts an idle
-  native range, and otherwise uses ordinary session scrolling.
-  Selection never sets `disableStdin`; composition/dead-key events bypass all
-  Deck shortcuts, and `macOptionIsMeta` is false so Option remains owned by
-  macOS text input. Codex/Claude Up-arrow compatibility is narrowly armed by a
-  history recall at the agent prompt and requires a visible continuation row
-  located from the first five public xterm cells; it re-enters `term.input` and
-  must never capture shell/editor keys or terminal text.
-  Terminal links use `tokenizeTerminalLinks`, not an overlapping global regex:
-  an HTTP(S) URL consumes its whole logical-line interval before path candidates
-  are considered. `terminal_paths_exist` then resolves candidates against the
-  pane cwd in one bounded backend call; nonexistent or inaccessible local paths
-  never become interactive. Link actions resolve again before opening.
-  History is 50,000 rows and clipboard extraction is explicitly capped at
-  64 MiB without truncation. During selection tmux freezes the reading frame
-  while the PTY stream continues through its bounded ACK gate.
-- The completion bar is a real flex row inside one pane, never an overlay.
-  Its generation-based transition is: detach/hide old owner, refit old owner,
-  mount new owner, refit new owner. Stale RAF work must not resize a newer
-  owner, and each pane preserves its own bottom-follow/scrollback position.
-- One poll command (`poll_sessions`) returns liveness + `#{window_activity}` recency +
-  process-tree RSS (pane_pid → ps tree walk) + the last six non-empty pane rows
-  for fixed-height, bottom-aligned card previews. Frontend polls every 2.5s and
-  diffs into granular UI events (status/mem/output) — never full re-renders on
-  output.
-- Status semantics: green = output <15s ago; amber "waiting" = alive but quiet ≥15s
-  (honest heuristic — may be waiting for input, may be a silent build); gray = no
-  session.
-- Agent status hooks (`agent_status.rs`, opt-in): agent CLIs report a CLOSED
-  state word (`working | needs-input | turn-done`) via the bundled
-  `deck-status-helper` (`app/status-helper/`, standalone zero-dep crate;
-  `build.rs` builds it into `binaries/` for tauri `externalBin` on every
-  build). Hook entries name the helper INSIDE the installed bundle
-  (`/Applications/deck.app/Contents/MacOS/deck-status-helper` or the
-  `~/Applications` twin) — never a copy under `~/.deck/bin`: that copy was
-  an EDR persistence signature, and a dev build once overwrote it with an
-  ad-hoc-signed binary that Claude Code then executed on every event. Only
-  a release-location install can enable hooks; dev/smoke builds get an
-  error and never touch agent config. `migrate_hooks_on_boot` (release
-  installs only) rewrites installed entries that are not what the CURRENT
-  spec describes — `hooks_are_current` compares the WHOLE entry (event,
-  matcher, helper path, style, args) and rejects a deck entry left under a
-  retired event, so a spec change (a narrowed matcher, a moved bundle, the
-  legacy copy) reaches users who enabled the toggle under an older version
-  without them touching the switch; installed-ness alone (`hooks_installed`)
-  cannot see that. It also deletes the legacy copy once nothing references
-  it. Install strips deck's entries document-wide before writing the specs,
-  but an EMPTY array the user wrote is left exactly as written. Hooks inherit `$TMUX`/`$TMUX_PANE`; the helper
-  drains and DISCARDS the hook stdin payload, charset-validates every field,
-  and writes one JSON line to the instance's `status.sock` (0600) — routed
-  per pane by `DECK_STATUS_SOCK`, which each deck exports into its own tmux
-  server env (tmux.rs), falling back to `~/.deck/status.sock`; so an
-  isolated/smoke instance receives its own events and never production's.
-  The helper can never carry content, exits 0 always, and silently does
-  nothing outside a deck tmux pane. The backend listener validates source/state against the module
-  registry, requires the event's socket name AND tmux server pid (generation
-  stamp — restarted servers reuse pane ids) before resolving pane→session,
-  refuses shell-foreground panes, and records the observed foreground
-  executable; `poll_sessions` reconciles so the state dies with the process
-  that reported it — no TTLs and no per-agent executable lists. Frontend:
-  `effectiveCardStatus` (pure.js) — agent state OUTRANKS the 15s heuristic
-  (card statuses `attention`/`done`; a working agent never shows amber). The
-  Settings toggle is the user-driven writer of `~/.claude/settings.json`
-  (three entries: UserPromptSubmit→working, Notification matcher
-  `permission_prompt` ONLY→needs-input, Stop→turn-done, written in
-  Claude Code's EXEC form — bare helper path in `command`, words in
-  `args` — so Claude Code spawns the signed helper directly and no `sh -c`
-  runs per event; Codex stays shell-form + `async`, exec form being
-  undocumented there), and the
-  release-only boot migration is the sole other one; install, migrate and
-  uninstall touch only entries containing `deck.app/Contents/MacOS/deck-status-helper` (or the legacy `.deck/bin/deck-status-helper`),
-  preserve everything else including file mode, and never modify a malformed
-  file. The toggle state is DERIVED from that file — never stored twice.
-  Claude Code's Stop does not fire on Esc-interrupt; foreground
-  reconciliation and the next UserPromptSubmit heal that. `idle_prompt` is
-  deliberately NOT matched: Claude Code fires it ~60s after the prompt goes
-  idle, so EVERY finished card decayed from `done` into `attention` a minute
-  later and the attention colour stopped meaning anything. needs-input means
-  a question raised DURING a turn; an idle prompt after a turn is `turn-done`,
-  which is already on screen. The Codex module
-  uses lifecycle hooks in `$CODEX_HOME/hooks.json` (same document shape as
-  Claude's, so ONE marker-based JSON merge engine serves both via per-agent
-  spec tables): UserPromptSubmit→working, PermissionRequest→needs-input,
-  Stop→turn-done, Interrupt→turn-done, all `"async": true` so the helper can
-  never block a turn. Multiple hooks per event coexist, so this never
-  conflicts with the user's own hooks or `notify` program — the earlier
-  notify/`config.toml` route was DROPPED for exactly that conflict (Codex
-  allows one notify program only; chain-forwarding it was rejected as too
-  much surface). Known caveat: Codex's Stop fires when the model ATTEMPTS to
-  stop, so another Stop hook forcing continuation makes "done" slightly
-  early. Adding an agent module = one `SOURCES` entry + its own installer
-  spec calling the same helper with its own source word, behind its own
-  Settings toggle.
-- Auto-respond / 自动响应 (`inbound.rs`, `inbound_slack.rs`, `keychain.rs`,
-  `ui/js/inbound.js`): an external badge starts a session. Three layers and
-  only the top one knows a service. SOURCES produce a fixed
-  `Event {source, key, badge, text, from, where, link}` and nothing else;
-  the Slack source has two paths on ONE user token: catch-up via
-  `search.messages` `hasmy::<badge>:` (one request per ruled badge, 30-day
-  `after:` window, every 30s; NOT `reactions.list`, which has no time filter,
-  returns every reaction ever and has undocumented order; Slack's search
-  index lags a fresh reaction by ~1 minute, measured) and live via Socket
-  Mode USER events `reaction_added` (app-level token; own reactions only;
-  text fetched with `conversations.history`/`replies`; Slack retries an
-  undelivered event only a few times, so the catch-up is the safety net).
-  The DISPATCHER dedupes on `(source, key, badge)` in `~/.deck/inbound.json`
-  (identifiers + time only, ephemeral save, no `.bak`), matches
-  `settings.inbound.rules` (validated structurally by `SettingsDoc` on load
-  AND save: closed source names, emoji-name badges, one rule per badge,
-  bounded ids/cmd/dir), and announces with a CONTENT-FREE `inbound-changed`
-  event; the webview pulls `inbound_pending`, `planInbound` (pure.js)
-  decides, the card is created through the ordinary Board transaction with
-  an `origin` field (persisted; the idempotency key), the template steps go
-  through the ordinary `queue_add` (step 1 `at=now`, gated by the readiness
-  probe; message newlines become spaces because the queue pastes one line),
-  and `inbound_ack` retires the item. The first poll for a (source, badge)
-  BASELINES — existing badges are recorded, never turned into cards — and a
-  lost ledger degrades to a re-baseline, never a flood. Credentials live in
-  the macOS Keychain under closed slots (`keychain.rs`); they are never
-  written under `~/.deck`, never logged, never in an error string, and never
-  read back into the webview (status reports presence only); a pasted token
-  is verified with Slack (`auth.test` / `apps.connections.open`) before it is
-  stored. Setup is one compiled deep link
-  (`api.slack.com/apps?new_app=1&manifest_json=…`, `inbound_slack::manifest`)
-  that prefills the Create page — the user picks a workspace, installs, and
-  copies two tokens back; nothing shorter exists because Slack has no OAuth
-  redirect to a local app and no API that mints app-level tokens. Cards are
-  never moved and deck never writes to Slack. Adding a source = one `Source`
-  impl + one Settings row; rules/templates/dispatch do not change.
-- tmux ships INSIDE the app: a statically linked binary (see
-  `binaries/build-tmux.sh`, committed as `binaries/tmux-aarch64-apple-darwin`,
-  bundled+signed via tauri `externalBin`). `tmux_bin()` prefers the sidecar,
-  then Homebrew/MacPorts probes. deck talks to its OWN server (`-L deck`
-  socket) — never version-clashes with a user tmux, and deck sessions don't
-  appear in the user's `tmux ls`. Production debug: `tmux -L deck ls`;
-  source bundles use `tmux -L deck-dev ls`.
-- Attach = `tmux attach` inside a portable-pty, bytes streamed as base64 over the
-  `pty-data` event to xterm.js; detach kills only the tmux *client*. Reader threads
-  carry a generation counter so a stale thread never removes a newer attachment.
-  Flow control is END-TO-END: pty-data events carry `gen`+`seq`; the frontend
-  ACKs (`pty_ack`) only after xterm's write callback, and the emitter never
-  runs more than MAX_INFLIGHT_BATCHES (4 × ≤256KB) past the last ACK — past
-  that it waits on the attachment's AckGate (closed by detach/re-attach, which
-  is what releases a stalled emitter; stalls are logged). The gate tracks an
-  emitted HIGH-WATER mark: an ACK counts only for acked < seq ≤ emitted on an
-  open gate, so a buggy/hostile webview ACKing sequences never sent cannot
-  widen the window; a failed app.emit ends the pump and closes the gate (the
-  webview can never ACK an event it never received); seq overflow ends the
-  stream cleanly. A wedged webview
-  therefore stalls emitter → bounded channel → kernel PTY → tmux client, with
-  memory bounded at ~1.5MB per attachment. The frontend drops (without ACKing)
-  events whose gen is older than the current attachment, and accepts+adopts a
-  NEWER gen (the first event can beat the attach invoke's resolution).
-- Scheduled prompts: Rust-side scheduler thread (NOT webview timers — App Nap
-  freezes those), 20s tick that sleeps on a condition so `wake_scheduler()`
-  (called when an inbound card's prompts are queued) starts a scan at once,
-  queue persisted at `~/.deck/queue.json` and loaded at boot. Every item persists its card id, optional full tmux
-  server/session/window/pane/pid binding, optional sanitized executable
-  basename, revision and a closed last-context result (never terminal text,
-  arguments or paths). Context protection is automatic and has no saved/UI/API
-  policy: an executable derived from the explicit card launch command is
-  required in the foreground, otherwise a live non-shell foreground is
-  captured at creation, otherwise same-pane compatibility delivery is
-  allowed. Hooks, agent class, output activity and
-  quiet time never gate delivery. Legacy policy/AgentClass/hook fields are
-  ignored and cleaned on the next save without changing schedule/delivery
-  state. `context.rs` owns metadata-only probing and sanitization.
-  Injection loads the literal text into a uniquely named tmux buffer, then
-  one synchronous tmux command queue compares the full generation plus
-  optional foreground executable and byte-literal-pastes only on a match
-  (`paste-buffer -p`: bracketed only for an application that asked). Enter
-  is sent 300ms later as a SEPARATE key under the same condition — a CR
-  inside the paste burst is a pasted newline to agent inputs (Claude Code,
-  Codex) and the prompt sat unsent in the box; a refused Enter is logged and
-  the delivery still counts, because the bytes are visibly in the pane. The
-  foreground check matches tmux's `pane_current_command` OR the argv name of
-  the tty's foreground process group (`ps … stat=+`): a launcher symlink to a
-  versioned binary (Claude Code's `claude → versions/2.1.259`) reports the
-  version to tmux and the command to ps, and the atomic paste pins the tmux
-  name it observed for the recognized process. The persisted binding
-  is a GENERATION STAMP that must hold within ONE delivery, never a permanent
-  target: `current_context_probe` re-observes the card's own pane (deck's own
-  name on deck's own socket, and a deleted card tombstones its items), the
-  readiness probe persists whatever generation it finds, and startup polling,
-  the final probe and the atomic paste then require THAT generation — numeric
-  tmux ids alone are insufficient there because a restarted server reuses
-  them, so server pid is part of the stamp. What decides whether the target is
-  the right one is `expected_process`, not the stamp. Never restore a hard
-  block on a changed generation: every production upgrade replaces the tmux
-  server, so it fired on every item after every update, stalled whole chain
-  groups behind their head, rewrote queue.json on each tick and taught the
-  user to click a rebind button that only ever confirmed the pane deck had
-  already picked. Manual immediate delivery may pointer-confirm a one-shot
-  process mismatch bypass; the process comparison is the only thing it can
-  bypass. "chain" mode fires after
-  `window_activity` has been quiet ≥180s (a permission prompt also counts as
-  quiet — documented behavior; quiet NEVER means "the agent finished").
-  Round-2/3 semantics (`scheduler/` is the reference, all unit-tested):
-  - at most ONE candidate per session per tick, ≥60s between any two
-    injections into the same session; each due session gets its own
-    short-lived worker thread claimed via a busy-set, so sessions are truly
-    independent (a startup wait delays only its own session), the
-    same session never has two concurrent sends, and a worker outliving its
-    tick can't collide with the next tick;
-  - deterministic priority: backoff-elapsed retry → earliest-due `at` →
-    cadence-due `every` → chain; a future `at` never blocks a due one;
-  - each worker re-selects from fresh state under the lock (`send_one` is
-    the delivery state machine and `send_one_safe` is its context-safe front
-    half, both testable with fake probe/fire/persist);
-    chain steps carry explicit `group`/`seq` (legacy files migrate from
-    array adjacency);
-  - the firing contract: while an item is mid-send, queue remove/update/
-    pause/retry/skip return a conflict error (UI toasts it) and the item
-    survives until finalize;
-  - EVERY user-driven mutation goes through `with_queue` (persist-then-
-    commit): clone the state, mutate the CANDIDATE, persist, only then swap
-    it in — a rejected mutation or a failed save leaves memory byte-identical
-    to disk, so the scheduler never acts on a change the user was told
-    failed. The two POST-send transitions are deliberately the opposite: the
-    injection cannot be rolled back, so memory takes the new state and a
-    failed write sets `Queues.dirty`, warns the user, and is retried by
-    `flush_dirty` every tick — that retry is what stops a definitively
-    NOT-sent prompt from being counted as delivered after a restart;
-  - deleting a card/project is PERMANENT cancellation: `queue_clear_session(s)`
-    tombstones the session (`cancelled`, capped 500) and drops ALL its items
-    INCLUDING one mid-send — that delivery still finalizes from the
-    pending-ledger snapshot (the audit completes), but no rule is restored,
-    no template step spawned, no cadence and no send-gap entry left behind,
-    and a tombstoned session is never eligible again (so `fire_item` cannot
-    restart it). A delete landing while a worker is inside its injection is
-    reaped afterwards (`SendHooks.kill`); scheduling for a session again
-    clears its tombstone. The frontend removes a card ONLY after that
-    cancellation is on disk — close, project delete (one atomic
-    `queue_clear_sessions`) and the shell-exited auto-retire share the path,
-    and a failure keeps the card with an explicit toast. The frontend then
-    kills every tmux session (already-missing is success) and persists the
-    candidate Board BEFORE committing removal; any kill/save failure keeps
-    the card/project and pane visible for retry;
-  - a step that exhausts its 8 attempts BLOCKS its group until the user
-    retries/skips/removes it (queue_retry / queue_skip commands);
-  - a recurring rule has at most one active iteration (its spawned steps,
-    keyed `rule`/`group`=delivery id) — iterations never interleave;
-  - firing intent + delivery id + a full item snapshot (the `pending` ledger)
-    is persisted only AFTER readiness, binding persistence, fresh re-selection
-    and a final probe, and still BEFORE injection. Blocked context never
-    increments attempts, creates a ledger or becomes ambiguous. A live confirmed success uses idempotent
-    `finalize_delivery` (fired count, until-N retirement, template-step spawn,
-    audit record — `deliveries`, capped 200). A persisted `firing` found after
-    a crash becomes `ambiguous`: it is never auto-retried or silently counted.
-    User acknowledge finalizes it once; risk-accepting retry clears the ledger
-    and re-arms it, both persist-then-commit and idempotent. A definitively
-    refused atomic injection becomes retryable `failed`; if that post-failure
-    save and the process both fail, the old disk intent is honestly ambiguous.
-    Boot recovery installs every persisted `firing`/orphan ledger entry as
-    in-memory `ambiguous` BEFORE attempting the repair write. If that write
-    fails, the ambiguous actions remain available and unschedulable while
-    `dirty` retries the exact snapshot. `flush_dirty` runs before the
-    empty-queue fast path.
-- Prompt templates (`{name, steps[]}`) live on the PROJECT inside the board
-  file, so the card queue (☆ / ✎) and the Board-level manager (`templates.js`,
-  the `◈ Templates` button in the board head) edit the same object through the
-  ordinary Board transaction — one mutation per user action, a failed write
-  leaves the template as it is on disk. The manager exists so a template can
-  be created and edited without owning a card; it never starts a session,
-  queues a prompt or moves a card. A step is ONE queued prompt flattened to a
-  single line (`normalizeTemplateStep`, same reason as inbound: the queue
-  pastes a literal buffer and a raw newline submits early), the name bound is
-  the one `settings-model` already enforces on an inbound rule, and both lists
-  are bounded. Inbound rules name a template by NAME: renaming or deleting one
-  that a rule uses is confirmed with the count of affected rules — deck warns,
-  and never rewrites the user's rules for them.
-- File drop / image paste into a terminal pane (Warp-style): WKWebView
-  surfaces external files as CONTENT with no path, so the frontend reads the
-  bytes and `save_dropped_file` persists them 0600 under `~/.deck/drops`
-  (0700, week-old entries pruned at boot); the returned path is typed into
-  the session shell-quoted, no Enter. Card/pane DnD is distinguished by the
-  `text/deck-session` payload; file drags show a plain accent outline, not
-  the split dropzone.
 - The GUI design reference (mock, same UI with fake data) lives in `gui/index.html`.
 
 ### WKWebView / Tauri gotchas (each cost a real bug)
@@ -609,9 +186,3 @@ Headless smoke test: run deck itself inside tmux and drive it with send-keys:
 ```bash
 tmux new-session -d -s deck-test -x 180 -y 40 target/debug/deck
 tmux send-keys -t deck-test s        # press a key
-tmux capture-pane -p -t deck-test    # read the screen
-tmux send-keys -t deck-test q && tmux kill-session -t deck-test
-```
-
-Use harmless card commands (e.g. `while true; do date; sleep 1; done`) when testing —
-a card whose command is `claude` will really launch Claude Code.

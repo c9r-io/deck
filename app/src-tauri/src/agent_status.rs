@@ -20,6 +20,73 @@
 //! Adding an agent module = one entry in `SOURCES` + an installer that
 //! registers that agent's own hook/notify config to call the same helper
 //! with its own source word. The socket protocol and store are shared.
+//!
+//! # Contract
+//! Agent status hooks (`agent_status.rs`, opt-in): agent CLIs report a CLOSED
+//! state word (`working | needs-input | turn-done`) via the bundled
+//! `deck-status-helper` (`app/status-helper/`, standalone zero-dep crate;
+//! `build.rs` builds it into `binaries/` for tauri `externalBin` on every
+//! build). Hook entries name the helper INSIDE the installed bundle
+//! (`/Applications/deck.app/Contents/MacOS/deck-status-helper` or the
+//! `~/Applications` twin) — never a copy under `~/.deck/bin`: that copy was
+//! an EDR persistence signature, and a dev build once overwrote it with an
+//! ad-hoc-signed binary that Claude Code then executed on every event. Only
+//! a release-location install can enable hooks; dev/smoke builds get an
+//! error and never touch agent config. `migrate_hooks_on_boot` (release
+//! installs only) rewrites installed entries that are not what the CURRENT
+//! spec describes — `hooks_are_current` compares the WHOLE entry (event,
+//! matcher, helper path, style, args) and rejects a deck entry left under a
+//! retired event, so a spec change (a narrowed matcher, a moved bundle, the
+//! legacy copy) reaches users who enabled the toggle under an older version
+//! without them touching the switch; installed-ness alone (`hooks_installed`)
+//! cannot see that. It also deletes the legacy copy once nothing references
+//! it. Install strips deck's entries document-wide before writing the specs,
+//! but an EMPTY array the user wrote is left exactly as written. Hooks inherit `$TMUX`/`$TMUX_PANE`; the helper
+//! drains and DISCARDS the hook stdin payload, charset-validates every field,
+//! and writes one JSON line to the instance's `status.sock` (0600) — routed
+//! per pane by `DECK_STATUS_SOCK`, which each deck exports into its own tmux
+//! server env (tmux.rs), falling back to `~/.deck/status.sock`; so an
+//! isolated/smoke instance receives its own events and never production's.
+//! The helper can never carry content, exits 0 always, and silently does
+//! nothing outside a deck tmux pane. The backend listener validates source/state against the module
+//! registry, requires the event's socket name AND tmux server pid (generation
+//! stamp — restarted servers reuse pane ids) before resolving pane→session,
+//! refuses shell-foreground panes, and records the observed foreground
+//! executable; `poll_sessions` reconciles so the state dies with the process
+//! that reported it — no TTLs and no per-agent executable lists. Frontend:
+//! `effectiveCardStatus` (pure.js) — agent state OUTRANKS the 15s heuristic
+//! (card statuses `attention`/`done`; a working agent never shows amber). The
+//! Settings toggle is the user-driven writer of `~/.claude/settings.json`
+//! (three entries: UserPromptSubmit→working, Notification matcher
+//! `permission_prompt` ONLY→needs-input, Stop→turn-done, written in
+//! Claude Code's EXEC form — bare helper path in `command`, words in
+//! `args` — so Claude Code spawns the signed helper directly and no `sh -c`
+//! runs per event; Codex stays shell-form + `async`, exec form being
+//! undocumented there), and the
+//! release-only boot migration is the sole other one; install, migrate and
+//! uninstall touch only entries containing `deck.app/Contents/MacOS/deck-status-helper` (or the legacy `.deck/bin/deck-status-helper`),
+//! preserve everything else including file mode, and never modify a malformed
+//! file. The toggle state is DERIVED from that file — never stored twice.
+//! Claude Code's Stop does not fire on Esc-interrupt; foreground
+//! reconciliation and the next UserPromptSubmit heal that. `idle_prompt` is
+//! deliberately NOT matched: Claude Code fires it ~60s after the prompt goes
+//! idle, so EVERY finished card decayed from `done` into `attention` a minute
+//! later and the attention colour stopped meaning anything. needs-input means
+//! a question raised DURING a turn; an idle prompt after a turn is `turn-done`,
+//! which is already on screen. The Codex module
+//! uses lifecycle hooks in `$CODEX_HOME/hooks.json` (same document shape as
+//! Claude's, so ONE marker-based JSON merge engine serves both via per-agent
+//! spec tables): UserPromptSubmit→working, PermissionRequest→needs-input,
+//! Stop→turn-done, Interrupt→turn-done, all `"async": true` so the helper can
+//! never block a turn. Multiple hooks per event coexist, so this never
+//! conflicts with the user's own hooks or `notify` program — the earlier
+//! notify/`config.toml` route was DROPPED for exactly that conflict (Codex
+//! allows one notify program only; chain-forwarding it was rejected as too
+//! much surface). Known caveat: Codex's Stop fires when the model ATTEMPTS to
+//! stop, so another Stop hook forcing continuation makes "done" slightly
+//! early. Adding an agent module = one `SOURCES` entry + its own installer
+//! spec calling the same helper with its own source word, behind its own
+//! Settings toggle.
 
 use std::collections::HashMap;
 use std::io::Read;

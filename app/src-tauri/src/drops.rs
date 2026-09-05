@@ -1,6 +1,15 @@
 //! Dropped/pasted files: WKWebView hands the frontend bytes with no path,
 //! so the bytes are persisted 0600 under `~/.deck/drops` and the path is
 //! typed into the session.
+//!
+//! # Contract
+//! File drop / image paste into a terminal pane (Warp-style): WKWebView
+//! surfaces external files as CONTENT with no path, so the frontend reads the
+//! bytes and `save_dropped_file` persists them 0600 under `~/.deck/drops`
+//! (0700, week-old entries pruned at boot); the returned path is typed into
+//! the session shell-quoted, no Enter. Card/pane DnD is distinguished by the
+//! `text/deck-session` payload; file drags show a plain accent outline, not
+//! the split dropzone.
 
 use std::path::PathBuf;
 

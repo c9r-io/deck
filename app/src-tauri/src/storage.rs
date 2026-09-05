@@ -25,6 +25,36 @@
 //! (`sanitize_log`), session names are logged as a per-run tag rather than
 //! verbatim (`session_tag`), and logs/exports written by an OLDER deck are
 //! migrated in place at boot (`sanitize_existing_logs`).
+//!
+//! # Contract
+//! Board persistence: `~/.deck/deck.json` (frontend owns the state). EVERY
+//! mutation enters one global persist-before-commit transaction queue and builds
+//! its candidate from the latest committed Board only when it reaches the head;
+//! debounced mutations enter that same queue before an immediate-operation
+//! barrier. A rejected mutation or failed write cannot poison the following
+//! transaction, resurrect a removed card, or overwrite a concurrent rename/move.
+//! Runtime-only card fields are merged from the newest live state at commit.
+//! `storage.rs` is TYPED and durable for every persistent JSON document
+//! (deck/queue/history/settings and per-session shell snapshots): JSON + version envelope + business-structure
+//! validation on load — BoardDoc/SettingsDoc validate via `try_from`
+//! (referential rules: unique ids, cards reference an existing project and a
+//! column of that project, ≥1 column per project, runtime fields present,
+//! session names by the same tmux rule the runtime enforces), and
+//! save_board/save_settings run the SAME validation before touching disk;
+//! unknown extension fields round-trip untouched. Damaged main quarantined to
+//! a unique `.corrupt-<ts>`
+//! BEFORE the fully-validated `.bak` is tried; recovery warnings returned
+//! in-band (`LoadedDoc {data, source, warning}`); future schema versions
+//! refused untouched (save refuses to overwrite them too); recovery never
+//! writes; a load FAILURE is surfaced, never treated as a first run — the UI
+//! must never auto-save defaults over an existing file. Writes: unique temp +
+//! fsync + rename + parent-dir fsync, `.bak` written the same way. The
+//! envelope is validated STRICTLY: only a document carrying neither
+//! `schema_version` nor `data` is legacy v0; once either appears the file
+//! must be a COMPLETE envelope with a non-negative INTEGER version (string /
+//! fractional / negative / null version, or a version without data, is
+//! damage → recovery), and `save` refuses to overwrite a malformed or future
+//! envelope.
 
 use serde::de::DeserializeOwned;
 use std::io::Write;

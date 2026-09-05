@@ -3,6 +3,68 @@
 // crosses the drag threshold, ownership transfers to tmux. At pointerup the
 // tmux range is frozen into an immutable token-bound backend snapshot and a
 // public-geometry overlay; later wheel movement changes only the viewport.
+//
+// # Contract
+// Terminal gesture and selection authority is explicit. A sub-threshold
+// physical gesture stays on xterm's trusted mouse/link path; no synthetic
+// compatibility click is replayed. Crossing the threshold transfers the drag
+// to `selection.js`/tmux and clears speculative xterm selection. tmux owns the
+// directional, end-exclusive endpoints only while dragging. Endpoints are
+// placed with `top-line` + `cursor-down` + `cursor-right` ONLY
+// (`copy_cursor_moves`): `start-of-line`/`end-of-line`/`back-to-indentation`
+// walk to the ends of the WRAPPED logical line and `cursor-left` lands on a
+// wide grapheme's trailing column, so all four leave the visible row. Because
+// `cursor-down` snaps the column to a line end until the walk first steps off
+// a NON-EMPTY line, the plan descends to the last blank row above the frame's
+// first text, wraps out of it with one `cursor-right`, then descends the rest
+// — without that, a full-screen agent frame (blank rows on top) selected rows
+// the pointer never touched while a shell pane looked fine. Pointerup queues
+// the final update, atomically snapshots tmux into a unique buffer, validates
+// the pane token, clears tmux's cursor-bound highlight without moving the
+// viewport, and installs one immutable backend lease (bytes + absolute content
+// coordinates). A plain overlay derived from public `.xterm-screen`, cols and
+// rows renders that lease; selection wheel commands only update viewport
+// status, so endpoints and copy bytes cannot drift. Pointerup positions the
+// final cell with edge scrolling disabled. Every pointer coordinate uses a
+// frontend grid confirmed by `pty_resize`; the backend serializes resize reflow
+// with selection operations and rejects stale dimensions instead of clamping.
+// A completed-selection scroll treats tmux status and xterm `onWriteParsed` as
+// unordered: if the frame arrived first, the status completion renders; if the
+// status arrived first, the next parsed frame renders. Because the immutable
+// lease no longer depends on tmux's copy cursor, scrolling re-anchors that
+// cursor to the live input row and publishes `cursor_visible`; xterm removes
+// its cursor marker once the input row is outside the viewport instead of
+// leaving it fixed on the selected cell. While Deck owns a
+// promoted drag, `onSelectionChange` clears any late compatibility-mouse xterm
+// selection so a second viewport-fixed highlight cannot survive.
+// ⌘C waits for the whole
+// chain and reads only the current token. Escape, input/composition, blur,
+// visibility, focus change, detach and disposal revoke the lease. Never add a
+// transparent textarea or dependency on xterm private internals.
+// Gesture promotion is based on crossing a public terminal cell, never an
+// arbitrary CSS-pixel distance, and pointerup rechecks the final cell because
+// WebKit may coalesce the last pointermove. This is what keeps short one-row
+// drags on the same tmux/overlay path as multi-row drags while same-cell and
+// double/triple clicks remain native xterm operations. If a native xterm
+// word/line range survives until the first wheel frame, read only its public
+// `getSelectionPosition()` coordinates, convert visible absolute buffer rows
+// with `terminalNativeSelectionCells`, and freeze it in tmux before scrolling.
+// Wheel routing keeps an existing Deck token authoritative, adopts an idle
+// native range, and otherwise uses ordinary session scrolling.
+// Selection never sets `disableStdin`; composition/dead-key events bypass all
+// Deck shortcuts, and `macOptionIsMeta` is false so Option remains owned by
+// macOS text input. Codex/Claude Up-arrow compatibility is narrowly armed by a
+// history recall at the agent prompt and requires a visible continuation row
+// located from the first five public xterm cells; it re-enters `term.input` and
+// must never capture shell/editor keys or terminal text.
+// Terminal links use `tokenizeTerminalLinks`, not an overlapping global regex:
+// an HTTP(S) URL consumes its whole logical-line interval before path candidates
+// are considered. `terminal_paths_exist` then resolves candidates against the
+// pane cwd in one bounded backend call; nonexistent or inaccessible local paths
+// never become interactive. Link actions resolve again before opening.
+// History is 50,000 rows and clipboard extraction is explicitly capped at
+// 64 MiB without truncation. During selection tmux freezes the reading frame
+// while the PTY stream continues through its bounded ACK gate.
 import { inv, uev } from './state.js';
 import { toast } from './dialogs.js';
 import {
