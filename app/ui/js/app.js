@@ -7,6 +7,7 @@ import './board.js';
 import './layout.js';
 import './terminal.js';
 import './scheduler.js';
+import './templates.js';
 import './inbound.js';
 import { $, genId, inv, listen, state, store, uev } from './state.js';
 import { loadSettings, toast } from './dialogs.js';

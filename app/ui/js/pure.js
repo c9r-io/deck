@@ -903,3 +903,65 @@ export function expandHome(dir, home) {
   if (d.startsWith('~/')) return home.replace(/\/+$/, '') + d.slice(1);
   return d;
 }
+
+/* ---------- project prompt templates ----------
+   A template is {name, steps[]} on the project, so the Board manager and the
+   card queue edit exactly the same object. A step is ONE queued prompt: the
+   queue pastes a literal buffer and a raw newline submits early, so a step
+   is flattened to a single line here, like an inbound message. The name
+   bound is the one an inbound rule already enforces (settings-model drops a
+   rule whose template name is longer), so a template built on the Board can
+   never be one a rule is unable to name. */
+export const TEMPLATE_NAME_MAX = 120;
+export const TEMPLATE_STEP_MAX = 2000;
+export const TEMPLATE_STEPS_MAX = 20;
+export const TEMPLATES_MAX = 50;
+
+export function normalizeTemplateStep(text) {
+  const line = String(text ?? '')
+    .replace(/\s*[\r\n\t]+\s*/g, ' ')
+    .replace(/[ ]{2,}/g, ' ')
+    .trim();
+  return Array.from(line).slice(0, TEMPLATE_STEP_MAX).join('');
+}
+
+/* null when the name is usable; otherwise the reason, which the caller
+   turns into a message. `current` is the name being edited, so keeping a
+   template's own name is not a duplicate. */
+export function templateNameProblem(name, templates = [], current = null) {
+  const clean = String(name ?? '').trim();
+  if (!clean) return 'empty';
+  if (Array.from(clean).length > TEMPLATE_NAME_MAX) return 'long';
+  if (templates.some(tp => tp.name === clean && tp.name !== current)) return 'duplicate';
+  return null;
+}
+
+export function nextTemplateName(base, templates = []) {
+  const taken = new Set(templates.map(tp => tp.name));
+  if (!taken.has(base)) return base;
+  for (let n = 2; n <= TEMPLATES_MAX + 1; n++) {
+    const candidate = `${base} ${n}`;
+    if (!taken.has(candidate)) return candidate;
+  }
+  return `${base} ${taken.size + 1}`;
+}
+
+/* Swap with the neighbour, or return the SAME array when the move would
+   leave the list — the caller persists only when something changed. */
+export function moveTemplateStep(steps, index, delta) {
+  const target = index + delta;
+  if (!Array.isArray(steps) || index < 0 || index >= steps.length
+      || target < 0 || target >= steps.length) return steps;
+  const next = steps.slice();
+  next[index] = steps[target];
+  next[target] = steps[index];
+  return next;
+}
+
+/* Inbound rules name a template by NAME, so renaming or deleting one
+   silently stops those rules from matching. The manager warns with this
+   count; deck never rewrites the user's rules behind their back. */
+export function inboundRulesUsingTemplate(rules, projectId, name) {
+  return (Array.isArray(rules) ? rules : [])
+    .filter(rule => rule && rule.projectId === projectId && rule.template === name).length;
+}

@@ -560,19 +560,20 @@
   #tmux-view-sessions { margin-right: auto; }
   .tmux-diag { font-family: var(--mono); font-size: 0.807692rem; color: var(--muted); line-height: 1.55; overflow-wrap: anywhere; }
 
-  #settings-modal {
+  #settings-modal, #tpl-modal {
     position: fixed; inset: 0; z-index: 70; display: none;
     background: var(--modal-overlay);
     align-items: center; justify-content: center;
     padding: 20px;
   }
-  #settings-box {
+  #settings-box, #tpl-box {
     width: 940px; height: 680px; max-width: 100%; max-height: 100%; overflow: hidden;
     display: flex; flex-direction: column;
     background: var(--panel); border: 1px solid var(--border);
     border-radius: 12px; padding: 0;
     box-shadow: 0 16px 48px var(--shadow-modal);
   }
+  #tpl-box { width: 860px; height: 620px; }
   .set-title { font-size: 1.07692rem; font-weight: 600; margin-bottom: 14px; }
   .set-row { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; font-size: 1rem; }
   .set-row label { color: var(--muted); width: 128px; flex: none; }
@@ -617,7 +618,7 @@
 
   .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
   #settings-box [hidden] { display: none !important; }
-  #settings-title { padding: 18px 22px; margin: 0; border-bottom: 1px solid var(--border-soft); flex: none; }
+  #settings-title, #tpl-title { padding: 18px 22px; margin: 0; border-bottom: 1px solid var(--border-soft); flex: none; }
   .set-layout { display: flex; flex: 1; min-height: 0; }
   .set-sidebar { width: 214px; flex: none; padding: 16px 12px; border-right: 1px solid var(--border-soft); overflow-y: auto; }
   .set-search { display: block; margin-bottom: 18px; }
@@ -627,7 +628,7 @@
   .set-nav-item > span:first-child { width: 20px; flex: none; text-align: center; font-family: var(--mono); }
   .set-nav-item:hover { color: var(--text); background: var(--hover); }
   .set-nav-item[aria-current="page"] { color: var(--accent); background: var(--sel); }
-  #set-content { flex: 1; min-width: 0; padding: 26px; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
+  #set-content, #tpl-content { flex: 1; min-width: 0; padding: 26px; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
   #set-panel-data .set-row label { color: var(--text); font-weight: 500; }
   .set-panel h2 { font-size: 1.30769rem; margin-bottom: 20px; font-weight: 600; }
   .set-panel + .set-panel { margin-top: 26px; }
@@ -647,8 +648,41 @@
   .set-log-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
   .btn.set-danger { color: var(--danger); border-color: var(--danger); }
   .btn.set-danger:hover { background: var(--hover); }
-  #settings-box > .set-actions { padding: 14px 22px; margin: 0; border-top: 1px solid var(--border-soft); flex: none; align-items: center; gap: 12px; }
-  #settings-box > .set-actions > span { margin-right: auto; color: var(--muted); font-size: 0.884615rem; }
+  #settings-box > .set-actions, #tpl-box > .set-actions { padding: 14px 22px; margin: 0; border-top: 1px solid var(--border-soft); flex: none; align-items: center; gap: 12px; }
+  #settings-box > .set-actions > span, #tpl-box > .set-actions > span { margin-right: auto; color: var(--muted); font-size: 0.884615rem; }
+
+  /* ---------- project templates (Board-level manager) ---------- */
+  #board-tpl .tpl-count { font-family: var(--mono); font-size: 0.769231rem; color: var(--faint); }
+  #board-tpl .tpl-count:empty { display: none; }
+  .tpl-items { display: grid; gap: 4px; }
+  .tpl-item {
+    display: flex; align-items: center; gap: 8px; width: 100%;
+    padding: 9px 10px; border-radius: 8px; color: var(--muted); text-align: left;
+  }
+  .tpl-item:hover { color: var(--text); background: var(--hover); }
+  .tpl-item[aria-current="true"] { color: var(--accent); background: var(--sel); }
+  .tpl-item .n { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tpl-item .c { flex: none; font-family: var(--mono); font-size: 0.769231rem; color: var(--faint); }
+  .tpl-side-empty { color: var(--muted); font-size: 0.884615rem; padding: 6px 10px; }
+  .tpl-blank { margin: 0; }
+  .tpl-wide { margin-left: 0; }
+  #tpl-form .set-row label { width: 76px; }
+  #tpl-form .set-hint { margin-left: 86px; }
+  #tpl-form .set-hint.tpl-wide { margin-left: 0; }
+  .tpl-step {
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 8px; margin-bottom: 6px;
+    background: var(--bg); border: 1px solid var(--border-soft); border-radius: 8px;
+  }
+  .tpl-step .idx { flex: none; font-family: var(--mono); font-size: 0.846154rem; color: var(--faint); min-width: 1.2em; }
+  .tpl-step input { background: transparent; border: none; border-radius: 4px; padding: 3px 4px; }
+  .tpl-step input:hover { background: var(--panel); }
+  .tpl-step .act { flex: none; padding: 2px 6px; border-radius: 4px; color: var(--faint); line-height: 1; }
+  .tpl-step .act:hover { color: var(--text); background: var(--hover); }
+  .tpl-step .act.del:hover { color: var(--danger); }
+  .tpl-step .act:disabled { opacity: 0.35; }
+  .tpl-add { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
+  .tpl-add input { flex: 1; min-width: 0; }
   #set-no-results { color: var(--muted); padding: 20px 0; }
   html.font-scale-large .set-sidebar { width: 240px; }
   html.font-scale-large .set-group .set-row label { flex-basis: 100%; }
@@ -670,6 +704,7 @@
      inside fixed one-line tracks clips controls and produces accidental word
      wraps; these rules instead give each group an explicit full-width row. */
   html.font-scale-large #settings-box { width: 1040px; }
+  html.font-scale-large #tpl-box { width: 1040px; }
   html.font-scale-large .set-row { align-items: flex-start; flex-wrap: wrap; }
   html.font-scale-large .set-row > label { width: 100%; }
   html.font-scale-large .set-row > select { flex-basis: 100%; }
@@ -716,7 +751,7 @@
     .sess-head { gap: 6px; padding: 8px; }
     .sess-title { max-width: 120px; }
     #queue-panel { max-height: 55vh; padding: 8px; }
-    #settings-modal { padding: 4vh 20px; }
+    #settings-modal, #tpl-modal { padding: 4vh 20px; }
     #cfm-box, #ppd-box { margin-top: 8vh; max-height: 84vh; overflow-y: auto; }
     #tmux-lifecycle-box { margin-top: 8vh; max-height: 84vh; overflow-y: auto; }
     .qg-row { align-items: flex-start; flex-wrap: wrap; }
@@ -757,6 +792,7 @@
       <div class="board-head">
         <h1 id="board-title" data-i18n="app.sessions">Sessions</h1>
         <button class="btn primary" id="board-new"><span>＋</span> <span data-i18n="app.newSession">New session</span></button>
+        <button class="btn" id="board-tpl" data-i18n-title="templates.buttonTitle" title="Prompt templates for this project"><span>◈</span> <span data-i18n="templates.button">Templates</span><span class="tpl-count" id="board-tpl-count"></span></button>
         <span class="hint" data-i18n="board.hint">click a Board title to target new sessions · drag cards between Boards · right-click for actions</span>
       </div>
       <div id="columns"></div>
@@ -1094,6 +1130,44 @@
     <div class="set-actions">
       <span data-i18n="settings.immediate">Changes apply immediately</span>
       <button class="btn primary" id="set-close" data-i18n="common.done">Done</button>
+    </div>
+  </div>
+</div>
+<div id="tpl-modal">
+  <div id="tpl-box" role="dialog" aria-modal="true" aria-labelledby="tpl-title">
+    <div class="set-title" id="tpl-title" data-i18n="templates.title">Templates</div>
+    <div class="set-layout">
+      <div class="set-sidebar">
+        <div class="set-search">
+          <input id="tpl-search" type="search" autocomplete="off" data-i18n-placeholder="templates.search" placeholder="Search templates">
+        </div>
+        <div class="tpl-items" id="tpl-items"></div>
+        <p class="tpl-side-empty" id="tpl-no-results" role="status" data-i18n="templates.noMatch" hidden>No template matches.</p>
+        <button class="side-new" id="tpl-new"><span>＋</span><span class="label" data-i18n="templates.new">New template</span></button>
+      </div>
+      <div id="tpl-content" tabindex="0">
+        <p class="set-hint tpl-blank" id="tpl-empty" data-i18n="templates.empty" hidden>No templates in this project yet.</p>
+        <div class="set-panel" id="tpl-form" hidden>
+          <div class="set-row">
+            <label for="tpl-name" data-i18n="templates.name">Name</label>
+            <input id="tpl-name" type="text" maxlength="120" autocomplete="off" spellcheck="false">
+          </div>
+          <div class="set-hint" data-i18n="templates.nameHint">Templates belong to this project.</div>
+          <div class="set-sep"></div>
+          <div class="set-row"><label data-i18n="templates.steps">Steps</label></div>
+          <div id="tpl-steps"></div>
+          <div class="tpl-add">
+            <input id="tpl-step-text" type="text" autocomplete="off" spellcheck="false" data-i18n-placeholder="templates.stepPlaceholder" placeholder="add a step">
+            <button class="btn" id="tpl-step-add" data-i18n="common.add">Add</button>
+          </div>
+          <div class="set-hint tpl-wide" data-i18n="templates.placeholders">Placeholders are filled in by an auto-respond rule.</div>
+        </div>
+      </div>
+    </div>
+    <div class="set-actions">
+      <span data-i18n="templates.footHint">Changes apply immediately</span>
+      <button class="btn set-danger" id="tpl-delete" data-i18n="templates.delete">Delete template</button>
+      <button class="btn primary" id="tpl-done" data-i18n="common.done">Done</button>
     </div>
   </div>
 </div>

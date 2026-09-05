@@ -20,6 +20,9 @@ import {
   linkMenuItems,
   CARD_PREVIEW_ROWS, cardPreviewRows, inlineRenameValue, persistOptimistically,
   effectiveCardStatus, attentionStatus,
+  TEMPLATES_MAX, TEMPLATE_NAME_MAX, TEMPLATE_STEPS_MAX,
+  inboundRulesUsingTemplate, moveTemplateStep, nextTemplateName, normalizeTemplateStep,
+  templateNameProblem,
 } from '../js/pure.js';
 
 test('agent-hook state outranks the output-recency heuristic', () => {
@@ -875,4 +878,46 @@ test('rename Enter/Escape/empty semantics and persistence rollback are determini
   });
   assert.equal(ok, true);
   assert.equal(value, 'new');
+});
+
+test('a template step is one queued line and its name stays usable by an inbound rule', () => {
+  assert.equal(normalizeTemplateStep('  read CLAUDE.md\n then plan  '), 'read CLAUDE.md then plan');
+  assert.equal(normalizeTemplateStep('a\tb   c'), 'a b c');
+  assert.equal(normalizeTemplateStep('   '), '', 'an empty step never reaches the queue');
+  assert.equal(normalizeTemplateStep('{{msg.text}}'), '{{msg.text}}', 'placeholders survive intact');
+
+  const templates = [{ name: 'morning', steps: [] }, { name: 'release', steps: [] }];
+  assert.equal(templateNameProblem('  new  ', templates), null);
+  assert.equal(templateNameProblem('   ', templates), 'empty');
+  assert.equal(templateNameProblem('x'.repeat(TEMPLATE_NAME_MAX + 1), templates), 'long');
+  assert.equal(templateNameProblem('release', templates), 'duplicate');
+  assert.equal(templateNameProblem('release', templates, 'release'), null,
+    'keeping a template its own name is not a collision');
+
+  assert.equal(nextTemplateName('new template', templates), 'new template');
+  assert.equal(nextTemplateName('release', templates), 'release 2');
+  assert.equal(nextTemplateName('release', [...templates, { name: 'release 2', steps: [] }]), 'release 3');
+  assert.ok(TEMPLATES_MAX > 0 && TEMPLATE_STEPS_MAX > 0, 'both lists stay bounded');
+});
+
+test('reordering a template step swaps neighbours and never leaves the list', () => {
+  const steps = ['a', 'b', 'c'];
+  assert.deepEqual(moveTemplateStep(steps, 1, -1), ['b', 'a', 'c']);
+  assert.deepEqual(moveTemplateStep(steps, 1, 1), ['a', 'c', 'b']);
+  assert.equal(moveTemplateStep(steps, 0, -1), steps, 'the first step cannot move up');
+  assert.equal(moveTemplateStep(steps, 2, 1), steps, 'the last step cannot move down');
+  assert.deepEqual(steps, ['a', 'b', 'c'], 'the input array is never mutated');
+});
+
+test('renaming or deleting a template counts the inbound rules that name it', () => {
+  const rules = [
+    { id: 'r1', projectId: 'P1', template: 'morning' },
+    { id: 'r2', projectId: 'P1', template: 'morning' },
+    { id: 'r3', projectId: 'P2', template: 'morning' },
+    { id: 'r4', projectId: 'P1', template: 'release' },
+  ];
+  assert.equal(inboundRulesUsingTemplate(rules, 'P1', 'morning'), 2);
+  assert.equal(inboundRulesUsingTemplate(rules, 'P1', 'release'), 1);
+  assert.equal(inboundRulesUsingTemplate(rules, 'P1', 'unused'), 0);
+  assert.equal(inboundRulesUsingTemplate(null, 'P1', 'morning'), 0);
 });

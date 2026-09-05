@@ -7,7 +7,7 @@ import { confirmDialog, inlineRename, toast } from './dialogs.js';
 import { clearSeparators, closePaneBySid, leaveSessionView, openSession, renderSessionView, updatePaneChrome } from './layout.js';
 import { SHELL_FG, showProjectCtx, showSessionCtx } from './terminal.js';
 import { renderQueueUI, setQueueChip, updateQuietHints } from './scheduler.js';
-import { t } from './i18n.js';
+import { formatNumber, t } from './i18n.js';
 import { createDefaultColumns, migrateColumnSemantics } from './board-defaults.js';
 export { migrateColumnSemantics } from './board-defaults.js';
 
@@ -605,6 +605,8 @@ export function renderBoard() {
   const p = activeProject();
   if (!p) return;
   $('board-title').textContent = p.name;
+  const templateCount = (p.templates || []).length;
+  $('board-tpl-count').textContent = templateCount ? formatNumber(templateCount) : '';
   const wrap = $('columns');
   const hScroll = wrap.scrollLeft;
   const colScroll = {};

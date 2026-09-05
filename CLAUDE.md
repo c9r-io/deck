@@ -11,7 +11,8 @@ Tauri 2 macOS app. Frontend `app/ui/` is a no-build set of native ES modules
 (`ui/js/state.js` shared slots/helpers · `pure.js` DOM-free logic, node-tested ·
 `board.js` · `layout.js` splits/terminal host · `selection.js` tmux-owned
 terminal selection · `terminal.js` completion/ghost ·
-`scheduler.js` queue UI · `dialogs.js` · `persistence.js` · `app.js` boot),
+`scheduler.js` queue UI · `templates.js` Board-level template manager ·
+`dialogs.js` · `persistence.js` · `app.js` boot),
 loaded by `ui/index.html`; xterm.js vendored in `app/ui/vendor/`. Backend
 `app/src-tauri/src/` is modular: `main.rs` (wiring) · `commands.rs` ·
 `scheduler.rs` · `storage.rs` · `pty.rs` · `tmux.rs` · `history.rs` ·
@@ -505,6 +506,19 @@ Frontend gates: `node --check` (syntax) · `ui/test/*.mjs` (node:test)
     fails, the ambiguous actions remain available and unschedulable while
     `dirty` retries the exact snapshot. `flush_dirty` runs before the
     empty-queue fast path.
+- Prompt templates (`{name, steps[]}`) live on the PROJECT inside the board
+  file, so the card queue (☆ / ✎) and the Board-level manager (`templates.js`,
+  the `◈ Templates` button in the board head) edit the same object through the
+  ordinary Board transaction — one mutation per user action, a failed write
+  leaves the template as it is on disk. The manager exists so a template can
+  be created and edited without owning a card; it never starts a session,
+  queues a prompt or moves a card. A step is ONE queued prompt flattened to a
+  single line (`normalizeTemplateStep`, same reason as inbound: the queue
+  pastes a literal buffer and a raw newline submits early), the name bound is
+  the one `settings-model` already enforces on an inbound rule, and both lists
+  are bounded. Inbound rules name a template by NAME: renaming or deleting one
+  that a rule uses is confirmed with the count of affected rules — deck warns,
+  and never rewrites the user's rules for them.
 - File drop / image paste into a terminal pane (Warp-style): WKWebView
   surfaces external files as CONTENT with no path, so the frontend reads the
   bytes and `save_dropped_file` persists them 0600 under `~/.deck/drops`
