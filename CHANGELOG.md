@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.5.13 — 2026-09-05 (Nightly)
+
 - Prevent Force Touch on buttons from opening the macOS Look Up popover.
 - Suppress WebKit's browser menus (Reload, Inspect, Look Up) on app-surface
   Control-click/right-click while retaining Deck's own context actions and
@@ -11,6 +13,8 @@
 - Add diagnostic log size, export and confirmed reset under Data & logs. Reset
   clears only the active log, serializes with background logging, and preserves
   exports, history, shell recovery data and running sessions.
+- Fix copying Chinese and other non-ASCII terminal text by giving the native
+  clipboard writer an explicit UTF-8 locale.
 
 ## 0.5.4 — 2026-08-30
 
