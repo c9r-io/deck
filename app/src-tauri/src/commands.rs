@@ -152,6 +152,8 @@ const SMOKE_CHECKS: &[&str] = &[
     "theme-switch",
     "theme-rollback",
     "settings-viewport",
+    "settings-navigation",
+    "settings-logs",
     "font-layout",
     "natural-fault",
     "completion-owner",
@@ -351,6 +353,17 @@ pub(crate) fn build_export(header: &str, log: &str) -> String {
     out
 }
 
+#[tauri::command]
+pub(crate) fn log_size() -> Result<u64, String> {
+    storage::log_size_at(&storage::deck_dir())
+}
+
+#[tauri::command]
+pub(crate) fn reset_logs() -> Result<(), String> {
+    storage::reset_logs_at(&storage::deck_dir())
+}
+
+#[tauri::command]
 pub(crate) fn export_logs() -> Result<PathBuf, String> {
     let data_dir = storage::deck_dir();
     let dir = data_dir.join("exports");
@@ -2371,7 +2384,10 @@ mod tests {
     #[test]
     fn pbcopy_is_spawned_under_a_utf8_locale() {
         let command = pbcopy_command();
-        assert_eq!(command.get_program(), std::ffi::OsStr::new("/usr/bin/pbcopy"));
+        assert_eq!(
+            command.get_program(),
+            std::ffi::OsStr::new("/usr/bin/pbcopy")
+        );
         let lang = command
             .get_envs()
             .find(|(key, _)| *key == std::ffi::OsStr::new("LANG"))

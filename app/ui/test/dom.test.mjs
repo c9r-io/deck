@@ -37,6 +37,7 @@ class FakeElement {
   focus() { fakeDocument.activeElement = this; }
   select() { this.selected = true; }
   closest() { return null; }
+  setAttribute(name, value) { this[name] = value; }
   set textContent(value) { this._textContent = String(value); this.children = []; }
   get textContent() { return this._textContent; }
 }
@@ -56,7 +57,7 @@ globalThis.window = { __TAURI__: null, __DECK_DEBUG: false };
 
 const {
   cfmDone, inlineRename, persistSessionRestoreChoice, persistUpdateChannelChoice,
-  promptDialog, persistThemeChoice,
+  promptDialog, persistThemeChoice, filterSettings, selectSettingsSection, resetApplicationLogs, refreshLogSize,
 } = await import('../js/dialogs.js');
 const { store } = await import('../js/state.js');
 const { boardData, flushBoardMutations, mutateBoard, mutateBoardDebounced } = await import('../js/persistence.js');
@@ -257,4 +258,113 @@ test('enabling shell recovery is opt-in and saves only after disclosure', async 
   await pending;
   assert.deepEqual(calls, ['save_settings']);
   assert.equal(globalThis.settings.sessionRestore, true);
+});
+
+
+test('settings navigation and search expose matching localized sections without losing controls', () => {
+  const names = ['general', 'shortcuts', 'terminal', 'integrations', 'data', 'about'];
+  names.forEach(name => { fakeDocument.getElementById('set-panel-' + name).textContent = name; });
+  fakeDocument.getElementById('set-panel-integrations').textContent = '集成 Slack 自动响应';
+  selectSettingsSection('terminal');
+  assert.equal(fakeDocument.getElementById('set-panel-terminal').hidden, false);
+  assert.equal(fakeDocument.getElementById('set-panel-general').hidden, true);
+  assert.equal(fakeDocument.getElementById('set-nav-terminal')['aria-current'], 'page');
+  const search = fakeDocument.getElementById('set-search');
+  search.value = ' SLACK ';
+  filterSettings();
+  assert.equal(fakeDocument.getElementById('set-panel-integrations').hidden, false);
+  assert.equal(fakeDocument.getElementById('set-panel-terminal').hidden, true);
+  search.value = '自动响应';
+  filterSettings();
+  assert.equal(fakeDocument.getElementById('set-no-results').hidden, true);
+  search.value = 'no such setting';
+  filterSettings();
+  assert.equal(fakeDocument.getElementById('set-no-results').hidden, false);
+  search.value = '';
+  filterSettings();
+  assert.equal(fakeDocument.getElementById('set-panel-terminal').hidden, false);
+});
+
+test('log reset requires confirmation, suppresses double clicks, and refreshes size after success', async () => {
+  const calls = [];
+  window.__TAURI__ = { core: { invoke: async cmd => { calls.push(cmd); return 0; } } };
+  const cancelled = resetApplicationLogs();
+  assert.equal(fakeDocument.activeElement, fakeDocument.getElementById('cfm-no'));
+  await resetApplicationLogs();
+  assert.deepEqual(calls, []);
+  cfmDone(false);
+  await cancelled;
+  assert.deepEqual(calls, []);
+  assert.equal(fakeDocument.getElementById('set-reset-logs').disabled, false);
+  const accepted = resetApplicationLogs();
+  cfmDone(true);
+  await accepted;
+  assert.deepEqual(calls, ['reset_logs', 'log_size']);
+  assert.match(fakeDocument.getElementById('set-log-size').textContent, /0 B$/);
+});
+
+test('failed log reset gives failure feedback and releases both buttons for retry', async () => {
+  window.__TAURI__ = { core: { invoke: async () => { throw new Error('disk unavailable'); } } };
+  const operation = resetApplicationLogs();
+  cfmDone(true);
+  await operation;
+  assert.match(fakeDocument.getElementById('toasts').children.at(-1).textContent, /Could not reset/);
+  assert.equal(fakeDocument.getElementById('set-reset-logs').disabled, false);
+  assert.equal(fakeDocument.getElementById('set-export-logs').disabled, false);
+  await refreshLogSize();
+  assert.match(fakeDocument.getElementById('set-log-size').textContent, /unavailable/);
+});
+
+test('settings keyboard navigation and Escape keep focus inside the workflow', () => {
+  selectSettingsSection('general');
+  fakeDocument.getElementById('set-nav-general').fire('keydown', { key: 'ArrowDown' });
+  assert.equal(fakeDocument.activeElement, fakeDocument.getElementById('set-nav-shortcuts'));
+  assert.equal(fakeDocument.getElementById('set-panel-shortcuts').hidden, false);
+  fakeDocument.getElementById('set-nav-shortcuts').fire('keydown', { key: 'End' });
+  assert.equal(fakeDocument.activeElement, fakeDocument.getElementById('set-nav-about'));
+  fakeDocument.getElementById('set-nav-about').fire('keydown', { key: 'Home' });
+  const search = fakeDocument.getElementById('set-search');
+  search.value = 'terminal';
+  search.fire('input');
+  assert.equal(fakeDocument.getElementById('set-panel-terminal').hidden, false);
+  const box = fakeDocument.getElementById('settings-box');
+  box.fire('keydown', { key: 'Escape' });
+  assert.equal(search.value, '');
+  assert.equal(fakeDocument.activeElement, search);
+  box.fire('keydown', { key: 'Escape' });
+  assert.equal(fakeDocument.getElementById('settings-modal').style.display, 'none');
+  assert.equal(fakeDocument.activeElement, fakeDocument.getElementById('settings-btn'));
+});
+
+test('log export blocks a concurrent reset and recovers from export failure', async () => {
+  let complete;
+  const calls = [];
+  window.__TAURI__ = { core: { invoke: cmd => {
+    calls.push(cmd);
+    return new Promise(resolve => { complete = resolve; });
+  } } };
+  const button = fakeDocument.getElementById('set-export-logs');
+  const exporting = button.onclick();
+  await resetApplicationLogs();
+  assert.deepEqual(calls, ['export_logs']);
+  assert.equal(fakeDocument.getElementById('set-reset-logs').disabled, true);
+  complete('/isolated/export.txt');
+  await exporting;
+  assert.match(fakeDocument.getElementById('toasts').children.at(-1).textContent, /Logs exported/);
+  window.__TAURI__ = { core: { invoke: async () => { throw new Error('disk unavailable'); } } };
+  await button.onclick();
+  assert.match(fakeDocument.getElementById('toasts').children.at(-1).textContent, /Could not export/);
+  assert.equal(button.disabled, false);
+});
+
+test('late log size responses cannot overwrite the newest post-reset size', async () => {
+  const reads = [];
+  window.__TAURI__ = { core: { invoke: () => new Promise(resolve => reads.push(resolve)) } };
+  const oldRead = refreshLogSize();
+  const newRead = refreshLogSize();
+  reads[1](0);
+  await newRead;
+  reads[0](128000);
+  await oldRead;
+  assert.match(fakeDocument.getElementById('set-log-size').textContent, /0 B$/);
 });

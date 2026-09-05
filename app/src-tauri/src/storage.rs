@@ -35,6 +35,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const SCHEMA_VERSION: u64 = 1;
 static SAVE_LOCK: Mutex<()> = Mutex::new(());
+static LOG_LOCK: Mutex<()> = Mutex::new(());
 
 // ---------- private-by-construction file creation --------------------------------
 //
@@ -812,6 +813,25 @@ pub(crate) fn log_path(dir: &Path) -> PathBuf {
     dir.join("app.log")
 }
 
+/// Reset only the active diagnostic log, without creating a backup. The same
+/// lock guards append and rotation so no pre-reset file can be written back.
+pub(crate) fn reset_logs_at(dir: &Path) -> Result<(), String> {
+    let _guard = LOG_LOCK
+        .lock()
+        .map_err(|_| "log lock unavailable".to_string())?;
+    create_private_dir(dir)?;
+    atomic_write(&log_path(dir), b"")
+}
+
+pub(crate) fn log_size_at(dir: &Path) -> Result<u64, String> {
+    match std::fs::metadata(log_path(dir)) {
+        Ok(meta) if meta.is_file() => Ok(meta.len()),
+        Ok(_) => Err("log is not a file".into()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(0),
+        Err(e) => Err(format!("could not read log size ({})", e.kind())),
+    }
+}
+
 /// Exact boolean launch flag. Unlike the isolated smoke arguments below,
 /// --debug-logging is intentionally available in release builds so a
 /// maintainer can reproduce a packaged WKWebView/input problem without
@@ -849,6 +869,7 @@ pub(crate) fn deck_dir() -> PathBuf {
 /// `applog` so the real writing path — including redaction and permissions —
 /// is exercised by tests against a temp directory instead of being stubbed.
 pub(crate) fn applog_to(path: &Path, msg: &str) {
+    let _guard = LOG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     use std::os::unix::fs::OpenOptionsExt;
     if let Some(dir) = path.parent() {
         let _ = create_private_dir(dir);
@@ -881,6 +902,7 @@ pub(crate) fn applog(msg: &str) {
 /// behind (a `.bak` would defeat the whole point). Files that need no change
 /// are not touched at all.
 pub(crate) fn sanitize_existing_logs(dir: &Path) -> u32 {
+    let _guard = LOG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut cleaned = 0;
     let mut targets = vec![log_path(dir)];
     if let Ok(rd) = std::fs::read_dir(dir.join("exports")) {
@@ -915,6 +937,7 @@ pub(crate) fn restrict_to_user(path: &Path) {
 }
 
 pub(crate) fn rotate_log() {
+    let _guard = LOG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let path = log_path(&deck_dir());
     if let Ok(meta) = std::fs::metadata(&path) {
         if meta.len() > 2 * 1024 * 1024 {
@@ -952,6 +975,66 @@ mod tests {
 
     fn load_doc(p: &Path) -> Result<Option<LoadOutcome>, String> {
         load_typed::<Doc>(p)
+    }
+
+    #[test]
+    fn reset_log_preserves_other_data_and_resumes_private_logging() {
+        let d = tdir("log-reset");
+        assert_eq!(log_size_at(&d).unwrap(), 0);
+        reset_logs_at(&d).unwrap();
+        applog_to(&log_path(&d), "[test] before-reset");
+        assert!(log_size_at(&d).unwrap() > 0);
+        create_private_dir(&d.join("exports")).unwrap();
+        for name in ["history.json", "settings.json", "exports/previous.txt"] {
+            write_private(&d.join(name), b"keep").unwrap();
+        }
+        reset_logs_at(&d).unwrap();
+        assert_eq!(log_size_at(&d).unwrap(), 0);
+        assert_eq!(mode_of(&log_path(&d)), 0o600);
+        assert!(!d.join("app.log.bak").exists());
+        for name in ["history.json", "settings.json", "exports/previous.txt"] {
+            assert_eq!(std::fs::read(d.join(name)).unwrap(), b"keep");
+        }
+        applog_to(&log_path(&d), "[test] after-reset");
+        let log = std::fs::read_to_string(log_path(&d)).unwrap();
+        assert!(log.contains("after-reset"));
+        assert!(!log.contains("before-reset"));
+        std::fs::remove_dir_all(d).unwrap();
+    }
+
+    #[test]
+    fn reset_log_serializes_with_concurrent_writers() {
+        let d = tdir("log-reset-concurrent");
+        applog_to(&log_path(&d), "[test] old-event");
+        std::thread::scope(|scope| {
+            for _ in 0..4 {
+                let dir = &d;
+                scope.spawn(move || {
+                    for _ in 0..30 {
+                        applog_to(&log_path(dir), "[test] concurrent-event");
+                    }
+                });
+            }
+            reset_logs_at(&d).unwrap();
+        });
+        applog_to(&log_path(&d), "[test] final-event");
+        let log = std::fs::read_to_string(log_path(&d)).unwrap();
+        assert!(!log.contains("old-event"));
+        assert!(log.ends_with("[test] final-event\n"));
+        assert!(log.lines().all(|line| line.contains("[test] ")));
+        assert!(!log.contains('\0'));
+        std::fs::remove_dir_all(d).unwrap();
+    }
+
+    #[test]
+    fn reset_log_reports_io_failure_without_removing_other_files() {
+        let d = tdir("log-reset-fail");
+        std::fs::create_dir(log_path(&d)).unwrap();
+        write_private(&log_path(&d).join("keep"), b"keep").unwrap();
+        assert!(reset_logs_at(&d).is_err());
+        assert!(log_size_at(&d).is_err());
+        assert_eq!(std::fs::read(log_path(&d).join("keep")).unwrap(), b"keep");
+        std::fs::remove_dir_all(d).unwrap();
     }
 
     #[test]

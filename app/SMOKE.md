@@ -1,5 +1,24 @@
 # deck release smoke checklist
 
+## Settings navigation and diagnostic log reset
+
+Run `DECK_SMOKE_DATA_DIR="$(mktemp -d /tmp/deck-settings.XXXXXX)" DECK_SMOKE_TMUX_SOCKET=deck-smoke-settings-UNIQUE DECK_SMOKE_WKWEBVIEW=settings app/run.sh`.
+This isolated mode checks all six categories, localized search, empty results,
+Escape/focus restoration, cancellation and acceptance of log reset, and 24
+layout combinations (English/Chinese, 100%/160% font, six categories) in a
+680 × 400 settings frame. It leaves Data & logs open for visual inspection.
+Expect `settings-logs=1/1`, `settings-navigation=6/6`,
+`settings-viewport=24/24`, and final `done=1` in that isolated `app.log`.
+Reset runs before smoke results are written, so it cannot erase test evidence.
+
+Validation on 2026-09-05: the settings-only WKWebView run passed all checks;
+103 Node tests (including coverage thresholds), 295 Rust tests, fmt and Clippy
+passed. The final full WK run passed settings, font layout and link activation,
+but `ime-routing` remained 5/7. The same 5/7 failure reproduced with an untouched
+HEAD build in a separate data directory/socket; it is an existing regression,
+not a passing release gate.
+
+
 `cargo test` covers the tmux contracts (scroll model, clear-history, literal
 injection, poll formats). The items below are **WKWebView/xterm integration
 behaviors that cannot be tested headless** — Chromium-based harnesses pass

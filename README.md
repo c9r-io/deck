@@ -168,6 +168,14 @@ waiting for you. Memory chips show the *whole process tree* of a session
 
 ## Data
 
+Settings is organized into six searchable categories, with navigation and the
+Done button kept visible while the content scrolls. **Data & logs** shows the
+current diagnostic log size and offers **Export logs…** and **Reset logs…**.
+Reset requires confirmation and clears only `app.log`, without a backup; new
+events continue to be recorded. Exported logs, command history, shell recovery
+data and running sessions are preserved. History and recovery data have their
+own separate clear actions.
+
 Everything lives in `~/.deck/` as plain JSON you can inspect or edit:
 `deck.json` (boards, cards, and each live pane's latest directory) · `queue.json` (scheduled prompts, incl. card/tmux
 identity, an optional sanitized executable basename, a content-free last

@@ -567,10 +567,10 @@
     padding: 20px;
   }
   #settings-box {
-    width: 640px; max-width: 100%; max-height: 100%; overflow-y: auto;
-    overscroll-behavior: contain; scrollbar-gutter: stable;
+    width: 940px; height: 680px; max-width: 100%; max-height: 100%; overflow: hidden;
+    display: flex; flex-direction: column;
     background: var(--panel); border: 1px solid var(--border);
-    border-radius: 12px; padding: 18px;
+    border-radius: 12px; padding: 0;
     box-shadow: 0 16px 48px var(--shadow-modal);
   }
   .set-title { font-size: 1.07692rem; font-weight: 600; margin-bottom: 14px; }
@@ -614,10 +614,62 @@
   .btn.cfm-danger { background: var(--danger); border-color: var(--danger); color: var(--danger-contrast); font-weight: 600; }
   .btn.cfm-danger:hover { filter: brightness(1.1); }
 
+
+  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  #settings-box [hidden] { display: none !important; }
+  #settings-title { padding: 18px 22px; margin: 0; border-bottom: 1px solid var(--border-soft); flex: none; }
+  .set-layout { display: flex; flex: 1; min-height: 0; }
+  .set-sidebar { width: 214px; flex: none; padding: 16px 12px; border-right: 1px solid var(--border-soft); overflow-y: auto; }
+  .set-search { display: block; margin-bottom: 18px; }
+  #set-search { min-width: 0; font-size: 0.923077rem; }
+  #set-nav { display: grid; gap: 5px; }
+  .set-nav-item { display: flex; align-items: center; gap: 10px; text-align: left; padding: 11px 10px; border-radius: 8px; color: var(--muted); line-height: 1.4; }
+  .set-nav-item > span:first-child { width: 20px; flex: none; text-align: center; font-family: var(--mono); }
+  .set-nav-item:hover { color: var(--text); background: var(--hover); }
+  .set-nav-item[aria-current="page"] { color: var(--accent); background: var(--sel); }
+  #set-content { flex: 1; min-width: 0; padding: 26px; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
+  #set-panel-data .set-row label { color: var(--text); font-weight: 500; }
+  .set-panel h2 { font-size: 1.30769rem; margin-bottom: 20px; font-weight: 600; }
+  .set-panel + .set-panel { margin-top: 26px; }
+  .set-panel[hidden] + .set-panel { margin-top: 0; }
+  .set-group { padding: 18px; border: 1px solid var(--border-soft); border-radius: 8px; background: var(--bg); margin-bottom: 14px; }
+  .set-group .set-row { flex-wrap: wrap; }
+  .set-group .set-row label { width: auto; min-width: 116px; flex: 1; }
+  .set-group .set-row select { flex: 1; min-width: 140px; }
+  .set-group .set-hint { margin: 6px 0 16px; }
+  .set-group .set-hint:last-child { margin-bottom: 0; }
+  .set-group .shortcut-list, .set-group .inbound-editor { margin-left: 0; }
+  .set-group .set-sep { margin-top: 18px; }
+  .set-details { margin: 8px 0 16px; color: var(--muted); font-size: 0.884615rem; line-height: 1.5; }
+  .set-details summary { cursor: pointer; width: fit-content; }
+  .set-details summary:hover { color: var(--text); }
+  #set-log-size { font-family: var(--mono); font-size: 0.884615rem; color: var(--muted); overflow-wrap: anywhere; }
+  .set-log-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+  .btn.set-danger { color: var(--danger); border-color: var(--danger); }
+  .btn.set-danger:hover { background: var(--hover); }
+  #settings-box > .set-actions { padding: 14px 22px; margin: 0; border-top: 1px solid var(--border-soft); flex: none; align-items: center; gap: 12px; }
+  #settings-box > .set-actions > span { margin-right: auto; color: var(--muted); font-size: 0.884615rem; }
+  #set-no-results { color: var(--muted); padding: 20px 0; }
+  html.font-scale-large .set-sidebar { width: 240px; }
+  html.font-scale-large .set-group .set-row label { flex-basis: 100%; }
+  @media (max-width: 700px) {
+    .set-sidebar, html.font-scale-large .set-sidebar { width: 175px; padding: 12px 8px; }
+    #set-content { padding: 16px; }
+    .set-group { padding: 12px; }
+    .set-group .set-row label { flex-basis: 100%; }
+  }
+  @media (max-width: 480px) {
+    .set-layout { flex-direction: column; }
+    .set-sidebar, html.font-scale-large .set-sidebar { width: 100%; max-height: 40%; border-right: 0; border-bottom: 1px solid var(--border-soft); }
+    .set-search { margin-bottom: 8px; }
+    #set-nav { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .set-nav-item { padding: 6px; }
+  }
+
   /* At 140% and above, reflow dense chrome by semantic rows. Scaling glyphs
      inside fixed one-line tracks clips controls and produces accidental word
      wraps; these rules instead give each group an explicit full-width row. */
-  html.font-scale-large #settings-box { width: 720px; }
+  html.font-scale-large #settings-box { width: 1040px; }
   html.font-scale-large .set-row { align-items: flex-start; flex-wrap: wrap; }
   html.font-scale-large .set-row > label { width: 100%; }
   html.font-scale-large .set-row > select { flex-basis: 100%; }
@@ -779,156 +831,270 @@
 <div id="settings-modal">
   <div id="settings-box" role="dialog" aria-modal="true" aria-labelledby="settings-title">
     <div class="set-title" id="settings-title" data-i18n="settings.title">Settings</div>
-    <div class="set-row">
-      <label for="set-locale" data-i18n="settings.language">Language</label>
-      <select class="col-select" id="set-locale">
-        <option value="system" data-i18n="settings.locale.system">Follow system</option>
-        <option value="en" data-i18n="settings.locale.en">English</option>
-        <option value="zh-Hans" data-i18n="settings.locale.zh-Hans">简体中文</option>
-      </select>
-    </div>
-    <div class="set-row">
-      <label for="set-theme" data-i18n="settings.theme">Theme</label>
-      <select class="col-select" id="set-theme">
-        <option value="deck-dark" data-i18n="settings.theme.deck-dark">Deck Dark</option>
-        <option value="light" data-i18n="settings.theme.light">Light</option>
-        <option value="system" data-i18n="settings.theme.system">Follow system</option>
-        <option value="high-contrast" data-i18n="settings.theme.high-contrast">High Contrast</option>
-      </select>
-    </div>
-    <div class="set-row">
-      <label for="set-accent" data-i18n="settings.accent">Accent</label>
-      <select class="col-select" id="set-accent">
-        <option value="teal" data-i18n="settings.accent.teal">Teal</option>
-        <option value="blue" data-i18n="settings.accent.blue">Blue</option>
-        <option value="purple" data-i18n="settings.accent.purple">Purple</option>
-        <option value="orange" data-i18n="settings.accent.orange">Orange</option>
-      </select>
-    </div>
-    <div class="set-hint" data-i18n="settings.themeHint">Changes apply immediately to the app and every terminal pane.</div>
-    <div class="set-row">
-      <label data-i18n="settings.fontSize">Font size</label>
-      <div class="font-controls">
-        <button class="btn" id="set-font-down" title="Decrease font size" data-i18n-title="settings.fontDecrease">−</button>
-        <output id="set-font-value">100%</output>
-        <button class="btn" id="set-font-up" title="Increase font size" data-i18n-title="settings.fontIncrease">＋</button>
-        <button class="btn" id="set-font-reset" data-i18n="settings.fontReset">Reset</button>
+    <div class="set-layout">
+      <aside class="set-sidebar">
+        <label class="set-search">
+          <span class="sr-only" data-i18n="settings.search">Search settings</span>
+          <input id="set-search" type="search" autocomplete="off" data-i18n-placeholder="settings.search" placeholder="Search settings">
+        </label>
+        <nav id="set-nav" aria-label="Settings categories" data-i18n-aria-label="settings.categories">
+          <button class="set-nav-item" id="set-nav-general" aria-controls="set-panel-general">
+            <span aria-hidden="true">◐</span>
+            <span data-i18n="settings.general">General & appearance</span>
+          </button>
+          <button class="set-nav-item" id="set-nav-shortcuts" aria-controls="set-panel-shortcuts">
+            <span aria-hidden="true">⌘</span>
+            <span data-i18n="settings.shortcuts">Shortcuts</span>
+          </button>
+          <button class="set-nav-item" id="set-nav-terminal" aria-controls="set-panel-terminal">
+            <span aria-hidden="true">›_</span>
+            <span data-i18n="settings.terminal">Terminal & sessions</span>
+          </button>
+          <button class="set-nav-item" id="set-nav-integrations" aria-controls="set-panel-integrations">
+            <span aria-hidden="true">◇</span>
+            <span data-i18n="settings.integrations">Integrations & automation</span>
+          </button>
+          <button class="set-nav-item" id="set-nav-data" aria-controls="set-panel-data">
+            <span aria-hidden="true">▤</span>
+            <span data-i18n="settings.data">Data & logs</span>
+          </button>
+          <button class="set-nav-item" id="set-nav-about" aria-controls="set-panel-about">
+            <span aria-hidden="true">ⓘ</span>
+            <span data-i18n="settings.about">About & updates</span>
+          </button>
+        </nav>
+      </aside>
+      <div id="set-content" tabindex="0">
+        <section class="set-panel" id="set-panel-general" aria-labelledby="set-heading-general">
+          <h2 id="set-heading-general" data-i18n="settings.general">General & appearance</h2>
+          <div class="set-group">
+            <div class="set-row">
+              <label for="set-locale" data-i18n="settings.language">Language</label>
+              <select class="col-select" id="set-locale">
+                <option value="system" data-i18n="settings.locale.system">Follow system</option>
+                <option value="en" data-i18n="settings.locale.en">English</option>
+                <option value="zh-Hans" data-i18n="settings.locale.zh-Hans">简体中文</option>
+              </select>
+            </div>
+            <div class="set-row">
+              <label for="set-theme" data-i18n="settings.theme">Theme</label>
+              <select class="col-select" id="set-theme">
+                <option value="deck-dark" data-i18n="settings.theme.deck-dark">Deck Dark</option>
+                <option value="light" data-i18n="settings.theme.light">Light</option>
+                <option value="system" data-i18n="settings.theme.system">Follow system</option>
+                <option value="high-contrast" data-i18n="settings.theme.high-contrast">High Contrast</option>
+              </select>
+            </div>
+            <div class="set-row">
+              <label for="set-accent" data-i18n="settings.accent">Accent</label>
+              <select class="col-select" id="set-accent">
+                <option value="teal" data-i18n="settings.accent.teal">Teal</option>
+                <option value="blue" data-i18n="settings.accent.blue">Blue</option>
+                <option value="purple" data-i18n="settings.accent.purple">Purple</option>
+                <option value="orange" data-i18n="settings.accent.orange">Orange</option>
+              </select>
+            </div>
+            <div class="set-hint" data-i18n="settings.themeHint">Changes apply immediately to the app and every terminal pane.</div>
+            <div class="set-row">
+              <label data-i18n="settings.fontSize">Font size</label>
+              <div class="font-controls">
+                <button class="btn" id="set-font-down" title="Decrease font size" data-i18n-title="settings.fontDecrease">−</button>
+                <output id="set-font-value">100%</output>
+                <button class="btn" id="set-font-up" title="Increase font size" data-i18n-title="settings.fontIncrease">＋</button>
+                <button class="btn" id="set-font-reset" data-i18n="settings.fontReset">Reset</button>
+              </div>
+            </div>
+            <div class="set-hint" data-i18n="settings.fontHint">Changes apply to app text and every terminal pane. Use ⌘+ / ⌘− to adjust anywhere.</div>
+          </div>
+        </section>
+        <section class="set-panel" id="set-panel-shortcuts" aria-labelledby="set-heading-shortcuts" hidden>
+          <h2 id="set-heading-shortcuts" data-i18n="settings.shortcuts">Shortcuts</h2>
+          <div class="set-group">
+            <div class="set-row">
+              <label data-i18n="settings.shortcuts">Shortcuts</label>
+              <button class="btn" id="set-shortcuts-reset" style="margin-left:auto" data-i18n="settings.shortcutsReset">Reset all</button>
+            </div>
+            <div class="shortcut-list" id="set-shortcuts">
+            </div>
+            <div class="set-hint" data-i18n="settings.shortcutsHint">Select a shortcut, then press a new key combination. Delete clears it; Escape cancels.</div>
+          </div>
+        </section>
+        <section class="set-panel" id="set-panel-terminal" aria-labelledby="set-heading-terminal" hidden>
+          <h2 id="set-heading-terminal" data-i18n="settings.terminal">Terminal & sessions</h2>
+          <div class="set-group">
+            <div class="set-row">
+              <label for="set-editor" data-i18n="settings.openFiles">Open files in</label>
+              <select class="col-select" id="set-editor">
+              </select>
+            </div>
+            <div class="set-hint" data-i18n="settings.editorHint">Used by “Open in editor” on file links in the terminal. Editors are auto-detected from /Applications.</div>
+          </div>
+          <div class="set-group">
+            <div class="set-row">
+              <label for="set-session-restore" data-i18n="settings.shellRecovery">Shell recovery</label>
+              <input type="checkbox" id="set-session-restore">
+            </div>
+            <details class="set-details">
+              <summary data-i18n="settings.details">Learn more</summary>
+              <div class="set-hint" data-i18n="settings.shellRecoveryHint">Off by default. If enabled, deck may save the current directory and up to 256 KB of redacted plain shell output for at most 7 days in private 0600 files without backups. Commands are never replayed. Restored shells and their tools share deck’s Local Network permission.</div>
+            </details>
+          </div>
+          <div class="set-group">
+            <div class="set-row">
+              <label data-i18n="tmux.service">Shell service</label>
+              <span id="set-tmux-state" style="color:var(--muted)">
+              </span>
+              <button class="btn" id="set-tmux-restart" style="margin-left:auto" data-i18n="tmux.restart">Restart service</button>
+            </div>
+            <div class="set-hint tmux-diag" id="set-tmux-details">
+            </div>
+          </div>
+        </section>
+        <section class="set-panel" id="set-panel-integrations" aria-labelledby="set-heading-integrations" hidden>
+          <h2 id="set-heading-integrations" data-i18n="settings.integrations">Integrations & automation</h2>
+          <div class="set-group">
+            <div class="set-row">
+              <label for="set-agent-hooks" data-i18n="settings.agentHooks">Agent status (Claude Code)</label>
+              <input type="checkbox" id="set-agent-hooks">
+            </div>
+            <details class="set-details">
+              <summary data-i18n="settings.details">Learn more</summary>
+              <div class="set-hint" data-i18n="settings.agentHooksHint">Off by default. If enabled, deck adds three hooks to ~/.claude/settings.json so cards can show “needs input” and “turn finished” precisely. Hooks send only a fixed status word and the pane id — never prompts, output, or paths. Turning this off removes exactly those hooks.</div>
+            </details>
+            <div class="set-row">
+              <label for="set-codex-hooks" data-i18n="settings.codexHooks">Agent status (Codex)</label>
+              <input type="checkbox" id="set-codex-hooks">
+            </div>
+            <details class="set-details">
+              <summary data-i18n="settings.details">Learn more</summary>
+              <div class="set-hint" data-i18n="settings.codexHooksHint">Off by default. If enabled, deck adds four hooks to ~/.codex/hooks.json so cards can show “needs input” and “turn finished”. Your own hooks and notify program keep working alongside. Hooks send only a fixed status word and the pane id — never prompts, output, or paths. Turning this off removes exactly those hooks.</div>
+            </details>
+            <div class="set-row">
+              <label data-i18n="settings.inbound">Auto-respond</label>
+              <span id="set-inbound-status" style="color:var(--muted)">
+              </span>
+              <button class="btn" id="set-inbound-check" style="margin-left:auto" data-i18n="settings.inboundCheckNow">Check now</button>
+            </div>
+            <div class="set-hint" data-i18n="settings.inboundHint">A badge (emoji reaction) you put on a message in a connected service starts a new session here: one card in the column the rule names, launched with the rule’s command, then the rule’s template prompts with the message filled in. Cards are never moved automatically, and deck never writes back.</div>
+            <div class="set-row">
+              <label for="set-inbound-slack" data-i18n="settings.inboundSlack">Slack</label>
+              <input type="checkbox" id="set-inbound-slack">
+              <button class="btn" id="set-inbound-setup" style="margin-left:auto" data-i18n="settings.inboundSetup">Create the Slack app…</button>
+            </div>
+            <details class="set-details">
+              <summary data-i18n="settings.details">Learn more</summary>
+              <div class="set-hint" data-i18n="settings.inboundSetupHint">Opens Slack’s “Create an app” page with everything prefilled (name, user scopes, Socket Mode, the reaction event). Pick a workspace and create it, then: Install App → Install to Workspace → Allow, copy the User OAuth Token below; Basic Information → App-Level Tokens → Generate with connections:write, copy it below. Each token is checked with Slack before it is stored.</div>
+            </details>
+            <div class="set-row">
+              <label for="set-inbound-slack-user" data-i18n="settings.inboundUserToken">User token</label>
+              <input type="password" id="set-inbound-slack-user" autocomplete="off" spellcheck="false" placeholder="xoxp-…">
+              <button class="btn" id="set-inbound-slack-user-clear" data-i18n="common.clear">Clear</button>
+            </div>
+            <div class="set-row">
+              <label for="set-inbound-slack-app" data-i18n="settings.inboundAppToken">App token</label>
+              <input type="password" id="set-inbound-slack-app" autocomplete="off" spellcheck="false" placeholder="xapp-…">
+              <button class="btn" id="set-inbound-slack-app-clear" data-i18n="common.clear">Clear</button>
+            </div>
+            <details class="set-details">
+              <summary data-i18n="settings.details">Learn more</summary>
+              <div class="set-hint" data-i18n="settings.inboundSlackHint">Tokens are kept in your macOS Keychain, never under ~/.deck, and are never shown again here. The user token finds your badged messages (search, about a minute behind); the app token hears new badges instantly. Only your own reactions count. There is no token without installing the app yourself: Slack has no OAuth redirect to a local app and no API that mints app-level tokens.</div>
+            </details>
+            <div class="set-row" style="align-items:flex-start">
+              <label data-i18n="settings.inboundRules">Rules</label>
+              <div id="set-inbound-rules" class="inbound-rules">
+              </div>
+            </div>
+            <div id="set-inbound-editor" class="inbound-editor" style="display:none">
+              <div class="set-row">
+                <label for="set-inbound-badge" data-i18n="settings.inboundRuleBadge">Badge</label>
+                <input id="set-inbound-badge" autocomplete="off" spellcheck="false" placeholder="deck">
+              </div>
+              <div class="set-row">
+                <label for="set-inbound-project" data-i18n="settings.inboundRuleTarget">Create in</label>
+                <select class="col-select" id="set-inbound-project">
+                </select>
+                <select class="col-select" id="set-inbound-column">
+                </select>
+              </div>
+              <div class="set-row">
+                <label for="set-inbound-dir" data-i18n="settings.inboundRuleDir">Directory</label>
+                <input id="set-inbound-dir" autocomplete="off" spellcheck="false" placeholder="~/work/project">
+              </div>
+              <div class="set-row">
+                <label for="set-inbound-cmd" data-i18n="settings.inboundRuleCmd">Command</label>
+                <input id="set-inbound-cmd" autocomplete="off" spellcheck="false" placeholder="claude">
+              </div>
+              <div class="set-row">
+                <label for="set-inbound-template" data-i18n="settings.inboundRuleTemplate">Template</label>
+                <select class="col-select" id="set-inbound-template">
+                </select>
+              </div>
+              <div class="set-hint" data-i18n="settings.inboundRuleHint">Templates belong to the chosen project. The first step is sent once the command is in the foreground; later steps follow in chain order. Placeholders: {{msg.text}} {{msg.from}} {{msg.where}} {{msg.link}}. A step that starts with a slash command hands the message to that skill.</div>
+              <div class="set-actions" style="gap:8px">
+                <button class="btn" id="set-inbound-cancel" data-i18n="common.cancel">Cancel</button>
+                <button class="btn primary" id="set-inbound-save" data-i18n="common.save">Save</button>
+              </div>
+            </div>
+            <div class="set-hint" data-i18n="settings.inboundRulesHint">One rule per badge. A message with several badges makes one card per rule; the same badge on the same message only ever makes one. Badges that already exist when a rule is added are left alone.</div>
+          </div>
+        </section>
+        <section class="set-panel" id="set-panel-data" aria-labelledby="set-heading-data" hidden>
+          <h2 id="set-heading-data" data-i18n="settings.data">Data & logs</h2>
+          <div class="set-group">
+            <div class="set-row">
+              <label data-i18n="settings.history">Command history</label>
+              <button class="btn" id="set-clear-hist" style="margin-left:auto" data-i18n="common.clear">Clear</button>
+            </div>
+            <div class="set-hint" data-i18n="settings.historyHint">deck keeps commands typed in its shells (for the completion chips) in ~/.deck/history.json, readable only by you.</div>
+          </div>
+          <div class="set-group">
+            <div class="set-row">
+              <label data-i18n="settings.shellData">Shell recovery data</label>
+              <button class="btn" id="set-clear-shell" style="margin-left:auto" data-i18n="common.clear">Clear</button>
+            </div>
+            <div class="set-hint" data-i18n="settings.shellDataHint">Saved directories and output snapshots. Running sessions are unaffected.</div>
+          </div>
+          <div class="set-group">
+            <div class="set-row">
+              <label data-i18n="settings.logs">Application logs</label>
+              <span id="set-log-size" role="status" aria-live="polite">
+              </span>
+            </div>
+            <div class="set-hint" data-i18n="settings.logsHint">Diagnostic events for troubleshooting. Resetting clears app.log; new events continue to be recorded.</div>
+            <div class="set-log-actions">
+              <button class="btn" id="set-export-logs" data-i18n="settings.exportLogs">Export logs…</button>
+              <button class="btn set-danger" id="set-reset-logs" data-i18n="settings.resetLogs">Reset logs…</button>
+            </div>
+          </div>
+        </section>
+        <section class="set-panel" id="set-panel-about" aria-labelledby="set-heading-about" hidden>
+          <h2 id="set-heading-about" data-i18n="settings.about">About & updates</h2>
+          <div class="set-group">
+            <div class="set-row">
+              <label for="set-channel" data-i18n="settings.updateChannel">Update channel</label>
+              <select class="col-select" id="set-channel">
+                <option value="stable" data-i18n="settings.channel.stable">Stable</option>
+                <option value="nightly" data-i18n="settings.channel.nightly">Nightly</option>
+              </select>
+            </div>
+            <div class="set-hint" data-i18n="settings.channelHint">Nightly provides early candidate builds and may be unstable.</div>
+            <div class="set-row">
+              <label data-i18n="settings.updates">Updates</label>
+              <span id="set-ver" style="color:var(--muted)">
+              </span>
+              <button class="btn" id="set-check" style="margin-left:auto" data-i18n="settings.checkUpdates">Check for updates</button>
+            </div>
+            <div class="set-hint" id="set-upd-status">
+            </div>
+          </div>
+        </section>
+        <p id="set-no-results" role="status" data-i18n="settings.noResults" hidden>No matching settings.</p>
       </div>
     </div>
-    <div class="set-hint" data-i18n="settings.fontHint">Changes apply to app text and every terminal pane. Use ⌘+ / ⌘− to adjust anywhere.</div>
-    <div class="set-row">
-      <label for="set-editor" data-i18n="settings.openFiles">Open files in</label>
-      <select class="col-select" id="set-editor"></select>
+    <div class="set-actions">
+      <span data-i18n="settings.immediate">Changes apply immediately</span>
+      <button class="btn primary" id="set-close" data-i18n="common.done">Done</button>
     </div>
-    <div class="set-hint" data-i18n="settings.editorHint">Used by “Open in editor” on file links in the terminal. Editors are auto-detected from /Applications.</div>
-    <div class="set-sep"></div>
-    <div class="set-row">
-      <label data-i18n="settings.shortcuts">Shortcuts</label>
-      <button class="btn" id="set-shortcuts-reset" style="margin-left:auto" data-i18n="settings.shortcutsReset">Reset all</button>
-    </div>
-    <div class="shortcut-list" id="set-shortcuts"></div>
-    <div class="set-hint" data-i18n="settings.shortcutsHint">Select a shortcut, then press a new key combination. Delete clears it; Escape cancels.</div>
-    <div class="set-row">
-      <label data-i18n="settings.history">Command history</label>
-      <button class="btn" id="set-clear-hist" style="margin-left:auto" data-i18n="common.clear">Clear</button>
-    </div>
-    <div class="set-hint" data-i18n="settings.historyHint">deck keeps commands typed in its shells (for the completion chips) in ~/.deck/history.json, readable only by you.</div>
-    <div class="set-row">
-      <label for="set-session-restore" data-i18n="settings.shellRecovery">Shell recovery</label>
-      <input type="checkbox" id="set-session-restore">
-      <button class="btn" id="set-clear-shell" style="margin-left:auto" data-i18n="common.clear">Clear</button>
-    </div>
-    <div class="set-hint" data-i18n="settings.shellRecoveryHint">Off by default. If enabled, deck may save the current directory and up to 256 KB of redacted plain shell output for at most 7 days in private 0600 files without backups. Commands are never replayed. Restored shells and their tools share deck’s Local Network permission.</div>
-    <div class="set-row">
-      <label for="set-agent-hooks" data-i18n="settings.agentHooks">Agent status (Claude Code)</label>
-      <input type="checkbox" id="set-agent-hooks">
-    </div>
-    <div class="set-hint" data-i18n="settings.agentHooksHint">Off by default. If enabled, deck adds three hooks to ~/.claude/settings.json so cards can show “needs input” and “turn finished” precisely. Hooks send only a fixed status word and the pane id — never prompts, output, or paths. Turning this off removes exactly those hooks.</div>
-    <div class="set-row">
-      <label for="set-codex-hooks" data-i18n="settings.codexHooks">Agent status (Codex)</label>
-      <input type="checkbox" id="set-codex-hooks">
-    </div>
-    <div class="set-hint" data-i18n="settings.codexHooksHint">Off by default. If enabled, deck adds four hooks to ~/.codex/hooks.json so cards can show “needs input” and “turn finished”. Your own hooks and notify program keep working alongside. Hooks send only a fixed status word and the pane id — never prompts, output, or paths. Turning this off removes exactly those hooks.</div>
-    <div class="set-sep"></div>
-    <div class="set-row">
-      <label data-i18n="settings.inbound">Auto-respond</label>
-      <span id="set-inbound-status" style="color:var(--muted)"></span>
-      <button class="btn" id="set-inbound-check" style="margin-left:auto" data-i18n="settings.inboundCheckNow">Check now</button>
-    </div>
-    <div class="set-hint" data-i18n="settings.inboundHint">A badge (emoji reaction) you put on a message in a connected service starts a new session here: one card in the column the rule names, launched with the rule’s command, then the rule’s template prompts with the message filled in. Cards are never moved automatically, and deck never writes back.</div>
-    <div class="set-row">
-      <label for="set-inbound-slack" data-i18n="settings.inboundSlack">Slack</label>
-      <input type="checkbox" id="set-inbound-slack">
-      <button class="btn" id="set-inbound-setup" style="margin-left:auto" data-i18n="settings.inboundSetup">Create the Slack app…</button>
-    </div>
-    <div class="set-hint" data-i18n="settings.inboundSetupHint">Opens Slack’s “Create an app” page with everything prefilled (name, user scopes, Socket Mode, the reaction event). Pick a workspace and create it, then: Install App → Install to Workspace → Allow, copy the User OAuth Token below; Basic Information → App-Level Tokens → Generate with connections:write, copy it below. Each token is checked with Slack before it is stored.</div>
-    <div class="set-row">
-      <label for="set-inbound-slack-user" data-i18n="settings.inboundUserToken">User token</label>
-      <input type="password" id="set-inbound-slack-user" autocomplete="off" spellcheck="false" placeholder="xoxp-…">
-      <button class="btn" id="set-inbound-slack-user-clear" data-i18n="common.clear">Clear</button>
-    </div>
-    <div class="set-row">
-      <label for="set-inbound-slack-app" data-i18n="settings.inboundAppToken">App token</label>
-      <input type="password" id="set-inbound-slack-app" autocomplete="off" spellcheck="false" placeholder="xapp-…">
-      <button class="btn" id="set-inbound-slack-app-clear" data-i18n="common.clear">Clear</button>
-    </div>
-    <div class="set-hint" data-i18n="settings.inboundSlackHint">Tokens are kept in your macOS Keychain, never under ~/.deck, and are never shown again here. The user token finds your badged messages (search, about a minute behind); the app token hears new badges instantly. Only your own reactions count. There is no token without installing the app yourself: Slack has no OAuth redirect to a local app and no API that mints app-level tokens.</div>
-    <div class="set-row" style="align-items:flex-start">
-      <label data-i18n="settings.inboundRules">Rules</label>
-      <div id="set-inbound-rules" class="inbound-rules"></div>
-    </div>
-    <div id="set-inbound-editor" class="inbound-editor" style="display:none">
-      <div class="set-row">
-        <label for="set-inbound-badge" data-i18n="settings.inboundRuleBadge">Badge</label>
-        <input id="set-inbound-badge" autocomplete="off" spellcheck="false" placeholder="deck">
-      </div>
-      <div class="set-row">
-        <label for="set-inbound-project" data-i18n="settings.inboundRuleTarget">Create in</label>
-        <select class="col-select" id="set-inbound-project"></select>
-        <select class="col-select" id="set-inbound-column"></select>
-      </div>
-      <div class="set-row">
-        <label for="set-inbound-dir" data-i18n="settings.inboundRuleDir">Directory</label>
-        <input id="set-inbound-dir" autocomplete="off" spellcheck="false" placeholder="~/work/project">
-      </div>
-      <div class="set-row">
-        <label for="set-inbound-cmd" data-i18n="settings.inboundRuleCmd">Command</label>
-        <input id="set-inbound-cmd" autocomplete="off" spellcheck="false" placeholder="claude">
-      </div>
-      <div class="set-row">
-        <label for="set-inbound-template" data-i18n="settings.inboundRuleTemplate">Template</label>
-        <select class="col-select" id="set-inbound-template"></select>
-      </div>
-      <div class="set-hint" data-i18n="settings.inboundRuleHint">Templates belong to the chosen project. The first step is sent once the command is in the foreground; later steps follow in chain order. Placeholders: {{msg.text}} {{msg.from}} {{msg.where}} {{msg.link}}. A step that starts with a slash command hands the message to that skill.</div>
-      <div class="set-actions" style="gap:8px">
-        <button class="btn" id="set-inbound-cancel" data-i18n="common.cancel">Cancel</button>
-        <button class="btn primary" id="set-inbound-save" data-i18n="common.save">Save</button>
-      </div>
-    </div>
-    <div class="set-hint" data-i18n="settings.inboundRulesHint">One rule per badge. A message with several badges makes one card per rule; the same badge on the same message only ever makes one. Badges that already exist when a rule is added are left alone.</div>
-    <div class="set-sep"></div>
-    <div class="set-row">
-      <label for="set-channel" data-i18n="settings.updateChannel">Update channel</label>
-      <select class="col-select" id="set-channel">
-        <option value="stable" data-i18n="settings.channel.stable">Stable</option>
-        <option value="nightly" data-i18n="settings.channel.nightly">Nightly</option>
-      </select>
-    </div>
-    <div class="set-hint" data-i18n="settings.channelHint">Nightly provides early candidate builds and may be unstable.</div>
-    <div class="set-row">
-      <label data-i18n="settings.updates">Updates</label>
-      <span id="set-ver" style="color:var(--muted)"></span>
-      <button class="btn" id="set-check" style="margin-left:auto" data-i18n="settings.checkUpdates">Check for updates</button>
-    </div>
-    <div class="set-hint" id="set-upd-status"></div>
-    <div class="set-sep"></div>
-    <div class="set-row">
-      <label data-i18n="tmux.service">Shell service</label>
-      <span id="set-tmux-state" style="color:var(--muted)"></span>
-      <button class="btn" id="set-tmux-restart" style="margin-left:auto" data-i18n="tmux.restart">Restart service</button>
-    </div>
-    <div class="set-hint tmux-diag" id="set-tmux-details"></div>
-    <div class="set-actions"><button class="btn" id="set-close" data-i18n="common.done">Done</button></div>
   </div>
 </div>
 <div id="tmux-lifecycle-modal">

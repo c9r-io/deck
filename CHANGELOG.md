@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Organize Settings into six searchable categories with fixed navigation and
+  footer, independently scrolling content, and expandable detailed explanations.
+- Add diagnostic log size, export and confirmed reset under Data & logs. Reset
+  clears only the active log, serializes with background logging, and preserves
+  exports, history, shell recovery data and running sessions.
+
 ## 0.5.4 — 2026-08-30
 
 - Separate Stable and Nightly updater trust roots. Nightly signing now runs in

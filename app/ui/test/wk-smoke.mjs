@@ -162,7 +162,8 @@ async function themeSmoke(card) {
   const settingsBounded = settingsOpened
     && settingsRect.top >= 0 && settingsRect.left >= 0
     && settingsRect.bottom <= innerHeight && settingsRect.right <= innerWidth
-    && settingsStyle.overflowY === 'auto'
+    && settingsStyle.overflowY === 'hidden'
+    && getComputedStyle($('set-content')).overflowY === 'auto'
     && settingsBox.clientHeight <= innerHeight - 40;
   await report('settings-viewport', settingsBounded,
     Math.round(settingsBox.clientHeight), Math.round(innerHeight));
@@ -171,14 +172,15 @@ async function themeSmoke(card) {
   const fixedFontHidden = shortcutIds === 'newSession,toggleSidebar,splitRight,splitDown';
   const rowsStacked = [...settingsBox.querySelectorAll('.set-row')].every(row => {
     const label = row.querySelector(':scope > label');
-    if (!label) return true;
+    if (!label || !row.getClientRects().length) return true;
     const rowRect = row.getBoundingClientRect();
     const labelRect = label.getBoundingClientRect();
     return labelRect.width >= rowRect.width - 1;
   });
   const textControlsFit = [...settingsBox.querySelectorAll(
     '.font-controls .btn, .shortcut-capture, .set-row > .btn',
-  )].every(control => control.scrollHeight <= control.clientHeight + 1);
+  )].filter(control => control.getClientRects().length)
+    .every(control => control.scrollHeight <= control.clientHeight + 1);
   const sessionReflows = getComputedStyle(document.querySelector('.sess-head')).flexWrap === 'wrap'
     && getComputedStyle($('sess-path')).display === 'none';
   const fontLayoutMask = (jisIncreased ? 1 : 0) | (fixedFontHidden ? 2 : 0)
@@ -1197,10 +1199,84 @@ async function naturalExitFaultSmoke(project, column) {
   await report('natural-fault', mask === 63, mask, 63);
 }
 
+// Run before any smoke result is logged: resetting later would erase evidence.
+async function settingsNavigationSmoke() {
+  const { openSettings, selectSettingsSection, resetApplicationLogs } = await import('../js/dialogs.js');
+  await openSettings();
+  selectSettingsSection('data');
+  const cancelled = resetApplicationLogs();
+  const safeFocus = document.activeElement === $('cfm-no');
+  $('cfm-no').click();
+  await cancelled;
+  const accepted = resetApplicationLogs();
+  $('cfm-yes').click();
+  await accepted;
+  const { t } = await import('../js/i18n.js');
+  const resetReady = !$('set-reset-logs').disabled && /app.log/.test($('set-log-size').textContent)
+    && $('toasts').lastElementChild?.textContent === t('settings.logsReset');
+  await report('settings-logs', safeFocus && resetReady, safeFocus ? 1 : 0, resetReady ? 1 : 0);
+  let visible = 0;
+  for (const id of ['general', 'shortcuts', 'terminal', 'integrations', 'data', 'about']) {
+    $('set-nav-' + id).click();
+    const panels = [...document.querySelectorAll('.set-panel')].filter(panel => !panel.hidden);
+    if (panels.length === 1 && panels[0].id === 'set-panel-' + id) visible++;
+  }
+  $('set-search').value = 'SLACK';
+  $('set-search').dispatchEvent(new Event('input', { bubbles: true }));
+  const found = !$('set-panel-integrations').hidden && $('set-panel-data').hidden;
+  $('set-search').value = 'no-matching-setting-xyz';
+  $('set-search').dispatchEvent(new Event('input', { bubbles: true }));
+  const empty = !$('set-no-results').hidden;
+  $('set-search').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  const restored = $('set-search').value === '' && !$('set-panel-about').hidden;
+  selectSettingsSection('general');
+  $('set-close').click();
+  const focusReturned = document.activeElement === $('settings-btn');
+  await report('settings-navigation', visible === 6 && found && empty && restored && focusReturned, visible, 6);
+}
+
+export async function verifySettings() {
+  try {
+    await settingsNavigationSmoke();
+    const { openSettings, selectSettingsSection } = await import('../js/dialogs.js');
+    const { setLocale } = await import('../js/i18n.js');
+    await openSettings();
+    const box = $('settings-box');
+    box.style.width = '680px';
+    box.style.height = '400px';
+    let passed = 0;
+    for (const locale of ['en', 'zh-Hans']) {
+      setLocale(locale);
+      for (const scale of [1, 1.6]) {
+        applyFontScale(scale);
+        for (const id of ['general', 'shortcuts', 'terminal', 'integrations', 'data', 'about']) {
+          selectSettingsSection(id);
+          await pause(20);
+          const content = $('set-content');
+          const footer = $('set-close').getBoundingClientRect();
+          const frame = box.getBoundingClientRect();
+          if (content.scrollWidth <= content.clientWidth + 1
+              && footer.bottom <= frame.bottom && footer.top >= frame.top
+              && box.scrollHeight <= box.clientHeight + 1) passed++;
+        }
+      }
+    }
+    await report('settings-viewport', passed === 24, passed, 24);
+    box.style.width = ''; box.style.height = '';
+    applyFontScale(settings.fontScale);
+    setLocale(settings.locale);
+    selectSettingsSection('data');
+    await report('done', !smokeFailed);
+  } catch (_) {
+    await report('done', false);
+  }
+}
+
 export async function run() {
   let stage = 0;
   try {
     stage = 1;
+    await settingsNavigationSmoke();
     await waitFor(() => provider.projects().length > 0);
     const project = provider.projects()[0];
     const column = project.columns.find(c => c.semantic === 'working') || project.columns[0];

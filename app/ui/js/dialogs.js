@@ -19,6 +19,7 @@ export function confirmDialog(msg) {
   return new Promise(resolve => {
     confirmPointerOnly = false;
     cfmResolve = resolve;
+    $('cfm-yes').textContent = t('common.confirm');
     $('cfm-msg').textContent = msg;
     $('cfm').style.display = 'flex';
     $('cfm-yes').focus();
@@ -27,10 +28,11 @@ export function confirmDialog(msg) {
 /* High-risk scheduler actions must not be accepted by an ordinary Enter or
    blur. The safe button receives focus and only an explicit activation of
    the confirm button can accept. */
-export function confirmDangerDialog(msg) {
+export function confirmDangerDialog(msg, confirmLabel = t('common.confirm')) {
   return new Promise(resolve => {
     confirmPointerOnly = true;
     cfmResolve = resolve;
+    $('cfm-yes').textContent = confirmLabel;
     $('cfm-msg').textContent = msg;
     $('cfm').style.display = 'flex';
     $('cfm-no').focus();
@@ -100,6 +102,130 @@ export function inlineRename(host, current, onDone, allowEmpty = false) {
 }
 
 /* ---------- settings ---------- */
+const SETTINGS_SECTIONS = ['general', 'shortcuts', 'terminal', 'integrations', 'data', 'about'];
+let activeSettingsSection = 'general';
+
+export function filterSettings() {
+  const query = $('set-search').value.trim().toLocaleLowerCase();
+  let matches = 0;
+  for (const id of SETTINGS_SECTIONS) {
+    const panel = $('set-panel-' + id);
+    const nav = $('set-nav-' + id);
+    const match = !query || panel.textContent.toLocaleLowerCase().includes(query);
+    nav.hidden = !match;
+    panel.hidden = query ? !match : id !== activeSettingsSection;
+    nav.setAttribute('aria-current', !query && id === activeSettingsSection ? 'page' : 'false');
+    if (match) matches++;
+  }
+  $('set-no-results').hidden = matches > 0;
+}
+
+export function selectSettingsSection(id) {
+  if (!SETTINGS_SECTIONS.includes(id)) return;
+  activeSettingsSection = id;
+  $('set-search').value = '';
+  filterSettings();
+  $('set-content').scrollTop = 0;
+  if (id === 'data') refreshLogSize();
+}
+
+for (const id of SETTINGS_SECTIONS) {
+  $('set-nav-' + id).onclick = () => selectSettingsSection(id);
+  $('set-nav-' + id).addEventListener('keydown', event => {
+    const keys = ['ArrowDown', 'ArrowUp', 'Home', 'End'];
+    if (!keys.includes(event.key)) return;
+    event.preventDefault();
+    const visible = SETTINGS_SECTIONS.filter(section => !$('set-nav-' + section).hidden);
+    const index = visible.indexOf(id);
+    const next = event.key === 'Home' ? 0 : event.key === 'End' ? visible.length - 1
+      : (index + (event.key === 'ArrowDown' ? 1 : -1) + visible.length) % visible.length;
+    selectSettingsSection(visible[next]);
+    $('set-nav-' + visible[next]).focus();
+  });
+}
+$('set-search').addEventListener('input', () => {
+  filterSettings();
+  $('set-content').scrollTop = 0;
+});
+
+function closeSettings() {
+  $('settings-modal').style.display = 'none';
+  $('settings-btn').focus();
+}
+$('settings-box').addEventListener('keydown', event => {
+  if (['cfm', 'ppd', 'tmux-lifecycle-modal'].some(id => $(id).style.display === 'flex')) return;
+  if (event.key === 'Escape') {
+    event.preventDefault(); event.stopPropagation();
+    if ($('set-search').value) {
+      $('set-search').value = '';
+      filterSettings();
+      $('set-search').focus();
+    } else closeSettings();
+  }
+  if (event.key === 'Tab') {
+    const controls = [...$('settings-box').querySelectorAll('button, input, select, summary, [tabindex="0"]')]
+      .filter(control => !control.disabled && control.getClientRects().length);
+    const first = controls[0], last = controls[controls.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault(); last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault(); first.focus();
+    }
+  }
+});
+
+let logOperationPending = false;
+let logSizeGeneration = 0;
+export async function refreshLogSize() {
+  const generation = ++logSizeGeneration;
+  $('set-log-size').textContent = 'app.log · …';
+  try {
+    const bytes = await inv('log_size');
+    if (generation !== logSizeGeneration) return;
+    const size = bytes < 1024 ? `${formatNumber(bytes)} B`
+      : bytes < 1024 * 1024 ? `${formatNumber(Math.round(bytes / 1024))} KB`
+        : `${formatNumber(Math.round(bytes / (1024 * 1024) * 10) / 10)} MB`;
+    $('set-log-size').textContent = `app.log · ${size}`;
+  } catch (_) {
+    if (generation === logSizeGeneration) $('set-log-size').textContent = t('settings.logSizeFailed');
+  }
+}
+
+export async function resetApplicationLogs() {
+  if (logOperationPending) return;
+  logOperationPending = true;
+  const buttons = ['set-reset-logs', 'set-export-logs'].map($);
+  buttons.forEach(button => { button.disabled = true; });
+  try {
+    if (!(await confirmDangerDialog(t('settings.resetLogsConfirm'), t('settings.resetLogsAction')))) return;
+    await inv('reset_logs');
+    toast(t('settings.logsReset'));
+    await refreshLogSize();
+  } catch (_) {
+    toast(t('settings.logsResetFailed'));
+  } finally {
+    logOperationPending = false;
+    buttons.forEach(button => { button.disabled = false; });
+    $('set-reset-logs').focus();
+  }
+}
+$('set-reset-logs').onclick = resetApplicationLogs;
+$('set-export-logs').onclick = async () => {
+  if (logOperationPending) return;
+  logOperationPending = true;
+  const buttons = ['set-reset-logs', 'set-export-logs'].map($);
+  buttons.forEach(button => { button.disabled = true; });
+  try {
+    await inv('export_logs');
+    toast(t('settings.logsExported'));
+  } catch (_) {
+    toast(t('settings.logsExportFailed'));
+  } finally {
+    logOperationPending = false;
+    buttons.forEach(button => { button.disabled = false; });
+  }
+};
+
 export async function loadSettings() {
   try {
     const doc = await inv('load_settings');
@@ -260,7 +386,10 @@ registerShortcutAction('fontIncrease', () => setFontScale(settings.fontScale + F
 registerShortcutAction('fontDecrease', () => setFontScale(settings.fontScale - FONT_SCALE_STEP));
 registerShortcutAction('fontReset', () => setFontScale(1));
 onLocaleChange(() => {
-  if ($('settings-modal').style.display === 'flex') renderShortcutSettings();
+  if ($('settings-modal').style.display === 'flex') {
+    renderShortcutSettings();
+    filterSettings();
+  }
 });
 
 export async function openSettings() {
@@ -291,15 +420,18 @@ export async function openSettings() {
   $('set-ver').textContent = 'deck ' + ($('app-ver').textContent || 'v?');
   $('set-upd-status').textContent = '';
   $('settings-modal').style.display = 'flex';
+  selectSettingsSection(activeSettingsSection);
+  if (activeSettingsSection !== 'data') refreshLogSize();
+  $('set-search').focus();
   if (typeof window.dispatchEvent === 'function' && typeof Event === 'function') {
     window.dispatchEvent(new Event('deck-settings-opened'));
   }
 }
 
 $('settings-btn').onclick = openSettings;
-$('set-close').onclick = () => { $('settings-modal').style.display = 'none'; };
+$('set-close').onclick = closeSettings;
 $('settings-modal').addEventListener('mousedown', e => {
-  if (e.target === $('settings-modal')) $('settings-modal').style.display = 'none';
+  if (e.target === $('settings-modal')) closeSettings();
 });
 $('set-editor').onchange = () => {
   settings.editor = $('set-editor').value;

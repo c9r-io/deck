@@ -246,6 +246,8 @@ fn main() {
                         "m.verifyRestart()"
                     } else if mode == "ambiguous" {
                         "m.verifyAmbiguousBoot()"
+                    } else if mode == "settings" {
+                        "m.verifySettings()"
                     } else {
                         "m.run()"
                     };
@@ -309,6 +311,9 @@ fn main() {
             history::record_command,
             history::history_clear,
             commands::debug_logging_enabled,
+            commands::log_size,
+            commands::reset_logs,
+            commands::export_logs,
             commands::ui_event,
             commands::ping_event,
             scheduler::queue_list,
