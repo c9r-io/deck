@@ -73,6 +73,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter};
 
 use crate::applog::applog;
+use crate::error::DeckError;
 use crate::keychain;
 use crate::storage;
 use crate::sync::LockRecover;
@@ -149,7 +150,7 @@ pub(crate) fn valid_badge(s: &str) -> bool {
 /// before every save, so a malformed rule can never reach disk or the poller.
 /// Referential checks (project/column/template exist) are the webview's,
 /// because only it holds the Board; a dangling rule is skipped at dispatch.
-pub(crate) fn validate_settings(v: &Value) -> Result<(), String> {
+pub(crate) fn validate_settings(v: &Value) -> Result<(), DeckError> {
     let obj = v.as_object().ok_or("inbound must be an object")?;
     if let Some(sources) = obj.get("sources") {
         let sources = sources
@@ -178,7 +179,7 @@ pub(crate) fn validate_settings(v: &Value) -> Result<(), String> {
         let mut ids = HashSet::new();
         for r in rules {
             let rule: Rule = serde_json::from_value(r.clone())
-                .map_err(|_| "inbound rule has the wrong shape".to_string())?;
+                .map_err(|_| DeckError::from("inbound rule has the wrong shape"))?;
             if !bounded_id(&rule.id, 64) {
                 return Err("inbound rule id must be a bounded identifier".into());
             }
@@ -418,7 +419,7 @@ fn load_doc() -> InboundDoc {
             // is "re-baseline everything", which an empty doc does.
             applog(&format!(
                 "[inbound] ledger unreadable ({}) — re-baselining",
-                crate::applog::err_code(&e)
+                e.code()
             ));
             InboundDoc::default()
         }
@@ -436,7 +437,7 @@ fn persist(rt: &mut Runtime) {
             rt.dirty = true;
             applog(&format!(
                 "[inbound] ledger save FAILED ({}) — will retry",
-                crate::applog::err_code(&e)
+                e.code()
             ));
         }
     }
@@ -598,7 +599,7 @@ pub(crate) fn inbound_pending() -> Vec<PendingView> {
 /// retire the item for good: a badge the user must fix a rule for is
 /// re-armed by removing and re-adding the badge, never by deck retrying.
 #[tauri::command]
-pub(crate) fn inbound_ack(id: u64, outcome: String) -> Result<(), String> {
+pub(crate) fn inbound_ack(id: u64, outcome: String) -> Result<(), DeckError> {
     if !matches!(outcome.as_str(), "done" | "skipped") {
         return Err("outcome must be done or skipped".into());
     }
@@ -630,7 +631,7 @@ pub(crate) fn inbound_ack(id: u64, outcome: String) -> Result<(), String> {
 /// Open the source's prefilled "create an app" page in the browser. The URL
 /// is compiled into deck (never user input) and carries no credential.
 #[tauri::command]
-pub(crate) fn inbound_setup(source: String) -> Result<(), String> {
+pub(crate) fn inbound_setup(source: String) -> Result<(), DeckError> {
     let url = match source.as_str() {
         "slack" => crate::inbound_slack::setup_url(),
         _ => return Err("unknown source".into()),
@@ -638,7 +639,7 @@ pub(crate) fn inbound_setup(source: String) -> Result<(), String> {
     let status = std::process::Command::new("open")
         .arg(&url)
         .status()
-        .map_err(|_| "could not open the browser".to_string())?;
+        .map_err(|_| DeckError::from("could not open the browser"))?;
     if !status.success() {
         return Err("could not open the browser".into());
     }
@@ -649,7 +650,7 @@ pub(crate) fn inbound_setup(source: String) -> Result<(), String> {
 /// Store a credential after proving it is the right kind and alive. The
 /// error is a short sentence for the toast; the token never appears in it.
 #[tauri::command]
-pub(crate) fn inbound_set_secret(slot: String, value: String) -> Result<(), String> {
+pub(crate) fn inbound_set_secret(slot: String, value: String) -> Result<(), DeckError> {
     let slot = keychain::Slot::parse(&slot).ok_or("unknown credential slot")?;
     let clearing = value.trim().is_empty();
     if !clearing {
@@ -669,7 +670,7 @@ pub(crate) fn inbound_set_secret(slot: String, value: String) -> Result<(), Stri
             }
         })?;
     }
-    keychain::set(slot, &value).map_err(|code| match code.as_str() {
+    keychain::set(slot, &value).map_err(|code| match code.message() {
         "shape" => "shape".to_string(),
         _ => "keychain".to_string(),
     })?;

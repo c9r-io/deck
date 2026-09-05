@@ -131,6 +131,7 @@ use std::sync::Mutex;
 
 use crate::applog::applog;
 use crate::context::{self, ContextCheck, ContextCode, ContextStatus, PaneIdentity};
+use crate::error::DeckError;
 use crate::storage;
 
 // ---------- scheduled prompts ----------------------------------------------------
@@ -328,9 +329,9 @@ pub(crate) const TX_NOOP: &str = "\u{0}tx-noop";
 /// across a tmux send or a session-boot wait (see `send_one`).
 pub(crate) fn with_queue<T>(
     qm: &Mutex<QueueState>,
-    persist: &dyn Fn(&QueueState) -> Result<(), String>,
-    f: impl FnOnce(&mut QueueState) -> Result<T, String>,
-) -> Result<T, String> {
+    persist: &dyn Fn(&QueueState) -> Result<(), DeckError>,
+    f: impl FnOnce(&mut QueueState) -> Result<T, DeckError>,
+) -> Result<T, DeckError> {
     let mut guard = qm.lock().unwrap();
     let mut candidate = guard.clone();
     let out = f(&mut candidate)?; // rejected: shared state never touched
@@ -346,7 +347,7 @@ pub(crate) fn with_queue<T>(
 pub(crate) fn flush_dirty(
     qm: &Mutex<QueueState>,
     dirty: &AtomicBool,
-    persist: &dyn Fn(&QueueState) -> Result<(), String>,
+    persist: &dyn Fn(&QueueState) -> Result<(), DeckError>,
 ) -> bool {
     if !dirty.load(AtomicOrdering::Relaxed) {
         return false;
@@ -361,7 +362,7 @@ pub(crate) fn flush_dirty(
         Err(e) => {
             applog(&format!(
                 "[queue] deferred persist still FAILING ({})",
-                crate::applog::err_code(&e)
+                e.code()
             ));
             false
         }
@@ -374,7 +375,7 @@ fn note_persist_lag(dirty: &AtomicBool, stage: &str, e: &str) {
     dirty.store(true, AtomicOrdering::Relaxed);
     applog(&format!(
         "[queue] persist ({stage}) FAILED ({}) — memory is ahead of disk, retrying",
-        crate::applog::err_code(e)
+        crate::error::err_code(e)
     ));
     storage::warn(format!(
         "scheduled prompts could not be saved after a send ({stage}); deck keeps retrying — if this persists, free disk space or check permissions on ~/.deck"
@@ -509,10 +510,10 @@ pub(crate) fn migrate_groups(q: &mut QueueState) {
 
 /// Persist the queue. Callers must not proceed with side effects (like
 /// injecting a prompt) when this fails.
-pub(crate) fn save_queue(q: &QueueState) -> Result<(), String> {
+pub(crate) fn save_queue(q: &QueueState) -> Result<(), DeckError> {
     if crate::smoke_faults::take("queue-save") {
         return Err("injected queue save failure".into());
     }
-    let raw = serde_json::to_string(q).map_err(|e| e.to_string())?;
+    let raw = serde_json::to_string(q).map_err(DeckError::from)?;
     storage::save_typed::<QueueState>(&queue_path(), &raw)
 }

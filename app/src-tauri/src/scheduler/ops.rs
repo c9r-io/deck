@@ -12,6 +12,7 @@ use super::*;
 use crate::applog::applog;
 use crate::context::{self, ContextCode, ContextStatus, PaneIdentity};
 use crate::datadir::now_epoch;
+use crate::error::DeckError;
 use crate::storage;
 use crate::sync::LockRecover;
 
@@ -36,7 +37,7 @@ pub(crate) struct ContextProbeView {
 pub(crate) fn queue_probe_context(
     state: State<'_, Queues>,
     id: String,
-) -> Result<ContextProbeView, String> {
+) -> Result<ContextProbeView, DeckError> {
     let item = state
         .q
         .lock()
@@ -58,7 +59,7 @@ pub(crate) fn queue_probe_context(
 }
 
 #[tauri::command]
-pub(crate) fn smoke_seed_ambiguous(state: State<'_, Queues>) -> Result<(), String> {
+pub(crate) fn smoke_seed_ambiguous(state: State<'_, Queues>) -> Result<(), DeckError> {
     if !crate::smoke_faults::enabled() {
         return Err("smoke queue hooks are unavailable".into());
     }
@@ -83,14 +84,14 @@ pub(crate) struct SmokeQueueState {
 }
 
 #[tauri::command]
-pub(crate) fn smoke_queue_state(state: State<'_, Queues>) -> Result<SmokeQueueState, String> {
+pub(crate) fn smoke_queue_state(state: State<'_, Queues>) -> Result<SmokeQueueState, DeckError> {
     if !crate::smoke_faults::enabled() {
         return Err("smoke queue hooks are unavailable".into());
     }
     let q = state.q.lock_or_recover().clone();
     let disk =
         storage::load_typed::<QueueState>(&queue_path())?.ok_or("smoke queue file is missing")?;
-    let disk: QueueState = serde_json::from_str(&disk.payload).map_err(|e| e.to_string())?;
+    let disk: QueueState = serde_json::from_str(&disk.payload).map_err(DeckError::from)?;
     Ok(SmokeQueueState {
         dirty: state.dirty.load(AtomicOrdering::Relaxed),
         disk_matches: serde_json::to_value(q).ok() == serde_json::to_value(disk).ok(),
@@ -98,7 +99,7 @@ pub(crate) fn smoke_queue_state(state: State<'_, Queues>) -> Result<SmokeQueueSt
 }
 
 #[tauri::command]
-pub(crate) fn smoke_flush_queue(state: State<'_, Queues>) -> Result<bool, String> {
+pub(crate) fn smoke_flush_queue(state: State<'_, Queues>) -> Result<bool, DeckError> {
     if !crate::smoke_faults::enabled() {
         return Err("smoke queue hooks are unavailable".into());
     }
@@ -128,7 +129,7 @@ pub(crate) struct QueueAddArgs {
 }
 
 /// Reject invalid schedule combinations up front.
-pub(crate) fn validate_add(a: &QueueAddArgs) -> Result<(), String> {
+pub(crate) fn validate_add(a: &QueueAddArgs) -> Result<(), DeckError> {
     crate::tmux::validate_session_name(&a.session)?;
     match a.mode.as_str() {
         "at" => {
@@ -143,7 +144,7 @@ pub(crate) fn validate_add(a: &QueueAddArgs) -> Result<(), String> {
                 return Err("recurring interval must be at least 1 minute".into());
             }
         }
-        m => return Err(format!("unknown schedule mode: {m}")),
+        m => return Err(format!("unknown schedule mode: {m}").into()),
     }
     if a.mode != "every" && (a.every.is_some() || a.steps.as_ref().is_some_and(|s| !s.is_empty())) {
         return Err("interval/steps only make sense on a recurring rule".into());
@@ -195,7 +196,11 @@ pub(crate) fn next_queue_id(existing: &[QueueItem]) -> String {
 /// Pure core of queue_add: append one already-validated item to the
 /// candidate state (never to the shared state directly — see `with_queue`).
 #[cfg(test)]
-pub(crate) fn add_item(q: &mut QueueState, args: QueueAddArgs, text: String) -> Result<(), String> {
+pub(crate) fn add_item(
+    q: &mut QueueState,
+    args: QueueAddArgs,
+    text: String,
+) -> Result<(), DeckError> {
     let expected_process = context::expected_from_command(&args.cmd);
     add_item_bound(q, args, text, None, expected_process)
 }
@@ -206,7 +211,7 @@ fn add_item_bound(
     text: String,
     binding: Option<PaneIdentity>,
     expected_process: Option<String>,
-) -> Result<(), String> {
+) -> Result<(), DeckError> {
     // Scheduling for a session again means it is alive again (the UI can
     // only add prompts from a live card), so a stale tombstone from an
     // earlier card of the same name must not silently swallow the schedule.
@@ -282,7 +287,7 @@ pub(crate) fn queue_add(
     state: State<'_, Queues>,
     app: AppHandle,
     args: QueueAddArgs,
-) -> Result<(), String> {
+) -> Result<(), DeckError> {
     validate_add(&args)?;
     let text = args.text.replace(['\n', '\r'], " ").trim().to_string();
     if text.is_empty() {
@@ -302,7 +307,7 @@ pub(crate) fn queue_add(
 /// the delivery — remove/update/pause/retry/skip are refused with a clear
 /// conflict error and the item is kept until finalize completes. The window
 /// is at most one send (seconds); the UI surfaces the error as a toast.
-pub(crate) fn firing_conflict(q: &QueueState, id: &str) -> Result<(), String> {
+pub(crate) fn firing_conflict(q: &QueueState, id: &str) -> Result<(), DeckError> {
     if let Some(i) = q.items.iter().find(|i| i.id == id) {
         if i.state == "firing" {
             return Err("this prompt is being sent right now — try again in a few seconds".into());
@@ -317,7 +322,7 @@ pub(crate) fn firing_conflict(q: &QueueState, id: &str) -> Result<(), String> {
 }
 
 /// Pure core of queue_update (unit-tested with the firing contract).
-pub(crate) fn update_text(q: &mut QueueState, id: &str, text: String) -> Result<(), String> {
+pub(crate) fn update_text(q: &mut QueueState, id: &str, text: String) -> Result<(), DeckError> {
     firing_conflict(q, id)?;
     if let Some(item) = q.items.iter_mut().find(|i| i.id == id) {
         item.text = text;
@@ -328,7 +333,7 @@ pub(crate) fn update_text(q: &mut QueueState, id: &str, text: String) -> Result<
 }
 
 /// Pure core of queue_remove / queue_skip.
-pub(crate) fn remove_item(q: &mut QueueState, id: &str) -> Result<bool, String> {
+pub(crate) fn remove_item(q: &mut QueueState, id: &str) -> Result<bool, DeckError> {
     firing_conflict(q, id)?;
     let n0 = q.items.len();
     q.items.retain(|i| i.id != id);
@@ -336,7 +341,7 @@ pub(crate) fn remove_item(q: &mut QueueState, id: &str) -> Result<bool, String> 
 }
 
 /// Pure core of queue_pause.
-pub(crate) fn pause_item(q: &mut QueueState, id: &str, paused: bool) -> Result<(), String> {
+pub(crate) fn pause_item(q: &mut QueueState, id: &str, paused: bool) -> Result<(), DeckError> {
     firing_conflict(q, id)?;
     if let Some(item) = q.items.iter_mut().find(|i| i.id == id) {
         item.paused = paused;
@@ -345,7 +350,7 @@ pub(crate) fn pause_item(q: &mut QueueState, id: &str, paused: bool) -> Result<(
 }
 
 /// Pure core of queue_retry.
-pub(crate) fn retry_item(q: &mut QueueState, id: &str) -> Result<(), String> {
+pub(crate) fn retry_item(q: &mut QueueState, id: &str) -> Result<(), DeckError> {
     if q.items.iter().any(|i| i.id == id && i.state == "firing") {
         return Err("this prompt is being sent right now — try again in a few seconds".into());
     }
@@ -378,7 +383,7 @@ pub(crate) fn retry_item(q: &mut QueueState, id: &str) -> Result<(), String> {
 /// Resolve an uncertain delivery as sent. Accounting is performed on the
 /// candidate state and reaches memory only after persistence succeeds.
 /// Replays are no-ops, including once/template steps already consumed.
-pub(crate) fn acknowledge_ambiguous(q: &mut QueueState, id: &str) -> Result<(), String> {
+pub(crate) fn acknowledge_ambiguous(q: &mut QueueState, id: &str) -> Result<(), DeckError> {
     let Some(item) = q.items.iter().find(|i| i.id == id).cloned() else {
         return if q.deliveries.iter().any(|d| d.item == id) {
             Ok(())
@@ -405,7 +410,7 @@ pub(crate) fn queue_update(
     app: AppHandle,
     id: String,
     text: String,
-) -> Result<(), String> {
+) -> Result<(), DeckError> {
     let text = text.replace(['\n', '\r'], " ").trim().to_string();
     if text.is_empty() {
         return Err("empty prompt".into());
@@ -422,7 +427,7 @@ pub(crate) fn queue_remove(
     state: State<'_, Queues>,
     app: AppHandle,
     id: String,
-) -> Result<(), String> {
+) -> Result<(), DeckError> {
     with_queue(&state.q, &save_queue, |q| remove_item(q, &id))?;
     let _ = app.emit("queue-changed", ());
     Ok(())
@@ -434,7 +439,7 @@ pub(crate) fn queue_pause(
     app: AppHandle,
     id: String,
     paused: bool,
-) -> Result<(), String> {
+) -> Result<(), DeckError> {
     // a failed save keeps the OLD pause state in force, matching the error
     with_queue(&state.q, &save_queue, |q| pause_item(q, &id, paused))?;
     let _ = app.emit("queue-changed", ());
@@ -447,7 +452,7 @@ pub(crate) fn queue_retry(
     state: State<'_, Queues>,
     app: AppHandle,
     id: String,
-) -> Result<(), String> {
+) -> Result<(), DeckError> {
     // a failed save must not re-arm the item in memory only
     with_queue(&state.q, &save_queue, |q| retry_item(q, &id))?;
     let _ = app.emit("queue-changed", ());
@@ -461,7 +466,7 @@ pub(crate) fn queue_acknowledge(
     state: State<'_, Queues>,
     app: AppHandle,
     id: String,
-) -> Result<(), String> {
+) -> Result<(), DeckError> {
     with_queue(&state.q, &save_queue, |q| acknowledge_ambiguous(q, &id))?;
     let _ = app.emit("queue-changed", ());
     Ok(())
@@ -474,7 +479,7 @@ pub(crate) fn queue_skip(
     state: State<'_, Queues>,
     app: AppHandle,
     id: String,
-) -> Result<(), String> {
+) -> Result<(), DeckError> {
     if with_queue(&state.q, &save_queue, |q| remove_item(q, &id))? {
         applog("[queue] step skipped by user — group unblocked");
     }
@@ -535,7 +540,7 @@ pub(crate) fn queue_clear_sessions(
     state: State<'_, Queues>,
     app: AppHandle,
     sessions: Vec<String>,
-) -> Result<(), String> {
+) -> Result<(), DeckError> {
     if crate::smoke_faults::take("queue-cancel") {
         return Err("injected queue cancellation failure".into());
     }
@@ -556,7 +561,7 @@ pub(crate) fn queue_send_now(
     app: AppHandle,
     id: String,
     accept_process_mismatch: bool,
-) -> Result<(), String> {
+) -> Result<(), DeckError> {
     let item = state
         .q
         .lock()

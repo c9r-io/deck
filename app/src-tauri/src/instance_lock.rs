@@ -5,19 +5,23 @@
 //! dialog plugin is `osascript`, an EDR signature.
 
 use crate::datadir::{create_private_dir, open_private};
+use crate::error::{DeckError, ErrorKind};
 use std::path::Path;
 
 /// Hold an exclusive advisory lock for the app's lifetime. A second deck
 /// instance would double-fire scheduled prompts and race every data file,
 /// so it must not start.
-pub fn acquire_instance_lock(dir: &Path) -> Result<(), String> {
+pub fn acquire_instance_lock(dir: &Path) -> Result<(), DeckError> {
     use std::os::fd::AsRawFd;
     create_private_dir(dir)?;
-    let f = open_private(&dir.join("deck.lock")).map_err(|e| e.to_string())?;
+    let f = open_private(&dir.join("deck.lock")).map_err(DeckError::from)?;
     // LOCK_EX | LOCK_NB
     let rc = unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
     if rc != 0 {
-        return Err("another deck instance is already running".into());
+        return Err(DeckError::new(
+            ErrorKind::Locked,
+            "another deck instance is already running",
+        ));
     }
     std::mem::forget(f); // keep the fd (and the lock) until the process exits
     Ok(())

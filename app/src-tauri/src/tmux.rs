@@ -14,6 +14,7 @@ use std::io::Write;
 use std::process::{Command, Stdio};
 
 use crate::applog;
+use crate::error::{DeckError, ErrorKind};
 
 // ---------- tmux helpers ----------------------------------------------------
 
@@ -139,20 +140,21 @@ pub(crate) fn tmux_conf_text(deck_dir: &std::path::Path) -> String {
 /// v0.4.16 "board all gray / no separators" bug: dev builds launched from a
 /// terminal inherited the shell's LANG and never reproduced it.) pty.rs
 /// sets the same for the attach client.
-pub(crate) fn tmux(args: &[&str]) -> Result<String, String> {
+pub(crate) fn tmux(args: &[&str]) -> Result<String, DeckError> {
     let conf = tmux_conf();
     let out = Command::new(tmux_bin())
         .args(["-f", &conf, "-L", socket()])
         .args(args)
         .env("LANG", "en_US.UTF-8")
         .output()
-        .map_err(|e| format!("tmux not runnable: {e}"))?;
+        .map_err(|e| DeckError::new(ErrorKind::TmuxMissing, format!("tmux not runnable: {e}")))?;
     if !out.status.success() {
         return Err(format!(
             "tmux {} failed: {}",
             args.first().unwrap_or(&""),
             String::from_utf8_lossy(&out.stderr).trim()
-        ));
+        )
+        .into());
     }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
@@ -162,7 +164,7 @@ pub(crate) fn tmux(args: &[&str]) -> Result<String, String> {
 /// variable, or a temporary file. `start-server ; load-buffer ... - ;
 /// new-session ...` may be submitted as one batch, which also keeps a newly
 /// spawned zero-session server alive until the restored pane exists.
-pub(crate) fn tmux_with_stdin(args: &[&str], input: &[u8]) -> Result<String, String> {
+pub(crate) fn tmux_with_stdin(args: &[&str], input: &[u8]) -> Result<String, DeckError> {
     let conf = tmux_conf();
     let mut child = Command::new(tmux_bin())
         .args(["-f", &conf, "-L", socket()])
@@ -172,15 +174,15 @@ pub(crate) fn tmux_with_stdin(args: &[&str], input: &[u8]) -> Result<String, Str
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| format!("tmux not runnable: {e}"))?;
+        .map_err(|e| DeckError::new(ErrorKind::TmuxMissing, format!("tmux not runnable: {e}")))?;
     let write_result = child
         .stdin
         .as_mut()
-        .ok_or_else(|| "tmux stdin unavailable".to_string())
+        .ok_or_else(|| DeckError::from("tmux stdin unavailable"))
         .and_then(|stdin| {
             stdin
                 .write_all(input)
-                .map_err(|e| format!("tmux stdin failed: {e}"))
+                .map_err(|e| DeckError::from(format!("tmux stdin failed: {e}")))
         });
     drop(child.stdin.take());
     if let Err(error) = write_result {
@@ -189,13 +191,14 @@ pub(crate) fn tmux_with_stdin(args: &[&str], input: &[u8]) -> Result<String, Str
     }
     let out = child
         .wait_with_output()
-        .map_err(|e| format!("tmux wait failed: {e}"))?;
+        .map_err(|e| DeckError::from(format!("tmux wait failed: {e}")))?;
     if !out.status.success() {
         return Err(format!(
             "tmux {} failed: {}",
             args.first().unwrap_or(&""),
             String::from_utf8_lossy(&out.stderr).trim()
-        ));
+        )
+        .into());
     }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
@@ -203,20 +206,21 @@ pub(crate) fn tmux_with_stdin(args: &[&str], input: &[u8]) -> Result<String, Str
 /// Owned-argument variant used for bounded command batches whose numeric
 /// cursor movements are assembled at runtime. Arguments still bypass a
 /// shell; `;` is an explicit tmux command separator, never shell syntax.
-pub(crate) fn tmux_owned(args: &[String]) -> Result<String, String> {
+pub(crate) fn tmux_owned(args: &[String]) -> Result<String, DeckError> {
     let conf = tmux_conf();
     let out = Command::new(tmux_bin())
         .args(["-f", &conf, "-L", socket()])
         .args(args)
         .env("LANG", "en_US.UTF-8")
         .output()
-        .map_err(|e| format!("tmux not runnable: {e}"))?;
+        .map_err(|e| DeckError::new(ErrorKind::TmuxMissing, format!("tmux not runnable: {e}")))?;
     if !out.status.success() {
         return Err(format!(
             "tmux {} failed: {}",
             args.first().map(String::as_str).unwrap_or(""),
             String::from_utf8_lossy(&out.stderr).trim()
-        ));
+        )
+        .into());
     }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
@@ -258,7 +262,7 @@ pub(crate) fn fmt_escape(s: &str) -> String {
 /// the accepted alphabet is the intersection of what tmux allows (no `:` `.`)
 /// and what can never read as a flag (no leading `-`) or a format expansion
 /// (no `#`). deck itself only generates `deck-<a-z0-9-slug>-<id>`.
-pub(crate) fn validate_session_name(name: &str) -> Result<(), String> {
+pub(crate) fn validate_session_name(name: &str) -> Result<(), DeckError> {
     if name.is_empty() || name.len() > 64 {
         return Err("session name must be 1–64 characters".into());
     }

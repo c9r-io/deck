@@ -49,6 +49,7 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::applog::applog;
+use crate::error::DeckError;
 use crate::sync::LockRecover;
 use crate::tmux::{session_target, socket, tmux_bin, tmux_conf};
 
@@ -204,7 +205,7 @@ pub(crate) fn attach_session(
     name: String,
     cols: u16,
     rows: u16,
-) -> Result<u64, String> {
+) -> Result<u64, DeckError> {
     crate::tmux::validate_session_name(&name)?;
     // replace any previous attachment for this session; closing its gate
     // releases an emitter that may be waiting on ACKs that will never come
@@ -221,7 +222,7 @@ pub(crate) fn attach_session(
             pixel_width: 0,
             pixel_height: 0,
         })
-        .map_err(|e| e.to_string())?;
+        .map_err(DeckError::text)?;
 
     let conf = tmux_conf();
     let mut cmd = CommandBuilder::new(tmux_bin());
@@ -242,7 +243,7 @@ pub(crate) fn attach_session(
         applog(&format!(
             "[pty] attach spawn failed for {} ({})",
             crate::applog::session_tag(&name),
-            crate::applog::err_code(&msg)
+            crate::error::err_code(&msg)
         ));
         msg
     })?;
@@ -252,8 +253,8 @@ pub(crate) fn attach_session(
         crate::applog::session_tag(&name)
     ));
 
-    let mut reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
-    let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
+    let mut reader = pair.master.try_clone_reader().map_err(DeckError::text)?;
+    let writer = pair.master.take_writer().map_err(DeckError::text)?;
 
     let generation = {
         let mut c = state.counter.lock_or_recover();
@@ -334,7 +335,7 @@ pub(crate) fn attach_session(
                 }
                 // a failed emit ends the pump (see pump_gated) — the webview
                 // can never ACK an event it never received
-                r.map_err(|e| e.to_string())
+                r.map_err(DeckError::text)
             },
         );
         // clean up only if this attachment is still the current one
@@ -369,7 +370,7 @@ pub(crate) fn attach_session(
 /// the failure closes the gate (which also lets the reader thread die via
 /// the dropped channel) and logs a classified, content-free diagnostic.
 /// Order-preserving, nothing dropped, nothing emitted past the window.
-pub(crate) fn pump_gated<F: FnMut(u64, Vec<u8>) -> Result<(), String>>(
+pub(crate) fn pump_gated<F: FnMut(u64, Vec<u8>) -> Result<(), DeckError>>(
     rx: &std::sync::mpsc::Receiver<Vec<u8>>,
     max: usize,
     gate: &AckGate,
@@ -401,10 +402,7 @@ pub(crate) fn pump_gated<F: FnMut(u64, Vec<u8>) -> Result<(), String>>(
         }
         gate.mark_emitted(seq);
         if let Err(e) = emit(seq, batch) {
-            applog(&format!(
-                "[pty] emit failed ({}) — ending stream",
-                crate::applog::err_code(&e)
-            ));
+            applog(&format!("[pty] emit failed ({}) — ending stream", e.code()));
             gate.close();
             return;
         }
@@ -701,12 +699,12 @@ pub(crate) fn pty_write(
     state: State<'_, PtyState>,
     name: String,
     data_b64: String,
-) -> Result<(), String> {
-    let bytes = B64.decode(data_b64).map_err(|e| e.to_string())?;
+) -> Result<(), DeckError> {
+    let bytes = B64.decode(data_b64).map_err(DeckError::text)?;
     let mut map = state.map.lock().unwrap();
     let entry = map.get_mut(&name).ok_or("not attached")?;
-    entry.writer.write_all(&bytes).map_err(|e| e.to_string())?;
-    entry.writer.flush().map_err(|e| e.to_string())
+    entry.writer.write_all(&bytes).map_err(DeckError::text)?;
+    entry.writer.flush().map_err(DeckError::text)
 }
 
 #[tauri::command]
@@ -715,7 +713,7 @@ pub(crate) fn pty_resize(
     name: String,
     cols: u16,
     rows: u16,
-) -> Result<(), String> {
+) -> Result<(), DeckError> {
     // tmux reflows the pane synchronously when the PTY changes size. Keep
     // that reflow out of the status -> capture row -> cursor movement window
     // used by terminal selection commands.
@@ -732,7 +730,7 @@ pub(crate) fn pty_resize(
             pixel_width: 0,
             pixel_height: 0,
         })
-        .map_err(|e| e.to_string())
+        .map_err(DeckError::text)
 }
 
 /// Webview confirmation that everything up to `seq` of attachment `gen`

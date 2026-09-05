@@ -7,6 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::error::DeckError;
 use crate::tmux::{pane_target, tmux};
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -250,7 +251,7 @@ pub(crate) fn parse_raw_probe(raw: &str) -> Option<RawProbe> {
 
 /// One metadata-only tmux read. No pane capture, prompt text, argument, path or
 /// user-configured hook participates in the decision.
-pub(crate) fn raw_probe(session: &str) -> Result<RawProbe, String> {
+pub(crate) fn raw_probe(session: &str) -> Result<RawProbe, DeckError> {
     let raw = tmux(&[
         "display-message",
         "-p",
@@ -336,7 +337,7 @@ pub(crate) fn probe(
         Ok(raw) => evaluate(&raw, expected_identity, expected_process),
         Err(e) => ProbeResult::blocked(
             ContextStatus::Unavailable,
-            if crate::applog::err_code(&e) == "no-session" {
+            if e.kind() == crate::error::ErrorKind::NoSession {
                 ContextCode::SessionMissing
             } else {
                 ContextCode::ProbeFailed

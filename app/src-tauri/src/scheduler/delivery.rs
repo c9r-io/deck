@@ -14,6 +14,7 @@ use crate::applog::applog;
 use crate::commands::start_session;
 use crate::context::{self, ContextCheck, ContextCode, ContextStatus, PaneIdentity, ProbeResult};
 use crate::datadir::now_epoch;
+use crate::error::DeckError;
 use crate::sync::LockRecover;
 use crate::tmux::{tmux, tmux_owned};
 
@@ -35,7 +36,7 @@ pub(crate) struct QueueFired {
 /// an externally killed tmux client after the server pasted could still read
 /// as a failure; deck never does that, and it is the same class of window as
 /// a power loss mid-send.)
-pub(crate) fn fire_item(item: &QueueItem) -> Result<(), String> {
+pub(crate) fn fire_item(item: &QueueItem) -> Result<(), DeckError> {
     let pane = item.binding.as_ref().ok_or("context binding is missing")?;
     let delivery = item
         .delivery
@@ -450,7 +451,7 @@ pub(crate) fn note_failed(q: &mut QueueState, id: &str, delivery: &str, err: &st
     if let Some(it) = q.items.iter_mut().find(|i| i.id == id) {
         it.delivery = None;
         it.state = "failed".into();
-        it.last_error = Some(format!("send failed ({})", crate::applog::err_code(err)));
+        it.last_error = Some(format!("send failed ({})", crate::error::err_code(err)));
     }
     q.pending.retain(|p| p.id != delivery);
 }
@@ -520,8 +521,8 @@ pub(crate) enum SendResult {
 /// The side-effecting parts of one send, injected so the whole firing state
 /// machine can be unit-tested without tmux or a disk.
 pub(crate) struct SendHooks<'a> {
-    pub(crate) fire: &'a (dyn Fn(&QueueItem) -> Result<(), String> + Sync),
-    pub(crate) persist: &'a (dyn Fn(&QueueState) -> Result<(), String> + Sync),
+    pub(crate) fire: &'a (dyn Fn(&QueueItem) -> Result<(), DeckError> + Sync),
+    pub(crate) persist: &'a (dyn Fn(&QueueState) -> Result<(), DeckError> + Sync),
     /// kill a session whose card was deleted DURING this send
     pub(crate) kill: &'a (dyn Fn(&str) + Sync),
 }
@@ -641,11 +642,11 @@ fn send_one_guarded(
     });
     let (item, delivery) = match pre {
         Ok(v) => v,
-        Err(e) if e == TX_NOOP => return SendResult::Nothing,
+        Err(e) if e.message() == TX_NOOP => return SendResult::Nothing,
         Err(e) => {
             applog(&format!(
                 "[queue] persist (pre-fire) FAILED ({}) — not sending this tick",
-                crate::applog::err_code(&e)
+                e.code()
             ));
             return SendResult::NotPersisted;
         }
@@ -663,7 +664,7 @@ fn send_one_guarded(
             finalize_delivery(&mut q, &item.id, &delivery, now_epoch(), false);
             let cancelled = is_cancelled(&q, &item.session);
             if let Err(e) = persist(&q) {
-                note_persist_lag(dirty, "post-fire", &e);
+                note_persist_lag(dirty, "post-fire", e.message());
             }
             drop(q);
             reap_if_cancelled(cancelled, &item.session, h);
@@ -673,11 +674,11 @@ fn send_one_guarded(
         }
         Err(e) => {
             let mut q = qm.lock_or_recover();
-            note_failed(&mut q, &item.id, &delivery, &e);
+            note_failed(&mut q, &item.id, &delivery, e.message());
             let gave_up = q.items.iter().any(|i| i.id == item.id && item_dead(i));
             let cancelled = is_cancelled(&q, &item.session);
             if let Err(pe) = persist(&q) {
-                note_persist_lag(dirty, "post-failure", &pe);
+                note_persist_lag(dirty, "post-failure", pe.message());
             }
             drop(q);
             reap_if_cancelled(cancelled, &item.session, h);
@@ -687,7 +688,7 @@ fn send_one_guarded(
                 "[queue] send FAILED for {} (attempt {}, {}){}",
                 crate::applog::session_tag(&item.session),
                 item.attempts,
-                crate::applog::err_code(&e),
+                e.code(),
                 if gave_up {
                     " — giving up"
                 } else {
@@ -717,10 +718,10 @@ fn context_check(result: &ProbeResult) -> ContextCheck {
 /// observations never rewrite an existing target.
 pub(super) fn persist_context_result(
     qm: &Mutex<QueueState>,
-    persist: &dyn Fn(&QueueState) -> Result<(), String>,
+    persist: &dyn Fn(&QueueState) -> Result<(), DeckError>,
     selected: &QueueItem,
     result: &ProbeResult,
-) -> Result<Option<QueueItem>, String> {
+) -> Result<Option<QueueItem>, DeckError> {
     with_queue(qm, persist, |q| {
         if is_cancelled(q, &selected.session) {
             return Err(TX_NOOP.into());
@@ -746,7 +747,13 @@ pub(super) fn persist_context_result(
         }
         Ok(Some(item.clone()))
     })
-    .or_else(|e| if e == TX_NOOP { Ok(None) } else { Err(e) })
+    .or_else(|e| {
+        if e.message() == TX_NOOP {
+            Ok(None)
+        } else {
+            Err(e)
+        }
+    })
 }
 
 /// A delete can land after a dead-session readiness worker's first
@@ -833,7 +840,7 @@ pub(super) fn send_one_safe_requested(
             Err(e) => {
                 applog(&format!(
                     "[queue] persist (context-blocked) FAILED ({})",
-                    crate::applog::err_code(&e)
+                    e.code()
                 ));
                 SendResult::NotPersisted
             }
@@ -848,7 +855,7 @@ pub(super) fn send_one_safe_requested(
         Err(e) => {
             applog(&format!(
                 "[queue] persist (context-ready) FAILED ({}) — not sending this tick",
-                crate::applog::err_code(&e)
+                e.code()
             ));
             return SendResult::NotPersisted;
         }
@@ -871,7 +878,7 @@ pub(super) fn send_one_safe_requested(
             Err(e) => {
                 applog(&format!(
                     "[queue] persist (context-final) FAILED ({})",
-                    crate::applog::err_code(&e)
+                    e.code()
                 ));
                 SendResult::NotPersisted
             }

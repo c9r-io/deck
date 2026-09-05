@@ -39,6 +39,7 @@ use std::sync::{Mutex, MutexGuard, OnceLock, TryLockError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::applog::applog;
+use crate::error::DeckError;
 use crate::tmux::{self, tmux, tmux_owned};
 
 const METADATA_OPTION: &str = "@deck-server-metadata";
@@ -228,9 +229,9 @@ fn read_disk() -> LifecycleDisk {
         .unwrap_or_default()
 }
 
-fn write_disk(disk: &LifecycleDisk) -> Result<(), String> {
+fn write_disk(disk: &LifecycleDisk) -> Result<(), DeckError> {
     crate::datadir::create_private_dir(&crate::datadir::deck_dir())?;
-    let bytes = serde_json::to_vec(disk).map_err(|_| "lifecycle-state-encode".to_string())?;
+    let bytes = serde_json::to_vec(disk).map_err(|_| DeckError::from("lifecycle-state-encode"))?;
     crate::datadir::atomic_write(&lifecycle_path(), &bytes)
 }
 
@@ -444,7 +445,7 @@ fn impact_token(
 }
 
 fn absent_error(error: &str) -> bool {
-    matches!(crate::applog::err_code(error), "no-session" | "missing")
+    matches!(crate::error::err_code(error), "no-session" | "missing")
         || error.contains("no server running")
         || error.contains("no sessions")
 }
@@ -456,7 +457,7 @@ fn probe_server() -> Probe {
         "#{pid}\t#{start_time}\t#{socket_path}",
     ]) {
         Ok(value) => value,
-        Err(error) if absent_error(&error) => return Probe::Absent,
+        Err(error) if absent_error(error.message()) => return Probe::Absent,
         Err(_) => return Probe::Unreachable,
     };
     let mut fields = head.trim_end().split('\t');
@@ -490,7 +491,7 @@ fn probe_server() -> Probe {
         "#{session_name}\t#{session_attached}\t#{session_activity}",
     ]) {
         Ok(value) => value,
-        Err(error) if absent_error(&error) => String::new(),
+        Err(error) if absent_error(error.message()) => String::new(),
         Err(_) => return Probe::Unreachable,
     };
     let mut sessions = Vec::new();
@@ -613,12 +614,12 @@ fn source_can_create(build: &CurrentBuildIdentity) -> bool {
     Path::new(tmux::tmux_bin()) == macos.join("tmux")
 }
 
-fn start_current_server(build: &CurrentBuildIdentity) -> Result<ServerSnapshot, String> {
+fn start_current_server(build: &CurrentBuildIdentity) -> Result<ServerSnapshot, DeckError> {
     if !source_can_create(build) {
         return Err("tmux-server-source-unstable".into());
     }
     let metadata = serde_json::to_string(&metadata_for_current(build))
-        .map_err(|_| "tmux-metadata-encode".to_string())?;
+        .map_err(|_| DeckError::from("tmux-metadata-encode"))?;
     let args = vec![
         "start-server".into(),
         ";".into(),
@@ -667,7 +668,7 @@ fn safe_stale_socket(
             .unwrap_or(false)
 }
 
-fn clean_confirmed_intent_socket(intent: &RestartIntent) -> Result<(), String> {
+fn clean_confirmed_intent_socket(intent: &RestartIntent) -> Result<(), DeckError> {
     let path = Path::new("/tmp")
         .join(format!("tmux-{}", unsafe { libc::getuid() }))
         .join(tmux::socket());
@@ -682,10 +683,10 @@ fn clean_confirmed_intent_socket(intent: &RestartIntent) -> Result<(), String> {
     ) {
         return Err("tmux-server-socket-not-safe".into());
     }
-    std::fs::remove_file(path).map_err(|_| "tmux-server-stale-socket".to_string())
+    std::fs::remove_file(path).map_err(|_| DeckError::from("tmux-server-stale-socket"))
 }
 
-fn wait_for_old_server_exit(old: &ServerSnapshot) -> Result<(), String> {
+fn wait_for_old_server_exit(old: &ServerSnapshot) -> Result<(), DeckError> {
     for _ in 0..50 {
         match probe_server() {
             Probe::Absent => break,
@@ -713,7 +714,7 @@ fn wait_for_old_server_exit(old: &ServerSnapshot) -> Result<(), String> {
             return Err("tmux-server-socket-not-safe".into());
         }
         std::fs::remove_file(&old.socket_path)
-            .map_err(|_| "tmux-server-stale-socket".to_string())?;
+            .map_err(|_| DeckError::from("tmux-server-stale-socket"))?;
     }
     Ok(())
 }
@@ -722,7 +723,7 @@ fn complete_restart(
     build: &CurrentBuildIdentity,
     old: &ServerSnapshot,
     notice_code: &str,
-) -> Result<ServerSnapshot, String> {
+) -> Result<ServerSnapshot, DeckError> {
     let key = build_key(build);
     let mut disk = read_disk();
     disk.operation = Some(RestartIntent {
@@ -740,7 +741,7 @@ fn complete_restart(
 
     match tmux(&["kill-server"]) {
         Ok(_) => {}
-        Err(error) if absent_error(&error) => {}
+        Err(error) if absent_error(error.message()) => {}
         Err(_) => return Err("tmux-server-stop-failed".into()),
     }
     if crate::smoke_faults::take("tmux-after-stop") {
@@ -881,7 +882,7 @@ fn status_from_probe(build: CurrentBuildIdentity, probe: Probe) -> ServerStatus 
     }
 }
 
-fn try_operation() -> Result<MutexGuard<'static, ()>, String> {
+fn try_operation() -> Result<MutexGuard<'static, ()>, DeckError> {
     match OPERATION.try_lock() {
         Ok(guard) => Ok(guard),
         Err(TryLockError::WouldBlock) => Err("tmux-server-restart-in-progress".into()),
@@ -914,7 +915,7 @@ pub(crate) fn reconcile_on_boot() {
                     if let Err(error) = clean_confirmed_intent_socket(&intent) {
                         applog(&format!(
                             "[tmux-lifecycle] restart socket recovery paused ({})",
-                            crate::applog::err_code(&error)
+                            error.code()
                         ));
                         return;
                     }
@@ -960,7 +961,7 @@ pub(crate) fn reconcile_on_boot() {
             if let Err(error) = start_current_server(&build) {
                 applog(&format!(
                     "[tmux-lifecycle] initial server start failed ({})",
-                    crate::applog::err_code(&error)
+                    error.code()
                 ));
             }
         }
@@ -986,7 +987,7 @@ pub(crate) fn reconcile_on_boot() {
 
 /// Guard every server-creating path. Existing incompatible sessions remain
 /// attachable after “later”, but no new session is added to the old helper.
-pub(crate) fn session_creation_guard() -> Result<MutexGuard<'static, ()>, String> {
+pub(crate) fn session_creation_guard() -> Result<MutexGuard<'static, ()>, DeckError> {
     if APP_UPDATE_INSTALLING.load(Ordering::Acquire) {
         return Err("app-update-installing".into());
     }
@@ -1013,7 +1014,7 @@ pub(crate) fn session_creation_guard() -> Result<MutexGuard<'static, ()>, String
 /// The updater renames the running app bundle while installing. From this
 /// point until process exit, the old process must never win a tmux-server
 /// creation race, regardless of what path APIs report after the rename.
-pub(crate) fn begin_app_update_install() -> Result<(), String> {
+pub(crate) fn begin_app_update_install() -> Result<(), DeckError> {
     let _guard = try_operation()?;
     APP_UPDATE_INSTALLING.store(true, Ordering::Release);
     Ok(())
@@ -1033,7 +1034,7 @@ pub(crate) fn tmux_server_status() -> ServerStatus {
 }
 
 #[tauri::command]
-pub(crate) fn defer_tmux_restart() -> Result<ServerStatus, String> {
+pub(crate) fn defer_tmux_restart() -> Result<ServerStatus, DeckError> {
     let _guard = try_operation()?;
     if APP_UPDATE_INSTALLING.load(Ordering::Acquire) {
         return Err("app-update-installing".into());
@@ -1047,7 +1048,7 @@ pub(crate) fn defer_tmux_restart() -> Result<ServerStatus, String> {
 }
 
 #[tauri::command]
-pub(crate) fn acknowledge_tmux_lifecycle_notice() -> Result<(), String> {
+pub(crate) fn acknowledge_tmux_lifecycle_notice() -> Result<(), DeckError> {
     let _guard = try_operation()?;
     let mut disk = read_disk();
     disk.notice = None;
@@ -1063,7 +1064,7 @@ pub(crate) fn restart_tmux_server(
     expected_session_count: u32,
     expected_pane_count: u32,
     force: bool,
-) -> Result<ServerStatus, String> {
+) -> Result<ServerStatus, DeckError> {
     let _guard = try_operation()?;
     if APP_UPDATE_INSTALLING.load(Ordering::Acquire) {
         return Err("app-update-installing".into());

@@ -2,6 +2,7 @@
 //! Hooks arm only when both smoke arguments select an isolated data root;
 //! normal and release launches cannot trigger them.
 
+use crate::error::DeckError;
 use crate::sync::LockRecover;
 use serde::Serialize;
 use std::collections::HashMap;
@@ -72,7 +73,7 @@ fn fnv1a64(bytes: &[u8]) -> u64 {
 }
 
 #[tauri::command]
-pub(crate) fn smoke_fault_set(kind: String, count: u8) -> Result<SmokeFaultState, String> {
+pub(crate) fn smoke_fault_set(kind: String, count: u8) -> Result<SmokeFaultState, DeckError> {
     if !enabled() {
         return Err("smoke fault hooks are unavailable".into());
     }
@@ -88,7 +89,7 @@ pub(crate) fn smoke_fault_set(kind: String, count: u8) -> Result<SmokeFaultState
 }
 
 #[tauri::command]
-pub(crate) fn smoke_clipboard_metrics() -> Result<SmokeClipboardMetrics, String> {
+pub(crate) fn smoke_clipboard_metrics() -> Result<SmokeClipboardMetrics, DeckError> {
     if !enabled() {
         return Err("smoke clipboard metrics are unavailable".into());
     }

@@ -7,6 +7,7 @@
 // prompt for a new binary. Callers receive the bytes; nothing here logs,
 // returns or interpolates a token into any error string.
 
+use crate::error::DeckError;
 use security_framework::item::{ItemClass, ItemSearchOptions};
 use security_framework::passwords::{
     delete_generic_password, get_generic_password, set_generic_password,
@@ -111,7 +112,7 @@ pub(crate) fn has(slot: Slot) -> bool {
 
 /// Store or clear one slot. An empty value clears it. Errors carry only a
 /// stable category — never the value, never the Keychain's own message.
-pub(crate) fn set(slot: Slot, value: &str) -> Result<(), String> {
+pub(crate) fn set(slot: Slot, value: &str) -> Result<(), DeckError> {
     let value = value.trim();
     if value.is_empty() {
         return clear(slot);
@@ -120,12 +121,12 @@ pub(crate) fn set(slot: Slot, value: &str) -> Result<(), String> {
         return Err("shape".into());
     }
     set_generic_password(SERVICE, slot.account(), value.as_bytes())
-        .map_err(|_| "keychain".to_string())?;
+        .map_err(|_| DeckError::from("keychain"))?;
     cache_put(slot, Some(value.to_string()));
     Ok(())
 }
 
-pub(crate) fn clear(slot: Slot) -> Result<(), String> {
+pub(crate) fn clear(slot: Slot) -> Result<(), DeckError> {
     cache_put(slot, None);
     match delete_generic_password(SERVICE, slot.account()) {
         Ok(()) => Ok(()),

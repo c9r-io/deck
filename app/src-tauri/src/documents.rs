@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
+use crate::error::DeckError;
 use crate::storage;
 use crate::sync::LockRecover;
 
@@ -29,8 +30,8 @@ pub(crate) struct BoardDocRaw {
 pub(crate) struct BoardDoc(#[allow(dead_code)] BoardDocRaw);
 
 impl TryFrom<BoardDocRaw> for BoardDoc {
-    type Error = String;
-    fn try_from(raw: BoardDocRaw) -> Result<Self, String> {
+    type Error = DeckError;
+    fn try_from(raw: BoardDocRaw) -> Result<Self, DeckError> {
         validate_board(&raw)?;
         Ok(BoardDoc(raw))
     }
@@ -73,25 +74,25 @@ pub(crate) struct BoardCard {
 /// The referential rules a usable board must satisfy. Errors carry ids
 /// (deck-generated), never titles/commands/paths — they end up in recovery
 /// warnings.
-fn validate_board(b: &BoardDocRaw) -> Result<(), String> {
+fn validate_board(b: &BoardDocRaw) -> Result<(), DeckError> {
     let mut project_ids = HashSet::new();
     for p in &b.projects {
         if p.id.trim().is_empty() {
             return Err("a project has an empty id".into());
         }
         if !project_ids.insert(p.id.as_str()) {
-            return Err(format!("duplicate project id {}", p.id));
+            return Err(format!("duplicate project id {}", p.id).into());
         }
         if p.columns.is_empty() {
-            return Err(format!("project {} has no columns", p.id));
+            return Err(format!("project {} has no columns", p.id).into());
         }
         let mut col_ids = HashSet::new();
         for c in &p.columns {
             if c.id.trim().is_empty() {
-                return Err(format!("project {} has a column with an empty id", p.id));
+                return Err(format!("project {} has a column with an empty id", p.id).into());
             }
             if !col_ids.insert(c.id.as_str()) {
-                return Err(format!("duplicate column id {} in project {}", c.id, p.id));
+                return Err(format!("duplicate column id {} in project {}", c.id, p.id).into());
             }
         }
     }
@@ -102,22 +103,23 @@ fn validate_board(b: &BoardDocRaw) -> Result<(), String> {
             return Err("a card has an empty id".into());
         }
         if !card_ids.insert(c.id.as_str()) {
-            return Err(format!("duplicate card id {}", c.id));
+            return Err(format!("duplicate card id {}", c.id).into());
         }
         // the SAME session-name rule the runtime enforces on start/attach
         crate::tmux::validate_session_name(&c.session)
-            .map_err(|e| format!("card {}: {e}", c.id))?;
+            .map_err(|e| DeckError::from(format!("card {}: {e}", c.id)))?;
         if !sessions.insert(c.session.as_str()) {
-            return Err(format!("card {}: session name is already used", c.id));
+            return Err(format!("card {}: session name is already used", c.id).into());
         }
         let Some(project) = b.projects.iter().find(|p| p.id == c.project_id) else {
-            return Err(format!("card {} references a missing project", c.id));
+            return Err(format!("card {} references a missing project", c.id).into());
         };
         if !project.columns.iter().any(|col| col.id == c.column_id) {
             return Err(format!(
                 "card {} references a column that is not in its project",
                 c.id
-            ));
+            )
+            .into());
         }
     }
     Ok(())
@@ -175,8 +177,8 @@ pub(crate) struct SettingsDocRaw {
 pub(crate) struct SettingsDoc(#[allow(dead_code)] SettingsDocRaw);
 
 impl TryFrom<SettingsDocRaw> for SettingsDoc {
-    type Error = String;
-    fn try_from(raw: SettingsDocRaw) -> Result<Self, String> {
+    type Error = DeckError;
+    fn try_from(raw: SettingsDocRaw) -> Result<Self, DeckError> {
         if let Some(e) = &raw.editor {
             if e.len() > 200 {
                 return Err("editor name is unreasonably long".into());
@@ -277,7 +279,7 @@ pub(crate) fn board_path() -> PathBuf {
 }
 
 #[tauri::command]
-pub(crate) fn load_board() -> Result<LoadedDoc, String> {
+pub(crate) fn load_board() -> Result<LoadedDoc, DeckError> {
     Ok(to_loaded(storage::load_typed::<BoardDoc>(&board_path())?))
 }
 
@@ -287,13 +289,14 @@ pub(crate) fn save_validated<T: serde::de::DeserializeOwned>(
     path: &std::path::Path,
     data: &str,
     what: &str,
-) -> Result<(), String> {
-    serde_json::from_str::<T>(data).map_err(|e| format!("refusing to save invalid {what}: {e}"))?;
+) -> Result<(), DeckError> {
+    serde_json::from_str::<T>(data)
+        .map_err(|e| DeckError::from(format!("refusing to save invalid {what}: {e}")))?;
     storage::save_typed::<T>(path, data)
 }
 
 #[tauri::command]
-pub(crate) fn save_board(data: String) -> Result<(), String> {
+pub(crate) fn save_board(data: String) -> Result<(), DeckError> {
     if crate::smoke_faults::take("board-save") {
         return Err("injected board save failure".into());
     }
@@ -317,14 +320,14 @@ pub(crate) fn settings_path() -> PathBuf {
 }
 
 #[tauri::command]
-pub(crate) fn load_settings() -> Result<LoadedDoc, String> {
+pub(crate) fn load_settings() -> Result<LoadedDoc, DeckError> {
     Ok(to_loaded(storage::load_typed::<SettingsDoc>(
         &settings_path(),
     )?))
 }
 
 #[tauri::command]
-pub(crate) fn save_settings(data: String) -> Result<(), String> {
+pub(crate) fn save_settings(data: String) -> Result<(), DeckError> {
     if crate::smoke_faults::take("settings-save") {
         return Err("injected settings save failure".into());
     }
@@ -332,9 +335,9 @@ pub(crate) fn save_settings(data: String) -> Result<(), String> {
     save_validated::<SettingsDoc>(&settings_path(), &data, "settings")
 }
 
-fn validate_saved_update_channel(data: &str) -> Result<(), String> {
+fn validate_saved_update_channel(data: &str) -> Result<(), DeckError> {
     let value: serde_json::Value =
-        serde_json::from_str(data).map_err(|_| "settings must be valid JSON".to_string())?;
+        serde_json::from_str(data).map_err(|_| DeckError::from("settings must be valid JSON"))?;
     match value.get("updateChannel") {
         None => Ok(()),
         Some(serde_json::Value::String(channel))
@@ -674,7 +677,7 @@ mod tests {
 
         let bad = board(&card("s1", "PX", "C1", "deck-t-ab12")); // dangling ref
         let err = save_validated::<BoardDoc>(&p, &bad, "board").unwrap_err();
-        assert!(err.contains("refusing to save"), "{err}");
+        assert!(err.message().contains("refusing to save"), "{err}");
         assert_eq!(
             std::fs::read_to_string(&p).unwrap(),
             before,

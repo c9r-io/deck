@@ -15,7 +15,7 @@
 //! slug rule) + two ints, and redacts everything else — never add a free-form
 //! frontend log channel (log_privacy tests enforce this). Backend log lines
 //! never interpolate raw error Display text or a raw session NAME:
-//! `crate::applog::err_code()` maps errors to stable path-free categories (the full
+//! `crate::error::err_code()` maps errors to stable path-free categories (the full
 //! error goes only to the operation's caller) and `crate::applog::session_tag()`
 //! gives a per-RUN, non-reversible tag. Every line is redacted again by
 //! `sanitize_log` on its way to disk (absolute paths, `~/`, any `scheme://`,
@@ -72,6 +72,7 @@ use std::process::Command;
 
 use crate::applog::applog;
 use crate::datadir::now_epoch;
+use crate::error::DeckError;
 use crate::tmux::tmux;
 
 /// Per-event detail policy: which detail strings an event code may log.
@@ -413,17 +414,17 @@ pub(crate) fn build_export(header: &str, log: &str) -> String {
 }
 
 #[tauri::command]
-pub(crate) fn log_size() -> Result<u64, String> {
+pub(crate) fn log_size() -> Result<u64, DeckError> {
     crate::applog::log_size_at(&crate::datadir::deck_dir())
 }
 
 #[tauri::command]
-pub(crate) fn reset_logs() -> Result<(), String> {
+pub(crate) fn reset_logs() -> Result<(), DeckError> {
     crate::applog::reset_logs_at(&crate::datadir::deck_dir())
 }
 
 #[tauri::command]
-pub(crate) fn export_logs() -> Result<PathBuf, String> {
+pub(crate) fn export_logs() -> Result<PathBuf, DeckError> {
     let data_dir = crate::datadir::deck_dir();
     let dir = data_dir.join("exports");
     crate::datadir::create_private_dir(&dir)?;
@@ -654,7 +655,9 @@ mod tests {
                     }
                 }
             }
-            if file == "selection.js" {
+            // selection.js logs `selectionCopyFailureCode(error)`; the codes live
+            // in pure.js
+            if file == "pure.js" {
                 for label in ["selection-missing", "snapshot-failed"] {
                     assert!(text.contains(label), "copy failure code {label} vanished");
                     pairs.push((file.clone(), "terminal-copy".into(), label.into()));
@@ -732,7 +735,7 @@ mod tests {
     /// survives into the returned category.
     #[test]
     fn err_codes_are_stable_and_path_free() {
-        use crate::applog::err_code;
+        use crate::error::err_code;
         let real_io = std::fs::read_to_string("/no/such/deck-test-file")
             .unwrap_err()
             .to_string();
@@ -762,7 +765,7 @@ mod tests {
             ("something entirely different", "other"),
         ];
         for (input, want) in cases {
-            let got = crate::applog::err_code(input);
+            let got = crate::error::err_code(input);
             assert_eq!(got, want, "{input}");
             // categories are single tokens, never echoing the input
             assert!(!got.contains('/') && got.len() <= 16);

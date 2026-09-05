@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use crate::datadir::now_epoch;
+use crate::error::DeckError;
 use crate::storage;
 use crate::sync::LockRecover;
 
@@ -136,7 +137,7 @@ pub(crate) fn recent_commands(limit: usize) -> Vec<String> {
 /// Record a command run in a deck shell (typed, completed, or injected).
 /// deck owns its history: shells inside tmux sessions stay alive, so the
 /// user's ~/.zsh_history only fills on shell exit — too late for completion.
-pub(crate) fn record_into(path: &Path, cmd: &str) -> Result<(), String> {
+pub(crate) fn record_into(path: &Path, cmd: &str) -> Result<(), DeckError> {
     let _g = HIST_LOCK.lock_or_recover(); // serialize read-modify-write
     let mut hist = read_history_from(path);
     if let Some(e) = hist.iter_mut().find(|e| e.cmd == cmd) {
@@ -151,14 +152,14 @@ pub(crate) fn record_into(path: &Path, cmd: &str) -> Result<(), String> {
     }
     hist.sort_by_key(|e| std::cmp::Reverse(hist_score(e)));
     hist.truncate(500);
-    let raw = serde_json::to_string(&hist).map_err(|e| e.to_string())?;
+    let raw = serde_json::to_string(&hist).map_err(DeckError::from)?;
     // full shell commands are user content; storage::save creates every
     // artifact (main, .bak, temp) 0600 by construction
     storage::save_typed::<Vec<HistEntry>>(path, &raw)
 }
 
 #[tauri::command]
-pub(crate) fn record_command(cmd: String) -> Result<(), String> {
+pub(crate) fn record_command(cmd: String) -> Result<(), DeckError> {
     if !usable_command(&cmd) {
         return Ok(());
     }
@@ -167,7 +168,7 @@ pub(crate) fn record_command(cmd: String) -> Result<(), String> {
 
 /// Wipe history at `path`: empty the main file AND delete the .bak (which
 /// still holds the old commands — clearing means clearing).
-pub(crate) fn clear_into(path: &Path) -> Result<(), String> {
+pub(crate) fn clear_into(path: &Path) -> Result<(), DeckError> {
     let _g = HIST_LOCK.lock_or_recover();
     storage::save_typed::<Vec<HistEntry>>(path, "[]")?;
     let mut bak = path.as_os_str().to_owned();
@@ -178,7 +179,7 @@ pub(crate) fn clear_into(path: &Path) -> Result<(), String> {
 
 /// Wipe deck's own command history (file + backup) — Settings → privacy.
 #[tauri::command]
-pub(crate) fn history_clear() -> Result<(), String> {
+pub(crate) fn history_clear() -> Result<(), DeckError> {
     clear_into(&deck_history_path())
 }
 

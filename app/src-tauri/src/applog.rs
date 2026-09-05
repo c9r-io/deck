@@ -1,65 +1,22 @@
 //! `~/.deck/app.log`: structured, sanitized, 0600.
 //!
 //! Every line passes `redact::sanitize_log` on its way to disk; session
-//! names are logged as a per-run tag (`session_tag`), errors as a stable
-//! category (`err_code`) — the full error text goes back to the caller's
-//! toast, never into the log. One `LOG_LOCK` serializes append, reset,
+//! names are logged as a per-run tag (`session_tag`), errors as their
+//! `DeckError::code()` (`error.rs`) — the full error text goes back to the
+//! caller's toast, never into the log. One `LOG_LOCK` serializes append, reset,
 //! rotation and the one-time migration of logs an older deck wrote
 //! (`sanitize_existing_logs`); it recovers from poisoning on its own so
 //! `sync.rs` can log a recovered lock without depending on this lock.
 //! `applog` is a no-op under `cfg(test)`: unit tests never touch the real log.
 
 use crate::datadir::{atomic_write, create_private_dir, deck_dir, now_epoch, write_private};
+use crate::error::DeckError;
 use crate::redact::sanitize_log;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 static LOG_LOCK: Mutex<()> = Mutex::new(());
-
-/// Stable, content-free category for an error message. The FULL error text
-/// goes back to the current operation's caller (command result → UI toast);
-/// the log gets only this code — raw io/tmux/storage/serde Display texts can
-/// embed absolute paths, directories or file contents and must never be
-/// interpolated into app.log.
-pub(crate) fn err_code(e: &str) -> &'static str {
-    let l = e.to_ascii_lowercase();
-    if l.contains("permission denied") || l.contains("read-only") {
-        "perm"
-    } else if l.contains("already running") {
-        "locked"
-    } else if l.contains("not a directory") {
-        "not-dir"
-    } else if l.contains("tmux not runnable") {
-        "tmux-missing"
-    } else if l.contains("no such file") || l.contains("not found") || l.contains("no such path") {
-        "missing"
-    } else if l.contains("no space") || l.contains("quota") {
-        "disk-full"
-    } else if l.contains("newer deck") {
-        "newer-schema"
-    } else if l.contains("context identity changed") {
-        "context-changed"
-    } else if l.contains("invalid json")
-        || l.contains("wrong structure")
-        || l.contains("refusing to save")
-        || l.contains("expected")
-    {
-        "invalid-doc"
-    } else if l.contains("no server")
-        || l.contains("can't find session")
-        || l.contains("can't find pane")
-        || l.contains("no such session")
-    {
-        "no-session"
-    } else if l.contains("tmux") {
-        "tmux"
-    } else if l.contains("unreadable") || l.contains("backup") || l.contains("corrupt") {
-        "recovery"
-    } else {
-        "other"
-    }
-}
 
 /// Non-reversible, per-RUN short tag for a session name. Log lines need to
 /// correlate events of one session; the NAME itself is user-derived (it is
@@ -81,20 +38,20 @@ pub(crate) fn log_path(dir: &Path) -> PathBuf {
 
 /// Reset only the active diagnostic log, without creating a backup. The same
 /// lock guards append and rotation so no pre-reset file can be written back.
-pub(crate) fn reset_logs_at(dir: &Path) -> Result<(), String> {
+pub(crate) fn reset_logs_at(dir: &Path) -> Result<(), DeckError> {
     let _guard = LOG_LOCK
         .lock()
-        .map_err(|_| "log lock unavailable".to_string())?;
+        .map_err(|_| DeckError::from("log lock unavailable"))?;
     create_private_dir(dir)?;
     atomic_write(&log_path(dir), b"")
 }
 
-pub(crate) fn log_size_at(dir: &Path) -> Result<u64, String> {
+pub(crate) fn log_size_at(dir: &Path) -> Result<u64, DeckError> {
     match std::fs::metadata(log_path(dir)) {
         Ok(meta) if meta.is_file() => Ok(meta.len()),
         Ok(_) => Err("log is not a file".into()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(0),
-        Err(e) => Err(format!("could not read log size ({})", e.kind())),
+        Err(e) => Err(format!("could not read log size ({})", e.kind()).into()),
     }
 }
 

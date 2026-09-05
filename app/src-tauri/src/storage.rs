@@ -55,8 +55,10 @@
 //! damage → recovery), and `save` refuses to overwrite a malformed or future
 //! envelope.
 
-use crate::applog::{applog, err_code};
+use crate::applog::applog;
 use crate::datadir::{atomic_write, create_private_dir, now_epoch, restrict_to_user};
+use crate::error::err_code;
+use crate::error::{DeckError, ErrorKind};
 use crate::sync::LockRecover;
 use serde::de::DeserializeOwned;
 use std::path::{Path, PathBuf};
@@ -178,7 +180,7 @@ fn unique_corrupt_path(path: &Path) -> PathBuf {
 /// A bad main file is quarantined, then the `.bak` (same validation) is
 /// tried; success carries a warning for the UI, failure is a hard error the
 /// caller must surface — NOT to be treated as an empty first run.
-pub fn load_typed<T: DeserializeOwned>(path: &Path) -> Result<Option<LoadOutcome>, String> {
+pub fn load_typed<T: DeserializeOwned>(path: &Path) -> Result<Option<LoadOutcome>, DeckError> {
     if !path.exists() {
         return Ok(None);
     }
@@ -198,9 +200,11 @@ pub fn load_typed<T: DeserializeOwned>(path: &Path) -> Result<Option<LoadOutcome
             }))
         }
         Err(DocErr::Newer(n)) => {
-            return Err(format!(
+            return Err(DeckError::new(
+                ErrorKind::NewerSchema,
+                format!(
                 "{name} was written by a newer deck (schema v{n}, this build reads v{SCHEMA_VERSION}) — update deck; the file was left untouched"
-            ))
+            )))
         }
         Err(DocErr::Bad(e)) => e,
     };
@@ -242,12 +246,14 @@ pub fn load_typed<T: DeserializeOwned>(path: &Path) -> Result<Option<LoadOutcome
                 warning: Some(warning),
             }))
         }
-        Err(DocErr::Newer(n)) => Err(format!(
+        Err(DocErr::Newer(n)) => Err(DeckError::new(
+                ErrorKind::NewerSchema,
+                format!(
             "{name} is unreadable ({main_err}) and its backup was written by a newer deck (schema v{n}) — update deck{kept_at}"
-        )),
+        ))),
         Err(DocErr::Bad(bak_err)) => Err(format!(
             "{name} is unreadable ({main_err}) and its backup is unusable ({bak_err}){kept_at}"
-        )),
+        ).into()),
     }
 }
 
@@ -258,14 +264,14 @@ fn save_checked(
     path: &Path,
     payload: &str,
     keep_backup: bool,
-    validate_existing: impl Fn(&serde_json::Value) -> Result<(), String>,
-) -> Result<(), String> {
+    validate_existing: impl Fn(&serde_json::Value) -> Result<(), DeckError>,
+) -> Result<(), DeckError> {
     // Scheduler workers and UI commands can save concurrently. Serialize the
     // validate → backup → replace sequence so one writer cannot validate
     // bytes another writer replaces before its backup is taken.
     let _save_guard = SAVE_LOCK.lock_or_recover();
-    let data: serde_json::Value =
-        serde_json::from_str(payload).map_err(|e| format!("refusing to save invalid JSON: {e}"))?;
+    let data: serde_json::Value = serde_json::from_str(payload)
+        .map_err(|e| DeckError::from(format!("refusing to save invalid JSON: {e}")))?;
     // Never clobber a file this build does not understand. `load_typed`
     // quarantines a damaged main file before anything can save over it, so
     // reaching here with a broken envelope means the file was never loaded
@@ -286,14 +292,16 @@ fn save_checked(
                     )
                 })?,
                 Err(DocErr::Newer(n)) => {
-                    return Err(format!(
+                    return Err(DeckError::new(
+                ErrorKind::NewerSchema,
+                format!(
                         "refusing to overwrite {name} — it was written by a newer deck (schema v{n}); update deck first"
-                    ))
+                    )))
                 }
                 Err(DocErr::Bad(e)) => {
                     return Err(format!(
                         "refusing to overwrite {name} — its version envelope is unreadable ({e}); move the file aside first"
-                    ))
+                    ).into())
                 }
             }
             Some(bytes)
@@ -302,27 +310,26 @@ fn save_checked(
         Err(_) => {
             return Err(format!(
                 "refusing to overwrite {name} — the existing file could not be read"
-            ))
+            )
+            .into())
         }
     };
     let doc = serde_json::json!({ "schema_version": SCHEMA_VERSION, "data": data });
-    let out = serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?;
+    let out = serde_json::to_string_pretty(&doc).map_err(DeckError::from)?;
 
     let dir = path.parent().ok_or("data path has no parent directory")?;
     create_private_dir(dir)?;
     if keep_backup {
         if let Some(cur) = existing {
-            atomic_write(&bak_path(path), &cur).map_err(|e| format!("backup failed: {e}"))?;
+            atomic_write(&bak_path(path), &cur)
+                .map_err(|e| DeckError::from(format!("backup failed: {e}")))?;
         }
     } else {
         match std::fs::remove_file(bak_path(path)) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => {
-                return Err(format!(
-                    "could not remove transient backup ({})",
-                    error.kind()
-                ))
+                return Err(format!("could not remove transient backup ({})", error.kind()).into())
             }
         }
     }
@@ -330,20 +337,20 @@ fn save_checked(
 }
 
 #[allow(dead_code)] // low-level envelope tests intentionally exercise this directly
-pub fn save(path: &Path, payload: &str) -> Result<(), String> {
+pub fn save(path: &Path, payload: &str) -> Result<(), DeckError> {
     save_checked(path, payload, true, |_| Ok(()))
 }
 
 /// Typed save used by every app data file. It validates both the new payload
 /// and any concurrently replaced existing payload under the same save lock,
 /// so malformed business structure cannot be silently overwritten.
-pub(crate) fn save_typed<T: DeserializeOwned>(path: &Path, payload: &str) -> Result<(), String> {
+pub(crate) fn save_typed<T: DeserializeOwned>(path: &Path, payload: &str) -> Result<(), DeckError> {
     serde_json::from_str::<T>(payload)
-        .map_err(|e| format!("refusing to save wrong structure: {e}"))?;
+        .map_err(|e| DeckError::from(format!("refusing to save wrong structure: {e}")))?;
     save_checked(path, payload, true, |existing| {
         serde_json::from_value::<T>(existing.clone())
             .map(|_| ())
-            .map_err(|e| e.to_string())
+            .map_err(DeckError::from)
     })
 }
 
@@ -353,13 +360,13 @@ pub(crate) fn save_typed<T: DeserializeOwned>(path: &Path, payload: &str) -> Res
 pub(crate) fn save_typed_ephemeral<T: DeserializeOwned>(
     path: &Path,
     payload: &str,
-) -> Result<(), String> {
+) -> Result<(), DeckError> {
     serde_json::from_str::<T>(payload)
-        .map_err(|e| format!("refusing to save wrong structure: {e}"))?;
+        .map_err(|e| DeckError::from(format!("refusing to save wrong structure: {e}")))?;
     save_checked(path, payload, false, |existing| {
         serde_json::from_value::<T>(existing.clone())
             .map(|_| ())
-            .map_err(|e| e.to_string())
+            .map_err(DeckError::from)
     })
 }
 
@@ -374,7 +381,7 @@ mod tests {
         d
     }
 
-    fn load_doc(p: &Path) -> Result<Option<LoadOutcome>, String> {
+    fn load_doc(p: &Path) -> Result<Option<LoadOutcome>, DeckError> {
         load_typed::<Doc>(p)
     }
 
@@ -476,11 +483,11 @@ mod tests {
         std::fs::write(bak_path(&p), "{worse").unwrap();
         let err = load_doc(&p).unwrap_err();
         assert!(
-            err.contains("unreadable") && err.contains("backup is unusable"),
+            err.message().contains("unreadable") && err.message().contains("backup is unusable"),
             "{err}"
         );
         assert!(
-            err.contains("corrupt-"),
+            err.message().contains("corrupt-"),
             "tells the user where the bytes are: {err}"
         );
         assert!(!p.exists(), "main moved aside");
@@ -498,7 +505,7 @@ mod tests {
         let p = d.join("x.json");
         std::fs::write(&p, r#"{"schema_version": 99, "data": {"v":1}}"#).unwrap();
         let err = load_doc(&p).unwrap_err();
-        assert!(err.contains("newer deck"), "{err}");
+        assert!(err.message().contains("newer deck"), "{err}");
         assert!(p.exists(), "file left in place");
         assert!(
             !std::fs::read_dir(&d).unwrap().any(|e| e
@@ -509,7 +516,10 @@ mod tests {
             "never marked corrupt"
         );
         let err = save(&p, r#"{"v":2}"#).unwrap_err();
-        assert!(err.contains("newer deck"), "save refuses too: {err}");
+        assert!(
+            err.message().contains("newer deck"),
+            "save refuses too: {err}"
+        );
         assert!(std::fs::read_to_string(&p).unwrap().contains("99"));
     }
 
@@ -535,7 +545,8 @@ mod tests {
             std::fs::write(&p, doc).unwrap();
             let err = load_doc(&p).unwrap_err();
             assert!(
-                err.contains("unreadable") && err.contains("backup is unusable"),
+                err.message().contains("unreadable")
+                    && err.message().contains("backup is unusable"),
                 "{doc} → {err}"
             );
             assert!(!p.exists(), "{doc}: damaged main file was quarantined");
@@ -599,8 +610,8 @@ mod tests {
         std::fs::write(&p, r#"{"schema_version":1}"#).unwrap();
         std::fs::write(bak_path(&p), r#"{"data":{"v":1}}"#).unwrap();
         let err = load_doc(&p).unwrap_err();
-        assert!(err.contains("backup is unusable"), "{err}");
-        assert!(err.contains("no schema_version field"), "{err}");
+        assert!(err.message().contains("backup is unusable"), "{err}");
+        assert!(err.message().contains("no schema_version field"), "{err}");
     }
 
     #[test]
@@ -617,7 +628,10 @@ mod tests {
             let bak = bak_path(&p);
             std::fs::write(&bak, doc).unwrap();
             let err = save(&p, r#"{"v":2}"#).unwrap_err();
-            assert!(err.contains("refusing to overwrite"), "{doc} → {err}");
+            assert!(
+                err.message().contains("refusing to overwrite"),
+                "{doc} → {err}"
+            );
             assert_eq!(std::fs::read_to_string(&p).unwrap(), doc, "main untouched");
             assert_eq!(
                 std::fs::read_to_string(&bak).unwrap(),
@@ -636,7 +650,10 @@ mod tests {
         std::fs::write(&p, b"{broken main").unwrap();
         std::fs::write(&bak, good_backup).unwrap();
         let err = save(&p, r#"{"v":8}"#).unwrap_err();
-        assert!(err.contains("refusing to overwrite") && err.contains("invalid JSON"));
+        assert!(
+            err.message().contains("refusing to overwrite")
+                && err.message().contains("invalid JSON")
+        );
         assert_eq!(std::fs::read(&p).unwrap(), b"{broken main");
         assert_eq!(std::fs::read_to_string(&bak).unwrap(), good_backup);
     }
@@ -651,7 +668,7 @@ mod tests {
         std::fs::write(&p, malformed).unwrap();
         std::fs::write(&bak, good_backup).unwrap();
         let err = save_typed::<Doc>(&p, r#"{"v":8}"#).unwrap_err();
-        assert!(err.contains("wrong structure"));
+        assert!(err.message().contains("wrong structure"));
         assert_eq!(std::fs::read_to_string(&p).unwrap(), malformed);
         assert_eq!(std::fs::read_to_string(&bak).unwrap(), good_backup);
     }
@@ -662,7 +679,7 @@ mod tests {
         let p = d.join("x.json");
         std::fs::create_dir(&p).unwrap();
         let err = save(&p, r#"{"v":1}"#).unwrap_err();
-        assert!(err.contains("refusing to overwrite"));
+        assert!(err.message().contains("refusing to overwrite"));
         assert!(p.is_dir(), "existing main object was untouched");
     }
 

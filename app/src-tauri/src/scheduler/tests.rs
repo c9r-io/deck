@@ -3,6 +3,7 @@
 
 use super::*;
 use crate::context::ProbeResult;
+use crate::error::DeckError;
 
 fn qi(id: &str, mode: &str) -> QueueItem {
     QueueItem {
@@ -897,7 +898,7 @@ fn orphan_ledger_boot_failure_is_immediately_decidable_and_ack_is_transactional(
 
 // ---------- send_one: the full firing state machine with fakes ----------
 
-fn ok_persist(_: &QueueState) -> Result<(), String> {
+fn ok_persist(_: &QueueState) -> Result<(), DeckError> {
     Ok(())
 }
 
@@ -909,8 +910,8 @@ fn send_test(
     session: &str,
     now_min: u32,
     activity: &HashMap<String, u64>,
-    fire: &(dyn Fn(&QueueItem) -> Result<(), String> + Sync),
-    persist: &(dyn Fn(&QueueState) -> Result<(), String> + Sync),
+    fire: &(dyn Fn(&QueueItem) -> Result<(), DeckError> + Sync),
+    persist: &(dyn Fn(&QueueState) -> Result<(), DeckError> + Sync),
 ) -> SendResult {
     let kill = |_: &str| {};
     send_one(
@@ -1086,7 +1087,7 @@ fn probe_result(status: ContextStatus, code: ContextCode, identity: u32) -> Prob
 
 fn send_safe_test(
     qm: &Mutex<QueueState>,
-    fire: &(dyn Fn(&QueueItem) -> Result<(), String> + Sync),
+    fire: &(dyn Fn(&QueueItem) -> Result<(), DeckError> + Sync),
     prepare: &(dyn Fn(&QueueItem, &dyn Fn() -> bool) -> ProbeResult + Sync),
     final_probe: &(dyn Fn(&QueueItem) -> ProbeResult + Sync),
 ) -> SendResult {
@@ -1591,7 +1592,7 @@ impl FakeDisk {
             writes: Mutex::new(vec![serde_json::to_string(initial).unwrap()]),
         }
     }
-    fn persist(&self, q: &QueueState) -> Result<(), String> {
+    fn persist(&self, q: &QueueState) -> Result<(), DeckError> {
         if self.fail.load(AtomicOrdering::Relaxed) {
             return Err("No space left on device (os error 28)".into());
         }
@@ -1645,7 +1646,7 @@ fn every_queue_mutation_is_all_or_nothing() {
         other.session = "other".into();
         qs(vec![a, b, f, other])
     };
-    type Mutation = (&'static str, fn(&mut QueueState) -> Result<(), String>);
+    type Mutation = (&'static str, fn(&mut QueueState) -> Result<(), DeckError>);
     let mutations: Vec<Mutation> = vec![
         ("add", |q| {
             add_item(q, add_args("s", "fresh"), "fresh".into())
@@ -1683,7 +1684,7 @@ fn every_queue_mutation_is_all_or_nothing() {
         let disk_before = disk.on_disk();
         let err = with_queue(&qm, &|q| disk.persist(q), mutate)
             .expect_err(&format!("{name}: failed save must be an error"));
-        assert_eq!(crate::applog::err_code(&err), "disk-full", "{name}: {err}");
+        assert_eq!(err.code(), "disk-full", "{name}: {err}");
         assert_eq!(
             serde_json::to_string(&*qm.lock().unwrap()).unwrap(),
             before,

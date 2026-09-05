@@ -13,6 +13,7 @@ mod datadir;
 mod diagnostics;
 mod documents;
 mod drops;
+mod error;
 mod history;
 mod inbound;
 mod inbound_slack;
@@ -38,6 +39,7 @@ mod updater;
 
 pub(crate) use applog::applog;
 
+use crate::error::DeckError;
 use std::process::Command;
 use tauri::{Emitter, Manager};
 
@@ -107,21 +109,19 @@ struct NativeMenu {
 }
 
 #[tauri::command]
-fn set_native_locale(locale: String, menu: tauri::State<'_, NativeMenu>) -> Result<(), String> {
+fn set_native_locale(locale: String, menu: tauri::State<'_, NativeMenu>) -> Result<(), DeckError> {
     if !matches!(locale.as_str(), "system" | "en" | "zh-Hans") {
         return Err("invalid locale".into());
     }
     let s = native_strings(&locale);
-    menu.clear.set_text(s.clear).map_err(|e| e.to_string())?;
+    menu.clear.set_text(s.clear).map_err(DeckError::text)?;
     menu.export_logs
         .set_text(s.export_logs)
-        .map_err(|e| e.to_string())?;
+        .map_err(DeckError::text)?;
     menu.check_updates
         .set_text(s.check_updates)
-        .map_err(|e| e.to_string())?;
-    menu.terminal
-        .set_text(s.terminal)
-        .map_err(|e| e.to_string())
+        .map_err(DeckError::text)?;
+    menu.terminal.set_text(s.terminal).map_err(DeckError::text)
 }
 
 // ---------- main ---------------------------------------------------------------
@@ -157,7 +157,7 @@ fn main() {
     if let Err(e) = crate::instance_lock::acquire_instance_lock(&deck_dir) {
         applog(&format!(
             "[boot] instance lock unavailable ({}) — exiting",
-            crate::applog::err_code(&e)
+            e.code()
         ));
         // No alert: the only way to show one without a dialog plugin is
         // `osascript`, and AppleScript execution from a third-party app is
@@ -240,7 +240,7 @@ fn main() {
                     match diagnostics::export_logs() {
                         Ok(_) => applog("[export] logs written"),
                         Err(err) => {
-                            applog(&format!("[export] FAILED ({})", crate::applog::err_code(&err)))
+                            applog(&format!("[export] FAILED ({})", err.code()))
                         }
                     }
                 }

@@ -11,6 +11,7 @@
 //! minisign verification and install. Build identity is only numeric version +
 //! a bounded hex commit from `build.rs`.
 
+use crate::error::DeckError;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 use tauri_plugin_updater::UpdaterExt;
@@ -21,7 +22,7 @@ const NIGHTLY_UPDATE_ENDPOINT: &str =
     "https://github.com/c9r-io/deck/releases/download/nightly-feed/latest.json";
 const NIGHTLY_UPDATE_PUBKEY: &str = include_str!("../updater/nightly.pub.b64");
 
-fn update_source(channel: &str) -> Result<(&'static str, Option<&'static str>), String> {
+fn update_source(channel: &str) -> Result<(&'static str, Option<&'static str>), DeckError> {
     match channel {
         // Stable keeps using the key from tauri.conf.json. Nightly overrides
         // it with a separately generated key so compromise of the candidate
@@ -45,25 +46,25 @@ fn strict_release_version(value: &str) -> bool {
 async fn update_for_channel(
     app: &AppHandle,
     channel: &str,
-) -> Result<Option<tauri_plugin_updater::Update>, String> {
+) -> Result<Option<tauri_plugin_updater::Update>, DeckError> {
     let (endpoint, pubkey) = update_source(channel)?;
     let endpoint = endpoint
         .parse()
-        .map_err(|_| "configured update endpoint is invalid".to_string())?;
+        .map_err(|_| DeckError::from("configured update endpoint is invalid"))?;
     let mut builder = app
         .updater_builder()
         .endpoints(vec![endpoint])
-        .map_err(|_| "configured update endpoint was rejected".to_string())?;
+        .map_err(|_| DeckError::from("configured update endpoint was rejected"))?;
     if let Some(pubkey) = pubkey {
         builder = builder.pubkey(pubkey);
     }
     let updater = builder
         .build()
-        .map_err(|_| "updater could not be initialized".to_string())?;
+        .map_err(|_| DeckError::from("updater could not be initialized"))?;
     updater
         .check()
         .await
-        .map_err(|_| "update check failed".to_string())
+        .map_err(|_| DeckError::from("update check failed"))
 }
 
 #[derive(Serialize)]
@@ -88,7 +89,7 @@ struct UpdateProgress {
 pub(crate) async fn check_for_update(
     app: AppHandle,
     channel: String,
-) -> Result<Option<UpdateInfo>, String> {
+) -> Result<Option<UpdateInfo>, DeckError> {
     Ok(update_for_channel(&app, &channel)
         .await?
         .map(|update| UpdateInfo {
@@ -106,7 +107,7 @@ pub(crate) async fn install_update(
     app: AppHandle,
     channel: String,
     expected_version: String,
-) -> Result<(), String> {
+) -> Result<(), DeckError> {
     if !strict_release_version(&expected_version) {
         return Err("expected update version is invalid".into());
     }
@@ -146,8 +147,9 @@ pub(crate) async fn install_update(
     if result.is_err() {
         crate::tmux_lifecycle::cancel_app_update_install();
     }
-    result
-        .map_err(|_| "update download, signature verification, or installation failed".to_string())
+    result.map_err(|_| {
+        DeckError::from("update download, signature verification, or installation failed")
+    })
 }
 
 #[derive(Serialize)]

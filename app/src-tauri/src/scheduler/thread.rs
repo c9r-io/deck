@@ -10,6 +10,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use super::*;
 use crate::applog::applog;
 use crate::datadir::now_epoch;
+use crate::error::DeckError;
 use crate::storage;
 use crate::sync::LockRecover;
 use crate::tmux::tmux;
@@ -19,7 +20,7 @@ use crate::tmux::tmux;
 /// write fails. `dirty` then gives the scheduler a real retry driver.
 pub(super) fn boot_queues_with(
     mut loaded: QueueState,
-    persist: &dyn Fn(&QueueState) -> Result<(), String>,
+    persist: &dyn Fn(&QueueState) -> Result<(), DeckError>,
 ) -> Queues {
     let has_interrupted = {
         loaded.items.iter().any(|i| i.state == "firing")
@@ -37,7 +38,7 @@ pub(super) fn boot_queues_with(
             queues.dirty.store(true, AtomicOrdering::Relaxed);
             storage::warn(format!(
                 "interrupted deliveries are available to acknowledge or retry now; their recovered state could not be saved yet ({}), so deck will keep retrying",
-                crate::applog::err_code(&e)
+                e.code()
             ));
         }
         drop(q);
@@ -132,7 +133,7 @@ pub(crate) fn spawn_scheduler(app: AppHandle) {
                 }
                 Err(e) => applog(&format!(
                     "[queue] persist (expiry purge) FAILED ({}) — rules kept",
-                    crate::applog::err_code(&e)
+                    e.code()
                 )),
             }
         }

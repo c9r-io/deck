@@ -15,6 +15,7 @@ use std::path::PathBuf;
 
 use crate::applog::applog;
 use crate::datadir::now_epoch;
+use crate::error::DeckError;
 
 // ---------- dropped files -------------------------------------------------------
 
@@ -62,7 +63,7 @@ pub(crate) fn save_drop_into(
     dir: &std::path::Path,
     name: &str,
     bytes: &[u8],
-) -> Result<PathBuf, String> {
+) -> Result<PathBuf, DeckError> {
     if bytes.is_empty() {
         return Err("empty file".into());
     }
@@ -87,11 +88,11 @@ pub(crate) fn save_drop_into(
 /// path, hence the round-trip. Files land 0600 in ~/.deck/drops (0700,
 /// pruned of week-old entries at boot); neither name nor content is logged.
 #[tauri::command]
-pub(crate) fn save_dropped_file(name: String, data_b64: String) -> Result<String, String> {
+pub(crate) fn save_dropped_file(name: String, data_b64: String) -> Result<String, DeckError> {
     use base64::Engine;
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(data_b64)
-        .map_err(|_| "malformed file payload".to_string())?;
+        .map_err(|_| DeckError::from("malformed file payload"))?;
     let path = save_drop_into(&crate::datadir::deck_dir().join("drops"), &name, &bytes)?;
     applog(&format!("[drop] saved {}B", bytes.len()));
     Ok(path.display().to_string())

@@ -17,6 +17,7 @@ use tauri::{AppHandle, Emitter};
 
 use crate::applog::applog;
 use crate::datadir::now_epoch;
+use crate::error::{DeckError, ErrorKind};
 use crate::sync::LockRecover;
 use crate::tmux::{
     expand_tilde, init_deck_server, pane_target, session_target, tmux, tmux_bin, tmux_with_stdin,
@@ -47,7 +48,7 @@ fn validated_palette_color(value: &str) -> bool {
 pub(crate) fn set_terminal_mode_style(
     foreground: String,
     background: String,
-) -> Result<(), String> {
+) -> Result<(), DeckError> {
     if !validated_palette_color(&foreground) || !validated_palette_color(&background) {
         return Err("terminal palette colors must be six-digit hex values".into());
     }
@@ -159,7 +160,7 @@ pub(crate) fn start_session(
     dir: String,
     cmd: String,
     restore_shell: bool,
-) -> Result<StartSessionResult, String> {
+) -> Result<StartSessionResult, DeckError> {
     validate_session_name(&name)?;
     if tmux(&["has-session", "-t", &session_target(&name)]).is_ok() {
         return Ok(StartSessionResult {
@@ -188,7 +189,7 @@ pub(crate) fn start_session(
         .filter(|cwd| std::path::Path::new(cwd).is_dir())
         .unwrap_or(requested_dir);
     if !std::path::Path::new(&dir).is_dir() {
-        return Err(format!("not a directory: {dir}"));
+        return Err(format!("not a directory: {dir}").into());
     }
     let bootstrap = recovery
         .as_ref()
@@ -200,7 +201,7 @@ pub(crate) fn start_session(
                     applog(&format!(
                         "[shell-state] bootstrap unavailable for {} ({})",
                         crate::applog::session_tag(&name),
-                        crate::applog::err_code(&error)
+                        error.code()
                     ));
                     None
                 }
@@ -222,7 +223,7 @@ pub(crate) fn start_session(
                 applog(&format!(
                     "[shell-state] restore start unavailable for {} ({}); starting a clean shell",
                     crate::applog::session_tag(&name),
-                    crate::applog::err_code(&error)
+                    error.code()
                 ));
                 // the sequence may have failed after the pane already existed
                 if tmux(&["has-session", "-t", &session_target(&name)]).is_ok() {
@@ -271,20 +272,20 @@ fn pbcopy_command() -> Command {
 }
 
 #[tauri::command]
-pub(crate) fn write_clipboard(text: String) -> Result<(), String> {
+pub(crate) fn write_clipboard(text: String) -> Result<(), DeckError> {
     use std::io::Write as _;
     let mut child = pbcopy_command()
         .spawn()
-        .map_err(|_| "clipboard-write-failed".to_string())?;
+        .map_err(|_| DeckError::from("clipboard-write-failed"))?;
     child
         .stdin
         .take()
         .ok_or("clipboard-write-failed")?
         .write_all(text.as_bytes())
-        .map_err(|_| "clipboard-write-failed".to_string())?;
+        .map_err(|_| DeckError::from("clipboard-write-failed"))?;
     let status = child
         .wait()
-        .map_err(|_| "clipboard-write-failed".to_string())?;
+        .map_err(|_| DeckError::from("clipboard-write-failed"))?;
     if status.success() {
         Ok(())
     } else {
@@ -293,7 +294,7 @@ pub(crate) fn write_clipboard(text: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub(crate) fn kill_session(name: String) -> Result<(), String> {
+pub(crate) fn kill_session(name: String) -> Result<(), DeckError> {
     validate_session_name(&name)?;
     idempotent_kill_result(tmux(&["kill-session", "-t", &session_target(&name)]))?;
     // Closing a card is also a privacy deletion: its transcript, backup and
@@ -301,12 +302,12 @@ pub(crate) fn kill_session(name: String) -> Result<(), String> {
     crate::shell_state::clear_snapshot(&name)
 }
 
-pub(crate) fn idempotent_kill_result(result: Result<String, String>) -> Result<(), String> {
+pub(crate) fn idempotent_kill_result(result: Result<String, DeckError>) -> Result<(), DeckError> {
     match result {
         Ok(_) => Ok(()),
         // Closing an already-gone session is the successful end state. This
         // also covers an empty deck tmux server ("no server running").
-        Err(e) if matches!(crate::applog::err_code(&e), "no-session" | "missing") => Ok(()),
+        Err(e) if matches!(e.kind(), ErrorKind::NoSession | ErrorKind::Missing) => Ok(()),
         Err(e) => Err(e),
     }
 }
@@ -467,10 +468,7 @@ pub(crate) fn poll_sessions(
         match &listing {
             Err(e) if !*broken => {
                 *broken = true;
-                applog(&format!(
-                    "[poll] session listing FAILED ({})",
-                    crate::applog::err_code(e)
-                ));
+                applog(&format!("[poll] session listing FAILED ({})", e.code()));
             }
             Ok(_) if *broken => {
                 *broken = false;

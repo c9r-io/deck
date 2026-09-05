@@ -27,6 +27,7 @@ use std::time::Duration;
 use tauri::AppHandle;
 
 use crate::applog::applog;
+use crate::error::DeckError;
 
 const HELPER_FLAG: &str = "--deck-relauncher";
 const WAIT_ATTEMPTS: usize = 600;
@@ -261,7 +262,7 @@ fn helper_command(executable: PathBuf, target: &RelaunchTarget, pid: u32) -> Com
     command
 }
 
-fn schedule_clean_relaunch() -> Result<(), String> {
+fn schedule_clean_relaunch() -> Result<(), DeckError> {
     let target = TARGET
         .get()
         .and_then(Option::as_ref)
@@ -274,13 +275,13 @@ fn schedule_clean_relaunch() -> Result<(), String> {
     helper_command(executable, target, pid)
         .spawn()
         .map(drop)
-        .map_err(|_| "clean application relaunch could not be scheduled".to_string())
+        .map_err(|_| DeckError::from("clean application relaunch could not be scheduled"))
 }
 
 /// Future updates never use Tauri's child-process restart. The command is
 /// accepted only after this process successfully installed a verified update.
 #[tauri::command]
-pub(crate) fn relaunch_after_update(app: AppHandle) -> Result<(), String> {
+pub(crate) fn relaunch_after_update(app: AppHandle) -> Result<(), DeckError> {
     if !crate::tmux_lifecycle::app_update_installing() {
         return Err("no installed update is awaiting relaunch".into());
     }

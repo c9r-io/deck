@@ -57,6 +57,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::applog::applog;
 use crate::datadir::now_epoch;
+use crate::error::DeckError;
 use crate::storage;
 use crate::sync::LockRecover;
 use crate::tmux::{pane_target, tmux, validate_session_name};
@@ -97,9 +98,9 @@ struct ShellSnapshotRaw {
 }
 
 impl TryFrom<ShellSnapshotRaw> for ShellSnapshot {
-    type Error = String;
+    type Error = DeckError;
 
-    fn try_from(raw: ShellSnapshotRaw) -> Result<Self, String> {
+    fn try_from(raw: ShellSnapshotRaw) -> Result<Self, DeckError> {
         validate_session_name(&raw.session)?;
         if !valid_cwd(&raw.cwd) {
             return Err("snapshot cwd must be a bounded absolute path without controls".into());
@@ -151,12 +152,12 @@ fn snapshot_dir() -> PathBuf {
     crate::datadir::deck_dir().join("shell-state")
 }
 
-fn snapshot_path_in(dir: &Path, session: &str) -> Result<PathBuf, String> {
+fn snapshot_path_in(dir: &Path, session: &str) -> Result<PathBuf, DeckError> {
     validate_session_name(session)?;
     Ok(dir.join(format!("{session}.json")))
 }
 
-fn snapshot_path(session: &str) -> Result<PathBuf, String> {
+fn snapshot_path(session: &str) -> Result<PathBuf, DeckError> {
     snapshot_path_in(&snapshot_dir(), session)
 }
 
@@ -219,7 +220,7 @@ fn bound_tail(text: &str, max: usize) -> String {
     }
 }
 
-fn load_snapshot_from(path: &Path) -> Result<Option<ShellSnapshot>, String> {
+fn load_snapshot_from(path: &Path) -> Result<Option<ShellSnapshot>, DeckError> {
     let Some(outcome) = storage::load_typed::<ShellSnapshot>(path)? else {
         return Ok(None);
     };
@@ -227,7 +228,7 @@ fn load_snapshot_from(path: &Path) -> Result<Option<ShellSnapshot>, String> {
         storage::warn(format!("shell recovery snapshot recovered: {warning}"));
     }
     let snapshot: ShellSnapshot =
-        serde_json::from_str(&outcome.payload).map_err(|e| e.to_string())?;
+        serde_json::from_str(&outcome.payload).map_err(DeckError::from)?;
     if now_epoch().saturating_sub(snapshot.updated) > MAX_SNAPSHOT_AGE_SECS {
         if let Some(dir) = path.parent() {
             remove_snapshot_files_in(dir, &snapshot.session)?;
@@ -237,7 +238,7 @@ fn load_snapshot_from(path: &Path) -> Result<Option<ShellSnapshot>, String> {
     Ok(Some(snapshot))
 }
 
-pub(crate) fn load_snapshot(session: &str) -> Result<Option<ShellSnapshot>, String> {
+pub(crate) fn load_snapshot(session: &str) -> Result<Option<ShellSnapshot>, DeckError> {
     let snapshot = load_snapshot_from(&snapshot_path(session)?)?;
     if snapshot
         .as_ref()
@@ -262,7 +263,7 @@ pub(crate) fn snapshot_for_start(session: &str, cmd: &str, enabled: bool) -> Opt
             applog(&format!(
                 "[shell-state] recovery unavailable for {} ({})",
                 crate::applog::session_tag(session),
-                crate::applog::err_code(&error)
+                error.code()
             ));
             None
         }
@@ -295,7 +296,7 @@ fn restore_buffer_name(attempt: u64) -> String {
 /// Build a one-use private tmux buffer payload. The snapshot JSON itself is
 /// never exposed to the pane, and the transcript is sanitized again here so
 /// this path remains safe if its caller changes later.
-pub(crate) fn prepare_bootstrap(snapshot: &ShellSnapshot) -> Result<ShellBootstrap, String> {
+pub(crate) fn prepare_bootstrap(snapshot: &ShellSnapshot) -> Result<ShellBootstrap, DeckError> {
     let transcript = sanitize_transcript(&snapshot.transcript);
     if transcript.trim().is_empty() {
         return Err("shell snapshot transcript is empty".into());
@@ -341,13 +342,13 @@ fn backup_path(path: &Path) -> PathBuf {
     PathBuf::from(os)
 }
 
-fn remove_snapshot_files_in(dir: &Path, session: &str) -> Result<(), String> {
+fn remove_snapshot_files_in(dir: &Path, session: &str) -> Result<(), DeckError> {
     let main = snapshot_path_in(dir, session)?;
     for path in [main.clone(), backup_path(&main)] {
         match std::fs::remove_file(path) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(format!("could not remove shell snapshot ({})", e.kind())),
+            Err(e) => return Err(format!("could not remove shell snapshot ({})", e.kind()).into()),
         }
     }
     // Also erase quarantined copies for this session.  They can contain the
@@ -367,7 +368,7 @@ fn remove_snapshot_files_in(dir: &Path, session: &str) -> Result<(), String> {
     Ok(())
 }
 
-pub(crate) fn clear_snapshot(session: &str) -> Result<(), String> {
+pub(crate) fn clear_snapshot(session: &str) -> Result<(), DeckError> {
     validate_session_name(session)?;
     {
         let mut tracker = TRACKER.lock_or_recover();
@@ -380,7 +381,7 @@ pub(crate) fn clear_snapshot(session: &str) -> Result<(), String> {
 
 /// Privacy control: erase main, backup and quarantined snapshot files.  The
 /// epoch + IO lock makes disabling race-safe with an already-running capture.
-pub(crate) fn clear_all() -> Result<(), String> {
+pub(crate) fn clear_all() -> Result<(), DeckError> {
     {
         let mut tracker = TRACKER.lock_or_recover();
         tracker.epoch = tracker.epoch.wrapping_add(1);
@@ -395,8 +396,9 @@ pub(crate) fn clear_all() -> Result<(), String> {
         if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
             continue; // never follow a symlink out of the private directory
         }
-        std::fs::remove_file(entry.path())
-            .map_err(|e| format!("could not clear shell snapshots ({})", e.kind()))?;
+        std::fs::remove_file(entry.path()).map_err(|e| {
+            DeckError::from(format!("could not clear shell snapshots ({})", e.kind()))
+        })?;
     }
     Ok(())
 }
@@ -427,7 +429,7 @@ fn prune_snapshot_count(dir: &Path, keep: &Path) {
     }
 }
 
-fn save_snapshot(snapshot: &ShellSnapshot, epoch: u64) -> Result<bool, String> {
+fn save_snapshot(snapshot: &ShellSnapshot, epoch: u64) -> Result<bool, DeckError> {
     let path = snapshot_path(&snapshot.session)?;
     let _io = SNAPSHOT_IO.lock_or_recover();
     if TRACKER.lock_or_recover().epoch != epoch {
@@ -437,12 +439,12 @@ fn save_snapshot(snapshot: &ShellSnapshot, epoch: u64) -> Result<bool, String> {
         crate::datadir::create_private_dir(dir)?;
         prune_snapshot_count(dir, &path);
     }
-    let raw = serde_json::to_string(snapshot).map_err(|e| e.to_string())?;
+    let raw = serde_json::to_string(snapshot).map_err(DeckError::from)?;
     storage::save_typed_ephemeral::<ShellSnapshot>(&path, &raw)?;
     Ok(true)
 }
 
-fn capture(observation: &ShellObservation) -> Result<ShellSnapshot, String> {
+fn capture(observation: &ShellObservation) -> Result<ShellSnapshot, DeckError> {
     let raw = tmux(&[
         "capture-pane",
         "-p",
@@ -524,7 +526,7 @@ pub(crate) fn schedule_checkpoints(observations: Vec<ShellObservation>, enabled:
                 Err(error) => applog(&format!(
                     "[shell-state] checkpoint failed for {} ({})",
                     crate::applog::session_tag(&observation.session),
-                    crate::applog::err_code(&error)
+                    error.code()
                 )),
             }
         }
@@ -546,7 +548,7 @@ pub(crate) fn schedule_checkpoints(observations: Vec<ShellObservation>, enabled:
 }
 
 #[tauri::command]
-pub(crate) fn shell_snapshots_clear() -> Result<(), String> {
+pub(crate) fn shell_snapshots_clear() -> Result<(), DeckError> {
     clear_all()
 }
 

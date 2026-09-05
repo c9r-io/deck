@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::error::DeckError;
 use crate::sync::LockRecover;
 use crate::tmux::{pane_target, tmux, tmux_owned, validate_session_name};
 
@@ -22,7 +23,7 @@ pub(crate) struct TerminalScrollResult {
     cursor_visible: bool,
 }
 
-fn parse_terminal_scroll_result(raw: &str) -> Result<TerminalScrollResult, String> {
+fn parse_terminal_scroll_result(raw: &str) -> Result<TerminalScrollResult, DeckError> {
     let mut fields = raw.trim_end().split('\t');
     let active = fields.next().ok_or("scroll-status-invalid")? == "1";
     let cursor_visible = fields.next().ok_or("scroll-status-invalid")? == "1";
@@ -36,7 +37,7 @@ fn parse_terminal_scroll_result(raw: &str) -> Result<TerminalScrollResult, Strin
 }
 
 #[tauri::command]
-pub(crate) fn scroll_session(name: String, lines: i32) -> Result<TerminalScrollResult, String> {
+pub(crate) fn scroll_session(name: String, lines: i32) -> Result<TerminalScrollResult, DeckError> {
     validate_session_name(&name)?;
     let t = pane_target(&name);
     // State test, optional copy-mode entry, movement and post-state report all
@@ -50,7 +51,7 @@ pub(crate) fn scroll_session(name: String, lines: i32) -> Result<TerminalScrollR
 /// chip, or wheel-to-bottom all end here). A pane that is not in copy-mode
 /// is a no-op — tmux's error for that case is deliberately swallowed.
 #[tauri::command]
-pub(crate) fn scroll_bottom(name: String) -> Result<(), String> {
+pub(crate) fn scroll_bottom(name: String) -> Result<(), DeckError> {
     validate_session_name(&name)?;
     let target = pane_target(&name);
     let _ = tmux(&["send-keys", "-t", &target, "-X", "cancel"]);
@@ -165,7 +166,7 @@ fn frozen_selection_status(
     name: &str,
     token: u64,
     mut status: TerminalSelectionStatus,
-) -> Result<TerminalSelectionStatus, String> {
+) -> Result<TerminalSelectionStatus, DeckError> {
     let leases = terminal_selection_leases().lock_or_recover();
     let Some(TerminalSelectionLease::Frozen {
         token: current,
@@ -193,7 +194,7 @@ fn parse_u32_or_zero(raw: Option<&str>) -> u32 {
     raw.and_then(|s| s.parse().ok()).unwrap_or(0)
 }
 
-fn terminal_selection_status_for(target: &str) -> Result<TerminalSelectionStatus, String> {
+fn terminal_selection_status_for(target: &str) -> Result<TerminalSelectionStatus, DeckError> {
     let raw = tmux(&[
         "display-message",
         "-p",
@@ -248,7 +249,7 @@ fn require_terminal_selection_dimensions(
     actual_rows: u32,
     expected_cols: u32,
     expected_rows: u32,
-) -> Result<(), String> {
+) -> Result<(), DeckError> {
     if actual_cols == expected_cols && actual_rows == expected_rows {
         Ok(())
     } else {
@@ -296,7 +297,7 @@ fn visible_rows_through(
     target: &str,
     scroll_position: u32,
     through_row: u32,
-) -> Result<Vec<String>, String> {
+) -> Result<Vec<String>, DeckError> {
     let top = -(scroll_position as i64);
     let bottom = through_row as i64 - scroll_position as i64;
     let captured = tmux(&[
@@ -324,7 +325,7 @@ pub(crate) fn terminal_selection_start(
     active_row: u32,
     active_col: u32,
     grid: TerminalSelectionGrid,
-) -> Result<TerminalSelectionStatus, String> {
+) -> Result<TerminalSelectionStatus, DeckError> {
     let _operation = terminal_selection_operation_lock().lock_or_recover();
     validate_session_name(&name)?;
     if terminal_selection_leases()
@@ -383,12 +384,7 @@ pub(crate) fn terminal_selection_start(
         ],
     );
     push_copy_cursor(&mut batch, &target, &rows, active_row, active_col);
-    tmux_owned(&batch).map_err(|e| {
-        format!(
-            "terminal selection could not start ({})",
-            crate::applog::err_code(&e)
-        )
-    })?;
+    tmux_owned(&batch).map_err(|e| format!("terminal selection could not start ({})", e.code()))?;
     let status = terminal_selection_status_for(&target)?;
     terminal_selection_leases()
         .lock()
@@ -405,7 +401,7 @@ pub(crate) fn terminal_selection_update(
     col: u32,
     edge_lines: i32,
     grid: TerminalSelectionGrid,
-) -> Result<TerminalSelectionStatus, String> {
+) -> Result<TerminalSelectionStatus, DeckError> {
     let _operation = terminal_selection_operation_lock().lock_or_recover();
     validate_session_name(&name)?;
     if !selection_token_matches(&name, token, false) {
@@ -448,12 +444,7 @@ pub(crate) fn terminal_selection_update(
             ],
         );
     }
-    tmux_owned(&batch).map_err(|e| {
-        format!(
-            "terminal selection could not move ({})",
-            crate::applog::err_code(&e)
-        )
-    })?;
+    tmux_owned(&batch).map_err(|e| format!("terminal selection could not move ({})", e.code()))?;
     if !selection_token_matches(&name, token, false) {
         return Err("selection-missing".into());
     }
@@ -487,7 +478,7 @@ pub(crate) fn terminal_selection_finish(
     name: String,
     token: u64,
     grid: TerminalSelectionGrid,
-) -> Result<TerminalSelectionStatus, String> {
+) -> Result<TerminalSelectionStatus, DeckError> {
     let _operation = terminal_selection_operation_lock().lock_or_recover();
     validate_session_name(&name)?;
     if !selection_token_matches(&name, token, false) {
@@ -514,8 +505,10 @@ pub(crate) fn terminal_selection_finish(
         return Err("selection-missing-cleared".into());
     }
     let prefix = terminal_selection_buffer_prefix(token);
-    let text = crate::terminal_selection::snapshot_selection(&target, &prefix, tmux_owned)
-        .map_err(|_| "snapshot-failed".to_string())?;
+    let text = crate::terminal_selection::snapshot_selection(&target, &prefix, |args| {
+        tmux_owned(args).map_err(String::from)
+    })
+    .map_err(|_| DeckError::from("snapshot-failed"))?;
     let bytes = text.len() as u64;
     if bytes > MAX_TERMINAL_SELECTION_BYTES {
         return Err(
@@ -530,7 +523,7 @@ pub(crate) fn terminal_selection_finish(
     // the frontend renders the frozen content coordinates with public cell
     // geometry, so later scroll commands cannot move either endpoint.
     tmux(&["send-keys", "-t", &target, "-X", "clear-selection"])
-        .map_err(|_| "snapshot-failed".to_string())?;
+        .map_err(|_| DeckError::from("snapshot-failed"))?;
     terminal_selection_leases().lock_or_recover().insert(
         name.clone(),
         TerminalSelectionLease::Frozen {
@@ -552,7 +545,7 @@ pub(crate) fn terminal_selection_finish(
 pub(crate) fn terminal_selection_copy(
     name: String,
     token: u64,
-) -> Result<TerminalSelectionCopy, String> {
+) -> Result<TerminalSelectionCopy, DeckError> {
     let _operation = terminal_selection_operation_lock().lock_or_recover();
     validate_session_name(&name)?;
     let lease = terminal_selection_leases()
@@ -579,8 +572,10 @@ pub(crate) fn terminal_selection_copy(
                 return Err("selection-missing".into());
             }
             let prefix = terminal_selection_buffer_prefix(token);
-            let text = crate::terminal_selection::snapshot_selection(&target, &prefix, tmux_owned)
-                .map_err(|_| "snapshot-failed".to_string())?;
+            let text = crate::terminal_selection::snapshot_selection(&target, &prefix, |args| {
+                tmux_owned(args).map_err(String::from)
+            })
+            .map_err(|_| DeckError::from("snapshot-failed"))?;
             let bytes = text.len() as u64;
             if bytes > MAX_TERMINAL_SELECTION_BYTES {
                 return Err("snapshot-failed".into());
@@ -600,7 +595,7 @@ pub(crate) fn terminal_selection_scroll(
     name: String,
     token: u64,
     lines: i32,
-) -> Result<TerminalSelectionStatus, String> {
+) -> Result<TerminalSelectionStatus, DeckError> {
     let _operation = terminal_selection_operation_lock().lock_or_recover();
     validate_session_name(&name)?;
     if !selection_token_matches(&name, token, true) {
@@ -623,7 +618,7 @@ pub(crate) fn terminal_selection_scroll(
 }
 
 #[tauri::command]
-pub(crate) fn terminal_selection_cancel(name: String, token: u64) -> Result<(), String> {
+pub(crate) fn terminal_selection_cancel(name: String, token: u64) -> Result<(), DeckError> {
     let _operation = terminal_selection_operation_lock().lock_or_recover();
     validate_session_name(&name)?;
     let should_cancel = {
@@ -668,7 +663,7 @@ pub(crate) struct TerminalMetrics {
 }
 
 #[tauri::command]
-pub(crate) fn terminal_metrics(name: String) -> Result<TerminalMetrics, String> {
+pub(crate) fn terminal_metrics(name: String) -> Result<TerminalMetrics, DeckError> {
     validate_session_name(&name)?;
     let status = terminal_selection_status_for(&pane_target(&name))?;
     Ok(TerminalMetrics {

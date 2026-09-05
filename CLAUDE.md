@@ -67,7 +67,8 @@ loaded by `ui/index.html`; xterm.js vendored in `app/ui/vendor/`. Backend
 | Board state, one persist-before-commit transaction queue | `ui/js/persistence.js`, `state.js` (shared slots), `pure.js` (DOM-free logic) |
 | Typed documents, envelope, quarantine-first recovery | `storage.rs`, `documents.rs` |
 | Private data dir (0700/0600 by construction), atomic writes, pruning | `datadir.rs` |
-| app.log writer, error codes, session tags, log migration | `applog.rs` |
+| One error type: closed `ErrorKind` + message, string on the wire | `error.rs` |
+| app.log writer, session tags, log migration | `applog.rs` |
 | Log redaction scanner (`sanitize_log`, `redact_credentials`) | `redact.rs` |
 | Single-instance flock, launch flags / debug-only smoke args | `instance_lock.rs`, `launch_args.rs` |
 | Session start/kill, poll (status, RSS, preview rows), clipboard write | `commands.rs` |

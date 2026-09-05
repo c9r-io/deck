@@ -96,6 +96,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use crate::applog;
+use crate::error::DeckError;
 use crate::sync::LockRecover;
 
 /// Registered agent modules.
@@ -320,9 +321,10 @@ fn handle_stream(mut stream: UnixStream, drops: &mut u32) {
     }
 }
 
-pub(crate) fn listen_at(path: &Path) -> Result<UnixListener, String> {
+pub(crate) fn listen_at(path: &Path) -> Result<UnixListener, DeckError> {
     let _ = std::fs::remove_file(path); // stale socket from a previous run
-    let listener = UnixListener::bind(path).map_err(|e| format!("bind failed: {e}"))?;
+    let listener =
+        UnixListener::bind(path).map_err(|e| DeckError::from(format!("bind failed: {e}")))?;
     // the data dir is already 0700; keep the socket itself private too
     use std::os::unix::fs::PermissionsExt;
     let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
@@ -337,10 +339,7 @@ pub(crate) fn spawn_listener() {
         let listener = match listen_at(&path) {
             Ok(l) => l,
             Err(e) => {
-                applog(&format!(
-                    "[agent-status] socket unavailable ({})",
-                    crate::applog::err_code(&e)
-                ));
+                applog(&format!("[agent-status] socket unavailable ({})", e.code()));
                 return;
             }
         };
@@ -515,7 +514,7 @@ pub(crate) fn hooks_with_install(
     source: &str,
     style: HookStyle,
     helper: &str,
-) -> Result<serde_json::Value, String> {
+) -> Result<serde_json::Value, DeckError> {
     let obj = root
         .as_object_mut()
         .ok_or("settings file is not a JSON object")?;
@@ -604,13 +603,13 @@ fn codex_hooks_path() -> Option<PathBuf> {
         .map(|dir| dir.join("hooks.json"))
 }
 
-fn read_settings_value(path: &Path) -> Result<serde_json::Value, String> {
+fn read_settings_value(path: &Path) -> Result<serde_json::Value, DeckError> {
     match std::fs::read(path) {
         Ok(bytes) => serde_json::from_slice(&bytes).map_err(|_| {
-            "the agent settings file is not valid JSON — not modifying it".to_string()
+            DeckError::from("the agent settings file is not valid JSON — not modifying it")
         }),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(serde_json::json!({})),
-        Err(e) => Err(format!("could not read agent settings ({})", e.kind())),
+        Err(e) => Err(format!("could not read agent settings ({})", e.kind()).into()),
     }
 }
 
@@ -618,7 +617,7 @@ fn read_settings_value(path: &Path) -> Result<serde_json::Value, String> {
 /// config files belong to the agent CLI, not deck — 0600 is only the default
 /// for a file deck itself creates). Refuses to create the agent's config
 /// DIRECTORY: a missing one means the agent never ran on this Mac.
-fn write_agent_config(path: &Path, bytes: &[u8], never_ran: &str) -> Result<(), String> {
+fn write_agent_config(path: &Path, bytes: &[u8], never_ran: &str) -> Result<(), DeckError> {
     use std::os::unix::fs::PermissionsExt;
     let mode = std::fs::metadata(path)
         .map(|m| m.permissions().mode() & 0o777)
@@ -635,7 +634,7 @@ fn write_agent_config(path: &Path, bytes: &[u8], never_ran: &str) -> Result<(), 
 
 /// The helper a hook command may name: the sidecar inside `bundle`, which
 /// must exist and must be quotable as one double-quoted shell word.
-fn helper_path_in(bundle: &Path) -> Result<String, String> {
+fn helper_path_in(bundle: &Path) -> Result<String, DeckError> {
     let helper = bundle.join("Contents").join("MacOS").join(HELPER_NAME);
     if !helper.is_file() {
         return Err("the bundled status helper is missing from this build".into());
@@ -658,18 +657,18 @@ fn helper_path_in(bundle: &Path) -> Result<String, String> {
 /// named one would break when the path vanished and would make the agent
 /// CLI execute an unsigned binary. Such builds cannot install hooks and
 /// never touch the agent's config at boot.
-fn installed_helper_path() -> Result<String, String> {
-    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+fn installed_helper_path() -> Result<String, DeckError> {
+    let exe = std::env::current_exe().map_err(DeckError::from)?;
     let bundle = crate::tmux_lifecycle::app_bundle_root(&exe)
         .filter(|bundle| crate::tmux_lifecycle::stable_installed_bundle(bundle))
         .ok_or("agent status hooks can only be installed from /Applications/deck.app or ~/Applications/deck.app")?;
     helper_path_in(bundle)
 }
 
-fn write_hooks(path: &Path, next: &serde_json::Value, never_ran: &str) -> Result<(), String> {
+fn write_hooks(path: &Path, next: &serde_json::Value, never_ran: &str) -> Result<(), DeckError> {
     let bytes = format!(
         "{}\n",
-        serde_json::to_string_pretty(next).map_err(|e| e.to_string())?
+        serde_json::to_string_pretty(next).map_err(DeckError::from)?
     );
     write_agent_config(path, bytes.as_bytes(), never_ran)
 }
@@ -739,7 +738,7 @@ pub(crate) fn migrate_hooks_on_boot() {
                     .is_ok_and(|text| text.contains(LEGACY_HELPER_MARKER));
                 applog(&format!(
                     "[agent-hooks] {source} migration FAILED ({})",
-                    crate::applog::err_code(&e)
+                    e.code()
                 ));
             }
         }
@@ -766,7 +765,7 @@ fn retire_legacy_helper_copy() {
         }
         Err(e) => applog(&format!(
             "[agent-hooks] legacy helper copy removal FAILED ({})",
-            crate::applog::err_code(&e.to_string())
+            crate::error::err_code(&e.to_string())
         )),
     }
 }
@@ -779,7 +778,7 @@ fn hooks_set(
     style: HookStyle,
     enable: bool,
     never_ran: &str,
-) -> Result<(), String> {
+) -> Result<(), DeckError> {
     let value = read_settings_value(path)?;
     let next = if enable {
         let helper = installed_helper_path()?;
@@ -816,7 +815,7 @@ pub(crate) fn agent_hooks_status() -> AgentHooksStatus {
 /// Settings toggle. The only other writer is `migrate_hooks_on_boot`, which
 /// rewrites deck's own entries and nothing else.
 #[tauri::command]
-pub(crate) fn agent_hooks_set(agent: String, enable: bool) -> Result<(), String> {
+pub(crate) fn agent_hooks_set(agent: String, enable: bool) -> Result<(), DeckError> {
     let module = agent_modules()
         .into_iter()
         .find(|(_, _, source, _, _)| *source == agent)
@@ -838,7 +837,7 @@ pub(crate) fn agent_hooks_set(agent: String, enable: bool) -> Result<(), String>
         Err(e) => applog(&format!(
             "[agent-hooks] {agent} {} FAILED ({})",
             if enable { "install" } else { "remove" },
-            crate::applog::err_code(e)
+            e.code()
         )),
     }
     result
@@ -1424,6 +1423,6 @@ mod tests {
 
         // the test binary is not a release install: no hook may name it
         let error = installed_helper_path().unwrap_err();
-        assert!(error.contains("/Applications/deck.app"));
+        assert!(error.message().contains("/Applications/deck.app"));
     }
 }

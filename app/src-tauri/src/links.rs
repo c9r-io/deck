@@ -6,6 +6,7 @@ use serde::Serialize;
 use std::path::PathBuf;
 use std::process::Command;
 
+use crate::error::DeckError;
 use crate::tmux::expand_tilde;
 
 // ---------- open path / url ----------------------------------------------------
@@ -35,14 +36,14 @@ fn unquote_clicked_path(value: &str) -> String {
     value.to_string()
 }
 
-fn absolute_clicked_path(value: &str, cwd: &str) -> Result<PathBuf, String> {
+fn absolute_clicked_path(value: &str, cwd: &str) -> Result<PathBuf, DeckError> {
     let value = expand_tilde(value);
     let path = PathBuf::from(&value);
     if path.is_absolute() {
         return Ok(path);
     }
     let cwd = std::fs::canonicalize(expand_tilde(cwd))
-        .map_err(|_| "the session working directory is unavailable".to_string())?;
+        .map_err(|_| DeckError::from("the session working directory is unavailable"))?;
     if !cwd.is_dir() {
         return Err("the session working directory is unavailable".into());
     }
@@ -52,7 +53,10 @@ fn absolute_clicked_path(value: &str, cwd: &str) -> Result<PathBuf, String> {
 /// Resolve a clicked path without confusing a real `name:42` file with a
 /// line suffix: the literal path always wins when it exists; suffix removal
 /// is only a fallback after that lookup fails.
-pub(crate) fn resolve_clicked_parent(value: &str, cwd: &str) -> Result<ResolvedPathTarget, String> {
+pub(crate) fn resolve_clicked_parent(
+    value: &str,
+    cwd: &str,
+) -> Result<ResolvedPathTarget, DeckError> {
     let raw = unquote_clicked_path(value);
     let literal = absolute_clicked_path(&raw, cwd)?;
     let resolved = match std::fs::canonicalize(&literal) {
@@ -62,12 +66,13 @@ pub(crate) fn resolve_clicked_parent(value: &str, cwd: &str) -> Result<ResolvedP
             if stripped == raw {
                 return Err("the selected path does not exist or cannot be accessed".into());
             }
-            std::fs::canonicalize(absolute_clicked_path(&stripped, cwd)?)
-                .map_err(|_| "the selected path does not exist or cannot be accessed".to_string())?
+            std::fs::canonicalize(absolute_clicked_path(&stripped, cwd)?).map_err(|_| {
+                DeckError::from("the selected path does not exist or cannot be accessed")
+            })?
         }
     };
     let meta = std::fs::metadata(&resolved)
-        .map_err(|_| "the selected path does not exist or cannot be accessed".to_string())?;
+        .map_err(|_| DeckError::from("the selected path does not exist or cannot be accessed"))?;
     let target_is_directory = meta.is_dir();
     let directory = if target_is_directory {
         resolved
@@ -87,7 +92,10 @@ pub(crate) fn resolve_clicked_parent(value: &str, cwd: &str) -> Result<ResolvedP
 }
 
 #[tauri::command]
-pub(crate) fn resolve_parent_dir(value: String, cwd: String) -> Result<ResolvedPathTarget, String> {
+pub(crate) fn resolve_parent_dir(
+    value: String,
+    cwd: String,
+) -> Result<ResolvedPathTarget, DeckError> {
     resolve_clicked_parent(&value, &cwd)
 }
 
@@ -121,31 +129,31 @@ pub(crate) fn terminal_paths_exist(values: Vec<String>, cwd: String) -> Vec<bool
 /// one — an unvalidated "url" click could reach file:// or an arbitrary app
 /// scheme; a relative path could resolve outside the card's cwd view. Rules:
 /// urls must be http(s); paths must resolve absolute and exist.
-pub(crate) fn validate_open(kind: &str, value: &str, resolved: &str) -> Result<(), String> {
+pub(crate) fn validate_open(kind: &str, value: &str, resolved: &str) -> Result<(), DeckError> {
     match kind {
         "url" => {
             let lower = value.trim().to_ascii_lowercase();
             if lower.starts_with("http://") || lower.starts_with("https://") {
                 Ok(())
             } else {
-                Err(format!("only http(s) links open externally: {value}"))
+                Err(format!("only http(s) links open externally: {value}").into())
             }
         }
         "editor" | "editor-parent" | "reveal" => {
             if !resolved.starts_with('/') {
-                return Err(format!("path did not resolve absolute: {resolved}"));
+                return Err(format!("path did not resolve absolute: {resolved}").into());
             }
             if !std::path::Path::new(resolved).exists() {
-                return Err(format!("no such path: {resolved}"));
+                return Err(format!("no such path: {resolved}").into());
             }
             Ok(())
         }
-        _ => Err(format!("unknown kind: {kind}")),
+        _ => Err(format!("unknown kind: {kind}").into()),
     }
 }
 
 #[tauri::command]
-pub(crate) fn open_target(kind: String, value: String, cwd: String) -> Result<(), String> {
+pub(crate) fn open_target(kind: String, value: String, cwd: String) -> Result<(), DeckError> {
     let resolved = if kind == "url" {
         String::new()
     } else if kind == "editor-parent" {
@@ -159,7 +167,7 @@ pub(crate) fn open_target(kind: String, value: String, cwd: String) -> Result<()
                 let stripped = regex_strip_lineno(&raw);
                 std::fs::canonicalize(absolute_clicked_path(&stripped, &cwd)?)
                     .map_err(|_| {
-                        "the selected path does not exist or cannot be accessed".to_string()
+                        DeckError::from("the selected path does not exist or cannot be accessed")
                     })?
                     .to_string_lossy()
                     .into_owned()
@@ -180,7 +188,7 @@ pub(crate) fn open_target(kind: String, value: String, cwd: String) -> Result<()
         "reveal" => Command::new("open").args(["-R", &resolved]).status(),
         _ => unreachable!("validate_open rejects unknown kinds"),
     }
-    .map_err(|e| e.to_string())?;
+    .map_err(DeckError::from)?;
     if status.success() {
         Ok(())
     } else {

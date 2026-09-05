@@ -9,6 +9,7 @@
 //! `harden_data_dir` migrates a tree an older deck left 0644 at boot, and
 //! `prune_old_files` ages out transient drops and snapshots.
 
+use crate::error::DeckError;
 use crate::launch_args::debug_arg;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -33,19 +34,20 @@ pub(crate) fn open_private(path: &Path) -> std::io::Result<std::fs::File> {
 
 /// Write a whole file with user-only permissions (non-atomic; for files that
 /// are not load-bearing data, e.g. exports).
-pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    let mut f = open_private(path).map_err(|e| format!("could not create file ({})", e.kind()))?;
+pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> Result<(), DeckError> {
+    let mut f = open_private(path)
+        .map_err(|e| DeckError::from(format!("could not create file ({})", e.kind())))?;
     f.write_all(bytes)
-        .map_err(|e| format!("could not write file ({})", e.kind()))
+        .map_err(|e| DeckError::from(format!("could not write file ({})", e.kind())))
 }
 
 /// Create `dir` (and parents) and restrict it to the user (0700).
-pub(crate) fn create_private_dir(dir: &Path) -> Result<(), String> {
+pub(crate) fn create_private_dir(dir: &Path) -> Result<(), DeckError> {
     use std::os::unix::fs::PermissionsExt;
     std::fs::create_dir_all(dir)
-        .map_err(|e| format!("could not create data dir ({})", e.kind()))?;
+        .map_err(|e| DeckError::from(format!("could not create data dir ({})", e.kind())))?;
     std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
-        .map_err(|e| format!("could not restrict data dir ({})", e.kind()))
+        .map_err(|e| DeckError::from(format!("could not restrict data dir ({})", e.kind())))
 }
 
 /// Boot-time, idempotent permission migration for the whole data tree:
@@ -53,7 +55,7 @@ pub(crate) fn create_private_dir(dir: &Path) -> Result<(), String> {
 /// .corrupt-*, app.log, exports and anything an older deck left 0644).
 /// Symlinks are left untouched — chmod would follow them out of the tree.
 /// Errors are counted and reported without embedding any path.
-pub(crate) fn harden_data_dir(dir: &Path) -> Result<(), String> {
+pub(crate) fn harden_data_dir(dir: &Path) -> Result<(), DeckError> {
     let mut errs = 0u32;
     fn set(p: &Path, mode: u32, errs: &mut u32) {
         use std::os::unix::fs::PermissionsExt;
@@ -84,9 +86,7 @@ pub(crate) fn harden_data_dir(dir: &Path) -> Result<(), String> {
         }
     }
     if errs > 0 {
-        Err(format!(
-            "could not restrict {errs} data file(s) to user-only access"
-        ))
+        Err(format!("could not restrict {errs} data file(s) to user-only access").into())
     } else {
         Ok(())
     }
@@ -96,7 +96,7 @@ pub(crate) fn harden_data_dir(dir: &Path) -> Result<(), String> {
 /// fsync → rename → fsync of the parent directory (so the rename itself
 /// survives power loss). Unique temp names keep concurrent saves of the
 /// same file from trampling each other's temp file.
-pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
+pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), DeckError> {
     static SEQ: AtomicU64 = AtomicU64::new(0);
     let dir = path.parent().ok_or("data path has no parent directory")?;
     let tmp = dir.join(format!(
@@ -114,13 +114,13 @@ pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
             .create_new(true)
             .mode(0o600)
             .open(&tmp)
-            .map_err(|e| format!("could not create temp file ({})", e.kind()))?;
-        f.write_all(bytes).map_err(|e| e.to_string())?;
-        f.sync_all().map_err(|e| e.to_string())?;
+            .map_err(|e| DeckError::from(format!("could not create temp file ({})", e.kind())))?;
+        f.write_all(bytes).map_err(DeckError::from)?;
+        f.sync_all().map_err(DeckError::from)?;
     }
     if let Err(e) = std::fs::rename(&tmp, path) {
         let _ = std::fs::remove_file(&tmp);
-        return Err(e.to_string());
+        return Err(e.to_string().into());
     }
     if let Ok(d) = std::fs::File::open(dir) {
         let _ = d.sync_all();
