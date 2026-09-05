@@ -18,7 +18,9 @@ loaded by `ui/index.html`; xterm.js vendored in `app/ui/vendor/`. Backend
 (session start/kill, poll, clipboard, editors) · `documents.rs` (typed
 Board/Settings docs + load/save) · `updater.rs` · `terminal.rs` (scroll +
 selection lease commands) · `links.rs` (path/URL open) · `diagnostics.rs`
-(`ui_event` whitelist, log export) · `drops.rs` · `scheduler.rs` ·
+(`ui_event` whitelist, log export) · `drops.rs` · `scheduler/` (`mod.rs`
+queue model + persistence · `ops.rs` commands/mutations · `select.rs` ·
+`delivery.rs` state machine · `thread.rs` tick · `tests.rs`) ·
 `storage.rs` · `pty.rs` · `tmux.rs` · `history.rs` · `smoke_faults.rs`
 (debug/isolated-smoke only).
 Frontend gates: `node --check` (syntax) · `ui/test/*.mjs` (node:test)
@@ -449,7 +451,7 @@ Frontend gates: `node --check` (syntax) · `ui/test/*.mjs` (node:test)
   bypass. "chain" mode fires after
   `window_activity` has been quiet ≥180s (a permission prompt also counts as
   quiet — documented behavior; quiet NEVER means "the agent finished").
-  Round-2/3 semantics (scheduler.rs is the reference, all unit-tested):
+  Round-2/3 semantics (`scheduler/` is the reference, all unit-tested):
   - at most ONE candidate per session per tick, ≥60s between any two
     injections into the same session; each due session gets its own
     short-lived worker thread claimed via a busy-set, so sessions are truly

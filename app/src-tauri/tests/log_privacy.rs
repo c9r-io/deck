@@ -255,7 +255,10 @@ fn scheduler_context_probe_is_metadata_only_and_content_free() {
         !context.contains("applog("),
         "raw probe metadata must never be logged"
     );
-    let scheduler = std::fs::read_to_string(manifest("src/scheduler.rs")).unwrap();
+    let scheduler: String = std::fs::read_dir(manifest("src/scheduler"))
+        .unwrap()
+        .map(|e| std::fs::read_to_string(e.unwrap().path()).unwrap())
+        .collect();
     assert!(scheduler.contains("last_context: Option<ContextCheck>"));
     assert!(!scheduler.contains("terminal_tail"));
 }

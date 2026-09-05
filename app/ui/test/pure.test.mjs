@@ -196,7 +196,7 @@ test('nextFire defers to the window opening (UTC)', () => {
 });
 
 test('chainQuietHint tracks the quiet window', () => {
-  assert.equal(CHAIN_QUIET_SECS, 180, 'must match scheduler.rs');
+  assert.equal(CHAIN_QUIET_SECS, 180, 'must match scheduler/mod.rs');
   assert.equal(chainQuietHint(42, true), ' · quiet 42s/180s');
   assert.equal(chainQuietHint(0, true), ' · quiet 0s/180s', 'fresh activity resets to zero');
   assert.equal(chainQuietHint(180, true), ' · quiet ✓');
