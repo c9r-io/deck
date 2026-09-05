@@ -1,0 +1,13 @@
+[package]
+name = "deck-status-helper"
+version = "0.1.0"
+edition = "2021"
+description = "deck — tiny agent-hook forwarder (writes one status line to deck's local socket)"
+license = "MIT"
+
+# Zero dependencies on purpose: the binary runs inside the user's tmux panes
+# (spawned by agent hooks), so it must stay minimal, offline, and must never
+# link the deck app itself. It is a member of the app/src-tauri workspace only
+# to share the lock file and the CI gates; the release profile (lto, strip)
+# comes from that workspace root, and build.rs there builds this crate as a
+# sidecar with its own --target-dir.

@@ -229,6 +229,18 @@ class ReleaseChannelTests(unittest.TestCase):
             self.assertNotIn('Contents/MacOS/deck"', workflow)
         rc.assert_promotion_has_no_build_commands(ROOT / ".github/workflows/promote.yml")
 
+    def test_workflows_pin_the_repository_toolchain(self) -> None:
+        toolchain = (ROOT / "rust-toolchain.toml").read_text()
+        channel = re.search(r'^channel = "([0-9]+\.[0-9]+\.[0-9]+)"$', toolchain, re.M)
+        self.assertIsNotNone(channel, "rust-toolchain.toml pins an exact version")
+        for path in (ROOT / ".github/workflows").glob("*.yml"):
+            text = path.read_text()
+            uses = len(re.findall(r"uses:\s+dtolnay/rust-toolchain@", text))
+            pins = re.findall(r"^\s+toolchain: (\S+)$", text, re.M)
+            self.assertEqual(len(pins), uses, f"every rust-toolchain step in {path.name} pins a version")
+            for pin in pins:
+                self.assertEqual(pin, channel.group(1), f"{path.name} pins the rust-toolchain.toml version")
+
     def test_provenance_generation_and_complete_candidate_verification(self) -> None:
         directory, _ = self.candidate_fixture()
         provenance = rc.create_provenance(

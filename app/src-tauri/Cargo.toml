@@ -5,7 +5,12 @@ edition = "2021"
 description = "deck — kanban for terminal agent sessions (Tauri app)"
 license = "MIT"
 
+# One workspace for both crates: one Cargo.lock, one target dir, one
+# fmt/clippy/test/coverage invocation in CI. The status helper stays a
+# separate zero-dependency package (it never links deck-app); build.rs still
+# builds it as a sidecar with its own --target-dir before tauri_build runs.
 [workspace]
+members = ["status-helper"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

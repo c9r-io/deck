@@ -75,7 +75,7 @@ loaded by `ui/index.html`; xterm.js vendored in `app/ui/vendor/`. Backend
 | Completion bar, links, context menus | `ui/js/terminal.js`, `links.rs` |
 | Scheduled prompts: queue model, selection, delivery state machine, tick | `scheduler/` (+ `docs/scheduler-context-safety.md`), `context.rs`, `ui/js/scheduler.js` |
 | Prompt templates | `ui/js/templates.js` |
-| Agent status hooks (closed state words, bundled helper) | `agent_status.rs`, `app/status-helper/` |
+| Agent status hooks (closed state words, bundled helper) | `agent_status.rs`, `src-tauri/status-helper/` |
 | Auto-respond (inbound sources, dispatcher, Keychain) | `inbound.rs`, `inbound_slack.rs`, `keychain.rs`, `ui/js/inbound.js` (+ `docs/auto-respond.md`) |
 | Shell restart recovery (bounded transcript projection) | `shell_state.rs` |
 | Updates (closed stable/nightly, one endpoint each) | `updater.rs`, `relaunch.rs` |
@@ -97,9 +97,12 @@ Status semantics (card colour) are documented on `effectiveCardStatus` in
 - Frontend gates: `node --check` · `scripts/ui-tests` (node:test + coverage
   thresholds; WKWebView-bound modules are excluded and covered by the smoke) ·
   `node ui/js/check.mjs` (unresolved identifiers; forbids xterm `._core`).
-  Backend gates: `cargo fmt`, `cargo clippy -D warnings`, `cargo test`
-  (unit + `tests/tmux_contract.rs` against the bundled tmux +
-  `tests/log_privacy.rs` + `tests/edr_quiet.rs`).
+  Backend gates: `cargo fmt`, `cargo clippy --workspace -D warnings`,
+  `cargo test --workspace` (unit + `tests/tmux_contract.rs` against the
+  bundled tmux + `tests/log_privacy.rs` + `tests/edr_quiet.rs` + the status
+  helper). `src-tauri/Cargo.toml` is the one workspace root; the compiler
+  is pinned by `rust-toolchain.toml` at the repository root and the same
+  version in every workflow (`scripts/test_release_tools.py` checks).
 - PTY smoke test (headless): `cargo run --example pty_smoke`
 - The unchanged vendored terminal is `@xterm/xterm` 5.5.0 (the local
   `xterm.js` is byte-identical to the published 5.5.0 artifact, SHA-256

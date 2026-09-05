@@ -5,8 +5,8 @@
 /// artifact ships inside every bundle, debug ones included. A separate
 /// target dir avoids the cargo-in-cargo file lock.
 fn build_status_helper() {
-    println!("cargo:rerun-if-changed=../status-helper/src");
-    println!("cargo:rerun-if-changed=../status-helper/Cargo.toml");
+    println!("cargo:rerun-if-changed=status-helper/src");
+    println!("cargo:rerun-if-changed=status-helper/Cargo.toml");
     let triple = std::env::var("TARGET").expect("cargo sets TARGET");
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
     let status = std::process::Command::new(cargo)
@@ -15,9 +15,9 @@ fn build_status_helper() {
             "--release",
             "--locked",
             "--manifest-path",
-            "../status-helper/Cargo.toml",
+            "status-helper/Cargo.toml",
             "--target-dir",
-            "../status-helper/target",
+            "status-helper/target",
             "--target",
             &triple,
         ])
@@ -29,7 +29,7 @@ fn build_status_helper() {
         .status()
         .expect("failed to run cargo for status-helper");
     assert!(status.success(), "status-helper build failed");
-    let built = format!("../status-helper/target/{triple}/release/deck-status-helper");
+    let built = format!("status-helper/target/{triple}/release/deck-status-helper");
     let dest = format!("binaries/deck-status-helper-{triple}");
     std::fs::copy(&built, &dest).expect("failed to place status-helper sidecar");
 }

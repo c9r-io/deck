@@ -1,0 +1,8 @@
+# Pinned so local builds, CI gates and release builds compile with the same
+# compiler. rustup reads this from the repository root for every cargo
+# invocation; the workflows pass the same version to dtolnay/rust-toolchain so
+# the runner cache matches. Bump both together.
+[toolchain]
+channel = "1.97.1"
+components = ["clippy", "rustfmt"]
+targets = ["aarch64-apple-darwin"]
