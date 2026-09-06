@@ -4,8 +4,8 @@ Everything below is a **live** checklist of WKWebView/xterm integration
 behaviours that cannot be tested headless: Chromium-based harnesses pass while
 the real webview fails (that is how every regression in this list originally
 shipped). Run through it in the `app/run.sh` build before tagging a release.
-Dated run logs and release evidence do not live here; they are archived under
-`docs/archive/smoke-runs-2026-08.md` once the run is over.
+Dated run logs and release evidence do not live here; they belong in the
+release's GitHub run and in git history, not in the checklist.
 
 `cargo test` covers the tmux contracts (scroll model, clear-history, literal
 injection, poll formats); `scripts/ui-tests` covers the DOM-free modules.

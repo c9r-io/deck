@@ -2,7 +2,7 @@
 // Part of deck's no-build frontend: native ES modules, no bundler.
 import { $, ctx, genId, inv, store, uev } from './state.js';
 import { INBOUND_BADGE_RE, inlineRenameValue } from './pure.js';
-import { applyTranslations, formatNumber, onLocaleChange, setLocale, t, translateNotice } from './i18n.js';
+import { applyTranslations, formatNumber, getLocale, onLocaleChange, setLocale, t, translateNotice } from './i18n.js';
 import {
   CUSTOMIZABLE_SHORTCUT_ACTIONS, FONT_SCALE_MAX, FONT_SCALE_MIN, FONT_SCALE_STEP, SHORTCUT_ACTIONS,
   normalizeSettings, parseSettings, serializeSettings,
@@ -172,7 +172,7 @@ export async function loadSettings() {
   activateTheme(ctx.settings);
   applyFontScale(ctx.settings.fontScale);
   announceShortcutChange();
-  inv('set_native_locale', { locale: ctx.settings.locale }).catch(() => {});
+  inv('set_native_locale', { locale: getLocale() }).catch(() => {});
 }
 
 let settingsWriteChain = Promise.resolve();
@@ -841,7 +841,7 @@ export function initDialogs() {
     applyTranslations();
     const firstEditor = $('set-editor').options && $('set-editor').options[0];
     if (firstEditor && firstEditor.value === '') firstEditor.textContent = t('settings.systemEditor');
-    inv('set_native_locale', { locale: ctx.settings.locale }).catch(() => {});
+    inv('set_native_locale', { locale: getLocale() }).catch(() => {});
     persistSettings();
   };
 

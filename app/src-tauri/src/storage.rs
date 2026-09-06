@@ -26,13 +26,9 @@
 //! `redact.rs` (the sanitizer), `instance_lock.rs`, `launch_args.rs`.
 //!
 //! # Contract
-//! Board persistence: `~/.deck/deck.json` (frontend owns the state). EVERY
-//! mutation enters one global persist-before-commit transaction queue and builds
-//! its candidate from the latest committed Board only when it reaches the head;
-//! debounced mutations enter that same queue before an immediate-operation
-//! barrier. A rejected mutation or failed write cannot poison the following
-//! transaction, resurrect a removed card, or overwrite a concurrent rename/move.
-//! Runtime-only card fields are merged from the newest live state at commit.
+//! `~/.deck/deck.json` is owned by the frontend; the persist-before-commit
+//! Board transaction queue every mutation goes through is documented in
+//! `ui/js/persistence.js`, not here.
 //! `storage.rs` is TYPED and durable for every persistent JSON document
 //! (deck/queue/history/settings and per-session shell snapshots): JSON + version envelope + business-structure
 //! validation on load — BoardDoc/SettingsDoc validate via `try_from`

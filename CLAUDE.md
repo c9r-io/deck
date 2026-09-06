@@ -25,8 +25,8 @@ same commit as the behaviour it describes.
   `localtime_r`, and a duplicate instance just logs and exits. Never
   writes an executable under `~`: hook commands name the helper INSIDE the
   signed bundle (see agent hooks). Remaining spawns are low-frequency,
-  fixed-argument system tools (`open`, `plutil`, `pbcopy`, `defaults`,
-  `sw_vers`, `uname`) plus the bundled tmux — which is the ONLY tmux deck
+  fixed-argument system tools (`open`, `plutil`, `pbcopy`, `sw_vers`,
+  `uname`) plus the bundled tmux — which is the ONLY tmux deck
   ever executes: `tmux::tmux_program()` resolves the signed sidecar next to
   deck's own executable and NEVER falls back to Homebrew/MacPorts or a PATH
   lookup (`/usr/local/bin` is user-writable on many Macs, and every deck

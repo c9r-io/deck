@@ -559,7 +559,7 @@ fn probe_server() -> Probe {
                 return Probe::Unreachable;
             };
             session.pane_count = session.pane_count.saturating_add(1);
-            if !is_shell_process(foreground) {
+            if !crate::context::shell_process(Some(foreground)) {
                 session.has_foreground_process = true;
             }
             pane_identities.push((
@@ -594,13 +594,6 @@ fn probe_server() -> Probe {
         sessions,
         impact_token,
     }))
-}
-
-fn is_shell_process(value: &str) -> bool {
-    matches!(
-        value,
-        "sh" | "bash" | "zsh" | "fish" | "dash" | "ksh" | "tcsh" | "csh" | "nu"
-    )
 }
 
 fn source_can_create(build: &CurrentBuildIdentity) -> bool {

@@ -40,7 +40,6 @@ mod updater;
 pub(crate) use applog::applog;
 
 use crate::error::{DeckError, ErrorKind};
-use std::process::Command;
 use tauri::{Emitter, Manager};
 
 #[derive(Clone, Copy)]
@@ -64,37 +63,11 @@ const NATIVE_ZH_HANS: NativeStrings = NativeStrings {
     terminal: "终端",
 };
 
-fn resolve_native_locale(preference: &str, system_languages: &str) -> &'static str {
-    if preference == "zh-Hans"
-        || (preference == "system"
-            && system_languages
-                .split(|c: char| c.is_whitespace() || matches!(c, '(' | ')' | ',' | '"'))
-                .any(|tag| {
-                    let tag = tag.to_ascii_lowercase();
-                    tag == "zh-cn"
-                        || tag == "zh-sg"
-                        || tag == "zh-hans"
-                        || tag.starts_with("zh-hans-")
-                }))
-    {
-        "zh-Hans"
-    } else {
-        "en"
-    }
-}
-
-fn system_languages() -> String {
-    Command::new("defaults")
-        .args(["read", "-g", "AppleLanguages"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
-        .unwrap_or_default()
-}
-
-fn native_strings(preference: &str) -> NativeStrings {
-    if resolve_native_locale(preference, &system_languages()) == "zh-Hans" {
+/// The webview resolves `system` against `navigator.languages` (`i18n.js`)
+/// and reports the RESOLVED locale here, so the native menu never has to
+/// read system preferences itself (no `defaults` spawn).
+fn native_strings(locale: &str) -> NativeStrings {
+    if locale == "zh-Hans" {
         NATIVE_ZH_HANS
     } else {
         NATIVE_EN
@@ -110,7 +83,7 @@ struct NativeMenu {
 
 #[tauri::command]
 fn set_native_locale(locale: String, menu: tauri::State<'_, NativeMenu>) -> Result<(), DeckError> {
-    if !matches!(locale.as_str(), "system" | "en" | "zh-Hans") {
+    if !matches!(locale.as_str(), "en" | "zh-Hans") {
         return Err(DeckError::new(ErrorKind::Other, "invalid locale"));
     }
     let s = native_strings(&locale);
@@ -371,20 +344,4 @@ fn main() {
             }
             let _ = (app, &event);
         });
-}
-
-#[cfg(test)]
-mod i18n_tests {
-    use super::resolve_native_locale;
-    #[test]
-    fn native_locale_resolution_matches_web_runtime() {
-        assert_eq!(
-            resolve_native_locale("system", "(\n zh-Hans-CN,\n en-US\n)"),
-            "zh-Hans"
-        );
-        assert_eq!(resolve_native_locale("system", "(zh-CN)"), "zh-Hans");
-        assert_eq!(resolve_native_locale("system", "(zh-SG)"), "zh-Hans");
-        assert_eq!(resolve_native_locale("system", "(zh-Hant, en-US)"), "en");
-        assert_eq!(resolve_native_locale("en", "(zh-CN)"), "en");
-    }
 }

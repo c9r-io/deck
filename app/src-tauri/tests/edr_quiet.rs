@@ -66,7 +66,6 @@ const ALLOWED_LITERALS: &[&str] = &[
     "/usr/bin/open",
     "/usr/bin/plutil",
     "/usr/bin/pbcopy",
-    "defaults",
     "sw_vers",
     "uname",
 ];

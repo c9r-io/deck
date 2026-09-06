@@ -210,10 +210,14 @@ pub(crate) fn expected_from_command(command: &str) -> Option<String> {
     None
 }
 
+/// The ONE list of interactive shells deck treats as "no application in the
+/// foreground". Every module that asks the question (scheduler context,
+/// shell-state checkpoints, agent status, the tmux lifecycle probe) uses
+/// this function, so a pane running one of these shells is a shell everywhere.
 pub(crate) fn shell_process(foreground: Option<&str>) -> bool {
     matches!(
         foreground.map(str::to_ascii_lowercase).as_deref(),
-        Some("zsh" | "bash" | "fish" | "sh" | "dash" | "ksh" | "tcsh" | "csh")
+        Some("zsh" | "bash" | "fish" | "sh" | "dash" | "ksh" | "tcsh" | "csh" | "nu")
     )
 }
 

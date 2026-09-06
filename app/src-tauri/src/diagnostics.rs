@@ -3,31 +3,24 @@
 //! exports. Nothing free-form from the webview ever reaches `app.log`.
 //!
 //! # Contract
-//! Run: `app/run.sh` — builds, wraps the binary in a minimal .app, launches via
-//! `open`. NEVER run the bare binary from a background shell: outside the GUI
-//! login session the process can't reach macOS text-input services (TSM/IMK) —
-//! window and mouse work, keyboard is silently dead. `~/.deck/app.log` (0600)
-//! collects backend + frontend diagnostics. Maintainer-only verbose frontend
-//! events are enabled at launch with `app/run.sh --debug-logging`; there is no
-//! user setting for them. Frontend logging is STRUCTURED
-//! ONLY: the `ui_event` command takes a whitelisted code + a detail vetted by
-//! that code's OWN closed policy (enum values / version pattern — no generic
-//! slug rule) + two ints, and redacts everything else — never add a free-form
-//! frontend log channel (log_privacy tests enforce this). Backend log lines
-//! never interpolate raw error Display text or a raw session NAME:
-//! `crate::error::err_code()` maps errors to stable path-free categories (the full
-//! error goes only to the operation's caller) and `crate::applog::session_tag()`
-//! gives a per-RUN, non-reversible tag. Every line is redacted again by
-//! `sanitize_log` on its way to disk (absolute paths, `~/`, any `scheme://`,
-//! credential prefixes, long opaque tokens, session-name shapes →
-//! `<redacted>`); exports sanitize their own header AND body instead of
-//! trusting app.log; `sanitize_existing_logs` migrates logs/exports an older
-//! deck wrote, in place, at boot (atomic, 0600, no raw copy kept). The
-//! runtime privacy tests write REAL files through `applog_to` into temp dirs
-//! — never stub the writer and call it proven. The whole `~/.deck` tree is private by construction
-//! (dir 0700, every file created 0600 — atomic-write temps, `.bak`,
-//! `.corrupt-*`, log, exports); `harden_data_dir()` re-migrates legacy modes
-//! at every boot.
+//! `~/.deck/app.log` (0600) collects backend + frontend diagnostics.
+//! Maintainer-only verbose frontend events are enabled at launch with
+//! `app/run.sh --debug-logging`; there is no user setting for them. Frontend
+//! logging is STRUCTURED ONLY: the `ui_event` command takes a whitelisted
+//! code + a detail vetted by that code's OWN closed policy (enum values /
+//! version pattern — no generic slug rule) + two ints, and redacts everything
+//! else — never add a free-form frontend log channel (log_privacy tests
+//! enforce this). Backend log lines never interpolate raw error Display text
+//! or a raw session NAME: `crate::error::err_code()` maps errors to stable
+//! path-free categories (the full error goes only to the operation's caller)
+//! and `crate::applog::session_tag()` gives a per-RUN, non-reversible tag.
+//! Every line is redacted again by `redact::sanitize_log` on its way to disk;
+//! exports sanitize their own header AND body instead of trusting app.log;
+//! `applog::sanitize_existing_logs` migrates logs/exports an older deck wrote,
+//! in place, at boot. The runtime privacy tests write REAL files through
+//! `applog_to` into temp dirs — never stub the writer and call it proven.
+//! (How to run the app, and the private-by-construction data directory, are
+//! documented once: CLAUDE.md "Run and gates" and `datadir.rs`.)
 //!
 //! Clipboard diagnostics are always structured and content-free. Copy records
 //! terminal key capture, Deck/native/no-selection routing, snapshot loss and

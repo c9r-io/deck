@@ -1,17 +1,19 @@
 //! PTY bridge: `tmux attach` inside a portable-pty, bytes streamed to the
-//! webview as base64 `pty-data` events. Detach kills only the tmux client.
+//! webview as base64 `pty-data` events. Detach kills only the tmux *client*.
+//! Reader threads carry a generation counter so a stale thread never removes
+//! a newer attachment.
 //!
-//! End-to-end flow control: every event carries the attachment's generation
-//! and a monotonically increasing sequence number; the webview ACKs each
-//! sequence after xterm has actually written the bytes (`pty_ack`). The
-//! emitter never has more than MAX_INFLIGHT_BATCHES un-ACKed events
-//! outstanding — past that it WAITS instead of calling app.emit, so a slow
-//! or wedged webview stalls the emitter → the bounded channel fills → the
-//! reader blocks → the kernel PTY buffer fills → the tmux client stalls.
-//! Bytes are never dropped or reordered, and a stale generation's tail is
-//! discarded by the frontend (gen mismatch) without being ACKed — its gate
-//! is closed by the detach/re-attach that replaced it, which is also what
-//! releases a waiting emitter.
+//! # Contract
+//! Flow control is END-TO-END. Every event carries the attachment's
+//! generation (`gen`) and a monotonically increasing sequence number (`seq`);
+//! the webview ACKs each sequence (`pty_ack`) only after xterm's write
+//! callback has actually written the bytes. The emitter never has more than
+//! MAX_INFLIGHT_BATCHES (4 × ≤256KB) un-ACKed events outstanding — past that
+//! it WAITS on the attachment's AckGate instead of calling app.emit, so a
+//! slow or wedged webview stalls the emitter → the bounded channel fills →
+//! the reader blocks → the kernel PTY buffer fills → the tmux client stalls,
+//! with memory bounded at ~1.5MB per attachment (stalls are logged). Bytes
+//! are never dropped or reordered.
 //!
 //! The gate tracks an emitted HIGH-WATER mark: an ACK is honored only for
 //! `acked < seq <= emitted` on an open gate, so a buggy or hostile webview
@@ -19,24 +21,11 @@
 //! app.emit ends the pump and closes the gate (the webview can never ACK an
 //! event it never received); sequence overflow ends the stream cleanly.
 //!
-//! # Contract
-//! Attach = `tmux attach` inside a portable-pty, bytes streamed as base64 over the
-//! `pty-data` event to xterm.js; detach kills only the tmux *client*. Reader threads
-//! carry a generation counter so a stale thread never removes a newer attachment.
-//! Flow control is END-TO-END: pty-data events carry `gen`+`seq`; the frontend
-//! ACKs (`pty_ack`) only after xterm's write callback, and the emitter never
-//! runs more than MAX_INFLIGHT_BATCHES (4 × ≤256KB) past the last ACK — past
-//! that it waits on the attachment's AckGate (closed by detach/re-attach, which
-//! is what releases a stalled emitter; stalls are logged). The gate tracks an
-//! emitted HIGH-WATER mark: an ACK counts only for acked < seq ≤ emitted on an
-//! open gate, so a buggy/hostile webview ACKing sequences never sent cannot
-//! widen the window; a failed app.emit ends the pump and closes the gate (the
-//! webview can never ACK an event it never received); seq overflow ends the
-//! stream cleanly. A wedged webview
-//! therefore stalls emitter → bounded channel → kernel PTY → tmux client, with
-//! memory bounded at ~1.5MB per attachment. The frontend drops (without ACKing)
-//! events whose gen is older than the current attachment, and accepts+adopts a
-//! NEWER gen (the first event can beat the attach invoke's resolution).
+//! The frontend drops (without ACKing) events whose gen is older than the
+//! current attachment and accepts+adopts a NEWER gen (the first event can
+//! beat the attach invoke's resolution). A stale generation's gate is closed
+//! by the detach/re-attach that replaced it, which is also what releases a
+//! waiting emitter.
 
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
