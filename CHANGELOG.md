@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.5.16 — 2026-09-06 (Nightly)
+
+- Card memory now reports physical footprint (`ri_phys_footprint`, the
+  number Activity Monitor shows) instead of summed RSS. Summing resident
+  size over a pane's process tree counted the dyld shared cache and every
+  shared binary's text once per process, so an agent session with its
+  daemon, pre-warmed workers and mcp servers showed ~3 GB for ~1.3 GB of
+  real memory.
+- Terminal path links no longer flicker under a repainting TUI: the link
+  provider answers synchronously from the text alone and the link actions
+  validate the path when it is opened.
+- Security: deck executes only the signed tmux sidecar next to its own
+  binary — no Homebrew/MacPorts/PATH fallback (`/usr/local/bin` is
+  user-writable on many Macs). A build without its sidecar reports
+  `TmuxMissing` instead of borrowing a foreign tmux. CI runs `cargo audit`
+  against the committed lockfile.
+- Internal: one `PaneRow` format and parser in `tmux.rs` serves every pane
+  probe (a tab in a directory name no longer truncates the poll's cwd); one
+  locale resolver (the `defaults read` spawn is gone); one shell-name list;
+  unused `.lproj` resources and duplicated module-header contracts removed.
+
 ## 0.5.15 — 2026-09-06 (Nightly)
 
 - Faster new shells under endpoint security: `start_session` no longer
