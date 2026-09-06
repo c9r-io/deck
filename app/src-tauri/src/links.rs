@@ -1,6 +1,6 @@
 //! Terminal link targets: resolving clicked paths against the pane cwd in
-//! Rust (no shell), existence checks for link candidates, and the validated
-//! `open_target` command.
+//! Rust (no shell) and the validated `open_target` command. Hover discovery
+//! is frontend-only; a path is checked when an action is taken on it.
 
 use serde::Serialize;
 use std::path::PathBuf;
@@ -122,31 +122,6 @@ pub(crate) fn resolve_parent_dir(
     cwd: String,
 ) -> Result<ResolvedPathTarget, DeckError> {
     resolve_clicked_parent(&value, &cwd)
-}
-
-/// Link discovery is intentionally stricter than token discovery: a path-like
-/// token only becomes interactive when it resolves to a real local target in
-/// the pane's working directory. Actions resolve it again to avoid TOCTOU.
-fn terminal_path_exists(value: &str, cwd: &str) -> bool {
-    const MAX_PATH_TOKEN: usize = 4096;
-    if value.is_empty()
-        || value.len() > MAX_PATH_TOKEN
-        || cwd.is_empty()
-        || cwd.len() > MAX_PATH_TOKEN
-    {
-        return false;
-    }
-    resolve_clicked_parent(value, cwd).is_ok()
-}
-
-#[tauri::command]
-pub(crate) fn terminal_paths_exist(values: Vec<String>, cwd: String) -> Vec<bool> {
-    const MAX_CANDIDATES: usize = 128;
-    values
-        .iter()
-        .enumerate()
-        .map(|(index, value)| index < MAX_CANDIDATES && terminal_path_exists(value, &cwd))
-        .collect()
 }
 
 /// What open_target is allowed to hand to `open`, decided BEFORE any
@@ -363,22 +338,13 @@ mod tests {
         assert!(resolve_clicked_parent("missing.txt", &root.to_string_lossy()).is_err());
         assert!(resolve_clicked_parent("file.txt", "/definitely/missing/deck-cwd").is_err());
         let cwd = root.to_string_lossy().into_owned();
-        assert_eq!(
-            terminal_paths_exist(
-                vec![
-                    "\"空 格😀/code.rs\":12:3".into(),
-                    "memcache.go:265".into(),
-                    "x".repeat(4097),
-                ],
-                cwd,
-            ),
-            vec![true, false, false]
-        );
+        assert!(resolve_clicked_parent("\"空 格😀/code.rs\":12:3", &cwd).is_ok());
+        assert!(resolve_clicked_parent("memcache.go:265", &cwd).is_err());
         std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
-    fn filesystem_command_adapters_bound_candidates_and_resolve_parents() {
+    fn filesystem_command_adapter_resolves_parents() {
         let dir = std::env::temp_dir().join(format!("deck-path-command-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("nested")).unwrap();
@@ -391,15 +357,6 @@ mod tests {
             std::fs::canonicalize(dir.join("nested")).unwrap()
         );
         assert!(!resolved.target_is_directory);
-
-        let mut candidates = vec!["nested/file.rs".to_string(), "missing.rs".to_string()];
-        candidates.extend((0..128).map(|_| "nested".to_string()));
-        let exists = terminal_paths_exist(candidates, dir.display().to_string());
-        assert!(exists[0]);
-        assert!(!exists[1]);
-        assert!(exists[127]);
-        assert!(!exists[128]);
-        assert!(!exists[129]);
         let _ = std::fs::remove_dir_all(dir);
     }
 }

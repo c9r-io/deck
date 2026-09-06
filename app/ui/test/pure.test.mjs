@@ -1023,20 +1023,18 @@ test('terminal auto-replies are recognised; user bytes are not', () => {
     assert.equal(isTerminalAutoReply(typed), false, JSON.stringify(typed));
 });
 
-test('link ranges keep confirmed paths and URLs on the rows the line covers', () => {
+test('link ranges keep paths and URLs on the rows the line covers', () => {
   const positions = [];
   for (let i = 0; i < 12; i++) positions.push({ x: (i % 6) + 1, endX: (i % 6) + 1, y: Math.floor(i / 6) });
   const url = { kind: 'url', value: 'http://a', index: 0 };   // cells 0..7 → rows 0 and 1
-  const good = { kind: 'path', value: 'ok', index: 9 };       // row 1
-  const bad = { kind: 'path', value: 'no', index: 9 };
+  const path = { kind: 'path', value: 'ok', index: 9 };       // row 1
   const cut = { kind: 'url', value: 'http://zzzz', index: 6 }; // runs past the known cells
-  const validPaths = new Map([[good, true], [bad, false]]);
-  const row0 = terminalLinkRanges({ matches: [url, good, bad, cut], positions, lineNo: 0, validPaths });
+  const row0 = terminalLinkRanges({ matches: [url, path, cut], positions, lineNo: 0 });
   assert.deepEqual(row0.map(l => l.text), ['http://a'], 'the path lives on row 1, the cut match has no end cell');
   assert.deepEqual(row0[0], { range: { start: { x: 1, y: 0 }, end: { x: 2, y: 1 } }, text: 'http://a', kind: 'url' });
-  const row1 = terminalLinkRanges({ matches: [url, good, bad], positions, lineNo: 1, validPaths });
+  const row1 = terminalLinkRanges({ matches: [url, path], positions, lineNo: 1 });
   assert.deepEqual(row1.map(l => l.text), ['http://a', 'ok'], 'a wrapped URL is offered on every row it spans');
-  assert.deepEqual(terminalLinkRanges({ matches: [url], positions, lineNo: 2, validPaths }), []);
+  assert.deepEqual(terminalLinkRanges({ matches: [url], positions, lineNo: 2 }), []);
 });
 
 test('scroll replies read the same way whether boolean or status object', () => {

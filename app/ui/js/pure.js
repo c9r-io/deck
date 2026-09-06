@@ -775,12 +775,10 @@ const TERMINAL_AUTO_REPLY = /^(?:\x1b\[[?>][0-9;$]*[a-zA-Z]|\x1b\[[0-9;]*R|\x1b\
 export const isTerminalAutoReply = data => TERMINAL_AUTO_REPLY.test(data);
 
 /** Link ranges for one xterm buffer line: every tokenized match whose start
- * and end cells are known, restricted to the rows that line covers; path
- * candidates the backend did not confirm are dropped. */
-export function terminalLinkRanges({ matches, positions, lineNo, validPaths }) {
+ * and end cells are known, restricted to the rows that line covers. */
+export function terminalLinkRanges({ matches, positions, lineNo }) {
   const links = [];
   for (const match of matches) {
-    if (match.kind === 'path' && !validPaths.get(match)) continue;
     const start = positions[match.index];
     const end = positions[match.index + match.value.length - 1];
     if (!start || !end) continue;

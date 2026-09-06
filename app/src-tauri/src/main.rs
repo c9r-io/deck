@@ -295,7 +295,6 @@ fn main() {
             pty::detach_session,
             links::open_target,
             links::resolve_parent_dir,
-            links::terminal_paths_exist,
             history::recent_commands,
             history::record_command,
             history::history_clear,

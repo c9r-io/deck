@@ -632,37 +632,30 @@ export function wireTerminalInput(pane, term, host) {
     pane.liveQ = pane.selection?.prepareInput() || Promise.resolve();
   }, true);
 
-  /* clickable paths and URLs in terminal output */
+  /* clickable paths and URLs in terminal output. The provider answers
+     SYNCHRONOUSLY: xterm's linkifier drops the hovered link and re-asks
+     whenever the rows under it repaint (a TUI spinner, scrolling output),
+     so any await here paints a frame without the underline and the link
+     visibly flickers. Path candidates are therefore offered on their text
+     alone; the actions resolve and validate them against the cwd. */
   const linkProvider = {
     provideLinks(lineNo, cb) {
-      const logical = terminalLogicalLine(term, lineNo);
-      const { text, positions } = logical;
+      const { text, positions } = terminalLogicalLine(term, lineNo);
       if (!text) return cb(undefined);
       const matches = tokenizeTerminalLinks(text);
       if (!matches.length) return cb(undefined);
-      const c = card();
-      const cwd = c ? c.dir : ctx.HOME;
-      const pathMatches = matches.filter(match => match.kind === 'path');
-      const validation = pathMatches.length
-        ? inv('terminal_paths_exist', { values: pathMatches.map(match => match.value), cwd })
-          .catch(() => pathMatches.map(() => false))
-        : Promise.resolve([]);
-      validation.then(pathResults => {
-        if (!host.isConnected) return cb(undefined);
-        const validPaths = new Map(pathMatches.map((match, index) => [match, !!pathResults[index]]));
-        const links = terminalLinkRanges({ matches, positions, lineNo, validPaths }).map(({ range, text, kind }) => ({
-          range,
-          text,
-          activate: (e, txt) => {
-            if (!pane.selection?.allowLinkActivation()) return;
-            e.stopPropagation();
-            try { term.clearSelection(); } catch (e2) { /* fine */ }
-            const c = card();
-            showLinkCtx(e, kind, txt, c ? c.dir : ctx.HOME, c ? c.id : null);
-          },
-        }));
-        cb(links.length ? links : undefined);
-      });
+      const links = terminalLinkRanges({ matches, positions, lineNo }).map(({ range, text, kind }) => ({
+        range,
+        text,
+        activate: (e, txt) => {
+          if (!pane.selection?.allowLinkActivation()) return;
+          e.stopPropagation();
+          try { term.clearSelection(); } catch (e2) { /* fine */ }
+          const c = card();
+          showLinkCtx(e, kind, txt, c ? c.dir : ctx.HOME, c ? c.id : null);
+        },
+      }));
+      cb(links.length ? links : undefined);
     },
   };
   pane.linkProvider = linkProvider; // public smoke seam: provider activate, not menu helper

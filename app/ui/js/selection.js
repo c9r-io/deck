@@ -59,9 +59,9 @@
 // must never capture shell/editor keys or terminal text.
 // Terminal links use `tokenizeTerminalLinks`, not an overlapping global regex:
 // an HTTP(S) URL consumes its whole logical-line interval before path candidates
-// are considered. `terminal_paths_exist` then resolves candidates against the
-// pane cwd in one bounded backend call; nonexistent or inaccessible local paths
-// never become interactive. Link actions resolve again before opening.
+// are considered. The provider answers synchronously from the line text alone
+// (an awaited backend check paints a frame without the underline every time
+// the rows repaint); link actions resolve and validate the path before opening.
 // History is 50,000 rows and clipboard extraction is explicitly capped at
 // 64 MiB without truncation. During selection tmux freezes the reading frame
 // while the PTY stream continues through its bounded ACK gate.
