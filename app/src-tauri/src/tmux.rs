@@ -1,5 +1,7 @@
-//! tmux backend: sidecar discovery, the private `deck` server, config, and
-//! raw command execution. Everything deck knows about tmux lives here.
+//! tmux backend: sidecar discovery, the private `deck` server, config, raw
+//! command execution, and the ONE pane row (`PaneRow` / `PANE_FORMAT`,
+//! `list_panes`, `pane_row`) every probe in deck reads panes through.
+//! Everything deck knows about tmux lives here.
 //!
 //! # Contract
 //! tmux ships INSIDE the app: a statically linked binary (see
@@ -350,9 +352,193 @@ pub(crate) fn init_deck_server() {
     let _ = tmux(&["set", "-g", "copy-mode-position-format", ""]);
 }
 
+// ---------- pane rows -------------------------------------------------------
+
+/// The ONE pane row every deck probe reads. `PANE_FORMAT` is the superset of
+/// the fields the poll (`commands.rs`), the agent-status resolver, the
+/// scheduler tick, the context probe and the lifecycle probe need;
+/// `list_panes()` reads every pane on the server and `pane_row(target)` one
+/// pane, both through `parse_pane_row`. Adding a field is one format entry
+/// plus one struct field. `path` is last because a directory name may
+/// contain a tab; every other field is tmux-generated and tab-free.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct PaneRow {
+    pub(crate) server_pid: u32,
+    /// `$N`
+    pub(crate) session_id: String,
+    pub(crate) session_name: String,
+    /// `@N`
+    pub(crate) window_id: String,
+    /// `%N`
+    pub(crate) pane_id: String,
+    pub(crate) pane_pid: u32,
+    pub(crate) window_activity: u64,
+    pub(crate) in_mode: bool,
+    /// `#{pane_current_command}` verbatim; callers sanitize.
+    pub(crate) command: String,
+    pub(crate) tty: String,
+    /// `#{pane_current_path}` verbatim; callers validate.
+    pub(crate) path: String,
+}
+
+pub(crate) const PANE_FORMAT: &str = "#{pid}\t#{session_id}\t#{session_name}\t#{window_id}\t#{pane_id}\t#{pane_pid}\t#{window_activity}\t#{pane_in_mode}\t#{pane_current_command}\t#{pane_tty}\t#{pane_current_path}";
+
+fn tmux_id(value: &str, prefix: char) -> bool {
+    value
+        .strip_prefix(prefix)
+        .is_some_and(|digits| !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// Strict: exactly the fields of `PANE_FORMAT`, tmux ids in their `$ @ %`
+/// shapes and non-zero pids. Anything else is `None` — a row is never
+/// half-read. (Session names are NOT validated here: a foreign session on
+/// the socket must not blank the listing; callers that store a name check
+/// it with `validate_session_name`.)
+pub(crate) fn parse_pane_row(line: &str) -> Option<PaneRow> {
+    let mut fields = line.trim_end_matches(['\r', '\n']).splitn(11, '\t');
+    let server_pid: u32 = fields.next()?.parse().ok()?;
+    let session_id = fields.next()?;
+    let session_name = fields.next()?;
+    let window_id = fields.next()?;
+    let pane_id = fields.next()?;
+    let pane_pid: u32 = fields.next()?.parse().ok()?;
+    let window_activity: u64 = fields.next()?.parse().ok()?;
+    let in_mode = match fields.next()? {
+        "0" => false,
+        "1" => true,
+        _ => return None,
+    };
+    let command = fields.next()?;
+    let tty = fields.next()?;
+    let path = fields.next()?;
+    if server_pid == 0
+        || pane_pid == 0
+        || !tmux_id(session_id, '$')
+        || !tmux_id(window_id, '@')
+        || !tmux_id(pane_id, '%')
+    {
+        return None;
+    }
+    Some(PaneRow {
+        server_pid,
+        session_id: session_id.into(),
+        session_name: session_name.into(),
+        window_id: window_id.into(),
+        pane_id: pane_id.into(),
+        pane_pid,
+        window_activity,
+        in_mode,
+        command: command.into(),
+        tty: tty.into(),
+        path: path.into(),
+    })
+}
+
+fn malformed_row() -> DeckError {
+    DeckError::new(ErrorKind::Tmux, "tmux returned a malformed pane row")
+}
+
+/// Every pane on deck's server, in tmux's listing order (a session's first
+/// pane comes first). One malformed line fails the whole read: the only
+/// known way to get one is tmux running without a UTF-8 locale, and then
+/// every line is malformed.
+pub(crate) fn list_panes() -> Result<Vec<PaneRow>, DeckError> {
+    tmux(&["list-panes", "-a", "-F", PANE_FORMAT])?
+        .lines()
+        .map(|line| parse_pane_row(line).ok_or_else(malformed_row))
+        .collect()
+}
+
+/// One pane, by tmux target (`pane_target(session)` for a card's pane).
+pub(crate) fn pane_row(target: &str) -> Result<PaneRow, DeckError> {
+    let raw = tmux(&["display-message", "-p", "-t", target, PANE_FORMAT])?;
+    parse_pane_row(&raw).ok_or_else(malformed_row)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn row(fields: &[&str]) -> String {
+        fields.join("\t")
+    }
+
+    #[test]
+    fn pane_rows_parse_every_field_and_keep_tabs_in_the_path() {
+        let line = row(&[
+            "99",
+            "$1",
+            "deck-card-ab12",
+            "@2",
+            "%3",
+            "44",
+            "1700000005",
+            "1",
+            "claude",
+            "/dev/ttys004",
+            "/tmp/a\tb",
+        ]);
+        let parsed = parse_pane_row(&format!("{line}\n")).unwrap();
+        assert_eq!(
+            parsed,
+            PaneRow {
+                server_pid: 99,
+                session_id: "$1".into(),
+                session_name: "deck-card-ab12".into(),
+                window_id: "@2".into(),
+                pane_id: "%3".into(),
+                pane_pid: 44,
+                window_activity: 1700000005,
+                in_mode: true,
+                command: "claude".into(),
+                tty: "/dev/ttys004".into(),
+                path: "/tmp/a\tb".into(),
+            }
+        );
+        assert_eq!(
+            PANE_FORMAT.split('\t').count(),
+            11,
+            "one field per struct member"
+        );
+    }
+
+    #[test]
+    fn pane_rows_are_all_or_nothing() {
+        let good = [
+            "99",
+            "$1",
+            "s",
+            "@2",
+            "%3",
+            "44",
+            "1",
+            "0",
+            "zsh",
+            "/dev/ttys0",
+            "/",
+        ];
+        assert!(parse_pane_row(&row(&good)).is_some());
+        for (i, bad) in [
+            (0, "0"),     // server pid 0
+            (0, "x"),     // non-numeric
+            (1, "1"),     // session id without $
+            (3, "2"),     // window id without @
+            (4, "%"),     // pane id without digits
+            (5, "0"),     // pane pid 0
+            (6, "later"), // activity non-numeric
+            (7, "2"),     // in_mode outside 0/1
+        ] {
+            let mut fields = good;
+            fields[i] = bad;
+            assert!(
+                parse_pane_row(&row(&fields)).is_none(),
+                "field {i} = {bad:?}"
+            );
+        }
+        assert!(parse_pane_row(&row(&good[..10])).is_none(), "missing field");
+        assert!(parse_pane_row("junk-line").is_none());
+        assert!(parse_pane_row("").is_none());
+    }
 
     #[test]
     fn session_names_accept_the_deck_alphabet() {

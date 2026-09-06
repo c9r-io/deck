@@ -89,6 +89,8 @@
 //! Settings toggle.
 
 use std::collections::HashMap;
+
+use crate::tmux::PaneRow;
 use std::io::Read;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -180,41 +182,25 @@ pub(crate) fn parse_event(line: &str) -> Result<Event, &'static str> {
 
 // ---------- pane → session resolution --------------------------------------
 
-/// Parse a `#{pid}\t#{pane_id}\t#{session_name}\t#{pane_current_command}`
-/// listing and return the (session, foreground) for `pane` — but only if the
+/// The (session, foreground) of `pane` in a pane listing — but only if the
 /// listing's server pid matches the event's generation stamp (a restarted
 /// server reuses numeric pane ids; pid is what tells generations apart).
-pub(crate) fn resolve_in(listing: &str, pane: &str, server_pid: u32) -> Option<(String, String)> {
-    for line in listing.lines() {
-        let mut fields = line.split('\t');
-        let (Some(pid), Some(id), Some(session), Some(fg)) =
-            (fields.next(), fields.next(), fields.next(), fields.next())
-        else {
-            continue;
-        };
-        if id != pane {
-            continue;
-        }
-        if pid.parse::<u32>().ok() != Some(server_pid) {
-            return None;
-        }
-        if crate::tmux::validate_session_name(session).is_err() {
-            return None;
-        }
-        return Some((session.to_string(), fg.to_string()));
+pub(crate) fn resolve_in(
+    rows: &[PaneRow],
+    pane: &str,
+    server_pid: u32,
+) -> Option<(String, String)> {
+    let row = rows.iter().find(|row| row.pane_id == pane)?;
+    if row.server_pid != server_pid
+        || crate::tmux::validate_session_name(&row.session_name).is_err()
+    {
+        return None;
     }
-    None
+    Some((row.session_name.clone(), row.command.clone()))
 }
 
 fn tmux_resolve(pane: &str, server_pid: u32) -> Option<(String, String)> {
-    let listing = crate::tmux::tmux(&[
-        "list-panes",
-        "-a",
-        "-F",
-        "#{pid}\t#{pane_id}\t#{session_name}\t#{pane_current_command}",
-    ])
-    .ok()?;
-    resolve_in(&listing, pane, server_pid)
+    resolve_in(&crate::tmux::list_panes().ok()?, pane, server_pid)
 }
 
 /// Validate one wire line and commit it to the store. `resolve` is injected
@@ -250,17 +236,17 @@ pub(crate) fn ingest(
 
 // ---------- poll integration ------------------------------------------------
 
-/// Called from every `poll_sessions` with the fresh pane map
-/// (session → (pid, activity, mode, foreground, cwd)). Clears state whose
-/// session is gone or whose pane foreground no longer matches the process
-/// observed when the state was reported — the agent exited or was replaced.
-pub(crate) fn reconcile(panes: &HashMap<String, (u32, u64, bool, String, String)>) {
+/// Called from every `poll_sessions` with the fresh representative pane per
+/// session. Clears state whose session is gone or whose pane foreground no
+/// longer matches the process observed when the state was reported — the
+/// agent exited or was replaced.
+pub(crate) fn reconcile(panes: &HashMap<String, PaneRow>) {
     with_agents(|agents| {
         agents.retain(|session, entry| {
-            let Some((_, _, _, fg, _)) = panes.get(session) else {
+            let Some(pane) = panes.get(session) else {
                 return false;
             };
-            !crate::context::shell_process(Some(fg)) && *fg == entry.expected_fg
+            !crate::context::shell_process(Some(&pane.command)) && pane.command == entry.expected_fg
         });
     });
 }
@@ -910,16 +896,29 @@ mod tests {
 
     #[test]
     fn pane_resolution_requires_the_server_generation() {
-        let listing = "42\t%3\tdeck-card-ab12\tclaude\n42\t%5\tdeck-card-cd34\tzsh\n";
+        let row = |pane: &str, session: &str, fg: &str| PaneRow {
+            server_pid: 42,
+            pane_id: pane.into(),
+            session_name: session.into(),
+            command: fg.into(),
+            ..PaneRow::default()
+        };
+        let listing = [
+            row("%3", "deck-card-ab12", "claude"),
+            row("%5", "deck-card-cd34", "zsh"),
+        ];
         assert_eq!(
-            resolve_in(listing, "%3", 42),
+            resolve_in(&listing, "%3", 42),
             Some(("deck-card-ab12".into(), "claude".into()))
         );
         // same pane id, different server pid → a restarted server reused it
-        assert_eq!(resolve_in(listing, "%3", 43), None);
-        assert_eq!(resolve_in(listing, "%9", 42), None);
+        assert_eq!(resolve_in(&listing, "%3", 43), None);
+        assert_eq!(resolve_in(&listing, "%9", 42), None);
         // a session name outside the tmux alphabet never enters the store
-        assert_eq!(resolve_in("42\t%3\tbad name\tclaude\n", "%3", 42), None);
+        assert_eq!(
+            resolve_in(&[row("%3", "bad name", "claude")], "%3", 42),
+            None
+        );
     }
 
     #[test]
@@ -1018,7 +1017,10 @@ mod tests {
             Err("no-such-pane")
         );
 
-        let pane = |fg: &str| (7u32, 0u64, false, fg.to_string(), "/".to_string());
+        let pane = |fg: &str| PaneRow {
+            command: fg.into(),
+            ..PaneRow::default()
+        };
         // same foreground → state survives the poll
         let mut panes = HashMap::new();
         panes.insert("deck-card-ab12".to_string(), pane("claude"));

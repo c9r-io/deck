@@ -753,6 +753,24 @@ fn poll_formats_exist() {
         ["sh", "bash", "zsh", "dash"].contains(&fg.as_str()),
         "pane_current_command should report the fg shell, got {fg:?}"
     );
+    // `tmux::PANE_FORMAT`, the one row every deck probe parses: eleven
+    // tab-separated fields, ids in their `$ @ %` shapes, numeric pids.
+    let row = s.fmt(
+        "#{pid}\t#{session_id}\t#{session_name}\t#{window_id}\t#{pane_id}\t#{pane_pid}\t#{window_activity}\t#{pane_in_mode}\t#{pane_current_command}\t#{pane_tty}\t#{pane_current_path}",
+    );
+    let fields: Vec<&str> = row.split('\t').collect();
+    assert_eq!(fields.len(), 11, "pane row: {row:?}");
+    assert!(
+        fields[0].parse::<u32>().is_ok_and(|pid| pid > 0),
+        "server pid"
+    );
+    assert!(fields[1].starts_with('$') && fields[3].starts_with('@') && fields[4].starts_with('%'));
+    assert!(
+        fields[5].parse::<u32>().is_ok_and(|pid| pid > 0),
+        "pane pid"
+    );
+    assert!(fields[9].starts_with("/dev/"), "pane_tty");
+    assert!(!fields[10].is_empty(), "pane_current_path");
 }
 
 /// Scheduled context protection depends only on stable tmux generation ids

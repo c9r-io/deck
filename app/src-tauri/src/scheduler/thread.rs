@@ -13,7 +13,6 @@ use crate::datadir::now_epoch;
 use crate::error::DeckError;
 use crate::storage;
 use crate::sync::LockRecover;
-use crate::tmux::tmux;
 
 /// Boot migration is unusual: the interrupted send is an irreversible fact,
 /// so recovered `ambiguous` memory is authoritative even when the first disk
@@ -99,20 +98,10 @@ pub(crate) fn spawn_scheduler(app: AppHandle) {
         }
         // pane activity for chain-mode quiet checks (one snapshot per tick)
         let mut activity: HashMap<String, u64> = HashMap::new();
-        if let Ok(out) = tmux(&[
-            "list-panes",
-            "-a",
-            "-F",
-            "#{session_name}\t#{window_activity}",
-        ]) {
-            for line in out.lines() {
-                let mut it = line.split('\t');
-                if let (Some(s), Some(a)) = (it.next(), it.next()) {
-                    if let Ok(a) = a.parse() {
-                        activity.entry(s.to_string()).or_insert(a);
-                    }
-                }
-            }
+        for row in crate::tmux::list_panes().unwrap_or_default() {
+            activity
+                .entry(row.session_name)
+                .or_insert(row.window_activity);
         }
         // expired rules die quietly, transactionally like every other change
         let now = now_epoch();

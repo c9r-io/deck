@@ -7,8 +7,8 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::{DeckError, ErrorKind};
-use crate::tmux::{pane_target, tmux};
+use crate::error::DeckError;
+use crate::tmux::{pane_target, PaneRow};
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -221,54 +221,29 @@ pub(crate) fn shell_process(foreground: Option<&str>) -> bool {
     )
 }
 
-/// Parse one tmux metadata line. Malformed or unsanitized foreground data is
-/// represented as no process; it is never persisted verbatim.
-pub(crate) fn parse_raw_probe(raw: &str) -> Option<RawProbe> {
-    let mut fields = raw.trim_end_matches(['\r', '\n']).split('\t');
-    let server_pid = fields.next()?.parse().ok()?;
-    let session_id = fields.next()?.to_string();
-    let window_id = fields.next()?.to_string();
-    let pane_id = fields.next()?.to_string();
-    let pane_pid = fields.next()?.parse().ok()?;
-    let foreground = sanitize_process(fields.next().unwrap_or_default());
-    if fields.next().is_some()
-        || !session_id.starts_with('$')
-        || !window_id.starts_with('@')
-        || !pane_id.starts_with('%')
-        || pane_pid == 0
-        || server_pid == 0
-    {
-        return None;
-    }
-    Some(RawProbe {
+/// The context view of one pane row: exact tmux generation identity plus
+/// the sanitized foreground name. Unsanitized foreground data is represented
+/// as no process; it is never persisted verbatim.
+pub(crate) fn probe_from_row(row: &PaneRow) -> RawProbe {
+    RawProbe {
         identity: PaneIdentity {
-            server_pid,
-            session_id,
-            window_id,
-            pane_id,
-            pane_pid,
+            server_pid: row.server_pid,
+            session_id: row.session_id.clone(),
+            window_id: row.window_id.clone(),
+            pane_id: row.pane_id.clone(),
+            pane_pid: row.pane_pid,
         },
-        foreground,
+        foreground: sanitize_process(&row.command),
         foreground_argv: None,
-    })
+    }
 }
 
-/// One metadata-only tmux read. No pane capture, prompt text, argument, path or
-/// user-configured hook participates in the decision.
+/// One metadata-only tmux read (`tmux::pane_row`). No pane capture, prompt
+/// text, argument, path or user-configured hook participates in the decision.
 pub(crate) fn raw_probe(session: &str) -> Result<RawProbe, DeckError> {
-    let raw = tmux(&[
-        "display-message",
-        "-p",
-        "-t",
-        &pane_target(session),
-        "#{pid}\t#{session_id}\t#{window_id}\t#{pane_id}\t#{pane_pid}\t#{pane_current_command}\t#{pane_tty}",
-    ])?;
-    let trimmed = raw.trim_end_matches(['\r', '\n']);
-    let (meta, tty) = trimmed.rsplit_once('\t').unwrap_or((trimmed, ""));
-    let mut probe = parse_raw_probe(meta).ok_or_else(|| {
-        DeckError::new(ErrorKind::Tmux, "tmux returned malformed context metadata")
-    })?;
-    probe.foreground_argv = foreground_from_tty(tty);
+    let row = crate::tmux::pane_row(&pane_target(session))?;
+    let mut probe = probe_from_row(&row);
+    probe.foreground_argv = foreground_from_tty(&row.tty);
     Ok(probe)
 }
 
@@ -356,7 +331,15 @@ mod tests {
     use super::*;
 
     fn raw(fg: &str) -> RawProbe {
-        parse_raw_probe(&format!("99\t$1\t@2\t%3\t44\t{fg}\n")).unwrap()
+        probe_from_row(&PaneRow {
+            server_pid: 99,
+            session_id: "$1".into(),
+            window_id: "@2".into(),
+            pane_id: "%3".into(),
+            pane_pid: 44,
+            command: fg.into(),
+            ..PaneRow::default()
+        })
     }
 
     #[test]
@@ -461,8 +444,20 @@ mod tests {
     }
 
     #[test]
-    fn probe_format_has_no_hook_fields_and_rejects_extra_metadata() {
-        assert!(parse_raw_probe("99\t$1\t@2\t%3\t44\tcodex\n").is_some());
-        assert!(parse_raw_probe("99\t$1\t@2\t%3\t44\tcodex\tready\n").is_none());
+    fn probe_reads_only_generation_identity_and_a_sanitized_command() {
+        let probe = raw("/Users/x/.local/bin/claude");
+        assert_eq!(probe.identity.server_pid, 99);
+        assert_eq!(probe.identity.pane_id, "%3");
+        assert_eq!(probe.foreground.as_deref(), Some("claude"));
+        assert_eq!(
+            probe.foreground_argv, None,
+            "argv comes from the tty, not tmux"
+        );
+        for field in crate::tmux::PANE_FORMAT.split('\t') {
+            assert!(
+                !field.contains("hook"),
+                "no hook field in the probe: {field}"
+            );
+        }
     }
 }

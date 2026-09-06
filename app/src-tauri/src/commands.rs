@@ -3,8 +3,9 @@
 //! command that feeds card status/memory/preview.
 //!
 //! # Contract
-//! One poll command (`poll_sessions`) returns liveness + `#{window_activity}` recency +
-//! process-tree RSS (pane_pid → ps tree walk) + the last six non-empty pane rows
+//! One poll command (`poll_sessions`) reads one `tmux::list_panes()` and
+//! returns liveness + `window_activity` recency + process-tree RSS
+//! (pane_pid → libproc tree walk) + the last six non-empty pane rows
 //! for fixed-height, bottom-aligned card previews. Frontend polls every 2.5s and
 //! diffs into granular UI events (status/mem/output) — never full re-renders on
 //! output.
@@ -21,7 +22,7 @@ use crate::error::{DeckError, ErrorKind};
 use crate::sync::LockRecover;
 use crate::tmux::{
     expand_tilde, pane_target, session_target, tmux, tmux_program, tmux_with_stdin,
-    validate_session_name,
+    validate_session_name, PaneRow,
 };
 
 /// Rust→JS event self-test: the frontend calls this after registering a
@@ -392,33 +393,17 @@ const CARD_PREVIEW_LINES: usize = 6;
 /// never produced by capture-pane for ordinary pane text lines.
 const TAIL_MARK: &str = "\u{1}deck-tail\u{1}";
 
-/// One pane-listing line → (session, pane pid, activity epoch, in copy-mode,
-/// fg command). Every tmux session has at least one pane, so this listing
+/// One representative pane per session — the first tmux lists — keyed by
+/// session name; a pane whose cwd is empty or carries control characters is
+/// not representative. Every tmux session has at least one pane, so this
 /// doubles as the liveness set — no separate `list-sessions` round-trip.
-pub(crate) fn parse_panes(text: &str) -> HashMap<String, (u32, u64, bool, String, String)> {
-    let mut panes: HashMap<String, (u32, u64, bool, String, String)> = HashMap::new();
-    for line in text.lines() {
-        let mut it = line.split('\t');
-        if let (Some(s), Some(pid), Some(act), Some(mode), Some(fg), Some(cwd)) = (
-            it.next(),
-            it.next(),
-            it.next(),
-            it.next(),
-            it.next(),
-            it.next(),
-        ) {
-            if let (Ok(pid), Ok(act)) = (pid.parse(), act.parse()) {
-                if !cwd.is_empty() && !cwd.chars().any(char::is_control) {
-                    panes.entry(s.to_string()).or_insert((
-                        pid,
-                        act,
-                        mode == "1",
-                        fg.to_string(),
-                        cwd.to_string(),
-                    ));
-                }
-            }
+pub(crate) fn representative_panes(rows: Vec<PaneRow>) -> HashMap<String, PaneRow> {
+    let mut panes: HashMap<String, PaneRow> = HashMap::new();
+    for row in rows {
+        if row.path.is_empty() || row.path.chars().any(char::is_control) {
+            continue;
         }
+        panes.entry(row.session_name.clone()).or_insert(row);
     }
     panes
 }
@@ -487,12 +472,7 @@ pub(crate) fn poll_sessions(
     checkpoint_shells: bool,
 ) -> Vec<SessInfo> {
     // one listing supplies liveness + activity + pid + fg for every session
-    let listing = tmux(&[
-        "list-panes",
-        "-a",
-        "-F",
-        "#{session_name}\t#{pane_pid}\t#{window_activity}\t#{pane_in_mode}\t#{pane_current_command}\t#{pane_current_path}",
-    ]);
+    let listing = crate::tmux::list_panes();
     // a failing listing silently reads as "everything is dead" — log the
     // failure and the recovery, once per transition (tmux errors carry no
     // user content)
@@ -511,14 +491,14 @@ pub(crate) fn poll_sessions(
             _ => {}
         }
     }
-    let panes = parse_panes(&listing.unwrap_or_default());
+    let panes = representative_panes(listing.unwrap_or_default());
     // agent-hook state lives exactly as long as the foreground process that
     // reported it — clear entries whose pane moved on before they render
     crate::agent_status::reconcile(&panes);
 
     let roots: HashMap<String, u32> = names
         .iter()
-        .filter_map(|n| panes.get(n).map(|(pid, _, _, _, _)| (n.clone(), *pid)))
+        .filter_map(|n| panes.get(n).map(|pane| (n.clone(), pane.pane_pid)))
         .collect();
     let mem = tree_mem(&roots);
 
@@ -543,13 +523,11 @@ pub(crate) fn poll_sessions(
     crate::shell_state::schedule_checkpoints(
         panes
             .iter()
-            .map(|(session, (_, activity, _, foreground, cwd))| {
-                crate::shell_state::ShellObservation {
-                    session: session.clone(),
-                    activity: *activity,
-                    cwd: cwd.clone(),
-                    foreground: foreground.clone(),
-                }
+            .map(|(session, pane)| crate::shell_state::ShellObservation {
+                session: session.clone(),
+                activity: pane.window_activity,
+                cwd: pane.path.clone(),
+                foreground: pane.command.clone(),
             })
             .collect(),
         checkpoint_shells,
@@ -561,12 +539,12 @@ pub(crate) fn poll_sessions(
             let pane = panes.get(&name);
             SessInfo {
                 alive: pane.is_some(),
-                idle_secs: pane.map(|(_, act, _, _, _)| now.saturating_sub(*act)),
+                idle_secs: pane.map(|pane| now.saturating_sub(pane.window_activity)),
                 mem_mb: mem.get(&name).copied(),
                 tail: tails.remove(&name).unwrap_or_default(),
-                fg: pane.map(|(_, _, _, fg, _)| fg.clone()),
-                cwd: pane.map(|(_, _, _, _, cwd)| cwd.clone()),
-                scrolled: pane.map(|(_, _, m, _, _)| *m),
+                fg: pane.map(|pane| pane.command.clone()),
+                cwd: pane.map(|pane| pane.path.clone()),
+                scrolled: pane.map(|pane| pane.in_mode),
                 agent: pane.and_then(|_| crate::agent_status::current(&name)),
                 name,
             }
@@ -629,30 +607,32 @@ mod tests {
         }
     }
 
-    #[test]
-    fn parse_panes_basic_and_malformed() {
-        let text = "alpha\t100\t1700000000\t0\tzsh\t/tmp/a\nbeta\t200\t1700000005\t1\tclaude\t/tmp/b\njunk-line\nempty\t\t\t\t\t\n";
-        let p = parse_panes(text);
-        assert_eq!(p.len(), 2);
-        assert_eq!(
-            p["alpha"],
-            (100, 1700000000, false, "zsh".into(), "/tmp/a".into())
-        );
-        assert_eq!(
-            p["beta"],
-            (200, 1700000005, true, "claude".into(), "/tmp/b".into()),
-            "copy-mode pane reported as scrolled"
-        );
+    fn row(session: &str, pid: u32, activity: u64, in_mode: bool, fg: &str, path: &str) -> PaneRow {
+        PaneRow {
+            session_name: session.into(),
+            pane_pid: pid,
+            window_activity: activity,
+            in_mode,
+            command: fg.into(),
+            path: path.into(),
+            ..PaneRow::default()
+        }
     }
 
     #[test]
-    fn parse_panes_first_pane_wins() {
-        // multi-pane session: the first listed pane is the representative one
-        let text = "s\t10\t111\t0\tzsh\t/tmp/one\ns\t20\t222\t1\tvim\t/tmp/two\n";
-        assert_eq!(
-            parse_panes(text)["s"],
-            (10, 111, false, "zsh".into(), "/tmp/one".into())
-        );
+    fn representative_panes_take_the_first_pane_and_need_a_usable_cwd() {
+        let panes = representative_panes(vec![
+            row("alpha", 100, 1700000000, false, "zsh", "/tmp/a"),
+            row("beta", 200, 1700000005, true, "claude", "/tmp/b"),
+            row("gone", 300, 1, false, "zsh", ""),
+            row("odd", 400, 1, false, "zsh", "/tmp/x\u{7}"),
+            // multi-pane session: the first listed pane is the representative one
+            row("beta", 201, 1700000009, false, "vim", "/tmp/two"),
+        ]);
+        assert_eq!(panes.len(), 2);
+        assert_eq!(panes["alpha"].command, "zsh");
+        assert!(panes["beta"].in_mode, "copy-mode pane reported as scrolled");
+        assert_eq!(panes["beta"].pane_pid, 200);
     }
 
     /// Pins the plan `tmux_contract::shell_restore_bootstrap_becomes_tmux_

@@ -526,48 +526,21 @@ fn probe_server() -> Probe {
 
     let mut pane_identities = Vec::new();
     if !sessions.is_empty() {
-        let panes = match tmux(&[
-            "list-panes",
-            "-a",
-            "-F",
-            "#{session_name}\t#{pane_id}\t#{pane_pid}\t#{pane_current_command}",
-        ]) {
-            Ok(value) => value,
-            Err(_) => return Probe::Unreachable,
+        let Ok(rows) = tmux::list_panes() else {
+            return Probe::Unreachable;
         };
-        for line in panes.lines() {
-            let mut fields = line.split('\t');
-            let (Some(name), Some(pane_id), Some(pane_pid), Some(foreground), None) = (
-                fields.next(),
-                fields.next(),
-                fields.next(),
-                fields.next(),
-                fields.next(),
-            ) else {
-                return Probe::Unreachable;
-            };
-            if !pane_id
-                .strip_prefix('%')
-                .is_some_and(|value| !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit()))
-            {
-                return Probe::Unreachable;
-            }
-            let Ok(pane_pid) = pane_pid.parse::<u32>() else {
-                return Probe::Unreachable;
-            };
-            let Some(session) = sessions.iter_mut().find(|session| session.name == name) else {
+        for row in rows {
+            let Some(session) = sessions
+                .iter_mut()
+                .find(|session| session.name == row.session_name)
+            else {
                 return Probe::Unreachable;
             };
             session.pane_count = session.pane_count.saturating_add(1);
-            if !crate::context::shell_process(Some(foreground)) {
+            if !crate::context::shell_process(Some(&row.command)) {
                 session.has_foreground_process = true;
             }
-            pane_identities.push((
-                name.to_string(),
-                pane_id.to_string(),
-                pane_pid,
-                foreground.to_string(),
-            ));
+            pane_identities.push((row.session_name, row.pane_id, row.pane_pid, row.command));
         }
         if sessions.iter().any(|session| session.pane_count == 0) {
             return Probe::Unreachable;

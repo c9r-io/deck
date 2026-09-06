@@ -174,7 +174,14 @@ fn debug_logging_is_command_line_only_and_stays_structured() {
 #[test]
 fn scheduler_context_probe_is_metadata_only_and_content_free() {
     let context = std::fs::read_to_string(manifest("src/context.rs")).unwrap();
-    assert!(context.contains("#{pane_current_command}"));
+    // the probe reads tmux through the one shared pane row (tmux::PANE_FORMAT)
+    let tmux = std::fs::read_to_string(manifest("src/tmux.rs")).unwrap();
+    assert!(context.contains("crate::tmux::pane_row("));
+    assert!(tmux.contains("#{pane_current_command}"));
+    assert!(
+        !tmux.contains("@deck_agent_"),
+        "the shared pane row must not read user hook options"
+    );
     assert!(
         !context.contains("@deck_agent_"),
         "production probe must not read user hook options"
