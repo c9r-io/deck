@@ -4,7 +4,7 @@
 //!
 //! # Contract
 //! One poll command (`poll_sessions`) reads one `tmux::list_panes()` and
-//! returns liveness + `window_activity` recency + process-tree RSS
+//! returns liveness + `window_activity` recency + process-tree footprint
 //! (pane_pid → libproc tree walk) + the last six non-empty pane rows
 //! for fixed-height, bottom-aligned card previews. Frontend polls every 2.5s and
 //! diffs into granular UI events (status/mem/output) — never full re-renders on
@@ -355,7 +355,7 @@ pub(crate) struct SessInfo {
     alive: bool,
     /// seconds since the pane last produced output (None if unknown)
     idle_secs: Option<u64>,
-    /// RSS of the whole process tree under the pane, in MB
+    /// physical footprint of the whole process tree under the pane, in MB
     mem_mb: Option<f64>,
     /// last non-empty lines of the pane, for card previews
     tail: Vec<String>,

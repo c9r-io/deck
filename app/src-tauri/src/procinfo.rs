@@ -5,7 +5,7 @@
 //! `ps`/`date` made deck the busiest process-spawner on the machine, which
 //! endpoint security tooling reads as process-discovery noise. Everything
 //! here is a direct libproc/sysctl query for the same closed facts: pid,
-//! parent, resident size, controlling tty, foreground process group and
+//! parent, physical footprint, controlling tty, foreground process group and
 //! argv[0]. No command lines, environments or paths beyond argv[0]'s
 //! basename ever leave this module.
 
@@ -73,27 +73,28 @@ fn bsd_info(pid: libc::pid_t) -> Option<ProcessInfo> {
     })
 }
 
-/// Resident set size in KiB; 0 for a process we may not inspect.
+/// Physical footprint in KiB (`ri_phys_footprint`, the number Activity
+/// Monitor shows); 0 for a process we may not inspect. Not the resident set:
+/// RSS counts the dyld shared cache and every shared binary's text in each
+/// process, so summing it over a tree of a dozen node processes reported
+/// roughly double the memory they actually held.
 #[cfg(target_os = "macos")]
-pub(crate) fn resident_kib(pid: u32) -> u64 {
-    use std::ffi::c_void;
-    let mut info = std::mem::MaybeUninit::<libc::proc_taskinfo>::zeroed();
-    let size = std::mem::size_of::<libc::proc_taskinfo>() as libc::c_int;
-    // SAFETY: the buffer is exactly the struct libproc fills for this flavor.
+pub(crate) fn footprint_kib(pid: u32) -> u64 {
+    let mut info = std::mem::MaybeUninit::<libc::rusage_info_v2>::zeroed();
+    // SAFETY: `RUSAGE_INFO_V2` asks the kernel to fill exactly the v2 struct;
+    // the buffer pointer is cast the way libproc's own header prescribes.
     let got = unsafe {
-        libc::proc_pidinfo(
+        libc::proc_pid_rusage(
             pid as libc::pid_t,
-            libc::PROC_PIDTASKINFO,
-            0,
-            info.as_mut_ptr().cast::<c_void>(),
-            size,
+            libc::RUSAGE_INFO_V2,
+            info.as_mut_ptr().cast::<libc::rusage_info_t>(),
         )
     };
-    if got != size {
+    if got != 0 {
         return 0;
     }
-    // SAFETY: libproc reported a full write of the struct.
-    unsafe { info.assume_init() }.pti_resident_size / 1024
+    // SAFETY: a zero return means the kernel wrote the whole struct.
+    unsafe { info.assume_init() }.ri_phys_footprint / 1024
 }
 
 /// Every visible process's identity facts, keyed by pid.
@@ -191,8 +192,8 @@ pub(crate) fn tty_device(path: &str) -> Option<u32> {
     u32::try_from(meta.rdev()).ok().filter(|dev| *dev != 0)
 }
 
-/// Sum of resident memory over `roots` and all their descendants, in MiB,
-/// keyed exactly like `roots`.
+/// Sum of physical footprint over `roots` and all their descendants, in
+/// MiB, keyed exactly like `roots`.
 #[cfg(target_os = "macos")]
 pub(crate) fn tree_memory(roots: &HashMap<String, u32>) -> HashMap<String, f64> {
     let table = processes();
@@ -209,7 +210,7 @@ pub(crate) fn tree_memory(roots: &HashMap<String, u32>) -> HashMap<String, f64> 
             if !seen.insert(pid) || !table.contains_key(&pid) {
                 continue;
             }
-            sum += resident_kib(pid);
+            sum += footprint_kib(pid);
             if let Some(kids) = children.get(&pid) {
                 stack.extend(kids);
             }
@@ -297,14 +298,14 @@ mod tests {
         let mine = table.get(&me).expect("own process listed");
         assert_eq!(mine.pid, me);
         assert!(mine.ppid > 0);
-        assert!(resident_kib(me) > 0);
+        assert!(footprint_kib(me) > 0);
         let own_argv0 = argv0(me).expect("own argv0 readable");
         let expected = std::env::current_exe().unwrap();
         assert_eq!(
             std::path::Path::new(&own_argv0).file_name(),
             expected.file_name()
         );
-        assert_eq!(resident_kib(u32::MAX), 0);
+        assert_eq!(footprint_kib(u32::MAX), 0);
         assert_eq!(argv0(u32::MAX), None);
     }
 

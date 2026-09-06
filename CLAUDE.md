@@ -20,7 +20,7 @@ same commit as the behaviour it describes.
   LaunchAgents/LaunchDaemons, no login items; post-update relaunch is a
   `setsid`-detached waiter (`relaunch.rs`) that waits for the old PID and
   `open -n`s the installed bundle. Never spawns `ps`, `date`, `osascript`
-  or a shell: process facts (pid/ppid/RSS/tty/foreground group/argv[0])
+  or a shell: process facts (pid/ppid/footprint/tty/foreground group/argv[0])
   come from libproc + `KERN_PROCARGS2` in `procinfo.rs`, local time from
   `localtime_r`, and a duplicate instance just logs and exits. Never
   writes an executable under `~`: hook commands name the helper INSIDE the
@@ -75,7 +75,7 @@ loaded by `ui/index.html`; xterm.js vendored in `app/ui/vendor/`. Backend
 | app.log writer, session tags, log migration | `applog.rs` |
 | Log redaction scanner (`sanitize_log`, `redact_credentials`) | `redact.rs` |
 | Single-instance flock, launch flags / debug-only smoke args | `instance_lock.rs`, `launch_args.rs` |
-| Session start/kill, poll (status, RSS, preview rows), clipboard write | `commands.rs` |
+| Session start/kill, poll (status, memory footprint, preview rows), clipboard write | `commands.rs` |
 | tmux sidecar, socket, server conf | `tmux.rs` |
 | Server lifecycle: protocol metadata, reuse/replace, restart transaction, channel sockets | `tmux_lifecycle.rs` (+ `docs/tmux-server-lifecycle.md`) |
 | PTY attach bridge with end-to-end flow control | `pty.rs` |
