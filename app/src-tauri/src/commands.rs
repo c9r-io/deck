@@ -20,7 +20,7 @@ use crate::datadir::now_epoch;
 use crate::error::{DeckError, ErrorKind};
 use crate::sync::LockRecover;
 use crate::tmux::{
-    expand_tilde, pane_target, session_target, tmux, tmux_bin, tmux_with_stdin,
+    expand_tilde, pane_target, session_target, tmux, tmux_program, tmux_with_stdin,
     validate_session_name,
 };
 
@@ -98,11 +98,13 @@ pub(crate) fn default_dir() -> String {
 
 #[tauri::command]
 pub(crate) fn tmux_available() -> bool {
-    Command::new(tmux_bin())
-        .arg("-V")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+    tmux_program().is_ok_and(|tmux_sidecar| {
+        Command::new(tmux_sidecar)
+            .arg("-V")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    })
 }
 
 #[derive(Clone, Debug, Serialize)]

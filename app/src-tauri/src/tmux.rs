@@ -4,8 +4,17 @@
 //! # Contract
 //! tmux ships INSIDE the app: a statically linked binary (see
 //! `binaries/build-tmux.sh`, committed as `binaries/tmux-aarch64-apple-darwin`,
-//! bundled+signed via tauri `externalBin`). `tmux_bin()` prefers the sidecar,
-//! then Homebrew/MacPorts probes. deck talks to its OWN server (`-L deck`
+//! bundled+signed via tauri `externalBin`). `tmux_bin()` resolves ONLY that
+//! sidecar, next to this build's own executable, and never falls back: no
+//! Homebrew/MacPorts probe and no PATH lookup, because `/usr/local/bin` is
+//! user-writable on many Macs and a PATH entry is not deck's to trust — the
+//! one tmux deck executes is the one it signed and shipped. `tmux_program()`
+//! is the single gate every spawn goes through (here, `commands.rs`,
+//! `pty.rs`, `tmux_lifecycle.rs`; `tests/edr_quiet.rs` allowlists exactly
+//! those). A build without its sidecar has no tmux at all (`tmux_kind()`
+//! says `missing`, every spawn fails `TmuxMissing`); `app/run.sh` copies the
+//! sidecar into the dev bundle for exactly this reason. deck talks to its
+//! OWN server (`-L deck`
 //! socket) — never version-clashes with a user tmux, and deck sessions don't
 //! appear in the user's `tmux ls`. Production debug: `tmux -L deck ls`;
 //! source bundles use `tmux -L deck-dev ls`.
@@ -18,54 +27,58 @@ use crate::error::{DeckError, ErrorKind};
 
 // ---------- tmux helpers ----------------------------------------------------
 
-/// Absolute path to tmux. The bundled sidecar comes first (zero-dependency
-/// installs — a statically linked tmux ships inside the .app); Homebrew /
-/// MacPorts are fallbacks for source builds. Apps launched from Finder get
-/// launchd's PATH (no /opt/homebrew/bin), so plain "tmux" is last resort.
+/// Absolute path to the ONE tmux deck may execute: the statically linked
+/// sidecar next to this build's own executable, signed inside the same
+/// bundle. There is deliberately no second candidate — a Homebrew/MacPorts
+/// probe or a PATH lookup would let anything with write access to
+/// `/usr/local/bin` (user-owned on many Macs) or to a PATH entry choose the
+/// binary deck runs as the user, and every deck session descends from it.
+/// Empty when this build has no sidecar; `tmux_program` turns that into
+/// `TmuxMissing` instead of letting an empty program reach a spawn.
 pub(crate) fn tmux_bin() -> &'static str {
     static BIN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     BIN.get_or_init(|| {
-        let mut candidates: Vec<String> = Vec::new();
-        if let Ok(exe) = std::env::current_exe() {
-            if let Some(dir) = exe.parent() {
-                candidates.push(dir.join("tmux").display().to_string());
+        let sidecar = std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(|dir| dir.join("tmux")))
+            .filter(|path| path.is_file());
+        match sidecar {
+            // log the CATEGORY, never the absolute path (it can embed
+            // the .app location / user directories and ends up in exports)
+            Some(path) => {
+                applog("[tmux] using the bundled sidecar");
+                path.display().to_string()
+            }
+            None => {
+                applog("[tmux] this build has no bundled sidecar");
+                String::new()
             }
         }
-        for p in [
-            "/opt/homebrew/bin/tmux",
-            "/usr/local/bin/tmux",
-            "/opt/local/bin/tmux",
-        ] {
-            candidates.push(p.to_string());
-        }
-        for c in candidates {
-            if std::path::Path::new(&c).exists() {
-                // log the CATEGORY, never the absolute path (it can embed
-                // the .app location / user directories and ends up in exports)
-                applog(&format!("[tmux] using {} binary", tmux_kind_of(&c)));
-                return c;
-            }
-        }
-        applog("[tmux] falling back to PATH lookup");
-        "tmux".to_string()
     })
 }
 
-/// Path-free classification of a tmux binary location, for logs/exports.
-pub(crate) fn tmux_kind_of(path: &str) -> &'static str {
-    if path == "tmux" {
-        "PATH"
-    } else if path.starts_with("/opt/homebrew") || path.starts_with("/usr/local") {
-        "homebrew"
-    } else if path.starts_with("/opt/local") {
-        "macports"
+/// The sidecar, or `TmuxMissing` — the one gate every spawn goes through, so
+/// a build without its sidecar reports the same error everywhere instead of
+/// handing an empty program to `Command`/`CommandBuilder`.
+pub(crate) fn tmux_program() -> Result<&'static str, DeckError> {
+    let bin = tmux_bin();
+    if bin.is_empty() {
+        return Err(DeckError::new(
+            ErrorKind::TmuxMissing,
+            "this build has no bundled tmux",
+        ));
+    }
+    Ok(bin)
+}
+
+/// Path-free tmux availability for logs/exports: deck either runs its own
+/// sidecar or has no tmux.
+pub(crate) fn tmux_kind() -> &'static str {
+    if tmux_bin().is_empty() {
+        "missing"
     } else {
         "sidecar"
     }
-}
-
-pub(crate) fn tmux_kind() -> &'static str {
-    tmux_kind_of(tmux_bin())
 }
 
 /// deck runs its own tmux server (socket "deck"): the bundled binary never
@@ -142,7 +155,7 @@ pub(crate) fn tmux_conf_text(deck_dir: &std::path::Path) -> String {
 /// sets the same for the attach client.
 pub(crate) fn tmux(args: &[&str]) -> Result<String, DeckError> {
     let conf = tmux_conf();
-    let out = Command::new(tmux_bin())
+    let out = Command::new(tmux_program()?)
         .args(["-f", &conf, "-L", socket()])
         .args(args)
         .env("LANG", "en_US.UTF-8")
@@ -165,7 +178,7 @@ pub(crate) fn tmux(args: &[&str]) -> Result<String, DeckError> {
 /// spawned zero-session server alive until the restored pane exists.
 pub(crate) fn tmux_with_stdin(args: &[&str], input: &[u8]) -> Result<String, DeckError> {
     let conf = tmux_conf();
-    let mut child = Command::new(tmux_bin())
+    let mut child = Command::new(tmux_program()?)
         .args(["-f", &conf, "-L", socket()])
         .args(args)
         .env("LANG", "en_US.UTF-8")
@@ -206,7 +219,7 @@ pub(crate) fn tmux_with_stdin(args: &[&str], input: &[u8]) -> Result<String, Dec
 /// shell; `;` is an explicit tmux command separator, never shell syntax.
 pub(crate) fn tmux_owned(args: &[String]) -> Result<String, DeckError> {
     let conf = tmux_conf();
-    let out = Command::new(tmux_bin())
+    let out = Command::new(tmux_program()?)
         .args(["-f", &conf, "-L", socket()])
         .args(args)
         .env("LANG", "en_US.UTF-8")
@@ -227,8 +240,11 @@ pub(crate) fn tmux_owned(args: &[String]) -> Result<String, DeckError> {
 /// capture). Callers parse per-command markers, so partial output is useful
 /// and a hard error would throw away every other command's result.
 pub(crate) fn tmux_batch(args: &[String]) -> String {
+    let Ok(tmux_sidecar) = tmux_program() else {
+        return String::new();
+    };
     let conf = tmux_conf();
-    Command::new(tmux_bin())
+    Command::new(tmux_sidecar)
         .args(["-f", &conf, "-L", socket()])
         .args(args)
         .env("LANG", "en_US.UTF-8") // see tmux(): C locale mangles output
@@ -407,23 +423,39 @@ mod tests {
     }
 
     #[test]
-    fn binary_kinds_targets_socket_and_paths_are_classified_without_guessing() {
-        assert_eq!(tmux_kind_of("tmux"), "PATH");
-        assert_eq!(tmux_kind_of("/opt/homebrew/bin/tmux"), "homebrew");
-        assert_eq!(tmux_kind_of("/usr/local/bin/tmux"), "homebrew");
-        assert_eq!(tmux_kind_of("/opt/local/bin/tmux"), "macports");
-        assert_eq!(
-            tmux_kind_of("/Applications/deck.app/Contents/MacOS/tmux"),
-            "sidecar"
-        );
-
+    fn targets_socket_and_paths_are_classified_without_guessing() {
         assert_eq!(session_target("deck-card-ab12"), "=deck-card-ab12");
         assert_eq!(pane_target("deck-card-ab12"), "=deck-card-ab12:");
         assert_eq!(expand_tilde("/tmp/project"), "/tmp/project");
         assert!(expand_tilde("~/project").ends_with("/project"));
         assert_eq!(socket(), "deck-dev");
+    }
+
+    /// The security property: the only binary deck can ever execute as tmux
+    /// is the sidecar next to its own executable. No Homebrew/MacPorts
+    /// candidate, no PATH lookup, and no empty program reaching a spawn.
+    #[test]
+    fn the_only_tmux_candidate_is_this_build_s_own_sidecar() {
+        let sidecar = std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(|dir| dir.join("tmux")));
         let binary = tmux_bin();
-        assert!(!binary.is_empty());
-        assert_eq!(tmux_kind(), tmux_kind_of(binary));
+        if binary.is_empty() {
+            // a test binary has no sidecar beside it — that is "no tmux",
+            // never a fallback to whatever the machine happens to have
+            assert_eq!(tmux_kind(), "missing");
+            let error = tmux_program().expect_err("no sidecar must not resolve to a program");
+            assert_eq!(error.kind(), ErrorKind::TmuxMissing);
+            assert!(tmux_batch(&["list-sessions".to_string()]).is_empty());
+            assert_eq!(tmux(&["-V"]).unwrap_err().kind(), ErrorKind::TmuxMissing);
+        } else {
+            assert_eq!(
+                Some(std::path::PathBuf::from(binary)),
+                sidecar,
+                "tmux_bin resolved something other than this build's sidecar"
+            );
+            assert_eq!(tmux_kind(), "sidecar");
+            assert_eq!(tmux_program().unwrap(), binary);
+        }
     }
 }

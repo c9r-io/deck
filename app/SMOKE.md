@@ -358,7 +358,7 @@ a fixture.
       and numbers)
 - [ ] `grep -E '/Users/|file://' ~/.deck/app.log ~/.deck/exports/*` → zero
       hits (errors are logged as category codes; the tmux binary is logged
-      as sidecar/homebrew/…, never as a path; storage recovery logs name
+      as sidecar/missing, never as a path; storage recovery logs name
       files, never absolute paths)
 - [ ] `grep -E 'deck-[a-z0-9]+-[a-z0-9-]+' ~/.deck/app.log ~/.deck/exports/*`
       → zero hits: sessions appear as `sess-xxxxx` tags, never by name

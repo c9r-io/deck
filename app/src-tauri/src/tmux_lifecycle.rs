@@ -291,10 +291,14 @@ fn helper_version() -> String {
     static VERSION: OnceLock<String> = OnceLock::new();
     VERSION
         .get_or_init(|| {
-            std::process::Command::new(tmux::tmux_bin())
-                .arg("-V")
-                .output()
+            tmux::tmux_program()
                 .ok()
+                .and_then(|tmux_sidecar| {
+                    std::process::Command::new(tmux_sidecar)
+                        .arg("-V")
+                        .output()
+                        .ok()
+                })
                 .filter(|out| out.status.success())
                 .and_then(|out| String::from_utf8(out.stdout).ok())
                 .map(|value| value.trim().to_string())

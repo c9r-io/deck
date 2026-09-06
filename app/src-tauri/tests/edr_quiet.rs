@@ -74,9 +74,12 @@ const ALLOWED_LITERALS: &[&str] = &[
 /// Computed executables, each reviewed: the bundled tmux sidecar and the
 /// relaunch waiter (the installed deck bundle itself, in helper mode).
 const ALLOWED_EXPRESSIONS: &[(&str, &str)] = &[
-    ("tmux.rs", "tmux_bin()"),
-    ("commands.rs", "tmux_bin()"),
-    ("tmux_lifecycle.rs", "tmux::tmux_bin()"),
+    // tmux_program() is the one gate: it resolves ONLY the sidecar inside
+    // this build's bundle, never Homebrew/MacPorts and never a PATH lookup
+    ("tmux.rs", "tmux_program()?"),
+    ("tmux.rs", "tmux_sidecar"),
+    ("commands.rs", "tmux_sidecar"),
+    ("tmux_lifecycle.rs", "tmux_sidecar"),
     ("tmux_lifecycle.rs", "&self.binary"),
     ("relaunch.rs", "executable"),
 ];

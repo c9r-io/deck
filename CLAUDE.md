@@ -26,7 +26,11 @@ same commit as the behaviour it describes.
   writes an executable under `~`: hook commands name the helper INSIDE the
   signed bundle (see agent hooks). Remaining spawns are low-frequency,
   fixed-argument system tools (`open`, `plutil`, `pbcopy`, `defaults`,
-  `sw_vers`, `uname`) plus the bundled tmux.
+  `sw_vers`, `uname`) plus the bundled tmux — which is the ONLY tmux deck
+  ever executes: `tmux::tmux_program()` resolves the signed sidecar next to
+  deck's own executable and NEVER falls back to Homebrew/MacPorts or a PATH
+  lookup (`/usr/local/bin` is user-writable on many Macs, and every deck
+  session descends from that binary).
 - **Never create a public candidate, Stable tag, feed update or promotion
   without the user's explicit authorization.** Release operation is documented
   in `docs/release-channels.md`. `scripts/release-version` synchronizes the three numeric source/lock entries;

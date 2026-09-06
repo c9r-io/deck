@@ -51,7 +51,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use crate::applog::applog;
 use crate::error::{DeckError, ErrorKind};
 use crate::sync::LockRecover;
-use crate::tmux::{session_target, socket, tmux_bin, tmux_conf};
+use crate::tmux::{session_target, socket, tmux_conf, tmux_program};
 
 // ---------- ACK window ---------------------------------------------------------
 
@@ -225,7 +225,7 @@ pub(crate) fn attach_session(
         .map_err(|e| DeckError::classified(e.to_string()))?;
 
     let conf = tmux_conf();
-    let mut cmd = CommandBuilder::new(tmux_bin());
+    let mut cmd = CommandBuilder::new(tmux_program()?);
     cmd.args([
         "-f",
         &conf,

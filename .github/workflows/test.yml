@@ -21,8 +21,10 @@ jobs:
           # keep in step with rust-toolchain.toml at the repository root
           toolchain: 1.97.1
           components: clippy, rustfmt
-      - name: Install pinned coverage runner
-        run: cargo install cargo-llvm-cov --version 0.8.5 --locked
+      - name: Install pinned coverage and audit runners
+        run: |
+          cargo install cargo-llvm-cov --version 0.8.5 --locked
+          cargo install cargo-audit --version 0.22.2 --locked
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: |
@@ -64,3 +66,12 @@ jobs:
 
       - name: Workflow syntax and expression validation
         run: scripts/check-workflows
+
+      # RustSec advisories against the committed lockfile. Last, so an
+      # advisory published upstream never masks a real test failure — it
+      # fails the build on its own line. Default severity: known
+      # vulnerabilities fail; informational notices (unmaintained, unsound)
+      # are reported without failing, so a transitive crate going unmaintained
+      # does not block every PR.
+      - name: cargo audit (RustSec advisories)
+        run: cargo audit --file app/src-tauri/Cargo.lock
