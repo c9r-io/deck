@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.6.0 — 2026-09-08 (Nightly)
+
+- Board-level automations. A daily, weekly or monthly job is no longer
+  something to pin on one card: **↻ Automations** on the Board head opens a
+  drawer for the project's rules — a schedule (every day, chosen weekdays or
+  days of the month, at a local time), the column to create in, directory,
+  command and template. At each slot deck creates a fresh card, launches the
+  command and queues the template, so every run starts with an empty agent
+  context; a slot that comes due while the previous run is still on the
+  Board is skipped and recorded. With “close the card” the run is retired
+  once every prompt is delivered and the agent reports its turn done (or the
+  program exits). The drawer shows each rule's next slot and its last runs,
+  and a run's card carries a chip pointing back at its rule. Automations are
+  auto-respond rules with a clock as their source, so a deleted project takes
+  its rules with it and the run ledger keeps identifiers and times only.
+- A card's schedule sets its own quiet time: “after previous” waits the
+  number of seconds, minutes or hours you choose instead of a fixed three
+  minutes. “At a time” takes a full date and time and refuses one that has
+  already passed instead of silently rolling to tomorrow. A recurring rule
+  can start at a date and time and stop at one. The panel picks the mode
+  first (after previous / at a time / repeat) and shows only that mode's
+  controls.
+
 ## 0.5.18 — 2026-09-07 (Nightly)
 
 - Dragging a selection over many rows is no longer sluggish. tmux repaints the
