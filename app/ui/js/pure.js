@@ -323,8 +323,28 @@ export function effectiveCardStatus(alive, agent, quiet) {
   return quiet ? 'waiting' : 'running';
 }
 
-/* the statuses that mean "a human look would help" — drives the tab hint */
-export const attentionStatus = status => status === 'waiting' || status === 'attention';
+/* ---------- project tab done hint ---------- */
+/* The tab dot is an UNREAD marker, not a derived status: once a card reaches
+   `done` its project tab stays lit until the user actually opens that card,
+   so a finished turn cannot be missed while another project is on screen.
+   Leaving `done` re-arms the card — the next completed turn lights the tab
+   again. A card that turns `done` while its pane is already on screen was
+   never unread. Memory only (no Board field): the dot is a transient UI
+   signal, and the agent hook re-reports `done` after a restart anyway. */
+export function createDoneSeenTracker() {
+  const seen = new Set();
+  return {
+    /* the user opened the card */
+    saw: id => { seen.add(id); },
+    /* poll observed a status CHANGE for the card */
+    observe: (id, status, onScreen = false) => {
+      if (status !== 'done') seen.delete(id);
+      else if (onScreen) seen.add(id);
+    },
+    /* does this project's cards leave its tab lit? */
+    unseen: cards => cards.some(c => c.status === 'done' && !seen.has(c.id)),
+  };
+}
 
 /* how long a session must stay quiet before a chain prompt fires —
    keep in sync with CHAIN_QUIET_SECS in scheduler.rs */

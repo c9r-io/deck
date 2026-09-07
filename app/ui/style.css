@@ -175,7 +175,7 @@ body.side-collapsed .side-new .label { display: none; }
 .tab.drag-before::before { left: -2px; }
 .tab.drag-after::after { right: -2px; }
 .tab .name { overflow: hidden; text-overflow: ellipsis; }
-.tab .wait-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--wait); animation: pulse 1.6s ease-in-out infinite; }
+.tab .done-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--done); flex: none; }
 .tab input { padding: 1px 6px; font-size: 1rem; width: 110px; background: var(--raised); }
 .tab-add { padding: 6px 10px 8px; color: var(--faint); border-radius: 8px 8px 0 0; flex: none; }
 .tab-add:hover { color: var(--accent); background: var(--hover); }

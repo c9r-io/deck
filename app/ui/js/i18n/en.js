@@ -51,7 +51,7 @@ const dictionary = {
   'session.status.attention': 'the agent asked for your input',
   'session.status.done': 'the agent finished its turn — waiting for your review',
   'session.status.stopped': 'no live session',
-  'session.quietTab': 'a session has been quiet — may be waiting for input',
+  'session.doneTab': 'a session finished its turn — open the card to clear this',
   'session.scrollback': '⤓ scrollback',
   'session.scrollbackTitle': 'view is frozen in scrollback — click, type, or scroll to the bottom to go live',
   'session.restored': 'pre-restart output restored into terminal scrollback; processes and environment were not restored',

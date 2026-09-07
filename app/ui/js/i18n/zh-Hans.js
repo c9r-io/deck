@@ -50,7 +50,7 @@ const dictionary = {
   'session.status.attention': 'agent 正在等待你的输入',
   'session.status.done': 'agent 已完成本轮，等待你查看',
   'session.status.stopped': '没有运行中的 session',
-  'session.quietTab': '有 session 已安静一段时间，可能正在等待输入',
+  'session.doneTab': '有 session 已完成一轮 — 打开对应卡片后消除提示',
   'session.scrollback': '⤓ 回滚记录',
   'session.scrollbackTitle': '当前停留在回滚记录中；点击、输入或滚动到底部可返回实时画面',
   'session.restored': '已将重启前的输出恢复到终端回滚记录；进程与环境变量未恢复',

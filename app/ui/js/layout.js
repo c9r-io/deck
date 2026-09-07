@@ -3,7 +3,7 @@
 import { $, ctx, dotTitle, duev, inv, listen, setMemChip, state, store, uev } from './state.js';
 import { inlineRename, toast } from './dialogs.js';
 import { t } from './i18n.js';
-import { panes, pollNow, provider, render, renderSidebar, updateSidebarSelection, activeProject } from './board.js';
+import { markSessionSeen, panes, pollNow, provider, render, renderSidebar, updateSidebarSelection, activeProject } from './board.js';
 import { SHELL_FG, acceptGhost, feedMirror, maybeRecordCommand, mountQuickBar, nextShellTitle, renderSuggest, resetSuggest, showLinkCtx, updateGhost, writeClipboard } from './terminal.js';
 import { AGENT_HISTORY_VERTICAL_UP, createTerminalPasteTrace, createTerminalResizeCoordinator, createTerminalWheelAccumulator, createTerminalWheelFrameScheduler, isComposingKeyEvent, isPlainShiftKeydown, isTerminalAutoReply, scrollResultView, shouldRouteImeKeydownThroughInput, shQuote, terminalLinkRanges, terminalAgentComposerGeometry, terminalAgentHistoryUpRoute, terminalCopyRoute, terminalSelectionWheelRoute, tokenizeTerminalLinks, terminalWheelLines } from './pure.js';
 import { toggleQueuePanel } from './scheduler.js';
@@ -855,6 +855,7 @@ export async function addSplit(targetSid, dir, before, newSid) {
   const card = provider.get(newSid);
   if (!card || state.view !== 'session' || !ctx.layout) return;
   if (newSid === targetSid) return;
+  markSessionSeen(newSid);
   /* already open in a pane → this is a MOVE: pluck the leaf and re-insert
      at the drop position; the terminal instance is reused untouched */
   if (panes.has(card.session)) {
@@ -966,6 +967,7 @@ export function showSplitPicker(dir) {
 export async function openSession(sid) {
   const card = provider.get(sid);
   if (!card) return;
+  markSessionSeen(sid);
   /* already open in a pane → just focus it */
   if (state.view === 'session' && panes.has(card.session)) {
     focusPane(card.session);

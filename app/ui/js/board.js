@@ -2,7 +2,7 @@
 // Part of deck's no-build frontend: native ES modules, no bundler.
 import { $, columnHint, ctx, dotTitle, emit, genId, inv, listeners, POLL_MS, QUIET_SECS, sessionName, setMemChip, state, store, uev } from './state.js';
 import { mutateBoard, mutateBoardDebounced } from './persistence.js';
-import { CARD_PREVIEW_ROWS, attentionStatus, cardPreviewRows, createExitRetirementTracker, effectiveCardStatus, reorderById, sidebarGroups } from './pure.js';
+import { CARD_PREVIEW_ROWS, cardPreviewRows, createDoneSeenTracker, createExitRetirementTracker, effectiveCardStatus, reorderById, sidebarGroups } from './pure.js';
 import { confirmDialog, inlineRename, toast } from './dialogs.js';
 import { clearSeparators, closePaneBySid, leaveSessionView, openSession, renderSessionView, updatePaneChrome } from './layout.js';
 import { SHELL_FG, showProjectCtx, showSessionCtx } from './terminal.js';
@@ -16,6 +16,8 @@ export const defaultColumns = () => createDefaultColumns(genId, t);
 /* ---------- provider (every persistent mutation is one queued transaction) ---------- */
 export const activeProject = () => provider.project(state.projectId);
 const exitRetirement = createExitRetirementTracker();
+/* which `done` cards the user has already opened — drives the tab dot */
+const doneSeen = createDoneSeenTracker();
 const closeOperations = new Map();
 
 export const provider = {
@@ -373,6 +375,7 @@ export async function pollNow() {
        close it without ceremony. Only live→dead transitions count, so cards
        that were already stopped (e.g. after an app restart) stay. */
     if (!info.alive && c.status !== 'stopped') {
+      doneSeen.observe(c.id, 'stopped');
       exitRetirement.observe(c.id);
       continue;
     }
@@ -394,6 +397,7 @@ export async function pollNow() {
        pane header chip) instead of letting an agent TUI look hung */
     const scrolled = !!(info.alive && info.scrolled);
     if (scrolled !== !!c.scrolled) { c.scrolled = scrolled; updatePaneChrome(c); }
+    doneSeen.observe(c.id, status, panes.has(c.session));
     if (status !== c.status) { c.status = status; emit('status', c); }
     if ((mem == null) !== (c.mem == null) || (mem != null && Math.abs(mem - c.mem) > 1)) {
       c.mem = mem;
@@ -525,12 +529,11 @@ export function renderTabs() {
     el.draggable = true;
     el.innerHTML = `<span class="name"></span>`;
     el.querySelector('.name').textContent = p.name;
-    if (p.id !== state.projectId &&
-        provider.list(p.id).some(s => attentionStatus(s.status))) {
-      const wait = document.createElement('span');
-      wait.className = 'wait-dot';
-      wait.title = t('session.quietTab');
-      el.appendChild(wait);
+    if (doneSeen.unseen(provider.list(p.id))) {
+      const done = document.createElement('span');
+      done.className = 'done-dot';
+      done.title = t('session.doneTab');
+      el.appendChild(done);
     }
     el.onclick = () => switchProject(p.id);
     el.ondblclick = () => renameTab(el, p);
@@ -580,6 +583,16 @@ export function renderTabs() {
   };
   bar.appendChild(add);
   bar.scrollLeft = scrollLeft;
+}
+
+/* The user opened a card: its finished turn has been seen, so the project
+   tab stops advertising it. Only a card that is actually lighting a tab
+   costs a tab rebuild. */
+export function markSessionSeen(sid) {
+  const card = provider.get(sid);
+  if (!card || card.status !== 'done') return;
+  doneSeen.saw(sid);
+  renderTabs();
 }
 
 export function renameTab(el, p) {
