@@ -59,9 +59,12 @@
               <button type="button" data-v="clock" aria-pressed="true" data-i18n="automation.trigger.clock">clock</button>
               <button type="button" data-v="slack" aria-pressed="false" data-i18n="automation.trigger.slack">Slack badge</button>
             </div>
-            <input id="auto-badge" class="q-p q-p-slack" autocomplete="off" spellcheck="false" maxlength="64" placeholder="bug">
-            <span id="auto-slack-state" class="q-p q-p-slack set-hint"></span>
           </div>
+          <div class="set-row q-p q-p-slack">
+            <label for="auto-badge" data-i18n="automation.badge">Badge</label>
+            <input id="auto-badge" autocomplete="off" spellcheck="false" maxlength="64" placeholder="bug">
+          </div>
+          <div class="set-hint auto-editor-hint q-p q-p-slack" id="auto-slack-state"></div>
           <div class="set-row q-p q-p-clock">
             <label data-i18n="automation.when">When</label>
             <select id="auto-unit">
@@ -180,6 +183,7 @@
 </div>
 
 <div id="ctx"></div>
+<div id="dd-menu" role="listbox" hidden></div>
 <div id="dropzone"></div>
 <div id="settings-modal">
   <div id="settings-box" role="dialog" aria-modal="true" aria-labelledby="settings-title">

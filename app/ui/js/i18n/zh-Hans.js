@@ -383,6 +383,7 @@ const dictionary = {
   'automation.trigger.clock': '时钟',
   'automation.trigger.slack': 'Slack 标记',
   'automation.trigger.badge': '收到 :{badge}: 时',
+  'automation.badge': '标记',
   'automation.dir': '目录',
   'automation.cmd': '命令',
   'automation.template': '模板',

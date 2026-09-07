@@ -217,6 +217,7 @@ const SMOKE_CHECKS: &[&str] = &[
     "ambiguous-boot",
     "scheduler-context",
     "multiline-prompt",
+    "dropdown",
     "automation",
     "rename-restart",
     "done",

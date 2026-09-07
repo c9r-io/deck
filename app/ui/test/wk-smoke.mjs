@@ -1257,6 +1257,53 @@ async function automationSmoke(project, column) {
    inherits body's `user-select: none` (the xterm helper-textarea bug), and
    `pre-wrap` vs `nowrap` is a computed value, not a stylesheet line. Both are
    read out of the real engine here. */
+/* deck's own dropdown stands in for the native <select> popup. What only
+   the real engine can say: the wrapper is laid out and the menu is placed
+   from live geometry, the instance-level value accessor keeps the button's
+   label in step with a property write, and a choice reaches the select as
+   a bubbling `change` the form logic already listens for (q-win appears
+   once a cadence is chosen, and hides again through the mutation observer
+   when the select is hidden). */
+async function dropdownSmoke(card) {
+  await openSession(card.id);
+  toggleQueuePanel(true);
+  await pause(150);
+  const sel = $('q-every');
+  const wrap = sel.closest('.dd');
+  const btn = wrap?.querySelector('.dd-btn');
+  const wrapped = !!btn && getComputedStyle(sel).display === 'none' && getComputedStyle(btn).display !== 'none';
+  const label = () => wrap?.querySelector('.dd-text')?.textContent;
+  const labelFollowsValue = (sel.value = '15', label() === sel.options[sel.selectedIndex].textContent);
+  sel.value = '';
+  let changes = 0;
+  sel.addEventListener('change', () => { changes++; });
+  btn?.click();
+  await pause(100);
+  const menu = $('dd-menu');
+  const opened = !menu.hidden && menu.querySelectorAll('.dd-item').length === sel.options.length
+    && btn.getAttribute('aria-expanded') === 'true';
+  const r = btn.getBoundingClientRect(), m = menu.getBoundingClientRect();
+  const placed = m.width >= r.width - 1 && (m.top >= r.bottom || m.bottom <= r.top);
+  const target = [...sel.options].findIndex(o => o.value === '120');
+  menu.querySelectorAll('.dd-item')[target]?.click();
+  await pause(150);
+  const chose = sel.value === '120' && changes === 1 && menu.hidden && label() === sel.options[target].textContent;
+  await pause(50);
+  const winShown = !$('q-win').hidden && !$('q-win').closest('.dd').hidden;
+  sel.value = '';
+  sel.dispatchEvent(new Event('change', { bubbles: true }));
+  await pause(50);
+  const winHidden = $('q-win').hidden && $('q-win').closest('.dd').hidden;
+  btn?.click();
+  await pause(60);
+  menu.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  await pause(60);
+  const escaped = menu.hidden && document.activeElement === btn;
+  const mask = (wrapped ? 1 : 0) | (labelFollowsValue ? 2 : 0) | (opened ? 4 : 0) | (placed ? 8 : 0)
+    | (chose ? 16 : 0) | (winShown ? 32 : 0) | (winHidden ? 64 : 0) | (escaped ? 128 : 0);
+  await report('dropdown', mask === 255, mask, 255);
+}
+
 async function multilinePromptSmoke(card) {
   await openSession(card.id);
   toggleQueuePanel(true);
@@ -1476,6 +1523,7 @@ export async function run() {
     stage = 12;
     await naturalExitFaultSmoke(project, column);
     stage = 13;
+    await dropdownSmoke(main);
     await multilinePromptSmoke(main);
     stage = 14;
     await inv('queue_add', { args: {

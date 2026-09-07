@@ -403,6 +403,45 @@ body.side-collapsed .side-new .label { display: none; }
 }
 #ctx hr { border: none; border-top: 1px solid var(--border-soft); margin: 4px 2px; }
 
+/* ---------- dropdown (deck's own <select> popup, dropdown.js) ----------
+   The native select stays in the wrapper for its value and events but is
+   not drawn; the button is the control, #dd-menu the one shared listbox. */
+.dd { display: inline-flex; min-width: 0; max-width: 100%; vertical-align: middle; }
+.dd[hidden] { display: none; }
+.dd > select { display: none; }
+.dd-btn {
+  display: inline-flex; align-items: center; gap: 6px; width: 100%; min-width: 0;
+  font-size: 0.923077rem; font-family: var(--sans); color: var(--text);
+  background: var(--raised); border: 1px solid var(--border); border-radius: 6px;
+  padding: 5px 7px 5px 8px; text-align: left; white-space: nowrap; line-height: 1.35;
+}
+.dd-btn:hover { border-color: var(--accent-dim); }
+.dd-btn:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+.dd-btn:disabled { opacity: 0.55; }
+.dd-btn[aria-expanded="true"] { border-color: var(--accent-dim); box-shadow: inset 0 0 0 1px var(--accent-dim); }
+.dd-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.dd-chev { flex: none; width: 10px; height: 10px; color: var(--faint); position: relative; }
+.dd-chev::before {
+  content: ''; position: absolute; left: 1px; top: 0; width: 6px; height: 6px;
+  border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(45deg);
+}
+#dd-menu {
+  position: fixed; z-index: 90; min-width: 140px; max-width: min(420px, calc(100vw - 16px));
+  max-height: min(60vh, 360px); overflow-y: auto; overscroll-behavior: contain;
+  background: var(--raised); border: 1px solid var(--border); border-radius: 8px; padding: 5px;
+  box-shadow: 0 8px 24px var(--shadow-menu);
+}
+#dd-menu[hidden] { display: none; }
+.dd-item {
+  display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
+  padding: 6px 10px 6px 26px; border-radius: 5px; font-size: 0.923077rem; color: var(--text);
+  white-space: nowrap; position: relative;
+}
+.dd-item:hover, .dd-item:focus-visible { background: var(--hover); outline: none; }
+.dd-item.on { color: var(--accent); }
+.dd-item.on::before { content: '✓'; position: absolute; left: 9px; font-size: 0.846154rem; }
+.dd-item:disabled { color: var(--faint); }
+
 /* ---------- scheduled prompts panel ---------- */
 #queue-panel {
   display: none; flex-direction: column; gap: 6px; position: relative;
@@ -629,7 +668,7 @@ body.side-collapsed .side-new .label { display: none; }
 .set-title { font-size: 1.07692rem; font-weight: 600; margin-bottom: 14px; }
 .set-row { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; font-size: 1rem; }
 .set-row label { color: var(--muted); width: 128px; flex: none; }
-.set-row select { flex: 1; min-width: 0; }
+.set-row select, .set-row .dd { flex: 1; min-width: 0; }
 .set-row input[type=checkbox] { width: auto; flex: none; }
 .font-controls { display: flex; align-items: center; gap: 6px; margin-left: auto; }
 .font-controls .btn { min-width: 34px; justify-content: center; padding-inline: 9px; }
@@ -671,7 +710,7 @@ body.side-collapsed .side-new .label { display: none; }
 .set-group { padding: 18px; border: 1px solid var(--border-soft); border-radius: 8px; background: var(--bg); margin-bottom: 14px; }
 .set-group .set-row { flex-wrap: wrap; }
 .set-group .set-row label { width: auto; min-width: 116px; flex: 1; }
-.set-group .set-row select { flex: 1; min-width: 140px; }
+.set-group .set-row select, .set-group .set-row .dd { flex: 1; min-width: 140px; }
 .set-group .set-hint { margin: 6px 0 16px; }
 .set-group .set-hint:last-child { margin-bottom: 0; }
 .set-group .shortcut-list { margin-left: 0; }
@@ -727,14 +766,14 @@ body.side-collapsed .side-new .label { display: none; }
 #auto-editor .set-row { flex-wrap: wrap; }
 #auto-editor .set-row label { width: 76px; }
 #auto-editor .q-days { flex: none; }
-#auto-editor input { flex: 1; min-width: 0; }
+#auto-editor input { flex: 1; min-width: 0; font-size: 0.923077rem; padding: 5px 8px; border-radius: 6px; background: var(--raised); border: 1px solid var(--border); }
 #auto-editor input[type=time] { flex: none; width: auto; }
-#auto-editor select { flex: 1; min-width: 0; }
-#auto-editor #auto-unit, #auto-editor #auto-dom { flex: none; }
+#auto-editor #auto-badge { flex: 0 1 14em; font-family: var(--mono); }
+#auto-editor .auto-editor-hint { margin: 0 0 8px 86px; }
+#auto-editor .dd { flex: 1; min-width: 0; }
+#auto-editor .dd[data-for=auto-unit], #auto-editor .dd[data-for=auto-dom] { flex: none; }
 #auto-editor .seg { flex: none; }
 #auto-editor .q-p[hidden] { display: none; }
-#auto-editor #auto-badge { flex: 0 1 12em; font-family: var(--mono); }
-#auto-editor #auto-slack-state { margin: 0; flex-basis: 100%; }
 .auto-empty { color: var(--faint); font-size: 0.923077rem; padding: 6px 0; }
 .card .auto-chip {
   font-family: var(--mono); font-size: 0.769231rem; color: var(--accent);
@@ -822,7 +861,7 @@ html.font-scale-large #settings-box { width: 1040px; }
 html.font-scale-large #tpl-box { width: 1040px; }
 html.font-scale-large .set-row { align-items: flex-start; flex-wrap: wrap; }
 html.font-scale-large .set-row > label { width: 100%; }
-html.font-scale-large .set-row > select { flex-basis: 100%; }
+html.font-scale-large .set-row > select, html.font-scale-large .set-row > .dd { flex-basis: 100%; }
 html.font-scale-large .set-row > .btn { margin-left: 0 !important; }
 html.font-scale-large .font-controls { margin-left: 0; flex-wrap: wrap; }
 html.font-scale-large .set-hint,

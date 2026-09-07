@@ -24,6 +24,14 @@
   trigger. "If missed" offers two choices — still start within 15 minutes,
   or the same day; a saved value outside them stays offered so an edit never
   silently rewrites it.
+- deck draws its own dropdowns. Every `<select>` — the list form, the
+  automation editor, Settings — opens deck's listbox instead of the macOS
+  system popup, styled like the rest of the app and keyboard-complete
+  (↑↓ Home End, Escape returns focus and no longer leaves the session). The
+  native select stays underneath as the single source of value and events,
+  so nothing else changed. The automation editor's Slack badge has its own
+  labelled row instead of wrapping under the trigger, and its inputs share
+  the dropdown's metrics.
 - Vocabulary: list, row, not before, repeat, template, automation, trigger.
   queue / group / step / chain / rule / source / inbound / auto-respond left
   the UI, the docs and the site. `queue.json` and `settings.json` are not

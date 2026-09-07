@@ -11,6 +11,7 @@ import { initScheduler, refreshQueue } from './scheduler.js';
 import { initTemplates } from './templates.js';
 import { drainInbound, initInbound } from './inbound.js';
 import { initAutomation } from './automation.js';
+import { initDropdowns } from './dropdown.js';
 import { onLocaleChange, setLocale, t, translateNotice } from './i18n.js';
 import { activateTheme, revealThemedWindow } from './theme.js';
 
@@ -243,6 +244,7 @@ export async function manualUpdateCheck() {
    the order of side effects is explicit. */
 function initModules() {
   initInputDiagnostics();
+  initDropdowns();
   initDialogs();
   initTerminalChrome();
   initLayout();

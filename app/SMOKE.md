@@ -283,6 +283,13 @@ a fixture.
       and never queries Stable or another URL. Test a deliberately invalidly
       signed fixture only in an isolated feed/release: Tauri refuses install.
 
+## Dropdowns
+- [ ] Every select in the list form, the automation editor and Settings opens
+      deck's own listbox (`dropdown` smoke check 255/255): the button label
+      follows a programmatic value, a choice fires `change`, Escape closes and
+      returns focus WITHOUT leaving the session view, and a hidden select hides
+      its wrapper. The 31-day day-of-month list scrolls inside the menu.
+
 ## Lists & templates
 - [ ] Start a list not before 1 min out on a harmless shell card whose launch command
       is empty → deck automatically binds the exact pane and fires once in

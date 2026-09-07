@@ -384,6 +384,7 @@ const dictionary = {
   'automation.trigger.clock': 'clock',
   'automation.trigger.slack': 'Slack badge',
   'automation.trigger.badge': 'on :{badge}:',
+  'automation.badge': 'Badge',
   'automation.dir': 'Directory',
   'automation.cmd': 'Command',
   'automation.template': 'Template',
