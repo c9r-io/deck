@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.5.18 — 2026-09-07 (Nightly)
+
+- Dragging a selection over many rows is no longer sluggish. tmux repaints the
+  whole selected region after every single motion it is given, and deck
+  re-placed the copy cursor from the top of the frame on every pointer move:
+  one full-screen update pushed about 19 KB down the terminal, 438 KB for a
+  drag of sixty moves. Those repaints drew cells that already looked right —
+  deck paints its own selection overlay. A drag now leaves tmux holding only a
+  cursor and builds the selection once when the button is released; the same
+  drag costs 11.7 KB. A pointer move that stays inside one terminal cell sends
+  nothing at all.
+- The highlight no longer covers text the pointer never crossed. tmux pins a
+  selection anchor to the text while its cursor stays on a screen row, so on a
+  card that was still printing, the frame scrolled between reading it and
+  placing the endpoint and the selection walked onto other lines. Both
+  endpoints are now tracked as content rows, and the two ends plus the
+  selection are placed in one tmux command list that the server runs in a
+  single pass — nothing can move the frame between them. If output does race
+  the reading the placement was built from, it is rebuilt rather than trusted.
+
 ## 0.5.17 — 2026-09-07 (Nightly)
 
 - Prompt templates and scheduled prompts hold MANY LINES. A step used to be
