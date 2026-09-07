@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.5.17 — 2026-09-07 (Nightly)
+
+- Prompt templates and scheduled prompts hold MANY LINES. A step used to be
+  flattened to one line on the belief that a newline submits the prompt early;
+  delivery pastes inside bracketed-paste marks and presses Enter as a separate
+  key, so only a carriage return does that, and a CR is now the one byte
+  rewritten. In every prompt field Enter types a newline and ⌘↵ commits. A
+  template row and a queue row show the prompt's first line plus a `⏎N` badge,
+  and one row at a time opens in place to the whole text, so a long chain
+  still fits the panel and stays scannable.
+- Auto-respond keeps a template step's own lines. The message pasted into it
+  is still flattened to one line, so an inbound post cannot reshape the prompt
+  built around it.
+- Terminal path links understand Chinese and Japanese prose. CJK writes
+  sentences without spaces, so a line offered the tokenizer no boundary at
+  all: `已修改 src/main.rs。` linkified the full stop, and
+  `请看 app/ui/js/pure.js，然后运行测试。` linkified the rest of the sentence with
+  it. Punctuation is now matched by Unicode range rather than by a list — the
+  first enumeration still missed ——, →, “”, ～ and ※ — and a CJK character
+  against an ASCII letter bounds a path the way a space bounds an English one.
+  Marks that are word characters (々, ・, ー) are deliberately not separators,
+  so `佐々木.txt` and `データ・ベース.txt` stay whole.
+- A path link whose start had to be guessed retries with the wider reading
+  when the first one does not exist, so a name that genuinely runs CJK into
+  letters (`报告v2.pdf`) still opens. Hover is unchanged: it answers from the
+  text alone, with no round trip and no flicker.
+- Internal: the `link-classify` WKWebView check asserted the path-existence
+  filter that 0.5.16 deliberately removed from the link provider, and had been
+  failing since. It now asserts what shipped.
+
 ## 0.5.16 — 2026-09-06 (Nightly)
 
 - Card memory now reports physical footprint (`ri_phys_footprint`, the
