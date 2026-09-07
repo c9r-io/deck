@@ -8,8 +8,9 @@
 //! text: <rule name>}` — nothing else. The dispatcher's ledger is the only
 //! thing that makes a slot fire once (the same key/badge is offered again on
 //! every poll until it is acked), so this source keeps no state and never
-//! decides; a slot deck slept through is offered until local midnight, then
-//! disappears with the day. The local day comes from `procinfo::local_clock`
+//! decides: a slot is offered until local midnight, and whether a slot deck
+//! slept through still starts a run (inside the rule's `graceMin`) or is
+//! recorded as missed is the dispatcher's call (`inbound::slot_missed`). The local day comes from `procinfo::local_clock`
 //! (libc `localtime_r` + `mktime`, never a spawned `date`); its `day_start`
 //! is one value for the whole day even across a DST switch, so a slot never
 //! gets a second key. Clock events are live by

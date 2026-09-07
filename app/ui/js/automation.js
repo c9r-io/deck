@@ -17,13 +17,16 @@
 // change; the drawer itself is re-rendered on every Board transaction and
 // every inbound change while open. A rule's `since` moves to now whenever
 // its schedule changes or it is resumed from pause, so a slot earlier that
-// day is never caught up by the edit itself.
+// day is never caught up by the edit itself; how long after its slot a run
+// may still start is the rule's `graceMin` (the backend records a later
+// slot as missed).
 import { $, ctx, genId, inv, listen, state, store, uev } from './state.js';
 import { activeProject, provider } from './board.js';
 import { openSession } from './layout.js';
 import { confirmDialog, persistInbound, toast } from './dialogs.js';
 import { hmToMin, minToHM, nextScheduleSlot, toggleClockRule } from './pure.js';
 import { formatNumber, onLocaleChange, t } from './i18n.js';
+import { DEFAULT_GRACE_MIN, GRACE_CHOICES } from './settings-model.js';
 import { fmtClock } from './scheduler.js';
 
 let editing = null;   // null | { id } (existing) | { id: null } (new)
@@ -37,6 +40,14 @@ export const clockRules = (projectId = state.projectId) =>
 export const clockRuleById = id => clockRules(null).find(r => r.id === id) || null;
 
 export const isOpen = () => !$('auto-drawer').hidden;
+
+/* "15 min" / "3 h" / "rest of the day" / "never" in the user's language */
+export function graceText(minutes) {
+  if (minutes === 0) return t('automation.grace.none');
+  if (minutes >= 1440) return t('automation.grace.day');
+  if (minutes % 60 === 0) return t('automation.grace.hours', { count: formatNumber(minutes / 60) });
+  return t('automation.grace.minutes', { count: formatNumber(minutes) });
+}
 
 /* "every Mon, Wed, Fri at 09:00" in the user's language */
 export function scheduleText(schedule) {
@@ -119,6 +130,7 @@ function ruleEl(rule) {
     ['automation.kv.cmd', rule.cmd || t('settings.inboundRuleShellOnly')],
     ['automation.kv.template', rule.template],
     ['automation.kv.finish', t(rule.finish === 'close' ? 'automation.finish.close' : 'automation.finish.keep')],
+    ['automation.kv.grace', graceText(rule.graceMin ?? DEFAULT_GRACE_MIN)],
     ['automation.kv.next', rule.enabled ? (next ? fmtClock(next) : '—') : t('automation.paused')],
   ];
   for (const [key, value] of rows) {
@@ -174,6 +186,20 @@ function buildDayControls() {
     dom.appendChild(o);
   }
   dom.value = keep;
+  buildGraceOptions(Number($('auto-grace').value) || DEFAULT_GRACE_MIN);
+}
+
+/* the grace select: the fixed choices plus, when a saved rule has another
+   value (an older default, a hand-edited settings file), that value too */
+function buildGraceOptions(value) {
+  const sel = $('auto-grace');
+  sel.innerHTML = '';
+  for (const m of [...new Set([...GRACE_CHOICES, value])].sort((a, b) => a - b)) {
+    const o = document.createElement('option');
+    o.value = String(m); o.textContent = graceText(m);
+    sel.appendChild(o);
+  }
+  sel.value = String(value);
 }
 
 function syncEditor() {
@@ -218,6 +244,7 @@ export function openEditor(rule) {
   }
   if (schedule.unit === 'month') $('auto-dom').value = String(schedule.days[0] || 1);
   $('auto-time').value = minToHM(schedule.minute);
+  buildGraceOptions(rule ? (rule.graceMin ?? DEFAULT_GRACE_MIN) : DEFAULT_GRACE_MIN);
   $('auto-dir').value = rule ? rule.dir : '';
   $('auto-cmd').value = rule ? rule.cmd : 'claude';
   fillTargets(rule);
@@ -260,6 +287,7 @@ function readEditor() {
     cmd: $('auto-cmd').value.trim(), template, dir: $('auto-dir').value.trim(),
     name, enabled: previous ? previous.enabled : true, schedule,
     finish: segGet('auto-finish') === 'keep' ? 'keep' : 'close',
+    graceMin: Number($('auto-grace').value),
     since: changed ? Math.floor(Date.now() / 1000) : previous.since,
   };
 }

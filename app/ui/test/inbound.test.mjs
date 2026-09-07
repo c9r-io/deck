@@ -3,7 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { expandHome, fillInboundTemplate, inboundTitle, planInbound, runDateLabel } from '../js/pure.js';
-import { normalizeInbound, normalizeSchedule, normalizeSettings } from '../js/settings-model.js';
+import { DEFAULT_GRACE_MIN, normalizeGrace, normalizeInbound, normalizeSchedule, normalizeSettings } from '../js/settings-model.js';
 
 const msg = { text: 'line one\n\n  line two', from: 'alice', where: '#frontend', link: 'https://x.slack.com/p1' };
 
@@ -145,6 +145,13 @@ test('clock rules normalize their schedule and keep their id as badge; slack rul
   assert.equal(rules[0].finish, 'keep', 'unknown finish falls back to keep');
   assert.equal(rules[0].since, 0);
   assert.equal(rules[0].enabled, true);
+  assert.equal(rules[0].graceMin, DEFAULT_GRACE_MIN, 'a rule without a grace gets the default');
+  assert.equal(normalizeInbound({ rules: [clockRule({ graceMin: 0 })] }).rules[0].graceMin, 0, 'zero is a choice, not "unset"');
+  assert.equal(normalizeInbound({ rules: [clockRule({ graceMin: 1440 })] }).rules[0].graceMin, 1440);
+  assert.equal(normalizeInbound({ rules: [clockRule({ graceMin: 1441 })] }).rules[0].graceMin, DEFAULT_GRACE_MIN);
+  assert.equal(normalizeGrace('15'), DEFAULT_GRACE_MIN, 'a string is not a minute count');
+  assert.equal(normalizeGrace(-1), DEFAULT_GRACE_MIN);
+  assert.equal(rules[1].graceMin, undefined, 'a slack rule has no grace');
   assert.deepEqual(rules[0].schedule, { unit: 'week', days: [1, 3, 5], minute: 540 });
   assert.equal(rules[1].id, 'R1');
   assert.equal(rules[1].enabled, true);

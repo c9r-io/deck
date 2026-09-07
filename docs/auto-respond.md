@@ -61,11 +61,15 @@ empty agent context.
 
 - One run at a time: a slot that comes due while the rule's previous card is
   still on the Board is skipped and recorded as such.
-- A slot deck slept through is caught up until local midnight (opening deck
-  in the evening starts the morning's job); slots older than the rule's
-  last schedule change or resume never fire. Slot keys come from `mktime`
-  of local midnight, one value for the whole day, so a DST switch never
-  hands a slot two keys.
+- A slot deck slept through (asleep, updating, not running) still starts a
+  run inside the rule's grace — **if missed, still start within** in the
+  editor, 15 minutes by default, up to the rest of the day or never — and
+  is otherwise recorded as a `skipped (missed)` run without a card, so
+  opening deck in the evening does not start the morning's job. Yesterday's
+  slots are never considered. Slots older than the rule's last schedule
+  change or resume never fire. Slot keys come from `mktime` of local
+  midnight, one value for the whole day, so a DST switch never hands a slot
+  two keys.
 - **close the card**: once every prompt is delivered and the agent reported
   its turn done (agent hooks) or the program left the foreground, the card
   is retired through the same path as an explicit close — after the reading

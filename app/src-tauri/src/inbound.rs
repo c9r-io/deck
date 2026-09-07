@@ -46,8 +46,12 @@
 //! month lacks meaning its last), its badge IS its id, and every poll offers
 //! `(clock, <slot epoch>, <rule id>)` for a slot that is due today and not
 //! older than the rule's `since` — the ledger's dedupe is what makes each slot
-//! fire once, a slot deck slept through is caught up until local midnight,
-//! and there is no baseline (clock events are live by nature). The webview
+//! fire once, and there is no baseline (clock events are live by nature). A
+//! slot deck slept through is caught up only inside the rule's grace
+//! (`graceMin`, default 15 minutes, 1440 = the rest of the day): past it the
+//! dispatcher records the slot as a `skipped (missed)` run and never offers
+//! it, so opening deck in the evening does not start the morning's job. The
+//! webview
 //! refuses a slot while a card of the same rule is still on the Board
 //! (`busy`, acked skipped) and, for a rule whose `finish` is `close`, closes
 //! the run's card once its prompts are all delivered and the agent reported
@@ -97,7 +101,10 @@ pub(crate) const SOURCES: &[&str] = &["slack", "clock"];
 const MAX_RUNS: usize = 200;
 /// Closed vocabulary of what became of a run.
 const RUN_OUTCOMES: &[&str] = &["running", "closed", "skipped"];
-const SKIP_REASONS: &[&str] = &["busy", "no-rule-target", "no-template"];
+const SKIP_REASONS: &[&str] = &["busy", "no-rule-target", "no-template", "missed"];
+/// Default grace of a clock rule, in minutes; 1440 means the whole day.
+pub(crate) const DEFAULT_GRACE_MIN: u32 = 15;
+pub(crate) const MAX_GRACE_MIN: u32 = 1440;
 const MAX_RULES: usize = 32;
 const MAX_SEEN: usize = 5000;
 const SEEN_TTL_SECS: u64 = 45 * 24 * 3600;
@@ -139,10 +146,18 @@ pub(crate) struct Rule {
     /// schedule is created or changed)
     #[serde(default)]
     pub(crate) since: u64,
+    /// clock rules: how many minutes after its slot a run may still start;
+    /// later the slot is recorded as missed
+    #[serde(default = "default_grace")]
+    pub(crate) grace_min: u32,
 }
 
 fn default_true() -> bool {
     true
+}
+
+fn default_grace() -> u32 {
+    DEFAULT_GRACE_MIN
 }
 
 /// A clock rule's cadence: `minute` of the local day on every day / the
@@ -316,6 +331,12 @@ pub(crate) fn validate_settings(v: &Value) -> Result<(), DeckError> {
                     return Err(DeckError::new(
                         ErrorKind::Other,
                         "a clock rule finishes by keep or close",
+                    ));
+                }
+                if rule.grace_min > MAX_GRACE_MIN {
+                    return Err(DeckError::new(
+                        ErrorKind::Other,
+                        "a clock rule's grace is at most a day",
                     ));
                 }
             } else if rule.schedule.is_some() {
@@ -662,6 +683,7 @@ pub(crate) fn offer<R: tauri::Runtime>(
     let now = now_secs();
     let mut fresh = 0usize;
     let mut baselined = 0usize;
+    let mut missed = 0usize;
     with_rt(|rt| {
         let mut newly_baselined: Vec<(String, String)> = Vec::new();
         for ev in events {
@@ -676,6 +698,20 @@ pub(crate) fn offer<R: tauri::Runtime>(
                     && p.view.event.key == ev.key
                     && p.view.event.badge == ev.badge
             }) {
+                continue;
+            }
+            if ev.source == "clock" && slot_missed(&ev.key, rule, now) {
+                rt.doc.mark(&ev.source, &ev.key, &ev.badge, now);
+                rt.doc.record_run(Run {
+                    rule: ev.badge.clone(),
+                    key: ev.key.clone(),
+                    card: None,
+                    started: now,
+                    ended: Some(now),
+                    outcome: RUN_OUTCOMES[2].into(),
+                    reason: "missed".into(),
+                });
+                missed += 1;
                 continue;
             }
             if !live && !rt.doc.is_baselined(&ev.source, &ev.badge) {
@@ -699,18 +735,31 @@ pub(crate) fn offer<R: tauri::Runtime>(
         for (s, b) in newly_baselined {
             rt.doc.baseline(&s, &b);
         }
-        if baselined > 0 {
+        if baselined > 0 || missed > 0 {
             persist(rt);
         }
     });
+    if fresh > 0 || missed > 0 {
+        let _ = app.emit("inbound-changed", ());
+    }
     if fresh > 0 {
         applog(&format!("[inbound] {fresh} new item(s) pending"));
-        let _ = app.emit("inbound-changed", ());
     }
     if baselined > 0 {
         applog(&format!("[inbound] baselined {baselined} existing item(s)"));
     }
+    if missed > 0 {
+        applog(&format!("[inbound] {missed} clock slot(s) missed"));
+    }
     fresh
+}
+
+/// A clock slot (`key` = its epoch second) whose grace has run out at `now`.
+/// An unparsable key is never missed: the ordinary path refuses it.
+pub(crate) fn slot_missed(key: &str, rule: &Rule, now: u64) -> bool {
+    key.parse::<u64>()
+        .map(|slot| now > slot + u64::from(rule.grace_min.min(MAX_GRACE_MIN)) * 60)
+        .unwrap_or(false)
 }
 
 /// Polled badges with NO current matches still need their baseline recorded,
@@ -1175,6 +1224,15 @@ mod tests {
         r["finish"] = json!("archive");
         assert!(!ok(r), "finish is keep or close");
         let mut r = clock_rule("a1", json!({"unit": "day", "minute": 0}));
+        r["graceMin"] = json!(1440);
+        assert!(ok(r), "a whole day of grace");
+        let mut r = clock_rule("a1", json!({"unit": "day", "minute": 0}));
+        r["graceMin"] = json!(1441);
+        assert!(!ok(r), "grace above a day");
+        let mut r = clock_rule("a1", json!({"unit": "day", "minute": 0}));
+        r["graceMin"] = json!(0);
+        assert!(ok(r), "no grace at all");
+        let mut r = clock_rule("a1", json!({"unit": "day", "minute": 0}));
         r["name"] = json!("two\nlines");
         assert!(!ok(r), "name is one line");
         let mut r = clock_rule("a1", json!({"unit": "day", "minute": 0}));
@@ -1199,6 +1257,25 @@ mod tests {
         ));
         assert_eq!(cfg.badges("clock"), vec!["a1".to_string()]);
         assert_eq!(cfg.rules[0].since, 100);
+        assert_eq!(
+            cfg.rules[0].grace_min, DEFAULT_GRACE_MIN,
+            "an old rule gets the default grace"
+        );
+        let r = cfg.rules[0].clone();
+        assert!(
+            !slot_missed("1000", &r, 1000 + 15 * 60),
+            "the last second of grace"
+        );
+        assert!(slot_missed("1000", &r, 1000 + 15 * 60 + 1));
+        assert!(!slot_missed("x", &r, u64::MAX));
+        let whole_day = Rule {
+            grace_min: 1440,
+            ..r.clone()
+        };
+        assert!(!slot_missed("1000", &whole_day, 1000 + 86_400));
+        let none = Rule { grace_min: 0, ..r };
+        assert!(!slot_missed("1000", &none, 1000));
+        assert!(slot_missed("1000", &none, 1001));
         let round = serde_json::to_value(&cfg.rules[0]).unwrap();
         assert_eq!(round["schedule"]["minute"], json!(5));
         assert_eq!(round["finish"], json!("close"));
@@ -1379,7 +1456,7 @@ mod tests {
         })));
         let slot = Event {
             source: "clock".into(),
-            key: "1000".into(),
+            key: now_secs().to_string(),
             badge: "a1".into(),
             text: "Morning tests".into(),
             from: String::new(),
@@ -1406,7 +1483,7 @@ mod tests {
         assert_eq!(inbound_runs()[0].outcome, "closed");
         assert!(inbound_runs()[0].ended.is_some());
         let busy = Event {
-            key: "2000".into(),
+            key: (now_secs() - 60).to_string(),
             ..inbound_runs()
                 .first()
                 .map(|_| Event {
@@ -1428,6 +1505,41 @@ mod tests {
             ("skipped", "busy")
         );
         assert!(last.ended.is_some());
+        // a slot older than the rule's grace is recorded missed and never
+        // reaches the webview; offered again it is a duplicate
+        let stale = Event {
+            source: "clock".into(),
+            key: (now_secs() - 3600).to_string(),
+            badge: "a1".into(),
+            text: String::new(),
+            from: String::new(),
+            where_: String::new(),
+            link: String::new(),
+        };
+        let before = inbound_runs().len();
+        assert_eq!(
+            offer(app.handle(), &clock_cfg, vec![stale.clone()], true),
+            0
+        );
+        assert!(inbound_pending().is_empty(), "a missed slot is not pending");
+        let runs = inbound_runs();
+        assert_eq!(runs.len(), before + 1);
+        let missed = runs.last().unwrap();
+        assert_eq!(
+            (
+                missed.outcome.as_str(),
+                missed.reason.as_str(),
+                missed.card.as_deref()
+            ),
+            ("skipped", "missed", None)
+        );
+        assert!(missed.ended.is_some());
+        assert_eq!(offer(app.handle(), &clock_cfg, vec![stale], true), 0);
+        assert_eq!(inbound_runs().len(), before + 1, "recorded once");
+        assert!(
+            load_doc().has("clock", &missed.key, "a1"),
+            "the ledger remembers it"
+        );
 
         inbound_check_now();
         wait_for_tick(Duration::from_secs(1));
