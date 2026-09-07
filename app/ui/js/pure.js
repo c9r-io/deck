@@ -41,16 +41,33 @@ export function cardPreviewRows(lines, rows = CARD_PREVIEW_ROWS) {
    against the pane cwd (`links.rs`). */
 const URL_SCHEMES = ['https://', 'http://'];
 const PATH_START_DELIMS = '=:([{<,;|';
-/* CJK and fullwidth punctuation. Chinese and Japanese prose carries no
-   spaces, so without these a sentence's own punctuation reads as part of the
-   filename (`src/main.rs。`) and everything after a comma is swallowed with
-   it (`pure.js，然后运行测试。`). Listing them as token ENDS also makes them
-   start boundaries — `isStartBoundary` accepts any token end — which is what
-   recovers the path after a fullwidth colon or an opening bracket. */
-const CJK_PUNCTUATION = '。、，；：！？…（）〔〕【】《》〈〉「」『』［］｛｝＜＞＝｜＂＇｀｡､｢｣';
-const TOKEN_END_DELIMS = '"\'`<>|\\' + CJK_PUNCTUATION;
+const TOKEN_END_DELIMS = '"\'`<>|\\';
 const PATH_HARD_END_DELIMS = '=,;';
 const PATH_TRAILING = '.,;!?)}]';
+
+/* Punctuation and symbols that prose puts BETWEEN things and that no ordinary
+   filename puts inside one. Chinese and Japanese write sentences without
+   spaces, so these are the only boundary such a line offers: without them
+   `src/main.rs。` is read as the filename and `pure.js，然后运行测试。`
+   swallows the rest of the sentence. Ranges rather than a list, because an
+   enumeration is never finished — 。，、：（）「」 were the first round, and
+   ——, →, “”, ～ and ※ each still reached a user inside a "filename" after it.
+   Deliberately NOT here: 々 〆 〇 (U+3005..3007) are word characters, and ・ ー
+   live in the kana block, so `佐々木.txt` and `データ・ベース.txt` stay whole. */
+const isProseSeparator = ch => {
+  if (!ch) return false;
+  const code = ch.charCodeAt(0);
+  return (code >= 0x2010 && code <= 0x205e)     // dashes, curly quotes, …, ※, primes
+    || (code >= 0x2190 && code <= 0x21ff)       // arrows
+    || (code >= 0x2500 && code <= 0x257f)       // box drawing a TUI puts beside a path
+    || (code >= 0x3001 && code <= 0x3004)       // 、。〃〄
+    || (code >= 0x3008 && code <= 0x3020)       // 〈〉《》「」『』【】〒〔〕〖〗
+    || (code >= 0x3030 && code <= 0x303f)       // 〰 and the rest of the block
+    || (code >= 0xff01 && code <= 0xff0f)       // ！＂＃＄％＆＇（）＊＋，－．／
+    || (code >= 0xff1a && code <= 0xff20)       // ：；＜＝＞？＠
+    || (code >= 0xff3b && code <= 0xff40)       // ［＼］＾＿｀
+    || (code >= 0xff5b && code <= 0xff65);      // ｛｜｝～｟｠｡｢｣､･
+};
 
 const isSpace = ch => !!ch && ch.trim() === '';
 const isAsciiDigit = ch => ch >= '0' && ch <= '9';
@@ -76,8 +93,9 @@ const isCJK = ch => {
 const isScriptBoundary = (prev, ch) =>
   (isCJK(prev) && isAsciiLetter(ch)) || (isAsciiLetter(prev) && isCJK(ch));
 const isStartBoundary = ch => !ch || isSpace(ch) || PATH_START_DELIMS.includes(ch)
-  || TOKEN_END_DELIMS.includes(ch);
-const isTokenEnd = ch => !ch || isSpace(ch) || TOKEN_END_DELIMS.includes(ch);
+  || TOKEN_END_DELIMS.includes(ch) || isProseSeparator(ch);
+const isTokenEnd = ch => !ch || isSpace(ch) || TOKEN_END_DELIMS.includes(ch)
+  || isProseSeparator(ch);
 
 function withoutLineLocation(value) {
   let end = value.length;

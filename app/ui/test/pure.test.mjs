@@ -873,6 +873,22 @@ test('CJK prose bounds a path the way whitespace bounds an English one', () => {
   assert.deepEqual(values('文件「src/main.rs」已更新'), ['src/main.rs']);
   assert.deepEqual(values('失败了：src/lib.rs！'), ['src/lib.rs']);
 
+  /* Separators are matched by RANGE, not by a list: every one of these
+     reached a user inside a "filename" while the set was enumerated. */
+  assert.deepEqual(values('改了 a.rs、b.rs、c.rs——它们不在'), ['a.rs', 'b.rs', 'c.rs']);
+  assert.deepEqual(values('src/main.rs→已修改'), ['src/main.rs']);
+  assert.deepEqual(values('这是“src/main.rs”的内容'), ['src/main.rs']);
+  assert.deepEqual(values('这是‘src/main.rs’的内容'), ['src/main.rs']);
+  assert.deepEqual(values('src/main.rs～备份'), ['src/main.rs']);
+  assert.deepEqual(values('注意※src/main.rs'), ['src/main.rs']);
+  assert.deepEqual(values('│ src/main.rs │'), ['src/main.rs'], 'a TUI box is a separator too');
+
+  /* …but the marks that are WORD characters are not separators, or the names
+     built from them would be cut apart */
+  assert.deepEqual(values('佐々木.txt'), ['佐々木.txt'], '々 is a letter, not punctuation');
+  assert.deepEqual(values('データ・ベース.txt'), ['データ・ベース.txt'], 'and ・ ー live in the kana block');
+  assert.deepEqual(values('サーバー.log'), ['サーバー.log']);
+
   /* CJK writes without spaces, so a letter meeting a Han character is the
      boundary an English line would have spelled with one */
   assert.deepEqual(values('修改了src/main.rs'), ['src/main.rs']);
