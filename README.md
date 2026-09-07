@@ -106,9 +106,12 @@ cleared when recovery is disabled. Redaction is best-effort, so the consent
 prompt still warns that terminal output may contain secrets.
 
 **Scheduled prompts.** The quota-window workflow: queue prompts on a session
-and have them typed in later — at a set time ("in 5 h, when my Claude window
-resets") or chained ("after the previous one goes quiet for 3 minutes" — quiet
-means no output, not that the program is ready). Before delivery deck
+and have them typed in later — at a date and time ("Friday 14:00, when my
+Claude window resets"), chained ("after the previous one goes quiet for 3
+minutes" — the quiet time is yours to set; quiet means no output, not that
+the program is ready), or on a rule: every N minutes inside an optional daily
+window, from an optional start date until you remove it, N fires or a date.
+Before delivery deck
 resolves the pane the card owns and pins the exact tmux
 server/session/window/pane/process generation it just read — a pane that came
 back with a new generation (after an update, a crash or a reboot) is adopted

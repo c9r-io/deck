@@ -431,10 +431,20 @@ body.side-collapsed .side-new .label { display: none; }
 }
 .q-hint { font-size: 0.846154rem; color: var(--faint); }
 .q-sentence { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; font-size: 0.923077rem; color: var(--muted); }
-.q-sentence select, .q-sentence input[type=time] {
+.q-sentence select, .q-sentence input[type=time], .q-sentence input[type=date],
+.q-sentence input[type=number] {
   font-size: 0.923077rem; color: var(--text); background: var(--raised);
-  border: 1px solid var(--border); border-radius: 6px; padding: 5px 8px;
+  border: 1px solid var(--border); border-radius: 6px; padding: 5px 8px; width: auto;
 }
+.q-sentence input[type=number] { width: 4.6em; }
+.q-sentence .q-p[hidden] { display: none; }
+.q-sentence .q-sep { color: var(--faint); }
+/* the mode picker: one pressed segment, the rest quiet */
+.seg { display: inline-flex; gap: 2px; padding: 2px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; }
+.seg button { padding: 3px 10px; border-radius: 4px; color: var(--muted); font-size: 0.923077rem; white-space: nowrap; }
+.seg button:hover { color: var(--text); }
+.seg button[aria-pressed="true"] { background: var(--raised); color: var(--text); box-shadow: inset 0 0 0 1px var(--border); }
+
 .q-meta { font-family: var(--mono); font-size: 0.807692rem; color: var(--faint); flex: none; white-space: nowrap; }
 #queue-list { display: flex; flex-direction: column; gap: 8px; }
 .q-group { border: 1px solid var(--border-soft); border-radius: 8px; background: var(--raised); overflow: hidden; }

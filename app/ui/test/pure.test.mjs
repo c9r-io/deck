@@ -8,6 +8,7 @@ import {
   sessionName, fmtMem, fmtEvery, minToHM, hmToMin, winHas, hasWindow,
   nextFire, groupQueue, groupSteps, itemDead, blockedBy,
   chainQuietHint, contextStatusKey, CHAIN_QUIET_SECS, shQuote, quickBarLayout, rectsOverlap,
+  MIN_QUIET_SECS, MAX_QUIET_SECS, quietSecsOf, localEpoch, isoDate, isoTime,
   createExitRetirementTracker, createSerialTransactionQueue, deleteSessionsTransaction, sidebarGroups,
   copyExact, createTerminalPasteTrace, createTerminalResizeCoordinator, createTerminalSelectionModel,
   reorderById,
@@ -239,6 +240,33 @@ test('chainQuietHint tracks the quiet window', () => {
   assert.equal(chainQuietHint(9999, true), ' · quiet ✓', 'capped, no runaway counter');
   assert.equal(chainQuietHint(null, true), '', 'no poll data yet — no hint');
   assert.equal(chainQuietHint(null, false), ' · session stopped', 'dead is not mislabeled ready');
+});
+
+test('chainQuietHint honours a per-item quiet time', () => {
+  assert.equal(MIN_QUIET_SECS, 10, 'must match MIN_QUIET_SECS in scheduler/ops.rs');
+  assert.equal(MAX_QUIET_SECS, 86400, 'must match MAX_QUIET_SECS in scheduler/ops.rs');
+  assert.equal(quietSecsOf({ quiet_secs: 30 }), 30);
+  assert.equal(quietSecsOf({}), 180, 'unset = the default');
+  assert.equal(quietSecsOf(undefined), 180);
+  assert.equal(chainQuietHint(29, true, 30), ' · quiet 29s/30s');
+  assert.equal(chainQuietHint(30, true, 30), ' · quiet ✓');
+  assert.equal(chainQuietHint(200, true, 600), ' · quiet 200s/600s', 'a longer wait is not done at 180');
+});
+
+test('local date helpers round-trip a wall-clock instant', () => {
+  const d = new Date(2026, 8, 12, 14, 5, 0, 0);
+  assert.equal(isoDate(d), '2026-09-12');
+  assert.equal(isoTime(d), '14:05');
+  assert.equal(localEpoch('2026-09-12', '14:05'), Math.floor(d.getTime() / 1000));
+  assert.equal(localEpoch('', '14:05'), null);
+  assert.equal(localEpoch('2026-09-12', ''), null);
+  assert.equal(localEpoch('nope', '14:05'), null);
+});
+
+test('nextFire waits for a start instant', () => {
+  const now = 1_000_000;
+  assert.equal(nextFire({ every: 300, not_before: now + 900 }, now), now + 900);
+  assert.equal(nextFire({ every: 300, not_before: now - 900 }, now), now, 'a past start changes nothing');
 });
 
 test('scheduler context states stay closed and UI-localized', () => {

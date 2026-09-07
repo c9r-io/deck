@@ -16,7 +16,9 @@ fn qi(id: &str, mode: &str) -> QueueItem {
         mode: mode.into(),
         at: None,
         added: 0,
+        quiet_secs: None,
         every: None,
+        not_before: None,
         win_from: None,
         win_to: None,
         until_n: None,
@@ -471,7 +473,9 @@ fn add_validation_rejects_bad_combinations() {
         text: "x".into(),
         mode: "at".into(),
         at: Some(NOW),
+        quiet_secs: None,
         every: None,
+        not_before: None,
         win_from: None,
         win_to: None,
         until_n: None,
@@ -529,6 +533,76 @@ fn every_rule_due_logic() {
     // stop instant passed → never due again
     r.until_at = Some(now - 1);
     assert!(!every_due(&r, now, 9 * 60));
+    // a start instant still ahead → not yet; reached → due
+    r.until_at = None;
+    r.not_before = Some(now + 1);
+    assert!(!every_due(&r, now, 9 * 60));
+    r.not_before = Some(now);
+    assert!(every_due(&r, now, 9 * 60));
+}
+
+#[test]
+fn chain_quiet_time_is_per_item() {
+    let mut c = qi("c", "chain");
+    c.quiet_secs = Some(30);
+    let q = qs(vec![c]);
+    let act = |ago: u64| HashMap::from([("s".to_string(), NOW - ago)]);
+    assert!(select_due(&q, NOW, 720, &act(29)).is_empty());
+    assert_eq!(ids(&select_due(&q, NOW, 720, &act(30))), ["c"]);
+    // unset = the default
+    let q = qs(vec![qi("d", "chain")]);
+    assert!(select_due(&q, NOW, 720, &act(CHAIN_QUIET_SECS - 1)).is_empty());
+    assert_eq!(
+        ids(&select_due(&q, NOW, 720, &act(CHAIN_QUIET_SECS))),
+        ["d"]
+    );
+}
+
+#[test]
+fn add_validation_covers_quiet_and_start() {
+    let base = || QueueAddArgs {
+        session: "s".into(),
+        card_id: "card-s".into(),
+        dir: String::new(),
+        cmd: String::new(),
+        text: "x".into(),
+        mode: "chain".into(),
+        at: None,
+        quiet_secs: None,
+        every: None,
+        not_before: None,
+        win_from: None,
+        win_to: None,
+        until_n: None,
+        until_at: None,
+        steps: None,
+        tpl: None,
+        tpl_idx: None,
+        tpl_total: None,
+    };
+    let mut a = base();
+    a.quiet_secs = Some(MIN_QUIET_SECS);
+    assert!(validate_add(&a).is_ok());
+    a.quiet_secs = Some(MIN_QUIET_SECS - 1);
+    assert!(validate_add(&a).is_err(), "quiet below the floor");
+    a.quiet_secs = Some(MAX_QUIET_SECS + 1);
+    assert!(validate_add(&a).is_err(), "quiet above the ceiling");
+    let mut a = base();
+    a.mode = "at".into();
+    a.at = Some(NOW);
+    a.quiet_secs = Some(60);
+    assert!(validate_add(&a).is_err(), "quiet time on a timed prompt");
+    let mut a = base();
+    a.mode = "every".into();
+    a.every = Some(300);
+    a.not_before = Some(NOW);
+    a.until_at = Some(NOW + 1);
+    assert!(validate_add(&a).is_ok());
+    a.until_at = Some(NOW);
+    assert!(validate_add(&a).is_err(), "stops before it starts");
+    let mut a = base();
+    a.not_before = Some(NOW);
+    assert!(validate_add(&a).is_err(), "start instant on a chain item");
 }
 
 // ---------- round 3: firing contract, delivery ledger, send_one ----------
@@ -1619,7 +1693,9 @@ fn add_args(session: &str, text: &str) -> QueueAddArgs {
         text: text.into(),
         mode: "chain".into(),
         at: None,
+        quiet_secs: None,
         every: None,
+        not_before: None,
         win_from: None,
         win_to: None,
         until_n: None,

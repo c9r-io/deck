@@ -136,7 +136,11 @@ pub(crate) struct QueueAddArgs {
     pub(crate) text: String,
     pub(crate) mode: String,
     pub(crate) at: Option<u64>,
+    #[serde(default)]
+    pub(crate) quiet_secs: Option<u64>,
     pub(crate) every: Option<u64>,
+    #[serde(default)]
+    pub(crate) not_before: Option<u64>,
     pub(crate) win_from: Option<u32>,
     pub(crate) win_to: Option<u32>,
     pub(crate) until_n: Option<u32>,
@@ -170,6 +174,11 @@ pub(crate) fn normalize_prompt(text: &str) -> String {
         .to_string()
 }
 
+/// Bounds of a chain item's quiet time: below 10s a single tmux status
+/// refresh would count as quiet, above a day the wait is a mistake.
+pub(crate) const MIN_QUIET_SECS: u64 = 10;
+pub(crate) const MAX_QUIET_SECS: u64 = 86_400;
+
 /// Reject invalid schedule combinations up front.
 pub(crate) fn validate_add(a: &QueueAddArgs) -> Result<(), DeckError> {
     crate::tmux::validate_session_name(&a.session)?;
@@ -182,7 +191,16 @@ pub(crate) fn validate_add(a: &QueueAddArgs) -> Result<(), DeckError> {
                 ));
             }
         }
-        "chain" => {}
+        "chain" => {
+            if a.quiet_secs
+                .is_some_and(|q| !(MIN_QUIET_SECS..=MAX_QUIET_SECS).contains(&q))
+            {
+                return Err(DeckError::new(
+                    ErrorKind::Other,
+                    "quiet time must be between 10 seconds and 24 hours",
+                ));
+            }
+        }
         "every" => {
             let e = a.every.ok_or(DeckError::new(
                 ErrorKind::Other,
@@ -202,11 +220,29 @@ pub(crate) fn validate_add(a: &QueueAddArgs) -> Result<(), DeckError> {
             ))
         }
     }
-    if a.mode != "every" && (a.every.is_some() || a.steps.as_ref().is_some_and(|s| !s.is_empty())) {
+    if a.mode != "every"
+        && (a.every.is_some()
+            || a.not_before.is_some()
+            || a.steps.as_ref().is_some_and(|s| !s.is_empty()))
+    {
         return Err(DeckError::new(
             ErrorKind::Other,
-            "interval/steps only make sense on a recurring rule",
+            "interval/start/steps only make sense on a recurring rule",
         ));
+    }
+    if a.mode != "chain" && a.quiet_secs.is_some() {
+        return Err(DeckError::new(
+            ErrorKind::Other,
+            "quiet time only applies after the previous prompt",
+        ));
+    }
+    if let (Some(from), Some(until)) = (a.not_before, a.until_at) {
+        if until <= from {
+            return Err(DeckError::new(
+                ErrorKind::Other,
+                "a rule must stop after it starts",
+            ));
+        }
     }
     for w in [a.win_from, a.win_to] {
         if w.is_some_and(|m| m >= 1440) {
@@ -325,7 +361,9 @@ fn add_item_bound(
         mode: args.mode,
         at: args.at,
         added: now_epoch(),
+        quiet_secs: args.quiet_secs,
         every: args.every,
+        not_before: args.not_before,
         win_from: args.win_from,
         win_to: args.win_to,
         until_n: args.until_n,

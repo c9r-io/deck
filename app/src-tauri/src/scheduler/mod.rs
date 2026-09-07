@@ -1,5 +1,10 @@
-//! Scheduled prompts: at / chain (quiet-based) / every (recurring rules
-//! with daily windows) + per-project templates. A persisted firing intent is
+//! Scheduled prompts: at (one instant, any day) / chain (quiet-based, with a
+//! per-item quiet time) / every (recurring rules: a minute cadence inside an
+//! optional daily window, with an optional start instant and stop) +
+//! per-project templates. Calendar cadences (every day / weekday / day of
+//! month) deliberately do NOT live on a card: a standing job is a Board-level
+//! automation that creates a fresh card per run, not a rule pinning one
+//! long-lived session. A persisted firing intent is
 //! deliberately treated as ambiguous after a crash: deck neither claims it
 //! succeeded nor sends it again until the user resolves it. Tick logic is
 //! pure and unit-tested; the thread only adds IO.
@@ -49,8 +54,9 @@
 //! already picked. Manual immediate delivery may pointer-confirm a one-shot
 //! process mismatch bypass; the process comparison is the only thing it can
 //! bypass. "chain" mode fires after
-//! `window_activity` has been quiet ≥180s (a permission prompt also counts as
-//! quiet — documented behavior; quiet NEVER means "the agent finished").
+//! `window_activity` has been quiet for the item's `quiet_secs` (default
+//! `CHAIN_QUIET_SECS`; a permission prompt also counts as quiet — documented
+//! behavior; quiet NEVER means "the agent finished").
 //! Round-2/3 semantics (`scheduler/` is the reference, all unit-tested):
 //! - at most ONE candidate per session per tick, ≥60s between any two
 //!   injections into the same session; each due session gets its own
@@ -153,14 +159,21 @@ pub(crate) struct QueueItem {
     cmd: String,
     text: String,
     /// "at" = fire at `at` (epoch secs); "chain" = fire once the session has
-    /// been quiet for CHAIN_QUIET_SECS after the previous send; "every" = a
-    /// standing rule that re-fires every `every` secs (optionally only inside
-    /// a daily time window) until stopped
+    /// been quiet for `quiet_secs` (default CHAIN_QUIET_SECS) after the
+    /// previous send; "every" = a standing rule that re-fires every `every`
+    /// secs (optionally only inside a daily time window) from `not_before`
+    /// until stopped
     mode: String,
     at: Option<u64>,
     added: u64,
+    /// chain only: how long the session must stay quiet
+    #[serde(default)]
+    quiet_secs: Option<u64>,
     #[serde(default)]
     every: Option<u64>,
+    /// every only: the rule is not due before this instant
+    #[serde(default)]
+    not_before: Option<u64>,
     /// daily window in minutes since local midnight; from > to wraps midnight
     #[serde(default)]
     win_from: Option<u32>,
@@ -412,19 +425,21 @@ pub(crate) fn local_minutes() -> u32 {
     crate::procinfo::local_minutes()
 }
 
-/// Whether an "every" rule has reached its cadence (window/stop-aware).
+/// Whether an "every" rule has reached its cadence (window/start/stop-aware).
 /// The per-session send gap and the one-active-iteration rule are enforced
 /// by candidate selection, not here.
 pub(crate) fn every_due(i: &QueueItem, now: u64, now_min: u32) -> bool {
     i.mode == "every"
         && !i.paused
         && i.until_at.map(|t| now < t).unwrap_or(true)
+        && i.not_before.map(|t| now >= t).unwrap_or(true)
         && in_window(now_min, i.win_from, i.win_to)
         && i.last
             .map(|l| now >= l + i.every.unwrap_or(u64::MAX))
             .unwrap_or(true)
 }
 
+/// Default quiet time of a chain item (`quiet_secs` unset).
 pub(crate) const CHAIN_QUIET_SECS: u64 = 180;
 /// Minimum spacing between ANY two injections into the same session — one
 /// prompt per session at a time, whatever mix of at/every/chain is queued.

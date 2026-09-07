@@ -64,37 +64,56 @@
           <textarea id="q-text" rows="1" placeholder="prompt to send to this session later…" data-i18n-placeholder="queue.placeholder" autocomplete="off" spellcheck="false"></textarea>
           <button class="btn primary" id="q-add-btn" data-i18n="common.add">Add</button>
         </div>
-        <div class="q-sentence">
-          <span data-i18n="queue.send">Send</span>
-          <select id="q-when">
-            <option value="chain" data-i18n="queue.when.chain">after previous (3 min quiet)</option>
-            <option value="30" data-i18n="queue.when.30">in 30 min</option>
-            <option value="60" data-i18n="queue.when.60">in 1 h</option>
-            <option value="180" data-i18n="queue.when.180">in 3 h</option>
-            <option value="300" data-i18n="queue.when.300">in 5 h</option>
-            <option value="custom" data-i18n="queue.when.custom">at time…</option>
-            <option value="e5" data-i18n="queue.when.e5">every 5 min</option>
-            <option value="e15" data-i18n="queue.when.e15">every 15 min</option>
-            <option value="e30" data-i18n="queue.when.e30">every 30 min</option>
-            <option value="e60" data-i18n="queue.when.e60">every 1 h</option>
-            <option value="e120" data-i18n="queue.when.e120">every 2 h</option>
+        <div class="q-sentence q-form">
+          <div class="seg" id="q-mode" role="radiogroup" aria-label="When to send" data-i18n-aria-label="queue.mode.label">
+            <button type="button" data-v="chain" aria-pressed="true" data-i18n="queue.mode.chain">after previous</button>
+            <button type="button" data-v="at" aria-pressed="false" data-i18n="queue.mode.at">at a time</button>
+            <button type="button" data-v="every" aria-pressed="false" data-i18n="queue.mode.every">repeat</button>
+          </div>
+        </div>
+        <div class="q-sentence q-params">
+          <span class="q-p q-p-chain" data-i18n="queue.quietFor">quiet for</span>
+          <select id="q-quiet" class="q-p q-p-chain"></select>
+          <input type="number" id="q-quiet-n" class="q-p q-p-chain q-p-quietc" min="1" step="1" value="3">
+          <select id="q-quiet-u" class="q-p q-p-chain q-p-quietc">
+            <option value="1" data-i18n="queue.unit.s">s</option>
+            <option value="60" selected data-i18n="queue.unit.min">min</option>
+            <option value="3600" data-i18n="queue.unit.h">h</option>
           </select>
-          <input type="time" id="q-time" style="display:none">
-          <select id="q-win" style="display:none">
+          <input type="date" id="q-date" class="q-p q-p-at">
+          <input type="time" id="q-time" class="q-p q-p-at">
+          <select id="q-quick" class="q-p q-p-at">
+            <option value="" data-i18n="queue.quick">quick…</option>
+            <option value="30" data-i18n="queue.quick.30">+30 min</option>
+            <option value="60" data-i18n="queue.quick.60">+1 h</option>
+            <option value="180" data-i18n="queue.quick.180">+3 h</option>
+            <option value="300" data-i18n="queue.quick.300">+5 h</option>
+          </select>
+          <span class="q-p q-p-every" data-i18n="queue.everyLabel">every</span>
+          <select id="q-every" class="q-p q-p-every"></select>
+          <select id="q-win" class="q-p q-p-every">
             <option value="" data-i18n="queue.window.any">any time of day</option>
             <option value="540-1080" data-i18n="queue.window.day">only 09:00–18:00</option>
             <option value="480-1320" data-i18n="queue.window.longDay">only 08:00–22:00</option>
             <option value="custom" data-i18n="queue.window.custom">only between…</option>
           </select>
-          <input type="time" id="q-win-a" style="display:none"><span id="q-win-dash" style="display:none">–</span><input type="time" id="q-win-b" style="display:none">
-          <select id="q-until" style="display:none">
-            <option value="" data-i18n="queue.until.remove">until I remove it</option>
+          <input type="time" id="q-win-a" class="q-p q-p-every q-p-winc"><span id="q-win-dash" class="q-p q-p-every q-p-winc">–</span><input type="time" id="q-win-b" class="q-p q-p-every q-p-winc">
+          <span class="q-sep q-p q-p-every">·</span>
+          <span class="q-p q-p-every" data-i18n="queue.from">from</span>
+          <select id="q-start" class="q-p q-p-every">
+            <option value="" data-i18n="queue.start.now">now</option>
+            <option value="date" data-i18n="queue.start.date">a date…</option>
+          </select>
+          <input type="date" id="q-start-d" class="q-p q-p-every q-p-startc"><input type="time" id="q-start-t" class="q-p q-p-every q-p-startc">
+          <span class="q-p q-p-every" data-i18n="queue.untilLabel">until</span>
+          <select id="q-until" class="q-p q-p-every">
+            <option value="" data-i18n="queue.until.remove">I remove it</option>
             <option value="n5" data-i18n="queue.until.n5">5 times</option>
             <option value="n10" data-i18n="queue.until.n10">10 times</option>
             <option value="n20" data-i18n="queue.until.n20">20 times</option>
-            <option value="t" data-i18n="queue.until.time">until time…</option>
+            <option value="date" data-i18n="queue.until.date">a date…</option>
           </select>
-          <input type="time" id="q-until-t" style="display:none">
+          <input type="date" id="q-until-d" class="q-p q-p-every q-p-untilc"><input type="time" id="q-until-t" class="q-p q-p-every q-p-untilc">
         </div>
         <div class="q-hint" data-i18n="queue.explainer">Prompts are typed into the session at the scheduled moment.</div>
         <div id="tpl-pop"></div>

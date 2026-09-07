@@ -1234,7 +1234,9 @@ async function multilinePromptSmoke(card) {
 
   const text = 'review the diff\n  - file:line\n  - the smallest fix';
   field.value = text;
-  $('q-when').value = '300';
+  $('q-mode').querySelector('[data-v="at"]').click();
+  $('q-quick').value = '300';
+  $('q-quick').dispatchEvent(new Event('change'));
   field.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', metaKey: true, bubbles: true }));
   await waitFor(async () => (await inv('queue_list')).items?.some(item => item.text === text), 4000);
   const stored = (await inv('queue_list')).items?.find(item => item.text === text);

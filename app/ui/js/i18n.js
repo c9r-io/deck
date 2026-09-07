@@ -59,6 +59,7 @@ export function formatDateTime(value, options = { hour: '2-digit', minute: '2-di
 }
 
 export function formatInterval(seconds) {
+  if (seconds < 60) return t('queue.intervalSeconds', { count: formatNumber(seconds) });
   const hours = seconds / 3600;
   return seconds % 3600 === 0
     ? t('queue.intervalHours', { count: formatNumber(hours) })

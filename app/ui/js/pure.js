@@ -293,10 +293,22 @@ export function rectsOverlap(a, b) {
 export const winHas = (m, f, t) => f < t ? (m >= f && m < t) : (m >= f || m < t);
 export const hasWindow = i => i.win_from != null && i.win_to != null && i.win_from !== i.win_to;
 
-/* earliest instant an "every" rule can fire again, window-aware */
+/* local 'YYYY-MM-DD' + 'HH:MM' → epoch seconds; null when either is unset */
+export function localEpoch(dateStr, timeStr) {
+  if (!dateStr || !timeStr) return null;
+  const [y, mo, d] = dateStr.split('-').map(Number);
+  const [h, mi] = timeStr.split(':').map(Number);
+  if ([y, mo, d, h, mi].some(Number.isNaN)) return null;
+  return Math.floor(new Date(y, mo - 1, d, h, mi, 0, 0).getTime() / 1000);
+}
+export const isoDate = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+export const isoTime = d => `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+
+/* earliest instant an "every" rule can fire again: start- and window-aware */
 export function nextFire(i, now = Math.floor(Date.now() / 1000)) {
   let t = i.last ? i.last + i.every : now;
   if (t < now) t = now;
+  if (i.not_before && t < i.not_before) t = i.not_before;
   if (hasWindow(i)) {
     const d = new Date(t * 1000);
     if (!winHas(d.getHours() * 60 + d.getMinutes(), i.win_from, i.win_to)) {
@@ -346,18 +358,22 @@ export function createDoneSeenTracker() {
   };
 }
 
-/* how long a session must stay quiet before a chain prompt fires —
-   keep in sync with CHAIN_QUIET_SECS in scheduler.rs */
+/* how long a session must stay quiet before a chain prompt fires when the
+   item sets no `quiet_secs` — keep in sync with CHAIN_QUIET_SECS in
+   scheduler/mod.rs; the accepted range mirrors MIN/MAX_QUIET_SECS there */
 export const CHAIN_QUIET_SECS = 180;
+export const MIN_QUIET_SECS = 10;
+export const MAX_QUIET_SECS = 86400;
+export const quietSecsOf = i => i?.quiet_secs || CHAIN_QUIET_SECS;
 
 /* progress hint for a chain head: how far the quiet timer has come. Any
    output (including the user typing in the pane) resets it — that's the
    product semantics, and exactly why the wait deserves a visible counter. */
-export function chainQuietHint(idleSecs, alive) {
+export function chainQuietHint(idleSecs, alive, total = CHAIN_QUIET_SECS) {
   if (!alive) return ' · session stopped'; // quiet/due is not context readiness
   if (idleSecs == null) return '';
-  const q = Math.min(Math.floor(idleSecs), CHAIN_QUIET_SECS);
-  return q >= CHAIN_QUIET_SECS ? ' · quiet ✓' : ` · quiet ${q}s/${CHAIN_QUIET_SECS}s`;
+  const q = Math.min(Math.floor(idleSecs), total);
+  return q >= total ? ' · quiet ✓' : ` · quiet ${q}s/${total}s`;
 }
 
 export const contextStatusKey = status => ({

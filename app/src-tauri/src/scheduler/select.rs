@@ -69,7 +69,7 @@ fn eligible(
         "at" => i.at.map(|t| now >= t).unwrap_or(false),
         "chain" => activity
             .get(&i.session)
-            .map(|a| now >= a + CHAIN_QUIET_SECS)
+            .map(|a| now >= a + i.quiet_secs.unwrap_or(CHAIN_QUIET_SECS))
             .unwrap_or(true), // dead session = quiet; fire_item restarts it
         "every" => {
             // a rule may not start a new iteration while any item of its
@@ -107,7 +107,7 @@ pub(crate) fn select_for_session(
         .cloned()
 }
 
-/// Explicit manual-now selection skips only the schedule clock/quiet/window.
+/// Explicit manual-now selection skips only the schedule now_min/quiet/window.
 /// It retains every ordering and exclusivity invariant: pause/ambiguous/dead,
 /// tombstone, session gap, group head and one-active-rule-iteration.
 pub(super) fn select_requested(

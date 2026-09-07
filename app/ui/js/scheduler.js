@@ -11,13 +11,26 @@
 // is pruned against the live queue on each render. Editing edits the WHOLE
 // prompt, so a collapsed row opens first and the same click continues into
 // the editor, where Enter types a newline and ⌘↵ commits.
+//
+// The schedule form is a mode picker (after previous / at a time / repeat)
+// over ONE parameter row: every control carries the `q-p-<facet>` classes of
+// the states it belongs to and `syncForm` shows exactly the controls of the
+// active facets, so the row never holds two modes at once. What the form
+// sends is the backend's `QueueAddArgs`: a chain item carries its own
+// `quietSecs`; a timed prompt is a full local date+time (never rolled to
+// "tomorrow" — a past instant is refused); a rule is a minute interval with
+// an optional daily window, an optional start (`notBefore`) and a stop. A
+// template inserted "after previous" gives every step the chosen quiet
+// time; inserted at a time, its follow-up steps keep the default. Calendar
+// cadences (daily / weekly / monthly) are deliberately not a card schedule —
+// see the Board-level automation note in scheduler/mod.rs.
 import { $, ctx, inv, listen, state, uev } from './state.js';
-import { blockedBy, chainQuietHint, contextStatusKey, fmtEvery, groupQueue, groupSteps, hasWindow, hmToMin, itemDead, minToHM, nextFire, promptSummary, promptTooltip, winHas } from './pure.js';
+import { blockedBy, chainQuietHint, contextStatusKey, fmtEvery, groupQueue, groupSteps, hasWindow, hmToMin, isoDate, isoTime, itemDead, localEpoch, MAX_QUIET_SECS, MIN_QUIET_SECS, minToHM, nextFire, promptSummary, promptTooltip, quietSecsOf, winHas } from './pure.js';
 export { blockedBy, chainQuietHint, contextStatusKey, fmtEvery, groupQueue, groupSteps, hasWindow, hmToMin, itemDead, minToHM, nextFire, promptSummary, promptTooltip, winHas };
 import { autoGrowField, confirmDangerDialog, confirmDialog, inlineRename, toast, promptDialog } from './dialogs.js';
 import { pollNow, provider } from './board.js';
 import { strToB64 } from './layout.js';
-import { formatDateTime, formatInterval, formatNumber, t } from './i18n.js';
+import { formatDateTime, formatInterval, formatNumber, onLocaleChange, t } from './i18n.js';
 
 /* ---------- scheduled prompts ---------- */
 export async function refreshQueue() {
@@ -55,10 +68,9 @@ export function fmtWhen(i) {
   return fmtClock(i.at);
 }
 
-export function localizedChainQuietHint(idleSecs, alive) {
+export function localizedChainQuietHint(idleSecs, alive, total = quietSecsOf()) {
   if (!alive) return t('queue.quiet.stopped');
   if (idleSecs == null) return '';
-  const total = 180;
   const seconds = Math.min(Math.floor(idleSecs), total);
   return seconds >= total ? t('queue.quiet.done') : t('queue.quiet.progress', { seconds, total });
 }
@@ -98,7 +110,7 @@ async function manualSendNow(item) {
 }
 
 const chainWhenSuffix = (i, card) =>
-  i.mode === 'chain' && card ? localizedChainQuietHint(card.idle, card.status !== 'stopped') : '';
+  i.mode === 'chain' && card ? localizedChainQuietHint(card.idle, card.status !== 'stopped', quietSecsOf(i)) : '';
 
 /* refresh the quiet counters in place on every poll tick — text-only, so an
    open panel never gets its DOM (hover/click targets, inline edits) rebuilt.
@@ -107,9 +119,9 @@ export function updateQuietHints() {
   if (!ctx.queueOpen || state.view !== 'session') return;
   const card = provider.get(state.sessionId);
   if (!card) return;
-  const suffix = localizedChainQuietHint(card.idle, card.status !== 'stopped');
+  const alive = card.status !== 'stopped';
   document.querySelectorAll('#queue-list .qg-when[data-quiet]').forEach(el => {
-    el.textContent = t('queue.afterPrevious') + suffix;
+    el.textContent = t('queue.afterPrevious') + localizedChainQuietHint(card.idle, alive, Number(el.dataset.quiet));
   });
 }
 
@@ -125,7 +137,8 @@ export function qMeta(i) {
     } else {
       const nm = new Date();
       const sleeping = hasWindow(i) && !winHas(nm.getHours() * 60 + nm.getMinutes(), i.win_from, i.win_to);
-      parts.push(t(sleeping ? 'queue.meta.sleeping' : 'queue.meta.next', { time: fmtClock(nextFire(i)) }));
+      const notYet = i.not_before && i.not_before * 1000 > nm.getTime();
+      parts.push(t(notYet ? 'queue.meta.from' : sleeping ? 'queue.meta.sleeping' : 'queue.meta.next', { time: fmtClock(nextFire(i)) }));
     }
     if (i.fired) parts.push(formatNumber(i.fired) + '×' + (i.until_n ? '/' + formatNumber(i.until_n) : ''));
     if (i.state === 'failed') parts.push(t('queue.meta.failed', { attempts: formatNumber(i.attempts) }));
@@ -162,7 +175,7 @@ export function groupEl(g, card) {
   const whenEl = head.querySelector('.qg-when');
   whenEl.textContent = fmtWhen(g.head) + chainWhenSuffix(g.head, card);
   /* chain heads get their quiet counter refreshed on every poll tick */
-  if (g.head.mode === 'chain') whenEl.dataset.quiet = '1';
+  if (g.head.mode === 'chain') whenEl.dataset.quiet = String(quietSecsOf(g.head));
   const n = groupSteps(g).length;
   head.querySelector('.qg-meta').textContent =
     [qMeta(g.head), n > 1 ? t('queue.followups', { count: formatNumber(n - 1) }) : '']
@@ -349,8 +362,15 @@ export function toggleQueuePanel(open) {
   $('queue-panel').style.display = ctx.queueOpen ? 'flex' : 'none';
   if (ctx.queueOpen) {
     const card = provider.get(state.sessionId);
-    $('q-when').value = card && sessionQueue(card.session).length ? 'chain' : '300';
-    syncSentence();
+    /* a first prompt is typically "when my quota resets in a few hours";
+       anything after it naturally follows the previous one */
+    if (card && sessionQueue(card.session).length) {
+      segSet('q-mode', 'chain');
+    } else {
+      segSet('q-mode', 'at');
+      applyQuickOffset(300);
+    }
+    syncForm();
     renderQueueUI();
     $('q-text').focus();
   } else if (ctx.term) {
@@ -358,23 +378,109 @@ export function toggleQueuePanel(open) {
   }
 }
 
-export function syncSentence() {
-  const w = $('q-when').value;
-  $('q-time').style.display = w === 'custom' ? '' : 'none';
-  const rec = w.startsWith('e');
-  $('q-win').style.display = rec ? '' : 'none';
-  $('q-until').style.display = rec ? '' : 'none';
-  const wc = rec && $('q-win').value === 'custom';
-  for (const id of ['q-win-a', 'q-win-dash', 'q-win-b']) $(id).style.display = wc ? '' : 'none';
-  $('q-until-t').style.display = rec && $('q-until').value === 't' ? '' : 'none';
+/* ---------- the schedule form ---------- */
+export const segGet = id => $(id).querySelector('button[aria-pressed="true"]')?.dataset.v || '';
+export function segSet(id, v) {
+  $(id).querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', b.dataset.v === v ? 'true' : 'false'));
 }
-export const nextEpochFor = t => {
-  const [h, m] = t.split(':').map(Number);
-  const d = new Date();
-  d.setHours(h, m, 0, 0);
-  if (d.getTime() <= Date.now()) d.setDate(d.getDate() + 1);   // past → tomorrow
-  return Math.floor(d.getTime() / 1000);
-};
+/* which controls the row shows: a control is visible when EVERY facet it
+   is tagged with is active, so a sub-control (custom quiet, custom window,
+   start/stop dates) needs both its mode and its own switch */
+export function activeFacets() {
+  const mode = segGet('q-mode');
+  const on = new Set([mode]);
+  if (mode === 'chain' && $('q-quiet').value === 'custom') on.add('quietc');
+  if (mode === 'every') {
+    if ($('q-win').value === 'custom') on.add('winc');
+    if ($('q-start').value === 'date') on.add('startc');
+    if ($('q-until').value === 'date') on.add('untilc');
+  }
+  return on;
+}
+
+export function syncForm() {
+  const on = activeFacets();
+  document.querySelectorAll('#queue-panel .q-p').forEach(el => {
+    const facets = [...el.classList].filter(c => c.startsWith('q-p-')).map(c => c.slice(4));
+    el.hidden = !facets.every(f => on.has(f));
+  });
+}
+
+/* fill date+time with now + `minutes`, rounded up to the next 5 minutes */
+export function applyQuickOffset(minutes) {
+  const d = new Date(Date.now() + minutes * 60000);
+  d.setMinutes(Math.ceil(d.getMinutes() / 5) * 5, 0, 0);
+  $('q-date').value = isoDate(d);
+  $('q-time').value = isoTime(d);
+}
+
+/* option lists that carry numbers go through the locale's formatter, so
+   they are rebuilt on a language change instead of being static HTML */
+export function fillFormOptions() {
+  const fill = (sel, entries, initial) => {
+    const keep = sel.value || initial;
+    sel.innerHTML = '';
+    for (const [value, label] of entries) {
+      const o = document.createElement('option');
+      o.value = value; o.textContent = label;
+      sel.appendChild(o);
+    }
+    sel.value = keep;
+    if (sel.selectedIndex < 0) sel.selectedIndex = 0;
+  };
+  fill($('q-quiet'), [
+    ...[30, 60, 180, 600, 1800].map(secs => [String(secs), formatInterval(secs)]),
+    ['custom', t('queue.quiet.custom')],
+  ], '180');
+  fill($('q-every'), [5, 15, 30, 60, 120].map(min => [String(min), formatInterval(min * 60)]), '30');
+}
+
+/* the form → QueueAddArgs schedule fields; null plus a toast when a field
+   the chosen mode needs is missing or contradictory */
+export function readSchedule() {
+  const now = Math.floor(Date.now() / 1000);
+  const mode = segGet('q-mode');
+  const out = { mode, at: null, quietSecs: null, every: null, notBefore: null,
+    winFrom: null, winTo: null, untilN: null, untilAt: null };
+  const fail = (key, focus) => { toast(t(key)); if (focus) $(focus).focus(); return null; };
+  if (mode === 'chain') {
+    const q = $('q-quiet').value;
+    out.quietSecs = q === 'custom'
+      ? Math.round(Number($('q-quiet-n').value) * Number($('q-quiet-u').value))
+      : Number(q);
+    if (!(out.quietSecs >= MIN_QUIET_SECS && out.quietSecs <= MAX_QUIET_SECS)) return fail('queue.badQuiet', 'q-quiet-n');
+    return out;
+  }
+  if (mode === 'at') {
+    out.at = localEpoch($('q-date').value, $('q-time').value);
+    if (out.at == null) return fail('queue.setTime', $('q-date').value ? 'q-time' : 'q-date');
+    if (out.at <= now) return fail('queue.pastTime', 'q-time');
+    return out;
+  }
+  out.every = Number($('q-every').value) * 60;
+  const wv = $('q-win').value;
+  if (wv === 'custom') {
+    const a = $('q-win-a').value, b = $('q-win-b').value;
+    if (!a || !b) return fail('queue.setWindow', a ? 'q-win-b' : 'q-win-a');
+    out.winFrom = hmToMin(a);
+    out.winTo = hmToMin(b);
+  } else if (wv) {
+    [out.winFrom, out.winTo] = wv.split('-').map(Number);
+  }
+  if ($('q-start').value === 'date') {
+    out.notBefore = localEpoch($('q-start-d').value, $('q-start-t').value);
+    if (out.notBefore == null) return fail('queue.setStart', $('q-start-d').value ? 'q-start-t' : 'q-start-d');
+  }
+  const uv = $('q-until').value;
+  if (uv.startsWith('n')) {
+    out.untilN = Number(uv.slice(1));
+  } else if (uv === 'date') {
+    out.untilAt = localEpoch($('q-until-d').value, $('q-until-t').value);
+    if (out.untilAt == null) return fail('queue.setStop', $('q-until-d').value ? 'q-until-t' : 'q-until-d');
+    if (out.untilAt <= Math.max(now, out.notBefore || 0)) return fail('queue.stopBeforeStart', 'q-until-t');
+  }
+  return out;
+}
 
 /* templates live on the project object → persisted inside the board file */
 export function projTemplates(card) {
@@ -469,11 +575,18 @@ export function showTplPop() {
 export function initScheduler() {
   $('queue-btn').onclick = () => toggleQueuePanel();
 
-  $('q-when').addEventListener('change', syncSentence);
-
-  $('q-win').addEventListener('change', syncSentence);
-
-  $('q-until').addEventListener('change', syncSentence);
+  fillFormOptions();
+  onLocaleChange(fillFormOptions);
+  $('q-mode').querySelectorAll('button').forEach(b => {
+    b.onclick = () => { segSet('q-mode', b.dataset.v); syncForm(); };
+  });
+  for (const id of ['q-quiet', 'q-win', 'q-start', 'q-until']) $(id).addEventListener('change', syncForm);
+  /* the quick list is a verb, not a value: it fills the date and time and
+     shows its placeholder again */
+  $('q-quick').addEventListener('change', () => {
+    if ($('q-quick').value) applyQuickOffset(Number($('q-quick').value));
+    $('q-quick').value = '';
+  });
 
   $('q-src').onclick = e => {
     e.stopPropagation();
@@ -487,51 +600,23 @@ export function initScheduler() {
   $('q-add-btn').onclick = async () => {
     const card = provider.get(state.sessionId);
     if (!card) return;
-    const w = $('q-when').value;
-    let mode = 'at', at = null, every = null, winFrom = null, winTo = null, untilN = null, untilAt = null;
-    if (w === 'chain') {
-      mode = 'chain';
-    } else if (w === 'custom') {
-      const startTime = $('q-time').value;
-      if (!startTime) { $('q-time').focus(); return; }
-      at = nextEpochFor(startTime);
-    } else if (w.startsWith('e')) {
-      mode = 'every';
-      every = parseInt(w.slice(1), 10) * 60;
-      const wv = $('q-win').value;
-      if (wv === 'custom') {
-        const a = $('q-win-a').value, b = $('q-win-b').value;
-        if (!a || !b) { toast(t('queue.setWindow')); return; }
-        winFrom = hmToMin(a);
-        winTo = hmToMin(b);
-      } else if (wv) {
-        [winFrom, winTo] = wv.split('-').map(Number);
-      }
-      const uv = $('q-until').value;
-      if (uv.startsWith('n')) untilN = parseInt(uv.slice(1), 10);
-      else if (uv === 't') {
-        const stopTime = $('q-until-t').value;
-        if (!stopTime) { toast(t('queue.setStop')); return; }
-        untilAt = nextEpochFor(stopTime);
-      }
-    } else {
-      at = Math.floor(Date.now() / 1000) + parseInt(w, 10) * 60;
-    }
+    const sched = readSchedule();
+    if (!sched) return;
     const base = {
       session: card.session, cardId: card.id, dir: card.dir, cmd: card.cmd,
     };
     try {
       if (ctx.qTpl) {
         const steps = ctx.qTpl.steps.slice();
-        if (mode === 'every') {
+        if (sched.mode === 'every') {
           /* one standing rule holds the whole template; steps 2..N re-enqueue
              as chain items on every fire */
-          await inv('queue_add', { args: { ...base, text: steps[0], mode, at: null, every, winFrom, winTo, untilN, untilAt,
+          await inv('queue_add', { args: { ...base, ...sched, text: steps[0],
             steps: steps.slice(1), tpl: ctx.qTpl.name, tplIdx: 1, tplTotal: steps.length } });
         } else {
           for (let k = 0; k < steps.length; k++) {
-            await inv('queue_add', { args: { ...base, text: steps[k],
-              mode: k === 0 ? mode : 'chain', at: k === 0 ? at : null,
+            const follow = { mode: 'chain', quietSecs: sched.mode === 'chain' ? sched.quietSecs : null };
+            await inv('queue_add', { args: { ...base, ...(k === 0 ? sched : follow), text: steps[k],
               tpl: ctx.qTpl.name, tplIdx: k + 1, tplTotal: steps.length } });
           }
         }
@@ -539,12 +624,12 @@ export function initScheduler() {
       } else {
         const text = $('q-text').value.trim();
         if (!text) { $('q-text').focus(); return; }
-        await inv('queue_add', { args: { ...base, text, mode, at, every, winFrom, winTo, untilN, untilAt } });
+        await inv('queue_add', { args: { ...base, ...sched, text } });
         $('q-text').value = '';
         autoGrowField($('q-text'));
       }
-      $('q-when').value = 'chain';   // natural default for the next one
-      syncSentence();
+      segSet('q-mode', 'chain');   // natural default for the next one
+      syncForm();
     } catch (e) {
       toast(t('error.operation', { operation: t('common.add') }));
     }
