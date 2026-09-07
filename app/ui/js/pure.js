@@ -44,6 +44,8 @@ const PATH_START_DELIMS = '=:([{<,;|';
 const TOKEN_END_DELIMS = '"\'`<>|\\';
 const PATH_HARD_END_DELIMS = '=,;';
 const PATH_TRAILING = '.,;!?)}]';
+/* How far a link action may reach back when its first reading does not exist. */
+export const PATH_LOOKBACK_MAX = 64;
 
 /* Punctuation and symbols that prose puts BETWEEN things and that no ordinary
    filename puts inside one. Chinese and Japanese write sentences without
@@ -225,7 +227,22 @@ function unquotedPathAt(text, index) {
   let value = text.slice(index, end);
   while (value && PATH_TRAILING.includes(value.at(-1))) value = value.slice(0, -1);
   if (!looksLikeTerminalPathCandidate(value)) return null;
-  return { kind: 'path', value, index, end: index + value.length };
+  const token = { kind: 'path', value, index, end: index + value.length };
+  /* The script boundary is a GUESS about where prose ends and a name begins,
+     and it is wrong for a name that genuinely runs CJK into letters:
+     `报告v2.pdf` is offered as `v2.pdf`, `main日本語.txt` as `日本語.txt`.
+     When the token only started because of that guess, carry the prefix it
+     cut off so the link ACTIONS can retry with it — the filesystem, not the
+     heuristic, then decides which reading was the name. Bounded, so no line
+     can grow an unreasonable second candidate. */
+  if (!isStartBoundary(text[index - 1])) {
+    let start = index;
+    const floor = Math.max(0, index - PATH_LOOKBACK_MAX);
+    while (start > floor && !isStartBoundary(text[start - 1])
+           && !PATH_HARD_END_DELIMS.includes(text[start - 1])) start--;
+    if (start < index) token.lookback = text.slice(start, index) + value;
+  }
+  return token;
 }
 
 export function tokenizeTerminalLinks(input) {
@@ -852,10 +869,12 @@ export function terminalLinkRanges({ matches, positions, lineNo }) {
     const end = positions[match.index + match.value.length - 1];
     if (!start || !end) continue;
     if (lineNo < start.y || lineNo > end.y) continue;
-    links.push({
+    const link = {
       range: { start: { x: start.x, y: start.y }, end: { x: end.endX, y: end.y } },
       text: match.value, kind: match.kind,
-    });
+    };
+    if (match.lookback) link.lookback = match.lookback;
+    links.push(link);
   }
   return links;
 }

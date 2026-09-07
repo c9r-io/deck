@@ -119,7 +119,14 @@ export function showProjectCtx(e, pid) {
 let linkActionGeneration = 0;
 let ignoreLinkOpeningClickUntil = 0;
 
-export function showLinkCtx(e, kind, value, cwd, sid = null) {
+/* `lookback` is the wider reading of a path whose start the tokenizer had to
+   guess (CJK prose has no space to end on). Every action below tries the
+   narrow reading first and falls back to it, so the filesystem settles what
+   the heuristic could not. Resolution fails before `open_target` spawns
+   anything, so the retry cannot open two things; only a failure of `open(1)`
+   itself — which resolution already passed — could, and that is the same
+   candidate the user pointed at. */
+export function showLinkCtx(e, kind, value, cwd, sid = null, lookback = null) {
   const ctx = $('ctx');
   linkActionGeneration++; // invalidate any older path resolution
   // xterm activates providers on mouseup. The browser's compatibility click
@@ -154,7 +161,9 @@ export function showLinkCtx(e, kind, value, cwd, sid = null) {
       try {
         const origin = sid && provider.get(sid);
         if (!origin) throw new Error('the source session is no longer available');
-        const resolved = await inv('resolve_parent_dir', { value, cwd: cwd || ctx.HOME });
+        const parentOf = target => inv('resolve_parent_dir', { value: target, cwd: cwd || ctx.HOME });
+        const resolved = await parentOf(value)
+          .catch(err => (lookback ? parentOf(lookback) : Promise.reject(err)));
         if (request !== linkActionGeneration || !provider.get(sid)) return;
         await newSession(resolved.directory, { projectId: origin.projectId, requireStart: true });
         toast(t('terminal.openedParent'));
@@ -162,7 +171,9 @@ export function showLinkCtx(e, kind, value, cwd, sid = null) {
         if (request === linkActionGeneration) toast(t('terminal.createPathFailed'));
       }
     } else {
-      inv('open_target', { kind: a, value, cwd: cwd || ctx.HOME })
+      const openIt = target => inv('open_target', { kind: a, value: target, cwd: cwd || ctx.HOME });
+      openIt(value)
+        .catch(err => (lookback ? openIt(lookback) : Promise.reject(err)))
         .then(() => toast(t(a === 'url' ? 'terminal.openBrowser' : a.startsWith('editor') ? 'terminal.openEditor' : 'terminal.revealFinder')))
         .catch(() => toast(t('terminal.openFailed')));
     }

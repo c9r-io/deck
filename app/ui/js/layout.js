@@ -644,7 +644,7 @@ export function wireTerminalInput(pane, term, host) {
       if (!text) return cb(undefined);
       const matches = tokenizeTerminalLinks(text);
       if (!matches.length) return cb(undefined);
-      const links = terminalLinkRanges({ matches, positions, lineNo }).map(({ range, text, kind }) => ({
+      const links = terminalLinkRanges({ matches, positions, lineNo }).map(({ range, text, kind, lookback }) => ({
         range,
         text,
         activate: (e, txt) => {
@@ -652,7 +652,7 @@ export function wireTerminalInput(pane, term, host) {
           e.stopPropagation();
           try { term.clearSelection(); } catch (e2) { /* fine */ }
           const c = card();
-          showLinkCtx(e, kind, txt, c ? c.dir : ctx.HOME, c ? c.id : null);
+          showLinkCtx(e, kind, txt, c ? c.dir : ctx.HOME, c ? c.id : null, lookback);
         },
       }));
       cb(links.length ? links : undefined);

@@ -21,7 +21,7 @@ import {
   tokenizeTerminalLinks,
   createTerminalWheelAccumulator, createTerminalWheelFrameScheduler, terminalWheelLines,
   linkMenuItems,
-  CARD_PREVIEW_ROWS, cardPreviewRows, inlineRenameValue, persistOptimistically,
+  CARD_PREVIEW_ROWS, cardPreviewRows, inlineRenameValue, persistOptimistically, PATH_LOOKBACK_MAX,
   effectiveCardStatus, attentionStatus,
   TEMPLATES_MAX, TEMPLATE_NAME_MAX, TEMPLATE_STEP_MAX, TEMPLATE_STEPS_MAX,
   inboundRulesUsingTemplate, moveTemplateStep, nextTemplateName, normalizeTemplateStep,
@@ -912,10 +912,21 @@ test('CJK prose bounds a path the way whitespace bounds an English one', () => {
      token is already a path, so nothing is cut there. */
   assert.deepEqual(values('目录/组合\u0065\u0301/😀.txt'), ['目录/组合\u0065\u0301/😀.txt']);
 
-  /* the residual cost, asserted so it is a decision and not a surprise */
-  assert.deepEqual(values('报告v2.pdf'), ['v2.pdf'],
-    'a bare component that runs CJK straight into letters loses its CJK head');
-  assert.deepEqual(values('main日本語.txt'), ['日本語.txt'], 'and the same the other way');
+  /* Where the boundary is only a GUESS, the token carries the wider reading
+     so the link actions can retry with it and let the filesystem decide. */
+  const token = line => tokenizeTerminalLinks(line)[0];
+  assert.equal(token('报告v2.pdf').value, 'v2.pdf',
+    'a bare component that runs CJK straight into letters loses its CJK head…');
+  assert.equal(token('报告v2.pdf').lookback, '报告v2.pdf', '…but the whole name is carried with it');
+  assert.equal(token('main日本語.txt').lookback, 'main日本語.txt', 'in either direction');
+  assert.equal(token('修改了src/main.rs').lookback, '修改了src/main.rs',
+    'a guess that was right still carries the other reading; only the disk settles it');
+  assert.equal(token('src/main.rs的内容已更新').lookback, undefined,
+    'a token that began at a real boundary has nothing to reach back for');
+  assert.equal(token('see src/main.rs.').lookback, undefined);
+  assert.equal(token('日志2024.log').lookback, undefined);
+  assert.ok(PATH_LOOKBACK_MAX > 0 && token('报'.repeat(400) + 'v2.pdf').lookback.length
+    <= PATH_LOOKBACK_MAX + 'v2.pdf'.length, 'and the reach back is bounded');
 });
 
 test('rename Enter/Escape/empty semantics and persistence rollback are deterministic', async () => {
