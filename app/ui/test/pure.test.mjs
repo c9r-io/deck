@@ -929,6 +929,33 @@ test('CJK prose bounds a path the way whitespace bounds an English one', () => {
     <= PATH_LOOKBACK_MAX + 'v2.pdf'.length, 'and the reach back is bounded');
 });
 
+test('a link token and a link carry exactly their documented keys', () => {
+  /* Pinned shapes. `lookback` is present ONLY when the start was a guess:
+     layout.js destructures these and terminal.js branches on the key, and a
+     key that appears unbidden would make every path take the retry path. */
+  assert.deepEqual(tokenizeTerminalLinks('see src/main.rs'),
+    [{ kind: 'path', value: 'src/main.rs', index: 4, end: 15 }]);
+  assert.deepEqual(tokenizeTerminalLinks('报告v2.pdf'),
+    [{ kind: 'path', value: 'v2.pdf', index: 2, end: 8, lookback: '报告v2.pdf' }]);
+  assert.deepEqual(tokenizeTerminalLinks('see https://x.dev/a'),
+    [{ kind: 'url', value: 'https://x.dev/a', index: 4, end: 19 }],
+    'a URL never reaches back — its start is a scheme, not a guess');
+
+  /* and the same, one layer out, where xterm reads them */
+  const positions = [];
+  for (let i = 0; i < 12; i++) positions.push({ x: i + 1, endX: i + 1, y: 0 });
+  const ranged = kind => terminalLinkRanges({
+    matches: [{ kind: 'path', value: 'ab', index: 0, ...kind }], positions, lineNo: 0,
+  })[0];
+  assert.deepEqual(ranged({}), {
+    range: { start: { x: 1, y: 0 }, end: { x: 2, y: 0 } }, text: 'ab', kind: 'path',
+  }, 'no lookback on the token, no key on the link');
+  assert.deepEqual(ranged({ lookback: '前ab' }), {
+    range: { start: { x: 1, y: 0 }, end: { x: 2, y: 0 } }, text: 'ab', kind: 'path',
+    lookback: '前ab',
+  }, 'and it is carried through verbatim when there is one');
+});
+
 test('rename Enter/Escape/empty semantics and persistence rollback are deterministic', async () => {
   assert.equal(inlineRenameValue('old', ' new ', true), 'new');
   assert.equal(inlineRenameValue('old', 'old', true), null);
