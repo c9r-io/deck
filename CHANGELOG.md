@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.1 — 2026-09-08 (Nightly)
 
 - Two concepts for "later". A card's ⏱ panel now holds **lists**: prompts
   sent in order, each row once the session has been quiet for the row's own
