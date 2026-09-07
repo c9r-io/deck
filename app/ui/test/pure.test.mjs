@@ -861,6 +861,47 @@ test('URL tokens own their complete interval and escaped log quotes stay outside
     'soft wrapping inserts no data and cannot truncate the URL token');
 });
 
+test('CJK prose bounds a path the way whitespace bounds an English one', () => {
+  const values = line => tokenizeTerminalLinks(line).map(token => token.value);
+
+  /* the sentence's own punctuation is not part of the filename, and nothing
+     after it is either — a fullwidth comma used to swallow the rest of the line */
+  assert.deepEqual(values('已修改 src/main.rs。'), ['src/main.rs']);
+  assert.deepEqual(values('请看 app/ui/js/pure.js，然后运行测试。'), ['app/ui/js/pure.js']);
+  assert.deepEqual(values('改了 a.rs、b.rs、c.rs'), ['a.rs', 'b.rs', 'c.rs']);
+  assert.deepEqual(values('参见（docs/design.md）'), ['docs/design.md']);
+  assert.deepEqual(values('文件「src/main.rs」已更新'), ['src/main.rs']);
+  assert.deepEqual(values('失败了：src/lib.rs！'), ['src/lib.rs']);
+
+  /* CJK writes without spaces, so a letter meeting a Han character is the
+     boundary an English line would have spelled with one */
+  assert.deepEqual(values('修改了src/main.rs'), ['src/main.rs']);
+  assert.deepEqual(values('src/main.rs的内容已更新'), ['src/main.rs']);
+  assert.deepEqual(values('错误出现在app/ui/js/pure.js:123'), ['app/ui/js/pure.js:123']);
+  assert.deepEqual(values('请访问https://example.com/a'), ['https://example.com/a'],
+    'a URL needs the same boundary to be found at all');
+
+  /* a name is one script: a separator or a digit is NOT a boundary, or every
+     CJK filename would be cut in half */
+  for (const name of ['文档/笔记.md', '我的文档.md', '日志2024.log', '会议记录2024.md',
+    '项目/源码/主程序.rs', 'テスト/コード.rs', 'データ・ベース.txt', '설정/파일.json']) {
+    assert.deepEqual(values(name), [name], `${name} is one name, not prose`);
+  }
+  assert.deepEqual(values('https://zh.wikipedia.org/wiki/中文'),
+    ['https://zh.wikipedia.org/wiki/中文'], 'and a URL may carry CJK in its own path');
+
+  /* Handing prose over to a path only counts while the token is still a bare
+     word. `目录/组合é/😀.txt` is one path whose `é` is `e`+U+0301 — an ASCII
+     letter pressed against a Han character — and the `/` before it says the
+     token is already a path, so nothing is cut there. */
+  assert.deepEqual(values('目录/组合\u0065\u0301/😀.txt'), ['目录/组合\u0065\u0301/😀.txt']);
+
+  /* the residual cost, asserted so it is a decision and not a surprise */
+  assert.deepEqual(values('报告v2.pdf'), ['v2.pdf'],
+    'a bare component that runs CJK straight into letters loses its CJK head');
+  assert.deepEqual(values('main日本語.txt'), ['日本語.txt'], 'and the same the other way');
+});
+
 test('rename Enter/Escape/empty semantics and persistence rollback are deterministic', async () => {
   assert.equal(inlineRenameValue('old', ' new ', true), 'new');
   assert.equal(inlineRenameValue('old', 'old', true), null);

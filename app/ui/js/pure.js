@@ -36,17 +36,45 @@ export function cardPreviewRows(lines, rows = CARD_PREVIEW_ROWS) {
 
 /* Terminal links are tokenized before they are classified. A URL consumes
    its complete interval first, so `/api` inside it can never become a path.
-   Path tokens are only candidates here: the provider asks the backend to
-   confirm that they exist relative to the pane cwd before making them links. */
+   Path tokens are only CANDIDATES: they are offered on their text alone so a
+   hovered link cannot flicker, and the link actions resolve and validate them
+   against the pane cwd (`links.rs`). */
 const URL_SCHEMES = ['https://', 'http://'];
 const PATH_START_DELIMS = '=:([{<,;|';
-const TOKEN_END_DELIMS = '"\'`<>|\\';
+/* CJK and fullwidth punctuation. Chinese and Japanese prose carries no
+   spaces, so without these a sentence's own punctuation reads as part of the
+   filename (`src/main.rs。`) and everything after a comma is swallowed with
+   it (`pure.js，然后运行测试。`). Listing them as token ENDS also makes them
+   start boundaries — `isStartBoundary` accepts any token end — which is what
+   recovers the path after a fullwidth colon or an opening bracket. */
+const CJK_PUNCTUATION = '。、，；：！？…（）〔〕【】《》〈〉「」『』［］｛｝＜＞＝｜＂＇｀｡､｢｣';
+const TOKEN_END_DELIMS = '"\'`<>|\\' + CJK_PUNCTUATION;
 const PATH_HARD_END_DELIMS = '=,;';
 const PATH_TRAILING = '.,;!?)}]';
 
 const isSpace = ch => !!ch && ch.trim() === '';
 const isAsciiDigit = ch => ch >= '0' && ch <= '9';
+const isAsciiLetter = ch => !!ch && ((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z'));
 const allAsciiDigits = value => !!value && [...value].every(isAsciiDigit);
+/* Kana, Han and Hangul: the scripts that write sentences without spaces.
+   Their punctuation lives in CJK_PUNCTUATION and is deliberately not here. */
+const isCJK = ch => {
+  if (!ch) return false;
+  const code = ch.charCodeAt(0);
+  return (code >= 0x3040 && code <= 0x30ff)      // kana, incl. ・ and ー
+    || (code >= 0x3400 && code <= 0x4dbf)        // CJK extension A
+    || (code >= 0x4e00 && code <= 0x9fff)        // CJK unified ideographs
+    || (code >= 0xac00 && code <= 0xd7af)        // Hangul syllables
+    || (code >= 0xf900 && code <= 0xfaff)        // compatibility ideographs
+    || (code >= 0xff66 && code <= 0xff9f);       // halfwidth kana
+};
+/* A CJK character sitting directly against an ASCII LETTER is prose meeting
+   a path rather than one name: `修改了src/main.rs` is a sentence that an
+   English line would have spelled with a space. The transition has to be a
+   LETTER — `日志2024.log` (digit) and `文档/笔记.md` (separator) are single
+   names and must survive whole. */
+const isScriptBoundary = (prev, ch) =>
+  (isCJK(prev) && isAsciiLetter(ch)) || (isAsciiLetter(prev) && isCJK(ch));
 const isStartBoundary = ch => !ch || isSpace(ch) || PATH_START_DELIMS.includes(ch)
   || TOKEN_END_DELIMS.includes(ch);
 const isTokenEnd = ch => !ch || isSpace(ch) || TOKEN_END_DELIMS.includes(ch);
@@ -89,7 +117,10 @@ export function looksLikeTerminalPathCandidate(value) {
 }
 
 function urlAt(text, index) {
-  if (!isStartBoundary(text[index - 1])) return null;
+  /* Only the START takes the script rule: a URL may legitimately carry CJK
+     in its own path (`…/wiki/中文`), so nothing ends a URL at a transition. */
+  if (!isStartBoundary(text[index - 1])
+      && !isScriptBoundary(text[index - 1], text[index])) return null;
   const scheme = URL_SCHEMES.find(prefix =>
     text.slice(index, index + prefix.length).toLowerCase() === prefix);
   if (!scheme) return null;
@@ -148,11 +179,31 @@ function quotedPathAt(text, index) {
 }
 
 function unquotedPathAt(text, index) {
-  if (!isStartBoundary(text[index - 1]) || isTokenEnd(text[index])
+  if ((!isStartBoundary(text[index - 1]) && !isScriptBoundary(text[index - 1], text[index]))
+      || isTokenEnd(text[index])
       || PATH_START_DELIMS.includes(text[index])) return null;
   let end = index;
+  /* Inside the scan the two directions are not symmetric. Handing prose OVER
+     to a path only counts while the token is still a bare word: once a `/` or
+     a `.` has been seen the token is a path already, and a script change
+     within it belongs to the name — `目录/组合é/…` is one path, and its `é`
+     is `e`+U+0301, an ASCII letter pressed against a Han character. Handing
+     a path BACK to prose (`src/main.rs的内容`) always ends the token, because
+     nothing follows a filename that way except a sentence.
+     Residual cost either way: a single component that genuinely runs CJK
+     straight into letters, `报告v2.pdf`, is offered as `v2.pdf`. */
+  let structural = false;
   while (end < text.length && !isTokenEnd(text[end])
-         && !PATH_HARD_END_DELIMS.includes(text[end])) end++;
+         && !PATH_HARD_END_DELIMS.includes(text[end])) {
+    const ch = text[end];
+    if (end > index) {
+      const prev = text[end - 1];
+      if ((isAsciiLetter(prev) && isCJK(ch))
+          || (!structural && isCJK(prev) && isAsciiLetter(ch))) break;
+    }
+    if (ch === '/' || ch === '.') structural = true;
+    end++;
+  }
   let value = text.slice(index, end);
   while (value && PATH_TRAILING.includes(value.at(-1))) value = value.slice(0, -1);
   if (!looksLikeTerminalPathCandidate(value)) return null;
