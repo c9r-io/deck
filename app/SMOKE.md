@@ -10,17 +10,7 @@ release's GitHub run and in git history, not in the checklist.
 `cargo test` covers the tmux contracts (scroll model, clear-history, literal
 injection, poll formats); `scripts/ui-tests` covers the DOM-free modules.
 
-## Known open regressions
-
-- **2026-09-07 — `link-classify a=-25 b=127`** (and the `done=-1` it causes).
-  Reproduced on an untouched HEAD build (bb35876), so it is not owned by the
-  change that found it. `classifierDebug` is the full 127, so `pure.js`'s
-  tokenizer finds both URLs in the logical line; the two missing mask bits are
-  `2` (the missing-path row still yields links) and `4` (the URL row yields
-  more than one). Both are backend path CONFIRMATION (`links.rs`) against the
-  pane cwd, not classification. Not yet triaged.
-
-When the full WKWebView smoke reports a failing check on an untouched
+None. When the full WKWebView smoke reports a failing check on an untouched
 HEAD build, record it here with the first-seen date; the release checklist is
 not green while an entry exists.
 

@@ -867,9 +867,20 @@ async function pathSmoke(card) {
   wrappedUrl?.activate(eventAt(linkX, linkY), wrappedUrl.text);
   const exactUrlMenu = $('ctx').style.display === 'block'
     && $('ctx').querySelector('.ctx-value')?.textContent === url;
+  /* The provider answers on the text alone and never consults the cwd — that
+     is what stopped hovered links from flickering. So a path that does not
+     exist IS offered here; `links.rs` refuses it when an action is taken on
+     it, and its tests cover this very `memcache.go:265` fixture. What this
+     check owns is the part only a real xterm can show: a URL that wraps
+     across rows comes back as ONE link, with nothing carved out of its own
+     interval by the row it shares. */
+  const missingOffered = missingRow >= 0
+    && missingLinks.length === 1 && missingLinks[0].text === missingFixture;
+  const urlWholeAndIntact = urlLinks.filter(link => link.text === url).length === 1
+    && !urlLinks.some(link => link.text !== url && url.includes(link.text));
   const tokenizerMask = (urlReady ? 1 : 0)
-    | (missingRow >= 0 && missingLinks.length === 0 ? 2 : 0)
-    | (wrappedUrl && urlLinks.length === 1 ? 4 : 0)
+    | (missingOffered ? 2 : 0)
+    | (wrappedUrl && urlWholeAndIntact ? 4 : 0)
     | (exactUrlMenu ? 8 : 0)
     | (hardRedrawRecovered ? 16 : 0);
   $('ctx').style.display = 'none';
