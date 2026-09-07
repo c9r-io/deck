@@ -147,6 +147,29 @@ pub(crate) struct QueueAddArgs {
     pub(crate) tpl_total: Option<u32>,
 }
 
+/// Queue text is what tmux pastes, byte for byte, so it is stored the way it
+/// reads — a multi-line prompt keeps its newlines and its indentation.
+///
+/// A CARRIAGE RETURN is the one byte that cannot survive: inside the paste
+/// burst it submits, which would send half a prompt (`delivery::fire_item`
+/// presses Enter as a separate key afterwards, and that stays the only
+/// submit). Tabs go the same way as everywhere else in deck, and whitespace
+/// that is invisible in the editor — trailing spaces, blank lines at either
+/// end — is not worth pasting. This is the Rust twin of
+/// `normalizeTemplateStep` in ui/js/pure.js; the two must agree, because the
+/// same prompt can arrive from a template or from the queue's own field.
+pub(crate) fn normalize_prompt(text: &str) -> String {
+    text.replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .replace('\t', " ")
+        .split('\n')
+        .map(|line| line.trim_end_matches(' '))
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string()
+}
+
 /// Reject invalid schedule combinations up front.
 pub(crate) fn validate_add(a: &QueueAddArgs) -> Result<(), DeckError> {
     crate::tmux::validate_session_name(&a.session)?;
@@ -314,7 +337,16 @@ fn add_item_bound(
         attempts: 0,
         last_error: None,
         last_attempt_at: None,
-        steps: args.steps.unwrap_or_default(),
+        /* a rule's follow-up steps are pasted verbatim too, one chain item
+        per fire, so they go through the same normalizer as `text`; a step
+        left empty by it would paste nothing and still press Enter */
+        steps: args
+            .steps
+            .unwrap_or_default()
+            .iter()
+            .map(|s| normalize_prompt(s))
+            .filter(|s| !s.is_empty())
+            .collect(),
         tpl: args.tpl,
         tpl_idx: args.tpl_idx,
         tpl_total: args.tpl_total,
@@ -337,7 +369,7 @@ pub(crate) fn queue_add(
     args: QueueAddArgs,
 ) -> Result<(), DeckError> {
     validate_add(&args)?;
-    let text = args.text.replace(['\n', '\r'], " ").trim().to_string();
+    let text = normalize_prompt(&args.text);
     if text.is_empty() {
         return Err(DeckError::new(ErrorKind::Other, "empty prompt"));
     }
@@ -475,7 +507,7 @@ pub(crate) fn queue_update(
     id: String,
     text: String,
 ) -> Result<(), DeckError> {
-    let text = text.replace(['\n', '\r'], " ").trim().to_string();
+    let text = normalize_prompt(&text);
     if text.is_empty() {
         return Err(DeckError::new(ErrorKind::Other, "empty prompt"));
     }

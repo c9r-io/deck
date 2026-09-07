@@ -1200,6 +1200,62 @@ async function naturalExitFaultSmoke(project, column) {
 }
 
 // Run before any smoke result is logged: resetting later would erase evidence.
+/* Prompts became multi-line, so the queue's field became a textarea and the
+   panel rows became collapsible. Both are exactly the class of change a fake
+   document cannot judge: WebKit REFUSES keyboard input in a textarea that
+   inherits body's `user-select: none` (the xterm helper-textarea bug), and
+   `pre-wrap` vs `nowrap` is a computed value, not a stylesheet line. Both are
+   read out of the real engine here. */
+async function multilinePromptSmoke(card) {
+  await openSession(card.id);
+  toggleQueuePanel(true);
+  await pause(150);
+  const field = $('q-text');
+  const isTextarea = field.tagName === 'TEXTAREA';
+  const typable = getComputedStyle(field).webkitUserSelect === 'text';
+
+  /* a bare Enter types a newline into the prompt; only ⌘↵ queues it */
+  field.value = 'bare enter must not queue this';
+  field.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+  await pause(150);
+  const bareEnterQueuedNothing =
+    !(await inv('queue_list')).items?.some(item => item.text === field.value);
+
+  const text = 'review the diff\n  - file:line\n  - the smallest fix';
+  field.value = text;
+  $('q-when').value = '300';
+  field.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', metaKey: true, bubbles: true }));
+  await waitFor(async () => (await inv('queue_list')).items?.some(item => item.text === text), 4000);
+  const stored = (await inv('queue_list')).items?.find(item => item.text === text);
+  const roundTripped = stored?.text === text;   // every newline survived the backend
+
+  await refreshQueue();
+  const row = document.querySelector('#queue-list .qg-row');
+  const collapsed = row?.querySelector('.q-text')?.textContent === 'review the diff';
+  const badge = row?.querySelector('.q-nl')?.textContent === '⏎2';
+  row?.querySelector('.q-chev')?.click();
+  await pause(200);
+  const opened = document.querySelector('#queue-list .qg-row.open');
+  const openedText = opened?.querySelector('.q-text');
+  const expanded = openedText?.textContent === text;
+  const wraps = openedText && getComputedStyle(openedText).whiteSpace === 'pre-wrap';
+
+  openedText?.click();
+  await pause(200);
+  const editor = document.querySelector('#queue-list .qg-row .q-text textarea');
+  const editsWholePrompt = editor?.value === text;
+  editor?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  await pause(200);
+  if (stored) await inv('queue_remove', { id: stored.id });
+  field.value = '';
+  await refreshQueue();
+
+  const mask = (isTextarea ? 1 : 0) | (typable ? 2 : 0) | (bareEnterQueuedNothing ? 4 : 0)
+    | (roundTripped ? 8 : 0) | (collapsed ? 16 : 0) | (badge ? 32 : 0)
+    | (expanded ? 64 : 0) | (wraps ? 128 : 0) | (editsWholePrompt ? 256 : 0);
+  await report('multiline-prompt', mask === 511, mask, 511);
+}
+
 async function settingsNavigationSmoke() {
   const { openSettings, selectSettingsSection, resetApplicationLogs } = await import('../js/dialogs.js');
   await openSettings();
@@ -1366,6 +1422,8 @@ export async function run() {
     stage = 12;
     await naturalExitFaultSmoke(project, column);
     stage = 13;
+    await multilinePromptSmoke(main);
+    stage = 14;
     await inv('queue_add', { args: {
       session: main.session, cardId: main.id, dir: main.dir, cmd: main.cmd,
       text: 'deterministic smoke delivery', mode: 'at',

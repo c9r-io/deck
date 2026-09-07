@@ -212,6 +212,7 @@ const SMOKE_CHECKS: &[&str] = &[
     "completion-owner",
     "ambiguous-boot",
     "scheduler-context",
+    "multiline-prompt",
     "rename-restart",
     "done",
 ];

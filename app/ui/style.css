@@ -36,6 +36,17 @@ input {
   border-radius: 6px; padding: 7px 10px; width: 100%;
 }
 input::placeholder { color: var(--faint); }
+/* Prompts and template steps are multi-line values edited in place. The field
+   is grown to its content by script; this max-height is the ceiling that
+   turns an over-long one into a scroller instead of a page-tall box. */
+textarea.inline-multiline, .q-add textarea, .tpl-add textarea {
+  font: inherit; font-family: var(--sans); color: var(--text);
+  background: var(--bg); border: 1px solid var(--border);
+  border-radius: 6px; padding: 7px 10px; width: 100%;
+  resize: none; line-height: 1.5; max-height: 12.3077rem; overflow-y: auto;
+}
+textarea.inline-multiline::placeholder, .q-add textarea::placeholder,
+.tpl-add textarea::placeholder { color: var(--faint); }
 
 #app { display: flex; height: 100%; }
 
@@ -412,8 +423,8 @@ body.side-collapsed .side-new .label { display: none; }
 .q-del, .q-retry, .q-skip, .q-wait, .q-now { color: var(--faint); padding: 2px 7px; border-radius: 4px; flex: none; }
 .q-retry:hover, .q-skip:hover, .q-wait:hover, .q-now:hover { color: var(--text); background: var(--hover); }
 .q-del:hover { color: var(--danger); background: var(--hover); }
-.q-add { display: flex; gap: 6px; align-items: center; }
-.q-add input[type=text] { flex: 1; font-size: 0.961538rem; padding: 6px 10px; }
+.q-add { display: flex; gap: 6px; align-items: flex-end; }
+.q-add textarea { flex: 1; min-width: 0; font-size: 0.961538rem; padding: 6px 10px; }
 .q-add select, .q-add input[type=time] {
   font-size: 0.923077rem; color: var(--muted); background: var(--raised);
   border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px;
@@ -449,6 +460,28 @@ body.side-collapsed .side-new .label { display: none; }
 .qg-row .q-text { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .qg-row.ro .q-text { color: var(--muted); }
 .qg-row .row-meta { font-family: var(--mono); font-size: 0.769231rem; color: var(--faint); flex: none; }
+/* A multi-line prompt collapses to its first line plus a count. Only the
+   chevron opens it, so the list stays one row per prompt however long the
+   prompts are. */
+.qg-row .q-chev {
+  flex: none; width: 12px; padding: 0; line-height: 1;
+  font-family: var(--mono); font-size: 0.769231rem; color: var(--faint);
+}
+.qg-row .q-chev:hover { color: var(--text); }
+.qg-row .q-chev:empty { cursor: default; }
+.qg-row .q-nl {
+  flex: none; font-family: var(--mono); font-size: 0.769231rem; color: var(--faint);
+  border: 1px solid var(--border-soft); border-radius: 4px; padding: 0 4px;
+}
+.qg-row.open, .qg-row.editing { align-items: flex-start; }
+.qg-row.open { background: var(--sel); }
+.qg-row.open .q-text { white-space: pre-wrap; overflow: visible; text-overflow: clip; line-height: 1.55; }
+.qg-row.editing .q-text { white-space: normal; overflow: visible; text-overflow: clip; }
+.qg-row.open > .tree, .qg-row.open > .q-chev, .qg-row.open > .q-nl,
+.qg-row.open > .row-meta, .qg-row.open > button,
+.qg-row.editing > .tree, .qg-row.editing > .q-chev, .qg-row.editing > .q-nl,
+.qg-row.editing > .row-meta, .qg-row.editing > button { margin-top: 1px; }
+.qg-row .q-text > textarea { display: block; }
 .q-pause { color: var(--faint); padding: 2px 6px; border-radius: 4px; flex: none; }
 .q-pause:hover { color: var(--wait); background: var(--hover); }
 .q-item.rule { border-color: var(--accent-dim); }
@@ -673,12 +706,32 @@ body.side-collapsed .side-new .label { display: none; }
 .tpl-step .idx { flex: none; font-family: var(--mono); font-size: 0.846154rem; color: var(--faint); min-width: 1.2em; }
 .tpl-step input { background: transparent; border: none; border-radius: 4px; padding: 3px 4px; }
 .tpl-step input:hover { background: var(--panel); }
+/* Collapsed: the step's first line and how many more there are. Opened: the
+   one full editor, which is why exactly one row at a time carries `.open`. */
+.tpl-step .body { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; }
+.tpl-step .body .one {
+  flex: 1; min-width: 0; padding: 3px 4px; border-radius: 4px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.tpl-step .body .one:hover { background: var(--panel); }
+.tpl-step .body .more {
+  flex: none; font-family: var(--mono); font-size: 0.769231rem; color: var(--faint);
+  border: 1px solid var(--border-soft); border-radius: 4px; padding: 0 4px;
+}
+.tpl-step.open { align-items: flex-start; border-color: var(--accent-dim); }
+.tpl-step.open .idx, .tpl-step.open .act { margin-top: 4px; }
+.tpl-step .body.editing { display: block; }
+.tpl-step .body.editing textarea { background: var(--panel); }
+.tpl-step .row-hint {
+  display: flex; justify-content: space-between; gap: 10px; margin-top: 5px;
+  font-family: var(--mono); font-size: 0.769231rem; color: var(--faint);
+}
 .tpl-step .act { flex: none; padding: 2px 6px; border-radius: 4px; color: var(--faint); line-height: 1; }
 .tpl-step .act:hover { color: var(--text); background: var(--hover); }
 .tpl-step .act.del:hover { color: var(--danger); }
 .tpl-step .act:disabled { opacity: 0.35; }
-.tpl-add { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
-.tpl-add input { flex: 1; min-width: 0; }
+.tpl-add { display: flex; align-items: flex-end; gap: 8px; margin-top: 10px; }
+.tpl-add textarea { flex: 1; min-width: 0; }
 #set-no-results { color: var(--muted); padding: 20px 0; }
 html.font-scale-large .set-sidebar { width: 240px; }
 html.font-scale-large .set-group .set-row label { flex-basis: 100%; }

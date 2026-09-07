@@ -1938,3 +1938,32 @@ fn window_plain_and_midnight_wrap() {
     assert!(in_window(0, None, None));
     assert!(in_window(700, Some(600), Some(600)));
 }
+
+/// A prompt is pasted byte for byte, so the only rewrite that matters is the
+/// one that keeps the burst from submitting itself. This must stay in step
+/// with `normalizeTemplateStep` in ui/js/pure.js — the same prompt reaches
+/// the queue from a template and from the panel's own field.
+#[test]
+fn normalize_prompt_keeps_the_lines_and_folds_every_carriage_return() {
+    use super::ops::normalize_prompt;
+
+    // newlines are content; a CR in any spelling becomes one
+    assert_eq!(normalize_prompt("one\ntwo"), "one\ntwo");
+    assert_eq!(normalize_prompt("one\r\ntwo\rthree"), "one\ntwo\nthree");
+    assert!(!normalize_prompt("a\r\nb\rc").contains('\r'));
+
+    // indentation is what the user typed, and stays
+    assert_eq!(
+        normalize_prompt("review\n  - file:line\n  - the fix"),
+        "review\n  - file:line\n  - the fix"
+    );
+
+    // only the invisible whitespace goes: trailing spaces and the edges
+    assert_eq!(
+        normalize_prompt("keep   \n\n  \nthese\n\n"),
+        "keep\n\n\nthese"
+    );
+    assert_eq!(normalize_prompt("a\tb   c"), "a b   c");
+    assert_eq!(normalize_prompt("   "), "");
+    assert_eq!(normalize_prompt("\n\n  \n"), "");
+}

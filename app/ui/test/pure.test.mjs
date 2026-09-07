@@ -23,9 +23,9 @@ import {
   linkMenuItems,
   CARD_PREVIEW_ROWS, cardPreviewRows, inlineRenameValue, persistOptimistically,
   effectiveCardStatus, attentionStatus,
-  TEMPLATES_MAX, TEMPLATE_NAME_MAX, TEMPLATE_STEPS_MAX,
+  TEMPLATES_MAX, TEMPLATE_NAME_MAX, TEMPLATE_STEP_MAX, TEMPLATE_STEPS_MAX,
   inboundRulesUsingTemplate, moveTemplateStep, nextTemplateName, normalizeTemplateStep,
-  templateNameProblem,
+  promptSummary, promptTooltip, PROMPT_TOOLTIP_LINES, templateNameProblem,
 } from '../js/pure.js';
 
 test('agent-hook state outranks the output-recency heuristic', () => {
@@ -883,11 +883,22 @@ test('rename Enter/Escape/empty semantics and persistence rollback are determini
   assert.equal(value, 'new');
 });
 
-test('a template step is one queued line and its name stays usable by an inbound rule', () => {
-  assert.equal(normalizeTemplateStep('  read CLAUDE.md\n then plan  '), 'read CLAUDE.md then plan');
-  assert.equal(normalizeTemplateStep('a\tb   c'), 'a b c');
+test('a template step keeps its lines and its name stays usable by an inbound rule', () => {
+  /* the queue pastes inside bracketed-paste marks and presses Enter as a
+     separate key, so a newline is content — only a CR would submit early */
+  assert.equal(normalizeTemplateStep('  read CLAUDE.md\n then plan  '), 'read CLAUDE.md\n then plan');
+  assert.equal(normalizeTemplateStep('one\r\ntwo\rthree'), 'one\ntwo\nthree',
+    'every CR spelling folds to a newline');
+  assert.equal(normalizeTemplateStep('review\n  - file:line\n  - the fix'),
+    'review\n  - file:line\n  - the fix', 'indentation is pasted exactly as it reads');
+  assert.equal(normalizeTemplateStep('a\tb   c'), 'a b   c', 'only tabs are rewritten');
+  assert.equal(normalizeTemplateStep('keep   \n\n  \nthese\n\n'), 'keep\n\n\nthese',
+    'trailing spaces and edge blank lines go; interior blank lines stay');
   assert.equal(normalizeTemplateStep('   '), '', 'an empty step never reaches the queue');
+  assert.equal(normalizeTemplateStep('\n\n  \n'), '', 'nor a step of nothing but blank lines');
   assert.equal(normalizeTemplateStep('{{msg.text}}'), '{{msg.text}}', 'placeholders survive intact');
+  assert.equal(Array.from(normalizeTemplateStep('x\n'.repeat(4000))).length, TEMPLATE_STEP_MAX,
+    'and the step stays bounded however it is pasted');
 
   const templates = [{ name: 'morning', steps: [] }, { name: 'release', steps: [] }];
   assert.equal(templateNameProblem('  new  ', templates), null);
@@ -901,6 +912,22 @@ test('a template step is one queued line and its name stays usable by an inbound
   assert.equal(nextTemplateName('release', templates), 'release 2');
   assert.equal(nextTemplateName('release', [...templates, { name: 'release 2', steps: [] }]), 'release 3');
   assert.ok(TEMPLATES_MAX > 0 && TEMPLATE_STEPS_MAX > 0, 'both lists stay bounded');
+});
+
+test('a one-row surface shows the first line and says how many it is hiding', () => {
+  assert.deepEqual(promptSummary('one line'), { first: 'one line', extra: 0 });
+  assert.deepEqual(promptSummary('first\nsecond\nthird'), { first: 'first', extra: 2 });
+  assert.deepEqual(promptSummary(''), { first: '', extra: 0 });
+  assert.deepEqual(promptSummary(null), { first: '', extra: 0 });
+  /* a leading blank line still counts: the row would otherwise look empty
+     with no sign that there is anything under it */
+  assert.deepEqual(promptSummary('\nsecond'), { first: '', extra: 1 });
+
+  assert.equal(promptTooltip('a\nb'), 'a\nb', 'a short prompt is carried whole');
+  const long = Array.from({ length: PROMPT_TOOLTIP_LINES + 5 }, (_, n) => `line ${n}`).join('\n');
+  const shown = promptTooltip(long);
+  assert.equal(shown.split('\n').length, PROMPT_TOOLTIP_LINES + 1, 'a long one is cut to the bound');
+  assert.ok(shown.endsWith('\n…'), 'and says so rather than looking complete');
 });
 
 test('reordering a template step swaps neighbours and never leaves the list', () => {

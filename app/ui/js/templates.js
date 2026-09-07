@@ -16,25 +16,30 @@
 // leaves the template as it is on disk. The manager exists so a template can
 // be created and edited without owning a card; it never starts a session,
 // queues a prompt or moves a card. A step is ONE queued prompt flattened to a
-// single line (`normalizeTemplateStep`, same reason as inbound: the queue
-// pastes a literal buffer and a raw newline submits early), the name bound is
-// the one `settings-model` already enforces on an inbound rule, and both lists
-// are bounded. Inbound rules name a template by NAME: renaming or deleting one
-// that a rule uses is confirmed with the count of affected rules — deck warns,
-// and never rewrites the user's rules for them.
+// MULTI-LINE prompt (`normalizeTemplateStep`: the queue pastes inside
+// bracketed-paste marks and presses Enter separately, so only a CR would
+// submit early). The step list stays one row per step — the row shows the
+// first line plus a `⏎N` badge, and exactly ONE row at a time opens in place
+// into the full editor, so a 20-step template is still scannable. Enter
+// inside that editor types a newline; ⌘↵ commits, Escape restores, blur
+// commits. The name bound is the one `settings-model` already enforces on an
+// inbound rule, and both lists are bounded. Inbound rules name a template by
+// NAME: renaming or deleting one that a rule uses is confirmed with the count
+// of affected rules — deck warns, and never rewrites the user's rules for them.
 import { $, ctx, state } from './state.js';
 import { provider } from './board.js';
-import { confirmDialog, toast } from './dialogs.js';
+import { autoGrowField, confirmDialog, toast } from './dialogs.js';
 import {
-  TEMPLATES_MAX, TEMPLATE_NAME_MAX, TEMPLATE_STEPS_MAX,
+  TEMPLATES_MAX, TEMPLATE_NAME_MAX, TEMPLATE_STEP_MAX, TEMPLATE_STEPS_MAX,
   inboundRulesUsingTemplate, moveTemplateStep, nextTemplateName, normalizeTemplateStep,
-  templateNameProblem,
+  promptSummary, templateNameProblem,
 } from './pure.js';
 import { formatNumber, onLocaleChange, t } from './i18n.js';
 
 let projectId = null;
 let selected = null;      // name of the template being edited
 let nameShown = null;     // whose name the editor field currently holds
+let openStep = null;      // index of the one step opened into the full editor
 let unsubscribe = null;
 
 const isOpen = () => $('tpl-modal').style.display === 'flex';
@@ -51,6 +56,7 @@ export function openTemplates() {
   const list = templates();
   selected = list.length ? list[0].name : null;
   nameShown = null;
+  openStep = null;
   $('tpl-search').value = '';
   $('tpl-modal').style.display = 'flex';
   /* while open, follow the board: another transaction (or a project delete)
@@ -59,7 +65,8 @@ export function openTemplates() {
     unsubscribe = provider.subscribe(ev => {
       if (ev !== 'projects') return;
       const active = document.activeElement;
-      if (active && active.tagName === 'INPUT' && active.closest('#tpl-box')) return;
+      if (active && ['INPUT', 'TEXTAREA'].includes(active.tagName)
+          && active.closest('#tpl-box')) return;
       renderTemplates();
     });
   }
@@ -68,6 +75,7 @@ export function openTemplates() {
 }
 
 export function closeTemplates() {
+  openStep = null;
   $('tpl-modal').style.display = 'none';
   if (unsubscribe) { unsubscribe(); unsubscribe = null; }
   $('board-tpl').focus();
@@ -87,26 +95,112 @@ async function persist(name, steps) {
   }
 }
 
+/* The collapsed row: the step's first line, plus how many more there are.
+   Clicking it is what opens the full editor — the same gesture that edits a
+   single-line step today. */
+function collapsedStep(step, index) {
+  const body = document.createElement('div');
+  body.className = 'body';
+  const { first, extra } = promptSummary(step);
+
+  const one = document.createElement('div');
+  one.className = 'one';
+  one.textContent = first;
+  one.title = t('common.edit');
+  one.onclick = () => {
+    openStep = index;
+    renderTemplates();
+  };
+  body.appendChild(one);
+  if (extra) {
+    const more = document.createElement('span');
+    more.className = 'more';
+    more.textContent = '⏎' + formatNumber(extra);
+    more.title = t('templates.moreLines', { count: formatNumber(extra) });
+    body.appendChild(more);
+  }
+  return body;
+}
+
+/* The opened row: one editor, committed once. A failed write leaves the
+   template as it is on disk (`persist` re-renders from the committed board),
+   so the editor never shows a change the user was told failed. */
+function openStepEditor(tpl, step, index) {
+  const body = document.createElement('div');
+  body.className = 'body editing';
+
+  const field = document.createElement('textarea');
+  field.className = 'inline-multiline';
+  field.rows = 1;
+  field.spellcheck = false;
+  field.value = step;
+
+  const hint = document.createElement('div');
+  hint.className = 'row-hint';
+  const keys = document.createElement('span');
+  keys.textContent = t('templates.editKeys');
+  const size = document.createElement('span');
+  const showSize = () => {
+    const { extra } = promptSummary(field.value);
+    size.textContent = t('templates.editSize', {
+      lines: formatNumber(extra + 1),
+      chars: formatNumber(Array.from(field.value).length),
+      max: formatNumber(TEMPLATE_STEP_MAX),
+    });
+  };
+  showSize();
+  hint.append(keys, size);
+
+  let done = false;
+  const finish = async commit => {
+    if (done) return;
+    done = true;
+    openStep = null;
+    const text = commit ? normalizeTemplateStep(field.value) : '';
+    if (!text || text === step) { renderTemplates(); return; }
+    const next = tpl.steps.slice();
+    next[index] = text;
+    await persist(tpl.name, next);
+    renderTemplates();
+  };
+  field.addEventListener('input', () => { autoGrowField(field); showSize(); });
+  field.addEventListener('keydown', event => {
+    event.stopPropagation();
+    if (event.key === 'Enter') {
+      if (event.isComposing || event.keyCode === 229) return;
+      if (!(event.metaKey || event.ctrlKey)) return;   // the newline is the content
+      event.preventDefault();
+      finish(true);
+    } else if (event.key === 'Escape') {
+      event.preventDefault();
+      finish(false);
+    }
+  });
+  field.addEventListener('blur', () => finish(true));
+
+  body.append(field, hint);
+  /* size and focus once the row is in the document, so scrollHeight is real */
+  queueMicrotask(() => {
+    if (!field.isConnected) return;
+    autoGrowField(field);
+    field.focus();
+    field.setSelectionRange(field.value.length, field.value.length);
+  });
+  return body;
+}
+
 function stepRow(tpl, step, index) {
+  const editing = openStep === index;
   const row = document.createElement('div');
-  row.className = 'tpl-step';
+  row.className = 'tpl-step' + (editing ? ' open' : '');
 
   const idx = document.createElement('span');
   idx.className = 'idx';
   idx.textContent = formatNumber(index + 1);
 
-  const input = document.createElement('input');
-  input.type = 'text';
-  input.value = step;
-  input.spellcheck = false;
-  input.addEventListener('change', async () => {
-    const text = normalizeTemplateStep(input.value);
-    if (!text || text === step) { input.value = step; return; }
-    const next = tpl.steps.slice();
-    next[index] = text;
-    await persist(tpl.name, next);
-    renderTemplates();
-  });
+  const body = editing
+    ? openStepEditor(tpl, step, index)
+    : collapsedStep(step, index);
 
   const act = (label, title, disabled, run) => {
     const button = document.createElement('button');
@@ -118,20 +212,24 @@ function stepRow(tpl, step, index) {
     button.onclick = run;
     return button;
   };
+  /* any change to the ORDER or LENGTH of the list invalidates the open
+     index, so reordering and removing close the editor first */
   const move = async delta => {
     const next = moveTemplateStep(tpl.steps, index, delta);
     if (next === tpl.steps) return;
+    openStep = null;
     await persist(tpl.name, next);
     renderTemplates();
   };
   const remove = act('✕', t('templates.removeStep'), false, async () => {
+    openStep = null;
     await persist(tpl.name, tpl.steps.filter((_, i) => i !== index));
     renderTemplates();
   });
   remove.classList.add('del');
 
   row.append(
-    idx, input,
+    idx, body,
     act('↑', t('templates.moveUp'), index === 0, () => move(-1)),
     act('↓', t('templates.moveDown'), index === tpl.steps.length - 1, () => move(1)),
     remove,
@@ -146,7 +244,10 @@ export function renderTemplates() {
   $('tpl-title').textContent = t('templates.titleProject', { project: p.name });
 
   const all = templates();
-  if (!all.some(tp => tp.name === selected)) selected = all.length ? all[0].name : null;
+  if (!all.some(tp => tp.name === selected)) {
+    selected = all.length ? all[0].name : null;
+    openStep = null;
+  }
   const query = $('tpl-search').value.trim().toLocaleLowerCase();
   const shown = all.filter(tp => !query || tp.name.toLocaleLowerCase().includes(query));
 
@@ -165,6 +266,7 @@ export function renderTemplates() {
     row.append(name, count);
     row.onclick = () => {
       selected = tp.name;
+      openStep = null;
       renderTemplates();
       $('tpl-name').focus();
     };
@@ -208,7 +310,11 @@ async function addStep() {
     toast(t('templates.maxSteps', { max: formatNumber(TEMPLATE_STEPS_MAX) }));
     return;
   }
-  if (await persist(tpl.name, [...tpl.steps, text])) $('tpl-step-text').value = '';
+  openStep = null;
+  if (await persist(tpl.name, [...tpl.steps, text])) {
+    $('tpl-step-text').value = '';
+    autoGrowField($('tpl-step-text'));
+  }
   renderTemplates();
   $('tpl-step-text').focus();
 }
@@ -264,9 +370,14 @@ export function initTemplates() {
 
   $('tpl-step-add').onclick = () => addStep();
 
+  $('tpl-step-text').addEventListener('input', () => autoGrowField($('tpl-step-text')));
+
   $('tpl-step-text').addEventListener('keydown', event => {
     if (event.key !== 'Enter') return;
     if (event.isComposing || event.keyCode === 229) return;   // IME commit, not submit
+    /* a step can be many lines, so Enter types one; ⌘↵ is what adds */
+    if (!(event.metaKey || event.ctrlKey)) return;
+    event.preventDefault();
     addStep();
   });
 
@@ -279,6 +390,7 @@ export function initTemplates() {
     const name = nextTemplateName(t('templates.newName'), all);
     if (!(await persist(name, []))) return;
     selected = name;
+    openStep = null;
     $('tpl-search').value = '';
     renderTemplates();
     $('tpl-name').focus();

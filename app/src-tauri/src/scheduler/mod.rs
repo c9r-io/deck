@@ -22,7 +22,9 @@
 //! Injection loads the literal text into a uniquely named tmux buffer, then
 //! one synchronous tmux command queue compares the full generation plus
 //! optional foreground executable and byte-literal-pastes only on a match
-//! (`paste-buffer -p`: bracketed only for an application that asked). Enter
+//! (`paste-buffer -p`: bracketed only for an application that asked). The
+//! text may be many lines; its newlines paste as newlines and only CRs are
+//! folded away up front (`ops::normalize_prompt`). Enter
 //! is sent 300ms later as a SEPARATE key under the same condition — a CR
 //! inside the paste burst is a pasted newline to agent inputs (Claude Code,
 //! Codex) and the prompt sat unsent in the box; a refused Enter is logged and

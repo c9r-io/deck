@@ -53,18 +53,38 @@ export function toast(msg) {
   setTimeout(() => el.remove(), 2600);
 }
 
-/* ---------- inline rename helper ---------- */
-export function inlineRename(host, current, onDone, allowEmpty = false) {
-  const input = document.createElement('input');
-  input.value = current;
-  host.replaceChildren(input);
-  input.focus();
-  input.select();
+/* ---------- inline rename helper ----------
+   A textarea that shows all of its content instead of one scrolling line.
+   The ceiling is CSS (`max-height` on the field), so an over-tall height set
+   here is simply clamped and the field scrolls — no computed style is read,
+   and a host without layout (the DOM-contract tests) is left alone. */
+export function autoGrowField(field) {
+  if (!field || !field.style) return;
+  field.style.height = 'auto';
+  if (typeof field.scrollHeight === 'number') field.style.height = field.scrollHeight + 'px';
+}
+
+/* One-shot edit lifecycle for a value shown in place. `multiline` swaps the
+   input for a growing textarea: a queued prompt or a template step can be
+   many lines, so Enter there TYPES a newline and ⌘↵/⌃↵ is what commits.
+   Escape restores, blur commits, and an IME's Enter never submits. */
+export function inlineRename(host, current, onDone, { allowEmpty = false, multiline = false } = {}) {
+  const field = document.createElement(multiline ? 'textarea' : 'input');
+  field.value = current;
+  if (multiline) {
+    field.className = 'inline-multiline';
+    field.rows = 1;
+    field.spellcheck = false;
+  }
+  host.replaceChildren(field);
+  if (multiline) autoGrowField(field);
+  field.focus();
+  field.select();
   let done = false;
   const finish = commit => {
     if (done) return;
     done = true;
-    const value = inlineRenameValue(current, input.value, commit, allowEmpty);
+    const value = inlineRenameValue(current, field.value, commit, allowEmpty);
     /* End the editing DOM/focus state before subscribers can render. Enter
        therefore looks committed in the same gesture and its subsequent blur
        is guaranteed to be a no-op. */
@@ -74,10 +94,11 @@ export function inlineRename(host, current, onDone, allowEmpty = false) {
       toast(t('error.changeNotSaved'));
     });
   };
-  input.addEventListener('keydown', e => {
+  field.addEventListener('keydown', e => {
     e.stopPropagation();
     if (e.key === 'Enter') {
       if (e.isComposing || e.keyCode === 229) return;
+      if (multiline && !(e.metaKey || e.ctrlKey)) return;   // the newline is the content
       e.preventDefault();
       finish(true);
     } else if (e.key === 'Escape') {
@@ -85,9 +106,10 @@ export function inlineRename(host, current, onDone, allowEmpty = false) {
       finish(false);
     }
   });
-  input.addEventListener('blur', () => finish(true));
-  input.addEventListener('click', e => e.stopPropagation());
-  input.addEventListener('dblclick', e => e.stopPropagation());
+  if (multiline) field.addEventListener('input', () => autoGrowField(field));
+  field.addEventListener('blur', () => finish(true));
+  field.addEventListener('click', e => e.stopPropagation());
+  field.addEventListener('dblclick', e => e.stopPropagation());
 }
 
 /* ---------- settings ---------- */

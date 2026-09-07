@@ -55,7 +55,7 @@ export function editDescInline(sid) {
   inlineRename(d, s.desc || '', async v => {
     if (v !== null) await provider.setDesc(sid, v);
     render();
-  }, true);
+  }, { allowEmpty: true });
 }
 
 export function showSessionCtx(e, sid) {

@@ -40,8 +40,9 @@ first.
 
 Template placeholders are source-neutral: `{{msg.text}}`, `{{msg.from}}`,
 `{{msg.where}}`, `{{msg.link}}`. A step that starts with a slash command
-hands the message to that skill, e.g. `/bug-fix {{msg.text}}`. Prompts are
-one line: newlines in the message become spaces.
+hands the message to that skill, e.g. `/bug-fix {{msg.text}}`. A step may
+span many lines and is sent exactly as written; the message pasted into it
+is flattened, so its newlines become spaces and cannot reshape your prompt.
 
 Badges that already exist when a rule is added are left alone. A message
 with several badges makes one card per rule; the same badge on the same

@@ -28,14 +28,16 @@ pub(crate) struct QueueFired {
 /// Inject one prompt into the exact pane approved by the context probe.
 ///
 /// The injection is one tmux server command queue: store the literal prompt
-/// plus CR in a private buffer, compare the full server/session/window/pane
+/// in a private buffer, compare the full server/session/window/pane
 /// generation plus the optional expected foreground process, and paste only
 /// on an exact match. There is no window where
-/// the text landed but Enter did not. Queue text has \r/\n stripped at
-/// add/update time, so the appended CR is the only one. (Residual ambiguity:
-/// an externally killed tmux client after the server pasted could still read
-/// as a failure; deck never does that, and it is the same class of window as
-/// a power loss mid-send.)
+/// the text landed but Enter did not. A prompt may be MANY LINES — its
+/// newlines are pasted as newlines inside the bracketed-paste marks — but
+/// `ops::normalize_prompt` has folded every CR away at add/update time, so
+/// the separate Enter below is the only submit in the burst. (Residual
+/// ambiguity: an externally killed tmux client after the server pasted could
+/// still read as a failure; deck never does that, and it is the same class of
+/// window as a power loss mid-send.)
 pub(crate) fn fire_item(item: &QueueItem) -> Result<(), DeckError> {
     let pane = item.binding.as_ref().ok_or(DeckError::new(
         ErrorKind::Other,

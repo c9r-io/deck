@@ -7,13 +7,17 @@ import { normalizeInbound, normalizeSettings } from '../js/settings-model.js';
 
 const msg = { text: 'line one\n\n  line two', from: 'alice', where: '#frontend', link: 'https://x.slack.com/p1' };
 
-test('placeholders fill from the message and prompts collapse to one line', () => {
+test('a step keeps its own lines and the message pasted into it does not', () => {
   assert.equal(fillInboundTemplate('Triage: {{msg.text}} — by {{ msg.from }} in {{msg.where}}', msg),
-    'Triage: line one line two — by alice in #frontend');
+    'Triage: line one line two — by alice in #frontend',
+    'third-party text is flattened: it must not reshape the prompt around it');
+  /* the step's own newlines are the template author's, and survive */
   assert.equal(fillInboundTemplate('/bug-fix\n{{msg.text}}\n\nsee {{msg.link}}', msg),
-    '/bug-fix line one line two see https://x.slack.com/p1');
+    '/bug-fix\nline one line two\n\nsee https://x.slack.com/p1');
   assert.equal(fillInboundTemplate('keep {{msg.nope}} and {{other}}', msg), 'keep {{msg.nope}} and {{other}}');
   assert.equal(fillInboundTemplate('   ', msg), '');
+  assert.ok(!fillInboundTemplate('a {{msg.text}}', { text: 'x\ry' }).includes('\r'),
+    'and no carriage return reaches the queue by way of a message');
 });
 
 test('titles take the first non-empty line, bounded by characters not bytes', () => {

@@ -52,6 +52,7 @@ class FakeElement {
   remove() { this.isConnected = false; }
   focus() { fakeDocument.activeElement = this; }
   select() {}
+  setSelectionRange() {}
   closest() { return null; }
   getClientRects() { return []; }
   setAttribute(name, value) { this[name] = value; }
@@ -110,23 +111,31 @@ function seed(templates, rules = []) {
 
 const savedTemplates = () => writes.at(-1).projects[0].templates;
 const stepRows = () => $('tpl-steps').children.filter(child => child.children.length >= 5);
-const stepInput = index => stepRows()[index].children[1];
+const stepBody = index => stepRows()[index].children[1];
+/* a collapsed row shows its first line; clicking that is what opens the one
+   editor, so the tests take the same route a user does */
+const collapsedText = index => stepBody(index).children[0].textContent;
+const openEditor = async index => {
+  stepBody(index).children[0].fire('click');
+  await tick();
+  return stepBody(index).children[0];
+};
 
 test('editing a step persists the whole ordered list in one Board transaction', async () => {
   seed([{ name: 'morning', steps: ['read the notes', 'plan the work'] }]);
-  const input = stepInput(0);
-  input.value = '  read the notes\n and the diff  ';
-  input.fire('change');
+  const editor = await openEditor(0);
+  editor.value = '  read the notes\n and the diff  ';
+  editor.fire('keydown', { key: 'Enter', metaKey: true });
   await tick();
   await flushBoardMutations();
   assert.equal(writes.length, 1, 'one write per edit');
-  assert.deepEqual(savedTemplates()[0].steps, ['read the notes and the diff', 'plan the work'],
-    'a step reaches the queue as one line');
+  assert.deepEqual(savedTemplates()[0].steps, ['read the notes\n and the diff', 'plan the work'],
+    'a step keeps the lines it was written with');
 
   stepRows()[0].children[3].fire('click');   // ↓ move later
   await tick();
   await flushBoardMutations();
-  assert.deepEqual(savedTemplates()[0].steps, ['plan the work', 'read the notes and the diff']);
+  assert.deepEqual(savedTemplates()[0].steps, ['plan the work', 'read the notes\n and the diff']);
 
   stepRows()[1].children[4].fire('click');   // ✕ remove
   await tick();
@@ -137,13 +146,13 @@ test('editing a step persists the whole ordered list in one Board transaction', 
 
 test('an emptied step and an added blank step write nothing', async () => {
   seed([{ name: 'morning', steps: ['read the notes'] }]);
-  const input = stepInput(0);
-  input.value = '   ';
-  input.fire('change');
+  const editor = await openEditor(0);
+  editor.value = '   ';
+  editor.fire('keydown', { key: 'Enter', metaKey: true });
   await tick();
   await flushBoardMutations();
   assert.equal(writes.length, 0, 'a step is never silently deleted by clearing its text');
-  assert.equal(input.value, 'read the notes', 'the visible row returns to what is on disk');
+  assert.equal(collapsedText(0), 'read the notes', 'the visible row returns to what is on disk');
 
   $('tpl-step-text').value = '  ';
   $('tpl-step-add').fire('click');
@@ -152,13 +161,43 @@ test('an emptied step and an added blank step write nothing', async () => {
   assert.equal(writes.length, 0);
 
   $('tpl-step-text').value = 'run the tests';
-  $('tpl-step-text').fire('keydown', { key: 'Enter', keyCode: 229, isComposing: true });
+  $('tpl-step-text').fire('keydown', { key: 'Enter', keyCode: 229, isComposing: true, metaKey: true });
   await tick();
   assert.equal(writes.length, 0, 'an IME commit is not a submit');
   $('tpl-step-text').fire('keydown', { key: 'Enter' });
   await tick();
   await flushBoardMutations();
+  assert.equal(writes.length, 0, 'a bare Enter types a newline into the step, it does not add it');
+  $('tpl-step-text').fire('keydown', { key: 'Enter', metaKey: true });
+  await tick();
+  await flushBoardMutations();
   assert.deepEqual(savedTemplates()[0].steps, ['read the notes', 'run the tests']);
+  closeTemplates();
+});
+
+test('a multi-line step collapses to its first line and only one row opens at a time', async () => {
+  seed([{ name: 'morning', steps: ['review the diff\nfor each finding give file:line\nskip style', 'plan the work'] }]);
+  assert.equal(collapsedText(0), 'review the diff', 'the row shows the first line, never the whole prompt');
+  assert.equal(stepBody(0).children[1].textContent, '⏎2', 'and says how many lines it is hiding');
+  assert.equal(stepBody(1).children.length, 1, 'a single-line step carries no badge');
+
+  const editor = await openEditor(0);
+  assert.equal(editor.tagName, 'TEXTAREA', 'the open row edits the whole prompt');
+  assert.equal(editor.value, 'review the diff\nfor each finding give file:line\nskip style');
+
+  /* opening another row closes this one — the list stays scannable */
+  stepBody(1).children[0].fire('click');
+  await tick();
+  assert.equal(collapsedText(0), 'review the diff', 'the first row went back to one line');
+  assert.equal(stepBody(1).children[0].tagName, 'TEXTAREA');
+
+  /* Escape restores; nothing is written and the row closes */
+  stepBody(1).children[0].value = 'something else entirely';
+  stepBody(1).children[0].fire('keydown', { key: 'Escape' });
+  await tick();
+  await flushBoardMutations();
+  assert.equal(writes.length, 0, 'a cancelled edit writes nothing');
+  assert.equal(collapsedText(1), 'plan the work');
   closeTemplates();
 });
 

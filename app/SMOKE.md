@@ -12,7 +12,15 @@ injection, poll formats); `scripts/ui-tests` covers the DOM-free modules.
 
 ## Known open regressions
 
-None. When the full WKWebView smoke reports a failing check on an untouched
+- **2026-09-07 — `link-classify a=-25 b=127`** (and the `done=-1` it causes).
+  Reproduced on an untouched HEAD build (bb35876), so it is not owned by the
+  change that found it. `classifierDebug` is the full 127, so `pure.js`'s
+  tokenizer finds both URLs in the logical line; the two missing mask bits are
+  `2` (the missing-path row still yields links) and `4` (the URL row yields
+  more than one). Both are backend path CONFIRMATION (`links.rs`) against the
+  pane cwd, not classification. Not yet triaged.
+
+When the full WKWebView smoke reports a failing check on an untouched
 HEAD build, record it here with the first-seen date; the release checklist is
 not green while an entry exists.
 
@@ -325,6 +333,14 @@ a fixture.
       server, or update the app, then reopen the card) → the next pass adopts
       the new identity, persists it, and delivers without any user action; a
       card whose launch command names an agent still waits for that executable.
+- [ ] Type a prompt with several lines into the queue field: Enter adds a
+      newline (it does not queue), ⌘↵ queues it, and the pasted prompt reaches
+      the agent's input as those same lines with a single submit at the end.
+      The row shows only the first line plus `⏎N`; its chevron opens the rest
+      and clicking the text edits the whole prompt
+- [ ] A template step written over several lines survives a save/reopen and an
+      auto-respond rule fills `{{msg.text}}` into it with the message flattened
+      to one line while the step keeps its own
 - [ ] Save a template from the queue group header → re-add it on another card
 - [ ] Pause a recurring rule → skipped while paused; resume → fires again
 

@@ -24,7 +24,7 @@
 //! decides, the card is created through the ordinary Board transaction with
 //! an `origin` field (persisted; the idempotency key), the template steps go
 //! through the ordinary `queue_add` (step 1 `at=now`, gated by the readiness
-//! probe; message newlines become spaces because the queue pastes one line),
+//! probe; a step keeps its own lines, message newlines become spaces),
 //! and `inbound_ack` retires the item. The first poll for a (source, badge)
 //! BASELINES — existing badges are recorded, never turned into cards — and a
 //! lost ledger degrades to a re-baseline, never a flood. Credentials live in

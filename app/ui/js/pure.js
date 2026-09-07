@@ -963,14 +963,22 @@ export async function persistOptimistically({ apply, persist, rollback }) {
 /* ---------- inbound (自动响应): pure decisions, no DOM, no Tauri ---------- */
 
 /* Source-neutral placeholders. Unknown ones stay literal so a typo is
-   visible in the prompt instead of silently vanishing. Prompts are one
-   line: the queue pastes a literal buffer and a raw newline would submit
-   the prompt early in most agents, so message newlines become spaces. */
+   visible in the prompt instead of silently vanishing.
+
+   The STEP is the user's own text and keeps the lines they wrote it with,
+   exactly as `normalizeTemplateStep` stores it. A MESSAGE is third-party
+   text being pasted into that step, so its newlines become spaces: an
+   inbound message must not reshape the prompt built around it, and a
+   50-line Slack post must not turn one step into a wall. */
 export const INBOUND_PLACEHOLDERS = ['text', 'from', 'where', 'link'];
 export function fillInboundTemplate(step, msg) {
+  const flatten = value => String(value ?? '')
+    .replace(/\s*[\r\n\t]+\s*/g, ' ')
+    .replace(/ {2,}/g, ' ')
+    .trim();
   const filled = String(step).replace(/\{\{\s*msg\.([a-z]+)\s*\}\}/g, (m, name) =>
-    INBOUND_PLACEHOLDERS.includes(name) ? String(msg[name] ?? '') : m);
-  return filled.replace(/\s*[\r\n]+\s*/g, ' ').replace(/[ \t]{2,}/g, ' ').trim();
+    INBOUND_PLACEHOLDERS.includes(name) ? flatten(msg[name]) : m);
+  return normalizeTemplateStep(filled);
 }
 
 export function inboundTitle(text, max = 40) {
@@ -1023,11 +1031,17 @@ export function expandHome(dir, home) {
 
 /* ---------- project prompt templates ----------
    A template is {name, steps[]} on the project, so the Board manager and the
-   card queue edit exactly the same object. A step is ONE queued prompt: the
-   queue pastes a literal buffer and a raw newline submits early, so a step
-   is flattened to a single line here, like an inbound message. The name
-   bound is the one an inbound rule already enforces (settings-model drops a
-   rule whose template name is longer), so a template built on the Board can
+   card queue edit exactly the same object. A step is ONE queued prompt and
+   may span many lines: the queue pastes a literal buffer inside bracketed
+   paste marks and presses Enter as a separate key afterwards, so a newline
+   in the text is a newline in the agent's input box, not an early submit.
+   A CARRIAGE RETURN is the one exception — inside the paste burst it DOES
+   submit — so every CR spelling folds to \n here and again in
+   `scheduler/ops.rs::normalize_prompt`, which is this function's Rust twin
+   for hand-typed queue text. Nothing else about the text is rewritten: the
+   step is pasted exactly as it reads, indentation included. The name bound
+   is the one an inbound rule already enforces (settings-model drops a rule
+   whose template name is longer), so a template built on the Board can
    never be one a rule is unable to name. */
 export const TEMPLATE_NAME_MAX = 120;
 export const TEMPLATE_STEP_MAX = 2000;
@@ -1035,11 +1049,31 @@ export const TEMPLATE_STEPS_MAX = 20;
 export const TEMPLATES_MAX = 50;
 
 export function normalizeTemplateStep(text) {
-  const line = String(text ?? '')
-    .replace(/\s*[\r\n\t]+\s*/g, ' ')
-    .replace(/[ ]{2,}/g, ' ')
-    .trim();
-  return Array.from(line).slice(0, TEMPLATE_STEP_MAX).join('');
+  const body = String(text ?? '')
+    .replace(/\r\n?/g, '\n')                     // a CR would submit mid-paste
+    .replace(/\t/g, ' ')                         // tmux buffers, not a terminal
+    .split('\n')
+    .map(line => line.replace(/ +$/, ''))        // invisible trailing spaces
+    .join('\n')
+    .replace(/^\s+/, '')
+    .replace(/\s+$/, '');
+  return Array.from(body).slice(0, TEMPLATE_STEP_MAX).join('');
+}
+
+/* Every surface that shows a queued prompt on ONE row shows the first line
+   and says how many more there are, so a multi-line prompt is never silently
+   truncated to look like a short one. */
+export function promptSummary(text) {
+  const lines = String(text ?? '').split('\n');
+  return { first: lines[0], extra: lines.length - 1 };
+}
+
+/* Tooltips carry the whole prompt, but a 200-line paste must not become a
+   200-line tooltip. */
+export const PROMPT_TOOLTIP_LINES = 8;
+export function promptTooltip(text, max = PROMPT_TOOLTIP_LINES) {
+  const lines = String(text ?? '').split('\n');
+  return lines.length <= max ? lines.join('\n') : lines.slice(0, max).join('\n') + '\n…';
 }
 
 /* null when the name is usable; otherwise the reason, which the caller

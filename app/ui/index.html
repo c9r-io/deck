@@ -61,7 +61,7 @@
         <div id="queue-list"></div>
         <div class="q-add">
           <button class="btn" id="q-src" title="Source — type a prompt, or insert a template (templates are saved per project)" data-i18n-title="queue.sourceTitle">✎</button>
-          <input type="text" id="q-text" placeholder="prompt to send to this session later…" data-i18n-placeholder="queue.placeholder" autocomplete="off" spellcheck="false">
+          <textarea id="q-text" rows="1" placeholder="prompt to send to this session later…" data-i18n-placeholder="queue.placeholder" autocomplete="off" spellcheck="false"></textarea>
           <button class="btn primary" id="q-add-btn" data-i18n="common.add">Add</button>
         </div>
         <div class="q-sentence">
@@ -400,7 +400,7 @@
           <div class="set-row"><label data-i18n="templates.steps">Steps</label></div>
           <div id="tpl-steps"></div>
           <div class="tpl-add">
-            <input id="tpl-step-text" type="text" autocomplete="off" spellcheck="false" data-i18n-placeholder="templates.stepPlaceholder" placeholder="add a step">
+            <textarea id="tpl-step-text" rows="1" autocomplete="off" spellcheck="false" data-i18n-placeholder="templates.stepPlaceholder" placeholder="add a step"></textarea>
             <button class="btn" id="tpl-step-add" data-i18n="common.add">Add</button>
           </div>
           <div class="set-hint tpl-wide" data-i18n="templates.placeholders">Placeholders are filled in by an auto-respond rule.</div>

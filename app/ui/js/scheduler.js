@@ -1,9 +1,20 @@
 // scheduler.js — scheduled prompts: queue groups, recurring rules, templates
 // Part of deck's no-build frontend: native ES modules, no bundler.
+//
+// # Contract
+// A queued prompt may be MANY LINES (`normalizeTemplateStep`/`normalize_prompt`
+// keep them; only a CR is folded). The panel therefore stays ONE ROW PER
+// PROMPT: a row shows the prompt's first line plus a `⏎N` badge, and only its
+// chevron opens the rest — a chain of long prompts must never push the group
+// head and its "next fire" out of a 40vh panel. Which rows are open lives in
+// `expandedRows` because the panel is rebuilt from scratch on every poll; it
+// is pruned against the live queue on each render. Editing edits the WHOLE
+// prompt, so a collapsed row opens first and the same click continues into
+// the editor, where Enter types a newline and ⌘↵ commits.
 import { $, ctx, inv, listen, state, uev } from './state.js';
-import { blockedBy, chainQuietHint, contextStatusKey, fmtEvery, groupQueue, groupSteps, hasWindow, hmToMin, itemDead, minToHM, nextFire, winHas } from './pure.js';
-export { blockedBy, chainQuietHint, contextStatusKey, fmtEvery, groupQueue, groupSteps, hasWindow, hmToMin, itemDead, minToHM, nextFire, winHas };
-import { confirmDangerDialog, confirmDialog, inlineRename, toast, promptDialog } from './dialogs.js';
+import { blockedBy, chainQuietHint, contextStatusKey, fmtEvery, groupQueue, groupSteps, hasWindow, hmToMin, itemDead, minToHM, nextFire, promptSummary, promptTooltip, winHas } from './pure.js';
+export { blockedBy, chainQuietHint, contextStatusKey, fmtEvery, groupQueue, groupSteps, hasWindow, hmToMin, itemDead, minToHM, nextFire, promptSummary, promptTooltip, winHas };
+import { autoGrowField, confirmDangerDialog, confirmDialog, inlineRename, toast, promptDialog } from './dialogs.js';
 import { pollNow, provider } from './board.js';
 import { strToB64 } from './layout.js';
 import { formatDateTime, formatInterval, formatNumber, t } from './i18n.js';
@@ -16,11 +27,19 @@ export async function refreshQueue() {
 
 export const sessionQueue = session => ctx.queueCache.items.filter(i => i.session === session);
 
+/* Which multi-line prompts are opened to their full text. The panel is
+   rebuilt from scratch on every poll, so this cannot live in the DOM; it is
+   pruned against the live queue on each render so removed prompts do not
+   leak keys. */
+const expandedRows = new Set();
+
 export function setQueueChip(chip, card) {
   if (!chip) return;
   const q = sessionQueue(card.session);
   chip.textContent = q.length ? '⏰' + q.length : '';
-  chip.title = q.length ? t('queue.next', { when: fmtWhen(q[0]), prompt: q[0].text }) : '';
+  chip.title = q.length
+    ? t('queue.next', { when: fmtWhen(q[0]), prompt: promptTooltip(q[0].text) })
+    : '';
 }
 
 export const fmtClock = ts => {
@@ -167,21 +186,27 @@ export function groupEl(g, card) {
   };
   el.appendChild(head);
 
-  /* rows: real queue items, plus a rule's embedded steps (read-only) */
+  /* rows: real queue items, plus a rule's embedded steps (read-only). Each
+     row carries the key its expanded/collapsed state is remembered under —
+     the panel is rebuilt on every poll, so the state cannot live in the DOM. */
   const rows = [];
   for (const i of g.rows) {
-    rows.push({ text: i.text, item: i });
-    if (i.steps) for (const s of i.steps) rows.push({ text: s, item: null });
+    rows.push({ text: i.text, item: i, key: i.id });
+    if (i.steps) i.steps.forEach((step, n) => rows.push({ text: step, item: null, key: `${i.id}#${n}` }));
   }
   rows.forEach((r, k) => {
+    const { first, extra } = promptSummary(r.text);
+    const expanded = extra > 0 && expandedRows.has(r.key);
     const row = document.createElement('div');
-    row.className = 'qg-row' + (r.item ? '' : ' ro');
+    row.className = 'qg-row' + (r.item ? '' : ' ro') + (expanded ? ' open' : '');
+    row.dataset.qkey = r.key;
     const dead = r.item && itemDead(r.item);
     const ambiguous = r.item && r.item.state === 'ambiguous';
     const contextBlocked = r.item && r.item.last_context && r.item.last_context.status !== 'ready'
       && !ambiguous && r.item.state !== 'firing';
     const manualAllowed = r.item && !ambiguous && r.item.state !== 'firing' && !dead;
-    row.innerHTML = '<span class="tree"></span><span class="q-text"></span><span class="row-meta"></span>'
+    row.innerHTML = '<span class="tree"></span><button class="q-chev"></button>'
+      + '<span class="q-text"></span><span class="q-nl"></span><span class="row-meta"></span>'
       + (contextBlocked ? '<button class="q-wait"></button>' : '')
       + (manualAllowed ? '<button class="q-now"></button>' : '')
       + (ambiguous ? '<button class="q-ack"></button><button class="q-risk-retry"></button>' : '')
@@ -189,19 +214,54 @@ export function groupEl(g, card) {
       + (r.item ? '<button class="q-del">✕</button>' : '');
     row.querySelector('.tree').textContent =
       rows.length === 1 || k === 0 ? '' : (k === rows.length - 1 ? '└' : '├');
+    /* a multi-line prompt shows its first line and says how many more; the
+       chevron is the only thing that opens the rest, so the list stays one
+       row per prompt no matter how long the prompts are */
+    const chev = row.querySelector('.q-chev');
+    const nl = row.querySelector('.q-nl');
+    if (extra) {
+      chev.textContent = expanded ? '▾' : '▸';
+      chev.title = t(expanded ? 'queue.collapsePrompt' : 'queue.expandPrompt');
+      chev.onclick = event => {
+        event.stopPropagation();
+        if (expanded) expandedRows.delete(r.key); else expandedRows.add(r.key);
+        renderQueueUI();
+      };
+      nl.textContent = '⏎' + formatNumber(extra);
+      nl.title = t('queue.moreLines', { count: formatNumber(extra) });
+    } else {
+      /* the chevron column stays, empty: every row's first line keeps the
+         same left edge whether or not the prompt has more of them */
+      nl.hidden = true;
+    }
     const txt = row.querySelector('.q-text');
-    txt.textContent = r.text;
+    txt.textContent = expanded ? r.text : first;
     if (r.item) {
       const i = r.item;
       txt.title = t('common.edit');
       txt.onclick = () => {
+        /* edit the WHOLE prompt, so open the row first: a collapsed row
+           shows one line and the editor is about to show all of them. The
+           re-render replaces this node, so the click continues on the new
+           one — one gesture, whatever the row's state was. */
+        if (extra && !expanded) {
+          expandedRows.add(r.key);
+          renderQueueUI();
+          const fresh = document.querySelector(`#queue-list .qg-row[data-qkey="${r.key}"] .q-text`);
+          if (fresh) fresh.click();
+          return;
+        }
+        /* the row must stop clipping while it holds a growing editor —
+           a single-line prompt is edited in an unopened row */
+        row.classList.add('editing');
         inlineRename(txt, i.text, v => {
+          row.classList.remove('editing');
           if (v && v !== i.text) {
             inv('queue_update', { id: i.id, text: v }).catch(() => toast(t('error.operation', { operation: t('common.edit') })));
           } else {
             setTimeout(renderQueueUI, 0);   // after blur, so the guard won't skip
           }
-        });
+        }, { multiline: true });
       };
       const del = row.querySelector('.q-del');
       del.title = t('queue.removePrompt');
@@ -256,12 +316,18 @@ export function groupEl(g, card) {
 
 export function renderQueueUI() {
   /* don't clobber an in-progress inline edit of a queued prompt */
-  if (document.activeElement && document.activeElement.tagName === 'INPUT'
+  if (document.activeElement && ['INPUT', 'TEXTAREA'].includes(document.activeElement.tagName)
       && document.activeElement.closest('#queue-list')) return;
   const card = state.view === 'session' && provider.get(state.sessionId);
   if (card) {
     const q = sessionQueue(card.session);
     $('queue-cnt').textContent = q.length || '';
+    const live = new Set();
+    for (const i of q) {
+      live.add(i.id);
+      (i.steps || []).forEach((_, n) => live.add(`${i.id}#${n}`));
+    }
+    for (const key of expandedRows) if (!live.has(key)) expandedRows.delete(key);
     if (ctx.queueOpen) {
       const list = $('queue-list');
       list.innerHTML = '';
@@ -333,6 +399,7 @@ export function setQSrc(tpl) {
     inp.readOnly = false;
     $('q-add-btn').textContent = t('common.add');
   }
+  autoGrowField(inp);
 }
 
 export function hideTplPop() { $('tpl-pop').style.display = 'none'; }
@@ -364,7 +431,7 @@ export function showTplPop() {
   for (const template of tpls) {
     const r = add('t-row', '<span class="t-name"></span><span class="t-n"></span><button class="t-act">✎</button><button class="t-act t-del">✕</button>');
     r.querySelector('.t-name').textContent = template.name;
-    r.querySelector('.t-name').title = template.steps.join('\n');
+    r.querySelector('.t-name').title = promptTooltip(template.steps.join('\n'));
     r.querySelector('.t-n').textContent = t('queue.steps', { count: formatNumber(template.steps.length) });
     r.querySelector('.t-act').title = t('common.rename');
     r.querySelector('.t-del').title = t('common.delete');
@@ -474,6 +541,7 @@ export function initScheduler() {
         if (!text) { $('q-text').focus(); return; }
         await inv('queue_add', { args: { ...base, text, mode, at, every, winFrom, winTo, untilN, untilAt } });
         $('q-text').value = '';
+        autoGrowField($('q-text'));
       }
       $('q-when').value = 'chain';   // natural default for the next one
       syncSentence();
@@ -482,7 +550,16 @@ export function initScheduler() {
     }
   };
 
-  $('q-text').addEventListener('keydown', e => { if (e.key === 'Enter') $('q-add-btn').click(); });
+  $('q-text').addEventListener('input', () => autoGrowField($('q-text')));
+
+  /* a prompt can be many lines, so Enter types one; ⌘↵ is what queues it */
+  $('q-text').addEventListener('keydown', e => {
+    if (e.key !== 'Enter') return;
+    if (e.isComposing || e.keyCode === 229) return;   // IME commit, not submit
+    if (!(e.metaKey || e.ctrlKey)) return;
+    e.preventDefault();
+    $('q-add-btn').click();
+  });
 
   listen('menu-clear', () => {
     if (state.view === 'session' && ctx.term) {
