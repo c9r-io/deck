@@ -559,6 +559,125 @@ fn repeated_selection_clear_then_begin_keeps_the_new_anchor_active() {
     assert_eq!(s.selection_points(), ((2, 0), (5, 0)));
 }
 
+/// A tmux selection anchor is pinned to CONTENT, while the copy cursor is a
+/// VISIBLE row. That asymmetry is the whole reason deck tracks both endpoints
+/// as absolute content rows and only materializes the tmux selection at
+/// pointerup: on a pane that keeps printing, a cursor left alone ends up over
+/// text the pointer never touched, while the anchor stays with its text.
+#[test]
+fn the_copy_cursor_is_a_visible_row_while_the_anchor_is_pinned_to_content() {
+    let s = Server::fixture("selection-drift", 40, 8, "sleep 30");
+    s.write_pane_lines("row", 0, 8);
+    s.run(&["copy-mode", "-H", "-t", "t"]);
+    s.move_copy_cursor(2, 0);
+    s.run(&["send-keys", "-t", "t", "-X", "begin-selection"]);
+    s.move_copy_cursor(4, 0);
+    let anchor_before = s.fmt("#{selection_start_y}");
+    let cursor_before = s.fmt("#{copy_cursor_y}");
+    let text_before = s.run(&["capture-pane", "-p", "-S", "4", "-E", "4", "-t", "t"]);
+
+    // The pane prints while the "drag" is still open.
+    s.write_pane_lines("more", 0, 6);
+
+    assert_eq!(
+        anchor_before,
+        s.fmt("#{selection_start_y}"),
+        "the anchor keeps naming the same content row"
+    );
+    assert_eq!(
+        cursor_before,
+        s.fmt("#{copy_cursor_y}"),
+        "the copy cursor stays on its VISIBLE row"
+    );
+    assert_ne!(
+        text_before,
+        s.run(&["capture-pane", "-p", "-S", "4", "-E", "4", "-t", "t"]),
+        "…so that visible row now carries different text"
+    );
+}
+
+/// Deck builds the real selection in ONE tmux command list, so the server
+/// runs both endpoint walks in a single event-loop pass and no pane output
+/// can move the frame between them. Three things have to hold: the list
+/// produces the same endpoints as placing them one command at a time, its
+/// leading `display-message` reports the history size the list actually ran
+/// with (deck's race check), and its leading `clear-selection` makes the list
+/// restart-safe even though `begin-selection` is a toggle.
+#[test]
+fn one_command_list_places_both_endpoints_and_reports_the_frame_it_ran_with() {
+    let s = Server::fixture("selection-atomic", 40, 12, "sleep 30");
+    s.write_pane_lines("row", 0, 10);
+    s.run(&["copy-mode", "-H", "-t", "t"]);
+    let anchor = (3, 0);
+    let active = (7, 4);
+
+    s.select_in_place(anchor, active);
+    let expected = s.selection_points();
+
+    let mut batch: Vec<String> = ["display-message", "-p", "-t", "t", "#{history_size}"]
+        .iter()
+        .map(|a| (*a).to_string())
+        .collect();
+    let mut push = |args: &[&str]| {
+        batch.push(";".into());
+        batch.extend(args.iter().map(|a| (*a).to_string()));
+    };
+    push(&["send-keys", "-t", "t", "-X", "clear-selection"]);
+    let plans = [anchor, active].map(|(row, col)| {
+        let captured = String::from_utf8(s.run_raw_checked(&[
+            "capture-pane",
+            "-p",
+            "-S",
+            "0",
+            "-E",
+            &row.to_string(),
+            "-t",
+            "t",
+        ]))
+        .expect("frame utf8");
+        copy_cursor_moves(&frame_rows(&captured, row), row, col)
+    });
+    for (index, moves) in plans.iter().enumerate() {
+        push(&["send-keys", "-t", "t", "-X", "top-line"]);
+        let counts = [
+            (moves.descend, "cursor-down"),
+            (u32::from(moves.wrap), "cursor-right"),
+            (moves.descend_after_wrap, "cursor-down"),
+            (moves.steps, "cursor-right"),
+        ];
+        for (count, action) in counts {
+            let repeat = count.to_string();
+            match count {
+                0 => {}
+                1 => push(&["send-keys", "-t", "t", "-X", action]),
+                _ => push(&["send-keys", "-t", "t", "-X", "-N", &repeat, action]),
+            }
+        }
+        if index == 0 {
+            push(&["send-keys", "-t", "t", "-X", "begin-selection"]);
+        }
+    }
+
+    for pass in 0..2 {
+        let history = s.fmt("#{history_size}");
+        let ran_with = s
+            .run_owned(&batch)
+            .expect("atomic placement")
+            .trim()
+            .to_string();
+        assert_eq!(
+            ran_with, history,
+            "pass {pass}: the list must report the frame it ran with"
+        );
+        assert_eq!(s.fmt("#{selection_present}"), "1", "pass {pass}");
+        assert_eq!(
+            s.selection_points(),
+            expected,
+            "pass {pass}: one list must place what two commands place"
+        );
+    }
+}
+
 /// v0.4.11 scrolling model: scroll-up enters copy-mode positioned in history;
 /// scroll-down past the bottom AUTO-EXITS (copy-mode -e). If -e ever stops
 /// working, the terminal gets stuck in copy-mode and looks frozen.

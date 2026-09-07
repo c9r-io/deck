@@ -8,8 +8,14 @@
 // Terminal gesture and selection authority is explicit. A sub-threshold
 // physical gesture stays on xterm's trusted mouse/link path; no synthetic
 // compatibility click is replayed. Crossing the threshold transfers the drag
-// to `selection.js`/tmux and clears speculative xterm selection. tmux owns the
-// directional, end-exclusive endpoints only while dragging. Endpoints are
+// to `selection.js`/tmux and clears speculative xterm selection. While the
+// drag runs tmux holds only a copy CURSOR: a selection makes it repaint the
+// whole selected region after every motion repetition (~19 KB down the PTY
+// per pointer move on a full-screen drag), while the same walk with no
+// selection is free. Deck owns the two endpoints in CONTENT coordinates
+// meanwhile, and reports them in the shape tmux would (directional,
+// `start` = anchor, end-exclusive at the cursor), so the overlay is
+// unchanged. Endpoints are
 // placed with `top-line` + `cursor-down` + `cursor-right` ONLY
 // (`copy_cursor_moves`): `start-of-line`/`end-of-line`/`back-to-indentation`
 // walk to the ends of the WRAPPED logical line and `cursor-left` lands on a
@@ -19,7 +25,10 @@
 // first text, wraps out of it with one `cursor-right`, then descends the rest
 // — without that, a full-screen agent frame (blank rows on top) selected rows
 // the pointer never touched while a shell pane looked fine. Pointerup queues
-// the final update, atomically snapshots tmux into a unique buffer, validates
+// the final update, then builds the real tmux selection ONCE: both endpoint
+// walks and `begin-selection` run in a single tmux command list, so no pane
+// output can move the frame between the anchor and the active endpoint. It
+// then atomically snapshots tmux into a unique buffer, validates
 // the pane token, clears tmux's cursor-bound highlight without moving the
 // viewport, and installs one immutable backend lease (bytes + absolute content
 // coordinates). A plain overlay derived from public `.xterm-screen`, cols and
@@ -63,9 +72,17 @@
 // (an awaited backend check paints a frame without the underline every time
 // the rows repaint); link actions resolve and validate the path before opening.
 // History is 50,000 rows and clipboard extraction is explicitly capped at
-// 64 MiB without truncation. During selection tmux freezes the reading frame
-// while the PTY stream continues through its bounded ACK gate.
-import { inv, uev } from './state.js';
+// 64 MiB without truncation. The PTY stream continues through its bounded ACK
+// gate throughout.
+// A pointer move that stays inside its terminal cell sends nothing: placing
+// the copy cursor where it already is costs three tmux round trips.
+// Two probes measure the drag itself, paired with the backend's `[selection]`
+// lines: `span-mismatch` (always on) reports the rows the pointer crossed
+// against the rows tmux selected — they diverge when an endpoint's content
+// scrolls out of the visible frame, which is the only drift left; `update-rtt`
+// (--debug-logging only) reports one update's round trip and how many pointer
+// moves folded into it.
+import { duev, inv, uev } from './state.js';
 import { toast } from './dialogs.js';
 import {
   createTerminalSelectionModel,
@@ -117,6 +134,17 @@ function terminalSelectionController(pane, onModeChange) {
   let token = 0;
   let suppressLinkUntil = 0;
   let promotedAt = 0;
+  /* Lag/mismatch forensics, paired with the backend's `[selection]` lines.
+     `coalescedMoves` counts the pointer moves folded into the update that is
+     currently in flight — the number that says how far behind the pointer the
+     highlight is running. `edgeScrolled` disarms the span check, because an
+     edge-scrolled drag legitimately selects rows the pointer never sat on. */
+  let coalescedMoves = 0;
+  let edgeScrolled = false;
+  /* The cell the backend was last asked for. A drag emits many pointer moves
+     per terminal cell, and re-sending the same cell repeats three tmux round
+     trips to place the copy cursor where it already is. */
+  let lastSentCell = null;
   let ownerTrace = {
     pointerDown: 0, promoted: 0, trustedClick: 0,
     compatibilityBlocked: 0, ended: 0,
@@ -132,6 +160,13 @@ function terminalSelectionController(pane, onModeChange) {
      promoted. No terminal text, session name or error text can enter. */
   const sev = (detail, a = 0) =>
     uev('terminal-selection', detail, a, promotedAt ? Date.now() - promotedAt : -1);
+  /* `sev` spends its second integer on the selection's age. These two probes
+     need both slots for their own numbers, so they name them explicitly.
+     `sevPair` is always on (it fires only when something is already wrong);
+     `dsevPair` is per-update volume and stays behind --debug-logging. */
+  const clampCount = value => Math.max(0, Math.min(99999, Math.trunc(value) || 0));
+  const sevPair = (detail, a, b) => uev('terminal-selection', detail, clampCount(a), clampCount(b));
+  const dsevPair = (detail, a, b) => duev('terminal-selection', detail, clampCount(a), clampCount(b));
 
   const queue = operation => {
     const pending = opChain.catch(() => {}).then(operation);
@@ -278,18 +313,33 @@ function terminalSelectionController(pane, onModeChange) {
   const requestUpdate = () => {
     if (!gesture || !gesture.promoted || disposed) return;
     updateDirty = true;
+    coalescedMoves += 1;
     if (updateRunning) return;
     updateRunning = true;
     const run = async () => {
       while (updateDirty && gesture && gesture.promoted && !disposed) {
         updateDirty = false;
+        const coalesced = coalescedMoves;
+        coalescedMoves = 0;
+        const startedAt = Date.now();
         const current = gesture;
         const point = { x: current.x, y: current.y };
+        const target = terminalCell(pane, point.x, point.y);
+        // Edge scrolling has to keep firing on a still pointer; an ordinary
+        // move that stayed inside its cell has nothing to tell the backend.
+        if (target && lastSentCell
+            && target.row === lastSentCell.row && target.col === lastSentCell.col
+            && !selectionEdgeScrollLines({ pointerY: point.y, cell: target, status: lastStatus })) {
+          continue;
+        }
         const generation = model.snapshot().generation;
         const currentToken = token;
         try {
           const result = await queue(() => updateAt(currentToken, point, true));
           const { status, cell, edgeLines } = result;
+          if (edgeLines) edgeScrolled = true;
+          lastSentCell = { row: cell.row, col: cell.col };
+          dsevPair('update-rtt', Date.now() - startedAt, coalesced);
           model.move({ row: cell.row, col: cell.col });
           if (currentToken !== token || !model.apply(generation, status)) continue;
           lastStatus = status;
@@ -328,6 +378,9 @@ function terminalSelectionController(pane, onModeChange) {
     token = nextSelectionToken++;
     frozen = false;
     promotedAt = Date.now();
+    coalescedMoves = 0;
+    edgeScrolled = false;
+    lastSentCell = null;
     sev('promote', Math.abs(active.row - anchor.row) + 1);
     const currentToken = token;
     const generation = model.begin({ row: anchor.row, col: anchor.col });
@@ -451,6 +504,20 @@ function terminalSelectionController(pane, onModeChange) {
       lastStatus = status;
       frozen = true;
       sev('finish-ok', selectionStatusRows(status));
+      /* The one number that names the reported "the highlight is not what I
+         dragged over" symptom: how many rows the pointer crossed versus how
+         many rows tmux actually selected. They diverge when the pane pushed
+         output into history while the drag was running, because the copy
+         cursor is placed by VISIBLE row while the anchor is pinned to
+         content. Edge-scrolled drags select rows the pointer never sat on by
+         design and are not compared. */
+      const dragged = model.snapshot();
+      const pointerRows = !edgeScrolled && dragged.anchor && dragged.active
+        ? Math.abs(dragged.active.row - dragged.anchor.row) + 1 : 0;
+      const selectedRows = selectionStatusRows(status);
+      if (pointerRows && selectedRows !== pointerRows) {
+        sevPair('span-mismatch', pointerRows, selectedRows);
+      }
       renderOverlay();
       if (onModeChange) onModeChange(true, lastStatus, { dragging: false, frozen: true });
     })).catch(error => {

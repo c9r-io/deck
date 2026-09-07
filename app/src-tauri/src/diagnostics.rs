@@ -228,8 +228,17 @@ const SMOKE_CHECKS: &[&str] = &[
 /// rest are the trusted pointerType. `native-cleared` records an xterm
 /// selection appearing (and being cleared) while Deck owned the drag — the
 /// signature of WKWebView's late compatibility mouse replay.
+///
+/// Two labels spend BOTH integers on their own numbers instead of the
+/// selection's age. `span-mismatch` (a = rows the pointer crossed, b = rows
+/// tmux selected) is the frontend half of the drift the backend's
+/// `[selection]` lines count; `update-rtt` (a = ms for one backend update,
+/// b = pointer moves folded into it) is the frontend half of drag lag and is
+/// verbose enough to stay behind --debug-logging.
 const SELECTION_EVENTS: &[&str] = &[
     "promote",
+    "span-mismatch",
+    "update-rtt",
     "start-ok",
     "start-failed",
     "finish-ok",
@@ -610,6 +619,8 @@ mod tests {
             // Labels that reach `uev` through a local wrapper or a builder.
             let indirect: &[(&str, &str, &str)] = &[
                 ("selection.js", "sev('", "terminal-selection"),
+                // `sevPair(` / `dsevPair(` — the two-integer probes.
+                ("selection.js", "sevPair('", "terminal-selection"),
                 ("pure.js", "emit('", "terminal-paste"),
             ];
             for (owner, marker, code) in indirect {
