@@ -7,7 +7,7 @@ const PERSISTED_CARD_KEYS = new Set([
   'id', 'projectId', 'columnId', 'title', 'desc', 'cmd', 'dir', 'session', 'pinned', 'origin',
 ]);
 
-/* A card created by 自动响应 remembers which external item it came from, so
+/* A card created by an automation remembers which trigger item it came from, so
    the same badge on the same message can never create a second card. Only
    identifiers are kept — never the message. */
 export function cardOrigin(c) {

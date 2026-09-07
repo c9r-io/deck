@@ -1,30 +1,39 @@
-// automation.js — 自动化: the project's scheduled automations drawer
+// automation.js — 自动化: the project's automations drawer
 // Part of deck's no-build frontend: native ES modules, no bundler.
 //
 // # Contract
-// An automation is an inbound rule with `source: 'clock'` (settings.json
-// `inbound.rules`, validated by settings-model.js and inbound.rs alike): a
-// schedule, the column it creates cards in, directory, command, template and
-// a finish mode. This module is only the drawer that lists the CURRENT
-// project's clock rules, edits them through `persistInbound` (one durable
-// settings write, the same path Slack rules take), and shows each rule's next
-// slot plus its last runs from the backend ledger (`inbound_runs`). Firing
-// is the backend clock source + inbound.js; closing a finished run is
-// board.js's poll. A rule whose project no longer exists is dropped on the
-// next Board change, so a deleted project never leaves a rule that fires
-// into nothing. Weekday chips and day-of-month options are built here (their
-// labels go through the locale), so the editor is rebuilt on a language
-// change; the drawer itself is re-rendered on every Board transaction and
-// every inbound change while open. A rule's `since` moves to now whenever
-// its schedule changes or it is resumed from pause, so a slot earlier that
-// day is never caught up by the edit itself; how long after its slot a run
-// may still start is the rule's `graceMin` (the backend records a later
-// slot as missed).
+// An automation is an inbound rule (settings.json `inbound.rules`, validated
+// by settings-model.js and inbound.rs alike) with one of two TRIGGERS: a
+// clock (`source: 'clock'`, a schedule; its badge IS its id) or a Slack
+// badge (`source: 'slack'`, the emoji name; one automation per badge across
+// every project, because the dispatcher matches a badge to ONE rule). Both
+// share the rest of the shape — the column it creates cards in, directory,
+// command, template and a finish mode — and both go through the same
+// dispatch (inbound.js) and the same run ledger (`inbound_runs`), so a
+// badge-started card is finished by `board.js` exactly like a clock run.
+// This module is only the drawer that lists the CURRENT project's rules of
+// either trigger, edits them through `persistInbound` (one durable settings
+// write), and shows each rule's next slot (clock) or last runs. Firing is
+// the backend sources + inbound.js; closing a finished run is board.js's
+// poll. The Slack CONNECTION (its switch and tokens) stays in Settings: it
+// is account-level, a rule is project-level. A rule whose project no longer
+// exists is dropped on the next Board change, whatever its trigger, so a
+// deleted project never leaves a rule that fires into nothing. Weekday chips
+// and day-of-month options are built here (their labels go through the
+// locale), so the editor is rebuilt on a language change; the drawer itself
+// is re-rendered on every Board transaction and every inbound change while
+// open. A clock rule's `since` moves to now whenever its schedule changes
+// or it is resumed from pause, so a slot earlier that day is never caught up
+// by the edit itself; how long after its slot a run may still start is the
+// rule's `graceMin` (two choices; a saved value outside them stays offered
+// so an edit never silently rewrites it). A Slack rule has no pause: the
+// backlog it would collect while paused has no honest reading, so it is
+// removed instead.
 import { $, ctx, genId, inv, listen, state, store, uev } from './state.js';
 import { activeProject, provider } from './board.js';
 import { openSession } from './layout.js';
 import { confirmDialog, persistInbound, toast } from './dialogs.js';
-import { hmToMin, minToHM, nextScheduleSlot, toggleClockRule } from './pure.js';
+import { badgeTaken, hmToMin, INBOUND_BADGE_RE, minToHM, nextScheduleSlot, projectRules, ruleByOrigin, toggleClockRule } from './pure.js';
 import { formatNumber, onLocaleChange, t } from './i18n.js';
 import { DEFAULT_GRACE_MIN, GRACE_CHOICES } from './settings-model.js';
 import { fmtClock } from './scheduler.js';
@@ -33,15 +42,18 @@ let editing = null;   // null | { id } (existing) | { id: null } (new)
 let runsCache = [];
 let unsubscribe = null;
 
-export const clockRules = (projectId = state.projectId) =>
-  ((ctx.settings && ctx.settings.inbound && ctx.settings.inbound.rules) || [])
-    .filter(r => r.source === 'clock' && (!projectId || r.projectId === projectId));
+const allRules = () => ((ctx.settings && ctx.settings.inbound && ctx.settings.inbound.rules) || []);
 
-export const clockRuleById = id => clockRules(null).find(r => r.id === id) || null;
+export const rulesOf = (projectId = state.projectId) => projectRules(allRules(), projectId);
+
+/* the automation behind a card's origin, whatever its trigger */
+export const ruleOf = origin => ruleByOrigin(allRules(), origin);
 
 export const isOpen = () => !$('auto-drawer').hidden;
 
-/* "15 min" / "3 h" / "rest of the day" / "never" in the user's language */
+const slackConnected = () => !!(ctx.settings && ctx.settings.inbound && ctx.settings.inbound.sources.slack.enabled);
+
+/* "15 min" / "3 h" / "the rest of the day" / "never" in the user's language */
 export function graceText(minutes) {
   if (minutes === 0) return t('automation.grace.none');
   if (minutes >= 1440) return t('automation.grace.day');
@@ -63,8 +75,15 @@ export function scheduleText(schedule) {
   return t('automation.schedule.day', { time });
 }
 
+/* what a rule's trigger reads as on its head line */
+export const triggerText = rule => (rule.source === 'clock'
+  ? scheduleText(rule.schedule)
+  : t('automation.trigger.badge', { badge: rule.badge }));
+
+export const ruleLabel = rule => rule.name || (rule.source === 'clock' ? rule.id : `:${rule.badge}:`);
+
 export function refreshAutomationBadge() {
-  const n = clockRules().length;
+  const n = rulesOf().length;
   $('board-auto-count').textContent = n ? formatNumber(n) : '';
   $('board-auto').classList.toggle('on', isOpen());
 }
@@ -104,42 +123,50 @@ function runLine(run) {
 function ruleEl(rule) {
   const project = activeProject();
   const column = project && project.columns.find(c => c.id === rule.columnId);
+  const clock = rule.source === 'clock';
   const el = document.createElement('div');
   el.className = 'auto-rule' + (rule.enabled ? '' : ' off');
   el.innerHTML = '<div class="ar-head"><span class="ar-name"></span><span class="ar-when"></span>'
-    + '<span class="ar-acts"><button class="ar-pause"></button><button class="ar-edit">✎</button><button class="ar-del">✕</button></span></div>'
+    + '<span class="ar-acts">' + (clock ? '<button class="ar-pause"></button>' : '')
+    + '<button class="ar-edit">✎</button><button class="ar-del">✕</button></span></div>'
     + '<div class="ar-body"><div class="ar-kv"></div><div class="ar-runs"></div></div>';
-  el.querySelector('.ar-name').textContent = rule.name || rule.id;
-  el.querySelector('.ar-when').textContent = scheduleText(rule.schedule);
+  el.querySelector('.ar-name').textContent = ruleLabel(rule);
+  el.querySelector('.ar-when').textContent = triggerText(rule);
   const pause = el.querySelector('.ar-pause');
-  pause.textContent = rule.enabled ? '⏸' : '▶';
-  pause.title = t(rule.enabled ? 'automation.pause' : 'automation.resume');
-  pause.onclick = () => saveRule(toggleClockRule(rule, Math.floor(Date.now() / 1000)));
+  if (pause) {
+    pause.textContent = rule.enabled ? '⏸' : '▶';
+    pause.title = t(rule.enabled ? 'automation.pause' : 'automation.resume');
+    pause.onclick = () => saveRule(toggleClockRule(rule, Math.floor(Date.now() / 1000)));
+  }
   el.querySelector('.ar-edit').title = t('automation.edit');
   el.querySelector('.ar-edit').onclick = () => openEditor(rule);
   el.querySelector('.ar-del').title = t('automation.delete');
   el.querySelector('.ar-del').onclick = async () => {
-    if (!(await confirmDialog(t('automation.deleteConfirm', { name: rule.name || rule.id })))) return;
+    if (!(await confirmDialog(t('automation.deleteConfirm', { name: ruleLabel(rule) })))) return;
     await persistInbound({ ...ctx.settings.inbound, rules: ctx.settings.inbound.rules.filter(r => r.id !== rule.id) });
     renderAutomations();
   };
   const kv = el.querySelector('.ar-kv');
-  const next = rule.enabled ? nextScheduleSlot(rule.schedule, Math.floor(Date.now() / 1000), rule.since) : null;
   const rows = [
-    ['automation.kv.target', `${column ? column.name : t('settings.inboundRuleMissingTarget')} · ${rule.dir || ctx.HOME}`],
-    ['automation.kv.cmd', rule.cmd || t('settings.inboundRuleShellOnly')],
+    ['automation.kv.target', `${column ? column.name : t('automation.missingTarget')} · ${rule.dir || ctx.HOME}`],
+    ['automation.kv.cmd', rule.cmd || t('automation.shellOnly')],
     ['automation.kv.template', rule.template],
     ['automation.kv.finish', t(rule.finish === 'close' ? 'automation.finish.close' : 'automation.finish.keep')],
-    ['automation.kv.grace', graceText(rule.graceMin ?? DEFAULT_GRACE_MIN)],
-    ['automation.kv.next', rule.enabled ? (next ? fmtClock(next) : '—') : t('automation.paused')],
   ];
+  if (clock) {
+    const next = rule.enabled ? nextScheduleSlot(rule.schedule, Math.floor(Date.now() / 1000), rule.since) : null;
+    rows.push(['automation.kv.grace', graceText(rule.graceMin ?? DEFAULT_GRACE_MIN)]);
+    rows.push(['automation.kv.next', rule.enabled ? (next ? fmtClock(next) : '—') : t('automation.paused')]);
+  } else {
+    rows.push(['automation.kv.connection', t(slackConnected() ? 'automation.slackOn' : 'automation.slackOff')]);
+  }
   for (const [key, value] of rows) {
     const k = document.createElement('span'); k.textContent = t(key);
     const v = document.createElement('b'); v.textContent = value; v.title = value;
     kv.append(k, v);
   }
   const runs = el.querySelector('.ar-runs');
-  const mine = runsCache.filter(r => r.rule === rule.id).slice(-4).reverse();
+  const mine = runsCache.filter(r => r.rule === (clock ? rule.id : rule.badge)).slice(-4).reverse();
   if (!mine.length) runs.hidden = true;
   for (const run of mine) runs.appendChild(runLine(run));
   return el;
@@ -150,7 +177,7 @@ export function renderAutomations() {
   if (!isOpen()) return;
   const list = $('auto-list');
   list.innerHTML = '';
-  const rules = clockRules();
+  const rules = rulesOf();
   if (!rules.length) {
     const empty = document.createElement('div');
     empty.className = 'auto-empty';
@@ -189,8 +216,8 @@ function buildDayControls() {
   buildGraceOptions(Number($('auto-grace').value) || DEFAULT_GRACE_MIN);
 }
 
-/* the grace select: the fixed choices plus, when a saved rule has another
-   value (an older default, a hand-edited settings file), that value too */
+/* the grace select: the two choices plus, when a saved rule has another
+   value (an older choice, a hand-edited settings file), that value too */
 function buildGraceOptions(value) {
   const sel = $('auto-grace');
   sel.innerHTML = '';
@@ -202,10 +229,17 @@ function buildGraceOptions(value) {
   sel.value = String(value);
 }
 
+/* the editor shows the controls of the chosen trigger and nothing of the
+   other: every trigger-bound control carries `q-p-clock` or `q-p-slack` */
 function syncEditor() {
+  const trigger = segGet('auto-trigger');
+  document.querySelectorAll('#auto-editor .q-p').forEach(el => {
+    el.hidden = !el.classList.contains(`q-p-${trigger}`);
+  });
   const unit = $('auto-unit').value;
-  $('auto-days').hidden = unit !== 'week';
-  $('auto-dom').hidden = unit !== 'month';
+  $('auto-days').hidden = trigger !== 'clock' || unit !== 'week';
+  $('auto-dom').hidden = trigger !== 'clock' || unit !== 'month';
+  $('auto-slack-state').textContent = t(slackConnected() ? 'automation.slackOn' : 'automation.slackOffHint');
 }
 
 function fillTargets(rule) {
@@ -222,7 +256,7 @@ function fillTargets(rule) {
   const tpls = (project && project.templates) || [];
   if (!tpls.length) {
     const o = document.createElement('option');
-    o.value = ''; o.textContent = t('settings.inboundNoTemplates');
+    o.value = ''; o.textContent = t('automation.noTemplates');
     ts.appendChild(o);
   }
   for (const tp of tpls) {
@@ -235,8 +269,11 @@ function fillTargets(rule) {
 
 export function openEditor(rule) {
   editing = { id: rule ? rule.id : null };
-  const schedule = rule ? rule.schedule : { unit: 'day', days: [], minute: 540 };
+  const clock = !rule || rule.source === 'clock';
+  const schedule = clock && rule ? rule.schedule : { unit: 'day', days: [], minute: 540 };
+  segSet('auto-trigger', clock ? 'clock' : 'slack');
   $('auto-name').value = rule ? rule.name : '';
+  $('auto-badge').value = rule && !clock ? rule.badge : '';
   $('auto-unit').value = schedule.unit;
   buildDayControls();
   if (schedule.unit === 'week') {
@@ -244,11 +281,11 @@ export function openEditor(rule) {
   }
   if (schedule.unit === 'month') $('auto-dom').value = String(schedule.days[0] || 1);
   $('auto-time').value = minToHM(schedule.minute);
-  buildGraceOptions(rule ? (rule.graceMin ?? DEFAULT_GRACE_MIN) : DEFAULT_GRACE_MIN);
+  buildGraceOptions(rule && clock ? (rule.graceMin ?? DEFAULT_GRACE_MIN) : DEFAULT_GRACE_MIN);
   $('auto-dir').value = rule ? rule.dir : '';
   $('auto-cmd').value = rule ? rule.cmd : 'claude';
   fillTargets(rule);
-  segSet('auto-finish', rule && rule.finish === 'keep' ? 'keep' : 'close');
+  segSet('auto-finish', rule ? (rule.finish === 'close' ? 'close' : 'keep') : 'close');
   syncEditor();
   $('auto-editor').hidden = false;
   $('auto-name').focus();
@@ -264,38 +301,51 @@ function readEditor() {
   const project = activeProject();
   if (!project) return null;
   const fail = (key, focus) => { toast(t(key)); if (focus) $(focus).focus(); return null; };
+  const trigger = segGet('auto-trigger');
   const name = $('auto-name').value.trim();
-  if (!name) return fail('automation.needsName', 'auto-name');
   if ([...name].length > 120) return fail('automation.longName', 'auto-name');
+  const columnId = $('auto-column').value;
+  if (!columnId) return fail('automation.needsColumn', 'auto-column');
+  const template = $('auto-template').value;
+  if (!template) return fail('automation.needsTemplate', 'auto-template');
+  const previous = editing.id ? allRules().find(r => r.id === editing.id) || null : null;
+  const shared = {
+    projectId: project.id, columnId,
+    cmd: $('auto-cmd').value.trim(), template, dir: $('auto-dir').value.trim(),
+    name, enabled: previous ? previous.enabled : true,
+    finish: segGet('auto-finish') === 'keep' ? 'keep' : 'close',
+  };
+  if (trigger === 'slack') {
+    const badge = $('auto-badge').value.trim().replace(/^:|:$/g, '');
+    if (!INBOUND_BADGE_RE.test(badge)) return fail('automation.invalidBadge', 'auto-badge');
+    const id = previous && previous.source === 'slack' ? previous.id : genId('R');
+    if (badgeTaken(allRules(), badge, id)) { toast(t('automation.badgeTaken', { badge })); $('auto-badge').focus(); return null; }
+    return { id, source: 'slack', badge, ...shared, enabled: true };
+  }
+  if (!name) return fail('automation.needsName', 'auto-name');
   const unit = $('auto-unit').value;
   const days = unit === 'week' ? pressedDays() : unit === 'month' ? [Number($('auto-dom').value)] : [];
   if (unit === 'week' && !days.length) return fail('automation.needsDays');
   const time = $('auto-time').value;
   if (!time) return fail('automation.needsTime', 'auto-time');
-  const columnId = $('auto-column').value;
-  if (!columnId) return fail('automation.needsColumn', 'auto-column');
-  const template = $('auto-template').value;
-  if (!template) return fail('automation.needsTemplate', 'auto-template');
   /* the id doubles as the rule's badge, which the backend spells lowercase */
-  const id = editing.id || genId('a');
-  const previous = editing.id ? clockRuleById(editing.id) : null;
+  const id = previous && previous.source === 'clock' ? previous.id : genId('a');
   const schedule = { unit, days, minute: hmToMin(time) };
   /* a changed schedule starts fresh: a slot earlier today never fires late */
-  const changed = !previous || JSON.stringify(previous.schedule) !== JSON.stringify(schedule);
+  const changed = !previous || previous.source !== 'clock' || JSON.stringify(previous.schedule) !== JSON.stringify(schedule);
   return {
-    id, source: 'clock', badge: id, projectId: project.id, columnId,
-    cmd: $('auto-cmd').value.trim(), template, dir: $('auto-dir').value.trim(),
-    name, enabled: previous ? previous.enabled : true, schedule,
-    finish: segGet('auto-finish') === 'keep' ? 'keep' : 'close',
+    id, source: 'clock', badge: id, ...shared, schedule,
     graceMin: Number($('auto-grace').value),
     since: changed ? Math.floor(Date.now() / 1000) : previous.since,
   };
 }
 
 async function saveRule(rule) {
-  const rules = ctx.settings.inbound.rules.some(r => r.id === rule.id)
-    ? ctx.settings.inbound.rules.map(r => (r.id === rule.id ? rule : r))
-    : [...ctx.settings.inbound.rules, rule];
+  /* a trigger change gives the rule a new id: the old entry goes */
+  const oldId = editing && editing.id;
+  const rest = ctx.settings.inbound.rules.filter(r => r.id !== rule.id && r.id !== oldId);
+  const at = ctx.settings.inbound.rules.findIndex(r => r.id === rule.id || r.id === oldId);
+  const rules = at < 0 ? [...rest, rule] : [...rest.slice(0, at), rule, ...rest.slice(at)];
   const ok = await persistInbound({ ...ctx.settings.inbound, rules });
   renderAutomations();
   return ok;
@@ -304,9 +354,9 @@ async function saveRule(rule) {
 /* rules pointing at a project that is gone fire into nothing forever;
    drop them the moment the Board says so */
 async function pruneOrphans() {
-  const rules = (ctx.settings && ctx.settings.inbound && ctx.settings.inbound.rules) || [];
+  const rules = allRules();
   const live = new Set(store.projects.map(p => p.id));
-  const kept = rules.filter(r => r.source !== 'clock' || live.has(r.projectId));
+  const kept = rules.filter(r => live.has(r.projectId));
   if (kept.length === rules.length) return;
   uev('inbound', 'rule-orphaned');
   await persistInbound({ ...ctx.settings.inbound, rules: kept });
@@ -318,7 +368,7 @@ export async function openAutomations() {
   closeEditor();
   await refreshRuns();
   renderAutomations();
-  if (!clockRules().length) openEditor(null);
+  if (!rulesOf().length) openEditor(null);
 }
 
 export function closeAutomations() {
@@ -345,6 +395,9 @@ export function initAutomation() {
     if (await saveRule(rule)) { closeEditor(); toast(t('automation.saved')); }
   };
   $('auto-unit').addEventListener('change', syncEditor);
+  $('auto-trigger').querySelectorAll('button').forEach(b => {
+    b.onclick = () => { segSet('auto-trigger', b.dataset.v); syncEditor(); };
+  });
   $('auto-finish').querySelectorAll('button').forEach(b => {
     b.onclick = () => segSet('auto-finish', b.dataset.v);
   });

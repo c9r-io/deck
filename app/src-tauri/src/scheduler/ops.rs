@@ -149,6 +149,11 @@ pub(crate) struct QueueAddArgs {
     pub(crate) tpl: Option<String>,
     pub(crate) tpl_idx: Option<u32>,
     pub(crate) tpl_total: Option<u32>,
+    /// chain only: the list (group id) the row joins. The panel shows one
+    /// list per group, and a row is added to a particular list, so the
+    /// newest-group fallback below is only for callers that do not say.
+    #[serde(default)]
+    pub(crate) group: Option<String>,
 }
 
 /// Queue text is what tmux pastes, byte for byte, so it is stored the way it
@@ -234,6 +239,12 @@ pub(crate) fn validate_add(a: &QueueAddArgs) -> Result<(), DeckError> {
         return Err(DeckError::new(
             ErrorKind::Other,
             "quiet time only applies after the previous prompt",
+        ));
+    }
+    if a.mode != "chain" && a.group.is_some() {
+        return Err(DeckError::new(
+            ErrorKind::Other,
+            "only a follow-up row joins a list",
         ));
     }
     if let (Some(from), Some(until)) = (a.not_before, a.until_at) {
@@ -327,14 +338,21 @@ fn add_item_bound(
     let (group, seq) = if args.mode == "every" {
         (None, None) // rules carry no group; their iterations get one at spawn
     } else if args.mode == "chain" {
-        // join the newest existing group of this session (matches the queue
-        // panel's visual grouping); otherwise start a group of its own
-        let joined = q
-            .items
-            .iter()
-            .rev()
-            .filter(|i| i.session == args.session && i.mode != "every")
-            .find_map(|i| i.group.clone());
+        // join the list the caller named when this session has it, else the
+        // newest existing group of this session (matches the queue panel's
+        // visual grouping); otherwise start a group of its own
+        let named = args.group.as_deref().filter(|g| {
+            q.items.iter().any(|i| {
+                i.session == args.session && i.mode != "every" && i.group.as_deref() == Some(g)
+            })
+        });
+        let joined = named.map(str::to_string).or_else(|| {
+            q.items
+                .iter()
+                .rev()
+                .filter(|i| i.session == args.session && i.mode != "every")
+                .find_map(|i| i.group.clone())
+        });
         match joined {
             Some(g) => {
                 let max = q
@@ -454,6 +472,30 @@ pub(crate) fn update_text(q: &mut QueueState, id: &str, text: String) -> Result<
     Ok(())
 }
 
+/// Pure core of queue_update's `steps`: a rule's follow-up rows 2..N are
+/// replaced wholesale (already normalized, empties dropped). Only a rule
+/// holds embedded steps; on any other item the field is refused so a caller
+/// cannot silently attach rows that would never fire.
+pub(crate) fn update_steps(
+    q: &mut QueueState,
+    id: &str,
+    steps: Vec<String>,
+) -> Result<(), DeckError> {
+    firing_conflict(q, id)?;
+    match q.items.iter_mut().find(|i| i.id == id) {
+        Some(item) if item.mode == "every" => {
+            item.steps = steps;
+            item.revision = item.revision.wrapping_add(1);
+            Ok(())
+        }
+        Some(_) => Err(DeckError::new(
+            ErrorKind::Other,
+            "only a repeating list holds follow-up rows",
+        )),
+        None => Ok(()),
+    }
+}
+
 /// Pure core of queue_remove / queue_skip.
 pub(crate) fn remove_item(q: &mut QueueState, id: &str) -> Result<bool, DeckError> {
     firing_conflict(q, id)?;
@@ -538,20 +580,43 @@ pub(crate) fn acknowledge_ambiguous(q: &mut QueueState, id: &str) -> Result<(), 
     Ok(())
 }
 
+/// Edit a queued prompt's text, or (rules only) replace its follow-up rows
+/// with `steps`. Exactly one of the two is given per call: the row editor
+/// edits one prompt, the list footer/delete edits the step list.
 #[tauri::command]
 pub(crate) fn queue_update(
     state: State<'_, Queues>,
     app: AppHandle,
     id: String,
-    text: String,
+    text: Option<String>,
+    steps: Option<Vec<String>>,
 ) -> Result<(), DeckError> {
-    let text = normalize_prompt(&text);
-    if text.is_empty() {
-        return Err(DeckError::new(ErrorKind::Other, "empty prompt"));
+    match (text, steps) {
+        (Some(text), None) => {
+            let text = normalize_prompt(&text);
+            if text.is_empty() {
+                return Err(DeckError::new(ErrorKind::Other, "empty prompt"));
+            }
+            // a failed save must not leave the new text in memory: the
+            // scheduler would then send a prompt the user was told was not
+            // saved
+            with_queue(&state.q, &save_queue, |q| update_text(q, &id, text))?;
+        }
+        (None, Some(steps)) => {
+            let steps: Vec<String> = steps
+                .iter()
+                .map(|s| normalize_prompt(s))
+                .filter(|s| !s.is_empty())
+                .collect();
+            with_queue(&state.q, &save_queue, |q| update_steps(q, &id, steps))?;
+        }
+        _ => {
+            return Err(DeckError::new(
+                ErrorKind::Other,
+                "queue_update takes a text or a step list",
+            ))
+        }
     }
-    // a failed save must not leave the new text in memory: the scheduler
-    // would then send a prompt the user was told was not saved
-    with_queue(&state.q, &save_queue, |q| update_text(q, &id, text))?;
     let _ = app.emit("queue-changed", ());
     Ok(())
 }

@@ -1,4 +1,4 @@
-//! The clock source of auto-respond ("自动化"): a `clock` rule's schedule
+//! The clock trigger of automations ("自动化"): a `clock` rule's schedule
 //! turns local-time slots into inbound events.
 //!
 //! # Contract

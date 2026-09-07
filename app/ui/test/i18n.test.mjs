@@ -72,7 +72,7 @@ test('switching locale immediately refreshes text, titles, placeholders and lang
   setLocale('zh-Hans');
   applyTranslations(root);
   assert.equal(text.textContent, '设置');
-  assert.match(titled.title, /定时 prompt/);
+  assert.match(titled.title, /列表/);
   assert.match(input.placeholder, /prompt/);
   assert.equal(globalThis.document.documentElement.lang, 'zh-Hans');
   delete globalThis.document;

@@ -6,7 +6,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   sessionName, fmtMem, fmtEvery, minToHM, hmToMin, winHas, hasWindow,
-  nextFire, groupQueue, groupSteps, itemDead, blockedBy,
+  nextFire, groupQueue, groupSteps, itemDead, blockedBy, listKey, listRepeats, listScheduleArgs, projectRules, ruleByOrigin, badgeTaken,
   chainQuietHint, contextStatusKey, CHAIN_QUIET_SECS, shQuote, quickBarLayout, rectsOverlap,
   MIN_QUIET_SECS, MAX_QUIET_SECS, quietSecsOf, localEpoch, isoDate, isoTime,
   scheduleMatchesDay, nextScheduleSlot, createConfirmationCounter, isoWeekday, daysInMonth, runFinishHolds, toggleClockRule,
@@ -295,6 +295,54 @@ test('groupQueue groups by explicit group id; rules stand alone', () => {
 test('groupSteps flattens embedded template steps in order', () => {
   const g = { rows: [item('r', 'every', { steps: ['s2', 's3'] }), item('c', 'chain')] };
   assert.deepEqual(groupSteps(g), ['t-r', 's2', 's3', 't-c']);
+});
+
+test('a list is keyed by its group, a repeating list by its rule', () => {
+  const g = { head: item('a', 'at', { group: 'g1' }), rows: [] };
+  assert.equal(listKey(g), 'g1');
+  assert.equal(listRepeats(g), false);
+  const r = { head: item('r', 'every'), rows: [] };
+  assert.equal(listKey(r), 'r');
+  assert.equal(listRepeats(r), true);
+  assert.equal(listKey({ head: item('lone', 'chain'), rows: [] }), 'lone', 'a legacy row without a group stands for itself');
+});
+
+test('the new-list form maps to an at head or an every rule', () => {
+  const now = 1_000_000;
+  assert.deepEqual(listScheduleArgs({}, now).args, {
+    mode: 'at', at: now, quietSecs: null, every: null, notBefore: null, winFrom: null, winTo: null, untilN: null, untilAt: null,
+  }, 'no fields: a one-shot list starting now');
+  assert.equal(listScheduleArgs({ notBefore: now + 600 }, now).args.at, now + 600);
+  assert.deepEqual(listScheduleArgs({ notBefore: now - 1 }, now), { error: 'queue.pastTime', focus: 'q-time' },
+    'a past instant is refused, never rolled to tomorrow');
+  const rep = listScheduleArgs({ every: 7200, notBefore: now - 1, winFrom: 540, winTo: 1080, untilN: 5 }, now).args;
+  assert.equal(rep.mode, 'every');
+  assert.equal(rep.every, 7200);
+  assert.equal(rep.notBefore, now - 1, 'a repeating list may start in the past: nextFire catches up');
+  assert.equal(rep.at, null);
+  assert.deepEqual([rep.winFrom, rep.winTo, rep.untilN, rep.untilAt], [540, 1080, 5, null]);
+  assert.deepEqual(listScheduleArgs({ every: 300, winFrom: 540 }, now), { error: 'queue.setWindow', focus: 'q-win-a' });
+  assert.deepEqual(listScheduleArgs({ every: 300, notBefore: now + 100, untilAt: now + 50 }, now),
+    { error: 'queue.stopBeforeStart', focus: 'q-until-t' });
+  assert.equal(listScheduleArgs({ every: 300, untilAt: now + 50 }, now).args.untilAt, now + 50);
+});
+
+test('automations are looked up per project and by a card origin', () => {
+  const rules = [
+    { id: 'a1', source: 'clock', badge: 'a1', projectId: 'P1', name: 'morning' },
+    { id: 'R1', source: 'slack', badge: 'bug', projectId: 'P1' },
+    { id: 'R2', source: 'slack', badge: 'deck', projectId: 'P2' },
+  ];
+  assert.deepEqual(projectRules(rules, 'P1').map(r => r.id), ['a1', 'R1']);
+  assert.deepEqual(projectRules(rules, 'P1', 'slack').map(r => r.id), ['R1']);
+  assert.deepEqual(projectRules(null, 'P1'), []);
+  assert.equal(ruleByOrigin(rules, { source: 'clock', key: '1', badge: 'a1' }).name, 'morning');
+  assert.equal(ruleByOrigin(rules, { source: 'slack', key: 'C/1', badge: 'bug' }).id, 'R1');
+  assert.equal(ruleByOrigin(rules, { source: 'slack', key: 'C/1', badge: 'a1' }), null, 'a clock id is not a slack badge');
+  assert.equal(ruleByOrigin(rules, null), null);
+  assert.equal(badgeTaken(rules, 'bug'), true);
+  assert.equal(badgeTaken(rules, 'bug', 'R1'), false, 'editing the rule that owns it');
+  assert.equal(badgeTaken(rules, 'a1'), false, 'clock ids do not take badges');
 });
 
 test('itemDead / blockedBy mirror the backend blocking rule', () => {

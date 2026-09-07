@@ -8,7 +8,7 @@ import { clearSeparators, closePaneBySid, hasPane, leaveSessionView, openSession
 import { SHELL_FG, showProjectCtx, showSessionCtx } from './terminal.js';
 import { renderQueueUI, setQueueChip, updateQuietHints } from './scheduler.js';
 import { formatNumber, t } from './i18n.js';
-import { clockRuleById, renderAutomations } from './automation.js';
+import { renderAutomations, ruleOf } from './automation.js';
 import { createDefaultColumns, migrateColumnSemantics } from './board-defaults.js';
 export { migrateColumnSemantics } from './board-defaults.js';
 
@@ -353,7 +353,7 @@ export const provider = {
 /* a card an automation created: tell the run ledger it is over. Unknown
    cards are a backend no-op, so every close path may call this. */
 function noteRunEnded(card) {
-  if (!card || !card.origin || card.origin.source !== 'clock') return;
+  if (!card || !card.origin) return;
   inv('inbound_run_ended', { card: card.id }).catch(() => {});
 }
 
@@ -369,9 +369,9 @@ function noteRunEnded(card) {
 const runConfirm = createConfirmationCounter(3);
 const runRetirement = createExitRetirementTracker();
 function observeRunFinish(c, info) {
-  if (!info.alive || !c.origin || c.origin.source !== 'clock') { runConfirm.forget(c.id); return; }
+  if (!info.alive || !c.origin) { runConfirm.forget(c.id); return; }
   const holds = runFinishHolds({
-    rule: clockRuleById(c.origin.badge),
+    rule: ruleOf(c.origin),
     queued: (ctx.queueCache.items || []).some(i => i.session === c.session),
     agent: info.agent, fg: info.fg, alive: true,
     stopped: c.status === 'stopped', viewing: hasPane(c.session),
@@ -801,8 +801,8 @@ export function cardEl(s) {
   setMemChip(el.querySelector('.mem-chip'), s);
   setQueueChip(el.querySelector('.q-chip'), s);   // self-fill: survives card rebuilds
   const autoChip = el.querySelector('.auto-chip');
-  const rule = s.origin && s.origin.source === 'clock' ? clockRuleById(s.origin.badge) : null;
-  autoChip.textContent = rule ? '↻ ' + (rule.name || rule.id) : '';
+  const rule = ruleOf(s.origin);
+  autoChip.textContent = rule ? '↻ ' + (rule.name || (rule.source === 'clock' ? rule.id : `:${rule.badge}:`)) : '';
   autoChip.hidden = !rule;
   el.querySelector('.cmd').textContent = s.cmd ? '$ ' + s.cmd : '';
   el.querySelector('.dir').textContent = s.dir;

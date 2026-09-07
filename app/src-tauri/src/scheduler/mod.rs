@@ -1,10 +1,12 @@
-//! Scheduled prompts: at (one instant, any day) / chain (quiet-based, with a
-//! per-item quiet time) / every (recurring rules: a minute cadence inside an
-//! optional daily window, with an optional start instant and stop) +
-//! per-project templates. Calendar cadences (every day / weekday / day of
-//! month) deliberately do NOT live on a card: a standing job is a Board-level
-//! automation that creates a fresh card per run, not a rule pinning one
-//! long-lived session. A persisted firing intent is
+//! Lists (the ⏱ panel): at (a list's "not before" instant, any day) / chain
+//! (a row, quiet-based, with a per-row quiet time; joins the list it names
+//! via `QueueAddArgs.group`) / every (a repeating list: a minute cadence
+//! inside an optional daily window, with the same "not before" as its start
+//! and a stop; its rows 2..N are embedded `steps`, replaced wholesale by
+//! `queue_update { steps }`) + per-project templates. Calendar cadences
+//! (every day / weekday / day of month) deliberately do NOT live on a card:
+//! a standing job is a Board-level automation that creates a fresh card per
+//! run, not a rule pinning one long-lived session. A persisted firing intent is
 //! deliberately treated as ambiguous after a crash: deck neither claims it
 //! succeeded nor sends it again until the user resolves it. Tick logic is
 //! pure and unit-tested; the thread only adds IO.

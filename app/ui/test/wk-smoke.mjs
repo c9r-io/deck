@@ -1274,7 +1274,8 @@ async function multilinePromptSmoke(card) {
 
   const text = 'review the diff\n  - file:line\n  - the smallest fix';
   field.value = text;
-  $('q-mode').querySelector('[data-v="at"]').click();
+  $('q-start').value = 'date';
+  $('q-start').dispatchEvent(new Event('change'));
   $('q-quick').value = '300';
   $('q-quick').dispatchEvent(new Event('change'));
   field.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', metaKey: true, bubbles: true }));

@@ -300,6 +300,83 @@ fn migration_derives_groups_from_legacy_adjacency() {
     assert_eq!(q.items.iter().find(|i| i.id == "t").unwrap().group, None);
 }
 
+#[test]
+fn a_named_list_is_joined_and_an_unknown_one_falls_back() {
+    // two lists on one session: an "at" head each, the newest last
+    let mut q = qs(vec![]);
+    let mut first = add_args("s", "first");
+    first.mode = "at".into();
+    first.at = Some(NOW + 10);
+    add_item(&mut q, first, "first".into()).unwrap();
+    let mut second = add_args("s", "second");
+    second.mode = "at".into();
+    second.at = Some(NOW + 20);
+    add_item(&mut q, second, "second".into()).unwrap();
+    let first_group = q.items[0].group.clone().unwrap();
+    let second_group = q.items[1].group.clone().unwrap();
+    assert_ne!(first_group, second_group);
+    // a row that names the OLDER list joins it, after its head
+    let mut row = add_args("s", "row");
+    row.mode = "chain".into();
+    row.group = Some(first_group.clone());
+    add_item(&mut q, row, "row".into()).unwrap();
+    let joined = q.items.iter().find(|i| i.text == "row").unwrap();
+    assert_eq!(joined.group.as_deref(), Some(first_group.as_str()));
+    assert_eq!(joined.seq, Some(2));
+    // a row naming a list this session does not have falls back to the
+    // list of the most recently added row (the pre-list behaviour)
+    let mut stray = add_args("s", "stray");
+    stray.mode = "chain".into();
+    stray.group = Some("nope".into());
+    add_item(&mut q, stray, "stray".into()).unwrap();
+    let stray = q.items.iter().find(|i| i.text == "stray").unwrap();
+    assert_eq!(stray.group.as_deref(), Some(first_group.as_str()));
+    assert_eq!(stray.seq, Some(3));
+    let _ = second_group;
+    // a list of another session is never joined, even by name
+    let mut other = add_args("o", "other");
+    other.mode = "chain".into();
+    other.group = Some(first_group.clone());
+    add_item(&mut q, other, "other".into()).unwrap();
+    let other = q.items.iter().find(|i| i.text == "other").unwrap();
+    assert_ne!(other.group.as_deref(), Some(first_group.as_str()));
+    // the field is a chain-only field
+    let mut timed = add_args("s", "timed");
+    timed.mode = "at".into();
+    timed.at = Some(NOW + 30);
+    timed.group = Some(first_group);
+    assert!(validate_add(&timed).is_err());
+}
+
+#[test]
+fn a_rules_follow_up_rows_are_replaced_wholesale_and_only_on_a_rule() {
+    let mut r = rule(300);
+    r.steps = vec!["s2".into()];
+    let mut q = qs(vec![r, qi("c", "chain")]);
+    update_steps(&mut q, "t", vec!["a".into(), "b".into()]).unwrap();
+    let rule_item = q.items.iter().find(|i| i.id == "t").unwrap();
+    assert_eq!(rule_item.steps, vec!["a".to_string(), "b".to_string()]);
+    assert_eq!(rule_item.revision, 1);
+    update_steps(&mut q, "t", vec![]).unwrap();
+    assert!(q
+        .items
+        .iter()
+        .find(|i| i.id == "t")
+        .unwrap()
+        .steps
+        .is_empty());
+    assert!(
+        update_steps(&mut q, "c", vec!["x".into()]).is_err(),
+        "a one-shot row never holds embedded steps"
+    );
+    assert!(
+        update_steps(&mut q, "missing", vec![]).is_ok(),
+        "gone is a no-op"
+    );
+    q.items[0].state = "firing".into();
+    assert!(update_steps(&mut q, "t", vec![]).is_err(), "never mid-send");
+}
+
 // ---------- finalize / ambiguous crash recovery ----------
 
 #[test]
@@ -484,6 +561,7 @@ fn add_validation_rejects_bad_combinations() {
         tpl: None,
         tpl_idx: None,
         tpl_total: None,
+        group: None,
     };
     assert!(validate_add(&base()).is_ok());
     let mut a = base();
@@ -579,6 +657,7 @@ fn add_validation_covers_quiet_and_start() {
         tpl: None,
         tpl_idx: None,
         tpl_total: None,
+        group: None,
     };
     let mut a = base();
     a.quiet_secs = Some(MIN_QUIET_SECS);
@@ -1704,6 +1783,7 @@ fn add_args(session: &str, text: &str) -> QueueAddArgs {
         tpl: None,
         tpl_idx: None,
         tpl_total: None,
+        group: None,
     }
 }
 

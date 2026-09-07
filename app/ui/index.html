@@ -46,7 +46,7 @@
           <button class="btn primary" id="auto-new" data-i18n="automation.new">＋ New</button>
           <button class="btn icon-btn" id="auto-close" data-i18n-title="automation.closeDrawer" title="Close">✕</button>
         </div>
-        <div class="q-hint auto-hint" data-i18n="automation.hint">At each scheduled time deck creates a fresh card in the chosen column, launches the command and sends the template in order. A slot that comes due while the previous run is still on the Board is skipped. With “close when done”, the card is retired once every prompt is delivered and the agent reports its turn done (or the program exits).</div>
+        <div class="q-hint auto-hint" data-i18n="automation.hint">A clock or a Slack badge opens a fresh card here, launches the command and sends the template.</div>
         <div id="auto-list"></div>
         <div id="auto-editor" hidden>
           <div class="set-row">
@@ -54,6 +54,15 @@
             <input id="auto-name" autocomplete="off" spellcheck="false" maxlength="120" placeholder="morning tests" data-i18n-placeholder="automation.namePlaceholder">
           </div>
           <div class="set-row">
+            <label data-i18n="automation.trigger">Trigger</label>
+            <div class="seg" id="auto-trigger" role="radiogroup" aria-label="Trigger" data-i18n-aria-label="automation.trigger">
+              <button type="button" data-v="clock" aria-pressed="true" data-i18n="automation.trigger.clock">clock</button>
+              <button type="button" data-v="slack" aria-pressed="false" data-i18n="automation.trigger.slack">Slack badge</button>
+            </div>
+            <input id="auto-badge" class="q-p q-p-slack" autocomplete="off" spellcheck="false" maxlength="64" placeholder="bug">
+            <span id="auto-slack-state" class="q-p q-p-slack set-hint"></span>
+          </div>
+          <div class="set-row q-p q-p-clock">
             <label data-i18n="automation.when">When</label>
             <select id="auto-unit">
               <option value="day" data-i18n="automation.unit.day">every day</option>
@@ -64,8 +73,8 @@
             <select id="auto-dom"></select>
             <input type="time" id="auto-time" value="09:00">
           </div>
-          <div class="set-row">
-            <label for="auto-grace" data-i18n="automation.grace">If deck was off</label>
+          <div class="set-row q-p q-p-clock">
+            <label for="auto-grace" data-i18n="automation.grace">If missed</label>
             <select id="auto-grace"></select>
           </div>
           <div class="set-row">
@@ -73,15 +82,15 @@
             <select id="auto-column"></select>
           </div>
           <div class="set-row">
-            <label for="auto-dir" data-i18n="settings.inboundRuleDir">Directory</label>
+            <label for="auto-dir" data-i18n="automation.dir">Directory</label>
             <input id="auto-dir" autocomplete="off" spellcheck="false" placeholder="~/work/project">
           </div>
           <div class="set-row">
-            <label for="auto-cmd" data-i18n="settings.inboundRuleCmd">Command</label>
+            <label for="auto-cmd" data-i18n="automation.cmd">Command</label>
             <input id="auto-cmd" autocomplete="off" spellcheck="false" maxlength="200" placeholder="claude">
           </div>
           <div class="set-row">
-            <label for="auto-template" data-i18n="settings.inboundRuleTemplate">Template</label>
+            <label for="auto-template" data-i18n="automation.template">Template</label>
             <select id="auto-template"></select>
           </div>
           <div class="set-row">
@@ -117,61 +126,49 @@
       </div>
       <div id="queue-panel">
         <div id="queue-list"></div>
-        <div class="q-add">
-          <button class="btn" id="q-src" title="Source — type a prompt, or insert a template (templates are saved per project)" data-i18n-title="queue.sourceTitle">✎</button>
-          <textarea id="q-text" rows="1" placeholder="prompt to send to this session later…" data-i18n-placeholder="queue.placeholder" autocomplete="off" spellcheck="false"></textarea>
-          <button class="btn primary" id="q-add-btn" data-i18n="common.add">Add</button>
-        </div>
-        <div class="q-sentence q-form">
-          <div class="seg" id="q-mode" role="radiogroup" aria-label="When to send" data-i18n-aria-label="queue.mode.label">
-            <button type="button" data-v="chain" aria-pressed="true" data-i18n="queue.mode.chain">after previous</button>
-            <button type="button" data-v="at" aria-pressed="false" data-i18n="queue.mode.at">at a time</button>
-            <button type="button" data-v="every" aria-pressed="false" data-i18n="queue.mode.every">repeat</button>
+        <div class="q-new" id="q-new">
+          <div class="q-sentence q-new-head">
+            <span class="q-new-title" data-i18n="queue.newList">New list</span>
+            <span class="q-sep">·</span>
+            <span data-i18n="queue.notBefore">not before</span>
+            <select id="q-start">
+              <option value="" data-i18n="queue.start.now">now</option>
+              <option value="date" data-i18n="queue.start.date">a date and time…</option>
+            </select>
+            <input type="date" id="q-date" class="q-p q-p-startc">
+            <input type="time" id="q-time" class="q-p q-p-startc">
+            <select id="q-quick" class="q-p q-p-startc">
+              <option value="" data-i18n="queue.quick">quick…</option>
+              <option value="30" data-i18n="queue.quick.30">+30 min</option>
+              <option value="60" data-i18n="queue.quick.60">+1 h</option>
+              <option value="180" data-i18n="queue.quick.180">+3 h</option>
+              <option value="300" data-i18n="queue.quick.300">+5 h</option>
+            </select>
+            <span class="q-sep">·</span>
+            <span data-i18n="queue.repeatLabel">repeat</span>
+            <select id="q-every"></select>
+            <select id="q-win" class="q-p q-p-every">
+              <option value="" data-i18n="queue.window.any">any time of day</option>
+              <option value="540-1080" data-i18n="queue.window.day">only 09:00–18:00</option>
+              <option value="480-1320" data-i18n="queue.window.longDay">only 08:00–22:00</option>
+              <option value="custom" data-i18n="queue.window.custom">only between…</option>
+            </select>
+            <input type="time" id="q-win-a" class="q-p q-p-every q-p-winc"><span id="q-win-dash" class="q-p q-p-every q-p-winc">–</span><input type="time" id="q-win-b" class="q-p q-p-every q-p-winc">
+            <span class="q-p q-p-every" data-i18n="queue.untilLabel">until</span>
+            <select id="q-until" class="q-p q-p-every">
+              <option value="" data-i18n="queue.until.remove">I remove it</option>
+              <option value="n5" data-i18n="queue.until.n5">5 times</option>
+              <option value="n10" data-i18n="queue.until.n10">10 times</option>
+              <option value="n20" data-i18n="queue.until.n20">20 times</option>
+              <option value="date" data-i18n="queue.until.date">a date and time…</option>
+            </select>
+            <input type="date" id="q-until-d" class="q-p q-p-every q-p-untilc"><input type="time" id="q-until-t" class="q-p q-p-every q-p-untilc">
           </div>
-        </div>
-        <div class="q-sentence q-params">
-          <span class="q-p q-p-chain" data-i18n="queue.quietFor">quiet for</span>
-          <select id="q-quiet" class="q-p q-p-chain"></select>
-          <input type="number" id="q-quiet-n" class="q-p q-p-chain q-p-quietc" min="1" step="1" value="3">
-          <select id="q-quiet-u" class="q-p q-p-chain q-p-quietc">
-            <option value="1" data-i18n="queue.unit.s">s</option>
-            <option value="60" selected data-i18n="queue.unit.min">min</option>
-            <option value="3600" data-i18n="queue.unit.h">h</option>
-          </select>
-          <input type="date" id="q-date" class="q-p q-p-at">
-          <input type="time" id="q-time" class="q-p q-p-at">
-          <select id="q-quick" class="q-p q-p-at">
-            <option value="" data-i18n="queue.quick">quick…</option>
-            <option value="30" data-i18n="queue.quick.30">+30 min</option>
-            <option value="60" data-i18n="queue.quick.60">+1 h</option>
-            <option value="180" data-i18n="queue.quick.180">+3 h</option>
-            <option value="300" data-i18n="queue.quick.300">+5 h</option>
-          </select>
-          <span class="q-p q-p-every" data-i18n="queue.everyLabel">every</span>
-          <select id="q-every" class="q-p q-p-every"></select>
-          <select id="q-win" class="q-p q-p-every">
-            <option value="" data-i18n="queue.window.any">any time of day</option>
-            <option value="540-1080" data-i18n="queue.window.day">only 09:00–18:00</option>
-            <option value="480-1320" data-i18n="queue.window.longDay">only 08:00–22:00</option>
-            <option value="custom" data-i18n="queue.window.custom">only between…</option>
-          </select>
-          <input type="time" id="q-win-a" class="q-p q-p-every q-p-winc"><span id="q-win-dash" class="q-p q-p-every q-p-winc">–</span><input type="time" id="q-win-b" class="q-p q-p-every q-p-winc">
-          <span class="q-sep q-p q-p-every">·</span>
-          <span class="q-p q-p-every" data-i18n="queue.from">from</span>
-          <select id="q-start" class="q-p q-p-every">
-            <option value="" data-i18n="queue.start.now">now</option>
-            <option value="date" data-i18n="queue.start.date">a date…</option>
-          </select>
-          <input type="date" id="q-start-d" class="q-p q-p-every q-p-startc"><input type="time" id="q-start-t" class="q-p q-p-every q-p-startc">
-          <span class="q-p q-p-every" data-i18n="queue.untilLabel">until</span>
-          <select id="q-until" class="q-p q-p-every">
-            <option value="" data-i18n="queue.until.remove">I remove it</option>
-            <option value="n5" data-i18n="queue.until.n5">5 times</option>
-            <option value="n10" data-i18n="queue.until.n10">10 times</option>
-            <option value="n20" data-i18n="queue.until.n20">20 times</option>
-            <option value="date" data-i18n="queue.until.date">a date…</option>
-          </select>
-          <input type="date" id="q-until-d" class="q-p q-p-every q-p-untilc"><input type="time" id="q-until-t" class="q-p q-p-every q-p-untilc">
+          <div class="q-add">
+            <button class="btn" id="q-tpl" title="Templates — start this list from one" data-i18n-title="queue.templatesTitle">📋</button>
+            <textarea id="q-text" rows="1" placeholder="first line of the new list — ⌘↵ to add" data-i18n-placeholder="queue.placeholder" autocomplete="off" spellcheck="false"></textarea>
+            <button class="btn primary" id="q-add-btn" data-i18n="common.add">Add</button>
+          </div>
         </div>
         <div class="q-hint" data-i18n="queue.explainer">Prompts are typed into the session at the scheduled moment.</div>
         <div id="tpl-pop"></div>
@@ -326,14 +323,14 @@
               <div class="set-hint" data-i18n="settings.codexHooksHint">Off by default. If enabled, deck adds four hooks to ~/.codex/hooks.json so cards can show “needs input” and “turn finished”. Your own hooks and notify program keep working alongside. Hooks send only a fixed status word and the pane id — never prompts, output, or paths. Turning this off removes exactly those hooks.</div>
             </details>
             <div class="set-row">
-              <label data-i18n="settings.inbound">Auto-respond</label>
+              <label data-i18n="settings.slack">Slack</label>
               <span id="set-inbound-status" style="color:var(--muted)">
               </span>
               <button class="btn" id="set-inbound-check" style="margin-left:auto" data-i18n="settings.inboundCheckNow">Check now</button>
             </div>
-            <div class="set-hint" data-i18n="settings.inboundHint">A badge (emoji reaction) you put on a message in a connected service starts a new session here: one card in the column the rule names, launched with the rule’s command, then the rule’s template prompts with the message filled in. Cards are never moved automatically, and deck never writes back.</div>
+            <div class="set-hint" data-i18n="settings.slackHint">A badge you put on a Slack message opens a card through the project’s automations (↻ on the Board). deck never writes to Slack.</div>
             <div class="set-row">
-              <label for="set-inbound-slack" data-i18n="settings.inboundSlack">Slack</label>
+              <label for="set-inbound-slack" data-i18n="settings.slackConnect">Connect</label>
               <input type="checkbox" id="set-inbound-slack">
               <button class="btn" id="set-inbound-setup" style="margin-left:auto" data-i18n="settings.inboundSetup">Create the Slack app…</button>
             </div>
@@ -355,43 +352,6 @@
               <summary data-i18n="settings.details">Learn more</summary>
               <div class="set-hint" data-i18n="settings.inboundSlackHint">Tokens are kept in your macOS Keychain, never under ~/.deck, and are never shown again here. The user token finds your badged messages (search, about a minute behind); the app token hears new badges instantly. Only your own reactions count. There is no token without installing the app yourself: Slack has no OAuth redirect to a local app and no API that mints app-level tokens.</div>
             </details>
-            <div class="set-row" style="align-items:flex-start">
-              <label data-i18n="settings.inboundRules">Rules</label>
-              <div id="set-inbound-rules" class="inbound-rules">
-              </div>
-            </div>
-            <div id="set-inbound-editor" class="inbound-editor" style="display:none">
-              <div class="set-row">
-                <label for="set-inbound-badge" data-i18n="settings.inboundRuleBadge">Badge</label>
-                <input id="set-inbound-badge" autocomplete="off" spellcheck="false" placeholder="deck">
-              </div>
-              <div class="set-row">
-                <label for="set-inbound-project" data-i18n="settings.inboundRuleTarget">Create in</label>
-                <select class="col-select" id="set-inbound-project">
-                </select>
-                <select class="col-select" id="set-inbound-column">
-                </select>
-              </div>
-              <div class="set-row">
-                <label for="set-inbound-dir" data-i18n="settings.inboundRuleDir">Directory</label>
-                <input id="set-inbound-dir" autocomplete="off" spellcheck="false" placeholder="~/work/project">
-              </div>
-              <div class="set-row">
-                <label for="set-inbound-cmd" data-i18n="settings.inboundRuleCmd">Command</label>
-                <input id="set-inbound-cmd" autocomplete="off" spellcheck="false" placeholder="claude">
-              </div>
-              <div class="set-row">
-                <label for="set-inbound-template" data-i18n="settings.inboundRuleTemplate">Template</label>
-                <select class="col-select" id="set-inbound-template">
-                </select>
-              </div>
-              <div class="set-hint" data-i18n="settings.inboundRuleHint">Templates belong to the chosen project. The first step is sent once the command is in the foreground; later steps follow in chain order. Placeholders: {{msg.text}} {{msg.from}} {{msg.where}} {{msg.link}}. A step that starts with a slash command hands the message to that skill.</div>
-              <div class="set-actions" style="gap:8px">
-                <button class="btn" id="set-inbound-cancel" data-i18n="common.cancel">Cancel</button>
-                <button class="btn primary" id="set-inbound-save" data-i18n="common.save">Save</button>
-              </div>
-            </div>
-            <div class="set-hint" data-i18n="settings.inboundRulesHint">One rule per badge. A message with several badges makes one card per rule; the same badge on the same message only ever makes one. Badges that already exist when a rule is added are left alone.</div>
           </div>
         </section>
         <section class="set-panel" id="set-panel-data" aria-labelledby="set-heading-data" hidden>

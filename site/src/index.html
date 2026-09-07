@@ -101,11 +101,11 @@
 
     <section class="shell section">
       <div class="boundary">
-        <div><p class="eyebrow">Scheduled prompts, with boundaries</p><h2>Queue work you can reason about.</h2><p class="hero-copy">Schedule a prompt for later, chain it after a quiet period, or repeat it on a cadence. deck records delivery state and makes ambiguous outcomes visible.</p></div>
+        <div><p class="eyebrow">Lists, with boundaries</p><h2>Queue work you can reason about.</h2><p class="hero-copy">Give a card a list of prompts: each row goes once the session is quiet, not before a time you set, and again on every interval if you want. deck records delivery state and makes ambiguous outcomes visible.</p></div>
         <div class="boundary-list">
           <div class="boundary-item"><strong>CONTEXT CHECKED</strong><span>Before sending, deck rechecks the exact tmux server, session, window, pane, process generation, and—when known—the foreground executable.</span></div>
           <div class="boundary-item"><strong>QUIET IS NOT READY</strong><span>A quiet session may be waiting for input, running a silent task, or doing nothing. deck does not read terminal content to decide.</span></div>
-          <div class="boundary-item"><strong>APP MUST BE RUNNING</strong><span>The queue survives restarts, but deck must be open for a scheduled prompt to fire. The underlying tmux sessions survive independently.</span></div>
+          <div class="boundary-item"><strong>APP MUST BE RUNNING</strong><span>Lists survive restarts, but deck must be open for a row to fire. The underlying tmux sessions survive independently.</span></div>
         </div>
       </div>
     </section>

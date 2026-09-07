@@ -87,11 +87,11 @@ loaded by `ui/index.html`; xterm.js vendored in `app/ui/vendor/`. Backend
 | Terminal scroll + token-bound selection lease commands | `terminal.rs`, `terminal_selection.rs`, `terminal_scroll.rs` |
 | Pointer/selection authority, overlay, wheel routing (frontend) | `ui/js/selection.js`, `layout.js` |
 | Completion bar, links, context menus | `ui/js/terminal.js`, `links.rs` |
-| Scheduled prompts: queue model, selection, delivery state machine, tick | `scheduler/` (+ `docs/scheduler-context-safety.md`), `context.rs`, `ui/js/scheduler.js` |
-| Prompt templates | `ui/js/templates.js` |
+| Lists (the ⏱ panel): queue model, selection, delivery state machine, tick | `scheduler/` (+ `docs/scheduler-context-safety.md`), `context.rs`, `ui/js/scheduler.js` |
+| Templates (saved lists, shared by cards and automations) | `ui/js/templates.js` |
 | Agent status hooks (closed state words, bundled helper) | `agent_status.rs`, `src-tauri/status-helper/` |
-| Auto-respond (inbound sources, dispatcher, Keychain) | `inbound.rs`, `inbound_slack.rs`, `keychain.rs`, `ui/js/inbound.js` (+ `docs/auto-respond.md`) |
-| Automations: clock source, project drawer, run finish | `inbound_clock.rs`, `ui/js/automation.js` (rules are clock inbound rules; finish close lives in `board.js` poll) |
+| Automations: inbound sources (Slack badge, clock), dispatcher, Keychain | `inbound.rs`, `inbound_slack.rs`, `inbound_clock.rs`, `keychain.rs`, `ui/js/inbound.js` (+ `docs/auto-respond.md`) |
+| Automations drawer (both triggers), run finish | `ui/js/automation.js` (rules are inbound rules; the Slack connection stays in Settings; finish close lives in the `board.js` poll) |
 | Shell restart recovery (bounded transcript projection) | `shell_state.rs` |
 | Updates (closed stable/nightly, one endpoint each) | `updater.rs`, `relaunch.rs` |
 | Structured diagnostics, ui_event whitelist, exports | `diagnostics.rs` |

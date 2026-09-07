@@ -1,7 +1,7 @@
 // dialogs.js — confirm/prompt dialogs, toasts, inline rename, settings modal
 // Part of deck's no-build frontend: native ES modules, no bundler.
-import { $, ctx, genId, inv, store, uev } from './state.js';
-import { INBOUND_BADGE_RE, inlineRenameValue } from './pure.js';
+import { $, ctx, inv, uev } from './state.js';
+import { inlineRenameValue } from './pure.js';
 import { applyTranslations, formatNumber, getLocale, onLocaleChange, setLocale, t, translateNotice } from './i18n.js';
 import {
   CUSTOMIZABLE_SHORTCUT_ACTIONS, FONT_SCALE_MAX, FONT_SCALE_MIN, FONT_SCALE_STEP, SHORTCUT_ACTIONS,
@@ -502,12 +502,12 @@ export async function persistAgentHooksChoice(agent, boxId, confirmKey) {
   }
 }
 
-/* ---------- 自动响应 (inbound): sources, credentials, rules ---------- */
-/* Rules live in settings.json (persist-then-commit like every other setting);
-   tokens live in the Keychain and are never read back into the page — the
-   backend only reports whether a slot is filled. */
+/* ---------- Slack connection (inbound): the switch and the tokens ----------
+   Rules are the project's automations (automation.js, the ↻ drawer); this
+   is only the account-level connection. Tokens live in the Keychain and are
+   never read back into the page — the backend only reports whether a slot
+   is filled. */
 let inboundSavePending = false;
-let inboundEditing = null;   // null | { id } (existing) | { id: null } (new)
 
 function inboundSlackStatusText(status) {
   const slack = (status && status.sources || []).find(s => s.id === 'slack');
@@ -529,7 +529,6 @@ function inboundSlackStatusText(status) {
 
 export async function renderInboundSettings() {
   $('set-inbound-slack').checked = !!ctx.settings.inbound.sources.slack.enabled;
-  renderInboundRules();
   let status = null;
   try { status = await inv('inbound_status'); } catch (_) { status = null; }
   const present = slot => !!(status && status.sources || []).some(s => s.secrets.some(x => x.slot === slot && x.present));
@@ -540,127 +539,6 @@ export async function renderInboundSettings() {
     $(id + '-clear').style.display = present(slot) ? '' : 'none';
   }
   $('set-inbound-status').textContent = inboundSlackStatusText(status);
-}
-
-function inboundTargetLabel(rule) {
-  const p = store.projects.find(x => x.id === rule.projectId);
-  const c = p && p.columns.find(x => x.id === rule.columnId);
-  return p && c ? `${p.name} ▸ ${c.name}` : t('settings.inboundRuleMissingTarget');
-}
-
-function renderInboundRules() {
-  const box = $('set-inbound-rules');
-  box.innerHTML = '';
-  const rules = ctx.settings.inbound.rules;
-  if (!rules.length) {
-    const empty = document.createElement('div');
-    empty.className = 'set-hint';
-    empty.style.margin = '2px 0 4px';
-    empty.textContent = t('settings.inboundNoRules');
-    box.appendChild(empty);
-  }
-  for (const rule of rules) {
-    const row = document.createElement('div');
-    row.className = 'inbound-rule';
-    const main = document.createElement('div');
-    main.className = 'ir-main';
-    const badge = document.createElement('span');
-    badge.className = 'ir-badge';
-    badge.textContent = `:${rule.badge}:`;
-    const sub = document.createElement('span');
-    sub.className = 'ir-sub';
-    sub.textContent = [inboundTargetLabel(rule), rule.cmd || t('settings.inboundRuleShellOnly'), rule.template].join(' · ');
-    sub.title = rule.dir || ctx.HOME;
-    main.append(badge, sub);
-    const edit = document.createElement('button');
-    edit.textContent = '✎';
-    edit.title = t('common.rename');
-    edit.onclick = () => openInboundEditor(rule);
-    const del = document.createElement('button');
-    del.className = 'ir-del';
-    del.textContent = '✕';
-    del.title = t('common.delete');
-    del.onclick = async () => {
-      if (!(await confirmDialog(t('settings.inboundRuleDelete', { badge: rule.badge })))) return;
-      await persistInbound({ ...ctx.settings.inbound, rules: ctx.settings.inbound.rules.filter(r => r.id !== rule.id) });
-    };
-    row.append(main, edit, del);
-    box.appendChild(row);
-  }
-  const add = document.createElement('button');
-  add.className = 'btn inbound-add';
-  add.textContent = t('settings.inboundAddRule');
-  add.onclick = () => openInboundEditor(null);
-  box.appendChild(add);
-}
-
-function fillInboundProjectSelects(projectId, columnId, template) {
-  const ps = $('set-inbound-project'), cs = $('set-inbound-column'), ts = $('set-inbound-template');
-  ps.innerHTML = '';
-  for (const p of store.projects) {
-    const o = document.createElement('option');
-    o.value = p.id; o.textContent = p.name;
-    ps.appendChild(o);
-  }
-  ps.value = store.projects.some(p => p.id === projectId) ? projectId : (store.projects[0] ? store.projects[0].id : '');
-  const p = store.projects.find(x => x.id === ps.value);
-  cs.innerHTML = '';
-  for (const c of (p ? p.columns : [])) {
-    const o = document.createElement('option');
-    o.value = c.id; o.textContent = c.name;
-    cs.appendChild(o);
-  }
-  if (p && p.columns.some(c => c.id === columnId)) cs.value = columnId;
-  ts.innerHTML = '';
-  const tpls = (p && p.templates) || [];
-  if (!tpls.length) {
-    const o = document.createElement('option');
-    o.value = ''; o.textContent = t('settings.inboundNoTemplates');
-    ts.appendChild(o);
-  }
-  for (const tp of tpls) {
-    const o = document.createElement('option');
-    o.value = tp.name; o.textContent = `${tp.name} · ${t('queue.steps', { count: tp.steps.length })}`;
-    ts.appendChild(o);
-  }
-  if (tpls.some(tp => tp.name === template)) ts.value = template;
-}
-
-function openInboundEditor(rule) {
-  inboundEditing = { id: rule ? rule.id : null };
-  $('set-inbound-badge').value = rule ? rule.badge : '';
-  $('set-inbound-dir').value = rule ? rule.dir : '';
-  $('set-inbound-cmd').value = rule ? rule.cmd : 'claude';
-  fillInboundProjectSelects(rule && rule.projectId, rule && rule.columnId, rule && rule.template);
-  $('set-inbound-editor').style.display = '';
-  $('set-inbound-badge').focus();
-}
-
-function closeInboundEditor() {
-  inboundEditing = null;
-  $('set-inbound-editor').style.display = 'none';
-}
-
-async function saveInboundEditor() {
-  if (!inboundEditing) return;
-  const badge = $('set-inbound-badge').value.trim().replace(/^:|:$/g, '');
-  if (!INBOUND_BADGE_RE.test(badge)) { toast(t('settings.inboundRuleInvalidBadge')); return; }
-  const projectId = $('set-inbound-project').value, columnId = $('set-inbound-column').value;
-  if (!projectId || !columnId) { toast(t('settings.inboundRuleNeedsTarget')); return; }
-  const template = $('set-inbound-template').value;
-  if (!template) { toast(t('settings.inboundRuleNeedsTemplate')); return; }
-  const cmd = $('set-inbound-cmd').value.trim();
-  const dir = $('set-inbound-dir').value.trim();
-  const id = inboundEditing.id || genId('R');
-  if (ctx.settings.inbound.rules.some(r => r.id !== id && r.source === 'slack' && r.badge === badge)) {
-    toast(t('settings.inboundRuleDuplicate', { badge }));
-    return;
-  }
-  const rule = { id, source: 'slack', badge, projectId, columnId, cmd, template, dir };
-  const rules = ctx.settings.inbound.rules.some(r => r.id === id)
-    ? ctx.settings.inbound.rules.map(r => (r.id === id ? rule : r))
-    : [...ctx.settings.inbound.rules, rule];
-  if (await persistInbound({ ...ctx.settings.inbound, rules })) closeInboundEditor();
 }
 
 /* One durable write for every rule/source change; a failed save leaves the
@@ -909,14 +787,9 @@ export function initDialogs() {
     setTimeout(renderInboundSettings, 4000);
   };
 
-  $('set-inbound-project').addEventListener('change', () =>
-    fillInboundProjectSelects($('set-inbound-project').value, null, null));
 
-  $('set-inbound-save').onclick = saveInboundEditor;
 
-  $('set-inbound-cancel').onclick = closeInboundEditor;
 
-  $('set-inbound-badge').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.isComposing && e.keyCode !== 229) saveInboundEditor(); });
 
   $('set-clear-hist').onclick = async () => {
     if (!(await confirmDialog(t('settings.clearHistoryConfirm')))) return;

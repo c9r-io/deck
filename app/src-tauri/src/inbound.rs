@@ -1,11 +1,13 @@
-//! Auto-respond dispatcher: sources produce content-free events, the ledger
+//! Automations dispatcher: sources produce content-free events, the ledger
 //! dedupes them, rules pick a template, and the webview creates the card
 //! through the ordinary Board transaction.
 //!
 //! # Contract
-//! Auto-respond / 自动响应 (`inbound.rs`, `inbound_slack.rs`, `keychain.rs`,
-//! `ui/js/inbound.js`): an external badge starts a session. Three layers and
-//! only the top one knows a service. SOURCES produce a fixed
+//! Automations / 自动化 (`inbound.rs`, `inbound_slack.rs`, `inbound_clock.rs`,
+//! `keychain.rs`, `ui/js/inbound.js`, `ui/js/automation.js`): a trigger — a
+//! Slack badge or a clock slot — starts a session. A rule is one shape with
+//! two sources; the drawer edits both, Settings holds only the Slack
+//! connection. Three layers and only the top one knows a service. SOURCES produce a fixed
 //! `Event {source, key, badge, text, from, where, link}` and nothing else;
 //! the Slack source has two paths on ONE user token: catch-up via
 //! `search.messages` `hasmy::<badge>:` (one request per ruled badge, 30-day
@@ -38,7 +40,9 @@
 //! copies two tokens back; nothing shorter exists because Slack has no OAuth
 //! redirect to a local app and no API that mints app-level tokens. Cards are
 //! never moved and deck never writes to Slack. Adding a source = one `Source`
-//! impl + one Settings row; rules/templates/dispatch do not change.
+//! impl + one trigger in the drawer; rules/templates/dispatch do not change.
+//! A badge item's ack carries the card it created, so the run ledger and the
+//! finish rule cover both triggers.
 //!
 //! The CLOCK source (`inbound_clock.rs`, "自动化") is a source whose events
 //! are local-time slots: a `clock` rule carries a `schedule` (a minute of the
@@ -59,7 +63,7 @@
 //! The ledger's `runs` list (rule, slot, card id, times, closed outcome word;
 //! capped) is the drawer's history — identifiers and times only.
 
-// inbound.rs — "自动响应": external services ask deck to start a session.
+// inbound.rs — "自动化": external services (and the clock) ask deck to start a session.
 //
 // Three layers, only the top one knows a service:
 //   sources (inbound_slack.rs, later others) → one fixed `Event`
@@ -854,8 +858,10 @@ pub(crate) fn inbound_pending() -> Vec<PendingView> {
 /// The webview has created the card (or decided it cannot). Both outcomes
 /// retire the item for good: a badge the user must fix a rule for is
 /// re-armed by removing and re-adding the badge, never by deck retrying.
-/// A clock item also records its run: `card` is the run's card id when one
-/// was created, `reason` the closed word for a skipped slot.
+/// A clock item records its run either way; a badge item records a run only
+/// when `card` names the card it created (so the rule's finish mode and the
+/// drawer history apply to both triggers); `reason` is the closed word for a
+/// skipped slot.
 #[tauri::command]
 pub(crate) fn inbound_ack(
     id: u64,
@@ -884,7 +890,10 @@ pub(crate) fn inbound_ack(
         let ev = &p.view.event;
         let now = now_secs();
         rt.doc.mark(&ev.source, &ev.key, &ev.badge, now);
-        if ev.source == "clock" {
+        // a clock slot records every outcome (its drawer history); a badge
+        // records only the run it started, so the finish rule can close the
+        // card it created and the drawer can show when the badge last fired
+        if ev.source == "clock" || (outcome == "done" && card.is_some()) {
             let created = outcome == "done";
             rt.doc.record_run(Run {
                 rule: ev.badge.clone(),
@@ -1447,7 +1456,25 @@ mod tests {
         let loaded = load_doc();
         assert!(loaded.has("slack", "C/new", "deck"));
         assert!(loaded.has("slack", "C/done", "bug"));
-        assert!(loaded.runs.is_empty(), "badge items record no run");
+        assert!(
+            loaded.runs.is_empty(),
+            "a badge item without a card records no run"
+        );
+
+        // a badge item that names its card records a running run bound to
+        // it, so a Slack-triggered automation can be finished like a clock one
+        assert_eq!(
+            offer(app.handle(), &cfg, vec![event("C/card", "bug")], true),
+            1
+        );
+        assert!(inbound_ack(3, "done".into(), Some("S-badge".into()), None).is_ok());
+        let runs = inbound_runs();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].rule, "bug");
+        assert_eq!(runs[0].card.as_deref(), Some("S-badge"));
+        assert_eq!(runs[0].outcome, "running");
+        assert!(inbound_run_ended("S-badge".into()).is_ok());
+        assert_eq!(inbound_runs()[0].outcome, "closed");
 
         // a clock slot: created → running run bound to its card; the same
         // slot offered again is a duplicate; run_ended closes it
@@ -1465,23 +1492,23 @@ mod tests {
         };
         assert_eq!(offer(app.handle(), &clock_cfg, vec![slot.clone()], true), 1);
         assert_eq!(offer(app.handle(), &clock_cfg, vec![slot.clone()], true), 0);
-        assert!(inbound_ack(3, "done".into(), Some("bad id!".into()), None).is_err());
-        assert!(inbound_ack(3, "skipped".into(), None, Some("tired".into())).is_err());
-        assert!(inbound_ack(3, "done".into(), Some("S-run1".into()), None).is_ok());
+        assert!(inbound_ack(4, "done".into(), Some("bad id!".into()), None).is_err());
+        assert!(inbound_ack(4, "skipped".into(), None, Some("tired".into())).is_err());
+        assert!(inbound_ack(4, "done".into(), Some("S-run1".into()), None).is_ok());
         assert_eq!(
             offer(app.handle(), &clock_cfg, vec![slot], true),
             0,
             "acked slots never fire again"
         );
         let runs = inbound_runs();
-        assert_eq!(runs.len(), 1);
-        assert_eq!(runs[0].outcome, "running");
-        assert_eq!(runs[0].card.as_deref(), Some("S-run1"));
+        assert_eq!(runs.len(), 2, "the badge run above plus this slot");
+        assert_eq!(runs[1].outcome, "running");
+        assert_eq!(runs[1].card.as_deref(), Some("S-run1"));
         assert!(inbound_run_ended("S-run1".into()).is_ok());
         assert!(inbound_run_ended("S-run1".into()).is_ok(), "idempotent");
         assert!(inbound_run_ended("bad id!".into()).is_err());
-        assert_eq!(inbound_runs()[0].outcome, "closed");
-        assert!(inbound_runs()[0].ended.is_some());
+        assert_eq!(inbound_runs()[1].outcome, "closed");
+        assert!(inbound_runs()[1].ended.is_some());
         let busy = Event {
             key: (now_secs() - 60).to_string(),
             ..inbound_runs()
@@ -1498,7 +1525,7 @@ mod tests {
                 .unwrap()
         };
         assert_eq!(offer(app.handle(), &clock_cfg, vec![busy], true), 1);
-        assert!(inbound_ack(4, "skipped".into(), None, Some("busy".into())).is_ok());
+        assert!(inbound_ack(5, "skipped".into(), None, Some("busy".into())).is_ok());
         let last = inbound_runs().last().cloned().unwrap();
         assert_eq!(
             (last.outcome.as_str(), last.reason.as_str()),

@@ -283,8 +283,8 @@ a fixture.
       and never queries Stable or another URL. Test a deliberately invalidly
       signed fixture only in an isolated feed/release: Tauri refuses install.
 
-## Scheduler queue & templates
-- [ ] Add an `at` prompt 1 min out on a harmless shell card whose launch command
+## Lists & templates
+- [ ] Start a list not before 1 min out on a harmless shell card whose launch command
       is empty → deck automatically binds the exact pane and fires once in
       compatibility mode; its row disappears (there is no "fired" UI; the send is
       recorded in queue.json's `deliveries` audit list, capped at 200 entries)
@@ -305,9 +305,11 @@ a fixture.
       a firing intent, delivery attempt, or ambiguous record.
 - [ ] With one session blocked in boot readiness, a due prompt on a second
       session still advances independently.
-- [ ] Add a chain of 2 prompts → they fire in order, second only after the
-      first target went quiet (~3 min; "quiet" ≠ "done" — the UI must say
-      quiet) and ≥60s after the first send (per-session min gap)
+- [ ] Start a list, then add a row from its footer → they fire in order, the
+      row only after the first target went quiet (~3 min; "quiet" ≠ "done" —
+      the UI must say quiet) and ≥60s after the first send (per-session min
+      gap). With two lists on a card, a row added to the OLDER list joins it,
+      not the newest.
 - [ ] Two prompts due at once on the SAME session → they arrive one per
       20s-tick, a minute apart — never both in one tick
 - [ ] Schedule onto a stopped card whose directory was deleted → the row shows
@@ -328,11 +330,15 @@ a fixture.
       the agent's input as those same lines with a single submit at the end.
       The row shows only the first line plus `⏎N`; its chevron opens the rest
       and clicking the text edits the whole prompt
-- [ ] A template step written over several lines survives a save/reopen and an
-      auto-respond rule fills `{{msg.text}}` into it with the message flattened
-      to one line while the step keeps its own
-- [ ] Save a template from the queue group header → re-add it on another card
-- [ ] Pause a recurring rule → skipped while paused; resume → fires again
+- [ ] A template row written over several lines survives a save/reopen and a
+      Slack-badge automation fills `{{msg.text}}` into it with the message
+      flattened to one line while the row keeps its own
+- [ ] Save a template from a list's 📋 → start a list from it on another
+      card, and insert it into an existing list (its rows join that list)
+- [ ] A repeating list: pause ⏸ → skipped while paused; resume → fires again;
+      add a row from its footer and delete one → both survive the next fire
+- [ ] Automations drawer: an automation with the Slack-badge trigger appears
+      beside the clock ones; Settings shows only the Slack connection
 
 ## Data durability
 - [ ] Quit deck → corrupt `~/.deck/deck.json` (truncate mid-JSON) → relaunch:

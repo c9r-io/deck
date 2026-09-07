@@ -105,29 +105,26 @@ private 0600 files, have no backup copy, expire after seven days, and are
 cleared when recovery is disabled. Redaction is best-effort, so the consent
 prompt still warns that terminal output may contain secrets.
 
-**Scheduled prompts.** The quota-window workflow: queue prompts on a session
-and have them typed in later — at a date and time ("Friday 14:00, when my
-Claude window resets"), chained ("after the previous one goes quiet for 3
-minutes" — the quiet time is yours to set; quiet means no output, not that
-the program is ready), or on a rule: every N minutes inside an optional daily
-window, from an optional start date until you remove it, N fires or a date.
-Before delivery deck
-resolves the pane the card owns and pins the exact tmux
-server/session/window/pane/process generation it just read — a pane that came
-back with a new generation (after an update, a crash or a reboot) is adopted
-automatically, so a schedule never needs re-pointing. When the
-card launch command identifies a program, deck also waits for that executable
-to return to the foreground; otherwise it sends to the same pane in
-compatibility mode, where input may be interpreted by a shell. Context waiting
-does not consume a delivery attempt. Works while detached; dead sessions are
-started and probed with a bounded wait; the queue survives restarts. The app
-must be running for prompts to fire.
-
-**Recurring rules.** A prompt can repeat — *every 5/15/30 min, 1/2 h* —
-optionally only inside a daily time window ("only 09:00–18:00"; 20:00–08:00
-wraps midnight, so night-only works too). Rules keep firing until you pause
-(⏸ keeps the settings) or remove them, or stop themselves after N times /
-at a set time. Outside the window a rule sleeps and resumes by itself.
+**Lists.** A card's ⏱ panel holds its lists: prompts to type into that
+session later, sent in order. A row waits until the session has been quiet
+for the time you give it ("once quiet for 3 min" — quiet means no output,
+not that the program is ready). A list has two optional fields: **not
+before** a date and time ("Friday 14:00, when my Claude window resets"; a
+past instant is refused, never rolled to tomorrow) and **repeat** — every
+5 min to 4 h, optionally only inside a daily window ("only 09:00–18:00";
+20:00–08:00 wraps midnight), until you remove it, N times or a set time. A
+repeating list sends all its rows again at every interval into the same
+session (⏸ keeps its settings). Lists on one card do not wait for each
+other. Before delivery deck resolves the pane the card owns and pins the
+exact tmux server/session/window/pane/process generation it just read — a
+pane that came back with a new generation (after an update, a crash or a
+reboot) is adopted automatically, so a list never needs re-pointing. When
+the card launch command identifies a program, deck also waits for that
+executable to return to the foreground; otherwise it sends to the same
+pane in compatibility mode, where input may be interpreted by a shell.
+Context waiting does not consume a delivery attempt. Works while detached;
+dead sessions are started and probed with a bounded wait; lists survive
+restarts. The app must be running for rows to fire.
 
 **Delivery you can reason about.** One prompt per session at a time, at least
 a minute apart; different sessions run independently (a session that needs a
@@ -135,32 +132,34 @@ startup wait never delays another session's prompt). Immediately before
 delivery, deck rechecks the automatically captured target identity and optional
 foreground executable. Prompt + Enter are literal-pasted only if both still
 match. If deck crashes in the narrow delivery window,
-the queue shows the prompt as **ambiguous** instead of claiming success or
+the list shows the row as **ambiguous** instead of claiming success or
 silently sending it again: acknowledge it as sent, or explicitly retry while
-accepting the possible duplicate. While a prompt is mid-send (a window of
+accepting the possible duplicate. While a row is mid-send (a window of
 seconds), editing/pausing/removing it is refused with a clear message
-instead of racing the delivery. If a step permanently fails to
-send (its session can't start, say), the later steps of its group **wait** —
-the queue shows ⚠ with retry ↻ and skip ⏭ buttons, and nothing runs past a
-failed step until you decide.
+instead of racing the delivery. If a row permanently fails to
+send (its session can't start, say), the later rows of its list **wait** —
+the list shows ⚠ with retry ↻ and skip ⏭ buttons, and nothing runs past a
+failed row until you decide.
 
-**Automations.** A daily, weekly or monthly job is not a card's schedule: it
-is a project-level rule (↻ Automations on the Board) that, at each slot,
-creates a fresh card in a column, launches the command and queues a template
-— so every run starts with an empty agent context, and one run at a time.
-With "close the card" the run is retired once every prompt is delivered and
-the agent reports its turn done (or the program exits) — never while you
-have its pane open. A slot that comes due while deck is not running still
-starts inside the rule's grace (15 minutes by default, up to the rest of the
-day, or never) and is otherwise recorded as missed; a rule you resume or
-reschedule starts from that moment. The drawer shows each rule's next slot
-and its last runs.
+**Automations.** A standing job is not a card's list: it is a project-level
+rule (↻ Automations on the Board) with a **trigger** — a clock (every day,
+chosen weekdays or days of the month, at a local time) or a **Slack badge**
+(an emoji reaction you put on a message; see
+[docs/auto-respond.md](docs/auto-respond.md) for the one-time Slack
+connection in Settings). When it fires, deck creates a fresh card in a
+column, launches the command and queues a template — so every run starts
+with an empty agent context; a clock runs one card at a time. With "close
+the card" the run is retired once every prompt is delivered and the agent
+reports its turn done (or the program exits) — never while you have its
+pane open. A clock slot that comes due while deck is not running still
+starts within 15 minutes (or, if you choose, the same day) and is otherwise
+recorded as missed; a rule you resume or reschedule starts from that
+moment. The drawer shows each rule's next slot and its last runs.
 
-**Prompt templates.** Save a queue of prompts as a named, per-project
-template (📋 in the scheduler panel). Inserting a template queues all its
-steps in order — your schedule applies to the first step, the rest follow
-"after previous". Combine with a recurring rule and the whole template
-re-runs on cadence.
+**Templates.** A template is a saved list, per project (◈ Templates on the
+Board, or ☆ from a list's 📋 menu). 📋 on a card starts a new list from
+one or inserts one into a list — a copy, so a template changed later leaves
+the rows alone; an automation names one and sends it on every run.
 
 **Honest signals.** Green = output in the last 15 s. Amber = quiet, may be
 waiting for you. Memory chips show the *whole process tree* of a session
@@ -178,7 +177,7 @@ waiting for you. Memory chips show the *whole process tree* of a session
 | Copy terminal text | drag directly in the terminal (hold at an edge to cross screens) · ⌘C |
 | Rename / describe | double-click titles · right-click card |
 | Split view | drag a card onto a pane edge · ⌘D right / ⌘⇧D down |
-| Schedule prompts | ⏱ in the session header; 📋 for templates |
+| Lists of prompts to send later | ⏱ in the session header; 📋 for templates |
 | Collapse sidebar | ⌘B |
 
 ## Data
@@ -192,7 +191,7 @@ data and running sessions are preserved. History and recovery data have their
 own separate clear actions.
 
 Everything lives in `~/.deck/` as plain JSON you can inspect or edit:
-`deck.json` (boards, cards, and each live pane's latest directory) · `queue.json` (scheduled prompts, incl. card/tmux
+`deck.json` (boards, cards, and each live pane's latest directory) · `queue.json` (lists, incl. card/tmux
 identity, an optional sanitized executable basename, a content-free last
 context result, and a short
 delivery audit) · `history.json` (command history; wipeable from

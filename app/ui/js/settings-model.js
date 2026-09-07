@@ -57,11 +57,12 @@ export const INBOUND_SOURCES = Object.freeze(['slack', 'clock']);
 const INBOUND_TOGGLES = Object.freeze(['slack']);
 export const SCHEDULE_UNITS = Object.freeze(['day', 'week', 'month']);
 export const FINISH_MODES = Object.freeze(['keep', 'close']);
-/* how long after its slot a clock rule may still start a run, in minutes;
-   the editor's choices, 1440 = the rest of the day (mirrors inbound.rs) */
+/* how long after its slot a clock rule may still start a run, in minutes:
+   the editor offers two choices — the default, and 1440 = the rest of the
+   day; any value 0..1440 stays valid on disk (mirrors inbound.rs) */
 export const DEFAULT_GRACE_MIN = 15;
 export const MAX_GRACE_MIN = 1440;
-export const GRACE_CHOICES = Object.freeze([0, 5, 15, 30, 60, 180, 1440]);
+export const GRACE_CHOICES = Object.freeze([DEFAULT_GRACE_MIN, MAX_GRACE_MIN]);
 export const normalizeGrace = raw => (Number.isInteger(raw) && raw >= 0 && raw <= MAX_GRACE_MIN ? raw : DEFAULT_GRACE_MIN);
 const INBOUND_BADGE = /^[a-z0-9_+-]{1,64}$/;
 const INBOUND_ID = /^[A-Za-z0-9_-]{1,128}$/;

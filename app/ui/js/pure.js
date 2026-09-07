@@ -423,6 +423,53 @@ export function groupSteps(g) {
   return steps;
 }
 
+/* ---------- lists: the ⏱ panel's reading of the queue ----------
+   A LIST is what the user sees: a queue group (an "at" head and the chain
+   rows behind it) or a standing "every" rule with its embedded rows. Its
+   head carries the two optional fields the panel offers — "not before"
+   (an "at" head's instant, a rule's start) and "repeat" (a rule's cadence).
+   The key is what the backend joins a new chain row to. */
+export const listKey = g => (g.head.mode === 'every' ? g.head.id : (g.head.group || g.head.id));
+export const listRepeats = g => g.head.mode === 'every';
+
+/* the new-list form → the schedule half of QueueAddArgs. A list without a
+   cadence is an "at" head at the chosen instant (now when none was
+   chosen; a past instant is refused, never rolled forward). A list with a
+   cadence is an "every" rule that starts at that same instant. Returns
+   `{ error, focus }` (a translation key and the field to focus) when the
+   form contradicts itself, `{ args }` otherwise. */
+export function listScheduleArgs({ notBefore = null, every = null, winFrom = null, winTo = null,
+  untilN = null, untilAt = null }, now) {
+  const base = { at: null, quietSecs: null, every: null, notBefore: null,
+    winFrom: null, winTo: null, untilN: null, untilAt: null };
+  if (!every) {
+    if (notBefore != null && notBefore <= now) return { error: 'queue.pastTime', focus: 'q-time' };
+    return { args: { ...base, mode: 'at', at: notBefore ?? now } };
+  }
+  if ((winFrom == null) !== (winTo == null)) return { error: 'queue.setWindow', focus: 'q-win-a' };
+  if (untilAt != null && untilAt <= Math.max(now, notBefore || 0)) return { error: 'queue.stopBeforeStart', focus: 'q-until-t' };
+  return { args: { ...base, mode: 'every', every, notBefore, winFrom, winTo, untilN, untilAt } };
+}
+
+/* ---------- automations: rules of both triggers ---------- */
+/* a project's automations in the order they were saved, whatever their
+   trigger; `source` narrows to one trigger */
+export const projectRules = (rules, projectId, source = null) => (Array.isArray(rules) ? rules : [])
+  .filter(r => r && r.projectId === projectId && (!source || r.source === source));
+
+/* the rule behind a card's `origin`: a clock rule is named by its id (its
+   badge IS its id), a badge rule by (source, badge) */
+export function ruleByOrigin(rules, origin) {
+  if (!origin || !Array.isArray(rules)) return null;
+  return rules.find(r => r && r.source === origin.source
+    && (origin.source === 'clock' ? r.id === origin.badge : r.badge === origin.badge)) || null;
+}
+
+/* one automation per badge across every project: the dispatcher matches a
+   badge to ONE rule, so a second rule for it would never fire */
+export const badgeTaken = (rules, badge, exceptId = null) => (Array.isArray(rules) ? rules : [])
+  .some(r => r && r.source === 'slack' && r.badge === badge && r.id !== exceptId);
+
 /* ---------- board deletion transaction ---------- */
 /**
  * Run the irreversible parts of deleting cards, but call commit only after
@@ -1084,7 +1131,7 @@ export async function persistOptimistically({ apply, persist, rollback }) {
   }
 }
 
-/* ---------- inbound (自动响应): pure decisions, no DOM, no Tauri ---------- */
+/* ---------- automations dispatch (inbound): pure decisions, no DOM, no Tauri ---------- */
 
 /* Source-neutral placeholders. Unknown ones stay literal so a typo is
    visible in the prompt instead of silently vanishing.

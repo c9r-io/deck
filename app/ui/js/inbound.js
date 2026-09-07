@@ -1,4 +1,4 @@
-// inbound.js — 自动响应: turn backend-detected badges into cards + queued prompts
+// inbound.js — 自动化 dispatch: turn a fired trigger into a card + queued prompts
 // Part of deck's no-build frontend: native ES modules, no bundler.
 //
 // The backend (inbound.rs) only says "something is pending" (content-free
@@ -11,7 +11,8 @@
 // (automation.js owns the rules) is the same path with two differences: a
 // slot whose rule still has a card on the Board is acked `busy`, and a
 // created run's ack carries the card id so the backend's run ledger can be
-// closed later by `inbound_run_ended`.
+// closed later by `inbound_run_ended`. A badge item's ack carries the card
+// id too, so a badge-started run is finished (and listed) like a clock one.
 import { ctx, inv, listen, store, uev } from './state.js';
 import { provider } from './board.js';
 import { toast } from './dialogs.js';
@@ -87,7 +88,7 @@ async function handleInbound(item) {
   if (queued === plan.steps.length) {
     toast(clock ? t('automation.created', { name: card.title }) : t('inbound.created', { badge, where: item.event.where }));
   }
-  return ack(item.id, 'done', 'created', clock ? { card: card.id } : {});
+  return ack(item.id, 'done', 'created', { card: card.id });
 }
 
 /* DOM wiring, run once at boot (app.js) so the module can be imported

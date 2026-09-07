@@ -1,5 +1,35 @@
 # Changelog
 
+## Unreleased
+
+- Two concepts for "later". A card's ⏱ panel now holds **lists**: prompts
+  sent in order, each row once the session has been quiet for the row's own
+  time. A list has two optional fields instead of a three-way mode picker —
+  **not before** a date and time (a past instant is refused, never rolled
+  to tomorrow; it is also a repeating list's start, so the separate "from"
+  is gone) and **repeat** (every 5 min to 4 h, a daily window, until you
+  remove it / N times / an instant). A row is added from the list's own
+  footer and joins THAT list (`queue_add` takes the list; before, a
+  follow-up always joined the newest group); a repeating list's rows can be
+  added, edited and removed (`queue_update { steps }`). 📋 on the panel
+  starts a list from a template; 📋 on a list inserts one or saves the list
+  as one — the three template buttons became that one menu.
+- **Automations** have a trigger: a clock, or a Slack badge. The Slack rules
+  that lived in Settings › Auto-respond are the same rules, now edited in
+  the project's ↻ Automations drawer beside the clock ones, with the same
+  finish mode — a badge-started card is closed by "close the card" too, and
+  its runs show in the drawer. Settings keeps only the Slack connection
+  (switch, create-app link, tokens); "Auto-respond" is no longer a name in
+  the app. A rule whose project is deleted goes with it, whatever its
+  trigger. "If missed" offers two choices — still start within 15 minutes,
+  or the same day; a saved value outside them stays offered so an edit never
+  silently rewrites it.
+- Vocabulary: list, row, not before, repeat, template, automation, trigger.
+  queue / group / step / chain / rule / source / inbound / auto-respond left
+  the UI, the docs and the site. `queue.json` and `settings.json` are not
+  rewritten: an "at" item shows as a list with "not before", an "every"
+  item as a list with "repeat", a Slack rule where it always was.
+
 ## 0.6.0 — 2026-09-08 (Nightly)
 
 - Board-level automations. A daily, weekly or monthly job is no longer
