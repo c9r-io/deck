@@ -443,6 +443,7 @@ const dictionary = {
   'automation.run.minutes': '{count} min',
   'automation.run.open': 'open',
   'automation.needsName': 'give the automation a name',
+  'automation.longName': 'automation names are at most 120 characters',
   'automation.needsDays': 'pick at least one weekday',
   'automation.needsTime': 'set the time',
   'automation.needsColumn': 'choose a column',

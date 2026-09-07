@@ -13,7 +13,12 @@ same commit as the behaviour it describes.
 ## Hard rules
 
 - **No automatic card movement.** The board never moves a card; not on agent
-  state, not on inbound events, not on delivery.
+  state, not on inbound events, not on delivery. The ONE sanctioned
+  automatic retirement is an automation run whose rule says "close the
+  card" (`runFinishHolds` in `pure.js`, driven by the `board.js` poll):
+  the user chose it per rule, it never fires while a pane shows the card,
+  and it goes through the same close path as a click. Nothing else retires
+  or relocates a card on its own.
 - **deck is EDR-QUIET by rule** (a corporate EDR flagged it and IT demanded the
   app be stopped; `tests/edr_quiet.rs` enforces each point):
   never touches launchd — no `launchctl` (not even a one-shot `submit`), no

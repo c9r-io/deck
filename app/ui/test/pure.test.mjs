@@ -9,7 +9,7 @@ import {
   nextFire, groupQueue, groupSteps, itemDead, blockedBy,
   chainQuietHint, contextStatusKey, CHAIN_QUIET_SECS, shQuote, quickBarLayout, rectsOverlap,
   MIN_QUIET_SECS, MAX_QUIET_SECS, quietSecsOf, localEpoch, isoDate, isoTime,
-  scheduleMatchesDay, nextScheduleSlot, createConfirmationCounter, isoWeekday, daysInMonth,
+  scheduleMatchesDay, nextScheduleSlot, createConfirmationCounter, isoWeekday, daysInMonth, runFinishHolds, toggleClockRule,
   createExitRetirementTracker, createSerialTransactionQueue, deleteSessionsTransaction, sidebarGroups,
   copyExact, createTerminalPasteTrace, createTerminalResizeCoordinator, createTerminalSelectionModel,
   reorderById,
@@ -1254,6 +1254,31 @@ test('nextScheduleSlot is the first future slot, honouring since', () => {
   const since = secs(new Date(2026, 8, 15, 0, 0));
   assert.equal(nextScheduleSlot(daily, nineToday - 600, since), secs(new Date(2026, 8, 15, 9, 0)));
   assert.equal(nextScheduleSlot({ unit: 'year', days: [], minute: 0 }, nineToday), null);
+});
+
+test('a close finish rule holds only for an unwatched, settled, drained run', () => {
+  const shell = /^-?(zsh|bash|fish|sh|dash)$/;
+  const base = { rule: { finish: 'close' }, queued: false, agent: 'turn-done', fg: 'claude', alive: true, stopped: false, viewing: false };
+  assert.ok(runFinishHolds(base, shell));
+  assert.ok(!runFinishHolds({ ...base, viewing: true }, shell), 'an open pane is the user reading or talking to the run');
+  assert.ok(!runFinishHolds({ ...base, queued: true }, shell), 'prompts still to deliver');
+  assert.ok(!runFinishHolds({ ...base, agent: 'working' }, shell));
+  assert.ok(!runFinishHolds({ ...base, agent: 'waiting' }, shell), 'a permission prompt is not done');
+  assert.ok(!runFinishHolds({ ...base, alive: false }, shell));
+  assert.ok(!runFinishHolds({ ...base, stopped: true }, shell));
+  assert.ok(!runFinishHolds({ ...base, rule: { finish: 'keep' } }, shell));
+  assert.ok(!runFinishHolds({ ...base, rule: null }, shell), 'a deleted rule closes nothing');
+  assert.ok(runFinishHolds({ ...base, agent: undefined, fg: 'zsh' }, shell), 'no agent reporting: the program left the foreground');
+  assert.ok(!runFinishHolds({ ...base, agent: undefined, fg: 'claude' }, shell), 'no agent reporting and the program still up');
+  assert.ok(!runFinishHolds({ ...base, agent: undefined, fg: undefined }, shell));
+});
+
+test('resuming a paused clock rule starts it fresh from now', () => {
+  const rule = { id: 'a1', enabled: true, since: 100 };
+  const paused = toggleClockRule(rule, 500);
+  assert.deepEqual(paused, { id: 'a1', enabled: false, since: 100 }, 'pausing keeps since');
+  assert.deepEqual(toggleClockRule(paused, 900), { id: 'a1', enabled: true, since: 900 }, 'resuming moves it');
+  assert.equal(rule.enabled, true, 'inputs are not mutated');
 });
 
 test('a confirmation counter needs N consecutive readings and forgets on any miss', () => {

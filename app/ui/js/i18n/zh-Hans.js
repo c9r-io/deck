@@ -442,6 +442,7 @@ const dictionary = {
   'automation.run.minutes': '{count} 分钟',
   'automation.run.open': '打开',
   'automation.needsName': '请给自动化起个名字',
+  'automation.longName': '自动化名称最多 120 个字符',
   'automation.needsDays': '请至少选择一个星期几',
   'automation.needsTime': '请设置时间',
   'automation.needsColumn': '请选择栏目',

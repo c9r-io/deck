@@ -149,8 +149,12 @@ is a project-level rule (↻ Automations on the Board) that, at each slot,
 creates a fresh card in a column, launches the command and queues a template
 — so every run starts with an empty agent context, and one run at a time.
 With "close the card" the run is retired once every prompt is delivered and
-the agent reports its turn done (or the program exits). The drawer shows each
-rule's next slot and its last runs.
+the agent reports its turn done (or the program exits) — never while you
+have its pane open. A slot that comes due while deck is not running is
+caught up the next time deck runs that day, so opening deck in the evening
+can start the morning's job; a rule you resume or reschedule starts from
+that moment instead. The drawer shows each rule's next slot and its last
+runs.
 
 **Prompt templates.** Save a queue of prompts as a named, per-project
 template (📋 in the scheduler panel). Inserting a template queues all its

@@ -10,7 +10,9 @@
 //! every poll until it is acked), so this source keeps no state and never
 //! decides; a slot deck slept through is offered until local midnight, then
 //! disappears with the day. The local day comes from `procinfo::local_clock`
-//! (libc `localtime_r`, never a spawned `date`). Clock events are live by
+//! (libc `localtime_r` + `mktime`, never a spawned `date`); its `day_start`
+//! is one value for the whole day even across a DST switch, so a slot never
+//! gets a second key. Clock events are live by
 //! nature: the baseline gate that protects badge sources does not apply.
 
 use tauri::AppHandle;
@@ -32,7 +34,7 @@ pub(crate) fn due_slot(rule: &Rule, clock: &LocalClock) -> Option<u64> {
     if !schedule.matches_day(clock) {
         return None;
     }
-    let slot = clock.day_start() + u64::from(schedule.minute) * 60;
+    let slot = clock.day_start + u64::from(schedule.minute) * 60;
     (clock.now >= slot && slot >= rule.since).then_some(slot)
 }
 
@@ -103,7 +105,7 @@ mod tests {
         LocalClock {
             now,
             min,
-            secs: min * 60,
+            day_start: now - u64::from(min) * 60,
             wday,
             mday,
             mdays: 30,

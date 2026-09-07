@@ -61,14 +61,18 @@ empty agent context.
 
 - One run at a time: a slot that comes due while the rule's previous card is
   still on the Board is skipped and recorded as such.
-- A slot deck slept through is caught up until local midnight; slots older
-  than the rule's last schedule change never fire.
+- A slot deck slept through is caught up until local midnight (opening deck
+  in the evening starts the morning's job); slots older than the rule's
+  last schedule change or resume never fire. Slot keys come from `mktime`
+  of local midnight, one value for the whole day, so a DST switch never
+  hands a slot two keys.
 - **close the card**: once every prompt is delivered and the agent reported
   its turn done (agent hooks) or the program left the foreground, the card
   is retired through the same path as an explicit close — after the reading
   held for three consecutive polls, so the instant between a step's delivery
-  and the agent's next `working` hook can never close a run early. **keep
-  it** leaves the card for you.
+  and the agent's next `working` hook can never close a run early, and never
+  while a pane shows the card: a run you are reading or talking to is yours
+  until you leave it. **keep it** leaves the card for you.
 - Deleting a project deletes its automations; cards a rule already created
   stay when the rule is deleted.
 

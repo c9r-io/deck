@@ -15,12 +15,14 @@
 // into nothing. Weekday chips and day-of-month options are built here (their
 // labels go through the locale), so the editor is rebuilt on a language
 // change; the drawer itself is re-rendered on every Board transaction and
-// every inbound change while open.
+// every inbound change while open. A rule's `since` moves to now whenever
+// its schedule changes or it is resumed from pause, so a slot earlier that
+// day is never caught up by the edit itself.
 import { $, ctx, genId, inv, listen, state, store, uev } from './state.js';
 import { activeProject, provider } from './board.js';
 import { openSession } from './layout.js';
 import { confirmDialog, persistInbound, toast } from './dialogs.js';
-import { hmToMin, minToHM, nextScheduleSlot } from './pure.js';
+import { hmToMin, minToHM, nextScheduleSlot, toggleClockRule } from './pure.js';
 import { formatNumber, onLocaleChange, t } from './i18n.js';
 import { fmtClock } from './scheduler.js';
 
@@ -101,7 +103,7 @@ function ruleEl(rule) {
   const pause = el.querySelector('.ar-pause');
   pause.textContent = rule.enabled ? '⏸' : '▶';
   pause.title = t(rule.enabled ? 'automation.pause' : 'automation.resume');
-  pause.onclick = () => saveRule({ ...rule, enabled: !rule.enabled });
+  pause.onclick = () => saveRule(toggleClockRule(rule, Math.floor(Date.now() / 1000)));
   el.querySelector('.ar-edit').title = t('automation.edit');
   el.querySelector('.ar-edit').onclick = () => openEditor(rule);
   el.querySelector('.ar-del').title = t('automation.delete');
@@ -237,6 +239,7 @@ function readEditor() {
   const fail = (key, focus) => { toast(t(key)); if (focus) $(focus).focus(); return null; };
   const name = $('auto-name').value.trim();
   if (!name) return fail('automation.needsName', 'auto-name');
+  if ([...name].length > 120) return fail('automation.longName', 'auto-name');
   const unit = $('auto-unit').value;
   const days = unit === 'week' ? pressedDays() : unit === 'month' ? [Number($('auto-dom').value)] : [];
   if (unit === 'week' && !days.length) return fail('automation.needsDays');

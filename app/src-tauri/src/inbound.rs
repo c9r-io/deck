@@ -324,7 +324,7 @@ pub(crate) fn validate_settings(v: &Value) -> Result<(), DeckError> {
                     "only a clock rule carries a schedule",
                 ));
             }
-            if rule.name.len() > 120 || rule.name.contains(['\n', '\r']) {
+            if rule.name.chars().count() > 120 || rule.name.contains(['\n', '\r']) {
                 return Err(DeckError::new(
                     ErrorKind::Other,
                     "inbound rule name must be one bounded line",
@@ -336,13 +336,13 @@ pub(crate) fn validate_settings(v: &Value) -> Result<(), DeckError> {
                     "inbound rule must reference bounded project and column ids",
                 ));
             }
-            if rule.cmd.len() > 200 || rule.cmd.contains(['\n', '\r']) {
+            if rule.cmd.chars().count() > 200 || rule.cmd.contains(['\n', '\r']) {
                 return Err(DeckError::new(
                     ErrorKind::Other,
                     "inbound rule command must be one bounded line",
                 ));
             }
-            if rule.template.is_empty() || rule.template.len() > 120 {
+            if rule.template.is_empty() || rule.template.chars().count() > 120 {
                 return Err(DeckError::new(
                     ErrorKind::Other,
                     "inbound rule template name must be a bounded string",
@@ -1177,6 +1177,15 @@ mod tests {
         let mut r = clock_rule("a1", json!({"unit": "day", "minute": 0}));
         r["name"] = json!("two\nlines");
         assert!(!ok(r), "name is one line");
+        let mut r = clock_rule("a1", json!({"unit": "day", "minute": 0}));
+        r["name"] = json!("每".repeat(120));
+        assert!(
+            ok(r),
+            "the bound counts characters, not bytes (the webview's rule)"
+        );
+        let mut r = clock_rule("a1", json!({"unit": "day", "minute": 0}));
+        r["name"] = json!("每".repeat(121));
+        assert!(!ok(r), "121 characters");
         let mut slack = rule("deck");
         slack["schedule"] = json!({"unit": "day", "minute": 0});
         assert!(!ok(slack), "a slack rule carries no schedule");

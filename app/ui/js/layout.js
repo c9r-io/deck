@@ -877,6 +877,10 @@ export async function addSplit(targetSid, dir, before, newSid) {
 }
 
 /* close one pane; the session keeps running unless the card itself closes */
+/* whether a pane currently shows `session` (the user can see and type
+   into it) */
+export const hasPane = session => panes.has(session);
+
 export function closePaneBySid(sid, opts = {}) {
   const entry = [...panes.values()].find(p => p.sid === sid);
   if (!entry) return;

@@ -229,8 +229,11 @@ pub(crate) struct LocalClock {
     pub(crate) now: u64,
     /// minutes since local midnight (0..1440)
     pub(crate) min: u32,
-    /// seconds since local midnight — `now - secs` is this local day's start
-    pub(crate) secs: u32,
+    /// epoch second this local day started at — `mktime` of 00:00 local,
+    /// so it is one value for the whole day even across a DST switch (a
+    /// `now - seconds since midnight` reading would move by the shift and
+    /// hand the same slot two keys)
+    pub(crate) day_start: u64,
     /// ISO weekday: 1 = Monday … 7 = Sunday
     pub(crate) wday: u32,
     /// day of the month, 1-based
@@ -246,17 +249,11 @@ impl LocalClock {
         LocalClock {
             now,
             min,
-            secs: min * 60,
+            day_start: now.saturating_sub(u64::from(min) * 60),
             wday: 1,
             mday: 1,
             mdays: 31,
         }
-    }
-
-    /// Epoch second this local day started at (exact except across a DST
-    /// switch earlier the same day, where it is off by the shift).
-    pub(crate) fn day_start(&self) -> u64 {
-        self.now.saturating_sub(u64::from(self.secs))
     }
 }
 
@@ -280,29 +277,48 @@ pub(crate) fn local_clock() -> LocalClock {
     extern "C" {
         fn tzset();
     }
-    // SAFETY: plain libc time calls on stack-owned values; tzset refreshes
-    // the zone before every read so a timezone change is honored.
+    // SAFETY: tzset refreshes the zone before every read so a timezone
+    // change is honored; `time` with a null pointer only returns.
     unsafe {
         tzset();
-        let now = libc::time(std::ptr::null_mut());
-        let mut tm = std::mem::MaybeUninit::<libc::tm>::zeroed();
-        let epoch = u64::try_from(now).unwrap_or(0);
+        clock_at(libc::time(std::ptr::null_mut()))
+    }
+}
+
+/// The local wall clock at epoch second `now` (the caller has refreshed the
+/// zone).
+fn clock_at(now: libc::time_t) -> LocalClock {
+    let epoch = u64::try_from(now).unwrap_or(0);
+    let mut tm = std::mem::MaybeUninit::<libc::tm>::zeroed();
+    // SAFETY: plain libc time calls on stack-owned values.
+    let tm = unsafe {
         if libc::localtime_r(&now, tm.as_mut_ptr()).is_null() {
             return LocalClock::synthetic(epoch, 720);
         }
-        let tm = tm.assume_init();
-        let hour = tm.tm_hour.clamp(0, 23) as u32;
-        let min = tm.tm_min.clamp(0, 59) as u32;
-        let sec = tm.tm_sec.clamp(0, 59) as u32;
-        LocalClock {
-            now: epoch,
-            min: hour * 60 + min,
-            secs: hour * 3600 + min * 60 + sec,
-            // tm_wday counts from Sunday = 0; ISO counts from Monday = 1
-            wday: ((tm.tm_wday.clamp(0, 6) + 6) % 7 + 1) as u32,
-            mday: tm.tm_mday.clamp(1, 31) as u32,
-            mdays: days_in_month(tm.tm_year + 1900, tm.tm_mon.clamp(0, 11)),
-        }
+        tm.assume_init()
+    };
+    let hour = tm.tm_hour.clamp(0, 23) as u32;
+    let min = tm.tm_min.clamp(0, 59) as u32;
+    let sec = tm.tm_sec.clamp(0, 59) as u32;
+    let since_midnight = u64::from(hour * 3600 + min * 60 + sec);
+    let mut midnight = tm;
+    midnight.tm_hour = 0;
+    midnight.tm_min = 0;
+    midnight.tm_sec = 0;
+    midnight.tm_isdst = -1;
+    // SAFETY: mktime only reads and normalizes the stack-owned tm.
+    let day_start = u64::try_from(unsafe { libc::mktime(&mut midnight) })
+        .ok()
+        .filter(|&start| start <= epoch && epoch - start < 26 * 3600)
+        .unwrap_or_else(|| epoch.saturating_sub(since_midnight));
+    LocalClock {
+        now: epoch,
+        min: hour * 60 + min,
+        day_start,
+        // tm_wday counts from Sunday = 0; ISO counts from Monday = 1
+        wday: ((tm.tm_wday.clamp(0, 6) + 6) % 7 + 1) as u32,
+        mday: tm.tm_mday.clamp(1, 31) as u32,
+        mdays: days_in_month(tm.tm_year + 1900, tm.tm_mon.clamp(0, 11)),
     }
 }
 
@@ -384,11 +400,11 @@ mod tests {
     fn local_clock_is_a_consistent_local_day() {
         let c = local_clock();
         assert!(c.min < 1440);
-        assert_eq!(c.secs / 60, c.min);
         assert!((1..=7).contains(&c.wday));
         assert!((1..=c.mdays).contains(&c.mday));
         assert!((28..=31).contains(&c.mdays));
-        assert!(c.day_start() <= c.now);
+        assert!(c.day_start <= c.now);
+        assert!(c.now - c.day_start < 26 * 3600);
         assert!(local_minutes() < 24 * 60);
         assert_eq!(days_in_month(2024, 1), 29);
         assert_eq!(days_in_month(2100, 1), 28);
@@ -396,6 +412,44 @@ mod tests {
         assert_eq!(days_in_month(2026, 8), 30);
         assert_eq!(days_in_month(2026, 11), 31);
         let s = LocalClock::synthetic(1_000_000, 600);
-        assert_eq!(s.day_start(), 1_000_000 - 36_000);
+        assert_eq!(s.day_start, 1_000_000 - 36_000);
+    }
+
+    /// The whole local day shares one `day_start`, so a clock rule's slot
+    /// keeps one key across a DST switch (both directions) — the bug was a
+    /// 00:30 slot firing twice on the switch day.
+    #[test]
+    fn day_start_is_stable_across_a_dst_switch() {
+        extern "C" {
+            fn tzset();
+        }
+        let tz_before = std::env::var_os("TZ");
+        std::env::set_var("TZ", "America/New_York");
+        // SAFETY: tzset only re-reads the environment.
+        unsafe { tzset() };
+        // 2026-03-08: clocks jump 02:00 → 03:00; 2026-11-01: 02:00 → 01:00
+        let spring_midnight = 1_772_946_000;
+        let spring = [
+            (1_772_947_800, 30),  // 00:30 EST
+            (1_772_978_400, 600), // 10:00 EDT
+        ];
+        let fall_midnight = 1_793_505_600;
+        let fall = [
+            (1_793_507_400, 30),  // 00:30 EDT
+            (1_793_545_200, 600), // 10:00 EST
+        ];
+        for (midnight, day) in [(spring_midnight, spring), (fall_midnight, fall)] {
+            for (at, min) in day {
+                let c = clock_at(at);
+                assert_eq!(c.min, min, "wall minute at {at}");
+                assert_eq!(c.day_start, midnight, "day start at {at}");
+                assert_eq!(c.wday, 7, "both switch days are Sundays");
+            }
+        }
+        match tz_before {
+            Some(v) => std::env::set_var("TZ", v),
+            None => std::env::remove_var("TZ"),
+        }
+        unsafe { tzset() };
     }
 }

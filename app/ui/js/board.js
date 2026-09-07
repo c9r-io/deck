@@ -2,9 +2,9 @@
 // Part of deck's no-build frontend: native ES modules, no bundler.
 import { $, columnHint, ctx, dotTitle, emit, genId, inv, listeners, POLL_MS, QUIET_SECS, sessionName, setMemChip, state, store, uev } from './state.js';
 import { mutateBoard, mutateBoardDebounced } from './persistence.js';
-import { CARD_PREVIEW_ROWS, cardPreviewRows, createConfirmationCounter, createDoneSeenTracker, createExitRetirementTracker, effectiveCardStatus, reorderById, sidebarGroups } from './pure.js';
+import { CARD_PREVIEW_ROWS, cardPreviewRows, createConfirmationCounter, createDoneSeenTracker, createExitRetirementTracker, effectiveCardStatus, reorderById, runFinishHolds, sidebarGroups } from './pure.js';
 import { confirmDialog, inlineRename, toast } from './dialogs.js';
-import { clearSeparators, closePaneBySid, leaveSessionView, openSession, renderSessionView, updatePaneChrome } from './layout.js';
+import { clearSeparators, closePaneBySid, hasPane, leaveSessionView, openSession, renderSessionView, updatePaneChrome } from './layout.js';
 import { SHELL_FG, showProjectCtx, showSessionCtx } from './terminal.js';
 import { renderQueueUI, setQueueChip, updateQuietHints } from './scheduler.js';
 import { formatNumber, t } from './i18n.js';
@@ -76,6 +76,7 @@ export const provider = {
   },
 
   async removeProject(pid, opts = {}) {
+    let gone = [];   // the run ledger learns of a close only once it is committed
     try {
       await mutateBoard(async draft => {
         if (!draft.projects.some(p => p.id === pid)) return { noop: true };
@@ -100,9 +101,9 @@ export const provider = {
           error.failed = failed;
           throw error;
         }
-        cards.forEach(noteRunEnded);
         draft.cards = draft.cards.filter(c => c.projectId !== pid);
         draft.projects = draft.projects.filter(p => p.id !== pid);
+        gone = cards;
       });
     } catch (error) {
       if (!opts.quiet && error.stage === 'kill') {
@@ -113,6 +114,7 @@ export const provider = {
       emit('projects');
       return false;
     }
+    gone.forEach(noteRunEnded);
     emit('projects');
     return true;
   },
@@ -356,20 +358,24 @@ function noteRunEnded(card) {
 }
 
 /* the finish rule of an automation run: once the run's prompts are all
-   delivered and the agent reported its turn done (or the program left the
-   foreground), the card is retired through the same path as an explicit
-   close. The reading must survive three consecutive polls, so the instant
-   between a step's delivery and the agent's next `working` hook — when the
-   queue is already empty but the old `turn-done` still stands — never
-   closes a card mid-run. */
+   delivered, the agent reported its turn done (or the program left the
+   foreground) and no pane shows the card, it is retired through the same
+   path as an explicit close (`runFinishHolds` in pure.js is the reading).
+   The reading must survive three consecutive polls, so the instant between
+   a step's delivery and the agent's next `working` hook — when the queue is
+   already empty but the old `turn-done` still stands — never closes a card
+   mid-run. An open pane holds the close for as long as the user keeps it:
+   a run they are reading or talking to is theirs until they leave. */
 const runConfirm = createConfirmationCounter(3);
 const runRetirement = createExitRetirementTracker();
 function observeRunFinish(c, info) {
   if (!info.alive || !c.origin || c.origin.source !== 'clock') { runConfirm.forget(c.id); return; }
-  const rule = clockRuleById(c.origin.badge);
-  const queued = (ctx.queueCache.items || []).some(i => i.session === c.session);
-  const settled = info.agent === 'turn-done' || (!info.agent && SHELL_FG.test(info.fg || ''));
-  const holds = !!rule && rule.finish === 'close' && !queued && settled && c.status !== 'stopped';
+  const holds = runFinishHolds({
+    rule: clockRuleById(c.origin.badge),
+    queued: (ctx.queueCache.items || []).some(i => i.session === c.session),
+    agent: info.agent, fg: info.fg, alive: true,
+    stopped: c.status === 'stopped', viewing: hasPane(c.session),
+  }, SHELL_FG);
   if (runConfirm.observe(c.id, holds)) {
     runConfirm.forget(c.id);
     runRetirement.observe(c.id);

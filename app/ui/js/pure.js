@@ -1194,6 +1194,24 @@ export function nextScheduleSlot(schedule, now, since = 0) {
    the finish rule closes a run only after the "prompts delivered + agent
    done" reading survives three polls, so the instant between a step's
    delivery and the agent's next `working` hook can never close a card */
+/* one poll's reading for a `close` finish rule: the run is over when its
+   session has nothing queued, the agent reported its turn done (or, with no
+   agent reporting, the program left the foreground), the card is alive and
+   nobody is looking at it — a run whose pane is open is the user's to read
+   and talk to; it is only retired after they leave it and the agent is done */
+export function runFinishHolds({ rule, queued, agent, fg, alive, stopped, viewing }, shellFg) {
+  if (!alive || stopped || viewing || queued) return false;
+  if (!rule || rule.finish !== 'close') return false;
+  return agent === 'turn-done' || (!agent && shellFg.test(fg || ''));
+}
+
+/* pause ↔ resume of a clock rule: resuming starts fresh from `now`, exactly
+   like a schedule change, so a slot earlier today is not caught up the
+   moment the rule comes back */
+export const toggleClockRule = (rule, now) => (
+  rule.enabled ? { ...rule, enabled: false } : { ...rule, enabled: true, since: now }
+);
+
 export function createConfirmationCounter(needed = 3) {
   const counts = new Map();
   return {
