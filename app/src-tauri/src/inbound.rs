@@ -39,6 +39,21 @@
 //! redirect to a local app and no API that mints app-level tokens. Cards are
 //! never moved and deck never writes to Slack. Adding a source = one `Source`
 //! impl + one Settings row; rules/templates/dispatch do not change.
+//!
+//! The CLOCK source (`inbound_clock.rs`, "自动化") is a source whose events
+//! are local-time slots: a `clock` rule carries a `schedule` (a minute of the
+//! day on every day / listed ISO weekdays / listed days of month, a day the
+//! month lacks meaning its last), its badge IS its id, and every poll offers
+//! `(clock, <slot epoch>, <rule id>)` for a slot that is due today and not
+//! older than the rule's `since` — the ledger's dedupe is what makes each slot
+//! fire once, a slot deck slept through is caught up until local midnight,
+//! and there is no baseline (clock events are live by nature). The webview
+//! refuses a slot while a card of the same rule is still on the Board
+//! (`busy`, acked skipped) and, for a rule whose `finish` is `close`, closes
+//! the run's card once its prompts are all delivered and the agent reported
+//! `turn-done` or the program left the foreground (three consecutive polls).
+//! The ledger's `runs` list (rule, slot, card id, times, closed outcome word;
+//! capped) is the drawer's history — identifiers and times only.
 
 // inbound.rs — "自动响应": external services ask deck to start a session.
 //
@@ -78,7 +93,11 @@ use crate::keychain;
 use crate::storage;
 use crate::sync::LockRecover;
 
-pub(crate) const SOURCES: &[&str] = &["slack"];
+pub(crate) const SOURCES: &[&str] = &["slack", "clock"];
+const MAX_RUNS: usize = 200;
+/// Closed vocabulary of what became of a run.
+const RUN_OUTCOMES: &[&str] = &["running", "closed", "skipped"];
+const SKIP_REASONS: &[&str] = &["busy", "no-rule-target", "no-template"];
 const MAX_RULES: usize = 32;
 const MAX_SEEN: usize = 5000;
 const SEEN_TTL_SECS: u64 = 45 * 24 * 3600;
@@ -103,6 +122,74 @@ pub(crate) struct Rule {
     /// Working directory for the new card; empty means the user's home.
     #[serde(default)]
     pub(crate) dir: String,
+    /// clock rules: the automation's display name
+    #[serde(default)]
+    pub(crate) name: String,
+    /// clock rules: a paused rule offers nothing
+    #[serde(default = "default_true")]
+    pub(crate) enabled: bool,
+    /// clock rules only
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) schedule: Option<Schedule>,
+    /// clock rules: "close" retires the run's card when its prompts are
+    /// done; anything else keeps it
+    #[serde(default)]
+    pub(crate) finish: String,
+    /// clock rules: slots before this instant never fire (set when the
+    /// schedule is created or changed)
+    #[serde(default)]
+    pub(crate) since: u64,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// A clock rule's cadence: `minute` of the local day on every day / the
+/// listed ISO weekdays (1 = Monday) / the listed days of month (1..=31; a day
+/// the month lacks means its last day).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub(crate) struct Schedule {
+    /// "day" | "week" | "month"
+    pub(crate) unit: String,
+    #[serde(default)]
+    pub(crate) days: Vec<u32>,
+    pub(crate) minute: u32,
+}
+
+impl Schedule {
+    pub(crate) fn validate(&self) -> Result<(), DeckError> {
+        let bad = |m: &str| Err(DeckError::new(ErrorKind::Other, m.to_string()));
+        if self.minute >= 1440 {
+            return bad("schedule time must be a minute of the day");
+        }
+        let limit = match self.unit.as_str() {
+            "day" => return Ok(()),
+            "week" => 7,
+            "month" => 31,
+            _ => return bad("schedule unit must be day, week or month"),
+        };
+        if self.days.is_empty() || self.days.len() > limit as usize {
+            return bad("a weekly or monthly schedule needs its days");
+        }
+        if self.days.iter().any(|&d| d == 0 || d > limit) {
+            return bad("schedule day out of range");
+        }
+        Ok(())
+    }
+
+    /// Does the schedule have a slot on the local day `clock` describes?
+    pub(crate) fn matches_day(&self, clock: &crate::procinfo::LocalClock) -> bool {
+        match self.unit.as_str() {
+            "day" => true,
+            "week" => self.days.contains(&clock.wday),
+            "month" => self
+                .days
+                .iter()
+                .any(|&d| d == clock.mday || (d > clock.mdays && clock.mday == clock.mdays)),
+            _ => false,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -213,6 +300,36 @@ pub(crate) fn validate_settings(v: &Value) -> Result<(), DeckError> {
                     "inbound rule badge must be an emoji name",
                 ));
             }
+            if rule.source == "clock" {
+                let schedule = rule.schedule.as_ref().ok_or(DeckError::new(
+                    ErrorKind::Other,
+                    "a clock rule needs a schedule",
+                ))?;
+                schedule.validate()?;
+                if rule.badge != rule.id {
+                    return Err(DeckError::new(
+                        ErrorKind::Other,
+                        "a clock rule's badge is its id",
+                    ));
+                }
+                if !matches!(rule.finish.as_str(), "" | "keep" | "close") {
+                    return Err(DeckError::new(
+                        ErrorKind::Other,
+                        "a clock rule finishes by keep or close",
+                    ));
+                }
+            } else if rule.schedule.is_some() {
+                return Err(DeckError::new(
+                    ErrorKind::Other,
+                    "only a clock rule carries a schedule",
+                ));
+            }
+            if rule.name.len() > 120 || rule.name.contains(['\n', '\r']) {
+                return Err(DeckError::new(
+                    ErrorKind::Other,
+                    "inbound rule name must be one bounded line",
+                ));
+            }
             if !bounded_id(&rule.project_id, 128) || !bounded_id(&rule.column_id, 128) {
                 return Err(DeckError::new(
                     ErrorKind::Other,
@@ -316,9 +433,14 @@ pub(crate) struct Event {
 pub(crate) trait Source: Send {
     fn id(&self) -> &'static str;
     fn enabled(&self, cfg: &Config) -> bool;
-    fn poll(&mut self, badges: &[String]) -> Result<Vec<Event>, &'static str>;
+    fn poll(&mut self, cfg: &Config, badges: &[String]) -> Result<Vec<Event>, &'static str>;
     fn set_live(&mut self, app: &AppHandle, wanted: bool, badges: &[String]);
     fn status(&self) -> SourceStatus;
+    /// A source whose polled events are new by definition (the clock) skips
+    /// the baseline gate that protects badge sources from a first-poll flood.
+    fn polled_events_are_live(&self) -> bool {
+        false
+    }
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -339,15 +461,58 @@ struct Seen {
     at: u64,
 }
 
+/// One run of a clock rule: identifiers, instants and a closed outcome word.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct Run {
+    pub(crate) rule: String,
+    /// the slot (epoch seconds) that produced it
+    pub(crate) key: String,
+    #[serde(default)]
+    pub(crate) card: Option<String>,
+    pub(crate) started: u64,
+    #[serde(default)]
+    pub(crate) ended: Option<u64>,
+    /// "running" | "closed" | "skipped"
+    pub(crate) outcome: String,
+    /// for skipped runs: why (closed word)
+    #[serde(default)]
+    pub(crate) reason: String,
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub(crate) struct InboundDoc {
     #[serde(default)]
     seen: Vec<Seen>,
     #[serde(default)]
     baselined: Vec<String>,
+    #[serde(default)]
+    runs: Vec<Run>,
 }
 
 impl InboundDoc {
+    fn record_run(&mut self, run: Run) {
+        self.runs.push(run);
+        if self.runs.len() > MAX_RUNS {
+            let drop = self.runs.len() - MAX_RUNS;
+            self.runs.drain(..drop);
+        }
+    }
+    /// Close the run bound to `card`; false when no running run has it.
+    fn end_run(&mut self, card: &str, now: u64) -> bool {
+        match self
+            .runs
+            .iter_mut()
+            .find(|r| r.card.as_deref() == Some(card) && r.outcome == "running")
+        {
+            Some(run) => {
+                run.outcome = "closed".into();
+                run.ended = Some(now);
+                true
+            }
+            None => false,
+        }
+    }
     fn has(&self, source: &str, key: &str, badge: &str) -> bool {
         self.seen
             .iter()
@@ -640,13 +805,27 @@ pub(crate) fn inbound_pending() -> Vec<PendingView> {
 /// The webview has created the card (or decided it cannot). Both outcomes
 /// retire the item for good: a badge the user must fix a rule for is
 /// re-armed by removing and re-adding the badge, never by deck retrying.
+/// A clock item also records its run: `card` is the run's card id when one
+/// was created, `reason` the closed word for a skipped slot.
 #[tauri::command]
-pub(crate) fn inbound_ack(id: u64, outcome: String) -> Result<(), DeckError> {
+pub(crate) fn inbound_ack(
+    id: u64,
+    outcome: String,
+    card: Option<String>,
+    reason: Option<String>,
+) -> Result<(), DeckError> {
     if !matches!(outcome.as_str(), "done" | "skipped") {
         return Err(DeckError::new(
             ErrorKind::Other,
             "outcome must be done or skipped",
         ));
+    }
+    let reason = reason.unwrap_or_default();
+    if !reason.is_empty() && !SKIP_REASONS.contains(&reason.as_str()) {
+        return Err(DeckError::new(ErrorKind::Other, "unknown skip reason"));
+    }
+    if card.as_deref().is_some_and(|c| !bounded_id(c, 128)) {
+        return Err(DeckError::new(ErrorKind::Other, "card id out of shape"));
     }
     with_rt(|rt| {
         let Some(pos) = rt.pending.iter().position(|p| p.view.id == id) else {
@@ -654,8 +833,30 @@ pub(crate) fn inbound_ack(id: u64, outcome: String) -> Result<(), DeckError> {
         };
         let p = rt.pending.remove(pos);
         let ev = &p.view.event;
-        rt.doc.mark(&ev.source, &ev.key, &ev.badge, now_secs());
-        rt.doc.prune(now_secs());
+        let now = now_secs();
+        rt.doc.mark(&ev.source, &ev.key, &ev.badge, now);
+        if ev.source == "clock" {
+            let created = outcome == "done";
+            rt.doc.record_run(Run {
+                rule: ev.badge.clone(),
+                key: ev.key.clone(),
+                card: if created { card.clone() } else { None },
+                started: now,
+                ended: if created { None } else { Some(now) },
+                outcome: if created {
+                    RUN_OUTCOMES[0]
+                } else {
+                    RUN_OUTCOMES[2]
+                }
+                .into(),
+                reason: if created {
+                    String::new()
+                } else {
+                    reason.clone()
+                },
+            });
+        }
+        rt.doc.prune(now);
         persist(rt);
         applog(&format!(
             "[inbound] item {}",
@@ -671,6 +872,29 @@ pub(crate) fn inbound_ack(id: u64, outcome: String) -> Result<(), DeckError> {
         crate::scheduler::wake_scheduler();
     }
     Ok(())
+}
+
+/// The run bound to `card` is over: its card was closed (by the finish rule
+/// or by hand). Unknown cards are a no-op, so the call is safe from every
+/// close path.
+#[tauri::command]
+pub(crate) fn inbound_run_ended(card: String) -> Result<(), DeckError> {
+    if !bounded_id(&card, 128) {
+        return Err(DeckError::new(ErrorKind::Other, "card id out of shape"));
+    }
+    with_rt(|rt| {
+        if rt.doc.end_run(&card, now_secs()) {
+            persist(rt);
+            applog("[inbound] run closed");
+        }
+    });
+    Ok(())
+}
+
+/// Every recorded run, oldest first; the webview filters by rule.
+#[tauri::command]
+pub(crate) fn inbound_runs() -> Vec<Run> {
+    with_rt(|rt| rt.doc.runs.clone())
 }
 
 /// Open the source's prefilled "create an app" page in the browser. The URL
@@ -770,8 +994,10 @@ fn wait_for_tick(d: Duration) {
 
 pub(crate) fn spawn_inbound(app: AppHandle) {
     std::thread::spawn(move || {
-        let mut sources: Vec<Box<dyn Source>> =
-            vec![Box::new(crate::inbound_slack::Slack::default())];
+        let mut sources: Vec<Box<dyn Source>> = vec![
+            Box::new(crate::inbound_slack::Slack::default()),
+            Box::new(crate::inbound_clock::Clock::default()),
+        ];
         let mut failures = 0u32;
         wait_for_tick(Duration::from_secs(5));
         loop {
@@ -781,11 +1007,14 @@ pub(crate) fn spawn_inbound(app: AppHandle) {
                 let wanted = src.enabled(&cfg) && !badges.is_empty();
                 src.set_live(&app, wanted, &badges);
                 if wanted {
-                    match src.poll(&badges) {
+                    match src.poll(&cfg, &badges) {
                         Ok(events) => {
                             failures = 0;
-                            offer(&app, &cfg, events, false);
-                            note_baselined(src.id(), &badges);
+                            let live = src.polled_events_are_live();
+                            offer(&app, &cfg, events, live);
+                            if !live {
+                                note_baselined(src.id(), &badges);
+                            }
                         }
                         Err(code) => {
                             failures = failures.saturating_add(1);
@@ -884,6 +1113,114 @@ mod tests {
         assert!(validate_settings(&json!({"rules": [rule("deck"), dup]})).is_err());
         let many: Vec<Value> = (0..MAX_RULES + 1).map(|i| rule(&format!("b{i}"))).collect();
         assert!(validate_settings(&json!({"rules": many})).is_err());
+    }
+
+    fn clock_rule(id: &str, schedule: Value) -> Value {
+        json!({"id": id, "source": "clock", "badge": id, "projectId": "P1", "columnId": "C1",
+               "cmd": "claude", "template": "morning", "name": "Morning tests",
+               "schedule": schedule, "finish": "close", "since": 100})
+    }
+
+    #[test]
+    fn clock_rules_carry_a_valid_schedule_and_their_own_id_as_badge() {
+        let ok = |r: Value| validate_settings(&json!({"rules": [r]})).is_ok();
+        assert!(ok(clock_rule("a1", json!({"unit": "day", "minute": 540}))));
+        assert!(ok(clock_rule(
+            "a1",
+            json!({"unit": "week", "days": [1, 3, 5], "minute": 0})
+        )));
+        assert!(ok(clock_rule(
+            "a1",
+            json!({"unit": "month", "days": [31], "minute": 1439})
+        )));
+        assert!(
+            !ok(clock_rule(
+                "a1",
+                json!({"unit": "week", "days": [], "minute": 0})
+            )),
+            "no weekday"
+        );
+        assert!(
+            !ok(clock_rule(
+                "a1",
+                json!({"unit": "week", "days": [8], "minute": 0})
+            )),
+            "weekday 8"
+        );
+        assert!(
+            !ok(clock_rule(
+                "a1",
+                json!({"unit": "month", "days": [0], "minute": 0})
+            )),
+            "day 0"
+        );
+        assert!(
+            !ok(clock_rule("a1", json!({"unit": "day", "minute": 1440}))),
+            "minute 1440"
+        );
+        assert!(
+            !ok(clock_rule(
+                "a1",
+                json!({"unit": "year", "days": [1], "minute": 0})
+            )),
+            "unit"
+        );
+        let mut r = clock_rule("a1", json!({"unit": "day", "minute": 0}));
+        r.as_object_mut().unwrap().remove("schedule");
+        assert!(!ok(r), "a clock rule needs a schedule");
+        let mut r = clock_rule("a1", json!({"unit": "day", "minute": 0}));
+        r["badge"] = json!("other");
+        assert!(!ok(r), "badge must be the id");
+        let mut r = clock_rule("a1", json!({"unit": "day", "minute": 0}));
+        r["finish"] = json!("archive");
+        assert!(!ok(r), "finish is keep or close");
+        let mut r = clock_rule("a1", json!({"unit": "day", "minute": 0}));
+        r["name"] = json!("two\nlines");
+        assert!(!ok(r), "name is one line");
+        let mut slack = rule("deck");
+        slack["schedule"] = json!({"unit": "day", "minute": 0});
+        assert!(!ok(slack), "a slack rule carries no schedule");
+        // defaults: an old rule without the new fields is enabled and kept
+        let cfg = config_from_value(Some(&json!({"rules": [rule("deck")]})));
+        assert!(cfg.rules[0].enabled);
+        assert_eq!(cfg.rules[0].finish, "");
+        assert!(cfg.rules[0].schedule.is_none());
+        let cfg = config_from_value(Some(
+            &json!({"rules": [clock_rule("a1", json!({"unit": "day", "minute": 5}))]}),
+        ));
+        assert_eq!(cfg.badges("clock"), vec!["a1".to_string()]);
+        assert_eq!(cfg.rules[0].since, 100);
+        let round = serde_json::to_value(&cfg.rules[0]).unwrap();
+        assert_eq!(round["schedule"]["minute"], json!(5));
+        assert_eq!(round["finish"], json!("close"));
+    }
+
+    #[test]
+    fn the_run_ledger_records_closes_and_caps() {
+        let mut d = InboundDoc::default();
+        for i in 0..(MAX_RUNS + 5) {
+            d.record_run(Run {
+                rule: "a1".into(),
+                key: i.to_string(),
+                card: Some(format!("S{i}")),
+                started: i as u64,
+                ended: None,
+                outcome: "running".into(),
+                reason: String::new(),
+            });
+        }
+        assert_eq!(d.runs.len(), MAX_RUNS);
+        assert_eq!(d.runs[0].key, "5", "oldest dropped first");
+        assert!(d.end_run("S10", 999));
+        assert!(!d.end_run("S10", 1000), "closed once");
+        assert!(!d.end_run("nope", 1000));
+        let run = d.runs.iter().find(|r| r.key == "10").unwrap();
+        assert_eq!(run.outcome, "closed");
+        assert_eq!(run.ended, Some(999));
+        let s = serde_json::to_string(&d).unwrap();
+        let back: InboundDoc = serde_json::from_str(&s).unwrap();
+        assert_eq!(back, d);
+        assert!(!s.contains("text"), "runs carry identifiers and times only");
     }
 
     #[test]
@@ -1010,20 +1347,78 @@ mod tests {
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].id, 1);
         assert_eq!(pending[0].event.key, "C/new");
-        assert!(inbound_ack(1, "later".into()).is_err());
-        assert!(inbound_ack(999, "skipped".into()).is_ok());
-        assert!(inbound_ack(1, "skipped".into()).is_ok());
+        assert!(inbound_ack(1, "later".into(), None, None).is_err());
+        assert!(inbound_ack(999, "skipped".into(), None, None).is_ok());
+        assert!(inbound_ack(1, "skipped".into(), None, None).is_ok());
         assert!(inbound_pending().is_empty());
 
         assert_eq!(
             offer(app.handle(), &cfg, vec![event("C/done", "bug")], true),
             1
         );
-        assert!(inbound_ack(2, "done".into()).is_ok());
+        assert!(inbound_ack(2, "done".into(), None, None).is_ok());
         assert!(inbound_pending().is_empty());
         let loaded = load_doc();
         assert!(loaded.has("slack", "C/new", "deck"));
         assert!(loaded.has("slack", "C/done", "bug"));
+        assert!(loaded.runs.is_empty(), "badge items record no run");
+
+        // a clock slot: created → running run bound to its card; the same
+        // slot offered again is a duplicate; run_ended closes it
+        let clock_cfg = config_from_value(Some(&json!({
+            "rules": [clock_rule("a1", json!({"unit": "day", "minute": 0}))]
+        })));
+        let slot = Event {
+            source: "clock".into(),
+            key: "1000".into(),
+            badge: "a1".into(),
+            text: "Morning tests".into(),
+            from: String::new(),
+            where_: String::new(),
+            link: String::new(),
+        };
+        assert_eq!(offer(app.handle(), &clock_cfg, vec![slot.clone()], true), 1);
+        assert_eq!(offer(app.handle(), &clock_cfg, vec![slot.clone()], true), 0);
+        assert!(inbound_ack(3, "done".into(), Some("bad id!".into()), None).is_err());
+        assert!(inbound_ack(3, "skipped".into(), None, Some("tired".into())).is_err());
+        assert!(inbound_ack(3, "done".into(), Some("S-run1".into()), None).is_ok());
+        assert_eq!(
+            offer(app.handle(), &clock_cfg, vec![slot], true),
+            0,
+            "acked slots never fire again"
+        );
+        let runs = inbound_runs();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].outcome, "running");
+        assert_eq!(runs[0].card.as_deref(), Some("S-run1"));
+        assert!(inbound_run_ended("S-run1".into()).is_ok());
+        assert!(inbound_run_ended("S-run1".into()).is_ok(), "idempotent");
+        assert!(inbound_run_ended("bad id!".into()).is_err());
+        assert_eq!(inbound_runs()[0].outcome, "closed");
+        assert!(inbound_runs()[0].ended.is_some());
+        let busy = Event {
+            key: "2000".into(),
+            ..inbound_runs()
+                .first()
+                .map(|_| Event {
+                    source: "clock".into(),
+                    key: String::new(),
+                    badge: "a1".into(),
+                    text: String::new(),
+                    from: String::new(),
+                    where_: String::new(),
+                    link: String::new(),
+                })
+                .unwrap()
+        };
+        assert_eq!(offer(app.handle(), &clock_cfg, vec![busy], true), 1);
+        assert!(inbound_ack(4, "skipped".into(), None, Some("busy".into())).is_ok());
+        let last = inbound_runs().last().cloned().unwrap();
+        assert_eq!(
+            (last.outcome.as_str(), last.reason.as_str()),
+            ("skipped", "busy")
+        );
+        assert!(last.ended.is_some());
 
         inbound_check_now();
         wait_for_tick(Duration::from_secs(1));

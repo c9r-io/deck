@@ -9,6 +9,7 @@ import {
   nextFire, groupQueue, groupSteps, itemDead, blockedBy,
   chainQuietHint, contextStatusKey, CHAIN_QUIET_SECS, shQuote, quickBarLayout, rectsOverlap,
   MIN_QUIET_SECS, MAX_QUIET_SECS, quietSecsOf, localEpoch, isoDate, isoTime,
+  scheduleMatchesDay, nextScheduleSlot, createConfirmationCounter, isoWeekday, daysInMonth,
   createExitRetirementTracker, createSerialTransactionQueue, deleteSessionsTransaction, sidebarGroups,
   copyExact, createTerminalPasteTrace, createTerminalResizeCoordinator, createTerminalSelectionModel,
   reorderById,
@@ -1225,4 +1226,47 @@ test('scroll replies read the same way whether boolean or status object', () => 
   assert.deepEqual(scrollResultView(false), { inMode: false, cursorVisible: true });
   assert.deepEqual(scrollResultView({ active: true, cursor_visible: false }), { inMode: true, cursorVisible: false });
   assert.deepEqual(scrollResultView(null), { inMode: undefined, cursorVisible: undefined });
+});
+
+test('schedule days mirror the backend: ISO weekdays, month days, and the last day for a day the month lacks', () => {
+  const mon = new Date(2026, 8, 7), tue = new Date(2026, 8, 8);
+  assert.equal(isoWeekday(mon), 1);
+  assert.equal(isoWeekday(new Date(2026, 8, 13)), 7, 'Sunday is 7, not 0');
+  assert.equal(daysInMonth(new Date(2024, 1, 10)), 29);
+  assert.ok(scheduleMatchesDay({ unit: 'day', days: [], minute: 0 }, tue));
+  assert.ok(scheduleMatchesDay({ unit: 'week', days: [1, 3, 5], minute: 0 }, mon));
+  assert.ok(!scheduleMatchesDay({ unit: 'week', days: [1, 3, 5], minute: 0 }, tue));
+  assert.ok(scheduleMatchesDay({ unit: 'month', days: [8], minute: 0 }, tue));
+  assert.ok(scheduleMatchesDay({ unit: 'month', days: [31], minute: 0 }, new Date(2026, 8, 30)));
+  assert.ok(!scheduleMatchesDay({ unit: 'month', days: [31], minute: 0 }, new Date(2026, 8, 29)));
+  assert.ok(!scheduleMatchesDay({ unit: 'year', days: [1], minute: 0 }, tue));
+  assert.ok(!scheduleMatchesDay(null, tue));
+});
+
+test('nextScheduleSlot is the first future slot, honouring since', () => {
+  const secs = d => Math.floor(d.getTime() / 1000);
+  const nineToday = secs(new Date(2026, 8, 8, 9, 0));          // Tuesday
+  const daily = { unit: 'day', days: [], minute: 540 };
+  assert.equal(nextScheduleSlot(daily, nineToday - 600), nineToday);
+  assert.equal(nextScheduleSlot(daily, nineToday), secs(new Date(2026, 8, 9, 9, 0)), 'the slot itself is not "next"');
+  assert.equal(nextScheduleSlot({ unit: 'week', days: [1, 5], minute: 540 }, nineToday), secs(new Date(2026, 8, 11, 9, 0)), 'Tuesday → Friday');
+  assert.equal(nextScheduleSlot({ unit: 'month', days: [1], minute: 540 }, nineToday), secs(new Date(2026, 9, 1, 9, 0)));
+  const since = secs(new Date(2026, 8, 15, 0, 0));
+  assert.equal(nextScheduleSlot(daily, nineToday - 600, since), secs(new Date(2026, 8, 15, 9, 0)));
+  assert.equal(nextScheduleSlot({ unit: 'year', days: [], minute: 0 }, nineToday), null);
+});
+
+test('a confirmation counter needs N consecutive readings and forgets on any miss', () => {
+  const c = createConfirmationCounter(3);
+  assert.equal(c.observe('a', true), false);
+  assert.equal(c.observe('a', true), false);
+  assert.equal(c.observe('a', false), false, 'a miss resets');
+  assert.equal(c.observe('a', true), false);
+  assert.equal(c.observe('a', true), false);
+  assert.equal(c.observe('a', true), true);
+  assert.equal(c.observe('b', true), false, 'ids are independent');
+  c.forget('a');
+  assert.equal(c.observe('a', true), false);
+  c.clear();
+  assert.equal(c.observe('b', true), false);
 });

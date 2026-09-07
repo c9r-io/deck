@@ -16,6 +16,7 @@ mod drops;
 mod error;
 mod history;
 mod inbound;
+mod inbound_clock;
 mod inbound_slack;
 mod instance_lock;
 mod keychain;
@@ -325,6 +326,8 @@ fn main() {
             inbound::inbound_status,
             inbound::inbound_pending,
             inbound::inbound_ack,
+            inbound::inbound_run_ended,
+            inbound::inbound_runs,
             inbound::inbound_set_secret,
             inbound::inbound_check_now,
             inbound::inbound_setup,

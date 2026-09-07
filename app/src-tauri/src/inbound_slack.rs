@@ -732,7 +732,7 @@ impl Source for Slack {
         cfg.slack_enabled && keychain::has(Slot::SlackUserToken)
     }
 
-    fn poll(&mut self, badges: &[String]) -> Result<Vec<Event>, &'static str> {
+    fn poll(&mut self, _cfg: &Config, badges: &[String]) -> Result<Vec<Event>, &'static str> {
         let token = keychain::get(Slot::SlackUserToken).ok_or("no-token")?;
         let mut all = Vec::new();
         let mut result = Ok(());

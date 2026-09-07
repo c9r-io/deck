@@ -2,12 +2,13 @@
 // Part of deck's no-build frontend: native ES modules, no bundler.
 import { $, columnHint, ctx, dotTitle, emit, genId, inv, listeners, POLL_MS, QUIET_SECS, sessionName, setMemChip, state, store, uev } from './state.js';
 import { mutateBoard, mutateBoardDebounced } from './persistence.js';
-import { CARD_PREVIEW_ROWS, cardPreviewRows, createDoneSeenTracker, createExitRetirementTracker, effectiveCardStatus, reorderById, sidebarGroups } from './pure.js';
+import { CARD_PREVIEW_ROWS, cardPreviewRows, createConfirmationCounter, createDoneSeenTracker, createExitRetirementTracker, effectiveCardStatus, reorderById, sidebarGroups } from './pure.js';
 import { confirmDialog, inlineRename, toast } from './dialogs.js';
 import { clearSeparators, closePaneBySid, leaveSessionView, openSession, renderSessionView, updatePaneChrome } from './layout.js';
 import { SHELL_FG, showProjectCtx, showSessionCtx } from './terminal.js';
 import { renderQueueUI, setQueueChip, updateQuietHints } from './scheduler.js';
 import { formatNumber, t } from './i18n.js';
+import { clockRuleById, renderAutomations } from './automation.js';
 import { createDefaultColumns, migrateColumnSemantics } from './board-defaults.js';
 export { migrateColumnSemantics } from './board-defaults.js';
 
@@ -99,6 +100,7 @@ export const provider = {
           error.failed = failed;
           throw error;
         }
+        cards.forEach(noteRunEnded);
         draft.cards = draft.cards.filter(c => c.projectId !== pid);
         draft.projects = draft.projects.filter(p => p.id !== pid);
       });
@@ -212,6 +214,7 @@ export const provider = {
         return { ok: false, applied: false };
       }
       if (closedCard) {
+        noteRunEnded(closedCard);
         emit('list', closedCard);
         return { ok: true, applied: true };
       }
@@ -345,6 +348,34 @@ export const provider = {
   },
 };
 
+/* a card an automation created: tell the run ledger it is over. Unknown
+   cards are a backend no-op, so every close path may call this. */
+function noteRunEnded(card) {
+  if (!card || !card.origin || card.origin.source !== 'clock') return;
+  inv('inbound_run_ended', { card: card.id }).catch(() => {});
+}
+
+/* the finish rule of an automation run: once the run's prompts are all
+   delivered and the agent reported its turn done (or the program left the
+   foreground), the card is retired through the same path as an explicit
+   close. The reading must survive three consecutive polls, so the instant
+   between a step's delivery and the agent's next `working` hook — when the
+   queue is already empty but the old `turn-done` still stands — never
+   closes a card mid-run. */
+const runConfirm = createConfirmationCounter(3);
+const runRetirement = createExitRetirementTracker();
+function observeRunFinish(c, info) {
+  if (!info.alive || !c.origin || c.origin.source !== 'clock') { runConfirm.forget(c.id); return; }
+  const rule = clockRuleById(c.origin.badge);
+  const queued = (ctx.queueCache.items || []).some(i => i.session === c.session);
+  const settled = info.agent === 'turn-done' || (!info.agent && SHELL_FG.test(info.fg || ''));
+  const holds = !!rule && rule.finish === 'close' && !queued && settled && c.status !== 'stopped';
+  if (runConfirm.observe(c.id, holds)) {
+    runConfirm.forget(c.id);
+    runRetirement.observe(c.id);
+  }
+}
+
 /* ---------- polling ---------- */
 export async function pollNow() {
   if (!store.cards.length) return;
@@ -404,6 +435,7 @@ export async function pollNow() {
       emit('mem', c);
     }
     if (tail.join('\n') !== (c.tail || []).join('\n')) { c.tail = tail; emit('output', c); }
+    observeRunFinish(c, info);
   }
   updateQuietHints();
   /* a shell that exited on its own retires its card through the SAME
@@ -419,6 +451,17 @@ export async function pollNow() {
       toast(t('session.closedExited', { name: c.title }));
     },
   });
+  await runRetirement.drain({
+    get: sid => provider.get(sid),
+    markStopped: c => { c.status = 'stopped'; emit('status', c); },
+    close: c => provider.close(c.id, { quiet: true, detail: true }),
+    failed: () => { uev('inbound', 'run-close-fail'); toast(t('automation.runCloseFailed')); },
+    succeeded: c => {
+      closePaneBySid(c.id, { detach: false });
+      uev('inbound', 'run-closed');
+      toast(t('automation.runClosed', { name: c.title }));
+    },
+  });
 }
 export function startPolling() {
   clearInterval(ctx.pollTimer);
@@ -429,6 +472,8 @@ export function stopPolling() {
   clearInterval(ctx.pollTimer);
   ctx.pollTimer = null;
   exitRetirement.clear();
+  runRetirement.clear();
+  runConfirm.clear();
 }
 
 /// Intentional whole-server replacement is not a set of natural shell exits.
@@ -620,6 +665,7 @@ export function renderBoard() {
   $('board-title').textContent = p.name;
   const templateCount = (p.templates || []).length;
   $('board-tpl-count').textContent = templateCount ? formatNumber(templateCount) : '';
+  renderAutomations();   // the drawer follows the project it is open over
   const wrap = $('columns');
   const hScroll = wrap.scrollLeft;
   const colScroll = {};
@@ -732,7 +778,7 @@ export function cardEl(s) {
      hover-only rows — cards never change size under the pointer */
   el.innerHTML = `
     <div class="card-top"><span class="dot ${s.status}"></span><span class="card-title"></span><button class="card-pin" type="button"></button><button class="card-x" type="button">✕</button></div>
-    <div class="card-meta"><span class="cmd"></span><span class="dir"></span><span class="q-chip"></span><span class="mem-chip"></span></div>
+    <div class="card-meta"><span class="cmd"></span><span class="dir"></span><span class="auto-chip"></span><span class="q-chip"></span><span class="mem-chip"></span></div>
     ${s.desc ? '<div class="card-desc"></div>' : ''}
     <div class="card-tail">${Array.from({ length: CARD_PREVIEW_ROWS }, () => '<div></div>').join('')}</div>`;
   el.querySelector('.card-title').textContent = s.title;
@@ -748,6 +794,10 @@ export function cardEl(s) {
   el.querySelector('.mem-chip').title = t('session.memory');
   setMemChip(el.querySelector('.mem-chip'), s);
   setQueueChip(el.querySelector('.q-chip'), s);   // self-fill: survives card rebuilds
+  const autoChip = el.querySelector('.auto-chip');
+  const rule = s.origin && s.origin.source === 'clock' ? clockRuleById(s.origin.badge) : null;
+  autoChip.textContent = rule ? '↻ ' + (rule.name || rule.id) : '';
+  autoChip.hidden = !rule;
   el.querySelector('.cmd').textContent = s.cmd ? '$ ' + s.cmd : '';
   el.querySelector('.dir').textContent = s.dir;
   if (s.desc) {

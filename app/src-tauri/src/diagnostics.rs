@@ -123,6 +123,10 @@ const INBOUND_OUTCOMES: &[&str] = &[
     "create-fail",
     "queue-fail",
     "ack-fail",
+    "busy",
+    "run-closed",
+    "run-close-fail",
+    "rule-orphaned",
 ];
 
 const LISTEN_TARGETS: &[&str] = &[
@@ -213,6 +217,7 @@ const SMOKE_CHECKS: &[&str] = &[
     "ambiguous-boot",
     "scheduler-context",
     "multiline-prompt",
+    "automation",
     "rename-restart",
     "done",
 ];

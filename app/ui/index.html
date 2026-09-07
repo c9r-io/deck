@@ -35,10 +35,64 @@
       <div class="board-head">
         <h1 id="board-title" data-i18n="app.sessions">Sessions</h1>
         <button class="btn primary" id="board-new"><span>＋</span> <span data-i18n="app.newSession">New session</span></button>
+        <button class="btn" id="board-auto" data-i18n-title="automation.buttonTitle" title="Scheduled automations for this project"><span>↻</span> <span data-i18n="automation.button">Automations</span><span class="tpl-count" id="board-auto-count"></span></button>
         <button class="btn" id="board-tpl" data-i18n-title="templates.buttonTitle" title="Prompt templates for this project"><span>◈</span> <span data-i18n="templates.button">Templates</span><span class="tpl-count" id="board-tpl-count"></span></button>
         <span class="hint" data-i18n="board.hint">click a Board title to target new sessions · drag cards between Boards · right-click for actions</span>
       </div>
       <div id="columns"></div>
+      <aside id="auto-drawer" role="dialog" aria-modal="false" aria-labelledby="auto-title" hidden>
+        <div class="auto-head">
+          <h2 id="auto-title" data-i18n="automation.title">Automations</h2>
+          <button class="btn primary" id="auto-new" data-i18n="automation.new">＋ New</button>
+          <button class="btn icon-btn" id="auto-close" data-i18n-title="automation.closeDrawer" title="Close">✕</button>
+        </div>
+        <div class="q-hint auto-hint" data-i18n="automation.hint">At each scheduled time deck creates a fresh card in the chosen column, launches the command and sends the template in order. A slot that comes due while the previous run is still on the Board is skipped. With “close when done”, the card is retired once every prompt is delivered and the agent reports its turn done (or the program exits).</div>
+        <div id="auto-list"></div>
+        <div id="auto-editor" hidden>
+          <div class="set-row">
+            <label for="auto-name" data-i18n="automation.name">Name</label>
+            <input id="auto-name" autocomplete="off" spellcheck="false" placeholder="morning tests" data-i18n-placeholder="automation.namePlaceholder">
+          </div>
+          <div class="set-row">
+            <label data-i18n="automation.when">When</label>
+            <select id="auto-unit">
+              <option value="day" data-i18n="automation.unit.day">every day</option>
+              <option value="week" data-i18n="automation.unit.week">every week on</option>
+              <option value="month" data-i18n="automation.unit.month">every month on day</option>
+            </select>
+            <span id="auto-days" class="q-days" role="group" aria-label="Weekdays" data-i18n-aria-label="automation.weekdays"></span>
+            <select id="auto-dom"></select>
+            <input type="time" id="auto-time" value="09:00">
+          </div>
+          <div class="set-row">
+            <label for="auto-column" data-i18n="automation.column">Column</label>
+            <select id="auto-column"></select>
+          </div>
+          <div class="set-row">
+            <label for="auto-dir" data-i18n="settings.inboundRuleDir">Directory</label>
+            <input id="auto-dir" autocomplete="off" spellcheck="false" placeholder="~/work/project">
+          </div>
+          <div class="set-row">
+            <label for="auto-cmd" data-i18n="settings.inboundRuleCmd">Command</label>
+            <input id="auto-cmd" autocomplete="off" spellcheck="false" placeholder="claude">
+          </div>
+          <div class="set-row">
+            <label for="auto-template" data-i18n="settings.inboundRuleTemplate">Template</label>
+            <select id="auto-template"></select>
+          </div>
+          <div class="set-row">
+            <label data-i18n="automation.finish">When done</label>
+            <div class="seg" id="auto-finish" role="radiogroup" aria-label="When done" data-i18n-aria-label="automation.finish">
+              <button type="button" data-v="close" aria-pressed="true" data-i18n="automation.finish.close">close the card</button>
+              <button type="button" data-v="keep" aria-pressed="false" data-i18n="automation.finish.keep">keep it</button>
+            </div>
+          </div>
+          <div class="set-actions" style="gap:8px">
+            <button class="btn" id="auto-cancel" data-i18n="common.cancel">Cancel</button>
+            <button class="btn primary" id="auto-save" data-i18n="common.save">Save</button>
+          </div>
+        </div>
+      </aside>
     </div>
 
     <div id="session-view">

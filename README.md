@@ -144,6 +144,14 @@ send (its session can't start, say), the later steps of its group **wait** —
 the queue shows ⚠ with retry ↻ and skip ⏭ buttons, and nothing runs past a
 failed step until you decide.
 
+**Automations.** A daily, weekly or monthly job is not a card's schedule: it
+is a project-level rule (↻ Automations on the Board) that, at each slot,
+creates a fresh card in a column, launches the command and queues a template
+— so every run starts with an empty agent context, and one run at a time.
+With "close the card" the run is retired once every prompt is delivered and
+the agent reports its turn done (or the program exits). The drawer shows each
+rule's next slot and its last runs.
+
 **Prompt templates.** Save a queue of prompts as a named, per-project
 template (📋 in the scheduler panel). Inserting a template queues all its
 steps in order — your schedule applies to the first step, the rest follow

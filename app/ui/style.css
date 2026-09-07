@@ -181,7 +181,7 @@ body.side-collapsed .side-new .label { display: none; }
 .tab-add:hover { color: var(--accent); background: var(--hover); }
 
 /* ---------- board view ---------- */
-#board-view { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+#board-view { flex: 1; display: flex; flex-direction: column; min-height: 0; position: relative; }
 .board-head { display: flex; align-items: center; gap: 12px; padding: 14px 20px 10px; }
 .board-head h1 {
   font-size: 1.15385rem; font-weight: 600;
@@ -691,8 +691,65 @@ body.side-collapsed .side-new .label { display: none; }
 #settings-box > .set-actions > span, #tpl-box > .set-actions > span { margin-right: auto; color: var(--muted); font-size: 0.884615rem; }
 
 /* ---------- project templates (Board-level manager) ---------- */
-#board-tpl .tpl-count { font-family: var(--mono); font-size: 0.769231rem; color: var(--faint); }
-#board-tpl .tpl-count:empty { display: none; }
+#board-tpl .tpl-count, #board-auto .tpl-count { font-family: var(--mono); font-size: 0.769231rem; color: var(--faint); }
+#board-tpl .tpl-count:empty, #board-auto .tpl-count:empty { display: none; }
+#board-auto.on { color: var(--accent); border-color: var(--accent-dim); }
+
+/* ---------- automations drawer ----------
+   A right-hand sheet over the columns of the current project: the rules
+   that make cards here, each with its next slot and last runs. */
+#auto-drawer {
+  position: absolute; top: 0; right: 0; bottom: 0; width: 420px; max-width: 100%; z-index: 30;
+  display: flex; flex-direction: column; gap: 8px; padding: 12px 14px;
+  background: var(--panel); border-left: 1px solid var(--border);
+  box-shadow: -14px 0 40px var(--shadow-menu); overflow-y: auto;
+}
+#auto-drawer[hidden] { display: none; }
+.auto-head { display: flex; align-items: center; gap: 8px; }
+.auto-head h2 { font-size: 1.076923rem; font-weight: 600; margin: 0; margin-right: auto; }
+.auto-hint { line-height: 1.45; }
+#auto-list { display: flex; flex-direction: column; gap: 8px; }
+.auto-rule { border: 1px solid var(--border-soft); border-radius: 8px; background: var(--raised); overflow: hidden; }
+.auto-rule.off { opacity: 0.6; }
+.auto-rule .ar-head { display: flex; align-items: center; gap: 8px; padding: 7px 10px; background: var(--panel); border-bottom: 1px solid var(--border-soft); }
+.auto-rule .ar-name { font-weight: 500; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.auto-rule .ar-when { font-family: var(--mono); font-size: 0.846154rem; color: var(--accent); flex: none; }
+.auto-rule .ar-acts { margin-left: auto; display: flex; gap: 2px; align-items: center; flex: none; }
+.auto-rule .ar-acts button { color: var(--faint); padding: 2px 6px; border-radius: 4px; font-size: 0.846154rem; }
+.auto-rule .ar-acts button:hover { color: var(--text); background: var(--hover); }
+.auto-rule .ar-acts .ar-del:hover { color: var(--danger); }
+.auto-rule .ar-body { padding: 8px 10px; }
+.auto-rule .ar-kv { display: grid; grid-template-columns: max-content 1fr; gap: 3px 10px; font-size: 0.923077rem; color: var(--muted); }
+.auto-rule .ar-kv span:nth-child(odd) { color: var(--faint); }
+.auto-rule .ar-kv b { font-weight: 400; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.auto-rule .ar-runs { margin-top: 8px; border-top: 1px solid var(--border-soft); padding-top: 6px; display: flex; flex-direction: column; gap: 3px; font-family: var(--mono); font-size: 0.807692rem; color: var(--faint); }
+.auto-rule .ar-runs .ok { color: var(--run); }
+.auto-rule .ar-runs .live { color: var(--wait); }
+.auto-rule .ar-runs button { color: var(--done); padding: 0; font-family: inherit; font-size: inherit; }
+.auto-rule .ar-runs button:hover { text-decoration: underline; }
+#auto-editor { padding: 10px 12px; border: 1px dashed var(--accent-dim); border-radius: 8px; background: var(--bg); }
+#auto-editor .set-row { flex-wrap: wrap; }
+#auto-editor .set-row label { width: 76px; }
+#auto-editor .q-days { flex: none; }
+#auto-editor input { flex: 1; min-width: 0; }
+#auto-editor input[type=time] { flex: none; width: auto; }
+#auto-editor select { flex: 1; min-width: 0; }
+#auto-editor #auto-unit, #auto-editor #auto-dom { flex: none; }
+#auto-editor .seg { flex: none; }
+.auto-empty { color: var(--faint); font-size: 0.923077rem; padding: 6px 0; }
+.card .auto-chip {
+  font-family: var(--mono); font-size: 0.769231rem; color: var(--accent);
+  border: 1px solid var(--accent-dim); border-radius: 4px; padding: 1px 5px; flex: none;
+  max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.q-days { display: inline-flex; gap: 3px; }
+.q-days[hidden] { display: none; }
+.q-day {
+  font-family: var(--mono); font-size: 0.846154rem; min-width: 22px; height: 22px; padding: 0 4px;
+  border: 1px solid var(--border); border-radius: 5px; color: var(--faint); background: var(--bg);
+}
+.q-day:hover { color: var(--text); }
+.q-day[aria-pressed="true"] { color: var(--accent-contrast); background: var(--accent); border-color: var(--accent); font-weight: 600; }
 .tpl-items { display: grid; gap: 4px; }
 .tpl-item {
   display: flex; align-items: center; gap: 8px; width: 100%;

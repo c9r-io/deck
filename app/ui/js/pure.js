@@ -1122,6 +1122,12 @@ export function planInbound(item, { cards, projects, home }) {
   const dup = cards.find(c => c.origin
     && c.origin.source === event.source && c.origin.key === event.key && c.origin.badge === event.badge);
   if (dup) return { outcome: 'duplicate', card: dup };
+  const clock = event.source === 'clock';
+  /* one run at a time: a slot that comes due while the rule's previous card
+     is still on the Board is skipped, never queued behind it */
+  if (clock && cards.some(c => c.origin && c.origin.source === 'clock' && c.origin.badge === event.badge)) {
+    return { outcome: 'busy' };
+  }
   const project = projects.find(p => p.id === rule.projectId);
   const column = project && project.columns.find(c => c.id === rule.columnId);
   if (!project || !column) return { outcome: 'no-rule-target' };
@@ -1130,18 +1136,75 @@ export function planInbound(item, { cards, projects, home }) {
   const steps = template ? template.steps.map(s => fillInboundTemplate(s, msg)).filter(Boolean) : [];
   if (!steps.length) return { outcome: 'no-template', template: rule.template };
   const dir = expandHome(rule.dir, home);
+  const name = clock ? (rule.name || rule.id) : inboundTitle(event.text) || `:${event.badge}:`;
   return {
     outcome: 'create',
     card: {
       projectId: project.id, columnId: column.id,
-      title: inboundTitle(event.text) || `:${event.badge}:`,
+      title: clock ? `${name} · ${runDateLabel(Number(event.key))}` : name,
       cmd: rule.cmd || '',
       dir,
-      desc: [`:${event.badge}:`, event.where, event.from].filter(Boolean).join(' · '),
+      desc: clock ? template.name : [`:${event.badge}:`, event.where, event.from].filter(Boolean).join(' · '),
       origin: { source: event.source, key: event.key, badge: event.badge },
     },
     steps,
     template: template.name,
+  };
+}
+
+/* ---------- clock automations ----------
+   Twin of `Schedule` in inbound.rs: a minute of the local day on every day /
+   the listed ISO weekdays (1 = Monday) / the listed days of the month, where
+   a day the month lacks means its last day. */
+export const runDateLabel = epoch => {
+  const d = new Date(epoch * 1000);
+  return `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
+export const isoWeekday = d => ((d.getDay() + 6) % 7) + 1;
+export const daysInMonth = d => new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
+export function scheduleMatchesDay(schedule, d) {
+  if (!schedule) return false;
+  if (schedule.unit === 'day') return true;
+  if (schedule.unit === 'week') return schedule.days.includes(isoWeekday(d));
+  if (schedule.unit === 'month') {
+    const mdays = daysInMonth(d);
+    return schedule.days.includes(d.getDate()) || (d.getDate() === mdays && schedule.days.some(x => x > mdays));
+  }
+  return false;
+}
+
+/* the first slot after `now` (and not before `since`); null when no day
+   matches within a year. The backend offers today's slot until midnight, so
+   "next" from the user's side is always a future instant. */
+export function nextScheduleSlot(schedule, now, since = 0) {
+  if (now == null) now = Math.floor(Date.now() / 1000);
+  const base = new Date(now * 1000);
+  for (let d = 0; d < 400; d++) {
+    const slotDate = new Date(base.getFullYear(), base.getMonth(), base.getDate() + d,
+      Math.floor(schedule.minute / 60), schedule.minute % 60, 0, 0);
+    if (!scheduleMatchesDay(schedule, slotDate)) continue;
+    const slot = Math.floor(slotDate.getTime() / 1000);
+    if (slot <= now || slot < since) continue;
+    return slot;
+  }
+  return null;
+}
+
+/* a condition that must hold on N consecutive observations before it counts:
+   the finish rule closes a run only after the "prompts delivered + agent
+   done" reading survives three polls, so the instant between a step's
+   delivery and the agent's next `working` hook can never close a card */
+export function createConfirmationCounter(needed = 3) {
+  const counts = new Map();
+  return {
+    observe(id, holds) {
+      if (!holds) { counts.delete(id); return false; }
+      const n = (counts.get(id) || 0) + 1;
+      counts.set(id, n);
+      return n >= needed;
+    },
+    forget(id) { counts.delete(id); },
+    clear() { counts.clear(); },
   };
 }
 

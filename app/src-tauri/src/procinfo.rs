@@ -220,9 +220,63 @@ pub(crate) fn tree_memory(roots: &HashMap<String, u32>) -> HashMap<String, f64> 
     result
 }
 
-/// Local wall-clock minutes since midnight, from the C library's timezone
-/// database; 12:00 if the platform cannot answer.
-pub(crate) fn local_minutes() -> u32 {
+/// Local wall-clock facts read once per tick from the C library's timezone
+/// database (never a spawned `date`): the minute of the day for the
+/// scheduler's daily windows, and the local calendar day for clock rules.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct LocalClock {
+    /// epoch seconds the clock was read at
+    pub(crate) now: u64,
+    /// minutes since local midnight (0..1440)
+    pub(crate) min: u32,
+    /// seconds since local midnight — `now - secs` is this local day's start
+    pub(crate) secs: u32,
+    /// ISO weekday: 1 = Monday … 7 = Sunday
+    pub(crate) wday: u32,
+    /// day of the month, 1-based
+    pub(crate) mday: u32,
+    /// how many days this local month has
+    pub(crate) mdays: u32,
+}
+
+impl LocalClock {
+    /// A clock at `min` on Monday the 1st of a 31-day month: the platform
+    /// fallback, and what unit tests use for a deterministic day.
+    pub(crate) fn synthetic(now: u64, min: u32) -> Self {
+        LocalClock {
+            now,
+            min,
+            secs: min * 60,
+            wday: 1,
+            mday: 1,
+            mdays: 31,
+        }
+    }
+
+    /// Epoch second this local day started at (exact except across a DST
+    /// switch earlier the same day, where it is off by the shift).
+    pub(crate) fn day_start(&self) -> u64 {
+        self.now.saturating_sub(u64::from(self.secs))
+    }
+}
+
+fn days_in_month(year: i32, month0: i32) -> u32 {
+    match month0 {
+        1 => {
+            if (year % 4 == 0 && year % 100 != 0) || year % 400 == 0 {
+                29
+            } else {
+                28
+            }
+        }
+        3 | 5 | 8 | 10 => 30,
+        _ => 31,
+    }
+}
+
+/// The local wall clock; noon on a synthetic day if the platform cannot
+/// answer.
+pub(crate) fn local_clock() -> LocalClock {
     extern "C" {
         fn tzset();
     }
@@ -232,12 +286,29 @@ pub(crate) fn local_minutes() -> u32 {
         tzset();
         let now = libc::time(std::ptr::null_mut());
         let mut tm = std::mem::MaybeUninit::<libc::tm>::zeroed();
+        let epoch = u64::try_from(now).unwrap_or(0);
         if libc::localtime_r(&now, tm.as_mut_ptr()).is_null() {
-            return 720;
+            return LocalClock::synthetic(epoch, 720);
         }
         let tm = tm.assume_init();
-        (tm.tm_hour.clamp(0, 23) * 60 + tm.tm_min.clamp(0, 59)) as u32
+        let hour = tm.tm_hour.clamp(0, 23) as u32;
+        let min = tm.tm_min.clamp(0, 59) as u32;
+        let sec = tm.tm_sec.clamp(0, 59) as u32;
+        LocalClock {
+            now: epoch,
+            min: hour * 60 + min,
+            secs: hour * 3600 + min * 60 + sec,
+            // tm_wday counts from Sunday = 0; ISO counts from Monday = 1
+            wday: ((tm.tm_wday.clamp(0, 6) + 6) % 7 + 1) as u32,
+            mday: tm.tm_mday.clamp(1, 31) as u32,
+            mdays: days_in_month(tm.tm_year + 1900, tm.tm_mon.clamp(0, 11)),
+        }
     }
+}
+
+/// Local wall-clock minutes since midnight.
+pub(crate) fn local_minutes() -> u32 {
+    local_clock().min
 }
 
 #[cfg(test)]
@@ -310,7 +381,21 @@ mod tests {
     }
 
     #[test]
-    fn local_minutes_is_a_wall_clock_minute_of_day() {
+    fn local_clock_is_a_consistent_local_day() {
+        let c = local_clock();
+        assert!(c.min < 1440);
+        assert_eq!(c.secs / 60, c.min);
+        assert!((1..=7).contains(&c.wday));
+        assert!((1..=c.mdays).contains(&c.mday));
+        assert!((28..=31).contains(&c.mdays));
+        assert!(c.day_start() <= c.now);
         assert!(local_minutes() < 24 * 60);
+        assert_eq!(days_in_month(2024, 1), 29);
+        assert_eq!(days_in_month(2100, 1), 28);
+        assert_eq!(days_in_month(2000, 1), 29);
+        assert_eq!(days_in_month(2026, 8), 30);
+        assert_eq!(days_in_month(2026, 11), 31);
+        let s = LocalClock::synthetic(1_000_000, 600);
+        assert_eq!(s.day_start(), 1_000_000 - 36_000);
     }
 }

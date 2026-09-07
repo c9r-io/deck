@@ -10,6 +10,7 @@ import { initTerminalChrome } from './terminal.js';
 import { initScheduler, refreshQueue } from './scheduler.js';
 import { initTemplates } from './templates.js';
 import { drainInbound, initInbound } from './inbound.js';
+import { initAutomation } from './automation.js';
 import { onLocaleChange, setLocale, t, translateNotice } from './i18n.js';
 import { activateTheme, revealThemedWindow } from './theme.js';
 
@@ -248,6 +249,7 @@ function initModules() {
   initScheduler();
   initTemplates();
   initInbound();
+  initAutomation();
   wireChrome();
 }
 

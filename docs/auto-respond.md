@@ -48,10 +48,37 @@ Badges that already exist when a rule is added are left alone. A message
 with several badges makes one card per rule; the same badge on the same
 message only ever makes one. Only your own reactions count.
 
+## Scheduled automations (自动化)
+
+The clock is a second source. An automation is a rule of the same shape with
+`source: clock` plus a schedule — every day, chosen weekdays, or chosen days
+of the month, at a local time — a name, and a finish mode. It lives in the
+project's **↻ Automations** drawer on the Board, not in Settings. At each
+slot deck creates a fresh card in the rule's column (title `name · MM-DD`),
+launches the command and queues the template, exactly like a badge would;
+nothing is typed into an existing session, so every run starts with an
+empty agent context.
+
+- One run at a time: a slot that comes due while the rule's previous card is
+  still on the Board is skipped and recorded as such.
+- A slot deck slept through is caught up until local midnight; slots older
+  than the rule's last schedule change never fire.
+- **close the card**: once every prompt is delivered and the agent reported
+  its turn done (agent hooks) or the program left the foreground, the card
+  is retired through the same path as an explicit close — after the reading
+  held for three consecutive polls, so the instant between a step's delivery
+  and the agent's next `working` hook can never close a run early. **keep
+  it** leaves the card for you.
+- Deleting a project deletes its automations; cards a rule already created
+  stay when the rule is deleted.
+
 ## What deck keeps
 
+
 - `~/.deck/inbound.json`: which (source, message, badge) triples have been
-  handled — identifiers and times only, no text.
+  handled — identifiers and times only, no text — and, for automations, the
+  run ledger: rule id, slot, card id, start/end instants and a closed outcome
+  word (running / closed / skipped with its reason). Capped at 200 runs.
 - The message text exists once, inside the queued prompt of the card it
   created, exactly like a prompt you typed.
 - Tokens: macOS Keychain, service `io.c9r.deck`.

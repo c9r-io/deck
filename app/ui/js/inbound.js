@@ -7,7 +7,11 @@
 // template through the ordinary queue, and acks. Acks are what retire an
 // item; an item whose card could not be created is left pending and the
 // backend re-announces it, while a duplicate (card already exists) is acked
-// without a second card — so a retry can never double-create.
+// without a second card — so a retry can never double-create. A clock item
+// (automation.js owns the rules) is the same path with two differences: a
+// slot whose rule still has a card on the Board is acked `busy`, and a
+// created run's ack carries the card id so the backend's run ledger can be
+// closed later by `inbound_run_ended`.
 import { ctx, inv, listen, store, uev } from './state.js';
 import { provider } from './board.js';
 import { toast } from './dialogs.js';
@@ -32,23 +36,31 @@ export async function drainInbound() {
   }
 }
 
-async function ack(id, outcome, code) {
+async function ack(id, outcome, code, extra = {}) {
   uev('inbound', code);
-  try { await inv('inbound_ack', { id, outcome }); }
+  try { await inv('inbound_ack', { id, outcome, ...extra }); }
   catch (e) { uev('inbound', 'ack-fail'); }
 }
+
+const ruleLabel = item => (item.event.source === 'clock' ? (item.rule.name || item.rule.id) : `:${item.event.badge}:`);
 
 async function handleInbound(item) {
   const plan = planInbound(item, { cards: store.cards, projects: store.projects, home: ctx.HOME });
   const badge = item.event.badge;
+  const clock = item.event.source === 'clock';
+  const skip = reason => ack(item.id, 'skipped', reason, clock ? { reason } : {});
   if (plan.outcome === 'duplicate') return ack(item.id, 'done', 'duplicate');
+  if (plan.outcome === 'busy') {
+    toast(t('automation.busy', { name: ruleLabel(item) }));
+    return skip('busy');
+  }
   if (plan.outcome === 'no-rule-target') {
-    toast(t('inbound.noTarget', { badge }));
-    return ack(item.id, 'skipped', 'no-rule-target');
+    toast(t('inbound.noTarget', { badge: ruleLabel(item) }));
+    return skip('no-rule-target');
   }
   if (plan.outcome === 'no-template') {
-    toast(t('inbound.noTemplate', { badge, template: plan.template }));
-    return ack(item.id, 'skipped', 'no-template');
+    toast(t('inbound.noTemplate', { badge: ruleLabel(item), template: plan.template }));
+    return skip('no-template');
   }
   let card;
   try {
@@ -72,8 +84,10 @@ async function handleInbound(item) {
     toast(t('inbound.queueFailed', { badge, queued, total: plan.steps.length }));
     uev('inbound', 'queue-fail');
   }
-  if (queued === plan.steps.length) toast(t('inbound.created', { badge, where: item.event.where }));
-  return ack(item.id, 'done', 'created');
+  if (queued === plan.steps.length) {
+    toast(clock ? t('automation.created', { name: card.title }) : t('inbound.created', { badge, where: item.event.where }));
+  }
+  return ack(item.id, 'done', 'created', clock ? { card: card.id } : {});
 }
 
 /* DOM wiring, run once at boot (app.js) so the module can be imported

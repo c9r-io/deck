@@ -7,7 +7,8 @@ let renameCardInline, renderSuggest, resetSuggest;
 let showLinkCtx, toggleSidebar, addSplit, backToBoard, openSession, strToB64;
 let closePaneBySid, focusPane, cancelTerminalSelection, copyTerminalSelection;
 let refreshQueue, toggleQueuePanel;
-let activateTheme, persistThemeChoice, applyFontScale, getFontScale;
+let activateTheme, persistThemeChoice, persistInbound, applyFontScale, getFontScale;
+let toggleAutomations;
 let terminalLogicalLine, tokenizeTerminalLinks;
 if (typeof window !== 'undefined') {
   ({ $, ctx, inv, state, store } = await import('../js/state.js'));
@@ -22,7 +23,8 @@ if (typeof window !== 'undefined') {
   ({ cancelTerminalSelection, copyTerminalSelection } = await import('../js/selection.js'));
   ({ refreshQueue, toggleQueuePanel } = await import('../js/scheduler.js'));
   ({ activateTheme } = await import('../js/theme.js'));
-  ({ persistThemeChoice } = await import('../js/dialogs.js'));
+  ({ persistThemeChoice, persistInbound } = await import('../js/dialogs.js'));
+  ({ toggleAutomations } = await import('../js/automation.js'));
   ({ applyFontScale, getFontScale } = await import('../js/font-scale.js'));
 }
 
@@ -1211,6 +1213,44 @@ async function naturalExitFaultSmoke(project, column) {
 }
 
 // Run before any smoke result is logged: resetting later would erase evidence.
+/* 自动化 end to end in the real app: a clock rule whose slot is already due
+   today is saved through the same settings write the drawer uses; the
+   backend clock offers the slot on its next poll (forced here), inbound.js
+   creates the run's card, the run ledger binds it, the same slot never makes
+   a second card, and closing the card closes the run. */
+async function automationSmoke(project, column) {
+  const clock = new Date();
+  const minute = Math.max(0, clock.getHours() * 60 + clock.getMinutes() - 1);
+  const template = 'smoke-automation';
+  await provider.saveTemplate(project.id, template, ['echo automation-smoke-step']);
+  const id = 'a' + Date.now().toString(36);
+  const rule = { id, source: 'clock', badge: id, projectId: project.id, columnId: column.id,
+    cmd: '', template, dir: '', name: 'Smoke automation', enabled: true,
+    schedule: { unit: 'day', days: [], minute }, finish: 'keep', since: 0 };
+  const saved = await persistInbound({ ...ctx.settings.inbound, rules: [...ctx.settings.inbound.rules, rule] });
+  state.view === 'board' || backToBoard();
+  toggleAutomations();
+  await pause(200);
+  const listed = !!document.querySelector('#auto-drawer .auto-rule');
+  const mine = () => store.cards.filter(c => c.origin && c.origin.source === 'clock' && c.origin.badge === id);
+  await inv('inbound_check_now');
+  const created = await waitFor(() => mine().length === 1, 45_000);
+  const card = mine()[0];
+  const runs = await inv('inbound_runs');
+  const recorded = !!card && runs.some(r => r.rule === id && r.card === card.id && r.outcome === 'running');
+  await inv('inbound_check_now');
+  await pause(1500);
+  const single = mine().length === 1;
+  if (card) await provider.close(card.id, { quiet: true });
+  const closed = await waitFor(async () => (await inv('inbound_runs')).some(r => r.rule === id && r.outcome === 'closed'), 5000);
+  await persistInbound({ ...ctx.settings.inbound, rules: ctx.settings.inbound.rules.filter(r => r.id !== id) });
+  await provider.deleteTemplate(project.id, template);
+  toggleAutomations();
+  const mask = (saved ? 1 : 0) | (listed ? 2 : 0) | (created ? 4 : 0) | (recorded ? 8 : 0)
+    | (single ? 16 : 0) | (closed ? 32 : 0);
+  await report('automation', mask === 63, mask, 63);
+}
+
 /* Prompts became multi-line, so the queue's field became a textarea and the
    panel rows became collapsible. Both are exactly the class of change a fake
    document cannot judge: WebKit REFUSES keyboard input in a textarea that
@@ -1477,6 +1517,8 @@ export async function run() {
       | (noPolicy ? 4 : 0) | (mismatchWaits ? 8 : 0)
       | (dangerShown ? 16 : 0) | (enterRejected ? 32 : 0);
     await report('scheduler-context', mask === 63, mask, 63);
+    stage = 15;
+    await automationSmoke(project, column);
     await inv('smoke_seed_ambiguous');
     await report('done', !smokeFailed, 1, 0);
   } catch (error) {

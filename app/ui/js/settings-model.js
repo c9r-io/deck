@@ -51,7 +51,12 @@ export function normalizeFontScale(value) {
   return Number((Math.round(number / FONT_SCALE_STEP) * FONT_SCALE_STEP).toFixed(1));
 }
 
-export const INBOUND_SOURCES = Object.freeze(['slack']);
+export const INBOUND_SOURCES = Object.freeze(['slack', 'clock']);
+/* sources with an on/off switch of their own; the clock is on whenever one
+   of its rules is enabled */
+const INBOUND_TOGGLES = Object.freeze(['slack']);
+export const SCHEDULE_UNITS = Object.freeze(['day', 'week', 'month']);
+export const FINISH_MODES = Object.freeze(['keep', 'close']);
 const INBOUND_BADGE = /^[a-z0-9_+-]{1,64}$/;
 const INBOUND_ID = /^[A-Za-z0-9_-]{1,128}$/;
 const MAX_INBOUND_RULES = 32;
@@ -61,14 +66,31 @@ export const DEFAULT_INBOUND = Object.freeze({
   rules: Object.freeze([]),
 });
 
+/* A clock rule's schedule, or null when it is not one the backend accepts:
+   a minute of the day on every day / listed ISO weekdays / listed days of
+   month, days sorted and unique. */
+export function normalizeSchedule(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const unit = String(raw.unit ?? '');
+  const minute = Number(raw.minute);
+  if (!SCHEDULE_UNITS.includes(unit) || !Number.isInteger(minute) || minute < 0 || minute >= 1440) return null;
+  if (unit === 'day') return { unit, days: [], minute };
+  const limit = unit === 'week' ? 7 : 31;
+  const days = [...new Set((Array.isArray(raw.days) ? raw.days : []).map(Number))]
+    .filter(d => Number.isInteger(d) && d >= 1 && d <= limit)
+    .sort((a, b) => a - b);
+  return days.length ? { unit, days, minute } : null;
+}
+
 /* Mirrors the backend's structural validation (inbound::validate_settings):
    a rule that would be refused on save is dropped here so the UI never
    shows a rule the poller will not honor. Referential checks against the
-   Board happen at dispatch time. */
+   Board happen at dispatch time. A clock rule's badge is its id, so its id
+   must also be spelled like a badge (lowercase). */
 export function normalizeInbound(value) {
   const raw = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
   const sources = {};
-  for (const name of INBOUND_SOURCES) {
+  for (const name of INBOUND_TOGGLES) {
     const src = raw.sources && typeof raw.sources === 'object' ? raw.sources[name] : null;
     sources[name] = { enabled: !!(src && src.enabled === true) };
   }
@@ -79,8 +101,17 @@ export function normalizeInbound(value) {
       id: String(r.id ?? ''), source: String(r.source ?? ''), badge: String(r.badge ?? ''),
       projectId: String(r.projectId ?? ''), columnId: String(r.columnId ?? ''),
       cmd: String(r.cmd ?? ''), template: String(r.template ?? ''), dir: String(r.dir ?? ''),
+      name: String(r.name ?? ''), enabled: r.enabled !== false,
+      finish: FINISH_MODES.includes(r.finish) ? r.finish : 'keep',
+      since: Number.isInteger(r.since) && r.since >= 0 ? r.since : 0,
     };
     if (!INBOUND_ID.test(rule.id) || rule.id.length > 64) continue;
+    if (rule.source === 'clock') {
+      rule.badge = rule.id;
+      rule.schedule = normalizeSchedule(r.schedule);
+      if (!rule.schedule) continue;
+    }
+    if (rule.name.length > 120 || /[\r\n]/.test(rule.name)) continue;
     if (!INBOUND_SOURCES.includes(rule.source) || !INBOUND_BADGE.test(rule.badge)) continue;
     if (!INBOUND_ID.test(rule.projectId) || !INBOUND_ID.test(rule.columnId)) continue;
     if (rule.cmd.length > 200 || /[\r\n]/.test(rule.cmd)) continue;
