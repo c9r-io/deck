@@ -1,10 +1,15 @@
 // state.js — shared helpers ($/inv/listen/log), the store, and the global mutable slots
 // Part of deck's no-build frontend: native ES modules, no bundler.
+import { createAttentionTracker } from './attention-model.js';
 
 /* Shared mutable runtime slots. One explicit object, imported as `ctx` by
    the modules that read or assign a slot, so every cross-module dependency
    is visible at the import site and check.mjs can flag a bare name. */
 export const ctx = {
+  // Derived attention and navigation are never serialized into Board data.
+  attention: createAttentionTracker(),
+  attentionFilter: 'pending',
+  attentionReturn: null,
   HOME: '~',
   attachedName: null,
   cfmResolve: null,
@@ -112,7 +117,7 @@ const keyCodeClass = code => ({
 export const $ = id => document.getElementById(id);
 /* how long without output before a live session counts as "quiet" —
    amber means "no output for a while, may be waiting for you" */
-export const QUIET_SECS = 15;
+export const QUIET_SECS = CARD_QUIET_SECS;
 export const POLL_MS = 2500;
 
 /* ---------- state ---------- */
@@ -131,7 +136,7 @@ export const genId = p => p + Date.now().toString(36) + (ctx.nextIdCounter++).to
 
 /* DOM-free logic lives in pure.js (node-testable); re-exported here so the
    rest of the app keeps one import point for shared helpers */
-import { fmtMem, sessionName } from './pure.js';
+import { CARD_QUIET_SECS, fmtMem, sessionName } from './pure.js';
 export { fmtMem, sessionName };
 
 /* ---------- tiny event bus (same contract as the mock) ---------- */
@@ -146,7 +151,7 @@ export function setMemChip(chip, s) {
 }
 
 import { t } from './i18n.js';
-export const columnHint = column => column?.semantic ? t(`board.hint.${column.semantic}`) : '';
+export const columnHint = column => column ? t('attention.manual') : '';
 export const dotTitle = status => t(`session.status.${status}`);
 
 /* DOM wiring, run once at boot (app.js) so the module can be imported

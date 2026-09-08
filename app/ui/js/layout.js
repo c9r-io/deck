@@ -1,5 +1,7 @@
 // layout.js — split-tree layout, pane lifecycle, terminal creation, session view
 // Part of deck's no-build frontend: native ES modules, no bundler.
+// Read receipts require a successful attach to the still-visible pane.
+// Attention navigation passes allowStart:false: attaching never creates a shell.
 import { $, ctx, dotTitle, duev, inv, listen, setMemChip, state, store, uev } from './state.js';
 import { inlineRename, toast } from './dialogs.js';
 import { t } from './i18n.js';
@@ -11,6 +13,7 @@ import { cancelAllTerminalSelections, cancelTerminalSelection, copyTerminalSelec
 import { getTerminalTheme, onThemeChange, syncThemeIntegrations } from './theme.js';
 import { getFontScale, onFontScaleChange, TERMINAL_BASE_FONT_SIZE } from './font-scale.js';
 import { registerShortcutAction } from './shortcuts.js';
+import { showAttention } from './attention.js';
 
 /* ----- layout tree helpers ----- */
 export const leafOf = sid => ({ type: 'leaf', sid });
@@ -826,12 +829,16 @@ export function focusPane(session) {
    already-live session is success, not an error). Callers use it to decide
    fresh-shell cleanup — clearing history on a restored or merely-live session
    would eat real scrollback. */
-export async function ensureAttached(pane) {
+export function ensureAttached(pane, opts = {}) {
+  if (!pane.attachPromise) pane.attachPromise = attachPane(pane, opts).finally(() => { pane.attachPromise = null; });
+  return pane.attachPromise;
+}
+async function attachPane(pane, { allowStart = true } = {}) {
   const card = provider.get(pane.sid);
-  const outcome = { created: false, restored: false };
+  const outcome = { created: false, restored: false, attached: false };
   if (!card) return outcome;
   try {
-    if (card.status === 'stopped') {
+    if (card.status === 'stopped' && allowStart) {
       const started = await inv('start_session', {
         name: card.session, dir: card.dir, cmd: card.cmd,
         restoreShell: !!ctx.settings.sessionRestore,
@@ -844,6 +851,12 @@ export async function ensureAttached(pane) {
        the handler below already advanced ptyGens then, and regressing it
        would make us drop (and never ACK) the current stream */
     ctx.ptyGens.set(card.session, Math.max(ctx.ptyGens.get(card.session) || 0, gen));
+    if (panes.get(card.session) === pane && state.view === 'session') {
+      pane.attached = true;
+      pane.attachedGen = gen;
+      outcome.attached = true;
+      markSessionSeen(card.id);
+    }
     if (outcome.restored) toast(t('session.restored'));
   } catch (e) {
     toast(t('error.attach'));
@@ -855,10 +868,11 @@ export async function addSplit(targetSid, dir, before, newSid) {
   const card = provider.get(newSid);
   if (!card || state.view !== 'session' || !ctx.layout) return;
   if (newSid === targetSid) return;
-  markSessionSeen(newSid);
   /* already open in a pane → this is a MOVE: pluck the leaf and re-insert
      at the drop position; the terminal instance is reused untouched */
   if (panes.has(card.session)) {
+    if (!panes.get(card.session).attached) await ensureAttached(panes.get(card.session));
+    markSessionSeen(newSid);
     if (!collectLeaves(ctx.layout).includes(newSid)) { focusPane(card.session); return; }
     ctx.layout = removeFromLayout(ctx.layout, newSid);
     ctx.layout = splitAt(ctx.layout, targetSid, dir, newSid, before);
@@ -968,14 +982,17 @@ export function showSplitPicker(dir) {
    with a silent promise rejection and the terminal never receives output. */
 
 /* ---------- session view ---------- */
-export async function openSession(sid) {
+export async function openSession(sid, opts = {}) {
   const card = provider.get(sid);
   if (!card) return;
-  markSessionSeen(sid);
+  ctx.attentionReturn = opts.attentionReturn || (state.view === 'session' ? ctx.attentionReturn : null);
   /* already open in a pane → just focus it */
   if (state.view === 'session' && panes.has(card.session)) {
+    const pane = panes.get(card.session);
+    if (!pane.attached) await ensureAttached(pane, opts);
+    markSessionSeen(sid);
     focusPane(card.session);
-    return;
+    return !!pane.attached;
   }
   leaveSessionView();
   state.projectId = card.projectId;
@@ -986,8 +1003,9 @@ export async function openSession(sid) {
   const pane = createPane(card);
   ctx.layout = leafOf(sid);
   renderLayout();
-  const { created, restored } = await ensureAttached(pane);
+  const { created, restored, attached } = await ensureAttached(pane, opts);
   if (created && !restored) setTimeout(() => inv('clear_history', { name: card.session }).catch(() => {}), 900);
+  if (panes.get(card.session) !== pane || state.view !== 'session') return false;
   ctx.freshShell = created && !card.cmd.trim();
   focusPane(card.session);
   /* history feeds both the fresh-shell chips and typed-prefix completion */
@@ -995,6 +1013,7 @@ export async function openSession(sid) {
     .then(c => { ctx.histCache = c; renderSuggest(); })
     .catch(() => { ctx.histCache = []; });
   pollNow();
+  return attached;
 }
 
 export function leaveSessionView() {
@@ -1017,7 +1036,9 @@ export function leaveSessionView() {
   ctx.term = null;
 }
 
-export function backToBoard() {
+export function backToBoard(opts = {}) {
+  if (!opts.home && ctx.attentionReturn) { showAttention(true); return; }
+  ctx.attentionReturn = null;
   leaveSessionView();
   state.view = 'board';
   state.sessionId = null;
@@ -1033,7 +1054,8 @@ export function renderSessionView() {
   /* back button names the board this card lives on */
   const proj0 = activeProject();
   const col0 = proj0 && proj0.columns.find(c => c.id === s.columnId);
-  $('back-label').textContent = col0 ? col0.name : t('app.board');
+  $('back-label').textContent = ctx.attentionReturn ? t('attention.title') : col0 ? col0.name : t('app.board');
+  $('back-btn').title = t(ctx.attentionReturn ? 'attention.back' : 'session.back');
   const nameEl = $('sess-name');
   nameEl.textContent = s.title;
   nameEl.title = t('session.renameTitle');
@@ -1087,7 +1109,15 @@ export function initLayout() {
       ctx.rxLogged++;
       /* ACK only after xterm has actually consumed the bytes — this is what
          bounds the backend's in-flight window (see pty.rs) */
-      p.term.write(u8, () => inv('pty_ack', { name, gen, seq }).catch(() => {}));
+      p.term.write(u8, () => {
+        inv('pty_ack', { name, gen, seq }).catch(() => {});
+        // The first consumed frame may precede the attach reply. Both must
+        // name the same generation before a turn can be marked viewed.
+        if (panes.get(name) === p && ctx.ptyGens.get(name) === gen) {
+          p.renderedGen = gen;
+          markSessionSeen(p.sid);
+        }
+      });
     } else {
       /* pane already gone but the stream still current: ACK so the emitter
          reaches its natural end instead of waiting on a window we'll never fill */
@@ -1096,8 +1126,10 @@ export function initLayout() {
   }).catch(() => uev('listen-fail', 'pty-data'));
 
   listen('pty-exit', ev => {
+    if (ev.payload.gen !== ctx.ptyGens.get(ev.payload.name)) return;
     const pane = panes.get(ev.payload.name);
     if (pane) {
+      pane.attached = false;
       cancelTerminalSelection(pane, 'exit');
       toast(t('session.ended'));
       pollNow();

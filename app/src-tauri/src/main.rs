@@ -236,6 +236,8 @@ fn main() {
                         "m.verifyRestart()"
                     } else if mode == "ambiguous" {
                         "m.verifyAmbiguousBoot()"
+                    } else if mode == "attention" {
+                        "m.verifyAttention()"
                     } else if mode == "settings" {
                         "m.verifySettings()"
                     } else {

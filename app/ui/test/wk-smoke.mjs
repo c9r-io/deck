@@ -1629,3 +1629,9 @@ export async function verifyRestart() {
     await report('done', false, 0, 8);
   }
 }
+
+// Separate, fresh-root scenario; no real agent installation or prompts.
+export async function verifyAttention() {
+  const { runAttentionSmoke } = await import('./attention-smoke.mjs');
+  await runAttentionSmoke();
+}

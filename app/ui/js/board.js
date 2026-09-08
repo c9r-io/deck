@@ -1,8 +1,10 @@
 // board.js — board CRUD provider, polling loop, sidebar/tabs/board rendering
 // Part of deck's no-build frontend: native ES modules, no bundler.
+// Polls are single-flight; attention snapshots and read state are runtime only.
+// Live status never changes placement or durable ordering.
 import { $, columnHint, ctx, dotTitle, emit, genId, inv, listeners, POLL_MS, QUIET_SECS, sessionName, setMemChip, state, store, uev } from './state.js';
 import { mutateBoard, mutateBoardDebounced } from './persistence.js';
-import { CARD_PREVIEW_ROWS, cardPreviewRows, createConfirmationCounter, createDoneSeenTracker, createExitRetirementTracker, effectiveCardStatus, reorderById, runFinishHolds, sidebarGroups } from './pure.js';
+import { CARD_PREVIEW_ROWS, cardPreviewRows, createConfirmationCounter, createExitRetirementTracker, effectiveCardStatus, reorderById, runFinishHolds, sidebarGroups } from './pure.js';
 import { confirmDialog, inlineRename, toast } from './dialogs.js';
 import { clearSeparators, closePaneBySid, hasPane, leaveSessionView, openSession, renderSessionView, updatePaneChrome } from './layout.js';
 import { SHELL_FG, showProjectCtx, showSessionCtx } from './terminal.js';
@@ -10,6 +12,7 @@ import { renderQueueUI, setQueueChip, updateQuietHints } from './scheduler.js';
 import { formatNumber, t } from './i18n.js';
 import { renderAutomations, ruleOf } from './automation.js';
 import { createDefaultColumns, migrateColumnSemantics } from './board-defaults.js';
+import { attentionStatusText, refreshAttention } from './attention.js';
 export { migrateColumnSemantics } from './board-defaults.js';
 
 export const defaultColumns = () => createDefaultColumns(genId, t);
@@ -17,8 +20,7 @@ export const defaultColumns = () => createDefaultColumns(genId, t);
 /* ---------- provider (every persistent mutation is one queued transaction) ---------- */
 export const activeProject = () => provider.project(state.projectId);
 const exitRetirement = createExitRetirementTracker();
-/* which `done` cards the user has already opened — drives the tab dot */
-const doneSeen = createDoneSeenTracker();
+
 const closeOperations = new Map();
 
 export const provider = {
@@ -383,8 +385,17 @@ function observeRunFinish(c, info) {
 }
 
 /* ---------- polling ---------- */
-export async function pollNow() {
-  if (!store.cards.length) return;
+let activePoll = null;
+export function pollNow() {
+  if (!activePoll) activePoll = pollSessionsNow().finally(() => { activePoll = null; });
+  return activePoll;
+}
+async function pollSessionsNow() {
+  if (!store.cards.length) {
+    ctx.attention.record([], []);
+    refreshAttention();
+    return true;
+  }
   const names = store.cards.map(c => c.session);
   const tailFor = state.view === 'board'
     ? store.cards.filter(c => c.projectId === state.projectId).map(c => c.session)
@@ -401,18 +412,22 @@ export async function pollNow() {
       state.lastPollError = String(e);
       uev('poll-fail');
     }
-    return;
+    ctx.attention.fail();
+    refreshAttention();
+    return false;
   }
   if (state.lastPollError) { state.lastPollError = null; uev('poll-recovered'); }
+  const previousUnread = store.cards.filter(c => ctx.attention.category(c) === 'done').map(c => c.id).join(',');
+  const visible = new Set([...panes.values()].filter(p => state.view === 'session' && p.attached && p.renderedGen === p.attachedGen).map(p => p.sid));
+  ctx.attention.record(store.cards, infos, visible);
   const byName = new Map(infos.map(i => [i.name, i]));
   for (const c of store.cards) {
     const info = byName.get(c.session);
-    if (!info) continue;
+    if (!info || typeof info.alive !== 'boolean') continue;
     /* the shell exited (Ctrl+D etc.) → the card has nothing left to hold;
        close it without ceremony. Only live→dead transitions count, so cards
        that were already stopped (e.g. after an app restart) stay. */
     if (!info.alive && c.status !== 'stopped') {
-      doneSeen.observe(c.id, 'stopped');
       exitRetirement.observe(c.id);
       continue;
     }
@@ -434,7 +449,6 @@ export async function pollNow() {
        pane header chip) instead of letting an agent TUI look hung */
     const scrolled = !!(info.alive && info.scrolled);
     if (scrolled !== !!c.scrolled) { c.scrolled = scrolled; updatePaneChrome(c); }
-    doneSeen.observe(c.id, status, panes.has(c.session));
     if (status !== c.status) { c.status = status; emit('status', c); }
     if ((mem == null) !== (c.mem == null) || (mem != null && Math.abs(mem - c.mem) > 1)) {
       c.mem = mem;
@@ -468,6 +482,10 @@ export async function pollNow() {
       toast(t('automation.runClosed', { name: c.title }));
     },
   });
+  const nextUnread = store.cards.filter(c => ctx.attention.category(c) === 'done').map(c => c.id).join(',');
+  if (previousUnread !== nextUnread) renderTabs();
+  refreshAttention();
+  return true;
 }
 export function startPolling() {
   clearInterval(ctx.pollTimer);
@@ -487,6 +505,7 @@ export function stopPolling() {
 /// fresh empty server, so exit retirement cannot delete durable card metadata.
 export function markSessionsStoppedForServerRestart() {
   exitRetirement.clear();
+  ctx.attention.record(store.cards, store.cards.map(c => ({ name: c.session, alive: false })));
   for (const card of store.cards) {
     card.status = 'stopped';
     card.mem = null;
@@ -580,10 +599,10 @@ export function renderTabs() {
     el.draggable = true;
     el.innerHTML = `<span class="name"></span>`;
     el.querySelector('.name').textContent = p.name;
-    if (doneSeen.unseen(provider.list(p.id))) {
+    if (provider.list(p.id).some(c => ctx.attention.category(c) === 'done')) {
       const done = document.createElement('span');
       done.className = 'done-dot';
-      done.title = t('session.doneTab');
+      done.title = t('session.doneTab') + (ctx.attention.freshness(provider.list(p.id)).kind === 'fresh' ? '' : ' · ' + t('attention.old'));
       el.appendChild(done);
     }
     el.onclick = () => switchProject(p.id);
@@ -636,14 +655,15 @@ export function renderTabs() {
   bar.scrollLeft = scrollLeft;
 }
 
-/* The user opened a card: its finished turn has been seen, so the project
-   tab stops advertising it. Only a card that is actually lighting a tab
-   costs a tab rebuild. */
+/* A successfully attached pane has consumed its first frame. Record viewing
+   once per observed status; input requests remain pending after viewing. */
 export function markSessionSeen(sid) {
   const card = provider.get(sid);
-  if (!card || card.status !== 'done') return;
-  doneSeen.saw(sid);
+  const pane = card && panes.get(card.session);
+  if (!pane?.attached || pane.renderedGen !== pane.attachedGen || state.view !== 'session') return;
+  if (ctx.attention.get(card)?.seen || !ctx.attention.saw(card)) return;
   renderTabs();
+  refreshAttention();
 }
 
 export function renameTab(el, p) {
@@ -655,6 +675,7 @@ export function renameTab(el, p) {
 }
 
 export function switchProject(pid) {
+  ctx.attentionReturn = null;
   if (state.projectId === pid && state.view === 'board') return;
   if (state.view === 'session') leaveSessionView();
   state.projectId = pid;
@@ -727,7 +748,7 @@ export function renderBoard() {
     colEl.querySelector('.col-del').title = t('board.deleteTitle');
 
     let dragDepth = 0;
-    colEl.addEventListener('dragover', e => e.preventDefault());
+    colEl.addEventListener('dragover', e => { e.preventDefault(); });
     colEl.addEventListener('dragenter', e => {
       e.preventDefault();
       dragDepth++;
@@ -785,9 +806,11 @@ export function cardEl(s) {
   el.innerHTML = `
     <div class="card-top"><span class="dot ${s.status}"></span><span class="card-title"></span><button class="card-pin" type="button"></button><button class="card-x" type="button">✕</button></div>
     <div class="card-meta"><span class="cmd"></span><span class="dir"></span><span class="auto-chip"></span><span class="q-chip"></span><span class="mem-chip"></span></div>
+    <div class="card-status"></div>
     ${s.desc ? '<div class="card-desc"></div>' : ''}
     <div class="card-tail">${Array.from({ length: CARD_PREVIEW_ROWS }, () => '<div></div>').join('')}</div>`;
   el.querySelector('.card-title').textContent = s.title;
+  el.querySelector('.card-status').textContent = attentionStatusText(s);
   el.querySelector('.dot').title = dotTitle(s.status);
   const pin = el.querySelector('.card-pin');
   const pinLabel = t(s.pinned === true ? 'card.unmarkImportant' : 'card.markImportant');
@@ -880,10 +903,12 @@ export const panes = new Map();      // session name -> {sid, session, el, body,
 export function render() {
   $('board-view').style.display = state.view === 'board' ? 'flex' : 'none';
   $('session-view').style.display = state.view === 'session' ? 'flex' : 'none';
+  $('attention-view').hidden = state.view !== 'attention';
   renderTabs();
   renderSidebar();
   if (state.view === 'board') renderBoard();
-  else renderSessionView();
+  else if (state.view === 'session') renderSessionView();
+  refreshAttention();
   panes.forEach(p => updatePaneChrome(provider.get(p.sid)));
   renderQueueUI();
 }

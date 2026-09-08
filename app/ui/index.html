@@ -20,6 +20,7 @@
       <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1.5" y="2.5" width="3.4" height="11"/><rect x="6.3" y="2.5" width="3.4" height="7"/><rect x="11.1" y="2.5" width="3.4" height="9"/></svg>
       <span class="label" data-i18n="app.board">Board</span>
     </button>
+    <button class="side-home" id="attention-btn" type="button"><span aria-hidden="true">◇</span><span class="label" data-i18n="attention.title">Needs attention</span><span id="attention-count"></span></button>
     <div class="side-group"><span data-i18n="app.sessions">Sessions</span><span id="side-count"></span></div>
     <div class="side-list" id="side-list"></div>
     <button id="tmux-restart-btn"><span>⚠</span><span class="label" data-i18n="tmux.pendingShort">Shell service restart required</span></button>
@@ -110,6 +111,13 @@
         </div>
       </aside>
     </div>
+
+    <section id="attention-view" aria-labelledby="attention-title" hidden>
+      <div class="attention-head"><h1 id="attention-title" data-i18n="attention.globalTitle">Needs attention · All projects</h1><button class="btn" id="attention-back" type="button"></button></div>
+      <p class="attention-hint" data-i18n="attention.hint">Original groups stay unchanged. Viewed does not mean handled.</p>
+      <div id="attention-tools" class="attention-tools"></div>
+      <div id="attention-list" tabindex="-1"></div>
+    </section>
 
     <div id="session-view">
       <div class="sess-head">

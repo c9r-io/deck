@@ -915,3 +915,46 @@ html.font-scale-large .tmux-lifecycle-actions { align-items: flex-start; flex-wr
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 5px; border: 2px solid transparent; background-clip: content-box; }
 ::-webkit-scrollbar-track { background: transparent; }
+
+/* Derived attention uses the theme's existing signal colours. Original
+   cards keep their six-row terminal preview and durable sidebar navigation. */
+#attention-count { margin-left: auto; font-size: .846154rem; }
+#attention-view { flex: 1; display: flex; flex-direction: column; min-height: 0; overflow: auto; }
+#attention-view[hidden], .attention-notice[hidden], .attention-column-empty[hidden] { display: none; }
+.attention-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 20px 20px 8px; flex-wrap: wrap; }
+.attention-head h1 { font-size: 1.384615rem; }
+.attention-hint { color: var(--muted); padding: 0 20px 8px; line-height: 1.5; }
+.attention-tools { padding: 0 20px 12px; flex: none; }
+.attention-summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; background: var(--raised); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; line-height: 1.6; }
+.attention-notice { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 8px; padding: 9px 12px; border: 1px solid var(--waiting-soft-border); background: var(--waiting-soft); color: var(--wait); border-radius: 6px; line-height: 1.5; }
+.attention-filters { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.attention-filters .btn { font-size: .923077rem; }
+.attention-filters .active { color: var(--accent); border-color: var(--accent-dim); background: var(--sel); }
+#attention-list { overflow: auto; min-height: 120px; flex: 1; padding: 0 20px 20px; }
+.attention-section { font-size: 1rem; font-weight: 600; color: var(--muted); margin: 18px 12px 6px; }
+.attention-row, .attention-labels { display: grid; grid-template-columns: minmax(130px,1.3fr) minmax(120px,1fr) minmax(125px,1fr) minmax(120px,1fr) auto; gap: 14px; align-items: center; padding: 16px 12px; border-bottom: 1px solid var(--border); line-height: 1.55; }
+.attention-row > span { min-width: 0; overflow-wrap: anywhere; }
+.attention-card-name { font-weight: 600; }
+.attention-origin, .attention-viewed { color: var(--muted); font-size: .923077rem; }
+.attention-reason[data-status="attention"] { color: var(--attn); }
+.attention-reason[data-status="done"] { color: var(--done); }
+.attention-reason[data-status="running"] { color: var(--run); }
+.attention-empty { color: var(--muted); padding: 32px 12px; line-height: 1.8; }
+.attention-column-empty { font-size: .923077rem; line-height: 1.65; padding: 16px 6px; color: var(--muted); }
+.card-status { font-size: .846154rem; line-height: 1.5; margin-top: 7px; color: var(--muted); }
+.card.attention .card-status { color: var(--attn); }
+@media (max-width: 1050px) {
+  .attention-row, .attention-labels { grid-template-columns: minmax(110px,1.2fr) minmax(110px,1fr) auto; gap: 8px 12px; }
+  .attention-row .attention-viewed { grid-column: 2; }
+  .attention-row button { grid-column: 3; grid-row: span 2; }
+}
+@media (max-width: 720px) {
+  .attention-row, .attention-labels { grid-template-columns: minmax(100px,1fr) auto; }
+  .attention-row .attention-origin, .attention-row .attention-reason, .attention-row .attention-viewed { grid-column: 1; }
+  .attention-row button { grid-column: 2; grid-row: 1 / span 4; }
+}
+
+.attention-labels { font-size: .846154rem; color: var(--muted); padding: 8px 12px; }
+@media (max-width: 1050px) { .attention-labels { display: none; } }
+body.side-collapsed #attention-btn { flex-direction: column; gap: 2px; }
+body.side-collapsed #attention-count { margin-left: 0; max-width: 34px; overflow: hidden; font-size: .692308rem; }

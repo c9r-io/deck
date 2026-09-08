@@ -10,9 +10,28 @@ release's GitHub run and in git history, not in the checklist.
 `cargo test` covers the tmux contracts (scroll model, clear-history, literal
 injection, poll formats); `scripts/ui-tests` covers the DOM-free modules.
 
-None. When the full WKWebView smoke reports a failing check on an untouched
-HEAD build, record it here with the first-seen date; the release checklist is
-not green while an entry exists.
+Known baseline failures (first seen 2026-09-09): an untouched `bad89b8`
+fresh-root run fails `selection-up`, `selection-clipboard`, and
+`selection-down`. The attention implementation run reproduces the same three
+numeric failures. These existing terminal-selection checks remain unresolved;
+the full release checklist is not green. The dedicated attention gate is
+separate and does not waive them.
+
+## Cross-project attention (B v01)
+
+Run `DECK_SMOKE_DATA_DIR="$(mktemp -d /tmp/deck-attention.XXXXXX)" DECK_SMOKE_TMUX_SOCKET=deck-smoke-attention-UNIQUE DECK_SMOKE_WKWEBVIEW=attention app/run.sh`.
+This fresh-root mode uses the shared 12-card fixture, real production modules,
+and real empty-command shells/PTY attachments. Only poll statuses and explicit
+poll/attach failures are injected in the debug test carrier; no agent or hook is
+installed. It checks the uncluttered Board with all cards draggable and only the sidebar
+attention entry, unchanged placement, keyed row focus,
+pointer reconciliation, success/failure read receipts (including splits),
+cross-project back navigation, stale/partial snapshots, and locate-only stopped
+entries. Twelve locale/theme/font combinations run in the actual WKWebView.
+Expect all `attention-*` checks positive and final `done=1`. A debug-only strip
+leaves Board / Needs attention / Update failed available for screenshots; the
+strip and fixture never ship in release bundles. Also inspect at the 720×480
+minimum window: controls must remain reachable and long names must wrap.
 
 ## Settings navigation and diagnostic log reset
 

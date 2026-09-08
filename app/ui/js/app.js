@@ -12,6 +12,7 @@ import { initTemplates } from './templates.js';
 import { drainInbound, initInbound } from './inbound.js';
 import { initAutomation } from './automation.js';
 import { initDropdowns } from './dropdown.js';
+import { initAttention } from './attention.js';
 import { onLocaleChange, setLocale, t, translateNotice } from './i18n.js';
 import { activateTheme, revealThemedWindow } from './theme.js';
 
@@ -247,6 +248,7 @@ function initModules() {
   initDropdowns();
   initDialogs();
   initTerminalChrome();
+  initAttention();
   initLayout();
   initScheduler();
   initTemplates();

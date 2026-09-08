@@ -24,7 +24,7 @@ import {
   createTerminalWheelAccumulator, createTerminalWheelFrameScheduler, terminalWheelLines,
   linkMenuItems,
   CARD_PREVIEW_ROWS, cardPreviewRows, inlineRenameValue, persistOptimistically, PATH_LOOKBACK_MAX,
-  effectiveCardStatus, createDoneSeenTracker,
+  effectiveCardStatus,
   TEMPLATES_MAX, TEMPLATE_NAME_MAX, TEMPLATE_STEP_MAX, TEMPLATE_STEPS_MAX,
   inboundRulesUsingTemplate, moveTemplateStep, nextTemplateName, normalizeTemplateStep,
   promptSummary, promptTooltip, PROMPT_TOOLTIP_LINES, templateNameProblem,
@@ -42,45 +42,6 @@ test('agent-hook state outranks the output-recency heuristic', () => {
   // a dead pane wins over any stale agent word; unknown words fall through
   assert.equal(effectiveCardStatus(false, 'needs-input', false), 'stopped');
   assert.equal(effectiveCardStatus(true, 'mystery', true), 'waiting');
-});
-
-test('the project tab dot is an unread marker for finished turns', () => {
-  const t = createDoneSeenTracker();
-  const cards = [{ id: 'a', status: 'running' }, { id: 'b', status: 'running' }];
-  assert.equal(t.unseen(cards), false);
-
-  // one card finishes off screen → the tab lights up
-  cards[0].status = 'done';
-  t.observe('a', 'done', false);
-  assert.equal(t.unseen(cards), true);
-
-  // a second finished card keeps it lit until BOTH have been opened
-  cards[1].status = 'done';
-  t.observe('b', 'done', false);
-  t.saw('a');
-  assert.equal(t.unseen(cards), true);
-  t.saw('b');
-  assert.equal(t.unseen(cards), false);
-
-  // leaving `done` re-arms: the next finished turn lights the tab again
-  cards[0].status = 'running';
-  t.observe('a', 'running', false);
-  cards[0].status = 'done';
-  t.observe('a', 'done', false);
-  assert.equal(t.unseen(cards), true);
-
-  // a card that finishes while its pane is on screen was never unread
-  t.observe('a', 'running', false);
-  t.observe('a', 'done', true);
-  assert.equal(t.unseen(cards), false);
-
-  // a stopped card never lights a tab, and restarting re-arms it cleanly
-  cards[1].status = 'stopped';
-  t.observe('b', 'stopped');
-  assert.equal(t.unseen(cards), false);
-  cards[1].status = 'done';
-  t.observe('b', 'done', false);
-  assert.equal(t.unseen(cards), true);
 });
 
 test('terminal paste trace identifies every silent handoff without recording content', async () => {

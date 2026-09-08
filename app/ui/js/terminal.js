@@ -548,7 +548,7 @@ export function initTerminalChrome() {
 
   $('collapse-btn').onclick = toggleSidebar;
 
-  $('home-btn').onclick = backToBoard;
+  $('home-btn').onclick = () => backToBoard({ home: true });
 
   $('back-btn').onclick = backToBoard;
 

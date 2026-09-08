@@ -1,5 +1,7 @@
 //! PTY bridge: `tmux attach` inside a portable-pty, bytes streamed to the
 //! webview as base64 `pty-data` events. Detach kills only the tmux *client*.
+//! Exit events also carry their attachment generation so a queued old exit
+//! cannot invalidate a newly attached pane or its read receipt.
 //! Reader threads carry a generation counter so a stale thread never removes
 //! a newer attachment.
 //!
@@ -183,6 +185,7 @@ pub(crate) struct PtyData {
 #[derive(Clone, Serialize)]
 pub(crate) struct PtyExit {
     name: String,
+    gen: u64,
 }
 
 /// Attach = subscribe to the session's byte stream. The tmux session keeps
@@ -350,7 +353,13 @@ pub(crate) fn attach_session(
                 "[pty] stream ended for {}",
                 crate::applog::session_tag(&thread_name)
             ));
-            let _ = thread_app.emit("pty-exit", PtyExit { name: thread_name });
+            let _ = thread_app.emit(
+                "pty-exit",
+                PtyExit {
+                    name: thread_name,
+                    gen: generation,
+                },
+            );
         }
     });
 

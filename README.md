@@ -40,12 +40,22 @@ operator and recovery guide.
 
 ## What it does
 
-**Boards express attention, not workflow.** Default boards per project:
-*Attention* (things you want to deal with next) · *Working* (agents running
-autonomously) · *Queued* · *Parked*. Cards never move on their own — status
-dots and amber highlights carry the information; you make the calls. Boards
-are per-project (tabs), and fully customizable: add, rename, delete, drag
-cards anywhere.
+**Boards are manual groups, independent of live status.** Default groups per
+project remain *Attention* · *Working* · *Queued* · *Parked*. Their names,
+card positions and order are yours; status never moves a card. Cards show their
+live status. Status summaries and filters live in the sidebar’s Needs attention
+view, keeping the Board focused on its groups.
+
+**Needs attention spans all projects.** Its sidebar entry links to sessions
+with an explicit input request or an unread turn ending, showing each card's
+original project and group. Opening a session successfully marks its ending as
+viewed, not handled or task-complete; an input request stays until its state
+changes. The back action restores the attention filter and position. Quiet or
+recent output without valid agent state is separate from confirmed requests:
+quiet never means ready. Failed or incomplete polls keep a labelled old
+snapshot, and stale/stopped entries only locate their original cards. Read
+markers last for this app run; hook reporting and unread history are not
+promised to survive restarts.
 
 **Sessions outlive the app.** deck runs its own private tmux server, so
 quitting deck (or it crashing) never kills your agents. Reopen and everything

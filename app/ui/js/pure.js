@@ -321,6 +321,7 @@ export function nextFire(i, now = Math.floor(Date.now() / 1000)) {
 }
 
 /* ---------- card status ---------- */
+export const CARD_QUIET_SECS = 15;
 /* One place decides what a card's status word is. `agent` is the closed
    agent-hook state from poll_sessions ("working" | "needs-input" |
    "turn-done", agent_status.rs) and OUTRANKS the output-recency heuristic:
@@ -335,28 +336,7 @@ export function effectiveCardStatus(alive, agent, quiet) {
   return quiet ? 'waiting' : 'running';
 }
 
-/* ---------- project tab done hint ---------- */
-/* The tab dot is an UNREAD marker, not a derived status: once a card reaches
-   `done` its project tab stays lit until the user actually opens that card,
-   so a finished turn cannot be missed while another project is on screen.
-   Leaving `done` re-arms the card — the next completed turn lights the tab
-   again. A card that turns `done` while its pane is already on screen was
-   never unread. Memory only (no Board field): the dot is a transient UI
-   signal, and the agent hook re-reports `done` after a restart anyway. */
-export function createDoneSeenTracker() {
-  const seen = new Set();
-  return {
-    /* the user opened the card */
-    saw: id => { seen.add(id); },
-    /* poll observed a status CHANGE for the card */
-    observe: (id, status, onScreen = false) => {
-      if (status !== 'done') seen.delete(id);
-      else if (onScreen) seen.add(id);
-    },
-    /* does this project's cards leave its tab lit? */
-    unseen: cards => cards.some(c => c.status === 'done' && !seen.has(c.id)),
-  };
-}
+// Runtime snapshots and per-observed-status viewing now live in attention-model.js.
 
 /* how long a session must stay quiet before a chain prompt fires when the
    item sets no `quiet_secs` — keep in sync with CHAIN_QUIET_SECS in
