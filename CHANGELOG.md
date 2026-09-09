@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.6.3 — 2026-09-10 (Nightly)
+
+- **Inspect after every row.** A list or an automation rule can explicitly
+  ask deck to stop after every delivered row, including the last. The sent
+  row stays as a durable checkpoint until you view the result and choose
+  **Inspected, allow next…**; a turn-done hook, quiet time, an open pane or
+  a permission wait never release it. The confirmation names the next row
+  and permits only that revision and target: editing, retrying or removing
+  it, a changed target, or toggling the mode revokes unused permission. The
+  next row still obeys its schedule, minimum gap and context checks; other
+  lists in the session interleave as before. A last-row confirmation is the
+  extra condition an opted-in automation needs before its finish=close path.
+  Skipping or cancelling omits work and never counts as inspection. Existing
+  lists, rules and runs are unchanged; a reviewed template is enqueued in one
+  transaction.
+- The ⏱ panel shows a read-only execution plan (the backend's selection
+  stage, gap or quiet remaining at observation; stale reads as unknown) apart
+  from hook observations, and a ledger of deliveries and inspections (ids,
+  times, source; 200 each; no prompt text). "Delivery uncertain" and
+  "acknowledge as sent" replace the ⚠/✓ wording. Docs no longer claim that
+  every row waits for quiet, that automation runs start with an empty
+  context, or that three finish polls prove a turn belongs to the last row.
+- Data: queue.json and settings.json move to a sticky schema v2 envelope once
+  they hold inspection state, so an older deck refuses them untouched instead
+  of resending sent rows; deck.json stays v1. Back up before installing this
+  candidate if you may return to an older build.
+
 ## 0.6.2 — 2026-09-09 (Nightly)
 
 - **Needs attention** in the sidebar: one view across projects of the
