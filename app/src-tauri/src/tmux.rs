@@ -280,13 +280,13 @@ pub(crate) fn fmt_escape(s: &str) -> String {
 pub(crate) fn validate_session_name(name: &str) -> Result<(), DeckError> {
     if name.is_empty() || name.len() > 64 {
         return Err(DeckError::new(
-            ErrorKind::Other,
+            ErrorKind::Invalid,
             "session name must be 1–64 characters",
         ));
     }
     if name.starts_with('-') {
         return Err(DeckError::new(
-            ErrorKind::Other,
+            ErrorKind::Invalid,
             "session name must not start with '-'",
         ));
     }
@@ -295,7 +295,7 @@ pub(crate) fn validate_session_name(name: &str) -> Result<(), DeckError> {
         .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '@'))
     {
         return Err(DeckError::new(
-            ErrorKind::Other,
+            ErrorKind::Invalid,
             "session name may only contain letters, digits, _ - @",
         ));
     }
@@ -643,5 +643,17 @@ mod tests {
             assert_eq!(tmux_kind(), "sidecar");
             assert_eq!(tmux_program().unwrap(), binary);
         }
+    }
+
+    #[test]
+    fn a_rejected_session_name_is_an_invalid_argument() {
+        for bad in ["", "-x", "a b", &"x".repeat(65)] {
+            assert_eq!(
+                validate_session_name(bad).unwrap_err().kind(),
+                ErrorKind::Invalid,
+                "{bad:?}"
+            );
+        }
+        assert!(validate_session_name("deck-web-1@2").is_ok());
     }
 }

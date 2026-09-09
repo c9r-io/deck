@@ -11,8 +11,8 @@
 //!   a name the runtime would accept; settings values from closed sets
 //!   (locale, theme, accent, update channel) or bounded ranges (font scale,
 //!   editor name, shortcut table), with `inbound` handed to
-//!   `inbound::validate_settings`. A violation is refused with its rule's
-//!   message; the file is never rewritten to make it pass.
+//!   `inbound::validate_settings`. A violation is an `InvalidDoc` error with
+//!   its rule's message; the file is never rewritten to make it pass.
 //! - The typed structs are parse-only. The webview owns the documents and
 //!   `save_*` persists the ORIGINAL string, so unknown extension fields
 //!   round-trip untouched and the `#[allow(dead_code)]` fields exist to be
@@ -127,19 +127,19 @@ fn validate_board(b: &BoardDocRaw) -> Result<(), DeckError> {
     for p in &b.projects {
         if p.id.trim().is_empty() {
             return Err(DeckError::new(
-                ErrorKind::Other,
+                ErrorKind::InvalidDoc,
                 "a project has an empty id",
             ));
         }
         if !project_ids.insert(p.id.as_str()) {
             return Err(DeckError::new(
-                ErrorKind::Other,
+                ErrorKind::InvalidDoc,
                 format!("duplicate project id {}", p.id),
             ));
         }
         if p.columns.is_empty() {
             return Err(DeckError::new(
-                ErrorKind::Other,
+                ErrorKind::InvalidDoc,
                 format!("project {} has no columns", p.id),
             ));
         }
@@ -147,13 +147,13 @@ fn validate_board(b: &BoardDocRaw) -> Result<(), DeckError> {
         for c in &p.columns {
             if c.id.trim().is_empty() {
                 return Err(DeckError::new(
-                    ErrorKind::Other,
+                    ErrorKind::InvalidDoc,
                     format!("project {} has a column with an empty id", p.id),
                 ));
             }
             if !col_ids.insert(c.id.as_str()) {
                 return Err(DeckError::new(
-                    ErrorKind::Other,
+                    ErrorKind::InvalidDoc,
                     format!("duplicate column id {} in project {}", c.id, p.id),
                 ));
             }
@@ -163,11 +163,14 @@ fn validate_board(b: &BoardDocRaw) -> Result<(), DeckError> {
     let mut sessions = HashSet::new();
     for c in &b.cards {
         if c.id.trim().is_empty() {
-            return Err(DeckError::new(ErrorKind::Other, "a card has an empty id"));
+            return Err(DeckError::new(
+                ErrorKind::InvalidDoc,
+                "a card has an empty id",
+            ));
         }
         if !card_ids.insert(c.id.as_str()) {
             return Err(DeckError::new(
-                ErrorKind::Other,
+                ErrorKind::InvalidDoc,
                 format!("duplicate card id {}", c.id),
             ));
         }
@@ -176,19 +179,19 @@ fn validate_board(b: &BoardDocRaw) -> Result<(), DeckError> {
             .map_err(|e| DeckError::classified(format!("card {}: {e}", c.id)))?;
         if !sessions.insert(c.session.as_str()) {
             return Err(DeckError::new(
-                ErrorKind::Other,
+                ErrorKind::InvalidDoc,
                 format!("card {}: session name is already used", c.id),
             ));
         }
         let Some(project) = b.projects.iter().find(|p| p.id == c.project_id) else {
             return Err(DeckError::new(
-                ErrorKind::Other,
+                ErrorKind::InvalidDoc,
                 format!("card {} references a missing project", c.id),
             ));
         };
         if !project.columns.iter().any(|col| col.id == c.column_id) {
             return Err(DeckError::new(
-                ErrorKind::Other,
+                ErrorKind::InvalidDoc,
                 format!(
                     "card {} references a column that is not in its project",
                     c.id
@@ -256,7 +259,7 @@ impl TryFrom<SettingsDocRaw> for SettingsDoc {
         if let Some(e) = &raw.editor {
             if e.len() > 200 {
                 return Err(DeckError::new(
-                    ErrorKind::Other,
+                    ErrorKind::InvalidDoc,
                     "editor name is unreasonably long",
                 ));
             }
@@ -264,7 +267,7 @@ impl TryFrom<SettingsDocRaw> for SettingsDoc {
         if let Some(locale) = &raw.locale {
             if !matches!(locale.as_str(), "system" | "en" | "zh-Hans") {
                 return Err(DeckError::new(
-                    ErrorKind::Other,
+                    ErrorKind::InvalidDoc,
                     "locale must be system, en, or zh-Hans",
                 ));
             }
@@ -275,7 +278,7 @@ impl TryFrom<SettingsDocRaw> for SettingsDoc {
                 "deck-dark" | "light" | "system" | "high-contrast"
             ) {
                 return Err(DeckError::new(
-                    ErrorKind::Other,
+                    ErrorKind::InvalidDoc,
                     "theme must be deck-dark, light, system, or high-contrast",
                 ));
             }
@@ -283,7 +286,7 @@ impl TryFrom<SettingsDocRaw> for SettingsDoc {
         if let Some(accent) = &raw.accent {
             if !matches!(accent.as_str(), "teal" | "blue" | "purple" | "orange") {
                 return Err(DeckError::new(
-                    ErrorKind::Other,
+                    ErrorKind::InvalidDoc,
                     "accent must be teal, blue, purple, or orange",
                 ));
             }
@@ -291,7 +294,7 @@ impl TryFrom<SettingsDocRaw> for SettingsDoc {
         if let Some(scale) = raw.font_scale {
             if !scale.is_finite() || !(0.5..=1.6).contains(&scale) {
                 return Err(DeckError::new(
-                    ErrorKind::Other,
+                    ErrorKind::InvalidDoc,
                     "fontScale must be between 0.5 and 1.6",
                 ));
             }
@@ -299,7 +302,7 @@ impl TryFrom<SettingsDocRaw> for SettingsDoc {
         if let Some(shortcuts) = &raw.shortcuts {
             if shortcuts.len() > 64 {
                 return Err(DeckError::new(
-                    ErrorKind::Other,
+                    ErrorKind::InvalidDoc,
                     "too many shortcut entries",
                 ));
             }
@@ -308,7 +311,7 @@ impl TryFrom<SettingsDocRaw> for SettingsDoc {
                 .any(|(key, value)| key.is_empty() || key.len() > 64 || value.len() > 64)
             {
                 return Err(DeckError::new(
-                    ErrorKind::Other,
+                    ErrorKind::InvalidDoc,
                     "shortcut names and bindings must be bounded strings",
                 ));
             }
@@ -438,7 +441,7 @@ pub(crate) fn save_settings(data: String) -> Result<(), DeckError> {
 
 fn validate_saved_update_channel(data: &str) -> Result<(), DeckError> {
     let value: serde_json::Value = serde_json::from_str(data)
-        .map_err(|_| DeckError::new(ErrorKind::Other, "settings must be valid JSON"))?;
+        .map_err(|_| DeckError::new(ErrorKind::InvalidDoc, "settings must be valid JSON"))?;
     match value.get("updateChannel") {
         None => Ok(()),
         Some(serde_json::Value::String(channel))
@@ -447,7 +450,7 @@ fn validate_saved_update_channel(data: &str) -> Result<(), DeckError> {
             Ok(())
         }
         Some(_) => Err(DeckError::new(
-            ErrorKind::Other,
+            ErrorKind::InvalidDoc,
             "updateChannel must be stable or nightly",
         )),
     }
@@ -551,12 +554,12 @@ mod tests {
         assert!(validate_saved_update_channel(r#"{"updateChannel":"stable"}"#).is_ok());
         assert!(validate_saved_update_channel(r#"{"updateChannel":"nightly"}"#).is_ok());
         let e = validate_saved_update_channel(r#"{"updateChannel":"beta"}"#).unwrap_err();
-        assert_eq!(e.kind(), ErrorKind::Other);
+        assert_eq!(e.kind(), ErrorKind::InvalidDoc);
         assert_eq!(
             validate_saved_update_channel("not json")
                 .unwrap_err()
                 .kind(),
-            ErrorKind::Other
+            ErrorKind::InvalidDoc
         );
     }
 

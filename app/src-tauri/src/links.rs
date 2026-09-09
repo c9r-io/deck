@@ -44,13 +44,13 @@ fn absolute_clicked_path(value: &str, cwd: &str) -> Result<PathBuf, DeckError> {
     }
     let cwd = std::fs::canonicalize(expand_tilde(cwd)).map_err(|_| {
         DeckError::new(
-            ErrorKind::Other,
+            ErrorKind::Missing,
             "the session working directory is unavailable",
         )
     })?;
     if !cwd.is_dir() {
         return Err(DeckError::new(
-            ErrorKind::Other,
+            ErrorKind::Missing,
             "the session working directory is unavailable",
         ));
     }
@@ -72,13 +72,13 @@ pub(crate) fn resolve_clicked_parent(
             let stripped = regex_strip_lineno(&raw);
             if stripped == raw {
                 return Err(DeckError::new(
-                    ErrorKind::Other,
+                    ErrorKind::Missing,
                     "the selected path does not exist or cannot be accessed",
                 ));
             }
             std::fs::canonicalize(absolute_clicked_path(&stripped, cwd)?).map_err(|_| {
                 DeckError::new(
-                    ErrorKind::Other,
+                    ErrorKind::Missing,
                     "the selected path does not exist or cannot be accessed",
                 )
             })?
@@ -86,7 +86,7 @@ pub(crate) fn resolve_clicked_parent(
     };
     let meta = std::fs::metadata(&resolved).map_err(|_| {
         DeckError::new(
-            ErrorKind::Other,
+            ErrorKind::Missing,
             "the selected path does not exist or cannot be accessed",
         )
     })?;
@@ -98,7 +98,7 @@ pub(crate) fn resolve_clicked_parent(
             .parent()
             .ok_or_else(|| {
                 DeckError::new(
-                    ErrorKind::Other,
+                    ErrorKind::Missing,
                     "the selected path has no usable parent folder",
                 )
             })?
@@ -106,7 +106,7 @@ pub(crate) fn resolve_clicked_parent(
     };
     if !directory.is_dir() {
         return Err(DeckError::new(
-            ErrorKind::Other,
+            ErrorKind::Missing,
             "the selected path has no usable parent folder",
         ));
     }
@@ -137,7 +137,7 @@ pub(crate) fn validate_open(kind: &str, value: &str, resolved: &str) -> Result<(
                 Ok(())
             } else {
                 Err(DeckError::new(
-                    ErrorKind::Other,
+                    ErrorKind::Invalid,
                     format!("only http(s) links open externally: {value}"),
                 ))
             }
@@ -145,7 +145,7 @@ pub(crate) fn validate_open(kind: &str, value: &str, resolved: &str) -> Result<(
         "editor" | "editor-parent" | "reveal" => {
             if !resolved.starts_with('/') {
                 return Err(DeckError::new(
-                    ErrorKind::Other,
+                    ErrorKind::Invalid,
                     format!("path did not resolve absolute: {resolved}"),
                 ));
             }
@@ -158,7 +158,7 @@ pub(crate) fn validate_open(kind: &str, value: &str, resolved: &str) -> Result<(
             Ok(())
         }
         _ => Err(DeckError::new(
-            ErrorKind::Other,
+            ErrorKind::Invalid,
             format!("unknown kind: {kind}"),
         )),
     }
@@ -180,7 +180,7 @@ pub(crate) fn open_target(kind: String, value: String, cwd: String) -> Result<()
                 std::fs::canonicalize(absolute_clicked_path(&stripped, &cwd)?)
                     .map_err(|_| {
                         DeckError::new(
-                            ErrorKind::Other,
+                            ErrorKind::Missing,
                             "the selected path does not exist or cannot be accessed",
                         )
                     })?
@@ -196,7 +196,7 @@ pub(crate) fn open_target(kind: String, value: String, cwd: String) -> Result<()
             Some(app) => Command::new("open").args(["-a", &app, &resolved]).status(),
             None => {
                 return Err(DeckError::new(
-                    ErrorKind::Other,
+                    ErrorKind::Missing,
                     "choose an editor in Settings before opening a folder",
                 ))
             }
@@ -357,6 +357,14 @@ mod tests {
             std::fs::canonicalize(dir.join("nested")).unwrap()
         );
         assert!(!resolved.target_is_directory);
+        let gone = resolve_parent_dir("nested/absent.rs".into(), dir.display().to_string())
+            .map(|_| ())
+            .unwrap_err();
+        assert_eq!(
+            gone.kind(),
+            ErrorKind::Missing,
+            "a path that is not there is Missing, so the log can tell it from a bad request"
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 }

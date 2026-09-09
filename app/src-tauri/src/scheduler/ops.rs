@@ -13,8 +13,8 @@
 //!   needs an interval of at least a minute), fields that only make sense on
 //!   a repeating rule or a row, a window with both ends below 24h, a stop
 //!   after the start, a bounded card id and a tmux-safe session name. A
-//!   failure is refused before anything is written; its message is the
-//!   caller's toast.
+//!   failure is an `Invalid` error, refused before anything is written; its
+//!   message is the caller's toast.
 //! - `normalize_prompt` is the ONE text normalization: CRs are folded,
 //!   newlines are kept (a prompt may be many lines), and an empty result is
 //!   refused; blank steps are dropped from a step list.
@@ -230,7 +230,7 @@ pub(crate) fn validate_add(a: &QueueAddArgs) -> Result<(), DeckError> {
         "at" => {
             if a.at.is_none() {
                 return Err(DeckError::new(
-                    ErrorKind::Other,
+                    ErrorKind::Invalid,
                     "a timed prompt needs its time",
                 ));
             }
@@ -240,26 +240,26 @@ pub(crate) fn validate_add(a: &QueueAddArgs) -> Result<(), DeckError> {
                 .is_some_and(|q| !(MIN_QUIET_SECS..=MAX_QUIET_SECS).contains(&q))
             {
                 return Err(DeckError::new(
-                    ErrorKind::Other,
+                    ErrorKind::Invalid,
                     "quiet time must be between 10 seconds and 24 hours",
                 ));
             }
         }
         "every" => {
             let e = a.every.ok_or(DeckError::new(
-                ErrorKind::Other,
+                ErrorKind::Invalid,
                 "a recurring rule needs an interval",
             ))?;
             if e < 60 {
                 return Err(DeckError::new(
-                    ErrorKind::Other,
+                    ErrorKind::Invalid,
                     "recurring interval must be at least 1 minute",
                 ));
             }
         }
         m => {
             return Err(DeckError::new(
-                ErrorKind::Other,
+                ErrorKind::Invalid,
                 format!("unknown schedule mode: {m}"),
             ))
         }
@@ -270,26 +270,26 @@ pub(crate) fn validate_add(a: &QueueAddArgs) -> Result<(), DeckError> {
             || a.steps.as_ref().is_some_and(|s| !s.is_empty()))
     {
         return Err(DeckError::new(
-            ErrorKind::Other,
+            ErrorKind::Invalid,
             "interval/start/steps only make sense on a recurring rule",
         ));
     }
     if a.mode != "chain" && a.quiet_secs.is_some() {
         return Err(DeckError::new(
-            ErrorKind::Other,
+            ErrorKind::Invalid,
             "quiet time only applies after the previous prompt",
         ));
     }
     if a.mode != "chain" && a.group.is_some() {
         return Err(DeckError::new(
-            ErrorKind::Other,
+            ErrorKind::Invalid,
             "only a follow-up row joins a list",
         ));
     }
     if let (Some(from), Some(until)) = (a.not_before, a.until_at) {
         if until <= from {
             return Err(DeckError::new(
-                ErrorKind::Other,
+                ErrorKind::Invalid,
                 "a rule must stop after it starts",
             ));
         }
@@ -297,25 +297,25 @@ pub(crate) fn validate_add(a: &QueueAddArgs) -> Result<(), DeckError> {
     for w in [a.win_from, a.win_to] {
         if w.is_some_and(|m| m >= 1440) {
             return Err(DeckError::new(
-                ErrorKind::Other,
+                ErrorKind::Invalid,
                 "time-window minutes must be below 24h",
             ));
         }
     }
     if a.win_from.is_some() != a.win_to.is_some() {
         return Err(DeckError::new(
-            ErrorKind::Other,
+            ErrorKind::Invalid,
             "a time window needs both ends",
         ));
     }
     if a.until_n.is_some_and(|n| n == 0) {
         return Err(DeckError::new(
-            ErrorKind::Other,
+            ErrorKind::Invalid,
             "stop-after count must be at least 1",
         ));
     }
     if a.session.trim().is_empty() {
-        return Err(DeckError::new(ErrorKind::Other, "missing session"));
+        return Err(DeckError::new(ErrorKind::Invalid, "missing session"));
     }
     if a.card_id.is_empty()
         || a.card_id.len() > 128
@@ -325,7 +325,7 @@ pub(crate) fn validate_add(a: &QueueAddArgs) -> Result<(), DeckError> {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-'))
     {
         return Err(DeckError::new(
-            ErrorKind::Other,
+            ErrorKind::Invalid,
             "scheduled prompt needs a valid card identity",
         ));
     }
@@ -476,7 +476,7 @@ pub(crate) fn queue_add(
     validate_add(&args)?;
     let text = normalize_prompt(&args.text);
     if text.is_empty() {
-        return Err(DeckError::new(ErrorKind::Other, "empty prompt"));
+        return Err(DeckError::new(ErrorKind::Invalid, "empty prompt"));
     }
     // never let the scheduler act on an item the disk doesn't know about
     let creation = context::creation_context(&args.session, &args.cmd);
@@ -546,7 +546,7 @@ pub(crate) fn update_steps(
             Ok(())
         }
         Some(_) => Err(DeckError::new(
-            ErrorKind::Other,
+            ErrorKind::Invalid,
             "only a repeating list holds follow-up rows",
         )),
         None => Ok(()),
@@ -657,7 +657,7 @@ pub(crate) fn queue_update(
         (Some(text), None) => {
             let text = normalize_prompt(&text);
             if text.is_empty() {
-                return Err(DeckError::new(ErrorKind::Other, "empty prompt"));
+                return Err(DeckError::new(ErrorKind::Invalid, "empty prompt"));
             }
             // a failed save must not leave the new text in memory: the
             // scheduler would then send a prompt the user was told was not
@@ -674,7 +674,7 @@ pub(crate) fn queue_update(
         }
         _ => {
             return Err(DeckError::new(
-                ErrorKind::Other,
+                ErrorKind::Invalid,
                 "queue_update takes a text or a step list",
             ))
         }

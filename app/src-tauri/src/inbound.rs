@@ -181,7 +181,7 @@ pub(crate) struct Schedule {
 
 impl Schedule {
     pub(crate) fn validate(&self) -> Result<(), DeckError> {
-        let bad = |m: &str| Err(DeckError::new(ErrorKind::Other, m.to_string()));
+        let bad = |m: &str| Err(DeckError::new(ErrorKind::InvalidDoc, m.to_string()));
         if self.minute >= 1440 {
             return bad("schedule time must be a minute of the day");
         }
@@ -261,29 +261,29 @@ pub(crate) fn valid_badge(s: &str) -> bool {
 /// because only it holds the Board; a dangling rule is skipped at dispatch.
 pub(crate) fn validate_settings(v: &Value) -> Result<(), DeckError> {
     let obj = v.as_object().ok_or(DeckError::new(
-        ErrorKind::Other,
+        ErrorKind::InvalidDoc,
         "inbound must be an object",
     ))?;
     if let Some(sources) = obj.get("sources") {
         let sources = sources.as_object().ok_or(DeckError::new(
-            ErrorKind::Other,
+            ErrorKind::InvalidDoc,
             "inbound.sources must be an object",
         ))?;
         for (name, cfg) in sources {
             if !SOURCES.contains(&name.as_str()) {
                 return Err(DeckError::new(
-                    ErrorKind::Other,
+                    ErrorKind::InvalidDoc,
                     "inbound.sources names an unknown source",
                 ));
             }
             let cfg = cfg.as_object().ok_or(DeckError::new(
-                ErrorKind::Other,
+                ErrorKind::InvalidDoc,
                 "inbound source config must be an object",
             ))?;
             if let Some(e) = cfg.get("enabled") {
                 if !e.is_boolean() {
                     return Err(DeckError::new(
-                        ErrorKind::Other,
+                        ErrorKind::InvalidDoc,
                         "inbound source enabled must be a boolean",
                     ));
                 }
@@ -292,105 +292,108 @@ pub(crate) fn validate_settings(v: &Value) -> Result<(), DeckError> {
     }
     if let Some(rules) = obj.get("rules") {
         let rules = rules.as_array().ok_or(DeckError::new(
-            ErrorKind::Other,
+            ErrorKind::InvalidDoc,
             "inbound.rules must be an array",
         ))?;
         if rules.len() > MAX_RULES {
-            return Err(DeckError::new(ErrorKind::Other, "too many inbound rules"));
+            return Err(DeckError::new(
+                ErrorKind::InvalidDoc,
+                "too many inbound rules",
+            ));
         }
         let mut pairs = HashSet::new();
         let mut ids = HashSet::new();
         for r in rules {
             let rule: Rule = serde_json::from_value(r.clone()).map_err(|_| {
-                DeckError::new(ErrorKind::Other, "inbound rule has the wrong shape")
+                DeckError::new(ErrorKind::InvalidDoc, "inbound rule has the wrong shape")
             })?;
             if !bounded_id(&rule.id, 64) {
                 return Err(DeckError::new(
-                    ErrorKind::Other,
+                    ErrorKind::InvalidDoc,
                     "inbound rule id must be a bounded identifier",
                 ));
             }
             if !SOURCES.contains(&rule.source.as_str()) {
                 return Err(DeckError::new(
-                    ErrorKind::Other,
+                    ErrorKind::InvalidDoc,
                     "inbound rule names an unknown source",
                 ));
             }
             if !valid_badge(&rule.badge) {
                 return Err(DeckError::new(
-                    ErrorKind::Other,
+                    ErrorKind::InvalidDoc,
                     "inbound rule badge must be an emoji name",
                 ));
             }
             if rule.source == "clock" {
                 let schedule = rule.schedule.as_ref().ok_or(DeckError::new(
-                    ErrorKind::Other,
+                    ErrorKind::InvalidDoc,
                     "a clock rule needs a schedule",
                 ))?;
                 schedule.validate()?;
                 if rule.badge != rule.id {
                     return Err(DeckError::new(
-                        ErrorKind::Other,
+                        ErrorKind::InvalidDoc,
                         "a clock rule's badge is its id",
                     ));
                 }
                 if !matches!(rule.finish.as_str(), "" | "keep" | "close") {
                     return Err(DeckError::new(
-                        ErrorKind::Other,
+                        ErrorKind::InvalidDoc,
                         "a clock rule finishes by keep or close",
                     ));
                 }
                 if rule.grace_min > MAX_GRACE_MIN {
                     return Err(DeckError::new(
-                        ErrorKind::Other,
+                        ErrorKind::InvalidDoc,
                         "a clock rule's grace is at most a day",
                     ));
                 }
             } else if rule.schedule.is_some() {
                 return Err(DeckError::new(
-                    ErrorKind::Other,
+                    ErrorKind::InvalidDoc,
                     "only a clock rule carries a schedule",
                 ));
             }
             if rule.name.chars().count() > 120 || rule.name.contains(['\n', '\r']) {
                 return Err(DeckError::new(
-                    ErrorKind::Other,
+                    ErrorKind::InvalidDoc,
                     "inbound rule name must be one bounded line",
                 ));
             }
             if !bounded_id(&rule.project_id, 128) || !bounded_id(&rule.column_id, 128) {
                 return Err(DeckError::new(
-                    ErrorKind::Other,
+                    ErrorKind::InvalidDoc,
                     "inbound rule must reference bounded project and column ids",
                 ));
             }
             if rule.cmd.chars().count() > 200 || rule.cmd.contains(['\n', '\r']) {
                 return Err(DeckError::new(
-                    ErrorKind::Other,
+                    ErrorKind::InvalidDoc,
                     "inbound rule command must be one bounded line",
                 ));
             }
             if rule.template.is_empty() || rule.template.chars().count() > 120 {
                 return Err(DeckError::new(
-                    ErrorKind::Other,
+                    ErrorKind::InvalidDoc,
                     "inbound rule template name must be a bounded string",
                 ));
             }
             if rule.dir.len() > 1024 || rule.dir.contains(['\n', '\r', '\0']) {
                 return Err(DeckError::new(
-                    ErrorKind::Other,
+                    ErrorKind::InvalidDoc,
                     "inbound rule directory must be one bounded line",
                 ));
             }
             if !ids.insert(rule.id.clone()) {
                 return Err(DeckError::new(
-                    ErrorKind::Other,
+                    ErrorKind::InvalidDoc,
                     "inbound rule ids must be unique",
                 ));
             }
             if !pairs.insert((rule.source.clone(), rule.badge.clone())) {
                 return Err(DeckError::new(
-                    ErrorKind::Other,
+                    ErrorKind::InvalidDoc,
                     "one badge per source maps to one rule",
                 ));
             }
@@ -874,16 +877,16 @@ pub(crate) fn inbound_ack(
 ) -> Result<(), DeckError> {
     if !matches!(outcome.as_str(), "done" | "skipped") {
         return Err(DeckError::new(
-            ErrorKind::Other,
+            ErrorKind::Invalid,
             "outcome must be done or skipped",
         ));
     }
     let reason = reason.unwrap_or_default();
     if !reason.is_empty() && !SKIP_REASONS.contains(&reason.as_str()) {
-        return Err(DeckError::new(ErrorKind::Other, "unknown skip reason"));
+        return Err(DeckError::new(ErrorKind::Invalid, "unknown skip reason"));
     }
     if card.as_deref().is_some_and(|c| !bounded_id(c, 128)) {
-        return Err(DeckError::new(ErrorKind::Other, "card id out of shape"));
+        return Err(DeckError::new(ErrorKind::Invalid, "card id out of shape"));
     }
     with_rt(|rt| {
         let Some(pos) = rt.pending.iter().position(|p| p.view.id == id) else {
@@ -941,7 +944,7 @@ pub(crate) fn inbound_ack(
 #[tauri::command]
 pub(crate) fn inbound_run_ended(card: String) -> Result<(), DeckError> {
     if !bounded_id(&card, 128) {
-        return Err(DeckError::new(ErrorKind::Other, "card id out of shape"));
+        return Err(DeckError::new(ErrorKind::Invalid, "card id out of shape"));
     }
     with_rt(|rt| {
         if rt.doc.end_run(&card, now_secs()) {
@@ -964,7 +967,7 @@ pub(crate) fn inbound_runs() -> Vec<Run> {
 pub(crate) fn inbound_setup(source: String) -> Result<(), DeckError> {
     let url = match source.as_str() {
         "slack" => crate::inbound_slack::setup_url(),
-        _ => return Err(DeckError::new(ErrorKind::Other, "unknown source")),
+        _ => return Err(DeckError::new(ErrorKind::Invalid, "unknown source")),
     };
     let status = std::process::Command::new("open")
         .arg(&url)
@@ -984,13 +987,15 @@ pub(crate) fn inbound_setup(source: String) -> Result<(), DeckError> {
 /// error is a short sentence for the toast; the token never appears in it.
 #[tauri::command]
 pub(crate) fn inbound_set_secret(slot: String, value: String) -> Result<(), DeckError> {
-    let slot = keychain::Slot::parse(&slot)
-        .ok_or(DeckError::new(ErrorKind::Other, "unknown credential slot"))?;
+    let slot = keychain::Slot::parse(&slot).ok_or(DeckError::new(
+        ErrorKind::Invalid,
+        "unknown credential slot",
+    ))?;
     let clearing = value.trim().is_empty();
     if !clearing {
         let trimmed = value.trim();
         if !keychain::accepts(slot, trimmed) {
-            return Err(DeckError::new(ErrorKind::Other, "shape"));
+            return Err(DeckError::new(ErrorKind::Invalid, "shape"));
         }
         crate::inbound_slack::verify(slot, trimmed).map_err(|code| {
             let slack_error = crate::inbound_slack::last_slack_error();
@@ -1145,7 +1150,11 @@ mod tests {
             &json!({"sources": {"slack": {"enabled": true}}, "rules": [rule("deck")]})
         )
         .is_ok());
-        assert!(validate_settings(&json!([])).is_err());
+        assert_eq!(
+            validate_settings(&json!([])).unwrap_err().kind(),
+            ErrorKind::InvalidDoc,
+            "the inbound section is part of settings.json: a bad shape is an invalid document"
+        );
         assert!(validate_settings(&json!({"sources": {"notion": {}}})).is_err());
         assert!(validate_settings(&json!({"sources": {"slack": {"enabled": "yes"}}})).is_err());
         assert!(validate_settings(&json!({"rules": {}})).is_err());

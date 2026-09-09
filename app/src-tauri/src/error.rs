@@ -9,7 +9,14 @@
 //!
 //! Construction: `DeckError::new(kind, message)` names the kind; there is
 //! deliberately no `From<String>`, so every message written in deck names
-//! its kind at the call site. `From<io::Error>` derives the kind from the io
+//! its kind at the call site. Two kinds cover refusals of what the caller
+//! handed in: `InvalidDoc` when a DOCUMENT fails its rules (deck.json,
+//! settings.json and the inbound rules inside it, on load and on save
+//! alike) and `Invalid` when a COMMAND's arguments do (a queue schedule, a
+//! session name, an ack outcome, a link kind). `Missing` names a thing that
+//! is not there (a path, a setting the action needs); `Other` is for what
+//! genuinely has no better name — a runtime state conflict, an external tool
+//! that failed — and is never the default for a new validation. `From<io::Error>` derives the kind from the io
 //! kind (`ErrorKind::io` does the same for a hand-written message); serde
 //! and UTF-8 errors convert as `InvalidDoc`. `DeckError::classified` is the
 //! one place text is classified, for text deck did not write: a foreign
@@ -30,6 +37,7 @@ pub(crate) enum ErrorKind {
     NewerSchema,
     ContextChanged,
     InvalidDoc,
+    Invalid,
     NoSession,
     Tmux,
     Recovery,
@@ -49,6 +57,7 @@ impl ErrorKind {
             ErrorKind::NewerSchema => "newer-schema",
             ErrorKind::ContextChanged => "context-changed",
             ErrorKind::InvalidDoc => "invalid-doc",
+            ErrorKind::Invalid => "invalid",
             ErrorKind::NoSession => "no-session",
             ErrorKind::Tmux => "tmux",
             ErrorKind::Recovery => "recovery",
@@ -273,6 +282,7 @@ mod tests {
             (ErrorKind::NewerSchema, "newer-schema"),
             (ErrorKind::ContextChanged, "context-changed"),
             (ErrorKind::InvalidDoc, "invalid-doc"),
+            (ErrorKind::Invalid, "invalid"),
             (ErrorKind::NoSession, "no-session"),
             (ErrorKind::Tmux, "tmux"),
             (ErrorKind::Recovery, "recovery"),

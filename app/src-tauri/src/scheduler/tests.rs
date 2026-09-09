@@ -571,7 +571,11 @@ fn add_validation_rejects_bad_combinations() {
     assert!(validate_add(&base()).is_ok());
     let mut a = base();
     a.at = None;
-    assert!(validate_add(&a).is_err(), "at without a time");
+    assert_eq!(
+        validate_add(&a).unwrap_err().kind(),
+        crate::error::ErrorKind::Invalid,
+        "at without a time is an invalid argument, not an anonymous failure"
+    );
     let mut a = base();
     a.mode = "every".into();
     a.every = Some(30);
