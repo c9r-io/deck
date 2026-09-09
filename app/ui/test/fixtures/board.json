@@ -20,6 +20,7 @@
       "dir": "~/work",
       "session": "deck-full-card-ab12",
       "pinned": true,
+      "launched": true,
       "origin": { "source": "slack", "key": "C1:1.2", "badge": "eyes" }
     }
   ]

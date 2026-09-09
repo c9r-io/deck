@@ -153,8 +153,8 @@ test('production debounce is flushed before an immediate destructive Board barri
   } } };
   store.projects = [{ id: 'p', name: 'p', columns: [{ id: 'c', name: 'c' }] }];
   store.cards = [
-    { id: 'a', projectId: 'p', columnId: 'c', title: 'A', desc: '', cmd: '', dir: '/tmp', session: 'deck-a-0001', pinned: true },
-    { id: 'b', projectId: 'p', columnId: 'c', title: 'B', desc: '', cmd: '', dir: '/tmp', session: 'deck-b-0002', pinned: false },
+    { id: 'a', projectId: 'p', columnId: 'c', title: 'A', desc: '', cmd: '', dir: '/tmp', session: 'deck-a-0001', pinned: true, launched: true },
+    { id: 'b', projectId: 'p', columnId: 'c', title: 'B', desc: '', cmd: '', dir: '/tmp', session: 'deck-b-0002', pinned: false, launched: true },
   ];
   mutateBoardDebounced(draft => { draft.projects[0].selected = 'c'; }, { delay: 10_000 });
   await mutateBoard(draft => { draft.cards = draft.cards.filter(c => c.id !== 'a'); });
@@ -192,6 +192,16 @@ test('the Board fixture is exactly the shape persistence.js writes', async () =>
   const serialized = boardData(fixture.projects, [full]);
   assert.deepEqual(Object.keys(serialized.cards[0]).sort(), Object.keys(fixture.cards[0]).sort());
   assert.deepEqual(serialized, fixture);
+});
+
+test('launched persists as written and reads true on boards from before the field', () => {
+  const base = { projectId: 'p', columnId: 'c', title: 'A', desc: '', cmd: 'claude', dir: '/tmp', session: 'deck-a-0001' };
+  const [legacy, pending, done] = boardData([], [
+    { ...base, id: 'a' }, { ...base, id: 'b', launched: false }, { ...base, id: 'c', launched: true },
+  ]).cards;
+  assert.equal(legacy.launched, true, 'no field = the command already ran; an upgrade never re-runs it');
+  assert.equal(pending.launched, false);
+  assert.equal(done.launched, true);
 });
 
 test('an inbound card keeps its origin across Board writes, and only identifiers', () => {

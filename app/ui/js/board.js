@@ -8,7 +8,7 @@
 // terminal preview: output is read in the terminal, never on the Board.
 import { $, columnHint, ctx, dotTitle, emit, genId, inv, listeners, POLL_MS, QUIET_SECS, sessionName, setMemChip, state, store, uev } from './state.js';
 import { mutateBoard, mutateBoardDebounced } from './persistence.js';
-import { createConfirmationCounter, createExitRetirementTracker, effectiveCardStatus, newSessionColumn, reorderById, runFinishHolds, sidebarGroups } from './pure.js';
+import { createConfirmationCounter, createExitRetirementTracker, effectiveCardStatus, initialLaunched, newSessionColumn, reorderById, runFinishHolds, sidebarGroups } from './pure.js';
 import { confirmDialog, inlineRename, toast } from './dialogs.js';
 import { clearSeparators, closePaneBySid, hasPane, leaveSessionView, openSession, renderSessionView, updatePaneChrome } from './layout.js';
 import { SHELL_FG, showProjectCtx, showSessionCtx } from './terminal.js';
@@ -165,6 +165,7 @@ export const provider = {
       id, projectId, columnId, title, cmd, dir, desc,
       session: sessionName(title, id),
       pinned: false,
+      launched: initialLaunched(cmd),   // a command is sent once, on the first start
       ...(origin ? { origin } : {}),
       status: 'stopped', mem: null, tail: [],
     };
@@ -275,6 +276,19 @@ export const provider = {
     });
     const c = this.get(sid);
     if (c) emit('list', c);
+  },
+  /* the launch command was delivered: it never runs again on a reopen */
+  async markLaunched(sid) {
+    try {
+      await mutateBoard(draft => {
+        const c = draft.cards.find(x => x.id === sid);
+        if (!c || c.launched !== false) return { noop: true };
+        c.launched = true;
+      });
+    } catch (_) {
+      /* the session is running either way; the next reopen re-sends the
+         command at worst, which the user sees in the terminal */
+    }
   },
   async togglePinned(sid) {
     let applied = false;

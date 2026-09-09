@@ -1276,3 +1276,17 @@ export function inboundRulesUsingTemplate(rules, projectId, name) {
   return (Array.isArray(rules) ? rules : [])
     .filter(rule => rule && rule.projectId === projectId && rule.template === name).length;
 }
+
+/* ---------- launch command ownership ----------
+   The launch command belongs to creation: it is sent once, and the durable
+   `launched` flag records that it was. Reopening a stopped card starts the
+   shell only (with its recovered text when the setting is on); starting the
+   program again is the user's decision. A card written before the field
+   existed counts as launched, so an upgrade never re-runs commands behind
+   the user's back. Only a card whose command was never delivered (a failed
+   first start) sends it on the next open. */
+export function startCommand(card) {
+  const cmd = String(card?.cmd || '');
+  return cmd.trim() && card?.launched === false ? cmd : '';
+}
+export const initialLaunched = cmd => !String(cmd || '').trim();

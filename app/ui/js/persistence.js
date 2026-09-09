@@ -25,6 +25,7 @@ export function boardData(projects = store.projects, cards = store.cards) {
       id: c.id, projectId: c.projectId, columnId: c.columnId,
       title: c.title, desc: c.desc || '', cmd: c.cmd, dir: c.dir, session: c.session,
       pinned: c.pinned === true,
+      launched: c.launched !== false,   // absent on older boards = already launched
       ...(cardOrigin(c) ? { origin: cardOrigin(c) } : {}),
     })),
   };

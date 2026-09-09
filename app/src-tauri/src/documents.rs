@@ -63,12 +63,21 @@ pub(crate) struct BoardCard {
     #[allow(dead_code)]
     #[serde(default)]
     pinned: bool,
+    /// The launch command was sent once. Absent on boards written before the
+    /// field, which must read as launched: an upgrade never re-runs commands.
+    #[allow(dead_code)]
+    #[serde(default = "launched_default")]
+    launched: bool,
     /// runtime fields the UI cannot operate a card without
     #[allow(dead_code)]
     cmd: String,
     #[allow(dead_code)]
     dir: String,
     session: String,
+}
+
+fn launched_default() -> bool {
+    true
 }
 
 /// The referential rules a usable board must satisfy. Errors carry ids
@@ -573,12 +582,13 @@ mod tests {
         );
         assert_eq!(
             tolerated,
-            ["desc", "origin", "pinned"],
-            "pinned defaults to false; desc and origin are the frontend's alone"
+            ["desc", "launched", "origin", "pinned"],
+            "pinned defaults to false, launched to true; desc and origin are the frontend's alone"
         );
         for (key, wrong) in [
             ("title", serde_json::json!(1)),
             ("pinned", serde_json::json!("yes")),
+            ("launched", serde_json::json!("yes")),
         ] {
             let mut typed = doc.clone();
             typed["cards"][0][key] = wrong;

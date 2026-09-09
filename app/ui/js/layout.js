@@ -5,13 +5,15 @@
 // A pane that is already open is only focused: a detached pane (shell exited,
 // attach failed) is never re-attached or restarted by a click; exit retirement
 // in board.js owns it. A pty-exit may land before its attach reply — the reply
-// never marks a pane attached once its generation has exited.
+// never marks a pane attached once its generation has exited. A stopped card
+// reopens as its shell: the launch command is sent only while the card's
+// durable `launched` flag is false (pure.js startCommand).
 import { $, ctx, dotTitle, duev, inv, listen, setMemChip, state, store, uev } from './state.js';
 import { inlineRename, toast } from './dialogs.js';
 import { t } from './i18n.js';
 import { markSessionSeen, panes, pollNow, provider, render, renderSidebar, updateSidebarSelection, activeProject } from './board.js';
 import { SHELL_FG, acceptGhost, feedMirror, maybeRecordCommand, mountQuickBar, nextShellTitle, renderSuggest, resetSuggest, showLinkCtx, updateGhost, writeClipboard } from './terminal.js';
-import { AGENT_HISTORY_VERTICAL_UP, newSessionColumn, createTerminalResizeCoordinator, createTerminalWheelAccumulator, createTerminalWheelFrameScheduler, isComposingKeyEvent, isPlainShiftKeydown, isTerminalAutoReply, scrollResultView, shouldRouteImeKeydownThroughInput, shQuote, terminalLinkRanges, terminalAgentComposerGeometry, terminalAgentHistoryUpRoute, terminalCopyRoute, terminalSelectionWheelRoute, tokenizeTerminalLinks, terminalWheelLines } from './pure.js';
+import { AGENT_HISTORY_VERTICAL_UP, newSessionColumn, startCommand, createTerminalResizeCoordinator, createTerminalWheelAccumulator, createTerminalWheelFrameScheduler, isComposingKeyEvent, isPlainShiftKeydown, isTerminalAutoReply, scrollResultView, shouldRouteImeKeydownThroughInput, shQuote, terminalLinkRanges, terminalAgentComposerGeometry, terminalAgentHistoryUpRoute, terminalCopyRoute, terminalSelectionWheelRoute, tokenizeTerminalLinks, terminalWheelLines } from './pure.js';
 import { toggleQueuePanel } from './scheduler.js';
 import { cancelAllTerminalSelections, cancelTerminalSelection, copyTerminalSelection, hasTerminalSelection, terminalSelectionElsewhere, wireTerminalSelection } from './selection.js';
 import { getTerminalTheme, onThemeChange, syncThemeIntegrations } from './theme.js';
@@ -824,16 +826,19 @@ export function ensureAttached(pane, opts = {}) {
 }
 async function attachPane(pane, { allowStart = true } = {}) {
   const card = provider.get(pane.sid);
-  const outcome = { created: false, restored: false, attached: false };
+  const outcome = { created: false, restored: false, attached: false, commandSent: false };
   if (!card) return outcome;
   try {
     if (card.status === 'stopped' && allowStart) {
+      const cmd = startCommand(card);
       const started = await inv('start_session', {
-        name: card.session, dir: card.dir, cmd: card.cmd,
+        name: card.session, dir: card.dir, cmd,
         restoreShell: !!ctx.settings.sessionRestore,
       });
       outcome.created = !!started.created;
       outcome.restored = !!started.restored;
+      outcome.commandSent = outcome.created && !!cmd;
+      if (outcome.commandSent) await provider.markLaunched(card.id);
     }
     const gen = await inv('attach_session', { name: card.session, cols: pane.term.cols, rows: pane.term.rows });
     /* max(): the first pty-data event can arrive BEFORE this invoke resolves;
@@ -879,9 +884,9 @@ export async function addSplit(targetSid, dir, before, newSid) {
   const pane = createPane(card);
   ctx.layout = splitAt(ctx.layout, targetSid, dir, newSid, before);
   renderLayout();
-  const { created, restored } = await ensureAttached(pane);
+  const { created, restored, commandSent } = await ensureAttached(pane);
   if (created && !restored) setTimeout(() => inv('clear_history', { name: card.session }).catch(() => {}), 900);
-  ctx.freshShell = created && !card.cmd.trim();
+  ctx.freshShell = created && !commandSent;
   focusPane(card.session);
   pollNow();
 }
@@ -1000,10 +1005,10 @@ export async function openSession(sid, opts = {}) {
   const pane = createPane(card);
   ctx.layout = leafOf(sid);
   renderLayout();
-  const { created, restored, attached } = await ensureAttached(pane, opts);
+  const { created, restored, attached, commandSent } = await ensureAttached(pane, opts);
   if (created && !restored) setTimeout(() => inv('clear_history', { name: card.session }).catch(() => {}), 900);
   if (panes.get(card.session) !== pane || state.view !== 'session') return false;
-  ctx.freshShell = created && !card.cmd.trim();
+  ctx.freshShell = created && !commandSent;
   focusPane(card.session);
   /* history feeds both the fresh-shell chips and typed-prefix completion */
   inv('recent_commands', { limit: 50 })

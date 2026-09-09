@@ -23,7 +23,7 @@ import {
   tokenizeTerminalLinks,
   createTerminalWheelAccumulator, createTerminalWheelFrameScheduler, terminalWheelLines,
   linkMenuItems,
-  inlineRenameValue, persistOptimistically, PATH_LOOKBACK_MAX,
+  initialLaunched, inlineRenameValue, startCommand, persistOptimistically, PATH_LOOKBACK_MAX,
   effectiveCardStatus,
   TEMPLATES_MAX, TEMPLATE_NAME_MAX, TEMPLATE_STEP_MAX, TEMPLATE_STEPS_MAX,
   inboundRulesUsingTemplate, moveTemplateStep, nextTemplateName, normalizeTemplateStep,
@@ -1257,4 +1257,15 @@ test('a new session lands in the selected group, else working, else the second, 
   assert.equal(newSessionColumn({ columns: [{ id: 'x' }, { id: 'y' }] }).id, 'y');
   assert.equal(newSessionColumn({ columns: [{ id: 'x' }] }).id, 'x');
   assert.equal(newSessionColumn({ columns: [] }), null);
+});
+
+test('a launch command is sent once: on the first start, never on a reopen', () => {
+  assert.equal(initialLaunched(''), true);
+  assert.equal(initialLaunched('  '), true);
+  assert.equal(initialLaunched('claude'), false);
+  assert.equal(startCommand({ cmd: 'claude', launched: false }), 'claude', 'first start sends it');
+  assert.equal(startCommand({ cmd: 'claude', launched: true }), '', 'a reopen starts the shell only');
+  assert.equal(startCommand({ cmd: 'claude' }), '', 'boards written before the field never re-run');
+  assert.equal(startCommand({ cmd: '', launched: false }), '', 'no command, nothing to send');
+  assert.equal(startCommand(null), '');
 });

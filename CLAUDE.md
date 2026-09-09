@@ -179,5 +179,10 @@ Status semantics (card colour) are documented on `effectiveCardStatus` in
 
 - Sessions are started with a plain shell + `send-keys` of the command, NOT by exec'ing
   the command, so the session survives agent exit and scrollback stays inspectable.
+- **A launch command is sent once.** The durable card flag `launched` records
+  it; reopening a stopped card starts the shell only (`pure.js` `startCommand`),
+  never the program. Boards without the field read as launched. The scheduler's
+  delivery start is the one path that still starts a dead session with the
+  command, because the list asked for that program.
 - Use harmless card commands (e.g. `while true; do date; sleep 1; done`) when
   testing — a card whose command is `claude` will really launch Claude Code.

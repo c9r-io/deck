@@ -69,7 +69,12 @@ sessions, deck asks before restarting the background shell service and shows
 what will be affected. You can choose Later and keep using existing sessions,
 but finishing the restart ends their commands and agents—Unix processes cannot
 be migrated into a new tmux server. The pending action remains in the sidebar
-and Settings.
+and Settings. Reopening a card afterwards starts its shell in the card's
+directory (with the recovered text below, when shell recovery is on) and does
+not run the launch command again: a command belongs to the card's creation and
+is sent once, so whatever you left at the prompt — an agent's resume hint, for
+instance — is where you look first, and restarting the program is your call.
+The one exception is a card whose first start never delivered its command.
 
 **A real terminal.** Full xterm with truecolor, ⌘C/⌘V, clickable existing
 local file paths, and complete HTTP(S) URLs even across terminal soft wraps.
