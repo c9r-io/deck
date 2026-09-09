@@ -1,5 +1,41 @@
 # Changelog
 
+## 0.6.2 — 2026-09-09 (Nightly)
+
+- **Needs attention** in the sidebar: one view across projects of the
+  sessions asking for input and the turns that finished unread, with a
+  filter row and an Open (or Locate) per row. A turn counts as read only
+  once its pane was really attached and displayed; a failed attach, a
+  stale snapshot or a stopped session leaves it pending. Boards stay manual
+  groups: nothing moves, the view is a runtime projection that marks its
+  rows stale when a poll fails or a session is missing, and returning from
+  a card lands on the same filter, scroll position and row.
+- One persistent Board action. The head keeps only **New session ▾**; its
+  menu holds new session now, new on a clock, new on a Slack badge (the
+  drawer opens preset to that trigger) and the two managers; a ↻ chip shows
+  only while the project has rules. Templates… opens from that menu, a
+  list's 📋, the automation editor and the project tab menu, and focus
+  returns to the opener. A project without cards shows one starting point
+  above its groups instead of per-column attention text.
+- Vocabulary: 看板 is the page and 栏目 (Group) the column; session stays
+  untranslated in Chinese; a split is 窗格; the automation editor's second
+  row is When. Status tooltips no longer claim readiness or waiting for
+  input.
+- Review fixes for the above: a click on a pane whose shell exited only
+  focuses it (it no longer re-attaches a dead session or restarts a card
+  mid-retirement); a shell that exits before its attach reply lands leaves
+  the pane detached and unseen; a poll requested while one is in flight
+  runs again afterwards, so an exit or an Open never acts on a stale
+  snapshot; keyboard focus survives an attention-row reorder; dismissing
+  New session ▾ by clicking elsewhere or Escape no longer leaves its
+  keyboard handler on later menus; the project tab menu returns focus to
+  the tab; a tab's done-dot tooltip follows freshness; the split picker's
+  new shell lands in the selected group like ⌘N.
+- Diagnostics whose findings landed are retired: the paste-chain trace,
+  clipboard success lines, the separator trace and per-emit PTY lines.
+  app.log carries three lines per attachment instead of five; selection
+  forensics stay while that problem is open.
+
 ## 0.6.1 — 2026-09-08 (Nightly)
 
 - Two concepts for "later". A card's ⏱ panel now holds **lists**: prompts
