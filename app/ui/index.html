@@ -35,10 +35,22 @@
     <div id="board-view">
       <div class="board-head">
         <h1 id="board-title" data-i18n="app.sessions">Sessions</h1>
-        <button class="btn primary" id="board-new"><span>＋</span> <span data-i18n="app.newSession">New session</span></button>
-        <button class="btn" id="board-auto" data-i18n-title="automation.buttonTitle" title="Scheduled automations for this project"><span>↻</span> <span data-i18n="automation.button">Automations</span><span class="tpl-count" id="board-auto-count"></span></button>
-        <button class="btn" id="board-tpl" data-i18n-title="templates.buttonTitle" title="Prompt templates for this project"><span>◈</span> <span data-i18n="templates.button">Templates</span><span class="tpl-count" id="board-tpl-count"></span></button>
-        <span class="hint" data-i18n="board.hint">click a Board title to target new sessions · drag cards between Boards · right-click for actions</span>
+        <div class="split" id="board-new-split">
+          <button class="btn primary" id="board-new"><span>＋</span> <span data-i18n="app.newSession">New session</span></button>
+          <button class="btn primary split-arrow" id="board-new-more" type="button" aria-haspopup="menu" aria-expanded="false" data-i18n-title="app.newSessionMore" title="More ways to start a session">▾</button>
+        </div>
+        <button class="btn auto-chip-btn" id="board-auto" type="button" data-i18n-title="automation.buttonTitle" title="Automations for this project" hidden><span>↻</span> <span id="board-auto-count"></span></button>
+        <span class="hint" data-i18n="board.hint">Manual groups · status never moves cards · click a title to target new sessions</span>
+      </div>
+      <div id="board-empty" hidden>
+        <div class="board-empty-text">
+          <h2 data-i18n="board.emptyTitle">No sessions yet</h2>
+          <p id="board-empty-body"></p>
+        </div>
+        <div class="board-empty-act">
+          <button class="btn primary" id="board-empty-new" type="button"><span>＋</span> <span data-i18n="app.newSession">New session</span></button>
+          <span class="board-empty-key" id="board-empty-key"></span>
+        </div>
       </div>
       <div id="columns"></div>
       <aside id="auto-drawer" role="dialog" aria-modal="false" aria-labelledby="auto-title" hidden>
@@ -82,7 +94,7 @@
             <select id="auto-grace"></select>
           </div>
           <div class="set-row">
-            <label for="auto-column" data-i18n="automation.column">Column</label>
+            <label for="auto-column" data-i18n="automation.column">Group</label>
             <select id="auto-column"></select>
           </div>
           <div class="set-row">
@@ -96,6 +108,7 @@
           <div class="set-row">
             <label for="auto-template" data-i18n="automation.template">Template</label>
             <select id="auto-template"></select>
+            <button class="btn" id="auto-tpl-manage" type="button" data-i18n="automation.manageTemplates">Templates…</button>
           </div>
           <div class="set-row">
             <label data-i18n="automation.finish">When done</label>

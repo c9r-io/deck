@@ -10,8 +10,9 @@
 //
 // # Contract
 // Prompt templates (`{name, steps[]}`) live on the PROJECT inside the board
-// file, so the card queue (☆ / ✎) and the Board-level manager (`templates.js`,
-// the `◈ Templates` button in the board head) edit the same object through the
+// file, so the card queue (☆ / ✎) and the project-level manager (`templates.js`,
+// reached from "Templates…" in the Board's New session ▾ menu, a list's 📋
+// menu and the automation editor — never a standing Board button) edit the same object through the
 // ordinary Board transaction — one mutation per user action, a failed write
 // leaves the template as it is on disk. The manager exists so a template can
 // be created and edited without owning a card; it never starts a session,
@@ -41,6 +42,7 @@ let selected = null;      // name of the template being edited
 let nameShown = null;     // whose name the editor field currently holds
 let openStep = null;      // index of the one step opened into the full editor
 let unsubscribe = null;
+let opener = null;        // element that opened the manager; focus returns there
 
 const isOpen = () => $('tpl-modal').style.display === 'flex';
 const project = () => (projectId ? provider.project(projectId) : null);
@@ -51,7 +53,8 @@ const templates = () => {
 const current = () => templates().find(tp => tp.name === selected) || null;
 const inboundRules = () => (ctx.settings && ctx.settings.inbound && ctx.settings.inbound.rules) || [];
 
-export function openTemplates() {
+export function openTemplates(from = null) {
+  opener = from;
   projectId = state.projectId;
   const list = templates();
   selected = list.length ? list[0].name : null;
@@ -78,7 +81,9 @@ export function closeTemplates() {
   openStep = null;
   $('tpl-modal').style.display = 'none';
   if (unsubscribe) { unsubscribe(); unsubscribe = null; }
-  $('board-tpl').focus();
+  const back = opener && opener.isConnected ? opener : $('board-new-more');
+  opener = null;
+  back.focus();
 }
 
 /* One transaction per user action. A failure is reported and the editor is
@@ -356,8 +361,6 @@ async function commitName() {
 /* DOM wiring, run once at boot (app.js) so the module can be imported
    without a document. */
 export function initTemplates() {
-  $('board-tpl').onclick = () => openTemplates();
-
   $('tpl-done').onclick = () => closeTemplates();
 
   $('tpl-modal').addEventListener('mousedown', event => {

@@ -89,6 +89,8 @@ function fillTools(container, cards) {
 
 export function refreshBoardAttention() {
   if (state.view !== 'board') return;
+  /* an empty project shows the Board's own starting point instead (06 B v01) */
+  const emptyProject = !document.querySelector('#columns .card[data-sid]');
   for (const column of document.querySelectorAll('#columns .column')) {
     for (const el of column.querySelectorAll('.card[data-sid]')) {
       const card = provider.get(el.dataset.sid);
@@ -98,7 +100,7 @@ export function refreshBoardAttention() {
     }
     let empty = column.querySelector('.attention-column-empty');
     if (!empty) { empty = node('p', 'attention-column-empty'); column.querySelector('.col-cards').append(empty); }
-    empty.hidden = !!column.querySelector('.card[data-sid]');
+    empty.hidden = emptyProject || !!column.querySelector('.card[data-sid]');
     empty.textContent = t('attention.emptyColumn');
   }
 }

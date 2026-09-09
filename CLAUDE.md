@@ -92,7 +92,7 @@ loaded by `ui/index.html`; xterm.js vendored in `app/ui/vendor/`. Backend
 | Templates (saved lists, shared by cards and automations) | `ui/js/templates.js` |
 | Agent status hooks (closed state words, bundled helper) | `agent_status.rs`, `src-tauri/status-helper/` |
 | Automations: inbound sources (Slack badge, clock), dispatcher, Keychain | `inbound.rs`, `inbound_slack.rs`, `inbound_clock.rs`, `keychain.rs`, `ui/js/inbound.js` (+ `docs/auto-respond.md`) |
-| Automations drawer (both triggers), run finish | `ui/js/automation.js` (rules are inbound rules; the Slack connection stays in Settings; finish close lives in the `board.js` poll) |
+| Automations drawer (both triggers), run finish, the Board's `New session ▾` menu and ↻ chip | `ui/js/automation.js` (rules are inbound rules; the Slack connection stays in Settings; finish close lives in the `board.js` poll; the head keeps ONE persistent action — automations and templates open from that menu, a list's 📋 menu, the automation editor or the project tab menu) |
 | Shell restart recovery (bounded transcript projection) | `shell_state.rs` |
 | Updates (closed stable/nightly, one endpoint each) | `updater.rs`, `relaunch.rs` |
 | Structured diagnostics, ui_event whitelist, exports | `diagnostics.rs` |

@@ -162,15 +162,87 @@ export async function runAttentionSmoke() {
     activateTheme({ theme: 'deck-dark', accent: 'teal' }); applyFontScale(1); setLocale('zh-Hans');
     await reset(); showAttention(); await pollNow();
     await report('attention-persistence', JSON.stringify(boardData()) === original && starts === 0);
+    // 06 B v01: the Board's entry points, the empty-project start, and one
+    // vocabulary per object — real DOM and real focus, no session starts.
+    stage = 5;
+    const { openAutomations, closeAutomations } = await import('../js/automation.js');
+    const { openTemplates, closeTemplates } = await import('../js/templates.js');
+    const { persistInbound } = await import('../js/dialogs.js');
+    const { switchProject } = await import('../js/board.js');
+    await reset();
+    const more = $('board-new-more');
+    const atlas = projects.get('Atlas');
+    await report('entry-head', !!more && !$('board-tpl') && $('board-auto').hidden && $('board-empty').hidden
+      && $('board-view').querySelectorAll('.board-head .btn').length === 3 && starts === 0);
+    const emptyProject = await provider.createProject('Empty');
+    switchProject(emptyProject.id); await pollNow();
+    const emptyTarget = emptyProject.columns.find(c => c.semantic === 'working');
+    const emptyShown = !$('board-empty').hidden && $('board-empty-body').textContent.includes(emptyTarget.name)
+      && $('board-empty-key').textContent === '⌘N'
+      && [...document.querySelectorAll('.attention-column-empty')].every(el => el.hidden);
+    switchProject(atlas.id); await pollNow();
+    await report('entry-empty', emptyShown && $('board-empty').hidden && starts === 0);
+    more.click(); await pause(20);
+    const items = [...$('ctx').querySelectorAll('button')];
+    const opened = $('ctx').style.display === 'block' && items.length === 5 && document.activeElement === items[0] && more.getAttribute('aria-expanded') === 'true';
+    $('ctx').dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+    const moved = document.activeElement === items[1];
+    $('ctx').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    await report('entry-menu', opened && moved && $('ctx').style.display !== 'block' && document.activeElement === more && more.getAttribute('aria-expanded') === 'false');
+    more.click(); await pause(20);
+    [...$('ctx').querySelectorAll('button')][2].click(); await pause(60);
+    const slackPreset = !$('auto-drawer').hidden && !$('auto-editor').hidden
+      && $('auto-trigger').querySelector('button[aria-pressed="true"]')?.dataset.v === 'slack' && $('ctx').style.display !== 'block';
+    closeAutomations();
+    await report('entry-automations', slackPreset && $('auto-drawer').hidden && document.activeElement === more);
+    const ruleId = 'entry' + Date.now().toString(36);
+    const rule = { id: ruleId, source: 'clock', badge: ruleId, projectId: atlas.id, columnId: atlas.columns[1].id,
+      cmd: '', template: 'none', dir: '', name: 'Entry smoke', enabled: true,
+      schedule: { unit: 'day', days: [], minute: 540 }, finish: 'keep', since: 0 };
+    const before = ctx.settings.inbound;
+    await persistInbound({ ...before, rules: [...before.rules, rule] }); render(); await pause(20);
+    const chipShown = !$('board-auto').hidden && $('board-auto-count').textContent.includes('1');
+    $('board-auto').click(); await pause(60);
+    const chipOpens = !$('auto-drawer').hidden && $('board-auto').classList.contains('on');
+    closeAutomations();
+    await persistInbound({ ...before, rules: before.rules.filter(r => r.id !== ruleId) }); render(); await pause(20);
+    await report('entry-chip', chipShown && chipOpens && $('board-auto').hidden);
+    openTemplates(more);
+    const tplOpen = $('tpl-modal').style.display === 'flex';
+    closeTemplates();
+    const tplBack = document.activeElement === more;
+    await openSession(samples.get('02').card.id); await pollNow();
+    $('queue-btn').click(); await pause(20);
+    $('q-tpl').click(); await pause(20);
+    const rows = [...$('tpl-pop').querySelectorAll('.t-row')];
+    const manage = rows[rows.length - 1];
+    const manageShown = $('tpl-pop').style.display === 'block' && !!manage && manage.textContent.includes(t('queue.manageTemplates'));
+    manage.click(); await pause(20);
+    const manageOpens = $('tpl-modal').style.display === 'flex' && $('tpl-pop').style.display !== 'block';
+    closeTemplates();
+    const manageBack = document.activeElement === $('q-tpl');
+    $('queue-btn').click();
+    backToBoard(); await pollNow();
+    await report('entry-templates', tplOpen && tplBack && manageShown && manageOpens && manageBack);
+    setLocale('zh-Hans'); render();
+    const zhNames = $('home-btn').querySelector('.label').textContent === '看板'
+      && document.querySelector('label[for="auto-column"]').textContent === '栏目'
+      && t('automation.when') !== t('automation.trigger') && $('side-count').previousElementSibling.textContent === 'session';
+    setLocale('en'); render();
+    const enNames = document.querySelector('label[for="auto-column"]').textContent === 'Group' && $('home-btn').querySelector('.label').textContent === 'Board';
+    setLocale('zh-Hans'); render();
+    await report('entry-vocabulary', zhNames && enNames);
+    await reset(); showAttention(); await pollNow();
     // Buttons in a test-only strip select real implemented views for screenshots.
     const strip = document.createElement('div');
     strip.style.cssText = 'padding:6px 12px;border-bottom:1px solid var(--border);display:flex;gap:12px;color:var(--muted);font-size:12px';
     const label = document.createElement('span'); label.textContent = '隔离验证 · 真实实现 / 虚构状态'; strip.append(label);
-    for (const mode of ['看板', '待关注', '更新失败']) {
+    for (const mode of ['看板', '空项目', '待关注', '更新失败']) {
       const btn = document.createElement('button'); btn.textContent = mode;
       btn.onclick = async () => {
         failPoll = false; missing = null;
         await reset();
+        if (mode === '空项目') { switchProject(emptyProject.id); await pollNow(); return; }
         if (mode !== '看板') { showAttention(); await pollNow(); }
         if (mode === '更新失败') { failPoll = true; await pollNow(); }
       };

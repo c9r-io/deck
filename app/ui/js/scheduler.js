@@ -26,7 +26,9 @@
 //
 // Templates are the project's saved lists (`templates.js` owns them): the
 // panel's 📋 starts a new list from one, a list head's 📋 inserts one into
-// that list or saves the list as a new template. Inserting is a copy — a
+// that list or saves the list as a new template, and either menu ends with
+// "Manage templates…" — the project manager opens from where templates are
+// used, not from a standing Board button. Inserting is a copy — a
 // template changed later leaves the rows alone. Calendar cadences (daily /
 // weekly / monthly) are deliberately not a card schedule — see the
 // Board-level automation note in scheduler/mod.rs.
@@ -36,6 +38,7 @@ export { blockedBy, chainQuietHint, contextStatusKey, fmtEvery, groupQueue, grou
 import { autoGrowField, confirmDangerDialog, confirmDialog, inlineRename, toast, promptDialog } from './dialogs.js';
 import { pollNow, provider } from './board.js';
 import { strToB64 } from './layout.js';
+import { openTemplates } from './templates.js';
 import { formatDateTime, formatInterval, formatNumber, onLocaleChange, t } from './i18n.js';
 
 /* ---------- scheduled prompts ---------- */
@@ -671,6 +674,10 @@ export function showTplPop(anchor, { insert, save = null }) {
     r.querySelector('.t-name').textContent = t('queue.saveList');
     r.onclick = () => { hideTplPop(); save(); };
   }
+  add('t-sep');
+  const manage = add('t-row', '<span class="t-name"></span>');
+  manage.querySelector('.t-name').textContent = '◈ ' + t('queue.manageTemplates');
+  manage.onclick = () => { hideTplPop(); openTemplates(anchor); };
   const panel = $('queue-panel');
   const a = anchor.getBoundingClientRect(), p = panel.getBoundingClientRect();
   pop.style.left = Math.max(0, a.left - p.left) + 'px';

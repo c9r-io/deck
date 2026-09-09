@@ -191,6 +191,28 @@ body.side-collapsed .side-new .label { display: none; }
   color: var(--faint); font-size: 0.923077rem; margin-left: auto;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0;
 }
+/* the one persistent action: "new session" plus the menu of the other ways
+   a session starts (automations) and what they reuse (templates) */
+.split { display: inline-flex; align-items: stretch; }
+.split .btn:first-child { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.split .split-arrow { border-top-left-radius: 0; border-bottom-left-radius: 0; border-left-color: var(--accent-dim); padding-inline: 8px; }
+.split .split-arrow[aria-expanded="true"] { filter: brightness(1.12); }
+/* direct entry to the drawer, shown only while the project has rules */
+#board-auto { border-radius: 999px; padding: 4px 11px; font-size: 0.846154rem; color: var(--muted); }
+#board-auto[hidden] { display: none; }
+#board-auto.on { color: var(--accent); border-color: var(--accent-dim); }
+#board-auto-count:empty { display: none; }
+/* empty project: one starting point instead of four empty groups */
+#board-empty {
+  display: flex; align-items: center; gap: 16px; margin: 0 20px 12px; padding: 14px 18px;
+  background: var(--raised); border: 1px solid var(--border); border-radius: 10px;
+}
+#board-empty[hidden] { display: none; }
+#board-empty h2 { margin: 0 0 4px; font-size: 1.07692rem; font-weight: 600; }
+#board-empty p { margin: 0; color: var(--muted); font-size: 0.923077rem; line-height: 1.5; }
+.board-empty-text { flex: 1; min-width: 0; }
+.board-empty-act { display: flex; align-items: center; gap: 8px; flex: none; }
+.board-empty-key { color: var(--faint); font-size: 0.846154rem; }
 .btn {
   display: inline-flex; align-items: center; gap: 6px;
   padding: 6px 12px; border-radius: 6px;
@@ -402,6 +424,9 @@ body.side-collapsed .side-new .label { display: none; }
   white-space: normal; overflow-wrap: anywhere; max-height: 7.2em; overflow-y: auto;
 }
 #ctx hr { border: none; border-top: 1px solid var(--border-soft); margin: 4px 2px; }
+#ctx button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+#ctx button .ctx-key { float: right; color: var(--faint); font-family: var(--mono); font-size: 0.807692rem; margin-left: 12px; }
+#ctx .ctx-label.ctx-sub { text-transform: none; letter-spacing: 0; padding-top: 6px; }
 
 /* ---------- dropdown (deck's own <select> popup, dropdown.js) ----------
    The native select stays in the wrapper for its value and events but is
@@ -725,10 +750,7 @@ body.side-collapsed .side-new .label { display: none; }
 #settings-box > .set-actions, #tpl-box > .set-actions { padding: 14px 22px; margin: 0; border-top: 1px solid var(--border-soft); flex: none; align-items: center; gap: 12px; }
 #settings-box > .set-actions > span, #tpl-box > .set-actions > span { margin-right: auto; color: var(--muted); font-size: 0.884615rem; }
 
-/* ---------- project templates (Board-level manager) ---------- */
-#board-tpl .tpl-count, #board-auto .tpl-count { font-family: var(--mono); font-size: 0.769231rem; color: var(--faint); }
-#board-tpl .tpl-count:empty, #board-auto .tpl-count:empty { display: none; }
-#board-auto.on { color: var(--accent); border-color: var(--accent-dim); }
+/* ---------- project templates (project-level manager) ---------- */
 
 /* ---------- automations drawer ----------
    A right-hand sheet over the columns of the current project: the rules
@@ -901,6 +923,7 @@ html.font-scale-large .tmux-lifecycle-actions { align-items: flex-start; flex-wr
   #sidebar { width: 190px; }
   .board-head .hint, .sess-path { display: none; }
   .board-head { padding-inline: 12px; }
+  #board-empty { margin-inline: 12px; flex-wrap: wrap; }
   #columns { padding-inline: 12px; }
   .sess-head { gap: 6px; padding: 8px; }
   .sess-title { max-width: 120px; }

@@ -10,6 +10,7 @@ import { clearSeparators, closePaneBySid, hasPane, leaveSessionView, openSession
 import { SHELL_FG, showProjectCtx, showSessionCtx } from './terminal.js';
 import { renderQueueUI, setQueueChip, updateQuietHints } from './scheduler.js';
 import { formatNumber, t } from './i18n.js';
+import { formatShortcut } from './shortcuts.js';
 import { renderAutomations, ruleOf } from './automation.js';
 import { createDefaultColumns, migrateColumnSemantics } from './board-defaults.js';
 import { attentionStatusText, refreshAttention } from './attention.js';
@@ -690,10 +691,16 @@ export function renderBoard() {
   const p = activeProject();
   if (!p) return;
   $('board-title').textContent = p.name;
-  const templateCount = (p.templates || []).length;
-  $('board-tpl-count').textContent = templateCount ? formatNumber(templateCount) : '';
   renderAutomations();   // the drawer follows the project it is open over
   const wrap = $('columns');
+  /* an empty project gets one starting point above its groups: what a new
+     session is, where its card will land (the same rule newSession uses) */
+  const total = provider.list(p.id).length;
+  const target = p.columns.find(c => c.id === p.selected)
+    || p.columns.find(c => c.semantic === 'working') || p.columns[1] || p.columns[0];
+  $('board-empty').hidden = total > 0;
+  $('board-empty-body').textContent = t('board.emptyBody', { column: target ? target.name : '' });
+  $('board-empty-key').textContent = formatShortcut(ctx.settings?.shortcuts?.newSession);
   const hScroll = wrap.scrollLeft;
   const colScroll = {};
   wrap.querySelectorAll('.column[data-cid]').forEach(el => {

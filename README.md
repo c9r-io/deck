@@ -92,10 +92,17 @@ new splits inherit it. Follow System reacts live to macOS appearance changes.
 Only the closed presets can be selected—there is no free-form color input—and
 the previous palette is restored if settings cannot be saved.
 
-**Board-grouped sidebar.** Sessions in the current project are grouped under
-their Board names, in Board order, with counts in each group. Sessions retain
-their durable card order within a Board even as live/quiet/stopped status
+**Group-ordered sidebar.** Sessions in the current project are grouped under
+their group names, in group order, with counts in each group. Sessions retain
+their durable card order within a group even as live/quiet/stopped status
 changes, so navigation never moves merely because a session was opened.
+
+**One persistent action.** The Board head keeps **＋ New session** and its
+▾ menu; everything else about starting a session lives in that menu — new
+session now, new on a clock, new on a Slack badge, and the two managers
+(Automations…, Templates…). A **↻ N automation(s)** chip appears beside it
+only while the project has rules. A project with no sessions shows one
+starting point above its groups instead of four empty columns.
 
 **Command completion, Warp-style.** deck records the commands you run in its
 shells (agent prompts are never recorded) and suggests as you type: the first
@@ -152,7 +159,8 @@ the list shows ⚠ with retry ↻ and skip ⏭ buttons, and nothing runs past a
 failed row until you decide.
 
 **Automations.** A standing job is not a card's list: it is a project-level
-rule (↻ Automations on the Board) with a **trigger** — a clock (every day,
+rule (New session ▾ → Automations… on the Board, or the ↻ chip once the
+project has one) with a **trigger** — a clock (every day,
 chosen weekdays or days of the month, at a local time) or a **Slack badge**
 (an emoji reaction you put on a message; see
 [docs/auto-respond.md](docs/auto-respond.md) for the one-time Slack
@@ -166,8 +174,9 @@ starts within 15 minutes (or, if you choose, the same day) and is otherwise
 recorded as missed; a rule you resume or reschedule starts from that
 moment. The drawer shows each rule's next slot and its last runs.
 
-**Templates.** A template is a saved list, per project (◈ Templates on the
-Board, or ☆ from a list's 📋 menu). 📋 on a card starts a new list from
+**Templates.** A template is a saved list, per project (Templates… from
+New session ▾, from a list's 📋 menu or from the automation editor; ☆ in a
+list's 📋 menu saves that list as one). 📋 on a card starts a new list from
 one or inserts one into a list — a copy, so a template changed later leaves
 the rows alone; an automation names one and sends it on every run.
 
@@ -180,9 +189,10 @@ waiting for you. Memory chips show the *whole process tree* of a session
 | Action | How |
 | --- | --- |
 | New session | ＋ New session → you're in a shell (`$HOME`); recent commands offered as chips |
-| Target board for new sessions | click a board's empty area (accent edge marks it) |
-| Enter / leave a session | click card · back button (shows the board name) or Esc |
-| Move cards | drag & drop (or the board dropdown inside a session) |
+| Target group for new sessions | click a group's empty area (accent edge marks it) |
+| Enter / leave a session | click card · back button (shows the group name) or Esc |
+| Move cards | drag & drop between groups |
+| Automations · templates | New session ▾ (or right-click the project tab); ↻ chip once a rule exists |
 | Close | card ✕ / Ctrl+D in shell (instant) · in-session Close (confirms) |
 | Copy terminal text | drag directly in the terminal (hold at an edge to cross screens) · ⌘C |
 | Rename / describe | double-click titles · right-click card |

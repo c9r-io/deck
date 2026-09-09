@@ -29,14 +29,29 @@
 // so an edit never silently rewrites it). A Slack rule has no pause: the
 // backlog it would collect while paused has no honest reading, so it is
 // removed instead.
+//
+// ENTRY POINTS (06 B v01): the Board head keeps ONE persistent action, the
+// "New session ▾" split button. Its menu (`showNewSessionMenu`, built in the
+// shared #ctx with arrow-key navigation) holds "new session now", the two
+// automatic ways a session starts (a clock, a Slack badge — each opens this
+// drawer with the editor preset to that trigger), and the two managers
+// (Automations…, Templates…). A direct "↻ N automation(s)" chip appears in
+// the head only while the project has rules, so the drawer is one click
+// away exactly when there is something in it. Closing the drawer returns
+// focus to whichever of those opened it.
 import { $, ctx, genId, inv, listen, state, store, uev } from './state.js';
 import { activeProject, provider } from './board.js';
 import { openSession } from './layout.js';
 import { confirmDialog, persistInbound, toast } from './dialogs.js';
 import { badgeTaken, hmToMin, INBOUND_BADGE_RE, minToHM, nextScheduleSlot, projectRules, ruleByOrigin, toggleClockRule } from './pure.js';
 import { formatNumber, onLocaleChange, t } from './i18n.js';
+import { formatShortcut } from './shortcuts.js';
 import { DEFAULT_GRACE_MIN, GRACE_CHOICES } from './settings-model.js';
 import { fmtClock } from './scheduler.js';
+import { openTemplates } from './templates.js';
+import { newSession } from './terminal.js';
+
+let opener = null;                 // element that opened the drawer; focus returns there
 
 let editing = null;   // null | { id } (existing) | { id: null } (new)
 let runsCache = [];
@@ -84,8 +99,10 @@ export const ruleLabel = rule => rule.name || (rule.source === 'clock' ? rule.id
 
 export function refreshAutomationBadge() {
   const n = rulesOf().length;
-  $('board-auto-count').textContent = n ? formatNumber(n) : '';
-  $('board-auto').classList.toggle('on', isOpen());
+  const chip = $('board-auto');
+  $('board-auto-count').textContent = n ? t('automation.chip', { count: formatNumber(n) }) : '';
+  chip.hidden = !n && !isOpen();
+  chip.classList.toggle('on', isOpen());
 }
 
 async function refreshRuns() {
@@ -363,29 +380,94 @@ async function pruneOrphans() {
 }
 
 /* ---------- drawer ---------- */
-export async function openAutomations() {
+/* `from` is the element to return focus to; `trigger` ('clock' | 'slack')
+   opens the editor for a NEW rule preset to that trigger. */
+export async function openAutomations({ from = null, trigger = null } = {}) {
+  opener = from;
   $('auto-drawer').hidden = false;
   closeEditor();
   await refreshRuns();
   renderAutomations();
-  if (!rulesOf().length) openEditor(null);
+  if (trigger) { openEditor(null); segSet('auto-trigger', trigger); syncEditor(); }
+  else if (!rulesOf().length) openEditor(null);
 }
 
 export function closeAutomations() {
   closeEditor();
   $('auto-drawer').hidden = true;
   refreshAutomationBadge();
-  $('board-auto').focus();
+  const back = opener && opener.isConnected && !opener.hidden ? opener : $('board-new-more');
+  opener = null;
+  back.focus();
 }
 
-export function toggleAutomations() {
-  if (isOpen()) closeAutomations(); else openAutomations();
+export function toggleAutomations(from = null) {
+  if (isOpen()) closeAutomations(); else openAutomations({ from });
+}
+
+/* ---------- the "New session ▾" menu ---------- */
+const menuItem = (label, opts = {}) => {
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.setAttribute('role', 'menuitem');
+  b.textContent = label;
+  if (opts.key) { const k = document.createElement('span'); k.className = 'ctx-key'; k.textContent = opts.key; b.appendChild(k); }
+  b.onclick = opts.run;
+  return b;
+};
+const menuLabel = (text, sub = false) => {
+  const d = document.createElement('div');
+  d.className = 'ctx-label' + (sub ? ' ctx-sub' : '');
+  d.textContent = text;
+  return d;
+};
+
+export function showNewSessionMenu(anchor) {
+  const menu = $('ctx');
+  const close = () => { menu.style.display = 'none'; anchor.setAttribute('aria-expanded', 'false'); menu.onkeydown = null; };
+  if (menu.style.display === 'block' && anchor.getAttribute('aria-expanded') === 'true') { close(); return; }
+  const go = fn => () => { close(); fn(); };
+  const p = activeProject();
+  const tplCount = p ? (p.templates || []).length : 0;
+  const ruleCount = rulesOf().length;
+  menu.replaceChildren(
+    menuItem(t('menu.newSessionNow'), { key: formatShortcut(ctx.settings?.shortcuts?.newSession), run: go(() => newSession(ctx.HOME)) }),
+    document.createElement('hr'),
+    menuLabel(t('menu.autoHeading'), true),
+    menuItem('◷ ' + t('menu.autoClock'), { run: go(() => openAutomations({ from: anchor, trigger: 'clock' })) }),
+    menuItem('◇ ' + t('menu.autoSlack'), { run: go(() => openAutomations({ from: anchor, trigger: 'slack' })) }),
+    document.createElement('hr'),
+    menuLabel(t('menu.manageHeading')),
+    menuItem('↻ ' + t('menu.automations'), { key: ruleCount ? formatNumber(ruleCount) : '', run: go(() => openAutomations({ from: anchor })) }),
+    menuItem('◈ ' + t('menu.templates'), { key: tplCount ? formatNumber(tplCount) : '', run: go(() => openTemplates(anchor)) }),
+  );
+  menu.setAttribute('role', 'menu');
+  menu.onclick = null;   // items carry their own handlers; the document click closes the rest
+  const items = () => [...menu.querySelectorAll('button')];
+  menu.onkeydown = event => {
+    const list = items();
+    const i = list.indexOf(document.activeElement);
+    const move = j => { event.preventDefault(); list[(j + list.length) % list.length].focus(); };
+    if (event.key === 'ArrowDown') move(i + 1);
+    else if (event.key === 'ArrowUp') move(i - 1);
+    else if (event.key === 'Home') move(0);
+    else if (event.key === 'End') move(list.length - 1);
+    else if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); close(); anchor.focus(); }
+  };
+  const r = anchor.getBoundingClientRect();
+  menu.style.display = 'block';
+  menu.style.left = Math.min(r.left, innerWidth - menu.offsetWidth - 8) + 'px';
+  menu.style.top = (r.bottom + 6) + 'px';
+  anchor.setAttribute('aria-expanded', 'true');
+  items()[0].focus();
 }
 
 /* DOM wiring, run once at boot (app.js) so the module can be imported
    without a document. */
 export function initAutomation() {
-  $('board-auto').onclick = () => toggleAutomations();
+  $('board-auto').onclick = () => toggleAutomations($('board-auto'));
+  $('board-new-more').onclick = e => { e.stopPropagation(); showNewSessionMenu($('board-new-more')); };
+  $('auto-tpl-manage').onclick = () => openTemplates($('auto-tpl-manage'));
   $('auto-close').onclick = () => closeAutomations();
   $('auto-new').onclick = () => openEditor(null);
   $('auto-cancel').onclick = () => closeEditor();

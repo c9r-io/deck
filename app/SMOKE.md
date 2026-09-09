@@ -28,9 +28,17 @@ attention entry, unchanged placement, keyed row focus,
 pointer reconciliation, success/failure read receipts (including splits),
 cross-project back navigation, stale/partial snapshots, and locate-only stopped
 entries. Twelve locale/theme/font combinations run in the actual WKWebView.
-Expect all `attention-*` checks positive and final `done=1`. A debug-only strip
-leaves Board / Needs attention / Update failed available for screenshots; the
-strip and fixture never ship in release bundles. Also inspect at the 720×480
+Expect all `attention-*` checks positive and final `done=1`. The same run
+carries the 06 B v01 entry-point gate (`entry-*`, seven checks): one
+persistent New session ▾ split button and no standing Automations/Templates
+buttons; the empty-project start block (and no per-column attention text)
+on a project without cards; the ▾ menu with arrow/Escape keyboard handling
+and focus return; the Slack-preset editor opened from that menu; the ↻ chip
+appearing only while a rule exists and opening the drawer; Templates…
+reachable from the menu and from a list's 📋 with focus returning to the
+opener; and one name per object in both dictionaries. A debug-only strip
+leaves Board / Empty project / Needs attention / Update failed available for
+screenshots; the strip and fixture never ship in release bundles. Also inspect at the 720×480
 minimum window: controls must remain reachable and long names must wrap.
 
 ## Settings navigation and diagnostic log reset

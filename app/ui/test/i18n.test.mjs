@@ -92,6 +92,31 @@ test('scheduler Chinese copy preserves sent, failed, blocked, ambiguous and quie
   assert.doesNotMatch(t('queue.quiet.done'), /就绪|可发送/);
 });
 
+/* 06 B v01: one name per object. The page is 看板 / Board, a column is
+   栏目 / group, a session is "session" in both languages, a split is 窗格 /
+   pane; the automation editor's two rows are not both "触发". */
+test('every object has exactly one name in each dictionary', () => {
+  const zh = dictionaries['zh-Hans'], en = dictionaries.en;
+  const columnKeys = ['app.newBoard', 'board.newName', 'board.deleteTitle', 'board.atLeastOne', 'board.delete', 'automation.column', 'automation.needsColumn', 'error.targetSave'];
+  for (const key of columnKeys) {
+    assert.match(zh[key], /栏目/, key);
+    assert.doesNotMatch(zh[key], /Board/, key);
+    assert.match(en[key], /group/i, key);
+    assert.doesNotMatch(en[key], /Board|Column/, key);
+  }
+  for (const key of ['app.board', 'session.back', 'error.boardLoad', 'error.projectSave', 'error.sessionSave'])
+    assert.match(zh[key], /看板/, key);
+  const zhAll = Object.entries(zh).filter(([k]) => !/^settings.(agentHooks|codexHooks)/.test(k)).map(([, v]) => v).join('\n');
+  assert.doesNotMatch(zhAll, /会话/, 'zh keeps "session" untranslated');
+  assert.doesNotMatch(zhAll, /个 pane|当前 pane/, 'zh calls a pane 窗格');
+  assert.notEqual(zh['automation.trigger'], zh['automation.when']);
+  assert.equal(zh['app.sessions'], 'session');
+  for (const key of ['session.status.running', 'session.status.waiting']) {
+    assert.doesNotMatch(zh[key], /可能正在等待输入|已就绪/, key);
+    assert.doesNotMatch(en[key], /may be waiting|is ready/, key);
+  }
+});
+
 test('default Boards localize only at creation and existing names never change', () => {
   let n = 0;
   setLocale('zh-Hans');

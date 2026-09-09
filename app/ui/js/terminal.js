@@ -13,6 +13,8 @@ import { closeSession, panes, provider, renameTab, render, switchProject, active
 import { backToBoard, openSession, strToB64 } from './layout.js';
 import { formatNumber, onLocaleChange, t } from './i18n.js';
 import { formatShortcut, registerShortcutAction } from './shortcuts.js';
+import { openAutomations } from './automation.js';
+import { openTemplates } from './templates.js';
 
 /* ---------- context menus ---------- */
 export function placeCtx(e) {
@@ -86,12 +88,17 @@ export function showProjectCtx(e, pid) {
   e.stopPropagation();
   const p = provider.project(pid);
   const ctx = $('ctx');
-  ctx.innerHTML = '<button data-a="rename"></button><button data-a="remove" class="danger"></button>';
+  ctx.innerHTML = '<button data-a="rename"></button><button data-a="automations"></button><button data-a="templates"></button><hr><button data-a="remove" class="danger"></button>';
   ctx.querySelector('[data-a="rename"]').textContent = t('menu.renameProject');
+  ctx.querySelector('[data-a="automations"]').textContent = '↻ ' + t('menu.automations');
+  ctx.querySelector('[data-a="templates"]').textContent = '◈ ' + t('menu.templates');
   ctx.querySelector('[data-a="remove"]').textContent = t('menu.deleteProject');
   ctx.onclick = async ev => {
     const a = ev.target.dataset && ev.target.dataset.a;
     ctx.style.display = 'none';
+    /* the managers are per project: switch first so they open over it */
+    if (a === 'automations') { switchProject(pid); openAutomations({ from: e.currentTarget }); }
+    if (a === 'templates') { switchProject(pid); openTemplates(e.currentTarget); }
     if (a === 'rename') {
       switchProject(pid);
       const tab = document.querySelector('#tabs .tab.active');
@@ -544,6 +551,7 @@ export function initTerminalChrome() {
     if ($('ctx').contains(event.target)) return;
     linkActionGeneration++;
     $('ctx').style.display = 'none';
+    $('board-new-more').setAttribute('aria-expanded', 'false');
   });
 
   $('collapse-btn').onclick = toggleSidebar;
@@ -553,6 +561,7 @@ export function initTerminalChrome() {
   $('back-btn').onclick = backToBoard;
 
   $('board-new').onclick = () => newSession(ctx.HOME);
+  $('board-empty-new').onclick = () => newSession(ctx.HOME);
 
   registerShortcutAction('newSession', () => newSession(ctx.HOME));
 
