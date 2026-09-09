@@ -78,7 +78,7 @@ test('the canonical dictionary has no unused keys outside documented dynamic fam
     'app/ui/js/dialogs.js', 'app/ui/js/i18n.js', 'app/ui/js/inbound.js', 'app/ui/js/layout.js',
     'app/ui/js/pure.js', 'app/ui/js/scheduler.js', 'app/ui/js/queue-review.js', 'app/ui/js/selection.js', 'app/ui/js/state.js',
     'app/ui/js/templates.js', 'app/ui/js/terminal.js'].map(read).join('\n');
-  const dynamic = /^(?:attention\.column|attention\.filter|automation\.run|automation\.wd|board\.default|board\.hint|session\.status|settings\.shortcut|notice|tmux\.notice)\./;
+  const dynamic = /^(?:attention\.column|attention\.filter|automation\.run|automation\.wd|board\.default|session\.status|settings\.shortcut|notice|tmux\.notice)\./;
   const unused = Object.keys(en).filter(key => !dynamic.test(key) && !source.includes(key));
   assert.deepEqual(unused, []);
 });
@@ -106,7 +106,7 @@ test('large font scaling reflows dense rows instead of clipping scaled line boxe
   assert.match(html, /html\.font-scale-large \.set-row \{[^}]*flex-wrap: wrap;/);
   assert.match(html, /html\.font-scale-large \.shortcut-row \{[^}]*grid-template-columns: minmax\(0, 1fr\);/);
   assert.match(html, /html\.font-scale-large \.sess-head \{[^}]*flex-wrap: wrap;/);
-  assert.match(html, /html\.font-scale-large \.q-item,[\s\S]*?flex-wrap: wrap;/);
+  assert.match(html, /html\.font-scale-large \.q-add,[\s\S]*?flex-wrap: wrap;/);
   assert.match(html, /\.card-meta \{[\s\S]*?min-height: 1\.53846rem;/);
   assert.doesNotMatch(html, /(?:\.card-meta|\.sess-head \.btn)[^{]*\{[^}]*(?:height: 20px|height: 47px|height: 28px)/);
   assert.match(dialogs, /for \(const action of CUSTOMIZABLE_SHORTCUT_ACTIONS\)/,

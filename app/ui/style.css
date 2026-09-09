@@ -477,15 +477,6 @@ body.side-collapsed .side-new .label { display: none; }
   background: var(--panel); border-bottom: 1px solid var(--border-soft);
   max-height: 40vh; overflow-y: auto;
 }
-.q-item {
-  display: flex; align-items: center; gap: 10px;
-  padding: 6px 10px; border: 1px solid var(--border-soft); border-radius: 6px;
-  background: var(--raised);
-}
-.q-when {
-  font-family: var(--mono); font-size: 0.846154rem; color: var(--wait);
-  flex: none; min-width: 92px;
-}
 .q-text { flex: 1; min-width: 0; font-size: 0.961538rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .q-del, .q-retry, .q-skip, .q-wait, .q-now { color: var(--faint); padding: 2px 7px; border-radius: 4px; flex: none; }
 .q-retry:hover, .q-skip:hover, .q-wait:hover, .q-now:hover { color: var(--text); background: var(--hover); }
@@ -512,7 +503,6 @@ body.side-collapsed .side-new .label { display: none; }
 .seg button:hover { color: var(--text); }
 .seg button[aria-pressed="true"] { background: var(--raised); color: var(--text); box-shadow: inset 0 0 0 1px var(--border); }
 
-.q-meta { font-family: var(--mono); font-size: 0.807692rem; color: var(--faint); flex: none; white-space: nowrap; }
 #queue-list { display: flex; flex-direction: column; gap: 8px; }
 .q-group { border: 1px solid var(--border-soft); border-radius: 8px; background: var(--raised); overflow: hidden; }
 .q-group.rule { border-color: var(--accent-dim); }
@@ -559,11 +549,6 @@ body.side-collapsed .side-new .label { display: none; }
 .qg-row.editing > .tree, .qg-row.editing > .q-chev, .qg-row.editing > .q-nl,
 .qg-row.editing > .row-meta, .qg-row.editing > button { margin-top: 1px; }
 .qg-row .q-text > textarea { display: block; }
-.q-pause { color: var(--faint); padding: 2px 6px; border-radius: 4px; flex: none; }
-.q-pause:hover { color: var(--wait); background: var(--hover); }
-.q-item.rule { border-color: var(--accent-dim); }
-.q-item.rule .q-when { color: var(--accent); }
-.q-item.paused { opacity: 0.55; }
 #q-tpl { flex: none; padding: 0 10px; min-height: 2.30769rem; }
 /* the new-list form: its head fields, then the first row's field */
 .q-new { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; border: 1px dashed var(--border); border-radius: 8px; }
@@ -663,8 +648,6 @@ body.side-collapsed .side-new .label { display: none; }
   flex: none; max-width: 260px; overflow: hidden; text-overflow: ellipsis;
 }
 .qb-chip:hover { color: var(--accent); border-color: var(--accent-dim); background: var(--sel); }
-#quick-bar .qb-close { margin-left: auto; color: var(--faint); padding: 2px 7px; border-radius: 4px; flex: none; }
-#quick-bar .qb-close:hover { color: var(--text); background: var(--hover); }
 
 /* ---------- confirm dialog (window.confirm is a no-op in WKWebView) ---------- */
 #cfm {
@@ -923,7 +906,6 @@ html.font-scale-large .sess-path { display: none; }
 html.font-scale-large .sess-head { flex-wrap: wrap; }
 html.font-scale-large .sess-title { flex: 1 1 12rem; }
 html.font-scale-large .sess-spacer { display: none; }
-html.font-scale-large .q-item,
 html.font-scale-large .q-add,
 html.font-scale-large .qg-row,
 html.font-scale-large .tmux-lifecycle-actions { align-items: flex-start; flex-wrap: wrap; }
