@@ -7,13 +7,18 @@
 // in board.js owns it. A pty-exit may land before its attach reply — the reply
 // never marks a pane attached once its generation has exited. A stopped card
 // reopens as its shell: the launch command is sent only while the card's
-// durable `launched` flag is false (pure.js startCommand).
+// durable `launched` flag is false (pure.js startCommand). A caller that
+// already started the session (provider.createStarted) passes that outcome
+// as `opts.started`, so fresh-shell chips and the first-prompt cleanup still
+// follow the real start and not the idempotent re-attach. The fresh-shell
+// flag is set AFTER focusPane (which resets suggestion state on a focus
+// change): a new empty shell offers its recent-command chips.
 import { $, ctx, dotTitle, duev, inv, listen, setMemChip, state, store, uev } from './state.js';
-import { inlineRename, toast } from './dialogs.js';
+import { choiceDialog, inlineRename, toast } from './dialogs.js';
 import { t } from './i18n.js';
 import { markSessionSeen, panes, pollNow, provider, render, renderSidebar, updateSidebarSelection, activeProject } from './board.js';
 import { SHELL_FG, acceptGhost, feedMirror, maybeRecordCommand, mountQuickBar, nextShellTitle, renderSuggest, resetSuggest, showLinkCtx, updateGhost, writeClipboard } from './terminal.js';
-import { AGENT_HISTORY_VERTICAL_UP, newSessionColumn, startCommand, createTerminalResizeCoordinator, createTerminalWheelAccumulator, createTerminalWheelFrameScheduler, isComposingKeyEvent, isPlainShiftKeydown, isTerminalAutoReply, scrollResultView, shouldRouteImeKeydownThroughInput, shQuote, terminalLinkRanges, terminalAgentComposerGeometry, terminalAgentHistoryUpRoute, terminalCopyRoute, terminalSelectionWheelRoute, tokenizeTerminalLinks, terminalWheelLines } from './pure.js';
+import { AGENT_HISTORY_VERTICAL_UP, collapseHome, isNotDirectoryError, newSessionColumn, startCommand, createTerminalResizeCoordinator, createTerminalWheelAccumulator, createTerminalWheelFrameScheduler, isComposingKeyEvent, isPlainShiftKeydown, isTerminalAutoReply, scrollResultView, shouldRouteImeKeydownThroughInput, shQuote, terminalLinkRanges, terminalAgentComposerGeometry, terminalAgentHistoryUpRoute, terminalCopyRoute, terminalSelectionWheelRoute, tokenizeTerminalLinks, terminalWheelLines } from './pure.js';
 import { toggleQueuePanel } from './scheduler.js';
 import { cancelAllTerminalSelections, cancelTerminalSelection, copyTerminalSelection, hasTerminalSelection, terminalSelectionElsewhere, wireTerminalSelection } from './selection.js';
 import { getTerminalTheme, onThemeChange, syncThemeIntegrations } from './theme.js';
@@ -866,7 +871,7 @@ async function attachPane(pane, { allowStart = true } = {}) {
   return outcome;
 }
 
-export async function addSplit(targetSid, dir, before, newSid) {
+export async function addSplit(targetSid, dir, before, newSid, opts = {}) {
   const card = provider.get(newSid);
   if (!card || state.view !== 'session' || !ctx.layout) return;
   if (newSid === targetSid) return;
@@ -884,11 +889,48 @@ export async function addSplit(targetSid, dir, before, newSid) {
   const pane = createPane(card);
   ctx.layout = splitAt(ctx.layout, targetSid, dir, newSid, before);
   renderLayout();
-  const { created, restored, commandSent } = await ensureAttached(pane);
+  const { created, restored, commandSent } = startOutcome(await ensureAttached(pane), opts.started);
   if (created && !restored) setTimeout(() => inv('clear_history', { name: card.session }).catch(() => {}), 900);
-  ctx.freshShell = created && !commandSent;
   focusPane(card.session);
+  /* AFTER focusPane: focusing a new pane resets the suggestion state, so the
+     fresh-shell flag must be the last word (it was cleared here since v0.4.0) */
+  ctx.freshShell = created && !commandSent;
+  renderSuggest();
   pollNow();
+}
+
+/* the attach's own outcome merged with a start the caller already did */
+function startOutcome(attach, started) {
+  const s = started || {};
+  return {
+    ...attach,
+    created: !!(attach.created || s.created),
+    restored: !!(attach.restored || s.restored),
+    commandSent: !!(attach.commandSent || s.commandSent),
+  };
+}
+
+/* the split picker's "new shell here": the focused pane's directory, never
+   a command; started before the card exists, like every creation */
+async function newShellInSplit(targetSid, dir, cwd) {
+  const p = activeProject();
+  if (!p) return;
+  const start = async where => provider.createStarted({
+    projectId: p.id, columnId: newSessionColumn(p).id, title: nextShellTitle(p), cmd: '', dir: where,
+  });
+  try {
+    const { card, started } = await start(cwd);
+    addSplit(targetSid, dir, false, card.id, { started });
+  } catch (error) {
+    if (!isNotDirectoryError(error)) { toast(t('terminal.createFailed')); return; }
+    const choice = await choiceDialog(t('terminal.dirUnavailable', { dir: collapseHome(cwd, ctx.HOME) }),
+      [{ id: 'home', label: t('terminal.newHomeShell'), primary: true }]);
+    if (choice !== 'home') return;
+    try {
+      const { card, started } = await start(ctx.HOME);
+      addSplit(targetSid, dir, false, card.id, { started });
+    } catch (_) { toast(t('terminal.createFailed')); }
+  }
 }
 
 /* close one pane; the session keeps running unless the card itself closes */
@@ -930,6 +972,7 @@ export function showSplitPicker(dir) {
   const candidates = store.cards.filter(c => !openSids.has(c.id));
   const order = { attention: 0, done: 1, running: 1, waiting: 1, stopped: 2 };
   candidates.sort((a, b) => order[a.status] - order[b.status]);
+  const home = ctx.HOME;   // the menu element shadows the shared slots below
   const ctx = $('ctx');
   ctx.replaceChildren();
   ctx.onkeydown = null;
@@ -959,16 +1002,8 @@ export function showSplitPicker(dir) {
     ctx.style.display = 'none';
     if (sid) addSplit(targetSid, dir, false, sid);
     if (isNew) {
-      const p = activeProject();
       const focused = provider.get(targetSid);
-      const c = await provider.create({
-        projectId: p.id,
-        columnId: newSessionColumn(p).id,
-        title: nextShellTitle(p),
-        cmd: '',
-        dir: focused ? focused.dir : ctx.HOME,
-      });
-      addSplit(targetSid, dir, false, c.id);
+      newShellInSplit(targetSid, dir, focused ? focused.dir : home);
     }
   };
   const btn = $(dir === 'col' ? 'split-down' : 'split-right');
@@ -1005,11 +1040,13 @@ export async function openSession(sid, opts = {}) {
   const pane = createPane(card);
   ctx.layout = leafOf(sid);
   renderLayout();
-  const { created, restored, attached, commandSent } = await ensureAttached(pane, opts);
+  const { created, restored, attached, commandSent } = startOutcome(await ensureAttached(pane, opts), opts.started);
   if (created && !restored) setTimeout(() => inv('clear_history', { name: card.session }).catch(() => {}), 900);
   if (panes.get(card.session) !== pane || state.view !== 'session') return false;
-  ctx.freshShell = created && !commandSent;
   focusPane(card.session);
+  /* AFTER focusPane: focusing a new pane resets the suggestion state, so the
+     fresh-shell flag must be the last word (it was cleared here since v0.4.0) */
+  ctx.freshShell = created && !commandSent;
   /* history feeds both the fresh-shell chips and typed-prefix completion */
   inv('recent_commands', { limit: 50 })
     .then(c => { ctx.histCache = c; renderSuggest(); })

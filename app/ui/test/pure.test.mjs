@@ -12,6 +12,7 @@ import {
   scheduleMatchesDay, nextScheduleSlot, createConfirmationCounter, isoWeekday, daysInMonth, runFinishHolds, toggleClockRule,
   createExitRetirementTracker, createSerialTransactionQueue, deleteSessionsTransaction, sidebarGroups,
   copyExact, createTerminalResizeCoordinator, newSessionColumn, createTerminalSelectionModel,
+  projectDefaults, newSessionPlan, collapseHome, isNotDirectoryError,
   reorderById,
   terminalCopyRoute, terminalSelectionEdgeLines,
   isComposingKeyEvent, isPlainShiftKeydown, shouldRouteImeKeydownThroughInput,
@@ -1266,6 +1267,30 @@ test('a launch command is sent once: on the first start, never on a reopen', () 
   assert.equal(startCommand({ cmd: 'claude', launched: false }), 'claude', 'first start sends it');
   assert.equal(startCommand({ cmd: 'claude', launched: true }), '', 'a reopen starts the shell only');
   assert.equal(startCommand({ cmd: 'claude' }), '', 'boards written before the field never re-run');
+});
+
+test('project defaults are optional trimmed strings and only the Board entries read them', () => {
+  assert.deepEqual(projectDefaults({}), { dir: '', cmd: '' });
+  assert.deepEqual(projectDefaults(null), { dir: '', cmd: '' });
+  assert.deepEqual(projectDefaults({ dir: '  ~/work/atlas ', cmd: ' claude ' }), { dir: '~/work/atlas', cmd: 'claude' });
+  assert.deepEqual(projectDefaults({ dir: 3, cmd: ['claude'] }), { dir: '', cmd: '' }, 'wrong types read as no default');
+  const cols = [{ id: 'a', name: 'Attention', semantic: 'attention' }, { id: 'w', name: 'Working', semantic: 'working' }];
+  const home = '/Users/me';
+  assert.deepEqual(newSessionPlan({ columns: cols }, home),
+    { dir: home, cmd: '', hasDir: false, columnId: 'w', column: 'Working' }, 'no defaults = a shell in $HOME');
+  assert.deepEqual(newSessionPlan({ columns: cols, dir: '~/work/atlas', cmd: 'claude', selected: 'a' }, home),
+    { dir: '/Users/me/work/atlas', cmd: 'claude', hasDir: true, columnId: 'a', column: 'Attention' }, 'defaults expand ~ and follow the selected group');
+  assert.deepEqual(newSessionPlan({ columns: cols, dir: '/srv/x', cmd: 'claude' }, home, { shellOnly: true }),
+    { dir: '/srv/x', cmd: '', hasDir: true, columnId: 'w', column: 'Working' }, 'shell only keeps the directory and drops the command');
+  assert.deepEqual(newSessionPlan(null, home), { dir: home, cmd: '', hasDir: false, columnId: null, column: '' });
+  assert.equal(collapseHome('/Users/me/work/atlas', home), '~/work/atlas');
+  assert.equal(collapseHome('/Users/me', home), '~');
+  assert.equal(collapseHome('/Users/meow/x', home), '/Users/meow/x', 'a sibling prefix is not home');
+  assert.equal(collapseHome('/tmp', '~'), '/tmp', 'an unresolved home leaves paths alone');
+  assert.equal(isNotDirectoryError('not a directory: /gone'), true, 'the wire carries the message only');
+  assert.equal(isNotDirectoryError(new Error('Not a directory: /gone')), true);
+  assert.equal(isNotDirectoryError('tmux kill-session failed'), false);
+  assert.equal(isNotDirectoryError(null), false);
   assert.equal(startCommand({ cmd: '', launched: false }), '', 'no command, nothing to send');
   assert.equal(startCommand(null), '');
 });

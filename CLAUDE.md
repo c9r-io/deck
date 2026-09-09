@@ -86,7 +86,7 @@ loaded by `ui/index.html`; xterm.js vendored in `app/ui/vendor/`. Backend
 | PTY attach bridge with end-to-end flow control | `pty.rs` |
 | Terminal scroll + token-bound selection lease commands | `terminal.rs`, `terminal_selection.rs`, `terminal_scroll.rs` |
 | Pointer/selection authority, overlay, wheel routing (frontend) | `ui/js/selection.js`, `layout.js` |
-| Completion bar, links, context menus | `ui/js/terminal.js`, `links.rs` |
+| Completion bar, links, context menus, the ONE new-session path (start first, persist after; project defaults for ＋/⌘N, context entries keep their directory and never a command) | `ui/js/terminal.js` (`newSession` / `newDefaultSession`), `provider.createStarted` + `openProjectDefaults` in `board.js`, `projectDefaults` / `newSessionPlan` in `pure.js`, `links.rs` |
 | Dropdowns (deck's own listbox over every `<select>`) | `ui/js/dropdown.js` |
 | Lists (the ⏱ panel): queue model, selection, delivery state machine, tick | `scheduler/` (+ `docs/scheduler-context-safety.md`), `context.rs`, `ui/js/scheduler.js` |
 | Templates (saved lists, shared by cards and automations) | `ui/js/templates.js` |
@@ -183,6 +183,14 @@ Status semantics (card colour) are documented on `effectiveCardStatus` in
   it; reopening a stopped card starts the shell only (`pure.js` `startCommand`),
   never the program. Boards without the field read as launched. The scheduler's
   delivery start is the one path that still starts a dead session with the
-  command, because the list asked for that program.
+  command, because the list asked for that program. A manually created card
+  gets a command from exactly one place: the project's optional default
+  command (`project.cmd`), taken by ＋ / ⌘N / "New session now" and sent by
+  that first start; "New shell only" and every context entry (in this
+  directory, parent folder, new shell in a split) create shells.
+- **A card is persisted only after its session started.** `provider.createStarted`
+  starts tmux inside the Board transaction and kills it if the write fails; a
+  directory that no longer exists (`NotDir`) asks the user (cancel / edit the
+  project defaults / a shell in `$HOME`) and never leaves a stopped card behind.
 - Use harmless card commands (e.g. `while true; do date; sleep 1; done`) when
   testing — a card whose command is `claude` will really launch Claude Code.

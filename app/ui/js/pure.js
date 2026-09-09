@@ -363,6 +363,49 @@ export function newSessionColumn(p) {
     || p.columns[1] || p.columns[0] || null;
 }
 
+/* ---------- project defaults (04 A v01) ----------
+   A project may carry a default directory and a default launch command,
+   both optional strings. They apply to the Board's OWN creation paths
+   (＋ / ⌘N / "New session now") and to nothing else: a context entry (new
+   session in this directory, in the parent folder, a new shell in a split)
+   keeps its own directory and is always a shell. Absent or blank means
+   today's behaviour, a shell in $HOME. The command is sent once, at
+   creation, through the same `launched` flag every card carries. */
+export function projectDefaults(p) {
+  const text = v => (typeof v === 'string' ? v.trim() : '');
+  return { dir: text(p && p.dir), cmd: text(p && p.cmd) };
+}
+
+/* What ＋ / ⌘N will do for this project: the directory, the command and the
+   group the card lands in. `shellOnly` drops the command (the menu's "New
+   shell only"). `hasDir` says the directory came from the project, so a
+   failure may offer to edit the defaults. */
+export function newSessionPlan(p, home, { shellOnly = false } = {}) {
+  const d = projectDefaults(p);
+  const column = p && Array.isArray(p.columns) ? newSessionColumn(p) : null;
+  return {
+    dir: d.dir ? expandHome(d.dir, home) : home,
+    cmd: shellOnly ? '' : d.cmd,
+    hasDir: !!d.dir,
+    columnId: column ? column.id : null,
+    column: column ? column.name : '',
+  };
+}
+
+/* `$HOME/x` shown as `~/x`; the inverse of expandHome for display only */
+export function collapseHome(dir, home) {
+  const d = String(dir || ''), h = String(home || '').replace(/\/+$/, '');
+  if (!h || h === '~') return d;
+  if (d === h) return '~';
+  return d.startsWith(h + '/') ? '~' + d.slice(h.length) : d;
+}
+
+/* The backend's NotDir failure as the one string the wire carries: error.rs
+   keeps the kind out of the payload and classifies free text by this same
+   phrase, so the frontend recognizes it the same way. */
+export const isNotDirectoryError = error =>
+  /not a directory/i.test(String((error && error.message) || error || ''));
+
 /* ---------- queue grouping (mirrors the backend's group semantics) ---------- */
 /* items carry an explicit group id (assigned by the backend, which is also
    what the scheduler's chain ordering runs on) — one panel group per group

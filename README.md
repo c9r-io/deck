@@ -105,9 +105,22 @@ changes, so navigation never moves merely because a session was opened.
 **One persistent action.** The Board head keeps **＋ New session** and its
 ▾ menu; everything else about starting a session lives in that menu — new
 session now, new on a clock, new on a Slack badge, and the two managers
-(Automations…, Templates…). A **↻ N automation(s)** chip appears beside it
-only while the project has rules. A project with no sessions shows one
-starting point above its groups instead of four empty columns.
+(Automations…, Templates…, Project defaults…). A **↻ N automation(s)** chip
+appears beside it only while the project has rules. A project with no
+sessions shows one starting point above its groups instead of four empty
+columns.
+
+**Project defaults.** A project may carry a default directory and a default
+launch command (right-click the project tab, or New session ▾ → Project
+defaults…; both optional). With them, ＋ / ⌘N start the session in that
+directory and send that command once — one click to working — and the menu's
+first item says exactly what it will do; **New shell only** keeps the
+directory without the command. Without them, ＋ opens a shell in `$HOME` as
+before. Context entries — a card's *New session in this directory*, the path
+menu's *parent folder*, a split's *new shell here* — keep their own directory
+and are always shells. Every creation starts the tmux session first and writes
+the card only after that succeeded, so a directory that no longer exists asks
+(cancel / edit the defaults / a shell in `$HOME`) and never leaves a card behind.
 
 **Command completion, Warp-style.** deck records the commands you run in its
 shells (agent prompts are never recorded) and suggests as you type: the first
@@ -193,7 +206,8 @@ waiting for you. Memory chips show the *whole process tree* of a session
 
 | Action | How |
 | --- | --- |
-| New session | ＋ New session → you're in a shell (`$HOME`); recent commands offered as chips |
+| New session | ＋ New session → you're in a shell (`$HOME`, or the project's default directory running its default command); recent commands offered as chips |
+| Project defaults (directory · command) | right-click the project tab · New session ▾ → Project defaults… · the empty project's link |
 | Target group for new sessions | click a group's empty area (accent edge marks it) |
 | Enter / leave a session | click card · back button (shows the group name) or Esc |
 | Move cards | drag & drop between groups |

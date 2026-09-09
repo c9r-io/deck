@@ -3,9 +3,17 @@
     {
       "id": "P1",
       "name": "main",
+      "dir": "~/work",
+      "cmd": "claude",
       "columns": [
-        { "id": "C1", "name": "Attention" },
-        { "id": "C2", "name": "Working" }
+        {
+          "id": "C1",
+          "name": "Attention"
+        },
+        {
+          "id": "C2",
+          "name": "Working"
+        }
       ]
     }
   ],
@@ -21,7 +29,11 @@
       "session": "deck-full-card-ab12",
       "pinned": true,
       "launched": true,
-      "origin": { "source": "slack", "key": "C1:1.2", "badge": "eyes" }
+      "origin": {
+        "source": "slack",
+        "key": "C1:1.2",
+        "badge": "eyes"
+      }
     }
   ]
 }

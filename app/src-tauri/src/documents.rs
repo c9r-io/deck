@@ -44,6 +44,15 @@ pub(crate) struct BoardProject {
     name: String,
     #[serde(default)]
     columns: Vec<BoardColumn>,
+    /// Optional project defaults for the Board's own creation paths (04): a
+    /// default directory and a default launch command. Absent means a shell
+    /// in $HOME; present values must be strings.
+    #[allow(dead_code)]
+    #[serde(default)]
+    dir: Option<String>,
+    #[allow(dead_code)]
+    #[serde(default)]
+    cmd: Option<String>,
 }
 #[derive(serde::Deserialize)]
 pub(crate) struct BoardColumn {
@@ -622,6 +631,48 @@ mod tests {
         );
         // empty board is a valid first save
         assert!(serde_json::from_str::<BoardDoc>(r#"{"projects":[],"cards":[]}"#).is_ok());
+    }
+
+    /// Project defaults (04) are optional strings: a board without them is
+    /// what every earlier version wrote, and a wrong type is refused rather
+    /// than guessed at.
+    #[test]
+    fn project_defaults_are_optional_typed_strings() {
+        let plain = board(&card("s1", "P1", "C1", "deck-t-ab12"));
+        assert!(serde_json::from_str::<BoardDoc>(&plain).is_ok());
+        let with_defaults = plain.replacen(
+            "\"name\":\"main\"",
+            "\"name\":\"main\",\"dir\":\"~/work/atlas\",\"cmd\":\"claude\"",
+            1,
+        );
+        assert!(
+            serde_json::from_str::<BoardDoc>(&with_defaults).is_ok(),
+            "a project may carry a default directory and command"
+        );
+        for wrong in [
+            "\"dir\":1",
+            "\"cmd\":[\"claude\"]",
+            "\"dir\":{\"path\":\"x\"}",
+        ] {
+            let typed = plain.replacen(
+                "\"name\":\"main\"",
+                &format!("\"name\":\"main\",{wrong}"),
+                1,
+            );
+            assert!(
+                serde_json::from_str::<BoardDoc>(&typed).is_err(),
+                "{wrong} is not a string"
+            );
+        }
+        let null_defaults = plain.replacen(
+            "\"name\":\"main\"",
+            "\"name\":\"main\",\"dir\":null,\"cmd\":null",
+            1,
+        );
+        assert!(
+            serde_json::from_str::<BoardDoc>(&null_defaults).is_ok(),
+            "null reads as no default"
+        );
     }
 
     #[test]

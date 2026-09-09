@@ -6,10 +6,22 @@
 // Its generation-based transition is: detach/hide old owner, refit old owner,
 // mount new owner, refit new owner. Stale RAF work must not resize a newer
 // owner, and each pane preserves its own bottom-follow/scrollback position.
+//
+// New session (04 A v01): `newSession` is the one entry for every way a
+// session is created by hand. It starts the session FIRST
+// (`provider.createStarted`) and persists the card only after that, so a
+// failed start leaves nothing behind. The Board's own entries (＋ / ⌘N /
+// "New session now" / "New shell only") go through `newDefaultSession`,
+// which takes the project's default directory and command (pure.js
+// newSessionPlan); a command is sent once, at that start, and never again.
+// Context entries (a card's "in this directory", the path menu's parent
+// folder, a split's "new shell here") pass their own directory and never a
+// command. A directory that no longer exists asks (choiceDialog) instead of
+// guessing: cancel, edit the project defaults, or a shell in $HOME.
 import { $, ctx, duev, inv, state, uev } from './state.js';
-import { copyExact, isComposingKeyEvent, linkMenuItems, newSessionColumn } from './pure.js';
-import { confirmDialog, inlineRename, toast, promptDialog } from './dialogs.js';
-import { closeSession, panes, provider, renameTab, render, switchProject, activeProject } from './board.js';
+import { collapseHome, copyExact, isComposingKeyEvent, isNotDirectoryError, linkMenuItems, newSessionColumn, newSessionPlan } from './pure.js';
+import { choiceDialog, confirmDialog, inlineRename, toast, promptDialog } from './dialogs.js';
+import { closeSession, openProjectDefaults, panes, provider, renameTab, render, switchProject, activeProject } from './board.js';
 import { backToBoard, openSession, strToB64 } from './layout.js';
 import { formatNumber, onLocaleChange, t } from './i18n.js';
 import { formatShortcut, registerShortcutAction } from './shortcuts.js';
@@ -83,7 +95,7 @@ export function showSessionCtx(e, sid) {
     ctx.style.display = 'none';
     if (a === 'rename') renameCardInline(sid, renameHost);
     if (a === 'desc') editDescInline(sid);
-    if (a === 'here') newSession(s.dir);
+    if (a === 'here') newSession(s.dir, { projectId: s.projectId });
     if (a === 'close') closeSession(sid);
   };
   placeCtx(e);
@@ -95,8 +107,9 @@ export function showProjectCtx(e, pid) {
   const p = provider.project(pid);
   const ctx = $('ctx');
   ctx.onkeydown = null;
-  ctx.innerHTML = '<button data-a="rename"></button><button data-a="automations"></button><button data-a="templates"></button><hr><button data-a="remove" class="danger"></button>';
+  ctx.innerHTML = '<button data-a="rename"></button><button data-a="defaults"></button><button data-a="automations"></button><button data-a="templates"></button><hr><button data-a="remove" class="danger"></button>';
   ctx.querySelector('[data-a="rename"]').textContent = t('menu.renameProject');
+  ctx.querySelector('[data-a="defaults"]').textContent = '⚑ ' + t('menu.projectDefaults');
   ctx.querySelector('[data-a="automations"]').textContent = '↻ ' + t('menu.automations');
   ctx.querySelector('[data-a="templates"]').textContent = '◈ ' + t('menu.templates');
   ctx.querySelector('[data-a="remove"]').textContent = t('menu.deleteProject');
@@ -112,6 +125,7 @@ export function showProjectCtx(e, pid) {
       if (tab) tab.tabIndex = -1;
       return tab || null;
     };
+    if (a === 'defaults') { switchProject(pid); openProjectDefaults(pid, tabOf); }
     if (a === 'automations') { switchProject(pid); openAutomations({ from: tabOf }); }
     if (a === 'templates') { switchProject(pid); openTemplates(tabOf); }
     if (a === 'rename') {
@@ -187,7 +201,7 @@ export function showLinkCtx(e, kind, value, cwd, sid = null, lookback = null) {
         const resolved = await parentOf(value)
           .catch(err => (lookback ? parentOf(lookback) : Promise.reject(err)));
         if (request !== linkActionGeneration || !provider.get(sid)) return;
-        await newSession(resolved.directory, { projectId: origin.projectId, requireStart: true });
+        await newSession(resolved.directory, { projectId: origin.projectId, rethrow: true });
         toast(t('terminal.openedParent'));
       } catch (err) {
         if (request === linkActionGeneration) toast(t('terminal.createPathFailed'));
@@ -217,9 +231,9 @@ export function showLinkCtx(e, kind, value, cwd, sid = null, lookback = null) {
   if (first) first.focus();
 }
 
-/* ---------- new session: no modal — create a shell and enter it.
-   Title is renamed on the board later; command is typed in the shell
-   (with quick-command chips as a shortcut); dir defaults to $HOME. ---------- */
+/* ---------- new session: no modal — start a shell and enter it. ----------
+   Title is renamed on the board later; the directory and command come from
+   the caller (see the module contract). */
 export function nextShellTitle(p) {
   const used = new Set(provider.list(p.id).map(c => c.title));
   let n = 1;
@@ -227,49 +241,65 @@ export function nextShellTitle(p) {
   return t('session.shellName', { number: n });
 }
 
+/* opts: projectId (default the active project), cmd (default none — a
+   shell), rethrow (hand every failure to the caller instead of reporting
+   it), defaults (the directory came from the project's defaults, so the
+   failure dialog may offer to edit them) */
 export async function newSession(dir, opts = {}) {
+  const { projectId = null, cmd = '', rethrow = false, defaults = false } = opts;
   if (ctx.tmuxRestarting || (ctx.tmuxServerStatus && ctx.tmuxServerStatus.pendingRestart)) {
     const error = new Error('tmux server restart required');
-    if (opts.requireStart) throw error;
+    if (rethrow) throw error;
     toast(t(ctx.tmuxRestarting ? 'tmux.restarting' : 'tmux.createBlocked'));
     return;
   }
   if (ctx.creatingSession) {
-    if (opts.requireStart) throw new Error('a session is already being created');
+    if (rethrow) throw new Error('a session is already being created');
     return;
   }
   ctx.creatingSession = true;
+  let p = null, failure = null;
   try {
-    const p = opts.projectId ? provider.project(opts.projectId) : activeProject();
+    p = projectId ? provider.project(projectId) : activeProject();
     if (!p) throw new Error('project no longer exists');
-    const columnId = newSessionColumn(p).id;
-    let started = false;
-    const card = await provider.create({
-      projectId: p.id, columnId,
+    const { card, started } = await provider.createStarted({
+      projectId: p.id, columnId: newSessionColumn(p).id,
       title: nextShellTitle(p),
-      cmd: '',
+      cmd: String(cmd || ''),
       dir: dir || ctx.HOME,
-    }, opts.requireStart ? {
-      beforePersist: async card => {
-        const result = await inv('start_session', {
-          name: card.session, dir: card.dir, cmd: card.cmd,
-          restoreShell: !!ctx.settings.sessionRestore,
-        });
-        started = !!result.created;
-        return started;
-      },
-      rollback: async card => {
-        if (started) await inv('kill_session', { name: card.session });
-      },
-    } : {});
-    await openSession(card.id);
+    });
+    await openSession(card.id, { started });
     return card;
   } catch (error) {
-    if (opts.requireStart) throw error;
-    toast(t('terminal.createFailed'));
+    if (rethrow) throw error;
+    failure = error;
   } finally {
     ctx.creatingSession = false;
   }
+  /* reported after the creation lock is released: a choice may start another */
+  await reportCreateFailure(failure, { project: p, dir: dir || ctx.HOME, defaults });
+}
+
+/* the Board's own entries: the project's default directory and command
+   (`shellOnly` keeps the directory and drops the command) */
+export function newDefaultSession({ shellOnly = false } = {}) {
+  const p = activeProject();
+  if (!p) return Promise.resolve();
+  const plan = newSessionPlan(p, ctx.HOME, { shellOnly });
+  return newSession(plan.dir, { projectId: p.id, cmd: plan.cmd, defaults: plan.hasDir });
+}
+
+/* A missing/unreadable directory is the user's call: never guess a fallback,
+   never leave a card. Every other failure keeps the one generic toast. */
+async function reportCreateFailure(error, { project, dir, defaults }) {
+  if (!project || !isNotDirectoryError(error)) { toast(t('terminal.createFailed')); return; }
+  const shown = collapseHome(dir, ctx.HOME);
+  const choices = [];
+  if (defaults) choices.push({ id: 'edit', label: t('terminal.editDefaults') });
+  choices.push({ id: 'home', label: t('terminal.newHomeShell'), primary: true });
+  const choice = await choiceDialog(t(defaults ? 'terminal.defaultDirUnavailable' : 'terminal.dirUnavailable', { dir: shown }), choices);
+  if (choice === 'home') await newSession(ctx.HOME, { projectId: project.id });
+  else if (choice === 'edit') await openProjectDefaults(project.id, $('board-new'));
 }
 
 /* ---------- command suggestions (Warp-style, driven by an input mirror) ----------
@@ -569,10 +599,11 @@ export function initTerminalChrome() {
 
   $('back-btn').onclick = backToBoard;
 
-  $('board-new').onclick = () => newSession(ctx.HOME);
-  $('board-empty-new').onclick = () => newSession(ctx.HOME);
+  $('board-new').onclick = () => newDefaultSession();
+  $('board-empty-new').onclick = () => newDefaultSession();
+  $('board-empty-defaults').onclick = () => openProjectDefaults(state.projectId, $('board-empty-defaults'));
 
-  registerShortcutAction('newSession', () => newSession(ctx.HOME));
+  registerShortcutAction('newSession', () => newDefaultSession());
 
   registerShortcutAction('toggleSidebar', toggleSidebar);
 

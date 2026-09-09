@@ -6,10 +6,16 @@
 // only coalesces. Attention snapshots and read state are runtime only.
 // Live status never changes placement or durable ordering. Cards carry no
 // terminal preview: output is read in the terminal, never on the Board.
+// Creation (04 A v01): `provider.createStarted` is the ONE path that makes a
+// card for a new session — it starts the tmux session first and persists the
+// card only after that succeeded, so a failed start never leaves a card
+// behind; a launch command sent by that start marks the card `launched`.
+// A project's optional defaults (`dir`, `cmd`; pure.js projectDefaults) feed
+// the Board's own entries only; `openProjectDefaults` edits them.
 import { $, columnHint, ctx, dotTitle, emit, genId, inv, listeners, POLL_MS, QUIET_SECS, sessionName, setMemChip, state, store, uev } from './state.js';
 import { mutateBoard, mutateBoardDebounced } from './persistence.js';
-import { createConfirmationCounter, createExitRetirementTracker, effectiveCardStatus, initialLaunched, newSessionColumn, reorderById, runFinishHolds, sidebarGroups } from './pure.js';
-import { confirmDialog, inlineRename, toast } from './dialogs.js';
+import { collapseHome, createConfirmationCounter, createExitRetirementTracker, effectiveCardStatus, initialLaunched, newSessionColumn, newSessionPlan, projectDefaults, reorderById, runFinishHolds, sidebarGroups } from './pure.js';
+import { confirmDialog, inlineRename, projectDefaultsDialog, toast } from './dialogs.js';
 import { clearSeparators, closePaneBySid, hasPane, leaveSessionView, openSession, renderSessionView, updatePaneChrome } from './layout.js';
 import { SHELL_FG, showProjectCtx, showSessionCtx } from './terminal.js';
 import { renderQueueUI, setQueueChip, updateQuietHints } from './scheduler.js';
@@ -44,6 +50,21 @@ export const provider = {
     await mutateBoard(draft => { draft.projects.push(p); });
     emit('projects', p);
     return p;
+  },
+  /* the project's default directory / launch command for ＋ / ⌘N; blank
+     removes the key, so a project without defaults stays byte-identical to
+     one written before the fields existed */
+  async setProjectDefaults(pid, values) {
+    const next = projectDefaults(values);
+    await mutateBoard(draft => {
+      const p = draft.projects.find(x => x.id === pid);
+      if (!p) throw new Error('project no longer exists');
+      const current = projectDefaults(p);
+      if (current.dir === next.dir && current.cmd === next.cmd) return { noop: true };
+      if (next.dir) p.dir = next.dir; else delete p.dir;
+      if (next.cmd) p.cmd = next.cmd; else delete p.cmd;
+    });
+    emit('projects');
   },
   async renameProject(pid, name) {
     await mutateBoard(draft => {
@@ -182,6 +203,33 @@ export const provider = {
     }
     emit('list', card);
     return card;
+  },
+
+  /* create a card for a NEW session: the tmux session is started inside the
+     Board transaction, before the card is persisted, and killed again if the
+     write fails — so a directory that does not exist, a refused start or a
+     failed save never leaves a card on the Board. Returns the card and what
+     the start did; a command sent here is the card's one launch. */
+  async createStarted(fields) {
+    let started = null;
+    const card = await this.create(fields, {
+      beforePersist: async card => {
+        const result = await inv('start_session', {
+          name: card.session, dir: card.dir, cmd: card.cmd,
+          restoreShell: !!ctx.settings.sessionRestore,
+        });
+        started = {
+          created: !!result.created, restored: !!result.restored,
+          commandSent: !!result.created && !!String(card.cmd || '').trim(),
+        };
+        if (started.commandSent) card.launched = true;
+        return started;
+      },
+      rollback: async card => {
+        if (started && started.created) await inv('kill_session', { name: card.session });
+      },
+    });
+    return { card, started };
   },
 
   /* stop and delete are one operation; returns false when the card was
@@ -737,10 +785,17 @@ export function renderBoard() {
   /* an empty project gets one starting point above its groups: what a new
      session is, where its card will land (the same rule newSession uses) */
   const total = provider.list(p.id).length;
-  const target = newSessionColumn(p);
+  const plan = newSessionPlan(p, ctx.HOME);
   $('board-empty').hidden = total > 0;
-  $('board-empty-body').textContent = t('board.emptyBody', { column: target ? target.name : '' });
+  $('board-empty-body').textContent = plan.cmd
+    ? t('board.emptyBodyCmd', { dir: collapseHome(plan.dir, ctx.HOME), cmd: plan.cmd, column: plan.column })
+    : plan.hasDir
+      ? t('board.emptyBodyDir', { dir: collapseHome(plan.dir, ctx.HOME), column: plan.column })
+      : t('board.emptyBody', { column: plan.column });
+  $('board-empty-defaults').textContent = t('board.emptyDefaultsLink');
+  $('board-empty-defaults').hidden = plan.hasDir || !!plan.cmd;
   $('board-empty-key').textContent = formatShortcut(ctx.settings?.shortcuts?.newSession);
+  $('board-new').title = `${t('app.newSession')} · ${newSessionSummary(p)} (${formatShortcut(ctx.settings?.shortcuts?.newSession)})`;
   const hScroll = wrap.scrollLeft;
   const colScroll = {};
   wrap.querySelectorAll('.column[data-cid]').forEach(el => {
@@ -839,6 +894,40 @@ export function renderBoard() {
     const st = colScroll[el.dataset.cid];
     if (st) el.querySelector('.col-cards').scrollTop = st;
   });
+}
+
+/* what ＋ / ⌘N will do, in words: directory · command → group */
+export function newSessionSummary(p, opts = {}) {
+  const plan = newSessionPlan(p, ctx.HOME, opts);
+  const dir = collapseHome(plan.dir, ctx.HOME);
+  return plan.cmd
+    ? t('menu.newSessionSub', { dir, cmd: plan.cmd, column: plan.column })
+    : t('menu.newShellSub', { dir, column: plan.column });
+}
+export function projectDefaultsSummary(p) {
+  const d = projectDefaults(p);
+  if (!d.dir && !d.cmd) return t('projectDefaults.none');
+  return t('projectDefaults.summary', { dir: d.dir || '~', cmd: d.cmd || t('automation.shellOnly') });
+}
+
+/* the project defaults dialog, from the tab menu, the New session ▾ menu or
+   the empty project's link; focus returns to whichever opened it. Recent
+   commands are offered as chips that only fill the field. */
+export async function openProjectDefaults(pid, opener = null) {
+  const p = provider.project(pid);
+  if (!p) return;
+  const recent = await inv('recent_commands', { limit: 6 }).catch(() => []);
+  const current = projectDefaults(p);
+  const result = await projectDefaultsDialog({
+    name: p.name, dir: current.dir, cmd: current.cmd,
+    recent: Array.isArray(recent) ? recent.filter(c => typeof c === 'string') : [],
+  });
+  if (result) {
+    try { await provider.setProjectDefaults(pid, result); }
+    catch (_) { toast(t('projectDefaults.saveFailed')); }
+  }
+  const back = typeof opener === 'function' ? opener() : opener;
+  if (back && back.isConnected && back.focus) back.focus();
 }
 
 export function cardEl(s) {

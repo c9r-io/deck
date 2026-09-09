@@ -1,7 +1,7 @@
-// dialogs.js — confirm/prompt dialogs, toasts, inline rename, settings modal
+// dialogs.js — confirm/prompt/choice dialogs, project defaults, toasts, inline rename, settings modal
 // Part of deck's no-build frontend: native ES modules, no bundler.
 import { $, ctx, inv, uev } from './state.js';
-import { inlineRenameValue } from './pure.js';
+import { inlineRenameValue, isComposingKeyEvent } from './pure.js';
 import { applyTranslations, formatNumber, getLocale, onLocaleChange, setLocale, t, translateNotice } from './i18n.js';
 import {
   CUSTOMIZABLE_SHORTCUT_ACTIONS, FONT_SCALE_MAX, FONT_SCALE_MIN, FONT_SCALE_STEP, SHORTCUT_ACTIONS,
@@ -42,6 +42,78 @@ export function cfmDone(v) {
   $('cfm').style.display = 'none';
   confirmPointerOnly = false;
   if (ctx.cfmResolve) { ctx.cfmResolve(v); ctx.cfmResolve = null; }
+}
+
+/* ---------- choice dialog: one question, explicit answers ----------
+   Used where deck must not guess (a directory that no longer exists).
+   Resolves the chosen id, or null on Cancel / Escape / a click outside.
+   Enter is not bound: the focused button (the caller's primary choice)
+   receives it natively, so a stray Enter can only take that one choice. */
+let chdResolve = null;
+export function choiceDialog(msg, choices) {
+  return new Promise(resolve => {
+    if (chdResolve) chdResolve(null);
+    $('chd-msg').textContent = msg;
+    const actions = $('chd-actions');
+    actions.replaceChildren();
+    const done = v => { $('chd').style.display = 'none'; $('chd').onkeydown = null; chdResolve = null; resolve(v); };
+    chdResolve = done;
+    const cancel = document.createElement('button');
+    cancel.type = 'button'; cancel.className = 'btn'; cancel.textContent = t('common.cancel');
+    cancel.onclick = () => done(null);
+    actions.appendChild(cancel);
+    let primary = null;
+    for (const c of choices) {
+      const b = document.createElement('button');
+      b.type = 'button'; b.className = 'btn' + (c.primary ? ' primary' : ''); b.textContent = c.label;
+      b.onclick = () => done(c.id);
+      actions.appendChild(b);
+      if (c.primary && !primary) primary = b;
+    }
+    $('chd').onkeydown = e => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); done(null); } };
+    $('chd').style.display = 'flex';
+    (primary || cancel).focus();
+  });
+}
+
+/* ---------- project defaults dialog (04 A v01) ----------
+   The project's default directory and launch command, edited together.
+   Resolves { dir, cmd } (trimmed; blank = no default) on Save / Enter, null
+   on Cancel / Escape / a click outside. `recent` are command chips that only
+   FILL the command field — nothing in this dialog runs anything. */
+let pdfResolve = null;
+export function projectDefaultsDialog({ name, dir = '', cmd = '', recent = [] }) {
+  return new Promise(resolve => {
+    if (pdfResolve) pdfResolve(null);
+    $('pdf-title').textContent = t('projectDefaults.title', { name });
+    const dirInput = $('pdf-dir'), cmdInput = $('pdf-cmd');
+    dirInput.value = dir; cmdInput.value = cmd;
+    const chips = $('pdf-chips');
+    chips.replaceChildren();
+    for (const c of recent.slice(0, 6)) {
+      const b = document.createElement('button');
+      b.type = 'button'; b.className = 'pdf-chip'; b.textContent = c;
+      b.onclick = () => { cmdInput.value = c; cmdInput.focus(); };
+      chips.appendChild(b);
+    }
+    chips.hidden = !recent.length;
+    const read = () => ({ dir: dirInput.value.trim(), cmd: cmdInput.value.trim() });
+    const done = v => { $('pdf').style.display = 'none'; $('pdf').onkeydown = null; pdfResolve = null; resolve(v); };
+    pdfResolve = done;
+    $('pdf-yes').onclick = () => done(read());
+    $('pdf-no').onclick = () => done(null);
+    $('pdf').onkeydown = e => {
+      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); done(null); return; }
+      if (e.key === 'Enter' && e.target && e.target.tagName === 'INPUT') {
+        if (isComposingKeyEvent(e)) return;
+        e.preventDefault(); e.stopPropagation();
+        done(read());
+      }
+    };
+    $('pdf').style.display = 'flex';
+    dirInput.focus();
+    dirInput.select();
+  });
 }
 
 /* ---------- toasts ---------- */
@@ -638,6 +710,8 @@ export function initDialogs() {
   $('cfm-no').onclick = () => cfmDone(false);
 
   $('cfm').addEventListener('mousedown', e => { if (e.target === $('cfm')) cfmDone(false); });
+  $('chd').addEventListener('mousedown', e => { if (e.target === $('chd') && chdResolve) chdResolve(null); });
+  $('pdf').addEventListener('mousedown', e => { if (e.target === $('pdf') && pdfResolve) pdfResolve(null); });
 
   document.addEventListener('keydown', e => {
     if ($('cfm').style.display !== 'flex') return;
@@ -669,7 +743,7 @@ export function initDialogs() {
   });
 
   $('settings-box').addEventListener('keydown', event => {
-    if (['cfm', 'ppd', 'tmux-lifecycle-modal'].some(id => $(id).style.display === 'flex')) return;
+    if (['cfm', 'ppd', 'chd', 'pdf', 'tmux-lifecycle-modal'].some(id => $(id).style.display === 'flex')) return;
     if (event.key === 'Escape') {
       event.preventDefault(); event.stopPropagation();
       if ($('set-search').value) {

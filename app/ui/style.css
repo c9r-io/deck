@@ -213,6 +213,12 @@ body.side-collapsed .side-new .label { display: none; }
 .board-empty-text { flex: 1; min-width: 0; }
 .board-empty-act { display: flex; align-items: center; gap: 8px; flex: none; }
 .board-empty-key { color: var(--faint); font-size: 0.846154rem; }
+#board-empty-defaults {
+  margin-top: 4px; padding: 0; background: none; border: none; font: inherit; font-size: 0.923077rem;
+  color: var(--accent); text-decoration: underline dotted; text-align: left;
+}
+#board-empty-defaults[hidden] { display: none; }
+#board-empty-defaults:hover { text-decoration: underline; }
 .btn {
   display: inline-flex; align-items: center; gap: 6px;
   padding: 6px 12px; border-radius: 6px;
@@ -419,6 +425,11 @@ body.side-collapsed .side-new .label { display: none; }
 #ctx button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 #ctx button .ctx-key { float: right; color: var(--faint); font-family: var(--mono); font-size: 0.807692rem; margin-left: 12px; }
 #ctx .ctx-label.ctx-sub { text-transform: none; letter-spacing: 0; padding-top: 6px; }
+/* a menu item's second line: what this entry will do (directory · command → group) */
+#ctx button .ctx-hint {
+  display: block; clear: right; color: var(--faint); font-family: var(--mono); font-size: 0.807692rem;
+  margin-top: 2px; white-space: normal; overflow-wrap: anywhere; max-width: min(420px, calc(100vw - 58px));
+}
 
 /* ---------- dropdown (deck's own <select> popup, dropdown.js) ----------
    The native select stays in the wrapper for its value and events but is
@@ -594,6 +605,30 @@ body.side-collapsed .side-new .label { display: none; }
   box-shadow: 0 16px 48px var(--shadow-modal);
 }
 #ppd-msg { font-size: 1rem; line-height: 1.5; margin-bottom: 10px; }
+/* choice dialog + project defaults (04): the prompt dialog's frame */
+#chd, #pdf {
+  position: fixed; inset: 0; z-index: 72; display: none;
+  background: var(--modal-overlay);
+  align-items: flex-start; justify-content: center;
+}
+#chd-box, #pdf-box {
+  margin-top: 16vh; width: 460px; max-width: calc(100vw - 40px);
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: 12px; padding: 18px;
+  box-shadow: 0 16px 48px var(--shadow-modal);
+}
+#chd-msg { font-size: 1rem; line-height: 1.5; margin-bottom: 16px; overflow-wrap: anywhere; }
+#pdf-box h2 { margin: 0 0 12px; font-size: 1.07692rem; font-weight: 600; overflow-wrap: anywhere; }
+#pdf-box .set-row label { width: 108px; }
+#pdf-box .set-row input { flex: 1; min-width: 0; font-family: var(--mono); }
+#pdf-box .set-hint { margin: 8px 0 14px; }
+.pdf-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 6px 118px; }
+.pdf-chips[hidden] { display: none; }
+.pdf-chip {
+  font-family: var(--mono); font-size: 0.807692rem; padding: 1px 8px; border-radius: 10px;
+  background: var(--raised); border: 1px solid var(--border); color: var(--muted);
+}
+.pdf-chip:hover { color: var(--accent); border-color: var(--accent-dim); background: var(--sel); }
 #ppd-input {
   width: 100%; box-sizing: border-box; margin-bottom: 14px;
   background: var(--bg); border: 1px solid var(--border); border-radius: 7px;
@@ -922,6 +957,7 @@ html.font-scale-large .tmux-lifecycle-actions { align-items: flex-start; flex-wr
   #queue-panel { max-height: 55vh; padding: 8px; }
   #settings-modal, #tpl-modal { padding: 4vh 20px; }
   #cfm-box, #ppd-box { margin-top: 8vh; max-height: 84vh; overflow-y: auto; }
+  #chd-box, #pdf-box { margin-top: 8vh; max-height: 84vh; overflow-y: auto; }
   #tmux-lifecycle-box { margin-top: 8vh; max-height: 84vh; overflow-y: auto; }
   .qg-row { align-items: flex-start; flex-wrap: wrap; }
   .qg-row .row-meta { flex-basis: calc(100% - 20px); margin-left: 20px; white-space: normal; }

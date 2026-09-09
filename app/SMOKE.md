@@ -42,7 +42,25 @@ keyboard handler; the Slack-preset editor opened from that menu; the project
 tab menu opening both managers with focus returning to the tab; the ↻ chip
 appearing only while a rule exists and opening the drawer; Templates…
 reachable from the menu and from a list's 📋 with focus returning to the
-opener; and one name per object in both dictionaries. A debug-only strip
+opener; and one name per object in both dictionaries. The same run also
+carries the 04 A v01 project-defaults gate (`defaults-*`, ten checks): the ▾
+menu without and with defaults (first-item hint, "New shell only", "Project
+defaults…" with its summary, the ＋ tooltip); ＋ with defaults starting a real
+session in the default directory with the command sent once and the card
+marked launched; "New shell only" keeping the directory with the fresh-shell
+flag set and an injected recent-command chip rendered (the flag is set after
+focusPane since 04; it had been reset there since v0.4.0); a missing default directory raising the three-choice
+dialog with nothing written (cancel keeps it so, the home choice starts a
+shell, the edit choice opens the defaults dialog); a context entry staying a
+shell and its missing directory raising the two-choice dialog; a new
+automation rule prefilled from the defaults while an existing rule keeps its
+own; the defaults dialog (values, Save, Escape, focus return, the tab menu
+entry); the empty project's link and promise text; and cleared defaults
+leaving the project byte-identical; and a new shell whose poll turns dead
+retiring its card and pane through the real close (the harness's synthetic
+poll only knows the fixture cards, so a card you create by hand in the
+left-over instance is NOT polled — press the strip's 真实轮询 first to hand
+the page back to the real backend before testing exits). A debug-only strip
 leaves Board / Empty project / Needs attention / Update failed available for
 screenshots; the strip and fixture never ship in release bundles. Also inspect at the 720×480
 minimum window: controls must remain reachable and long names must wrap.

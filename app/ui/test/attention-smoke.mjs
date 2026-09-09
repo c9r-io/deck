@@ -248,7 +248,7 @@ export async function runAttentionSmoke() {
     await report('entry-empty', emptyShown && $('board-empty').hidden && starts === 0);
     more.click(); await pause(20);
     const items = [...$('ctx').querySelectorAll('button')];
-    const opened = $('ctx').style.display === 'block' && items.length === 5 && document.activeElement === items[0] && more.getAttribute('aria-expanded') === 'true';
+    const opened = $('ctx').style.display === 'block' && items.length === 6 && document.activeElement === items[0] && more.getAttribute('aria-expanded') === 'true';
     $('ctx').dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
     const moved = document.activeElement === items[1];
     $('ctx').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
@@ -317,16 +317,179 @@ export async function runAttentionSmoke() {
     const enNames = document.querySelector('label[for="auto-column"]').textContent === 'Group' && $('home-btn').querySelector('.label').textContent === 'Board';
     setLocale('zh-Hans'); render();
     await report('entry-vocabulary', zhNames && enNames);
+    // 04 A v01: project defaults. The Board's own entries take the project's
+    // directory and command (sent once, at creation); context entries never
+    // do; a directory that no longer exists asks and leaves no card behind.
+    // Real sessions start on the isolated socket with a harmless echo.
+    stage = 6;
+    const { openProjectDefaults } = await import('../js/board.js');
+    const { newSession, newDefaultSession } = await import('../js/terminal.js');
+    const { openEditor } = await import('../js/automation.js');
+    const { renderSuggest } = await import('../js/terminal.js');
+    await reset();
+    const base = JSON.stringify(boardData());
+    const menuButtons = () => [...$('ctx').querySelectorAll('button')];
+    more.click(); await pause(20);
+    const plain = menuButtons();
+    const plainMenu = plain.length === 6 && !plain.some(b => b.textContent.includes(t('menu.newShellOnly')))
+      && plain[0].querySelector('.ctx-hint')?.textContent.includes(atlas.columns[1].name)
+      && plain[3].textContent.includes(t('menu.projectDefaults')) && plain[3].querySelector('.ctx-hint')?.textContent === t('projectDefaults.none');
+    document.body.click(); await pause(20);
+    const smokeCmd = 'echo deck-04-smoke';
+    await provider.setProjectDefaults(atlas.id, { dir: '/tmp', cmd: smokeCmd }); await pause(20);
+    more.click(); await pause(20);
+    const withDefaults = menuButtons();
+    const hint0 = withDefaults[0].querySelector('.ctx-hint')?.textContent || '';
+    const defaultsMenu = withDefaults.length === 7 && withDefaults[1].textContent.includes(t('menu.newShellOnly'))
+      && hint0.includes('/tmp') && hint0.includes(smokeCmd) && hint0.includes(atlas.columns[1].name)
+      && withDefaults[4].querySelector('.ctx-hint')?.textContent.includes(smokeCmd)
+      && $('board-new').title.includes('/tmp') && $('board-new').title.includes(smokeCmd);
+    document.body.click(); await pause(20);
+    await report('defaults-menu', plainMenu && defaultsMenu);
+    // ＋ with defaults: one start with the command, the card marked launched,
+    // no fresh-shell chips (a program owns the pane), the session really alive.
+    let startsMark = starts;
+    const created = await newDefaultSession(); await pause(80);
+    const c1 = created && provider.get(created.id);
+    const live1 = c1 ? await nativeInvoke('poll_sessions', { names: [c1.session], tailFor: [], checkpointShells: false }) : [];
+    const createOk = !!c1 && c1.dir === '/tmp' && c1.cmd === smokeCmd && c1.launched === true && c1.columnId === atlas.columns[1].id
+      && starts === startsMark + 2 && live1[0]?.alive === true && ctx.freshShell === false && state.view === 'session'
+      && boardData().cards.find(c => c.id === c1.id)?.launched === true;
+    if (c1) await provider.close(c1.id);
+    backToBoard(); await pollNow();
+    await report('defaults-create', createOk && !provider.get(created?.id));
+    // "New shell only": same directory, no command, one real start.
+    startsMark = starts;
+    const shell = await newDefaultSession({ shellOnly: true }); await pause(80);
+    const c2 = shell && provider.get(shell.id);
+    const live2 = c2 ? await nativeInvoke('poll_sessions', { names: [c2.session], tailFor: [], checkpointShells: false }) : [];
+    // A fresh empty shell offers its recent-command chips (fixed under 04: the
+    // flag survives focusPane); history is injected because the isolated data
+    // dir has none, and the chips only FILL the line.
+    const freshFlag = ctx.freshShell === true;
+    ctx.histCache = ['echo deck-04-chip']; renderSuggest(); await pause(60);
+    const chipsShown = $('quick-bar').style.display === 'flex' && [...$('quick-bar').querySelectorAll('.qb-chip')].some(b => b.textContent === 'echo deck-04-chip');
+    const shellOk = !!c2 && c2.dir === '/tmp' && c2.cmd === '' && c2.launched === true && state.view === 'session'
+      && starts === startsMark + 2 && live2[0]?.alive === true && freshFlag && chipsShown;
+    if (c2) await provider.close(c2.id);
+    backToBoard(); await pollNow();
+    await report('defaults-shell-only', shellOk);
+    // A shell that exits retires its card through the poll's live→dead
+    // transition, exactly as before 04. This harness replaces poll_sessions
+    // with a synthetic snapshot that knows only the fixture cards, so the new
+    // card is registered in it first; the close itself is the real one.
+    const exiting = await newDefaultSession({ shellOnly: true }); await pause(80);
+    const c4 = exiting && provider.get(exiting.id);
+    if (c4) statuses.set(c4.session, { name: c4.session, alive: true, agent: null, idle_secs: 1, fg: 'zsh', mem_mb: 5 });
+    await pollNow();
+    const wentLive = !!c4 && c4.status !== 'stopped';
+    if (c4) { statuses.get(c4.session).alive = false; statuses.get(c4.session).mem_mb = null; }
+    await pollNow(); await pause(80);
+    const retired = !!c4 && !provider.get(c4.id) && state.view === 'board' && !panes.has(c4.session);
+    if (c4) statuses.delete(c4.session);
+    await report('defaults-exit', wentLive && retired);
+    // A default directory that does not exist: the dialog names it, nothing
+    // was written, cancel leaves it so; the home-shell choice creates a shell.
+    await provider.setProjectDefaults(atlas.id, { dir: '/nonexistent/deck-04-smoke', cmd: smokeCmd }); await pause(20);
+    const beforeFail = JSON.stringify(boardData());
+    startsMark = starts;
+    newDefaultSession(); await pause(200);
+    const dialogShown = $('chd').style.display === 'flex' && $('chd-msg').textContent.includes('/nonexistent/deck-04-smoke')
+      && $('chd-actions').querySelectorAll('button').length === 3 && document.activeElement === $('chd-actions').lastElementChild;
+    const noGhost = JSON.stringify(boardData()) === beforeFail && starts === startsMark + 1 && state.view === 'board';
+    $('chd-actions').querySelectorAll('button')[0].click(); await pause(20);
+    const cancelled = $('chd').style.display !== 'flex' && JSON.stringify(boardData()) === beforeFail;
+    newDefaultSession(); await pause(200);
+    $('chd-actions').lastElementChild.click(); await pause(200);
+    const homeCard = provider.list(atlas.id).find(c => c.dir === ctx.HOME && c.cmd === '');
+    const homeOk = !!homeCard && homeCard.launched === true && state.view === 'session' && ctx.freshShell === true;
+    if (homeCard) await provider.close(homeCard.id);
+    backToBoard(); await pollNow();
+    newDefaultSession(); await pause(200);
+    $('chd-actions').querySelectorAll('button')[1].click(); await pause(80);
+    const editOffered = $('pdf').style.display === 'flex' && $('pdf-dir').value === '/nonexistent/deck-04-smoke';
+    $('pdf-no').click(); await pause(20);
+    await report('defaults-not-dir', dialogShown && noGhost && cancelled && homeOk && editOffered);
+    // A context entry keeps its own directory and is a shell even with a
+    // default command; its missing directory asks with two choices only.
+    await provider.setProjectDefaults(atlas.id, { dir: '/tmp', cmd: smokeCmd }); await pause(20);
+    const here = await newSession('/tmp', { projectId: atlas.id }); await pause(80);
+    const c3 = here && provider.get(here.id);
+    const hereOk = !!c3 && c3.cmd === '' && c3.dir === '/tmp' && c3.launched === true && state.view === 'session' && ctx.freshShell === true;
+    if (c3) await provider.close(c3.id);
+    backToBoard(); await pollNow();
+    const beforeHere = JSON.stringify(boardData());
+    newSession('/nonexistent/deck-04-here', { projectId: atlas.id }); await pause(200);
+    const hereDialog = $('chd').style.display === 'flex' && $('chd-actions').querySelectorAll('button').length === 2 && JSON.stringify(boardData()) === beforeHere;
+    $('chd-actions').querySelectorAll('button')[0].click(); await pause(20);
+    await report('defaults-here', hereOk && hereDialog && $('chd').style.display !== 'flex');
+    // A NEW automation rule starts from the defaults; an existing rule keeps its own.
+    await openAutomations({ from: more }); await pause(20);
+    $('auto-new').click(); await pause(20);
+    const prefilled = $('auto-dir').value === '/tmp' && $('auto-cmd').value === smokeCmd;
+    openEditor({ ...rule, dir: '/elsewhere', cmd: 'codex' }); await pause(20);
+    const existingKept = $('auto-dir').value === '/elsewhere' && $('auto-cmd').value === 'codex';
+    closeAutomations();
+    await report('defaults-editor', prefilled && existingKept);
+    // The dialog: current values, Save clears, Escape and the tab menu entry.
+    let pdfPromise = openProjectDefaults(atlas.id, more); await pause(60);
+    const dialogValues = $('pdf').style.display === 'flex' && $('pdf-dir').value === '/tmp' && $('pdf-cmd').value === smokeCmd && document.activeElement === $('pdf-dir');
+    $('pdf-dir').value = ''; $('pdf-cmd').value = '';
+    $('pdf-yes').click(); await pdfPromise; await pause(20);
+    const atlasNow = provider.project(atlas.id);
+    const cleared = !('dir' in atlasNow) && !('cmd' in atlasNow) && $('pdf').style.display !== 'flex' && document.activeElement === more;
+    pdfPromise = openProjectDefaults(atlas.id, more); await pause(60);
+    $('pdf').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    await pdfPromise;
+    const escaped = $('pdf').style.display !== 'flex' && document.activeElement === more;
+    tabMenu(); $('ctx').querySelector('[data-a="defaults"]').click(); await pause(60);
+    const fromTab = $('pdf').style.display === 'flex';
+    $('pdf-no').click(); await pause(20);
+    await report('defaults-dialog', dialogValues && cleared && escaped && fromTab);
+    // The empty project: the link without defaults, the promise with them.
+    switchProject(emptyProject.id); await pollNow();
+    const linkShown = !$('board-empty').hidden && !$('board-empty-defaults').hidden
+      && $('board-empty-body').textContent === t('board.emptyBody', { column: emptyTarget.name });
+    $('board-empty-defaults').click(); await pause(60);
+    const linkOpens = $('pdf').style.display === 'flex';
+    $('pdf-no').click(); await pause(20);
+    await provider.setProjectDefaults(emptyProject.id, { dir: '/tmp', cmd: 'echo e' }); await pause(20);
+    const promised = $('board-empty-defaults').hidden && $('board-empty-body').textContent.includes('/tmp') && $('board-empty-body').textContent.includes('echo e');
+    await provider.setProjectDefaults(emptyProject.id, { dir: '', cmd: '' }); await pause(20);
+    switchProject(atlas.id); await pollNow();
+    await report('defaults-empty', linkShown && linkOpens && promised);
+    // Persistence: present values are written as strings; cleared ones leave
+    // the project byte-identical to one written before the fields existed.
+    await provider.setProjectDefaults(atlas.id, { dir: '~/work/atlas', cmd: 'claude' });
+    const saved = boardData().projects.find(p => p.id === atlas.id);
+    await provider.setProjectDefaults(atlas.id, { dir: '', cmd: '' });
+    const savedAfter = boardData().projects.find(p => p.id === atlas.id);
+    await report('defaults-persistence', saved.dir === '~/work/atlas' && saved.cmd === 'claude'
+      && !('dir' in savedAfter) && !('cmd' in savedAfter) && JSON.stringify(boardData()) === base);
     await reset(); showAttention(); await pollNow();
     // Buttons in a test-only strip select real implemented views for screenshots.
     const strip = document.createElement('div');
     strip.style.cssText = 'padding:6px 12px;border-bottom:1px solid var(--border);display:flex;gap:12px;color:var(--muted);font-size:12px';
     const label = document.createElement('span'); label.textContent = '隔离验证 · 真实实现 / 虚构状态'; strip.append(label);
-    for (const mode of ['看板', '空项目', '待关注', '更新失败']) {
+    for (const mode of ['看板', '空项目', '待关注', '更新失败', '项目默认值示例', '真实轮询']) {
       const btn = document.createElement('button'); btn.textContent = mode;
       btn.onclick = async () => {
         failPoll = false; missing = null;
+        if (mode === '真实轮询') {
+          // Hand the page back to the real backend: polls, exits and closes
+          // behave as in production from here on ("更新失败" no longer injects).
+          window.__TAURI__ = nativeTauri;
+          await reset(); switchProject(atlas.id); await pollNow(); return;
+        }
         await reset();
+        if (mode === '项目默认值示例') {
+          // Atlas gets a harmless demo default (a directory that exists and an
+          // echo), so ＋ / ▾ / the tab menu can be inspected; the fixture
+          // cards are untouched and the values are cleared by 看板.
+          await provider.setProjectDefaults(atlas.id, { dir: '/tmp', cmd: 'echo deck-04-demo' });
+          switchProject(atlas.id); await pollNow(); return;
+        }
+        if (mode === '看板') await provider.setProjectDefaults(atlas.id, { dir: '', cmd: '' });
         if (mode === '空项目') { switchProject(emptyProject.id); await pollNow(); return; }
         if (mode !== '看板') { showAttention(); await pollNow(); }
         if (mode === '更新失败') { failPoll = true; await pollNow(); }

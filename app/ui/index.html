@@ -46,6 +46,7 @@
         <div class="board-empty-text">
           <h2 data-i18n="board.emptyTitle">No sessions yet</h2>
           <p id="board-empty-body"></p>
+          <button id="board-empty-defaults" type="button" hidden></button>
         </div>
         <div class="board-empty-act">
           <button class="btn primary" id="board-empty-new" type="button"><span>＋</span> <span data-i18n="app.newSession">New session</span></button>
@@ -504,6 +505,25 @@
     <div class="cfm-actions">
       <button class="btn" id="cfm-no" data-i18n="common.cancel">Cancel</button>
       <button class="btn cfm-danger" id="cfm-yes" data-i18n="common.confirm">Confirm</button>
+    </div>
+  </div>
+</div>
+<div id="chd" role="dialog" aria-modal="true" aria-labelledby="chd-msg">
+  <div id="chd-box">
+    <div id="chd-msg"></div>
+    <div class="cfm-actions" id="chd-actions"></div>
+  </div>
+</div>
+<div id="pdf" role="dialog" aria-modal="true" aria-labelledby="pdf-title">
+  <div id="pdf-box">
+    <h2 id="pdf-title"></h2>
+    <div class="set-row"><label for="pdf-dir" data-i18n="projectDefaults.dir">Default directory</label><input id="pdf-dir" autocomplete="off" spellcheck="false" placeholder="~/work/project"></div>
+    <div class="set-row"><label for="pdf-cmd" data-i18n="projectDefaults.cmd">Default command</label><input id="pdf-cmd" autocomplete="off" spellcheck="false" maxlength="200" placeholder="claude"></div>
+    <div class="pdf-chips" id="pdf-chips" hidden></div>
+    <p class="set-hint" data-i18n="projectDefaults.hint">Both may stay empty: ＋ / ⌘N then open a shell in your home directory, as today. The command is sent once, when the session is created; reopening a stopped card returns to its shell. “New session in this directory”, “new session in the parent folder” and a split’s “new shell here” keep their own directory and never run it. A new automation starts with these two values filled in; existing rules are untouched.</p>
+    <div class="cfm-actions">
+      <button class="btn" id="pdf-no" data-i18n="common.cancel">Cancel</button>
+      <button class="btn primary" id="pdf-yes" data-i18n="common.save">Save</button>
     </div>
   </div>
 </div>

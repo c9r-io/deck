@@ -70,8 +70,8 @@ globalThis.document = fakeDocument;
 globalThis.window = { __TAURI__: null, __DECK_DEBUG: false };
 
 const {
-  cfmDone, confirmDangerDialog, confirmDialog, initDialogs, inlineRename, persistSessionRestoreChoice, persistUpdateChannelChoice,
-  promptDialog, persistThemeChoice, filterSettings, selectSettingsSection, resetApplicationLogs, refreshLogSize,
+  cfmDone, choiceDialog, confirmDangerDialog, confirmDialog, initDialogs, inlineRename, persistSessionRestoreChoice, persistUpdateChannelChoice,
+  projectDefaultsDialog, promptDialog, persistThemeChoice, filterSettings, selectSettingsSection, resetApplicationLogs, refreshLogSize,
 } = await import('../js/dialogs.js');
 const { ctx, store } = await import('../js/state.js');
 const { boardData, flushBoardMutations, mutateBoard, mutateBoardDebounced } = await import('../js/persistence.js');
@@ -443,4 +443,65 @@ test('late log size responses cannot overwrite the newest post-reset size', asyn
   reads[0](128000);
   await oldRead;
   assert.match(fakeDocument.getElementById('set-log-size').textContent, /0 B$/);
+});
+
+test('the choice dialog resolves an explicit answer, or null on cancel and Escape', async () => {
+  const dlg = ids.get('chd') || fakeDocument.getElementById('chd');
+  let promise = choiceDialog('directory gone', [{ id: 'edit', label: 'Edit' }, { id: 'home', label: 'Home shell', primary: true }]);
+  const actions = fakeDocument.getElementById('chd-actions');
+  assert.equal(dlg.style.display, 'flex');
+  assert.equal(fakeDocument.getElementById('chd-msg').textContent, 'directory gone');
+  assert.deepEqual(actions.children.map(b => b.textContent), ['Cancel', 'Edit', 'Home shell'], 'cancel first, choices in order');
+  assert.equal(fakeDocument.activeElement, actions.children[2], 'the primary choice holds focus; Enter can only take that one');
+  actions.children[2].fire('click');
+  assert.equal(await promise, 'home');
+  assert.equal(dlg.style.display, 'none');
+  promise = choiceDialog('again', [{ id: 'home', label: 'Home shell', primary: true }]);
+  fakeDocument.getElementById('chd-actions').children[0].fire('click');
+  assert.equal(await promise, null, 'cancel');
+  promise = choiceDialog('again', [{ id: 'home', label: 'Home shell' }]);
+  assert.equal(fakeDocument.activeElement.textContent, 'Cancel', 'no primary: cancel holds focus');
+  const esc = dlg.fire('keydown', { key: 'Escape' });
+  assert.equal(esc.prevented, 1);
+  assert.equal(await promise, null, 'Escape');
+  assert.equal(dlg.onkeydown, null, 'the handler is cleared with the dialog');
+  promise = choiceDialog('outside', [{ id: 'home', label: 'Home shell' }]);
+  dlg.fire('mousedown', { target: dlg });
+  assert.equal(await promise, null, 'a click on the scrim cancels');
+});
+
+test('the project defaults dialog edits two trimmed strings and chips only fill the command', async () => {
+  const dlg = fakeDocument.getElementById('pdf');
+  const dir = fakeDocument.getElementById('pdf-dir'), cmd = fakeDocument.getElementById('pdf-cmd');
+  let promise = projectDefaultsDialog({ name: 'Atlas', dir: '~/work/atlas', cmd: '', recent: ['claude', 'codex', 'cargo test'] });
+  assert.equal(dlg.style.display, 'flex');
+  assert.match(fakeDocument.getElementById('pdf-title').textContent, /Atlas/);
+  assert.equal(dir.value, '~/work/atlas');
+  assert.equal(cmd.value, '');
+  assert.equal(fakeDocument.activeElement, dir, 'the directory field is focused first');
+  const chips = fakeDocument.getElementById('pdf-chips');
+  assert.equal(chips.hidden, false);
+  assert.deepEqual(chips.children.map(c => c.textContent), ['claude', 'codex', 'cargo test']);
+  chips.children[1].fire('click');
+  assert.equal(cmd.value, 'codex', 'a chip fills the field');
+  assert.equal(fakeDocument.activeElement, cmd);
+  dir.value = '  ~/work/atlas/api ';
+  const enter = dlg.fire('keydown', { key: 'Enter', target: { tagName: 'INPUT' } });
+  assert.equal(enter.prevented, 1);
+  assert.deepEqual(await promise, { dir: '~/work/atlas/api', cmd: 'codex' }, 'Enter saves trimmed values');
+  assert.equal(dlg.style.display, 'none');
+  promise = projectDefaultsDialog({ name: 'Cedar', recent: [] });
+  assert.equal(chips.hidden, true, 'no recent commands, no chip row');
+  assert.equal(dir.value, '');
+  const composing = dlg.fire('keydown', { key: 'Enter', isComposing: true, target: { tagName: 'INPUT' } });
+  assert.equal(composing.prevented, 0, 'an IME Enter never saves');
+  dlg.fire('keydown', { key: 'Escape' });
+  assert.equal(await promise, null);
+  promise = projectDefaultsDialog({ name: 'Cedar' });
+  cmd.value = 'claude';
+  fakeDocument.getElementById('pdf-yes').fire('click');
+  assert.deepEqual(await promise, { dir: '', cmd: 'claude' }, 'Save with a blank directory keeps only the command');
+  promise = projectDefaultsDialog({ name: 'Cedar' });
+  fakeDocument.getElementById('pdf-no').fire('click');
+  assert.equal(await promise, null);
 });

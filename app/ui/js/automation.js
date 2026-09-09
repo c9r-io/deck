@@ -38,18 +38,22 @@
 // (Automations…, Templates…). A direct "↻ N automation(s)" chip appears in
 // the head only while the project has rules, so the drawer is one click
 // away exactly when there is something in it. Closing the drawer returns
-// focus to whichever of those opened it.
+// focus to whichever of those opened it. With project defaults (04 A v01)
+// the first item's second line says what it will do (directory · command →
+// group), a "New shell only" item appears while the project has a default
+// command, and "Project defaults…" sits in the manage section. A NEW rule's
+// editor starts from those defaults; existing rules keep their own values.
 import { $, ctx, genId, inv, listen, state, store, uev } from './state.js';
-import { activeProject, provider } from './board.js';
+import { activeProject, newSessionSummary, openProjectDefaults, projectDefaultsSummary, provider } from './board.js';
 import { openSession } from './layout.js';
 import { confirmDialog, persistInbound, toast } from './dialogs.js';
-import { badgeTaken, hmToMin, INBOUND_BADGE_RE, minToHM, nextScheduleSlot, projectRules, ruleByOrigin, toggleClockRule } from './pure.js';
+import { badgeTaken, hmToMin, INBOUND_BADGE_RE, minToHM, nextScheduleSlot, projectDefaults, projectRules, ruleByOrigin, toggleClockRule } from './pure.js';
 import { formatNumber, onLocaleChange, t } from './i18n.js';
 import { formatShortcut } from './shortcuts.js';
 import { DEFAULT_GRACE_MIN, GRACE_CHOICES } from './settings-model.js';
 import { fmtClock } from './scheduler.js';
 import { openTemplates } from './templates.js';
-import { newSession } from './terminal.js';
+import { newDefaultSession } from './terminal.js';
 
 let opener = null;                 // element that opened the drawer; focus returns there
 
@@ -299,8 +303,11 @@ export function openEditor(rule) {
   if (schedule.unit === 'month') $('auto-dom').value = String(schedule.days[0] || 1);
   $('auto-time').value = minToHM(schedule.minute);
   buildGraceOptions(rule && clock ? (rule.graceMin ?? DEFAULT_GRACE_MIN) : DEFAULT_GRACE_MIN);
-  $('auto-dir').value = rule ? rule.dir : '';
-  $('auto-cmd').value = rule ? rule.cmd : 'claude';
+  /* a new rule starts from the project's defaults (04): saved into the rule
+     on Save, editable here; an existing rule keeps what it has */
+  const defaults = projectDefaults(activeProject());
+  $('auto-dir').value = rule ? rule.dir : defaults.dir;
+  $('auto-cmd').value = rule ? rule.cmd : (defaults.cmd || 'claude');
   fillTargets(rule);
   segSet('auto-finish', rule ? (rule.finish === 'close' ? 'close' : 'keep') : 'close');
   syncEditor();
@@ -415,6 +422,7 @@ const menuItem = (label, opts = {}) => {
   b.setAttribute('role', 'menuitem');
   b.textContent = label;
   if (opts.key) { const k = document.createElement('span'); k.className = 'ctx-key'; k.textContent = opts.key; b.appendChild(k); }
+  if (opts.sub) { const h = document.createElement('span'); h.className = 'ctx-hint'; h.textContent = opts.sub; b.appendChild(h); }
   b.onclick = opts.run;
   return b;
 };
@@ -433,14 +441,17 @@ export function showNewSessionMenu(anchor) {
   const p = activeProject();
   const tplCount = p ? (p.templates || []).length : 0;
   const ruleCount = rulesOf().length;
+  const hasCmd = !!projectDefaults(p).cmd;
   menu.replaceChildren(
-    menuItem(t('menu.newSessionNow'), { key: formatShortcut(ctx.settings?.shortcuts?.newSession), run: go(() => newSession(ctx.HOME)) }),
+    menuItem(t('menu.newSessionNow'), { key: formatShortcut(ctx.settings?.shortcuts?.newSession), sub: p ? newSessionSummary(p) : '', run: go(() => newDefaultSession()) }),
+    ...(hasCmd ? [menuItem(t('menu.newShellOnly'), { sub: newSessionSummary(p, { shellOnly: true }), run: go(() => newDefaultSession({ shellOnly: true })) })] : []),
     document.createElement('hr'),
     menuLabel(t('menu.autoHeading'), true),
     menuItem('◷ ' + t('menu.autoClock'), { run: go(() => openAutomations({ from: anchor, trigger: 'clock' })) }),
     menuItem('◇ ' + t('menu.autoSlack'), { run: go(() => openAutomations({ from: anchor, trigger: 'slack' })) }),
     document.createElement('hr'),
     menuLabel(t('menu.manageHeading')),
+    menuItem('⚑ ' + t('menu.projectDefaults'), { sub: p ? projectDefaultsSummary(p) : '', run: go(() => openProjectDefaults(p && p.id, anchor)) }),
     menuItem('↻ ' + t('menu.automations'), { key: ruleCount ? formatNumber(ruleCount) : '', run: go(() => openAutomations({ from: anchor })) }),
     menuItem('◈ ' + t('menu.templates'), { key: tplCount ? formatNumber(tplCount) : '', run: go(() => openTemplates(anchor)) }),
   );

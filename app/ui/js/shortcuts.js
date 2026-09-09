@@ -100,7 +100,7 @@ export function registerShortcutAction(actionId, handler) {
 }
 
 function modalOpen() {
-  return ['cfm', 'ppd', 'settings-modal', 'tmux-lifecycle-modal']
+  return ['cfm', 'ppd', 'chd', 'pdf', 'settings-modal', 'tmux-lifecycle-modal']
     .some(id => document.getElementById(id)?.style.display === 'flex');
 }
 
