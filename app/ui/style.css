@@ -314,17 +314,9 @@ body.side-collapsed .side-new .label { display: none; }
 .card-desc {
   margin-top: 5px; font-size: 0.884615rem; line-height: 1.4; color: var(--muted);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  min-height: 1.23846rem;   /* one reserved line: adding a description never changes card height */
 }
 .card-desc input { padding: 2px 6px; font-size: 0.884615rem; background: var(--panel); }
-.card-tail {
-  margin-top: 8px; padding: 7px 9px;
-  background: var(--bg); border-radius: 6px;
-  font-family: var(--mono); font-size: 0.846154rem; line-height: 1.5;
-  color: var(--muted);
-  white-space: nowrap; overflow: hidden;
-  height: calc(7.61538rem + 14px);   /* six scaled lines + fixed padding */
-}
-.card-tail div { overflow: hidden; text-overflow: ellipsis; height: 1.26923rem; }
 
 /* ---------- session view ---------- */
 #session-view { flex: 1; display: none; flex-direction: column; min-height: 0; position: relative; }
@@ -940,7 +932,7 @@ html.font-scale-large .tmux-lifecycle-actions { align-items: flex-start; flex-wr
 ::-webkit-scrollbar-track { background: transparent; }
 
 /* Derived attention uses the theme's existing signal colours. Original
-   cards keep their six-row terminal preview and durable sidebar navigation. */
+   cards keep their durable sidebar navigation. */
 #attention-count { margin-left: auto; font-size: .846154rem; }
 #attention-view { flex: 1; display: flex; flex-direction: column; min-height: 0; overflow: auto; }
 #attention-view[hidden], .attention-notice[hidden], .attention-column-empty[hidden] { display: none; }

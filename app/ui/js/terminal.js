@@ -58,12 +58,7 @@ export function editDescInline(sid) {
     });
     return;
   }
-  let d = card.querySelector('.card-desc');
-  if (!d) {
-    d = document.createElement('div');
-    d.className = 'card-desc';
-    card.querySelector('.card-meta').after(d);
-  }
+  const d = card.querySelector('.card-desc');   // always present (reserved line)
   inlineRename(d, s.desc || '', async v => {
     if (v !== null) await provider.setDesc(sid, v);
     render();

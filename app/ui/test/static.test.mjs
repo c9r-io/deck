@@ -108,8 +108,7 @@ test('large font scaling reflows dense rows instead of clipping scaled line boxe
   assert.match(html, /html\.font-scale-large \.sess-head \{[^}]*flex-wrap: wrap;/);
   assert.match(html, /html\.font-scale-large \.q-item,[\s\S]*?flex-wrap: wrap;/);
   assert.match(html, /\.card-meta \{[\s\S]*?min-height: 1\.53846rem;/);
-  assert.match(html, /\.card-tail \{[\s\S]*?height: calc\(7\.61538rem \+ 14px\);/);
-  assert.doesNotMatch(html, /(?:\.card-meta|\.card-tail|\.sess-head \.btn)[^{]*\{[^}]*(?:height: 20px|height: 47px|height: 28px)/);
+  assert.doesNotMatch(html, /(?:\.card-meta|\.sess-head \.btn)[^{]*\{[^}]*(?:height: 20px|height: 47px|height: 28px)/);
   assert.match(dialogs, /for \(const action of CUSTOMIZABLE_SHORTCUT_ACTIONS\)/,
     'fixed US/JIS font gestures stay out of the shortcut editor');
 });
@@ -138,6 +137,14 @@ test('retired features do not return', () => {
   assert.doesNotMatch(layout + html + read('app/src-tauri/src/main.rs'),
     /shell-recovery|recoverychip|load_shell_snapshot/);
   assert.match(layout, /outcome\.restored = !!started\.restored/);
+  // the six-row terminal preview on Board cards (02 B v02: output is read in the terminal)
+  const board = read('app/ui/js/board.js');
+  assert.doesNotMatch(board + html + read('app/ui/style.css') + read('app/ui/js/pure.js'),
+    /card-tail|cardPreviewRows|CARD_PREVIEW_ROWS|emit\('output'/);
+  assert.match(board, /const tailFor = \[\];/, 'the Board poll never requests pane captures');
+  // the description line is reserved so a card keeps its height with or without one
+  assert.match(board, /<div class="card-desc"><\/div>`;/);
+  assert.match(read('app/ui/style.css'), /\.card-desc \{[\s\S]*?min-height: 1\.23846rem;/);
   assert.match(layout, /if \(created && !restored\)[^\n]*clear_history/,
     'restored tmux history must survive the fresh-shell cleanup');
 });

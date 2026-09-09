@@ -55,7 +55,7 @@ export async function runAttentionSmoke() {
     for (const { spec, card } of samples.values()) statuses.set(card.session, {
       name: card.session, alive: spec.state !== 'stopped', agent: spec.source === 'hook' ? spec.state : null,
       idle_secs: spec.state === 'quiet' ? 240 : 3, fg: spec.source === 'hook' ? 'fixture-agent' : 'zsh',
-      mem_mb: spec.state === 'stopped' ? null : 24, tail: ['', '', '', '', '[isolated sample]', spec.detail],
+      mem_mb: spec.state === 'stopped' ? null : 24,
     });
     const wrappedInvoke = async (command, args) => {
       if (command === 'start_session') starts++;

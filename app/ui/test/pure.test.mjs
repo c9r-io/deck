@@ -23,7 +23,7 @@ import {
   tokenizeTerminalLinks,
   createTerminalWheelAccumulator, createTerminalWheelFrameScheduler, terminalWheelLines,
   linkMenuItems,
-  CARD_PREVIEW_ROWS, cardPreviewRows, inlineRenameValue, persistOptimistically, PATH_LOOKBACK_MAX,
+  inlineRenameValue, persistOptimistically, PATH_LOOKBACK_MAX,
   effectiveCardStatus,
   TEMPLATES_MAX, TEMPLATE_NAME_MAX, TEMPLATE_STEP_MAX, TEMPLATE_STEPS_MAX,
   inboundRulesUsingTemplate, moveTemplateStep, nextTemplateName, normalizeTemplateStep,
@@ -42,18 +42,6 @@ test('agent-hook state outranks the output-recency heuristic', () => {
   // a dead pane wins over any stale agent word; unknown words fall through
   assert.equal(effectiveCardStatus(false, 'needs-input', false), 'stopped');
   assert.equal(effectiveCardStatus(true, 'mystery', true), 'waiting');
-});
-
-test('card preview keeps the newest rows bottom-aligned', () => {
-  assert.equal(CARD_PREVIEW_ROWS, 6);
-  assert.deepEqual(cardPreviewRows(['answer tail', 'prompt']), [
-    '', '', '', '', 'answer tail', 'prompt',
-  ]);
-  assert.deepEqual(cardPreviewRows(['old', 'one', 'two', 'three'], 3), [
-    'one', 'two', 'three',
-  ]);
-  assert.deepEqual(cardPreviewRows(null, 2), ['', '']);
-  assert.deepEqual(cardPreviewRows(['ignored'], 0), []);
 });
 
 test('id-addressed reorder supports before/after and ignores stale drag payloads', () => {

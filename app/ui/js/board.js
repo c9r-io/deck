@@ -4,10 +4,11 @@
 // one is in flight runs after it (its request may predate the caller's event),
 // and every such caller receives the follow-up's promise. The interval tick
 // only coalesces. Attention snapshots and read state are runtime only.
-// Live status never changes placement or durable ordering.
+// Live status never changes placement or durable ordering. Cards carry no
+// terminal preview: output is read in the terminal, never on the Board.
 import { $, columnHint, ctx, dotTitle, emit, genId, inv, listeners, POLL_MS, QUIET_SECS, sessionName, setMemChip, state, store, uev } from './state.js';
 import { mutateBoard, mutateBoardDebounced } from './persistence.js';
-import { CARD_PREVIEW_ROWS, cardPreviewRows, createConfirmationCounter, createExitRetirementTracker, effectiveCardStatus, newSessionColumn, reorderById, runFinishHolds, sidebarGroups } from './pure.js';
+import { createConfirmationCounter, createExitRetirementTracker, effectiveCardStatus, newSessionColumn, reorderById, runFinishHolds, sidebarGroups } from './pure.js';
 import { confirmDialog, inlineRename, toast } from './dialogs.js';
 import { clearSeparators, closePaneBySid, hasPane, leaveSessionView, openSession, renderSessionView, updatePaneChrome } from './layout.js';
 import { SHELL_FG, showProjectCtx, showSessionCtx } from './terminal.js';
@@ -419,9 +420,8 @@ async function pollSessionsNow() {
     return true;
   }
   const names = store.cards.map(c => c.session);
-  const tailFor = state.view === 'board'
-    ? store.cards.filter(c => c.projectId === state.projectId).map(c => c.session)
-    : [];
+  /* the Board shows no output preview, so no pane is ever captured for it */
+  const tailFor = [];
   /* the tab strip is rebuilt only when what it shows changes: a project's
      unread endings or the freshness its done-dot tooltip names */
   const previousTabs = tabsKey();
@@ -459,7 +459,6 @@ async function pollSessionsNow() {
     const status = effectiveCardStatus(info.alive, info.agent,
       info.idle_secs != null && info.idle_secs >= QUIET_SECS);
     const mem = info.alive && info.mem_mb != null ? info.mem_mb : null;
-    const tail = info.tail || [];
     const prevFg = c.fg;
     c.fg = info.fg || null;
     if (info.alive && info.cwd && info.cwd !== c.dir) provider.observeDir(c.id, info.cwd);
@@ -479,7 +478,6 @@ async function pollSessionsNow() {
       c.mem = mem;
       emit('mem', c);
     }
-    if (tail.join('\n') !== (c.tail || []).join('\n')) { c.tail = tail; emit('output', c); }
     observeRunFinish(c, info);
   }
   updateQuietHints();
@@ -835,15 +833,14 @@ export function cardEl(s) {
   el.dataset.sid = s.id;
   el.draggable = true;
 
-  const tail = cardPreviewRows(s.tail);
-  /* fixed shape: the tail box is always present (6 lines) and there are no
-     hover-only rows — cards never change size under the pointer */
+  /* fixed shape: no hover-only rows, the description line is reserved even
+     while empty, and a poll only changes text and classes — cards never
+     change size under the pointer or when a description is added */
   el.innerHTML = `
     <div class="card-top"><span class="dot ${s.status}"></span><span class="card-title"></span><button class="card-pin" type="button"></button><button class="card-x" type="button">✕</button></div>
     <div class="card-meta"><span class="cmd"></span><span class="dir"></span><span class="auto-chip"></span><span class="q-chip"></span><span class="mem-chip"></span></div>
     <div class="card-status"></div>
-    ${s.desc ? '<div class="card-desc"></div>' : ''}
-    <div class="card-tail">${Array.from({ length: CARD_PREVIEW_ROWS }, () => '<div></div>').join('')}</div>`;
+    <div class="card-desc"></div>`;
   el.querySelector('.card-title').textContent = s.title;
   el.querySelector('.card-status').textContent = attentionStatusText(s);
   el.querySelector('.dot').title = dotTitle(s.status);
@@ -864,14 +861,9 @@ export function cardEl(s) {
   autoChip.hidden = !rule;
   el.querySelector('.cmd').textContent = s.cmd ? '$ ' + s.cmd : '';
   el.querySelector('.dir').textContent = s.dir;
-  if (s.desc) {
-    const d = el.querySelector('.card-desc');
-    d.textContent = s.desc;
-    d.title = s.desc;
-  }
-  const tailDivs = el.querySelectorAll('.card-tail div');
-  tail.forEach((l, i) => { tailDivs[i].textContent = l; });
-
+  const desc = el.querySelector('.card-desc');
+  desc.textContent = s.desc || '';
+  if (s.desc) desc.title = s.desc;
   el.addEventListener('dragstart', e => {
     e.dataTransfer.setData('text/deck-session', s.id);
     el.classList.add('dragging');
@@ -894,18 +886,6 @@ export function cardEl(s) {
   });
   el.oncontextmenu = e => showSessionCtx(e, s.id);
   return el;
-}
-
-export function updateCardInPlace(s) {
-  const el = document.querySelector(`.card[data-sid="${s.id}"]`);
-  if (!el) return;
-  const tail = cardPreviewRows(s.tail);
-  const tailDivs = el.querySelectorAll('.card-tail div');
-  tailDivs.forEach((d, i) => { d.textContent = tail[i]; });
-  const dot = el.querySelector('.dot');
-  if (dot) { dot.className = 'dot ' + s.status; dot.title = dotTitle(s.status); }
-  el.classList.toggle('waiting', s.status === 'waiting');
-  el.classList.toggle('attention', s.status === 'attention');
 }
 
 export async function closeSession(sid, needConfirm = false) {
@@ -955,10 +935,6 @@ provider.subscribe((ev, s) => {
   if (ev === 'mem') {
     if (state.view === 'session' && s.id === state.sessionId) setMemChip($('sess-mem'), s);
     else setMemChip(document.querySelector(`.card[data-sid="${s.id}"] .mem-chip`), s);
-    return;
-  }
-  if (ev === 'output') {
-    if (state.view === 'board' && s.projectId === state.projectId) updateCardInPlace(s);
     return;
   }
   if (ev === 'path') {

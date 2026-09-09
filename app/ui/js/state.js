@@ -124,7 +124,7 @@ export const POLL_MS = 2500;
 export const store = {
   projects: [],   // {id, name, columns: [{id, name}]}
   cards: [],      // {id, projectId, columnId, title, desc, cmd, dir, session, pinned}
-                  // + runtime (not persisted): status, mem, tail, idle
+                  // + runtime (not persisted): status, mem, idle
 };
 export const state = {
   projectId: null,
