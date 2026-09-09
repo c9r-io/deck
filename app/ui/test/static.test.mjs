@@ -74,13 +74,26 @@ test('the updater, relaunch and server restart stay backend-owned', () => {
 });
 
 test('the canonical dictionary has no unused keys outside documented dynamic families', () => {
-  const source = ['app/ui/index.html', 'app/ui/js/app.js', 'app/ui/js/attention.js', 'app/ui/js/automation.js', 'app/ui/js/board.js',
-    'app/ui/js/dialogs.js', 'app/ui/js/i18n.js', 'app/ui/js/inbound.js', 'app/ui/js/layout.js',
-    'app/ui/js/pure.js', 'app/ui/js/scheduler.js', 'app/ui/js/queue-review.js', 'app/ui/js/selection.js', 'app/ui/js/state.js',
-    'app/ui/js/templates.js', 'app/ui/js/terminal.js'].map(read).join('\n');
+  const source = ['app/ui/index.html', 'app/ui/js/app.js', 'app/ui/js/attention.js', 'app/ui/js/automation.js',
+    'app/ui/js/automation-model.js', 'app/ui/js/board.js', 'app/ui/js/dialogs.js', 'app/ui/js/i18n.js', 'app/ui/js/inbound.js',
+    'app/ui/js/layout.js', 'app/ui/js/pure.js', 'app/ui/js/scheduler.js', 'app/ui/js/scheduler-model.js', 'app/ui/js/queue-review.js',
+    'app/ui/js/selection.js', 'app/ui/js/state.js', 'app/ui/js/templates.js', 'app/ui/js/terminal.js'].map(read).join('\n');
   const dynamic = /^(?:attention\.column|attention\.filter|automation\.run|automation\.wd|board\.default|session\.status|settings\.shortcut|notice|tmux\.notice)\./;
   const unused = Object.keys(en).filter(key => !dynamic.test(key) && !source.includes(key));
   assert.deepEqual(unused, []);
+});
+
+test('the coverage exclusion list only shrinks: new logic lands in a measured *-model.js', () => {
+  const gate = read('scripts/ui-tests');
+  const [, list] = /--test-coverage-exclude='app\/ui\/js\/\{([^}]+)\}\.js'/.exec(gate) || [];
+  assert.ok(list, 'the WKWebView-bound exclusion list is the one brace group in scripts/ui-tests');
+  const frozen = ['app', 'attention', 'automation', 'board', 'dropdown', 'layout', 'scheduler', 'queue-review', 'selection', 'terminal'];
+  for (const name of list.split(',')) {
+    assert.ok(frozen.includes(name), `${name}.js joined the coverage exclusion list; split its DOM-free half into ${name}-model.js instead`);
+  }
+  for (const model of ['attention-model', 'automation-model', 'scheduler-model']) {
+    assert.doesNotMatch(read(`app/ui/js/${model}.js`), /\b(?:document|window|navigator)\.|__TAURI__/, `${model}.js stays DOM-free`);
+  }
 });
 
 test('minimum-window layout keeps long localized panels bounded and scrollable', () => {

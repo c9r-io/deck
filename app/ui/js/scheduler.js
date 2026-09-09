@@ -31,6 +31,11 @@
 // edits the WHOLE prompt: a collapsed row opens first and the same click
 // continues into the editor, where Enter types a newline and ⌘↵ commits.
 //
+// What an item READS as (its time, meta line, context label, a row's quiet
+// hint) and which backend calls start a list live DOM-free in
+// scheduler-model.js, where node tests pin them; this module only places
+// those words in the panel.
+//
 // Templates are the project's saved lists (`templates.js` owns them): the
 // panel's 📋 starts a new list from one, a list head's 📋 inserts one into
 // that list or saves the list as a new template, and either menu ends with
@@ -40,6 +45,7 @@
 // weekly / monthly) are deliberately not a card schedule — see the
 // Board-level automation note in scheduler/mod.rs.
 import { isReview, reviewRow, executionPlan, stageText, queueHistory, cancelQueueList } from './queue-review.js';
+import { chainWhenSuffix, contextLabel, fmtWhen, listStartCalls, localizedChainQuietHint, qMeta } from './scheduler-model.js';
 import { $, ctx, inv, listen, state, uev } from './state.js';
 import { blockedBy, chainQuietHint, CHAIN_QUIET_SECS, contextStatusKey, fmtEvery, groupQueue, groupSteps, hasWindow, hmToMin, isoDate, isoTime, itemDead, listKey, listRepeats, listScheduleArgs, localEpoch, MAX_QUIET_SECS, MIN_QUIET_SECS, minToHM, nextFire, promptSummary, promptTooltip, quietSecsOf, winHas } from './pure.js';
 export { blockedBy, chainQuietHint, contextStatusKey, fmtEvery, groupQueue, groupSteps, hasWindow, hmToMin, itemDead, minToHM, nextFire, promptSummary, promptTooltip, winHas };
@@ -47,7 +53,7 @@ import { autoGrowField, confirmDangerDialog, confirmDialog, inlineRename, toast,
 import { pollNow, provider } from './board.js';
 import { strToB64 } from './layout.js';
 import { openTemplates } from './templates.js';
-import { formatDateTime, formatInterval, formatNumber, onLocaleChange, t } from './i18n.js';
+import { formatInterval, formatNumber, onLocaleChange, t } from './i18n.js';
 
 /* ---------- scheduled prompts ---------- */
 let queueFetchedAt = 0;
@@ -85,35 +91,6 @@ export function setQueueChip(chip, card) {
     : '';
 }
 
-export const fmtClock = ts => {
-  const d = new Date(ts * 1000);
-  const today = new Date().toDateString() === d.toDateString();
-  return formatDateTime(d, today
-    ? { hour: '2-digit', minute: '2-digit' }
-    : { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-};
-export function fmtWhen(i) {
-  if (i.mode === 'chain') return t('queue.afterPrevious');
-  if (i.mode === 'every') return t('queue.every', { interval: formatInterval(i.every) });
-  return fmtClock(i.at);
-}
-
-export function localizedChainQuietHint(idleSecs, alive, total = quietSecsOf()) {
-  if (!alive) return t('queue.quiet.stopped');
-  if (idleSecs == null) return '';
-  const seconds = Math.min(Math.floor(idleSecs), total);
-  return seconds >= total ? t('queue.quiet.done') : t('queue.quiet.progress', { seconds, total });
-}
-
-export const contextLabel = item => {
-  const check = item?.last_context || item;
-  if (!check) return '';
-  if (check.status === 'foreground-different') {
-    return t('queue.context.differentProcess', { process: item.expected_process || '?' });
-  }
-  return t(contextStatusKey(check.status));
-};
-
 async function refreshItemProbe(item) {
   const result = await inv('queue_probe_context', { id: item.id });
   await refreshQueue();
@@ -139,9 +116,6 @@ async function manualSendNow(item) {
     .catch(() => toast(t('error.operation', { operation: t('queue.manualNow') })));
 }
 
-const chainWhenSuffix = (i, card) =>
-  i.mode === 'chain' && card ? localizedChainQuietHint(card.idle, card.status !== 'stopped', quietSecsOf(i)) : '';
-
 /* refresh the quiet counters in place on every poll tick — text-only, so an
    open panel never gets its DOM (hover/click targets, inline edits) rebuilt.
    The panel is per-session, so every chain head shares one hint. */
@@ -153,29 +127,6 @@ export function updateQuietHints() {
   document.querySelectorAll('#queue-list .qg-when[data-quiet]').forEach(el => {
     el.textContent = t('queue.afterPrevious') + localizedChainQuietHint(card.idle, alive, Number(el.dataset.quiet));
   });
-}
-
-export function qMeta(i) {
-  const parts = [];
-  if (i.state === 'ambiguous') parts.push(t('queue.meta.ambiguous'));
-  else if (i.state === 'firing') parts.push(t('queue.meta.sending'));
-  if (i.tpl) parts.push(`tpl·${i.tpl} ${i.tpl_idx}/${i.tpl_total}`);
-  if (i.mode === 'every') {
-    if (hasWindow(i)) parts.push(minToHM(i.win_from) + '–' + minToHM(i.win_to));
-    if (i.paused) {
-      parts.push(t('queue.meta.paused'));
-    } else {
-      const nm = new Date();
-      const sleeping = hasWindow(i) && !winHas(nm.getHours() * 60 + nm.getMinutes(), i.win_from, i.win_to);
-      const notYet = i.not_before && i.not_before * 1000 > nm.getTime();
-      parts.push(t(notYet ? 'queue.meta.from' : sleeping ? 'queue.meta.sleeping' : 'queue.meta.next', { time: fmtClock(nextFire(i)) }));
-    }
-    if (i.fired) parts.push(formatNumber(i.fired) + '×' + (i.until_n ? '/' + formatNumber(i.until_n) : ''));
-    if (i.state === 'failed') parts.push(t('queue.meta.failed', { attempts: formatNumber(i.attempts) }));
-    else if (i.until_n) parts.push(t('queue.meta.stops', { count: formatNumber(i.until_n) }));
-    if (i.until_at) parts.push(t('queue.meta.until', { time: fmtClock(i.until_at) }));
-  }
-  return parts.join(' · ');
 }
 
 export async function saveListAsTemplate(g) {
@@ -666,19 +617,7 @@ export function readSchedule() {
    re-enqueue as chain items on every fire */
 async function startList(card, sched, steps, tpl) {
   const base = { ...queueBase(card), reviewEach: sched.reviewEach === true };
-  const tag = k => (tpl ? { tpl: tpl.name, tplIdx: k + 1, tplTotal: steps.length } : {});
-  if (sched.mode === 'every') {
-    await inv('queue_add', { args: { ...base, ...sched, text: steps[0], steps: steps.slice(1), ...tag(0) } });
-    return;
-  }
-  if (base.reviewEach) {
-    await inv('queue_add_reviewed_list', { args: { ...base, ...sched, text: steps[0], ...tag(0) }, texts: steps });
-    return;
-  }
-  for (let k = 0; k < steps.length; k++) {
-    const follow = { mode: 'chain', quietSecs: null };
-    await inv('queue_add', { args: { ...base, ...(k === 0 ? sched : follow), text: steps[k], ...tag(k) } });
-  }
+  for (const [command, payload] of listStartCalls(base, sched, steps, tpl)) await inv(command, payload);
 }
 
 /* templates live on the project object → persisted inside the board file */

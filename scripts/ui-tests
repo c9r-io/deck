@@ -7,6 +7,10 @@
 # the real-WKWebView smoke (app/SMOKE.md, ui/test/wk-smoke.mjs), not here, so
 # they are excluded from the threshold rather than dragging it to a number
 # that means nothing. The test carriers themselves are excluded too.
+#
+# The exclusion list only SHRINKS (static.test.mjs pins it): a new module's
+# DOM-free half goes into a `*-model.js` sibling that this gate measures
+# (attention-model, automation-model, scheduler-model), never onto this list.
 set -eu
 cd "$(dirname "$0")/.."
 exec node --test --experimental-test-coverage \
