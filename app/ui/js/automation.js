@@ -48,9 +48,9 @@
 // group), a "New shell only" item appears while the project has a default
 // command, and "Project defaults…" sits in the manage section. A NEW rule's
 // editor starts from those defaults; existing rules keep their own values.
+// This module is a LEAF of the import graph: what it needs from board.js,
+// layout.js and terminal.js arrives through `initAutomation(deps)`.
 import { $, ctx, genId, inv, listen, state, store, uev } from './state.js';
-import { activeProject, newSessionSummary, openProjectDefaults, projectDefaultsSummary, provider } from './board.js';
-import { openSession } from './layout.js';
 import { confirmDialog, persistInbound, toast } from './dialogs.js';
 import { minToHM, projectDefaults, projectRules, ruleByOrigin, toggleClockRule } from './pure.js';
 import { composeRule, graceOptions, graceText, liveRules, mergeRules, recentRuns, ruleFacts, ruleLabel, runSummary, triggerText } from './automation-model.js';
@@ -58,7 +58,11 @@ import { formatNumber, onLocaleChange, t } from './i18n.js';
 import { formatShortcut } from './shortcuts.js';
 import { DEFAULT_GRACE_MIN } from './settings-model.js';
 import { openTemplates } from './templates.js';
-import { newDefaultSession } from './terminal.js';
+
+/* the Board, layout and terminal actions this drawer calls, handed in by
+   `initAutomation(deps)` so board.js and terminal.js may import this module
+   without a cycle */
+let activeProject, newSessionSummary, openProjectDefaults, projectDefaultsSummary, provider, openSession, newDefaultSession;
 
 let opener = null;                 // element that opened the drawer; focus returns there
 
@@ -415,8 +419,9 @@ export function showNewSessionMenu(anchor) {
 }
 
 /* DOM wiring, run once at boot (app.js) so the module can be imported
-   without a document. */
-export function initAutomation() {
+   without a document; `deps` are the Board/layout/terminal actions above. */
+export function initAutomation(deps) {
+  ({ activeProject, newSessionSummary, openProjectDefaults, projectDefaultsSummary, provider, openSession, newDefaultSession } = deps);
   $('board-auto').onclick = () => toggleAutomations($('board-auto'));
   $('board-new-more').onclick = e => { e.stopPropagation(); showNewSessionMenu($('board-new-more')); };
   $('auto-tpl-manage').onclick = () => openTemplates($('auto-tpl-manage'));

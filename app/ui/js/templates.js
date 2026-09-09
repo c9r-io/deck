@@ -27,8 +27,10 @@
 // inbound rule, and both lists are bounded. Inbound rules name a template by
 // NAME: renaming or deleting one that a rule uses is confirmed with the count
 // of affected rules — deck warns, and never rewrites the user's rules for them.
+// The Board `provider` arrives through `initTemplates({ provider })`, so the
+// modules that open the manager (scheduler, terminal, automation) can import
+// this one without a cycle.
 import { $, ctx, state } from './state.js';
-import { provider } from './board.js';
 import { autoGrowField, confirmDialog, toast } from './dialogs.js';
 import {
   TEMPLATES_MAX, TEMPLATE_NAME_MAX, TEMPLATE_STEP_MAX, TEMPLATE_STEPS_MAX,
@@ -37,6 +39,7 @@ import {
 } from './pure.js';
 import { formatNumber, onLocaleChange, t } from './i18n.js';
 
+let provider = null;      // the Board, from initTemplates
 let projectId = null;
 let selected = null;      // name of the template being edited
 let nameShown = null;     // whose name the editor field currently holds
@@ -361,7 +364,8 @@ async function commitName() {
 
 /* DOM wiring, run once at boot (app.js) so the module can be imported
    without a document. */
-export function initTemplates() {
+export function initTemplates(deps) {
+  ({ provider } = deps);
   $('tpl-done').onclick = () => closeTemplates();
 
   $('tpl-modal').addEventListener('mousedown', event => {

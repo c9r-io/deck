@@ -115,7 +115,9 @@ Status semantics (card colour) are documented on `effectiveCardStatus` in
   `tmux -L deck ls`; source bundles use `tmux -L deck-dev ls`.
 - Frontend gates: `node --check` · `scripts/ui-tests` (node:test + coverage
   thresholds; WKWebView-bound modules are excluded and covered by the smoke) ·
-  `node ui/js/check.mjs` (unresolved identifiers; forbids xterm `._core`).
+  `node ui/js/check.mjs` (unresolved identifiers; forbids xterm `._core`;
+  import cycles only inside board/layout/terminal/scheduler — a leaf module
+  takes what it needs from the core through `init*(deps)`).
   Backend gates: `cargo fmt`, `cargo clippy --workspace -D warnings`,
   `cargo test --workspace` (unit + `tests/tmux_contract.rs` against the
   bundled tmux + `tests/log_privacy.rs` + `tests/edr_quiet.rs` + the status

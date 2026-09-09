@@ -22,11 +22,15 @@
 //   entries locate the original card.
 // - Returning (`showAttention(true)`) restores project, filter, scroll and
 //   the focused row from the `ctx.attentionReturn` that `openSession` kept.
+// - A leaf of the import graph: the Board and layout actions it calls
+//   (`pollNow`, `provider`, `render`, `switchProject`, `leaveSessionView`,
+//   `openSession`) arrive through `initAttention(deps)` from app.js, so
+//   board.js and layout.js may import this module without a cycle.
 import { $, ctx, QUIET_SECS, state, store } from './state.js';
 import { ATTENTION_FILTERS, attentionRows } from './attention-model.js';
 import { formatDateTime, formatNumber, t } from './i18n.js';
-import { pollNow, provider, render, switchProject } from './board.js';
-import { leaveSessionView, openSession } from './layout.js';
+
+let pollNow, provider, render, switchProject, leaveSessionView, openSession;
 
 let pointerHeld = false;
 let deferredRender = false;
@@ -250,7 +254,8 @@ export async function openAttentionCard(id) {
   await openSession(id, { allowStart: false, attentionReturn: returnTo });
 }
 
-export function initAttention() {
+export function initAttention(deps) {
+  ({ pollNow, provider, render, switchProject, leaveSessionView, openSession } = deps);
   $('attention-btn').onclick = () => showAttention();
   $('attention-back').onclick = () => switchProject(state.projectId);
   document.addEventListener('pointerdown', event => {

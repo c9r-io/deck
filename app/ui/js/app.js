@@ -4,9 +4,12 @@ import './persistence.js';
 import './board.js';
 import { $, ctx, genId, initInputDiagnostics, inv, listen, state, store, uev } from './state.js';
 import { initDialogs, loadSettings, toast } from './dialogs.js';
-import { markSessionsStoppedForServerRestart, migrateColumnSemantics, provider, render, startPolling, stopPolling } from './board.js';
-import { initLayout, leaveSessionView } from './layout.js';
-import { initTerminalChrome } from './terminal.js';
+import {
+  activeProject, markSessionsStoppedForServerRestart, migrateColumnSemantics, newSessionSummary, openProjectDefaults, pollNow,
+  projectDefaultsSummary, provider, render, startPolling, stopPolling, switchProject,
+} from './board.js';
+import { initLayout, leaveSessionView, openSession } from './layout.js';
+import { initTerminalChrome, newDefaultSession } from './terminal.js';
 import { initScheduler, refreshQueue } from './scheduler.js';
 import { initTemplates } from './templates.js';
 import { drainInbound, initInbound } from './inbound.js';
@@ -242,18 +245,21 @@ export async function manualUpdateCheck() {
 /* ---------- boot ---------- */
 /* Every module wires its DOM once here, in dependency order, instead of at
    import time: modules stay importable without a document (node tests), and
-   the order of side effects is explicit. */
+   the order of side effects is explicit. The leaf modules (attention,
+   templates, automation) receive the Board/layout/terminal actions they call
+   as `deps` here instead of importing them, which keeps the import cycles
+   confined to the view core (check.mjs enforces that). */
 function initModules() {
   initInputDiagnostics();
   initDropdowns();
   initDialogs();
   initTerminalChrome();
-  initAttention();
+  initAttention({ pollNow, provider, render, switchProject, leaveSessionView, openSession });
   initLayout();
   initScheduler();
-  initTemplates();
+  initTemplates({ provider });
   initInbound();
-  initAutomation();
+  initAutomation({ activeProject, newSessionSummary, openProjectDefaults, projectDefaultsSummary, provider, openSession, newDefaultSession });
   wireChrome();
 }
 

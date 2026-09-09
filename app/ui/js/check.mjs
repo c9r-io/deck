@@ -6,7 +6,12 @@
 // (shared runtime slots are members of state.js's exported `ctx`, so a bare
 // slot name is exactly the kind of leftover this catches). Catches the "forgot an
 // import during refactor" class before the webview does. Also forbids
-// xterm private API (`._core`) in deck's own code.
+// xterm private API (`._core`) in deck's own code, and confines static
+// import CYCLES to the view core: board.js, layout.js, terminal.js and
+// scheduler.js may import each other (they share one document), every other
+// module must be a leaf or a strict dependency — what a leaf needs from the
+// core arrives through its `init*(deps)` from app.js (attention, templates,
+// automation set the pattern). A cycle through any other module fails.
 // Runs in CI (test.yml) and exits non-zero on violations.
 
 import { readFileSync, readdirSync } from 'node:fs';
@@ -178,8 +183,34 @@ for (const f of files) {
     console.error(`${f}: unresolved identifiers: ${[...unknown.keys()].join(', ')}`);
   }
 }
+// ---- import cycles outside the view core ----
+const CORE = new Set(['board.js', 'layout.js', 'terminal.js', 'scheduler.js']);
+// static specifiers only (a dynamic import() is a deliberate late edge)
+const edges = new Map(files.map(f => [f,
+  [...readFileSync(join(dir, f), 'utf8').matchAll(/^import\s[^;]*?from\s+['"]\.\/([\w-]+\.js)['"]/gm)].map(m => m[1])]));
+const cycles = new Set();
+const stack = [];
+const done = new Set();
+function walk(node) {
+  const at = stack.indexOf(node);
+  if (at >= 0) { cycles.add(stack.slice(at).concat(node).join(' -> ')); return; }
+  if (done.has(node)) return;
+  stack.push(node);
+  for (const next of edges.get(node) || []) walk(next);
+  stack.pop();
+  done.add(node);
+}
+for (const f of files) walk(f);
+for (const cycle of cycles) {
+  const outside = cycle.split(' -> ').filter(name => !CORE.has(name));
+  if (outside.length) {
+    bad++;
+    console.error(`import cycle leaves the view core (${[...new Set(outside)].join(', ')}): ${cycle}`);
+  }
+}
+
 if (bad) {
-  console.error(`\n${bad} unresolved identifier(s)`);
+  console.error(`\n${bad} violation(s)`);
   process.exit(1);
 }
-console.log(`ok: ${files.length} modules, all identifiers resolve`);
+console.log(`ok: ${files.length} modules, all identifiers resolve, import cycles stay inside the view core`);

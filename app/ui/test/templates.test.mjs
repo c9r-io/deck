@@ -81,7 +81,8 @@ globalThis.window = { __TAURI__: null, __DECK_DEBUG: false, addEventListener() {
 
 const { cfmDone } = await import('../js/dialogs.js');
 const { openTemplates, closeTemplates, initTemplates } = await import('../js/templates.js');
-initTemplates();
+const { provider } = await import('../js/board.js');
+initTemplates({ provider });
 const { ctx, state, store } = await import('../js/state.js');
 const { flushBoardMutations } = await import('../js/persistence.js');
 
