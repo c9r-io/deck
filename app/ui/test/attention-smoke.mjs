@@ -187,6 +187,15 @@ export async function runAttentionSmoke() {
     button.focus();
     await pollNow();
     await report('attention-keyed-focus', document.activeElement === button && button.isConnected);
+    // A reorder moves a connected row (remove + insert); focus must survive it.
+    const inputRows = [...$('attention-list').querySelectorAll('.attention-row')].filter(el => ctx.attention.category(provider.get(el.dataset.sid)) === 'input');
+    const laterButton = inputRows[1].querySelector('button'); laterButton.focus();
+    const earlier = provider.get(inputRows[0].dataset.sid);
+    statuses.get(earlier.session).agent = 'turn-done'; await pollNow();
+    const reordered = $('attention-list').querySelector('.attention-row') === inputRows[1] && inputRows[0].isConnected;
+    await report('attention-reorder-focus', reordered && document.activeElement === laterButton);
+    statuses.get(earlier.session).agent = 'needs-input'; await pollNow();
+    button.focus();
     button.dispatchEvent(new Event('pointerdown', { bubbles: true }));
     statuses.get(input.session).agent = 'working'; await pollNow();
     const held = button.isConnected;
@@ -244,12 +253,33 @@ export async function runAttentionSmoke() {
     const moved = document.activeElement === items[1];
     $('ctx').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
     await report('entry-menu', opened && moved && $('ctx').style.display !== 'block' && document.activeElement === more && more.getAttribute('aria-expanded') === 'false');
+    // Dismissal by a click elsewhere or the global Escape clears the menu's keyboard handler.
+    more.click(); await pause(20);
+    const armed = typeof $('ctx').onkeydown === 'function';
+    document.body.click(); await pause(20);
+    const clickCleared = $('ctx').style.display !== 'block' && $('ctx').onkeydown === null && more.getAttribute('aria-expanded') === 'false';
+    more.click(); await pause(20);
+    document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    const escCleared = $('ctx').style.display !== 'block' && $('ctx').onkeydown === null;
+    await report('entry-menu-dismiss', armed && clickCleared && escCleared);
     more.click(); await pause(20);
     [...$('ctx').querySelectorAll('button')][2].click(); await pause(60);
     const slackPreset = !$('auto-drawer').hidden && !$('auto-editor').hidden
       && $('auto-trigger').querySelector('button[aria-pressed="true"]')?.dataset.v === 'slack' && $('ctx').style.display !== 'block';
     closeAutomations();
     await report('entry-automations', slackPreset && $('auto-drawer').hidden && document.activeElement === more);
+    // The project tab menu hands both managers a tab resolved at close time.
+    const tabMenu = () => document.querySelector('#tabs .tab.active')
+      .dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 20, clientY: 20 }));
+    tabMenu(); $('ctx').querySelector('[data-a="automations"]').click(); await pause(60);
+    const autoOpen = !$('auto-drawer').hidden;
+    closeAutomations();
+    const autoBack = document.activeElement?.dataset?.pid === atlas.id;
+    tabMenu(); $('ctx').querySelector('[data-a="templates"]').click(); await pause(20);
+    const tplOpenTab = $('tpl-modal').style.display === 'flex';
+    closeTemplates();
+    const tplBackTab = document.activeElement?.dataset?.pid === atlas.id;
+    await report('entry-project-menu', autoOpen && autoBack && tplOpenTab && tplBackTab);
     const ruleId = 'entry' + Date.now().toString(36);
     const rule = { id: ruleId, source: 'clock', badge: ruleId, projectId: atlas.id, columnId: atlas.columns[1].id,
       cmd: '', template: 'none', dir: '', name: 'Entry smoke', enabled: true,

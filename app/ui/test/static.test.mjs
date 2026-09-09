@@ -173,13 +173,10 @@ test('clipboard and selection diagnostics are wired at every handoff', () => {
   const layout = read('app/ui/js/layout.js');
   const terminal = read('app/ui/js/terminal.js');
   const selection = read('app/ui/js/selection.js');
-  for (const stage of ['pasteTrace.keyCapture()', 'pasteTrace.keyHandler()', 'pasteTrace.event(',
-    'pasteTrace.onData(', 'pasteTrace.write('])
-    assert.ok(layout.includes(stage), `missing paste diagnostic handoff: ${stage}`);
   for (const stage of ['key-capture', 'keydown-deck', 'keydown-native', 'keydown-none',
     'keydown-elsewhere', 'selection-vanished'])
     assert.ok(layout.includes(stage), `missing copy diagnostic: ${stage}`);
-  for (const stage of ['pbcopy-success', 'pbcopy-failed', 'web-success', 'web-failed', 'web-unavailable'])
+  for (const stage of ['pbcopy-failed', 'web-failed', 'web-unavailable'])
     assert.ok(terminal.includes(stage), `missing clipboard writer diagnostic: ${stage}`);
   for (const stage of ['promote', 'start-ok', 'start-failed', 'finish-ok', 'finish-failed',
     'update-failed', 'dimensions-changed', 'freeze-ok', 'freeze-failed', 'native-cleared'])

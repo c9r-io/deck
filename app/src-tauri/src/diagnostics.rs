@@ -24,15 +24,19 @@
 //!
 //! Clipboard diagnostics are always structured and content-free. Copy records
 //! terminal key capture, Deck/native/no-selection routing, snapshot loss and
-//! the `pbcopy`/Web Clipboard writer result. `pbcopy` is spawned with
+//! a `pbcopy`/Web Clipboard writer FAILURE (a successful write is silent:
+//! the v0.5.7 success lines never revealed the empty-pasteboard bug below,
+//! `terminal-copy success` already marks a copy that completed). `pbcopy` is spawned with
 //! `LANG=en_US.UTF-8` (`pbcopy_command`): a GUI-launched deck has no locale,
 //! and under the C locale pbcopy writes an EMPTY pasteboard item for any
 //! non-ASCII input while exiting 0 — every copy from an agent pane (Chinese,
-//! box-drawing, `⏺`) "succeeded" and pasted nothing. Text paste records the closed chain
-//! key capture → xterm key handler → native paste event → xterm `onData` → PTY
-//! write, with bounded missing-stage timers. Only fixed labels and character or
-//! file counts enter `app.log`; clipboard text, errors and session names never
-//! do. Per-pane timers are disposed with the pane.
+//! box-drawing, `⏺`) "succeeded" and pasted nothing. The v0.5.7 paste-chain
+//! trace (key capture → handler → paste event → `onData` → PTY write, with
+//! missing-stage timers) was retired once its two findings landed (Enter sent
+//! separately after a bracketed paste; a fresh agent settles before the first
+//! paste): a PTY write that fails is still `pty-write-fail`. Only fixed labels
+//! and character counts enter `app.log`; clipboard text, errors and session
+//! names never do.
 //! ⌘C can only report what it FOUND, so `terminal-selection` records the
 //! selection's own life: `promote` / `start-ok` / `finish-ok` (or
 //! `start-failed` / `update-failed` / `finish-failed` / `freeze-failed`,
@@ -130,7 +134,6 @@ const INBOUND_OUTCOMES: &[&str] = &[
 ];
 
 const LISTEN_TARGETS: &[&str] = &[
-    "deck-ping",
     "update-check",
     "update-check-manual",
     "update-download-progress",
@@ -206,9 +209,15 @@ const SMOKE_CHECKS: &[&str] = &[
     "entry-empty",
     "entry-head",
     "entry-menu",
+    "entry-menu-dismiss",
+    "entry-project-menu",
     "entry-templates",
     "entry-vocabulary",
     "attention-attach-fail",
+    "attention-exit-before-reply",
+    "attention-poll-followup",
+    "attention-reopen-detached",
+    "attention-reorder-focus",
     "attention-board",
     "attention-attach-pending",
     "attention-exit-generation",
@@ -319,10 +328,7 @@ const UI_EVENT_SPECS: &[(&str, DetailPolicy)] = &[
     ("poll-fail", DetailPolicy::None),
     ("poll-recovered", DetailPolicy::None),
     ("clipboard-addon-fail", DetailPolicy::None),
-    (
-        "separator",
-        DetailPolicy::Closed(&["no-marker", "at", "fail"]),
-    ),
+    ("separator", DetailPolicy::Closed(&["no-marker", "fail"])),
     ("mirror-desync", DetailPolicy::Closed(&["esc", "plain"])),
     ("ondata", DetailPolicy::Closed(&["desync", "ok"])),
     ("pty-write-fail", DetailPolicy::None),
@@ -344,33 +350,10 @@ const UI_EVENT_SPECS: &[(&str, DetailPolicy)] = &[
             "clipboard-write-failed",
         ]),
     ),
-    (
-        "terminal-paste",
-        DetailPolicy::Closed(&[
-            "key-capture",
-            "key-handler",
-            "handler-missing",
-            "event-text",
-            "event-empty",
-            "event-file",
-            "event-unavailable",
-            "event-missing",
-            "ondata",
-            "ondata-missing",
-            "pty-success",
-            "pty-failed",
-        ]),
-    ),
     ("terminal-selection", DetailPolicy::Closed(SELECTION_EVENTS)),
     (
         "clipboard-write",
-        DetailPolicy::Closed(&[
-            "pbcopy-success",
-            "pbcopy-failed",
-            "web-success",
-            "web-failed",
-            "web-unavailable",
-        ]),
+        DetailPolicy::Closed(&["pbcopy-failed", "web-failed", "web-unavailable"]),
     ),
     ("record", DetailPolicy::None),
     ("record-skip", DetailPolicy::Closed(FG_CLASSES)),
@@ -527,13 +510,11 @@ mod tests {
             "[ui] terminal-copy snapshot-failed"
         );
         assert_eq!(
-            format_ui_event("terminal-paste", Some("ondata"), Some(42), None).unwrap(),
-            "[ui] terminal-paste ondata a=42"
+            format_ui_event("clipboard-write", Some("pbcopy-failed"), Some(42), None).unwrap(),
+            "[ui] clipboard-write pbcopy-failed a=42"
         );
-        assert_eq!(
-            format_ui_event("clipboard-write", Some("pbcopy-success"), Some(42), None).unwrap(),
-            "[ui] clipboard-write pbcopy-success a=42"
-        );
+        // retired probes stay retired: no code, no line
+        assert!(format_ui_event("terminal-paste", Some("ondata"), None, None).is_none());
         assert_eq!(
             format_ui_event("terminal-selection", Some("promote"), Some(3), Some(0)).unwrap(),
             "[ui] terminal-selection promote a=3 b=0"
@@ -574,7 +555,6 @@ mod tests {
                 "record-skip",
                 "separator",
                 "terminal-copy",
-                "terminal-paste",
                 "terminal-selection",
                 "clipboard-write",
             ] {
@@ -652,7 +632,6 @@ mod tests {
                 ("selection.js", "sev('", "terminal-selection"),
                 // `sevPair(` / `dsevPair(` — the two-integer probes.
                 ("selection.js", "sevPair('", "terminal-selection"),
-                ("pure.js", "emit('", "terminal-paste"),
             ];
             for (owner, marker, code) in indirect {
                 if file == owner {

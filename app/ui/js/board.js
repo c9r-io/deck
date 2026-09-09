@@ -7,7 +7,7 @@
 // Live status never changes placement or durable ordering.
 import { $, columnHint, ctx, dotTitle, emit, genId, inv, listeners, POLL_MS, QUIET_SECS, sessionName, setMemChip, state, store, uev } from './state.js';
 import { mutateBoard, mutateBoardDebounced } from './persistence.js';
-import { CARD_PREVIEW_ROWS, cardPreviewRows, createConfirmationCounter, createExitRetirementTracker, effectiveCardStatus, reorderById, runFinishHolds, sidebarGroups } from './pure.js';
+import { CARD_PREVIEW_ROWS, cardPreviewRows, createConfirmationCounter, createExitRetirementTracker, effectiveCardStatus, newSessionColumn, reorderById, runFinishHolds, sidebarGroups } from './pure.js';
 import { confirmDialog, inlineRename, toast } from './dialogs.js';
 import { clearSeparators, closePaneBySid, hasPane, leaveSessionView, openSession, renderSessionView, updatePaneChrome } from './layout.js';
 import { SHELL_FG, showProjectCtx, showSessionCtx } from './terminal.js';
@@ -422,6 +422,9 @@ async function pollSessionsNow() {
   const tailFor = state.view === 'board'
     ? store.cards.filter(c => c.projectId === state.projectId).map(c => c.session)
     : [];
+  /* the tab strip is rebuilt only when what it shows changes: a project's
+     unread endings or the freshness its done-dot tooltip names */
+  const previousTabs = tabsKey();
   let infos;
   try {
     infos = await inv('poll_sessions', {
@@ -435,11 +438,11 @@ async function pollSessionsNow() {
       uev('poll-fail');
     }
     ctx.attention.fail();
+    if (tabsKey() !== previousTabs) renderTabs();
     refreshAttention();
     return false;
   }
   if (state.lastPollError) { state.lastPollError = null; uev('poll-recovered'); }
-  const previousUnread = store.cards.filter(c => ctx.attention.category(c) === 'done').map(c => c.id).join(',');
   const visible = new Set([...panes.values()].filter(p => state.view === 'session' && p.attached && p.renderedGen === p.attachedGen).map(p => p.sid));
   ctx.attention.record(store.cards, infos, visible);
   const byName = new Map(infos.map(i => [i.name, i]));
@@ -504,11 +507,15 @@ async function pollSessionsNow() {
       toast(t('automation.runClosed', { name: c.title }));
     },
   });
-  const nextUnread = store.cards.filter(c => ctx.attention.category(c) === 'done').map(c => c.id).join(',');
-  if (previousUnread !== nextUnread) renderTabs();
+  if (tabsKey() !== previousTabs) renderTabs();
   refreshAttention();
   return true;
 }
+const tabsKey = () => provider.projects().map(p => {
+  const cards = provider.list(p.id);
+  const unread = cards.filter(c => ctx.attention.category(c) === 'done').map(c => c.id).join(',');
+  return `${p.id}:${ctx.attention.freshness(cards).kind}:${unread}`;
+}).join('|');
 export function startPolling() {
   clearInterval(ctx.pollTimer);
   /* the tick carries no event: coalesce into the in-flight poll, never queue */
@@ -718,8 +725,7 @@ export function renderBoard() {
   /* an empty project gets one starting point above its groups: what a new
      session is, where its card will land (the same rule newSession uses) */
   const total = provider.list(p.id).length;
-  const target = p.columns.find(c => c.id === p.selected)
-    || p.columns.find(c => c.semantic === 'working') || p.columns[1] || p.columns[0];
+  const target = newSessionColumn(p);
   $('board-empty').hidden = total > 0;
   $('board-empty-body').textContent = t('board.emptyBody', { column: target ? target.name : '' });
   $('board-empty-key').textContent = formatShortcut(ctx.settings?.shortcuts?.newSession);

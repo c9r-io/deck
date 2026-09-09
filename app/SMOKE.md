@@ -27,16 +27,19 @@ installed. It checks the uncluttered Board with all cards draggable and only the
 attention entry, unchanged placement, keyed row focus,
 pointer reconciliation, success/failure read receipts (including splits),
 cross-project back navigation, stale/partial snapshots, locate-only stopped
-entries, and three lifecycle races: a click on a pane whose shell exited only
-focuses it (no re-attach, no restart), an exit that lands before its attach
-reply leaves the pane detached and unseen, and a poll requested mid-flight
-runs again afterwards and hands every waiter the follow-up. Twelve locale/theme/font combinations run in the actual WKWebView.
+entries, keyboard focus surviving a row reorder, and three lifecycle races:
+a click on a pane whose shell exited only focuses it (no re-attach, no
+restart), an exit that lands before its attach reply leaves the pane detached
+and unseen, and a poll requested mid-flight runs again afterwards and hands
+every waiter the follow-up. Twelve locale/theme/font combinations run in the actual WKWebView.
 Expect all `attention-*` checks positive and final `done=1`. The same run
-carries the 06 B v01 entry-point gate (`entry-*`, seven checks): one
+carries the 06 B v01 entry-point gate (`entry-*`, nine checks): one
 persistent New session ▾ split button and no standing Automations/Templates
 buttons; the empty-project start block (and no per-column attention text)
 on a project without cards; the ▾ menu with arrow/Escape keyboard handling
-and focus return; the Slack-preset editor opened from that menu; the ↻ chip
+and focus return; a click elsewhere or the global Escape clearing that menu's
+keyboard handler; the Slack-preset editor opened from that menu; the project
+tab menu opening both managers with focus returning to the tab; the ↻ chip
 appearing only while a rule exists and opening the drawer; Templates…
 reachable from the menu and from a list's 📋 with focus returning to the
 opener; and one name per object in both dictionaries. A debug-only strip

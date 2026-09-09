@@ -165,7 +165,11 @@ function updateRows() {
       : ctx.attentionFilter === 'pending' ? 'attention.emptyPending' : 'attention.emptyFilter');
   }
   for (const el of [...list.children]) if (!keys.has(el.dataset.key)) el.remove();
-  if (focusedHere && !focus.isConnected) {
+  /* insertBefore of a connected row removes it first, and removal blurs the
+     focused button inside it: put focus back where the reader left it */
+  if (focusedHere && focus.isConnected) {
+    if (document.activeElement !== focus) focus.focus({ preventScroll: true });
+  } else if (focusedHere) {
     $('attention-tools').querySelector('[aria-pressed="true"]')?.focus({ preventScroll: true });
   }
   list.scrollTop = scroll;

@@ -7,7 +7,7 @@
 // mount new owner, refit new owner. Stale RAF work must not resize a newer
 // owner, and each pane preserves its own bottom-follow/scrollback position.
 import { $, ctx, duev, inv, state, uev } from './state.js';
-import { copyExact, isComposingKeyEvent, linkMenuItems } from './pure.js';
+import { copyExact, isComposingKeyEvent, linkMenuItems, newSessionColumn } from './pure.js';
 import { confirmDialog, inlineRename, toast, promptDialog } from './dialogs.js';
 import { closeSession, panes, provider, renameTab, render, switchProject, activeProject } from './board.js';
 import { backToBoard, openSession, strToB64 } from './layout.js';
@@ -17,6 +17,16 @@ import { openAutomations } from './automation.js';
 import { openTemplates } from './templates.js';
 
 /* ---------- context menus ---------- */
+/* The one dismissal for the shared #ctx element. Every menu that installs a
+   keyboard handler on it (New session ▾, links) has it cleared here, so a
+   later card/project menu or split picker never inherits a stale handler. */
+export function hideCtx() {
+  const ctx = $('ctx');
+  ctx.style.display = 'none';
+  ctx.onkeydown = null;
+  $('board-new-more').setAttribute('aria-expanded', 'false');
+}
+
 export function placeCtx(e) {
   const ctx = $('ctx');
   ctx.style.display = 'block';
@@ -67,6 +77,7 @@ export function showSessionCtx(e, sid) {
   const renameHost = e.currentTarget && e.currentTarget.querySelector
     ? e.currentTarget.querySelector('.name, .card-title') : null;
   const ctx = $('ctx');
+  ctx.onkeydown = null;
   ctx.innerHTML = '<button data-a="rename"></button><button data-a="desc"></button><button data-a="here"></button><hr><button data-a="close" class="danger"></button>';
   ctx.querySelector('[data-a="rename"]').textContent = t('menu.renameCard');
   ctx.querySelector('[data-a="desc"]').textContent = t(s.desc ? 'menu.editDescription' : 'menu.addDescription');
@@ -88,6 +99,7 @@ export function showProjectCtx(e, pid) {
   e.stopPropagation();
   const p = provider.project(pid);
   const ctx = $('ctx');
+  ctx.onkeydown = null;
   ctx.innerHTML = '<button data-a="rename"></button><button data-a="automations"></button><button data-a="templates"></button><hr><button data-a="remove" class="danger"></button>';
   ctx.querySelector('[data-a="rename"]').textContent = t('menu.renameProject');
   ctx.querySelector('[data-a="automations"]').textContent = '↻ ' + t('menu.automations');
@@ -96,9 +108,17 @@ export function showProjectCtx(e, pid) {
   ctx.onclick = async ev => {
     const a = ev.target.dataset && ev.target.dataset.a;
     ctx.style.display = 'none';
-    /* the managers are per project: switch first so they open over it */
-    if (a === 'automations') { switchProject(pid); openAutomations({ from: e.currentTarget }); }
-    if (a === 'templates') { switchProject(pid); openTemplates(e.currentTarget); }
+    /* the managers are per project: switch first so they open over it. The
+       contextmenu event's currentTarget is null by now (dispatch is over) and
+       every render rebuilds the tabs, so focus returns to the tab resolved
+       at close time */
+    const tabOf = () => {
+      const tab = [...document.querySelectorAll('#tabs .tab')].find(el => el.dataset.pid === pid);
+      if (tab) tab.tabIndex = -1;
+      return tab || null;
+    };
+    if (a === 'automations') { switchProject(pid); openAutomations({ from: tabOf }); }
+    if (a === 'templates') { switchProject(pid); openTemplates(tabOf); }
     if (a === 'rename') {
       switchProject(pid);
       const tab = document.querySelector('#tabs .tab.active');
@@ -227,10 +247,7 @@ export async function newSession(dir, opts = {}) {
   try {
     const p = opts.projectId ? provider.project(opts.projectId) : activeProject();
     if (!p) throw new Error('project no longer exists');
-    const selected = p.columns.find(c => c.id === p.selected);
-    const columnId = (selected
-      || p.columns.find(c => c.semantic === 'working')
-      || p.columns[1] || p.columns[0]).id;
+    const columnId = newSessionColumn(p).id;
     let started = false;
     const card = await provider.create({
       projectId: p.id, columnId,
@@ -508,7 +525,6 @@ export function resetSuggest(nextPane = null) {
 export async function writeClipboard(text) {
   try {
     const result = await copyExact(text, value => inv('write_clipboard', { text: value }));
-    uev('clipboard-write', 'pbcopy-success', text.length);
     return result;
   } catch (nativeError) {
     uev('clipboard-write', 'pbcopy-failed', text.length);
@@ -518,7 +534,6 @@ export async function writeClipboard(text) {
     }
     try {
       const result = await copyExact(text, value => navigator.clipboard.writeText(value));
-      uev('clipboard-write', 'web-success', text.length);
       return result;
     } catch (webError) {
       uev('clipboard-write', 'web-failed', text.length);
@@ -550,8 +565,7 @@ export function initTerminalChrome() {
     if (Date.now() < ignoreLinkOpeningClickUntil) return;
     if ($('ctx').contains(event.target)) return;
     linkActionGeneration++;
-    $('ctx').style.display = 'none';
-    $('board-new-more').setAttribute('aria-expanded', 'false');
+    hideCtx();
   });
 
   $('collapse-btn').onclick = toggleSidebar;
@@ -572,7 +586,7 @@ export function initTerminalChrome() {
   document.addEventListener('keydown', e => {
     if (isComposingKeyEvent(e)) return;
     if (e.key === 'Escape') {
-      if ($('ctx').style.display === 'block') { $('ctx').style.display = 'none'; return; }
+      if ($('ctx').style.display === 'block') { hideCtx(); return; }
       /* Esc inside the terminal belongs to the terminal (agents use it) */
       if (state.view === 'session' && !(document.activeElement && document.activeElement.closest('#terminal'))) {
         backToBoard();

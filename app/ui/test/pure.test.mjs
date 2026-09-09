@@ -11,7 +11,7 @@ import {
   MIN_QUIET_SECS, MAX_QUIET_SECS, quietSecsOf, localEpoch, isoDate, isoTime,
   scheduleMatchesDay, nextScheduleSlot, createConfirmationCounter, isoWeekday, daysInMonth, runFinishHolds, toggleClockRule,
   createExitRetirementTracker, createSerialTransactionQueue, deleteSessionsTransaction, sidebarGroups,
-  copyExact, createTerminalPasteTrace, createTerminalResizeCoordinator, createTerminalSelectionModel,
+  copyExact, createTerminalResizeCoordinator, newSessionColumn, createTerminalSelectionModel,
   reorderById,
   terminalCopyRoute, terminalSelectionEdgeLines,
   isComposingKeyEvent, isPlainShiftKeydown, shouldRouteImeKeydownThroughInput,
@@ -42,49 +42,6 @@ test('agent-hook state outranks the output-recency heuristic', () => {
   // a dead pane wins over any stale agent word; unknown words fall through
   assert.equal(effectiveCardStatus(false, 'needs-input', false), 'stopped');
   assert.equal(effectiveCardStatus(true, 'mystery', true), 'waiting');
-});
-
-test('terminal paste trace identifies every silent handoff without recording content', async () => {
-  let nextTimer = 1;
-  const timers = new Map();
-  const events = [];
-  const trace = createTerminalPasteTrace({
-    emit: (detail, length, id) => events.push([detail, length, id]),
-    schedule: callback => { const id = nextTimer++; timers.set(id, callback); return id; },
-    cancel: id => timers.delete(id),
-  });
-  const flushTimers = () => {
-    const callbacks = [...timers.values()];
-    timers.clear();
-    callbacks.forEach(callback => callback());
-  };
-
-  trace.keyCapture();
-  trace.keyHandler();
-  trace.event('event-text', 12);
-  const id = trace.onData(24);
-  trace.write(id, true);
-  assert.deepEqual(events, [
-    ['key-capture', undefined, 1], ['key-handler', undefined, 1], ['event-text', 12, 1],
-    ['ondata', 24, 1], ['pty-success', undefined, 1],
-  ]);
-  assert.equal(timers.size, 0);
-
-  trace.keyCapture();
-  flushTimers();
-  trace.keyHandler();
-  flushTimers();
-  trace.event('event-text', 3);
-  flushTimers();
-  assert.deepEqual(events.slice(-6), [
-    ['key-capture', undefined, 2], ['handler-missing', undefined, 2],
-    ['key-handler', undefined, 3], ['event-missing', undefined, 3],
-    ['event-text', 3, 4], ['ondata-missing', undefined, 4],
-  ]);
-
-  trace.event('event-file', 2);
-  assert.equal(trace.onData(99), null, 'file paste expects path insertion, not xterm onData');
-  trace.dispose();
 });
 
 test('card preview keeps the newest rows bottom-aligned', () => {
@@ -1303,4 +1260,13 @@ test('a confirmation counter needs N consecutive readings and forgets on any mis
   assert.equal(c.observe('a', true), false);
   c.clear();
   assert.equal(c.observe('b', true), false);
+});
+
+test('a new session lands in the selected group, else working, else the second, else the first', () => {
+  const cols = [{ id: 'a', semantic: 'attention' }, { id: 'w', semantic: 'working' }, { id: 'q' }];
+  assert.equal(newSessionColumn({ columns: cols, selected: 'q' }).id, 'q');
+  assert.equal(newSessionColumn({ columns: cols, selected: 'gone' }).id, 'w');
+  assert.equal(newSessionColumn({ columns: [{ id: 'x' }, { id: 'y' }] }).id, 'y');
+  assert.equal(newSessionColumn({ columns: [{ id: 'x' }] }).id, 'x');
+  assert.equal(newSessionColumn({ columns: [] }), null);
 });

@@ -90,6 +90,7 @@ loaded by `ui/index.html`; xterm.js vendored in `app/ui/vendor/`. Backend
 | Dropdowns (deck's own listbox over every `<select>`) | `ui/js/dropdown.js` |
 | Lists (the ⏱ panel): queue model, selection, delivery state machine, tick | `scheduler/` (+ `docs/scheduler-context-safety.md`), `context.rs`, `ui/js/scheduler.js` |
 | Templates (saved lists, shared by cards and automations) | `ui/js/templates.js` |
+| Needs-attention view (sidebar entry), runtime read state, tab done-dot | `ui/js/attention.js`, `ui/js/attention-model.js` |
 | Agent status hooks (closed state words, bundled helper) | `agent_status.rs`, `src-tauri/status-helper/` |
 | Automations: inbound sources (Slack badge, clock), dispatcher, Keychain | `inbound.rs`, `inbound_slack.rs`, `inbound_clock.rs`, `keychain.rs`, `ui/js/inbound.js` (+ `docs/auto-respond.md`) |
 | Automations drawer (both triggers), run finish, the Board's `New session ▾` menu and ↻ chip | `ui/js/automation.js` (rules are inbound rules; the Slack connection stays in Settings; finish close lives in the `board.js` poll; the head keeps ONE persistent action — automations and templates open from that menu, a list's 📋 menu, the automation editor or the project tab menu) |

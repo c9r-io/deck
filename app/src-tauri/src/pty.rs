@@ -282,12 +282,7 @@ pub(crate) fn attach_session(
     const EMIT_COALESCE_MAX: usize = 256 * 1024;
     let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(PTY_CHANNEL_CHUNKS);
 
-    let reader_name = name.clone();
     std::thread::spawn(move || {
-        applog(&format!(
-            "[pty] reader started for {}",
-            crate::applog::session_tag(&reader_name)
-        ));
         let mut buf = [0u8; 8192];
         loop {
             match reader.read(&mut buf) {
@@ -313,13 +308,6 @@ pub(crate) fn attach_session(
             MAX_INFLIGHT_BATCHES,
             |seq, batch| {
                 emits += 1;
-                if emits <= 3 || emits.is_multiple_of(200) {
-                    applog(&format!(
-                        "[pty] emit #{emits} {}B to {}",
-                        batch.len(),
-                        crate::applog::session_tag(&thread_name)
-                    ));
-                }
                 let r = thread_app.emit(
                     "pty-data",
                     PtyData {
@@ -331,9 +319,12 @@ pub(crate) fn attach_session(
                 );
                 if emits == 1 {
                     // time from attach to the first byte the webview sees:
-                    // for a fresh pane this is the login shell's startup
+                    // for a fresh pane this is the login shell's startup. The
+                    // frontend's `pty-rx` is the liveness trace after that.
                     applog(&format!(
-                        "[pty] first emit result: {:?} after {}ms",
+                        "[pty] first emit {}B to {} ok={:?} after {}ms",
+                        batch.len(),
+                        crate::applog::session_tag(&thread_name),
                         r.is_ok(),
                         attached_at.elapsed().as_millis()
                     ));

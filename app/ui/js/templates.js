@@ -42,7 +42,7 @@ let selected = null;      // name of the template being edited
 let nameShown = null;     // whose name the editor field currently holds
 let openStep = null;      // index of the one step opened into the full editor
 let unsubscribe = null;
-let opener = null;        // element that opened the manager; focus returns there
+let opener = null;        // element (or resolver) that opened the manager; focus returns there
 
 const isOpen = () => $('tpl-modal').style.display === 'flex';
 const project = () => (projectId ? provider.project(projectId) : null);
@@ -81,7 +81,8 @@ export function closeTemplates() {
   openStep = null;
   $('tpl-modal').style.display = 'none';
   if (unsubscribe) { unsubscribe(); unsubscribe = null; }
-  const back = opener && opener.isConnected ? opener : $('board-new-more');
+  const target = typeof opener === 'function' ? opener() : opener;
+  const back = target && target.isConnected ? target : $('board-new-more');
   opener = null;
   back.focus();
 }

@@ -11,7 +11,7 @@ import { inlineRename, toast } from './dialogs.js';
 import { t } from './i18n.js';
 import { markSessionSeen, panes, pollNow, provider, render, renderSidebar, updateSidebarSelection, activeProject } from './board.js';
 import { SHELL_FG, acceptGhost, feedMirror, maybeRecordCommand, mountQuickBar, nextShellTitle, renderSuggest, resetSuggest, showLinkCtx, updateGhost, writeClipboard } from './terminal.js';
-import { AGENT_HISTORY_VERTICAL_UP, createTerminalPasteTrace, createTerminalResizeCoordinator, createTerminalWheelAccumulator, createTerminalWheelFrameScheduler, isComposingKeyEvent, isPlainShiftKeydown, isTerminalAutoReply, scrollResultView, shouldRouteImeKeydownThroughInput, shQuote, terminalLinkRanges, terminalAgentComposerGeometry, terminalAgentHistoryUpRoute, terminalCopyRoute, terminalSelectionWheelRoute, tokenizeTerminalLinks, terminalWheelLines } from './pure.js';
+import { AGENT_HISTORY_VERTICAL_UP, newSessionColumn, createTerminalResizeCoordinator, createTerminalWheelAccumulator, createTerminalWheelFrameScheduler, isComposingKeyEvent, isPlainShiftKeydown, isTerminalAutoReply, scrollResultView, shouldRouteImeKeydownThroughInput, shQuote, terminalLinkRanges, terminalAgentComposerGeometry, terminalAgentHistoryUpRoute, terminalCopyRoute, terminalSelectionWheelRoute, tokenizeTerminalLinks, terminalWheelLines } from './pure.js';
 import { toggleQueuePanel } from './scheduler.js';
 import { cancelAllTerminalSelections, cancelTerminalSelection, copyTerminalSelection, hasTerminalSelection, terminalSelectionElsewhere, wireTerminalSelection } from './selection.js';
 import { getTerminalTheme, onThemeChange, syncThemeIntegrations } from './theme.js';
@@ -236,9 +236,6 @@ export function createPane(card) {
   }
   /* echo arrives asynchronously — reposition after each parsed write */
   const pane = { sid: card.id, session, el, body, term, fit, seps: [] };
-  pane.pasteTrace = createTerminalPasteTrace({
-    emit: (detail, length, attempt) => uev('terminal-paste', detail, length, attempt),
-  });
   const resize = createTerminalResizeCoordinator((cols, rows) =>
     inv('pty_resize', { name: pane.session, cols, rows }));
   pane.syncSize = () => resize.sync(pane.term.cols, pane.term.rows);
@@ -338,21 +335,10 @@ export function createPane(card) {
   body.addEventListener('paste', e => {
     const files = e.clipboardData && e.clipboardData.files;
     if (files && files.length) {
-      pane.pasteTrace.event('event-file', files.length);
       e.preventDefault();
       e.stopPropagation();
       insertDroppedFiles(pane, files);
-      return;
     }
-    if (!e.clipboardData) {
-      pane.pasteTrace.event('event-unavailable');
-      return;
-    }
-    let textLength = null;
-    try { textLength = e.clipboardData.getData('text/plain').length; } catch (_) { /* unavailable */ }
-    const detail = textLength == null ? 'event-unavailable'
-      : textLength > 0 ? 'event-text' : 'event-empty';
-    pane.pasteTrace.event(detail, textLength || 0);
   }, true);
 
   wireTerminalInput(pane, term, body);
@@ -387,7 +373,6 @@ export function addInputSeparator(pane) {
       const i = pane.seps.indexOf(entry);
       if (i >= 0) pane.seps.splice(i, 1);
     });
-    if (ctx.sepLogged < 5) { ctx.sepLogged++; uev('separator', 'at', marker.line); }
     positionSeparators(pane);
   } catch (e) {
     if (ctx.sepLogged < 5) { ctx.sepLogged++; uev('separator', 'fail'); }
@@ -458,7 +443,6 @@ export function wireTerminalInput(pane, term, host) {
     if (event.type === 'keydown' && event.metaKey) {
       const key = String(event.key || '').toLowerCase();
       if (key === 'c') uev('terminal-copy', 'key-capture');
-      if (key === 'v') pane.pasteTrace.keyCapture();
     }
     const imePrintable = shouldRouteImeKeydownThroughInput(event);
     const plainShift = isPlainShiftKeydown(event);
@@ -471,7 +455,6 @@ export function wireTerminalInput(pane, term, host) {
   term.onData(d => {
     /* xterm's auto-answers to terminal queries are not user input */
     const isAutoReply = isTerminalAutoReply(d);
-    const pasteAttempt = isAutoReply ? null : pane.pasteTrace.onData(d.length);
     /* the input mirror / completion only tracks the focused pane */
     if (!isAutoReply && ctx.attachedName === session) {
       if (d.includes('\x1b') && escLogged < 5) {
@@ -502,14 +485,7 @@ export function wireTerminalInput(pane, term, host) {
        chained so keystroke order is preserved; once the chain drains,
        writes go direct again. Terminal auto-replies never trigger this. */
     const doWrite = bytes => inv('pty_write', { name: session, dataB64: strToB64(bytes) })
-      .then(result => {
-        if (pasteAttempt) pane.pasteTrace.write(pasteAttempt, true);
-        return result;
-      })
-      .catch(() => {
-        uev('pty-write-fail');
-        if (pasteAttempt) pane.pasteTrace.write(pasteAttempt, false);
-      });
+      .catch(() => { uev('pty-write-fail'); });
     const cc = card();
     if (!isAutoReply && hasTerminalSelection(pane)) {
       pane.liveQ = cancelTerminalSelection(pane, 'input');
@@ -553,7 +529,6 @@ export function wireTerminalInput(pane, term, host) {
        PTY. (navigator.clipboard.readText is permission-blocked in WKWebView —
        the native paste event is the reliable path.) */
     if (e.type === 'keydown' && e.metaKey && String(e.key || '').toLowerCase() === 'v') {
-      pane.pasteTrace.keyHandler();
       return false;
     }
     if (e.type === 'keydown' && e.key === 'Escape' && hasTerminalSelection(pane)) {
@@ -921,7 +896,6 @@ export function closePaneBySid(sid, opts = {}) {
   if (!entry) return;
   if ($('quick-bar').closest('.spane') === entry.el) resetSuggest();
   if (entry.selection) entry.selection.dispose();
-  entry.pasteTrace?.dispose();
   entry.scrollCursorObserver?.disconnect();
   if (opts.detach !== false) inv('detach_session', { name: entry.session }).catch(() => {});
   try { entry.term.dispose(); } catch (e) { /* already gone */ }
@@ -953,6 +927,7 @@ export function showSplitPicker(dir) {
   candidates.sort((a, b) => order[a.status] - order[b.status]);
   const ctx = $('ctx');
   ctx.replaceChildren();
+  ctx.onkeydown = null;
   const label = document.createElement('div');
   label.className = 'ctx-label';
   label.textContent = t('split.choose', { direction: t(dir === 'col' ? 'split.down' : 'split.right') });
@@ -983,7 +958,7 @@ export function showSplitPicker(dir) {
       const focused = provider.get(targetSid);
       const c = await provider.create({
         projectId: p.id,
-        columnId: (p.columns.find(x => x.semantic === 'working') || p.columns[0]).id,
+        columnId: newSessionColumn(p).id,
         title: nextShellTitle(p),
         cmd: '',
         dir: focused ? focused.dir : ctx.HOME,
@@ -1046,7 +1021,6 @@ export function leaveSessionView() {
   if (quickBar && quickBar.closest('.spane')) $('session-view').appendChild(quickBar);
   panes.forEach(p => {
     if (p.selection) p.selection.dispose();
-    p.pasteTrace?.dispose();
     p.scrollCursorObserver?.disconnect();
     inv('detach_session', { name: p.session }).catch(() => {});
     try { p.term.dispose(); } catch (e) { /* fine */ }

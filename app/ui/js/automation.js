@@ -380,8 +380,10 @@ async function pruneOrphans() {
 }
 
 /* ---------- drawer ---------- */
-/* `from` is the element to return focus to; `trigger` ('clock' | 'slack')
-   opens the editor for a NEW rule preset to that trigger. */
+/* `from` is the element to return focus to, or a function resolving it at
+   close time (a project tab is rebuilt by every render, so the element the
+   menu was opened on is gone by then); `trigger` ('clock' | 'slack') opens
+   the editor for a NEW rule preset to that trigger. */
 export async function openAutomations({ from = null, trigger = null } = {}) {
   opener = from;
   $('auto-drawer').hidden = false;
@@ -396,7 +398,8 @@ export function closeAutomations() {
   closeEditor();
   $('auto-drawer').hidden = true;
   refreshAutomationBadge();
-  const back = opener && opener.isConnected && !opener.hidden ? opener : $('board-new-more');
+  const target = typeof opener === 'function' ? opener() : opener;
+  const back = target && target.isConnected && !target.hidden ? target : $('board-new-more');
   opener = null;
   back.focus();
 }
