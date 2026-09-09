@@ -1,3 +1,9 @@
+//! Review-aware opt-in uses envelope v2 (sticky) for queue.json and
+//! settings.json ONLY; v0/v1 load unchanged and every other document stays v1.
+//! A settings v2 barrier precedes the first reviewed queue save, preventing old
+//! automation finish rules from treating a refused queue as empty. deck.json is
+//! deliberately outside the door: an old reader without rules cannot auto-close
+//! a run, and a card's `origin.reviewEach` alone must not lock the whole Board.
 //! One reliable persistence layer for every deck data file
 //! (deck.json / queue.json / history.json / settings.json).
 //!
@@ -60,7 +66,29 @@ use serde::de::DeserializeOwned;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-pub const SCHEMA_VERSION: u64 = 1;
+// v2 protects opt-in human checkpoints from older readers ignoring new fields.
+// Ordinary documents keep v1; once upgraded, a document never downgrades itself.
+pub const SCHEMA_VERSION: u64 = 2;
+
+/// The two documents whose review fields an old reader could misinterpret as
+/// ordinary state (queue rows it would resend; finish rules it would apply).
+fn review_gated(name: &str) -> bool {
+    matches!(name, "queue.json" | "settings.json")
+}
+
+fn uses_review(v: &serde_json::Value) -> bool {
+    match v {
+        serde_json::Value::Object(o) => o.iter().any(|(k, v)| {
+            ((k == "review_each" || k == "reviewEach") && v.as_bool() == Some(true))
+                || (k == "review" && v.is_object())
+                || ((k == "reviews" || k == "review_completed")
+                    && v.as_array().is_some_and(|a| !a.is_empty()))
+                || uses_review(v)
+        }),
+        serde_json::Value::Array(a) => a.iter().any(uses_review),
+        _ => false,
+    }
+}
 static SAVE_LOCK: Mutex<()> = Mutex::new(());
 
 /// Warnings produced before the webview exists (e.g. corrupt files found at
@@ -106,6 +134,13 @@ fn bak_path(path: &Path) -> PathBuf {
 /// envelope as v0 would hand the caller the wrapper object as if it were
 /// the payload, and let `save` overwrite a file it never understood.
 fn envelope_payload(v: &serde_json::Value) -> Result<serde_json::Value, DocErr> {
+    envelope_payload_for(v, SCHEMA_VERSION)
+}
+
+fn envelope_payload_for(
+    v: &serde_json::Value,
+    supported: u64,
+) -> Result<serde_json::Value, DocErr> {
     match (v.get("schema_version"), v.get("data")) {
         (None, None) => Ok(v.clone()), // legacy v0: the whole document
         (Some(sv), data) => {
@@ -115,7 +150,7 @@ fn envelope_payload(v: &serde_json::Value) -> Result<serde_json::Value, DocErr> 
                     type_name_of(sv)
                 ))
             })?;
-            if n > SCHEMA_VERSION {
+            if n > supported {
                 return Err(DocErr::Newer(n));
             }
             data.cloned()
@@ -261,12 +296,30 @@ fn save_checked(
     path: &Path,
     payload: &str,
     keep_backup: bool,
+    minimum_version: u64,
     validate_existing: impl Fn(&serde_json::Value) -> Result<(), DeckError>,
 ) -> Result<(), DeckError> {
     // Scheduler workers and UI commands can save concurrently. Serialize the
     // validate → backup → replace sequence so one writer cannot validate
     // bytes another writer replaces before its backup is taken.
     let _save_guard = SAVE_LOCK.lock_or_recover();
+    save_checked_locked(
+        path,
+        payload,
+        keep_backup,
+        minimum_version,
+        validate_existing,
+    )
+}
+
+// Caller owns SAVE_LOCK, including any read used to derive this write.
+fn save_checked_locked(
+    path: &Path,
+    payload: &str,
+    keep_backup: bool,
+    minimum_version: u64,
+    validate_existing: impl Fn(&serde_json::Value) -> Result<(), DeckError>,
+) -> Result<(), DeckError> {
     let data: serde_json::Value = serde_json::from_str(payload)
         .map_err(|e| DeckError::classified(format!("refusing to save invalid JSON: {e}")))?;
     // Never clobber a file this build does not understand. `load_typed`
@@ -274,6 +327,11 @@ fn save_checked(
     // reaching here with a broken envelope means the file was never loaded
     // (or was replaced behind our back) — refuse rather than destroy it.
     let name = path.file_name().unwrap_or_default().to_string_lossy();
+    let mut version = minimum_version.max(if review_gated(&name) && uses_review(&data) {
+        2
+    } else {
+        1
+    });
     let existing = match std::fs::read(path) {
         Ok(bytes) => {
             let raw = std::str::from_utf8(&bytes).map_err(|_| {
@@ -309,6 +367,11 @@ fn save_checked(
                     ))
                 }
             }
+            version = version.max(
+                v.get("schema_version")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(1),
+            );
             Some(bytes)
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
@@ -319,7 +382,7 @@ fn save_checked(
             ))
         }
     };
-    let doc = serde_json::json!({ "schema_version": SCHEMA_VERSION, "data": data });
+    let doc = serde_json::json!({ "schema_version": version, "data": data });
     let out = serde_json::to_string_pretty(&doc).map_err(DeckError::from)?;
 
     let dir = path.parent().ok_or(DeckError::new(
@@ -349,16 +412,53 @@ fn save_checked(
 
 #[allow(dead_code)] // low-level envelope tests intentionally exercise this directly
 pub fn save(path: &Path, payload: &str) -> Result<(), DeckError> {
-    save_checked(path, payload, true, |_| Ok(()))
+    save_checked(path, payload, true, 1, |_| Ok(()))
 }
 
 /// Typed save used by every app data file. It validates both the new payload
 /// and any concurrently replaced existing payload under the same save lock,
 /// so malformed business structure cannot be silently overwritten.
 pub(crate) fn save_typed<T: DeserializeOwned>(path: &Path, payload: &str) -> Result<(), DeckError> {
+    save_typed_version::<T>(path, payload, 1)
+}
+
+pub(crate) fn save_typed_version<T: DeserializeOwned>(
+    path: &Path,
+    payload: &str,
+    minimum_version: u64,
+) -> Result<(), DeckError> {
+    if !(1..=SCHEMA_VERSION).contains(&minimum_version) {
+        return Err(DeckError::new(
+            ErrorKind::NewerSchema,
+            "unsupported schema version",
+        ));
+    }
     serde_json::from_str::<T>(payload)
         .map_err(|e| DeckError::classified(format!("refusing to save wrong structure: {e}")))?;
-    save_checked(path, payload, true, |existing| {
+    save_checked(path, payload, true, minimum_version, |existing| {
+        serde_json::from_value::<T>(existing.clone())
+            .map(|_| ())
+            .map_err(DeckError::from)
+    })
+}
+
+/// Upgrade only the envelope while holding the same lock as settings saves.
+/// Reading outside this lock could restore stale user settings during opt-in.
+pub(crate) fn ensure_review_schema<T: DeserializeOwned>(path: &Path) -> Result<(), DeckError> {
+    let _save_guard = SAVE_LOCK.lock_or_recover();
+    let already_v2 = std::fs::read_to_string(path)
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|v| v.get("schema_version").and_then(|n| n.as_u64()))
+        == Some(2);
+    if already_v2 {
+        return Ok(());
+    }
+    let payload = load_typed::<T>(path)?
+        .map(|v| v.payload)
+        .unwrap_or_else(|| "{}".into());
+    serde_json::from_str::<T>(&payload).map_err(DeckError::from)?;
+    save_checked_locked(path, &payload, true, 2, |existing| {
         serde_json::from_value::<T>(existing.clone())
             .map(|_| ())
             .map_err(DeckError::from)
@@ -374,7 +474,7 @@ pub(crate) fn save_typed_ephemeral<T: DeserializeOwned>(
 ) -> Result<(), DeckError> {
     serde_json::from_str::<T>(payload)
         .map_err(|e| DeckError::classified(format!("refusing to save wrong structure: {e}")))?;
-    save_checked(path, payload, false, |existing| {
+    save_checked(path, payload, false, 1, |existing| {
         serde_json::from_value::<T>(existing.clone())
             .map(|_| ())
             .map_err(DeckError::from)
@@ -820,5 +920,75 @@ mod tests {
         assert_eq!(mode_of(&p), 0o600);
         assert_eq!(mode_of(&bak_path(&p)), 0o600);
         assert_eq!(mode_of(&d), 0o700);
+    }
+    #[test]
+    fn review_documents_upgrade_only_on_opt_in_and_never_silently_downgrade() {
+        let dir = tdir("review-version");
+        let path = dir.join("queue.json");
+        save_typed::<serde_json::Value>(&path, r#"{"items":[],"reviews":[]}"#).unwrap();
+        let first: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(first["schema_version"], 1);
+        assert!(envelope_payload_for(&first, 1).is_ok());
+        save_typed::<serde_json::Value>(&path, r#"{"items":[{"review_each":true}]}"#).unwrap();
+        let reviewed: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(reviewed["schema_version"], 2);
+        assert!(matches!(
+            envelope_payload_for(&reviewed, 1),
+            Err(DocErr::Newer(2))
+        ));
+        assert!(load_typed::<serde_json::Value>(&path).unwrap().is_some());
+        save_typed::<serde_json::Value>(&path, r#"{"items":[]}"#).unwrap();
+        let empty: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            empty["schema_version"], 2,
+            "removing the last checkpoint never permits an old reader to resurrect its v1 backup"
+        );
+        let settings = dir.join("settings.json");
+        save_typed::<serde_json::Value>(&settings, r#"{"editor":"Zed"}"#).unwrap();
+        ensure_review_schema::<serde_json::Value>(&settings).unwrap();
+        save_typed::<serde_json::Value>(&settings, r#"{"editor":"Zed"}"#).unwrap();
+        let raw: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
+        assert!(matches!(
+            envelope_payload_for(&raw, 1),
+            Err(DocErr::Newer(2))
+        ));
+        assert_eq!(raw["data"]["editor"], "Zed");
+        // The Board never joins the door: an opted-in run origin stays v1.
+        let board = dir.join("deck.json");
+        save_typed::<serde_json::Value>(
+            &board,
+            r#"{"cards":[{"origin":{"source":"clock","reviewEach":true}}]}"#,
+        )
+        .unwrap();
+        let board_raw: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&board).unwrap()).unwrap();
+        assert_eq!(board_raw["schema_version"], 1);
+        assert!(envelope_payload_for(&board_raw, 1).is_ok());
+    }
+
+    #[test]
+    fn review_envelope_barrier_never_overwrites_concurrent_settings() {
+        let path = tdir("review-settings-race").join("settings.json");
+        save_typed::<Doc>(&path, r#"{"v":0}"#).unwrap();
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                for value in 1..=50 {
+                    save_typed::<Doc>(&path, &format!("{{\"v\":{value}}}")).unwrap();
+                }
+            });
+            scope.spawn(|| {
+                for _ in 0..50 {
+                    ensure_review_schema::<Doc>(&path).unwrap();
+                }
+            });
+        });
+        let raw: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        assert_eq!(raw["schema_version"], 2);
+        assert_eq!(raw["data"]["v"], 50);
     }
 }

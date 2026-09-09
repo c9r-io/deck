@@ -110,6 +110,7 @@ export function normalizeInbound(value) {
       cmd: String(r.cmd ?? ''), template: String(r.template ?? ''), dir: String(r.dir ?? ''),
       name: String(r.name ?? ''), enabled: r.enabled !== false,
       finish: FINISH_MODES.includes(r.finish) ? r.finish : 'keep',
+      ...(r.reviewEach === true ? { reviewEach: true } : {}),
       since: Number.isInteger(r.since) && r.since >= 0 ? r.since : 0,
     };
     if (!INBOUND_ID.test(rule.id) || rule.id.length > 64) continue;

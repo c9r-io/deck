@@ -2,6 +2,13 @@
 // Part of deck's no-build frontend: native ES modules, no bundler.
 //
 // # Contract
+// C v01: a list optionally leaves a durable human checkpoint after EVERY
+// delivery, including the last. queue-review.js renders backend selection
+// observations and separate delivery/inspection records. Never use agent
+// state or viewed markers to release a checkpoint; only its revision-bound
+// confirmation does. Reviewed templates enter as one backend transaction.
+// Plans are read-only snapshots: an open panel re-fetches them on the poll
+// tick (refreshQueuePlans) so a waiting list is not shown as "unknown".
 // The panel shows one LIST per queue group (an "at" head and the chain rows
 // behind it) or per standing "every" rule (its embedded rows). A list's head
 // carries the two optional fields the form offers — NOT BEFORE (the head's
@@ -32,6 +39,7 @@
 // template changed later leaves the rows alone. Calendar cadences (daily /
 // weekly / monthly) are deliberately not a card schedule — see the
 // Board-level automation note in scheduler/mod.rs.
+import { isReview, reviewRow, executionPlan, stageText, queueHistory, cancelQueueList } from './queue-review.js';
 import { $, ctx, inv, listen, state, uev } from './state.js';
 import { blockedBy, chainQuietHint, CHAIN_QUIET_SECS, contextStatusKey, fmtEvery, groupQueue, groupSteps, hasWindow, hmToMin, isoDate, isoTime, itemDead, listKey, listRepeats, listScheduleArgs, localEpoch, MAX_QUIET_SECS, MIN_QUIET_SECS, minToHM, nextFire, promptSummary, promptTooltip, quietSecsOf, winHas } from './pure.js';
 export { blockedBy, chainQuietHint, contextStatusKey, fmtEvery, groupQueue, groupSteps, hasWindow, hmToMin, itemDead, minToHM, nextFire, promptSummary, promptTooltip, winHas };
@@ -42,9 +50,21 @@ import { openTemplates } from './templates.js';
 import { formatDateTime, formatInterval, formatNumber, onLocaleChange, t } from './i18n.js';
 
 /* ---------- scheduled prompts ---------- */
+let queueFetchedAt = 0;
 export async function refreshQueue() {
-  try { ctx.queueCache = await inv('queue_list'); } catch (e) { return; }
+  try { ctx.queueCache = await inv('queue_list'); queueFetchedAt = Date.now(); } catch (e) { ctx.queueCache.plans = []; }
   renderQueueUI();
+}
+/* the backend emits queue-changed only on mutations, and a list that is
+   merely waiting (gap, quiet, not-before) mutates nothing — so an open panel
+   re-fetches its read-only plans every 15 s, well inside the 40 s after which
+   stageText reports them as stale. Closed panels never fetch. */
+const PLAN_REFRESH_MS = 15_000;
+export function refreshQueuePlans() {
+  if (!ctx.queueOpen || state.view !== 'session') return;
+  if (Date.now() - queueFetchedAt < PLAN_REFRESH_MS) return;
+  queueFetchedAt = Date.now();
+  refreshQueue();
 }
 
 export const sessionQueue = session => ctx.queueCache.items.filter(i => i.session === session);
@@ -238,6 +258,7 @@ const withSteps = (rule, steps, operation) =>
   inv('queue_update', { id: rule.id, steps }).catch(() => toast(t('error.operation', { operation })));
 
 function rowEl(r, g, rows, k) {
+  if (isReview(r.item)) return reviewRow(r.item, refreshQueue, () => toggleQueuePanel(false));
   const { first, extra } = promptSummary(r.text);
   const expanded = extra > 0 && expandedRows.has(r.key);
   const row = document.createElement('div');
@@ -248,7 +269,8 @@ function rowEl(r, g, rows, k) {
   const ambiguous = i && i.state === 'ambiguous';
   const contextBlocked = i && i.last_context && i.last_context.status !== 'ready'
     && !ambiguous && i.state !== 'firing';
-  const manualAllowed = i && !ambiguous && i.state !== 'firing' && !dead;
+  const manualAllowed = i && !ambiguous && i.state !== 'firing' && !dead
+    && !g.rows.some(p => isReview(p) && p.state === 'review' && p.seq < i.seq);
   row.innerHTML = '<span class="tree"></span><button class="q-chev"></button>'
     + '<span class="q-text"></span><span class="q-nl"></span><span class="row-meta"></span>'
     + (contextBlocked ? '<button class="q-wait"></button>' : '')
@@ -278,6 +300,7 @@ function rowEl(r, g, rows, k) {
        same left edge whether or not the prompt has more of them */
     nl.hidden = true;
   }
+  row.querySelectorAll('button').forEach((b, n) => { b.dataset.queueFocus = `${r.key}:${n}`; });
   const txt = row.querySelector('.q-text');
   txt.textContent = expanded ? r.text : first;
   txt.title = t('common.edit');
@@ -311,9 +334,11 @@ function rowEl(r, g, rows, k) {
   };
   const del = row.querySelector('.q-del');
   del.title = t('queue.removePrompt');
-  del.onclick = () => (i
-    ? inv('queue_remove', { id: i.id }).catch(() => toast(t('error.operation', { operation: t('common.delete') })))
-    : withSteps(r.rule, r.rule.steps.filter((_, n) => n !== r.step), t('common.delete')));
+  del.onclick = async () => {
+    if (g.rows.some(item => item.review_each) && !await confirmDialog(t('queue.review.skipConfirm'))) return;
+    if (i) await inv('queue_remove', { id: i.id }).catch(() => toast(t('error.operation', { operation: t('common.delete') })));
+    else await withSteps(r.rule, r.rule.steps.filter((_, n) => n !== r.step), t('common.delete'));
+  };
   if (!i) {
     row.querySelector('.row-meta').textContent = t('queue.repeatRow', { quiet: formatInterval(CHAIN_QUIET_SECS) });
     return row;
@@ -347,8 +372,14 @@ function rowEl(r, g, rows, k) {
     };
   }
   const sb = row.querySelector('.q-skip');
-  if (sb) { sb.title = t('queue.skipStep'); sb.onclick = () => inv('queue_skip', { id: i.id }).catch(() => toast(t('error.operation', { operation: t('queue.skipStep') }))); }
-  const bits = [];
+  if (sb) {
+    sb.title = t('queue.skipStep');
+    sb.onclick = async () => {
+      if (i.review_each && !await confirmDialog(t('queue.review.skipConfirm'))) return;
+      await inv('queue_skip', { id: i.id }).catch(() => toast(t('error.operation', { operation: t('queue.skipStep') })));
+    };
+  }
+  const bits = [stageText(i)];
   if (i.tpl && i.mode !== 'every') bits.push(`tpl·${i.tpl} ${i.tpl_idx}/${i.tpl_total}`);
   if (i.mode === 'chain') bits.push(t('queue.rowQuiet', { quiet: formatInterval(quietSecsOf(i)) }));
   if (i.state === 'ambiguous') {
@@ -421,7 +452,7 @@ function listFooter(g, card) {
   return { foot, quiet };
 }
 
-export function groupEl(g, card) {
+export function groupEl(g, card, otherLists = 0) {
   const rule = listRepeats(g);
   const el = document.createElement('div');
   el.className = 'q-group' + (rule ? ' rule' : '') + (g.head.paused ? ' paused' : '');
@@ -434,9 +465,9 @@ export function groupEl(g, card) {
     + '<button class="qg-tpl">📋</button>'
     + '<button class="qg-del">✕</button></span>';
   const whenEl = head.querySelector('.qg-when');
-  whenEl.textContent = fmtWhen(g.head) + chainWhenSuffix(g.head, card);
+  whenEl.textContent = isReview(g.head) ? t('queue.review.checkpoint') : fmtWhen(g.head) + chainWhenSuffix(g.head, card);
   /* chain heads get their quiet counter refreshed on every poll tick */
-  if (g.head.mode === 'chain') whenEl.dataset.quiet = String(quietSecsOf(g.head));
+  if (!isReview(g.head) && g.head.mode === 'chain') whenEl.dataset.quiet = String(quietSecsOf(g.head));
   const n = groupSteps(g).length;
   head.querySelector('.qg-meta').textContent =
     [qMeta(g.head), n > 1 ? t('queue.followups', { count: formatNumber(n - 1) }) : '']
@@ -468,10 +499,18 @@ export function groupEl(g, card) {
     });
   };
   head.querySelector('.qg-del').title = t('queue.removeList');
+  /* an ordinary list is removed at once, exactly as before C v01; only a
+     list with checkpoints (sent rows it must not resend or mark inspected)
+     goes through the explicit cancel confirmation */
   head.querySelector('.qg-del').onclick = () => {
+    if (g.rows.some(i => i.review_each || isReview(i))) {
+      cancelQueueList(g.head, refreshQueue).catch(() => toast(t('queue.review.failed')));
+      return;
+    }
     for (const i of g.rows) inv('queue_remove', { id: i.id }).catch(() => toast(t('error.operation', { operation: t('common.delete') })));
   };
   el.appendChild(head);
+  el.appendChild(executionPlan(g, card, otherLists, refreshQueue));
   const rows = listRows(g);
   rows.forEach((r, k) => el.appendChild(rowEl(r, g, rows, k)));
   el.appendChild(foot);
@@ -497,8 +536,14 @@ export function renderQueueUI() {
     for (const key of drafts.keys()) if (!liveLists.has(key)) drafts.delete(key);
     if (ctx.queueOpen) {
       const list = $('queue-list');
+      const focus = document.activeElement?.dataset.queueFocus;
       list.innerHTML = '';
-      for (const g of lists) list.appendChild(groupEl(g, card));
+      for (const g of lists) list.appendChild(groupEl(g, card, lists.length - 1));
+      list.appendChild(queueHistory(card));
+      if (focus) {
+        const target = [...list.querySelectorAll('[data-queue-focus]')].find(el => el.dataset.queueFocus === focus);
+        (target || list).focus();
+      }
       if (!q.length) {
         const empty = document.createElement('div');
         empty.className = 'q-hint'; empty.textContent = t('queue.empty'); list.appendChild(empty);
@@ -549,6 +594,7 @@ export function syncForm() {
 /* a fresh form: a one-shot list starting now */
 export function resetListForm() {
   $('q-start').value = '';
+  $('q-review').checked = false;
   $('q-every').value = '';
   $('q-win').value = '';
   $('q-until').value = '';
@@ -611,7 +657,7 @@ export function readSchedule() {
   }
   const read = listScheduleArgs(form, now);
   if (read.error) return fail(read.error, $(read.focus));
-  return read.args;
+  return { ...read.args, reviewEach: $('q-review').checked };
 }
 
 /* start a new list from `steps`: a one-shot list is an "at" head plus chain
@@ -619,10 +665,14 @@ export function readSchedule() {
    repeating list is one rule holding the whole template — steps 2..N
    re-enqueue as chain items on every fire */
 async function startList(card, sched, steps, tpl) {
-  const base = queueBase(card);
+  const base = { ...queueBase(card), reviewEach: sched.reviewEach === true };
   const tag = k => (tpl ? { tpl: tpl.name, tplIdx: k + 1, tplTotal: steps.length } : {});
   if (sched.mode === 'every') {
     await inv('queue_add', { args: { ...base, ...sched, text: steps[0], steps: steps.slice(1), ...tag(0) } });
+    return;
+  }
+  if (base.reviewEach) {
+    await inv('queue_add_reviewed_list', { args: { ...base, ...sched, text: steps[0], ...tag(0) }, texts: steps });
     return;
   }
   for (let k = 0; k < steps.length; k++) {

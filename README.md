@@ -141,16 +141,16 @@ cleared when recovery is disabled. Redaction is best-effort, so the consent
 prompt still warns that terminal output may contain secrets.
 
 **Lists.** A card's ⏱ panel holds its lists: prompts to type into that
-session later, sent in order. A row waits until the session has been quiet
-for the time you give it ("once quiet for 3 min" — quiet means no output,
-not that the program is ready). A list has two optional fields: **not
+session later, sent in order. The first row is time-based; later rows wait
+for the configured quiet interval ("once quiet for 3 min" — an activity
+observation, not evidence that the program is ready or the work succeeded). A list has two optional fields: **not
 before** a date and time ("Friday 14:00, when my Claude window resets"; a
 past instant is refused, never rolled to tomorrow) and **repeat** — every
 5 min to 4 h, optionally only inside a daily window ("only 09:00–18:00";
 20:00–08:00 wraps midnight), until you remove it, N times or a set time. A
 repeating list sends all its rows again at every interval into the same
-session (⏸ keeps its settings). Lists on one card do not wait for each
-other. Before delivery deck resolves the pane the card owns and pins the
+session (⏸ keeps its settings). Lists on one card may interleave; their order does not establish a work
+dependency. Repeat counters count deliveries, not successful tasks. Before delivery deck resolves the pane the card owns and pins the
 exact tmux server/session/window/pane/process generation it just read — a
 pane that came back with a new generation (after an update, a crash or a
 reboot) is adopted automatically, so a list never needs re-pointing. When
@@ -160,6 +160,25 @@ pane in compatibility mode, where input may be interpreted by a shell.
 Context waiting does not consume a delivery attempt. Works while detached;
 dead sessions are started and probed with a bounded wait; lists survive
 restarts. The app must be running for rows to fire.
+
+**Inspect each step.** Lists and automation rules can explicitly enable
+inspection after every delivered row, including the last. Existing lists
+remain unchanged. The sent row stays as a durable checkpoint until you view
+the result and choose **Inspected, allow next…**. Opening the pane, quiet,
+permission waits and hook reports never count as inspection. The dialog names
+the next prompt; confirmation permits only that revision and target. Editing,
+retrying or changing the target revokes unused permission. The next row still
+obeys its schedule, minimum gap and context checks. A cancelled or skipped row
+is omitted work, not inspected work. Other lists can continue in the session.
+Repeating lists require fresh inspection in each iteration. A last-row
+confirmation releases that iteration's final hold; it does not terminate a
+process itself. An opted-in automation cannot use its automatic finish path
+before that final inspection. Rule changes affect new runs only.
+
+The panel separates the execution plan from independent agent observations,
+and keeps up to 200 delivery and 200 inspection records without historical
+prompt text. Sent text remains in its pending checkpoint until that checkpoint
+is consumed. See [the checkpoint contract and data compatibility](docs/scheduler-context-safety.md#human-inspection-checkpoints-c-v01).
 
 **Delivery you can reason about.** One prompt per session at a time, at least
 a minute apart; different sessions run independently (a session that needs a
@@ -183,11 +202,13 @@ chosen weekdays or days of the month, at a local time) or a **Slack badge**
 (an emoji reaction you put on a message; see
 [docs/auto-respond.md](docs/auto-respond.md) for the one-time Slack
 connection in Settings). When it fires, deck creates a fresh card in a
-column, launches the command and queues a template — so every run starts
-with an empty agent context; a clock runs one card at a time. With "close
-the card" the run is retired once every prompt is delivered and the agent
-reports its turn done (or the program exits) — never while you have its
-pane open. A clock slot that comes due while deck is not running still
+column, launches the command and queues a template in a new session. A launch
+command may restore its own prior context; a clock runs one card at a time.
+With "close the card", the existing finish check requires an empty queue and
+a reported turn end (or, without a hook state, a shell in the foreground) for
+three consecutive polls, and no open pane showing the card. These observations
+do not prove business success or correlate a report to the final delivery.
+Opted-in runs additionally require final human inspection. A clock slot that comes due while deck is not running still
 starts within 15 minutes (or, if you choose, the same day) and is otherwise
 recorded as missed; a rule you resume or reschedule starts from that
 moment. The drawer shows each rule's next slot and its last runs.

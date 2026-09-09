@@ -18,7 +18,7 @@ import { collapseHome, createConfirmationCounter, createExitRetirementTracker, e
 import { confirmDialog, inlineRename, projectDefaultsDialog, toast } from './dialogs.js';
 import { clearSeparators, closePaneBySid, hasPane, leaveSessionView, openSession, renderSessionView, updatePaneChrome } from './layout.js';
 import { SHELL_FG, showProjectCtx, showSessionCtx } from './terminal.js';
-import { renderQueueUI, setQueueChip, updateQuietHints } from './scheduler.js';
+import { refreshQueuePlans, renderQueueUI, setQueueChip, updateQuietHints } from './scheduler.js';
 import { formatNumber, t } from './i18n.js';
 import { formatShortcut } from './shortcuts.js';
 import { renderAutomations, ruleOf } from './automation.js';
@@ -432,8 +432,7 @@ function noteRunEnded(card) {
    path as an explicit close (`runFinishHolds` in pure.js is the reading).
    The reading must survive three consecutive polls, so the instant between
    a step's delivery and the agent's next `working` hook — when the queue is
-   already empty but the old `turn-done` still stands — never closes a card
-   mid-run. An open pane holds the close for as long as the user keeps it:
+   already empty but the old `turn-done` still stands — buffers a short gap, but cannot prove which delivery the done belongs to. An open pane holds the close for as long as the user keeps it:
    a run they are reading or talking to is theirs until they leave. */
 const runConfirm = createConfirmationCounter(3);
 const runRetirement = createExitRetirementTracker();
@@ -441,6 +440,8 @@ function observeRunFinish(c, info) {
   if (!info.alive || !c.origin) { runConfirm.forget(c.id); return; }
   const holds = runFinishHolds({
     rule: ruleOf(c.origin),
+    reviewRequired: c.origin.reviewEach === true,
+    finalReviewed: (ctx.queueCache.review_completed || []).includes(c.session),
     queued: (ctx.queueCache.items || []).some(i => i.session === c.session),
     agent: info.agent, fg: info.fg, alive: true,
     stopped: c.status === 'stopped', viewing: hasPane(c.session),
@@ -543,6 +544,7 @@ async function pollSessionsNow() {
     observeRunFinish(c, info);
   }
   updateQuietHints();
+  refreshQueuePlans();
   /* a shell that exited on its own retires its card through the SAME
      reliable path as an explicit close: cancel the schedule first, and keep
      the card if that cannot be persisted */

@@ -391,6 +391,12 @@ pub(crate) fn finalize_delivery(
         q.pending.retain(|p| p.id != delivery);
         return;
     }
+    q.items.retain(|i| {
+        !i.review
+            .as_ref()
+            .and_then(|r| r.permit.as_ref())
+            .is_some_and(|p| p.next_id == item_id)
+    });
     if item.mode == "every" {
         // spawn this iteration's follow-up steps 2..N exactly once, keyed by
         // the delivery id (also their group id — one group per iteration)
@@ -433,6 +439,8 @@ pub(crate) fn finalize_delivery(
                     binding: item.binding.clone(),
                     last_context: None,
                     revision: 0,
+                    review_each: item.review_each,
+                    review: None,
                 });
             }
         }
@@ -451,6 +459,27 @@ pub(crate) fn finalize_delivery(
         }
     } else {
         q.items.retain(|i| i.id != item_id);
+    }
+    if item.review_each {
+        q.review_completed.remove(&item.session);
+        let mut checkpoint = item.clone();
+        if item.mode == "every" {
+            checkpoint.id = next_queue_id(&q.items);
+            checkpoint.mode = "chain".into();
+            checkpoint.group = Some(delivery.to_string());
+            checkpoint.seq = Some(1);
+            checkpoint.rule = Some(item.id.clone());
+            checkpoint.steps.clear();
+        }
+        checkpoint.state = "review".into();
+        checkpoint.delivery = None;
+        checkpoint.attempts = 0;
+        checkpoint.last_error = None;
+        checkpoint.review = Some(ReviewCheckpoint {
+            delivery: delivery.into(),
+            permit: None,
+        });
+        q.items.push(checkpoint);
     }
     q.pending.retain(|p| p.id != delivery);
 }
@@ -738,6 +767,9 @@ pub(super) fn persist_context_result(
     with_queue(qm, persist, |q| {
         if is_cancelled(q, &selected.session) {
             return Err(DeckError::new(ErrorKind::Other, TX_NOOP));
+        }
+        if invalidate_review_target(q, &selected.id, result.identity.as_ref()) {
+            return Ok(None);
         }
         let Some(item) = q.items.iter_mut().find(|i| i.id == selected.id) else {
             return Err(DeckError::new(ErrorKind::Other, TX_NOOP));

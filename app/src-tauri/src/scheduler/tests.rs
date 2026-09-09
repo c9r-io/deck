@@ -17,6 +17,7 @@ fn qi(id: &str, mode: &str) -> QueueItem {
         at: None,
         added: 0,
         quiet_secs: None,
+        review_each: false,
         every: None,
         not_before: None,
         win_from: None,
@@ -42,6 +43,7 @@ fn qi(id: &str, mode: &str) -> QueueItem {
         binding: None,
         last_context: None,
         revision: 0,
+        review: None,
     }
 }
 
@@ -60,6 +62,8 @@ fn qs(items: Vec<QueueItem>) -> QueueState {
         deliveries: Vec::new(),
         pending: Vec::new(),
         cancelled: Vec::new(),
+        reviews: Vec::new(),
+        review_completed: HashSet::new(),
     };
     migrate_groups(&mut q);
     q
@@ -551,6 +555,7 @@ fn add_validation_rejects_bad_combinations() {
         mode: "at".into(),
         at: Some(NOW),
         quiet_secs: None,
+        review_each: false,
         every: None,
         not_before: None,
         win_from: None,
@@ -647,6 +652,7 @@ fn add_validation_covers_quiet_and_start() {
         mode: "chain".into(),
         at: None,
         quiet_secs: None,
+        review_each: false,
         every: None,
         not_before: None,
         win_from: None,
@@ -1773,6 +1779,7 @@ fn add_args(session: &str, text: &str) -> QueueAddArgs {
         mode: "chain".into(),
         at: None,
         quiet_secs: None,
+        review_each: false,
         every: None,
         not_before: None,
         win_from: None,
@@ -2122,4 +2129,268 @@ fn normalize_prompt_keeps_the_lines_and_folds_every_carriage_return() {
     assert_eq!(normalize_prompt("a\tb   c"), "a b   c");
     assert_eq!(normalize_prompt("   "), "");
     assert_eq!(normalize_prompt("\n\n  \n"), "");
+}
+
+// C v01: a checkpoint is a durable order barrier, independent of hook/quiet.
+fn reviewed_pair() -> QueueState {
+    let mut first = qi("inspect-a", "at");
+    first.at = Some(NOW - 10);
+    first.review_each = true;
+    first.binding = Some(pane(1));
+    let mut next = qi("inspect-b", "chain");
+    next.review_each = true;
+    let mut q = qs(vec![first, next]);
+    finalize_delivery(&mut q, "inspect-a", "delivery-a", NOW, false);
+    q
+}
+
+#[test]
+fn review_wait_survives_restart_quiet_manual_now_and_old_done_cannot_authorize_it() {
+    let q = reviewed_pair();
+    let raw = serde_json::to_string(&q).unwrap();
+    let mut q: QueueState = serde_json::from_str(&raw).unwrap();
+    recover_interrupted(&mut q);
+    assert!(select_for_session(&q, "s", NOW + 99_999, 0, &HashMap::new()).is_none());
+    assert!(select_requested(&q, "s", "inspect-a", NOW + 99_999).is_none());
+    assert!(select_requested(&q, "s", "inspect-b", NOW + 99_999).is_none());
+    assert_eq!(q.deliveries.len(), 1);
+    assert_eq!(
+        q.items.iter().find(|i| i.id == "inspect-a").unwrap().state,
+        "review"
+    );
+    assert!(retry_item(&mut q, "inspect-a").is_err());
+    assert!(remove_item(&mut q, "inspect-a").is_err());
+    assert!(update_text(&mut q, "inspect-a", "changed".into()).is_err());
+}
+
+#[test]
+fn human_inspection_releases_only_its_successor_with_gap_and_quiet_still_required() {
+    let mut q = reviewed_pair();
+    let d = review::decision_for(&q, "inspect-a", pane(1)).unwrap();
+    confirm_review(&mut q, &d, pane(1), NOW + 1).unwrap();
+    confirm_review(&mut q, &d, pane(1), NOW + 2).unwrap();
+    assert_eq!(q.reviews.len(), 1);
+    assert!(select_for_session(&q, "s", NOW + 30, 0, &HashMap::new()).is_none());
+    assert!(
+        select_for_session(&q, "s", NOW + 61, 0, &HashMap::from([("s".into(), NOW)])).is_none()
+    );
+    assert_eq!(
+        select_for_session(&q, "s", NOW + 181, 0, &HashMap::new())
+            .unwrap()
+            .id,
+        "inspect-b"
+    );
+    finalize_delivery(&mut q, "inspect-b", "delivery-b", NOW + 181, false);
+    assert!(!q.items.iter().any(|i| i.id == "inspect-a"));
+    assert_eq!(q.items[0].state, "review");
+    assert!(!q.review_completed.contains("s"));
+    let last = review::decision_for(&q, "inspect-b", pane(1)).unwrap();
+    confirm_review(&mut q, &last, pane(1), NOW + 182).unwrap();
+    assert!(q.items.is_empty());
+    assert!(q.review_completed.contains("s"));
+    confirm_review(&mut q, &last, pane(1), NOW + 183).unwrap();
+    assert_eq!(q.reviews.len(), 2);
+    assert_eq!(q.deliveries.len(), 2);
+}
+
+#[test]
+fn inspection_save_failure_leaves_memory_and_disk_decision_unreleased() {
+    let q = reviewed_pair();
+    let d = review::decision_for(&q, "inspect-a", pane(1)).unwrap();
+    let before = serde_json::to_string(&q).unwrap();
+    let qm = Mutex::new(q);
+    let failed = |_: &QueueState| Err(DeckError::new(ErrorKind::Other, "test save rejected"));
+    assert!(with_queue(&qm, &failed, |q| confirm_review(q, &d, pane(1), NOW)).is_err());
+    assert_eq!(serde_json::to_string(&*qm.lock().unwrap()).unwrap(), before);
+}
+
+#[test]
+fn inspection_preview_is_invalidated_by_successor_edit_removal_target_change_and_cancel() {
+    for change in 0..4 {
+        let mut q = reviewed_pair();
+        let d = review::decision_for(&q, "inspect-a", pane(1)).unwrap();
+        match change {
+            0 => update_text(&mut q, "inspect-b", "different".into()).unwrap(),
+            1 => {
+                remove_item(&mut q, "inspect-b").unwrap();
+            }
+            2 => {}
+            _ => clear_session_items(&mut q, "s"),
+        }
+        assert!(
+            confirm_review(&mut q, &d, if change == 2 { pane(2) } else { pane(1) }, NOW).is_err()
+        );
+        assert!(q.reviews.is_empty());
+    }
+}
+
+#[test]
+fn unused_inspection_permission_is_revoked_by_edit_retry_and_target_generation() {
+    for change in 0..3 {
+        let mut q = reviewed_pair();
+        let old = review::decision_for(&q, "inspect-a", pane(1)).unwrap();
+        confirm_review(&mut q, &old, pane(1), NOW).unwrap();
+        match change {
+            0 => update_text(&mut q, "inspect-b", "different".into()).unwrap(),
+            1 => retry_item(&mut q, "inspect-b").unwrap(),
+            _ => {
+                assert!(invalidate_review_target(
+                    &mut q,
+                    "inspect-b",
+                    Some(&pane(2))
+                ));
+            }
+        }
+        assert!(select_requested(&q, "s", "inspect-b", NOW + 9999).is_none());
+        // Replaying the old decision cannot release the new revision.
+        confirm_review(&mut q, &old, pane(1), NOW).unwrap();
+        assert_eq!(
+            q.items.iter().find(|i| i.id == "inspect-a").unwrap().state,
+            "review"
+        );
+        let new = review::decision_for(&q, "inspect-a", pane(2)).unwrap();
+        confirm_review(&mut q, &new, pane(2), NOW + 1).unwrap();
+        assert_eq!(q.reviews.len(), 2);
+    }
+}
+
+#[test]
+fn reviewed_repeating_single_row_and_last_iteration_wait_for_last_inspection() {
+    for last in [false, true] {
+        let mut i = rule(60);
+        i.review_each = true;
+        i.until_n = last.then_some(1);
+        let mut q = qs(vec![i]);
+        finalize_delivery(&mut q, "t", "iteration-1", NOW, false);
+        let cp = q.items.iter().find(|i| is_review(i)).unwrap().id.clone();
+        assert!(select_for_session(&q, "s", NOW + 9999, 0, &HashMap::new()).is_none());
+        let d = review::decision_for(&q, &cp, pane(1)).unwrap();
+        confirm_review(&mut q, &d, pane(1), NOW + 9999).unwrap();
+        assert_eq!(
+            select_for_session(&q, "s", NOW + 9999, 0, &HashMap::new()).is_some(),
+            !last
+        );
+        if !last {
+            finalize_delivery(&mut q, "t", "iteration-2", NOW + 9999, false);
+            assert!(q
+                .items
+                .iter()
+                .any(|i| is_review(i) && i.review.as_ref().unwrap().delivery == "iteration-2"));
+        }
+    }
+}
+
+#[test]
+fn ambiguous_acknowledgement_creates_inspection_not_a_successful_business_result() {
+    let mut i = qi("a", "at");
+    i.review_each = true;
+    i.at = Some(NOW);
+    i.state = "firing".into();
+    i.delivery = Some("uncertain".into());
+    let mut q = qs(vec![i]);
+    recover_interrupted(&mut q);
+    assert_eq!(q.items[0].state, "ambiguous");
+    acknowledge_ambiguous(&mut q, "a").unwrap();
+    acknowledge_ambiguous(&mut q, "a").unwrap();
+    assert_eq!(q.deliveries.len(), 1);
+    assert!(q.deliveries[0].assumed);
+    assert_eq!(q.items[0].state, "review");
+    assert!(q.reviews.is_empty());
+}
+
+#[test]
+fn checkpoint_blocks_only_its_group_and_cancel_does_not_mark_it_inspected() {
+    let mut q = reviewed_pair();
+    let mut other = qi("other-list", "at");
+    other.at = Some(NOW);
+    other.group = Some("other-group".into());
+    q.items.push(other);
+    assert_eq!(
+        select_for_session(&q, "s", NOW + 181, 0, &HashMap::new())
+            .unwrap()
+            .id,
+        "other-list"
+    );
+    cancel_list(&mut q, "inspect-a").unwrap();
+    assert_eq!(ids(&q.items), vec!["other-list"]);
+    assert_eq!(q.deliveries.len(), 1);
+    assert!(q.reviews.is_empty());
+}
+
+#[test]
+fn opting_out_never_removes_an_existing_checkpoint_and_firing_refuses_mode_changes() {
+    let mut q = reviewed_pair();
+    set_review_mode(&mut q, "inspect-a", false).unwrap();
+    assert!(q.items.iter().any(is_review));
+    assert!(select_requested(&q, "s", "inspect-b", NOW + 9999).is_none());
+    assert!(
+        !q.items
+            .iter()
+            .find(|i| i.id == "inspect-b")
+            .unwrap()
+            .review_each
+    );
+    q.items
+        .iter_mut()
+        .find(|i| i.id == "inspect-b")
+        .unwrap()
+        .state = "firing".into();
+    assert!(set_review_mode(&mut q, "inspect-a", true).is_err());
+    assert!(cancel_list(&mut q, "inspect-a").is_err());
+}
+
+#[test]
+fn observed_replacement_revokes_inspection_before_any_injection() {
+    let q = reviewed_pair();
+    let qm = Mutex::new(q);
+    {
+        let mut q = qm.lock().unwrap();
+        let d = review::decision_for(&q, "inspect-a", pane(1)).unwrap();
+        confirm_review(&mut q, &d, pane(1), NOW).unwrap();
+        q.last_fired.clear();
+    }
+    let dirty = AtomicBool::new(false);
+    let result = send_one_safe(
+        &qm,
+        &dirty,
+        "s",
+        0,
+        &HashMap::new(),
+        &SendHooks {
+            fire: &|_| panic!("stale permission must never inject"),
+            persist: &ok_persist,
+            kill: &|_| {},
+        },
+        &ContextHooks {
+            prepare: &|_, _| {
+                probe_result(ContextStatus::Ready, ContextCode::CompatibilityTarget, 2)
+            },
+            final_probe: &|_| panic!("revoked before final probe"),
+        },
+    );
+    assert!(matches!(result, SendResult::Nothing));
+    let q = qm.lock().unwrap();
+    assert!(q.pending.is_empty());
+    assert_eq!(
+        q.items.iter().find(|i| i.id == "inspect-a").unwrap().state,
+        "review"
+    );
+}
+
+#[test]
+fn inspecting_one_list_never_marks_another_pending_list_inspected() {
+    let mut q = reviewed_pair();
+    let mut other = qi("other-review", "at");
+    other.group = Some("other-group".into());
+    other.review_each = true;
+    q.items.push(other);
+    finalize_delivery(&mut q, "other-review", "other-delivery", NOW, false);
+    let d = review::decision_for(&q, "other-review", pane(1)).unwrap();
+    confirm_review(&mut q, &d, pane(1), NOW + 1).unwrap();
+    assert!(!q.review_completed.contains("s"));
+    // Cancel is not a last-inspection receipt, including after a prior one.
+    q.review_completed.insert("s".into());
+    cancel_list(&mut q, "inspect-a").unwrap();
+    assert!(!q.review_completed.contains("s"));
+    assert!(q.items.is_empty());
 }

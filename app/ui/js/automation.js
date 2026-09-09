@@ -2,6 +2,8 @@
 // Part of deck's no-build frontend: native ES modules, no bundler.
 //
 // # Contract
+// C v01 reviewEach is explicit and applies only to newly dispatched runs;
+// ordinary rules and existing runs keep their existing timing.
 // An automation is an inbound rule (settings.json `inbound.rules`, validated
 // by settings-model.js and inbound.rs alike) with one of two TRIGGERS: a
 // clock (`source: 'clock'`, a schedule; its badge IS its id) or a Slack
@@ -172,6 +174,7 @@ function ruleEl(rule) {
     ['automation.kv.target', `${column ? column.name : t('automation.missingTarget')} · ${rule.dir || ctx.HOME}`],
     ['automation.kv.cmd', rule.cmd || t('automation.shellOnly')],
     ['automation.kv.template', rule.template],
+    ['queue.plan', t(rule.reviewEach ? 'queue.review.enabled' : 'queue.review.disabled')],
     ['automation.kv.finish', t(rule.finish === 'close' ? 'automation.finish.close' : 'automation.finish.keep')],
   ];
   if (clock) {
@@ -309,6 +312,7 @@ export function openEditor(rule) {
   $('auto-dir').value = rule ? rule.dir : defaults.dir;
   $('auto-cmd').value = rule ? rule.cmd : (defaults.cmd || 'claude');
   fillTargets(rule);
+  $('auto-review').checked = rule?.reviewEach === true;
   segSet('auto-finish', rule ? (rule.finish === 'close' ? 'close' : 'keep') : 'close');
   syncEditor();
   $('auto-editor').hidden = false;
@@ -338,6 +342,7 @@ function readEditor() {
     cmd: $('auto-cmd').value.trim(), template, dir: $('auto-dir').value.trim(),
     name, enabled: previous ? previous.enabled : true,
     finish: segGet('auto-finish') === 'keep' ? 'keep' : 'close',
+    ...( $('auto-review').checked ? { reviewEach: true } : {}),
   };
   if (trigger === 'slack') {
     const badge = $('auto-badge').value.trim().replace(/^:|:$/g, '');

@@ -21,7 +21,7 @@ test('i18n owns visible copy and translation parameters never enter innerHTML', 
     assert.match(line, /data-i18n(?:-title|-placeholder)?=/, `unkeyed visible HTML: ${line.trim()}`);
   }
   const production = ['app/ui/js/app.js', 'app/ui/js/attention.js', 'app/ui/js/automation.js', 'app/ui/js/board.js', 'app/ui/js/dialogs.js',
-    'app/ui/js/inbound.js', 'app/ui/js/layout.js', 'app/ui/js/scheduler.js', 'app/ui/js/selection.js',
+    'app/ui/js/inbound.js', 'app/ui/js/layout.js', 'app/ui/js/scheduler.js', 'app/ui/js/queue-review.js', 'app/ui/js/selection.js',
     'app/ui/js/templates.js', 'app/ui/js/terminal.js'].map(read).join('\n');
   assert.doesNotMatch(production, /innerHTML\s*=\s*t\s*\(/);
   assert.doesNotMatch(production, /(?:toast|confirmDialog|promptDialog)\(\s*['"`][A-Za-z]/,
@@ -76,7 +76,7 @@ test('the updater, relaunch and server restart stay backend-owned', () => {
 test('the canonical dictionary has no unused keys outside documented dynamic families', () => {
   const source = ['app/ui/index.html', 'app/ui/js/app.js', 'app/ui/js/attention.js', 'app/ui/js/automation.js', 'app/ui/js/board.js',
     'app/ui/js/dialogs.js', 'app/ui/js/i18n.js', 'app/ui/js/inbound.js', 'app/ui/js/layout.js',
-    'app/ui/js/pure.js', 'app/ui/js/scheduler.js', 'app/ui/js/selection.js', 'app/ui/js/state.js',
+    'app/ui/js/pure.js', 'app/ui/js/scheduler.js', 'app/ui/js/queue-review.js', 'app/ui/js/selection.js', 'app/ui/js/state.js',
     'app/ui/js/templates.js', 'app/ui/js/terminal.js'].map(read).join('\n');
   const dynamic = /^(?:attention\.column|attention\.filter|automation\.run|automation\.wd|board\.default|board\.hint|session\.status|settings\.shortcut|notice|tmux\.notice)\./;
   const unused = Object.keys(en).filter(key => !dynamic.test(key) && !source.includes(key));

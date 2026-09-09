@@ -17,6 +17,25 @@ numeric failures. These existing terminal-selection checks remain unresolved;
 the full release checklist is not green. The dedicated attention gate is
 separate and does not waive them.
 
+## Human inspection checkpoints (05 C v01)
+
+Run `DECK_SMOKE_DATA_DIR="$(mktemp -d /tmp/deck-review.XXXXXX)" DECK_SMOKE_TMUX_SOCKET=deck-smoke-review-UNIQUE DECK_SMOKE_WKWEBVIEW=review app/run.sh`.
+This mode uses the real queue, storage, WKWebView and a fresh empty-command
+shell. It sends only three `:` no-ops labelled 修改代码 → 运行测试 → 整理结果,
+observing the real minimum 60-second gap (allow about two minutes). It checks
+default opt-out, atomic enqueue, no manual-send bypass, failed-save rollback,
+replayed confirmations, edit revocation, synthetic hook/quiet/permission states,
+confirmation cancellation, locale/theme/font layout, second delivery and the
+last row still held. The debug strip labels synthetic observations explicitly;
+no hook or agent is installed. Expect all `review-*` and final `done` positive.
+
+Quit only this smoke instance, then relaunch with the **same isolated root and
+socket** and `DECK_SMOKE_WKWEBVIEW=review-restart`. Expect `review-restart=1`
+and `done=1`: the last checkpoint and separate delivery/inspection ledgers
+survive. Inspect and capture the plan, independent observations, records and
+last-row confirmation. Do not confirm it until persistence evidence is captured.
+The full release checklist and its known selection baseline remain separate.
+
 ## Cross-project attention (B v01)
 
 Run `DECK_SMOKE_DATA_DIR="$(mktemp -d /tmp/deck-attention.XXXXXX)" DECK_SMOKE_TMUX_SOCKET=deck-smoke-attention-UNIQUE DECK_SMOKE_WKWEBVIEW=attention app/run.sh`.

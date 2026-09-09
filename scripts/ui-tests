@@ -12,5 +12,5 @@ cd "$(dirname "$0")/.."
 exec node --test --experimental-test-coverage \
   --test-coverage-lines=70 --test-coverage-branches=70 --test-coverage-functions=70 \
   --test-coverage-exclude='app/ui/test/**' \
-  --test-coverage-exclude='app/ui/js/{app,attention,automation,board,dropdown,layout,scheduler,selection,terminal}.js' \
+  --test-coverage-exclude='app/ui/js/{app,attention,automation,board,dropdown,layout,scheduler,queue-review,selection,terminal}.js' \
   app/ui/test/*.mjs

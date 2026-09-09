@@ -159,3 +159,18 @@ test('clock rules normalize their schedule and keep their id as badge; slack rul
   const settings = normalizeSettings({ inbound: { rules: [clockRule()] } });
   assert.equal(settings.inbound.rules[0].source, 'clock');
 });
+
+test('review is opt-in per new run and incomplete reviewed runs never auto-finish', async () => {
+  const { normalizeInbound } = await import('../js/settings-model.js');
+  const { runFinishHolds } = await import('../js/pure.js');
+  const candidate = { id: 'r', source: 'slack', badge: 'bug', projectId: 'P', columnId: 'C', cmd: '', template: 'work', reviewEach: true };
+  const cfg = normalizeInbound({ rules: [candidate] });
+  assert.equal(cfg.rules[0].reviewEach, true);
+  const ordinary = normalizeInbound({ rules: [{ ...candidate, reviewEach: false }] });
+  assert.equal(ordinary.rules[0].reviewEach, undefined);
+  const args = { rule: { finish: 'close' }, queued: false, agent: 'turn-done', alive: true, stopped: false, viewing: false, reviewRequired: true };
+  assert.equal(runFinishHolds(args, /^zsh$/), false);
+  assert.equal(runFinishHolds({ ...args, finalReviewed: true }, /^zsh$/), true);
+  assert.equal(runFinishHolds({ ...args, finalReviewed: true, queued: true }, /^zsh$/), false);
+  assert.equal(runFinishHolds({ ...args, finalReviewed: true, viewing: true }, /^zsh$/), false);
+});

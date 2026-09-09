@@ -678,7 +678,7 @@ body.side-collapsed .side-new .label { display: none; }
   border-radius: 12px; padding: 18px;
   box-shadow: 0 16px 48px var(--shadow-modal);
 }
-#cfm-msg { font-size: 1rem; line-height: 1.5; margin-bottom: 16px; }
+#cfm-msg { font-size: 1rem; line-height: 1.5; margin-bottom: 16px; white-space: pre-line; }
 .cfm-actions { display: flex; gap: 8px; justify-content: flex-end; }
 
 #tmux-lifecycle-modal {
@@ -1009,3 +1009,28 @@ html.font-scale-large .tmux-lifecycle-actions { align-items: flex-start; flex-wr
 @media (max-width: 1050px) { .attention-labels { display: none; } }
 body.side-collapsed #attention-btn { flex-direction: column; gap: 2px; }
 body.side-collapsed #attention-count { margin-left: 0; max-width: 34px; overflow: hidden; font-size: .692308rem; }
+
+/* C v01: local execution evidence and durable human checkpoints. */
+#queue-panel { max-height: 62vh; }
+.q-review-option { display: flex; align-items: center; gap: 8px; padding: 8px 0; font-size: 0.923077rem; color: var(--muted); }
+.q-review-option input { flex: none; width: auto; }
+.q-execution-plan { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 14px; padding: 12px; border-top: 1px solid var(--border-soft); background: var(--panel); font-size: 0.923077rem; }
+.q-execution-plan p, .qg-review p { margin: 6px 0; line-height: 1.5; }
+.q-plan-mode { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.q-plan-stage, .qg-review-status { color: var(--wait); }
+.q-plan-evidence { border-left: 1px solid var(--border-soft); padding-left: 14px; }
+.qg-review { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; padding: 12px; border-top: 1px solid var(--border-soft); background: var(--sel); }
+.qg-review-body { flex: 1 1 260px; min-width: 0; }
+.qg-review-title { white-space: pre-wrap; overflow-wrap: anywhere; }
+.qg-review-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.qg-row { flex-wrap: wrap; }
+.qg-row .row-meta { white-space: normal; overflow-wrap: anywhere; max-width: 100%; }
+.q-history { margin-top: 10px; padding: 10px 12px; border: 1px solid var(--border-soft); border-radius: 8px; }
+.q-history summary { cursor: pointer; color: var(--text); }
+.q-history-record { overflow-wrap: anywhere; color: var(--muted); font-size: 0.846154rem; }
+@media (max-width: 850px) {
+  .q-execution-plan { grid-template-columns: minmax(0, 1fr); }
+  .q-plan-evidence { border-left: 0; padding-left: 0; border-top: 1px solid var(--border-soft); padding-top: 10px; }
+}
+
+.q-execution-plan .q-hint, .qg-review .q-hint { color: var(--muted); }

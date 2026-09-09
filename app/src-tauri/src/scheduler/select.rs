@@ -25,7 +25,7 @@ fn group_head<'a>(q: &'a QueueState, i: &QueueItem) -> Option<&'a QueueItem> {
     let g = i.group.as_deref()?;
     q.items
         .iter()
-        .filter(|x| x.group.as_deref() == Some(g))
+        .filter(|x| x.group.as_deref() == Some(g) && x.state != "review-approved")
         .min_by_key(|x| (x.seq.unwrap_or(1), x.added))
 }
 
@@ -36,7 +36,9 @@ fn eligible(
     now_min: u32,
     activity: &HashMap<String, u64>,
 ) -> bool {
-    if i.paused
+    if is_review(i)
+        || !review_allows(q, i)
+        || i.paused
         || matches!(i.state.as_str(), "firing" | "ambiguous")
         || item_dead(i)
         || !retry_ok(i, now)
@@ -120,7 +122,9 @@ pub(super) fn select_requested(
         .items
         .iter()
         .find(|i| i.id == id && i.session == session)?;
-    if item.paused
+    if is_review(item)
+        || !review_allows(q, item)
+        || item.paused
         || matches!(item.state.as_str(), "firing" | "ambiguous")
         || item_dead(item)
         || is_cancelled(q, session)

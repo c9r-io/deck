@@ -236,6 +236,10 @@ fn main() {
                         "m.verifyRestart()"
                     } else if mode == "ambiguous" {
                         "m.verifyAmbiguousBoot()"
+                    } else if mode == "review" {
+                        "m.verifyReview()"
+                    } else if mode == "review-restart" {
+                        "m.verifyReview(true)"
                     } else if mode == "attention" {
                         "m.verifyAttention()"
                     } else if mode == "settings" {
@@ -308,11 +312,16 @@ fn main() {
             diagnostics::ui_event,
             commands::ping_event,
             scheduler::queue_list,
+            scheduler::queue_review_preview,
+            scheduler::queue_review_confirm,
+            scheduler::queue_review_mode,
+            scheduler::queue_cancel_list,
             scheduler::queue_probe_context,
             scheduler::smoke_seed_ambiguous,
             scheduler::smoke_queue_state,
             scheduler::smoke_flush_queue,
             scheduler::queue_add,
+            scheduler::queue_add_reviewed_list,
             scheduler::queue_update,
             scheduler::queue_remove,
             scheduler::queue_pause,

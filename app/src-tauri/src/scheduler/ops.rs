@@ -17,8 +17,9 @@ use crate::storage;
 use crate::sync::LockRecover;
 
 #[tauri::command]
-pub(crate) fn queue_list(state: State<'_, Queues>) -> QueueState {
-    state.q.lock_or_recover().clone()
+pub(crate) fn queue_list(state: State<'_, Queues>) -> QueueView {
+    let q = state.q.lock_or_recover().clone();
+    queue_view(q)
 }
 
 #[derive(Serialize)]
@@ -125,7 +126,7 @@ pub(crate) fn smoke_flush_queue(state: State<'_, Queues>) -> Result<bool, DeckEr
     Ok(flush_dirty(&state.q, &state.dirty, &save_queue))
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct QueueAddArgs {
     pub(crate) session: String,
@@ -138,6 +139,8 @@ pub(crate) struct QueueAddArgs {
     pub(crate) at: Option<u64>,
     #[serde(default)]
     pub(crate) quiet_secs: Option<u64>,
+    #[serde(default)]
+    pub(crate) review_each: bool,
     pub(crate) every: Option<u64>,
     #[serde(default)]
     pub(crate) not_before: Option<u64>,
@@ -369,6 +372,14 @@ fn add_item_bound(
     } else {
         (Some(id.clone()), Some(1))
     };
+    let inherited_review = group.as_ref().is_some_and(|g| {
+        q.items
+            .iter()
+            .any(|i| i.group.as_ref() == Some(g) && i.review_each)
+    });
+    if args.review_each || inherited_review {
+        q.review_completed.remove(&args.session);
+    }
     q.items.push(QueueItem {
         id,
         session: args.session,
@@ -414,6 +425,8 @@ fn add_item_bound(
         binding,
         last_context: None,
         revision: 0,
+        review_each: args.review_each || inherited_review,
+        review: None,
     });
     Ok(())
 }
@@ -445,6 +458,12 @@ pub(crate) fn queue_add(
 /// is at most one send (seconds); the UI surfaces the error as a toast.
 pub(crate) fn firing_conflict(q: &QueueState, id: &str) -> Result<(), DeckError> {
     if let Some(i) = q.items.iter().find(|i| i.id == id) {
+        if is_review(i) {
+            return Err(DeckError::new(
+                ErrorKind::Other,
+                "this row is already sent — inspect its checkpoint or cancel the list",
+            ));
+        }
         if i.state == "firing" {
             return Err(DeckError::new(
                 ErrorKind::Other,
@@ -464,6 +483,7 @@ pub(crate) fn firing_conflict(q: &QueueState, id: &str) -> Result<(), DeckError>
 /// Pure core of queue_update (unit-tested with the firing contract).
 pub(crate) fn update_text(q: &mut QueueState, id: &str, text: String) -> Result<(), DeckError> {
     firing_conflict(q, id)?;
+    invalidate_review_successor(q, id);
     if let Some(item) = q.items.iter_mut().find(|i| i.id == id) {
         item.text = text;
         item.revision = item.revision.wrapping_add(1);
@@ -482,6 +502,7 @@ pub(crate) fn update_steps(
     steps: Vec<String>,
 ) -> Result<(), DeckError> {
     firing_conflict(q, id)?;
+    invalidate_review_successor(q, id);
     match q.items.iter_mut().find(|i| i.id == id) {
         Some(item) if item.mode == "every" => {
             item.steps = steps;
@@ -499,6 +520,7 @@ pub(crate) fn update_steps(
 /// Pure core of queue_remove / queue_skip.
 pub(crate) fn remove_item(q: &mut QueueState, id: &str) -> Result<bool, DeckError> {
     firing_conflict(q, id)?;
+    invalidate_review_successor(q, id);
     let n0 = q.items.len();
     q.items.retain(|i| i.id != id);
     Ok(q.items.len() != n0)
@@ -515,6 +537,10 @@ pub(crate) fn pause_item(q: &mut QueueState, id: &str, paused: bool) -> Result<(
 
 /// Pure core of queue_retry.
 pub(crate) fn retry_item(q: &mut QueueState, id: &str) -> Result<(), DeckError> {
+    if q.items.iter().any(|i| i.id == id && is_review(i)) {
+        return Err(review_error());
+    }
+    invalidate_review_successor(q, id);
     if q.items.iter().any(|i| i.id == id && i.state == "firing") {
         return Err(DeckError::new(
             ErrorKind::Other,
@@ -719,6 +745,7 @@ pub(crate) fn clear_session_items(q: &mut QueueState, session: &str) {
     }
     q.items.retain(|i| i.session != session);
     q.last_fired.remove(session);
+    q.review_completed.remove(session);
 }
 
 /// Cancel a whole set of sessions in ONE transaction — deleting a project
@@ -853,4 +880,51 @@ pub(crate) fn queue_send_now(
             "tmux refused the literal send",
         )),
     }
+}
+
+/// Reviewed one-shot templates enter as one durable group: no partially queued
+/// list can mislabel its first delivered row as the last inspection point.
+#[tauri::command]
+pub(crate) fn queue_add_reviewed_list(
+    state: State<'_, Queues>,
+    app: AppHandle,
+    args: QueueAddArgs,
+    texts: Vec<String>,
+) -> Result<(), DeckError> {
+    if !args.review_each || args.mode != "at" || texts.is_empty() {
+        return Err(review_error());
+    }
+    let creation = context::creation_context(&args.session, &args.cmd);
+    with_queue(&state.q, &save_queue, |q| {
+        let mut group = None;
+        for (k, text) in texts.iter().enumerate() {
+            let mut row = args.clone();
+            row.text = text.clone();
+            row.tpl_idx = row.tpl.as_ref().map(|_| k as u32 + 1);
+            row.tpl_total = row.tpl.as_ref().map(|_| texts.len() as u32);
+            if k > 0 {
+                row.mode = "chain".into();
+                row.at = None;
+                row.group = group.clone();
+            }
+            validate_add(&row)?;
+            let normalized = normalize_prompt(text);
+            if normalized.is_empty() {
+                return Err(review_error());
+            }
+            add_item_bound(
+                q,
+                row,
+                normalized,
+                creation.binding.clone(),
+                creation.expected_process.clone(),
+            )?;
+            if k == 0 {
+                group = q.items.last().and_then(|i| i.group.clone());
+            }
+        }
+        Ok(())
+    })?;
+    let _ = app.emit("queue-changed", ());
+    Ok(())
 }

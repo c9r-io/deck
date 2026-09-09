@@ -1635,3 +1635,8 @@ export async function verifyAttention() {
   const { runAttentionSmoke } = await import('./attention-smoke.mjs');
   await runAttentionSmoke();
 }
+
+export async function verifyReview(restart = false) {
+  const { runReviewSmoke } = await import('./review-smoke.mjs');
+  await runReviewSmoke(restart);
+}

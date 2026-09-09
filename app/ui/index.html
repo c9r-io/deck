@@ -118,6 +118,8 @@
               <button type="button" data-v="keep" aria-pressed="false" data-i18n="automation.finish.keep">keep it</button>
             </div>
           </div>
+          <label class="q-review-option"><input type="checkbox" id="auto-review"><span data-i18n="queue.review.option">Inspect after every row, including the last</span></label>
+          <p class="q-hint" data-i18n="automation.plan">Creates a new session; the command may restore its own context. Inspection applies only to new runs.</p>
           <div class="set-actions" style="gap:8px">
             <button class="btn" id="auto-cancel" data-i18n="common.cancel">Cancel</button>
             <button class="btn primary" id="auto-save" data-i18n="common.save">Save</button>
@@ -150,7 +152,7 @@
         <button class="btn danger" id="sess-close" title="Close session (terminates the shell and removes the card)" data-i18n="session.close" data-i18n-title="session.closeTitle">Close</button>
       </div>
       <div id="queue-panel">
-        <div id="queue-list"></div>
+        <div id="queue-list" tabindex="-1"></div>
         <div class="q-new" id="q-new">
           <div class="q-sentence q-new-head">
             <span class="q-new-title" data-i18n="queue.newList">New list</span>
@@ -189,6 +191,7 @@
             </select>
             <input type="date" id="q-until-d" class="q-p q-p-every q-p-untilc"><input type="time" id="q-until-t" class="q-p q-p-every q-p-untilc">
           </div>
+          <label class="q-review-option"><input type="checkbox" id="q-review"><span data-i18n="queue.review.option">Inspect after every row, including the last</span></label>
           <div class="q-add">
             <button class="btn" id="q-tpl" title="Templates — start this list from one" data-i18n-title="queue.templatesTitle">📋</button>
             <textarea id="q-text" rows="1" placeholder="first line of the new list — ⌘↵ to add" data-i18n-placeholder="queue.placeholder" autocomplete="off" spellcheck="false"></textarea>

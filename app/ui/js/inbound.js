@@ -1,3 +1,5 @@
+// Reviewed templates enter in one queue transaction; an opted-in run needs
+// an explicit final inspection even if enqueue fails. No hook releases it.
 // inbound.js — 自动化 dispatch: turn a fired trigger into a card + queued prompts
 // Part of deck's no-build frontend: native ES modules, no bundler.
 //
@@ -71,11 +73,15 @@ async function handleInbound(item) {
     uev('inbound', 'create-fail');
     return;   // stays pending; the backend announces it again
   }
-  const base = { session: card.session, cardId: card.id, dir: card.dir, cmd: card.cmd };
+  const base = { session: card.session, cardId: card.id, dir: card.dir, cmd: card.cmd, reviewEach: item.rule.reviewEach === true };
   const now = Math.floor(Date.now() / 1000);
   let queued = 0;
   try {
-    for (let k = 0; k < plan.steps.length; k++) {
+    if (base.reviewEach) {
+      await inv('queue_add_reviewed_list', { args: { ...base, text: plan.steps[0], mode: 'at', at: now,
+        tpl: plan.template, tplIdx: 1, tplTotal: plan.steps.length }, texts: plan.steps });
+      queued = plan.steps.length;
+    } else for (let k = 0; k < plan.steps.length; k++) {
       await inv('queue_add', { args: { ...base, text: plan.steps[k],
         mode: k === 0 ? 'at' : 'chain', at: k === 0 ? now : null,
         tpl: plan.template, tplIdx: k + 1, tplTotal: plan.steps.length } });

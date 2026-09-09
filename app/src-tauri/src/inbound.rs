@@ -146,6 +146,9 @@ pub(crate) struct Rule {
     /// done; anything else keeps it
     #[serde(default)]
     pub(crate) finish: String,
+    /// Copied to each newly created run, never retroactively to active runs.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) review_each: bool,
     /// clock rules: slots before this instant never fire (set when the
     /// schedule is created or changed)
     #[serde(default)]

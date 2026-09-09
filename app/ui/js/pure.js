@@ -419,6 +419,10 @@ export function groupQueue(items) {
     if (!g) { g = { head: i, rows: [] }; byKey.set(key, g); groups.push(g); }
     g.rows.push(i);
   }
+  for (const g of groups) {
+    g.rows.sort((a, b) => (a.seq ?? 1) - (b.seq ?? 1));
+    g.head = g.rows[0];
+  }
   return groups;
 }
 
@@ -1143,7 +1147,7 @@ export function planInbound(item, { cards, projects, home }) {
       cmd: rule.cmd || '',
       dir,
       desc: clock ? template.name : [`:${event.badge}:`, event.where, event.from].filter(Boolean).join(' · '),
-      origin: { source: event.source, key: event.key, badge: event.badge },
+      origin: { source: event.source, key: event.key, badge: event.badge, ...(rule.reviewEach ? { reviewEach: true } : {}) },
     },
     steps,
     template: template.name,
@@ -1190,14 +1194,15 @@ export function nextScheduleSlot(schedule, now, since = 0) {
 
 /* a condition that must hold on N consecutive observations before it counts:
    the finish rule closes a run only after the "prompts delivered + agent
-   done" reading survives three polls, so the instant between a step's
-   delivery and the agent's next `working` hook can never close a card */
+   done" reading survives three polls, buffering short gaps between a step's
+   delivery and the next `working` hook; this does not correlate a turn to a delivery */
 /* one poll's reading for a `close` finish rule: the run is over when its
    session has nothing queued, the agent reported its turn done (or, with no
    agent reporting, the program left the foreground), the card is alive and
    nobody is looking at it — a run whose pane is open is the user's to read
    and talk to; it is only retired after they leave it and the agent is done */
-export function runFinishHolds({ rule, queued, agent, fg, alive, stopped, viewing }, shellFg) {
+export function runFinishHolds({ rule, queued, agent, fg, alive, stopped, viewing, reviewRequired, finalReviewed }, shellFg) {
+  if (reviewRequired && !finalReviewed) return false;
   if (!alive || stopped || viewing || queued) return false;
   if (!rule || rule.finish !== 'close') return false;
   return agent === 'turn-done' || (!agent && shellFg.test(fg || ''));

@@ -52,7 +52,9 @@ same commit as the behaviour it describes.
 - **Persistence never guesses.** A load FAILURE is surfaced, never treated as a
   first run; the UI must never auto-save defaults over an existing file; every
   Board mutation goes through the one transaction queue (`persistence.js`);
-  future schema versions are refused untouched (`storage.rs`).
+  future schema versions are refused untouched (`storage.rs`). Inspection opt-in uses
+  sticky v2 envelopes on queue.json and settings.json only, plus a settings
+  barrier; deck.json and ordinary v1 data stay v1.
 - **The signed `deck-app` binary is never a pane executable**, and no
   `/bin/sh -c`, script or shell argv appears on the shell-restore path
   (`commands::restore_start_args`, `tests/edr_quiet.rs`).
@@ -88,7 +90,7 @@ loaded by `ui/index.html`; xterm.js vendored in `app/ui/vendor/`. Backend
 | Pointer/selection authority, overlay, wheel routing (frontend) | `ui/js/selection.js`, `layout.js` |
 | Completion bar, links, context menus, the ONE new-session path (start first, persist after; project defaults for ＋/⌘N, context entries keep their directory and never a command) | `ui/js/terminal.js` (`newSession` / `newDefaultSession`), `provider.createStarted` + `openProjectDefaults` in `board.js`, `projectDefaults` / `newSessionPlan` in `pure.js`, `links.rs` |
 | Dropdowns (deck's own listbox over every `<select>`) | `ui/js/dropdown.js` |
-| Lists (the ⏱ panel): queue model, selection, delivery state machine, tick | `scheduler/` (+ `docs/scheduler-context-safety.md`), `context.rs`, `ui/js/scheduler.js` |
+| Lists (the ⏱ panel): queue model, selection, delivery state machine, tick | `scheduler/` (+ `docs/scheduler-context-safety.md`), `context.rs`, `ui/js/scheduler.js`, `ui/js/queue-review.js`, `scheduler/review.rs` |
 | Templates (saved lists, shared by cards and automations) | `ui/js/templates.js` |
 | Needs-attention view (sidebar entry), runtime read state, tab done-dot | `ui/js/attention.js`, `ui/js/attention-model.js` |
 | Agent status hooks (closed state words, bundled helper) | `agent_status.rs`, `src-tauri/status-helper/` |

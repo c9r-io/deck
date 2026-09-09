@@ -62,7 +62,7 @@ schedule — every day, chosen weekdays, or chosen days of the month, at a
 local time — a name, and the finish mode. At each slot deck creates a fresh
 card in the rule's column (title `name · MM-DD`), launches the command and
 queues the template, exactly like a badge would; nothing is typed into an
-existing session, so every run starts with an empty agent context.
+existing session. The command may independently resume its own prior context.
 
 - One run at a time: a slot that comes due while the rule's previous card is
   still on the Board is skipped and recorded as such.
@@ -75,16 +75,23 @@ existing session, so every run starts with an empty agent context.
   change or resume never fire. Slot keys come from `mktime` of local
   midnight, one value for the whole day, so a DST switch never hands a slot
   two keys.
-- **close the card** (both triggers): once every prompt is delivered and
-  the agent reported its turn done (agent hooks) or the program left the
-  foreground, the card is retired through the same path as an explicit
-  close — after the reading held for three consecutive polls, so the
-  instant between a row's delivery and the agent's next `working` hook can
-  never close a run early, and never while a pane shows the card: a run you
-  are reading or talking to is yours until you leave it. **keep it** leaves
-  the card for you.
-- Deleting a project deletes its automations; cards a rule already created
-  stay when the rule is deleted.
+- **close the card** (both triggers): the existing finish check requires an
+  empty queue plus a reported turn end, or a shell in the foreground when
+  there is no hook state. This must hold for three consecutive polls, and
+  never while a pane shows the card. Three polls cannot establish business
+  success or associate an old turn report with the final row. **keep it**
+  leaves the card for you.
+- **Inspect every row before continuing** is off by default and affects new
+  runs when enabled on a rule. All template rows enter the reviewed list in
+  one queue transaction. Each delivered row leaves a durable human checkpoint,
+  including the last; automatic closing additionally requires final inspection.
+  A queue write failure does not create a partially queued reviewed list or
+  count as inspection. Card creation and inbound acknowledgement are still
+  separate lifecycle transactions. Existing runs and rules without opt-in
+  keep their timing. See [inspection and compatibility](scheduler-context-safety.md#human-inspection-checkpoints-c-v01).
+- Deleting a rule leaves its existing cards. A rule whose project no longer
+  exists cannot dispatch a new card; project deletion currently does not
+  remove the saved rule from settings.
 
 ## What deck keeps
 

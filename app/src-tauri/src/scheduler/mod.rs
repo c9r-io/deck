@@ -100,6 +100,9 @@
 //!   kills every tmux session (already-missing is success) and persists the
 //!   candidate Board BEFORE committing removal; any kill/save failure keeps
 //!   the card/project and pane visible for retry;
+//! - opt-in human checkpoints remain in the group after every delivered row,
+//!   including the last; no timeout/hook/viewing action releases them.
+//!   Successor edits or target replacement revoke unconsumed human permits.
 //! - a step that exhausts its 8 attempts BLOCKS its group until the user
 //!   retries/skips/removes it (queue_retry / queue_skip commands);
 //! - a recurring rule has at most one active iteration (its spawned steps,
@@ -123,6 +126,7 @@
 
 mod delivery;
 mod ops;
+mod review;
 mod select;
 #[cfg(test)]
 mod tests;
@@ -130,6 +134,7 @@ mod thread;
 
 pub(crate) use delivery::*;
 pub(crate) use ops::*;
+pub(crate) use review::*;
 pub(crate) use select::*;
 pub(crate) use thread::*;
 
@@ -243,6 +248,11 @@ pub(crate) struct QueueItem {
     /// Incremented by edits that invalidate an in-progress readiness wait.
     #[serde(default)]
     revision: u64,
+    /// Opt-in C v01: every delivery leaves a durable human checkpoint.
+    #[serde(default)]
+    review_each: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    review: Option<ReviewCheckpoint>,
 }
 
 pub(crate) fn default_state() -> String {
@@ -306,6 +316,11 @@ pub(crate) struct QueueState {
     /// sessions whose card/project was deleted — permanently unschedulable
     #[serde(default)]
     cancelled: Vec<Tombstone>,
+    /// Content-free human decisions, separate from delivery receipts.
+    #[serde(default)]
+    reviews: Vec<ReviewRecord>,
+    #[serde(default)]
+    review_completed: HashSet<String>,
 }
 
 pub(crate) struct Queues {
@@ -535,6 +550,13 @@ pub(crate) fn save_queue(q: &QueueState) -> Result<(), DeckError> {
             ErrorKind::Other,
             "injected queue save failure",
         ));
+    }
+    // Older builds refuse v2 settings as well as queue: otherwise an old
+    // finish=close rule could mistake its refused queue for an empty run.
+    if q.items.iter().any(|i| i.review_each || is_review(i)) || !q.reviews.is_empty() {
+        storage::ensure_review_schema::<crate::documents::SettingsDoc>(
+            &crate::documents::settings_path(),
+        )?;
     }
     let raw = serde_json::to_string(q).map_err(DeckError::from)?;
     storage::save_typed::<QueueState>(&queue_path(), &raw)
