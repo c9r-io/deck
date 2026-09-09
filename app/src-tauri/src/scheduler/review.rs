@@ -1,10 +1,37 @@
-//! C v01: human checkpoints in the existing queue group, never agent readiness.
-//! A sent row remains `review`; only a persisted, revision/target-bound human
-//! decision makes it `review-approved`. Its successor still passes normal
-//! scheduling/context checks. Keep that checkpoint until the successor is sent,
-//! so edits, target changes and retries can revoke the unused permission.
-//! The last checkpoint is removed on explicit inspection. It has no timeout.
-//! Other groups remain independent. Content-free decisions are capped at 200.
+//! Human inspection checkpoints (C v01): a reviewed list stops after EVERY
+//! delivered row, the last one included, until a person confirms the next.
+//!
+//! # Contract
+//! - A sent row of a `review_each` list stays in the queue as state
+//!   `review`; only a persisted, revision- and target-bound human decision
+//!   (`ReviewDecision`, issued by `queue_review_preview` and returned to
+//!   `queue_review_confirm`) moves it to `review-approved`. Agent state,
+//!   quiet time, an open pane, a hook or a permission wait never release it,
+//!   and the preview's probe is read-only: inspecting a stopped target never
+//!   starts it.
+//! - A permit names ONE successor (`ReviewPermit`: its id, revision, the pane
+//!   identity and expected process observed at preview time) and
+//!   `review_allows` grants exactly that. Editing, retrying or removing the
+//!   successor (`invalidate_review_successor`), a changed target
+//!   (`invalidate_review_target`) or toggling the mode (`set_review_mode`)
+//!   revokes an unused permit; the successor still passes the ordinary
+//!   scheduling and context checks. Replaying the same decision is
+//!   idempotent; a decision that no longer matches fails with
+//!   `review_error` and the plan must be inspected again.
+//! - The last row's checkpoint is removed only by explicit inspection; it
+//!   has no timeout. `cancel_list` is the one way to drop an uninspected row
+//!   without claiming inspection: it takes the whole list (a repeating rule
+//!   and its live iteration included), after the firing contract.
+//! - `set_review_mode` changes future unsent rows only; existing checkpoints
+//!   stay, so disabling the mode never silently releases required inspection.
+//! - Decisions are recorded content-free (`ReviewRecord`: item, delivery,
+//!   revision, session, time, whether a successor existed), capped at 200.
+//!   Other lists in the session and other sessions are untouched.
+//! - `QueuePlan` / `queue_view` are the read-only projection the panel shows:
+//!   the backend's own selection stage per item (review, review-approved,
+//!   ambiguous, firing, failed, paused, retry, previous, iteration, gap,
+//!   time, quiet, context, unknown) with its observation time, so the
+//!   webview never derives readiness from hook state.
 
 use super::*;
 use crate::datadir::now_epoch;

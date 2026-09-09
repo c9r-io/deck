@@ -1,8 +1,27 @@
-// attention.js — derived cross-project navigation; never a writable Board.
-// Keyed rows preserve focus/scroll; pointer gestures freeze row reconciliation
-// until click has dispatched. Every action closes over card.id, never an index.
-// Unknown/stale/stopped entries locate the original card. Live opens re-poll
-// and prohibit session creation even if a session exits during navigation.
+// attention.js — the needs-attention view: one derived list across projects
+// Part of deck's no-build frontend: native ES modules, no bundler.
+//
+// # Contract
+// - Derived, never a Board. Rows come from `attentionRows` (attention-model.js)
+//   over the live projects and cards plus `ctx.attention` (the runtime
+//   tracker); the view moves no card and persists nothing but its filter.
+// - Freshness is explicit: the tracker's `freshness` decides whether counts
+//   show ("fresh"), show with an "old" mark ("stale") or show as "—"
+//   ("unknown"), and a retry button re-polls. `attentionStatusText` and the
+//   status title also feed the Board card's status line, so both surfaces
+//   read the same words.
+// - Keyed rows preserve focus and scroll: `updateRows` reconciles children by
+//   key instead of rebuilding, restores the focused button after the
+//   insertBefore blur, and a pointer held inside the list freezes
+//   reconciliation until the click has dispatched (`pointerHeld`, released on
+//   pointerup, pointercancel and window blur).
+// - Every action closes over `card.id`, never an index. Opening a live card
+//   re-polls first and checks a navigation token, so a session that exited
+//   during the round trip is located on its Board instead; opening never
+//   starts a session (`allowStart: false`). Unknown, stale and stopped
+//   entries locate the original card.
+// - Returning (`showAttention(true)`) restores project, filter, scroll and
+//   the focused row from the `ctx.attentionReturn` that `openSession` kept.
 import { $, ctx, QUIET_SECS, state, store } from './state.js';
 import { ATTENTION_FILTERS, attentionRows } from './attention-model.js';
 import { formatDateTime, formatNumber, t } from './i18n.js';

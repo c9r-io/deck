@@ -1,6 +1,36 @@
 //! Typed board/settings documents: `BoardDoc` and `SettingsDoc` validate
 //! business structure via `try_from` (the SAME rules on load and save), and
 //! the load/save commands plus the settings readers other modules use.
+//!
+//! # Contract
+//! - One rule set, two doors. `BoardDoc` / `SettingsDoc` deserialize through
+//!   `try_from`, so `storage::load_typed` (quarantine-first recovery on
+//!   failure) and `save_board` / `save_settings` (reject before touching
+//!   disk) run identical checks: non-empty unique project, column and card
+//!   ids; a card's project and column exist; one tmux session per card with
+//!   a name the runtime would accept; settings values from closed sets
+//!   (locale, theme, accent, update channel) or bounded ranges (font scale,
+//!   editor name, shortcut table), with `inbound` handed to
+//!   `inbound::validate_settings`. A violation is refused with its rule's
+//!   message; the file is never rewritten to make it pass.
+//! - The typed structs are parse-only. The webview owns the documents and
+//!   `save_*` persists the ORIGINAL string, so unknown extension fields
+//!   round-trip untouched and the `#[allow(dead_code)]` fields exist to be
+//!   validated, not read; `launched` defaults to true so a board written
+//!   before the field never re-runs a command.
+//! - `LoadedDoc` carries the text, its source and at most one `UiNotice`: a
+//!   closed code (`storage.privacy`, `queue.persist`, `queue.load`,
+//!   `history.load`, `queue.interrupted`, `storage.recovered`) the webview
+//!   translates; a recovery note never carries a path. `storage_warnings`
+//!   drains the boot-time notes once, for the first Board render.
+//! - The settings readers (`editor_app`, `locale_setting`,
+//!   `update_channel_setting`) load the file through the same typed door on
+//!   every call, never a cache, and fall back (None / "system" / "stable")
+//!   when the file or field is absent or malformed: a broken settings file
+//!   must not take the editor menu, the locale or the updater down with it.
+//! - `save_settings` refuses an unknown `updateChannel` before disk
+//!   (`validate_saved_update_channel`) so a build can never be pointed at an
+//!   endpoint deck does not ship.
 
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};

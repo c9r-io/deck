@@ -1,7 +1,23 @@
-// Queue evidence and C v01 human inspection. These views never authorize a
-// send from agent/quiet UI state: decisions use a backend preview token and
-// persist before release. Opened/seen is unrelated to inspected. No new Board
-// entry, hook installation, terminal parsing or prompt history capture.
+// queue-review.js — the ⏱ panel's evidence and inspection views (C v01)
+// Part of deck's no-build frontend: native ES modules, no bundler.
+//
+// # Contract
+// - Three read-only projections of `ctx.queueCache`: `stageText` (the
+//   backend's selection stage for an item; a plan older than 40 s reads as
+//   unknown), `executionPlan` (a list's mode, stage and the hook observation
+//   shown APART from the plan and labelled unverified) and `queueHistory`
+//   (the delivery and inspection ledgers: ids and times, no prompt text).
+// - `reviewRow` is the one place a checkpoint is released. Inspect asks the
+//   backend for a preview (`queue_review_preview`), shows the next prompt and
+//   the observed vs expected process, and only a confirmed dialog returns
+//   that exact decision (`queue_review_confirm`). Nothing here reads agent
+//   state, viewed markers or quiet time to authorize a send; an opened or
+//   seen card is unrelated to inspected.
+// - `cancelQueueList` is the confirmed alternative that omits work without
+//   claiming inspection. Buttons disable while their action is in flight and
+//   carry `data-queue-focus` so a re-render can restore focus.
+// - No new Board entry, hook installation, terminal parsing or prompt
+//   history capture lives here.
 import { ctx, inv } from './state.js';
 import { t } from './i18n.js';
 import { confirmDialog, toast } from './dialogs.js';

@@ -1,6 +1,42 @@
-//! Queue commands and user-driven mutations. Every mutation goes through
-//! `with_queue` (persist-then-commit) and a mid-send item refuses edits
-//! until its delivery finalizes.
+//! Queue commands and user-driven mutations: the Tauri commands behind the
+//! ⏱ panel (`queue_add`, `queue_update`, `queue_remove`, `queue_pause`,
+//! `queue_retry`, `queue_acknowledge`, `queue_skip`, `queue_send_now`,
+//! `queue_add_reviewed_list`, `queue_clear_sessions`) and their pure cores.
+//!
+//! # Contract
+//! - Every mutation goes through `with_queue` (persist, then commit to
+//!   memory): a rejected save leaves the in-memory queue untouched, so the
+//!   scheduler never sends a prompt the user was told was not saved.
+//! - `validate_add` is the ONE shape check for a new item and runs before
+//!   anything is written: the mode's own field ("at" needs its instant, a
+//!   row's quiet time stays within `MIN_QUIET_SECS..=MAX_QUIET_SECS`, "every"
+//!   needs an interval of at least a minute), fields that only make sense on
+//!   a repeating rule or a row, a window with both ends below 24h, a stop
+//!   after the start, a bounded card id and a tmux-safe session name. A
+//!   failure is refused before anything is written; its message is the
+//!   caller's toast.
+//! - `normalize_prompt` is the ONE text normalization: CRs are folded,
+//!   newlines are kept (a prompt may be many lines), and an empty result is
+//!   refused; blank steps are dropped from a step list.
+//! - The firing contract (`firing_conflict`): while an item is mid-send
+//!   ("firing" persisted, the paste possibly in flight), awaiting an
+//!   ambiguous-delivery decision, or standing as a review checkpoint,
+//!   remove/update/pause/retry/skip refuse with a conflict error and keep
+//!   the item. The window is one send. `retry_item` returns an ambiguous or
+//!   failed item to pending; `acknowledge_ambiguous` finalizes
+//!   the uncertain delivery as sent. Either edit invalidates a review
+//!   successor's permit (`review.rs`).
+//! - `queue_send_now` is manual immediate delivery: it re-probes the target,
+//!   refuses while the session already has a send in progress, and may
+//!   bypass exactly one observed foreground-process mismatch for that one
+//!   send when the caller confirmed it — never the pane binding.
+//! - `queue_update` takes a text OR a step list, never both: the row editor
+//!   edits one prompt, the list footer edits a repeating rule's steps.
+//! - `next_queue_id` is collision-proof against the live queue (ms clock +
+//!   counter); `clear_session_items` / `clear_sessions` tombstone a deleted
+//!   card's items so nothing fires into a session that no longer exists.
+//! - `smoke_*` are debug-only fault-injection seams (`smoke_faults.rs`) and
+//!   fail closed when the hooks are not armed.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
