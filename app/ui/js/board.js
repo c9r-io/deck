@@ -1,6 +1,9 @@
 // board.js — board CRUD provider, polling loop, sidebar/tabs/board rendering
 // Part of deck's no-build frontend: native ES modules, no bundler.
-// Polls are single-flight; attention snapshots and read state are runtime only.
+// Polls are single-flight with ONE queued follow-up: a poll requested while
+// one is in flight runs after it (its request may predate the caller's event),
+// and every such caller receives the follow-up's promise. The interval tick
+// only coalesces. Attention snapshots and read state are runtime only.
 // Live status never changes placement or durable ordering.
 import { $, columnHint, ctx, dotTitle, emit, genId, inv, listeners, POLL_MS, QUIET_SECS, sessionName, setMemChip, state, store, uev } from './state.js';
 import { mutateBoard, mutateBoardDebounced } from './persistence.js';
@@ -387,8 +390,26 @@ function observeRunFinish(c, info) {
 
 /* ---------- polling ---------- */
 let activePoll = null;
+let followUp = null;
+/* Event-driven callers (pty-exit, attention open/retry) react to something
+   that happened AFTER the in-flight request left; handing them that snapshot
+   would let them attach to a session that has since died. Queue exactly one
+   follow-up and resolve every waiter with it. */
 export function pollNow() {
-  if (!activePoll) activePoll = pollSessionsNow().finally(() => { activePoll = null; });
+  if (activePoll) {
+    if (!followUp) {
+      let resolve;
+      const promise = new Promise(r => { resolve = r; });
+      followUp = { promise, resolve };
+    }
+    return followUp.promise;
+  }
+  activePoll = pollSessionsNow().finally(() => {
+    activePoll = null;
+    const next = followUp;
+    followUp = null;
+    if (next) next.resolve(pollNow());
+  });
   return activePoll;
 }
 async function pollSessionsNow() {
@@ -490,7 +511,8 @@ async function pollSessionsNow() {
 }
 export function startPolling() {
   clearInterval(ctx.pollTimer);
-  ctx.pollTimer = setInterval(pollNow, POLL_MS);
+  /* the tick carries no event: coalesce into the in-flight poll, never queue */
+  ctx.pollTimer = setInterval(() => { if (!activePoll) pollNow(); }, POLL_MS);
   pollNow();
 }
 export function stopPolling() {

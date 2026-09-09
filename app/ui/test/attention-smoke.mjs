@@ -43,11 +43,14 @@ export async function runAttentionSmoke() {
         await mutateBoard(draft => { draft.cards.push(card); });
       } else card = await provider.create({ projectId: project.id, columnId: column.id, title: spec.title, cmd: '', dir: '/tmp' });
       if (spec.pin) await provider.togglePinned(card.id);
+      // A live fixture card owns a real empty shell on the isolated socket, so
+      // attachments stream a real prompt and never end before their reply.
+      if (spec.state !== 'stopped') await nativeInvoke('start_session', { name: card.session, dir: '/tmp', cmd: '', restoreShell: false });
       samples.set(spec.id, { spec, card: provider.get(card.id) });
     }
     stage = 1;
-    let failPoll = false, missing = null, failAttach = null, starts = 0;
-    let attachGate = null;
+    let failPoll = false, missing = null, failAttach = null, starts = 0, attaches = 0, polls = 0;
+    let attachGate = null, pendingGen = null, pollGate = null;
     const statuses = new Map();
     for (const { spec, card } of samples.values()) statuses.set(card.session, {
       name: card.session, alive: spec.state !== 'stopped', agent: spec.source === 'hook' ? spec.state : null,
@@ -57,13 +60,18 @@ export async function runAttentionSmoke() {
     const wrappedInvoke = async (command, args) => {
       if (command === 'start_session') starts++;
       if (command === 'attach_session' && args.name === failAttach) throw new Error('isolated attach failure');
+      if (command === 'attach_session') attaches++;
       if (command !== 'poll_sessions') {
         const result = await nativeInvoke(command, args);
-        if (command === 'attach_session' && attachGate) await attachGate;
+        if (command === 'attach_session' && attachGate) { pendingGen = result; await attachGate; }
         return result;
       }
+      polls++;
       if (failPoll) throw new Error('isolated poll failure');
-      return args.names.filter(name => name !== missing).map(name => statuses.get(name)).filter(Boolean);
+      // The snapshot is taken when the request leaves, as a real poll's is.
+      const snapshot = args.names.filter(name => name !== missing).map(name => ({ ...statuses.get(name) })).filter(Boolean);
+      if (pollGate) await pollGate;
+      return snapshot;
     };
     window.__TAURI__ = { ...nativeTauri, core: { ...nativeTauri.core, invoke: wrappedInvoke } };
     const reset = async () => {
@@ -126,6 +134,53 @@ export async function runAttentionSmoke() {
     await report('attention-split-fail', ctx.attention.category(ending) === 'done' && !panes.get(ending.session)?.attached);
     failAttach = null;
     backToBoard(); await pollNow();
+    // A pane whose shell exited is only focused again: no re-attach, no restart.
+    await openSession(input.id); await pollNow();
+    await nativeTauri.event.emit('pty-exit', { name: input.session, gen: panes.get(input.session).attachedGen });
+    await pause(20);
+    const attachesBefore = attaches, startsBefore = starts;
+    const reopened = await openSession(input.id);
+    const bits = checks => checks.reduce((mask, ok, index) => mask | (ok ? 0 : 1 << index), 0);
+    const reopenBits = bits([reopened === false, !panes.get(input.session)?.attached, attaches === attachesBefore,
+      starts === startsBefore, state.view === 'session', ctx.attachedName === input.session]);
+    await report('attention-reopen-detached', reopenBits === 0, 1, reopenBits);
+    backToBoard(); await pollNow();
+    // An exit that lands before the attach reply keeps the pane detached and unseen.
+    statuses.get(input.session).agent = 'working'; await pollNow();
+    statuses.get(input.session).agent = 'needs-input'; await pollNow();
+    attachGate = new Promise(resolve => { releaseAttach = resolve; });
+    pendingGen = null;
+    const racing = openSession(input.id);
+    for (let i = 0; i < 100 && pendingGen == null; i++) await pause(20);
+    await nativeTauri.event.emit('pty-exit', { name: input.session, gen: pendingGen });
+    await pause(20);
+    releaseAttach(); attachGate = null;
+    const raced = await racing; await pollNow();
+    const raceBits = bits([raced === false, !panes.get(input.session)?.attached,
+      ctx.ptyGens.get(input.session) === pendingGen, !ctx.attention.get(input)?.seen]);
+    await report('attention-exit-before-reply', raceBits === 0, 1, raceBits);
+    backToBoard(); await pollNow();
+    // A poll requested during an in-flight poll runs again after it and hands
+    // its callers the follow-up, never the pre-event snapshot.
+    let releaseFirst, releaseSecond;
+    pollGate = new Promise(resolve => { releaseFirst = resolve; });
+    const pollsBefore = polls;
+    const first = pollNow();
+    for (let i = 0; i < 100 && polls === pollsBefore; i++) await pause(20);
+    statuses.get(input.session).agent = 'turn-done';
+    const second = pollNow();
+    const third = pollNow();
+    // The follow-up holds on its own gate so the first result is read before it records.
+    pollGate = new Promise(resolve => { releaseSecond = resolve; });
+    releaseFirst();
+    await first;
+    const firstStale = ctx.attention.get(input)?.agent === 'needs-input';
+    releaseSecond(); pollGate = null;
+    await second;
+    const followBits = bits([firstStale, second !== first, third === second,
+      polls === pollsBefore + 2, ctx.attention.get(input)?.agent === 'turn-done']);
+    await report('attention-poll-followup', followBits === 0, 1, followBits);
+    statuses.get(input.session).agent = 'needs-input'; await pollNow();
     stage = 3;
     await reset(); showAttention(); await pollNow();
     const button = [...$('attention-list').querySelectorAll('.attention-row')].find(el => el.dataset.sid === input.id).querySelector('button');

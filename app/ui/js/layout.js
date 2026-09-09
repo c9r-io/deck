@@ -2,6 +2,10 @@
 // Part of deck's no-build frontend: native ES modules, no bundler.
 // Read receipts require a successful attach to the still-visible pane.
 // Attention navigation passes allowStart:false: attaching never creates a shell.
+// A pane that is already open is only focused: a detached pane (shell exited,
+// attach failed) is never re-attached or restarted by a click; exit retirement
+// in board.js owns it. A pty-exit may land before its attach reply — the reply
+// never marks a pane attached once its generation has exited.
 import { $, ctx, dotTitle, duev, inv, listen, setMemChip, state, store, uev } from './state.js';
 import { inlineRename, toast } from './dialogs.js';
 import { t } from './i18n.js';
@@ -825,6 +829,16 @@ export function focusPane(session) {
   p.term.focus();
 }
 
+/* the attachment's stream ended: the pane keeps its transcript but is no
+   longer viewing; the poll decides whether the card retires */
+function paneExited(pane, gen) {
+  pane.exitedGen = gen;
+  pane.attached = false;
+  cancelTerminalSelection(pane, 'exit');
+  toast(t('session.ended'));
+  pollNow();
+}
+
 /* Returns explicit created/restored state (backend is idempotent: an
    already-live session is success, not an error). Callers use it to decide
    fresh-shell cleanup — clearing history on a restored or merely-live session
@@ -851,6 +865,14 @@ async function attachPane(pane, { allowStart = true } = {}) {
        the handler below already advanced ptyGens then, and regressing it
        would make us drop (and never ACK) the current stream */
     ctx.ptyGens.set(card.session, Math.max(ctx.ptyGens.get(card.session) || 0, gen));
+    /* the stream can END before this invoke resolves too (shell exits at
+       once): marking the pane attached now would grant a read receipt on a
+       dead stream. Either the exit already ran (its gen was current) or it
+       is parked on the pane waiting for this reply to name its generation */
+    if (pane.exitedGen === gen) return outcome;
+    const parked = pane.pendingExit;
+    pane.pendingExit = null;
+    if (parked === gen) { paneExited(pane, gen); return outcome; }
     if (panes.get(card.session) === pane && state.view === 'session') {
       pane.attached = true;
       pane.attachedGen = gen;
@@ -871,7 +893,6 @@ export async function addSplit(targetSid, dir, before, newSid) {
   /* already open in a pane → this is a MOVE: pluck the leaf and re-insert
      at the drop position; the terminal instance is reused untouched */
   if (panes.has(card.session)) {
-    if (!panes.get(card.session).attached) await ensureAttached(panes.get(card.session));
     markSessionSeen(newSid);
     if (!collectLeaves(ctx.layout).includes(newSid)) { focusPane(card.session); return; }
     ctx.layout = removeFromLayout(ctx.layout, newSid);
@@ -986,10 +1007,11 @@ export async function openSession(sid, opts = {}) {
   const card = provider.get(sid);
   if (!card) return;
   ctx.attentionReturn = opts.attentionReturn || (state.view === 'session' ? ctx.attentionReturn : null);
-  /* already open in a pane → just focus it */
+  /* already open in a pane → just focus it. A detached pane stays detached:
+     re-attaching a dead session or restarting a card mid-retirement is not
+     what a click means */
   if (state.view === 'session' && panes.has(card.session)) {
     const pane = panes.get(card.session);
-    if (!pane.attached) await ensureAttached(pane, opts);
     markSessionSeen(sid);
     focusPane(card.session);
     return !!pane.attached;
@@ -1126,13 +1148,15 @@ export function initLayout() {
   }).catch(() => uev('listen-fail', 'pty-data'));
 
   listen('pty-exit', ev => {
-    if (ev.payload.gen !== ctx.ptyGens.get(ev.payload.name)) return;
-    const pane = panes.get(ev.payload.name);
-    if (pane) {
-      pane.attached = false;
-      cancelTerminalSelection(pane, 'exit');
-      toast(t('session.ended'));
-      pollNow();
-    }
+    const { name, gen } = ev.payload;
+    const cur = ctx.ptyGens.get(name) || 0;
+    const pane = panes.get(name);
+    /* a gen we have not seen yet is EITHER the shell exiting before our
+       attach reply named its generation OR a queued exit from a pane closed
+       an instant ago (ptyGens was cleared). Only the reply can tell them
+       apart: park it on the pane and let attachPane compare */
+    if (gen > cur) { if (pane) pane.pendingExit = gen; return; }
+    if (gen < cur) return;
+    if (pane) paneExited(pane, gen);
   }).catch(() => uev('listen-fail', 'pty-exit'));
 }
