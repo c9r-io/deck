@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.6.4 — 2026-09-11 (Nightly)
+
 - Voice drafts recover from a replaced session on the next explicit Insert/Send
   action, without automatic retransmission. Uncertain deliveries keep their
   original target and must be checked and cleared before using a replacement.
@@ -24,11 +26,17 @@
   and Send also work during recording: non-empty text stops capture and acts on
   the visible draft; empty text leaves recording untouched. Review before sending; target changes and uncertain deliveries never auto-retry.
   Manual target confirmation is removed: each send checks the session’s current
-  foreground program. Refused deliveries retain the binding; only uncertain
-  delivery offers an explicit retry action.
+  foreground program. Transient refusals retain the binding; a replaced session
+  can be rebound on the next explicit action. Uncertain delivery retains its
+  original target until the result is resolved or the draft is cleared.
   Swift is linked into the app with microphone purpose strings and entitlement;
   no speech helper process, service registration or cloud fallback. See
   [voice input](docs/voice-input.md) for system requirements and validation.
+
+- Restore session split buttons and shortcuts, and correct cross-screen terminal
+  selection so the full dragged range follows the copy-mode snapshot.
+- Extract DOM-free scheduler and automation models, confine import cycles to
+  the view core, and remove obsolete queue styles and translation keys.
 
 ## 0.6.3 — 2026-09-10 (Nightly)
 
