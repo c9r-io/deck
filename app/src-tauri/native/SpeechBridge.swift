@@ -1,6 +1,8 @@
 // In-process, on-device speech only. C entry points enqueue work on the main
 // actor; snapshots cross a synchronous callback and never enter logs/files.
 // One capture owner, bounded recording/input buffer, token-scoped cancellation.
+// Nested Tasks own a fresh weak capture, including on older Swift compilers:
+// never transfer the enclosing callback's mutable weak storage across actors.
 import Foundation
 import AppKit
 @preconcurrency import AVFoundation
@@ -35,7 +37,7 @@ public typealias DeckSpeechCallback = @convention(c) (UInt64, UnsafePointer<CCha
         // must not let that completion start a hidden microphone later.
         for name in [NSApplication.didHideNotification, NSWindow.didMiniaturizeNotification] {
             observers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
-                Task { @MainActor in self?.stop() }
+                Task { @MainActor [weak self] in self?.stop() }
             })
         }
     }
@@ -116,7 +118,7 @@ public typealias DeckSpeechCallback = @convention(c) (UInt64, UnsafePointer<CCha
         engine.prepare()
         try engine.start()
         observers.append(NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main) { [weak self] _ in
-            Task { @MainActor in self?.finish("error", "microphone-unavailable") }
+            Task { @MainActor [weak self] in self?.finish("error", "microphone-unavailable") }
         })
         publish("recording")
         deadline = Task { [weak self] in
@@ -145,7 +147,7 @@ public typealias DeckSpeechCallback = @convention(c) (UInt64, UnsafePointer<CCha
             let transcript = result?.bestTranscription.formattedString
             let final = result?.isFinal ?? false
             let failed = error != nil
-            Task { @MainActor in
+            Task { @MainActor [weak self] in
                 guard let self, self.active else { return }
                 if let transcript {
                     self.text = transcript
@@ -185,7 +187,7 @@ public typealias DeckSpeechCallback = @convention(c) (UInt64, UnsafePointer<CCha
         cancelRecognition = { input.finish(); Task { await analyzer.cancelAndFinishNow() } }
         stopRecognition = { [weak self] in
             input.finish()
-            Task { @MainActor in
+            Task { @MainActor [weak self] in
                 do {
                     try await analyzer.finalizeAndFinishThroughEndOfInput()
                     await self?.results?.value
@@ -221,7 +223,7 @@ public typealias DeckSpeechCallback = @convention(c) (UInt64, UnsafePointer<CCha
             if !failed, converted.frameLength > 0 {
                 if case .dropped = input.yield(AnalyzerInput(buffer: converted)) { failed = true }
             }
-            if failed { Task { @MainActor in self?.finish("error", "audio-overrun") } }
+            if failed { Task { @MainActor [weak self] in self?.finish("error", "audio-overrun") } }
         }
     }
     #endif
