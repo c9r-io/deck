@@ -1090,6 +1090,12 @@ test('overlay bands are pixel spans of the visible lease rows only', () => {
   assert.deepEqual(bands[1], { absoluteRow: 101, left: 0, top: 20, width: 30, height: 20 });
   assert.deepEqual(terminalSelectionOverlayBands({ status: null, rect, rows: 10, cols: 40 }), []);
   assert.deepEqual(terminalSelectionOverlayBands({ status, rect: null, rows: 10, cols: 40 }), []);
+  // Output printed while the pane was frozen in copy-mode grows the live
+  // history but not the snapshot: the backend's frame_top wins over
+  // history_rows - scroll_position, so the bands stay on the selected text.
+  const printed = { ...status, history_rows: 112, frame_top: 100 };
+  assert.deepEqual(terminalSelectionOverlayBands({ status: printed, rect, rows: 10, cols: 40 })
+    .map(b => b.absoluteRow), [100, 101]);
 });
 
 test('edge scrolling stops at the end tmux already reached', () => {
@@ -1113,6 +1119,7 @@ test('selection status rows, owner label and closed failure codes', () => {
   assert.equal(selectionCopyFailureCode('anything else'), 'snapshot-failed');
   assert.equal(selectionFinishFailureReason('… selection-missing-inactive'), 1);
   assert.equal(selectionFinishFailureReason('… selection-missing-cleared'), 2);
+  assert.equal(selectionFinishFailureReason('… selection-missing-unreachable'), 3);
   assert.equal(selectionFinishFailureReason(null), 0);
   assert.equal(selectionDimensionsChanged(new Error('selection-dimensions-changed')), true);
   assert.equal(selectionDimensionsChanged('selection-missing'), false);

@@ -10,12 +10,21 @@ release's GitHub run and in git history, not in the checklist.
 `cargo test` covers the tmux contracts (scroll model, clear-history, literal
 injection, poll formats); `scripts/ui-tests` covers the DOM-free modules.
 
-Known baseline failures (first seen 2026-09-09): an untouched `bad89b8`
-fresh-root run fails `selection-up`, `selection-clipboard`, and
-`selection-down`. The attention implementation run reproduces the same three
-numeric failures. These existing terminal-selection checks remain unresolved;
-the full release checklist is not green. The dedicated attention gate is
-separate and does not waive them.
+Baseline history: from `7364362` (2026-09-07) through 0.6.3 an untouched
+fresh-root run failed `selection-up`, `selection-clipboard` and
+`selection-down` (first seen 2026-09-09 on `bad89b8`; governance 07). Root
+cause: a cross-screen drag's off-screen anchor was clamped to the visible
+frame at pointerup, so every cross-screen selection collapsed to one screen;
+underneath, endpoints mixed the live `#{history_size}` with copy-mode's
+snapshot coordinates. Fixed 2026-09-10 (07 A v01): endpoints count from the
+copy-mode snapshot, an off-screen endpoint is reached with `goto-line`
+inside the one materialize list, and a placement tmux reports on other rows
+is refused. The full run is green again on an idle machine; the same run
+under a concurrent `cargo test` build failed six timing-bound checks
+(`link-activate`, `completion*`, `selection-native-scroll`,
+`selection-resize`, `scroll-frame`), so run the release smoke with no other
+build in progress. The five `selection-*-range/expect/copy/scroll`
+lines are 07's closed diagnostics and always report positive.
 
 ## Human inspection checkpoints (05 C v01)
 

@@ -11,7 +11,10 @@
 //! (`SelectionPoint`) — tmux's copy cursor is a VISIBLE row, so on a pane
 //! that keeps printing it walks off the text the pointer was on — and
 //! `materialize_selection` builds the real tmux selection once, in a single
-//! command list, at pointerup or at a mid-drag ⌘C.
+//! command list, at pointerup or at a mid-drag ⌘C. An endpoint that has left
+//! the visible frame (every cross-screen drag's anchor) is reached by moving
+//! the copy-mode viewport inside that list; it is never clamped to the frame
+//! edge, and a placement tmux reports on other rows is refused.
 //!
 //! The `[selection]` probe prices all of it: one integers-only summary per
 //! finished or abandoned drag (always), plus a per-update line behind
@@ -25,7 +28,10 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use crate::error::{DeckError, ErrorKind};
 use crate::sync::LockRecover;
-use crate::terminal_selection::CopyCursorMoves;
+use crate::terminal_selection::{
+    copy_cursor_moves, push_copy_cursor, push_tmux_command, CopyCursorMoves, EndpointFrame,
+    EndpointPlacement,
+};
 use crate::tmux::{pane_target, tmux, tmux_owned, validate_session_name};
 
 /// Wheel scrolling is deck-driven: xterm keeps LOCAL selection (mouse mode
@@ -118,6 +124,10 @@ pub(crate) struct TerminalSelectionStatus {
     at_top: bool,
     at_bottom: bool,
     history_at_limit: bool,
+    /// The content row on the pane's first visible line, in the coordinates
+    /// the selection rows use — the copy-mode SNAPSHOT's, once a lease
+    /// exists (`SelectionPoint`); the live history's for a plain status.
+    frame_top: u32,
     selection_start_row: u32,
     selection_start_col: u32,
     selection_end_row: u32,
@@ -131,10 +141,17 @@ pub(crate) struct TerminalSelectionGrid {
 }
 
 /// One selection endpoint in CONTENT coordinates: `absolute_row` counts from
-/// the first row tmux still holds in history, so it keeps naming the same
-/// text while the pane scrolls. A visible row index does not — tmux's copy
-/// cursor is screen-relative, which is exactly how a drag over a pane that is
-/// still printing used to walk off the text the pointer was on.
+/// the first row of the copy-mode SNAPSHOT's history, so it keeps naming the
+/// same text while the pane scrolls. A visible row index does not.
+///
+/// The coordinate system is the snapshot's, not the live pane's: tmux
+/// copy-mode clones the screen when it is entered, and everything it reports
+/// or accepts — `scroll_position`, `copy_cursor_y`, `selection_*_y`,
+/// `goto-line` — counts from that clone's history size (`snapshot_history`
+/// on the lease), while `#{history_size}` keeps growing with output the
+/// user cannot see until copy-mode ends. Mixing the two moved every endpoint
+/// by the number of lines printed since entry; that was the "drift" 0.6.1
+/// measured with `capture-pane`, which reads the LIVE screen, not the clone.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct SelectionPoint {
     absolute_row: u32,
@@ -156,12 +173,16 @@ enum TerminalSelectionLease {
         token: u64,
         anchor: SelectionPoint,
         active: SelectionPoint,
+        /// The copy-mode snapshot's history size: the origin of every row
+        /// in this lease (`SelectionPoint`).
+        snapshot_history: u32,
     },
     Frozen {
         token: u64,
         text: String,
         bytes: u64,
         history_limit: u32,
+        snapshot_history: u32,
         selection_start_row: u32,
         selection_start_col: u32,
         selection_end_row: u32,
@@ -202,39 +223,62 @@ fn selection_token_matches(name: &str, token: u64, frozen: bool) -> bool {
     )
 }
 
-/// The content row the pane's first VISIBLE row currently holds.
-fn viewport_top(status: &TerminalSelectionStatus) -> u32 {
-    status.history_rows.saturating_sub(status.scroll_position)
+/// The snapshot content row on the pane's first VISIBLE line.
+fn viewport_top(snapshot_history: u32, scroll_position: u32) -> u32 {
+    snapshot_history.saturating_sub(scroll_position)
 }
 
-fn selection_point(status: &TerminalSelectionStatus, row: u32, col: u32) -> SelectionPoint {
+fn selection_point(
+    snapshot_history: u32,
+    scroll_position: u32,
+    row: u32,
+    col: u32,
+) -> SelectionPoint {
     SelectionPoint {
-        absolute_row: viewport_top(status).saturating_add(row),
+        absolute_row: viewport_top(snapshot_history, scroll_position).saturating_add(row),
         col,
     }
 }
 
-/// The visible row a content row occupies now, clamped INTO the frame.
-/// `top-line` + `cursor-down` can only reach visible rows, and the overlay
-/// clips the same way, so an endpoint that scrolled out of the frame selects
-/// from the edge the user can still see. The bool says it was clipped.
-fn visible_row(status: &TerminalSelectionStatus, point: SelectionPoint) -> (u32, bool) {
-    let top = viewport_top(status);
-    let last = status.pane_rows.saturating_sub(1);
-    let row = point.absolute_row.saturating_sub(top);
-    (row.min(last), point.absolute_row < top || row > last)
+/// The frame an endpoint is placed in when the selection is materialized:
+/// the current one while its row is visible, otherwise the viewport that
+/// shows it (`terminal_selection::endpoint_frame`).
+fn endpoint_frame(
+    snapshot_history: u32,
+    status: &TerminalSelectionStatus,
+    point: SelectionPoint,
+) -> EndpointFrame {
+    crate::terminal_selection::endpoint_frame(
+        snapshot_history,
+        status.scroll_position,
+        status.pane_rows,
+        point.absolute_row,
+    )
+}
+
+/// Lines the pane printed since copy-mode was entered: invisible in the
+/// snapshot, but they shift where the snapshot's rows sit in the live grid
+/// that `capture-pane` reads.
+fn live_offset(snapshot_history: u32, status: &TerminalSelectionStatus) -> u32 {
+    status.history_rows.saturating_sub(snapshot_history)
 }
 
 /// A drag's status: tmux has no selection of its own until pointerup, so the
 /// endpoints deck owns are reported in the exact shape tmux would report them
 /// (directional, `start` = anchor, `end` = the cursor, both inclusive of the
-/// anchor cell and exclusive of the cursor cell).
+/// anchor cell and exclusive of the cursor cell). The frame top and the
+/// history edges are the snapshot's, like the endpoints.
 fn dragging_selection_status(
     mut status: TerminalSelectionStatus,
+    snapshot_history: u32,
     anchor: SelectionPoint,
     active: SelectionPoint,
 ) -> TerminalSelectionStatus {
     status.selection_present = true;
+    status.frame_top = viewport_top(snapshot_history, status.scroll_position);
+    status.at_top = status.scroll_position >= snapshot_history && status.cursor_row == 0;
+    status.at_bottom =
+        status.scroll_position == 0 && status.cursor_row >= status.pane_rows.saturating_sub(1);
     status.selection_start_row = anchor.absolute_row;
     status.selection_start_col = anchor.col;
     status.selection_end_row = active.absolute_row;
@@ -242,17 +286,19 @@ fn dragging_selection_status(
     status
 }
 
-/// The endpoints deck tracked for a live drag, or `selection-missing`.
+/// The endpoints deck tracked for a live drag and their snapshot origin, or
+/// `selection-missing`.
 fn dragging_endpoints(
     name: &str,
     token: u64,
-) -> Result<(SelectionPoint, SelectionPoint), DeckError> {
+) -> Result<(SelectionPoint, SelectionPoint, u32), DeckError> {
     match terminal_selection_leases().lock_or_recover().get(name) {
         Some(TerminalSelectionLease::Dragging {
             token: current,
             anchor,
             active,
-        }) if *current == token => Ok((*anchor, *active)),
+            snapshot_history,
+        }) if *current == token => Ok((*anchor, *active, *snapshot_history)),
         _ => Err(DeckError::new(ErrorKind::Other, "selection-missing")),
     }
 }
@@ -265,6 +311,7 @@ fn frozen_selection_status(
     let leases = terminal_selection_leases().lock_or_recover();
     let Some(TerminalSelectionLease::Frozen {
         token: current,
+        snapshot_history,
         selection_start_row,
         selection_start_col,
         selection_end_row,
@@ -278,6 +325,7 @@ fn frozen_selection_status(
         return Err(DeckError::new(ErrorKind::Other, "selection-missing"));
     }
     status.selection_present = true;
+    status.frame_top = viewport_top(*snapshot_history, status.scroll_position);
     status.selection_start_row = *selection_start_row;
     status.selection_start_col = *selection_start_col;
     status.selection_end_row = *selection_end_row;
@@ -335,6 +383,7 @@ fn terminal_selection_status_for(target: &str) -> Result<TerminalSelectionStatus
         at_top: absolute_row == 0,
         at_bottom: absolute_row >= last_row,
         history_at_limit: history_limit > 0 && history_rows >= history_limit,
+        frame_top: history_rows.saturating_sub(scroll_position),
         selection_start_row,
         selection_start_col,
         selection_end_row,
@@ -358,59 +407,20 @@ fn require_terminal_selection_dimensions(
     }
 }
 
-fn push_tmux_command(batch: &mut Vec<String>, command: &[String]) {
-    if !batch.is_empty() {
-        batch.push(";".into());
-    }
-    batch.extend(command.iter().cloned());
-}
-
-fn push_copy_motion(batch: &mut Vec<String>, target: &str, count: u32, action: &str) {
-    if count == 0 {
-        return;
-    }
-    let mut command = vec!["send-keys".into(), "-t".into(), target.into(), "-X".into()];
-    if count > 1 {
-        command.push("-N".into());
-        command.push(count.to_string());
-    }
-    command.push(action.into());
-    push_tmux_command(batch, &command);
-}
-
-/// Place tmux's copy cursor on the visible cell (`row`, `col`). The move plan
-/// and the tmux motions it may use are documented on
-/// `terminal_selection::copy_cursor_moves`.
-/// Returns the plan it issued: its repetition count is what a selection
-/// update actually costs, because tmux redraws the changed selection after
-/// EVERY repetition (`selection_motions`).
-fn push_copy_cursor(
-    batch: &mut Vec<String>,
+/// The SNAPSHOT frame's rows 0..=`through_row` at viewport `scroll_position`,
+/// measured the way `terminal_selection::frame_rows` documents. `capture-pane`
+/// reads the live screen, whose rows sit `live_offset` lines further down
+/// than the snapshot's (the lines printed since copy-mode was entered), so
+/// the capture is shifted by that much; below the history limit the live
+/// grid only ever appends, so the snapshot's rows keep their live index.
+fn frame_rows_through(
     target: &str,
-    rows: &[String],
-    row: u32,
-    col: u32,
-) -> CopyCursorMoves {
-    let moves = crate::terminal_selection::copy_cursor_moves(rows, row, col);
-    push_copy_motion(batch, target, 1, "top-line");
-    push_copy_motion(batch, target, moves.descend, "cursor-down");
-    if moves.wrap {
-        push_copy_motion(batch, target, 1, "cursor-right");
-    }
-    push_copy_motion(batch, target, moves.descend_after_wrap, "cursor-down");
-    push_copy_motion(batch, target, moves.steps, "cursor-right");
-    moves
-}
-
-/// The visible frame's rows 0..=`through_row`, measured the way
-/// `terminal_selection::frame_rows` documents.
-fn visible_rows_through(
-    target: &str,
+    live_offset: u32,
     scroll_position: u32,
     through_row: u32,
 ) -> Result<Vec<String>, DeckError> {
-    let top = -(scroll_position as i64);
-    let bottom = through_row as i64 - scroll_position as i64;
+    let top = -(scroll_position as i64) - live_offset as i64;
+    let bottom = through_row as i64 - scroll_position as i64 - live_offset as i64;
     let captured = tmux(&[
         "capture-pane",
         "-p",
@@ -431,10 +441,14 @@ fn visible_rows_through(
 //
 // Two reported symptoms need numbers that only this layer can produce: a
 // multi-row drag feels sluggish, and the highlight sometimes covers text the
-// pointer never crossed. Both have the same root: an update re-places the
-// copy cursor from `top-line` on EVERY pointer move, so its cost grows with
-// the row and column it has to walk to, and the visible frame it walks over
-// can scroll under the walk while the pane is still producing output.
+// pointer never crossed. The first is cost: an update re-places the copy
+// cursor from `top-line` on EVERY pointer move, so it grows with the row and
+// column it has to walk to. The second was the live-vs-snapshot mix-up
+// (`SelectionPoint`): lines the pane prints while copy-mode is frozen move
+// the live rows `capture-pane` reads, so a plan built from them could walk
+// to the wrong snapshot row. The offset is now applied to every capture;
+// `drift` keeps counting the output so a misplacement can still be paired
+// with it.
 //
 // So each update records what it asked for, what tmux actually did, and what
 // it cost, and one summary line per finished selection reports the worst of
@@ -453,19 +467,21 @@ struct SelectionProbe {
     updates: u32,
     /// Updates whose copy cursor did not land on the row that was asked for.
     misplaced: u32,
-    /// Updates during which the pane pushed new lines into history, i.e. the
-    /// frame `top-line` counts from moved while the plan was being applied.
+    /// Updates during which the pane pushed new lines into the LIVE history
+    /// (invisible in the frozen copy-mode snapshot, but they move the rows a
+    /// plan's `capture-pane` reads while the plan is being applied).
     drifted: u32,
     /// Largest single-update history growth, in rows.
     worst_drift: u32,
     worst_ms: u32,
     total_ms: u32,
     worst_motions: u32,
-    /// Placements whose plan raced pane output and had to be rebuilt.
+    /// Placements whose plan raced pane output, or landed on rows other than
+    /// the ones asked for, and had to be rebuilt.
     races: u32,
-    /// Placements with an endpoint that had scrolled out of the visible frame
-    /// and was clamped to the edge the overlay already clips it to.
-    clipped: u32,
+    /// Placements with an endpoint outside the visible frame, reached by
+    /// moving the copy-mode viewport (a cross-screen drag).
+    offscreen: u32,
 }
 
 fn selection_probes() -> &'static Mutex<HashMap<String, SelectionProbe>> {
@@ -531,10 +547,10 @@ fn record_selection_update(
 }
 
 /// What `materialize_selection` had to do to build the real tmux selection.
-fn record_selection_placement(name: &str, clipped: bool, races: u32) {
+fn record_selection_placement(name: &str, offscreen: bool, races: u32) {
     let mut probes = selection_probes().lock_or_recover();
     let probe = probes.entry(name.to_string()).or_default();
-    probe.clipped = probe.clipped.saturating_add(u32::from(clipped));
+    probe.offscreen = probe.offscreen.saturating_add(u32::from(offscreen));
     probe.races = probe.races.max(races);
 }
 
@@ -551,7 +567,7 @@ fn report_selection_probe(name: &str, outcome: &str) {
     }
     crate::applog::applog(&format!(
         "[selection] {} {outcome} updates={} misplaced={} drifted={} worst_drift={} \
-         worst_motions={} worst_ms={} mean_ms={} races={} clipped={}",
+         worst_motions={} worst_ms={} mean_ms={} races={} offscreen={}",
         crate::applog::session_tag(name),
         probe.updates,
         probe.misplaced,
@@ -561,76 +577,171 @@ fn report_selection_probe(name: &str, outcome: &str) {
         probe.worst_ms,
         probe.total_ms / probe.updates,
         probe.races,
-        probe.clipped,
+        probe.offscreen,
     ));
 }
 
 /// Build the real tmux selection from deck's two content endpoints.
 ///
 /// Both endpoints are placed and `begin-selection` is issued inside ONE tmux
-/// command list, which the server runs in a single event-loop pass: no pane
-/// output can move the frame between the anchor and the active endpoint, so
-/// the two can no longer be measured against different frames. The list's
-/// leading `display-message` reports the history size the list actually ran
-/// with; if the `capture-pane` the move plan was built from saw a different
-/// one, the plan raced the frame and the whole thing is rebuilt. tmux keeps
-/// the resulting anchor pinned to CONTENT, so later output cannot move it.
+/// command list (`terminal_selection::materialize_args`), which the server
+/// runs in a single event-loop pass: no pane output can move the frame
+/// between the anchor and the active endpoint, so the two can no longer be
+/// measured against different frames. An endpoint outside the visible frame
+/// — every cross-screen drag's anchor — is reached by moving the copy-mode
+/// viewport inside that same list, never by clamping it to the frame's edge.
+/// The list's leading `display-message` reports the history size the list
+/// actually ran with; if the `capture-pane` the move plans were built from
+/// saw a different one, or tmux reports endpoint rows other than the ones
+/// asked for (copy-mode caps `goto-line` at the history it was entered with),
+/// the placement is rebuilt, and after the last attempt refused: a selection
+/// that names other rows than the drag is never handed out. tmux keeps the
+/// resulting anchor pinned to CONTENT, so later output cannot move it.
 fn materialize_selection(
     name: &str,
     target: &str,
+    snapshot_history: u32,
     anchor: SelectionPoint,
     active: SelectionPoint,
 ) -> Result<TerminalSelectionStatus, DeckError> {
     const ATTEMPTS: u32 = 3;
-    let mut clipped = false;
-    let mut races = 0;
+    let mut offscreen = false;
     for attempt in 0..ATTEMPTS {
         let status = terminal_selection_status_for(target)?;
-        let (anchor_row, anchor_clipped) = visible_row(&status, anchor);
-        let (active_row, active_clipped) = visible_row(&status, active);
-        let rows =
-            visible_rows_through(target, status.scroll_position, anchor_row.max(active_row))?;
-        let mut batch = vec![
+        let offset = live_offset(snapshot_history, &status);
+        let anchor_frame = endpoint_frame(snapshot_history, &status, anchor);
+        let active_frame = endpoint_frame(snapshot_history, &status, active);
+        let anchor_rows = frame_rows_through(
+            target,
+            offset,
+            anchor_frame.scroll_position,
+            anchor_frame.row,
+        )?;
+        let active_rows = frame_rows_through(
+            target,
+            offset,
+            active_frame.scroll_position,
+            active_frame.row,
+        )?;
+        let batch = crate::terminal_selection::materialize_args(
+            target,
+            status.scroll_position,
+            EndpointPlacement {
+                frame: anchor_frame,
+                moves: copy_cursor_moves(&anchor_rows, anchor_frame.row, anchor.col),
+            },
+            EndpointPlacement {
+                frame: active_frame,
+                moves: copy_cursor_moves(&active_rows, active_frame.row, active.col),
+            },
+        );
+        let ran_with = tmux_owned(&batch)?;
+        let ran_with: u32 = ran_with.trim().parse().unwrap_or(status.history_rows);
+        offscreen = anchor_frame.offscreen || active_frame.offscreen;
+        let placed = terminal_selection_status_for(target)?;
+        // No selection at all is the caller's `selection-missing-cleared`;
+        // a selection on the wrong rows is retried, then refused.
+        let landed = !placed.selection_present
+            || (placed.selection_start_row == anchor.absolute_row
+                && placed.selection_end_row == active.absolute_row);
+        if ran_with == status.history_rows && landed {
+            record_selection_placement(name, offscreen, attempt);
+            return Ok(placed);
+        }
+        if crate::diagnostics::debug_logging_enabled() {
+            crate::applog::applog(&format!(
+                "[selection] {} placement-retry attempt={attempt} ask=r{}..r{} \
+                 got=r{}..r{} present={} hist={}->{} scroll={}->{} frames={}/{}",
+                crate::applog::session_tag(name),
+                anchor.absolute_row,
+                active.absolute_row,
+                placed.selection_start_row,
+                placed.selection_end_row,
+                u8::from(placed.selection_present),
+                status.history_rows,
+                ran_with,
+                status.scroll_position,
+                placed.scroll_position,
+                anchor_frame.scroll_position,
+                active_frame.scroll_position,
+            ));
+        }
+    }
+    record_selection_placement(name, offscreen, ATTEMPTS);
+    Err(DeckError::new(
+        ErrorKind::Other,
+        "selection-missing-unreachable",
+    ))
+}
+
+/// The copy-mode snapshot a drag counts from. Copy-mode is entered here when
+/// the pane is not in it (`copy-mode -H`); the snapshot's history size is
+/// then read back through tmux's own coordinates — a one-cell selection is
+/// begun and cleared inside the same command list, and `selection_start_y`
+/// is `snapshot + copy_cursor_y - scroll_position` — because no format
+/// exposes it directly and `#{history_size}` is the LIVE pane's.
+struct CopyModeSnapshot {
+    history: u32,
+    scroll_position: u32,
+    live_history: u32,
+}
+
+fn copy_mode_snapshot(target: &str, enter: bool) -> Result<CopyModeSnapshot, DeckError> {
+    let mut batch = Vec::new();
+    if enter {
+        push_tmux_command(
+            &mut batch,
+            &["copy-mode".into(), "-H".into(), "-t".into(), target.into()],
+        );
+    }
+    // A selection left by an earlier drag would be repainted by every motion
+    // of this one and would outlive its anchor; the probe below needs a
+    // clean slate anyway. The drag itself keeps tmux selection-free.
+    for action in ["clear-selection", "begin-selection"] {
+        push_tmux_command(
+            &mut batch,
+            &[
+                "send-keys".into(),
+                "-t".into(),
+                target.into(),
+                "-X".into(),
+                action.into(),
+            ],
+        );
+    }
+    push_tmux_command(
+        &mut batch,
+        &[
             "display-message".into(),
             "-p".into(),
             "-t".into(),
-            target.to_string(),
-            "#{history_size}".into(),
-        ];
-        // begin-selection is a toggle, so a previous attempt's selection must
-        // go before this one starts.
-        push_tmux_command(
-            &mut batch,
-            &[
-                "send-keys".into(),
-                "-t".into(),
-                target.to_string(),
-                "-X".into(),
-                "clear-selection".into(),
-            ],
-        );
-        push_copy_cursor(&mut batch, target, &rows, anchor_row, anchor.col);
-        push_tmux_command(
-            &mut batch,
-            &[
-                "send-keys".into(),
-                "-t".into(),
-                target.to_string(),
-                "-X".into(),
-                "begin-selection".into(),
-            ],
-        );
-        push_copy_cursor(&mut batch, target, &rows, active_row, active.col);
-        let ran_with = tmux_owned(&batch)?;
-        let ran_with: u32 = ran_with.trim().parse().unwrap_or(status.history_rows);
-        clipped = anchor_clipped || active_clipped;
-        races = attempt;
-        if ran_with == status.history_rows || attempt + 1 == ATTEMPTS {
-            break;
-        }
-    }
-    record_selection_placement(name, clipped, races);
-    terminal_selection_status_for(target)
+            target.into(),
+            "#{selection_start_y}\t#{copy_cursor_y}\t#{scroll_position}\t#{history_size}".into(),
+        ],
+    );
+    push_tmux_command(
+        &mut batch,
+        &[
+            "send-keys".into(),
+            "-t".into(),
+            target.into(),
+            "-X".into(),
+            "clear-selection".into(),
+        ],
+    );
+    let raw = tmux_owned(&batch)?;
+    let mut f = raw.trim_end().split('\t');
+    let anchor_row = parse_u32_or_zero(f.next());
+    let cursor_row = parse_u32_or_zero(f.next());
+    let scroll_position = parse_u32_or_zero(f.next());
+    let live_history = parse_u32_or_zero(f.next());
+    Ok(CopyModeSnapshot {
+        history: anchor_row
+            .saturating_add(scroll_position)
+            .saturating_sub(cursor_row),
+        scroll_position,
+        live_history,
+    })
 }
 
 #[tauri::command]
@@ -663,31 +774,23 @@ pub(crate) fn terminal_selection_start(
     let anchor_col = clamp_col(anchor_col);
     let active_row = clamp_row(active_row);
     let active_col = clamp_col(active_col);
-    let rows = visible_rows_through(&target, dims.scroll_position, active_row)?;
-    let mut batch = Vec::new();
     // A wheel-scrolled pane is already in copy-mode at the user's chosen
-    // history position. Re-entering copy-mode here jumps it back to the live
-    // frame and makes a downward cross-screen drag impossible.
-    if !dims.active {
-        push_tmux_command(
-            &mut batch,
-            &["copy-mode".into(), "-H".into(), "-t".into(), target.clone()],
-        );
-    } else if dims.selection_present {
-        // A selection left by an earlier drag would be repainted by every
-        // motion below, and would outlive this one's anchor. Drop it: the
-        // drag itself keeps tmux selection-free.
-        push_tmux_command(
-            &mut batch,
-            &[
-                "send-keys".into(),
-                "-t".into(),
-                target.clone(),
-                "-X".into(),
-                "clear-selection".into(),
-            ],
-        );
-    }
+    // history position (and its snapshot may be older than the pane's live
+    // history). Re-entering copy-mode here would jump it back to the live
+    // frame and make a downward cross-screen drag impossible.
+    let snapshot = copy_mode_snapshot(&target, !dims.active).map_err(|e| {
+        DeckError::new(
+            e.kind(),
+            format!("terminal selection could not start ({})", e.code()),
+        )
+    })?;
+    let rows = frame_rows_through(
+        &target,
+        snapshot.live_history.saturating_sub(snapshot.history),
+        snapshot.scroll_position,
+        active_row,
+    )?;
+    let mut batch = Vec::new();
     // Only the active endpoint reaches tmux while dragging; the anchor is
     // deck's, in content coordinates, until pointerup materializes both.
     let active_moves = push_copy_cursor(&mut batch, &target, &rows, active_row, active_col);
@@ -698,8 +801,18 @@ pub(crate) fn terminal_selection_start(
         )
     })?;
     let status = terminal_selection_status_for(&target)?;
-    let anchor = selection_point(&dims, anchor_row, anchor_col);
-    let active = selection_point(&status, status.cursor_row, status.cursor_col);
+    let anchor = selection_point(
+        snapshot.history,
+        snapshot.scroll_position,
+        anchor_row,
+        anchor_col,
+    );
+    let active = selection_point(
+        snapshot.history,
+        status.scroll_position,
+        status.cursor_row,
+        status.cursor_col,
+    );
     // A new drag starts a new measurement; an abandoned one leaves its own
     // record behind rather than blending into this one.
     report_selection_probe(&name, "restart");
@@ -724,9 +837,15 @@ pub(crate) fn terminal_selection_start(
             token,
             anchor,
             active,
+            snapshot_history: snapshot.history,
         },
     );
-    Ok(dragging_selection_status(status, anchor, active))
+    Ok(dragging_selection_status(
+        status,
+        snapshot.history,
+        anchor,
+        active,
+    ))
 }
 
 #[tauri::command]
@@ -763,7 +882,13 @@ pub(crate) fn terminal_selection_update(
     }
     let row = row.min(before.pane_rows.saturating_sub(1));
     let col = col.min(before.pane_cols.saturating_sub(1));
-    let rows = visible_rows_through(&target, before.scroll_position, row)?;
+    let (_, _, snapshot_history) = dragging_endpoints(&name, token)?;
+    let rows = frame_rows_through(
+        &target,
+        live_offset(snapshot_history, &before),
+        before.scroll_position,
+        row,
+    )?;
     let mut batch = Vec::new();
     let moves = push_copy_cursor(&mut batch, &target, &rows, row, col);
     if edge_lines != 0 {
@@ -809,12 +934,18 @@ pub(crate) fn terminal_selection_update(
     // The copy cursor IS the active endpoint; reading it back in content
     // coordinates is what keeps an edge-scrolled or grapheme-snapped landing
     // authoritative without a second command.
-    let active = selection_point(&after, after.cursor_row, after.cursor_col);
+    let active = selection_point(
+        snapshot_history,
+        after.scroll_position,
+        after.cursor_row,
+        after.cursor_col,
+    );
     let mut leases = terminal_selection_leases().lock_or_recover();
     let Some(TerminalSelectionLease::Dragging {
         token: current,
         anchor,
         active: tracked,
+        ..
     }) = leases.get_mut(&name)
     else {
         return Err(DeckError::new(ErrorKind::Other, "selection-missing"));
@@ -825,7 +956,12 @@ pub(crate) fn terminal_selection_update(
     *tracked = active;
     let anchor = *anchor;
     drop(leases);
-    Ok(dragging_selection_status(after, anchor, active))
+    Ok(dragging_selection_status(
+        after,
+        snapshot_history,
+        anchor,
+        active,
+    ))
 }
 
 const MAX_TERMINAL_SELECTION_BYTES: u64 = 64 * 1024 * 1024;
@@ -881,10 +1017,10 @@ pub(crate) fn terminal_selection_finish(
             "selection-missing-inactive",
         ));
     }
-    let (anchor, active) = dragging_endpoints(&name, token)?;
+    let (anchor, active, snapshot_history) = dragging_endpoints(&name, token)?;
     // The one place a real tmux selection exists: both endpoints placed in a
     // single atomic command list, from the content coordinates deck tracked.
-    let status = materialize_selection(&name, &target, anchor, active)?;
+    let status = materialize_selection(&name, &target, snapshot_history, anchor, active)?;
     if !status.selection_present {
         return Err(DeckError::new(
             ErrorKind::Other,
@@ -919,6 +1055,7 @@ pub(crate) fn terminal_selection_finish(
             text,
             bytes,
             history_limit: status.history_limit,
+            snapshot_history,
             selection_start_row: status.selection_start_row,
             selection_start_col: status.selection_start_col,
             selection_end_row: status.selection_end_row,
@@ -958,6 +1095,7 @@ pub(crate) fn terminal_selection_copy(
             token: current,
             anchor,
             active,
+            snapshot_history,
         }) if current == token => {
             let target = pane_target(&name);
             if !terminal_selection_status_for(&target)?.active {
@@ -965,7 +1103,7 @@ pub(crate) fn terminal_selection_copy(
             }
             // ⌘C before pointerup: the drag has no tmux selection yet, so
             // build one from the same endpoints pointerup would use.
-            let status = materialize_selection(&name, &target, anchor, active)?;
+            let status = materialize_selection(&name, &target, snapshot_history, anchor, active)?;
             if !status.selection_present {
                 return Err(DeckError::new(ErrorKind::Other, "selection-missing"));
             }
@@ -1188,6 +1326,7 @@ mod tests {
             text: "exact\ntext".into(),
             bytes: 10,
             history_limit: 50000,
+            snapshot_history: 90,
             selection_start_row: 11,
             selection_start_col: 2,
             selection_end_row: 13,
@@ -1220,6 +1359,7 @@ mod tests {
             at_top: false,
             at_bottom: false,
             history_at_limit: false,
+            frame_top: 90,
             selection_start_row: 0,
             selection_start_col: 0,
             selection_end_row: 0,
@@ -1227,6 +1367,10 @@ mod tests {
         };
         let frozen = frozen_selection_status(&name, 77, status).unwrap();
         assert!(frozen.selection_present);
+        assert_eq!(
+            frozen.frame_top, 80,
+            "the frame top counts from the snapshot the endpoints count from"
+        );
         assert_eq!(
             (
                 frozen.selection_start_row,
@@ -1260,6 +1404,7 @@ mod tests {
             at_top: false,
             at_bottom: false,
             history_at_limit: false,
+            frame_top: history_rows.saturating_sub(scroll_position),
             selection_start_row: 0,
             selection_start_col: 0,
             selection_end_row: 0,
@@ -1267,14 +1412,13 @@ mod tests {
         }
     }
 
-    /// The conversion the whole drift fix rests on: a visible row means a
-    /// different content row once the pane has printed, so an endpoint is
-    /// kept as content and converted back against the CURRENT frame.
+    /// The conversion the whole drift fix rests on: every row counts from
+    /// the copy-mode SNAPSHOT, so lines the pane prints after entry change
+    /// the live history and the capture offset only, never an endpoint.
     #[test]
-    fn an_endpoint_kept_as_content_survives_the_frame_scrolling_under_it() {
-        let before = status_at(100, 0);
-        assert_eq!(viewport_top(&before), 100);
-        let point = selection_point(&before, 5, 7);
+    fn an_endpoint_kept_as_content_survives_output_arriving_under_it() {
+        assert_eq!(viewport_top(100, 0), 100);
+        let point = selection_point(100, 0, 5, 7);
         assert_eq!(
             point,
             SelectionPoint {
@@ -1282,26 +1426,47 @@ mod tests {
                 col: 7,
             }
         );
-        // Five lines printed: the same text is now five rows higher.
-        assert_eq!(visible_row(&status_at(105, 0), point), (0, false));
-        assert_eq!(visible_row(&status_at(103, 0), point), (2, false));
-        // A pane scrolled up into history reads the same way.
-        assert_eq!(visible_row(&status_at(120, 20), point), (5, false));
+        // Five lines printed since entry: the snapshot still shows the
+        // endpoint on row 5; only the live capture shifts by five.
+        assert_eq!(endpoint_frame(100, &status_at(105, 0), point).row, 5);
+        assert_eq!(live_offset(100, &status_at(105, 0)), 5);
+        assert_eq!(live_offset(100, &status_at(100, 0)), 0);
+        // A pane scrolled two rows up into history reads the same way: the
+        // endpoint is two rows lower in the frame, on the same snapshot row.
+        let scrolled = endpoint_frame(100, &status_at(105, 2), point);
+        assert_eq!(
+            (scrolled.scroll_position, scrolled.row, scrolled.offscreen),
+            (2, 7, false)
+        );
     }
 
+    /// The 0.6.1 clamp is gone: an endpoint that left the frame names the
+    /// viewport that shows it (the rules live in `terminal_selection`).
     #[test]
-    fn an_endpoint_that_left_the_frame_is_clamped_to_the_edge_the_overlay_clips_to() {
+    fn an_endpoint_that_left_the_frame_names_the_viewport_that_shows_it() {
         let point = SelectionPoint {
             absolute_row: 105,
             col: 3,
         };
-        // Scrolled off the top: one line past it is already out of frame.
-        assert_eq!(visible_row(&status_at(106, 0), point), (0, true));
-        assert_eq!(visible_row(&status_at(145, 0), point), (0, true));
-        // Scrolled off the bottom: the frame starts below the endpoint.
-        assert_eq!(visible_row(&status_at(200, 120), point), (23, true));
-        // Exactly the last visible row is still inside the frame.
-        assert_eq!(visible_row(&status_at(82, 0), point), (23, false));
+        let off_top = endpoint_frame(106, &status_at(106, 0), point);
+        assert_eq!(
+            (off_top.scroll_position, off_top.row, off_top.offscreen),
+            (1, 0, true)
+        );
+        let off_bottom = endpoint_frame(200, &status_at(200, 120), point);
+        assert_eq!(
+            (
+                off_bottom.scroll_position,
+                off_bottom.row,
+                off_bottom.offscreen
+            ),
+            (95, 0, true)
+        );
+        let last_row = endpoint_frame(82, &status_at(82, 0), point);
+        assert_eq!(
+            (last_row.scroll_position, last_row.row, last_row.offscreen),
+            (0, 23, false)
+        );
     }
 
     /// A drag reports deck's own endpoints in the shape tmux reports its own:
@@ -1316,8 +1481,11 @@ mod tests {
             absolute_row: 102,
             col: 1,
         };
-        let status = dragging_selection_status(status_at(120, 0), anchor, active);
+        // Twelve lines printed since entry: the live history says 120, the
+        // snapshot 108, and the frame top counts from the snapshot.
+        let status = dragging_selection_status(status_at(120, 0), 108, anchor, active);
         assert!(status.selection_present);
+        assert_eq!(status.frame_top, 108);
         assert_eq!(
             (
                 status.selection_start_row,
@@ -1347,11 +1515,12 @@ mod tests {
                 token: 12,
                 anchor,
                 active,
+                snapshot_history: 40,
             },
         );
         assert!(selection_token_matches(&name, 12, false));
         assert!(!selection_token_matches(&name, 12, true));
-        assert_eq!(dragging_endpoints(&name, 12).unwrap(), (anchor, active));
+        assert_eq!(dragging_endpoints(&name, 12).unwrap(), (anchor, active, 40));
         assert!(dragging_endpoints(&name, 11).is_err());
         assert!(dragging_endpoints("deck-drag-unit-absent", 12).is_err());
         terminal_selection_leases().lock_or_recover().remove(&name);
@@ -1421,7 +1590,7 @@ mod tests {
         assert_eq!(probe.total_ms, 31);
         assert_eq!(probe.worst_motions, 8);
         assert_eq!(probe.races, 2);
-        assert_eq!(probe.clipped, 1);
+        assert_eq!(probe.offscreen, 1);
 
         report_selection_probe(&name, "finish");
         assert!(

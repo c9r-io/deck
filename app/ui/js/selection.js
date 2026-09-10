@@ -78,8 +78,11 @@
 // the copy cursor where it already is costs three tmux round trips.
 // Two probes measure the drag itself, paired with the backend's `[selection]`
 // lines: `span-mismatch` (always on) reports the rows the pointer crossed
-// against the rows tmux selected — they diverge when an endpoint's content
-// scrolls out of the visible frame, which is the only drift left; `update-rtt`
+// against the rows tmux selected — they diverge when the pane printed during
+// the drag (the copy cursor is a visible row, the anchor is content), which is
+// the only drift left; an endpoint that scrolled out of the frame is reached
+// by the backend's viewport move at pointerup and no longer shortens the
+// selection; `update-rtt`
 // (--debug-logging only) reports one update's round trip and how many pointer
 // moves folded into it.
 import { duev, inv, uev } from './state.js';

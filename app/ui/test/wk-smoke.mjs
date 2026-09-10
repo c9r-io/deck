@@ -294,6 +294,12 @@ async function selectionSmoke(card) {
   if (expanded.includes('\n\n')) upMask |= 32;
   if (expanded.includes('x'.repeat(200))) upMask |= 64;
   await report('selection-up', upMask === 127, expanded.split('\n').length, upMask);
+  /* 07 diagnosis (closed integers): the rows the drag's own endpoints span in
+     absolute content coordinates against the rows the copy delivered. */
+  const upStatus = pane.selection.status();
+  await report('selection-up-range', true,
+    upStatus ? Math.abs(upStatus.selection_end_row - upStatus.selection_start_row) + 1 : 0,
+    expanded.split('\n').length);
   const markerIds = [...expanded.matchAll(/R7-(\d{4})/g)].map(match => Number(match[1]));
   const markerStart = markerIds[0] ?? -1;
   const markerEnd = markerIds.at(-1) ?? -1;
@@ -360,6 +366,7 @@ async function selectionSmoke(card) {
     clientX: cellX, clientY: rowY(activeRow),
   }));
   await pane.selection.idle();
+  const frozenStatus = pane.selection.status();
   const ownership = pane.selection.ownership();
   const ownerMask = (downTrusted ? 1 : 0) | (compatDownReachedXterm ? 2 : 0)
     | (lateMouseupTrusted ? 4 : 0) | (ownership.promoted === 1 ? 8 : 0)
@@ -385,6 +392,19 @@ async function selectionSmoke(card) {
   await report('selection-clipboard', expected.length > 0 && copiedByKey
     && clipboard.bytes === expectedBytes && clipboard.newlines === expectedNewlines
     && clipboard.hash === expectedHash, clipboard.bytes, clipboard.newlines);
+  /* 07 diagnosis (closed integers, no text): the oracle's expectation; the
+     rows deck intended (drag endpoints) against the rows tmux froze at
+     pointerup; and the frozen lease's own bytes against the clipboard's, so
+     a range error, a byte-generation error and a clipboard write/read error
+     can be told apart. */
+  await report('selection-clipboard-expect', true, expectedBytes, expectedNewlines);
+  const rowsOf = status => (status
+    ? Math.abs(status.selection_end_row - status.selection_start_row) + 1 : 0);
+  await report('selection-clipboard-range', true, rowsOf(exactStatus), rowsOf(frozenStatus));
+  const leaseText = await copyTerminalSelection(pane).catch(() => null);
+  await report('selection-clipboard-copy', true,
+    typeof leaseText === 'string' ? new TextEncoder().encode(leaseText).length : 0,
+    clipboard.bytes);
 
   await cancelTerminalSelection(pane);
   pane.term.clearSelection();
@@ -660,10 +680,17 @@ async function selectionSmoke(card) {
     await report('selection-down', false, metrics.in_copy_mode ? 1 : 0, 0);
     await inv('scroll_bottom', { name: card.session });
   }
+  // hasSelection() turns true at promotion, before the first backend status
+  // exists (07-C): read the starting scroll position only once one does.
+  await waitFor(() => pane.selection.status() != null, 3000);
   const downInitialScroll = pane.selection.status()?.scroll_position || 0;
   const crossedDown = await waitFor(() =>
     (pane.selection.status()?.scroll_position ?? downInitialScroll)
       < downInitialScroll - pane.term.rows * 3, 8000);
+  /* 07 diagnosis: `a` is the scroll position after the wait, `b` the initial
+     value the crossing check subtracted from (b sits in the slot that keeps 0). */
+  await report('selection-down-scroll', true,
+    pane.selection.status()?.scroll_position ?? 0, downInitialScroll);
   const downText = startedDown ? (await copyTerminalSelection(pane) || '') : '';
   selectionStage = 8;
   document.dispatchEvent(pointer('pointerup', 42, rect.left + 60, rect.bottom + 32));

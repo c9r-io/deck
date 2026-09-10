@@ -811,13 +811,18 @@ export function terminalSelectionOverlayRows({
 }
 
 /** Pixel bands for the settled selection overlay: one per visible row of the
- * immutable lease, derived only from public geometry (screen rect, grid). */
+ * immutable lease, derived only from public geometry (screen rect, grid).
+ * The viewport top is the backend's `frame_top`: it counts from the copy-mode
+ * snapshot the selection rows count from, not from the live history, which
+ * keeps growing with output the frozen pane does not show. */
 export function terminalSelectionOverlayBands({ status, rect, rows, cols }) {
   if (!status || !rect || !(rows > 0) || !(cols > 0)) return [];
   const spans = terminalSelectionOverlayRows({
     startRow: status.selection_start_row, startCol: status.selection_start_col,
     endRow: status.selection_end_row, endCol: status.selection_end_col,
-    viewportTop: status.history_rows - status.scroll_position, rows, cols,
+    viewportTop: Number.isFinite(status.frame_top)
+      ? status.frame_top : status.history_rows - status.scroll_position,
+    rows, cols,
   });
   const cellWidth = rect.width / cols;
   const cellHeight = rect.height / rows;
@@ -863,11 +868,14 @@ export const selectionOwnerLabel = ({ promoted, pending, selected }) => (promote
 export const selectionCopyFailureCode = error => (String(error || '').includes('selection-missing')
   ? 'selection-missing' : 'snapshot-failed');
 /** `finish-failed` reason for the log's `a` slot: 1 = the pane had left tmux
- * copy-mode, 2 = copy-mode survived but its selection was cleared, 0 = else. */
+ * copy-mode, 2 = copy-mode survived but its selection was cleared, 3 = tmux
+ * placed the selection on other rows than the drag's (an endpoint beyond
+ * copy-mode's reachable history), 0 = else. */
 export const selectionFinishFailureReason = error => {
   const value = String(error || '');
   if (value.includes('selection-missing-inactive')) return 1;
   if (value.includes('selection-missing-cleared')) return 2;
+  if (value.includes('selection-missing-unreachable')) return 3;
   return 0;
 };
 export const selectionDimensionsChanged = error => String(error || '').includes('selection-dimensions-changed');

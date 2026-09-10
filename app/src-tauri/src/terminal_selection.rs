@@ -4,6 +4,27 @@
 //! byte snapshot to tmux itself. In particular, copying must not translate
 //! absolute selection rows into `capture-pane` coordinates: pane history may
 //! grow between those operations and silently move the coordinates.
+//!
+//! # Contract
+//! A selection endpoint is an absolute content row of the copy-mode SNAPSHOT
+//! (tmux clones the screen on entry; `#{history_size}` is the live pane's,
+//! `capture-pane` reads the live screen — `terminal.rs` `SelectionPoint`
+//! holds the coordinate rules). The copy cursor can only
+//! be walked over VISIBLE rows (`copy_cursor_moves`), so an endpoint whose
+//! row has left the frame — every cross-screen drag's anchor — is reached by
+//! moving the copy-mode viewport with `goto-line` first (`endpoint_frame`),
+//! never by clamping it to the frame's edge: the clamp shipped in 0.6.1 and
+//! turned every cross-screen selection into one screen (governance 07).
+//! `materialize_args` builds the whole placement as ONE tmux command list
+//! (`clear-selection`, viewport, anchor walk, `begin-selection`, viewport,
+//! active walk) so pane output cannot move the frame between the two walks;
+//! its leading `display-message` reports the history the list ran with. tmux
+//! pins the anchor to content, so the list may leave the viewport on the
+//! active endpoint's frame. `goto-line` neither exits `copy-mode -e` nor
+//! moves the cursor's visible row, but copy-mode caps it at the history size
+//! seen when copy-mode was entered (bundled tmux 3.7c): the caller verifies
+//! the rows tmux reports against the rows it asked for and refuses the
+//! selection rather than returning a shortened one.
 
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
@@ -101,6 +122,153 @@ pub(crate) fn frame_rows(captured: &str, through_row: u32) -> Vec<String> {
     // A frame that is entirely empty captures as a single empty line.
     rows.resize(through_row as usize + 1, String::new());
     rows
+}
+
+/// Where an endpoint is placed: the copy-mode viewport (`scroll_position`)
+/// that shows its content row, and the visible row it occupies there.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct EndpointFrame {
+    pub(crate) scroll_position: u32,
+    pub(crate) row: u32,
+    /// The endpoint lies outside the current frame: the plan reaches it with
+    /// `goto-line` before walking to its row.
+    pub(crate) offscreen: bool,
+}
+
+/// The frame an endpoint at snapshot content row `absolute_row` is placed
+/// in (`snapshot_history` is the copy-mode snapshot's history size, the
+/// origin of that row). Inside the current frame it keeps that frame;
+/// otherwise the viewport is moved so the row sits on the first visible line
+/// (or, for a row below history, on its line of the live frame), which is
+/// the cheapest walk from `top-line`.
+pub(crate) fn endpoint_frame(
+    snapshot_history: u32,
+    scroll_position: u32,
+    pane_rows: u32,
+    absolute_row: u32,
+) -> EndpointFrame {
+    let last = pane_rows.saturating_sub(1);
+    let top = snapshot_history.saturating_sub(scroll_position);
+    if absolute_row >= top && absolute_row - top <= last {
+        return EndpointFrame {
+            scroll_position,
+            row: absolute_row - top,
+            offscreen: false,
+        };
+    }
+    let scroll_position = snapshot_history.saturating_sub(absolute_row);
+    let row = absolute_row
+        .saturating_sub(snapshot_history - scroll_position)
+        .min(last);
+    EndpointFrame {
+        scroll_position,
+        row,
+        offscreen: true,
+    }
+}
+
+pub(crate) fn push_tmux_command(batch: &mut Vec<String>, command: &[String]) {
+    if !batch.is_empty() {
+        batch.push(";".into());
+    }
+    batch.extend(command.iter().cloned());
+}
+
+fn push_copy_command(batch: &mut Vec<String>, target: &str, action: &[&str]) {
+    let mut command = vec![
+        "send-keys".to_string(),
+        "-t".into(),
+        target.into(),
+        "-X".into(),
+    ];
+    command.extend(action.iter().map(|a| (*a).to_string()));
+    push_tmux_command(batch, &command);
+}
+
+fn push_copy_motion(batch: &mut Vec<String>, target: &str, count: u32, action: &str) {
+    match count {
+        0 => {}
+        1 => push_copy_command(batch, target, &[action]),
+        _ => push_copy_command(batch, target, &["-N", &count.to_string(), action]),
+    }
+}
+
+/// Place tmux's copy cursor on the visible cell (`row`, `col`) of the frame
+/// `rows` describes. The move plan and the tmux motions it may use are
+/// documented on `copy_cursor_moves`. Returns the plan it issued: its
+/// repetition count is what a selection update actually costs, because tmux
+/// redraws the changed selection after EVERY repetition.
+// The tmux contract tests include this module by path and use the pure
+// builders only; the production caller is `terminal.rs`.
+#[cfg_attr(test, allow(dead_code))]
+pub(crate) fn push_copy_cursor(
+    batch: &mut Vec<String>,
+    target: &str,
+    rows: &[String],
+    row: u32,
+    col: u32,
+) -> CopyCursorMoves {
+    let moves = copy_cursor_moves(rows, row, col);
+    push_copy_cursor_moves(batch, target, moves);
+    moves
+}
+
+fn push_copy_cursor_moves(batch: &mut Vec<String>, target: &str, moves: CopyCursorMoves) {
+    push_copy_motion(batch, target, 1, "top-line");
+    push_copy_motion(batch, target, moves.descend, "cursor-down");
+    if moves.wrap {
+        push_copy_motion(batch, target, 1, "cursor-right");
+    }
+    push_copy_motion(batch, target, moves.descend_after_wrap, "cursor-down");
+    push_copy_motion(batch, target, moves.steps, "cursor-right");
+}
+
+/// One endpoint of a materialized selection: its frame and the walk that
+/// reaches its cell inside that frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct EndpointPlacement {
+    pub(crate) frame: EndpointFrame,
+    pub(crate) moves: CopyCursorMoves,
+}
+
+/// The ONE tmux command list that builds the real selection from two content
+/// endpoints (see the module contract). `current_scroll` is the viewport the
+/// pane shows now, so a viewport move is issued only when a frame differs
+/// from the one before it.
+pub(crate) fn materialize_args(
+    target: &str,
+    current_scroll: u32,
+    anchor: EndpointPlacement,
+    active: EndpointPlacement,
+) -> Vec<String> {
+    let mut batch = vec![
+        "display-message".to_string(),
+        "-p".into(),
+        "-t".into(),
+        target.into(),
+        "#{history_size}".into(),
+    ];
+    // begin-selection is a toggle, so a previous attempt's selection must go
+    // before this one starts.
+    push_copy_command(&mut batch, target, &["clear-selection"]);
+    if anchor.frame.scroll_position != current_scroll {
+        push_copy_command(
+            &mut batch,
+            target,
+            &["goto-line", &anchor.frame.scroll_position.to_string()],
+        );
+    }
+    push_copy_cursor_moves(&mut batch, target, anchor.moves);
+    push_copy_command(&mut batch, target, &["begin-selection"]);
+    if active.frame.scroll_position != anchor.frame.scroll_position {
+        push_copy_command(
+            &mut batch,
+            target,
+            &["goto-line", &active.frame.scroll_position.to_string()],
+        );
+    }
+    push_copy_cursor_moves(&mut batch, target, active.moves);
+    batch
 }
 
 /// Snapshot the current selection into a uniquely-prefixed tmux paste buffer,
@@ -314,5 +482,151 @@ mod tests {
         .unwrap_err();
         assert_eq!(error, "tmux did not create a terminal selection snapshot");
         assert_eq!(calls, 2);
+    }
+
+    /// The conversion the drift fix rests on: a visible row means a different
+    /// content row once the pane has printed, so an endpoint is kept as
+    /// content and converted back against the CURRENT frame.
+    #[test]
+    fn an_endpoint_inside_the_frame_keeps_the_current_viewport() {
+        // history 100, live frame: content row 105 is visible row 5.
+        assert_eq!(
+            endpoint_frame(100, 0, 24, 105),
+            EndpointFrame {
+                scroll_position: 0,
+                row: 5,
+                offscreen: false
+            }
+        );
+        // Five lines printed: the same text is now five rows higher.
+        assert_eq!(endpoint_frame(105, 0, 24, 105).row, 0);
+        assert_eq!(endpoint_frame(103, 0, 24, 105).row, 2);
+        // A pane scrolled up into history reads the same way.
+        assert_eq!(
+            endpoint_frame(120, 20, 24, 105),
+            EndpointFrame {
+                scroll_position: 20,
+                row: 5,
+                offscreen: false
+            }
+        );
+        // Exactly the last visible row is still inside the frame.
+        assert_eq!(endpoint_frame(82, 0, 24, 105).row, 23);
+        assert!(!endpoint_frame(82, 0, 24, 105).offscreen);
+    }
+
+    /// The 0.6.1 clamp is gone: an endpoint outside the frame names the
+    /// viewport that shows it instead of the edge the overlay clips to.
+    #[test]
+    fn an_endpoint_outside_the_frame_names_the_viewport_that_shows_it() {
+        // Scrolled off the top by one line: goto-line 1 puts it on row 0.
+        assert_eq!(
+            endpoint_frame(106, 0, 24, 105),
+            EndpointFrame {
+                scroll_position: 1,
+                row: 0,
+                offscreen: true
+            }
+        );
+        // The smoke's upward drag: anchor on the live frame's last row,
+        // the viewport now 130 rows up into history.
+        assert_eq!(
+            endpoint_frame(2600, 130, 24, 2623),
+            EndpointFrame {
+                scroll_position: 0,
+                row: 23,
+                offscreen: true
+            }
+        );
+        // Below the frame but still in history: row 0 of its own viewport.
+        assert_eq!(
+            endpoint_frame(200, 120, 24, 105),
+            EndpointFrame {
+                scroll_position: 95,
+                row: 0,
+                offscreen: true
+            }
+        );
+        // Below history: the live frame, clamped to its last row.
+        assert_eq!(endpoint_frame(100, 60, 24, 130).scroll_position, 0);
+        assert_eq!(endpoint_frame(100, 60, 24, 130).row, 23);
+    }
+
+    fn placement(scroll_position: u32, row: u32, offscreen: bool, steps: u32) -> EndpointPlacement {
+        EndpointPlacement {
+            frame: EndpointFrame {
+                scroll_position,
+                row,
+                offscreen,
+            },
+            moves: CopyCursorMoves {
+                descend: row,
+                wrap: false,
+                descend_after_wrap: 0,
+                steps,
+            },
+        }
+    }
+
+    fn joined(batch: &[String]) -> Vec<String> {
+        batch.join(" ").split(" ; ").map(str::to_string).collect()
+    }
+
+    #[test]
+    fn materialize_list_moves_the_viewport_only_between_differing_frames() {
+        // Both endpoints in the current frame: no goto-line at all.
+        let same = joined(&materialize_args(
+            "=t:",
+            7,
+            placement(7, 2, false, 3),
+            placement(7, 5, false, 0),
+        ));
+        assert_eq!(same[0], "display-message -p -t =t: #{history_size}");
+        assert_eq!(same[1], "send-keys -t =t: -X clear-selection");
+        assert!(!same.iter().any(|c| c.contains("goto-line")));
+        assert_eq!(
+            same[2..],
+            [
+                "send-keys -t =t: -X top-line",
+                "send-keys -t =t: -X -N 2 cursor-down",
+                "send-keys -t =t: -X -N 3 cursor-right",
+                "send-keys -t =t: -X begin-selection",
+                "send-keys -t =t: -X top-line",
+                "send-keys -t =t: -X -N 5 cursor-down",
+            ]
+        );
+
+        // The upward drag: anchor back on the live frame, active on the
+        // current history frame; the list ends on the active frame.
+        let up = joined(&materialize_args(
+            "=t:",
+            130,
+            placement(0, 23, true, 7),
+            placement(130, 0, false, 7),
+        ));
+        let gotos: Vec<&String> = up.iter().filter(|c| c.contains("goto-line")).collect();
+        assert_eq!(
+            gotos,
+            [
+                "send-keys -t =t: -X goto-line 0",
+                "send-keys -t =t: -X goto-line 130"
+            ]
+        );
+        let begin = up
+            .iter()
+            .position(|c| c.ends_with("begin-selection"))
+            .unwrap();
+        assert!(up[..begin].iter().any(|c| c.ends_with("goto-line 0")));
+        assert!(up[begin..].iter().any(|c| c.ends_with("goto-line 130")));
+
+        // Two endpoints on the same history frame that is not the current
+        // one: one viewport move before the anchor, none before the active.
+        let deep = joined(&materialize_args(
+            "=t:",
+            0,
+            placement(400, 0, true, 0),
+            placement(400, 9, true, 0),
+        ));
+        assert_eq!(deep.iter().filter(|c| c.contains("goto-line")).count(), 1);
     }
 }

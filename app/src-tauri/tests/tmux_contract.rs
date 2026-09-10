@@ -15,7 +15,10 @@ use std::time::Duration;
 mod terminal_scroll;
 #[path = "../src/terminal_selection.rs"]
 mod terminal_selection;
-use terminal_selection::{copy_cursor_moves, frame_rows, snapshot_selection};
+use terminal_selection::{
+    copy_cursor_moves, endpoint_frame, frame_rows, materialize_args, snapshot_selection,
+    EndpointPlacement,
+};
 
 fn tmux_bin() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("binaries/tmux-aarch64-apple-darwin")
@@ -676,6 +679,285 @@ fn one_command_list_places_both_endpoints_and_reports_the_frame_it_ran_with() {
             "pass {pass}: one list must place what two commands place"
         );
     }
+}
+
+impl Server {
+    /// The production placement plan for content row `absolute_row` given
+    /// the pane's current status: `terminal_selection::endpoint_frame` over a
+    /// `capture-pane` of that frame, exactly as `terminal::materialize_selection`
+    /// builds it.
+    fn placement(&self, absolute_row: u32, col: u32) -> EndpointPlacement {
+        let history: u32 = self.fmt("#{history_size}").parse().expect("history");
+        let scroll = self.scroll_position();
+        let rows: u32 = self.fmt("#{pane_height}").parse().expect("pane height");
+        let frame = endpoint_frame(history, scroll, rows, absolute_row);
+        let captured = String::from_utf8(self.run_raw_checked(&[
+            "capture-pane",
+            "-p",
+            "-S",
+            &(-(frame.scroll_position as i64)).to_string(),
+            "-E",
+            &(frame.row as i64 - frame.scroll_position as i64).to_string(),
+            "-t",
+            "t",
+        ]))
+        .expect("frame utf8");
+        EndpointPlacement {
+            frame,
+            moves: copy_cursor_moves(&frame_rows(&captured, frame.row), frame.row, col),
+        }
+    }
+}
+
+/// Governance 07: a cross-screen drag's anchor has left the visible frame by
+/// pointerup. 0.6.1 clamped it to the frame edge and every cross-screen
+/// selection collapsed to one screen (selection-up 14 rows of 130,
+/// selection-clipboard 12 rows of 94). The production list now moves the
+/// copy-mode viewport with `goto-line` inside the ONE command list, so the
+/// anchor is placed on its real content row, `begin-selection` pins it there,
+/// the active endpoint is placed on its own frame, and the list ends with the
+/// viewport on the active frame. The copied bytes are the half-open range the
+/// user dragged, checked against `capture-pane` of the same absolute rows.
+#[test]
+fn an_offscreen_anchor_is_placed_by_moving_the_viewport_inside_the_one_list() {
+    let s = Server::fixture("selection-offscreen", 40, 8, "sleep 30");
+    s.write_pane_lines("row", 0, 80);
+    s.run(&["copy-mode", "-H", "-t", "t"]);
+    let history: u32 = s.fmt("#{history_size}").parse().expect("history");
+    assert!(history >= 72, "fixture must reach history: {history}");
+
+    // The upward drag: pointerdown on the live frame's last row, then edge
+    // scrolling took the viewport 40 rows up; the active endpoint is column 2
+    // of the top visible row there.
+    let anchor_row = history + 7;
+    let active_row = history - 40;
+    s.run(&["send-keys", "-t", "t", "-X", "goto-line", "40"]);
+    assert_eq!(s.scroll_position(), 40);
+    let anchor = s.placement(anchor_row, 0);
+    let active = s.placement(active_row, 2);
+    assert!(anchor.frame.offscreen && anchor.frame.scroll_position == 0);
+    assert!(!active.frame.offscreen && active.frame.scroll_position == 40);
+
+    let batch = materialize_args("t", 40, anchor, active);
+    let ran_with = s.run_owned(&batch).expect("materialize list");
+    assert_eq!(ran_with.trim(), history.to_string());
+    assert_eq!(s.fmt("#{selection_present}"), "1");
+    assert_eq!(
+        s.selection_points(),
+        ((7, 0), (-40, 2)),
+        "anchor on the live frame's last row, active 40 rows up"
+    );
+    assert_eq!(
+        s.scroll_position(),
+        40,
+        "the list leaves the viewport on the active endpoint's frame"
+    );
+
+    let copied = s.production_selection_snapshot("offscreen-");
+    // Half-open range: from the active cell through the row above the
+    // anchor, whose column-0 cell is the bottom-right-most and is dropped.
+    let expected = String::from_utf8(s.run_raw_checked(&[
+        "capture-pane",
+        "-p",
+        "-S",
+        "-40",
+        "-E",
+        "6",
+        "-t",
+        "t",
+    ]))
+    .expect("expected utf8");
+    let expected: String = expected.chars().skip(2).collect();
+    assert_eq!(
+        String::from_utf8_lossy(&copied),
+        expected,
+        "the copy is the whole dragged range, not one screen"
+    );
+    assert_eq!(copied.iter().filter(|b| **b == b'\n').count(), 47);
+}
+
+/// `goto-line` is what makes the viewport move safe inside a drag: unlike
+/// `scroll-down`, reaching the bottom neither with it nor with the
+/// edge-scroll `cursor-down` exits `copy-mode -e` (the wheel entry mode).
+#[test]
+fn goto_line_and_cursor_down_never_exit_scroll_exit_copy_mode() {
+    let s = Server::fixture("selection-goto-e", 40, 8, "sleep 30");
+    s.write_pane_lines("row", 0, 40);
+    s.run(&[
+        "copy-mode",
+        "-e",
+        "-t",
+        "t",
+        ";",
+        "send-keys",
+        "-t",
+        "t",
+        "-X",
+        "goto-line",
+        "5",
+    ]);
+    assert_eq!(s.scroll_position(), 5);
+    s.run(&["send-keys", "-t", "t", "-X", "goto-line", "0"]);
+    assert_eq!(s.fmt("#{pane_in_mode}\t#{scroll_position}"), "1\t0");
+    s.run(&["send-keys", "-t", "t", "-X", "goto-line", "1"]);
+    s.move_copy_cursor(7, 0);
+    s.run(&["send-keys", "-t", "t", "-X", "-N", "3", "cursor-down"]);
+    assert_eq!(s.fmt("#{pane_in_mode}\t#{scroll_position}"), "1\t0");
+    s.run(&[
+        "send-keys",
+        "-t",
+        "t",
+        "-X",
+        "goto-line",
+        "2",
+        ";",
+        "send-keys",
+        "-t",
+        "t",
+        "-X",
+        "-N",
+        "2",
+        "scroll-down",
+    ]);
+    assert_eq!(
+        s.fmt("#{pane_in_mode}"),
+        "0",
+        "scroll-down to the bottom is the one that exits"
+    );
+}
+
+/// The premise every selection coordinate rests on (governance 07): tmux
+/// copy-mode works on a SNAPSHOT of the screen taken when it is entered.
+/// Output printed afterwards grows `#{history_size}` and the live screen
+/// that `capture-pane` reads, but the copy-mode display, `scroll_position`,
+/// the copy cursor, `goto-line` and `selection_*_y` all count from the
+/// snapshot's history size — which no format exposes directly, so deck reads
+/// it back through a begun-and-cleared one-cell selection. 0.6.1 mixed the
+/// two (`capture-pane` rows for the plan, live history for the endpoints)
+/// and every endpoint moved by the lines printed since entry.
+#[test]
+fn copy_mode_is_a_snapshot_whose_coordinates_ignore_later_output() {
+    let s = Server::fixture("selection-snapshot", 40, 8, "sleep 30");
+    s.write_pane_lines("row", 0, 40);
+    s.run(&["copy-mode", "-H", "-t", "t"]);
+    let entered: u32 = s.fmt("#{history_size}").parse().expect("history");
+    s.move_copy_cursor(3, 0);
+    let frozen_line = s.fmt("#{copy_cursor_line}");
+    assert_eq!(
+        frozen_line,
+        s.run(&["capture-pane", "-p", "-S", "3", "-E", "3", "-t", "t"]),
+        "row 3 of the live frame at entry"
+    );
+    assert!(frozen_line.starts_with("row-"), "{frozen_line}");
+
+    s.write_pane_lines("more", 0, 6);
+    let live: u32 = s.fmt("#{history_size}").parse().expect("history");
+    assert_eq!(live, entered + 6, "the live history grew");
+    assert_eq!(
+        s.fmt("#{copy_cursor_line}"),
+        frozen_line,
+        "the copy-mode display did not move"
+    );
+    let live_row = s.run(&["capture-pane", "-p", "-S", "3", "-E", "3", "-t", "t"]);
+    assert!(
+        live_row.starts_with("more-") && live_row != frozen_line,
+        "capture-pane reads the LIVE screen, six lines further on: {live_row}"
+    );
+    assert_eq!(
+        s.run(&["capture-pane", "-p", "-S", "-3", "-E", "-3", "-t", "t"]),
+        frozen_line,
+        "the snapshot row keeps its live index: shift the capture by the lines printed"
+    );
+
+    // deck's probe: a one-cell selection begun and cleared in one list
+    // reports the snapshot's history size as sely - cy + oy.
+    let probe = s.run(&[
+        "send-keys",
+        "-t",
+        "t",
+        "-X",
+        "clear-selection",
+        ";",
+        "send-keys",
+        "-t",
+        "t",
+        "-X",
+        "begin-selection",
+        ";",
+        "display-message",
+        "-p",
+        "-t",
+        "t",
+        "#{selection_start_y}\t#{copy_cursor_y}\t#{scroll_position}\t#{history_size}",
+        ";",
+        "send-keys",
+        "-t",
+        "t",
+        "-X",
+        "clear-selection",
+    ]);
+    let fields: Vec<u32> = probe
+        .split('\t')
+        .map(|f| f.parse().expect("numeric"))
+        .collect();
+    assert_eq!(
+        fields[0] + fields[2] - fields[1],
+        entered,
+        "snapshot history from the probe"
+    );
+    assert_eq!(fields[3], live, "#{{history_size}} is the live pane's");
+    assert_eq!(
+        s.fmt("#{selection_present}"),
+        "0",
+        "the probe leaves no selection behind"
+    );
+}
+
+/// The boundary `materialize_selection` verifies against: copy-mode caps
+/// `goto-line` (and scroll-up) at the history size it was ENTERED with, while
+/// `#{history_size}` keeps growing with output. A row printed before entry
+/// that the growth pushed past that cap cannot be reached until copy-mode is
+/// re-entered, so a placement is checked by the rows tmux reports, never
+/// assumed from the rows it was asked for.
+#[test]
+fn copy_mode_caps_goto_line_at_the_history_it_was_entered_with() {
+    let s = Server::fixture("selection-goto-cap", 40, 8, "sleep 30");
+    s.write_pane_lines("row", 0, 40);
+    s.run(&["copy-mode", "-H", "-t", "t"]);
+    let entered: u32 = s.fmt("#{history_size}").parse().expect("history");
+    s.write_pane_lines("more", 0, 10);
+    let grown: u32 = s.fmt("#{history_size}").parse().expect("history");
+    assert_eq!(grown, entered + 10);
+    s.run(&[
+        "send-keys",
+        "-t",
+        "t",
+        "-X",
+        "goto-line",
+        &grown.to_string(),
+    ]);
+    assert_eq!(s.scroll_position(), entered, "capped at the entry history");
+    s.run(&[
+        "send-keys",
+        "-t",
+        "t",
+        "-X",
+        "cancel",
+        ";",
+        "copy-mode",
+        "-H",
+        "-t",
+        "t",
+    ]);
+    s.run(&[
+        "send-keys",
+        "-t",
+        "t",
+        "-X",
+        "goto-line",
+        &grown.to_string(),
+    ]);
+    assert_eq!(s.scroll_position(), grown, "re-entering lifts the cap");
 }
 
 /// v0.4.11 scrolling model: scroll-up enters copy-mode positioned in history;
