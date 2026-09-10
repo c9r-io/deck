@@ -1,6 +1,8 @@
 // layout.js — split-tree layout, pane lifecycle, terminal creation, session view
 // Part of deck's no-build frontend: native ES modules, no bundler.
 // Read receipts require a successful attach to the still-visible pane.
+// Split buttons and shortcuts open the shared menu before start/attach; its
+// DOM element must stay distinct from the imported runtime state (`ctx`).
 // Attention navigation passes allowStart:false: attaching never creates a shell.
 // A pane that is already open is only focused: a detached pane (shell exited,
 // attach failed) is never re-attached or restarted by a click; exit retirement
@@ -972,14 +974,14 @@ export function showSplitPicker(dir) {
   const candidates = store.cards.filter(c => !openSids.has(c.id));
   const order = { attention: 0, done: 1, running: 1, waiting: 1, stopped: 2 };
   candidates.sort((a, b) => order[a.status] - order[b.status]);
-  const home = ctx.HOME;   // the menu element shadows the shared slots below
-  const ctx = $('ctx');
-  ctx.replaceChildren();
-  ctx.onkeydown = null;
+  const home = ctx.HOME;
+  const menu = $('ctx');
+  menu.replaceChildren();
+  menu.onkeydown = null;
   const label = document.createElement('div');
   label.className = 'ctx-label';
   label.textContent = t('split.choose', { direction: t(dir === 'col' ? 'split.down' : 'split.right') });
-  ctx.appendChild(label);
+  menu.appendChild(label);
   for (const c of candidates.slice(0, 12)) {
     const button = document.createElement('button');
     button.dataset.sid = c.id;
@@ -989,17 +991,17 @@ export function showSplitPicker(dir) {
       : (c.status === 'waiting' || c.status === 'attention') ? '◆' : '●';
     status.title = dotTitle(c.status);
     button.append(status, document.createTextNode(' ' + c.title));
-    ctx.appendChild(button);
+    menu.appendChild(button);
   }
-  ctx.appendChild(document.createElement('hr'));
+  menu.appendChild(document.createElement('hr'));
   const newButton = document.createElement('button');
   newButton.dataset.new = '1';
   newButton.textContent = t('session.newShellHere');
-  ctx.appendChild(newButton);
-  ctx.onclick = async ev => {
+  menu.appendChild(newButton);
+  menu.onclick = async ev => {
     const sid = ev.target.closest('button') && ev.target.closest('button').dataset.sid;
     const isNew = ev.target.closest('button') && ev.target.closest('button').dataset.new;
-    ctx.style.display = 'none';
+    menu.style.display = 'none';
     if (sid) addSplit(targetSid, dir, false, sid);
     if (isNew) {
       const focused = provider.get(targetSid);
@@ -1008,9 +1010,9 @@ export function showSplitPicker(dir) {
   };
   const btn = $(dir === 'col' ? 'split-down' : 'split-right');
   const r = btn.getBoundingClientRect();
-  ctx.style.display = 'block';
-  ctx.style.left = Math.min(r.left, innerWidth - ctx.offsetWidth - 8) + 'px';
-  ctx.style.top = (r.bottom + 6) + 'px';
+  menu.style.display = 'block';
+  menu.style.left = Math.min(r.left, innerWidth - menu.offsetWidth - 8) + 'px';
+  menu.style.top = (r.bottom + 6) + 'px';
 }
 
 /* NOTE: listen() requires the core:event permission in

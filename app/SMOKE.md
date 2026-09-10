@@ -331,8 +331,15 @@ a fixture.
       unreadable or stale paths show a safe error and create no ghost card/session.
 
 ## Splits
-- [ ] ⌘D split; typing goes to the FOCUSED pane; no reflow jitter from the
-      completion bar; divider drags
+- [ ] Both toolbar buttons and ⌘D / ⌘⇧D open the session picker. Open panes
+      are excluded; “new shell here” works even when no other cards exist.
+      Create a shell and select an existing session in each direction.
+      Typing goes to the FOCUSED pane; no reflow jitter from the completion
+      bar; divider drags.
+      The isolated WKWebView run covers these entry points with the six
+      `split-picker-*` checks, once per direction (a=1/right, a=2/down).
+      They verify creation, attachment, geometry, PTY row sizing and a real
+      shell input/output round trip; all values must be positive.
 
 ## PTY flow control
 - [ ] `seq 1 500000` (or `yes | head -2000000`) → output streams smoothly to

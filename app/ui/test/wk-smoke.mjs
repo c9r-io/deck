@@ -54,6 +54,70 @@ const eventAt = (x = 20, y = 20) => ({
 });
 const overlaps = (a, b) => a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
 
+// Exercise the actual entry points: calling addSplit directly misses errors
+// in the picker, before any backend command is reached.
+async function splitPickerSmoke(card) {
+  const menu = $('ctx');
+  const original = panes.get(card.session);
+  for (const dir of ['row', 'col']) {
+    focusPane(card.session);
+    menu.style.display = 'none';
+    $('split-' + (dir === 'row' ? 'right' : 'down')).click();
+    const opened = menu.style.display === 'block'
+      && !!menu.querySelector('[data-new]')
+      && !menu.querySelector(`[data-sid="${card.id}"]`);
+    await report('split-picker-button', opened, dir === 'row' ? 1 : 2);
+    if (!opened) throw new Error('split picker did not open');
+    const priorIds = new Set(store.cards.map(c => c.id));
+    menu.querySelector('[data-new]').click();
+    let fresh;
+    const attached = await waitFor(() => {
+      fresh = store.cards.find(c => !priorIds.has(c.id));
+      return fresh && panes.get(fresh.session)?.attached && state.sessionId === fresh.id;
+    });
+    await report('split-picker-create', attached && fresh.cmd === '' && fresh.dir === card.dir
+      && panes.get(card.session) === original && original.attached, dir === 'row' ? 1 : 2);
+    if (!attached) throw new Error('split shell did not attach');
+    const pane = panes.get(fresh.session);
+    const geometry = await waitFor(async () => {
+      const a = original.el.getBoundingClientRect(), b = pane.el.getBoundingClientRect();
+      const metrics = await inv('terminal_metrics', { name: fresh.session });
+      return ctx.layout.dir === dir && a.width > 0 && b.width > 0
+        && (dir === 'row' ? a.right <= b.left && Math.abs(a.top - b.top) < 2
+          : a.bottom <= b.top && Math.abs(a.left - b.left) < 2)
+        && metrics.pane_rows === pane.term.rows;
+    });
+    await report('split-picker-layout', geometry, dir === 'row' ? 1 : 2);
+    // Real xterm input -> PTY -> tmux shell -> xterm output. The echoed
+    // command never contains the joined marker, so echo alone cannot pass.
+    await pause(1100);
+    pane.term.input("printf '%s%s\\n' 'split-' '" + dir + "-ok'\r", true);
+    const output = await waitFor(() => {
+      const buffer = pane.term.buffer.active;
+      return Array.from({ length: buffer.length }, (_, i) => buffer.getLine(i).translateToString(true))
+        .some(line => line.includes('split-' + dir + '-ok'));
+    });
+    await report('split-picker-pty', output, dir === 'row' ? 1 : 2);
+    closePaneBySid(fresh.id);
+    await pollNow();
+    // Reopen the now-running session through each real keyboard shortcut.
+    menu.style.display = 'none';
+    original.term.textarea.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'd', code: 'KeyD', metaKey: true, shiftKey: dir === 'col', bubbles: true, cancelable: true,
+    }));
+    const choice = menu.querySelector(`[data-sid="${fresh.id}"]`);
+    const shortcutOpened = menu.style.display === 'block' && !!choice;
+    await report('split-picker-shortcut', shortcutOpened, dir === 'row' ? 1 : 2);
+    if (!shortcutOpened) throw new Error('split shortcut did not open');
+    choice.click();
+    const reopened = await waitFor(() => panes.get(fresh.session)?.attached && state.sessionId === fresh.id);
+    await report('split-picker-existing', reopened && store.cards.length === priorIds.size + 1
+      && ctx.layout.dir === dir && panes.get(card.session) === original, dir === 'row' ? 1 : 2);
+    closePaneBySid(fresh.id);
+    await provider.close(fresh.id);
+  }
+}
+
 async function boardConcurrency(project, column) {
   const mk = title => provider.create({
     projectId: project.id, columnId: column.id, title, cmd: '', dir: '/tmp',
@@ -955,7 +1019,10 @@ async function pathSmoke(card) {
   const beforeRelative = store.cards.length;
   showLinkCtx(eventAt(), 'path', fixture, card.dir, card.id);
   $('ctx').querySelector('[data-a="session-parent"]').click();
-  const relativeMade = await waitFor(() => store.cards.length > beforeRelative, 10000);
+  // A card commits before openSession finishes. Wait for the creation guard
+  // to clear before the next independent click, or the second case merely
+  // tests duplicate-create refusal and fails depending on attach timing.
+  const relativeMade = await waitFor(() => store.cards.length > beforeRelative && !ctx.creatingSession, 10000);
   const relative = store.cards.at(-1);
   await report('path-session-relative', relativeMade && relative?.dir.endsWith('/空 格😀'), 1, 0);
 
@@ -963,7 +1030,7 @@ async function pathSmoke(card) {
   const absoluteValue = `${card.dir}/空 格😀/code.rs`;
   showLinkCtx(eventAt(), 'path', absoluteValue, card.dir, card.id);
   $('ctx').querySelector('[data-a="session-parent"]').click();
-  const absoluteMade = await waitFor(() => store.cards.length > beforeAbsolute, 10000);
+  const absoluteMade = await waitFor(() => store.cards.length > beforeAbsolute && !ctx.creatingSession, 10000);
   const absolute = store.cards.at(-1);
   await report('path-session-absolute', absoluteMade && absolute?.dir.endsWith('/空 格😀'), 1, 0);
   focus.remove();
@@ -1529,6 +1596,7 @@ export async function run() {
     });
     render();
     await openSession(main.id);
+    await splitPickerSmoke(main);
     stage = 3;
     await boardConcurrency(project, column);
     stage = 4;
