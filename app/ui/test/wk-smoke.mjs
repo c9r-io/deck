@@ -1,7 +1,7 @@
 // Debug-only real-WKWebView smoke. main.rs imports this module only when the
 // app was launched with --smoke-wkwebview and an isolated --smoke-data-dir.
-// The release gate also runs `node --test app/ui/test/*.mjs`; defer production
-// DOM imports so Node can load this carrier without fabricating a browser.
+// The Node gate runs only *.test.mjs and does not count smoke carriers.
+// Production DOM imports below run only inside the real WKWebView.
 let $, ctx, inv, state, store, panes, provider, render, pollNow, boardData;
 let renameCardInline, renderSuggest, resetSuggest;
 let showLinkCtx, toggleSidebar, addSplit, backToBoard, openSession, strToB64;

@@ -8,13 +8,21 @@
 # they are excluded from the threshold rather than dragging it to a number
 # that means nothing. The test carriers themselves are excluded too.
 #
+# Smoke carriers run only in WKWebView; loading them in Node is not a test.
+# After testing, verify that EVERY eligible source file appears in coverage.
 # The exclusion list only SHRINKS (static.test.mjs pins it): a new module's
 # DOM-free half goes into a `*-model.js` sibling that this gate measures
 # (attention-model, automation-model, scheduler-model), never onto this list.
 set -eu
 cd "$(dirname "$0")/.."
-exec node --test --experimental-test-coverage \
+coverage=$(mktemp "${TMPDIR:-/tmp}/deck-ui-coverage.XXXXXX")
+trap 'rm -f "$coverage"' EXIT HUP INT TERM
+node --test --test-reporter=spec --test-reporter-destination=stdout \
+  --test-reporter=lcov --test-reporter-destination="$coverage" --experimental-test-coverage \
   --test-coverage-lines=70 --test-coverage-branches=70 --test-coverage-functions=70 \
+  --test-coverage-include='app/ui/js/**' \
   --test-coverage-exclude='app/ui/test/**' \
   --test-coverage-exclude='app/ui/js/{app,attention,automation,board,dropdown,layout,scheduler,queue-review,selection,terminal}.js' \
-  app/ui/test/*.mjs
+  app/ui/test/*.test.mjs
+
+node scripts/check-ui-coverage.mjs "$coverage"

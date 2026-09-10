@@ -52,7 +52,7 @@ jobs:
             node --check "$f"
           done
       # 2. headless pure + production-module DOM tests (node:test, no npm).
-      #    wk-smoke is environment-guarded here and executes only in WKWebView.
+      #    WKWebView smoke runs in the app separately; Node counts only .test.mjs.
       - name: JS unit tests + coverage
         run: scripts/ui-tests
       # 3. unresolved-identifier scan (forgotten imports; also forbids

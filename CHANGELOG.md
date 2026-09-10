@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Voice drafts recover from a replaced session on the next explicit Insert/Send
+  action, without automatic retransmission. Uncertain deliveries keep their
+  original target and must be checked and cleared before using a replacement.
+  Recorder and preference UI ownership are split into focused modules; tests
+  now exercise production voice controls and shared literal delivery. The UI
+  coverage gate rejects eligible modules missing from its report.
+
 - Voice language preferences in Settings → Terminal & sessions: Chinese,
   English and Japanese by default, with configurable enabled languages and
   recognition default. One enabled language hides the draft selector. Settings

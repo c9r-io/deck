@@ -3,69 +3,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-class FakeElement {
-  constructor(tag = 'div') {
-    this.tagName = tag.toUpperCase();
-    this.children = [];
-    this.listeners = new Map();
-    this.style = {};
-    this.classList = { add() {}, remove() {}, toggle() {}, contains() { return false; } };
-    this.isConnected = true;
-    this.value = '';
-    this._textContent = '';
-  }
-  addEventListener(type, fn) {
-    const list = this.listeners.get(type) || [];
-    list.push(fn); this.listeners.set(type, list);
-  }
-  fire(type, extra = {}) {
-    const event = {
-      key: '', keyCode: 0, isComposing: false,
-      prevented: 0, stopped: 0,
-      preventDefault() { this.prevented++; },
-      stopPropagation() { this.stopped++; },
-      ...extra,
-    };
-    for (const fn of this.listeners.get(type) || []) fn(event);
-    if (typeof this[`on${type}`] === 'function') this[`on${type}`](event);
-    return event;
-  }
-  replaceChildren(...nodes) { this.children = nodes; }
-  appendChild(node) { this.children.push(node); return node; }
-  append(node) { this.children.push(node); }
-  remove() { this.isConnected = false; }
-  focus() { fakeDocument.activeElement = this; }
-  select() { this.selected = true; }
-  closest() { return null; }
-  setAttribute(name, value) { this[name] = value; }
-  set textContent(value) { this._textContent = String(value); this.children = []; }
-  get textContent() { return this._textContent; }
-}
+import { FakeElement, fakeDocument, ids, documentListeners } from './fixtures/dom-fixture.mjs';
 
-const ids = new Map();
-const documentListeners = new Map();
-const fakeDocument = {
-  activeElement: null,
-  addEventListener(type, fn) {
-    const list = documentListeners.get(type) || [];
-    list.push(fn); documentListeners.set(type, list);
-  },
-  fire(type, extra = {}) {
-    const event = {
-      key: '', keyCode: 0, isComposing: false, prevented: 0, stopped: 0,
-      preventDefault() { this.prevented++; },
-      stopPropagation() { this.stopped++; },
-      ...extra,
-    };
-    for (const fn of documentListeners.get(type) || []) fn(event);
-    return event;
-  },
-  createElement: tag => new FakeElement(tag),
-  getElementById(id) {
-    if (!ids.has(id)) ids.set(id, new FakeElement());
-    return ids.get(id);
-  },
-};
 globalThis.document = fakeDocument;
 globalThis.window = { __TAURI__: null, __DECK_DEBUG: false };
 

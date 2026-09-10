@@ -3,6 +3,7 @@
 // Each session owns its draft and target; selection survives layout changes. No global mic/keyboard capture.
 // The session header identifies the recipient; only uncertain delivery shows
 // a retry action alongside its message, without a duplicate target row.
+// Expired uncertain drafts must be checked and cleared before a new target.
 import { $, ctx, inv, listen, uev } from './state.js';
 import { onLocaleChange, t } from './i18n.js';
 import { createVoiceComposer, voiceBusy, voiceRecording, voiceCanAct } from './voice-model.js';
@@ -30,7 +31,7 @@ export function initVoice(deps) {
     $('voice-stop').disabled = s.phase === 'stopping';
     $('voice-close').disabled = s.phase === 'sending';
     $('voice-clear').disabled = !voiceCanAct(s);
-    $('voice-retry').disabled = !voiceCanAct(s) || !s.target;
+    $('voice-retry').disabled = !voiceCanAct(s) || !s.target || s.bindingExpired;
     $('voice-retry').hidden = !s.needsConfirmation;
     const language = $('voice-language');
     if ([...language.options].map(option => option.value).join(',') !== s.languages.join(',')) {
@@ -48,7 +49,7 @@ export function initVoice(deps) {
     const time = `${String(Math.floor(elapsed / 60)).padStart(2, '0')}:${String(elapsed % 60).padStart(2, '0')}`;
     $('voice-status').textContent = t(`voice.phase.${s.phase}`) + (s.phase === 'recording' ? ` · ${time}` : '');
     panel.dataset.phase = s.phase;
-    $('voice-message').textContent = s.error ? t(`voice.error.${s.error}`) : s.notice ? t(`voice.notice.${s.notice}`) : t('voice.hint');
+    $('voice-message').textContent = s.bindingExpired && s.needsConfirmation ? t('voice.error.target-expired-uncertain') : s.error ? t(`voice.error.${s.error}`) : s.notice ? t(`voice.notice.${s.notice}`) : t('voice.hint');
     $('voice-message').classList.toggle('voice-error', !!s.error || s.notice === 'ambiguous');
     panel.querySelectorAll('[data-voice-layout]').forEach(el => el.setAttribute('aria-pressed', String(el.dataset.voiceLayout === s.layout)));
   };

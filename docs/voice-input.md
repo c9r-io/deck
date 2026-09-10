@@ -40,7 +40,10 @@ The session/pane identity is captured before recording. There is no manual
 **Confirm current target** step. Each explicit send uses the session's current
 foreground program, then checks it and the tmux pane generation at paste and
 again at Enter. A change during that operation blocks delivery; replacing the
-session/pane also blocks delivery. A refusal before any text is pasted (such as
+session/pane also blocks that delivery and reports an expired binding. The draft
+is preserved; after checking the terminal, the next explicit Insert/Send action
+binds the replacement and attempts delivery once. Merely switching sessions or
+reopening the panel never resends. A refusal before any text is pasted (such as
 unsupported multiline paste) keeps the session binding, so correcting the text
 and sending again requires no rebinding. These checks do not establish that an
 agent is ready for a prompt: review the terminal, especially a permission menu,
@@ -56,7 +59,9 @@ unconfirmed Enter preserves the draft and requires checking the terminal and
 **Retry after checking terminal** before repeating the operation. This retries
 the original Insert only or Send action against the same session, without a
 rebinding step. Ordinary Send/Insert clicks remain disabled until that retry
-or clearing the uncertain draft. Switching sessions does not authorize a retry. No automatic retransmission.
+or clearing the uncertain draft. If that original session has been replaced,
+retry cannot move the uncertain text to the replacement: check the terminal,
+then clear the draft before composing a new message. Switching sessions does not authorize a retry. No automatic retransmission.
 
 Closing the panel, leaving the session view, closing its target pane, or closing
 the app window cancels capture and preserves the last displayed draft in frontend
@@ -96,9 +101,16 @@ in the target environment.
 
 `scripts/ui-tests` covers recorder/target lifecycle, layout state preservation,
 session switching during recording and delivery, late callbacks, cancellation,
-errors and duplicate-delivery prevention.
+errors and duplicate-delivery prevention, plus production voice DOM handlers
+and binding recovery. Its coverage inventory fails if any non-excluded production
+JS module is absent from the report; smoke carriers are not counted as Node tests.
 `cargo test --workspace -- --test-threads=1` includes the native bridge EDR
-tripwires and stale-snapshot checks, plus existing scheduler/tmux contracts.
+tripwires, recording lifecycle and stale-snapshot checks, input validation,
+scheduler exclusion and generation expiry. Shared delivery tests execute the
+production implementation through its transport boundary, including real guarded
+pastes against an isolated bundled tmux server. Swift/Apple speech device behavior
+is not measured by the Rust or Node coverage gates; the device checks below remain
+required for recognition changes.
 
 Use a **fresh** isolated directory for the real WebView + IPC + terminal check:
 

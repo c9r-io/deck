@@ -48,6 +48,8 @@ const dictionary = {
   "voice.error.audio-overrun": "这次录音未能完整识别，部分文字可能遗漏。请检查草稿，并尝试分成较短的几段录音。",
   "voice.error.text-limit": "这次录音的文字已达到长度上限，录音已停止。请将草稿分成较短的消息发送。",
   "voice.error.target-unavailable": "暂时无法连接当前 session。草稿已保留，请确认终端仍在运行后重试。",
+  "voice.error.target-expired-uncertain": "原 session 已被替换，且上一次发送结果不确定。请检查终端，清空这份草稿后再编写新消息。",
+  "voice.error.target-expired": "原 session 已被替换，草稿已保留。请检查终端，再次点击插入或发送以使用当前 session。",
   "voice.error.target-changed": "发送时终端状态发生了变化，或原 session 已结束。消息尚未发送，请检查终端中接收消息的程序。",
   "voice.error.delivery-busy": "当前 session 正在接收另一条消息，本次消息尚未发送。请稍候再试。",
   "voice.error.delivery-unknown": "无法确认消息是否已发送，草稿已保留。请先查看终端；确定需要再次发送时，再点击“检查终端后重试”。",

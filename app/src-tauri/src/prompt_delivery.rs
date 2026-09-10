@@ -2,9 +2,9 @@
 //! immediate input owns its draft. Both pin identity/foreground and separate
 //! paste from Enter. Errors after transport begins can be ambiguous: callers
 //! must not blindly retry. Interactive multi-line input requires paste mode.
-use crate::context::{self, PaneIdentity};
+use crate::context::{self, PaneIdentity, RawProbe};
 use crate::error::{DeckError, ErrorKind};
-use crate::tmux::{tmux, tmux_owned};
+use crate::tmux::tmux_owned;
 use serde::Serialize;
 use std::time::Duration;
 
@@ -26,7 +26,35 @@ pub(crate) struct LiteralRequest<'a> {
     pub require_bracketed: bool,
 }
 
+/// The IO boundary is shared by production delivery and its tests. Tests drive
+/// this implementation, including the atomic guards and cleanup, not a copy of
+/// the command construction. The native adapter is the only process boundary.
+pub(crate) trait Transport {
+    fn probe(&self, session: &str) -> Result<RawProbe, DeckError>;
+    fn run(&self, args: &[String]) -> Result<String, DeckError>;
+    fn pause(&self, duration: Duration);
+}
+pub(crate) struct TmuxTransport;
+impl Transport for TmuxTransport {
+    fn probe(&self, session: &str) -> Result<RawProbe, DeckError> {
+        context::raw_probe(session)
+    }
+    fn run(&self, args: &[String]) -> Result<String, DeckError> {
+        tmux_owned(args)
+    }
+    fn pause(&self, duration: Duration) {
+        std::thread::sleep(duration);
+    }
+}
+
 pub(crate) fn deliver(request: LiteralRequest<'_>) -> Result<LiteralOutcome, DeckError> {
+    deliver_with(request, &TmuxTransport)
+}
+
+pub(crate) fn deliver_with(
+    request: LiteralRequest<'_>,
+    transport: &impl Transport,
+) -> Result<LiteralOutcome, DeckError> {
     let LiteralRequest {
         session,
         pane,
@@ -36,12 +64,13 @@ pub(crate) fn deliver(request: LiteralRequest<'_>) -> Result<LiteralOutcome, Dec
         submit,
         require_bracketed,
     } = request;
-    if !delivery
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '-')
+    if delivery.is_empty()
+        || !delivery
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-')
     {
         return Err(DeckError::new(
-            ErrorKind::Other,
+            ErrorKind::Invalid,
             "delivery identity is invalid",
         ));
     }
@@ -68,7 +97,7 @@ pub(crate) fn deliver(request: LiteralRequest<'_>) -> Result<LiteralOutcome, Dec
     // symlink to a versioned binary — tmux says `2.1.259`, ps says `claude`),
     // pin the paste to the exact tmux name observed for that very process,
     // so the atomic check still means "the verified process is still here".
-    let condition_process = expected_process.map(|expected| match context::raw_probe(session) {
+    let condition_process = expected_process.map(|expected| match transport.probe(session) {
         Ok(raw)
             if raw.foreground.as_deref() != Some(expected)
                 && raw.foreground_argv.as_deref() == Some(expected) =>
@@ -95,7 +124,7 @@ pub(crate) fn deliver(request: LiteralRequest<'_>) -> Result<LiteralOutcome, Dec
     };
     let yes = format!("paste-buffer -p -b {buffer} -d -t {}", pane.pane_id);
     let no = format!("delete-buffer -b {buffer}; display-message -p deck-context-refused");
-    let out = tmux_owned(&[
+    let out = transport.run(&[
         "set-buffer".into(),
         "-b".into(),
         buffer.clone(),
@@ -118,7 +147,7 @@ pub(crate) fn deliver(request: LiteralRequest<'_>) -> Result<LiteralOutcome, Dec
         // A vanished target can abort the command queue before its refusal
         // branch deletes the private buffer. Never leave prompt bytes behind
         // in tmux after a refused/indeterminate injection.
-        let _ = tmux(&["delete-buffer", "-b", &buffer]);
+        let _ = transport.run(&["delete-buffer".into(), "-b".into(), buffer]);
         return Err(DeckError::new(
             if out.as_ref().is_ok_and(refused) {
                 ErrorKind::ContextChanged
@@ -135,9 +164,9 @@ pub(crate) fn deliver(request: LiteralRequest<'_>) -> Result<LiteralOutcome, Dec
     if !submit {
         return Ok(LiteralOutcome::Inserted);
     }
-    std::thread::sleep(Duration::from_millis(600));
+    transport.pause(Duration::from_millis(600));
     let enter = format!("send-keys -t {} Enter", pane.pane_id);
-    let out = tmux_owned(&[
+    let out = transport.run(&[
         "if-shell".into(),
         "-F".into(),
         "-t".into(),
@@ -154,3 +183,6 @@ pub(crate) fn deliver(request: LiteralRequest<'_>) -> Result<LiteralOutcome, Dec
     }
     Ok(LiteralOutcome::Submitted)
 }
+
+#[cfg(test)]
+pub(crate) mod tests;

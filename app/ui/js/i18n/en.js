@@ -49,6 +49,8 @@ const dictionary = {
   "voice.error.audio-overrun": "Some of this recording could not be processed, so words may be missing. Check your draft and try recording in shorter sections.",
   "voice.error.text-limit": "The recording reached the text limit and has stopped. Split the draft into shorter messages before sending.",
   "voice.error.target-unavailable": "The current session is unavailable. Your draft is kept. Check that its terminal is still running before trying again.",
+  "voice.error.target-expired-uncertain": "The original session was replaced and the previous delivery is uncertain. Check the terminal, then clear this draft before writing a new message.",
+  "voice.error.target-expired": "The original session was replaced. Your draft was kept. Check the terminal, then click Insert or Send again to use the current session.",
   "voice.error.target-changed": "The terminal changed while sending, or the original session ended. Nothing was sent. Check the program that should receive your message.",
   "voice.error.delivery-busy": "This session is receiving another message. This message has not been sent. Wait a moment and try again.",
   "voice.error.delivery-unknown": "We could not confirm whether the message was sent. Your draft is kept. Check the terminal, then use Retry after checking terminal only if it needs to be sent again.",

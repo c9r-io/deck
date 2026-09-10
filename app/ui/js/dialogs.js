@@ -9,7 +9,8 @@ import {
   CUSTOMIZABLE_SHORTCUT_ACTIONS, FONT_SCALE_MAX, FONT_SCALE_MIN, FONT_SCALE_STEP, SHORTCUT_ACTIONS,
   normalizeSettings, parseSettings, serializeSettings,
 } from './settings-model.js';
-import { normalizeVoicePreferences, VOICE_LANGUAGES, VOICE_LANGUAGE_NAMES } from './voice-preferences-model.js';
+import { normalizeVoicePreferences } from './voice-preferences-model.js';
+import { createVoiceSettings } from './voice-settings.js';
 import { activateTheme } from './theme.js';
 import { applyFontScale } from './font-scale.js';
 import {
@@ -285,56 +286,12 @@ export function persistSettings() {
   return saveSettingsCandidate(ctx.settings).catch(() => uev('settings-save-fail'));
 }
 
-let voiceSavePending = false;
-function announceVoicePreferences() {
-  if (typeof window.dispatchEvent === 'function' && typeof Event === 'function') {
-    window.dispatchEvent(new Event('deck-voice-preferences-changed'));
-  }
-}
-export function renderVoicePreferences() {
-  const preferences = normalizeVoicePreferences(ctx.settings.voice);
-  const list = $('set-voice-languages');
-  list.replaceChildren();
-  for (const code of VOICE_LANGUAGES) {
-    const label = document.createElement('label'); label.className = 'voice-language-choice';
-    const checkbox = document.createElement('input'); checkbox.type = 'checkbox'; checkbox.value = code;
-    checkbox.checked = preferences.languages.includes(code);
-    checkbox.disabled = voiceSavePending || (checkbox.checked && preferences.languages.length === 1);
-    const name = document.createElement('span'); name.textContent = VOICE_LANGUAGE_NAMES[code];
-    label.appendChild(checkbox); label.appendChild(name); list.appendChild(label);
-  }
-  const selector = $('set-voice-default');
-  selector.replaceChildren();
-  for (const code of ['system', ...preferences.languages]) {
-    const option = document.createElement('option'); option.value = code;
-    option.textContent = code === 'system' ? t('settings.voiceSystem') : VOICE_LANGUAGE_NAMES[code];
-    selector.appendChild(option);
-  }
-  selector.value = preferences.defaultLanguage; selector.disabled = voiceSavePending;
-}
-export async function persistVoicePreferences(value) {
-  if (voiceSavePending || !Array.isArray(value?.languages) || !value.languages.length) return false;
-  voiceSavePending = true;
-  // Drain earlier writes before constructing this patch. Lock mutation controls
-  // while saving; on failure the committed settings and recorder stay intact.
-  const controls = [...$('settings-modal').querySelectorAll('input, select, button')].filter(control => !control.disabled);
-  controls.forEach(control => { control.disabled = true; });
-  try {
-    await settingsWriteChain.catch(() => {});
-    controls.forEach(control => { control.disabled = true; });
-    const candidate = normalizeSettings({ ...ctx.settings, voice: value });
-    await saveSettingsCandidate(candidate);
-    ctx.settings = { ...ctx.settings, voice: candidate.voice };
-    announceVoicePreferences();
-    return true;
-  } catch (_) {
-    toast(t('settings.voiceSaveFailed')); uev('settings-save-fail'); return false;
-  } finally {
-    voiceSavePending = false;
-    controls.forEach(control => { control.disabled = false; });
-    renderVoicePreferences();
-  }
-}
+const voiceSettings = createVoiceSettings({
+  drain: () => settingsWriteChain.catch(() => {}), save: saveSettingsCandidate,
+  failed: () => { toast(t('settings.voiceSaveFailed')); uev('settings-save-fail'); },
+});
+const { render: renderVoicePreferences, save: persistVoicePreferences, announce: announceVoicePreferences } = voiceSettings;
+export { renderVoicePreferences, persistVoicePreferences };
 
 function renderFontScale() {
   $('set-font-value').textContent = `${Math.round(ctx.settings.fontScale * 100)}%`;
@@ -400,7 +357,7 @@ function announceShortcutChange() {
 
 let fontGeneration = 0;
 export async function setFontScale(value) {
-  if (voiceSavePending) return;
+  if (voiceSettings.isPending()) return;
   const generation = ++fontGeneration;
   const previous = ctx.settings;
   const bounded = Math.min(FONT_SCALE_MAX, Math.max(FONT_SCALE_MIN, Number(value)));
