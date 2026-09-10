@@ -9,7 +9,7 @@
 //!   disk) run identical checks: non-empty unique project, column and card
 //!   ids; a card's project and column exist; one tmux session per card with
 //!   a name the runtime would accept; settings values from closed sets
-//!   (locale, theme, accent, update channel) or bounded ranges (font scale,
+//!   (locale, theme, accent, update channel, voice languages) or bounded ranges (font scale,
 //!   editor name, shortcut table), with `inbound` handed to
 //!   `inbound::validate_settings`. A violation is an `InvalidDoc` error with
 //!   its rule's message; the file is never rewritten to make it pass.
@@ -211,8 +211,27 @@ where
     String::deserialize(deserializer).map(Some)
 }
 
+// Voice preferences are optional for old settings, but a present value must
+// select at least one supported language and a default from that set/system.
+#[derive(serde::Deserialize)]
+struct VoicePreferencesDoc {
+    languages: Vec<String>,
+    #[serde(rename = "defaultLanguage")]
+    default_language: String,
+}
+fn deserialize_voice_preferences<'de, D>(
+    deserializer: D,
+) -> Result<Option<VoicePreferencesDoc>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    VoicePreferencesDoc::deserialize(deserializer).map(Some)
+}
+
 #[derive(serde::Deserialize)]
 pub(crate) struct SettingsDocRaw {
+    #[serde(default, deserialize_with = "deserialize_voice_preferences")]
+    voice: Option<VoicePreferencesDoc>,
     #[serde(default)]
     editor: Option<String>,
     #[serde(default)]
@@ -313,6 +332,23 @@ impl TryFrom<SettingsDocRaw> for SettingsDoc {
                 return Err(DeckError::new(
                     ErrorKind::InvalidDoc,
                     "shortcut names and bindings must be bounded strings",
+                ));
+            }
+        }
+        if let Some(voice) = &raw.voice {
+            let unique: HashSet<_> = voice.languages.iter().collect();
+            if voice.languages.is_empty()
+                || unique.len() != voice.languages.len()
+                || voice
+                    .languages
+                    .iter()
+                    .any(|language| !crate::voice::SUPPORTED_LANGUAGES.contains(&language.as_str()))
+                || (voice.default_language != "system"
+                    && !voice.languages.contains(&voice.default_language))
+            {
+                return Err(DeckError::new(
+                    ErrorKind::InvalidDoc,
+                    "voice languages must be supported, unique, non-empty, and include the default",
                 ));
             }
         }
@@ -771,6 +807,34 @@ mod tests {
             card("s2", "P1", "C2", "deck-a-1111")
         ));
         fail(&dup_sess, "dup session", "already used");
+    }
+
+    #[test]
+    fn voice_preferences_require_supported_unique_languages_and_enabled_default() {
+        assert!(serde_json::from_str::<SettingsDoc>(r#"{}"#).is_ok());
+        for value in [
+            r#"{"languages":["zh-CN","en-US","ja-JP"],"defaultLanguage":"system"}"#,
+            r#"{"languages":["ja-JP"],"defaultLanguage":"ja-JP","future":true}"#,
+        ] {
+            assert!(
+                serde_json::from_str::<SettingsDoc>(&format!(r#"{{"voice":{value}}}"#)).is_ok()
+            );
+        }
+        for value in [
+            "null",
+            "[]",
+            "false",
+            "{}",
+            r#"{"languages":[],"defaultLanguage":"system"}"#,
+            r#"{"languages":["en-US","en-US"],"defaultLanguage":"system"}"#,
+            r#"{"languages":["unknown"],"defaultLanguage":"system"}"#,
+            r#"{"languages":["en-US"],"defaultLanguage":"ja-JP"}"#,
+            r#"{"languages":["en-US"],"defaultLanguage":null}"#,
+        ] {
+            assert!(
+                serde_json::from_str::<SettingsDoc>(&format!(r#"{{"voice":{value}}}"#)).is_err()
+            );
+        }
     }
 
     #[test]

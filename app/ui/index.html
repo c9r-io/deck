@@ -148,6 +148,7 @@
         <span class="mem-chip" id="sess-mem" title="Memory of the whole session process tree: shell + agent + spawned children" data-i18n-title="session.memory"></span>
         <button class="btn icon-btn" id="split-right" title="Split right (⌘D)">◧</button>
         <button class="btn icon-btn" id="split-down" title="Split down (⌘⇧D)">⬓</button>
+        <button class="btn icon-btn" id="voice-btn" type="button" aria-controls="voice-panel" aria-expanded="false" data-i18n-title="voice.title" data-i18n-aria-label="voice.title"><svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="7" y="2" width="6" height="10" rx="3"/><path d="M4 9v1a6 6 0 0 0 12 0V9M10 16v3M7 19h6"/></svg></button>
         <button class="btn icon-btn" id="queue-btn" title="Scheduled prompts — send prompts to this session later" data-i18n-title="queue.title"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8.8" r="5"/><path d="M8 6.2v2.6l1.8 1.2"/><path d="M13.9 2.8l-1.7 1.5M2.1 2.8l1.7 1.5" stroke-linecap="round"/></svg><span class="cnt" id="queue-cnt"></span></button>
         <button class="btn danger" id="sess-close" title="Close session (terminates the shell and removes the card)" data-i18n="session.close" data-i18n-title="session.closeTitle">Close</button>
       </div>
@@ -201,8 +202,36 @@
         <div class="q-hint" data-i18n="queue.explainer">Prompts are typed into the session at the scheduled moment.</div>
         <div id="tpl-pop"></div>
       </div>
-      <div id="terminal"></div>
-      <div id="quick-bar"></div>
+      <div id="voice-workspace">
+        <div id="voice-terminal"><div id="terminal"></div><div id="quick-bar"></div></div>
+        <section id="voice-panel" aria-labelledby="voice-title" hidden>
+          <div class="voice-head">
+            <strong id="voice-title" data-i18n="voice.title">Voice draft</strong>
+            <span class="voice-local" data-i18n="voice.local">On-device</span>
+            <div class="voice-layouts" role="group" data-i18n-aria-label="voice.layout">
+              <button type="button" data-voice-layout="bottom" aria-pressed="true" data-i18n="voice.bottom">Bottom</button>
+              <button type="button" data-voice-layout="floating" aria-pressed="false" data-i18n="voice.floating">Floating</button>
+              <button type="button" data-voice-layout="right" aria-pressed="false" data-i18n="voice.right">Right</button>
+            </div>
+            <button class="btn icon-btn" id="voice-close" type="button" data-i18n-title="voice.close" data-i18n-aria-label="voice.close">✕</button>
+          </div>
+          <div class="voice-state-row"><span id="voice-status" role="status" aria-live="polite"></span><label id="voice-language-label" class="sr-only" for="voice-language" data-i18n="voice.language">Recognition language</label><select id="voice-language"></select></div>
+          <label class="sr-only" for="voice-draft" data-i18n="voice.title">Voice draft</label>
+          <textarea id="voice-draft" rows="3" maxlength="65536" spellcheck="false" data-i18n-placeholder="voice.placeholder" placeholder="Record or type a prompt…"></textarea>
+          <div class="voice-feedback">
+            <p id="voice-message" role="status" aria-live="polite"></p>
+            <button id="voice-retry" class="btn" type="button" data-i18n="voice.retry" hidden>Retry after checking terminal</button>
+          </div>
+          <div class="voice-actions">
+            <button class="btn" id="voice-record" type="button" data-i18n="voice.record">Record</button>
+            <button class="btn danger" id="voice-stop" type="button" hidden data-i18n="voice.stop">■ Stop</button>
+            <button class="btn" id="voice-clear" type="button" data-i18n="voice.clear">Clear</button>
+            <span class="voice-shortcut" data-i18n="voice.shortcut">⌘ Enter to send</span>
+            <button class="btn" id="voice-insert" type="button" data-i18n="voice.insert">Insert only</button>
+            <button class="btn primary" id="voice-send" type="button" data-i18n="voice.send">Send</button>
+          </div>
+        </section>
+      </div>
     </div>
   </div>
 </div>
@@ -303,6 +332,16 @@
         </section>
         <section class="set-panel" id="set-panel-terminal" aria-labelledby="set-heading-terminal" hidden>
           <h2 id="set-heading-terminal" data-i18n="settings.terminal">Terminal & sessions</h2>
+          <fieldset class="set-group voice-preferences">
+            <legend data-i18n="settings.voice">Voice input</legend>
+            <div id="set-voice-languages" class="voice-language-choices" role="group" data-i18n-aria-label="settings.voiceLanguages"></div>
+            <div class="set-row">
+              <label for="set-voice-default" data-i18n="settings.voiceDefault">Default recognition language</label>
+              <select id="set-voice-default" class="col-select"></select>
+            </div>
+            <div class="set-hint" data-i18n="settings.voiceHint">Choose at least one language. With one selected, the language menu is hidden. Recognition files download only when needed for recording.</div>
+            <div class="set-hint" data-i18n="settings.voiceSessionHint">Existing sessions keep their language if it remains enabled. Changes never interrupt a recording.</div>
+          </fieldset>
           <div class="set-group">
             <div class="set-row">
               <label for="set-editor" data-i18n="settings.openFiles">Open files in</label>

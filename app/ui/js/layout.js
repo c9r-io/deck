@@ -1,4 +1,6 @@
 // layout.js — split-tree layout, pane lifecycle, terminal creation, session view
+// Voice placement resizes through the existing observer. Leaving releases the
+// recorder; focus selects that session's voice draft. An explicit voice delivery briefly owns the target's user input.
 // Part of deck's no-build frontend: native ES modules, no bundler.
 // Read receipts require a successful attach to the still-visible pane.
 // Split buttons and shortcuts open the shared menu before start/attach; its
@@ -464,6 +466,7 @@ export function wireTerminalInput(pane, term, host) {
   term.onData(d => {
     /* xterm's auto-answers to terminal queries are not user input */
     const isAutoReply = isTerminalAutoReply(d);
+    if (!isAutoReply && ctx.voiceDelivering === session) return;
     /* the input mirror / completion only tracks the focused pane */
     if (!isAutoReply && ctx.attachedName === session) {
       if (d.includes('\x1b') && escLogged < 5) {
@@ -811,11 +814,13 @@ export function focusPane(session) {
   renderSessionView();
   updateSidebarSelection();
   p.term.focus();
+  window.dispatchEvent(new Event('deck-voice-session-changed'));
 }
 
 /* the attachment's stream ended: the pane keeps its transcript but is no
    longer viewing; the poll decides whether the card retires */
 function paneExited(pane, gen) {
+  window.dispatchEvent(new CustomEvent('deck-voice-target-exit', { detail: pane.session }));
   pane.exitedGen = gen;
   pane.attached = false;
   cancelTerminalSelection(pane, 'exit');
@@ -943,13 +948,14 @@ export const hasPane = session => panes.has(session);
 export function closePaneBySid(sid, opts = {}) {
   const entry = [...panes.values()].find(p => p.sid === sid);
   if (!entry) return;
+  window.dispatchEvent(new CustomEvent('deck-voice-target-exit', { detail: entry.session }));
   if ($('quick-bar').closest('.spane') === entry.el) resetSuggest();
   if (entry.selection) entry.selection.dispose();
   entry.scrollCursorObserver?.disconnect();
   if (opts.detach !== false) inv('detach_session', { name: entry.session }).catch(() => {});
   try { entry.term.dispose(); } catch (e) { /* already gone */ }
   const quickBar = $('quick-bar');
-  if (quickBar && entry.el.contains(quickBar)) $('session-view').appendChild(quickBar);
+  if (quickBar && entry.el.contains(quickBar)) $('voice-terminal').appendChild(quickBar);
   entry.el.remove();
   panes.delete(entry.session);
   ctx.ptyGens.delete(entry.session);
@@ -1033,7 +1039,7 @@ export async function openSession(sid, opts = {}) {
     focusPane(card.session);
     return !!pane.attached;
   }
-  leaveSessionView();
+  leaveSessionView({ switchingSession: true });
   state.projectId = card.projectId;
   state.view = 'session';
   state.sessionId = sid;
@@ -1057,12 +1063,13 @@ export async function openSession(sid, opts = {}) {
   return attached;
 }
 
-export function leaveSessionView() {
+export function leaveSessionView({ switchingSession = false } = {}) {
+  window.dispatchEvent(new CustomEvent('deck-session-leave', { detail: { switchingSession } }));
   cancelAllTerminalSelections('leave');
   resetSuggest(null);
   toggleQueuePanel(false);
   const quickBar = $('quick-bar');
-  if (quickBar && quickBar.closest('.spane')) $('session-view').appendChild(quickBar);
+  if (quickBar && quickBar.closest('.spane')) $('voice-terminal').appendChild(quickBar);
   panes.forEach(p => {
     if (p.selection) p.selection.dispose();
     p.scrollCursorObserver?.disconnect();

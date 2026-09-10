@@ -89,6 +89,18 @@ onto a pane edge, or hit ⌘D / ⌘⇧D (or the ◧ ⬓ buttons) and pick a sess
 Splits nest freely, dividers drag to resize, closing a pane never kills the
 session.
 
+**Voice drafts.** The session header's microphone records into an editable,
+on-device transcript. Clear, Insert only and Send can stop recording and act
+on the displayed text directly; an empty draft does nothing. Each session retains its own draft, recognition language and target
+binding when you switch sessions. The same editor switches between Bottom (default), Floating and Right
+without restarting capture; the choice lasts for this app run. Native local
+recognition requires a supported macOS 12+ configuration; macOS 26 builds use
+the newer Speech engine where available. There is no cloud speech fallback.
+The language menu defaults to Chinese, English and Japanese. Settings → Terminal
+& sessions → Voice input saves your enabled languages and default; choosing
+only one language hides the draft's selector.
+See [voice input](docs/voice-input.md) for target checks, permissions and limits.
+
 **Complete, safe themes.** Settings offers Deck Dark (the compatible default),
 Light, Follow System, and High Contrast, plus reviewed teal, blue, purple, and
 orange accents. A switch updates the whole app, every open xterm pane, ANSI

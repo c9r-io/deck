@@ -23,6 +23,7 @@ mod keychain;
 mod launch_args;
 mod links;
 mod procinfo;
+mod prompt_delivery;
 mod pty;
 mod redact;
 mod relaunch;
@@ -37,6 +38,7 @@ mod terminal_selection;
 mod tmux;
 mod tmux_lifecycle;
 mod updater;
+mod voice;
 
 pub(crate) use applog::applog;
 
@@ -244,6 +246,8 @@ fn main() {
                         "m.verifyAttention()"
                     } else if mode == "settings" {
                         "m.verifySettings()"
+                    } else if mode == "voice" {
+                        "m.verifyVoice()"
                     } else {
                         "m.run()"
                     };
@@ -258,11 +262,19 @@ fn main() {
             // ⌘W / red button hides instead of destroying the only window;
             // the Dock icon (Reopen) brings it back.
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                voice::voice_cancel(0);
+                let _ = window.emit("voice-window-hidden", ());
                 let _ = window.hide();
                 api.prevent_close();
             }
         })
         .invoke_handler(tauri::generate_handler![
+            voice::voice_bind,
+            voice::voice_start,
+            voice::voice_snapshot,
+            voice::voice_stop,
+            voice::voice_cancel,
+            voice::voice_deliver,
             documents::load_board,
             documents::save_board,
             documents::load_settings,

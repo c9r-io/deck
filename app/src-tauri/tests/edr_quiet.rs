@@ -88,6 +88,40 @@ const ALLOWED_EXPRESSIONS: &[(&str, &str)] = &[
 const DEBUG_ONLY_LITERALS: &[(&str, &str)] = &[("smoke_faults.rs", "pbpaste")];
 
 #[test]
+fn native_speech_is_in_process_local_and_content_free() {
+    let swift = std::fs::read_to_string(manifest("native/SpeechBridge.swift")).unwrap();
+    for forbidden in [
+        "Process(",
+        "NSTask",
+        "URLSession",
+        "AVAudioFile",
+        "print(",
+        "NSLog(",
+        "launchctl",
+        "osascript",
+    ] {
+        assert!(
+            !swift.contains(forbidden),
+            "native Speech must not introduce {forbidden}"
+        );
+    }
+    assert!(swift.contains("recognizer.supportsOnDeviceRecognition"));
+    assert!(swift.contains("request.requiresOnDeviceRecognition = true"));
+    assert!(swift.contains("engine.inputNode.removeTap(onBus: 0)"));
+    let config = std::fs::read_to_string(manifest("tauri.conf.json")).unwrap();
+    assert!(config.contains("Entitlements.plist"));
+    let entitlement = std::fs::read_to_string(manifest("Entitlements.plist")).unwrap();
+    assert!(entitlement.contains("com.apple.security.device.audio-input"));
+    for forbidden in [
+        "disable-library-validation",
+        "allow-unsigned-executable-memory",
+        "allow-jit",
+    ] {
+        assert!(!entitlement.contains(forbidden));
+    }
+}
+
+#[test]
 fn every_production_spawn_is_on_the_allowlist() {
     let mut seen = 0;
     for (name, src) in production_sources() {

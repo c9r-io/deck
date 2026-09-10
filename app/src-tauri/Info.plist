@@ -2,6 +2,10 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>Record your voice when you press the microphone button to compose a prompt. Audio is recognized on this Mac.</string>
+  <key>NSSpeechRecognitionUsageDescription</key>
+  <string>Convert your voice into an editable prompt using on-device speech recognition.</string>
   <key>NSLocalNetworkUsageDescription</key>
   <string>Shell commands, CLIs, and agents launched or restored by deck can access devices and services on your local network.</string>
 </dict>

@@ -74,7 +74,76 @@ fn stage_frontend() {
     );
 }
 
+// Swift is compiled and statically linked at build time, never spawned by Deck.
+// New Speech APIs remain availability-guarded; older macOS uses local-only SF.
+fn build_speech_bridge() {
+    println!("cargo:rerun-if-changed=native/SpeechBridge.swift");
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("macos") {
+        return;
+    }
+    let out = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
+    let arch = if std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() == Ok("aarch64") {
+        "arm64"
+    } else {
+        "x86_64"
+    };
+    let object = out.join("SpeechBridge.o");
+    let status = std::process::Command::new("xcrun")
+        .args([
+            "swiftc",
+            "-parse-as-library",
+            "-swift-version",
+            "5",
+            "-O",
+            "-target",
+        ])
+        .arg(format!("{arch}-apple-macosx11.0"))
+        .args([
+            "-emit-object",
+            "-whole-module-optimization",
+            "native/SpeechBridge.swift",
+            "-o",
+        ])
+        .arg(&object)
+        .status()
+        .expect("Swift compiler is required (use the macOS 26 SDK for SpeechAnalyzer)");
+    assert!(status.success(), "failed to compile native Speech bridge");
+    let status = std::process::Command::new("xcrun")
+        .args(["libtool", "-static", "-o"])
+        .arg(out.join("libdeck_speech.a"))
+        .arg(object)
+        .status()
+        .expect("failed to archive Speech bridge");
+    assert!(status.success(), "failed to archive Speech bridge");
+    println!("cargo:rustc-link-search=native={}", out.display());
+    println!("cargo:rustc-link-lib=static=deck_speech");
+    let compiler = std::process::Command::new("xcrun")
+        .args(["--find", "swiftc"])
+        .output()
+        .expect("find Swift runtime libraries");
+    let compiler = std::path::PathBuf::from(String::from_utf8(compiler.stdout).unwrap().trim());
+    let lib = compiler
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("lib/swift/macosx");
+    println!("cargo:rustc-link-search=native={}", lib.display());
+    println!("cargo:rustc-link-search=native=/usr/lib/swift");
+    println!("cargo:rustc-link-arg=-Wl,-rpath,/usr/lib/swift");
+    for framework in [
+        "Foundation",
+        "AVFoundation",
+        "Speech",
+        "CoreMedia",
+        "AudioToolbox",
+    ] {
+        println!("cargo:rustc-link-lib=framework={framework}");
+    }
+}
+
 fn main() {
+    build_speech_bridge();
     build_status_helper();
     stage_frontend();
     println!("cargo:rerun-if-env-changed=DECK_BUILD_COMMIT");

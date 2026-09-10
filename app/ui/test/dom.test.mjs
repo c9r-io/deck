@@ -505,3 +505,34 @@ test('the project defaults dialog edits two trimmed strings and chips only fill 
   fakeDocument.getElementById('pdf-no').fire('click');
   assert.equal(await promise, null);
 });
+
+test('voice settings save only preferences, preserve unrelated fields and roll back on failure', async () => {
+  const { persistVoicePreferences, renderVoicePreferences } = await import('../js/dialogs.js');
+  const { normalizeSettings } = await import('../js/settings-model.js');
+  const control = new FakeElement('input');
+  fakeDocument.getElementById('settings-modal').querySelectorAll = () => [control];
+  ctx.settings = normalizeSettings({ future: { kept: 1 }, editor: 'Zed' });
+  let fail = false, resolveSave, saved, changes = 0;
+  window.dispatchEvent = event => { if (event.type === 'deck-voice-preferences-changed') changes++; };
+  window.__TAURI__ = { core: { invoke: async (cmd, args) => {
+    if (cmd !== 'save_settings') return;
+    saved = JSON.parse(args.data);
+    if (fail) throw new Error('disk unavailable');
+    await new Promise(resolve => { resolveSave = resolve; });
+  } } };
+  renderVoicePreferences();
+  const original = ctx.settings.voice;
+  const pending = persistVoicePreferences({ languages: ['ja-JP'], defaultLanguage: 'ja-JP' });
+  await tick(); assert.equal(control.disabled, true); assert.equal(ctx.settings.voice, original);
+  assert.equal(await persistVoicePreferences({ languages: ['en-US'], defaultLanguage: 'en-US' }), false);
+  resolveSave(); assert.equal(await pending, true);
+  assert.deepEqual(saved.future, { kept: 1 }); assert.equal(ctx.settings.editor, 'Zed'); assert.equal(changes, 1);
+  assert.equal(ctx.settings.voice.defaultLanguage, 'ja-JP'); assert.equal(control.disabled, false);
+  const choices = fakeDocument.getElementById('set-voice-languages').children.map(label => label.children[0]);
+  assert.equal(choices.find(input => input.value === 'ja-JP').disabled, true, 'last enabled choice cannot be unchecked');
+  fail = true;
+  assert.equal(await persistVoicePreferences({ languages: ['en-US'], defaultLanguage: 'en-US' }), false);
+  assert.equal(ctx.settings.voice.defaultLanguage, 'ja-JP'); assert.equal(changes, 1); assert.equal(control.disabled, false);
+  assert.equal(await persistVoicePreferences({ languages: [], defaultLanguage: 'system' }), false);
+  delete window.dispatchEvent;
+});

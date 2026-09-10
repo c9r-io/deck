@@ -57,11 +57,17 @@ cat > "$APP/Contents/Info.plist" <<EOF
   <key>CFBundleIconFile</key><string>deck</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>NSHighResolutionCapable</key><true/>
+  <key>NSMicrophoneUsageDescription</key><string>Record your voice to compose a prompt using on-device recognition.</string>
+  <key>NSSpeechRecognitionUsageDescription</key><string>Convert your voice into an editable prompt on this Mac.</string>
   <key>LSMinimumSystemVersion</key><string>11.0</string>
   <key>NSLocalNetworkUsageDescription</key><string>Terminal tools running in deck may connect to local services and devices you choose.</string>
 </dict>
 </plist>
 EOF
+
+# Stable ad-hoc bundle identity for local TCC permission checks; release uses
+# Developer ID signing and the same microphone entitlement via Tauri.
+codesign --force --sign - --entitlements Entitlements.plist "$APP"
 
 if [ -n "${DECK_SMOKE_DATA_DIR:-}" ]; then
   case "$DECK_SMOKE_DATA_DIR" in
@@ -76,7 +82,7 @@ if [ -n "${DECK_SMOKE_DATA_DIR:-}" ]; then
   if [ -n "${DECK_SMOKE_WKWEBVIEW:-}" ]; then
     SMOKE_MODE=$DECK_SMOKE_WKWEBVIEW
     case "$SMOKE_MODE" in
-      run|restart|ambiguous|settings|attention|review|review-restart) ;;
+      run|restart|ambiguous|settings|attention|review|review-restart|voice) ;;
       *) SMOKE_MODE=run ;;
     esac
     open -n "$APP" --args \

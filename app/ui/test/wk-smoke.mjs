@@ -1731,6 +1731,11 @@ export async function verifyAttention() {
   await runAttentionSmoke();
 }
 
+export async function verifyVoice() {
+  const { runVoiceSmoke } = await import('./voice-smoke.mjs');
+  await runVoiceSmoke();
+}
+
 export async function verifyReview(restart = false) {
   const { runReviewSmoke } = await import('./review-smoke.mjs');
   await runReviewSmoke(restart);

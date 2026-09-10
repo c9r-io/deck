@@ -1,3 +1,5 @@
+import { DEFAULT_VOICE_PREFERENCES, normalizeVoicePreferences } from './voice-preferences-model.js';
+
 const THEMES = new Set(['deck-dark', 'light', 'system', 'high-contrast']);
 const ACCENTS = new Set(['teal', 'blue', 'purple', 'orange']);
 const UPDATE_CHANNELS = new Set(['stable', 'nightly']);
@@ -138,7 +140,7 @@ export function normalizeInbound(value) {
 export const DEFAULT_SETTINGS = Object.freeze({
   editor: '', locale: 'system', theme: 'deck-dark', accent: 'teal',
   updateChannel: 'stable', sessionRestore: false, fontScale: 1,
-  shortcuts: DEFAULT_SHORTCUTS, inbound: DEFAULT_INBOUND,
+  shortcuts: DEFAULT_SHORTCUTS, inbound: DEFAULT_INBOUND, voice: DEFAULT_VOICE_PREFERENCES,
 });
 
 export function normalizeSettings(value) {
@@ -164,6 +166,7 @@ export function normalizeSettings(value) {
   }
   merged.shortcuts = shortcuts;
   merged.inbound = normalizeInbound(raw.inbound);
+  merged.voice = normalizeVoicePreferences(raw.voice);
   return merged;
 }
 

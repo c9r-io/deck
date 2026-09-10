@@ -86,6 +86,7 @@ loaded by `ui/index.html`; xterm.js vendored in `app/ui/vendor/`. Backend
 | tmux sidecar, socket, server conf | `tmux.rs` |
 | Server lifecycle: protocol metadata, reuse/replace, restart transaction, channel sockets | `tmux_lifecycle.rs` (+ `docs/tmux-server-lifecycle.md`) |
 | PTY attach bridge with end-to-end flow control | `pty.rs` |
+| Native on-device voice drafts, volatile target/recording lifecycle, shared literal paste | `native/SpeechBridge.swift`, `voice.rs`, `prompt_delivery.rs`, `ui/js/voice.js`, `voice-model.js` (+ `docs/voice-input.md`) |
 | Terminal scroll + token-bound selection lease commands | `terminal.rs`, `terminal_selection.rs`, `terminal_scroll.rs` |
 | Pointer/selection authority, overlay, wheel routing (frontend) | `ui/js/selection.js`, `layout.js` |
 | Completion bar, links, context menus, the ONE new-session path (start first, persist after; project defaults for ＋/⌘N, context entries keep their directory and never a command) | `ui/js/terminal.js` (`newSession` / `newDefaultSession`), `provider.createStarted` + `openProjectDefaults` in `board.js`, `projectDefaults` / `newSessionPlan` in `pure.js`, `links.rs` |

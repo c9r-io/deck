@@ -1,5 +1,28 @@
 # Changelog
 
+## Unreleased
+
+- Voice language preferences in Settings → Terminal & sessions: Chinese,
+  English and Japanese by default, with configurable enabled languages and
+  recognition default. One enabled language hides the draft selector. Settings
+  persist across restarts; existing session choices stay if enabled, and removal
+  waits for active recording to finish. No automatic language detection.
+
+- Native on-device voice drafts in the session toolbar: Bottom by default,
+  with Floating and Right placements sharing the same recorder and editor.
+  Drafts, recognition language and target bindings follow each session, so
+  switching sessions restores its draft without rebinding. Switching during
+  recording releases capture and keeps the original session’s displayed text.
+  Placement and unsent drafts last only for this app run. Clear, Insert only
+  and Send also work during recording: non-empty text stops capture and acts on
+  the visible draft; empty text leaves recording untouched. Review before sending; target changes and uncertain deliveries never auto-retry.
+  Manual target confirmation is removed: each send checks the session’s current
+  foreground program. Refused deliveries retain the binding; only uncertain
+  delivery offers an explicit retry action.
+  Swift is linked into the app with microphone purpose strings and entitlement;
+  no speech helper process, service registration or cloud fallback. See
+  [voice input](docs/voice-input.md) for system requirements and validation.
+
 ## 0.6.3 — 2026-09-10 (Nightly)
 
 - **Inspect after every row.** A list or an automation rule can explicitly

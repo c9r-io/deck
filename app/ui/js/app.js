@@ -5,7 +5,7 @@ import './board.js';
 import { $, ctx, genId, initInputDiagnostics, inv, listen, state, store, uev } from './state.js';
 import { initDialogs, loadSettings, toast } from './dialogs.js';
 import {
-  activeProject, markSessionsStoppedForServerRestart, migrateColumnSemantics, newSessionSummary, openProjectDefaults, pollNow,
+  activeProject, panes, markSessionsStoppedForServerRestart, migrateColumnSemantics, newSessionSummary, openProjectDefaults, pollNow,
   projectDefaultsSummary, provider, render, startPolling, stopPolling, switchProject,
 } from './board.js';
 import { initLayout, leaveSessionView, openSession } from './layout.js';
@@ -18,6 +18,8 @@ import { initDropdowns } from './dropdown.js';
 import { initAttention } from './attention.js';
 import { onLocaleChange, setLocale, t, translateNotice } from './i18n.js';
 import { activateTheme, revealThemedWindow } from './theme.js';
+import { initVoice } from './voice.js';
+import { cancelTerminalSelection } from './selection.js';
 
 setLocale('system');
 activateTheme({ theme: 'deck-dark', accent: 'teal' });
@@ -355,6 +357,20 @@ boot();
 /* DOM wiring, run once at boot (app.js) so the module can be imported
    without a document. */
 function wireChrome() {
+  initVoice({
+    selectedTarget: () => {
+      const card = provider.get(state.sessionId);
+      return card && ctx.attachedName ? { session: ctx.attachedName, cardId: card.id, title: card.title } : null;
+    },
+    prepareTarget: async target => {
+      const pane = panes.get(target.session);
+      if (!pane?.attached || !provider.get(target.cardId)) throw 'target-not-visible';
+      ctx.voiceDelivering = target.session;
+      await cancelTerminalSelection(pane, 'input');
+      await inv('scroll_bottom', { name: target.session });
+    },
+    afterDelivery: () => { ctx.voiceDelivering = null; ctx.lineBuf = null; },
+  });
   window.addEventListener('beforeunload', stopPolling, { once: true });
 
   document.addEventListener('webkitmouseforcewillbegin', event => {

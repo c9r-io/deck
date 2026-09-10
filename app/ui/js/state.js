@@ -12,6 +12,7 @@ export const ctx = {
   attentionReturn: null,
   HOME: '~',
   attachedName: null,
+  voiceDelivering: null,
   cfmResolve: null,
   creatingSession: false,
   freshShell: false,
@@ -40,6 +41,7 @@ export const ctx = {
   settings: {
     editor: '', locale: 'system', theme: 'deck-dark', accent: 'teal',
     updateChannel: 'stable', sessionRestore: false, fontScale: 1,
+    voice: { languages: ['zh-CN', 'en-US', 'ja-JP'], defaultLanguage: 'system' },
     shortcuts: {
       newSession: 'Meta+KeyN', toggleSidebar: 'Meta+KeyB',
       splitRight: 'Meta+KeyD', splitDown: 'Meta+Shift+KeyD',
