@@ -57,9 +57,9 @@ When [reporting an issue on GitHub](https://github.com/c9r-io/deck/issues/new?te
 
 ## Updates and versions
 
-This guide is based on **0.6.5**. Stable is the default channel; Nightly is an opt-in candidate channel whose features and stability may differ. Settings shows the version, channel and short commit.
+This guide is based on **0.6.5** functionality and also applies to **0.6.6 Stable**. Stable is the default channel; Nightly is an opt-in candidate channel whose features and stability may differ. Settings shows the version, channel and short commit.
 
-Stable and Nightly replace the same app and share local data and tmux sessions. They cannot run side by side. Switching to Stable changes future update checks; it does not automatically downgrade a newer build. For example, switching an installed 0.6.6 Nightly to Stable does not install 0.6.5.
+Stable and Nightly replace the same app and share local data and tmux sessions. They cannot run side by side. Switching to Stable changes future update checks; it does not automatically downgrade a newer build. When the same Nightly version is promoted to Stable, the app archive is unchanged; no reinstall is needed just for the channel name. If you have a higher version installed, check data compatibility first.
 
 **Disabling human inspection does not undo its data upgrade.** First use moves relevant queue and settings data to v2; older builds without support refuse to read it. Do not edit version numbers or formats to bypass that check. Before downgrading, back up important data and verify the target version's compatibility. A data backup does not restore running processes.
 

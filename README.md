@@ -2,7 +2,7 @@
 
 [User guide](https://deck.c9r.io/guide/) · [网站中文指南](https://deck.c9r.io/zh/guide/) · [仓库中文说明](docs/zh-Hans.md)
 
-The website guide targets 0.6.5. This README follows the current source and remains the canonical technical specification.
+The website guide covers Stable 0.6.6 using the 0.6.5 feature baseline. This README follows the current source and remains the canonical technical specification.
 
 **A native macOS command center for terminal agent sessions** — Claude Code,
 Codex, or any long-running CLI. Every card on the board is a real, persistent

@@ -4,8 +4,8 @@
   "githubUrl": "https://github.com/c9r-io/deck",
   "feedbackUrl": "https://github.com/c9r-io/deck/issues/new?template=feedback.yml",
   "licenseUrl": "https://github.com/c9r-io/deck/blob/main/LICENSE",
-  "releaseLabel": "Stable 0.6.5",
-  "releaseLabelZh": "稳定版 0.6.5",
-  "guideVersion": "0.6.5",
-  "guideRef": "caa944275d3313655df2585f4f552cecd9f10649"
+  "releaseLabel": "Stable 0.6.6",
+  "releaseLabelZh": "稳定版 0.6.6",
+  "guideVersion": "0.6.6",
+  "guideRef": "0c76b3e138b83f00817591c04fcba5d58c91eea8"
 }

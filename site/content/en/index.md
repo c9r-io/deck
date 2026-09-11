@@ -27,6 +27,6 @@ Create a session, launch a CLI you already use, then leave the terminal and retu
 
 ## Version scope
 
-This guide covers **deck 0.6.5**, including Needs attention, lists, human inspection, automations and on-device voice drafts. Check your installed version in Settings; earlier versions may have different labels and entry points. Later Nightly changes are outside this guide's baseline.
+This guide uses the **deck 0.6.5** feature baseline and also applies to **0.6.6 Stable**, including Needs attention, lists, human inspection, automations and on-device voice drafts. Check your installed version in Settings; earlier versions may have different labels and entry points. Version 0.6.6 hardens prompt-delivery privacy without adding new user flows. Later Nightly changes are outside this guide's baseline.
 
 See [updates and versions](/guide/input-and-settings/#updates-and-versions) for upgrades, channel switching and older data compatibility.
