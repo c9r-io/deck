@@ -1,6 +1,8 @@
 //! Terminal link targets: resolving clicked paths against the pane cwd in
 //! Rust (no shell) and the validated `open_target` command. Hover discovery
 //! is frontend-only; a path is checked when an action is taken on it.
+//! Voice setup opens only three fixed System Settings destinations; terminal
+//! URLs still accept only http(s). Opening settings never grants permissions.
 
 use serde::Serialize;
 use std::path::PathBuf;
@@ -8,6 +10,44 @@ use std::process::Command;
 
 use crate::error::{DeckError, ErrorKind};
 use crate::tmux::expand_tilde;
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum VoiceSettings {
+    Microphone,
+    Speech,
+    Dictation,
+}
+
+impl VoiceSettings {
+    fn url(&self) -> &'static str {
+        match self {
+            Self::Microphone => {
+                "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"
+            }
+            Self::Speech => {
+                "x-apple.systempreferences:com.apple.preference.security?Privacy_SpeechRecognition"
+            }
+            Self::Dictation => "x-apple.systempreferences:com.apple.preference.keyboard?Dictation",
+        }
+    }
+}
+
+#[tauri::command]
+pub(crate) fn voice_open_settings(kind: VoiceSettings) -> Result<(), DeckError> {
+    let status = Command::new("/usr/bin/open")
+        .arg(kind.url())
+        .status()
+        .map_err(DeckError::from)?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(DeckError::new(
+            ErrorKind::Other,
+            "system-settings-unavailable",
+        ))
+    }
+}
 
 // ---------- open path / url ----------------------------------------------------
 
@@ -242,6 +282,24 @@ pub(crate) fn regex_strip_lineno(path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn voice_settings_accept_only_fixed_setup_destinations() {
+        for (kind, suffix) in [
+            ("microphone", "security?Privacy_Microphone"),
+            ("speech", "security?Privacy_SpeechRecognition"),
+            ("dictation", "keyboard?Dictation"),
+        ] {
+            let target: VoiceSettings = serde_json::from_value(serde_json::json!(kind)).unwrap();
+            assert_eq!(
+                target.url(),
+                format!("x-apple.systempreferences:com.apple.preference.{suffix}")
+            );
+        }
+        for kind in ["", "url", "file:///tmp", "x-apple.systempreferences:other"] {
+            assert!(serde_json::from_value::<VoiceSettings>(serde_json::json!(kind)).is_err());
+        }
+    }
 
     #[test]
     fn open_validation_gates_urls_and_paths() {

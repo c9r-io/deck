@@ -86,6 +86,37 @@ test('recognition failure retains partial text, cancels native capture, and does
   assert.ok(f.calls.some(([cmd]) => cmd === 'voice_cancel')); assert.ok(!f.calls.some(([cmd]) => cmd === 'voice_deliver'));
 });
 
+test('disabled system dictation keeps setup guidance and the existing draft, then allows explicit recording retry', async () => {
+  const f = fixture(), m = f.model;
+  await m.bind(target); m.edit('已有草稿');
+  f.setSnapshot({ id: 2, status: 'error', text: '', code: 'dictation-disabled' });
+  await m.start();
+  assert.equal(m.state.phase, 'error'); assert.equal(m.state.error, 'dictation-disabled');
+  assert.equal(m.state.draft, '已有草稿'); assert.equal(m.state.recordingId, null);
+  assert.equal(f.scheduled.length, 0);
+  assert.equal(f.calls.filter(([cmd]) => cmd === 'voice_start').length, 1);
+  assert.ok(f.calls.some(([cmd]) => cmd === 'voice_cancel'));
+  assert.ok(!f.calls.some(([cmd]) => cmd === 'voice_deliver'));
+  assert.deepEqual(f.calls.filter(([cmd]) => cmd === 'voice_open_settings'), [['voice_open_settings', { kind: 'dictation' }]]);
+  f.setSnapshot({ id: 2, status: 'ready', text: '恢复识别' });
+  await m.start();
+  assert.equal(m.state.error, ''); assert.equal(m.state.phase, 'ready');
+  assert.equal(m.state.draft, '已有草稿\n恢复识别');
+});
+
+test('setup navigation failure preserves permission guidance; stale permission failures never open settings', async () => {
+  const f = fixture({ voice_open_settings: async () => { throw 'cannot open'; } }), m = f.model;
+  await m.bind(target); m.edit('keep');
+  f.setSnapshot({ id: 2, status: 'error', text: '', code: 'microphone-denied' });
+  await m.start();
+  assert.equal(m.state.error, 'microphone-denied'); assert.equal(m.state.draft, 'keep');
+  const reply = deferred(), g = fixture({ voice_snapshot: () => reply.promise });
+  await g.model.bind(target); const pending = g.model.start(); await Promise.resolve();
+  await g.model.close();
+  reply.resolve({ id: 2, status: 'error', text: '', code: 'speech-denied' }); await pending;
+  assert.ok(!g.calls.some(([cmd]) => cmd === 'voice_open_settings'));
+});
+
 test('uncertain delivery keeps the session binding but a second ordinary click never resends', async () => {
   for (const outcome of ['ambiguous', 'enter-refused']) {
     const f = fixture({ voice_deliver: async () => outcome }), m = f.model;

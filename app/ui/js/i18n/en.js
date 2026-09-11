@@ -42,6 +42,8 @@ const dictionary = {
   "voice.notice.ambiguous": "We could not confirm whether the message was sent. Your draft is kept. Check the terminal, then use Retry after checking terminal only if it needs to be sent again.",
   "voice.error.microphone-denied": "Microphone access is not allowed. In System Settings → Privacy & Security → Microphone, allow this app.",
   "voice.error.speech-denied": "Speech recognition access is not allowed. In System Settings → Privacy & Security → Speech Recognition, allow this app.",
+  "voice.error.dictation-disabled": "System Dictation is disabled, so local speech recognition cannot start. Enable Dictation in System Settings → Keyboard → Dictation, then try again. Your existing draft is kept.",
+  "voice.openSettings": "Open System Settings",
   "voice.error.microphone-unavailable": "Unable to record from the microphone. Check its connection and the input device selected in System Settings → Sound.",
   "voice.error.local-unavailable": "This device cannot currently recognize this language on-device. Try another recognition language or type your message. Audio will not be uploaded.",
   "voice.error.recognition-failed": "Speech recognition stopped unexpectedly. The available text is kept in your draft. Check for missing words before continuing or sending.",

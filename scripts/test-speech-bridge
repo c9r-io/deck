@@ -1,0 +1,16 @@
+#!/bin/sh
+# Compile the production bridge and test error classification without capture.
+set -eu
+cd "$(dirname "$0")/.."
+speech_test_dir=$(mktemp -d "${TMPDIR:-/tmp}/deck-speech-tests.XXXXXX")
+trap 'rm -rf "$speech_test_dir"' EXIT HUP INT TERM
+set --
+if [ "${DECK_REQUIRE_MODERN_SPEECH:-0}" = 1 ]; then
+  set -- -D DECK_REQUIRE_MODERN_SPEECH
+fi
+xcrun swiftc -parse-as-library -swift-version 5 \
+  "$@" \
+  app/src-tauri/native/SpeechBridge.swift \
+  app/src-tauri/native/tests/SpeechErrorTests.swift \
+  -o "$speech_test_dir/speech-tests"
+"$speech_test_dir/speech-tests"

@@ -78,6 +78,8 @@ fn stage_frontend() {
 // New Speech APIs remain availability-guarded; older macOS uses local-only SF.
 fn build_speech_bridge() {
     println!("cargo:rerun-if-changed=native/SpeechBridge.swift");
+    println!("cargo:rerun-if-env-changed=DEVELOPER_DIR");
+    println!("cargo:rerun-if-env-changed=DECK_REQUIRE_MODERN_SPEECH");
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("macos") {
         return;
     }
@@ -88,15 +90,17 @@ fn build_speech_bridge() {
         "x86_64"
     };
     let object = out.join("SpeechBridge.o");
-    let status = std::process::Command::new("xcrun")
-        .args([
-            "swiftc",
-            "-parse-as-library",
-            "-swift-version",
-            "5",
-            "-O",
-            "-target",
-        ])
+    let mut compiler = std::process::Command::new("xcrun");
+    compiler.arg("swiftc");
+    // A release must include the same modern path exercised by local device
+    // testing. Older developer toolchains may still build the legacy debug app.
+    if std::env::var("PROFILE").as_deref() == Ok("release")
+        || std::env::var("DECK_REQUIRE_MODERN_SPEECH").as_deref() == Ok("1")
+    {
+        compiler.args(["-D", "DECK_REQUIRE_MODERN_SPEECH"]);
+    }
+    let status = compiler
+        .args(["-parse-as-library", "-swift-version", "5", "-O", "-target"])
         .arg(format!("{arch}-apple-macosx11.0"))
         .args([
             "-emit-object",

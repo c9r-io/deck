@@ -1,6 +1,8 @@
 // In-process, on-device speech only. C entry points enqueue work on the main
 // actor; snapshots cross a synchronous callback and never enter logs/files.
 // One capture owner, bounded recording/input buffer, token-scoped cancellation.
+// Framework errors cross the bridge only as closed codes, never descriptions
+// or userInfo. Disabled system Dictation has actionable setup guidance.
 // Nested Tasks own a fresh weak capture, including on older Swift compilers:
 // never transfer the enclosing callback's mutable weak storage across actors.
 import Foundation
@@ -8,7 +10,25 @@ import AppKit
 @preconcurrency import AVFoundation
 import Speech
 
+#if DECK_REQUIRE_MODERN_SPEECH && !compiler(>=6.2)
+#error("This build requires Swift 6.2+ and the macOS 26 SDK to include SpeechAnalyzer.")
+#endif
+
 public typealias DeckSpeechCallback = @convention(c) (UInt64, UnsafePointer<CChar>, UnsafePointer<CChar>, UnsafePointer<CChar>) -> Void
+
+func deckSpeechErrorCode(_ error: Error) -> String {
+    var cause = error as NSError
+    // Speech may wrap the local recognizer error. Bound traversal in case a
+    // foreign error contains an unexpected underlying-error cycle.
+    for _ in 0..<8 {
+        if cause.domain == "kLSRErrorDomain", cause.code == 201 {
+            return "dictation-disabled"
+        }
+        guard let underlying = cause.userInfo[NSUnderlyingErrorKey] as? NSError else { break }
+        cause = underlying
+    }
+    return "recognition-failed"
+}
 
 @available(macOS 12.0, *)
 @MainActor private var current: Capture?
@@ -103,7 +123,7 @@ public typealias DeckSpeechCallback = @convention(c) (UInt64, UnsafePointer<CCha
                 #endif
                 try await self.legacy(locale: Locale(identifier: locale))
             } catch {
-                self.finish("error", "recognition-failed")
+                self.finish("error", deckSpeechErrorCode(error))
             }
         }
     }
@@ -146,7 +166,7 @@ public typealias DeckSpeechCallback = @convention(c) (UInt64, UnsafePointer<CCha
             // Copy text before hopping off the framework callback queue.
             let transcript = result?.bestTranscription.formattedString
             let final = result?.isFinal ?? false
-            let failed = error != nil
+            let failureCode = error.map { deckSpeechErrorCode($0) }
             Task { @MainActor [weak self] in
                 guard let self, self.active else { return }
                 if let transcript {
@@ -155,7 +175,7 @@ public typealias DeckSpeechCallback = @convention(c) (UInt64, UnsafePointer<CCha
                     self.publish(self.stopping ? "stopping" : "recording")
                 }
                 if final { self.finish("ready") }
-                else if failed { self.finish("error", "recognition-failed") }
+                else if let failureCode { self.finish("error", failureCode) }
             }
         }
         cancelRecognition = { recognition.cancel() }
@@ -192,7 +212,7 @@ public typealias DeckSpeechCallback = @convention(c) (UInt64, UnsafePointer<CCha
                     try await analyzer.finalizeAndFinishThroughEndOfInput()
                     await self?.results?.value
                     self?.finish("ready")
-                } catch { self?.finish("error", "recognition-failed") }
+                } catch { self?.finish("error", deckSpeechErrorCode(error)) }
             }
         }
         results = Task { [weak self] in
@@ -205,7 +225,7 @@ public typealias DeckSpeechCallback = @convention(c) (UInt64, UnsafePointer<CCha
                     if self.text.utf8.count > 65_536 { self.finish("error", "text-limit"); return }
                     self.publish(self.stopping ? "stopping" : "recording")
                 }
-            } catch { self?.finish("error", "recognition-failed") }
+            } catch { self?.finish("error", deckSpeechErrorCode(error)) }
         }
         try await analyzer.start(inputSequence: stream)
         guard active else { await analyzer.cancelAndFinishNow(); return }

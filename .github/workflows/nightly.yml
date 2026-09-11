@@ -112,7 +112,10 @@ jobs:
 
   test:
     needs: resolve
-    runs-on: macos-14
+    runs-on: macos-15
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+      DECK_REQUIRE_MODERN_SPEECH: "1"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -140,17 +143,20 @@ jobs:
             node --check "$file"
           done
           scripts/ui-tests
+          scripts/test-speech-bridge
           node app/ui/js/check.mjs
           python3 -m unittest scripts/test_release_tools.py
           scripts/check-workflows
 
   build-sign:
     needs: [resolve, test]
-    runs-on: macos-14
+    runs-on: macos-15
     environment: nightly
     permissions:
       contents: read
     env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+      DECK_REQUIRE_MODERN_SPEECH: "1"
       CANDIDATE_SHA: ${{ needs.resolve.outputs.sha }}
       CANDIDATE_TAG: ${{ needs.resolve.outputs.tag }}
       CANDIDATE_VERSION: ${{ needs.resolve.outputs.version }}
@@ -173,7 +179,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             app/src-tauri/target
-          key: ${{ runner.os }}-nightly-cargo-${{ hashFiles('app/src-tauri/Cargo.lock') }}
+          key: ${{ runner.os }}-nightly-xcode26.3-cargo-${{ hashFiles('app/src-tauri/Cargo.lock') }}
       - name: Build, sign, notarize app and updater archive
         uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0
         env:

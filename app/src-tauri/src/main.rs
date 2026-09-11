@@ -275,6 +275,7 @@ fn main() {
             voice::voice_stop,
             voice::voice_cancel,
             voice::voice_deliver,
+            links::voice_open_settings,
             documents::load_board,
             documents::save_board,
             documents::load_settings,

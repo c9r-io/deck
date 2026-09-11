@@ -1,7 +1,9 @@
 // One microphone owner. Capture epochs reject late replies independently of
 // session binding. Closing cancels promptly; draft actions await native cleanup
 // before any paste. Pending start replies must release their ids before reuse.
-import { voiceRecording, voiceError, joinVoiceDraft } from './voice-state-model.js';
+// A setup failure opens its settings once for this explicit recording attempt,
+// after cleanup. Stale callbacks and restored drafts never open settings.
+import { voiceRecording, voiceError, joinVoiceDraft, voiceSettingsTarget } from './voice-state-model.js';
 
 export function createVoiceRecorder(deps) {
   const { invoke, changed } = deps;
@@ -11,6 +13,11 @@ export function createVoiceRecorder(deps) {
   let pendingStart = Promise.resolve(), pendingCancel = Promise.resolve();
   const cancelNative = id => (pendingCancel = invoke('voice_cancel', { id }).catch(() => {}));
   const clearPoll = () => { if (timer !== null) unschedule(timer); timer = null; };
+  const openSetup = async owner => {
+    const kind = voiceSettingsTarget(owner.error);
+    // The original error retains the manual settings path if opening fails.
+    if (kind) await invoke('voice_open_settings', { kind }).catch(() => {});
+  };
   async function poll(owner, revision, id) {
     try {
       const result = await invoke('voice_snapshot', { id });
@@ -22,7 +29,10 @@ export function createVoiceRecorder(deps) {
       if (result.code) owner.error = voiceError(result.code);
       if (voiceRecording(owner.phase)) timer = schedule(() => poll(owner, revision, id));
       else { owner.recordingId = null; await cancelNative(id); }
-      if (epoch === revision) changed();
+      if (epoch === revision) {
+        changed();
+        if (owner.phase === 'error') await openSetup(owner);
+      }
     } catch (_) {
       if (epoch !== revision) return;
       owner.phase = 'error'; owner.error = 'operation-failed'; owner.recordingId = null;
@@ -42,6 +52,7 @@ export function createVoiceRecorder(deps) {
     } catch (error) {
       if (epoch !== revision) return;
       owner.phase = 'error'; owner.error = voiceError(error); changed();
+      await openSetup(owner);
     }
   }
 

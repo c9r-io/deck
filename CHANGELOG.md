@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 0.6.5 — 2026-09-11 (Nightly)
+
+- Voice input reports disabled macOS Dictation with directions to enable it in
+  System Settings → Keyboard, instead of a generic recognition interruption.
+  Wrapped native errors retain this guidance; drafts stay available for retry.
+- Failed recording setup opens the relevant macOS microphone, Speech Recognition
+  or Dictation settings, with a button to reopen it. Release builds require the
+  modern speech toolchain; CI and nightly now select Xcode 26.3 explicitly so a
+  locally tested `SpeechAnalyzer` path is not silently omitted from distribution.
+
 ## 0.6.4 — 2026-09-11 (Nightly)
 
 - Voice drafts recover from a replaced session on the next explicit Insert/Send

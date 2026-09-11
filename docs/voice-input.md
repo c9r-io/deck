@@ -82,12 +82,30 @@ available text, which may be incomplete. A finalization timeout is 15 seconds.
   explicitly set. Unsupported configurations show an error, never a cloud
   fallback. macOS 11 can still run Deck and edit drafts, but recording is
   unavailable (the native bridge needs the system Swift concurrency runtime).
-- Building with an older Swift compiler uses the local legacy path. Build with
-  Swift 6.2+ and the macOS 26 SDK to include the modern path.
+- The legacy recognizer also depends on macOS Dictation being enabled. If it
+  returns `kLSRErrorDomain / 201`, enable **System Settings → Keyboard →
+  Dictation**, then explicitly start recording again. This system requirement
+  applies equally to shell and agent sessions and is separate from microphone
+  and Speech Recognition app permissions. Deck now shows specific setup guidance
+  for that error, including when wrapped by another framework error.
+- Release builds require Swift 6.2+ and the macOS 26 SDK, and fail compilation
+  instead of silently omitting the modern path. CI and nightly builds select
+  Xcode 26.3 on macOS 15 explicitly (`DECK_REQUIRE_MODERN_SPEECH=1` also enforces
+  this in debug tests). Older developer toolchains can still build legacy debug
+  apps. A new OS alone cannot enable a modern path omitted at build time:
+  the installed 0.6.4 investigated here used SDK 14.5, while the working local
+  isolated bundle used SDK 26.5 and included `SpeechAnalyzer`.
 - Mic permission is requested on explicit recording only. The legacy recognizer
   also requests Speech Recognition permission. Denials have settings guidance.
   Release and development bundles carry purpose strings and Audio Input
   entitlement; no hardened-runtime exception for unsigned code or JIT is added.
+- After an explicit recording attempt fails because microphone access, Speech
+  Recognition access or system Dictation is disabled, Deck releases capture and
+  opens the corresponding System Settings pane once. The error also offers
+  **Open System Settings** for reopening it. Returning to a draft never opens
+  settings by itself. If the system cannot open the pane, the manual path remains
+  visible. Permission toggles and Dictation enablement are completed by the user;
+  returning to Deck does not automatically record or send.
 - There are no external speech API credentials or audio uploads. Audio buffers
   and transcripts are transient; no recordings or drafts are written to disk or
   logs. A transcript reaches the selected CLI only when the user sends/inserts
@@ -98,6 +116,10 @@ enterprise EDR policy will permit microphone access. Test the signed distributio
 in the target environment.
 
 ## Validation
+
+`scripts/test-speech-bridge` compiles the production Swift bridge and exercises
+direct/wrapped Dictation-disabled errors, unrelated errors and bounded error
+traversal without requesting microphone access. It runs in CI and the nightly gate.
 
 `scripts/ui-tests` covers recorder/target lifecycle, layout state preservation,
 session switching during recording and delivery, late callbacks, cancellation,

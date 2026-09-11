@@ -41,6 +41,8 @@ const dictionary = {
   "voice.notice.ambiguous": "无法确认消息是否已发送，草稿已保留。请先查看终端；确定需要再次发送时，再点击“检查终端后重试”。",
   "voice.error.microphone-denied": "尚未获得麦克风使用权限。请在系统设置 → 隐私与安全性 → 麦克风中允许此应用。",
   "voice.error.speech-denied": "尚未获得语音识别权限。请在系统设置 → 隐私与安全性 → 语音识别中允许此应用。",
+  "voice.error.dictation-disabled": "系统听写未启用，无法开始本地语音识别。请在系统设置 → 键盘 → 听写中启用听写，然后重试。已有草稿已保留。",
+  "voice.openSettings": "打开系统设置",
   "voice.error.microphone-unavailable": "无法从麦克风录音。请检查麦克风是否已连接，并在系统声音设置中确认输入设备。",
   "voice.error.local-unavailable": "当前设备暂时无法在本机识别该语言。请尝试其他识别语言，或直接输入文字。音频不会上传。",
   "voice.error.recognition-failed": "语音识别中断，已有文字保留在草稿中。请检查是否有遗漏，再继续录音或发送。",

@@ -9,6 +9,7 @@ import { onLocaleChange, t } from './i18n.js';
 import { createVoiceComposer, voiceBusy, voiceRecording, voiceCanAct } from './voice-model.js';
 
 import { VOICE_LANGUAGE_NAMES } from './voice-preferences-model.js';
+import { voiceSettingsTarget } from './voice-state-model.js';
 
 export let voiceComposer = null;
 
@@ -33,6 +34,8 @@ export function initVoice(deps) {
     $('voice-clear').disabled = !voiceCanAct(s);
     $('voice-retry').disabled = !voiceCanAct(s) || !s.target || s.bindingExpired;
     $('voice-retry').hidden = !s.needsConfirmation;
+    $('voice-open-settings').hidden = !voiceSettingsTarget(s.error);
+    $('voice-open-settings').disabled = busy;
     const language = $('voice-language');
     if ([...language.options].map(option => option.value).join(',') !== s.languages.join(',')) {
       language.replaceChildren(...s.languages.map(code => {
@@ -73,6 +76,11 @@ export function initVoice(deps) {
   $('voice-stop').onclick = () => controller.stop();
   $('voice-close').onclick = () => { controller.close(); button.focus(); };
   $('voice-retry').onclick = () => controller.retry();
+  $('voice-open-settings').onclick = async () => {
+    if (voiceBusy(controller.state.phase)) return;
+    const kind = voiceSettingsTarget(controller.state.error);
+    if (kind) await inv('voice_open_settings', { kind }).catch(() => {});
+  };
   $('voice-clear').onclick = async () => {
     const owner = controller.state;
     await controller.clear();

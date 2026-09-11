@@ -10,7 +10,7 @@ const other = { session: 'deck-voice-b', cardId: 'b', title: 'B' };
 const tick = () => new Promise(resolve => setTimeout(resolve, 0));
 function setup() {
   ids.clear(); const calls = [], events = new Map(), native = new Map();
-  let selected = target, generation = 1, serial = 0, outcome = 'submitted', phase = 'ready';
+  let selected = target, generation = 1, serial = 0, outcome = 'submitted', phase = 'ready', code = '';
   const bindings = new Map();
   globalThis.window = {
     addEventListener: (name, fn) => events.set(name, fn),
@@ -20,7 +20,7 @@ function setup() {
         calls.push([cmd, args]);
         if (cmd === 'voice_bind') { const id = ++serial; bindings.set(id, generation); return { id, process: 'zsh' }; }
         if (cmd === 'voice_start') return ++serial;
-        if (cmd === 'voice_snapshot') return { id: args.id, status: phase, text: 'spoken draft' };
+        if (cmd === 'voice_snapshot') return { id: args.id, status: phase, text: 'spoken draft', code };
         if (cmd === 'voice_deliver') {
           if (bindings.get(args.targetId) !== generation) throw 'target-expired';
           return outcome === 'submitted' && !args.submit ? 'inserted' : outcome;
@@ -38,9 +38,31 @@ function setup() {
     emit: (name, detail) => events.get(name)?.({ detail }),
     select: value => { selected = value; return events.get('deck-voice-session-changed')(); },
     phase: value => { phase = value; },
+    error: value => { phase = 'error'; code = value; },
     replace: () => { generation++; }, outcome: value => { outcome = value; },
   };
 }
+
+test('recording permission failures open the right settings once and expose a manual reopen button', async () => {
+  for (const [code, kind] of [['microphone-denied', 'microphone'], ['speech-denied', 'speech'], ['dictation-disabled', 'dictation']]) {
+    const f = setup(); f.error(code); await f.element('voice-btn').onclick();
+    const opened = () => f.calls.filter(([cmd]) => cmd === 'voice_open_settings');
+    assert.deepEqual(opened(), [['voice_open_settings', { kind }]]);
+    assert.equal(f.element('voice-open-settings').hidden, false);
+    assert.equal(f.model.state.error, code);
+    f.model.layout('right'); f.model.edit('keep');
+    assert.equal(opened().length, 1, 'rerendering never reopens settings');
+    await f.element('voice-close').onclick(); await f.element('voice-btn').onclick();
+    assert.equal(opened().length, 1, 'restoring a nonempty draft never reopens settings');
+    await f.element('voice-open-settings').onclick();
+    assert.equal(opened().length, 2);
+    assert.equal(f.model.state.draft, 'keep');
+  }
+  const f = setup(); f.error('recognition-failed'); await f.element('voice-btn').onclick();
+  assert.equal(f.element('voice-open-settings').hidden, true);
+  await f.element('voice-open-settings').onclick();
+  assert.ok(!f.calls.some(([cmd]) => cmd === 'voice_open_settings'));
+});
 
 test('microphone, editor and placement buttons execute production handlers on one mounted editor', async () => {
   const f = setup(); await f.element('voice-btn').onclick();

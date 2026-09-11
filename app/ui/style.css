@@ -357,7 +357,7 @@ body.side-collapsed .side-new .label { display: none; }
 .voice-layouts button { padding: 4px 7px; border-radius: 4px; color: var(--muted); }
 .voice-layouts button[aria-pressed="true"] { color: var(--accent); background: var(--sel); }
 .voice-feedback { flex-wrap: wrap; }
-#voice-retry { font-size: 0.85rem; padding: 3px 7px; margin-left: auto; flex: none; }
+#voice-retry, #voice-open-settings { font-size: 0.85rem; padding: 3px 7px; margin-left: auto; flex: none; }
 .voice-state-row { justify-content: space-between; }
 #voice-status { color: var(--muted); font-size: 0.9rem; }
 #voice-panel[data-phase="recording"] #voice-status { color: var(--danger); }
