@@ -27,9 +27,14 @@ different port.
 
 - `site.config.json` pins the guide version and immutable source reference.
   Document the shipped baseline, not whatever is newest on main or Nightly.
-- Update paired chapters together when promoting a release. Check defaults,
+- Review the same facts in both languages when promoting a release. Check defaults,
   menu labels, signal semantics, failure actions and data compatibility against
   that exact release; older changelog entries are not current specifications.
+- Write Chinese from the reader's actual situation, independently of English
+  sentence structure and headings. Prefer concrete actions and complete sentences
+  over engineering shorthand or slogans that tell the reader how to feel. Keep
+  quoted UI labels exact, and preserve behavior, defaults and recovery conditions
+  when making wording more natural. Published section anchors should remain usable.
 - Keep the homepage focused on arranging work, checking less and stepping in.
   Detailed timing/target rules belong in the guide. The homepage signal example
   uses fictional tasks and is explicitly labeled as a simplified illustration.
