@@ -69,7 +69,7 @@ export async function buildGuides(root, output, config) {
 <nav class="chapter-pagination" aria-label="${zh ? '前后章节' : 'Previous and next chapters'}">${previous ? `<a href="${guidePath(locale, previous.slug)}"><span>${zh ? '上一章' : 'Previous'}</span>← ${escapeHtml(previous.title)}</a>` : '<span></span>'}${next ? `<a href="${guidePath(locale, next.slug)}"><span>${zh ? '下一章' : 'Next'}</span>${escapeHtml(next.title)} →</a>` : `<a href="${guidePath(locale, 'index')}">${zh ? '返回指南' : 'Back to the guide'} →</a>`}</nav>
 <p class="guide-source">${zh ? '适用于 deck 0.6.6，操作方式与 deck 0.6.5 相同。更多技术说明：' : 'Based on deck 0.6.5 functionality; also applies to 0.6.6. Technical reference: '}<a href="${config.githubUrl}/blob/${config.guideRef}/README.md">README ↗</a> · <a href="${config.feedbackUrl}">${zh ? '反馈问题' : 'Report an issue'}</a></p></main>
 <aside class="guide-toc"><nav aria-label="${zh ? '本页目录' : 'On this page'}"><p>${zh ? '本页内容' : 'On this page'}</p>${toc}</nav></aside>
-</div><footer class="site-footer"><div class="shell footer"><a class="brand" href="${home}">▦ deck</a><span>${zh ? '集中管理 CLI session，减少来回查看。' : 'Less checking. Know when to step in.'}</span><div class="footer-links"><a href="${home}privacy/">${zh ? '隐私' : 'Privacy'}</a><a href="${config.githubUrl}">GitHub</a></div></div></footer>
+</div><footer class="site-footer"><div class="shell footer"><a class="brand" href="${home}">▦ deck</a><span>${zh ? '本地终端与 session 管理。' : 'Local terminals and session management.'}</span><div class="footer-links"><a href="${home}privacy/">${zh ? '隐私' : 'Privacy'}</a><a href="${config.githubUrl}">GitHub</a></div></div></footer>
 </body></html>`;
       const folder = path.join(output, route);
       await mkdir(folder, { recursive: true });

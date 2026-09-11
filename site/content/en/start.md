@@ -1,19 +1,19 @@
 # Start your first task
 
-Begin work in a real terminal, then return to the Board. Each card represents a persistent session.
+Open a session to use deck as an ordinary terminal. Each card represents a terminal on your Mac, and its programs continue running when you return to the Board.
 
 ## Install and prepare
 
 1. [Download Stable](https://github.com/c9r-io/deck/releases/latest), open the DMG and drag deck to Applications. Releases are signed and Apple-notarized; Apple Silicon Macs are currently supported.
 2. Open deck. No deck account is needed, and tmux is included.
-3. Prepare the CLI you want to run. deck provides the terminal and controls; installation, sign-in, model access and charges belong to the CLI you choose. You can also start with a plain shell.
+3. You can use the shell without configuring additional features. If you want an agent, install and sign in to its CLI separately; model access and charges belong to that tool.
 
 ## Create and run
 
 1. Select a project and click **＋ New session**. Without project defaults, the shell opens in your home directory.
-2. Change to your working directory in the terminal and run an installed CLI, such as `claude` or `codex`.
-3. Enter a task as you would in any terminal. Double-click the title to rename it, for example “Review changes”.
-4. Use the back button to return to the Board. The agent keeps running in its session. Click the card to return to it.
+2. Run your usual commands: `pwd` shows the current directory, `ls` lists files, and `cd` changes directories. You can also run an installed CLI such as `claude` or `codex`.
+3. Run a script or enter an agent prompt as you normally would. Double-click the title to rename it, for example “Review changes”.
+4. Use the back button to return to the Board. Programs keep running in the session. Click the card to return to it.
 
 Board groups are manual. Drag cards to place them, and click a group's empty area to choose where new sessions go. Live status never moves a card.
 

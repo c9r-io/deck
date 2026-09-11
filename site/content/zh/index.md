@@ -1,12 +1,16 @@
 # 使用指南
 
-从打开第一个 session，到安排后续 prompt、查看任务状态，这里介绍 deck 的日常用法。可以从头开始，也可以直接查找遇到的问题。
+deck 是本地终端外面的一层管理界面。可以照常用它运行命令，也可以把多个任务的 session 按项目整理起来。这里介绍基本操作和一些可选功能。
 
-## 先完成一个任务
+<span id="先完成一个任务" aria-hidden="true"></span>
+
+## 先打开一个终端
 
 [开始第一个任务 →](/zh/guide/start/)
 
-先用一个平时就在做的任务熟悉 deck：创建 session，启动常用的 CLI，再试试返回看板、查看进展。deck 已内置 tmux；Claude Code、Codex 等 CLI 需要另外安装和配置。
+创建 session 后就会进入普通 shell，可以直接运行平时的命令。列表、自动化和 agent 集成都不需要先配置，想用时再了解即可。deck 已内置 tmux；Claude Code、Codex 等 CLI 需要另外安装和配置。
+
+deck 不提供云服务或云账号，也没有在远端运行任务的服务器。shell、程序和 session 都在你的 Mac 上。使用的 CLI 如果需要连接模型服务，仍按它自己的方式安装和登录。
 
 ## 按你现在的问题查找
 
