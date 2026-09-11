@@ -166,6 +166,12 @@ section { scroll-margin-top: 90px; }
 .section-head { max-width: 720px; margin-bottom: 2.8rem; }
 .section-head h2 { margin-bottom: 1rem; font-size: clamp(2rem, 4vw, 3.2rem); }
 .section-head p { margin: 0; color: var(--muted); font-size: 1.05rem; }
+.demo { padding-top: 0; }
+.demo-player { max-width: 960px; margin: 0 auto; }
+.demo-player video { display: block; width: 100%; height: auto; aspect-ratio: 1600 / 1110; border: 1px solid var(--line); border-radius: 14px; background: #0b0f13; }
+.demo-player video:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
+.demo-player figcaption { margin-top: 1rem; color: var(--muted); font-size: .875rem; line-height: 1.7; }
+.demo-player figcaption a { color: var(--accent); text-underline-offset: .2em; }
 .feature-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 1rem; }
 .feature { min-height: 250px; padding: clamp(1.4rem, 3vw, 2rem); border: 1px solid var(--line); border-radius: 14px; background: linear-gradient(145deg, rgba(27,36,48,.9), rgba(21,27,35,.65)); }
 .feature-number { color: var(--accent); font: 700 .72rem var(--mono); }

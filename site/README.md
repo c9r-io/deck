@@ -23,6 +23,15 @@ npm run preview
 The preview listens on `http://127.0.0.1:4173` by default. Set `PORT` to use a
 different port.
 
+## Homepage demo
+
+Both homepages embed the same local 26-second recording before the feature
+section. The video uses native controls and `preload="none"`; it does not
+autoplay or load a third-party player. Its poster and MP4 live in
+`src/assets/demo/`. The recording has a Chinese interface and burned-in Chinese
+captions, which the English caption identifies. Each page includes a text
+summary of the flow and a direct MP4 link.
+
 ## Content maintenance
 
 - `site.config.json` pins the guide version and immutable source reference.
