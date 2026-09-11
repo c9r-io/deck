@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { readFile, stat } from 'node:fs/promises';
+import { readFile, readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
+import { renderMarkdown } from '../scripts/guides.mjs';
 
 const exec = promisify(execFile);
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -14,7 +15,16 @@ const config = JSON.parse(await readFile(path.join(root, 'site.config.json'), 'u
 
 await exec(process.execPath, ['scripts/build.mjs'], { cwd: root });
 
-const routes = ['index.html', 'zh/index.html', 'privacy/index.html', 'zh/privacy/index.html', '404.html'];
+async function htmlRoutes(folder, prefix = '') {
+  const result = [];
+  for (const entry of await readdir(folder, { withFileTypes: true })) {
+    const relative = path.join(prefix, entry.name);
+    if (entry.isDirectory()) result.push(...await htmlRoutes(path.join(folder, entry.name), relative));
+    else if (entry.name.endsWith('.html')) result.push(relative);
+  }
+  return result;
+}
+const routes = await htmlRoutes(dist);
 
 test('build emits every public route and infrastructure file', async () => {
   for (const file of [...routes, 'assets/site.css', 'assets/og.png', 'assets/icon.svg', 'assets/icon-180.png', 'favicon.ico', 'robots.txt', 'sitemap.xml', '_headers', '_redirects']) {
@@ -39,7 +49,7 @@ test('pages have language, metadata, navigation, and resolved config', async () 
   }
 });
 
-test('first version contains no analytics, cookies, remote assets, or executable JavaScript', async () => {
+test('every route contains no analytics, remote assets, or executable JavaScript', async () => {
   for (const route of routes) {
     const html = await readFile(path.join(dist, route), 'utf8');
     assert.doesNotMatch(html, /<script\b/i, route);
@@ -76,16 +86,53 @@ test('security headers prohibit telemetry connections', async () => {
   assert.match(headers, /form-action 'none'/);
 });
 
-test('every root-relative page link resolves in the static build', async () => {
+test('every local page link and fragment resolves in the static build', async () => {
   for (const route of routes) {
     const html = await readFile(path.join(dist, route), 'utf8');
     for (const [, href] of html.matchAll(/href="([^"]+)"/g)) {
-      if (!href.startsWith('/') || href.startsWith('//')) continue;
-      const pagePath = href.split('#', 1)[0];
-      if (!pagePath || pagePath.startsWith('/assets/')) continue;
+      if ((!href.startsWith('/') && !href.startsWith('#')) || href.startsWith('//')) continue;
+      const [pagePath, fragment] = href.split('#');
+      if (pagePath.startsWith('/assets/')) continue;
       const bare = pagePath.replace(/^\//, '').replace(/\/$/, '');
-      const relative = pagePath === '/' ? 'index.html' : path.extname(bare) ? bare : `${bare}/index.html`;
+      const relative = !pagePath ? route : pagePath === '/' ? 'index.html' : path.extname(bare) ? bare : `${bare}/index.html`;
       assert.equal((await stat(path.join(dist, relative))).isFile(), true, `${route} -> ${href}`);
+      if (fragment) {
+        const target = await readFile(path.join(dist, relative), 'utf8');
+        assert.ok(target.includes(`id="${decodeURIComponent(fragment)}"`), `${route} -> missing fragment ${href}`);
+      }
     }
   }
+});
+
+test('both languages publish all six topics, overview, metadata and version-scoped references', async () => {
+  const topics = ['', 'start/', 'attention/', 'prompts/', 'sessions/', 'automations/', 'input-and-settings/'];
+  const sitemap = await readFile(path.join(dist, 'sitemap.xml'), 'utf8');
+  const redirects = await readFile(path.join(dist, '_redirects'), 'utf8');
+  for (const topic of topics) {
+    for (const locale of ['', 'zh/']) {
+      const route = `${locale}guide/${topic}`;
+      const html = await readFile(path.join(dist, route, 'index.html'), 'utf8');
+      assert.ok(html.includes(`<html lang="${locale ? 'zh-Hans' : 'en'}">`));
+      assert.equal([...html.matchAll(/<h1\b/g)].length, 1);
+      assert.match(html, /aria-current="page"/);
+      assert.match(html, /deck 0\.6\.5/);
+      assert.ok(html.includes(`/blob/${config.guideRef}/README.md`));
+      assert.ok(html.includes(`rel="canonical" href="${config.siteUrl}/${route}"`));
+      assert.ok(html.includes(`hreflang="${locale ? 'en' : 'zh-Hans'}"`));
+      assert.ok(sitemap.includes(`<loc>${config.siteUrl}/${route}</loc>`));
+      assert.ok(redirects.includes(`/${route.slice(0, -1)} /${route} 301`));
+    }
+  }
+  // The Slack placeholders are user-authored template syntax, not unresolved site config.
+  for (const route of ['guide/automations/', 'zh/guide/automations/']) {
+    assert.match(await readFile(path.join(dist, route, 'index.html'), 'utf8'), /\{\{msg\.text\}\}/);
+  }
+});
+
+test('Markdown supports stable Unicode anchors, duplicate headings and rejects missing structure', () => {
+  const page = renderMarkdown('# Guide\n\nLead.\n\n## 下一步\n\nOne.\n\n## 下一步\n\nTwo.');
+  assert.deepEqual(page.headings.map(item => item.id), ['下一步', '下一步-2']);
+  assert.match(page.html, /id="下一步-2"/);
+  assert.throws(() => renderMarkdown('No title.'), /exactly one H1/);
+  assert.throws(() => renderMarkdown('# Only a title'), /introductory paragraph/);
 });

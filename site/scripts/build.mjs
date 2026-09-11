@@ -1,6 +1,7 @@
 import { cp, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { buildGuides } from './guides.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, '..');
@@ -46,4 +47,5 @@ async function renderDirectory(from, to) {
 
 await rm(output, { recursive: true, force: true });
 await renderDirectory(source, output);
-console.log(`Built deck landing page in ${output}`);
+await buildGuides(root, output, config);
+console.log(`Built deck website and guides in ${output}`);

@@ -30,5 +30,6 @@ jobs:
       - name: Test and build static site
         working-directory: site
         run: |
+          npm ci
           npm test
           npm run build
