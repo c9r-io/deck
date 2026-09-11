@@ -226,7 +226,13 @@ fn delivery_outcomes_preserve_ambiguity_and_multiline_requires_paste_mode() {
         );
         assert!(busy.lock_or_recover().is_empty());
         if io.calls.borrow().len() > 1 {
-            assert_eq!(io.calls.borrow()[1][3], "first\nsecond");
+            assert_eq!(*io.inputs.borrow(), [b"first\nsecond".to_vec()]);
+            assert!(!io
+                .calls
+                .borrow()
+                .iter()
+                .flatten()
+                .any(|arg| arg.contains("first")));
         }
     }
 }

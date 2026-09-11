@@ -173,15 +173,25 @@ pub(crate) fn tmux(args: &[&str]) -> Result<String, DeckError> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-/// Run tmux with bounded caller-owned bytes on stdin. This is used for shell
-/// recovery so private scrollback never appears in argv, an environment
+/// Run tmux with bounded caller-owned bytes on stdin. Prompt delivery and shell
+/// recovery use this so private text never appears in argv, an environment
 /// variable, or a temporary file. `start-server ; load-buffer ... - ;
 /// new-session ...` may be submitted as one batch, which also keeps a newly
 /// spawned zero-session server alive until the restored pane exists.
 pub(crate) fn tmux_with_stdin(args: &[&str], input: &[u8]) -> Result<String, DeckError> {
     let conf = tmux_conf();
-    let mut child = Command::new(tmux_program()?)
-        .args(["-f", &conf, "-L", socket()])
+    let mut command = Command::new(tmux_program()?);
+    command.args(["-f", &conf, "-L", socket()]);
+    command_with_stdin(&mut command, args, input)
+}
+
+/// Shared pipe implementation; isolated tests supply their own tmux socket.
+pub(super) fn command_with_stdin(
+    command: &mut Command,
+    args: &[&str],
+    input: &[u8],
+) -> Result<String, DeckError> {
+    let mut child = command
         .args(args)
         .env("LANG", "en_US.UTF-8")
         .stdin(Stdio::piped())

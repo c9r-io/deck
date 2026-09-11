@@ -2,9 +2,11 @@
 //! immediate input owns its draft. Both pin identity/foreground and separate
 //! paste from Enter. Errors after transport begins can be ambiguous: callers
 //! must not blindly retry. Interactive multi-line input requires paste mode.
+//! Prompt bytes travel only on stdin, never in process arguments, environment
+//! variables or temporary files. Buffer loading and guarded paste share a batch.
 use crate::context::{self, PaneIdentity, RawProbe};
 use crate::error::{DeckError, ErrorKind};
-use crate::tmux::tmux_owned;
+use crate::tmux::{tmux_owned, tmux_with_stdin};
 use serde::Serialize;
 use std::time::Duration;
 
@@ -32,6 +34,7 @@ pub(crate) struct LiteralRequest<'a> {
 pub(crate) trait Transport {
     fn probe(&self, session: &str) -> Result<RawProbe, DeckError>;
     fn run(&self, args: &[String]) -> Result<String, DeckError>;
+    fn run_with_stdin(&self, args: &[String], input: &[u8]) -> Result<String, DeckError>;
     fn pause(&self, duration: Duration);
 }
 pub(crate) struct TmuxTransport;
@@ -41,6 +44,10 @@ impl Transport for TmuxTransport {
     }
     fn run(&self, args: &[String]) -> Result<String, DeckError> {
         tmux_owned(args)
+    }
+    fn run_with_stdin(&self, args: &[String], input: &[u8]) -> Result<String, DeckError> {
+        let args: Vec<_> = args.iter().map(String::as_str).collect();
+        tmux_with_stdin(&args, input)
     }
     fn pause(&self, duration: Duration) {
         std::thread::sleep(duration);
@@ -74,7 +81,6 @@ pub(crate) fn deliver_with(
             "delivery identity is invalid",
         ));
     }
-    let line = text.to_string();
     let buffer = format!("deck-send-{delivery}");
     // Pane/session ids can be reused after the entire tmux server exits. Put
     // the bytes in a uniquely named tmux buffer, then compare the FULL
@@ -124,20 +130,23 @@ pub(crate) fn deliver_with(
     };
     let yes = format!("paste-buffer -p -b {buffer} -d -t {}", pane.pane_id);
     let no = format!("delete-buffer -b {buffer}; display-message -p deck-context-refused");
-    let out = transport.run(&[
-        "set-buffer".into(),
-        "-b".into(),
-        buffer.clone(),
-        line,
-        ";".into(),
-        "if-shell".into(),
-        "-F".into(),
-        "-t".into(),
-        pane.pane_id.clone(),
-        condition.clone(),
-        yes,
-        no,
-    ]);
+    let out = transport.run_with_stdin(
+        &[
+            "load-buffer".into(),
+            "-b".into(),
+            buffer.clone(),
+            "-".into(),
+            ";".into(),
+            "if-shell".into(),
+            "-F".into(),
+            "-t".into(),
+            pane.pane_id.clone(),
+            condition.clone(),
+            yes,
+            no,
+        ],
+        text.as_bytes(),
+    );
     let refused = |stdout: &String| {
         stdout
             .lines()

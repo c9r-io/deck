@@ -50,7 +50,9 @@ agent is ready for a prompt: review the terminal, especially a permission menu,
 shell or editor. Multi-line interactive input requires the target program to
 enable bracketed paste, including for Insert only.
 
-The exact literal-paste implementation and per-session busy exclusion are
+Prompt text reaches tmux through a stdin pipe, never process arguments,
+environment variables or temporary files. The exact literal-paste implementation
+and per-session busy exclusion are
 shared with scheduled prompts, but interactive voice input has no schedule,
 quiet wait or one-minute rate limit. Prompt text is never evaluated by a Deck
 shell command. Send injects text and a separate Enter; it does not establish

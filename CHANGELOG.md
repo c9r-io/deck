@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Voice drafts and scheduled prompts pass text to tmux through stdin instead
+  of process arguments, preventing command-line auditing from collecting it.
+  Guarded paste, buffer cleanup and explicit retry behavior are preserved.
+
 ## 0.6.5 — 2026-09-11 (Nightly)
 
 - Voice input reports disabled macOS Dictation with directions to enable it in
