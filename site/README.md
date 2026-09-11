@@ -35,8 +35,13 @@ different port.
   over engineering shorthand or slogans that tell the reader how to feel. Keep
   quoted UI labels exact, and preserve behavior, defaults and recovery conditions
   when making wording more natural. Published section anchors should remain usable.
-- Keep the homepage focused on arranging work, checking less and stepping in.
-  Detailed timing/target rules belong in the guide. The homepage signal example
+- Lead with what deck is: a local terminal interface that also organizes multiple
+  task sessions. Ordinary shell use needs no agent integration or automation.
+  Describe optional features plainly, without slogans, emotional appeals or
+  promises of autonomous completion. Explain that deck has no cloud service,
+  cloud account or remote task-hosting server; distinguish the local tmux process
+  and user-selected CLI/integration network access. Detailed timing/target rules
+  belong in the guide. The homepage signal example
   uses fictional tasks and is explicitly labeled as a simplified illustration.
 - Keep agent observations, delivery and human inspection distinct. Include what
   the user must do next for uncertain, failed, stale or stopped states.

@@ -1,12 +1,14 @@
 # User guide
 
-Let work continue and save your attention for the moments that need your judgment. Start with one session, then look up each operation when you need it.
+deck is an interface around local terminals. Use it for ordinary commands, or organize multiple task sessions by project. This guide covers the basics and optional features.
 
 ## Start with one task
 
 [Start your first task →](/guide/start/)
 
-Create a session, launch a CLI you already use, then leave the terminal and return. deck includes tmux; install and configure agent CLIs such as Claude Code or Codex separately.
+Creating a session opens a shell where you can run your usual commands. Lists, automations and agent integrations can be configured later, if you want them. deck includes tmux; install and configure agent CLIs such as Claude Code or Codex separately.
+
+deck has no cloud service, cloud account or remote server hosting your tasks. Shells, programs and sessions run on your Mac. A CLI that uses a model service still needs its own setup and sign-in.
 
 ## Find the answer you need
 
