@@ -1,12 +1,35 @@
 # deck 简体中文指南
 
-面向日常使用的分主题说明见[网站使用指南](https://deck.c9r.io/zh/guide/)（0.6.5 功能基线，适用于 0.6.6 Stable）；本页跟随仓库当前版本。
+**deck 是一个原生 macOS 应用，方便你同时管理多个终端 agent session。** 在真实终端中运行 Claude Code、Codex 或其他 CLI，用看板整理任务，再从「待关注」找到需要回复或查看结果的 session。
 
-deck 是用于管理终端 agent session 的原生 macOS 控制台。每张卡片都对应一个真实、持久的 tmux session；看板里的栏目是手工分组，名称、位置和顺序由你决定；实时状态不会移动卡片。
+[官网](https://deck.c9r.io/zh/) · [26 秒真实演示](https://deck.c9r.io/zh/#demo) · [下载稳定版](https://github.com/c9r-io/deck/releases/latest) · [使用指南](https://deck.c9r.io/zh/guide/) · [English](../README.md)
+
+- **整理多个任务**：每张卡片都是真实的 tmux session，可以按项目分组，也可以分屏查看。卡片的位置和顺序由你决定。
+- **找到需要关注的 session**：启用 Claude Code 或 Codex 状态集成后，跨项目查看输入请求和本轮结束未读；未启用时只显示输出活动，安静不代表任务完成。
+- **退出应用，session 仍在运行**：重新打开 deck 可以继续查看；重启机器或后台 Shell 服务会结束运行中的进程。
+
+deck 在本机运行，已内置 tmux，无需 deck 账号，采用 MIT 许可证。Agent CLI 需要自行安装和登录，模型服务与费用由相应工具提供和收取。
+
+[![Deck 中的三个真实 Claude session，点击观看演示](../site/src/assets/demo/deck-0.6.6-poster.jpg)](https://deck.c9r.io/zh/#demo)
+
+*26 秒 Deck 0.6.6 实录：找到等待回复的 Claude，打开终端批准请求，查看结果。中文界面与字幕，无音频，已剪去等待时间。*
 
 ## 快速开始
 
-从 GitHub Releases 下载 `.dmg` 并拖入“应用程序”即可。应用已内置 tmux，无需另行安装。首次创建项目时，默认栏目会按当前语言命名为“需要关注 / 进行中 / 队列中 / 已搁置”；创建后这些名称就是你的数据，切换语言不会改名。
+需要 **Apple Silicon Mac，macOS 11 或更新版本**；当前不支持 Intel Mac。语音录音需要受支持的 macOS 12+ 本地识别配置，详见[语音输入说明](voice-input.md)。
+
+1. 打开[最新稳定版 Release](https://github.com/c9r-io/deck/releases/latest)，下载 `deck_<版本号>_aarch64.dmg`。
+2. 打开 DMG，将 **deck** 拖入「应用程序」，然后启动。应用经过签名与 Apple 公证，tmux 已包含在内。
+3. 选择项目，点击「＋ 新建 session」，用 `cd` 进入工作目录，再运行已安装的 `claude`、`codex` 或普通 shell 命令。
+4. 返回看板后任务继续运行，点击卡片即可回到终端。要查看 agent 输入请求和本轮结束状态，在「设置 → 集成与自动化」中启用对应的 Agent 状态。
+
+[完整首次任务指南](https://deck.c9r.io/zh/guide/start/) · [状态集成与信号说明](https://deck.c9r.io/zh/guide/attention/)
+
+首次创建项目时，默认栏目会按当前语言命名为「需要关注 / 进行中 / 队列中 / 已搁置」；创建后这些名称就是你的数据，切换语言不会改名。后续更新会在侧边栏提示，默认使用 Stable 通道。
+
+## 常用操作
+
+网站指南使用 0.6.5 功能基线，适用于 0.6.6 Stable；以下说明跟随仓库当前版本。
 
 - 点击“新建 session”进入 shell（项目设了默认目录/命令时，会在那个目录启动并发送一次该命令）。
 - Shell 恢复默认关闭；在设置中显式启用后，shell 回到提示符时，deck 才会低频保存当前目录和一段有上限的纯文本输出；

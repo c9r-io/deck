@@ -1,32 +1,49 @@
 # deck
 
-[User guide](https://deck.c9r.io/guide/) · [网站中文指南](https://deck.c9r.io/zh/guide/) · [仓库中文说明](docs/zh-Hans.md)
+**A native macOS app for managing multiple terminal agent sessions.** Run
+Claude Code, Codex, or other CLIs in persistent terminals, organize them on a
+board, and find the sessions that need your attention.
 
-The website guide covers Stable 0.6.6 using the 0.6.5 feature baseline. This README follows the current source and remains the canonical technical specification.
+[Website](https://deck.c9r.io/) · [Watch the 26-second demo](https://deck.c9r.io/#demo) · [Download Stable](https://github.com/c9r-io/deck/releases/latest) · [User guide](https://deck.c9r.io/guide/) · [简体中文](docs/zh-Hans.md)
 
-**A native macOS command center for terminal agent sessions** — Claude Code,
-Codex, or any long-running CLI. Every card on the board is a real, persistent
-terminal session; the board shows which sessions have recent output, are quiet,
-or have stopped, so you decide where to look next.
+- **Keep tasks organized.** Each card is a real tmux session. Group cards by
+  project and open several terminals in split view; you control their placement.
+- **Find where to look next.** Enable Claude Code or Codex status integration
+  to see input requests and unread turn endings across projects. Without it,
+  deck shows output activity; silence alone does not mean a task is finished.
+- **Leave the app, keep sessions running.** Sessions survive quitting deck.
+  Restarting your Mac or its background shell service ends running processes.
 
-```
-┌ Attention ──────┐┌ Working ─────────┐┌ Queued ─────────┐┌ Parked ─────────┐
-│● fix flaky test ││● refactor auth   ││○ migration plan ││○ changelog pass │
-│  ⧗ quiet 3m     ││  ⏺ cargo test …  ││                 ││                 │
-│  inspect next   ││            812M  ││                 ││                 │
-└─────────────────┘└──────────────────┘└─────────────────┘└─────────────────┘
-```
+deck runs locally and includes tmux. Install and sign in to your preferred
+agent CLI separately; its model service and charges belong to that tool.
+No deck account is required. MIT licensed.
+
+[![Deck showing three real Claude sessions; click to watch the demo](site/src/assets/demo/deck-0.6.6-poster.jpg)](https://deck.c9r.io/#demo)
+
+*26 seconds recorded in Deck 0.6.6: find a waiting Claude session, open its
+terminal, approve a request, and read the result. Chinese interface and
+captions, no audio; waiting time is cut.*
 
 ## Install
 
-Download the latest `.dmg` from [Releases](https://github.com/c9r-io/deck/releases),
-drag to Applications, open. That's it:
+Requires **macOS 11 or later on Apple Silicon**. Intel Macs are not currently
+supported. Voice recording requires a supported macOS 12+ on-device speech
+configuration; see [voice input](docs/voice-input.md).
 
-- **Zero dependencies** — a statically linked tmux ships inside the app
-- **Signed & notarized** — no Gatekeeper prompts
-- **Self-updating** — new versions appear as a button in the sidebar
+1. Open the [latest Stable release](https://github.com/c9r-io/deck/releases/latest)
+   and download its `deck_<version>_aarch64.dmg` asset.
+2. Open the DMG, drag **deck** to **Applications**, then open deck. The app is
+   signed and Apple-notarized, and tmux is included.
+3. Select a project and click **＋ New session**. Use `cd` to enter your working
+   directory, then run an installed CLI such as `claude` or `codex`, or any
+   ordinary shell command.
+4. Return to the Board while it runs; click the card to reopen its terminal.
+   To see agent input requests and turn endings, enable the matching Agent
+   status option in **Settings → Integrations & automation**.
 
-Apple Silicon only for now.
+[First-task walkthrough](https://deck.c9r.io/guide/start/) · [Status integration and signals](https://deck.c9r.io/guide/attention/)
+
+Updates appear as a button in the sidebar. Stable is the default channel.
 
 ### Update channels
 
@@ -41,6 +58,9 @@ is required. See [release channels](docs/release-channels.md) for the complete
 operator and recovery guide.
 
 ## What it does
+
+The website guide covers Stable 0.6.6 using the 0.6.5 feature baseline. The
+technical reference below follows the current source and remains canonical.
 
 **Boards are manual groups, independent of live status.** Default groups per
 project remain *Attention* · *Working* · *Queued* · *Parked*. Their names,
