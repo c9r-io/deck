@@ -65,7 +65,7 @@ test('marketing copy keeps status and scheduler boundaries explicit', async () =
   assert.match(english, /quiet is not ready/i);
   assert.match(english, /app must be running/i);
   assert.match(english, /amber means the session has been quiet/i);
-  assert.match(chinese, /安静不等于 READY/i);
+  assert.match(chinese, /安静不代表程序已准备好/i);
   assert.match(chinese, /应用必须运行/i);
   assert.match(chinese, /琥珀色只说明 session/i);
 });
