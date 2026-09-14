@@ -879,6 +879,31 @@ export const selectionFinishFailureReason = error => {
   return 0;
 };
 export const selectionDimensionsChanged = error => String(error || '').includes('selection-dimensions-changed');
+/** A finish the backend refused because both endpoints walk to the same tmux
+ * position (`selection-missing-empty`): an empty range, which tmux reports as
+ * no selection. The drag was a click — never a failure, never a toast. */
+export const selectionFinishIsEmpty = error => String(error || '').includes('selection-missing-empty');
+
+/** Rows a native xterm selection spans, from its public position; 0 when unknown. */
+export const nativeSelectionRows = position => (Number.isFinite(position?.start?.y) && Number.isFinite(position?.end?.y)
+  ? Math.abs(position.end.y - position.start.y) + 1 : 0);
+
+/** The closed `native-end-*` label for an xterm word/line selection that went
+ * away, or null when Deck adopted it (wheel freeze) and nothing was lost.
+ * What Deck itself was doing wins (`cause`: a press/drag on this pane, Deck
+ * clearing it, pane disposal); then a buffer switch; then what xterm did in
+ * the same turn — terminal output trims it away while parsing, user input
+ * clears it right before `onData`. Anything else is `other`. */
+export function nativeSelectionEndLabel({ cause = null, bufferChanged = false, output = false, input = false } = {}) {
+  if (cause === 'adopted') return null;
+  if (cause === 'pointer') return 'native-end-pointer';
+  if (cause === 'deck') return 'native-end-deck';
+  if (cause === 'dispose') return 'native-end-dispose';
+  if (bufferChanged) return 'native-end-buffer';
+  if (output) return 'native-end-output';
+  if (input) return 'native-end-input';
+  return 'native-end-other';
+}
 
 /** Run one grid-bound selection command. `prepare` (size sync, cell lookup)
  * fails fast; `send` is retried after `invalidate` while the backend rejects

@@ -47,9 +47,16 @@
 // promoted drag, `onSelectionChange` clears any late compatibility-mouse xterm
 // selection so a second viewport-fixed highlight cannot survive.
 // ⌘C waits for the whole
-// chain and reads only the current token. Escape, input/composition, blur,
-// visibility, focus change, detach and disposal revoke the lease. Never add a
-// transparent textarea or dependency on xterm private internals.
+// chain and reads only the current token. Escape, input/composition, focus
+// change, detach and disposal revoke the lease. Window blur and a hidden
+// document end only a drag still in progress (its pointerup may never
+// arrive): a finished lease is immutable backend bytes and a native xterm
+// range is view state, so both survive an app switch and ⌘C copies them on
+// return, as in any macOS terminal. A drag whose two endpoints walk to the
+// same tmux position (`selection-missing-empty`: a click that crossed a cell
+// boundary and came back, both halves of one wide grapheme, two cells past a
+// line's text) is an empty range; it ends silently as the click it was.
+// Never add a transparent textarea or dependency on xterm private internals.
 // Gesture promotion is based on crossing a public terminal cell, never an
 // arbitrary CSS-pixel distance, and pointerup rechecks the final cell because
 // WebKit may coalesce the last pointermove. This is what keeps short one-row
@@ -85,14 +92,23 @@
 // selection; `update-rtt`
 // (--debug-logging only) reports one update's round trip and how many pointer
 // moves folded into it.
+// A native xterm word/line selection leaves no Deck state, so its life is
+// logged on its own: `native-select` (rows, click count of the press that
+// made it) and one `native-end-<reason>` (rows, age ms) — a press/drag on the
+// pane, user input, output that trimmed it away (xterm fires no event for
+// that; `writeParsed` notices), a buffer switch, Deck clearing it, disposal,
+// or other. A wheel freeze adopts it into a Deck lease and logs no end.
 import { duev, inv, uev } from './state.js';
 import { toast } from './dialogs.js';
 import {
   createTerminalSelectionModel,
+  nativeSelectionEndLabel,
+  nativeSelectionRows,
   retryOnStaleGrid,
   selectionCopyFailureCode,
   selectionEdgeScrollLines,
   selectionFinishFailureReason,
+  selectionFinishIsEmpty,
   selectionOwnerLabel,
   selectionStatusRows,
   terminalCellAt,
@@ -152,6 +168,15 @@ function terminalSelectionController(pane, onModeChange) {
     pointerDown: 0, promoted: 0, trustedClick: 0,
     compatibilityBlocked: 0, ended: 0,
   };
+  /* Native selection lifecycle (see the header). `native` is the live xterm
+     range Deck does not own; `xtermClearCause` names Deck's own clears while
+     they run; the last press and the input counter attribute xterm's. */
+  let native = null;
+  let xtermClearCause = null;
+  let pressAt = 0;
+  let pressDetail = 0;
+  let inputSeq = 0;
+  let inputDisposable = null;
 
   /* Selection lifecycle diagnostics. ⌘C only ever reports what it FOUND;
      without these, a copy that logs `terminal-copy keydown-none` cannot be
@@ -170,6 +195,21 @@ function terminalSelectionController(pane, onModeChange) {
   const clampCount = value => Math.max(0, Math.min(99999, Math.trunc(value) || 0));
   const sevPair = (detail, a, b) => uev('terminal-selection', detail, clampCount(a), clampCount(b));
   const dsevPair = (detail, a, b) => duev('terminal-selection', detail, clampCount(a), clampCount(b));
+
+  const logNativeEnd = (ended, label) => {
+    if (label) uev('terminal-selection', label, ended.rows, Math.min(Date.now() - ended.at, 3600000));
+  };
+  const endNative = label => {
+    const ended = native;
+    native = null;
+    if (ended) logNativeEnd(ended, label);
+  };
+  /* Every clear Deck issues goes through here so the selection-change handler
+     can tell it apart from one xterm made on its own. */
+  const clearXtermSelection = cause => {
+    xtermClearCause = cause;
+    try { pane.term.clearSelection(); } catch (e) { /* pane may be disposing */ } finally { xtermClearCause = null; }
+  };
 
   const queue = operation => {
     const pending = opChain.catch(() => {}).then(operation);
@@ -389,7 +429,7 @@ function terminalSelectionController(pane, onModeChange) {
     const generation = model.begin({ row: anchor.row, col: anchor.col });
     model.move({ row: active.row, col: active.col });
     setMode(true);
-    try { pane.term.clearSelection(); } catch (e) { /* already empty */ }
+    clearXtermSelection('pointer');
     if (pane.body.setPointerCapture) {
       try { pane.body.setPointerCapture(gesture.pointerId); } catch (e) { /* document capture remains */ }
     }
@@ -415,6 +455,8 @@ function terminalSelectionController(pane, onModeChange) {
   const pointerDown = event => {
     if (disposed || event.button !== 0) return;
     if (!terminalCell(pane, event.clientX, event.clientY)) return;
+    pressAt = Date.now();
+    pressDetail = Math.max(0, Math.min(9, event.detail || 0));
     /* This pointerdown is about to revoke a live selection (the paired
        `cancel-pointer` follows). Attribute WHERE it came from so a failed
        ⌘C can be traced to a synthetic/replayed event, a trackpad lift-off
@@ -524,7 +566,9 @@ function terminalSelectionController(pane, onModeChange) {
       renderOverlay();
       if (onModeChange) onModeChange(true, lastStatus, { dragging: false, frozen: true });
     })).catch(error => {
-      if (currentToken === token && !disposed) {
+      if (currentToken === token && !disposed && selectionFinishIsEmpty(error)) {
+        cancel(false, 'empty');
+      } else if (currentToken === token && !disposed) {
         uev('terminal-copy', selectionCopyFailureCode(error));
         sev('finish-failed', selectionFinishFailureReason(error));
         cancel(false, null);
@@ -532,9 +576,7 @@ function terminalSelectionController(pane, onModeChange) {
       }
     });
     setTimeout(() => {
-      if (currentToken === token) {
-        try { pane.term.clearSelection(); } catch (e) { /* disposed */ }
-      }
+      if (currentToken === token) clearXtermSelection('pointer');
     }, 0);
   };
 
@@ -590,9 +632,7 @@ function terminalSelectionController(pane, onModeChange) {
     // Repair disableStdin left by an older controller, but pointer selection
     // itself never owns keyboard input in this state machine.
     pane.term.options.disableStdin = false;
-    if (clearNative) {
-      try { pane.term.clearSelection(); } catch (e) { /* pane may be disposing */ }
-    }
+    if (clearNative) clearXtermSelection('deck');
     if (hadSelection && oldToken) {
       await queue(() => inv('terminal_selection_cancel', {
         name: pane.session, token: oldToken,
@@ -651,7 +691,7 @@ function terminalSelectionController(pane, onModeChange) {
       lastStatus = status;
       frozen = true;
       sev('freeze-ok', selectionStatusRows(status));
-      pane.term.clearSelection();
+      clearXtermSelection('adopted');
       renderOverlay();
       return true;
     } catch (error) {
@@ -690,6 +730,11 @@ function terminalSelectionController(pane, onModeChange) {
 
   const writeParsed = () => {
     parsedFrame++;
+    // xterm drops a range that scrolled out of its buffer without firing a
+    // selection change; a held press may have emptied it for the moment.
+    if (native && !gesture && !pane.term.hasSelection?.()) {
+      endNative(nativeSelectionEndLabel({ output: true }));
+    }
     renderOverlay();
   };
 
@@ -710,8 +755,11 @@ function terminalSelectionController(pane, onModeChange) {
     if (disposed) return;
     disposed = true;
     cancel(false, 'dispose');
+    endNative(nativeSelectionEndLabel({ cause: 'dispose' }));
     nativeSelectionDisposable?.dispose();
     nativeSelectionDisposable = null;
+    inputDisposable?.dispose();
+    inputDisposable = null;
     pane.body.removeEventListener('pointerdown', pointerDown, true);
     document.removeEventListener('pointermove', pointerMove, true);
     document.removeEventListener('pointerup', pointerEnd, true);
@@ -721,8 +769,9 @@ function terminalSelectionController(pane, onModeChange) {
     document.removeEventListener('visibilitychange', visibility);
     controllers.delete(api);
   };
-  const blur = () => cancel(true, 'blur');
-  const visibility = () => { if (document.hidden) cancel(true, 'hidden'); };
+  /* Only a drag in progress dies with the window (see the header). */
+  const blur = () => { if (gesture) cancel(false, 'blur'); };
+  const visibility = () => { if (document.hidden && gesture) cancel(false, 'hidden'); };
 
   pane.body.addEventListener('pointerdown', pointerDown, true);
   document.addEventListener('pointermove', pointerMove, true);
@@ -753,17 +802,49 @@ function terminalSelectionController(pane, onModeChange) {
   // native. Once Deck promotes that gesture, any late compatibility mouse
   // event must not leave a second, viewport-fixed xterm selection behind.
   nativeSelectionDisposable = pane.term.onSelectionChange?.(() => {
-    if ((gesture?.promoted || selected) && pane.term.hasSelection?.()) {
+    const has = !!pane.term.hasSelection?.();
+    if ((gesture?.promoted || selected) && has) {
       /* Direct evidence that WKWebView replayed the drag as late
          compatibility mouse events: an xterm selection appeared while Deck
          still owns one. `a` is the rows the doomed native range spanned. */
-      const position = pane.term.getSelectionPosition?.();
-      const span = Number.isFinite(position?.start?.y) && Number.isFinite(position?.end?.y)
-        ? Math.abs(position.end.y - position.start.y) + 1 : 0;
-      sev('native-cleared', span);
-      try { pane.term.clearSelection(); } catch (e) { /* pane may be disposing */ }
+      sev('native-cleared', nativeSelectionRows(pane.term.getSelectionPosition?.()));
+      clearXtermSelection('deck');
+      return;
     }
+    if (has) {
+      if (!native) {
+        native = {
+          at: Date.now(),
+          rows: nativeSelectionRows(pane.term.getSelectionPosition?.()),
+          buffer: pane.term.buffer.active.type,
+        };
+        uev('terminal-selection', 'native-select', native.rows,
+          Date.now() - pressAt < 1000 ? pressDetail : 0);
+      }
+      return;
+    }
+    if (!native) return;
+    const ended = native;
+    native = null;
+    const now = Date.now();
+    // xterm applies a click to its model at mousedown and may announce it
+    // only at mouseup, so a press counts while held and just after release.
+    const cause = xtermClearCause
+      || (gesture || now - pressAt < 150 || now - lastPointerUpAt < 150 ? 'pointer' : null);
+    const bufferChanged = pane.term.buffer.active.type !== ended.buffer;
+    if (cause || bufferChanged) {
+      logNativeEnd(ended, nativeSelectionEndLabel({ cause, bufferChanged }));
+      return;
+    }
+    // Input clears the range just before `onData`; output inside a parse,
+    // before `writeParsed`. Both land before this microtask.
+    const inputAt = inputSeq;
+    const frameAt = parsedFrame;
+    queueMicrotask(() => logNativeEnd(ended, nativeSelectionEndLabel({
+      input: inputSeq !== inputAt, output: parsedFrame !== frameAt,
+    })));
   });
+  inputDisposable = pane.term.onData?.(() => { inputSeq++; });
   controllers.add(api);
   return api;
 }

@@ -231,6 +231,18 @@ pub(crate) struct EndpointPlacement {
     pub(crate) moves: CopyCursorMoves,
 }
 
+/// Both walks end on the same tmux position, so the half-open range between
+/// them is empty and tmux reports NO selection (`selection_present` 0). A
+/// pointer that left its cell and came back, the two halves of one wide
+/// grapheme, and two cells past the end of a line's text all place both
+/// endpoints identically. Such a drag is a click: the caller ends it without
+/// building a selection instead of reporting one that tmux "cleared".
+pub(crate) fn placements_coincide(anchor: EndpointPlacement, active: EndpointPlacement) -> bool {
+    anchor.frame.scroll_position == active.frame.scroll_position
+        && anchor.frame.row == active.frame.row
+        && anchor.moves == active.moves
+}
+
 /// The ONE tmux command list that builds the real selection from two content
 /// endpoints (see the module contract). `current_scroll` is the viewport the
 /// pane shows now, so a viewport move is issued only when a frame differs
@@ -566,6 +578,29 @@ mod tests {
                 steps,
             },
         }
+    }
+
+    #[test]
+    fn a_wide_grapheme_or_past_the_line_end_places_both_endpoints_identically() {
+        let rows = frame(&["a中b", "short"]);
+        let at = |row: u32, col: u32| EndpointPlacement {
+            frame: EndpointFrame {
+                scroll_position: 0,
+                row,
+                offscreen: false,
+            },
+            moves: copy_cursor_moves(&rows, row, col),
+        };
+        assert!(placements_coincide(at(0, 1), at(0, 2)), "both halves of 中");
+        assert!(placements_coincide(at(1, 9), at(1, 30)), "past the text");
+        assert!(!placements_coincide(at(0, 0), at(0, 1)));
+        assert!(
+            !placements_coincide(at(0, 4), at(1, 0)),
+            "line end vs next row"
+        );
+        let mut other_frame = at(1, 9);
+        other_frame.frame.scroll_position = 3;
+        assert!(!placements_coincide(at(1, 9), other_frame));
     }
 
     fn joined(batch: &[String]) -> Vec<String> {

@@ -639,6 +639,38 @@ async function selectionSmoke(card) {
   await report('selection-repeat', repeated && typeof repeatedText === 'string'
     && repeatedText.length > 0, repeatedText?.length || 0, 0);
 
+  /* An app switch blurs the window. A finished selection survives it and
+     still copies on return; a drag still in progress ends, because its
+     pointerup may land in the other app and never arrive. */
+  const blurFrozen = repeated && pane.selection.isFrozen();
+  window.dispatchEvent(new Event('blur'));
+  const blurKept = blurFrozen && pane.selection.isFrozen()
+    && await copyTerminalSelection(pane) === repeatedText;
+  const cellCenter = col => rect.left + cellWidth * (col + 0.5);
+  screen.dispatchEvent(pointer('pointerdown', 77, cellCenter(2), rowY(singleAnchorRow + 1)));
+  document.dispatchEvent(pointer('pointermove', 77, cellCenter(6), rowY(singleAnchorRow + 1)));
+  const blurDragging = await waitFor(() => pane.selection.isDragging(), 3000);
+  window.dispatchEvent(new Event('blur'));
+  const blurEndedDrag = !pane.selection.isDragging() && !pane.selection.hasSelection();
+  document.dispatchEvent(pointer('pointerup', 77, cellCenter(6), rowY(singleAnchorRow + 1)));
+  await pane.selection.idle();
+  await report('selection-blur', blurKept && blurDragging && blurEndedDrag
+    && !pane.selection.hasSelection(), (blurKept ? 1 : 0) | (blurDragging ? 2 : 0)
+    | (blurEndedDrag ? 4 : 0), repeatedText?.length || 0);
+
+  /* A press that crosses into the next cell and is released back in its own
+     is an empty range, i.e. a click: no selection and no failure toast. */
+  const toastsBefore = document.querySelectorAll('#toasts .toast').length;
+  screen.dispatchEvent(pointer('pointerdown', 78, cellCenter(5), rowY(singleAnchorRow)));
+  document.dispatchEvent(pointer('pointermove', 78, cellCenter(6), rowY(singleAnchorRow)));
+  const emptyPromoted = await waitFor(() => pane.selection.isDragging(), 3000);
+  document.dispatchEvent(pointer('pointerup', 78, cellCenter(5), rowY(singleAnchorRow)));
+  const emptyEnded = emptyPromoted && await waitFor(() => !pane.selection.hasSelection(), 3000);
+  await pane.selection.idle();
+  const emptyToasts = document.querySelectorAll('#toasts .toast').length - toastsBefore;
+  await report('selection-empty-click', emptyEnded && emptyToasts === 0
+    && !pane.term.hasSelection(), emptyEnded ? 1 : 0, emptyToasts);
+
   await cancelTerminalSelection(pane);
   await inv('scroll_bottom', { name: card.session });
 

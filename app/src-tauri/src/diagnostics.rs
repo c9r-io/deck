@@ -42,7 +42,9 @@
 //! `start-failed` / `update-failed` / `finish-failed` / `freeze-failed`,
 //! which previously cancelled behind nothing but a toast), plus one
 //! `cancel-<reason>` naming every revoke — pointer, pointer-cancel, blur,
-//! hidden, input, escape, focus, live, exit, leave, dispose. That is what
+//! hidden (both only for a drag still in progress), input, escape, focus,
+//! live, exit, leave, dispose, and empty (a drag whose endpoints walked to
+//! the same tmux position ended as the click it was). That is what
 //! separates a `terminal-copy keydown-none` caused by a drag that never
 //! promoted from one caused by a live selection something took away. A cancel
 //! with nothing to destroy stays silent, so ordinary clicks do not flood the
@@ -63,6 +65,11 @@
 //! compatibility-mouse replay); and `terminal-copy keydown-elsewhere` replaces
 //! `keydown-none` when another pane still holds a live Deck selection (count +
 //! its age), separating "revoked" from "⌘C reached the wrong pane".
+//! A native xterm word/line selection has its own lifecycle: `native-select`
+//! (a = rows, b = click count of the press that made it, 0 when none) and one
+//! `native-end-<reason>` (a = rows, b = age ms) — pointer, input, output,
+//! buffer, deck, dispose, other — so a `keydown-none` that followed a native
+//! selection says what took it away.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -183,6 +190,8 @@ const SMOKE_CHECKS: &[&str] = &[
     "selection-owner",
     "selection-gestures",
     "selection-repeat",
+    "selection-blur",
+    "selection-empty-click",
     "selection-scroll-stable",
     "selection-scroll-cursor",
     "selection-overlay",
@@ -332,6 +341,9 @@ const SMOKE_CHECKS: &[&str] = &[
 /// start tmux refused, or a specific later revoke. Labels only — no terminal
 /// text, session name or error string is representable here.
 ///
+/// `native-select` / `native-end-*` follow an xterm word/line selection Deck
+/// does not own; both spend `a` on rows, `b` on click count and age.
+///
 /// `revoker-*` pairs with `cancel-pointer` and classifies the pointerdown
 /// that destroyed a live selection: `synthetic` is an untrusted event, the
 /// rest are the trusted pointerType. `native-cleared` records an xterm
@@ -357,6 +369,14 @@ const SELECTION_EVENTS: &[&str] = &[
     "freeze-ok",
     "freeze-failed",
     "native-cleared",
+    "native-select",
+    "native-end-pointer",
+    "native-end-input",
+    "native-end-output",
+    "native-end-buffer",
+    "native-end-deck",
+    "native-end-dispose",
+    "native-end-other",
     "revoker-mouse",
     "revoker-touch",
     "revoker-pen",
@@ -373,6 +393,7 @@ const SELECTION_EVENTS: &[&str] = &[
     "cancel-exit",
     "cancel-leave",
     "cancel-dispose",
+    "cancel-empty",
     "cancel-other",
 ];
 
@@ -709,6 +730,13 @@ mod tests {
                     }
                 }
             }
+            for (at, _) in text.match_indices("'native-") {
+                let word: String = text[at + 1..]
+                    .chars()
+                    .take_while(|c| c.is_ascii_lowercase() || *c == '-')
+                    .collect();
+                pairs.push((file.clone(), "terminal-selection".into(), word));
+            }
             for (at, _) in text.match_indices("'revoker-") {
                 let word: String = text[at + 1..]
                     .chars()
@@ -770,6 +798,7 @@ mod tests {
             "exit",
             "leave",
             "dispose",
+            "empty",
             "other",
         ] {
             assert!(

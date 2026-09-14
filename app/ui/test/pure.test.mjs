@@ -20,6 +20,7 @@ import {
   terminalNativeSelectionCells, terminalSelectionOverlayRows, terminalSelectionWheelRoute,
   terminalSelectionOverlayBands, terminalCellAt, selectionEdgeScrollLines, selectionStatusRows,
   selectionOwnerLabel, selectionCopyFailureCode, selectionFinishFailureReason, selectionDimensionsChanged,
+  selectionFinishIsEmpty, nativeSelectionRows, nativeSelectionEndLabel,
   retryOnStaleGrid, isTerminalAutoReply, terminalLinkRanges, scrollResultView,
   tokenizeTerminalLinks,
   createTerminalWheelAccumulator, createTerminalWheelFrameScheduler, terminalWheelLines,
@@ -1123,6 +1124,27 @@ test('selection status rows, owner label and closed failure codes', () => {
   assert.equal(selectionFinishFailureReason(null), 0);
   assert.equal(selectionDimensionsChanged(new Error('selection-dimensions-changed')), true);
   assert.equal(selectionDimensionsChanged('selection-missing'), false);
+  assert.equal(selectionFinishIsEmpty(new Error('selection-missing-empty')), true);
+  assert.equal(selectionFinishIsEmpty('… selection-missing-cleared'), false);
+  assert.equal(selectionFinishIsEmpty(null), false);
+  assert.equal(selectionCopyFailureCode('selection-missing-empty'), 'selection-missing',
+    'a ⌘C during an empty drag still reads as nothing selected');
+});
+
+test('native selection lifecycle: rows and closed end labels', () => {
+  assert.equal(nativeSelectionRows({ start: { x: 4, y: 9 }, end: { x: 2, y: 7 } }), 3);
+  assert.equal(nativeSelectionRows({ start: { x: 0, y: 5 }, end: { x: 8, y: 5 } }), 1);
+  assert.equal(nativeSelectionRows(undefined), 0);
+  assert.equal(nativeSelectionEndLabel({ cause: 'adopted', output: true }), null);
+  assert.equal(nativeSelectionEndLabel({ cause: 'pointer', bufferChanged: true }), 'native-end-pointer');
+  assert.equal(nativeSelectionEndLabel({ cause: 'deck', input: true }), 'native-end-deck');
+  assert.equal(nativeSelectionEndLabel({ cause: 'dispose' }), 'native-end-dispose');
+  assert.equal(nativeSelectionEndLabel({ bufferChanged: true, output: true }), 'native-end-buffer');
+  assert.equal(nativeSelectionEndLabel({ output: true, input: true }), 'native-end-output',
+    'an auto-reply during a parse is not the user typing');
+  assert.equal(nativeSelectionEndLabel({ input: true }), 'native-end-input');
+  assert.equal(nativeSelectionEndLabel({}), 'native-end-other');
+  assert.equal(nativeSelectionEndLabel(), 'native-end-other');
 });
 
 test('retryOnStaleGrid retries only a stale-grid rejection of the send step', async () => {

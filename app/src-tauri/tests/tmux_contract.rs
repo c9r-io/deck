@@ -16,8 +16,8 @@ mod terminal_scroll;
 #[path = "../src/terminal_selection.rs"]
 mod terminal_selection;
 use terminal_selection::{
-    copy_cursor_moves, endpoint_frame, frame_rows, materialize_args, snapshot_selection,
-    EndpointPlacement,
+    copy_cursor_moves, endpoint_frame, frame_rows, materialize_args, placements_coincide,
+    snapshot_selection, EndpointPlacement,
 };
 
 fn tmux_bin() -> PathBuf {
@@ -1538,6 +1538,42 @@ fn copy_mode_selection_reaches_beyond_20000_rows() {
         (start - end).abs() > 20_000,
         "selection span must cross 20,000 rows: start={start}, end={end}"
     );
+}
+
+/// Field logs (0.6.x) held fifteen `finish-failed` "copy-mode kept, selection
+/// cleared" drags: one row, ~150 ms. They were empty ranges. A pointer that
+/// crossed into a neighbouring cell and was released back in its own, the two
+/// halves of one wide grapheme, or two cells past a line's text produce the
+/// same placement for both endpoints, and tmux reports an empty range as no
+/// selection at all. `placements_coincide` is exactly that set; a placement
+/// one cell apart still builds a real selection.
+#[test]
+fn coinciding_placements_are_an_empty_range_tmux_reports_as_no_selection() {
+    let s = Server::fixture(
+        "selection-empty",
+        40,
+        6,
+        "sh -c 'printf \"a中b\\nshort\\n\"; sleep 30'",
+    );
+    s.run(&["copy-mode", "-H", "-t", "t"]);
+    let history: u32 = s.fmt("#{history_size}").parse().expect("history");
+    for (label, anchor, active, empty) in [
+        ("wide-halves", (0, 1), (0, 2), true),
+        ("past-the-text", (1, 9), (1, 30), true),
+        ("same-cell", (1, 2), (1, 2), true),
+        ("one-cell", (1, 1), (1, 2), false),
+    ] {
+        let anchor = s.placement(history + anchor.0, anchor.1);
+        let active = s.placement(history + active.0, active.1);
+        assert_eq!(placements_coincide(anchor, active), empty, "{label}");
+        s.run_owned(&materialize_args("t", 0, anchor, active))
+            .expect("materialize list");
+        assert_eq!(
+            s.fmt("#{selection_present}"),
+            if empty { "0" } else { "1" },
+            "{label}: tmux must agree with placements_coincide"
+        );
+    }
 }
 
 /// The release copy command snapshots tmux's native selection into a uniquely

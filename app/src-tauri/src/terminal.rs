@@ -623,17 +623,24 @@ fn materialize_selection(
             active_frame.scroll_position,
             active_frame.row,
         )?;
+        let anchor_placement = EndpointPlacement {
+            frame: anchor_frame,
+            moves: copy_cursor_moves(&anchor_rows, anchor_frame.row, anchor.col),
+        };
+        let active_placement = EndpointPlacement {
+            frame: active_frame,
+            moves: copy_cursor_moves(&active_rows, active_frame.row, active.col),
+        };
+        // An empty range is a click, not a selection tmux refused: nothing is
+        // built, and the caller ends the drag without a failure.
+        if crate::terminal_selection::placements_coincide(anchor_placement, active_placement) {
+            return Err(DeckError::new(ErrorKind::Other, "selection-missing-empty"));
+        }
         let batch = crate::terminal_selection::materialize_args(
             target,
             status.scroll_position,
-            EndpointPlacement {
-                frame: anchor_frame,
-                moves: copy_cursor_moves(&anchor_rows, anchor_frame.row, anchor.col),
-            },
-            EndpointPlacement {
-                frame: active_frame,
-                moves: copy_cursor_moves(&active_rows, active_frame.row, active.col),
-            },
+            anchor_placement,
+            active_placement,
         );
         let ran_with = tmux_owned(&batch)?;
         let ran_with: u32 = ran_with.trim().parse().unwrap_or(status.history_rows);
@@ -1010,7 +1017,11 @@ pub(crate) fn terminal_selection_finish(
     // selection. Say WHICH half went: the pane left copy-mode, or copy-mode
     // survived but refused the selection this builds. Both still read as
     // `selection-missing` to the caller; the suffix only feeds the closed
-    // `finish-failed` reason code in the log.
+    // `finish-failed` reason code in the log. The field's `cleared` failures
+    // turned out to be empty ranges (a click that crossed a cell boundary and
+    // came back, one wide grapheme, two cells past a line's text): tmux has
+    // no selection for those. `materialize_selection` now refuses them first
+    // as `selection-missing-empty`, which the frontend ends as a click.
     if !status.active {
         return Err(DeckError::new(
             ErrorKind::Other,

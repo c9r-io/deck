@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- A finished terminal selection survives switching to another app or hiding
+  the window, so ⌘C still copies it on return; only a drag still in progress
+  ends. A drag released back in its starting cell (or across one wide
+  character, or past the end of a line's text) is an empty range and now ends
+  quietly as a click instead of a "selection ended" toast.
+- Diagnostics record the life of a native double/triple-click selection
+  (`native-select`, `native-end-<reason>`) and `cancel-empty`, so a ⌘C that
+  finds nothing to copy can be attributed from a log export.
+
 ## 0.6.6 — 2026-09-11 (Nightly)
 
 - Voice drafts and scheduled prompts pass text to tmux through stdin instead
