@@ -2,6 +2,14 @@
 
 Use Needs attention in the sidebar to gather input requests and unread turn endings across projects, reducing how often you open terminals just to check them.
 
+## Keep a card in view
+
+Click ☆ on a card to **Follow card**. The ★ mark keeps it in Needs attention across projects until you explicitly unfollow it, including after viewing results, status changes, moving groups or restarting deck. Existing stars become follow-up marks automatically. No status integration is needed for manual follow-up.
+
+The **Followed** filter includes all starred cards. In Needs attention, input requests come first, then unread endings, then cards kept solely by manual follow-up. A card appears once even when several reasons apply, and its live status stays visible. Use the star on the card or attention row to unfollow it; any input request or unread ending still keeps it in the list.
+
+When no status has been received, the followed count is still available. A total such as **3+** means at least three followed cards; additional agent requests are unknown. Stopped or stale sessions still lead to the original card.
+
 ## Enable the matching status integration
 
 In **Settings → Integrations & automation**, enable Agent status for **Claude Code** or **Codex**, depending on the CLI you use. Both are off by default. Enabling adds deck hooks to the CLI's configuration; read the confirmation for details. Other existing hooks are preserved.

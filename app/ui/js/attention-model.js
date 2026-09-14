@@ -6,7 +6,7 @@
 // unobserved working→done between polls cannot be distinguished from a repeat.
 import { CARD_QUIET_SECS, effectiveCardStatus } from './pure.js';
 
-export const ATTENTION_FILTERS = Object.freeze(['pending', 'input', 'done', 'unavailable', 'stopped']);
+export const ATTENTION_FILTERS = Object.freeze(['pending', 'input', 'done', 'followed', 'unavailable', 'stopped']);
 
 export function createAttentionTracker() {
   const snapshots = new Map();
@@ -27,7 +27,8 @@ export function createAttentionTracker() {
   };
   const matches = (card, filter) => {
     const kind = category(card);
-    return filter === 'all' || (filter === 'pending' ? kind === 'input' || kind === 'done'
+    return filter === 'all' || (filter === 'followed' ? card.pinned === true
+      : filter === 'pending' ? kind === 'input' || kind === 'done' || card.pinned === true
       : filter === 'unavailable' ? kind === 'unavailable' || kind === 'unknown' : kind === filter);
   };
   return {
@@ -77,11 +78,12 @@ export function createAttentionTracker() {
       };
     },
     counts(cards) {
-      const counts = { all: cards.length, pending: 0, input: 0, done: 0, unavailable: 0, stopped: 0, unknown: 0 };
+      const counts = { all: cards.length, pending: 0, input: 0, done: 0, followed: 0, unavailable: 0, stopped: 0, unknown: 0 };
       for (const card of cards) {
         const kind = category(card);
         if (kind in counts) counts[kind]++;
-        if (kind === 'input' || kind === 'done') counts.pending++;
+        if (card.pinned === true) counts.followed++;
+        if (kind === 'input' || kind === 'done' || card.pinned === true) counts.pending++;
         if (kind === 'unknown') counts.unavailable++;
       }
       return counts;
@@ -97,9 +99,13 @@ export function attentionRows(projects, cards, tracker, filter) {
     for (const card of cards) {
       if (card.projectId !== project.id || card.columnId !== column.id || added.has(card.id)) continue;
       added.add(card.id);
-      if (tracker.matches(card, filter)) ordered.push({ card, project, column, kind: tracker.category(card) });
+      if (tracker.matches(card, filter)) {
+        const category = tracker.category(card);
+        const kind = filter === 'pending' && !['input', 'done'].includes(category) ? 'followed' : category;
+        ordered.push({ card, project, column, kind });
+      }
     }
   }
   if (filter !== 'pending') return ordered;
-  return [...ordered.filter(row => row.kind === 'input'), ...ordered.filter(row => row.kind === 'done')];
+  return ['input', 'done', 'followed'].flatMap(kind => ordered.filter(row => row.kind === kind));
 }

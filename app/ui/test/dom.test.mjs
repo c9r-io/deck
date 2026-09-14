@@ -105,7 +105,7 @@ test('production debounce is flushed before an immediate destructive Board barri
   assert.deepEqual(final, JSON.parse(JSON.stringify({ projects: store.projects, cards: store.cards })));
 });
 
-test('Board serialization persists important marks and excludes runtime card state', () => {
+test('Board serialization persists manual follow-up and excludes runtime card state', () => {
   const cards = [{
     id: 'a', projectId: 'p', columnId: 'c', title: 'A', desc: '', cmd: '', dir: '/tmp',
     session: 'deck-a-0001', pinned: true, status: 'running', mem: 42, tail: ['private output'],

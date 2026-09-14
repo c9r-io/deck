@@ -1012,6 +1012,7 @@ html.font-scale-large .tmux-lifecycle-actions { align-items: flex-start; flex-wr
 .attention-row, .attention-labels { display: grid; grid-template-columns: minmax(130px,1.3fr) minmax(120px,1fr) minmax(125px,1fr) minmax(120px,1fr) auto; gap: 14px; align-items: center; padding: 16px 12px; border-bottom: 1px solid var(--border); line-height: 1.55; }
 .attention-row > span { min-width: 0; overflow-wrap: anywhere; }
 .attention-card-name { font-weight: 600; }
+.attention-card-name .card-pin { margin-left: 6px; }
 .attention-origin, .attention-viewed { color: var(--muted); font-size: .923077rem; }
 .attention-reason[data-status="attention"] { color: var(--attn); }
 .attention-reason[data-status="done"] { color: var(--done); }
@@ -1023,12 +1024,12 @@ html.font-scale-large .tmux-lifecycle-actions { align-items: flex-start; flex-wr
 @media (max-width: 1050px) {
   .attention-row, .attention-labels { grid-template-columns: minmax(110px,1.2fr) minmax(110px,1fr) auto; gap: 8px 12px; }
   .attention-row .attention-viewed { grid-column: 2; }
-  .attention-row button { grid-column: 3; grid-row: span 2; }
+  .attention-row > button { grid-column: 3; grid-row: span 2; }
 }
 @media (max-width: 720px) {
   .attention-row, .attention-labels { grid-template-columns: minmax(100px,1fr) auto; }
   .attention-row .attention-origin, .attention-row .attention-reason, .attention-row .attention-viewed { grid-column: 1; }
-  .attention-row button { grid-column: 2; grid-row: 1 / span 4; }
+  .attention-row > button { grid-column: 2; grid-row: 1 / span 4; }
 }
 
 .attention-labels { font-size: .846154rem; color: var(--muted); padding: 8px 12px; }

@@ -69,7 +69,8 @@ live status. Status summaries and filters live in the sidebar’s Needs attentio
 view, keeping the Board focused on its groups.
 
 **Needs attention spans all projects.** Its sidebar entry links to sessions
-with an explicit input request or an unread turn ending, showing each card's
+with an explicit input request, an unread turn ending, or a manual follow-up
+star, showing each card's
 original project and group. Opening a session successfully marks its ending as
 viewed, not handled or task-complete; an input request stays until its state
 changes. The back action restores the attention filter and position. Quiet or
@@ -77,7 +78,10 @@ recent output without valid agent state is separate from confirmed requests:
 quiet never means ready. Failed or incomplete polls keep a labelled old
 snapshot, and stale/stopped entries only locate their original cards. Read
 markers last for this app run; hook reporting and unread history are not
-promised to survive restarts.
+promised to survive restarts. Manual follow-up stars do survive restarts and
+remain until explicitly removed, regardless of viewing, status or group changes.
+The Followed filter includes every starred card; the main list deduplicates
+overlapping reasons and puts manual-only follow-up after input and unread groups.
 
 **Sessions outlive the app.** deck runs its own private tmux server, so
 quitting deck (or it crashing) never kills your agents. Reopen and everything

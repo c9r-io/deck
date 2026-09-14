@@ -4,7 +4,7 @@
 // # Contract
 // - Derived, never a Board. Rows come from `attentionRows` (attention-model.js)
 //   over the live projects and cards plus `ctx.attention` (the runtime
-//   tracker); the view moves no card and persists nothing but its filter.
+//   tracker); the view moves no card. Stars persist manual follow-up on cards.
 // - Freshness is explicit: the tracker's `freshness` decides whether counts
 //   show ("fresh"), show with an "old" mark ("stale") or show as "—"
 //   ("unknown"), and a retry button re-polls. `attentionStatusText` and the
@@ -64,6 +64,12 @@ function sourceText(card) {
   return t(snapshot.seen ? 'attention.viewed' : 'attention.notViewed');
 }
 
+function countText(filter, counts, freshness) {
+  if (freshness.kind !== 'unknown' || ['all', 'followed', 'unavailable'].includes(filter)) return formatNumber(counts[filter]);
+  // Manual follow-up is known even before the first successful status poll.
+  return filter === 'pending' && counts.followed ? `${formatNumber(counts.followed)}+` : '—';
+}
+
 function fillTools(container, cards) {
   if (!container.firstElementChild) {
     const summary = node('div', 'attention-summary');
@@ -84,6 +90,7 @@ function fillTools(container, cards) {
   container.querySelector('.attention-totals').textContent = t('attention.summaryGlobal', {
     input: freshness.kind === 'unknown' ? '—' : formatNumber(counts.input),
     done: freshness.kind === 'unknown' ? '—' : formatNumber(counts.done), unavailable: formatNumber(counts.unavailable),
+    followed: formatNumber(counts.followed),
   }) + (freshness.kind === 'fresh' ? '' : ` · ${t(freshness.kind === 'unknown' ? 'attention.unknown' : 'attention.old')}`);
   const notice = container.querySelector('.attention-notice');
   notice.hidden = freshness.kind === 'fresh';
@@ -103,7 +110,7 @@ function fillTools(container, cards) {
       };
       filters.append(button);
     }
-    const count = freshness.kind === 'unknown' && !['all', 'unavailable'].includes(filter) ? '—' : formatNumber(counts[filter]);
+    const count = countText(filter, counts, freshness);
     button.textContent = `${t(`attention.filter.${filter}`)} ${count}`;
     button.setAttribute('aria-pressed', String(selected === filter));
     button.classList.toggle('active', selected === filter);
@@ -166,24 +173,39 @@ function updateRows() {
     const row = place(`card-${card.id}`, () => {
       const el = node('div', 'attention-row'); el.dataset.sid = card.id;
       el.append(node('span', 'attention-card-name'), node('span', 'attention-origin'), node('span', 'attention-reason'), node('span', 'attention-viewed'));
-      const open = node('button', 'btn'); open.type = 'button';
+      const pin = node('button', 'card-pin'); pin.type = 'button';
+      pin.onclick = async () => {
+        pin.disabled = true;
+        try { await provider.togglePinned(card.id); }
+        finally { pin.disabled = false; refreshAttention(); }
+      };
+      el.querySelector('.attention-card-name').append(node('span', 'attention-card-title'), pin);
+      const open = node('button', 'btn attention-open'); open.type = 'button';
       open.onclick = () => openAttentionCard(card.id);
       el.append(open);
       return el;
     });
     const snapshot = ctx.attention.get(card);
     const locate = !snapshot || snapshot.stale || !snapshot.alive;
-    row.querySelector('.attention-card-name').textContent = `${card.title}${card.pinned ? ' ★' : ''}`;
+    row.querySelector('.attention-card-title').textContent = card.title;
+    const pin = row.querySelector('.card-pin');
+    const pinLabel = t(card.pinned === true ? 'card.unmarkImportant' : 'card.markImportant');
+    pin.textContent = card.pinned === true ? '★' : '☆';
+    pin.title = pinLabel;
+    pin.setAttribute('aria-label', `${pinLabel}: ${card.title}`);
+    pin.setAttribute('aria-pressed', String(card.pinned === true));
+    pin.classList.toggle('active', card.pinned === true);
     row.querySelector('.attention-origin').textContent = `${project.name} / ${column.name}`;
-    row.querySelector('.attention-reason').textContent = attentionStatusText(card);
+    row.querySelector('.attention-reason').textContent = (card.pinned === true ? `${t('attention.filter.followed')} · ` : '') + attentionStatusText(card);
     row.querySelector('.attention-reason').dataset.status = snapshot?.status || 'unknown';
     row.querySelector('.attention-viewed').textContent = sourceText(card);
-    row.querySelector('button').textContent = t(locate ? 'attention.locate' : 'attention.open');
-    row.querySelector('button').setAttribute('aria-label', t(locate ? 'attention.locateNamed' : 'attention.openNamed', { name: card.title, project: project.name }));
+    row.querySelector('.attention-open').textContent = t(locate ? 'attention.locate' : 'attention.open');
+    row.querySelector('.attention-open').setAttribute('aria-label', t(locate ? 'attention.locateNamed' : 'attention.openNamed', { name: card.title, project: project.name }));
   }
   if (!rows.length) {
     const empty = place('empty', () => node('p', 'attention-empty'));
-    empty.textContent = t(ctx.attention.freshness(store.cards).kind === 'unknown' ? 'attention.unknownHint'
+    empty.textContent = t(ctx.attentionFilter === 'followed' ? 'attention.emptyFilter'
+      : ctx.attention.freshness(store.cards).kind === 'unknown' ? 'attention.unknownHint'
       : ctx.attention.freshness(store.cards).kind === 'stale' ? 'attention.staleEmpty'
       : ctx.attentionFilter === 'pending' ? 'attention.emptyPending' : 'attention.emptyFilter');
   }
@@ -201,8 +223,7 @@ function updateRows() {
 export function refreshAttention() {
   const counts = ctx.attention.counts(store.cards);
   const freshness = ctx.attention.freshness(store.cards);
-  $('attention-count').textContent = freshness.kind === 'unknown' ? '—'
-    : `${formatNumber(counts.pending)}${freshness.kind === 'stale' ? ` · ${t('attention.old')}` : ''}`;
+  $('attention-count').textContent = `${countText('pending', counts, freshness)}${freshness.kind === 'stale' ? ` · ${t('attention.old')}` : ''}`;
   $('attention-btn').title = t('attention.globalTitle');
   $('attention-btn').classList.toggle('active', state.view === 'attention');
   $('attention-btn').setAttribute('aria-pressed', String(state.view === 'attention'));
@@ -224,7 +245,7 @@ export function showAttention(returning = false) {
   render();
   if (saved) {
     const row = [...$('attention-list').children].find(el => el.dataset.sid === saved.focusId);
-    (row?.querySelector('button') || $('attention-tools').querySelector('[aria-pressed="true"]'))?.focus({ preventScroll: true });
+    (row?.querySelector('.attention-open') || $('attention-tools').querySelector('[aria-pressed="true"]'))?.focus({ preventScroll: true });
     $('attention-list').scrollTop = saved.scroll;
   } else {
     $('attention-tools').querySelector('[aria-pressed="true"]')?.focus({ preventScroll: true });

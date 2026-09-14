@@ -62,7 +62,8 @@ poll/attach failures are injected in the debug test carrier; no agent or hook is
 installed. It checks the uncluttered Board with all cards draggable and only the sidebar
 attention entry, unchanged placement, keyed row focus,
 pointer reconciliation, success/failure read receipts (including splits),
-cross-project back navigation, stale/partial snapshots, locate-only stopped
+cross-project back navigation, persistent manual follow-up (including failed-save
+rollback, unfollowing, viewed cards and unknown-state counts), stale/partial snapshots, locate-only stopped
 entries, keyboard focus surviving a row reorder, and three lifecycle races:
 a click on a pane whose shell exited only focuses it (no re-attach, no
 restart), an exit that lands before its attach reply leaves the pane detached

@@ -49,7 +49,7 @@ export async function runAttentionSmoke() {
       samples.set(spec.id, { spec, card: provider.get(card.id) });
     }
     stage = 1;
-    let failPoll = false, missing = null, failAttach = null, starts = 0, attaches = 0, polls = 0;
+    let failPoll = false, failSave = false, missing = null, failAttach = null, starts = 0, attaches = 0, polls = 0;
     let attachGate = null, pendingGen = null, pollGate = null;
     const statuses = new Map();
     for (const { spec, card } of samples.values()) statuses.set(card.session, {
@@ -58,6 +58,7 @@ export async function runAttentionSmoke() {
       mem_mb: spec.state === 'stopped' ? null : 24,
     });
     const wrappedInvoke = async (command, args) => {
+      if (command === 'save_board' && failSave) throw new Error('isolated save failure');
       if (command === 'start_session') starts++;
       if (command === 'attach_session' && args.name === failAttach) throw new Error('isolated attach failure');
       if (command === 'attach_session') attaches++;
@@ -86,13 +87,13 @@ export async function runAttentionSmoke() {
     await reset(); setLocale('zh-Hans'); render();
     const original = JSON.stringify(boardData());
     const counts = ctx.attention.counts(store.cards);
-    await report('attention-fixture', counts.pending === 4 && counts.input === 2 && counts.done === 2 && counts.unavailable === 3 && counts.stopped === 1, counts.pending, 4);
+    await report('attention-fixture', counts.pending === 5 && counts.input === 2 && counts.done === 2 && counts.unavailable === 3 && counts.stopped === 1, counts.pending, 5);
     const visible = [...document.querySelectorAll('#columns .card')].filter(el => !el.hidden);
     await report('attention-board', !$('board-attention') && !$('board-view').querySelector('.attention-tools')
       && visible.length === 6 && visible.every(el => el.draggable) && !!$('attention-btn')
       && JSON.stringify(boardData()) === original);
     showAttention(); await pollNow();
-    await report('attention-origin', $('attention-list').querySelectorAll('.attention-row').length === 4
+    await report('attention-origin', $('attention-list').querySelectorAll('.attention-row').length === 5
       && $('attention-list').textContent.includes('Beacon / Parked') && document.querySelectorAll('#side-list .side-item').length === 6);
     stage = 2;
     const ending = samples.get('07').card;
@@ -183,29 +184,31 @@ export async function runAttentionSmoke() {
     statuses.get(input.session).agent = 'needs-input'; await pollNow();
     stage = 3;
     await reset(); showAttention(); await pollNow();
-    const button = [...$('attention-list').querySelectorAll('.attention-row')].find(el => el.dataset.sid === input.id).querySelector('button');
+    const button = [...$('attention-list').querySelectorAll('.attention-row')].find(el => el.dataset.sid === input.id).querySelector('.attention-open');
     button.focus();
     await pollNow();
     await report('attention-keyed-focus', document.activeElement === button && button.isConnected);
     // A reorder moves a connected row (remove + insert); focus must survive it.
     const inputRows = [...$('attention-list').querySelectorAll('.attention-row')].filter(el => ctx.attention.category(provider.get(el.dataset.sid)) === 'input');
-    const laterButton = inputRows[1].querySelector('button'); laterButton.focus();
+    const laterButton = inputRows[1].querySelector('.attention-open'); laterButton.focus();
     const earlier = provider.get(inputRows[0].dataset.sid);
     statuses.get(earlier.session).agent = 'turn-done'; await pollNow();
     const reordered = $('attention-list').querySelector('.attention-row') === inputRows[1] && inputRows[0].isConnected;
     await report('attention-reorder-focus', reordered && document.activeElement === laterButton);
     statuses.get(earlier.session).agent = 'needs-input'; await pollNow();
+    await provider.togglePinned(input.id);
     button.focus();
     button.dispatchEvent(new Event('pointerdown', { bubbles: true }));
     statuses.get(input.session).agent = 'working'; await pollNow();
     const held = button.isConnected;
     document.dispatchEvent(new Event('pointerup', { bubbles: true })); await pause(20);
     await report('attention-pointer', held && !button.isConnected && $('attention-tools').contains(document.activeElement));
+    await provider.togglePinned(input.id);
     statuses.get(input.session).agent = 'needs-input';
     await reset(); showAttention(); await pollNow();
     failPoll = true; await pollNow();
-    await report('attention-stale', ctx.attention.counts(store.cards).pending === 4 && !$('attention-tools').querySelector('.attention-notice').hidden
-      && [...$('attention-list').querySelectorAll('.attention-row button')].every(el => el.textContent === t('attention.locate')));
+    await report('attention-stale', ctx.attention.counts(store.cards).pending === 5 && !$('attention-tools').querySelector('.attention-notice').hidden
+      && [...$('attention-list').querySelectorAll('.attention-row .attention-open')].every(el => el.textContent === t('attention.locate')));
     failPoll = false; missing = ending.session; await pollNow();
     await report('attention-partial', ctx.attention.get(ending).stale && !ctx.attention.get(input).stale && ctx.attention.freshness(store.cards).kind === 'stale');
     missing = null; await pollNow();
@@ -224,6 +227,40 @@ export async function runAttentionSmoke() {
     }
     await report('attention-layout', layoutChecks === 12, layoutChecks, 12);
     activateTheme({ theme: 'deck-dark', accent: 'teal' }); applyFontScale(1); setLocale('zh-Hans');
+    await reset(); showAttention(); await pollNow();
+    await report('attention-persistence', JSON.stringify(boardData()) === original && starts === 0);
+    // Manual follow-up uses the real transaction path and keyed row controls.
+    const followed = samples.get('11').card;
+    const rowOf = id => [...$('attention-list').querySelectorAll('.attention-row')].find(el => el.dataset.sid === id);
+    ctx.attentionFilter = 'followed'; refreshAttention();
+    const pin = rowOf(followed.id).querySelector('.card-pin');
+    pin.focus(); failSave = true;
+    await pin.onclick(); failSave = false;
+    await report('attention-followed-save', provider.get(followed.id).pinned && pin.isConnected && !pin.disabled
+      && document.activeElement === pin && $('attention-list').querySelectorAll('.attention-row').length === 2);
+    await pin.onclick();
+    const removed = !rowOf(followed.id) && !provider.get(followed.id).pinned && $('attention-tools').contains(document.activeElement);
+    await provider.togglePinned(followed.id);
+    ctx.attentionFilter = 'pending'; refreshAttention();
+    await rowOf(input.id).querySelector('.card-pin').onclick();
+    const stillInput = !!rowOf(input.id) && ctx.attention.category(provider.get(input.id)) === 'input';
+    await provider.togglePinned(input.id);
+    await report('attention-followed-toggle', removed && stillInput && ctx.attention.counts(store.cards).pending === 5);
+    await openAttentionCard(followed.id); await pollNow();
+    backToBoard(); await pollNow();
+    await report('attention-followed-viewed', provider.get(followed.id).pinned && !!rowOf(followed.id)
+      && rowOf(followed.id).querySelector('.attention-reason').textContent.includes(t('attention.filter.followed')));
+    const stopped = samples.get('05').card;
+    await provider.togglePinned(stopped.id);
+    const savedBoard = JSON.parse((await nativeInvoke('load_board')).data);
+    ctx.attention = createAttentionTracker(); refreshAttention();
+    const restoredTracker = createAttentionTracker();
+    await report('attention-followed-unknown', !!rowOf(stopped.id)
+      && rowOf(stopped.id).querySelector('.attention-open').textContent === t('attention.locate')
+      && $('attention-count').textContent === '3+'
+      && $('attention-tools').querySelector('[data-filter="followed"]').textContent.endsWith('3')
+      && restoredTracker.counts(savedBoard.cards).pending === 3);
+    await provider.togglePinned(stopped.id);
     await reset(); showAttention(); await pollNow();
     await report('attention-persistence', JSON.stringify(boardData()) === original && starts === 0);
     // 06 B v01: the Board's entry points, the empty-project start, and one
