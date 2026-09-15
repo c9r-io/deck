@@ -1,6 +1,17 @@
 # Changelog
 
-## Unreleased
+## 0.6.8 — 2026-09-16 (Nightly)
+
+- Voice input types straight into the session. The header microphone starts
+  and stops a recording; text the on-device recognizer has confirmed is typed
+  into the focused pane while you speak, like keystrokes, never with Enter,
+  and a translucent caption under the button shows what has been heard but
+  not yet typed. The draft panel with its placements, Clear, Insert only,
+  Send and retry flow is gone; keyboard and voice share one input. Switching
+  sessions, leaving the view or a pane's exit ends the recording. Stopping no
+  longer needs repeated clicks. `app.log` notes which speech engine ran.
+
+## 0.6.7 — 2026-09-14 (Nightly)
 
 - A finished terminal selection survives switching to another app or hiding
   the window, so ⌘C still copies it on return; only a drag still in progress
