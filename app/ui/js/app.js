@@ -370,6 +370,8 @@ function wireChrome() {
       await inv('scroll_bottom', { name: target.session });
     },
     afterDelivery: () => { ctx.voiceDelivering = null; ctx.lineBuf = null; },
+    focusTerminal: () => ctx.term?.focus(),
+    toast,
   });
   window.addEventListener('beforeunload', stopPolling, { once: true });
 

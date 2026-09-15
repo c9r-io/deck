@@ -5,138 +5,101 @@ globalThis.document = fakeDocument;
 globalThis.window = { __TAURI__: null };
 const { initVoice } = await import('../js/voice.js');
 const { ctx } = await import('../js/state.js');
+const { t } = await import('../js/i18n.js');
 const target = { session: 'deck-voice-a', cardId: 'a', title: 'A' };
 const other = { session: 'deck-voice-b', cardId: 'b', title: 'B' };
-const tick = () => new Promise(resolve => setTimeout(resolve, 0));
+const settle = () => new Promise(resolve => setTimeout(resolve, 0));
 function setup() {
-  ids.clear(); const calls = [], events = new Map(), native = new Map();
-  let selected = target, generation = 1, serial = 0, outcome = 'submitted', phase = 'ready', code = '';
-  const bindings = new Map();
+  ids.clear(); const calls = [], events = new Map(), native = new Map(), toasts = [];
+  let selected = target, phase = 'recording', code = '', text = 'spoken words', preview = 'still listening', focused = 0;
   globalThis.window = {
     addEventListener: (name, fn) => events.set(name, fn),
     __TAURI__: {
       event: { listen: async (name, fn) => { native.set(name, fn); return () => {}; } },
       core: { invoke: async (cmd, args) => {
         calls.push([cmd, args]);
-        if (cmd === 'voice_bind') { const id = ++serial; bindings.set(id, generation); return { id, process: 'zsh' }; }
-        if (cmd === 'voice_start') return ++serial;
-        if (cmd === 'voice_snapshot') return { id: args.id, status: phase, text: 'spoken draft', code };
-        if (cmd === 'voice_deliver') {
-          if (bindings.get(args.targetId) !== generation) throw 'target-expired';
-          return outcome === 'submitted' && !args.submit ? 'inserted' : outcome;
-        }
+        if (cmd === 'voice_bind') return { id: 7, process: 'zsh' };
+        if (cmd === 'voice_start') return 2;
+        if (cmd === 'voice_snapshot') return { id: args.id, status: phase, text, preview, code };
       } },
     },
   };
   ctx.settings.voice = { languages: ['zh-CN', 'en-US', 'ja-JP'], defaultLanguage: 'en-US' };
-  const panel = fakeDocument.getElementById('voice-panel');
-  for (const value of ['bottom', 'floating', 'right']) {
-    const button = new FakeElement('button'); button.dataset.voiceLayout = value; panel.appendChild(button);
-  }
-  const model = initVoice({ selectedTarget: () => selected, prepareTarget: async () => {}, afterDelivery() {} });
-  return { model, calls, panel, native, element: id => fakeDocument.getElementById(id),
+  const model = initVoice({ selectedTarget: () => selected, prepareTarget: async () => {}, afterDelivery() {},
+    focusTerminal: () => { focused++; }, toast: message => toasts.push(message) });
+  return { model, calls, native, toasts, element: id => fakeDocument.getElementById(id),
+    focused: () => focused, typed: () => calls.filter(([cmd]) => cmd === 'voice_deliver').map(([, args]) => args.text),
     emit: (name, detail) => events.get(name)?.({ detail }),
     select: value => { selected = value; return events.get('deck-voice-session-changed')(); },
-    phase: value => { phase = value; },
+    phase: value => { phase = value; }, text: value => { text = value; },
     error: value => { phase = 'error'; code = value; },
-    replace: () => { generation++; }, outcome: value => { outcome = value; },
   };
 }
 
-test('recording permission failures open the right settings once and expose a manual reopen button', async () => {
+test('the header button starts a recording for the focused pane, keeps terminal focus, and types committed words', async () => {
+  const f = setup(), button = f.element('voice-btn'), label = f.element('voice-time');
+  assert.equal(button.dataset.phase, 'idle'); assert.equal(button.title, t('voice.phase.idle'));
+  assert.equal(button['aria-pressed'], 'false'); assert.equal(label.hidden, true);
+  assert.equal(button.fire('mousedown').prevented, 1, 'the button never takes focus from the terminal');
+  await button.onclick(); await settle();
+  assert.equal(f.focused(), 1);
+  assert.deepEqual(f.calls.slice(0, 2).map(([cmd]) => cmd), ['voice_bind', 'voice_start']);
+  assert.equal(f.calls[1][1].locale, 'en-US'); assert.equal(f.calls[1][1].targetId, 7);
+  assert.equal(button.dataset.phase, 'recording'); assert.equal(button.title, t('voice.phase.recording'));
+  assert.equal(button['aria-pressed'], 'true'); assert.equal(button.disabled, false);
+  assert.equal(label.hidden, false); assert.match(label.textContent, /^\d\d:\d\d$/);
+  assert.deepEqual(f.typed(), ['spoken words']); assert.deepEqual(f.toasts, []);
+  const caption = f.element('voice-caption');
+  assert.equal(caption.hidden, false); assert.equal(caption.textContent, 'still listening');
+  await button.onclick();
+  assert.equal(f.calls.filter(([cmd]) => cmd === 'voice_stop').length, 1);
+  assert.equal(button.dataset.phase, 'stopping'); assert.equal(button.disabled, true);
+  assert.equal(button.title, t('voice.phase.stopping'));
+  await button.onclick(); assert.equal(f.calls.filter(([cmd]) => cmd === 'voice_stop').length, 1, 'stopping waits');
+  await f.model.cancel(); assert.equal(button.dataset.phase, 'idle'); assert.equal(label.hidden, true);
+  assert.equal(caption.hidden, true); assert.equal(caption.textContent, '');
+});
+
+test('errors and notices are toasts; a permission failure opens its settings pane once', async () => {
   for (const [code, kind] of [['microphone-denied', 'microphone'], ['speech-denied', 'speech'], ['dictation-disabled', 'dictation']]) {
-    const f = setup(); f.error(code); await f.element('voice-btn').onclick();
-    const opened = () => f.calls.filter(([cmd]) => cmd === 'voice_open_settings');
-    assert.deepEqual(opened(), [['voice_open_settings', { kind }]]);
-    assert.equal(f.element('voice-open-settings').hidden, false);
-    assert.equal(f.model.state.error, code);
-    f.model.layout('right'); f.model.edit('keep');
-    assert.equal(opened().length, 1, 'rerendering never reopens settings');
-    await f.element('voice-close').onclick(); await f.element('voice-btn').onclick();
-    assert.equal(opened().length, 1, 'restoring a nonempty draft never reopens settings');
-    await f.element('voice-open-settings').onclick();
-    assert.equal(opened().length, 2);
-    assert.equal(f.model.state.draft, 'keep');
+    const f = setup(); f.error(code); f.text('');
+    await f.element('voice-btn').onclick(); await settle();
+    assert.deepEqual(f.toasts, [t(`voice.error.${code}`)]);
+    assert.deepEqual(f.calls.filter(([cmd]) => cmd === 'voice_open_settings'), [['voice_open_settings', { kind }]]);
+    assert.equal(f.element('voice-btn').dataset.phase, 'idle'); assert.deepEqual(f.typed(), []);
   }
-  const f = setup(); f.error('recognition-failed'); await f.element('voice-btn').onclick();
-  assert.equal(f.element('voice-open-settings').hidden, true);
-  await f.element('voice-open-settings').onclick();
+  const f = setup(); f.phase('downloading'); f.text('');
+  await f.element('voice-btn').onclick(); await settle();
+  assert.deepEqual(f.toasts, [t('voice.notice.downloading')]);
+  assert.equal(f.element('voice-btn').dataset.phase, 'downloading'); assert.equal(f.element('voice-time').textContent, '…');
   assert.ok(!f.calls.some(([cmd]) => cmd === 'voice_open_settings'));
+  await f.model.cancel();
 });
 
-test('microphone, editor and placement buttons execute production handlers on one mounted editor', async () => {
-  const f = setup(); await f.element('voice-btn').onclick();
-  assert.equal(f.model.state.draft, 'spoken draft');
-  assert.equal(f.element('voice-draft').readOnly, false);
-  const draft = f.element('voice-draft'); draft.focus(); draft.setSelectionRange(1, 4);
-  for (const button of f.panel.children) {
-    assert.equal(button.fire('mousedown').prevented, 1); button.onclick();
-    assert.equal(f.model.state.layout, button.dataset.voiceLayout);
-    assert.equal(draft.selectionStart, 1); assert.equal(fakeDocument.activeElement, draft);
-  }
-  draft.value = 'edited'; draft.fire('input');
-  f.element('voice-language').fire('change', { target: { value: 'ja-JP' } });
-  assert.equal(f.model.state.draft, 'edited'); assert.equal(f.model.state.language, 'ja-JP');
-  await f.element('voice-insert').onclick();
-  assert.equal(f.model.state.notice, 'inserted'); assert.equal(f.model.state.draft, '');
-  await f.element('voice-close').onclick(); assert.equal(f.element('voice-panel').hidden, true);
-});
-
-test('IME and ordinary Enter never send; command Enter dispatches one explicit send', async () => {
-  const f = setup(); f.model.show(); await f.model.ensureTarget(target); f.model.edit('typed');
-  f.panel.fire('keydown', { key: 'Enter', metaKey: true, isComposing: true });
-  f.panel.fire('keydown', { key: 'Enter', metaKey: true, keyCode: 229 });
-  f.panel.fire('keydown', { key: 'Enter' });
-  assert.equal(f.calls.filter(([cmd]) => cmd === 'voice_deliver').length, 0);
-  const sent = f.panel.fire('keydown', { key: 'Enter', metaKey: true }); await tick();
-  assert.equal(sent.prevented, 1); assert.equal(sent.stopped, 1);
-  assert.equal(f.calls.filter(([cmd]) => cmd === 'voice_deliver').length, 1);
-  assert.equal(f.model.state.notice, 'submitted');
-});
-
-test('expired target only rebinds on the next explicit send, including after session switches', async () => {
-  const f = setup(); f.model.show(); await f.model.ensureTarget(target); f.model.edit('keep'); f.replace();
-  await f.element('voice-send').onclick();
-  assert.equal(f.model.state.error, 'target-expired'); assert.equal(f.model.state.target, null);
-  assert.equal(f.model.state.draft, 'keep');
-  await f.select(other); await f.select(target);
-  assert.equal(f.calls.filter(([cmd, args]) => cmd === 'voice_bind' && args.name === target.session).length, 1);
-  await f.element('voice-send').onclick();
-  assert.equal(f.model.state.notice, 'submitted');
-  assert.equal(f.calls.filter(([cmd]) => cmd === 'voice_deliver').length, 2);
-  assert.equal(f.calls.filter(([cmd, args]) => cmd === 'voice_bind' && args.name === target.session).length, 2);
-});
-
-test('uncertainty survives expiry and navigation; only clearing permits a fresh binding', async () => {
-  const f = setup(); f.model.show(); await f.model.ensureTarget(target); f.model.edit('keep');
-  f.outcome('ambiguous'); await f.element('voice-send').onclick();
-  assert.equal(f.element('voice-retry').hidden, false); assert.equal(f.element('voice-send').disabled, true);
-  f.replace(); await f.element('voice-retry').onclick();
-  assert.equal(f.model.state.needsConfirmation, true);
-  assert.equal(f.element('voice-retry').disabled, true);
-  await f.select(other); await f.select(target); await f.element('voice-send').onclick();
-  assert.equal(f.calls.filter(([cmd]) => cmd === 'voice_deliver').length, 2);
-  await f.element('voice-clear').onclick(); f.model.edit('new'); f.outcome('submitted');
-  await f.element('voice-send').onclick(); assert.equal(f.model.state.notice, 'submitted');
-});
-
-test('close, leave, target exit and hidden window release capture; preference changes render the selector', async () => {
-  const f = setup(); await f.element('voice-btn').onclick();
-  ctx.settings.voice = { languages: ['en-US'], defaultLanguage: 'en-US' };
-  f.emit('deck-voice-preferences-changed'); assert.equal(f.element('voice-language').hidden, true);
-  assert.equal(f.element('voice-language-label').hidden, true);
-  for (const event of ['deck-session-leave', 'deck-voice-target-exit', 'pagehide']) {
-    f.phase('recording'); f.model.show(); await f.element('voice-record').onclick();
-    assert.equal(f.model.state.phase, 'recording');
+test('switching sessions, leaving, pane exit, page hide and a hidden window end the recording', async () => {
+  const f = setup(), button = f.element('voice-btn');
+  await button.onclick(); await settle(); assert.equal(f.model.state.phase, 'recording');
+  await f.select(target); assert.equal(f.model.state.phase, 'recording');
+  await f.select(other); assert.equal(f.model.state.phase, 'idle');
+  assert.equal(f.calls.filter(([cmd]) => cmd === 'voice_cancel').length, 1);
+  await f.select(target);
+  for (const [event, detail] of [['deck-session-leave', undefined], ['deck-voice-target-exit', target.session], ['pagehide', undefined]]) {
+    await button.onclick(); await settle(); assert.equal(f.model.state.phase, 'recording');
     const cancels = f.calls.filter(([cmd]) => cmd === 'voice_cancel').length;
-    await f.emit(event, target.session); assert.equal(f.model.state.open, false);
+    await f.emit(event, detail); assert.equal(f.model.state.phase, 'idle');
     assert.equal(f.calls.filter(([cmd]) => cmd === 'voice_cancel').length, cancels + 1);
   }
-  f.model.show(); await f.element('voice-record').onclick(); await f.native.get('voice-window-hidden')(); assert.equal(f.model.state.open, false);
-  f.model.show(); f.panel.fire('keydown', { key: 'Escape' }); await tick(); assert.equal(f.model.state.open, false);
-  f.model.show(); await f.element('voice-record').onclick();
-  await f.element('voice-stop').onclick();
-  assert.equal(f.model.state.phase, 'stopping');
-  assert.equal(f.calls.filter(([cmd]) => cmd === 'voice_stop').length, 1);
-  await f.model.close();
+  await button.onclick(); await settle();
+  await f.emit('deck-voice-target-exit', other.session); assert.equal(f.model.state.phase, 'recording');
+  await f.native.get('voice-window-hidden')(); assert.equal(f.model.state.phase, 'idle');
+});
+
+test('preference changes reach the recorder and the next recording uses the new default language', async () => {
+  const f = setup();
+  ctx.settings.voice = { languages: ['ja-JP'], defaultLanguage: 'ja-JP' };
+  f.emit('deck-voice-preferences-changed');
+  await f.element('voice-btn').onclick(); await settle();
+  assert.equal(f.calls.find(([cmd]) => cmd === 'voice_start')[1].locale, 'ja-JP');
+  assert.ok(!f.calls.some(([cmd]) => cmd === 'voice_open_settings'));
+  await f.model.cancel();
 });

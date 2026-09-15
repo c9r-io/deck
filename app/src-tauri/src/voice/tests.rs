@@ -19,10 +19,28 @@ fn binding(state: &Mutex<Voice>, io: &FakeTransport) -> u64 {
     bind_with(state, "deck-voice-test".into(), io).unwrap().id
 }
 fn snapshot(state: &Mutex<Voice>, id: u64, status: &str, text: &str, code: &str) {
+    preview_snapshot(state, id, status, text, "", code);
+}
+fn preview_snapshot(
+    state: &Mutex<Voice>,
+    id: u64,
+    status: &str,
+    text: &str,
+    preview: &str,
+    code: &str,
+) {
     let status = CString::new(status).unwrap();
     let text = CString::new(text).unwrap();
+    let preview = CString::new(preview).unwrap();
     let code = CString::new(code).unwrap();
-    accept_snapshot(state, id, status.as_ptr(), text.as_ptr(), code.as_ptr());
+    accept_snapshot(
+        state,
+        id,
+        status.as_ptr(),
+        text.as_ptr(),
+        preview.as_ptr(),
+        code.as_ptr(),
+    );
 }
 #[test]
 fn recording_lifecycle_accepts_current_callbacks_and_cannot_revive_cancelled_capture() {
@@ -39,21 +57,41 @@ fn recording_lifecycle_accepts_current_callbacks_and_cannot_revive_cancelled_cap
         std::ptr::null(),
         std::ptr::null(),
         std::ptr::null(),
+        std::ptr::null(),
     );
     assert!(snapshot_with(&state, id).unwrap().text.is_empty());
+    snapshot(&state, id, "preparing", "", "engine-modern");
+    let preparing = snapshot_with(&state, id).unwrap();
+    assert_eq!(preparing.status, "preparing");
+    assert!(
+        preparing.code.is_empty(),
+        "the engine word is a log line, not a code"
+    );
     for phase in ["downloading", "recording", "stopping"] {
         snapshot(&state, id, phase, "部分文字", "");
         assert_eq!(snapshot_with(&state, id).unwrap().status, phase);
     }
     stop_with(&state, id + 1, &speech);
+    assert_eq!(snapshot_with(&state, id).unwrap().status, "stopping");
+    snapshot(&state, id, "recording", "更多文字", "");
     stop_with(&state, id, &speech);
     assert_eq!(speech.0.borrow().len(), 2);
+    // The stop is acknowledged at once; a capture callback that was already
+    // in flight updates the text but cannot revive the recording phase.
+    snapshot(&state, id, "recording", "更多文字 结尾", "");
+    let acknowledged = snapshot_with(&state, id).unwrap();
+    assert_eq!(acknowledged.status, "stopping");
+    assert_eq!(acknowledged.text, "更多文字 结尾");
+    preview_snapshot(&state, id, "stopping", "部分文字", "临时", "");
     cancel_with(&state, id + 1, &speech);
-    assert_eq!(snapshot_with(&state, id).unwrap().text, "部分文字");
+    let shown = snapshot_with(&state, id).unwrap();
+    assert_eq!(shown.text, "部分文字");
+    assert_eq!(shown.preview, "临时");
     cancel_with(&state, id, &speech);
     snapshot(&state, id, "recording", "late", "");
     assert_eq!(snapshot_with(&state, id).unwrap().status, "cancelled");
     assert!(snapshot_with(&state, id).unwrap().text.is_empty());
+    assert!(snapshot_with(&state, id).unwrap().preview.is_empty());
     assert!(snapshot_with(&state, id + 1).is_err());
     let next = start_with(&state, target, "en-US", &speech).unwrap();
     snapshot(&state, id, "error", "old error", "recognition-failed");
@@ -118,7 +156,7 @@ fn delivery_validates_text_and_shares_the_scheduler_exclusion() {
         "界".repeat(22000),
     ] {
         assert_eq!(
-            deliver_with(&state, &busy, target, text, true, &io)
+            deliver_with(&state, &busy, target, text, &io)
                 .unwrap_err()
                 .code(),
             "invalid"
@@ -127,21 +165,22 @@ fn delivery_validates_text_and_shares_the_scheduler_exclusion() {
     assert!(io.calls.borrow().is_empty());
     assert!(scheduler::claim_session(&busy, "deck-voice-test"));
     assert_eq!(
-        deliver_with(&state, &busy, target, "test".into(), true, &io)
+        deliver_with(&state, &busy, target, "test".into(), &io)
             .unwrap_err()
             .to_string(),
         "delivery-busy"
     );
     assert!(busy.lock_or_recover().contains("deck-voice-test"));
     scheduler::release_session(&busy, "deck-voice-test");
-    assert!(deliver_with(&state, &busy, target + 10, "test".into(), true, &io).is_err());
+    assert!(deliver_with(&state, &busy, target + 10, "test".into(), &io).is_err());
+    // Committed slices are typed while the microphone is still open, and a
+    // slice keeps the word separator it starts with: no trimming, no Enter.
     state.lock_or_recover().snapshot.status = "recording".into();
-    assert_eq!(
-        deliver_with(&state, &busy, target, "test".into(), true, &io)
-            .unwrap_err()
-            .to_string(),
-        "voice-busy"
-    );
+    deliver_with(&state, &busy, target, " world\t".into(), &io).unwrap();
+    assert_eq!(*io.inputs.borrow(), [b" world\t".to_vec()]);
+    assert!(io.waits.borrow().is_empty());
+    assert_eq!(io.calls.borrow().len(), 1);
+    assert!(!io.calls.borrow()[0].iter().any(|arg| arg.contains("Enter")));
     assert!(busy.lock_or_recover().is_empty());
 }
 #[test]
@@ -154,7 +193,7 @@ fn generation_expiry_is_distinct_from_transient_refusals_and_always_releases_bus
     changed.identity.server_pid += 1;
     *io.observed.borrow_mut() = Some(changed);
     assert_eq!(
-        deliver_with(&state, &busy, target, "test".into(), true, &io)
+        deliver_with(&state, &busy, target, "test".into(), &io)
             .unwrap_err()
             .to_string(),
         "target-expired"
@@ -162,14 +201,11 @@ fn generation_expiry_is_distinct_from_transient_refusals_and_always_releases_bus
     assert!(busy.lock_or_recover().is_empty());
     assert!(io.calls.borrow().is_empty());
     let rebound = binding(&state, &io);
-    assert_eq!(
-        deliver_with(&state, &busy, rebound, "test".into(), false, &io).unwrap(),
-        Delivery::Inserted
-    );
+    deliver_with(&state, &busy, rebound, "test".into(), &io).unwrap();
     assert!(busy.lock_or_recover().is_empty());
     io.fail_probe.set(true);
     assert_eq!(
-        deliver_with(&state, &busy, rebound, "test".into(), true, &io)
+        deliver_with(&state, &busy, rebound, "test".into(), &io)
             .unwrap_err()
             .to_string(),
         "target-changed"
@@ -179,7 +215,7 @@ fn generation_expiry_is_distinct_from_transient_refusals_and_always_releases_bus
     missing.foreground = None;
     *io.observed.borrow_mut() = Some(missing);
     assert_eq!(
-        deliver_with(&state, &busy, rebound, "test".into(), true, &io)
+        deliver_with(&state, &busy, rebound, "test".into(), &io)
             .unwrap_err()
             .to_string(),
         "target-unavailable"
@@ -190,10 +226,7 @@ fn generation_expiry_is_distinct_from_transient_refusals_and_always_releases_bus
 fn delivery_outcomes_preserve_ambiguity_and_multiline_requires_paste_mode() {
     for (replies, expected) in [
         (vec![Ok("0".into())], Err("multiline-unsupported")),
-        (
-            vec![Ok("1".into()), Ok(String::new()), Ok(String::new())],
-            Ok(Delivery::Submitted),
-        ),
+        (vec![Ok("1".into()), Ok(String::new())], Ok(())),
         (
             vec![Ok("1".into()), Ok("deck-context-refused".into())],
             Err("target-changed"),
@@ -203,15 +236,7 @@ fn delivery_outcomes_preserve_ambiguity_and_multiline_requires_paste_mode() {
                 Ok("1".into()),
                 Err(DeckError::new(ErrorKind::Other, "lost reply")),
             ],
-            Ok(Delivery::Ambiguous),
-        ),
-        (
-            vec![
-                Ok("1".into()),
-                Ok(String::new()),
-                Ok("deck-context-refused".into()),
-            ],
-            Ok(Delivery::EnterRefused),
+            Err("delivery-unknown"),
         ),
     ] {
         let state = Mutex::new(Voice::default());
@@ -220,7 +245,7 @@ fn delivery_outcomes_preserve_ambiguity_and_multiline_requires_paste_mode() {
         let target = binding(&state, &io);
         io.replies.borrow_mut().extend(replies);
         assert_eq!(
-            deliver_with(&state, &busy, target, "first\r\nsecond".into(), true, &io)
+            deliver_with(&state, &busy, target, "first\r\nsecond".into(), &io)
                 .map_err(|e| e.to_string()),
             expected.map_err(str::to_string)
         );

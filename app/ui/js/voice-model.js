@@ -1,180 +1,179 @@
-// One mounted editor with volatile drafts, languages and bindings per session.
-// Switching releases capture and keeps the last displayed partial in its owner.
-// Epochs suppress late replies; sends finish against their captured session.
-// Clear/insert/send freeze the visible draft and release capture immediately;
-// empty drafts are no-ops, and late finalization cannot change the action text.
-// Preference changes preserve enabled session choices and defer replacing a
-// removed language until its recording/delivery finishes.
-// Transient refusals retain bindings. Expired generations rebind only on the
-// next explicit action, never by resending. Uncertain delivery requires the
-// separate retry action; it never gets reauthorized by switching sessions.
-import { defaultVoiceLanguage, normalizeVoicePreferences, VOICE_LANGUAGES, voiceLanguage } from './voice-preferences-model.js';
-export { VOICE_LANGUAGES, voiceLanguage };
-import { VOICE_LAYOUTS, voiceBusy, voiceRecording, voiceCanAct, voiceError, joinVoiceDraft } from './voice-state-model.js';
-export { VOICE_LAYOUTS, voiceBusy, voiceRecording, voiceCanAct, voiceError, joinVoiceDraft };
-import { createVoiceRecorder } from './voice-recorder-model.js';
-export function createVoiceComposer(deps) {
-  const invoke = deps.invoke;
+// One microphone, one bound pane, no draft. The committed transcript arrives
+// as a growing prefix; every new slice is typed into the bound pane while
+// capture continues, cut at the last non-blank so a word separator travels
+// with the word that follows it. Line breaks become spaces: voice never
+// produces an Enter. Stop finishes finalization and types the remainder;
+// leaving, replacing or hiding the pane cancels and drops what was not yet
+// committed. A delivery failure ends the recording with a closed code, after
+// a short bounded retry for transient refusals; an unconfirmed paste counts as
+// typed and is never retransmitted. The volatile tail is only a preview for
+// the caption: what is heard but not yet typed. Capture epochs reject late
+// native replies. A setup failure opens its System Settings pane once.
+import { defaultVoiceLanguage, normalizeVoicePreferences } from './voice-preferences-model.js';
+
+export const voiceBusy = phase => ['binding', 'preparing', 'downloading', 'recording', 'stopping'].includes(phase);
+export const voiceRecording = phase => ['preparing', 'downloading', 'recording', 'stopping'].includes(phase);
+const ERROR_CODES = new Set(['microphone-denied', 'speech-denied', 'dictation-disabled', 'microphone-unavailable', 'local-unavailable',
+  'recognition-failed', 'finalize-timeout', 'audio-overrun', 'text-limit', 'target-unavailable', 'target-changed', 'target-expired',
+  'delivery-busy', 'delivery-unknown', 'text-invalid', 'multiline-unsupported', 'target-not-visible']);
+const TRANSIENT = new Set(['target-changed', 'delivery-busy']);
+const RETRY_LIMIT = 10;
+export function voiceError(error) {
+  const text = String(error || '');
+  return ERROR_CODES.has(text) ? text : 'operation-failed';
+}
+export function voiceSettingsTarget(error) {
+  switch (error) {
+    case 'microphone-denied': return 'microphone';
+    case 'speech-denied': return 'speech';
+    case 'dictation-disabled': return 'dictation';
+    default: return null;
+  }
+}
+// The slice of `committed` to type now, given how much was typed already.
+// While recording, trailing blanks wait for the word that follows them; at
+// the end everything is typed with trailing blanks dropped. `next` is in
+// committed's own coordinates so no replacement can shift the bookkeeping.
+export function voiceSlice(committed, typed, final) {
+  const pending = committed.slice(typed);
+  const trailing = pending.search(/\s+$/);
+  const cut = final || trailing < 0 ? pending.length : trailing;
+  const text = pending.slice(0, cut).replace(/[\r\n\t]+/g, ' ').replace(/\s+$/, '');
+  return { text: text.trim() ? text : '', next: typed + (final ? pending.length : cut) };
+}
+
+export function createVoiceInput(deps) {
+  const { invoke } = deps;
+  const schedule = deps.schedule || (fn => setTimeout(fn, 200));
+  const unschedule = deps.unschedule || clearTimeout;
   let preferences = normalizeVoicePreferences(deps.preferences);
-  const fresh = () => ({ open: false, layout: 'bottom', phase: 'idle', draft: '', target: null,
-    language: defaultVoiceLanguage(preferences, deps.language), error: '', notice: '', recordingId: null, startedAt: 0,
-    languages: [...preferences.languages],
-    session: null, bindingExpired: false, needsConfirmation: false, deliveryBusy: false });
-  let s = fresh();
-  const sessions = new Map();
-  let releasing = false, resumeOpen = false;
-  let placement = 'bottom', selection = 0, deliveryBusy = false;
-  let release = Promise.resolve(), pendingBind = Promise.resolve(), pendingStart = Promise.resolve();
-  let epoch = 0;
-  const reconcileLanguage = state => {
-    if (!voiceBusy(state.phase) && !preferences.languages.includes(state.language)) {
-      state.language = defaultVoiceLanguage(preferences, deps.language);
-    }
-    state.languages = preferences.languages.includes(state.language)
-      ? [...preferences.languages] : [state.language, ...preferences.languages];
-  };
-  const changed = () => {
-    reconcileLanguage(s);
-    s.deliveryBusy = deliveryBusy; s.switching = releasing; deps.changed?.(s);
-  };
-  const recorder = createVoiceRecorder({ ...deps, changed });
-
-  function bind(target) {
-    if (voiceBusy(s.phase) || deliveryBusy) return Promise.resolve(false);
-    const owner = s, revision = epoch;
-    pendingBind = releasing ? release.then(() => owner === s && epoch === revision && bindOwned(owner, target)) : bindOwned(owner, target);
-    return pendingBind;
+  const s = { phase: 'idle', session: null, target: null, recordingId: null, startedAt: 0, error: '', notice: '', typed: 0, preview: '' };
+  let epoch = 0, timer = null, seen = '', retries = 0;
+  let pendingStart = Promise.resolve(), pendingCancel = Promise.resolve();
+  const changed = () => deps.changed?.(s);
+  const report = (kind, code) => deps.report?.(kind, code);
+  const clearPoll = () => { if (timer !== null) unschedule(timer); timer = null; };
+  const cancelNative = id => (pendingCancel = invoke('voice_cancel', { id }).catch(() => {}));
+  const rest = () => { s.recordingId = null; s.startedAt = 0; s.preview = ''; s.phase = 'idle'; changed(); };
+  async function fail(code) {
+    s.error = code; rest(); report('error', code);
+    const kind = voiceSettingsTarget(code);
+    // The toast keeps the manual settings path if opening fails.
+    if (kind) await invoke('voice_open_settings', { kind }).catch(() => {});
   }
-  async function bindOwned(owner, target) {
-    if (deliveryBusy || voiceBusy(owner.phase) || !target || (owner.session && target.session !== owner.session)) return false;
-    owner.session = target.session; sessions.set(owner.session, owner);
-    const revision = ++epoch;
-    owner.phase = 'binding'; owner.error = ''; owner.notice = ''; changed();
+
+  // true: typed; 'retry': nothing typed, ask again next poll; false: ended.
+  async function type(revision, text, final) {
     try {
-      const result = await invoke('voice_bind', { name: target.session });
-      if (epoch !== revision) return false;
-      owner.target = { ...target, ...result }; owner.bindingExpired = false; owner.phase = 'idle'; changed(); return true;
+      await deps.prepareTarget(s.target);
+      await invoke('voice_deliver', { targetId: s.target.id, text });
+      retries = 0; return true;
     } catch (error) {
       if (epoch !== revision) return false;
-      owner.target = null; owner.phase = 'error'; owner.error = voiceError(error); changed(); return false;
-    }
-  }
-
-  function start() {
-    if (voiceBusy(s.phase) || deliveryBusy || !s.target) return Promise.resolve();
-    const owner = s, revision = epoch;
-    pendingStart = releasing ? release.then(() => owner === s && epoch === revision && startOwned(owner)) : startOwned(owner);
-    return pendingStart;
-  }
-  function startOwned(owner) {
-    if (deliveryBusy || voiceBusy(owner.phase) || !owner.target) return;
-    return recorder.start(owner);
-  }
-  const stop = () => recorder.stop(s);
-
-  async function close({ preserveOpen = false } = {}) {
-    const owner = currentState();
-    resumeOpen = preserveOpen && owner.open;
-    if (owner.phase === 'sending') return;
-    ++epoch;
-    const cleanup = recorder.close(owner);
-    owner.open = false; owner.phase = 'idle'; changed();
-    await cleanup;
-  }
-
-  async function clear() {
-    const owner = s;
-    if (!voiceCanAct(owner)) return;
-    const cleanup = recorder.interrupt(owner);
-    deliveryBusy = true; // One draft action owns microphone cleanup at a time.
-    if (owner.bindingExpired) owner.target = null;
-    owner.draft = ''; owner.needsConfirmation = false; owner.phase = 'stopping'; owner.error = ''; owner.notice = ''; changed();
-    try { await cleanup; owner.phase = 'idle'; }
-    catch (_) { owner.phase = 'error'; owner.error = 'operation-failed'; }
-    finally { await finishAction(owner); }
-  }
-
-  async function deliver(submit, { retry = false } = {}) {
-    const owner = currentState();
-    if (!voiceCanAct(owner) || !owner.target || (owner.needsConfirmation && !retry)) return;
-    const target = owner.target, text = owner.draft;
-    const cleanup = recorder.interrupt(owner);
-    deliveryBusy = true;
-    owner.lastSubmit = submit;
-    owner.phase = 'sending'; owner.error = ''; owner.notice = ''; changed();
-    let attempted = false;
-    try {
-      await cleanup;
-      await deps.prepareTarget(target);
-      attempted = true;
-      const result = await invoke('voice_deliver', { targetId: target.id, text, submit });
-      if (result === 'submitted' || result === 'inserted') {
-        owner.draft = ''; owner.needsConfirmation = false; owner.phase = 'idle'; owner.notice = result;
-      } else {
-        owner.needsConfirmation = true;
-        owner.phase = 'error'; owner.notice = result === 'enter-refused' ? 'enter-refused' : 'ambiguous';
-      }
-    } catch (error) {
-      owner.phase = 'error'; owner.error = attempted && voiceError(error) === 'operation-failed' ? 'delivery-unknown' : voiceError(error);
-      if (attempted) owner.needsConfirmation ||= owner.error === 'delivery-unknown';
-      if (owner.error === 'target-expired') {
-        owner.bindingExpired = true;
-        if (!owner.needsConfirmation) owner.target = null;
-      }
+      const code = voiceError(error);
+      if (code === 'delivery-unknown') { s.notice = code; report('notice', code); return true; }
+      if (TRANSIENT.has(code) && !final && retries < RETRY_LIMIT) { retries++; return 'retry'; }
+      await cancel(); await fail(code); return false;
     } finally {
-      deps.afterDelivery?.(target); await finishAction(owner);
+      deps.afterDelivery?.(s.target);
     }
   }
 
-  async function finishAction(owner) {
-    deliveryBusy = false; changed();
-    if (s !== owner && s.open && !s.target && !s.bindingExpired && !s.needsConfirmation) await bind(s.destination);
-  }
-
-  const currentState = () => s;
-  async function select(target) {
-    if (!target) return;
-    if (s.session === target.session) {
-      s.open ||= resumeOpen; resumeOpen = false;
-      if (s.target) { s.target.title = target.title; changed(); }
+  async function poll(revision, id) {
+    let result;
+    try { result = await invoke('voice_snapshot', { id }); } catch (_) { result = null; }
+    if (epoch !== revision) return;
+    if (!result || result.id !== id || typeof result.text !== 'string' || !result.text.startsWith(seen)) {
+      await cancel(); await fail(result ? 'recognition-failed' : 'operation-failed'); return;
+    }
+    if (result.status === 'cancelled') { rest(); return; }
+    if (result.status === 'downloading' && s.phase !== 'downloading') report('notice', 'downloading');
+    // A stop already shown never regresses to a capture phase on a stale snapshot.
+    if (voiceRecording(result.status) && s.phase !== 'stopping') s.phase = result.status;
+    if (result.status === 'recording' && !s.startedAt) s.startedAt = Date.now();
+    const final = result.status === 'ready' || result.status === 'error';
+    seen = result.text;
+    const slice = voiceSlice(result.text, s.typed, final);
+    const outcome = slice.text ? await type(revision, slice.text, final) : true;
+    if (outcome === false || epoch !== revision) return;
+    if (outcome === true) s.typed = slice.next;
+    s.preview = final ? '' : (result.text.slice(s.typed) + (typeof result.preview === 'string' ? result.preview : '')).trim();
+    if (final) {
+      s.recordingId = null; cancelNative(id);
+      if (result.status === 'error') await fail(voiceError(result.code)); else rest();
       return;
     }
-    const revision = ++selection, previous = s, wasOpen = previous.open || resumeOpen;
-    // Capture all outstanding IPC before selecting the next owner. A late
-    // start must be cancelled before another session can acquire the mic.
-    const closing = close();
-    releasing = true;
-    release = Promise.all([release, closing, pendingBind, pendingStart, recorder.settled()]).then(() => {});
-    s = sessions.get(target.session) || fresh();
-    s.session = target.session; s.destination = target; sessions.set(target.session, s);
-    previous.open = wasOpen;
-    s.layout = placement; s.open ||= wasOpen;
-    if (s.target) s.target.title = target.title;
+    timer = schedule(() => poll(revision, id));
     changed();
-    await release;
-    if (selection === revision) { releasing = false; changed(); }
-    if (selection === revision && s.open && !s.target && !s.bindingExpired && !s.needsConfirmation) await bind(target);
   }
-  async function ensureTarget(target) {
-    await select(target);
-    if (!target || s.session !== target.session) return false;
-    if (s.needsConfirmation) return false;
-    if (s.target) return true;
-    return !s.needsConfirmation && bind(target);
+
+  async function startOwned(target, revision) {
+    try {
+      await Promise.all([pendingStart, pendingCancel]);
+      if (epoch !== revision) return;
+      const binding = await invoke('voice_bind', { name: target.session });
+      if (epoch !== revision) return;
+      s.target = { ...target, ...binding }; s.phase = 'preparing'; changed();
+      const id = await invoke('voice_start', { targetId: s.target.id, locale: defaultVoiceLanguage(preferences, deps.language) });
+      if (epoch !== revision) { await cancelNative(id); return; }
+      s.recordingId = id; changed();
+      await poll(revision, id);
+    } catch (error) {
+      if (epoch !== revision) return;
+      await fail(voiceError(error));
+    }
+  }
+  function start(target) {
+    if (!target || voiceBusy(s.phase)) return Promise.resolve();
+    const revision = ++epoch;
+    clearPoll();
+    Object.assign(s, { session: target.session, target: null, recordingId: null, startedAt: 0, error: '', notice: '', typed: 0, phase: 'binding' });
+    seen = ''; retries = 0; changed();
+    pendingStart = startOwned(target, revision);
+    return pendingStart;
+  }
+
+  async function stop() {
+    if (!voiceBusy(s.phase) || s.phase === 'stopping') return;
+    if (s.recordingId === null) return cancel();
+    const revision = epoch;
+    s.phase = 'stopping'; changed();
+    try { await invoke('voice_stop', { id: s.recordingId }); }
+    catch (_) { if (epoch === revision) { await cancel(); await fail('operation-failed'); } }
+  }
+
+  async function cancel() {
+    if (!voiceBusy(s.phase)) return;
+    ++epoch; clearPoll();
+    const id = s.recordingId;
+    rest();
+    if (id !== null) await cancelNative(id);
   }
 
   const controller = {
-    select, ensureTarget, bind, start, stop, close, clear, deliver,
-    configure(value) {
-      preferences = normalizeVoicePreferences(value);
-      sessions.forEach(reconcileLanguage); changed();
+    start, stop, cancel,
+    toggle(target) {
+      if (s.phase === 'idle') return start(target);
+      if (s.phase === 'stopping') return Promise.resolve();
+      return stop();
     },
-    retry() { if (s.needsConfirmation) return deliver(s.lastSubmit, { retry: true }); },
-    show() { s.open = true; changed(); },
-    layout(value) { if (VOICE_LAYOUTS.includes(value)) { placement = value; s.layout = value; changed(); } },
-    edit(text) { if (!voiceBusy(s.phase)) { s.draft = text; changed(); } },
-    language(value) { if (!voiceBusy(s.phase) && preferences.languages.includes(value)) { s.language = value; changed(); } },
+    select(target) {
+      if (voiceBusy(s.phase) && target?.session !== s.session) return cancel();
+      return Promise.resolve();
+    },
+    targetExit(session) {
+      if (voiceBusy(s.phase) && session === s.session) return cancel();
+      return Promise.resolve();
+    },
+    configure(value) { preferences = normalizeVoicePreferences(value); },
+    // The literal-typing path on its own, without capture (smoke coverage).
+    async typeText(target, text) {
+      const binding = await invoke('voice_bind', { name: target.session });
+      const bound = { ...target, ...binding };
+      try { await deps.prepareTarget(bound); await invoke('voice_deliver', { targetId: bound.id, text }); }
+      finally { deps.afterDelivery?.(bound); }
+    },
   };
-  Object.defineProperty(controller, 'state', { get: currentState });
+  Object.defineProperty(controller, 'state', { get: () => s });
   return controller;
 }

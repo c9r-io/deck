@@ -1,6 +1,6 @@
 // layout.js — split-tree layout, pane lifecycle, terminal creation, session view
-// Voice placement resizes through the existing observer. Leaving releases the
-// recorder; focus selects that session's voice draft. An explicit voice delivery briefly owns the target's user input.
+// Leaving or refocusing ends the voice recording; each voice paste briefly
+// owns the target's user input.
 // Part of deck's no-build frontend: native ES modules, no bundler.
 // Read receipts require a successful attach to the still-visible pane.
 // Split buttons and shortcuts open the shared menu before start/attach; its
@@ -955,7 +955,7 @@ export function closePaneBySid(sid, opts = {}) {
   if (opts.detach !== false) inv('detach_session', { name: entry.session }).catch(() => {});
   try { entry.term.dispose(); } catch (e) { /* already gone */ }
   const quickBar = $('quick-bar');
-  if (quickBar && entry.el.contains(quickBar)) $('voice-terminal').appendChild(quickBar);
+  if (quickBar && entry.el.contains(quickBar)) $('terminal-host').appendChild(quickBar);
   entry.el.remove();
   panes.delete(entry.session);
   ctx.ptyGens.delete(entry.session);
@@ -1069,7 +1069,7 @@ export function leaveSessionView({ switchingSession = false } = {}) {
   resetSuggest(null);
   toggleQueuePanel(false);
   const quickBar = $('quick-bar');
-  if (quickBar && quickBar.closest('.spane')) $('voice-terminal').appendChild(quickBar);
+  if (quickBar && quickBar.closest('.spane')) $('terminal-host').appendChild(quickBar);
   panes.forEach(p => {
     if (p.selection) p.selection.dispose();
     p.scrollCursorObserver?.disconnect();

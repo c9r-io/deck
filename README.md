@@ -115,16 +115,15 @@ onto a pane edge, or hit ⌘D / ⌘⇧D (or the ◧ ⬓ buttons) and pick a sess
 Splits nest freely, dividers drag to resize, closing a pane never kills the
 session.
 
-**Voice drafts.** The session header's microphone records into an editable,
-on-device transcript. Clear, Insert only and Send can stop recording and act
-on the displayed text directly; an empty draft does nothing. Each session retains its own draft, recognition language and target
-binding when you switch sessions. The same editor switches between Bottom (default), Floating and Right
-without restarting capture; the choice lasts for this app run. Native local
-recognition requires a supported macOS 12+ configuration; macOS 26 builds use
-the newer Speech engine where available. There is no cloud speech fallback.
-The language menu defaults to Chinese, English and Japanese. Settings → Terminal
-& sessions → Voice input saves your enabled languages and default; choosing
-only one language hides the draft's selector.
+**Voice input.** The session header's microphone starts a recording; click
+it again to stop. Speech is recognized on the Mac and typed straight into the
+focused session as it is confirmed, like keystrokes, without an Enter; a
+translucent caption under the button shows what is heard but not yet typed.
+Correct it with the keyboard and press Enter yourself. There is no draft panel and
+nothing to insert, send or clear. Native local recognition requires a
+supported macOS 12+ configuration; macOS 26 builds use the newer Speech engine
+where available. There is no cloud speech fallback. Settings → Terminal &
+sessions → Voice input saves the recognition languages and the default.
 See [voice input](docs/voice-input.md) for target checks, permissions and limits.
 
 **Complete, safe themes.** Settings offers Deck Dark (the compatible default),

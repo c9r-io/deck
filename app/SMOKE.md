@@ -1,10 +1,10 @@
 # deck release smoke checklist
 
-Voice composer integration has a separate isolated scenario:
+Voice input integration has a separate isolated scenario:
 `DECK_SMOKE_DATA_DIR=/tmp/deck-voice-unique DECK_SMOKE_TMUX_SOCKET=deck-smoke-voice-unique DECK_SMOKE_WKWEBVIEW=voice app/run.sh`.
-It checks all placements, editor identity/selection, IME, insert/send via real
-IPC, dead targets, themes, saved language preferences and the single-language
-selector layout without opening the microphone. See
+It checks the header button, the byte-literal typing path via real IPC (no
+Enter, separators kept, any foreground program, dead targets), themes and
+saved language preferences without opening the microphone. See
 [voice input](../docs/voice-input.md) for native audio and permission checks.
 
 

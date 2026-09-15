@@ -1,12 +1,15 @@
-//! One native recorder with volatile per-session target bindings.
+//! One native recorder bound to one pane; committed text is typed straight in.
 //! Native snapshots are pulled only by the invoking webview: no audio files,
 //! transcript logs, broadcast transcript events, subprocesses or cloud fallback.
-//! Bind pins session/pane identity, not the foreground program. Every explicit
-//! delivery probes the current program and pins it through paste and Enter.
-//! Transient refusals retain bindings; a changed generation returns target-expired
-//! so the NEXT explicit UI action can bind again without automatic retransmission.
-//! The UI requires a distinct retry action
-//! for uncertain delivery. Shared scheduler exclusion prevents concurrent sends.
+//! A snapshot's text is the committed transcript so far (a growing prefix);
+//! the webview pastes each new slice while capture is still running, so
+//! delivery is allowed during a busy recording. Bind pins session/pane
+//! identity, not the foreground program; every paste probes the current
+//! program and pins identity + program atomically. Text is byte-literal:
+//! no trimming (a slice may begin with the space between two words), never
+//! an Enter. A changed generation returns target-expired; the UI ends the
+//! recording rather than rebinding. Shared scheduler exclusion prevents
+//! concurrent sends into one session.
 use crate::context::RawProbe;
 use crate::error::{DeckError, ErrorKind};
 use crate::prompt_delivery::{self, LiteralOutcome, LiteralRequest};
@@ -25,7 +28,10 @@ pub(crate) const SUPPORTED_LANGUAGES: &[&str] = &[
 pub(crate) struct Snapshot {
     id: u64,
     status: String,
+    /// Committed transcript prefix; grows until `ready`, never revised.
     text: String,
+    /// Volatile tail shown as a caption; never typed, never logged.
+    preview: String,
     code: String,
 }
 impl Snapshot {
@@ -73,6 +79,7 @@ extern "C" {
             *const std::ffi::c_char,
             *const std::ffi::c_char,
             *const std::ffi::c_char,
+            *const std::ffi::c_char,
         ),
     );
     fn deck_speech_stop(id: u64);
@@ -83,19 +90,21 @@ extern "C" fn snapshot_callback(
     id: u64,
     status: *const std::ffi::c_char,
     text: *const std::ffi::c_char,
+    preview: *const std::ffi::c_char,
     code: *const std::ffi::c_char,
 ) {
-    accept_snapshot(voice(), id, status, text, code);
+    accept_snapshot(voice(), id, status, text, preview, code);
 }
 fn accept_snapshot(
     state: &Mutex<Voice>,
     id: u64,
     status: *const std::ffi::c_char,
     text: *const std::ffi::c_char,
+    preview: *const std::ffi::c_char,
     code: *const std::ffi::c_char,
 ) {
     // Swift lends valid NUL-terminated strings for this synchronous callback.
-    if status.is_null() || text.is_null() || code.is_null() {
+    if status.is_null() || text.is_null() || preview.is_null() || code.is_null() {
         return;
     }
     let mut v = state.lock_or_recover();
@@ -103,13 +112,36 @@ fn accept_snapshot(
         return;
     }
     unsafe {
-        v.snapshot.status = CStr::from_ptr(status).to_string_lossy().into_owned();
+        let status = CStr::from_ptr(status).to_string_lossy().into_owned();
+        // A stop is acknowledged here before the native side reaches it; a
+        // capture-phase callback in between must not revive the recording.
+        if !(v.snapshot.status == "stopping"
+            && matches!(status.as_str(), "preparing" | "downloading" | "recording"))
+        {
+            v.snapshot.status = status;
+        }
         v.snapshot.text = CStr::from_ptr(text)
             .to_string_lossy()
             .chars()
             .take(65_536)
             .collect();
+        v.snapshot.preview = CStr::from_ptr(preview)
+            .to_string_lossy()
+            .chars()
+            .take(4_096)
+            .collect();
         v.snapshot.code = CStr::from_ptr(code).to_string_lossy().into_owned();
+    }
+    // While preparing, the code names the recognizer that will run: a closed
+    // word for app.log so "typed only at stop" can be told apart from a slow
+    // finalization. It never reaches the snapshot as an error code.
+    if v.snapshot.status == "preparing" {
+        match v.snapshot.code.as_str() {
+            "engine-modern" => crate::applog::applog("[voice] engine=modern"),
+            "engine-legacy" => crate::applog::applog("[voice] engine=legacy"),
+            _ => {}
+        }
+        v.snapshot.code.clear();
     }
 }
 
@@ -244,8 +276,9 @@ pub(crate) fn voice_stop(id: u64) {
     stop_with(voice(), id, &NativeSpeech);
 }
 fn stop_with(state: &Mutex<Voice>, id: u64, speech: &impl Speech) {
-    let v = state.lock_or_recover();
+    let mut v = state.lock_or_recover();
     if v.snapshot.id == id && v.snapshot.busy() {
+        v.snapshot.status = "stopping".into();
         speech.stop(id);
     }
 }
@@ -259,17 +292,9 @@ fn cancel_with(state: &Mutex<Voice>, id: u64, speech: &impl Speech) {
     if id == 0 || v.snapshot.id == id {
         v.snapshot.status = "cancelled".into();
         v.snapshot.text.clear();
+        v.snapshot.preview.clear();
     }
     speech.cancel(id);
-}
-
-#[derive(Debug, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub(crate) enum Delivery {
-    Inserted,
-    Submitted,
-    EnterRefused,
-    Ambiguous,
 }
 
 #[tauri::command]
@@ -277,8 +302,7 @@ pub(crate) async fn voice_deliver(
     app: tauri::AppHandle,
     target_id: u64,
     text: String,
-    submit: bool,
-) -> Result<Delivery, DeckError> {
+) -> Result<(), DeckError> {
     use tauri::Manager;
     tauri::async_runtime::spawn_blocking(move || {
         let queues = app.state::<Queues>();
@@ -287,7 +311,6 @@ pub(crate) async fn voice_deliver(
             &queues.busy,
             target_id,
             text,
-            submit,
             &prompt_delivery::TmuxTransport,
         )
     })
@@ -300,9 +323,8 @@ fn deliver_with(
     busy: &Mutex<HashSet<String>>,
     target_id: u64,
     text: String,
-    submit: bool,
     transport: &impl prompt_delivery::Transport,
-) -> Result<Delivery, DeckError> {
+) -> Result<(), DeckError> {
     if text.trim().is_empty()
         || text.len() > 65_536
         || text
@@ -311,15 +333,11 @@ fn deliver_with(
     {
         return Err(failure("text-invalid"));
     }
-    let text = scheduler::normalize_prompt(&text);
-    if text.is_empty() {
-        return Err(failure("text-invalid"));
-    }
+    // Byte-literal apart from line endings: the webview already turned line
+    // breaks into spaces, and a slice keeps its leading word separator.
+    let text = text.replace("\r\n", "\n").replace('\r', "\n");
     let target = {
         let v = state.lock_or_recover();
-        if v.snapshot.busy() {
-            return Err(failure("voice-busy"));
-        }
         let target = v
             .targets
             .values()
@@ -366,20 +384,18 @@ fn deliver_with(
             expected_process: current.foreground.as_deref(),
             delivery: &format!("voice-{}", scheduler::next_delivery_id()),
             text: &text,
-            submit,
+            submit: false,
             require_bracketed: true,
         },
         transport,
     );
     // A transport failure can happen after the paste. Never auto-retry it.
-    let result = match outcome {
-        Ok(LiteralOutcome::Inserted) => Delivery::Inserted,
-        Ok(LiteralOutcome::Submitted) => Delivery::Submitted,
-        Ok(LiteralOutcome::EnterRefused) => Delivery::EnterRefused,
-        Err(error) if error == "target-changed" => return Err(failure("target-changed")),
-        Err(_) => Delivery::Ambiguous,
-    };
-    Ok(result)
+    match outcome {
+        Ok(LiteralOutcome::Inserted) => Ok(()),
+        Ok(_) => Err(failure("delivery-unknown")),
+        Err(error) if error == "target-changed" => Err(failure("target-changed")),
+        Err(_) => Err(failure("delivery-unknown")),
+    }
 }
 
 #[cfg(test)]

@@ -31,10 +31,7 @@ export class FakeElement {
   }
   get options() { return this.children; }
   setSelectionRange(start, end) { this.selectionStart = start; this.selectionEnd = end; }
-  querySelectorAll(selector) {
-    if (selector === '[data-voice-layout]') return this.children.filter(child => child.dataset.voiceLayout);
-    return [];
-  }
+  querySelectorAll() { return []; }
   replaceChildren(...nodes) { this.children = nodes; }
   appendChild(node) { this.children.push(node); return node; }
   append(node) { this.children.push(node); }

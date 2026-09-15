@@ -1,5 +1,7 @@
 // In-process, on-device speech only. C entry points enqueue work on the main
 // actor; snapshots cross a synchronous callback and never enter logs/files.
+// A snapshot's text is the committed transcript so far (a growing prefix);
+// the volatile tail travels separately as a preview and is never typed.
 // One capture owner, bounded recording/input buffer, token-scoped cancellation.
 // Framework errors cross the bridge only as closed codes, never descriptions
 // or userInfo. Disabled system Dictation has actionable setup guidance.
@@ -14,7 +16,7 @@ import Speech
 #error("This build requires Swift 6.2+ and the macOS 26 SDK to include SpeechAnalyzer.")
 #endif
 
-public typealias DeckSpeechCallback = @convention(c) (UInt64, UnsafePointer<CChar>, UnsafePointer<CChar>, UnsafePointer<CChar>) -> Void
+public typealias DeckSpeechCallback = @convention(c) (UInt64, UnsafePointer<CChar>, UnsafePointer<CChar>, UnsafePointer<CChar>, UnsafePointer<CChar>) -> Void
 
 func deckSpeechErrorCode(_ error: Error) -> String {
     var cause = error as NSError
@@ -64,9 +66,14 @@ func deckSpeechErrorCode(_ error: Error) -> String {
 
     var active: Bool { !ended && current === self }
 
+    // Committed text is what gets typed: finalized segments while capturing,
+    // the whole transcript once finalization succeeds. The volatile tail is
+    // published only as a preview for the caption.
     func publish(_ state: String, _ code: String = "") {
         guard current === self else { return }
-        state.withCString { s in text.withCString { t in code.withCString { c in callback(id, s, t, c) } } }
+        let committed = state == "ready" ? text : stable
+        let preview = state == "ready" ? "" : String(text.dropFirst(stable.count))
+        state.withCString { s in committed.withCString { t in preview.withCString { p in code.withCString { c in callback(id, s, t, p, c) } } } }
     }
 
     func releaseMic() {
@@ -117,10 +124,13 @@ func deckSpeechErrorCode(_ error: Error) -> String {
                 if #available(macOS 26.0, *), SpeechTranscriber.isAvailable,
                    let supported = await SpeechTranscriber.supportedLocale(equivalentTo: Locale(identifier: locale)) {
                     guard self.active else { return }
+                    // The engine word is a closed diagnostic, logged by Rust, never text.
+                    self.publish("preparing", "engine-modern")
                     try await self.modern(locale: supported)
                     return
                 }
                 #endif
+                self.publish("preparing", "engine-legacy")
                 try await self.legacy(locale: Locale(identifier: locale))
             } catch {
                 self.finish("error", deckSpeechErrorCode(error))
@@ -186,6 +196,8 @@ func deckSpeechErrorCode(_ error: Error) -> String {
     #if compiler(>=6.2)
     @available(macOS 26.0, *)
     func modern(locale: Locale) async throws {
+        // Accuracy over early finalization: fastResults was tried and typed
+        // noticeably worse text; the caption covers the waiting instead.
         let transcriber = SpeechTranscriber(locale: locale, preset: .progressiveTranscription)
         if let download = try await AssetInventory.assetInstallationRequest(supporting: [transcriber]) {
             guard active else { return }
@@ -259,7 +271,7 @@ public func deckSpeechStart(_ id: UInt64, _ locale: UnsafePointer<CChar>, _ call
             current = capture
             capture.run(locale: language)
         } else {
-            "error".withCString { s in "".withCString { t in "local-unavailable".withCString { c in callback(id, s, t, c) } } }
+            "error".withCString { s in "".withCString { t in "local-unavailable".withCString { c in callback(id, s, t, t, c) } } }
         }
     }
 }
