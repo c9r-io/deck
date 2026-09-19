@@ -1166,6 +1166,16 @@ fn connection_identity(bot: &str) -> Result<Identity, &'static str> {
     })
 }
 
+fn injected_connection_fault() -> Option<&'static str> {
+    if crate::smoke_faults::take("channel-network") {
+        Some("network")
+    } else if crate::smoke_faults::take("channel-scope") {
+        Some("scope")
+    } else {
+        None
+    }
+}
+
 fn socket_loop(app: AppHandle) {
     use tungstenite::stream::MaybeTlsStream;
     use tungstenite::Message;
@@ -1190,6 +1200,9 @@ fn socket_loop(app: AppHandle) {
             continue;
         }
         let attempt = (|| -> Result<(), &'static str> {
+            if let Some(code) = injected_connection_fault() {
+                return Err(code);
+            }
             let identity = connection_identity(&bot)?;
             if !credentials_unchanged(credential_epoch) {
                 return Err("credential-changed");
@@ -1209,6 +1222,9 @@ fn socket_loop(app: AppHandle) {
             set_gap(true, None);
             backoff = 1;
             loop {
+                if let Some(code) = injected_connection_fault() {
+                    return Err(code);
+                }
                 match ws.read() {
                     Ok(Message::Text(text)) => {
                         let value = serde_json::from_str::<Value>(&text).ok();

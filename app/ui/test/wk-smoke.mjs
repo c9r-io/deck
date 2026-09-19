@@ -2240,6 +2240,54 @@ export async function verifyChannel() {
   } catch (_) { await report('done', false, 0, 17); }
 }
 
+// Real-credential transport acceptance on an isolated data root. These closed
+// debug-only faults exercise disconnect status, retry, and recovery without
+// changing the Mac's Wi-Fi/VPN or writing test messages to Slack.
+export async function verifyChannelFault() {
+  let armed = '';
+  try {
+    // A stopped smoke process intentionally forgets its credential cache. Give
+    // the operator time to copy both sandbox tokens directly from Slack into
+    // this isolated window without ever persisting them in the fixture.
+    const baseline = await waitFor(async () => (await inv('channel_status')).connected, 180000);
+    const before = await inv('channel_status');
+    const { openSettings, renderInboundSettings, selectSettingsSection } = await import('../js/dialogs.js');
+    const { t } = await import('../js/i18n.js');
+    await openSettings(); selectSettingsSection('integrations');
+
+    const exercise = async kind => {
+      armed = kind;
+      await inv('smoke_fault_set', { kind, count: 8 });
+      const code = kind === 'channel-network' ? 'network' : 'scope';
+      const disconnected = await waitFor(async () => {
+        const status = await inv('channel_status');
+        return !status.connected && status.lastError === code && status.gapUnresolved;
+      }, 12000);
+      await renderInboundSettings();
+      const text = $('set-channel-status').textContent;
+      const visible = text.includes(code)
+        && text.includes(t('settings.channelStatus.disconnected'))
+        && text.includes(t('settings.channelGap'));
+      await inv('smoke_fault_set', { kind, count: 0 });
+      armed = '';
+      const recovered = await waitFor(async () => {
+        const status = await inv('channel_status');
+        return status.connected && status.gapUnresolved && status.lastConnected >= (before.lastConnected || 0);
+      }, 15000);
+      await report(kind, disconnected && visible && recovered, disconnected ? 1 : 0, recovered ? 1 : 0);
+      return disconnected && visible && recovered;
+    };
+
+    const network = baseline && await exercise('channel-network');
+    const scope = network && await exercise('channel-scope');
+    await report('channel-fault-recovery', baseline && network && scope, network ? 1 : 0, scope ? 1 : 0);
+    await report('done', !smokeFailed, 1, 0);
+  } catch (_) {
+    if (armed) await inv('smoke_fault_set', { kind: armed, count: 0 }).catch(() => {});
+    await report('done', false, 0, 18);
+  }
+}
+
 export async function verifyConnector() {
   try {
     await waitFor(() => provider.projects().length > 0);

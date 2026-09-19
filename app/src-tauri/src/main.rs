@@ -261,6 +261,8 @@ fn main() {
                         "m.verifyBuffer()"
                     } else if mode == "channel" {
                         "m.verifyChannel()"
+                    } else if mode == "channel-fault" {
+                        "m.verifyChannelFault()"
                     } else if mode == "connector" {
                         "m.verifyConnector()"
                     } else if mode == "connector-transport" {

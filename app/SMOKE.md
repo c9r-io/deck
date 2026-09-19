@@ -189,6 +189,20 @@ a fixture.
       build fields only—no socket path, session names, commands, prompts,
       terminal text, or project paths.
 
+### Slack channel transport faults
+
+- [ ] Start only an isolated data root that already has the sandbox channel
+      credentials and rule, with `DECK_SMOKE_WKWEBVIEW=channel-fault`. The
+      runner arms the closed debug-only `channel-network` and `channel-scope`
+      faults in turn; it does not disable Wi-Fi/VPN or write to Slack.
+- [ ] For each fault, Settings shows not connected/no backfill, an unresolved
+      gap, and the exact `network` or `scope` code. Clearing the fault restores
+      the real Socket Mode connection while the explicit gap remains.
+- [ ] Treat `scope` as deterministic application-path acceptance paired with
+      Slack's live configuration constraint and the Web API
+      `missing_scope -> scope` contract test. Do not report it as a successful
+      live scope removal when Slack requires the scope for a configured event.
+
 ### Signed updater and responsible-code gate
 
 - [ ] Use two authorized, increasing, signed/notarized candidate builds from
