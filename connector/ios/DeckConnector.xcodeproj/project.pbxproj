@@ -1,0 +1,131 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {};
+	objectVersion = 60;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		100000000000000000000001 /* DeckConnectorApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000001 /* DeckConnectorApp.swift */; };
+		100000000000000000000002 /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000002 /* AppModel.swift */; };
+		100000000000000000000003 /* Views.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000003 /* Views.swift */; };
+		100000000000000000000004 /* QRScannerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000004 /* QRScannerView.swift */; };
+		100000000000000000000005 /* DeckConnectorCore in Frameworks */ = {isa = PBXBuildFile; productRef = 900000000000000000000001 /* DeckConnectorCore */; };
+		100000000000000000000006 /* AppModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000007 /* AppModelTests.swift */; };
+		100000000000000000000007 /* XCTest.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 200000000000000000000009 /* XCTest.framework */; };
+		100000000000000000000008 /* DeckConnectorCore in Frameworks */ = {isa = PBXBuildFile; productRef = 900000000000000000000003 /* DeckConnectorCore */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		200000000000000000000001 /* DeckConnectorApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeckConnectorApp.swift; sourceTree = "<group>"; };
+		200000000000000000000002 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
+		200000000000000000000003 /* Views.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views.swift; sourceTree = "<group>"; };
+		200000000000000000000004 /* QRScannerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QRScannerView.swift; sourceTree = "<group>"; };
+		200000000000000000000005 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		200000000000000000000006 /* DeckConnector.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = DeckConnector.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		200000000000000000000007 /* AppModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModelTests.swift; sourceTree = "<group>"; };
+		200000000000000000000008 /* DeckConnectorTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = DeckConnectorTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		200000000000000000000009 /* XCTest.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = XCTest.framework; path = System/Library/Frameworks/XCTest.framework; sourceTree = SDKROOT; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		300000000000000000000001 /* Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (100000000000000000000005 /* DeckConnectorCore in Frameworks */,); runOnlyForDeploymentPostprocessing = 0; };
+		300000000000000000000002 /* Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (100000000000000000000007 /* XCTest.framework in Frameworks */, 100000000000000000000008 /* DeckConnectorCore in Frameworks */,); runOnlyForDeploymentPostprocessing = 0; };
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		400000000000000000000001 = {isa = PBXGroup; children = (400000000000000000000002 /* DeckConnectorApp */, 400000000000000000000004 /* DeckConnectorTests */, 400000000000000000000003 /* Products */,); sourceTree = "<group>"; };
+		400000000000000000000002 /* DeckConnectorApp */ = {isa = PBXGroup; children = (200000000000000000000001, 200000000000000000000002, 200000000000000000000003, 200000000000000000000004, 200000000000000000000005,); path = DeckConnectorApp; sourceTree = "<group>"; };
+		400000000000000000000003 /* Products */ = {isa = PBXGroup; children = (200000000000000000000006, 200000000000000000000008,); name = Products; sourceTree = "<group>"; };
+		400000000000000000000004 /* DeckConnectorTests */ = {isa = PBXGroup; children = (200000000000000000000007,); path = DeckConnectorTests; sourceTree = "<group>"; };
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		500000000000000000000001 /* DeckConnector */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 800000000000000000000002 /* Build configuration list for PBXNativeTarget "DeckConnector" */;
+			buildPhases = (700000000000000000000001 /* Sources */, 300000000000000000000001 /* Frameworks */, 700000000000000000000002 /* Resources */,);
+			buildRules = ();
+			dependencies = ();
+			name = DeckConnector;
+			packageProductDependencies = (900000000000000000000001 /* DeckConnectorCore */,);
+			productName = DeckConnector;
+			productReference = 200000000000000000000006 /* DeckConnector.app */;
+			productType = "com.apple.product-type.application";
+		};
+		500000000000000000000002 /* DeckConnectorTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 800000000000000000000003 /* Build configuration list for PBXNativeTarget "DeckConnectorTests" */;
+			buildPhases = (700000000000000000000003 /* Sources */, 300000000000000000000002 /* Frameworks */, 700000000000000000000004 /* Resources */,);
+			buildRules = ();
+			dependencies = (C00000000000000000000001 /* PBXTargetDependency */,);
+			name = DeckConnectorTests;
+			packageProductDependencies = (900000000000000000000003 /* DeckConnectorCore */,);
+			productName = DeckConnectorTests;
+			productReference = 200000000000000000000008 /* DeckConnectorTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		600000000000000000000001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {BuildIndependentTargetsInParallel = 1; LastSwiftUpdateCheck = 1600; LastUpgradeCheck = 1600; TargetAttributes = {500000000000000000000001 = {CreatedOnToolsVersion = 16.0; }; 500000000000000000000002 = {CreatedOnToolsVersion = 27.0; TestTargetID = 500000000000000000000001; };};};
+			buildConfigurationList = 800000000000000000000001 /* Build configuration list for PBXProject "DeckConnector" */;
+			compatibilityVersion = "Xcode 15.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (en, Base,);
+			mainGroup = 400000000000000000000001;
+			packageReferences = (900000000000000000000002 /* XCLocalSwiftPackageReference "." */,);
+			productRefGroup = 400000000000000000000003;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (500000000000000000000001 /* DeckConnector */, 500000000000000000000002 /* DeckConnectorTests */,);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		700000000000000000000002 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		700000000000000000000004 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		700000000000000000000001 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (100000000000000000000001, 100000000000000000000002, 100000000000000000000003, 100000000000000000000004,); runOnlyForDeploymentPostprocessing = 0; };
+		700000000000000000000003 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (100000000000000000000006 /* AppModelTests.swift in Sources */,); runOnlyForDeploymentPostprocessing = 0; };
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		A00000000000000000000001 /* Debug */ = {isa = XCBuildConfiguration; buildSettings = {CLANG_ENABLE_MODULES = YES; CLANG_ENABLE_OBJC_ARC = YES; IPHONEOS_DEPLOYMENT_TARGET = 17.0; ONLY_ACTIVE_ARCH = YES; SDKROOT = iphoneos; SWIFT_VERSION = 5.0;}; name = Debug; };
+		A00000000000000000000002 /* Release */ = {isa = XCBuildConfiguration; buildSettings = {CLANG_ENABLE_MODULES = YES; CLANG_ENABLE_OBJC_ARC = YES; IPHONEOS_DEPLOYMENT_TARGET = 17.0; SDKROOT = iphoneos; SWIFT_COMPILATION_MODE = wholemodule; SWIFT_VERSION = 5.0; VALIDATE_PRODUCT = YES;}; name = Release; };
+		A00000000000000000000003 /* Debug */ = {isa = XCBuildConfiguration; buildSettings = {CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 1; ENABLE_TESTABILITY = YES; GENERATE_INFOPLIST_FILE = NO; INFOPLIST_FILE = DeckConnectorApp/Info.plist; IPHONEOS_DEPLOYMENT_TARGET = 17.0; MARKETING_VERSION = 1.0; PRODUCT_BUNDLE_IDENTIFIER = io.c9r.deck.connector; PRODUCT_NAME = "$(TARGET_NAME)"; SDKROOT = iphoneos; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SUPPORTS_MACCATALYST = NO; SWIFT_EMIT_LOC_STRINGS = YES; SWIFT_OPTIMIZATION_LEVEL = "-Onone"; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = 1;}; name = Debug; };
+		A00000000000000000000004 /* Release */ = {isa = XCBuildConfiguration; buildSettings = {CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 1; GENERATE_INFOPLIST_FILE = NO; INFOPLIST_FILE = DeckConnectorApp/Info.plist; IPHONEOS_DEPLOYMENT_TARGET = 17.0; MARKETING_VERSION = 1.0; PRODUCT_BUNDLE_IDENTIFIER = io.c9r.deck.connector; PRODUCT_NAME = "$(TARGET_NAME)"; SDKROOT = iphoneos; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SUPPORTS_MACCATALYST = NO; SWIFT_COMPILATION_MODE = wholemodule; SWIFT_EMIT_LOC_STRINGS = YES; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = 1; VALIDATE_PRODUCT = YES;}; name = Release; };
+		A00000000000000000000005 /* Debug */ = {isa = XCBuildConfiguration; buildSettings = {BUNDLE_LOADER = "$(TEST_HOST)"; CODE_SIGN_STYLE = Automatic; GENERATE_INFOPLIST_FILE = YES; IPHONEOS_DEPLOYMENT_TARGET = 17.0; PRODUCT_BUNDLE_IDENTIFIER = io.c9r.deck.connector.tests; PRODUCT_NAME = "$(TARGET_NAME)"; SDKROOT = iphoneos; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SWIFT_OPTIMIZATION_LEVEL = "-Onone"; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = 1; TEST_HOST = "$(BUILT_PRODUCTS_DIR)/DeckConnector.app/DeckConnector";}; name = Debug; };
+		A00000000000000000000006 /* Release */ = {isa = XCBuildConfiguration; buildSettings = {BUNDLE_LOADER = "$(TEST_HOST)"; CODE_SIGN_STYLE = Automatic; GENERATE_INFOPLIST_FILE = YES; IPHONEOS_DEPLOYMENT_TARGET = 17.0; PRODUCT_BUNDLE_IDENTIFIER = io.c9r.deck.connector.tests; PRODUCT_NAME = "$(TARGET_NAME)"; SDKROOT = iphoneos; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = 1; TEST_HOST = "$(BUILT_PRODUCTS_DIR)/DeckConnector.app/DeckConnector";}; name = Release; };
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		800000000000000000000001 /* Build configuration list for PBXProject "DeckConnector" */ = {isa = XCConfigurationList; buildConfigurations = (A00000000000000000000001, A00000000000000000000002,); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		800000000000000000000002 /* Build configuration list for PBXNativeTarget "DeckConnector" */ = {isa = XCConfigurationList; buildConfigurations = (A00000000000000000000003, A00000000000000000000004,); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		800000000000000000000003 /* Build configuration list for PBXNativeTarget "DeckConnectorTests" */ = {isa = XCConfigurationList; buildConfigurations = (A00000000000000000000005, A00000000000000000000006,); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		900000000000000000000002 /* XCLocalSwiftPackageReference "." */ = {isa = XCLocalSwiftPackageReference; relativePath = "."; };
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		900000000000000000000001 /* DeckConnectorCore */ = {isa = XCSwiftPackageProductDependency; package = 900000000000000000000002 /* XCLocalSwiftPackageReference "." */; productName = DeckConnectorCore; };
+		900000000000000000000003 /* DeckConnectorCore */ = {isa = XCSwiftPackageProductDependency; package = 900000000000000000000002 /* XCLocalSwiftPackageReference "." */; productName = DeckConnectorCore; };
+/* End XCSwiftPackageProductDependency section */
+
+/* Begin PBXContainerItemProxy section */
+		B00000000000000000000001 /* PBXContainerItemProxy */ = {isa = PBXContainerItemProxy; containerPortal = 600000000000000000000001 /* Project object */; proxyType = 1; remoteGlobalIDString = 500000000000000000000001; remoteInfo = DeckConnector; };
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXTargetDependency section */
+		C00000000000000000000001 /* PBXTargetDependency */ = {isa = PBXTargetDependency; target = 500000000000000000000001 /* DeckConnector */; targetProxy = B00000000000000000000001 /* PBXContainerItemProxy */; };
+/* End PBXTargetDependency section */
+	};
+	rootObject = 600000000000000000000001 /* Project object */;
+}
