@@ -35,6 +35,8 @@ test('grace, schedule and trigger read in the user\'s language', () => {
   assert.equal(ruleLabel(clockRule()), 'Nightly');
   assert.equal(ruleLabel(clockRule({ name: '' })), 'a1');
   assert.equal(ruleLabel(slackRule()), ':deck:');
+  assert.equal(ruleLabel({ source: 'channel', id: 'channel-1', name: 'Reviews' }), 'Reviews');
+  assert.equal(ruleLabel({ source: 'channel', id: 'channel-1', name: '' }), 'channel-1');
 });
 
 test('a run line states its outcome; only a running run with a card can be opened', () => {

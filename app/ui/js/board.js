@@ -28,6 +28,7 @@ import { attentionStatusText, refreshAttention } from './attention.js';
 import { addManual, addQueueCopy, bufferLimitError, copyEvidence, deleteEntry, editEntry, emptyBuffer, retainedBuffer } from './buffer-model.js';
 import { nextCollectedAt } from './channel-model.js';
 import { normalizeTaskPresets } from './connector-model.js';
+import { ruleLabel } from './automation-model.js';
 import { formatDateTime, onLocaleChange } from './i18n.js';
 export { migrateColumnSemantics } from './board-defaults.js';
 
@@ -1275,7 +1276,7 @@ export function cardEl(s) {
   setQueueChip(el.querySelector('.q-chip'), s);   // self-fill: survives card rebuilds
   const autoChip = el.querySelector('.auto-chip');
   const rule = ruleOf(s.origin);
-  autoChip.textContent = rule ? '↻ ' + (rule.name || (rule.source === 'clock' ? rule.id : `:${rule.badge}:`)) : '';
+  autoChip.textContent = rule ? '↻ ' + ruleLabel(rule) : '';
   autoChip.hidden = !rule;
   el.querySelector('.cmd').textContent = s.cmd ? '$ ' + s.cmd : '';
   el.querySelector('.dir').textContent = s.dir;
