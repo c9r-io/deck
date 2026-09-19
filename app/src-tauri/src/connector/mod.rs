@@ -36,6 +36,7 @@ const TERMINAL_RESERVE_BYTES: usize = 2 * 1024;
 const MAX_RESULT_BYTES: usize = 1024;
 const PAIR_TTL: u64 = 300;
 const MAX_TEXT: usize = 32 * 1024;
+const MAX_OUTPUT_BYTES: usize = 64 * 1024;
 
 fn now() -> u64 {
     SystemTime::now()
@@ -2038,6 +2039,19 @@ pub(super) fn buffer(app: &AppHandle, card_id: &str) -> Result<Value, DeckError>
     Ok(out)
 }
 
+fn bounded_output(text: String, history_size: usize) -> (String, bool) {
+    let bytes_truncated = text.len() > MAX_OUTPUT_BYTES;
+    let truncated = history_size > 200 || bytes_truncated;
+    if !bytes_truncated {
+        return (text, truncated);
+    }
+    let mut start = text.len() - MAX_OUTPUT_BYTES;
+    while !text.is_char_boundary(start) {
+        start += 1;
+    }
+    (text[start..].to_string(), truncated)
+}
+
 pub(super) fn output(card_id: &str) -> Result<Value, DeckError> {
     let card = committed_card(card_id)?;
     let before = crate::context::connector_probe(&card.session)?;
@@ -2063,17 +2077,7 @@ pub(super) fn output(card_id: &str) -> Result<Value, DeckError> {
     if before.generation != after.generation || committed_card(card_id)?.session != card.session {
         return Err(DeckError::new(ErrorKind::ContextChanged, "target-changed"));
     }
-    let bytes = text.as_bytes();
-    let truncated = history_size > 200 || bytes.len() > 64 * 1024;
-    let text = if truncated {
-        let mut s = bytes.len() - 64 * 1024;
-        while !text.is_char_boundary(s) {
-            s += 1;
-        }
-        text[s..].to_string()
-    } else {
-        text
-    };
+    let (text, truncated) = bounded_output(text, history_size);
     let revision = sha(format!("{}\0{text}", before.generation).as_bytes());
     Ok(
         json!({"cardId":card_id,"generation":before.generation,"revision":revision,"capturedAt":now(),"text":text,"truncated":truncated}),
@@ -2159,6 +2163,19 @@ mod tests {
             expected_revision: Some("1".into()),
             payload: json!({"text":text}),
         }
+    }
+
+    #[test]
+    fn output_bounds_history_and_utf8_tail_independently() {
+        let short = "trust line\nlatest marker".to_string();
+        assert_eq!(bounded_output(short.clone(), 201), (short, true));
+
+        let boundary = "a".repeat(MAX_OUTPUT_BYTES);
+        assert_eq!(bounded_output(boundary.clone(), 200), (boundary, false));
+
+        let crossing = format!("é{}", "a".repeat(MAX_OUTPUT_BYTES - 1));
+        let expected_tail = "a".repeat(MAX_OUTPUT_BYTES - 1);
+        assert_eq!(bounded_output(crossing, 200), (expected_tail, true));
     }
 
     #[test]
