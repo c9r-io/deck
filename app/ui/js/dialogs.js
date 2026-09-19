@@ -674,7 +674,7 @@ export async function renderInboundSettings() {
   const channelParts = [];
   if (!channel?.enabled) channelParts.push(t('settings.inboundStatus.off'));
   else if (!channel.tokenReady) channelParts.push(t('settings.inboundStatus.noToken'));
-  else channelParts.push(t(channel.connected ? 'settings.inboundStatus.live' : 'settings.inboundStatus.polling'));
+  else channelParts.push(t(channel.connected ? 'settings.inboundStatus.live' : 'settings.channelStatus.disconnected'));
   if (channel?.pendingCount) channelParts.push(t('settings.channelPending', { count: formatNumber(channel.pendingCount) }));
   if (channel?.rejectedCount) channelParts.push(t('settings.channelRejected', { count: formatNumber(channel.rejectedCount) }));
   if (channel?.gapUnresolved) channelParts.push(t('settings.channelGap'));

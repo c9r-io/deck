@@ -255,14 +255,13 @@ final class ConnectorUITests: XCTestCase {
             ok.tap()
             XCUIDevice.shared.press(.home)
             app.activate()
-            let editNavigation = app.navigationBars["Edit note"]
-            if editNavigation.waitForExistence(timeout: 3) {
-                let cancel = editNavigation.buttons["Cancel"]
-                guard cancel.waitForExistence(timeout: 2), cancel.isHittable else {
-                    XCTFail("Expected Cancel for the already submitted pending edit; the edit was not submitted again.")
+            if app.navigationBars["Edit note"].waitForExistence(timeout: 3) {
+                let check = app.buttons["deck.note.edit.check-original"]
+                guard check.waitForExistence(timeout: 3), check.isHittable, check.isEnabled else {
+                    XCTFail("Expected an in-editor check for the already submitted operation; the edit was not submitted again.")
                     return false
                 }
-                cancel.tap()
+                check.tap()
             }
         }
         guard app.navigationBars["Edit note"].waitForNonExistence(timeout: 15) else {

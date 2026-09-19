@@ -92,6 +92,13 @@ test('scheduler Chinese copy preserves sent, failed, blocked, ambiguous and quie
   assert.doesNotMatch(t('queue.quiet.done'), /就绪|可发送/);
 });
 
+test('channel monitor disconnect copy never promises reaction catch-up', () => {
+  setLocale('en');
+  assert.equal(t('settings.channelStatus.disconnected'), 'not connected (no backfill)');
+  setLocale('zh-Hans');
+  assert.equal(t('settings.channelStatus.disconnected'), '未连接（无历史回填）');
+});
+
 /* 06 B v01: one name per object. The page is 看板 / Board, a column is
    栏目 / group, a session is "session" in both languages, a split is 窗格 /
    pane; the automation editor's two rows are not both "触发". */

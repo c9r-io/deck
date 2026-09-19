@@ -488,6 +488,17 @@ private struct EditNoteView: View {
                 TextEditor(text: $text)
                     .frame(minHeight: 180)
                     .accessibilityIdentifier("deck.note.edit.text")
+                if pendingOperation != nil {
+                    Section {
+                        Label("The edit was submitted with its original operation ID. Check that operation before trying anything again.", systemImage: "clock.arrow.circlepath")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                        Button("Check original operation") {
+                            Task { await model.checkOriginalOperations() }
+                        }
+                        .accessibilityIdentifier("deck.note.edit.check-original")
+                    }
+                }
             }
                 .navigationTitle("Edit note")
                 .toolbar {

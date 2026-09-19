@@ -709,6 +709,7 @@ const dictionary = {
   'settings.channelPending': '{count} 条待处理',
   'settings.channelRejected': '{count} 条因容量限制被拒绝',
   'settings.channelGap': '存在未解决消息缺口',
+  'settings.channelStatus.disconnected': '未连接（无历史回填）',
   'automation.trigger.channel': 'Slack 频道',
   'automation.trigger.channelSummary': '{count} 个频道',
   'automation.channelIds': '频道 ID',

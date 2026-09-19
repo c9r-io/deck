@@ -710,6 +710,7 @@ const dictionary = {
   'settings.channelPending': '{count} pending',
   'settings.channelRejected': '{count} rejected at capacity',
   'settings.channelGap': 'unresolved message gap',
+  'settings.channelStatus.disconnected': 'not connected (no backfill)',
   'automation.trigger.channel': 'Slack channel',
   'automation.trigger.channelSummary': '{count} channel(s)',
   'automation.channelIds': 'Channel IDs',
