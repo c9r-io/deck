@@ -20,8 +20,11 @@
 //! persists cwd changes into the card. `shell_state.rs` checkpoints only panes
 //! whose foreground process is a shell, at most every 15s and two panes per
 //! pass, into separate 0600 typed files (≤256 KiB / 3000 plain-text lines;
-//! control characters stripped). On a user-opened command-less card,
-//! `start_session` may use the saved cwd and submits one tmux batch that starts
+//! control characters stripped).
+//! A single over-budget logical line is omitted before credential scanning;
+//! never slice into a secret and accidentally retain its unlabelled suffix.
+//! On a user-opened command-less card, `start_session` may use the saved cwd
+//! and submits one tmux batch that starts
 //! an empty server if needed, loads sanitized bytes from Deck's stdin into a
 //! uniquely named private tmux buffer, creates the pane the ORDINARY way
 //! (tmux's own login shell, no command), and in the same sequence has the
@@ -202,6 +205,9 @@ pub(crate) fn sanitize_transcript(raw: &str) -> String {
                     private_key_block = false;
                 }
                 return None;
+            }
+            if line.len() > MAX_TRANSCRIPT_BYTES {
+                return Some("<omitted oversized terminal line>".to_string());
             }
             Some(crate::redact::redact_credentials(line))
         })
@@ -716,6 +722,24 @@ mod tests {
         assert!(clean.ends_with("new"));
         assert!(clean.len() <= MAX_TRANSCRIPT_BYTES);
         assert!(clean.lines().count() <= MAX_TRANSCRIPT_LINES);
+    }
+
+    #[test]
+    fn oversized_lines_do_not_leak_unlabelled_secret_tails() {
+        let raw = format!(
+            "PASSWORD=\"{} secret tail\"\nlatest",
+            "a".repeat(MAX_TRANSCRIPT_BYTES)
+        );
+        assert_eq!(
+            sanitize_transcript(&raw),
+            "<omitted oversized terminal line>\nlatest"
+        );
+        let raw =
+            "PASSWORD=\"correct horse battery staple\"\nAuthorization: Basic dXNlcjpwYXNz\nlatest";
+        assert_eq!(
+            sanitize_transcript(raw),
+            "PASSWORD=\"<redacted>\"\nAuthorization: <redacted>\nlatest"
+        );
     }
 
     #[test]

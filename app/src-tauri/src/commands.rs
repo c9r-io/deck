@@ -9,6 +9,9 @@
 //! for fixed-height, bottom-aligned card previews. Frontend polls every 2.5s and
 //! diffs into granular UI events (status/mem/output) — never full re-renders on
 //! output.
+//! Poll IO runs on the blocking pool with a tmux deadline. A failed listing
+//! rejects the poll, never reports dead sessions; unusable cwd metadata is
+//! omitted independently of liveness.
 
 use serde::Serialize;
 use std::collections::HashMap;
@@ -350,7 +353,7 @@ pub(crate) fn idempotent_kill_result(result: Result<String, DeckError>) -> Resul
 
 // ---------- polling ------------------------------------------------------------
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 pub(crate) struct SessInfo {
     name: String,
     alive: bool,
@@ -395,15 +398,12 @@ const CARD_PREVIEW_LINES: usize = 6;
 const TAIL_MARK: &str = "\u{1}deck-tail\u{1}";
 
 /// One representative pane per session — the first tmux lists — keyed by
-/// session name; a pane whose cwd is empty or carries control characters is
-/// not representative. Every tmux session has at least one pane, so this
+/// session name. Cwd validity must never determine session liveness.
+/// Every tmux session has at least one pane, so this
 /// doubles as the liveness set — no separate `list-sessions` round-trip.
 pub(crate) fn representative_panes(rows: Vec<PaneRow>) -> HashMap<String, PaneRow> {
     let mut panes: HashMap<String, PaneRow> = HashMap::new();
     for row in rows {
-        if row.path.is_empty() || row.path.chars().any(char::is_control) {
-            continue;
-        }
         panes.entry(row.session_name.clone()).or_insert(row);
     }
     panes
@@ -467,16 +467,36 @@ pub(crate) fn capture_tails(names: &[&String], lines: usize) -> HashMap<String, 
 /// 5/20/50 sessions — old pattern 14/45/108 ms with 7/22/52 subprocesses;
 /// batched pattern 4.3/4.6/5.1 ms with a constant 2 (+1 ps here).
 #[tauri::command]
-pub(crate) fn poll_sessions(
+pub(crate) async fn poll_sessions(
     names: Vec<String>,
     tail_for: Vec<String>,
     checkpoint_shells: bool,
-) -> Vec<SessInfo> {
+) -> Result<Vec<SessInfo>, DeckError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let _activity = crate::session_runtime::activity_guard()?;
+        let _deadline = crate::session_runtime::Deadline::until(
+            std::time::Instant::now() + std::time::Duration::from_secs(2),
+        );
+        poll_from_listing(
+            names,
+            tail_for,
+            checkpoint_shells,
+            crate::tmux::list_panes(),
+        )
+    })
+    .await
+    .map_err(|_| DeckError::new(ErrorKind::Other, "session poll worker failed"))?
+}
+
+fn poll_from_listing(
+    names: Vec<String>,
+    tail_for: Vec<String>,
+    checkpoint_shells: bool,
+    listing: Result<Vec<PaneRow>, DeckError>,
+) -> Result<Vec<SessInfo>, DeckError> {
     // one listing supplies liveness + activity + pid + fg for every session
-    let listing = crate::tmux::list_panes();
-    // a failing listing silently reads as "everything is dead" — log the
-    // failure and the recovery, once per transition (tmux errors carry no
-    // user content)
+    // Log transitions, then propagate failures before reconciling agents,
+    // scheduling checkpoints or projecting liveness. The UI retains cards.
     static POLL_BROKEN: std::sync::Mutex<bool> = std::sync::Mutex::new(false);
     {
         let mut broken = POLL_BROKEN.lock_or_recover();
@@ -492,7 +512,7 @@ pub(crate) fn poll_sessions(
             _ => {}
         }
     }
-    let panes = representative_panes(listing.unwrap_or_default());
+    let panes = representative_panes(listing?);
     // agent-hook state lives exactly as long as the foreground process that
     // reported it — clear entries whose pane moved on before they render
     crate::agent_status::reconcile(&panes);
@@ -534,7 +554,7 @@ pub(crate) fn poll_sessions(
         checkpoint_shells,
     );
 
-    names
+    Ok(names
         .into_iter()
         .map(|name| {
             let pane = panes.get(&name);
@@ -544,13 +564,17 @@ pub(crate) fn poll_sessions(
                 mem_mb: mem.get(&name).copied(),
                 tail: tails.remove(&name).unwrap_or_default(),
                 fg: pane.map(|pane| pane.command.clone()),
-                cwd: pane.map(|pane| pane.path.clone()),
+                cwd: pane.and_then(|pane| usable_cwd(&pane.path).map(str::to_owned)),
                 scrolled: pane.map(|pane| pane.in_mode),
                 agent: pane.and_then(|_| crate::agent_status::current(&name)),
                 name,
             }
         })
-        .collect()
+        .collect())
+}
+
+fn usable_cwd(path: &str) -> Option<&str> {
+    (!path.is_empty() && !path.chars().any(char::is_control)).then_some(path)
 }
 
 #[cfg(test)]
@@ -621,7 +645,7 @@ mod tests {
     }
 
     #[test]
-    fn representative_panes_take_the_first_pane_and_need_a_usable_cwd() {
+    fn representative_panes_keep_live_sessions_even_without_a_usable_cwd() {
         let panes = representative_panes(vec![
             row("alpha", 100, 1700000000, false, "zsh", "/tmp/a"),
             row("beta", 200, 1700000005, true, "claude", "/tmp/b"),
@@ -630,10 +654,32 @@ mod tests {
             // multi-pane session: the first listed pane is the representative one
             row("beta", 201, 1700000009, false, "vim", "/tmp/two"),
         ]);
-        assert_eq!(panes.len(), 2);
+        assert_eq!(panes.len(), 4);
+        assert_eq!(usable_cwd(&panes["gone"].path), None);
+        assert_eq!(usable_cwd(&panes["odd"].path), None);
+        assert_eq!(usable_cwd("/tmp/a\tb"), None);
+        assert_eq!(usable_cwd(&panes["alpha"].path), Some("/tmp/a"));
         assert_eq!(panes["alpha"].command, "zsh");
         assert!(panes["beta"].in_mode, "copy-mode pane reported as scrolled");
         assert_eq!(panes["beta"].pane_pid, 200);
+    }
+
+    #[test]
+    fn failed_listing_rejects_poll_instead_of_reporting_dead_sessions() {
+        for kind in [
+            ErrorKind::Tmux,
+            ErrorKind::TmuxMissing,
+            ErrorKind::Perm,
+            ErrorKind::NoSession,
+        ] {
+            let result = poll_from_listing(
+                vec!["live-session".into()],
+                vec![],
+                false,
+                Err(DeckError::new(kind, "listing unavailable")),
+            );
+            assert_eq!(result.unwrap_err().kind(), kind);
+        }
     }
 
     /// Pins the plan `tmux_contract::shell_restore_bootstrap_becomes_tmux_

@@ -60,6 +60,7 @@ fn request(pane: &PaneIdentity) -> LiteralRequest<'_> {
 
 #[test]
 fn injected_transport_cannot_bypass_restart_exclusion() {
+    let _scope = crate::session_runtime::test_activity_scope();
     let io = FakeTransport::default();
     let pane = probe().identity;
     let _restart = crate::session_runtime::exclusive().unwrap();
@@ -73,6 +74,7 @@ fn injected_transport_cannot_bypass_restart_exclusion() {
 
 #[test]
 fn insert_is_byte_literal_and_never_waits_or_sends_enter() {
+    let _scope = crate::session_runtime::test_activity_scope();
     let io = FakeTransport::default();
     let pane = probe().identity;
     let mut req = request(&pane);
@@ -90,6 +92,7 @@ fn insert_is_byte_literal_and_never_waits_or_sends_enter() {
 }
 #[test]
 fn submit_waits_then_reuses_the_full_atomic_guard_for_enter() {
+    let _scope = crate::session_runtime::test_activity_scope();
     let io = FakeTransport::default();
     let pane = probe().identity;
     let mut req = request(&pane);
@@ -111,6 +114,7 @@ fn submit_waits_then_reuses_the_full_atomic_guard_for_enter() {
 }
 #[test]
 fn scheduler_compatibility_omits_interactive_guards_and_supports_argv_alias() {
+    let _scope = crate::session_runtime::test_activity_scope();
     let io = FakeTransport::default();
     let pane = probe().identity;
     let mut raw = probe();
@@ -132,6 +136,7 @@ fn scheduler_compatibility_omits_interactive_guards_and_supports_argv_alias() {
 }
 #[test]
 fn refusals_and_unknown_paste_failures_cleanup_without_enter() {
+    let _scope = crate::session_runtime::test_activity_scope();
     for refused in [true, false] {
         let io = FakeTransport::default();
         let pane = probe().identity;
@@ -158,6 +163,7 @@ fn refusals_and_unknown_paste_failures_cleanup_without_enter() {
 }
 #[test]
 fn enter_refusal_and_transport_failure_do_not_paste_again() {
+    let _scope = crate::session_runtime::test_activity_scope();
     for refused in [true, false] {
         let io = FakeTransport::default();
         let pane = probe().identity;
@@ -178,6 +184,7 @@ fn enter_refusal_and_transport_failure_do_not_paste_again() {
 }
 #[test]
 fn invalid_ids_cannot_reach_transport_and_failed_probe_keeps_expected_guard() {
+    let _scope = crate::session_runtime::test_activity_scope();
     let io = FakeTransport::default();
     let pane = probe().identity;
     for id in ["", "x;send-keys", "x y"] {
@@ -235,6 +242,7 @@ impl Drop for IsolatedTmux {
 }
 #[test]
 fn production_paste_guards_reject_changed_generation_foreground_multiline_and_copy_mode() {
+    let _scope = crate::session_runtime::test_activity_scope();
     let io = IsolatedTmux(format!("deck-test-voice-delivery-{}", std::process::id()));
     let run = |args: &[&str]| {
         io.run(&args.iter().map(|s| s.to_string()).collect::<Vec<_>>())

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Failed session polls preserve running cards and queued prompts instead of
+  treating an unavailable listing as exited sessions. Invalid working-directory
+  metadata no longer hides a live session. Polling and Slack credential
+  verification run off the UI thread, with a deadline on polling tmux calls.
+- Credential redaction covers complete quoted passwords and Authorization
+  headers. Long-line scanning is linear, and shell recovery omits oversized
+  logical lines before scanning instead of retaining partial secret values.
+
 - Voice input keeps each pending slice bound to its original recording and
   pane. Switching or cancelling during preparation drops the slice, and late
   replies cannot reset a newer recording. Voice paste now excludes service

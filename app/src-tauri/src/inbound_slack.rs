@@ -1016,6 +1016,21 @@ mod tests {
 
     #[test]
     fn web_api_transport_errors_pagination_and_live_helpers_are_closed() {
+        // Exercise the async IPC entry through a real HTTP failure. Verification
+        // must run off the async executor and never reach the real Keychain.
+        let (error, requests) = with_responses(
+            vec![(200, r#"{"ok":false,"error":"invalid_auth"}"#)],
+            || {
+                tauri::async_runtime::block_on(inbound::inbound_set_secret(
+                    "slack-user-token".into(),
+                    "xoxp-test-invalid".into(),
+                ))
+                .unwrap_err()
+            },
+        );
+        assert_eq!(error.message(), "auth");
+        assert!(requests[0].starts_with("POST /auth.test HTTP/1.1\r\n"));
+
         let (body, requests) = with_responses(vec![(200, r#"{"ok":true,"value":7}"#)], || {
             call("auth.test", "secret", &[("query", "a b"), ("badge", "+1")]).unwrap()
         });

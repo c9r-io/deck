@@ -8,6 +8,9 @@
 //! cannot leak an absolute path, a URL or a token shape. `redact_credentials`
 //! is the narrower policy shell recovery uses: paths and links survive,
 //! obvious secret values do not. Pure string scanning, no dependencies.
+//! Quoted assignments consume escaped delimiters and spaces; Authorization
+//! consumes the complete header value. Cached token/scheme lookahead keeps
+//! both policies linear even on long terminal lines without whitespace.
 
 const SECRET_PREFIXES: &[&str] = &[
     "ghp_",
@@ -49,6 +52,85 @@ fn token_end(bytes: &[u8], mut i: usize) -> usize {
     i
 }
 
+/// Look ahead at most once per token/scheme run, while still visiting each
+/// position to recognize embedded secret prefixes (e.g. `prefix_sk-...`).
+#[derive(Default)]
+struct Scan {
+    end: usize,
+    last_digit: Option<usize>,
+    last_alpha: Option<usize>,
+    scheme_end: usize,
+    previous: usize,
+    escape: Option<usize>,
+    #[cfg(test)]
+    inspected: usize,
+}
+
+impl Scan {
+    fn at(&mut self, line: &str, start: usize) {
+        if let Some(offset) = line[self.previous..start].rfind('\x1b') {
+            self.escape = Some(self.previous + offset);
+        }
+        self.previous = start;
+        if start < self.end {
+            return;
+        }
+        self.end = start;
+        self.last_digit = None;
+        self.last_alpha = None;
+        for b in line[start..].bytes() {
+            #[cfg(test)]
+            {
+                self.inspected += 1;
+            }
+            if !(b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-')) {
+                break;
+            }
+            if b.is_ascii_digit() {
+                self.last_digit = Some(self.end);
+            }
+            if b.is_ascii_alphabetic() {
+                self.last_alpha = Some(self.end);
+            }
+            self.end += 1;
+        }
+    }
+
+    fn opaque(&self, start: usize) -> bool {
+        self.end.saturating_sub(start) >= 24
+            && self.last_digit.is_some_and(|i| i >= start)
+            && self.last_alpha.is_some_and(|i| i >= start)
+    }
+
+    fn scheme_end(&mut self, line: &str, start: usize) -> usize {
+        if start >= self.scheme_end {
+            self.scheme_end = start;
+            for b in line[start..].bytes() {
+                #[cfg(test)]
+                {
+                    self.inspected += 1;
+                }
+                if !(b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'.')) {
+                    break;
+                }
+                self.scheme_end += 1;
+            }
+        }
+        self.scheme_end
+    }
+}
+
+fn quoted_end(bytes: &[u8], mut i: usize, close: u8) -> usize {
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' if i + 1 < bytes.len() => i += 2,
+            b if b == close => break,
+            _ => i += 1,
+        }
+    }
+    i // an unfinished quote is sensitive through the end of the input
+}
+
 fn credential_assignment(line: &str, start: usize) -> Option<(usize, usize)> {
     let bytes = line.as_bytes();
     if start > 0 {
@@ -72,6 +154,7 @@ fn credential_assignment(line: &str, start: usize) -> Option<(usize, usize)> {
             | "apikey"
             | "access_key"
             | "authorization"
+            | "proxy-authorization"
             | "credential"
             | "cookie"
             | "private_key"
@@ -107,11 +190,32 @@ fn credential_assignment(line: &str, start: usize) -> Option<(usize, usize)> {
     while bytes.get(i).is_some_and(u8::is_ascii_whitespace) {
         i += 1;
     }
-    if bytes
-        .get(i)
-        .is_some_and(|b| matches!(b, b'"' | b'\'' | b'(' | b'['))
-    {
-        i += 1; // keep the user's syntax, redact only its value
+    if let Some(quote @ (b'"' | b'\'')) = bytes.get(i).copied() {
+        i += 1;
+        let end = quoted_end(bytes, i, quote);
+        return (end > i).then_some((i, end));
+    }
+    if key == "authorization" || key == "proxy-authorization" {
+        // Basic, Bearer, Digest and future schemes all carry credentials.
+        // An outer shell quote ends the header; quotes INSIDE a raw Digest
+        // header do not. Otherwise redact through the header line boundary.
+        let outer = start
+            .checked_sub(1)
+            .and_then(|n| bytes.get(n))
+            .copied()
+            .filter(|b| matches!(b, b'"' | b'\''));
+        let limit = outer.map_or(bytes.len(), |quote| quoted_end(bytes, i, quote));
+        let end = bytes[i..limit]
+            .iter()
+            .position(|b| matches!(b, b'\r' | b'\n'))
+            .map_or(limit, |n| i + n);
+        return (end > i).then_some((i, end));
+    }
+    if bytes.get(i).is_some_and(|b| matches!(b, b'(' | b'[')) {
+        let close = if bytes[i] == b'(' { b')' } else { b']' };
+        i += 1;
+        let end = quoted_end(bytes, i, close);
+        return (end > i).then_some((i, end));
     }
     let mut end = value_end(bytes, i);
     if line[i..end].eq_ignore_ascii_case("bearer") {
@@ -149,7 +253,7 @@ fn uuid_token_end(line: &str, start: usize) -> Option<usize> {
     shaped.then_some(end)
 }
 
-fn credential_token_end(line: &str, start: usize) -> Option<usize> {
+fn credential_token_end(line: &str, start: usize, scan: &Scan) -> Option<usize> {
     let bytes = line.as_bytes();
     let rest = &line[start..];
     if SECRET_PREFIXES
@@ -158,38 +262,40 @@ fn credential_token_end(line: &str, start: usize) -> Option<usize> {
     {
         return Some(value_end(bytes, start));
     }
-    let end = token_end(bytes, start);
-    if end > start {
-        let run = &line[start..end];
-        let opaque = run.len() >= 24
-            && run.bytes().any(|c| c.is_ascii_digit())
-            && run.bytes().any(|c| c.is_ascii_alphabetic());
-        if opaque {
-            return Some(end);
-        }
-    }
-    None
+    scan.opaque(start).then_some(scan.end)
 }
 
 /// Redact likely credentials without removing ordinary paths and URLs. Shell
 /// recovery uses this narrower policy because its output remains useful only
 /// if directories and links survive, while obvious secret values must not.
 pub(crate) fn redact_credentials(line: &str) -> String {
+    redact(line, true, &mut Scan::default())
+}
+
+fn redact(line: &str, credentials_only: bool, scan: &mut Scan) -> String {
     let mut out = String::with_capacity(line.len());
     let mut i = 0;
     while i < line.len() {
+        scan.at(line, i);
         if let Some((value_start, end)) = credential_assignment(line, i) {
             out.push_str(&line[i..value_start]);
             out.push_str("<redacted>");
             i = end;
             continue;
         }
-        if let Some(end) = uuid_token_end(line, i) {
-            out.push_str(&line[i..end]); // an identifier, not a credential
-            i = end;
-            continue;
+        if credentials_only {
+            if let Some(end) = uuid_token_end(line, i) {
+                out.push_str(&line[i..end]); // an identifier, not a credential
+                i = end;
+                continue;
+            }
         }
-        if let Some(end) = credential_token_end(line, i) {
+        let end = if credentials_only {
+            credential_token_end(line, i, scan)
+        } else {
+            sensitive_end(line, i, scan)
+        };
+        if let Some(end) = end {
             out.push_str("<redacted>");
             i = end;
             continue;
@@ -202,11 +308,11 @@ pub(crate) fn redact_credentials(line: &str) -> String {
 }
 
 /// Return the end of a sensitive value beginning exactly at `start`.
-fn sensitive_end(line: &str, start: usize) -> Option<usize> {
+fn sensitive_end(line: &str, start: usize, scan: &mut Scan) -> Option<usize> {
     let bytes = line.as_bytes();
     let rest = &line[start..];
     if rest.starts_with("~/") || rest.starts_with('/') {
-        let ansi_boundary = line[..start].rfind('\x1b').is_some_and(|esc| {
+        let ansi_boundary = scan.escape.is_some_and(|esc| {
             line[esc..start].starts_with("\x1b[") && line[esc..start].ends_with('m')
         });
         let boundary = start == 0
@@ -224,7 +330,7 @@ fn sensitive_end(line: &str, start: usize) -> Option<usize> {
         return Some(value_end(bytes, start));
     }
     if rest.starts_with("deck-") {
-        let end = token_end(bytes, start);
+        let end = scan.end;
         if line[start + 5..end].contains('-') {
             return Some(end);
         }
@@ -234,57 +340,100 @@ fn sensitive_end(line: &str, start: usize) -> Option<usize> {
     // punctuation. Detection starts at the scheme rather than splitting on
     // whitespace, so quotes, colons, equals and ANSI wrappers cannot hide it.
     if bytes[start].is_ascii_alphabetic() {
-        let mut j = start + 1;
-        while j < bytes.len()
-            && (bytes[j].is_ascii_alphanumeric() || matches!(bytes[j], b'+' | b'-' | b'.'))
-        {
-            j += 1;
-        }
+        let j = scan.scheme_end(line, start);
         if line[j..].starts_with("://") {
             return Some(value_end(bytes, j + 3));
         }
     }
 
-    let end = token_end(bytes, start);
-    if end > start {
-        let run = &line[start..end];
-        let opaque = run.len() >= 24
-            && run.bytes().any(|c| c.is_ascii_digit())
-            && run.bytes().any(|c| c.is_ascii_alphabetic());
-        if opaque {
-            return Some(end);
-        }
-    }
-    None
+    scan.opaque(start).then_some(scan.end)
 }
 
 /// Replace sensitive spans wherever they occur while preserving surrounding
 /// diagnostic punctuation and ANSI control sequences.
 pub(crate) fn sanitize_log(line: &str) -> String {
-    let mut out = String::with_capacity(line.len());
-    let mut i = 0;
-    while i < line.len() {
-        if let Some((value_start, end)) = credential_assignment(line, i) {
-            out.push_str(&line[i..value_start]);
-            out.push_str("<redacted>");
-            i = end;
-            continue;
-        }
-        if let Some(end) = sensitive_end(line, i) {
-            out.push_str("<redacted>");
-            i = end;
-            continue;
-        }
-        let ch = line[i..].chars().next().unwrap();
-        out.push(ch);
-        i += ch.len_utf8();
-    }
-    out
+    redact(line, false, &mut Scan::default())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn complete_quoted_and_authorization_values_are_private() {
+        for (input, expected) in [
+            (
+                r#"Authorization: Digest username="alice", response="secret""#,
+                "Authorization: <redacted>",
+            ),
+            (
+                r#"curl -H 'Authorization: Digest username="alice", response="secret"' next"#,
+                "curl -H 'Authorization: <redacted>' next",
+            ),
+            (
+                r#"PASSWORD="correct horse battery staple""#,
+                r#"PASSWORD="<redacted>""#,
+            ),
+            (
+                r#"{"password":"hello, world; [secret]"}"#,
+                r#"{"password":"<redacted>"}"#,
+            ),
+            (
+                r#"PASSWORD="escaped \"quote\" and tail" ok"#,
+                r#"PASSWORD="<redacted>" ok"#,
+            ),
+            ("TOKEN='多字节 密码' ok", "TOKEN='<redacted>' ok"),
+            ("SECRET='unfinished value", "SECRET='<redacted>"),
+            (
+                "Authorization: Basic dXNlcjpwYXNz",
+                "Authorization: <redacted>",
+            ),
+            (
+                "authorization: Bearer short-token",
+                "authorization: <redacted>",
+            ),
+            (
+                "Proxy-Authorization: Basic dXNlcjpwYXNz",
+                "Proxy-Authorization: <redacted>",
+            ),
+            (
+                "Authorization: Digest username=alice, response=secret",
+                "Authorization: <redacted>",
+            ),
+            (
+                "curl -H 'Authorization: Basic dXNlcjpwYXNz' next",
+                "curl -H 'Authorization: <redacted>' next",
+            ),
+            (
+                "Authorization: Basic dXNlcjpwYXNz\nnext",
+                "Authorization: <redacted>\nnext",
+            ),
+        ] {
+            for redact in [redact_credentials, sanitize_log] {
+                assert_eq!(redact(input), expected, "{input}");
+            }
+        }
+    }
+
+    #[test]
+    fn lookahead_work_is_linear_for_long_non_secret_runs() {
+        for input in ["a".repeat(128 * 1024), "a.+a/".repeat(32 * 1024)] {
+            for credentials_only in [true, false] {
+                let mut scan = Scan::default();
+                assert_eq!(redact(&input, credentials_only, &mut scan), input);
+                assert!(
+                    scan.inspected <= input.len() * 4,
+                    "{} visits",
+                    scan.inspected
+                );
+            }
+        }
+        // Skipping a non-secret run wholesale would miss embedded prefixes.
+        for redact in [redact_credentials, sanitize_log] {
+            let input = format!("{}sk-short-secret", "a".repeat(65536));
+            assert_eq!(redact(&input), format!("{}<redacted>", "a".repeat(65536)));
+        }
+    }
 
     #[test]
     fn ordinary_diagnostics_survive_redaction_unchanged() {

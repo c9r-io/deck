@@ -21,6 +21,7 @@ fn binding(state: &Mutex<Voice>, io: &FakeTransport) -> u64 {
 
 #[test]
 fn exclusive_restart_refuses_voice_before_any_transport_or_session_claim() {
+    let _scope = crate::session_runtime::test_activity_scope();
     let state = Mutex::new(Voice::default());
     let io = FakeTransport::default();
     let busy = Mutex::new(HashSet::new());
@@ -35,6 +36,7 @@ fn exclusive_restart_refuses_voice_before_any_transport_or_session_claim() {
 
 #[test]
 fn voice_excludes_restart_through_probe_paste_and_cleanup_then_releases() {
+    let _scope = crate::session_runtime::test_activity_scope();
     use crate::prompt_delivery::Transport;
     struct Checked<'a>(&'a FakeTransport);
     impl Transport for Checked<'_> {
@@ -206,6 +208,7 @@ fn invalid_or_busy_capture_never_opens_the_microphone_or_replaces_binding() {
 }
 #[test]
 fn delivery_validates_text_and_shares_the_scheduler_exclusion() {
+    let _scope = crate::session_runtime::test_activity_scope();
     let state = Mutex::new(Voice::default());
     let io = FakeTransport::default();
     let busy = Mutex::new(HashSet::new());
@@ -246,6 +249,7 @@ fn delivery_validates_text_and_shares_the_scheduler_exclusion() {
 }
 #[test]
 fn generation_expiry_is_distinct_from_transient_refusals_and_always_releases_busy() {
+    let _scope = crate::session_runtime::test_activity_scope();
     let state = Mutex::new(Voice::default());
     let io = FakeTransport::default();
     let busy = Mutex::new(HashSet::new());
@@ -285,6 +289,7 @@ fn generation_expiry_is_distinct_from_transient_refusals_and_always_releases_bus
 }
 #[test]
 fn delivery_outcomes_preserve_ambiguity_and_multiline_requires_paste_mode() {
+    let _scope = crate::session_runtime::test_activity_scope();
     for (replies, expected) in [
         (vec![Ok("0".into())], Err("multiline-unsupported")),
         (vec![Ok("1".into()), Ok(String::new())], Ok(())),

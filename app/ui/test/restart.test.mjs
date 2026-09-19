@@ -1,11 +1,49 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { fakeDocument } from './fixtures/dom-fixture.mjs';
-globalThis.document = fakeDocument;
+globalThis.document = { ...fakeDocument, querySelectorAll: () => [], querySelector: () => null };
 globalThis.window = { __TAURI__: null, __DECK_DEBUG: false, addEventListener() {} };
-const { ctx, store } = await import('../js/state.js');
+const { ctx, state, store } = await import('../js/state.js');
 const { pollNow, stopPolling, prepareCardsForServerRestart } = await import('../js/board.js');
 const { openSession } = await import('../js/layout.js');
+
+test('a rejected poll preserves live cards and schedules, then recovers without closing', async () => {
+  const calls = [];
+  let fail = true;
+  const view = state.view;
+  state.view = 'session';
+  store.projects = [];
+  store.cards = [{ id: 'live', session: 'deck-live', status: 'active', fg: 'claude' }];
+  const queue = { items: [{ id: 'scheduled', session: 'deck-live' }], last_fired: {} };
+  ctx.queueCache = queue;
+  const infos = [{ name: 'deck-live', alive: true, fg: 'claude', agent: 'working' }];
+  ctx.attention.record(store.cards, infos);
+  const card = structuredClone(store.cards[0]);
+  window.__TAURI__ = { core: { invoke: async cmd => {
+    calls.push(cmd);
+    if (cmd === 'ui_event') return;
+    assert.equal(cmd, 'poll_sessions', 'poll must not close sessions or change persistence');
+    if (fail) throw new Error('tmux returned a malformed pane row');
+    return infos;
+  } } };
+  try {
+    assert.equal(await pollNow(), false);
+    assert.deepEqual(store.cards, [card]);
+    assert.equal(ctx.queueCache, queue);
+    assert.equal(ctx.attention.get(card).alive, true);
+    assert.equal(ctx.attention.get(card).stale, true);
+    fail = false;
+    assert.equal(await pollNow(), true);
+    assert.equal(store.cards.length, 1);
+    assert.equal(ctx.attention.get(card).stale, false);
+    assert.equal(ctx.queueCache, queue);
+    assert.equal(calls.filter(cmd => cmd === 'poll_sessions').length, 2);
+  } finally {
+    stopPolling();
+    state.view = view;
+    ctx.queueCache = { items: [], last_fired: {} };
+  }
+});
 
 test('restart invalidates a poll already in flight and blocks event-driven polls and reentry', async () => {
   let resolvePoll;

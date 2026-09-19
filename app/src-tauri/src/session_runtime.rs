@@ -84,6 +84,18 @@ pub(crate) fn exclusive() -> Result<RwLockWriteGuard<'static, ()>, DeckError> {
     ACTIVITY.try_write().map_err(|_| error("tmux-restart-busy"))
 }
 
+/// Tests exercising the process-wide activity gate must own this scope before
+/// starting any workers and retain it until those workers release their guards.
+/// This isolates independent scenarios; threads WITHIN a test still contend on
+/// the real ACTIVITY lock, including the production nonblocking busy behavior.
+#[cfg(test)]
+pub(crate) fn test_activity_scope() -> std::sync::MutexGuard<'static, ()> {
+    static TEST_SCOPE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    TEST_SCOPE
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+}
+
 /// Ordinary calls retain their existing behavior. The restart worker installs
 /// one absolute deadline, inherited by all its tmux probes, captures and kills.
 /// Drain nonblocking pipes ourselves: a reader thread could outlive a timeout.
@@ -197,6 +209,7 @@ mod tests {
     }
     #[test]
     fn watchdog_returns_while_a_stalled_worker_keeps_its_guard_and_cannot_continue() {
+        let _scope = test_activity_scope();
         let (release, blocked) = std::sync::mpsc::channel();
         let (done, finished) = std::sync::mpsc::channel();
         let begin = Instant::now();

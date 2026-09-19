@@ -43,6 +43,8 @@
 //! impl + one trigger in the drawer; rules/templates/dispatch do not change.
 //! A badge item's ack carries the card it created, so the run ledger and the
 //! finish rule cover both triggers.
+//! Credential verification and Keychain writes run on the blocking pool,
+//! serialized independently of the UI thread.
 //!
 //! The CLOCK source (`inbound_clock.rs`, "自动化") is a source whose events
 //! are local-time slots: a `clock` rule carries a `schedule` (a minute of the
@@ -986,8 +988,18 @@ pub(crate) fn inbound_setup(source: String) -> Result<(), DeckError> {
 /// Store a credential after proving it is the right kind and alive. The
 /// error is a short sentence for the toast; the token never appears in it.
 #[tauri::command]
-pub(crate) fn inbound_set_secret(slot: String, value: String) -> Result<(), DeckError> {
-    let slot = keychain::Slot::parse(&slot).ok_or(DeckError::new(
+pub(crate) async fn inbound_set_secret(slot: String, value: String) -> Result<(), DeckError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        static SECRET_WRITES: Mutex<()> = Mutex::new(());
+        let _write = SECRET_WRITES.lock_or_recover();
+        set_secret(&slot, &value)
+    })
+    .await
+    .map_err(|_| DeckError::new(ErrorKind::Other, "credential worker failed"))?
+}
+
+fn set_secret(slot: &str, value: &str) -> Result<(), DeckError> {
+    let slot = keychain::Slot::parse(slot).ok_or(DeckError::new(
         ErrorKind::Invalid,
         "unknown credential slot",
     ))?;
@@ -1013,7 +1025,7 @@ pub(crate) fn inbound_set_secret(slot: String, value: String) -> Result<(), Deck
             )
         })?;
     }
-    keychain::set(slot, &value).map_err(|code| {
+    keychain::set(slot, value).map_err(|code| {
         DeckError::new(
             ErrorKind::Other,
             match code.message() {
