@@ -187,6 +187,7 @@ struct TaskDetailView: View {
                     ToolbarItemGroup(placement: .keyboard) {
                         Spacer()
                         Button(String(localized: "taskDetail.keyboard.done")) { focusedField = nil }
+                            .accessibilityIdentifier("deck.keyboard.done")
                     }
                 }
             } else {
@@ -327,6 +328,7 @@ struct TaskDetailView: View {
                 Label("A scratchpad or queue operation is pending. Its original ID will be queried; controls remain locked to prevent duplicates.", systemImage: "clock.arrow.circlepath")
                     .font(.caption).foregroundStyle(.orange)
                 Button("Check original operation") { Task { await refreshCurrentTaskDetails() } }
+                    .accessibilityIdentifier("deck.note.check-original")
                 ForEach(pending.filter { $0.localState == .notFound }) { record in
                     Button("Retry original operation \(record.id)") { Task { await model.retryOriginal(record) } }
                 }
@@ -337,6 +339,7 @@ struct TaskDetailView: View {
             }))
                 .frame(minHeight: 90)
                 .focused($focusedField, equals: .note)
+                .accessibilityIdentifier("deck.note.new")
                 .overlay(alignment: .topLeading) {
                     if newNote.isEmpty {
                         Text(String(localized: "taskDetail.note.placeholder"))
@@ -364,6 +367,7 @@ struct TaskDetailView: View {
                     addingNote = false
                 }
             }
+                .accessibilityIdentifier("deck.note.save")
                 .buttonStyle(.borderedProminent)
                 .disabled(!pending.isEmpty || pendingAdd != nil || noteSaveState == .pending || model.busyCards.contains(card.id) || addingNote || newNote.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             noteSaveStatus
@@ -373,14 +377,23 @@ struct TaskDetailView: View {
                         Toggle("", isOn: Binding(get: { selection.contains(entry.id) }, set: { selected in if selected { selection.insert(entry.id) } else { selection.remove(entry.id) } })).labelsHidden()
                             .disabled(queueingSelection || !pending.isEmpty || model.busyCards.contains(card.id))
                         VStack(alignment: .leading) {
-                            Text(entry.text)
+                            Text(entry.text).accessibilityIdentifier("deck.note.text")
                             Text(entry.kind == "manual" ? "Manual note" : (entry.source?.type ?? "External event")).font(.caption).foregroundStyle(.secondary)
                             if let copy = entry.copies.last { Text("Queued copy: \(copy.state)").font(.caption2).foregroundStyle(.secondary) }
                         }
                         Spacer()
-                        if entry.kind == "manual" { Button { editing = entry } label: { Image(systemName: "pencil") }.disabled(!pending.isEmpty || model.busyCards.contains(card.id)) }
+                        if entry.kind == "manual" {
+                            Button { editing = entry } label: { Image(systemName: "pencil") }
+                                .accessibilityIdentifier("deck.note.edit")
+                                .disabled(!pending.isEmpty || model.busyCards.contains(card.id))
+                        }
                     }
-                    .swipeActions { Button("Delete", role: .destructive) { Task { _ = await model.bufferDelete(card: card, entry: entry) } } }
+                    .accessibilityElement(children: .contain)
+                    .accessibilityIdentifier("deck.note.row")
+                    .swipeActions {
+                        Button("Delete", role: .destructive) { Task { _ = await model.bufferDelete(card: card, entry: entry) } }
+                            .accessibilityIdentifier("deck.note.delete")
+                    }
                 }
                 Button("Queue selected (\(selection.count))") {
                     let submittedSelection = selection
@@ -392,7 +405,9 @@ struct TaskDetailView: View {
                         if case let .pending(id?, _) = outcome { pendingQueue = (id, submittedSelection) }
                         queueingSelection = false
                     }
-                }.disabled(!card.canQueue || queueingSelection || !pending.isEmpty || model.busyCards.contains(card.id) || selection.isEmpty)
+                }
+                .accessibilityIdentifier("deck.note.queue-selected")
+                .disabled(!card.canQueue || queueingSelection || !pending.isEmpty || model.busyCards.contains(card.id) || selection.isEmpty)
                 if !card.canQueue {
                     Text("Queueing requires a Codex or Claude launch configuration saved on the desktop.").font(.caption).foregroundStyle(.secondary)
                 }
@@ -469,7 +484,11 @@ private struct EditNoteView: View {
     let save: (String) async -> AppModel.MutationOutcome
     var body: some View {
         NavigationStack {
-            Form { TextEditor(text: $text).frame(minHeight: 180) }
+            Form {
+                TextEditor(text: $text)
+                    .frame(minHeight: 180)
+                    .accessibilityIdentifier("deck.note.edit.text")
+            }
                 .navigationTitle("Edit note")
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
@@ -488,7 +507,9 @@ private struct EditNoteView: View {
                                     error = "Operation is \(state); the note remains open until Deck confirms it."
                                 }
                             }
-                        }.disabled(saving || pendingOperation != nil || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        }
+                        .accessibilityIdentifier("deck.note.edit.save")
+                        .disabled(saving || pendingOperation != nil || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     }
                 }
                 .alert("Note not confirmed", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) { Button("OK") { error = nil } } message: { Text(error ?? "") }
