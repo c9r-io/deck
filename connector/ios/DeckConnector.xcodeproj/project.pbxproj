@@ -14,6 +14,7 @@
 		100000000000000000000006 /* AppModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000007 /* AppModelTests.swift */; };
 		100000000000000000000007 /* XCTest.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 200000000000000000000009 /* XCTest.framework */; };
 		100000000000000000000008 /* DeckConnectorCore in Frameworks */ = {isa = PBXBuildFile; productRef = 900000000000000000000003 /* DeckConnectorCore */; };
+		100000000000000000000009 /* Localizable.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000010 /* Localizable.xcstrings */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -26,6 +27,7 @@
 		200000000000000000000007 /* AppModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModelTests.swift; sourceTree = "<group>"; };
 		200000000000000000000008 /* DeckConnectorTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = DeckConnectorTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		200000000000000000000009 /* XCTest.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = XCTest.framework; path = System/Library/Frameworks/XCTest.framework; sourceTree = SDKROOT; };
+		200000000000000000000010 /* Localizable.xcstrings */ = {isa = PBXFileReference; lastKnownFileType = text.json.xcstrings; path = Localizable.xcstrings; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -35,7 +37,7 @@
 
 /* Begin PBXGroup section */
 		400000000000000000000001 = {isa = PBXGroup; children = (400000000000000000000002 /* DeckConnectorApp */, 400000000000000000000004 /* DeckConnectorTests */, 400000000000000000000003 /* Products */,); sourceTree = "<group>"; };
-		400000000000000000000002 /* DeckConnectorApp */ = {isa = PBXGroup; children = (200000000000000000000001, 200000000000000000000002, 200000000000000000000003, 200000000000000000000004, 200000000000000000000005,); path = DeckConnectorApp; sourceTree = "<group>"; };
+		400000000000000000000002 /* DeckConnectorApp */ = {isa = PBXGroup; children = (200000000000000000000001, 200000000000000000000002, 200000000000000000000003, 200000000000000000000004, 200000000000000000000005, 200000000000000000000010,); path = DeckConnectorApp; sourceTree = "<group>"; };
 		400000000000000000000003 /* Products */ = {isa = PBXGroup; children = (200000000000000000000006, 200000000000000000000008,); name = Products; sourceTree = "<group>"; };
 		400000000000000000000004 /* DeckConnectorTests */ = {isa = PBXGroup; children = (200000000000000000000007,); path = DeckConnectorTests; sourceTree = "<group>"; };
 /* End PBXGroup section */
@@ -75,7 +77,7 @@
 			compatibilityVersion = "Xcode 15.0";
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
-			knownRegions = (en, Base,);
+			knownRegions = (en, "zh-Hans", Base,);
 			mainGroup = 400000000000000000000001;
 			packageReferences = (900000000000000000000002 /* XCLocalSwiftPackageReference "." */,);
 			productRefGroup = 400000000000000000000003;
@@ -86,7 +88,7 @@
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
-		700000000000000000000002 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		700000000000000000000002 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (100000000000000000000009 /* Localizable.xcstrings in Resources */,); runOnlyForDeploymentPostprocessing = 0; };
 		700000000000000000000004 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXResourcesBuildPhase section */
 

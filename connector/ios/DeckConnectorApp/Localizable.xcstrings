@@ -1,0 +1,126 @@
+{
+  "sourceLanguage" : "en",
+  "strings" : {
+    "taskDetail.keyboard.done" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Done" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "完成" } }
+      }
+    },
+    "taskDetail.message.localDraft" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "This draft is saved only on this iPhone. It is not a desktop scratchpad note." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "此草稿仅保存在这台 iPhone 上，并不是桌面端的暂存区便签。" } }
+      }
+    },
+    "taskDetail.message.saveFailed" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Draft is kept on this iPhone but is not saved yet: %@" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "草稿仍保留在这台 iPhone 上，但尚未保存：%@" } }
+      }
+    },
+    "taskDetail.message.saved" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Draft saved on this iPhone." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "草稿已保存在这台 iPhone 上。" } }
+      }
+    },
+    "taskDetail.message.saving" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Saving draft on this iPhone…" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "正在将草稿保存到这台 iPhone…" } }
+      }
+    },
+    "taskDetail.message.send" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Send to agent" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "发送给智能体" } }
+      }
+    },
+    "taskDetail.message.title" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Send to agent" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "发送给智能体" } }
+      }
+    },
+    "taskDetail.message.unavailable.agent" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "This task has no writable Codex or Claude target." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "此任务没有可写入的 Codex 或 Claude 目标。" } }
+      }
+    },
+    "taskDetail.message.unavailable.stopped" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "This task is stopped. Start it on the desktop before sending." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "此任务已停止。请先在桌面端启动，再发送消息。" } }
+      }
+    },
+    "taskDetail.message.unavailable.unknown" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Deck cannot verify a writable agent target for this task." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "Deck 无法确认此任务存在可写入的智能体目标。" } }
+      }
+    },
+    "taskDetail.note.explanation" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Save a note to this card’s desktop scratchpad. Saving does not send it to the agent." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "将便签保存到此卡片的桌面端暂存区。保存不会发送给智能体。" } }
+      }
+    },
+    "taskDetail.note.failed" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Note was not saved: %@" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "便签未保存：%@" } }
+      }
+    },
+    "taskDetail.note.pending" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Waiting for Deck to confirm the original save…" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "正在等待 Deck 确认原始保存操作…" } }
+      }
+    },
+    "taskDetail.note.placeholder" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "New scratchpad note" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "新建暂存区便签" } }
+      }
+    },
+    "taskDetail.note.rejected" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Deck rejected the save." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "Deck 拒绝了保存操作。" } }
+      }
+    },
+    "taskDetail.note.save" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Save note" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "保存便签" } }
+      }
+    },
+    "taskDetail.note.saved" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Saved to the desktop scratchpad." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "已保存到桌面端暂存区。" } }
+      }
+    },
+    "taskDetail.note.savedNewer" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Saved the submitted note. Your newer text remains in the editor." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "已保存提交时的便签；之后输入的新内容仍保留在编辑框中。" } }
+      }
+    },
+    "taskDetail.note.saving" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Saving note…" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "正在保存便签…" } }
+      }
+    },
+    "taskDetail.scratchpad.title" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Scratchpad" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "暂存区" } }
+      }
+    }
+  },
+  "version" : "1.0"
+}

@@ -143,16 +143,24 @@ struct TaskListView: View {
 }
 
 struct TaskDetailView: View {
+    private enum NoteSaveState: Equatable {
+        case idle, saving, pending, saved, savedWithNewerDraft, failed(String)
+    }
+
+    private enum FocusedField: Hashable { case note, message }
+
     @EnvironmentObject private var model: AppModel
     let cardID: String
     @State private var newNote = ""
     @State private var addingNote = false
+    @State private var noteSaveState = NoteSaveState.idle
     @State private var selection = Set<String>()
     @State private var queueingSelection = false
     @State private var pendingAdd: (id: String, text: String)?
     @State private var pendingQueue: (id: String, selection: Set<String>)?
     @State private var editing: BufferEntry?
     @State private var composer: ComposerDraftState
+    @FocusState private var focusedField: FocusedField?
 
     init(cardID: String) {
         self.cardID = cardID
@@ -165,23 +173,40 @@ struct TaskDetailView: View {
         Group {
             if let card {
                 List {
-                    outputSection(card)
-                    composerSection(card)
                     scratchpadSection(card)
+                    composerSection(card)
+                    outputSection(card)
                 }
+                .scrollDismissesKeyboard(.interactively)
                 .navigationTitle(card.title)
                 .navigationBarTitleDisplayMode(.inline)
                 .refreshable { await model.refresh(); await model.loadDetails(card: model.snapshot?.cards.first(where: { $0.id == cardID }) ?? card) }
                 .task { await model.loadDetails(card: card) }
                 .sheet(item: $editing) { entry in EditNoteView(text: entry.text) { text in await model.bufferEdit(card: card, entry: entry, text: text) } }
+                .toolbar {
+                    ToolbarItemGroup(placement: .keyboard) {
+                        Spacer()
+                        Button(String(localized: "taskDetail.keyboard.done")) { focusedField = nil }
+                    }
+                }
             } else {
                 ContentUnavailableView("Task unavailable", systemImage: "rectangle.slash", description: Text("It may have been removed on the desktop."))
             }
         }
         .onChange(of: model.operationReceipts) { _, receipts in
-            if let pendingAdd, let result = receipts[pendingAdd.id], [.applied, .delivered].contains(result.state) {
-                if newNote == pendingAdd.text { newNote = "" }
-                self.pendingAdd = nil
+            if let pendingAdd, let result = receipts[pendingAdd.id] {
+                switch result.state {
+                case .applied:
+                    let hasNewerDraft = newNote != pendingAdd.text
+                    if !hasNewerDraft { newNote = "" }
+                    noteSaveState = hasNewerDraft ? .savedWithNewerDraft : .saved
+                    self.pendingAdd = nil
+                case .rejected:
+                    noteSaveState = .failed(result.code ?? String(localized: "taskDetail.note.rejected"))
+                    self.pendingAdd = nil
+                case .accepted, .ambiguous, .delivered:
+                    break
+                }
             }
             if let pendingQueue, let result = receipts[pendingQueue.id], [.applied, .delivered].contains(result.state) {
                 if selection == pendingQueue.selection { selection.removeAll() }
@@ -208,9 +233,10 @@ struct TaskDetailView: View {
     @ViewBuilder private func composerSection(_ card: CardSummary) -> some View {
         let generationChanged = composer.expectedGeneration != card.generation
         let pending = model.pendingSends[card.id]
-        Section("Message") {
+        Section(String(localized: "taskDetail.message.title")) {
             TextEditor(text: Binding(get: { composer.text }, set: { value in composer.edit(value); model.stageDraft(composer.snapshot) }))
                 .frame(minHeight: 90)
+                .focused($focusedField, equals: .message)
                 .disabled(model.sendingCards.contains(card.id))
                 .onAppear { composer.merge(remote: model.drafts[card.id], fallbackGeneration: card.generation) }
                 .onChange(of: model.drafts[card.id]) { _, remote in composer.merge(remote: remote, fallbackGeneration: card.generation) }
@@ -221,9 +247,12 @@ struct TaskDetailView: View {
                     case .saving, .none: break
                     }
                 }
+            Text(String(localized: "taskDetail.message.localDraft"))
+                .font(.caption).foregroundStyle(.secondary)
             Text("Use the keyboard microphone for system dictation. Review and edit the text before sending.").font(.caption).foregroundStyle(.secondary)
-            if let error = composer.persistenceError {
-                Label("Draft is kept on this phone but is not saved yet: \(error)", systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
+            draftPersistenceStatus(card)
+            if let error = draftPersistenceError(card) {
+                Label(String(format: String(localized: "taskDetail.message.saveFailed"), error), systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
                 Button("Retry saving draft") { model.stageDraft(composer.snapshot) }
             }
             if generationChanged {
@@ -238,7 +267,7 @@ struct TaskDetailView: View {
                     Button("Retry original ID and body") { Task { await model.retryOriginal(pending) } }
                 }
             }
-            Button("Send") {
+            Button(String(localized: "taskDetail.message.send")) {
                 let visible = composer.snapshot
                 Task {
                     if await model.send(card: card, visible: visible) == .applied {
@@ -246,14 +275,50 @@ struct TaskDetailView: View {
                     }
                 }
             }
+                .buttonStyle(.borderedProminent)
                 .disabled(!card.canSend || composer.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || generationChanged || pending != nil || model.sendingCards.contains(card.id))
+            if !card.canSend {
+                Label(sendUnavailableReason(card), systemImage: "exclamationmark.circle")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             Text("Sending never starts a stopped shell and does not change desktop permissions.").font(.caption).foregroundStyle(.secondary)
         }
+    }
+
+    @ViewBuilder private func draftPersistenceStatus(_ card: CardSummary) -> some View {
+        switch model.draftPersistence[card.id] {
+        case let .saving(version) where version == composer.version:
+            Label(String(localized: "taskDetail.message.saving"), systemImage: "arrow.triangle.2.circlepath")
+                .font(.caption).foregroundStyle(.secondary)
+        case let .saved(version) where version >= composer.version:
+            Label(String(localized: "taskDetail.message.saved"), systemImage: "checkmark.circle")
+                .font(.caption).foregroundStyle(.green)
+        default:
+            EmptyView()
+        }
+    }
+
+    private func draftPersistenceError(_ card: CardSummary) -> String? {
+        if let error = composer.persistenceError { return error }
+        if case let .failed(version, message)? = model.draftPersistence[card.id], version == composer.version { return message }
+        return nil
+    }
+
+    private func sendUnavailableReason(_ card: CardSummary) -> String {
+        if card.status == "dead" || card.status == "stopped" {
+            return String(localized: "taskDetail.message.unavailable.stopped")
+        }
+        if card.status == "unknown" {
+            return String(localized: "taskDetail.message.unavailable.unknown")
+        }
+        return String(localized: "taskDetail.message.unavailable.agent")
     }
 
     @ViewBuilder private func scratchpadSection(_ card: CardSummary) -> some View {
         let pending = model.pendingCardCommands[card.id] ?? []
         Section {
+            Text(String(localized: "taskDetail.note.explanation"))
+                .font(.caption).foregroundStyle(.secondary)
             if !pending.isEmpty {
                 Label("A scratchpad or queue operation is pending. Its original ID will be queried; controls remain locked to prevent duplicates.", systemImage: "clock.arrow.circlepath")
                     .font(.caption).foregroundStyle(.orange)
@@ -262,19 +327,42 @@ struct TaskDetailView: View {
                     Button("Retry original operation \(record.id)") { Task { await model.retryOriginal(record) } }
                 }
             }
-            HStack {
-                TextField("New note", text: $newNote, axis: .vertical)
-                Button("Add") {
-                    let text = newNote
-                    addingNote = true
-                    Task {
-                        let outcome = await model.bufferAdd(card: card, text: text)
-                        if outcome == .applied, newNote == text { newNote = "" }
-                        if case let .pending(id?, _) = outcome { pendingAdd = (id, text) }
-                        addingNote = false
+            TextEditor(text: Binding(get: { newNote }, set: { value in
+                newNote = value
+                if pendingAdd == nil && !addingNote { noteSaveState = .idle }
+            }))
+                .frame(minHeight: 90)
+                .focused($focusedField, equals: .note)
+                .overlay(alignment: .topLeading) {
+                    if newNote.isEmpty {
+                        Text(String(localized: "taskDetail.note.placeholder"))
+                            .foregroundStyle(.tertiary).padding(.top, 8).padding(.leading, 5)
+                            .allowsHitTesting(false)
                     }
-                }.disabled(!pending.isEmpty || model.busyCards.contains(card.id) || addingNote || newNote.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            Button(String(localized: "taskDetail.note.save")) {
+                let text = newNote
+                addingNote = true
+                noteSaveState = .saving
+                Task {
+                    let outcome = await model.bufferAdd(card: card, text: text)
+                    switch outcome {
+                    case .applied:
+                        let hasNewerDraft = newNote != text
+                        if !hasNewerDraft { newNote = "" }
+                        noteSaveState = hasNewerDraft ? .savedWithNewerDraft : .saved
+                    case let .pending(id, _):
+                        if let id { pendingAdd = (id, text) }
+                        noteSaveState = .pending
+                    case let .failed(message):
+                        noteSaveState = .failed(message)
+                    }
+                    addingNote = false
+                }
             }
+                .buttonStyle(.borderedProminent)
+                .disabled(!pending.isEmpty || pendingAdd != nil || noteSaveState == .pending || model.busyCards.contains(card.id) || addingNote || newNote.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            noteSaveStatus
             if let buffer = model.buffers[card.id] {
                 ForEach(buffer.entries) { entry in
                     HStack(alignment: .top) {
@@ -306,7 +394,29 @@ struct TaskDetailView: View {
                 }
                 Text("Queueing creates a copy; notes remain in the scratchpad and later edits do not alter that copy.").font(.caption).foregroundStyle(.secondary)
             } else { ProgressView() }
-        } header: { Text("Scratchpad") }
+        } header: { Text(String(localized: "taskDetail.scratchpad.title")) }
+    }
+
+    @ViewBuilder private var noteSaveStatus: some View {
+        switch noteSaveState {
+        case .idle:
+            EmptyView()
+        case .saving:
+            Label(String(localized: "taskDetail.note.saving"), systemImage: "arrow.triangle.2.circlepath")
+                .font(.caption).foregroundStyle(.secondary)
+        case .pending:
+            Label(String(localized: "taskDetail.note.pending"), systemImage: "clock.arrow.circlepath")
+                .font(.caption).foregroundStyle(.orange)
+        case .saved:
+            Label(String(localized: "taskDetail.note.saved"), systemImage: "checkmark.circle")
+                .font(.caption).foregroundStyle(.green)
+        case .savedWithNewerDraft:
+            Label(String(localized: "taskDetail.note.savedNewer"), systemImage: "checkmark.circle")
+                .font(.caption).foregroundStyle(.green)
+        case let .failed(message):
+            Label(String(format: String(localized: "taskDetail.note.failed"), message), systemImage: "exclamationmark.triangle")
+                .font(.caption).foregroundStyle(.orange)
+        }
     }
 }
 
