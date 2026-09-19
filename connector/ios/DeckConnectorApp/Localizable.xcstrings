@@ -79,6 +79,24 @@
         "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "便签未保存：%@" } }
       }
     },
+    "taskDetail.note.delete" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Delete" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "删除" } }
+      }
+    },
+    "taskDetail.note.external" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "External event" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "外部事件" } }
+      }
+    },
+    "taskDetail.note.manual" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Manual note" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "手工便签" } }
+      }
+    },
     "taskDetail.note.pending" : {
       "localizations" : {
         "en" : { "stringUnit" : { "state" : "translated", "value" : "Waiting for Deck to confirm the original save…" } },
@@ -119,6 +137,30 @@
       "localizations" : {
         "en" : { "stringUnit" : { "state" : "translated", "value" : "Saving note…" } },
         "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "正在保存便签…" } }
+      }
+    },
+    "taskDetail.queue.copy" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Queued copy: %@" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "排队副本：%@" } }
+      }
+    },
+    "taskDetail.queue.explanation" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Queueing creates a copy; notes remain in the scratchpad and later edits do not alter that copy." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "排队会创建副本；便签仍保留在暂存区，之后的编辑不会改变该副本。" } }
+      }
+    },
+    "taskDetail.queue.selected" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Queue selected (%lld)" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "排队所选项（%lld）" } }
+      }
+    },
+    "taskDetail.queue.unavailable" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Queueing requires a Codex or Claude launch configuration saved on the desktop." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "排队需要桌面端已保存 Codex 或 Claude 启动配置。" } }
       }
     },
     "taskDetail.scratchpad.title" : {

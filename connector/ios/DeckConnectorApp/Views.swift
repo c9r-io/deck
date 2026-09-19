@@ -378,8 +378,8 @@ struct TaskDetailView: View {
                             .disabled(queueingSelection || !pending.isEmpty || model.busyCards.contains(card.id))
                         VStack(alignment: .leading) {
                             Text(entry.text).accessibilityIdentifier("deck.note.text")
-                            Text(entry.kind == "manual" ? "Manual note" : (entry.source?.type ?? "External event")).font(.caption).foregroundStyle(.secondary)
-                            if let copy = entry.copies.last { Text("Queued copy: \(copy.state)").font(.caption2).foregroundStyle(.secondary) }
+                            Text(entry.kind == "manual" ? String(localized: "taskDetail.note.manual") : (entry.source?.type ?? String(localized: "taskDetail.note.external"))).font(.caption).foregroundStyle(.secondary)
+                            if let copy = entry.copies.last { Text(String(format: String(localized: "taskDetail.queue.copy"), copy.state)).font(.caption2).foregroundStyle(.secondary) }
                         }
                         Spacer()
                         if entry.kind == "manual" {
@@ -391,11 +391,11 @@ struct TaskDetailView: View {
                     .accessibilityElement(children: .contain)
                     .accessibilityIdentifier("deck.note.row")
                     .swipeActions {
-                        Button("Delete", role: .destructive) { Task { _ = await model.bufferDelete(card: card, entry: entry) } }
+                        Button(String(localized: "taskDetail.note.delete"), role: .destructive) { Task { _ = await model.bufferDelete(card: card, entry: entry) } }
                             .accessibilityIdentifier("deck.note.delete")
                     }
                 }
-                Button("Queue selected (\(selection.count))") {
+                Button(String(format: String(localized: "taskDetail.queue.selected"), selection.count)) {
                     let submittedSelection = selection
                     queueingSelection = true
                     Task {
@@ -409,9 +409,9 @@ struct TaskDetailView: View {
                 .accessibilityIdentifier("deck.note.queue-selected")
                 .disabled(!card.canQueue || queueingSelection || !pending.isEmpty || model.busyCards.contains(card.id) || selection.isEmpty)
                 if !card.canQueue {
-                    Text("Queueing requires a Codex or Claude launch configuration saved on the desktop.").font(.caption).foregroundStyle(.secondary)
+                    Text(String(localized: "taskDetail.queue.unavailable")).font(.caption).foregroundStyle(.secondary)
                 }
-                Text("Queueing creates a copy; notes remain in the scratchpad and later edits do not alter that copy.").font(.caption).foregroundStyle(.secondary)
+                Text(String(localized: "taskDetail.queue.explanation")).font(.caption).foregroundStyle(.secondary)
             } else { ProgressView() }
         } header: { Text(String(localized: "taskDetail.scratchpad.title")) }
     }
