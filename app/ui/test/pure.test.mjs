@@ -947,6 +947,45 @@ test('CJK prose bounds a path the way whitespace bounds an English one', () => {
     <= PATH_LOOKBACK_MAX + 'v2.pdf'.length, 'and the reach back is bounded');
 });
 
+test('ASCII prose and Markdown wrappers do not become part of a path', () => {
+  for (const prefix of ['说明(', '说明[', '说明{', '[说明](']) {
+    for (const path of ['/tmp/a.txt', 'src/main.rs', '~/目录/文件.md:12:3']) {
+      const text = prefix + path + (prefix.endsWith('[') ? ']' : prefix.endsWith('{') ? '}' : ')');
+      assert.deepEqual(tokenizeTerminalLinks(text), [{
+        kind: 'path', value: path, index: prefix.length, end: prefix.length + path.length,
+      }]);
+    }
+  }
+  for (const text of ['说明(/tmp/a.txt', '说明(/tmp/a.txt).', '说明(/tmp/a.txt). next']) {
+    assert.deepEqual(tokenizeTerminalLinks(text).map(x => x.value), ['/tmp/a.txt']);
+  }
+  assert.deepEqual(tokenizeTerminalLinks('说明(/tmp/a.txt)，以及(src/b.rs)').map(x => x.value),
+    ['/tmp/a.txt', 'src/b.rs']);
+});
+
+test('balanced filename brackets and URL punctuation retain their own ranges', () => {
+  for (const path of ['/tmp/file(1).txt', 'file(1).txt', 'dir(copy)/a.rs',
+    '/tmp/目录(副本)', '/tmp/a[b]{c}.txt', '/tmp/a(b(c)).rs']) {
+    assert.deepEqual(tokenizeTerminalLinks(`说明(${path})`).map(x => x.value), [path]);
+  }
+  assert.deepEqual(tokenizeTerminalLinks('https://example.com/a(b)' + ')'.repeat(10000)).map(x => x.value),
+    ['https://example.com/a(b)']);
+  assert.deepEqual(tokenizeTerminalLinks('说明(https://example.com/a)').map(x => x.value),
+    ['https://example.com/a']);
+});
+
+test('long rejected candidates advance without quadratic suffix rescans', () => {
+  // 64k is larger than a usual 32-row hover. A generous one-second budget
+  // distinguishes the previous multi-second quadratic scan even with coverage.
+  for (const pattern of ['note:', '[中文]', '0.', 'http://[']) {
+    const input = pattern.repeat(Math.ceil(64000 / pattern.length)) + ' /tmp/end.rs';
+    const started = performance.now();
+    const tokens = tokenizeTerminalLinks(input);
+    assert.equal(tokens.at(-1).value, '/tmp/end.rs');
+    assert.ok(performance.now() - started < 1000, `bounded scan for ${pattern}`);
+  }
+});
+
 test('a link token and a link carry exactly their documented keys', () => {
   /* Pinned shapes. `lookback` is present ONLY when the start was a guess:
      layout.js destructures these and terminal.js branches on the key, and a

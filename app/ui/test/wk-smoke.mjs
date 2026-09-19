@@ -1049,7 +1049,7 @@ async function pathSmoke(card) {
   screen.dispatchEvent(new MouseEvent('mousemove', {
     bubbles: true, clientX: linkX, clientY: linkY,
   }));
-  await waitFor(() => pane.body.querySelector('.xterm')?.classList.contains('xterm-cursor-pointer'), 3000);
+  await waitFor(() => screen.classList.contains('xterm-cursor-pointer'), 3000);
   screen.dispatchEvent(pointer('pointerdown', 31, linkX, linkY));
   screen.dispatchEvent(new MouseEvent('mousedown', {
     bubbles: true, cancelable: true, button: 0, buttons: 1,
@@ -1073,7 +1073,16 @@ async function pathSmoke(card) {
   });
   const fixtureLinks = await linksAt(fixtureRow);
   const providerLink = fixtureLinks.find(link => link.text === fixture) || null;
-  providerLink?.activate(eventAt(linkX, linkY), providerLink.text);
+  // Exercise the provider through a second physical click: activation now
+  // requires a press snapshot, so a naked callback cannot open stale content.
+  screen.dispatchEvent(pointer('pointerdown', 32, linkX, linkY));
+  screen.dispatchEvent(new MouseEvent('mousedown', {
+    bubbles: true, cancelable: true, button: 0, buttons: 1, clientX: linkX, clientY: linkY, detail: 1,
+  }));
+  document.dispatchEvent(pointer('pointerup', 32, linkX, linkY));
+  screen.dispatchEvent(new MouseEvent('mouseup', {
+    bubbles: true, cancelable: true, button: 0, buttons: 0, clientX: linkX, clientY: linkY, detail: 1,
+  }));
   const providerOpened = $('ctx').style.display === 'block'
     && $('ctx').querySelector('.ctx-value')?.textContent === fixture;
   screen.dispatchEvent(new MouseEvent('click', {
@@ -1147,7 +1156,20 @@ async function pathSmoke(card) {
   const hardWrappedUrl = hardLinks.find(link => link.text === hardUrl) || null;
   const hardFirstLine = hardSnapshot.line;
   const hardRedrawRecovered = !!hardWrappedUrl && hardFirstLine?.isWrapped === false;
-  wrappedUrl?.activate(eventAt(linkX, linkY), wrappedUrl.text);
+  if (wrappedUrl) {
+    const bounds = screen.getBoundingClientRect();
+    const x = bounds.left + (wrappedUrl.range.start.x - 0.5) * bounds.width / pane.term.cols;
+    const y = bounds.top + (wrappedUrl.range.start.y - pane.term.buffer.active.viewportY - 0.5)
+      * bounds.height / pane.term.rows;
+    screen.dispatchEvent(pointer('pointerdown', 33, x, y));
+    screen.dispatchEvent(new MouseEvent('mousedown', {
+      bubbles: true, cancelable: true, button: 0, buttons: 1, clientX: x, clientY: y, detail: 1,
+    }));
+    document.dispatchEvent(pointer('pointerup', 33, x, y));
+    screen.dispatchEvent(new MouseEvent('mouseup', {
+      bubbles: true, cancelable: true, button: 0, buttons: 0, clientX: x, clientY: y, detail: 1,
+    }));
+  }
   const exactUrlMenu = $('ctx').style.display === 'block'
     && $('ctx').querySelector('.ctx-value')?.textContent === url;
   /* The provider answers on the text alone and never consults the cwd — that
@@ -1224,6 +1246,99 @@ async function pathSmoke(card) {
   const absolute = store.cards.at(-1);
   await report('path-session-absolute', absoluteMade && absolute?.dir.endsWith('/空 格😀'), 1, 0);
   focus.remove();
+}
+
+// Repaint the same public buffer row while the button is held. This is the
+// race a direct provider.activate test cannot cover: xterm replaces its hover
+// object and refuses mouseup, even though the path has not changed.
+async function linkRepaintSmoke(card) {
+  await openSession(card.id);
+  const pane = panes.get(card.session), term = pane.term;
+  pane.fit.fit(); await pane.syncSize(); await pause(400);
+  const path = '/tmp/deck-link-probe.txt', fixture = `说明(${path})`;
+  const write = text => new Promise(resolve => term.write(text, resolve));
+  const screen = pane.body.querySelector('.xterm-screen'), menu = $('ctx');
+  let menuWrites = 0;
+  const observer = new MutationObserver(records => { menuWrites += records.filter(r => r.target === menu).length; });
+  observer.observe(menu, { childList: true });
+  const cols = term.cols, rows = term.rows;
+  try {
+    for (let mode = 0; mode < 7; mode++) {
+      let correct = 0;
+      const repetitions = mode < 2 ? 10 : 2;
+      for (let i = 0; i < repetitions; i++) {
+        menu.style.display = 'none'; term.focus(); term.scrollToBottom();
+        await write('\x1b[2J\x1b[H' + fixture + '\r\n'); await pause(50);
+        const rect = screen.getBoundingClientRect();
+        const x = rect.left + 10.5 * rect.width / cols, y = rect.top + 0.5 * rect.height / rows;
+        const mouse = (type, buttons = 0, clientX = x, clientY = y) => screen.dispatchEvent(new MouseEvent(type, {
+          bubbles: true, cancelable: true, button: 0, buttons, clientX, clientY, detail: 1,
+        }));
+        mouse('mousemove', 0, rect.right - 4); // leave the old hover cell
+        if (mode !== 6) mouse('mousemove');   // mode 6 clicks without a hover
+        await pause(30);
+        const before = menuWrites;
+        screen.dispatchEvent(pointer('pointerdown', 92, x, y)); mouse('mousedown', 1);
+        if (mode === 1 || mode === 2) {
+          await write('\x1b7\x1b[1;1H' + (mode === 1 ? fixture : fixture.replace('probe', 'other')) + '\x1b8');
+          await pause(100); // render must occur between down and up
+        }
+        if (mode === 3) window.dispatchEvent(new Event('blur'));
+        if (mode === 4) { term.resize(cols + 1, rows); await pause(50); }
+        const releaseX = mode === 5 ? x + 3 * rect.width / cols : x;
+        document.dispatchEvent(pointer('pointerup', 92, releaseX, y));
+        mouse('mouseup', 0, releaseX); mouse('click', 0, releaseX);
+        await pause(30);
+        const shouldOpen = mode === 0 || mode === 1 || mode === 6;
+        if (shouldOpen
+          ? menu.style.display === 'block' && menu.querySelector('.ctx-value')?.textContent === path
+            && menuWrites - before === 1
+          : menu.style.display !== 'block' && menuWrites === before) correct++;
+        if (mode === 4) { term.resize(cols, rows); await pane.syncSize(); }
+        if (mode === 5) {
+          cancelTerminalSelection(pane);
+          await waitFor(async () => !(await inv('terminal_metrics', { name: card.session })).in_copy_mode, 3000);
+          await pause(300);
+        }
+      }
+      await report('link-repaint', correct === repetitions, correct, mode);
+    }
+    // Explicit OSC 8 links have higher priority than their path-looking
+    // display text. A test handler observes activation without opening a URL.
+    const originalHandler = term.options.linkHandler;
+    let oscActivations = 0;
+    try {
+      term.options.linkHandler = { activate: () => { oscActivations++; } };
+      menu.style.display = 'none'; term.focus();
+      await write('\x1b[2J\x1b[H\x1b]8;;https://example.com\x07' + path + '\x1b]8;;\x07\r\n');
+      await pause(100);
+      const rect = screen.getBoundingClientRect();
+      const x = rect.left + 4.5 * rect.width / cols, y = rect.top + 0.5 * rect.height / rows;
+      const mouse = (type, buttons = 0, clientX = x, clientY = y) => screen.dispatchEvent(new MouseEvent(type, {
+        bubbles: true, cancelable: true, button: 0, buttons, clientX, clientY, detail: 1,
+      }));
+      mouse('mousemove', 0, rect.right - 4, y + rect.height / rows); mouse('mousemove');
+      await pause(30);
+      screen.dispatchEvent(pointer('pointerdown', 93, x, y)); mouse('mousedown', 1);
+      document.dispatchEvent(pointer('pointerup', 93, x, y)); mouse('mouseup'); mouse('click');
+      await report('link-repaint', oscActivations === 1 && menu.style.display !== 'block', oscActivations, 7);
+    } finally { term.options.linkHandler = originalHandler; }
+    // A bounded fallback scan is still needed after a repaint. Measure the
+    // former quadratic inputs inside WebKit, not just Node's different JIT.
+    for (const [kind, pattern] of ['note:', '[中文]'].entries()) {
+      const input = pattern.repeat(Math.ceil(6400 / pattern.length));
+      const samples = [];
+      for (let i = 0; i < 5; i++) {
+        const start = performance.now(); tokenizeTerminalLinks(input); samples.push(performance.now() - start);
+      }
+      samples.sort((a, b) => a - b);
+      await report('link-scan-bounded', samples[2] < 50, Math.ceil(samples[2]) || 1, kind);
+    }
+  } finally {
+    observer.disconnect(); menu.style.display = 'none';
+    if (term.cols !== cols) term.resize(cols, rows);
+    cancelTerminalSelection(pane);
+  }
 }
 
 async function imeRoutingSmoke(card) {
@@ -1795,6 +1910,7 @@ export async function run() {
     await renameSmoke(main);
     stage = 6;
     await pathSmoke(main);
+    await linkRepaintSmoke(main);
     stage = 7;
     await completionSmoke(main, project, column);
     stage = 8;

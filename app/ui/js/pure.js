@@ -26,12 +26,31 @@ export function shQuote(p) {
    its complete interval first, so `/api` inside it can never become a path.
    Path tokens are only CANDIDATES: they are offered on their text alone so a
    hovered link cannot flicker, and the link actions resolve and validate them
-   against the pane cwd (`links.rs`). */
+   against the pane cwd (`links.rs`). ASCII prose wrappers end a candidate;
+   balanced brackets within a filename are retained. Failed scans advance
+   past the inspected span, so long non-path output cannot cause quadratic
+   suffix rescans. Bracket matching and URL punctuation trimming are linear. */
 const URL_SCHEMES = ['https://', 'http://'];
-const PATH_START_DELIMS = '=:([{<,;|';
+const PATH_START_DELIMS = '=:()[]{}<,;|';
 const TOKEN_END_DELIMS = '"\'`<>|\\';
 const PATH_HARD_END_DELIMS = '=,;';
-const PATH_TRAILING = '.,;!?)}]';
+const PATH_TRAILING = '.,;!?';
+const LINK_BRACKETS = { '(': ')', '[': ']', '{': '}' };
+
+// One pass supplies matching brackets; a bare `name(1).txt` is a filename,
+// while `说明(/tmp/a.txt)` hands ownership to the path inside the wrapper.
+function linkBracketPairs(text) {
+  const stack = [], pairs = new Map();
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (LINK_BRACKETS[ch]) stack.push(i);
+    else if (')]}'.includes(ch)) {
+      if (stack.length && LINK_BRACKETS[text[stack.at(-1)]] === ch) pairs.set(stack.pop(), i);
+      else stack.length = 0;
+    }
+  }
+  return pairs;
+}
 /* How far a link action may reach back when its first reading does not exist. */
 export const PATH_LOOKBACK_MAX = 64;
 
@@ -138,32 +157,24 @@ function urlAt(text, index) {
 
   // Closing prose punctuation is not part of a URL. Keep balanced brackets,
   // which are valid in paths and queries, but remove unmatched closers.
-  const bracketPairs = [['(', ')'], ['[', ']'], ['{', '}']];
-  let trimming = true;
-  while (value && trimming) {
-    trimming = false;
-    if ('.,;!:'.includes(value.at(-1))) {
-      value = value.slice(0, -1);
-      trimming = true;
-      continue;
-    }
-    const pair = bracketPairs.find(([, close]) => value.endsWith(close));
-    if (pair) {
-      const [open, close] = pair;
-      const opens = [...value].filter(ch => ch === open).length;
-      const closes = [...value].filter(ch => ch === close).length;
-      if (closes > opens) {
-        value = value.slice(0, -1);
-        trimming = true;
-      }
-    }
+  const balance = { ')': 0, ']': 0, '}': 0 };
+  for (const ch of value) {
+    if (LINK_BRACKETS[ch]) balance[LINK_BRACKETS[ch]]++;
+    else if (ch in balance) balance[ch]--;
+  }
+  while (value) {
+    const ch = value.at(-1);
+    if ('.,;!:'.includes(ch)) value = value.slice(0, -1);
+    else if (ch in balance && balance[ch] < 0) {
+      balance[ch]++; value = value.slice(0, -1);
+    } else break;
   }
   try {
     const parsed = new URL(value);
     if (!URL_SCHEMES.some(prefix => parsed.protocol === prefix.slice(0, -2))
-        || !parsed.hostname) return null;
+        || !parsed.hostname) return { skipTo: end };
   } catch (_) {
-    return null;
+    return { skipTo: end };
   }
   return { kind: 'url', value, index, end: index + value.length };
 }
@@ -186,7 +197,7 @@ function quotedPathAt(text, index) {
     : null;
 }
 
-function unquotedPathAt(text, index) {
+function unquotedPathAt(text, index, pairs) {
   if ((!isStartBoundary(text[index - 1]) && !isScriptBoundary(text[index - 1], text[index]))
       || isTokenEnd(text[index])
       || PATH_START_DELIMS.includes(text[index])) return null;
@@ -201,9 +212,23 @@ function unquotedPathAt(text, index) {
      Residual cost either way: a single component that genuinely runs CJK
      straight into letters, `报告v2.pdf`, is offered as `v2.pdf`. */
   let structural = false;
+  const brackets = [];
   while (end < text.length && !isTokenEnd(text[end])
          && !PATH_HARD_END_DELIMS.includes(text[end])) {
     const ch = text[end];
+    if (LINK_BRACKETS[ch]) {
+      const close = pairs.get(end);
+      const filenameSuffix = close !== undefined && (text[close + 1] === '/'
+        || text[close + 1] === '.' && !isTokenEnd(text[close + 2])
+          && !PATH_START_DELIMS.includes(text[close + 2]));
+      if (!structural && !brackets.length && !filenameSuffix) break;
+      brackets.push(LINK_BRACKETS[ch]);
+    } else if (')]}'.includes(ch)) {
+      if (brackets.at(-1) !== ch) break;
+      brackets.pop();
+    }
+    // A bare prose label ends at ':'. Paths keep colons (including :line:col).
+    if (ch === ':' && !structural) break;
     if (end > index) {
       const prev = text[end - 1];
       if ((isAsciiLetter(prev) && isCJK(ch))
@@ -214,7 +239,7 @@ function unquotedPathAt(text, index) {
   }
   let value = text.slice(index, end);
   while (value && PATH_TRAILING.includes(value.at(-1))) value = value.slice(0, -1);
-  if (!looksLikeTerminalPathCandidate(value)) return null;
+  if (!looksLikeTerminalPathCandidate(value)) return { skipTo: Math.max(index + 1, end) };
   const token = { kind: 'path', value, index, end: index + value.length };
   /* The script boundary is a GUESS about where prose ends and a name begins,
      and it is wrong for a name that genuinely runs CJK into letters:
@@ -236,12 +261,16 @@ function unquotedPathAt(text, index) {
 export function tokenizeTerminalLinks(input) {
   const text = String(input);
   const links = [];
+  const pairs = linkBracketPairs(text);
   let index = 0;
   while (index < text.length) {
     const token = urlAt(text, index)
       || quotedPathAt(text, index)
-      || unquotedPathAt(text, index);
-    if (token) {
+      || unquotedPathAt(text, index, pairs);
+    if (token?.skipTo) {
+      // Never rescan an already rejected suffix from every inner boundary.
+      index = token.skipTo;
+    } else if (token) {
       links.push(token);
       index = token.end;
     } else {

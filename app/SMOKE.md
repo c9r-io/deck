@@ -331,6 +331,18 @@ a fixture.
 
 ## File-path menu
 
+- [ ] Print `说明(/tmp/a.txt)`, `[说明](src/main.rs)` and `file(1).txt`.
+      Menus show only the path, preserving brackets that belong to filenames.
+      Press a path while its row repaints unchanged: one menu opens on release.
+      Changing the target, resizing, losing focus or dragging cancels the click.
+      A click without prior hover still opens the menu. The isolated run covers
+      these through `link-repaint` modes 0–7 (including OSC 8 priority) and bounds the former quadratic
+      scans through `link-scan-bounded` (median under 50ms at 6,400 characters).
+      Production `terminal-link` events contain only run/pane/attempt IDs,
+      closed outcomes and counts/durations; slow scans are limited to one per
+      pane per five seconds. Action events use codes 1/copy, 2/URL, 3/editor,
+      4/editor-parent, 5/session-parent, 6/reveal. No path or content is logged.
+
 - [ ] Print relative and absolute paths containing spaces, Chinese and emoji,
       plus `:line[:column]`. Keyboard-open the menu: URL entries remain only
       Open/Copy; file entries include Open, Reveal, Copy, Open parent folder in
@@ -338,7 +350,8 @@ a fixture.
       and focus restoration work.
 - [ ] Print a nonexistent log token (`memcache.go:265`), an IPv4 address with
       port, and a long HTTP(S) URL that soft-wraps through its `/api` segment.
-      The first two have no link; every wrapped URL row resolves to one exact
+      The missing file remains a candidate (actions report failure); the IP
+      has no link. Every wrapped URL row resolves to one exact
       URL value and never exposes `/api` as a file path.
 - [ ] Open parent uses the configured editor with the directory as an argument;
       New session starts in the canonical parent and follows the normal project/

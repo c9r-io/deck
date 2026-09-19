@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Terminal path links separate Chinese/Markdown labels from ASCII brackets,
+  preserving balanced filename brackets. Rejected candidates and URL closing
+  punctuation are scanned without repeatedly traversing the same suffix.
+- A path click survives an unchanged row repaint between press and release.
+  Changed targets, viewport/grid changes and drags cancel the click. Link
+  diagnostics record numeric attempt IDs, closed outcomes, action durations
+  and rate-limited slow scans; paths and terminal text remain private.
+
 - Held double-click word selections and triple-click line selections now extend
   through a drag without losing the original range or selection granularity.
   Reversing the drag keeps the original selected word/line intact.

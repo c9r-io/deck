@@ -221,6 +221,8 @@ const SMOKE_CHECKS: &[&str] = &[
     "scroll-frame",
     "link-activate",
     "link-classify",
+    "link-repaint",
+    "link-scan-bounded",
     "ime-routing",
     "path-menu",
     "path-editor",
@@ -409,6 +411,31 @@ const SELECTION_EVENTS: &[&str] = &[
     "cancel-other",
 ];
 
+/// Link attempts share the terminal numeric context (selection = 0).
+/// press/menu/blocked: a = candidate UTF-16 length, b = click count for press,
+/// otherwise elapsed ms. miss = no candidate on a click. scan-slow: a = ms,
+/// b = scanned UTF-16 length, limited to one per pane per five seconds.
+/// action-*: a = copy(1), URL(2), editor(3), editor-parent(4), session-parent(5),
+/// reveal(6); b = elapsed ms. No candidate, path, URL or error text is accepted.
+const LINK_EVENTS: &[&str] = &[
+    "press-path",
+    "press-url",
+    "menu-path",
+    "menu-url",
+    "miss",
+    "drag",
+    "viewport",
+    "outside",
+    "changed",
+    "cancelled",
+    "scan-slow",
+    "action-start",
+    "action-retry",
+    "action-ok",
+    "action-failed",
+    "action-stale",
+];
+
 /// The only frontend diagnostic codes the backend will log, each with its
 /// closed detail policy. Anything else is dropped, so no free-form frontend
 /// string (keystrokes, prompts, paths, URLs, error messages, token-shaped
@@ -453,6 +480,7 @@ const UI_EVENT_SPECS: &[(&str, DetailPolicy)] = &[
         ]),
     ),
     ("terminal-selection", DetailPolicy::Closed(SELECTION_EVENTS)),
+    ("terminal-link", DetailPolicy::Closed(LINK_EVENTS)),
     (
         "clipboard-write",
         DetailPolicy::Closed(&["pbcopy-failed", "web-failed", "web-unavailable"]),
@@ -523,7 +551,7 @@ fn format_scoped_ui_event(
     let mut line = format_ui_event(code, detail, a, b)?;
     if matches!(
         code,
-        "terminal-copy" | "terminal-selection" | "clipboard-write"
+        "terminal-copy" | "terminal-selection" | "terminal-link" | "clipboard-write"
     ) {
         if let Some(c) = context {
             line.push_str(&format!(
@@ -698,6 +726,7 @@ mod tests {
                 "separator",
                 "terminal-copy",
                 "terminal-selection",
+                "terminal-link",
                 "clipboard-write",
             ] {
                 let line = format_ui_event(code, Some(bad), None, None).unwrap();
@@ -864,6 +893,28 @@ mod tests {
                 .is_some_and(|l| !l.contains("<redacted>")),
                 "revoke reason cancel-{reason} must stay loggable"
             );
+        }
+    }
+
+    #[test]
+    fn link_events_are_closed_and_keep_numeric_correlation() {
+        let c = TerminalEventContext {
+            run: 123,
+            pane: 2,
+            selection: 0,
+            attempt: 4,
+        };
+        for detail in LINK_EVENTS {
+            let line =
+                format_scoped_ui_event("terminal-link", Some(detail), Some(18), Some(5), Some(&c))
+                    .unwrap();
+            assert_eq!(
+                line,
+                format!(
+                    "[ui] terminal-link {detail} a=18 b=5 run=123 pane=2 selection=0 attempt=4"
+                )
+            );
+            assert_eq!(crate::redact::sanitize_log(&line), line);
         }
     }
 

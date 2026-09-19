@@ -152,6 +152,8 @@ export function showProjectCtx(e, pid) {
   placeCtx(e);
 }
 
+// Link diagnostics carry only closed action/outcome labels, numeric action
+// codes and durations, with the original click IDs captured across awaits.
 let linkActionGeneration = 0;
 let ignoreLinkOpeningClickUntil = 0;
 
@@ -162,7 +164,7 @@ let ignoreLinkOpeningClickUntil = 0;
    anything, so the retry cannot open two things; only a failure of `open(1)`
    itself — which resolution already passed — could, and that is the same
    candidate the user pointed at. */
-export function showLinkCtx(e, kind, value, cwd, sid = null, lookback = null) {
+export function showLinkCtx(e, kind, value, cwd, sid = null, lookback = null, trace = null) {
   const ctx = $('ctx');
   linkActionGeneration++; // invalidate any older path resolution
   // xterm activates providers on mouseup. The browser's compatibility click
@@ -189,29 +191,40 @@ export function showLinkCtx(e, kind, value, cwd, sid = null, lookback = null) {
     const a = ev.target.dataset && ev.target.dataset.a;
     if (!a) return;
     const request = ++linkActionGeneration;
+    const action = ['copy', 'url', 'editor', 'editor-parent', 'session-parent', 'reveal'].indexOf(a) + 1;
+    if (!action) return;
+    const started = Date.now();
+    const log = detail => uev('terminal-link', detail, action, Date.now() - started, trace);
+    const attempt = operation => operation(value).catch(err => {
+      if (!lookback) throw err;
+      log('action-retry');
+      return operation(lookback);
+    });
+    log('action-start');
     ctx.style.display = 'none';
     if (restoreFocus && restoreFocus.isConnected && restoreFocus.focus) restoreFocus.focus();
     if (a === 'copy') {
-      writeClipboard(value).then(() => toast(t('terminal.copied')), () => toast(t('terminal.copyFailed')));
+      writeClipboard(value, trace).then(() => { log('action-ok'); toast(t('terminal.copied')); },
+        () => { log('action-failed'); toast(t('terminal.copyFailed')); });
     } else if (a === 'session-parent') {
       try {
         const origin = sid && provider.get(sid);
         if (!origin) throw new Error('the source session is no longer available');
         const parentOf = target => inv('resolve_parent_dir', { value: target, cwd: cwd || ctx.HOME });
-        const resolved = await parentOf(value)
-          .catch(err => (lookback ? parentOf(lookback) : Promise.reject(err)));
-        if (request !== linkActionGeneration || !provider.get(sid)) return;
+        const resolved = await attempt(parentOf);
+        if (request !== linkActionGeneration || !provider.get(sid)) { log('action-stale'); return; }
         await newSession(resolved.directory, { projectId: origin.projectId, rethrow: true });
+        log('action-ok');
         toast(t('terminal.openedParent'));
       } catch (err) {
+        log('action-failed');
         if (request === linkActionGeneration) toast(t('terminal.createPathFailed'));
       }
     } else {
       const openIt = target => inv('open_target', { kind: a, value: target, cwd: cwd || ctx.HOME });
-      openIt(value)
-        .catch(err => (lookback ? openIt(lookback) : Promise.reject(err)))
-        .then(() => toast(t(a === 'url' ? 'terminal.openBrowser' : a.startsWith('editor') ? 'terminal.openEditor' : 'terminal.revealFinder')))
-        .catch(() => toast(t('terminal.openFailed')));
+      attempt(openIt)
+        .then(() => { log('action-ok'); toast(t(a === 'url' ? 'terminal.openBrowser' : a.startsWith('editor') ? 'terminal.openEditor' : 'terminal.revealFinder')); })
+        .catch(() => { log('action-failed'); toast(t('terminal.openFailed')); });
     }
   };
   ctx.onkeydown = ev => {
