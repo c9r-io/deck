@@ -180,7 +180,7 @@ struct TaskDetailView: View {
                 .scrollDismissesKeyboard(.interactively)
                 .navigationTitle(card.title)
                 .navigationBarTitleDisplayMode(.inline)
-                .refreshable { await model.refresh(); await model.loadDetails(card: model.snapshot?.cards.first(where: { $0.id == cardID }) ?? card) }
+                .refreshable { await refreshCurrentTaskDetails() }
                 .task { await model.loadDetails(card: card) }
                 .sheet(item: $editing) { entry in EditNoteView(text: entry.text) { text in await model.bufferEdit(card: card, entry: entry, text: text) } }
                 .toolbar {
@@ -262,7 +262,7 @@ struct TaskDetailView: View {
             if let pending {
                 Label("Original send \(pending.localState.rawValue). Operation \(pending.id)", systemImage: "clock.arrow.circlepath")
                     .font(.caption).foregroundStyle(.orange).textSelection(.enabled)
-                Button("Check original operation") { Task { await model.checkOriginalOperations() } }
+                Button("Check original operation") { Task { await refreshCurrentTaskDetails() } }
                 if pending.localState == .notFound {
                     Button("Retry original ID and body") { Task { await model.retryOriginal(pending) } }
                 }
@@ -314,6 +314,12 @@ struct TaskDetailView: View {
         return String(localized: "taskDetail.message.unavailable.agent")
     }
 
+    private func refreshCurrentTaskDetails() async {
+        await model.checkOriginalOperations()
+        guard let latestCard = model.snapshot?.cards.first(where: { $0.id == cardID }) else { return }
+        await model.loadDetails(card: latestCard)
+    }
+
     @ViewBuilder private func scratchpadSection(_ card: CardSummary) -> some View {
         let pending = model.pendingCardCommands[card.id] ?? []
         Section {
@@ -322,7 +328,7 @@ struct TaskDetailView: View {
             if !pending.isEmpty {
                 Label("A scratchpad or queue operation is pending. Its original ID will be queried; controls remain locked to prevent duplicates.", systemImage: "clock.arrow.circlepath")
                     .font(.caption).foregroundStyle(.orange)
-                Button("Check original operation") { Task { await model.checkOriginalOperations() } }
+                Button("Check original operation") { Task { await refreshCurrentTaskDetails() } }
                 ForEach(pending.filter { $0.localState == .notFound }) { record in
                     Button("Retry original operation \(record.id)") { Task { await model.retryOriginal(record) } }
                 }
