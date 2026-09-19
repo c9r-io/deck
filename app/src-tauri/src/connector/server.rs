@@ -313,10 +313,13 @@ async fn handle(
                 Ok(value) => value,
                 Err(failure) => return mapped(&failure),
             };
-            state
-                .accept(epoch, &device, command)
-                .map(|value| response(StatusCode::ACCEPTED, serde_json::to_value(value).unwrap()))
-                .unwrap_or_else(|failure| mapped(&failure))
+            match state.accept(epoch, &device, command) {
+                Ok(_) if crate::smoke_faults::take("connector-after-accept") => {
+                    error(StatusCode::GATEWAY_TIMEOUT, "timeout")
+                }
+                Ok(value) => response(StatusCode::ACCEPTED, serde_json::to_value(value).unwrap()),
+                Err(failure) => mapped(&failure),
+            }
         })
         .await;
     }

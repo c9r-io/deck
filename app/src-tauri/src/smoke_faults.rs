@@ -15,6 +15,7 @@ const KINDS: &[&str] = &[
     "channel-inbox-save",
     "channel-network",
     "channel-scope",
+    "connector-after-accept",
     "queue-cancel",
     "tmux-after-stop",
     "tmux-after-socket",
@@ -128,6 +129,10 @@ mod tests {
         assert_eq!(canonical("settings-save"), Some("settings-save"));
         assert_eq!(canonical("channel-network"), Some("channel-network"));
         assert_eq!(canonical("channel-scope"), Some("channel-scope"));
+        assert_eq!(
+            canonical("connector-after-accept"),
+            Some("connector-after-accept")
+        );
         assert_eq!(canonical("tmux-after-stop"), Some("tmux-after-stop"));
         assert_eq!(
             canonical("tmux-after-metadata"),

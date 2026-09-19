@@ -86,10 +86,27 @@ final class AppModelTests: XCTestCase {
 
         let note = "simulator-smoke-\(UUID().uuidString.lowercased())"
         let addOutcome = await model.bufferAdd(card: card, text: note)
-        let addResult = try await awaitTerminal(addOutcome)
-        XCTAssertTrue(addResult == nil || addResult?.state == .applied)
+        if ProcessInfo.processInfo.environment["DECK_CONNECTOR_EXPECT_POST_ACCEPT_FAILURE"] == "1" {
+            guard case .failed = addOutcome else {
+                XCTFail("The post-accept fault must make the original response unavailable.")
+                return
+            }
+            let operationID = try XCTUnwrap(model.pendingCardCommands[card.id]?.first?.id)
+            let clock = ContinuousClock(), deadline = clock.now.advanced(by: .seconds(15))
+            while clock.now < deadline, model.operationReceipts[operationID]?.state != .applied {
+                await model.checkOriginalOperations()
+                try await Task.sleep(for: .milliseconds(100))
+            }
+            XCTAssertEqual(model.operationReceipts[operationID]?.state, .applied)
+            XCTAssertTrue(model.pendingCardCommands[card.id]?.isEmpty ?? true)
+        } else {
+            let addResult = try await awaitTerminal(addOutcome)
+            XCTAssertTrue(addResult == nil || addResult?.state == .applied)
+        }
         await model.loadDetails(card: card)
-        let added = try XCTUnwrap(model.buffers[card.id]?.entries.first(where: { $0.text == note }))
+        let addedMatches = model.buffers[card.id]?.entries.filter { $0.text == note } ?? []
+        XCTAssertEqual(addedMatches.count, 1, "Recovering the original operation must not duplicate its note.")
+        let added = try XCTUnwrap(addedMatches.first)
         let editedText = note + "-edited"
         let editOutcome = await model.bufferEdit(card: card, entry: added, text: editedText)
         let editResult = try await awaitTerminal(editOutcome)

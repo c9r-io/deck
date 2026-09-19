@@ -203,6 +203,16 @@ a fixture.
       `missing_scope -> scope` contract test. Do not report it as a successful
       live scope removal when Slack requires the scope for a configured event.
 
+### Connector post-accept recovery
+
+- [ ] Launch the isolated `connector-transport` runner with
+      `--smoke-fault connector-after-accept`, then run the opt-in Simulator
+      AppModel host test with `DECK_CONNECTOR_EXPECT_POST_ACCEPT_FAILURE=1`.
+- [ ] The first command is durably accepted but its POST returns `timeout`.
+      The app must retain the immutable operation ID, query that same operation,
+      reach `applied`, and find exactly one matching note before continuing the
+      existing edit/delete, stale-revision, Keychain restore and unpair checks.
+
 ### Signed updater and responsible-code gate
 
 - [ ] Use two authorized, increasing, signed/notarized candidate builds from
