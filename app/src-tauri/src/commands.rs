@@ -330,7 +330,7 @@ pub(crate) fn write_clipboard(text: String) -> Result<(), DeckError> {
 
 #[tauri::command]
 pub(crate) fn kill_session(name: String) -> Result<(), DeckError> {
-    let _activity = crate::restart::activity_guard()?;
+    let _activity = crate::session_runtime::activity_guard()?;
     validate_session_name(&name)?;
     idempotent_kill_result(tmux(&["kill-session", "-t", &session_target(&name)]))?;
     // Closing a card is also a privacy deletion: its transcript, backup and

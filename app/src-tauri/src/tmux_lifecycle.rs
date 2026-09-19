@@ -231,7 +231,7 @@ fn read_disk() -> LifecycleDisk {
 }
 
 fn write_disk(disk: &LifecycleDisk) -> Result<(), DeckError> {
-    crate::restart::check_deadline()?;
+    crate::session_runtime::check_deadline()?;
     crate::datadir::create_private_dir(&crate::datadir::deck_dir())?;
     let bytes = serde_json::to_vec(disk)
         .map_err(|_| DeckError::new(ErrorKind::Other, "lifecycle-state-encode"))?;
@@ -678,7 +678,7 @@ fn clean_confirmed_intent_socket(intent: &RestartIntent) -> Result<(), DeckError
 
 fn wait_for_old_server_exit(old: &ServerSnapshot) -> Result<(), DeckError> {
     for _ in 0..50 {
-        crate::restart::check_deadline()?;
+        crate::session_runtime::check_deadline()?;
         match probe_server() {
             Probe::Absent => break,
             Probe::Reachable(snapshot)
@@ -736,7 +736,7 @@ fn complete_restart(
     });
     write_disk(&disk)?;
 
-    crate::restart::check_deadline()?;
+    crate::session_runtime::check_deadline()?;
     let stop_started = std::time::Instant::now();
     applog("[tmux-restart] stopping");
     match tmux(&["kill-server"]) {
@@ -760,7 +760,7 @@ fn complete_restart(
     }
 
     disk.operation.as_mut().unwrap().phase = RestartPhase::Starting;
-    crate::restart::check_deadline()?;
+    crate::session_runtime::check_deadline()?;
     write_disk(&disk)?;
     if crate::smoke_faults::take("tmux-before-start") {
         return Err(DeckError::new(
@@ -1114,8 +1114,9 @@ pub(crate) async fn restart_tmux_server(
     // during exit hooks. All IO, deadlines and guards belong to this worker.
     let started = std::time::Instant::now();
     tauri::async_runtime::spawn_blocking(move || {
-        crate::restart::run_bounded(started + crate::restart::TOTAL_BUDGET, move || {
-            let _deadline = crate::restart::Deadline::until(started + crate::restart::TOTAL_BUDGET);
+        crate::session_runtime::run_bounded(started + crate::restart::TOTAL_BUDGET, move || {
+            let _deadline =
+                crate::session_runtime::Deadline::until(started + crate::restart::TOTAL_BUDGET);
             let progress = |phase: &str, completed: usize, total: usize| {
                 let _ = app.emit(
                     "tmux-restart-progress",
@@ -1170,9 +1171,9 @@ fn restart_tmux_server_inner(
     progress: &dyn Fn(&str, usize, usize),
 ) -> Result<ServerStatus, DeckError> {
     let preparation_deadline =
-        crate::restart::Deadline::until(started + crate::restart::PREPARE_BUDGET);
+        crate::session_runtime::Deadline::until(started + crate::restart::PREPARE_BUDGET);
     let _guard = try_operation()?;
-    let _activity = crate::restart::exclusive()?;
+    let _activity = crate::session_runtime::exclusive()?;
     if APP_UPDATE_INSTALLING.load(Ordering::Acquire) {
         return Err(DeckError::new(ErrorKind::Other, "app-update-installing"));
     }
@@ -1238,7 +1239,7 @@ fn restart_tmux_server_inner(
         }
     };
     let checked_rows = tmux::list_panes()?;
-    if !crate::restart::unchanged_rows(&prepared_rows, &checked_rows) {
+    if !crate::tmux::unchanged_rows(&prepared_rows, &checked_rows) {
         return Err(DeckError::new(
             ErrorKind::Tmux,
             "tmux-server-impact-changed",
@@ -1256,9 +1257,9 @@ fn restart_tmux_server_inner(
         "[tmux-restart] queue-paused count={paused} elapsed_ms={}",
         started.elapsed().as_millis()
     ));
-    crate::restart::check_deadline()?;
+    crate::session_runtime::check_deadline()?;
     drop(preparation_deadline);
-    let _replace_deadline = crate::restart::Deadline::until(
+    let _replace_deadline = crate::session_runtime::Deadline::until(
         (std::time::Instant::now() + Duration::from_secs(5))
             .min(started + crate::restart::TOTAL_BUDGET),
     );

@@ -28,7 +28,8 @@ generation) captured when it started, and every typed slice re-checks that
 identity and the pane's current foreground program atomically with the paste.
 Switching sessions or panes, leaving the session view, the pane's exit, a
 hidden window or page unload ends the recording; words already typed stay,
-words not yet confirmed are dropped. A replaced session, a lost pane, a
+words not yet submitted for delivery are dropped. A delivery already submitted
+keeps its original target; a late reply cannot alter a newer recording. A replaced session, a lost pane, a
 program change during the paste, another message being delivered to the same
 session, or text the program cannot take end the recording with a toast; a
 transient refusal is retried briefly first. If a paste could not be confirmed,
@@ -39,7 +40,8 @@ menu, shell or editor.
 
 Text reaches tmux through a stdin pipe, never process arguments, environment
 variables or temporary files. The literal-paste implementation and per-session
-busy exclusion are shared with scheduled prompts, but voice input has no
+busy exclusion are shared with scheduled prompts. Both hold the session activity
+guard throughout transport and cleanup, excluding service restart, but voice input has no
 schedule, quiet wait or rate limit, and never sends Enter. Voice text is never
 evaluated by a Deck shell command.
 
@@ -114,7 +116,9 @@ production JS module is absent from the report; smoke carriers are not counted
 as Node tests. `cargo test --workspace -- --test-threads=1` includes the native
 bridge EDR tripwires, recording lifecycle and stale-snapshot checks, input
 validation, byte-literal typing during capture, scheduler exclusion and
-generation expiry. Shared delivery tests execute the production implementation
+generation expiry and restart exclusion. Frontend regressions cover cancellation
+during pane preparation and late success/failure after a new recording starts.
+Shared delivery tests execute the production implementation
 through its transport boundary, including real guarded pastes against an
 isolated bundled tmux server. Swift/Apple speech device behavior is not
 measured by the Rust or Node coverage gates; the device checks below remain

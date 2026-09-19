@@ -10,6 +10,8 @@
 //! an Enter. A changed generation returns target-expired; the UI ends the
 //! recording rather than rebinding. Shared scheduler exclusion prevents
 //! concurrent sends into one session.
+//! Delivery holds shared session activity from its first probe through paste
+//! and cleanup, so an intentional server restart cannot overlap any slice.
 use crate::context::RawProbe;
 use crate::error::{DeckError, ErrorKind};
 use crate::prompt_delivery::{self, LiteralOutcome, LiteralRequest};
@@ -325,6 +327,8 @@ fn deliver_with(
     text: String,
     transport: &impl prompt_delivery::Transport,
 ) -> Result<(), DeckError> {
+    let _activity =
+        crate::session_runtime::activity_guard().map_err(|_| failure("delivery-busy"))?;
     if text.trim().is_empty()
         || text.len() > 65_536
         || text

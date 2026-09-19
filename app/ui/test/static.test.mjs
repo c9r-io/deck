@@ -4,13 +4,22 @@
 // Rust unit and contract tests, and the real-WKWebView smoke.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { en } from '../js/i18n/en.js';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 const read = path => readFileSync(resolve(root, path), 'utf8');
+const production = readdirSync(resolve(root, 'app/ui/js')).filter(name => name.endsWith('.js'))
+  .map(name => read(`app/ui/js/${name}`)).join('\n');
+
+test('extracted terminal adapters and queue view cannot import the view core', () => {
+  for (const name of ['terminal-links', 'terminal-links-model', 'terminal-clipboard', 'terminal-bytes', 'voice-target', 'scheduler']) {
+    assert.doesNotMatch(read(`app/ui/js/${name}.js`), /from\s+['"]\.\/(?:board|layout|terminal)\.js['"]/,
+      `${name} receives view actions from its owner`);
+  }
+});
 
 test('i18n owns visible copy and translation parameters never enter innerHTML', () => {
   const html = read('app/ui/index.html');
@@ -20,9 +29,7 @@ test('i18n owns visible copy and translation parameters never enter innerHTML', 
     if (/class="wordmark"/.test(line)) continue;
     assert.match(line, /data-i18n(?:-title|-placeholder)?=/, `unkeyed visible HTML: ${line.trim()}`);
   }
-  const production = ['app/ui/js/app.js', 'app/ui/js/attention.js', 'app/ui/js/automation.js', 'app/ui/js/board.js', 'app/ui/js/dialogs.js',
-    'app/ui/js/inbound.js', 'app/ui/js/layout.js', 'app/ui/js/scheduler.js', 'app/ui/js/queue-review.js', 'app/ui/js/selection.js',
-    'app/ui/js/templates.js', 'app/ui/js/terminal.js'].map(read).join('\n');
+
   assert.doesNotMatch(production, /innerHTML\s*=\s*t\s*\(/);
   assert.doesNotMatch(production, /(?:toast|confirmDialog|promptDialog)\(\s*['"`][A-Za-z]/,
     'visible dynamic prose must use a stable translation key');
@@ -74,10 +81,7 @@ test('the updater, relaunch and server restart stay backend-owned', () => {
 });
 
 test('the canonical dictionary has no unused keys outside documented dynamic families', () => {
-  const source = ['app/ui/index.html', 'app/ui/js/app.js', 'app/ui/js/attention.js', 'app/ui/js/automation.js',
-    'app/ui/js/automation-model.js', 'app/ui/js/board.js', 'app/ui/js/dialogs.js', 'app/ui/js/i18n.js', 'app/ui/js/inbound.js',
-    'app/ui/js/layout.js', 'app/ui/js/pure.js', 'app/ui/js/scheduler.js', 'app/ui/js/scheduler-model.js', 'app/ui/js/queue-review.js',
-    'app/ui/js/selection.js', 'app/ui/js/state.js', 'app/ui/js/templates.js', 'app/ui/js/terminal.js', 'app/ui/js/voice.js', 'app/ui/js/voice-settings.js'].map(read).join('\n');
+  const source = read('app/ui/index.html') + production;
   const dynamic = /^(?:attention\.column|attention\.filter|automation\.run|automation\.wd|board\.default|session\.status|settings\.shortcut|notice|tmux\.notice|voice\.phase|voice\.error|voice\.notice)\./;
   const unused = Object.keys(en).filter(key => !dynamic.test(key) && !source.includes(key));
   assert.deepEqual(unused, []);
@@ -191,13 +195,13 @@ test('clipboard and selection diagnostics are wired at every handoff', () => {
   // diagnostics.rs (`every_frontend_event_label_survives_the_formatter`);
   // this only checks that no handoff lost its call.
   const layout = read('app/ui/js/layout.js');
-  const terminal = read('app/ui/js/terminal.js');
+  const clipboard = read('app/ui/js/terminal-clipboard.js');
   const selection = read('app/ui/js/selection.js');
   for (const stage of ['keydown-deck', 'keydown-native', 'keydown-none',
     'keydown-elsewhere', 'source-elsewhere'])
-    assert.ok(layout.includes(stage), `missing copy diagnostic: ${stage}`);
+    assert.ok(clipboard.includes(stage), `missing copy diagnostic: ${stage}`);
   for (const stage of ['pbcopy-failed', 'web-failed', 'web-unavailable'])
-    assert.ok(terminal.includes(stage), `missing clipboard writer diagnostic: ${stage}`);
+    assert.ok(clipboard.includes(stage), `missing clipboard writer diagnostic: ${stage}`);
   for (const stage of ['promote', 'start-ok', 'start-failed', 'finish-ok', 'finish-failed',
     'update-failed', 'dimensions-changed', 'freeze-ok', 'freeze-failed', 'native-cleared'])
     assert.ok(selection.includes(`sev('${stage}'`), `selection stage never logged: ${stage}`);

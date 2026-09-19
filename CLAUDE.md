@@ -84,12 +84,13 @@ loaded by `ui/index.html`; xterm.js vendored in `app/ui/vendor/`. Backend
 | Single-instance flock, launch flags / debug-only smoke args | `instance_lock.rs`, `launch_args.rs` |
 | Session start/kill, poll (status, memory footprint, preview rows), clipboard write | `commands.rs` |
 | tmux sidecar, socket, server conf | `tmux.rs` |
-| Server lifecycle: protocol metadata, reuse/replace, restart transaction, channel sockets | `tmux_lifecycle.rs` (+ `docs/tmux-server-lifecycle.md`) |
+| Server lifecycle: protocol metadata, reuse/replace, restart transaction, channel sockets | `tmux_lifecycle.rs`, `restart.rs` (exit/restart policy), `session_runtime.rs` (shared guards and deadlines) (+ `docs/tmux-server-lifecycle.md`) |
 | PTY attach bridge with end-to-end flow control | `pty.rs` |
-| Native on-device voice input typed straight into the pane (one mic, one bound pane, no draft), shared literal paste | `native/SpeechBridge.swift`, `voice.rs`, `prompt_delivery.rs`, `ui/js/voice.js`, `voice-model.js`, `voice-settings.js` (+ `docs/voice-input.md`) |
+| Native on-device voice input typed straight into the pane (one mic, one bound pane, no draft), shared literal paste | `native/SpeechBridge.swift`, `voice.rs`, `prompt_delivery.rs`, `ui/js/voice.js`, `voice-model.js`, `voice-target.js`, `voice-settings.js` (+ `docs/voice-input.md`) |
 | Terminal scroll + token-bound selection lease commands | `terminal.rs`, `terminal_selection.rs`, `terminal_scroll.rs` |
 | Pointer/selection authority, overlay, wheel routing (frontend) | `ui/js/selection.js`, `layout.js` |
 | Completion bar, links, context menus, the ONE new-session path (start first, persist after; project defaults for ＋/⌘N, context entries keep their directory and never a command) | `ui/js/terminal.js` (`newSession` / `newDefaultSession`), `provider.createStarted` + `openProjectDefaults` in `board.js`, `projectDefaults` / `newSessionPlan` in `pure.js`, `links.rs` |
+| Terminal link parsing and xterm adapter, copy routing and clipboard, PTY byte codecs | `ui/js/terminal-links-model.js`, `terminal-links.js`, `terminal-clipboard.js`, `terminal-bytes.js`; composed by `layout.js` |
 | Dropdowns (deck's own listbox over every `<select>`) | `ui/js/dropdown.js` |
 | Lists (the ⏱ panel): queue model, selection, delivery state machine, tick | `scheduler/` (+ `docs/scheduler-context-safety.md`), `context.rs`, `ui/js/scheduler.js`, `ui/js/queue-review.js`, `scheduler/review.rs` |
 | Templates (saved lists, shared by cards and automations) | `ui/js/templates.js` |
@@ -117,7 +118,7 @@ Status semantics (card colour) are documented on `effectiveCardStatus` in
 - Frontend gates: `node --check` · `scripts/ui-tests` (node:test + coverage
   thresholds and a source/coverage inventory; WKWebView-bound modules are excluded and covered by the smoke) ·
   `node ui/js/check.mjs` (unresolved identifiers; forbids xterm `._core`;
-  import cycles only inside board/layout/terminal/scheduler — a leaf module
+  import cycles only inside board/layout/terminal — a leaf module
   takes what it needs from the core through `init*(deps)`).
   Backend gates: `cargo fmt`, `cargo clippy --workspace -D warnings`,
   `cargo test --workspace` (unit + `tests/tmux_contract.rs` against the

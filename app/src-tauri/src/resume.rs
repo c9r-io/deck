@@ -72,7 +72,7 @@ fn extract(text: &str) -> Vec<ResumeHint> {
 pub(crate) async fn terminal_resume_hints(name: String) -> Result<Vec<ResumeHint>, DeckError> {
     tauri::async_runtime::spawn_blocking(move || {
         validate_session_name(&name)?;
-        let _activity = crate::restart::activity_guard()?;
+        let _activity = crate::session_runtime::activity_guard()?;
         let target = pane_target(&name);
         let before = pane_row(&target)?;
         if !crate::context::shell_process(Some(&before.command)) {

@@ -797,7 +797,11 @@ mod tests {
         let mut sites = 0;
         let mut pairs: Vec<(String, String, String)> = Vec::new();
         for (file, text) in &sources {
-            for marker in ["uev('", "duev('"] {
+            let mut markers = vec!["uev('", "duev('"];
+            if file == "terminal-clipboard.js" {
+                markers.push("log('");
+            }
+            for marker in markers {
                 for (code, detail) in literal_after(text, marker) {
                     sites += 1;
                     let line = format_ui_event(code, None, None, None);
@@ -816,6 +820,9 @@ mod tests {
                 // `sevPair(` / `dsevPair(` — the two-integer probes.
                 ("selection.js", "sevPair('", "terminal-selection"),
                 ("selection.js", "dsevPair('", "terminal-selection"),
+                ("terminal-links.js", "log('", "terminal-link"),
+                ("terminal-links.js", "outcome('", "terminal-link"),
+                ("terminal-links.js", "cancelPress('", "terminal-link"),
             ];
             for (owner, marker, code) in indirect {
                 if file == owner {
@@ -861,9 +868,8 @@ mod tests {
                     }
                 }
             }
-            // selection.js logs `selectionCopyFailureCode(error)`; the codes live
-            // in pure.js
-            if file == "pure.js" {
+            // Copy outcomes are returned by the clipboard adapter.
+            if file == "terminal-clipboard.js" {
                 for label in ["selection-missing", "snapshot-failed"] {
                     assert!(text.contains(label), "copy failure code {label} vanished");
                     pairs.push((file.clone(), "terminal-copy".into(), label.into()));

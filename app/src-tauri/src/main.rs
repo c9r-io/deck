@@ -30,6 +30,7 @@ mod relaunch;
 mod restart;
 mod resume;
 mod scheduler;
+mod session_runtime;
 mod shell_state;
 mod smoke_faults;
 mod storage;

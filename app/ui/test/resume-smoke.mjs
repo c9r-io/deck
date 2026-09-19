@@ -2,7 +2,8 @@
 export async function runResumeSmoke() {
   const { $, ctx, inv, state } = await import('../js/state.js');
   const { provider, render, stopPolling, prepareCardsForServerRestart, markSessionsStoppedForServerRestart } = await import('../js/board.js');
-  const { openSession, strToB64, leaveSessionView } = await import('../js/layout.js');
+  const { openSession, leaveSessionView } = await import('../js/layout.js');
+  const { strToB64 } = await import('../js/terminal-bytes.js');
   const { renderSuggest, resetSuggest, suggestions, updateGhost, acceptGhost } = await import('../js/terminal.js');
   const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
   let failed = false, stage = 0;

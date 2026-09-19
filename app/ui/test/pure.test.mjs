@@ -11,26 +11,28 @@ import {
   MIN_QUIET_SECS, MAX_QUIET_SECS, quietSecsOf, localEpoch, isoDate, isoTime,
   scheduleMatchesDay, nextScheduleSlot, createConfirmationCounter, isoWeekday, daysInMonth, runFinishHolds, toggleClockRule,
   createExitRetirementTracker, createSerialTransactionQueue, deleteSessionsTransaction, sidebarGroups,
-  copyExact, createTerminalResizeCoordinator, newSessionColumn, createTerminalSelectionModel,
+   createTerminalResizeCoordinator, newSessionColumn, createTerminalSelectionModel,
   projectDefaults, newSessionPlan, collapseHome, isNotDirectoryError,
   reorderById,
-  terminalCopyRoute, copyTerminalText, terminalSelectionEdgeLines,
+    terminalSelectionEdgeLines,
   isComposingKeyEvent, isPlainShiftKeydown, shouldRouteImeKeydownThroughInput,
   AGENT_HISTORY_VERTICAL_UP, terminalAgentComposerGeometry, terminalAgentHistoryUpRoute,
   terminalNativeSelectionCells, terminalSelectionOverlayRows, terminalSelectionWheelRoute,
   terminalSelectionOverlayBands, terminalCellAt, selectionEdgeScrollLines, selectionStatusRows,
-  selectionOwnerLabel, selectionCopyFailureCode, selectionFinishFailureReason, selectionDimensionsChanged,
+  selectionOwnerLabel,  selectionFinishFailureReason, selectionDimensionsChanged,
   selectionFinishIsEmpty, nativeSelectionRows, nativeSelectionEndLabel,
-  retryOnStaleGrid, isTerminalAutoReply, terminalLinkRanges, scrollResultView,
-  tokenizeTerminalLinks,
+  retryOnStaleGrid, isTerminalAutoReply,  scrollResultView,
+
   createTerminalWheelAccumulator, createTerminalWheelFrameScheduler, terminalWheelLines,
-  linkMenuItems,
-  initialLaunched, inlineRenameValue, startCommand, persistOptimistically, PATH_LOOKBACK_MAX,
+
+  initialLaunched, inlineRenameValue, startCommand, persistOptimistically,
   effectiveCardStatus,
   TEMPLATES_MAX, TEMPLATE_NAME_MAX, TEMPLATE_STEP_MAX, TEMPLATE_STEPS_MAX,
   inboundRulesUsingTemplate, moveTemplateStep, nextTemplateName, normalizeTemplateStep,
   promptSummary, promptTooltip, PROMPT_TOOLTIP_LINES, templateNameProblem,
 } from '../js/pure.js';
+import { terminalLinkRanges, tokenizeTerminalLinks, linkMenuItems, PATH_LOOKBACK_MAX } from '../js/terminal-links-model.js';
+import { copyExact, terminalCopyRoute, copyTerminalText, selectionCopyFailureCode } from '../js/terminal-clipboard.js';
 
 test('agent-hook state outranks the output-recency heuristic', () => {
   // no agent state: the classic trichotomy is unchanged

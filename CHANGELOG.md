@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Voice input keeps each pending slice bound to its original recording and
+  pane. Switching or cancelling during preparation drops the slice, and late
+  replies cannot reset a newer recording. Voice paste now excludes service
+  restart through transport and cleanup.
+- Shared session guards and deadlines no longer depend on restart policy.
+  Terminal links, clipboard handling and byte codecs have dedicated modules;
+  the queue panel receives its board dependencies during initialization.
+
 - Terminal path links separate Chinese/Markdown labels from ASCII brackets,
   preserving balanced filename brackets. Rejected candidates and URL closing
   punctuation are scanned without repeatedly traversing the same suffix.

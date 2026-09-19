@@ -855,7 +855,7 @@ pub(crate) fn queue_send_now(
     id: String,
     accept_process_mismatch: bool,
 ) -> Result<(), DeckError> {
-    let _activity = crate::restart::activity_guard()?;
+    let _activity = crate::session_runtime::activity_guard()?;
     let item = state
         .q
         .lock()

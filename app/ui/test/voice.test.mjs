@@ -126,6 +126,107 @@ test('cancelling a pending bind or start releases the eventual native id and bin
   assert.ok(rebind > cancel);
 });
 
+test('cancelling while preparation waits drops the unsent slice', async () => {
+  const preparing = deferred(), ready = deferred();
+  const f = fixture({ deps: { prepareTarget: async () => { ready.resolve(); await preparing.promise; } } });
+  f.setSnapshot({ id: 2, status: 'recording', text: '' });
+  await f.model.start(target);
+  f.setSnapshot({ id: 2, status: 'recording', text: 'cancelled words' });
+  const pending = f.tick(); await ready.promise;
+  await f.model.cancel(); preparing.resolve(); await pending;
+  assert.deepEqual(f.typed(), []);
+  assert.deepEqual(f.finished, [target.session]);
+  assert.equal(f.model.state.phase, 'idle');
+  assert.equal(f.scheduled.length, 0);
+});
+
+test('old preparation cannot send to or clean up a new binding, including A → B → A', async () => {
+  for (const destination of [other, target]) {
+    for (const rejected of [false, true]) {
+      const old = deferred(), next = deferred(), oldReady = deferred(), nextReady = deferred();
+      const finished = [];
+      let serial = 0;
+      const f = fixture({
+        voice_bind: async () => ({ id: ++serial }),
+        deps: {
+          prepareTarget: async bound => {
+            (bound.id === 1 ? oldReady : nextReady).resolve();
+            await (bound.id === 1 ? old : next).promise;
+          },
+          afterDelivery: bound => finished.push(bound.id),
+        },
+      });
+      const m = f.model;
+      f.setSnapshot({ id: 2, status: 'recording', text: '' }); await m.start(target);
+      f.setSnapshot({ id: 2, status: 'recording', text: 'old private words' });
+      const pending = f.tick(); await oldReady.promise;
+      await m.select(other);
+      f.setSnapshot({ id: 2, status: 'recording', text: 'new words' });
+      const starting = m.start(destination); await nextReady.promise;
+      if (rejected) old.reject('target-not-visible'); else old.resolve();
+      await pending;
+      assert.deepEqual(f.typed(), [], 'revoked preparation never reaches voice_deliver');
+      assert.deepEqual(finished, [1], 'cleanup retains the old binding, even for the same session');
+      assert.equal(m.state.target.id, 2);
+      assert.equal(m.state.phase, 'recording');
+      assert.equal(m.state.typed, 0);
+      assert.deepEqual(f.reports, []);
+      next.resolve(); await starting;
+      assert.deepEqual(f.calls.filter(([cmd]) => cmd === 'voice_deliver'),
+        [['voice_deliver', { targetId: 2, text: 'new words' }]]);
+      assert.deepEqual(finished, [1, 2]);
+      await m.cancel();
+    }
+  }
+});
+
+test('already-submitted delivery stays on its captured binding and late results cannot affect a new recording', async () => {
+  for (const rejected of [false, true]) {
+    const delivery = deferred(), ready = deferred(), finished = [];
+    let serial = 0;
+    const f = fixture({
+      voice_bind: async () => ({ id: ++serial }),
+      voice_deliver: async () => { ready.resolve(); return delivery.promise; },
+      deps: { afterDelivery: bound => finished.push(bound.id) },
+    });
+    f.setSnapshot({ id: 2, status: 'recording', text: '' }); await f.model.start(target);
+    f.setSnapshot({ id: 2, status: 'recording', text: 'already submitted' });
+    const pending = f.tick(); await ready.promise;
+    await f.model.select(other);
+    f.setSnapshot({ id: 2, status: 'recording', text: '', preview: 'new preview' }); await f.model.start(other);
+    if (rejected) delivery.reject('delivery-unknown'); else delivery.resolve();
+    await pending;
+    assert.deepEqual(f.calls.filter(([cmd]) => cmd === 'voice_deliver'),
+      [['voice_deliver', { targetId: 1, text: 'already submitted' }]]);
+    assert.deepEqual(finished, [1]);
+    assert.equal(f.model.state.typed, 0);
+    assert.equal(f.model.state.preview, 'new preview');
+    assert.deepEqual(f.reports, []);
+    assert.equal(f.scheduled.length, 1, 'only the new recording continues polling');
+    await f.model.cancel();
+  }
+});
+
+test('a delivery failure awaiting native cancellation cannot reset the next recording', async () => {
+  const cancelled = deferred(), ready = deferred();
+  let refuse = true;
+  const f = fixture({
+    voice_cancel: async () => { ready.resolve(); await cancelled.promise; },
+    voice_deliver: async () => { if (refuse) throw 'target-expired'; },
+  });
+  f.setSnapshot({ id: 2, status: 'recording', text: '' }); await f.model.start(target);
+  f.setSnapshot({ id: 2, status: 'recording', text: 'old words' });
+  const pending = f.tick(); await ready.promise;
+  refuse = false;
+  const next = f.model.start(other);
+  cancelled.resolve(); await Promise.all([pending, next]);
+  assert.equal(f.model.state.session, other.session);
+  assert.equal(f.model.state.phase, 'recording');
+  assert.equal(f.model.state.error, '');
+  assert.deepEqual(f.reports, []);
+  await f.model.cancel();
+});
+
 test('permission and dictation failures report once, open the matching settings once, and end the recording', async () => {
   for (const [code, kind] of [['microphone-denied', 'microphone'], ['speech-denied', 'speech'], ['dictation-disabled', 'dictation']]) {
     const f = fixture(), m = f.model;

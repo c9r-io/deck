@@ -504,7 +504,7 @@ pub(crate) fn checkpoint_before_restart(
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(100));
-        crate::restart::check_deadline()?;
+        crate::session_runtime::check_deadline()?;
         let next = capture_restart_rows(rows)?;
         stable = snapshots
             .iter()
@@ -524,7 +524,7 @@ pub(crate) fn checkpoint_before_restart(
         began.elapsed().as_millis()
     ));
     for (index, snapshot) in snapshots.iter().enumerate() {
-        crate::restart::check_deadline()?;
+        crate::session_runtime::check_deadline()?;
         let began = std::time::Instant::now();
         if !save_snapshot(snapshot, epoch)? {
             return Err(DeckError::new(
@@ -540,11 +540,11 @@ pub(crate) fn checkpoint_before_restart(
         ));
         progress("saving", index + 1, snapshots.len());
     }
-    crate::restart::check_deadline()
+    crate::session_runtime::check_deadline()
 }
 
 fn capture_restart_rows(rows: &[crate::tmux::PaneRow]) -> Result<Vec<ShellSnapshot>, DeckError> {
-    if !crate::restart::unchanged_rows(rows, &crate::tmux::list_panes()?) {
+    if !crate::tmux::unchanged_rows(rows, &crate::tmux::list_panes()?) {
         return Err(DeckError::new(
             ErrorKind::Recovery,
             "tmux-restart-snapshot-target-changed",
@@ -552,7 +552,7 @@ fn capture_restart_rows(rows: &[crate::tmux::PaneRow]) -> Result<Vec<ShellSnapsh
     }
     let mut snapshots: Vec<ShellSnapshot> = Vec::new();
     for row in rows {
-        crate::restart::check_deadline()?;
+        crate::session_runtime::check_deadline()?;
         let observation = ShellObservation {
             session: row.session_name.clone(),
             activity: row.window_activity,
@@ -606,7 +606,7 @@ pub(crate) fn schedule_checkpoints(observations: Vec<ShellObservation>, enabled:
     if !enabled {
         return;
     }
-    let Ok(_activity) = crate::restart::activity_guard() else {
+    let Ok(_activity) = crate::session_runtime::activity_guard() else {
         return;
     };
     let now = now_epoch();

@@ -18,8 +18,9 @@ if (typeof window !== 'undefined') {
     renameCardInline, renderSuggest, resetSuggest,
     showLinkCtx, toggleSidebar,
   } = await import('../js/terminal.js'));
-  ({ addSplit, backToBoard, closePaneBySid, focusPane, openSession, strToB64, terminalLogicalLine } = await import('../js/layout.js'));
-  ({ tokenizeTerminalLinks } = await import('../js/pure.js'));
+  ({ addSplit, backToBoard, closePaneBySid, focusPane, openSession } = await import('../js/layout.js'));
+  ({ strToB64 } = await import('../js/terminal-bytes.js'));
+  ({ tokenizeTerminalLinks, terminalLogicalLine } = await import('../js/terminal-links-model.js'));
   ({ cancelTerminalSelection, copyTerminalSelection, terminalSelectionElsewhere } = await import('../js/selection.js'));
   ({ refreshQueue, toggleQueuePanel } = await import('../js/scheduler.js'));
   ({ activateTheme } = await import('../js/theme.js'));

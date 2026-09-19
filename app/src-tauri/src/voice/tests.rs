@@ -18,6 +18,67 @@ impl Speech for FakeSpeech {
 fn binding(state: &Mutex<Voice>, io: &FakeTransport) -> u64 {
     bind_with(state, "deck-voice-test".into(), io).unwrap().id
 }
+
+#[test]
+fn exclusive_restart_refuses_voice_before_any_transport_or_session_claim() {
+    let state = Mutex::new(Voice::default());
+    let io = FakeTransport::default();
+    let busy = Mutex::new(HashSet::new());
+    let target = binding(&state, &io);
+    let _restart = crate::session_runtime::exclusive().unwrap();
+    let error = deliver_with(&state, &busy, target, "unsent words".into(), &io).unwrap_err();
+    assert_eq!(error.message(), "delivery-busy");
+    assert!(io.inputs.borrow().is_empty());
+    assert!(io.calls.borrow().is_empty());
+    assert!(busy.lock_or_recover().is_empty());
+}
+
+#[test]
+fn voice_excludes_restart_through_probe_paste_and_cleanup_then_releases() {
+    use crate::prompt_delivery::Transport;
+    struct Checked<'a>(&'a FakeTransport);
+    impl Transport for Checked<'_> {
+        fn probe(&self, name: &str) -> Result<RawProbe, DeckError> {
+            assert!(
+                crate::session_runtime::exclusive().is_err(),
+                "probe owns activity"
+            );
+            self.0.probe(name)
+        }
+        fn run(&self, args: &[String]) -> Result<String, DeckError> {
+            assert!(
+                crate::session_runtime::exclusive().is_err(),
+                "cleanup owns activity"
+            );
+            self.0.run(args)
+        }
+        fn run_with_stdin(&self, args: &[String], input: &[u8]) -> Result<String, DeckError> {
+            assert!(
+                crate::session_runtime::exclusive().is_err(),
+                "paste owns activity"
+            );
+            self.0.run_with_stdin(args, input)
+        }
+        fn pause(&self, _: std::time::Duration) {
+            panic!("voice never waits for Enter");
+        }
+    }
+    let state = Mutex::new(Voice::default());
+    let io = FakeTransport::default();
+    let busy = Mutex::new(HashSet::new());
+    let target = binding(&state, &io);
+    deliver_with(&state, &busy, target, "words".into(), &Checked(&io)).unwrap();
+    assert!(crate::session_runtime::exclusive().is_ok());
+    io.replies
+        .borrow_mut()
+        .push_back(Err(failure("delivery-unknown")));
+    assert!(deliver_with(&state, &busy, target, "words".into(), &Checked(&io)).is_err());
+    assert!(
+        crate::session_runtime::exclusive().is_ok(),
+        "failure releases activity too"
+    );
+    assert!(busy.lock_or_recover().is_empty());
+}
 fn snapshot(state: &Mutex<Voice>, id: u64, status: &str, text: &str, code: &str) {
     preview_snapshot(state, id, status, text, "", code);
 }

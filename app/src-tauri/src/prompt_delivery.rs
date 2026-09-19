@@ -4,6 +4,8 @@
 //! must not blindly retry. Interactive multi-line input requires paste mode.
 //! Prompt bytes travel only on stdin, never in process arguments, environment
 //! variables or temporary files. Buffer loading and guarded paste share a batch.
+//! Every entry, including injected transports, holds shared session activity
+//! through cleanup and Enter. Transport injection cannot bypass restart exclusion.
 use crate::context::{self, PaneIdentity, RawProbe};
 use crate::error::{DeckError, ErrorKind};
 use crate::tmux::{tmux_owned, tmux_with_stdin};
@@ -55,7 +57,6 @@ impl Transport for TmuxTransport {
 }
 
 pub(crate) fn deliver(request: LiteralRequest<'_>) -> Result<LiteralOutcome, DeckError> {
-    let _activity = crate::restart::activity_guard()?;
     deliver_with(request, &TmuxTransport)
 }
 
@@ -63,6 +64,7 @@ pub(crate) fn deliver_with(
     request: LiteralRequest<'_>,
     transport: &impl Transport,
 ) -> Result<LiteralOutcome, DeckError> {
+    let _activity = crate::session_runtime::activity_guard()?;
     let LiteralRequest {
         session,
         pane,

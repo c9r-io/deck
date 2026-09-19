@@ -19,6 +19,7 @@ import { initAttention } from './attention.js';
 import { onLocaleChange, setLocale, t, translateNotice } from './i18n.js';
 import { activateTheme, revealThemedWindow } from './theme.js';
 import { initVoice } from './voice.js';
+import { createVoiceTarget } from './voice-target.js';
 import { cancelTerminalSelection } from './selection.js';
 
 setLocale('system');
@@ -272,7 +273,7 @@ export async function manualUpdateCheck() {
 /* ---------- boot ---------- */
 /* Every module wires its DOM once here, in dependency order, instead of at
    import time: modules stay importable without a document (node tests), and
-   the order of side effects is explicit. The leaf modules (attention,
+   the order of side effects is explicit. The leaf modules (scheduler, attention,
    templates, automation) receive the Board/layout/terminal actions they call
    as `deps` here instead of importing them, which keeps the import cycles
    confined to the view core (check.mjs enforces that). */
@@ -283,7 +284,7 @@ function initModules() {
   initTerminalChrome();
   initAttention({ pollNow, provider, render, switchProject, leaveSessionView, openSession });
   initLayout();
-  initScheduler();
+  initScheduler({ provider, pollNow });
   initTemplates({ provider });
   initInbound();
   initAutomation({ activeProject, newSessionSummary, openProjectDefaults, projectDefaultsSummary, provider, openSession, newDefaultSession });
@@ -387,14 +388,14 @@ function wireChrome() {
       const card = provider.get(state.sessionId);
       return card && ctx.attachedName ? { session: ctx.attachedName, cardId: card.id, title: card.title } : null;
     },
-    prepareTarget: async target => {
-      const pane = panes.get(target.session);
-      if (!pane?.attached || !provider.get(target.cardId)) throw 'target-not-visible';
-      ctx.voiceDelivering = target.session;
-      await cancelTerminalSelection(pane, 'input');
-      await inv('scroll_bottom', { name: target.session });
-    },
-    afterDelivery: () => { ctx.voiceDelivering = null; ctx.lineBuf = null; },
+    ...createVoiceTarget({
+      getPane: session => panes.get(session),
+      hasCard: id => !!provider.get(id),
+      cancelSelection: pane => cancelTerminalSelection(pane, 'input'),
+      scrollBottom: name => inv('scroll_bottom', { name }),
+      setDelivering: session => { ctx.voiceDelivering = session; },
+      resetInput: () => { ctx.lineBuf = null; },
+    }),
     focusTerminal: () => ctx.term?.focus(),
     toast,
   });

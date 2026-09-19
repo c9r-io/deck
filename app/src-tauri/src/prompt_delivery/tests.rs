@@ -59,6 +59,19 @@ fn request(pane: &PaneIdentity) -> LiteralRequest<'_> {
 }
 
 #[test]
+fn injected_transport_cannot_bypass_restart_exclusion() {
+    let io = FakeTransport::default();
+    let pane = probe().identity;
+    let _restart = crate::session_runtime::exclusive().unwrap();
+    assert_eq!(
+        deliver_with(request(&pane), &io).unwrap_err().message(),
+        "tmux-restart-busy"
+    );
+    assert!(io.inputs.borrow().is_empty());
+    assert!(io.calls.borrow().is_empty());
+}
+
+#[test]
 fn insert_is_byte_literal_and_never_waits_or_sends_enter() {
     let io = FakeTransport::default();
     let pane = probe().identity;

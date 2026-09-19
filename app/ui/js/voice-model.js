@@ -8,7 +8,10 @@
 // a short bounded retry for transient refusals; an unconfirmed paste counts as
 // typed and is never retransmitted. The volatile tail is only a preview for
 // the caption: what is heard but not yet typed. Capture epochs reject late
-// native replies. A setup failure opens its System Settings pane once.
+// native replies and revoke prepared-but-unsent slices. Each delivery keeps
+// its original bound target through preparation, IPC and cleanup; a late
+// completion may never change the next recording. A setup failure opens its
+// System Settings pane once.
 import { defaultVoiceLanguage, normalizeVoicePreferences } from './voice-preferences-model.js';
 
 export const voiceBusy = phase => ['binding', 'preparing', 'downloading', 'recording', 'stopping'].includes(phase);
@@ -61,21 +64,31 @@ export function createVoiceInput(deps) {
     // The toast keeps the manual settings path if opening fails.
     if (kind) await invoke('voice_open_settings', { kind }).catch(() => {});
   }
+  async function cancelFailed(revision, code) {
+    if (epoch !== revision) return;
+    const pending = cancel();
+    const cancelled = epoch;
+    await pending;
+    if (epoch === cancelled) await fail(code);
+  }
 
   // true: typed; 'retry': nothing typed, ask again next poll; false: ended.
   async function type(revision, text, final) {
+    const target = s.target;
     try {
-      await deps.prepareTarget(s.target);
-      await invoke('voice_deliver', { targetId: s.target.id, text });
+      await deps.prepareTarget(target);
+      if (epoch !== revision) return false;
+      await invoke('voice_deliver', { targetId: target.id, text });
+      if (epoch !== revision) return false;
       retries = 0; return true;
     } catch (error) {
       if (epoch !== revision) return false;
       const code = voiceError(error);
       if (code === 'delivery-unknown') { s.notice = code; report('notice', code); return true; }
       if (TRANSIENT.has(code) && !final && retries < RETRY_LIMIT) { retries++; return 'retry'; }
-      await cancel(); await fail(code); return false;
+      await cancelFailed(revision, code); return false;
     } finally {
-      deps.afterDelivery?.(s.target);
+      deps.afterDelivery?.(target);
     }
   }
 
@@ -84,7 +97,7 @@ export function createVoiceInput(deps) {
     try { result = await invoke('voice_snapshot', { id }); } catch (_) { result = null; }
     if (epoch !== revision) return;
     if (!result || result.id !== id || typeof result.text !== 'string' || !result.text.startsWith(seen)) {
-      await cancel(); await fail(result ? 'recognition-failed' : 'operation-failed'); return;
+      await cancelFailed(revision, result ? 'recognition-failed' : 'operation-failed'); return;
     }
     if (result.status === 'cancelled') { rest(); return; }
     if (result.status === 'downloading' && s.phase !== 'downloading') report('notice', 'downloading');
@@ -139,7 +152,7 @@ export function createVoiceInput(deps) {
     const revision = epoch;
     s.phase = 'stopping'; changed();
     try { await invoke('voice_stop', { id: s.recordingId }); }
-    catch (_) { if (epoch === revision) { await cancel(); await fail('operation-failed'); } }
+    catch (_) { await cancelFailed(revision, 'operation-failed'); }
   }
 
   async function cancel() {

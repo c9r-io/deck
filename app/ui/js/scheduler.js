@@ -50,8 +50,9 @@ import { $, ctx, inv, listen, state, uev } from './state.js';
 import { blockedBy, chainQuietHint, CHAIN_QUIET_SECS, contextStatusKey, fmtEvery, groupQueue, groupSteps, hasWindow, hmToMin, isoDate, isoTime, itemDead, listKey, listRepeats, listScheduleArgs, localEpoch, MAX_QUIET_SECS, MIN_QUIET_SECS, minToHM, nextFire, promptSummary, promptTooltip, quietSecsOf, winHas } from './pure.js';
 export { blockedBy, chainQuietHint, contextStatusKey, fmtEvery, groupQueue, groupSteps, hasWindow, hmToMin, itemDead, minToHM, nextFire, promptSummary, promptTooltip, winHas };
 import { autoGrowField, confirmDangerDialog, confirmDialog, inlineRename, toast, promptDialog } from './dialogs.js';
-import { pollNow, provider } from './board.js';
-import { strToB64 } from './layout.js';
+// Board access is injected at boot; the queue view has no view-core imports.
+let provider, pollNow;
+import { strToB64 } from './terminal-bytes.js';
 import { openTemplates } from './templates.js';
 import { formatInterval, formatNumber, onLocaleChange, t } from './i18n.js';
 
@@ -676,7 +677,8 @@ export function showTplPop(anchor, { insert, save = null }) {
 
 /* DOM wiring, run once at boot (app.js) so the module can be imported
    without a document. */
-export function initScheduler() {
+export function initScheduler(deps) {
+  ({ provider, pollNow } = deps);
   $('queue-btn').onclick = () => toggleQueuePanel();
 
   fillFormOptions();

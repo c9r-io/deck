@@ -22,14 +22,17 @@
 // command. A directory that no longer exists asks (choiceDialog) instead of
 // guessing: cancel, edit the project defaults, or a shell in $HOME.
 import { $, ctx, duev, inv, state, uev } from './state.js';
-import { collapseHome, copyExact, isComposingKeyEvent, isNotDirectoryError, linkMenuItems, newSessionColumn, newSessionPlan } from './pure.js';
+import { collapseHome, isComposingKeyEvent, isNotDirectoryError, newSessionColumn, newSessionPlan } from './pure.js';
 import { choiceDialog, confirmDialog, inlineRename, toast, promptDialog } from './dialogs.js';
 import { closeSession, openProjectDefaults, panes, provider, renameTab, render, switchProject, activeProject } from './board.js';
-import { backToBoard, openSession, strToB64 } from './layout.js';
+import { backToBoard, openSession } from './layout.js';
 import { formatNumber, onLocaleChange, t } from './i18n.js';
 import { formatShortcut, registerShortcutAction } from './shortcuts.js';
 import { openAutomations } from './automation.js';
 import { openTemplates } from './templates.js';
+import { strToB64 } from './terminal-bytes.js';
+import { linkMenuItems } from './terminal-links-model.js';
+import { writeClipboard } from './terminal-clipboard.js';
 import { createResumeCache, resumeCommands, resumeTarget } from './resume-model.js';
 
 /* ---------- context menus ---------- */
@@ -579,26 +582,6 @@ export function resetSuggest(nextPane = null) {
   clearTimeout(ctx.ghostTimer);
   if (ctx.ghostEl) ctx.ghostEl.style.display = 'none';
   showQuickBar(false, nextPane);
-}
-
-export async function writeClipboard(text, context = null) {
-  try {
-    const result = await copyExact(text, value => inv('write_clipboard', { text: value }));
-    return result;
-  } catch (nativeError) {
-    uev('clipboard-write', 'pbcopy-failed', text.length, null, context);
-    if (!navigator.clipboard || !navigator.clipboard.writeText) {
-      uev('clipboard-write', 'web-unavailable', text.length, null, context);
-      throw nativeError;
-    }
-    try {
-      const result = await copyExact(text, value => navigator.clipboard.writeText(value));
-      return result;
-    } catch (webError) {
-      uev('clipboard-write', 'web-failed', text.length, null, context);
-      throw webError;
-    }
-  }
 }
 
 /* ---------- chrome wiring ---------- */

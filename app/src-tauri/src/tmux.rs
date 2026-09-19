@@ -157,7 +157,7 @@ pub(crate) fn tmux_conf_text(deck_dir: &std::path::Path) -> String {
 /// sets the same for the attach client.
 pub(crate) fn tmux(args: &[&str]) -> Result<String, DeckError> {
     let conf = tmux_conf();
-    let out = crate::restart::command_output(
+    let out = crate::session_runtime::command_output(
         Command::new(tmux_program()?)
             .args(["-f", &conf, "-L", socket()])
             .args(args)
@@ -238,7 +238,7 @@ pub(super) fn command_with_stdin(
 /// shell; `;` is an explicit tmux command separator, never shell syntax.
 pub(crate) fn tmux_owned(args: &[String]) -> Result<String, DeckError> {
     let conf = tmux_conf();
-    let out = crate::restart::command_output(
+    let out = crate::session_runtime::command_output(
         Command::new(tmux_program()?)
             .args(["-f", &conf, "-L", socket()])
             .args(args)
@@ -405,6 +405,23 @@ pub(crate) struct PaneRow {
     pub(crate) path: String,
 }
 
+/// Compare the observed pane identities, with or without foreground state.
+pub(crate) fn unchanged_rows(before: &[PaneRow], after: &[PaneRow]) -> bool {
+    before.len() == after.len()
+        && before.iter().all(|row| {
+            after
+                .iter()
+                .any(|now| same_pane(row, now) && row.command == now.command)
+        })
+}
+pub(crate) fn same_pane(a: &PaneRow, b: &PaneRow) -> bool {
+    a.server_pid == b.server_pid
+        && a.session_name == b.session_name
+        && a.session_id == b.session_id
+        && a.window_id == b.window_id
+        && a.pane_id == b.pane_id
+        && a.pane_pid == b.pane_pid
+}
 pub(crate) const PANE_FORMAT: &str = "#{pid}\t#{session_id}\t#{session_name}\t#{window_id}\t#{pane_id}\t#{pane_pid}\t#{window_activity}\t#{pane_in_mode}\t#{pane_current_command}\t#{pane_tty}\t#{pane_current_path}";
 
 fn tmux_id(value: &str, prefix: char) -> bool {
