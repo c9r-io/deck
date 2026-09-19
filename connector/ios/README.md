@@ -139,7 +139,7 @@ Do not add an ATS exception that permits arbitrary/self-signed certificates. The
 
 ### Opt-in paired-device UI smoke
 
-The shared `DeckConnectorUITests` scheme contains only the UI test target; it does not run `DeckConnectorTests` or reset the app's Keychain pairing, drafts, or data. The read-only output test opens one explicitly named card, checks that its output accessibility label contains a non-secret marker, exercises the Latest output control, backgrounds and reactivates the app, repeats the check, and attaches one card-detail screenshot. The separate note mutation test below requires an additional opt-in. A skipped opt-in test is not a pass—confirm that the named test executed.
+The shared `DeckConnectorUITests` scheme contains only the UI test target; it does not run `DeckConnectorTests` or reset the app's Keychain pairing, drafts, or data. The read-only output test opens one explicitly named card, checks that its output accessibility label contains a non-secret marker, exercises the Latest output control, then backgrounds and reactivates the app. The process-termination test instead checks an existing non-secret note, explicitly terminates and relaunches the app, and verifies the same card and note after Keychain restoration. Each attaches one card-detail screenshot. The separate note mutation test below requires an additional opt-in. A skipped opt-in test is not a pass—confirm that the named test executed.
 
 The verified rerun uses a full Xcode `DEVELOPER_DIR`, builds once, copies the generated test plan beside the original under `Build/Products` so its `__TESTROOT__` paths remain valid, injects the three opt-in values only into the `DeckConnectorUITests` target's `EnvironmentVariables`, and runs without rebuilding. Inspect the generated `.xctestrun` before editing it because its plist shape varies by Xcode; shell variables passed only to `xcodebuild` are not a substitute for test-runner environment injection.
 
@@ -171,6 +171,8 @@ xcodebuild -xctestrun "$DECK_UI_RUN" \
   -resultBundlePath "$DECK_UI_RESULT" \
   test-without-building
 ```
+
+Run `DeckConnectorUITests/ConnectorUITests/testPairedCardOutputSurvivesProcessTermination` with `DECK_UI_PAIRED_SMOKE=1`, the exact `DECK_UI_CARD_TITLE`, and a non-secret existing `DECK_UI_EXPECTED_NOTE`. It covers an explicit app-process termination and relaunch by verifying the same card and scratchpad note before and after Keychain restoration, without mutating the note. This does not simulate a locked Keychain or prolonged iOS background eviction; verify those separately on the physical-device gate.
 
 Use a new result-bundle path for every run; do not pre-delete an existing result. Add `-allowProvisioningUpdates` to the build step only when the already authorized Team/device needs normal profile resolution—do not use this procedure to register additional devices by default. The verified run completed in 21.393 seconds with 1 test passed, 0 skipped, and 0 failed; require those exact counts rather than treating an opt-in skip as success. Its single card-detail screenshot supports visual review, while the assertion proves only that the complete accessibility label contains the marker, not that the marker's text range is visible inside the clipped viewport.
 

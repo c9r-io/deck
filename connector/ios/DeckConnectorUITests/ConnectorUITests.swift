@@ -34,6 +34,38 @@ final class ConnectorUITests: XCTestCase {
         add(attachment)
     }
 
+    func testPairedCardOutputSurvivesProcessTermination() throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard environment["DECK_UI_PAIRED_SMOKE"] == "1" else {
+            throw XCTSkip("Set DECK_UI_PAIRED_SMOKE=1 to run against an already paired device.")
+        }
+        let cardTitle = environment["DECK_UI_CARD_TITLE"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !cardTitle.isEmpty else { throw XCTSkip("DECK_UI_CARD_TITLE is required.") }
+        let expectedNote = environment["DECK_UI_EXPECTED_NOTE"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !expectedNote.isEmpty else { throw XCTSkip("DECK_UI_EXPECTED_NOTE is required.") }
+
+        let app = XCUIApplication()
+        app.launch()
+        openCard(named: cardTitle, in: app)
+        XCTAssertTrue(
+            noteText(expectedNote, in: app).waitForExistence(timeout: 15),
+            "Expected the paired scratchpad note before process termination."
+        )
+
+        app.terminate()
+        app.launch()
+        openCard(named: cardTitle, in: app)
+        XCTAssertTrue(
+            noteText(expectedNote, in: app).waitForExistence(timeout: 15),
+            "Expected the paired scratchpad note after process termination and Keychain restore."
+        )
+
+        let attachment = XCTAttachment(screenshot: app.screenshot())
+        attachment.name = "Paired card detail after process termination"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
     func testPairedScratchpadNoteCRUD() throws {
         let environment = ProcessInfo.processInfo.environment
         guard environment["DECK_UI_PAIRED_SMOKE"] == "1" else {
