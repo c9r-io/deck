@@ -176,6 +176,35 @@ final class ConnectorUITests: XCTestCase {
         check.tap()
     }
 
+    private func waitForNoteMutationControls(
+        for text: String,
+        in app: XCUIApplication,
+        timeout: TimeInterval = 15
+    ) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        let check = app.buttons["deck.note.check-original"]
+        var checkedOriginalOperation = false
+
+        while Date() < deadline {
+            if let row = noteRow(text, in: app) {
+                let edit = row.buttons["deck.note.edit"]
+                if edit.exists && edit.isEnabled { return true }
+            }
+
+            if !checkedOriginalOperation,
+               revealBySwipingDown(check, in: app),
+               check.isHittable,
+               check.isEnabled {
+                check.tap()
+                checkedOriginalOperation = true
+            }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+        }
+
+        XCTFail("The note mutation controls remained disabled after checking the original operation at most once. No new mutation was attempted.")
+        return false
+    }
+
     private func editOnlyNote(_ original: String, to edited: String, in app: XCUIApplication) -> Bool {
         let originals = noteTexts(original, in: app)
         guard originals.count == 1 else {
@@ -186,6 +215,7 @@ final class ConnectorUITests: XCTestCase {
             XCTFail("The edited marker already exists. No edit was attempted.")
             return false
         }
+        guard waitForNoteMutationControls(for: original, in: app) else { return false }
         let originalNote = originals.firstMatch
         guard reveal(originalNote, in: app), let row = noteRow(original, in: app) else {
             XCTFail("Could not identify the unique original marker row. No edit was attempted.")
@@ -225,6 +255,15 @@ final class ConnectorUITests: XCTestCase {
             ok.tap()
             XCUIDevice.shared.press(.home)
             app.activate()
+            let editNavigation = app.navigationBars["Edit note"]
+            if editNavigation.waitForExistence(timeout: 3) {
+                let cancel = editNavigation.buttons["Cancel"]
+                guard cancel.waitForExistence(timeout: 2), cancel.isHittable else {
+                    XCTFail("Expected Cancel for the already submitted pending edit; the edit was not submitted again.")
+                    return false
+                }
+                cancel.tap()
+            }
         }
         guard app.navigationBars["Edit note"].waitForNonExistence(timeout: 15) else {
             XCTFail("The edit did not reach its applied state; do not submit it again.")
@@ -235,6 +274,7 @@ final class ConnectorUITests: XCTestCase {
             XCTFail("Expected the exact edited marker.")
             return false
         }
+        guard waitForNoteMutationControls(for: edited, in: app) else { return false }
         XCTAssertFalse(noteText(original, in: app).exists, "The original marker remained after editing.")
         return !noteText(original, in: app).exists
     }
@@ -245,6 +285,7 @@ final class ConnectorUITests: XCTestCase {
             XCTFail("Expected exactly one note matching the explicit marker; found \(matches.count). No delete was attempted.")
             return false
         }
+        guard waitForNoteMutationControls(for: text, in: app) else { return false }
         let note = matches.firstMatch
         guard reveal(note, in: app) else {
             XCTFail("Expected the exact marker note to be visible. No delete was attempted.")
