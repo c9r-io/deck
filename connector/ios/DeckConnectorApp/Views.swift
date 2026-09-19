@@ -436,6 +436,7 @@ private struct TerminalOutputSnapshotView: View {
                 } label: {
                     Label(String(localized: "taskDetail.output.latest"), systemImage: "arrow.down.to.line")
                 }
+                .accessibilityIdentifier("deck.output.latest")
                 .buttonStyle(.bordered)
                 ScrollView([.horizontal, .vertical]) {
                     VStack(alignment: .leading, spacing: 0) {
@@ -443,9 +444,11 @@ private struct TerminalOutputSnapshotView: View {
                             .font(.system(.caption, design: .monospaced))
                             .fixedSize(horizontal: true, vertical: true)
                             .textSelection(.enabled)
+                            .accessibilityIdentifier("deck.output.text")
                         Color.clear.frame(width: 1, height: 1).id(Self.endID)
                     }
                 }
+                .accessibilityIdentifier("deck.output.scroll")
                 .frame(height: 260)
             }
             .task(id: output.revision.value) {

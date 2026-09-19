@@ -136,3 +136,40 @@ On a Mac with an assigned Development Team, install a signed development build o
 6. restart/generation conflicts, stale buffer revisions, concurrent note edits, queue pause/cancel, unknown delivery recovery, foreground reconnect, and host removal never cause silent loss or duplicate send.
 
 Do not add an ATS exception that permits arbitrary/self-signed certificates. The host certificate must include the paired LAN IP or DNS name in SAN; an address outside SAN requires desktop reset and re-pairing.
+
+### Opt-in paired-device UI smoke
+
+The shared `DeckConnectorUITests` scheme contains only the read-only UI test target; it does not run `DeckConnectorTests` or clear the app's Keychain pairing, drafts, or data. The test opens one explicitly named card, checks that its output accessibility label contains a non-secret marker, exercises the Latest output control, backgrounds and reactivates the app, repeats the check, and attaches one card-detail screenshot. A skipped opt-in test is not a pass—confirm that the named test executed.
+
+The verified rerun uses a full Xcode `DEVELOPER_DIR`, builds once, copies the generated test plan beside the original under `Build/Products` so its `__TESTROOT__` paths remain valid, injects the three opt-in values only into the `DeckConnectorUITests` target's `EnvironmentVariables`, and runs without rebuilding. Inspect the generated `.xctestrun` before editing it because its plist shape varies by Xcode; shell variables passed only to `xcodebuild` are not a substitute for test-runner environment injection.
+
+```sh
+export DEVELOPER_DIR=/path/to/Xcode.app/Contents/Developer
+export DECK_DEVICE_ID='<paired iPhone UDID>'
+export DECK_UI_DERIVED=/tmp/deck-ios-ui-derived
+export DECK_UI_PRODUCTS="$DECK_UI_DERIVED/Build/Products"
+
+xcodebuild -project connector/ios/DeckConnector.xcodeproj \
+  -scheme DeckConnectorUITests -configuration Debug \
+  -destination "id=$DECK_DEVICE_ID" \
+  -derivedDataPath "$DECK_UI_DERIVED" \
+  build-for-testing
+
+export DECK_UI_SOURCE="$(find "$DECK_UI_PRODUCTS" -name 'DeckConnectorUITests*.xctestrun' ! -name 'DeckConnectorUITests-paired-*.xctestrun' -print -quit)"
+export DECK_UI_RUN="$DECK_UI_PRODUCTS/DeckConnectorUITests-paired-$(date +%Y%m%d-%H%M%S).xctestrun"
+cp "$DECK_UI_SOURCE" "$DECK_UI_RUN"
+
+# In DECK_UI_RUN, set these only for the DeckConnectorUITests target:
+# DECK_UI_PAIRED_SMOKE=1
+# DECK_UI_CARD_TITLE=<exact non-secret card title>
+# DECK_UI_EXPECTED_OUTPUT=<non-secret expected marker>
+
+export DECK_UI_RESULT="/tmp/DeckConnectorUITests-$(date +%Y%m%d-%H%M%S).xcresult"
+xcodebuild -xctestrun "$DECK_UI_RUN" \
+  -destination "id=$DECK_DEVICE_ID" \
+  -only-testing:DeckConnectorUITests/ConnectorUITests/testPairedCardOutputSurvivesForegroundCycle \
+  -resultBundlePath "$DECK_UI_RESULT" \
+  test-without-building
+```
+
+Use a new result-bundle path for every run; do not pre-delete an existing result. Add `-allowProvisioningUpdates` to the build step only when the already authorized Team/device needs normal profile resolution—do not use this procedure to register additional devices by default. The verified run completed in 21.393 seconds with 1 test passed, 0 skipped, and 0 failed; require those exact counts rather than treating an opt-in skip as success. Its single card-detail screenshot supports visual review, while the assertion proves only that the complete accessibility label contains the marker, not that the marker's text range is visible inside the clipped viewport.
