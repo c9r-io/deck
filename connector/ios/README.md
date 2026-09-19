@@ -124,6 +124,14 @@ The test rejects a fixture whose parsed HTTPS origin is not exactly `127.0.0.1` 
 
 Simulator verification covers local signing, Simulator Keychain access, and loopback TLS through production code. It does not establish physical-device Keychain protection, camera behavior, LAN permission, or real Wi-Fi connectivity.
 
+## TestFlight internal distribution
+
+The App Store Connect record uses bundle ID `io.c9r.deck.connector`, primary language Simplified Chinese, and SKU `deck-connector-ios`. Internal builds are assigned to the auto-distribution group `个人设备`. TestFlight does not require Developer Mode on the receiving iPhone.
+
+Before each upload, increment `CURRENT_PROJECT_VERSION`; App Store Connect rejects reuse of a build number for the same marketing version. Keep `MARKETING_VERSION` and `CURRENT_PROJECT_VERSION` in the Xcode project as the single version source—the app Info.plist expands those build settings. `ITSAppUsesNonExemptEncryption` is false because the app uses only Apple's TLS, Security, Keychain, and CryptoKit implementations and contains no proprietary or separately bundled encryption implementation.
+
+Archive with the full Xcode toolchain and automatic signing, then distribute the archive to App Store Connect from Xcode Organizer or with an `app-store-connect` export options plist. Do not commit the archive, IPA, export options containing account-specific values, or App Store credentials. A successful upload still needs to finish App Store Connect processing before the build becomes installable; confirm its final TestFlight status rather than treating the upload response as availability.
+
 ## Required physical-device gate
 
 On a Mac with an assigned Development Team, install a signed development build on a physical iPhone and verify:

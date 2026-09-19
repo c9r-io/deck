@@ -61,8 +61,6 @@ public struct FileJournalStorage: JournalStorage, Sendable {
 
     public func load() async throws -> JournalSnapshot? {
         guard FileManager.default.fileExists(atPath: file.path) else { return nil }
-        let attributes = try FileManager.default.attributesOfItem(atPath: file.path)
-        guard let size = attributes[.size] as? NSNumber, size.intValue <= ConnectorLimits.journalBytes else { throw ConnectorError.responseTooLarge }
         let handle = try FileHandle(forReadingFrom: file)
         defer { try? handle.close() }
         let data = try handle.read(upToCount: ConnectorLimits.journalBytes + 1) ?? Data()
