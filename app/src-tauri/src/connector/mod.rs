@@ -2227,6 +2227,370 @@ mod tests {
     }
 
     #[test]
+    fn every_wire_command_has_a_closed_valid_and_invalid_payload_contract() {
+        let make = |kind: &str, payload: Value| CommandRequest {
+            id: format!("{kind}-1"),
+            kind: kind.into(),
+            card_id: (kind != "task-create").then(|| "C1".into()),
+            expected_generation: if kind == "send-message" {
+                ExpectedGeneration::Live("a".repeat(64))
+            } else if matches!(kind, "queue-pause" | "queue-cancel") {
+                ExpectedGeneration::Stopped
+            } else {
+                ExpectedGeneration::Missing
+            },
+            expected_revision: matches!(
+                kind,
+                "buffer-add" | "buffer-edit" | "buffer-delete" | "buffer-queue" | "task-create"
+            )
+            .then(|| "7".into()),
+            payload,
+        };
+
+        let valid = [
+            make("send-message", json!({"text":"hello\nworld"})),
+            make("buffer-add", json!({"text":"note"})),
+            make("buffer-edit", json!({"entryId":"E1","text":"replacement"})),
+            make("buffer-delete", json!({"entryId":"E1"})),
+            make("buffer-queue", json!({"entryIds":["E1","E2"]})),
+            make(
+                "task-create",
+                json!({"projectId":"P1","presetId":"preset-1"}),
+            ),
+            make(
+                "queue-pause",
+                json!({"itemId":"Q1","paused":true,"revision":"12"}),
+            ),
+            make("queue-cancel", json!({"itemId":"Q1","revision":"12"})),
+        ];
+        for request in &valid {
+            assert!(validate_command(request).is_ok(), "{}", request.kind);
+        }
+
+        let invalid = [
+            make("send-message", json!({"text":""})),
+            make("send-message", json!({"text":"bad\u{0}text"})),
+            make("buffer-add", json!({"text":"ok","extra":true})),
+            make("buffer-edit", json!({"entryId":"","text":"ok"})),
+            make("buffer-delete", json!({"entryId":"bad\nidentity"})),
+            make("buffer-queue", json!({"entryIds":[]})),
+            make("buffer-queue", json!({"entryIds":["E1","E1"]})),
+            make("task-create", json!({"projectId":"P1","presetId":""})),
+            make("queue-pause", json!({"itemId":"Q1","revision":"12"})),
+            make(
+                "queue-cancel",
+                json!({"itemId":"Q1","paused":false,"revision":"12"}),
+            ),
+            make("queue-cancel", json!({"itemId":"Q1","revision":"v12"})),
+        ];
+        for request in &invalid {
+            assert_eq!(
+                validate_command(request).unwrap_err().kind(),
+                ErrorKind::Invalid,
+                "{}",
+                request.kind
+            );
+        }
+
+        let mut malformed = valid[0].clone();
+        malformed.id = "bad\nidentity".into();
+        assert_eq!(
+            validate_command(&malformed).unwrap_err().kind(),
+            ErrorKind::Invalid
+        );
+        malformed = valid[0].clone();
+        malformed.kind = "shell-command".into();
+        assert_eq!(
+            validate_command(&malformed).unwrap_err().kind(),
+            ErrorKind::Invalid
+        );
+        malformed = valid[0].clone();
+        malformed.card_id = None;
+        assert_eq!(
+            validate_command(&malformed).unwrap_err().kind(),
+            ErrorKind::Invalid
+        );
+        malformed = valid[0].clone();
+        malformed.expected_generation = ExpectedGeneration::Stopped;
+        assert_eq!(
+            validate_command(&malformed).unwrap_err().kind(),
+            ErrorKind::Invalid
+        );
+        malformed = valid[1].clone();
+        malformed.expected_revision = None;
+        assert_eq!(
+            validate_command(&malformed).unwrap_err().kind(),
+            ErrorKind::Invalid
+        );
+
+        assert!(command_id("literal-id"));
+        assert!(!command_id(""));
+        assert!(!command_id("bad\tid"));
+        assert!(command_text("tabs\tand\nlines"));
+        assert!(!command_text(""));
+        assert_eq!(external_state("executing"), "accepted");
+        assert_eq!(external_state("applied"), "applied");
+    }
+
+    #[test]
+    fn command_surface_preserves_the_durable_lifecycle_and_closes_on_disable() {
+        use crate::prompt_delivery::Transport;
+
+        let (runtime, _app) = test_runtime("command-surface");
+        assert!(RUNTIME.set(runtime.clone()).is_ok());
+        runtime
+            .with_doc(|doc| {
+                for id in ["D1", "D2"] {
+                    doc.devices.push(Device {
+                        id: id.into(),
+                        name: format!("device-{id}"),
+                        token_hash: sha(format!("token-{id}").as_bytes()),
+                        paired_at: 1,
+                        revoked_at: None,
+                    });
+                }
+                Ok(())
+            })
+            .unwrap();
+
+        let accepted = runtime.accept(1, "D1", request("surface", "note")).unwrap();
+        assert_eq!(accepted.state, "accepted");
+        assert_eq!(
+            serde_json::to_value(&accepted).unwrap()["state"],
+            "accepted"
+        );
+        let handle = sha(b"D1\0surface");
+        let status = connector_status().unwrap();
+        assert!(status.enabled);
+        assert!(status.running);
+        assert_eq!(status.devices.len(), 2);
+        assert!(status.origin.as_deref().unwrap().starts_with("https://"));
+        let status_wire = serde_json::to_value(&status).unwrap();
+        assert_eq!(status_wire["devices"].as_array().unwrap().len(), 2);
+        assert_eq!(status_wire["enabled"], true);
+        assert_eq!(connector_pending().unwrap().len(), 1);
+
+        let claimed = connector_claim(handle.clone()).unwrap();
+        assert_eq!(claimed.request.id, "surface");
+        assert_eq!(
+            serde_json::to_value(&claimed).unwrap()["request"]["id"],
+            "surface"
+        );
+        assert!(connector_pending().unwrap().is_empty());
+        assert_eq!(
+            connector_claim(handle.clone()).err().unwrap().kind(),
+            ErrorKind::Other
+        );
+        assert_eq!(
+            connector_complete(handle.clone(), "unknown".into(), None, None)
+                .unwrap_err()
+                .kind(),
+            ErrorKind::Invalid
+        );
+        connector_complete(
+            handle.clone(),
+            "applied".into(),
+            None,
+            Some(json!({"cardId":"C1","entryId":"E1","revision":"2"})),
+        )
+        .unwrap();
+        assert_eq!(
+            connector_complete(handle.clone(), "applied".into(), None, None)
+                .unwrap_err()
+                .kind(),
+            ErrorKind::Other
+        );
+        assert_eq!(
+            connector_validate(handle).unwrap_err().kind(),
+            ErrorKind::ContextChanged
+        );
+
+        connector_revoke("D2".into()).unwrap();
+        assert_eq!(
+            connector_revoke("missing".into()).unwrap_err().kind(),
+            ErrorKind::Missing
+        );
+        connector_disable().unwrap();
+        let disabled = connector_status().unwrap();
+        assert!(!disabled.enabled);
+        assert!(!disabled.running);
+        assert!(disabled.origin.is_none());
+        assert_eq!(runtime.read(|doc| doc.version).unwrap(), VERSION);
+        assert!(runtime
+            .read(|doc| doc.host_id.starts_with("host_"))
+            .unwrap());
+        assert_eq!(runtime.read(|doc| doc.devices.len()).unwrap(), 2usize);
+        assert_eq!(runtime.read(|doc| doc.commands.len()).unwrap(), 1usize);
+        assert!(!runtime.read(|doc| doc.config.clone()).unwrap().enabled);
+        assert_eq!(
+            runtime.read(|doc| doc.identity_address.clone()).unwrap(),
+            None
+        );
+        assert_eq!(
+            runtime
+                .read(|doc| doc.identity_fingerprint.clone())
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            runtime
+                .read(|doc| (doc.config.address.clone(), doc.config.port))
+                .unwrap(),
+            ("127.0.0.1".into(), 8443)
+        );
+        assert_eq!(
+            runtime
+                .read(|doc| doc
+                    .devices
+                    .iter()
+                    .filter(|device| device.revoked_at.is_some())
+                    .count())
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            runtime
+                .read(|doc| doc.commands.first().map(|command| command.state.clone()))
+                .unwrap()
+                .as_deref(),
+            Some("applied")
+        );
+        assert_eq!(
+            runtime
+                .read(|doc| {
+                    doc.devices
+                        .iter()
+                        .map(|device| device.name.clone())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap(),
+            vec!["device-D1".to_string(), "device-D2".to_string()]
+        );
+        assert_eq!(
+            runtime
+                .read(|doc| {
+                    doc.devices
+                        .iter()
+                        .map(|device| device.id.clone())
+                        .collect::<HashSet<_>>()
+                })
+                .unwrap(),
+            HashSet::from(["D1".to_string(), "D2".to_string()])
+        );
+        assert_eq!(
+            runtime
+                .read(|doc| json!({
+                    "enabled": doc.config.enabled,
+                    "commands": doc.commands.len(),
+                    "devices": doc.devices.len()
+                }))
+                .unwrap(),
+            json!({"enabled":false,"commands":1,"devices":2})
+        );
+        assert_eq!(
+            connector_claim("missing".into()).err().unwrap().kind(),
+            ErrorKind::Perm
+        );
+        assert_eq!(connector_pairing().err().unwrap().kind(), ErrorKind::Other);
+        assert_eq!(
+            connector_validate_admission("invalid".into())
+                .unwrap_err()
+                .kind(),
+            ErrorKind::Invalid
+        );
+        assert_eq!(
+            connector_smoke_seed("C1".into(), "1".into())
+                .err()
+                .unwrap()
+                .kind(),
+            ErrorKind::Other
+        );
+        assert_eq!(
+            connector_smoke_transport("C1".into()).err().unwrap().kind(),
+            ErrorKind::Other
+        );
+        assert_eq!(
+            serde_json::to_value(SmokeTransportView {
+                path: "/private/fixture".into()
+            })
+            .unwrap()["path"],
+            "/private/fixture"
+        );
+        let pairing_wire = serde_json::to_value(PairingView {
+            uri: "deck-connector://pair?data=fixture".into(),
+            svg: "<svg/>".into(),
+            expires_at: 42,
+            origin: "https://192.168.1.2:8443".into(),
+            fingerprint: "a".repeat(64),
+        })
+        .unwrap();
+        assert_eq!(pairing_wire["expiresAt"], 42);
+        let invalid_enable = tauri::async_runtime::block_on(connector_enable("public".into(), 80));
+        assert_eq!(invalid_enable.err().unwrap().kind(), ErrorKind::Invalid);
+
+        let queues = Queues::new(crate::scheduler::QueueState::default());
+        assert!(crate::scheduler::claim_session(&queues.busy, "busy"));
+        {
+            let _claim = BusyClaim {
+                busy: &queues.busy,
+                session: "busy",
+            };
+            assert!(queues.busy.lock_or_recover().contains("busy"));
+        }
+        assert!(!queues.busy.lock_or_recover().contains("busy"));
+
+        let transport = ConnectorTransport {
+            card_id: "C1",
+            session: "S1",
+            expected_generation: "generation",
+            device_id: "D1",
+        };
+        assert_eq!(transport.guard().unwrap_err().kind(), ErrorKind::Perm);
+        assert_eq!(
+            transport
+                .run(&["display-message".into()])
+                .unwrap_err()
+                .kind(),
+            ErrorKind::Perm
+        );
+        assert_eq!(
+            transport
+                .run_with_stdin(&["load-buffer".into()], b"literal")
+                .unwrap_err()
+                .kind(),
+            ErrorKind::Perm
+        );
+        transport.pause(std::time::Duration::ZERO);
+
+        for kind in ["send-message", "queue-pause", "queue-cancel"] {
+            let malformed = CommandRequest {
+                id: "native-invalid".into(),
+                kind: kind.into(),
+                card_id: Some("C1".into()),
+                expected_generation: ExpectedGeneration::Stopped,
+                expected_revision: None,
+                payload: json!({"unexpected":true}),
+            };
+            assert_eq!(
+                execute_native(&malformed, &"a".repeat(64), "D1", &queues),
+                Err(("rejected", "invalid-payload"))
+            );
+        }
+        let frontend_command = request("frontend", "note");
+        assert_eq!(
+            execute_native(&frontend_command, &"a".repeat(64), "D1", &queues),
+            Err(("rejected", "frontend-required"))
+        );
+
+        assert!(!connector_addresses().iter().any(|address| {
+            address
+                .parse::<Ipv4Addr>()
+                .is_ok_and(|ip| !connector_network_address(ip))
+        }));
+        assert!(!host_name().chars().any(char::is_control));
+    }
+
+    #[test]
     fn unknown_probe_is_not_reported_as_stopped() {
         assert_eq!(
             probe_status::<()>(Err(DeckError::new(ErrorKind::NoSession, "missing"))).0,
@@ -2741,8 +3105,13 @@ mod tests {
     #[test]
     fn generated_certificate_has_ip_san_and_real_rustls_verification() {
         let identity = Identity::generate("127.0.0.1").unwrap();
+        let encoded = identity.encode().unwrap();
+        let decoded = Identity::decode(&encoded).unwrap();
+        assert_eq!(decoded.address, "127.0.0.1");
+        assert_eq!(decoded.fingerprint, identity.fingerprint);
+        assert!(Identity::decode("not-base64").is_err());
         let cert = base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .decode(&identity.cert_der)
+            .decode(&decoded.cert_der)
             .unwrap();
         let mut roots = rustls::RootCertStore::empty();
         roots.add(CertificateDer::from(cert)).unwrap();
@@ -2751,7 +3120,7 @@ mod tests {
                 .with_root_certificates(roots)
                 .with_no_client_auth(),
         );
-        let server = Arc::new(identity.tls().unwrap());
+        let server = Arc::new(decoded.tls().unwrap());
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         let worker = std::thread::spawn(move || {
