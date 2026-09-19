@@ -202,6 +202,7 @@ const SMOKE_CHECKS: &[&str] = &[
     "selection-clipboard",
     "selection-owner",
     "selection-gestures",
+    "selection-multiclick-drag",
     "selection-repeat",
     "selection-blur",
     "selection-empty-click",

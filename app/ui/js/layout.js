@@ -644,7 +644,9 @@ export function wireTerminalInput(pane, term, host) {
   term.registerLinkProvider(linkProvider);
 
   /* Wheel handling, deck-driven: tmux mouse mode stays OFF. xterm owns
-     click/double/triple-click selection; the coordinator owns promoted drags.
+     double/triple-click selection and held multi-click drags; the coordinator
+     owns promoted single-click drags. A held native drag must not be frozen
+     halfway through by wheel adoption.
      Fractional trackpad deltas are consumed on display frames, with one
      backend request in flight; tmux remains the scrollback authority without
      imposing the old 50ms/20fps timer or dropping each batch's remainder. */
@@ -655,6 +657,10 @@ export function wireTerminalInput(pane, term, host) {
     take: wheel.take,
     active: () => host.isConnected,
     run: lines => {
+      if (pane.selection.isNativeDragging()) {
+        term.scrollLines(lines);
+        return;
+      }
       const route = terminalSelectionWheelRoute({
         tokenSelected: hasTerminalSelection(pane),
         frozen: pane.selection.isFrozen(),

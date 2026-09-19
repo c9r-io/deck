@@ -1,14 +1,17 @@
 // selection.js — one coordinator for pointer ownership and terminal selection.
 // A physical click stays on xterm's trusted mouse/link path. Once movement
-// crosses the drag threshold, ownership transfers to tmux. At pointerup the
-// tmux range is frozen into an immutable token-bound backend snapshot and a
+// crosses the drag threshold, a single-click drag transfers to tmux.
+// Held double/triple-click drags stay native for their entire gesture.
+// At pointerup the tmux-owned range is frozen into an immutable token-bound backend snapshot and a
 // public-geometry overlay; later wheel movement changes only the viewport.
 //
 // # Contract
 // Terminal gesture and selection authority is explicit. A sub-threshold
 // physical gesture stays on xterm's trusted mouse/link path; no synthetic
-// compatibility click is replayed. Crossing the threshold transfers the drag
-// to `selection.js`/tmux and clears speculative xterm selection. While the
+// compatibility click is replayed. Multi-click word/line drags remain xterm-owned:
+// its original range, unit boundaries, wrapped lines and direction reversals
+// must not be replaced with the physical press cell. For single-click drags,
+// crossing the threshold transfers ownership to `selection.js`/tmux and clears speculative xterm selection. While the
 // drag runs tmux holds only a copy CURSOR: a selection makes it repaint the
 // whole selected region after every motion repetition (~19 KB down the PTY
 // per pointer move on a full-screen drag), while the same walk with no
@@ -61,8 +64,10 @@
 // arbitrary CSS-pixel distance, and pointerup rechecks the final cell because
 // WebKit may coalesce the last pointermove. This is what keeps short one-row
 // drags on the same tmux/overlay path as multi-row drags while same-cell and
-// double/triple clicks remain native xterm operations. If a native xterm
-// word/line range survives until the first wheel frame, read only its public
+// double/triple clicks AND their held drags remain native xterm operations.
+// The compatibility mousedown detail is authoritative (WebKit pointerdown
+// may have detail=0). No synthetic mouse events or private selection APIs.
+// If an idle native word/line range survives until the first wheel frame, read only its public
 // `getSelectionPosition()` coordinates, convert visible absolute buffer rows
 // with `terminalNativeSelectionCells`, and freeze it in tmux before scrolling.
 // Wheel routing keeps an existing Deck token authoritative, adopts an idle
@@ -417,7 +422,7 @@ function terminalSelectionController(pane, onModeChange) {
   };
 
   const promote = () => {
-    if (!gesture || gesture.promoted || disposed) return;
+    if (!gesture || gesture.promoted || gesture.native || disposed) return;
     const anchor = terminalCell(pane, gesture.startX, gesture.startY);
     const active = terminalCell(pane, gesture.x, gesture.y);
     if (!anchor || !active) return;
@@ -501,15 +506,33 @@ function terminalSelectionController(pane, onModeChange) {
       pointerId: event.pointerId,
       startX: event.clientX, startY: event.clientY,
       x: event.clientX, y: event.clientY,
-      promoted: false,
+      promoted: false, native: event.detail === 2 || event.detail === 3, nativeDragged: false,
     };
     physicalPointerOwner = api;
+  };
+
+  // PointerEvent.detail can be zero on WebKit; inspect the real compatibility
+  // mousedown before xterm sees it, then leave the rest of that gesture alone.
+  const mouseDown = event => {
+    if (!gesture || gesture.promoted || event.button !== 0) return;
+    pressDetail = Math.max(0, Math.min(9, event.detail || 0));
+    gesture.native = event.detail === 2 || event.detail === 3;
+  };
+
+  const noteNativeDrag = () => {
+    if (!gesture?.native) return;
+    const anchor = terminalCell(pane, gesture.startX, gesture.startY);
+    const active = terminalCell(pane, gesture.x, gesture.y);
+    if (anchor && active && (anchor.row !== active.row || anchor.col !== active.col)) {
+      gesture.nativeDragged = true;
+    }
   };
 
   const pointerMove = event => {
     if (!gesture || event.pointerId !== gesture.pointerId) return;
     gesture.x = event.clientX;
     gesture.y = event.clientY;
+    noteNativeDrag();
     // xterm selects terminal cells, not CSS-pixel distances. Promote as soon
     // as the pointer enters a different cell so a short horizontal drag near
     // a glyph boundary follows the exact same tmux path as a multi-row drag.
@@ -530,6 +553,7 @@ function terminalSelectionController(pane, onModeChange) {
     // WebKit can coalesce the final pointermove of a quick drag. Re-evaluate
     // the pointerup cell before deciding this was a click; promote() already
     // leaves same-cell clicks and native double/triple-click selection alone.
+    noteNativeDrag();
     if (!ended.promoted) promote();
     clearEdgeTimer();
     releaseCapture(ended);
@@ -538,7 +562,8 @@ function terminalSelectionController(pane, onModeChange) {
     ownerTrace.ended = 1;
     lastGesture = { at: Date.now(), promoted: ended.promoted };
     if (!ended.promoted) {
-      ownerTrace.trustedClick = 1;
+      if (ended.nativeDragged) suppressLinkUntil = Date.now() + 250;
+      ownerTrace.trustedClick = ended.nativeDragged ? 0 : 1;
       return;
     }
 
@@ -618,6 +643,7 @@ function terminalSelectionController(pane, onModeChange) {
     // listener sees the event, so one-row and multi-row drags share ownership.
     gesture.x = event.clientX;
     gesture.y = event.clientY;
+    noteNativeDrag();
     if (!gesture.promoted) promote();
     if (!gesture.promoted) return;
     ownerTrace.compatibilityBlocked++;
@@ -779,6 +805,7 @@ function terminalSelectionController(pane, onModeChange) {
     inputDisposable?.dispose();
     inputDisposable = null;
     pane.body.removeEventListener('pointerdown', pointerDown, true);
+    pane.body.removeEventListener('mousedown', mouseDown, true);
     document.removeEventListener('pointermove', pointerMove, true);
     document.removeEventListener('pointerup', pointerEnd, true);
     document.removeEventListener('pointercancel', pointerCancel, true);
@@ -790,10 +817,18 @@ function terminalSelectionController(pane, onModeChange) {
   };
   /* Only a drag in progress dies with the window (see the header). */
   const windowFocus = () => { lastWindowFocusAt = Date.now(); };
-  const blur = () => { if (gesture) cancel(false, 'blur'); };
-  const visibility = () => { if (document.hidden && gesture) cancel(false, 'hidden'); };
+  const blur = () => {
+    if (gesture?.native) cancel(true, 'blur');
+    else if (gesture) cancel(false, 'blur');
+  };
+  const visibility = () => {
+    if (!document.hidden) return;
+    if (gesture?.native) cancel(true, 'hidden');
+    else if (gesture) cancel(false, 'hidden');
+  };
 
   pane.body.addEventListener('pointerdown', pointerDown, true);
+  pane.body.addEventListener('mousedown', mouseDown, true);
   document.addEventListener('pointermove', pointerMove, true);
   document.addEventListener('pointerup', pointerEnd, true);
   document.addEventListener('pointercancel', pointerCancel, true);
@@ -814,9 +849,11 @@ function terminalSelectionController(pane, onModeChange) {
     hasSelection: () => selected,
     hasNativeSelection: () => !!pane.term.hasSelection(),
     isDragging: () => !!gesture?.promoted,
+    isNativeDragging: () => !!gesture?.native,
     isFrozen: () => frozen,
     ageMs: () => (promotedAt ? Date.now() - promotedAt : native ? Date.now() - native.at : -1),
-    allowLinkActivation: () => !gesture?.promoted && Date.now() >= suppressLinkUntil,
+    allowLinkActivation: () => !gesture?.promoted && !gesture?.nativeDragged
+      && Date.now() >= suppressLinkUntil,
     status: () => lastStatus,
     ownership: () => ({
       ...ownerTrace,

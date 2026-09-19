@@ -243,6 +243,12 @@ a fixture.
       (typing while scrolled first leaves copy-mode, so keys are never eaten
       as copy-mode commands)
 - [ ] Drag-select multiple lines → ⌘C → paste elsewhere matches
+- [ ] Double-click a word / triple-click a line, keep the last press held,
+      and drag up, down, then reverse across the original unit. The original
+      word/line stays included and endpoint granularity matches native xterm.
+      Copy matches byte-for-byte, including mixed Unicode. A wheel frame while
+      held does not freeze the native gesture; blur ends an unfinished gesture
+      but preserves a finished selection (`selection-multiclick-drag` smoke).
 - [ ] Without cancelling that selection first, immediately drag-select a
       different multi-line range. The new range replaces it without a
       "session changed" error or leaving the pane in copy-mode.

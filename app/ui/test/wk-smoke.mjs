@@ -301,6 +301,117 @@ function visibleTerminalLine(pane, row) {
   return buffer.getLine(buffer.viewportY + row)?.translateToString(true) || '';
 }
 
+// Compare production multi-click drags with an independent, unmodified xterm.
+// Both receive real DOM event sequences in WKWebView; the clipboard oracle
+// reads the OS pasteboard. No xterm private APIs or production selection helper
+// computes the expected range. Case IDs: word 21..23, line 31..33.
+async function multiClickDragSmoke(pane) {
+  const screen = pane.body.querySelector('.xterm-screen');
+  await cancelTerminalSelection(pane);
+  await inv('scroll_bottom', { name: pane.session });
+  const fixtureCommand = `python3 -c '[print(f"MCD-{i:03d} alpha βeta 中文 omega") for i in range(60)]; print("MCD-END")'`;
+  await inv('pty_write', { name: pane.session, dataB64: strToB64(fixtureCommand + '\r') });
+  const fixtureReady = await waitFor(() =>
+    visibleTerminalLine(pane, Math.floor(pane.term.rows / 2)).startsWith('MCD-'), 5000);
+
+  for (const detail of [2, 3]) {
+    for (const direction of [1, -1, 0]) {
+      await cancelTerminalSelection(pane);
+      await inv('scroll_bottom', { name: pane.session });
+      await pause(150);
+      const firstRow = Math.max(4, Math.floor(pane.term.rows / 2));
+      const fixture = Array.from({ length: pane.term.rows - 1 }, (_, row) =>
+        visibleTerminalLine(pane, row));
+      const controlHost = document.createElement('div');
+      controlHost.style.cssText = 'position:fixed;left:0;top:0;width:1000px;height:600px;z-index:9999;background:black';
+      document.body.appendChild(controlHost);
+      const control = new Terminal({ cols: pane.term.cols, rows: pane.term.rows, allowProposedApi: true });
+      control.open(controlHost);
+      try {
+        await new Promise(resolve => control.write(fixture.join('\r\n'), resolve));
+        const cs = controlHost.querySelector('.xterm-screen');
+        const cell = (surface, term, col, row) => {
+          const rect = surface.getBoundingClientRect();
+          return { x: rect.left + rect.width / term.cols * (col + 0.5),
+            y: rect.top + rect.height / term.rows * (row + 0.5) };
+        };
+        const mouse = (type, point, count) => new MouseEvent(type, {
+          bubbles: true, cancelable: true, button: 0, buttons: type === 'mouseup' ? 0 : 1,
+          clientX: point.x, clientY: point.y, detail: count,
+        });
+        const id = detail * 100 + direction + 10;
+        const press = (surface, term, count, deck) => {
+          const point = cell(surface, term, 10, firstRow);
+          // pointerdown deliberately has detail=0, as on WebKit.
+          if (deck) surface.dispatchEvent(pointer('pointerdown', id, point.x, point.y));
+          surface.dispatchEvent(mouse('mousedown', point, count));
+          if (count < detail) {
+            if (deck) document.dispatchEvent(pointer('pointerup', id, point.x, point.y));
+            surface.dispatchEvent(mouse('mouseup', point, count));
+          }
+        };
+        for (let count = 1; count <= detail; count++) press(cs, control, count, false);
+        const original = control.getSelection();
+        const rows = direction === 0 ? [firstRow + 2, firstRow - 2]
+          : [firstRow + direction * 2];
+        for (const row of rows) cs.dispatchEvent(mouse('mousemove', cell(cs, control, 21, row), detail));
+        cs.dispatchEvent(mouse('mouseup', cell(cs, control, 21, rows.at(-1)), detail));
+        const expected = control.getSelection();
+        for (let count = 1; count <= detail; count++) press(screen, pane.term, count, true);
+        const initialMatches = pane.term.getSelection() === original;
+        for (const row of rows) {
+          const point = cell(screen, pane.term, 21, row);
+          // Reversal also exercises WebKit's compatibility-mouse-only moves.
+          if (direction !== 0) document.dispatchEvent(pointer('pointermove', id, point.x, point.y));
+          screen.dispatchEvent(mouse('mousemove', point, detail));
+        }
+        const heldNative = pane.selection.isNativeDragging() && !pane.selection.hasSelection();
+        const final = cell(screen, pane.term, 21, rows.at(-1));
+        document.dispatchEvent(pointer('pointerup', id, final.x, final.y));
+        screen.dispatchEvent(mouse('mouseup', final, detail));
+        const actual = pane.term.getSelection();
+        const blockedLink = !pane.selection.allowLinkActivation();
+        window.dispatchEvent(new Event('blur'));
+        const completedSurvivedBlur = pane.term.getSelection() === actual;
+        pane.term.textarea.dispatchEvent(new KeyboardEvent('keydown', {
+          key: 'c', metaKey: true, bubbles: true, cancelable: true,
+        }));
+        const copied = expected.length > 0 && await waitFor(async () => {
+          const m = await inv('smoke_clipboard_metrics');
+          return m.hash === fnv1a64(expected) && m.bytes === new TextEncoder().encode(expected).length;
+        }, 3000);
+        const caseId = detail * 10 + (direction === 1 ? 1 : direction === -1 ? 2 : 3);
+        await report('selection-multiclick-drag', fixtureReady && original.length > 0 && expected.includes(original)
+          && initialMatches && heldNative && actual === expected && copied
+          && !pane.selection.isNativeDragging() && blockedLink && completedSurvivedBlur, caseId, actual.length);
+        if (detail === 3 && direction === 0) {
+          // A wheel frame during the held multi-click cannot freeze/clear the
+          // live native range. Losing the window mid-gesture DOES end it and
+          // removes xterm's mouse listeners; later moves must not resurrect it.
+          for (let count = 1; count <= detail; count++) press(screen, pane.term, count, true);
+          const beforeWheel = pane.term.getSelection();
+          pane.body.dispatchEvent(new WheelEvent('wheel', {
+            deltaY: -42, deltaMode: 0, bubbles: true, cancelable: true,
+          }));
+          await pause(100);
+          const wheelKeptNative = pane.selection.isNativeDragging() && !pane.selection.hasSelection()
+            && beforeWheel.length > 0 && pane.term.getSelection() === beforeWheel;
+          window.dispatchEvent(new Event('blur'));
+          screen.dispatchEvent(mouse('mousemove', final, detail));
+          document.dispatchEvent(pointer('pointerup', id, final.x, final.y));
+          screen.dispatchEvent(mouse('mouseup', final, detail));
+          await report('selection-multiclick-drag', wheelKeptNative
+            && !pane.selection.isNativeDragging() && !pane.term.hasSelection(), 34);
+        }
+      } finally {
+        control.dispose(); controlHost.remove();
+      }
+    }
+  }
+  await cancelTerminalSelection(pane);
+  await inv('scroll_bottom', { name: pane.session });
+}
+
 async function selectionSmoke(card) {
   let selectionStage = 0;
   try {
@@ -769,6 +880,8 @@ async function selectionSmoke(card) {
     && beforeRaceCopy.hash === afterRaceCopy.hash && beforeRaceCopy.bytes === afterRaceCopy.bytes, 2);
 
   await inv('scroll_bottom', { name: card.session });
+
+  await multiClickDragSmoke(pane);
 
   /* Real wheel routing: two sub-threshold pixel events must combine into one
      line; the retained rounding remainder must absorb the complementary tail;

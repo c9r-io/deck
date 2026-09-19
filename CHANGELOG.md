@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Held double-click word selections and triple-click line selections now extend
+  through a drag without losing the original range or selection granularity.
+  Reversing the drag keeps the original selected word/line intact.
+
 - Terminal copy reports when no text is selected, including a selection lost
   while copying, and leaves the clipboard untouched for empty snapshots.
   Repeated copy attempts share a short notification cooldown.
