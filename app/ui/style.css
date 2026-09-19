@@ -647,7 +647,7 @@ body.side-collapsed .side-new .label { display: none; }
 .buffer-head > b { color: var(--wait); border: 1px solid var(--waiting-soft-border); border-radius: 9px; padding: 1px 7px; font-size: 0.730769rem; }
 #buffer-list { display: flex; flex-direction: column; gap: 7px; }
 .buffer-row { display: flex; gap: 8px; align-items: flex-start; padding: 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); }
-.buffer-row > input { margin-top: 7px; }
+.buffer-row > input[type="checkbox"] { width: auto; flex: none; margin-top: 7px; }
 .buffer-body { flex: 1; min-width: 0; }
 .buffer-body textarea, .buffer-add textarea { width: 100%; box-sizing: border-box; resize: vertical; }
 .buffer-meta { color: var(--faint); font-size: 0.769231rem; margin-bottom: 4px; }
