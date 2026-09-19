@@ -127,8 +127,10 @@ jobs:
         with:
           toolchain: 1.97.1
           components: clippy, rustfmt
-      - name: Install pinned coverage runner
-        run: cargo install cargo-llvm-cov --version 0.8.5 --locked
+      - name: Install pinned coverage and audit runners
+        run: |
+          cargo install cargo-llvm-cov --version 0.8.5 --locked
+          cargo install cargo-audit --version 0.22.2 --locked
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: |
@@ -147,6 +149,7 @@ jobs:
           node app/ui/js/check.mjs
           python3 -m unittest scripts/test_release_tools.py
           scripts/check-workflows
+          cargo audit --file app/src-tauri/Cargo.lock
 
   build-sign:
     needs: [resolve, test]
