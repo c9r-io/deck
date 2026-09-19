@@ -1,4 +1,4 @@
-//! LAN-only authenticated Connector host.
+//! Private-network-only authenticated Connector host.
 //!
 //! The listener is disabled by default and exposes only the closed v1 HTTPS
 //! routes. TLS identity is Keychain-only; the private durable file contains
@@ -598,6 +598,16 @@ fn start_server(runtime: Arc<Runtime>) -> Result<(), DeckError> {
     if !cfg.enabled {
         return Ok(());
     }
+    let ip = cfg
+        .address
+        .parse::<Ipv4Addr>()
+        .map_err(|_| DeckError::new(ErrorKind::Invalid, "invalid connector address"))?;
+    if !connector_network_address(ip) || !local_ipv4_addresses().contains(&ip) {
+        return Err(DeckError::new(
+            ErrorKind::Invalid,
+            "connector address is not an available private-network address",
+        ));
+    }
     let identity = identity_get()?
         .ok_or_else(|| DeckError::new(ErrorKind::Missing, "connector identity is missing"))?;
     if identity.address != cfg.address {
@@ -676,7 +686,8 @@ pub(crate) async fn connector_enable(address: String, port: u16) -> Result<Statu
         let ip: Ipv4Addr = address
             .parse()
             .map_err(|_| DeckError::new(ErrorKind::Invalid, "invalid connector address"))?;
-        if !local_ipv4_addresses().contains(&ip)
+        if !connector_network_address(ip)
+            || !local_ipv4_addresses().contains(&ip)
             || ip.is_unspecified()
             || ip.is_loopback()
             || port < 1024
@@ -2097,7 +2108,7 @@ fn local_ipv4_addresses() -> Vec<Ipv4Addr> {
             if !a.ifa_addr.is_null() && (*a.ifa_addr).sa_family as i32 == libc::AF_INET {
                 let sin = &*(a.ifa_addr as *const libc::sockaddr_in);
                 let ip = Ipv4Addr::from(u32::from_be(sin.sin_addr.s_addr));
-                if !ip.is_unspecified() && !ip.is_loopback() {
+                if connector_network_address(ip) {
                     out.push(ip);
                 }
             }
@@ -2108,6 +2119,14 @@ fn local_ipv4_addresses() -> Vec<Ipv4Addr> {
         out.dedup();
         out
     }
+}
+
+/// Addresses on which Connector may listen. RFC1918 covers ordinary LANs,
+/// link-local covers direct/self-assigned networks, and RFC6598 covers VPNs
+/// such as Tailscale without treating an arbitrary public interface as LAN.
+fn connector_network_address(ip: Ipv4Addr) -> bool {
+    let octets = ip.octets();
+    ip.is_private() || ip.is_link_local() || (octets[0] == 100 && (64..=127).contains(&octets[1]))
 }
 fn host_name() -> String {
     let mut b = [0i8; 256];
@@ -2455,6 +2474,37 @@ mod tests {
                     .unwrap_err()
                     .message(),
                 "unsupported-target"
+            );
+        }
+    }
+
+    #[test]
+    fn listener_addresses_are_private_link_local_or_shared_vpn_space() {
+        for address in [
+            "10.0.0.1",
+            "172.16.0.1",
+            "192.168.31.101",
+            "169.254.20.4",
+            "100.64.0.1",
+            "100.127.255.254",
+        ] {
+            assert!(
+                connector_network_address(address.parse().unwrap()),
+                "{address}"
+            );
+        }
+        for address in [
+            "0.0.0.0",
+            "127.0.0.1",
+            "8.8.8.8",
+            "25.1.2.3",
+            "100.63.255.255",
+            "100.128.0.1",
+            "224.0.0.1",
+        ] {
+            assert!(
+                !connector_network_address(address.parse().unwrap()),
+                "{address}"
             );
         }
     }

@@ -354,6 +354,7 @@ fn main() {
             scheduler::smoke_queue_state,
             scheduler::smoke_flush_queue,
             scheduler::queue_add,
+            scheduler::channel_queue_add,
             scheduler::queue_add_reviewed_list,
             scheduler::queue_update,
             scheduler::queue_remove,

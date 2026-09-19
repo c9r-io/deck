@@ -18,6 +18,10 @@
 //! - `normalize_prompt` is the ONE text normalization: CRs are folded,
 //!   newlines are kept (a prompt may be many lines), and an empty result is
 //!   refused; blank steps are dropped from a step list.
+//! - `channel_queue_add` is the external-message admission path. It uses the
+//!   same durable queue transaction but first requires an explicitly
+//!   recognized Codex or Claude launch command, so channel text can never be
+//!   submitted to a compatibility-mode shell.
 //! - The firing contract (`firing_conflict`): while an item is mid-send
 //!   ("firing" persisted, the paste possibly in flight), awaiting an
 //!   ambiguous-delivery decision, or standing as a review checkpoint,
@@ -549,6 +553,24 @@ pub(crate) fn queue_add(
     })?;
     let _ = app.emit("queue-changed", ());
     Ok(())
+}
+
+#[tauri::command]
+pub(crate) fn channel_queue_add(
+    state: State<'_, Queues>,
+    app: AppHandle,
+    args: QueueAddArgs,
+) -> Result<(), DeckError> {
+    if !crate::context::expected_from_command(&args.cmd)
+        .as_deref()
+        .is_some_and(|value| matches!(value, "codex" | "claude"))
+    {
+        return Err(DeckError::new(
+            ErrorKind::Invalid,
+            "channel automation requires a supported agent",
+        ));
+    }
+    queue_add(state, app, args)
 }
 
 /// The firing contract for user operations: while an item is mid-send

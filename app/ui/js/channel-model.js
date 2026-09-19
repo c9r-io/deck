@@ -9,6 +9,32 @@ const BOT_ID = /^B[A-Z0-9_-]{0,63}$/;
 export const CHANNEL_IDLE_DEFAULT = 30;
 export const CHANNEL_IDLE_MAX = 7 * 24 * 60;
 
+const SHELLS = new Set(['zsh', 'bash', 'fish', 'sh', 'dash', 'ksh', 'tcsh', 'csh', 'nu']);
+const SHELL_WORDS = new Set(['cd', 'source', '.', 'alias', 'export', 'set', 'unset', 'while',
+  'until', 'for', 'if', 'case', 'function', 'exec', 'command', 'builtin', 'eval']);
+const assignment = value => /^[A-Za-z_][A-Za-z0-9_]*=/.test(value);
+const unquote = value => value.length >= 2 && ((value[0] === "'" && value.at(-1) === "'")
+  || (value[0] === '"' && value.at(-1) === '"')) ? value.slice(1, -1) : value;
+
+// Frontend twin of context::expected_from_command. Native validation remains
+// authoritative; this rejects unsafe rules before they can be persisted.
+export function channelAgentCommand(command) {
+  const parts = String(command || '').trim().split(/\s+/).filter(Boolean);
+  let afterEnv = false;
+  for (let index = 0; index < parts.length; index++) {
+    const part = unquote(parts[index]);
+    if (assignment(part)) continue;
+    const candidate = unquote(part).replace(/^-+/, '').split('/').at(-1);
+    if (!candidate || !/^[A-Za-z0-9_.+-]{1,64}$/.test(candidate)) return null;
+    if (!afterEnv && candidate === 'env') { afterEnv = true; continue; }
+    if (afterEnv && ['-i', '--ignore-environment', '-0', '--null'].includes(part)) continue;
+    if (afterEnv && ['-u', '--unset'].includes(part)) { index++; continue; }
+    if (SHELL_WORDS.has(candidate) || SHELLS.has(candidate.toLowerCase())) return null;
+    return ['codex', 'claude'].includes(candidate) ? candidate : null;
+  }
+  return null;
+}
+
 export async function channelDigestId(prefix, value) {
   const bytes = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
   return prefix + [...new Uint8Array(bytes)].slice(0, 16).map(byte => byte.toString(16).padStart(2, '0')).join('');
@@ -46,7 +72,7 @@ export function normalizeChannelRule(raw) {
     || (!rule.senderUserIds.length && !rule.senderBotIds.length) || !validMatch
     || !LOCAL_ID.test(rule.projectId) || !LOCAL_ID.test(rule.columnId)
     || rule.dir.length > 1024 || /[\r\n\0]/.test(rule.dir)
-    || rule.cmd.length > 200 || /[\r\n]/.test(rule.cmd)
+    || rule.cmd.length > 200 || /[\r\n]/.test(rule.cmd) || !channelAgentCommand(rule.cmd)
     || !rule.template || rule.template.length > 120) return null;
   return rule;
 }
@@ -81,6 +107,7 @@ export const unfinishedChannelPlans = cards => (cards || [])
   .filter(card => card.channelRun && !card.channelRun.initialQueued);
 
 export function channelTemplatePlan(item, project, nowSecs) {
+  if (!channelAgentCommand(item?.target?.cmd)) return { error: 'target' };
   const template = (project?.templates || []).find(value => value.name === item.target.template);
   if (!template) return { error: 'template' };
   const msg = { text: item.body, from: item.senderUserId || item.senderBotId || '', where: item.channelId, link: '' };

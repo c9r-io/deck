@@ -2171,6 +2171,7 @@ export async function verifyChannel() {
     $('auto-sender-users').value = 'U0123';
     $('auto-match-kind').value = 'regex'; $('auto-match-kind').dispatchEvent(new Event('change'));
     $('auto-match-value').value = 'INC-(?<incident>[0-9]+)'; $('auto-match-capture').value = 'incident';
+    $('auto-cmd').value = 'claude --version';
     $('auto-idle').value = '30'; $('auto-template').value = 'channel smoke';
     $('auto-save').click();
     const saved = await waitFor(() => ctx.settings.inbound.channelRules?.length === 1);

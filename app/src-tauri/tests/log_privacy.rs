@@ -45,13 +45,22 @@ fn frontend_sources() -> Vec<(String, String)> {
 /// (filename, contents) of every backend module.
 fn backend_sources() -> Vec<(String, String)> {
     let mut out = Vec::new();
-    for e in std::fs::read_dir(manifest("src")).expect("src") {
-        let p = e.unwrap().path();
-        if p.extension().is_some_and(|x| x == "rs") {
-            out.push((
-                p.file_name().unwrap().to_string_lossy().into_owned(),
-                std::fs::read_to_string(&p).unwrap(),
-            ));
+    let root = manifest("src");
+    let mut pending = vec![root.clone()];
+    while let Some(dir) = pending.pop() {
+        for e in std::fs::read_dir(&dir).expect("backend source directory") {
+            let p = e.unwrap().path();
+            if p.is_dir() {
+                pending.push(p);
+            } else if p.extension().is_some_and(|x| x == "rs") {
+                out.push((
+                    p.strip_prefix(&root)
+                        .unwrap()
+                        .to_string_lossy()
+                        .into_owned(),
+                    std::fs::read_to_string(&p).unwrap(),
+                ));
+            }
         }
     }
     assert!(out.len() >= 6, "all backend modules found");

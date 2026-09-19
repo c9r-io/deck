@@ -74,7 +74,9 @@ async function handleChannel(item) {
   const project = store.projects.find(value => value.id === item.target.projectId);
   const column = project?.columns.find(value => value.id === item.target.columnId);
   const plan = channelTemplatePlan(item, project, Math.floor(Date.now() / 1000));
-  if (!project || !column || plan.error) { toast(t(plan.error ? 'channel.noTemplate' : 'channel.noTarget')); return; }
+  if (!project || !column || plan.error) {
+    toast(t(plan.error === 'template' ? 'channel.noTemplate' : 'channel.noTarget')); return;
+  }
   const operationIds = await Promise.all(plan.texts.map((_, index) => channelDigestId('B', `${item.operationKey}/step/${index}`)));
   const initialSteps = plan.texts.map((text, index) => ({ operationId: operationIds[index], text,
     mode: index ? 'chain' : 'at', at: index ? null : plan.at,

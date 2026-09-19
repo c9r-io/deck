@@ -16,6 +16,7 @@
 import { $, columnHint, ctx, dotTitle, emit, genId, inv, listeners, POLL_MS, QUIET_SECS, sessionName, setMemChip, state, store, uev } from './state.js';
 import { mutateBoard, mutateBoardDebounced } from './persistence.js';
 import { collapseHome, createConfirmationCounter, createExitRetirementTracker, effectiveCardStatus, initialLaunched, newSessionColumn, newSessionPlan, projectDefaults, reorderById, runFinishHolds, sidebarGroups } from './pure.js';
+import { channelAgentCommand } from './channel-model.js';
 import { confirmDialog, inlineRename, projectDefaultsDialog, toast } from './dialogs.js';
 import { clearSeparators, closePaneBySid, hasPane, leaveSessionView, openSession, renderSessionView, updatePaneChrome } from './layout.js';
 import { SHELL_FG, invalidateResumeSuggestions, showProjectCtx, showSessionCtx } from './terminal.js';
@@ -416,6 +417,12 @@ export const provider = {
     const card = this.get(sid); if (card) emit('list', card);
   },
   async queueChannelPlan(sid, expectedGroupKey) {
+    const candidate = this.get(sid);
+    if (!candidate || !channelAgentCommand(candidate.cmd)) {
+      const error = new Error('channel automation requires a supported agent');
+      error.stage = 'unsupported-target';
+      throw error;
+    }
     let admitted = false;
     await mutateBoard(async draft => {
       const card = draft.cards.find(value => value.id === sid);
@@ -423,7 +430,7 @@ export const provider = {
       if (!card || run?.groupKey !== expectedGroupKey) return { noop: true };
       if (run.initialQueued) { admitted = true; return { noop: true }; }
       for (const step of run.initialSteps || []) {
-        await inv('queue_add', { args: { session: card.session, cardId: card.id,
+        await inv('channel_queue_add', { args: { session: card.session, cardId: card.id,
           operationId: step.operationId, dir: card.dir, cmd: card.cmd, text: step.text,
           mode: step.mode, at: step.at, tpl: step.tpl, tplIdx: step.tplIdx, tplTotal: step.tplTotal } });
       }

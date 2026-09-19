@@ -15,7 +15,9 @@
 //! does not promise Slack will retry forever; a later disconnect still leaves
 //! the explicit unresolved gap. Message bodies live only in this private durable
 //! inbox and the eventual card buffer. Tokens live only in closed Keychain
-//! slots. The adapter never writes to Slack.
+//! slots. The adapter never writes to Slack. A channel target must launch a
+//! recognized Codex or Claude process: externally supplied text is never
+//! admitted to an ordinary shell queue.
 
 use regex::{Regex, RegexBuilder};
 use serde::{Deserialize, Serialize};
@@ -136,10 +138,14 @@ fn one_line(s: &str, max_chars: usize) -> bool {
 }
 
 fn valid_target(target: &ChannelTarget) -> bool {
+    let agent = crate::context::expected_from_command(&target.cmd);
     local_id(&target.project_id, 128)
         && local_id(&target.column_id, 128)
         && one_line(&target.dir, 1024)
         && one_line(&target.cmd, 200)
+        && agent
+            .as_deref()
+            .is_some_and(|value| matches!(value, "codex" | "claude"))
         && !target.template.is_empty()
         && one_line(&target.template, 120)
         && target.idle_minutes <= 7 * 24 * 60
@@ -930,7 +936,9 @@ pub(crate) fn channel_smoke_seed(
         project_id,
         column_id,
         dir: String::new(),
-        cmd: String::new(),
+        // The debug smoke only needs a durable, agent-gated queue plan. The
+        // version command exits immediately, so it cannot consume prompts.
+        cmd: "claude --version".into(),
         template: "{text}".into(),
         idle_minutes: match scenario {
             "backlog" => 10,
@@ -1380,6 +1388,19 @@ mod tests {
         let mut enterprise = good.clone();
         enterprise["channelRules"][0]["senderUserIds"] = json!(["W123"]);
         assert!(validate_settings(&enterprise).is_ok());
+        for command in ["", "/bin/zsh", "/bin/zsh -lc claude", "while true"] {
+            let mut unsafe_target = good.clone();
+            unsafe_target["channelRules"][0]["cmd"] = json!(command);
+            assert!(
+                validate_settings(&unsafe_target).is_err(),
+                "channel command must be an explicitly recognized agent: {command}"
+            );
+        }
+        for command in ["codex --full-auto", "env FOO=1 /opt/bin/claude --x"] {
+            let mut agent_target = good.clone();
+            agent_target["channelRules"][0]["cmd"] = json!(command);
+            assert!(validate_settings(&agent_target).is_ok());
+        }
     }
 
     #[test]
