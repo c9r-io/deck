@@ -82,6 +82,10 @@ const ALLOWED_EXPRESSIONS: &[(&str, &str)] = &[
     // tmux_program() is the one gate: it resolves ONLY the sidecar inside
     // this build's bundle, never Homebrew/MacPorts and never a PATH lookup
     ("tmux.rs", "tmux_program()?"),
+    // Private control-channel seam: production passes tmux_program(); the
+    // injectable argument exists only so an isolated bundled tmux can test
+    // the real protocol without touching the deck/deck-dev sockets.
+    ("tmux.rs", "program"),
     ("tmux.rs", "tmux_sidecar"),
     ("commands.rs", "tmux_sidecar"),
     ("tmux_lifecycle.rs", "tmux_sidecar"),
@@ -93,7 +97,7 @@ const ALLOWED_EXPRESSIONS: &[(&str, &str)] = &[
 /// compiled into isolated smoke builds only.
 const DEBUG_ONLY_LITERALS: &[(&str, &str)] = &[("smoke_faults.rs", "pbpaste")];
 
-const EXPECTED_COMMAND_SITES: usize = 22;
+const EXPECTED_COMMAND_SITES: usize = 23;
 
 fn call_argument(rest: &str) -> &str {
     let mut depth = 0usize;

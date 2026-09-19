@@ -23,7 +23,9 @@
 
 use std::io::{Read, Write};
 use std::os::fd::AsRawFd;
-use std::process::{Command, Output, Stdio};
+use std::process::{Child, ChildStderr, ChildStdout, Command, Output, Stdio};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use crate::applog;
 use crate::error::{DeckError, ErrorKind};
@@ -593,6 +595,401 @@ pub(crate) fn list_panes() -> Result<Vec<PaneRow>, DeckError> {
         .collect()
 }
 
+// ---------- persistent read-only query channel -----------------------------
+
+const CONTROL_OUTPUT_LIMIT: usize = 2 * 1024 * 1024;
+const CONTROL_QUERY_BUDGET: Duration = Duration::from_millis(1500);
+const CONTROL_RETRY_DELAY: Duration = Duration::from_secs(10);
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct OwnedControlClient {
+    client_pid: u32,
+    server_pid: u32,
+    session: String,
+}
+
+static OWNED_CONTROL_CLIENT: Mutex<Option<OwnedControlClient>> = Mutex::new(None);
+
+/// Identity used only to remove Deck's own read-only control client from the
+/// lifecycle impact count. Callers must still verify it against list-clients;
+/// a remembered PID alone is never authority after a process exits/reuses it.
+pub(crate) fn owned_control_client() -> Option<(u32, u32, String)> {
+    OWNED_CONTROL_CLIENT
+        .lock()
+        .ok()
+        .and_then(|owned| owned.clone())
+        .map(|owned| (owned.client_pid, owned.server_pid, owned.session))
+}
+
+#[derive(Debug, Eq, PartialEq)]
+enum ControlFeed {
+    Pending,
+    Complete(String),
+    Failed,
+    Exited,
+}
+
+#[derive(Default)]
+struct ControlParser {
+    command_id: Option<u64>,
+    output: String,
+}
+
+fn control_marker(line: &str, marker: &str) -> Option<u64> {
+    let mut fields = line.split_whitespace();
+    (fields.next()? == marker)
+        .then_some(())
+        .and_then(|_| fields.next())
+        .and_then(|_| fields.next())
+        .and_then(|id| id.parse().ok())
+}
+
+impl ControlParser {
+    fn feed(&mut self, line: &str) -> Result<ControlFeed, DeckError> {
+        if let Some(id) = control_marker(line, "%begin") {
+            if self.command_id.replace(id).is_some() {
+                return Err(DeckError::new(ErrorKind::Tmux, "tmux control nested frame"));
+            }
+            self.output.clear();
+            return Ok(ControlFeed::Pending);
+        }
+        if let Some(id) = control_marker(line, "%end") {
+            if self.command_id.take() != Some(id) {
+                return Err(DeckError::new(
+                    ErrorKind::Tmux,
+                    "tmux control frame mismatch",
+                ));
+            }
+            return Ok(ControlFeed::Complete(std::mem::take(&mut self.output)));
+        }
+        if let Some(id) = control_marker(line, "%error") {
+            if self.command_id.take() != Some(id) {
+                return Err(DeckError::new(
+                    ErrorKind::Tmux,
+                    "tmux control frame mismatch",
+                ));
+            }
+            self.output.clear();
+            return Ok(ControlFeed::Failed);
+        }
+        if line == "%exit" || line.starts_with("%exit ") {
+            self.command_id = None;
+            self.output.clear();
+            return Ok(ControlFeed::Exited);
+        }
+        // All other % records are asynchronous control notifications. They
+        // are never pane rows (a pane row begins with the numeric server PID).
+        if line.starts_with('%') || self.command_id.is_none() {
+            return Ok(ControlFeed::Pending);
+        }
+        if self.output.len().saturating_add(line.len() + 1) > CONTROL_OUTPUT_LIMIT {
+            return Err(DeckError::new(ErrorKind::Tmux, "tmux control output limit"));
+        }
+        self.output.push_str(line);
+        self.output.push('\n');
+        Ok(ControlFeed::Pending)
+    }
+}
+
+fn take_control_line(buffer: &mut Vec<u8>) -> Result<Option<String>, DeckError> {
+    let Some(end) = buffer.iter().position(|byte| *byte == b'\n') else {
+        return Ok(None);
+    };
+    let bytes: Vec<u8> = buffer.drain(..=end).collect();
+    let line = std::str::from_utf8(&bytes[..bytes.len() - 1])
+        .map_err(|_| DeckError::new(ErrorKind::Tmux, "tmux control invalid utf8"))?;
+    Ok(Some(line.strip_suffix('\r').unwrap_or(line).to_owned()))
+}
+
+struct TmuxQueryChannel {
+    child: Child,
+    stdout: ChildStdout,
+    stderr: ChildStderr,
+    bytes: Vec<u8>,
+    parser: ControlParser,
+    server_pid: u32,
+    session: String,
+}
+
+fn nonblocking(fd: i32) -> Result<(), DeckError> {
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+        return Err(DeckError::new(
+            ErrorKind::Tmux,
+            "tmux control pipe unavailable",
+        ));
+    }
+    Ok(())
+}
+
+impl TmuxQueryChannel {
+    fn connect(rows: &[PaneRow]) -> Result<Self, DeckError> {
+        let conf = tmux_conf();
+        Self::connect_with(tmux_program()?, &conf, socket(), rows)
+    }
+
+    fn connect_with(
+        program: &str,
+        conf: &str,
+        socket_name: &str,
+        rows: &[PaneRow],
+    ) -> Result<Self, DeckError> {
+        let first = rows
+            .iter()
+            .min_by(|a, b| a.session_name.cmp(&b.session_name))
+            .ok_or_else(|| DeckError::new(ErrorKind::NoSession, "no sessions"))?;
+        let server_pid = first.server_pid;
+        if rows.iter().any(|row| row.server_pid != server_pid) {
+            return Err(DeckError::new(ErrorKind::Tmux, "tmux server changed"));
+        }
+        let session = first.session_name.clone();
+        let mut child = Command::new(program)
+            .args(["-f", conf, "-L", socket_name, "-C", "attach-session"])
+            .args(["-r", "-f", "ignore-size,no-output", "-t"])
+            .arg(session_target(&session))
+            .env("LANG", "en_US.UTF-8")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|error| {
+                DeckError::new(
+                    ErrorKind::TmuxMissing,
+                    format!("tmux control not runnable: {error}"),
+                )
+            })?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| DeckError::new(ErrorKind::Tmux, "tmux control stdout unavailable"))?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| DeckError::new(ErrorKind::Tmux, "tmux control stderr unavailable"))?;
+        nonblocking(stdout.as_raw_fd())?;
+        nonblocking(stderr.as_raw_fd())?;
+        let mut channel = Self {
+            child,
+            stdout,
+            stderr,
+            bytes: Vec::new(),
+            parser: ControlParser::default(),
+            server_pid,
+            session,
+        };
+        // The attach command itself is the first framed response. Consume it
+        // before accepting the first fixed query so command frames cannot mix.
+        channel.read_frame(Instant::now() + CONTROL_QUERY_BUDGET)?;
+        let owned = OwnedControlClient {
+            client_pid: channel.child.id(),
+            server_pid,
+            session: channel.session.clone(),
+        };
+        if let Ok(mut slot) = OWNED_CONTROL_CLIENT.lock() {
+            *slot = Some(owned);
+        }
+        Ok(channel)
+    }
+
+    fn drain_stderr(&mut self) -> Result<(), DeckError> {
+        let mut total = 0usize;
+        let mut bytes = [0u8; 4096];
+        loop {
+            match self.stderr.read(&mut bytes) {
+                Ok(0) => return Ok(()),
+                Ok(count) => {
+                    total += count;
+                    if total > 64 * 1024 {
+                        return Err(DeckError::new(ErrorKind::Tmux, "tmux control stderr limit"));
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => return Ok(()),
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(_) => {
+                    return Err(DeckError::new(
+                        ErrorKind::Tmux,
+                        "tmux control stderr failed",
+                    ))
+                }
+            }
+        }
+    }
+
+    fn next_line(&mut self, deadline: Instant) -> Result<String, DeckError> {
+        loop {
+            if let Some(line) = take_control_line(&mut self.bytes)? {
+                return Ok(line);
+            }
+            if Instant::now() >= deadline {
+                return Err(DeckError::new(ErrorKind::Tmux, "tmux control timeout"));
+            }
+            let mut chunk = [0u8; 8192];
+            match self.stdout.read(&mut chunk) {
+                Ok(0) => {
+                    return Err(DeckError::new(ErrorKind::Tmux, "tmux control closed"));
+                }
+                Ok(count) => {
+                    self.bytes.extend_from_slice(&chunk[..count]);
+                    if self.bytes.len() > CONTROL_OUTPUT_LIMIT {
+                        return Err(DeckError::new(ErrorKind::Tmux, "tmux control output limit"));
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    self.drain_stderr()?;
+                    if self
+                        .child
+                        .try_wait()
+                        .map_err(|_| DeckError::new(ErrorKind::Tmux, "tmux control wait failed"))?
+                        .is_some()
+                    {
+                        return Err(DeckError::new(ErrorKind::Tmux, "tmux control exited"));
+                    }
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(_) => {
+                    return Err(DeckError::new(
+                        ErrorKind::Tmux,
+                        "tmux control output failed",
+                    ))
+                }
+            }
+        }
+    }
+
+    fn read_frame(&mut self, deadline: Instant) -> Result<String, DeckError> {
+        loop {
+            let line = self.next_line(deadline)?;
+            match self.parser.feed(&line)? {
+                ControlFeed::Pending => {}
+                ControlFeed::Complete(output) => return Ok(output),
+                ControlFeed::Failed => {
+                    return Err(DeckError::new(ErrorKind::Tmux, "tmux control query failed"))
+                }
+                ControlFeed::Exited => {
+                    return Err(DeckError::new(ErrorKind::Tmux, "tmux control exited"))
+                }
+            }
+        }
+    }
+
+    fn list_panes(&mut self) -> Result<Vec<PaneRow>, DeckError> {
+        let command = format!("list-panes -a -F '{}'\n", PANE_FORMAT);
+        self.child
+            .stdin
+            .as_mut()
+            .ok_or_else(|| DeckError::new(ErrorKind::Tmux, "tmux control stdin unavailable"))?
+            .write_all(command.as_bytes())
+            .map_err(|_| DeckError::new(ErrorKind::Tmux, "tmux control stdin failed"))?;
+        let raw = self.read_frame(Instant::now() + CONTROL_QUERY_BUDGET)?;
+        let rows: Vec<_> = raw
+            .lines()
+            .map(|line| parse_pane_row(line).ok_or_else(malformed_row))
+            .collect::<Result<_, _>>()?;
+        if rows.is_empty() || rows.iter().any(|row| row.server_pid != self.server_pid) {
+            return Err(DeckError::new(
+                ErrorKind::Tmux,
+                "tmux control generation changed",
+            ));
+        }
+        Ok(rows)
+    }
+
+    fn stop(&mut self) {
+        let _ = self.child.stdin.take();
+        let deadline = Instant::now() + Duration::from_millis(250);
+        while Instant::now() < deadline {
+            if self.child.try_wait().ok().flatten().is_some() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+impl Drop for TmuxQueryChannel {
+    fn drop(&mut self) {
+        self.stop();
+        if let Ok(mut slot) = OWNED_CONTROL_CLIENT.lock() {
+            if slot
+                .as_ref()
+                .is_some_and(|owned| owned.client_pid == self.child.id())
+            {
+                *slot = None;
+            }
+        }
+    }
+}
+
+#[derive(Default)]
+struct QueryState {
+    channel: Option<TmuxQueryChannel>,
+    retry_after: Option<Instant>,
+}
+
+static QUERY_STATE: Mutex<QueryState> = Mutex::new(QueryState {
+    channel: None,
+    retry_after: None,
+});
+
+/// The Board-only high-frequency read path. Discovery/failure uses the
+/// existing one-shot implementation as an oracle, then stable polling stays
+/// on one read-only control client. No user value is ever parsed as a control
+/// command.
+pub(crate) fn query_list_panes() -> Result<Vec<PaneRow>, DeckError> {
+    let mut state = QUERY_STATE
+        .lock()
+        .map_err(|_| DeckError::new(ErrorKind::Tmux, "tmux control unavailable"))?;
+    if let Some(channel) = state.channel.as_mut() {
+        match channel.list_panes() {
+            Ok(rows) => return Ok(rows),
+            Err(error) => {
+                applog(&format!("[tmux-control] query reset ({})", error.code()));
+                state.channel.take();
+                state.retry_after = Some(Instant::now() + CONTROL_RETRY_DELAY);
+                // Exactly one one-shot oracle read accompanies a failed
+                // generation. Cooldown polls fail closed instead of exec-looping.
+                return list_panes();
+            }
+        }
+    }
+    if state
+        .retry_after
+        .is_some_and(|retry| Instant::now() < retry)
+    {
+        return Err(DeckError::new(ErrorKind::Tmux, "tmux control recovering"));
+    }
+    state.retry_after = None;
+    let rows = list_panes()?;
+    if rows.is_empty() {
+        return Ok(rows);
+    }
+    match TmuxQueryChannel::connect(&rows) {
+        Ok(channel) => {
+            applog("[tmux-control] read channel connected");
+            state.channel = Some(channel);
+        }
+        Err(error) => {
+            applog(&format!(
+                "[tmux-control] connect deferred ({})",
+                error.code()
+            ));
+            state.retry_after = Some(Instant::now() + CONTROL_RETRY_DELAY);
+        }
+    }
+    Ok(rows)
+}
+
+/// Restart and process exit call this after excluding active poll operations.
+pub(crate) fn stop_query_channel() {
+    if let Ok(mut state) = QUERY_STATE.lock() {
+        state.channel.take();
+        state.retry_after = None;
+    }
+}
+
 /// One pane, by tmux target (`pane_target(session)` for a card's pane).
 pub(crate) fn pane_row(target: &str) -> Result<PaneRow, DeckError> {
     let raw = tmux(&["display-message", "-p", "-t", target, PANE_FORMAT])?;
@@ -602,6 +999,7 @@ pub(crate) fn pane_row(target: &str) -> Result<PaneRow, DeckError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     fn row(fields: &[&str]) -> String {
         fields.join("\t")
@@ -820,5 +1218,179 @@ mod tests {
             crate::session_runtime::Deadline::until(begin + std::time::Duration::from_millis(60));
         assert!(command_with_stdin(&mut stalled, &["-c", "sleep 2"], b"").is_err());
         assert!(begin.elapsed() < std::time::Duration::from_secs(1));
+    }
+
+    #[test]
+    fn control_parser_correlates_frames_and_ignores_notifications() {
+        let mut parser = ControlParser::default();
+        assert_eq!(
+            parser.feed("%begin 1700000000 41 0").unwrap(),
+            ControlFeed::Pending
+        );
+        assert_eq!(parser.feed("99\t$1\talpha").unwrap(), ControlFeed::Pending);
+        assert_eq!(
+            parser.feed("%session-changed $1 alpha").unwrap(),
+            ControlFeed::Pending
+        );
+        assert_eq!(
+            parser.feed("%end 1700000000 41 0").unwrap(),
+            ControlFeed::Complete("99\t$1\talpha\n".into())
+        );
+
+        assert_eq!(
+            parser.feed("%begin 1700000001 42 0").unwrap(),
+            ControlFeed::Pending
+        );
+        assert_eq!(
+            parser.feed("%error 1700000001 42 0").unwrap(),
+            ControlFeed::Failed
+        );
+        assert_eq!(parser.feed("%exit reason").unwrap(), ControlFeed::Exited);
+    }
+
+    #[test]
+    fn control_parser_rejects_ambiguous_or_oversized_frames() {
+        let mut nested = ControlParser::default();
+        nested.feed("%begin 1 7 0").unwrap();
+        assert!(nested.feed("%begin 1 8 0").is_err());
+
+        let mut mismatched = ControlParser::default();
+        mismatched.feed("%begin 1 7 0").unwrap();
+        assert!(mismatched.feed("%end 1 8 0").is_err());
+
+        let mut oversized = ControlParser::default();
+        oversized.feed("%begin 1 7 0").unwrap();
+        assert!(oversized.feed(&"x".repeat(CONTROL_OUTPUT_LIMIT)).is_err());
+    }
+
+    #[test]
+    fn control_lines_handle_fragmentation_crlf_and_invalid_utf8() {
+        let mut bytes = b"first\r\nsecond".to_vec();
+        assert_eq!(take_control_line(&mut bytes).unwrap(), Some("first".into()));
+        assert_eq!(take_control_line(&mut bytes).unwrap(), None);
+        bytes.extend_from_slice(b" half\nthird\n");
+        assert_eq!(
+            take_control_line(&mut bytes).unwrap(),
+            Some("second half".into())
+        );
+        assert_eq!(take_control_line(&mut bytes).unwrap(), Some("third".into()));
+        assert!(bytes.is_empty());
+
+        let mut invalid = vec![0xff, b'\n'];
+        assert!(take_control_line(&mut invalid).is_err());
+    }
+
+    static CONTROL_SOCKET_SEQ: AtomicU64 = AtomicU64::new(0);
+
+    struct IsolatedControlServer {
+        socket: String,
+        binary: std::path::PathBuf,
+    }
+
+    impl IsolatedControlServer {
+        fn new() -> Self {
+            let seq = CONTROL_SOCKET_SEQ.fetch_add(1, Ordering::Relaxed);
+            Self {
+                socket: format!("deck-smoke-control-{}-{seq}", std::process::id()),
+                binary: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("binaries/tmux-aarch64-apple-darwin"),
+            }
+        }
+
+        fn output(&self, args: &[&str]) -> Output {
+            Command::new(&self.binary)
+                .args(["-f", "/dev/null", "-L", &self.socket])
+                .args(args)
+                .output()
+                .expect("run isolated control tmux")
+        }
+
+        fn run(&self, args: &[&str]) -> String {
+            let output = self.output(args);
+            assert!(
+                output.status.success(),
+                "tmux {args:?} failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8(output.stdout)
+                .expect("tmux output utf8")
+                .trim_end()
+                .to_owned()
+        }
+    }
+
+    impl Drop for IsolatedControlServer {
+        fn drop(&mut self) {
+            let _ = self.output(&["kill-server"]);
+        }
+    }
+
+    #[test]
+    fn persistent_control_matches_one_shot_and_is_read_only_no_output() {
+        let server = IsolatedControlServer::new();
+        assert!(server.binary.is_file(), "bundled tmux test binary missing");
+        server.run(&[
+            "new-session",
+            "-d",
+            "-s",
+            "alpha",
+            "-x",
+            "80",
+            "-y",
+            "24",
+            "/bin/sleep",
+            "30",
+        ]);
+        let raw = server.run(&["list-panes", "-a", "-F", PANE_FORMAT]);
+        let expected: Vec<_> = raw
+            .lines()
+            .map(|line| parse_pane_row(line).unwrap())
+            .collect();
+
+        let mut channel = TmuxQueryChannel::connect_with(
+            server.binary.to_str().unwrap(),
+            "/dev/null",
+            &server.socket,
+            &expected,
+        )
+        .expect("connect persistent control client");
+        assert_eq!(
+            owned_control_client(),
+            Some((channel.child.id(), expected[0].server_pid, "alpha".into()))
+        );
+        let actual = channel.list_panes().expect("persistent list-panes");
+        assert_eq!(actual, expected);
+
+        let clients = server.run(&[
+            "list-clients",
+            "-F",
+            "#{client_pid}\t#{client_control_mode}\t#{client_flags}\t#{session_name}",
+        ]);
+        let owned = clients
+            .lines()
+            .find(|line| line.starts_with(&format!("{}\t", channel.child.id())))
+            .expect("owned client is listed");
+        assert!(owned.contains("\t1\t"), "not a control client: {owned}");
+        assert!(owned.contains("read-only"), "not read-only: {owned}");
+        assert!(
+            owned.contains("no-output"),
+            "output not suppressed: {owned}"
+        );
+        assert!(owned.contains("ignore-size"), "size not ignored: {owned}");
+        assert_eq!(
+            server.run(&[
+                "display-message",
+                "-p",
+                "-t",
+                "alpha:",
+                "#{window_width}x#{window_height}"
+            ]),
+            "80x24"
+        );
+
+        server.run(&["kill-session", "-t", "=alpha"]);
+        assert!(channel.list_panes().is_err());
+        drop(channel);
+        assert_eq!(owned_control_client(), None);
     }
 }

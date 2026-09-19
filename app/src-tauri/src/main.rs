@@ -413,6 +413,9 @@ fn main() {
                     let _ = w.set_focus();
                 }
             }
+            if matches!(&event, tauri::RunEvent::Exit) {
+                tmux::stop_query_channel();
+            }
             let _ = (app, &event);
         });
 }

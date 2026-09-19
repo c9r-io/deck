@@ -460,8 +460,10 @@ pub(crate) fn capture_tails(names: &[&String], lines: usize) -> HashMap<String, 
 
 /// Single poll for everything the board needs: liveness, output recency,
 /// process-tree memory, and (for the sessions on screen) tail previews.
-/// Cost is bounded: 2 tmux subprocesses + 1 ps per poll, independent of
-/// session count (was 2 + one capture-pane per visible card).
+/// Cost is bounded: the stable list path reuses one read-only tmux control
+/// client, while tail capture remains one subprocess and memory remains one
+/// ps per poll, independent of session count (was 2 + one capture-pane per
+/// visible card).
 ///
 /// PERF (examples/poll_bench.rs, M-series, release, 2026-08): per poll at
 /// 5/20/50 sessions — old pattern 14/45/108 ms with 7/22/52 subprocesses;
@@ -481,7 +483,7 @@ pub(crate) async fn poll_sessions(
             names,
             tail_for,
             checkpoint_shells,
-            crate::tmux::list_panes(),
+            crate::tmux::query_list_panes(),
         )
     })
     .await

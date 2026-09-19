@@ -457,6 +457,54 @@ fn absent_error(error: &str) -> bool {
         || error.contains("no sessions")
 }
 
+fn subtract_owned_control_client(
+    server_pid: u32,
+    sessions: &mut [SessionImpact],
+    clients: &str,
+    owned: Option<(u32, u32, String)>,
+) -> Result<(), ()> {
+    let Some((owned_pid, owned_server_pid, owned_session)) = owned else {
+        return Ok(());
+    };
+    if owned_server_pid != server_pid {
+        return Ok(());
+    }
+    let mut verified = false;
+    for line in clients.lines() {
+        let mut fields = line.split('\t');
+        let (Some(pid), Some(control), Some(flags), Some(session), None) = (
+            fields.next(),
+            fields.next(),
+            fields.next(),
+            fields.next(),
+            fields.next(),
+        ) else {
+            return Err(());
+        };
+        let pid = pid.parse::<u32>().map_err(|_| ())?;
+        let flags: Vec<_> = flags.split(',').collect();
+        let expected_flags = ["ignore-size", "no-output", "read-only"];
+        if pid == owned_pid
+            && control == "1"
+            && expected_flags.iter().all(|flag| flags.contains(flag))
+            && session == owned_session
+        {
+            if verified {
+                return Err(());
+            }
+            verified = true;
+        }
+    }
+    if verified {
+        let session = sessions
+            .iter_mut()
+            .find(|session| session.name == owned_session)
+            .ok_or(())?;
+        session.attached_clients = session.attached_clients.saturating_sub(1);
+    }
+    Ok(())
+}
+
 fn probe_server() -> Probe {
     let head = match tmux(&[
         "display-message",
@@ -524,6 +572,21 @@ fn probe_server() -> Probe {
             has_foreground_process: false,
             recently_active: now_epoch().saturating_sub(activity) <= 60,
         });
+    }
+
+    if let Some(owned) = tmux::owned_control_client() {
+        let clients = match tmux(&[
+            "list-clients",
+            "-F",
+            "#{client_pid}\t#{client_control_mode}\t#{client_flags}\t#{session_name}",
+        ]) {
+            Ok(value) => value,
+            Err(error) if absent_error(error.message()) => String::new(),
+            Err(_) => return Probe::Unreachable,
+        };
+        if subtract_owned_control_client(pid, &mut sessions, &clients, Some(owned)).is_err() {
+            return Probe::Unreachable;
+        }
     }
 
     let mut pane_identities = Vec::new();
@@ -1174,6 +1237,10 @@ fn restart_tmux_server_inner(
         crate::session_runtime::Deadline::until(started + crate::restart::PREPARE_BUDGET);
     let _guard = try_operation()?;
     let _activity = crate::session_runtime::exclusive()?;
+    // The read-only client is still an attached tmux client. Stop it before
+    // capturing/rechecking restart impact so it cannot keep the old server
+    // alive or perturb attached-client counts during replacement.
+    tmux::stop_query_channel();
     if APP_UPDATE_INSTALLING.load(Ordering::Acquire) {
         return Err(DeckError::new(ErrorKind::Other, "app-update-installing"));
     }
@@ -1428,6 +1495,88 @@ mod tests {
 
     fn metadata(build: &CurrentBuildIdentity) -> MetadataRead {
         MetadataRead::Present(metadata_for_current(build))
+    }
+
+    fn impact(name: &str, attached_clients: u32) -> SessionImpact {
+        SessionImpact {
+            name: name.into(),
+            pane_count: 1,
+            attached_clients,
+            has_foreground_process: false,
+            recently_active: false,
+        }
+    }
+
+    #[test]
+    fn only_the_verified_owned_control_client_is_removed_from_impact() {
+        let mut sessions = vec![impact("alpha", 2), impact("beta", 1)];
+        subtract_owned_control_client(
+            77,
+            &mut sessions,
+            "100\t1\tignore-size,no-output,read-only\talpha\n101\t1\tcontrol-mode\talpha\n102\t0\t\tbeta\n",
+            Some((100, 77, "alpha".into())),
+        )
+        .unwrap();
+        assert_eq!(sessions[0].attached_clients, 1);
+        assert_eq!(sessions[1].attached_clients, 1);
+
+        let mut wrong_server = vec![impact("alpha", 2)];
+        subtract_owned_control_client(
+            77,
+            &mut wrong_server,
+            "100\t1\tignore-size,no-output,read-only\talpha\n",
+            Some((100, 78, "alpha".into())),
+        )
+        .unwrap();
+        assert_eq!(wrong_server[0].attached_clients, 2);
+
+        let mut not_control = vec![impact("alpha", 2)];
+        subtract_owned_control_client(
+            77,
+            &mut not_control,
+            "100\t0\tignore-size,no-output,read-only\talpha\n",
+            Some((100, 77, "alpha".into())),
+        )
+        .unwrap();
+        assert_eq!(not_control[0].attached_clients, 2);
+
+        let mut wrong_flags = vec![impact("alpha", 2)];
+        subtract_owned_control_client(
+            77,
+            &mut wrong_flags,
+            "100\t1\tignore-size,read-only\talpha\n",
+            Some((100, 77, "alpha".into())),
+        )
+        .unwrap();
+        assert_eq!(wrong_flags[0].attached_clients, 2);
+    }
+
+    #[test]
+    fn owned_control_client_verification_fails_closed() {
+        for clients in [
+            "not-a-pid\t1\tignore-size,no-output,read-only\talpha\n",
+            "100\t1\talpha\n",
+            "100\t1\tignore-size,no-output,read-only\talpha\textra\n",
+            "100\t1\tignore-size,no-output,read-only\talpha\n100\t1\tignore-size,no-output,read-only\talpha\n",
+        ] {
+            let mut sessions = vec![impact("alpha", 1)];
+            assert!(subtract_owned_control_client(
+                77,
+                &mut sessions,
+                clients,
+                Some((100, 77, "alpha".into())),
+            )
+            .is_err());
+        }
+
+        let mut missing_session = vec![impact("beta", 1)];
+        assert!(subtract_owned_control_client(
+            77,
+            &mut missing_session,
+            "100\t1\tignore-size,no-output,read-only\talpha\n",
+            Some((100, 77, "alpha".into())),
+        )
+        .is_err());
     }
 
     #[test]

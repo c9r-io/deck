@@ -93,6 +93,30 @@ stable Applications location. A process launched from an updater temporary
 directory, DMG, App Translocation, or another transient location can inspect
 an existing server but cannot become the creator of a new long-lived one.
 
+## Board query channel
+
+The Board's high-frequency pane inventory uses one serialized tmux control
+client after an initial one-shot discovery. The client attaches read-only with
+`ignore-size,no-output` and accepts only Deck's compiled `list-panes -a -F`
+query; user, project, session and prompt values can never become control
+commands. Replies are correlated by tmux command ID and have a 1.5 second
+deadline plus a 2 MiB output bound. Malformed, nested, mismatched, failed or
+exited frames destroy the channel.
+
+Discovery and the first failure of a channel generation use the existing
+one-shot query as an oracle. A ten-second cooldown then fails closed instead
+of creating a new process on every Board poll. No sentinel session is created:
+an empty server has no persistent query client. Every write, PTY, stdin,
+session mutation and lifecycle operation remains on the existing one-shot
+path.
+
+A control client increments tmux's attached-client count. Deck therefore
+remembers its child PID, server PID and attached session, then subtracts one
+client from lifecycle impact only after `list-clients` independently confirms
+the exact PID, control mode, read-only/no-output/ignore-size flags and session
+on the same server generation. Missing, duplicate or malformed evidence fails
+closed. The channel is stopped before a server restart and on app exit.
+
 ## Restart transaction and recovery
 
 The backend owns one serialized restart operation:
