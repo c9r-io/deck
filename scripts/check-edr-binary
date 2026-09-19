@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+app_path=${1:?usage: scripts/check-edr-binary /path/to/deck.app}
+info="$app_path/Contents/Info.plist"
+test -f "$info"
+executable=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$info")
+targets=("$app_path/Contents/MacOS/$executable" "$app_path/Contents/MacOS/deck-status-helper")
+for target in "${targets[@]}"; do
+  test -f "$target"
+  for forbidden in \
+    launchctl LaunchAgents LaunchDaemons SMAppService osascript \
+    /bin/sh /bin/bash /bin/zsh --deck-shell-bootstrap
+  do
+    if strings -a "$target" | grep -Fq -- "$forbidden"; then
+      echo "$target contains forbidden EDR token: $forbidden" >&2
+      exit 1
+    fi
+  done
+done
+echo "EDR binary vocabulary clean: ${targets[*]}"

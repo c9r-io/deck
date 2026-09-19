@@ -5,7 +5,9 @@
 # binary outside the GUI login session can't reach macOS text-input services
 # (TSM/IMK) — the window opens and mouse works, but keyboard input is dead.
 set -e
-cd "$(dirname "$0")/src-tauri"
+APP_DIR=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
+REPO_ROOT=$(dirname "$APP_DIR")
+cd "$APP_DIR/src-tauri"
 
 cargo build
 
@@ -97,6 +99,7 @@ if [ -n "${DECK_SMOKE_DATA_DIR:-}" ]; then
       "$@"
   fi
   echo "deck smoke bundle launched with isolated data and tmux socket"
+  echo "cleanup after evidence capture: $REPO_ROOT/scripts/edr_runtime.py --cleanup --socket $DECK_SMOKE_TMUX_SOCKET"
 else
   if [ "$#" -gt 0 ]; then
     open "$APP" --args "$@"

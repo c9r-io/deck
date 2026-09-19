@@ -85,8 +85,9 @@ notes and `publish_feed`. The workflow:
    workflow gate;
 3. builds Apple Silicon exactly once using the shared Developer ID carrier
    identity but the Nightly-only updater minisign key;
-4. notarizes and staples the final DMG, then runs codesign, stapler and
-   Gatekeeper verification;
+4. scans the packaged app/helper for the closed EDR-forbidden runtime
+   vocabulary, notarizes and staples the final DMG, then runs codesign, stapler
+   and Gatekeeper verification;
 5. creates an annotated candidate tag at the resolved SHA and a draft
    prerelease, uploads the DMG, updater archive, signature, candidate manifest,
    `SHA256SUMS` and closed `provenance.json`, and downloads them into a fresh

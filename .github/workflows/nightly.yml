@@ -147,7 +147,7 @@ jobs:
           scripts/ui-tests
           scripts/test-speech-bridge
           node app/ui/js/check.mjs
-          python3 -m unittest scripts/test_release_tools.py
+          python3 -m unittest scripts/test_release_tools.py scripts/test_edr_runtime.py
           scripts/check-workflows
           cargo audit --file app/src-tauri/Cargo.lock
 
@@ -230,6 +230,7 @@ jobs:
           test -f "$app_path/Contents/MacOS/$executable"
           test -f "$app_path/Contents/MacOS/tmux"
           LC_ALL=C grep -aFq "$CANDIDATE_SHA" "$app_path/Contents/MacOS/$executable"
+          scripts/check-edr-binary "$app_path"
           codesign --verify --deep --strict --verbose=2 "$app_path"
           codesign --verify --strict --verbose=2 "$app_path/Contents/MacOS/tmux"
           test "$(dwarfdump --uuid "$app_path/Contents/MacOS/$executable" | wc -l | tr -d ' ')" = 1

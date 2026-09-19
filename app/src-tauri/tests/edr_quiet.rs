@@ -60,14 +60,20 @@ fn production_sources() -> Vec<(String, String)> {
         .collect()
 }
 
-/// Fixed-argument system tools deck may spawn, and nothing else.
-const ALLOWED_LITERALS: &[&str] = &[
-    "open",
-    "/usr/bin/open",
-    "/usr/bin/plutil",
-    "/usr/bin/pbcopy",
-    "sw_vers",
-    "uname",
+/// Fixed-argument system tools deck may spawn, at reviewed module boundaries.
+/// Keeping the file in this key means a new `open` in an unrelated module is
+/// not silently accepted merely because another feature already uses it.
+const ALLOWED_LITERAL_SITES: &[(&str, &str)] = &[
+    ("links.rs", "open"),
+    ("links.rs", "/usr/bin/open"),
+    ("diagnostics.rs", "open"),
+    ("diagnostics.rs", "sw_vers"),
+    ("diagnostics.rs", "uname"),
+    ("relaunch.rs", "/usr/bin/open"),
+    ("relaunch.rs", "/usr/bin/plutil"),
+    ("commands.rs", "/usr/bin/pbcopy"),
+    ("inbound.rs", "open"),
+    ("inbound_channel.rs", "open"),
 ];
 
 /// Computed executables, each reviewed: the bundled tmux sidecar and the
@@ -86,6 +92,28 @@ const ALLOWED_EXPRESSIONS: &[(&str, &str)] = &[
 /// Debug-only smoke instrumentation may read the pasteboard back; it is
 /// compiled into isolated smoke builds only.
 const DEBUG_ONLY_LITERALS: &[(&str, &str)] = &[("smoke_faults.rs", "pbpaste")];
+
+const EXPECTED_COMMAND_SITES: usize = 22;
+
+fn call_argument(rest: &str) -> &str {
+    let mut depth = 0usize;
+    let end = rest
+        .char_indices()
+        .find_map(|(index, character)| match character {
+            '(' => {
+                depth += 1;
+                None
+            }
+            ')' if depth == 0 => Some(index),
+            ')' => {
+                depth -= 1;
+                None
+            }
+            _ => None,
+        })
+        .expect("balanced process constructor argument");
+    rest[..end].trim()
+}
 
 #[test]
 fn native_speech_is_in_process_local_and_content_free() {
@@ -128,29 +156,15 @@ fn every_production_spawn_is_on_the_allowlist() {
         for (at, _) in src.match_indices("Command::new(") {
             seen += 1;
             let rest = &src[at + "Command::new(".len()..];
-            // the argument ends at the paren that closes `Command::new(`
-            let mut depth = 0usize;
-            let end = rest
-                .char_indices()
-                .find_map(|(i, c)| match c {
-                    '(' => {
-                        depth += 1;
-                        None
-                    }
-                    ')' if depth == 0 => Some(i),
-                    ')' => {
-                        depth -= 1;
-                        None
-                    }
-                    _ => None,
-                })
-                .expect("balanced Command::new argument");
-            let arg = rest[..end].trim();
+            let arg = call_argument(rest);
             if let Some(literal) = arg.strip_prefix('"').and_then(|a| a.strip_suffix('"')) {
                 let debug = DEBUG_ONLY_LITERALS.contains(&(name.as_str(), literal));
                 assert!(
-                    ALLOWED_LITERALS.contains(&literal) || debug,
-                    "{name}: spawns {literal:?}, which is not an allowed system tool"
+                    ALLOWED_LITERAL_SITES
+                        .iter()
+                        .any(|(file, tool)| name.ends_with(file) && *tool == literal)
+                        || debug,
+                    "{name}: spawns {literal:?} at an unreviewed call site"
                 );
             } else {
                 assert!(
@@ -162,7 +176,42 @@ fn every_production_spawn_is_on_the_allowlist() {
             }
         }
     }
-    assert!(seen >= 10, "spawn sites found: {seen}");
+    assert_eq!(
+        seen, EXPECTED_COMMAND_SITES,
+        "the production process surface changed and needs EDR review"
+    );
+}
+
+#[test]
+fn pty_launches_only_the_reviewed_bundled_tmux() {
+    let mut sites = Vec::new();
+    for (name, src) in production_sources() {
+        for (at, _) in src.match_indices("CommandBuilder::new(") {
+            let rest = &src[at + "CommandBuilder::new(".len()..];
+            sites.push((name.clone(), call_argument(rest).to_string()));
+        }
+    }
+    assert_eq!(sites, vec![("pty.rs".into(), "tmux_program()?".into())]);
+}
+
+#[test]
+fn bundled_status_helper_has_no_process_or_persistence_surface() {
+    let helper = std::fs::read_to_string(manifest("status-helper/src/main.rs")).unwrap();
+    for forbidden in [
+        "Command::new(",
+        "CommandBuilder::new(",
+        "Process(",
+        "NSTask",
+        "launchctl",
+        "LaunchAgents",
+        "LaunchDaemons",
+        "SMAppService",
+    ] {
+        assert!(
+            !helper.contains(forbidden),
+            "status helper introduced {forbidden}"
+        );
+    }
 }
 
 #[test]

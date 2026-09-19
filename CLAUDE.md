@@ -35,7 +35,10 @@ same commit as the behaviour it describes.
   ever executes: `tmux::tmux_program()` resolves the signed sidecar next to
   deck's own executable and NEVER falls back to Homebrew/MacPorts or a PATH
   lookup (`/usr/local/bin` is user-writable on many Macs, and every deck
-  session descends from that binary).
+  session descends from that binary). Isolated debug/smoke servers must be
+  retired after evidence capture: `scripts/edr_runtime.py` inventories only
+  reviewed `deck-dev` / `deck-smoke-*` identities and cleanup is explicit;
+  release workflows run `scripts/check-edr-binary` over the packaged app.
 - **Never create a public candidate, Stable tag, feed update or promotion
   without the user's explicit authorization.** Release operation is documented
   in `docs/release-channels.md`. `scripts/release-version` synchronizes the three numeric source/lock entries;

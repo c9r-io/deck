@@ -143,6 +143,7 @@ jobs:
           test -f "$app_path/Contents/MacOS/$executable"
           test -f "$app_path/Contents/MacOS/tmux"
           LC_ALL=C grep -aFq "$CANDIDATE_SHA" "$app_path/Contents/MacOS/$executable"
+          scripts/check-edr-binary "$app_path"
           codesign --verify --deep --strict --verbose=2 "$app_path"
           codesign --verify --strict --verbose=2 "$app_path/Contents/MacOS/tmux"
           test "$(dwarfdump --uuid "$app_path/Contents/MacOS/$executable" | wc -l | tr -d ' ')" = 1

@@ -1,5 +1,12 @@
 # deck release smoke checklist
 
+Every isolated run must be retired after its evidence is captured. From the
+repository root, first audit with `scripts/edr_runtime.py`; then explicitly run
+`scripts/edr_runtime.py --cleanup --socket deck-smoke-UNIQUE`. Cleanup validates
+the server's `source=smoke` metadata and never targets production `-L deck`. It
+refuses a non-shell foreground process unless the operator deliberately adds
+`--include-foreground`. A final read-only audit must print nothing and exit 0.
+
 Resume completion has an isolated scenario:
 `DECK_SMOKE_DATA_DIR="$(mktemp -d /tmp/deck-resume.XXXXXX)" DECK_SMOKE_TMUX_SOCKET=deck-smoke-resume-unique DECK_SMOKE_WKWEBVIEW=resume app/run.sh`.
 It checks wrapped exit hints through real tmux/IPC, candidate priority, ghost

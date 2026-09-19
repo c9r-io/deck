@@ -40,13 +40,13 @@ other descendants in only the restored pane failed with `no route to host`.
 Shell recovery therefore has a separate process-boundary invariant: Deck may
 prepare inert history, but it must never be a pane executable. The current
 path sends sanitized bounded bytes to the private tmux server over client
-stdin, using one command batch to `start-server`, load a uniquely named buffer,
-and create the pane. `/bin/sh` writes that buffer to pane stdout, deletes it,
-and replaces itself with the login shell. This preserves the visible history
-and restart boundary without replaying commands, placing history in shell
-stdin or argv, creating a new restore payload file, or putting Deck in the
-pane's responsible process chain. Fresh and restored sessions now have the
-same tmux-to-system-shell trust boundary.
+stdin, using one command batch to load a uniquely named buffer, create the pane
+as an ordinary clean shell, write that buffer to the new pane's tty with tmux
+`save-buffer`, and delete the buffer. No script or shell argv carries the
+payload. This preserves the visible history and restart boundary without
+replaying commands, placing history in shell stdin or argv, creating a restore
+payload file, or putting Deck in the pane's responsible process chain. Fresh
+and restored sessions now have the same tmux-to-system-shell trust boundary.
 
 ## Identity and compatibility
 
