@@ -82,7 +82,7 @@ if [ -n "${DECK_SMOKE_DATA_DIR:-}" ]; then
   if [ -n "${DECK_SMOKE_WKWEBVIEW:-}" ]; then
     SMOKE_MODE=$DECK_SMOKE_WKWEBVIEW
     case "$SMOKE_MODE" in
-      run|restart|ambiguous|settings|attention|review|review-restart|voice) ;;
+      run|restart|ambiguous|settings|attention|review|review-restart|voice|resume) ;;
       *) SMOKE_MODE=run ;;
     esac
     open -n "$APP" --args \

@@ -1,5 +1,11 @@
 # deck release smoke checklist
 
+Resume completion has an isolated scenario:
+`DECK_SMOKE_DATA_DIR="$(mktemp -d /tmp/deck-resume.XXXXXX)" DECK_SMOKE_TMUX_SOCKET=deck-smoke-resume-unique DECK_SMOKE_WKWEBVIEW=resume app/run.sh`.
+It checks wrapped exit hints through real tmux/IPC, candidate priority, ghost
+acceptance without execution, recovery across an isolated service restart,
+pane isolation, agent suppression and clearing.
+
 Voice input integration has a separate isolated scenario:
 `DECK_SMOKE_DATA_DIR=/tmp/deck-voice-unique DECK_SMOKE_TMUX_SOCKET=deck-smoke-voice-unique DECK_SMOKE_WKWEBVIEW=voice app/run.sh`.
 It checks the header button, the byte-literal typing path via real IPC (no

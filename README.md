@@ -176,6 +176,12 @@ shells (agent prompts are never recorded) and suggests as you type: the first
 match appears as gray ghost text at the cursor — **Tab or →** applies it; more
 candidates sit in a reserved row below. Only the focused pane gives up that
 row, and xterm plus the underlying PTY are refit together.
+Typing `codex resume`, `claude --resume` or `claude -r` also offers session IDs
+from recent exit messages in that pane, ahead of ordinary command history.
+Existing options such as `codex --yolo resume` are preserved. Acceptance fills
+the command without pressing Enter. Hints use bounded tmux output (including
+restored output when shell recovery is enabled); cleared, missing or unrecognized
+exit messages simply leave ordinary completion in place.
 
 **Bounded shell recovery.** This opt-in feature is off by default. While a pane
 is back at a shell prompt, deck checkpoints its current directory and up to

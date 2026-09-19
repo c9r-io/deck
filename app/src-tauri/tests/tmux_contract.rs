@@ -379,6 +379,11 @@ fn shell_restore_bootstrap_becomes_tmux_history_without_executing_text() {
     for line in 0..40 {
         writeln!(payload, "restored-contract-{line:02}").unwrap();
     }
+    writeln!(
+        payload,
+        "To continue this session, run:\n\n  codex resume 01a0b76c-b577-7493-86ef-a1f6209b823e"
+    )
+    .unwrap();
     writeln!(payload, "touch {}", executed.display()).unwrap();
     writeln!(payload, "\n---------------- deck restart ----------------").unwrap();
 
@@ -480,6 +485,12 @@ fn shell_restore_bootstrap_becomes_tmux_history_without_executing_text() {
         "captured={captured:?} current={current_command:?} start={start_command:?}"
     );
     assert!(captured.contains("restored-contract-39"), "{captured}");
+    assert!(
+        captured.contains(
+            "To continue this session, run:\n\n  codex resume 01a0b76c-b577-7493-86ef-a1f6209b823e"
+        ),
+        "resume hints survive restoration: {captured}"
+    );
     assert!(captured.contains(&format!("touch {}", executed.display())));
     assert!(
         !executed.exists(),

@@ -190,6 +190,18 @@ const KEY_CLASSES: &[&str] = &[
 /// recorded). Process names themselves stay out of the log.
 const FG_CLASSES: &[&str] = &["no-card", "no-fg", "agent", "editor", "repl", "other"];
 const SMOKE_CHECKS: &[&str] = &[
+    "resume-capture-0",
+    "resume-capture-1",
+    "resume-priority",
+    "resume-chip",
+    "resume-ghost",
+    "resume-no-execution",
+    "resume-restored",
+    "resume-pane-isolation",
+    "resume-agent-hidden",
+    "resume-cleared",
+    "resume-done",
+    "resume-exception",
     "rename",
     "selection-up",
     "selection-markers",

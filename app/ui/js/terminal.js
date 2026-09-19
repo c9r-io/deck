@@ -6,6 +6,9 @@
 // Its generation-based transition is: detach/hide old owner, refit old owner,
 // mount new owner, refit new owner. Stale RAF work must not resize a newer
 // owner, and each pane preserves its own bottom-follow/scrollback position.
+// Shell-only resume prefixes also request bounded tmux exit hints. These are
+// pane-local, ephemeral and ranked before history; accepting only fills input.
+// Focus, submit and foreground changes revoke pending hint reads.
 //
 // New session (04 A v01): `newSession` is the one entry for every way a
 // session is created by hand. It starts the session FIRST
@@ -27,6 +30,7 @@ import { formatNumber, onLocaleChange, t } from './i18n.js';
 import { formatShortcut, registerShortcutAction } from './shortcuts.js';
 import { openAutomations } from './automation.js';
 import { openTemplates } from './templates.js';
+import { createResumeCache, resumeCommands, resumeTarget } from './resume-model.js';
 
 /* ---------- context menus ---------- */
 /* The one dismissal for the shared #ctx element. Every menu that installs a
@@ -326,10 +330,12 @@ export function feedMirror(d) {
   let completed = null;
   for (const ch of d) {
     if (ch === '\r' || ch === '\n') {
+      resumeCache.reset();
       if (ctx.lineBuf && ctx.lineBuf.trim().length >= 2) completed = ctx.lineBuf.trim();
       ctx.lineBuf = '';
       ctx.freshShell = false;
     } else if (ch === '\x03' || ch === '\x15') {
+      resumeCache.reset();
       ctx.lineBuf = '';
       ctx.freshShell = false;
     } else if (ch === '\x7f') {
@@ -366,10 +372,24 @@ export function maybeRecordCommand(cmd) {
   ctx.histCache = [cmd, ...ctx.histCache.filter(x => x !== cmd)];
 }
 
+const resumeCache = createResumeCache(
+  pane => inv('terminal_resume_hints', { name: pane.session }),
+  pane => { if (panes.get(ctx.attachedName) === pane) renderSuggest(); },
+);
+
+export function invalidateResumeSuggestions() {
+  resumeCache.reset();
+  renderSuggest();
+}
+
 export function suggestions() {
   if (ctx.lineBuf === null) return [];
   if (ctx.lineBuf.length >= 2) {
-    return ctx.histCache.filter(c => c.startsWith(ctx.lineBuf) && c !== ctx.lineBuf).slice(0, 6);
+    const pane = panes.get(ctx.attachedName);
+    const card = provider.get(state.sessionId);
+    const hints = pane && SHELL_FG.test(card?.fg || '') && resumeTarget(ctx.lineBuf)
+      ? resumeCommands(ctx.lineBuf, resumeCache.get(pane)) : [];
+    return [...new Set([...hints, ...ctx.histCache.filter(c => c.startsWith(ctx.lineBuf) && c !== ctx.lineBuf)])].slice(0, 6);
   }
   if (ctx.freshShell && ctx.lineBuf === '') return ctx.histCache.slice(0, 8);
   return [];
@@ -552,6 +572,7 @@ export function renderSuggest() {
 }
 
 export function resetSuggest(nextPane = null) {
+  resumeCache.reset();
   ctx.lineBuf = '';
   ctx.freshShell = false;
   ctx.ghostRemainder = '';

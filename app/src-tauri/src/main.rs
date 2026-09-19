@@ -28,6 +28,7 @@ mod pty;
 mod redact;
 mod relaunch;
 mod restart;
+mod resume;
 mod scheduler;
 mod shell_state;
 mod smoke_faults;
@@ -249,6 +250,8 @@ fn main() {
                         "m.verifySettings()"
                     } else if mode == "voice" {
                         "m.verifyVoice()"
+                    } else if mode == "resume" {
+                        "m.verifyResume()"
                     } else {
                         "m.run()"
                     };
@@ -317,6 +320,7 @@ fn main() {
             links::open_target,
             links::resolve_parent_dir,
             history::recent_commands,
+            resume::terminal_resume_hints,
             history::record_command,
             history::history_clear,
             diagnostics::debug_logging_enabled,

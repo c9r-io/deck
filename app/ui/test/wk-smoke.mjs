@@ -2042,6 +2042,11 @@ export async function verifyVoice() {
   await runVoiceSmoke();
 }
 
+export async function verifyResume() {
+  const { runResumeSmoke } = await import('./resume-smoke.mjs');
+  await runResumeSmoke();
+}
+
 export async function verifyReview(restart = false) {
   const { runReviewSmoke } = await import('./review-smoke.mjs');
   await runReviewSmoke(restart);

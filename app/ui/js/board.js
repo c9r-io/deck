@@ -6,6 +6,7 @@
 // only coalesces. Attention snapshots and read state are runtime only.
 // Live status never changes placement or durable ordering. Cards carry no
 // terminal preview: output is read in the terminal, never on the Board.
+// Foreground changes in the focused pane invalidate ephemeral resume hints.
 // Creation (04 A v01): `provider.createStarted` is the ONE path that makes a
 // card for a new session — it starts the tmux session first and persists the
 // card only after that succeeded, so a failed start never leaves a card
@@ -17,7 +18,7 @@ import { mutateBoard, mutateBoardDebounced } from './persistence.js';
 import { collapseHome, createConfirmationCounter, createExitRetirementTracker, effectiveCardStatus, initialLaunched, newSessionColumn, newSessionPlan, projectDefaults, reorderById, runFinishHolds, sidebarGroups } from './pure.js';
 import { confirmDialog, inlineRename, projectDefaultsDialog, toast } from './dialogs.js';
 import { clearSeparators, closePaneBySid, hasPane, leaveSessionView, openSession, renderSessionView, updatePaneChrome } from './layout.js';
-import { SHELL_FG, showProjectCtx, showSessionCtx } from './terminal.js';
+import { SHELL_FG, invalidateResumeSuggestions, showProjectCtx, showSessionCtx } from './terminal.js';
 import { refreshQueuePlans, renderQueueUI, setQueueChip, updateQuietHints } from './scheduler.js';
 import { formatNumber, t } from './i18n.js';
 import { formatShortcut } from './shortcuts.js';
@@ -530,6 +531,7 @@ async function pollSessionsNow() {
     const mem = info.alive && info.mem_mb != null ? info.mem_mb : null;
     const prevFg = c.fg;
     c.fg = info.fg || null;
+    if (prevFg !== c.fg && c.session === ctx.attachedName) invalidateResumeSuggestions();
     if (info.alive && info.cwd && info.cwd !== c.dir) provider.observeDir(c.id, info.cwd);
     /* shell → agent transition: shell-era separator lines would overlap the
        TUI's in-place repaints — drop them for this pane */
