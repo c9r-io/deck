@@ -7,6 +7,12 @@
         "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "完成" } }
       }
     },
+    "taskDetail.output.latest" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Latest output" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "最新输出" } }
+      }
+    },
     "taskDetail.message.localDraft" : {
       "localizations" : {
         "en" : { "stringUnit" : { "state" : "translated", "value" : "This draft is saved only on this iPhone. It is not a desktop scratchpad note." } },

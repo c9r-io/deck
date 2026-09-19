@@ -218,9 +218,7 @@ struct TaskDetailView: View {
     @ViewBuilder private func outputSection(_ card: CardSummary) -> some View {
         Section("Read-only terminal snapshot") {
             if let output = model.outputs[card.id] {
-                ScrollView(.horizontal) {
-                    Text(output.text.isEmpty ? "No output" : output.text).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
-                }.frame(maxHeight: 260)
+                TerminalOutputSnapshotView(output: output)
                 if output.truncated { Label("Older output was truncated by the host.", systemImage: "scissors").font(.caption).foregroundStyle(.orange) }
                 Text("This is a bounded terminal snapshot, not complete chat history.").font(.caption).foregroundStyle(.secondary)
             } else if let unavailable = model.outputUnavailable[card.id] {
@@ -422,6 +420,38 @@ struct TaskDetailView: View {
         case let .failed(message):
             Label(String(format: String(localized: "taskDetail.note.failed"), message), systemImage: "exclamationmark.triangle")
                 .font(.caption).foregroundStyle(.orange)
+        }
+    }
+}
+
+private struct TerminalOutputSnapshotView: View {
+    private static let endID = "terminal-output-end"
+    let output: TerminalOutput
+
+    var body: some View {
+        ScrollViewReader { proxy in
+            VStack(alignment: .leading, spacing: 8) {
+                Button {
+                    withAnimation { proxy.scrollTo(Self.endID, anchor: .bottomLeading) }
+                } label: {
+                    Label(String(localized: "taskDetail.output.latest"), systemImage: "arrow.down.to.line")
+                }
+                .buttonStyle(.bordered)
+                ScrollView([.horizontal, .vertical]) {
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text(output.text.isEmpty ? "No output" : output.text)
+                            .font(.system(.caption, design: .monospaced))
+                            .fixedSize(horizontal: true, vertical: true)
+                            .textSelection(.enabled)
+                        Color.clear.frame(width: 1, height: 1).id(Self.endID)
+                    }
+                }
+                .frame(height: 260)
+            }
+            .task(id: output.revision.value) {
+                await Task.yield()
+                proxy.scrollTo(Self.endID, anchor: .bottomLeading)
+            }
         }
     }
 }
