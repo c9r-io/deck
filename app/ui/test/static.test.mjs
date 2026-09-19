@@ -193,8 +193,8 @@ test('clipboard and selection diagnostics are wired at every handoff', () => {
   const layout = read('app/ui/js/layout.js');
   const terminal = read('app/ui/js/terminal.js');
   const selection = read('app/ui/js/selection.js');
-  for (const stage of ['key-capture', 'keydown-deck', 'keydown-native', 'keydown-none',
-    'keydown-elsewhere', 'selection-vanished'])
+  for (const stage of ['keydown-deck', 'keydown-native', 'keydown-none',
+    'keydown-elsewhere', 'source-elsewhere'])
     assert.ok(layout.includes(stage), `missing copy diagnostic: ${stage}`);
   for (const stage of ['pbcopy-failed', 'web-failed', 'web-unavailable'])
     assert.ok(terminal.includes(stage), `missing clipboard writer diagnostic: ${stage}`);

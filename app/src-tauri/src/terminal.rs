@@ -17,7 +17,8 @@
 //! edge, and a placement tmux reports on other rows is refused.
 //!
 //! The `[selection]` probe prices all of it: one integers-only summary per
-//! finished or abandoned drag (always), plus a per-update line behind
+//! finished or abandoned drag (always), plus token-bound empty-range content
+//! deltas (no terminal text or absolute coordinates) and a per-update line behind
 //! --debug-logging.
 
 use serde::{Deserialize, Serialize};
@@ -599,6 +600,7 @@ fn report_selection_probe(name: &str, outcome: &str) {
 /// resulting anchor pinned to CONTENT, so later output cannot move it.
 fn materialize_selection(
     name: &str,
+    token: u64,
     target: &str,
     snapshot_history: u32,
     anchor: SelectionPoint,
@@ -634,6 +636,13 @@ fn materialize_selection(
         // An empty range is a click, not a selection tmux refused: nothing is
         // built, and the caller ends the drag without a failure.
         if crate::terminal_selection::placements_coincide(anchor_placement, active_placement) {
+            crate::applog::applog(&format!(
+                "[selection] {} empty selection={token} rows={} cols={} collapsed={}",
+                crate::applog::session_tag(name),
+                anchor.absolute_row.abs_diff(active.absolute_row),
+                anchor.col.abs_diff(active.col),
+                u8::from(anchor.absolute_row != active.absolute_row || anchor.col != active.col),
+            ));
             return Err(DeckError::new(ErrorKind::Other, "selection-missing-empty"));
         }
         let batch = crate::terminal_selection::materialize_args(
@@ -1031,7 +1040,7 @@ pub(crate) fn terminal_selection_finish(
     let (anchor, active, snapshot_history) = dragging_endpoints(&name, token)?;
     // The one place a real tmux selection exists: both endpoints placed in a
     // single atomic command list, from the content coordinates deck tracked.
-    let status = materialize_selection(&name, &target, snapshot_history, anchor, active)?;
+    let status = materialize_selection(&name, token, &target, snapshot_history, anchor, active)?;
     if !status.selection_present {
         return Err(DeckError::new(
             ErrorKind::Other,
@@ -1114,7 +1123,8 @@ pub(crate) fn terminal_selection_copy(
             }
             // ⌘C before pointerup: the drag has no tmux selection yet, so
             // build one from the same endpoints pointerup would use.
-            let status = materialize_selection(&name, &target, snapshot_history, anchor, active)?;
+            let status =
+                materialize_selection(&name, token, &target, snapshot_history, anchor, active)?;
             if !status.selection_present {
                 return Err(DeckError::new(ErrorKind::Other, "selection-missing"));
             }

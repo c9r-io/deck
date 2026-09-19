@@ -17,12 +17,15 @@
 // follow the real start and not the idempotent re-attach. The fresh-shell
 // flag is set AFTER focusPane (which resets suggestion state on a focus
 // change): a new empty shell offers its recent-command chips.
+// Command-C always consumes the shortcut and reports unavailable selections;
+// empty or vanished snapshots never reach the clipboard writer. Each attempt
+// captures its diagnostic identity before any asynchronous selection work.
 import { $, ctx, dotTitle, duev, inv, listen, setMemChip, state, store, uev } from './state.js';
 import { choiceDialog, inlineRename, toast } from './dialogs.js';
 import { t } from './i18n.js';
 import { markSessionSeen, panes, pollNow, provider, render, renderSidebar, updateSidebarSelection, activeProject } from './board.js';
 import { SHELL_FG, acceptGhost, feedMirror, maybeRecordCommand, mountQuickBar, nextShellTitle, renderSuggest, resetSuggest, showLinkCtx, updateGhost, writeClipboard } from './terminal.js';
-import { AGENT_HISTORY_VERTICAL_UP, collapseHome, isNotDirectoryError, newSessionColumn, startCommand, createTerminalResizeCoordinator, createTerminalWheelAccumulator, createTerminalWheelFrameScheduler, isComposingKeyEvent, isPlainShiftKeydown, isTerminalAutoReply, scrollResultView, shouldRouteImeKeydownThroughInput, shQuote, terminalLinkRanges, terminalAgentComposerGeometry, terminalAgentHistoryUpRoute, terminalCopyRoute, terminalSelectionWheelRoute, tokenizeTerminalLinks, terminalWheelLines } from './pure.js';
+import { AGENT_HISTORY_VERTICAL_UP, collapseHome, isNotDirectoryError, newSessionColumn, startCommand, createTerminalResizeCoordinator, createTerminalWheelAccumulator, createTerminalWheelFrameScheduler, isComposingKeyEvent, isPlainShiftKeydown, isTerminalAutoReply, scrollResultView, shouldRouteImeKeydownThroughInput, shQuote, terminalLinkRanges, terminalAgentComposerGeometry, terminalAgentHistoryUpRoute, terminalCopyRoute, copyTerminalText, terminalSelectionWheelRoute, tokenizeTerminalLinks, terminalWheelLines } from './pure.js';
 import { toggleQueuePanel } from './scheduler.js';
 import { cancelAllTerminalSelections, cancelTerminalSelection, copyTerminalSelection, hasTerminalSelection, terminalSelectionElsewhere, wireTerminalSelection } from './selection.js';
 import { getTerminalTheme, onThemeChange, syncThemeIntegrations } from './theme.js';
@@ -451,10 +454,6 @@ export function wireTerminalInput(pane, term, host) {
      capture runs before xterm's target listener and disappears with the DOM. */
   host.addEventListener('keydown', event => {
     if (event.target !== term.textarea) return;
-    if (event.type === 'keydown' && event.metaKey) {
-      const key = String(event.key || '').toLowerCase();
-      if (key === 'c') uev('terminal-copy', 'key-capture');
-    }
     const imePrintable = shouldRouteImeKeydownThroughInput(event);
     const plainShift = isPlainShiftKeydown(event);
     if (imePrintable || plainShift) {
@@ -513,6 +512,15 @@ export function wireTerminalInput(pane, term, host) {
       doWrite(d);
     }
   });
+  let copyAttempt = 0;
+  let copyNoticeAt = -Infinity;
+  let copyNoticeKey = null;
+  const copyNotice = key => {
+    if (key === copyNoticeKey && Date.now() - copyNoticeAt < 1500) return;
+    copyNoticeKey = key;
+    copyNoticeAt = Date.now();
+    toast(t(key));
+  };
   /* app shortcuts pass through; ⌘C/⌘V are handled here because a menu-less
      macOS app gets no standard edit actions in the webview */
   term.attachCustomKeyEventHandler(e => {
@@ -550,49 +558,29 @@ export function wireTerminalInput(pane, term, host) {
     }
     const copyRoute = terminalCopyRoute(e, hasTerminalSelection(pane), term.hasSelection());
     if (e.type === 'keydown' && e.metaKey && String(e.key || '').toLowerCase() === 'c') {
-      if (copyRoute === 'deck' || copyRoute === 'native') {
-        uev('terminal-copy', copyRoute === 'deck' ? 'keydown-deck' : 'keydown-native');
-      } else {
-        /* Empty-handed ⌘C: say whether a live Deck selection exists in some
-           OTHER pane (focus never followed the drag) or nowhere at all.
-           `a` counts the other panes holding one, `b` is the youngest one's
-           age in ms. Attribution only — the copy still does nothing. */
+      e.preventDefault();
+      const context = { ...pane.selection.traceContext(), attempt: ++copyAttempt };
+      if (!copyRoute) {
         const elsewhere = terminalSelectionElsewhere(pane);
-        if (elsewhere.count > 0) {
-          uev('terminal-copy', 'keydown-elsewhere', elsewhere.count, elsewhere.ageMs);
-        } else {
-          uev('terminal-copy', 'keydown-none');
-        }
+        uev('terminal-copy', elsewhere.count ? 'keydown-elsewhere' : 'keydown-none',
+          elsewhere.count, elsewhere.ageMs, context);
+        // Record the source pane separately; never silently copy another pane.
+        if (elsewhere.context) uev('terminal-copy', 'source-elsewhere',
+          context.pane, context.attempt, elsewhere.context);
+        pane.selection.traceUnavailable(context);
+        copyNotice(elsewhere.count ? 'error.copyElsewhere' : 'error.copyEmpty');
+        return false;
       }
-    }
-    if (copyRoute === 'deck') {
-      e.preventDefault();
-      copyTerminalSelection(pane)
-        .then(text => {
-          if (text == null) {
-            uev('terminal-copy', 'selection-vanished');
-            return null;
-          }
-          return writeClipboard(text)
-            .then(() => uev('terminal-copy', 'success'))
-            .catch(error => {
-              uev('terminal-copy', 'clipboard-write-failed');
-              throw error;
-            });
-        })
-        .catch(() => toast(t('error.copy')));
-      return false;
-    }
-    if (copyRoute === 'native') {
-      e.preventDefault();
-      const text = term.getSelection();
-      if (!text) uev('terminal-copy', 'selection-vanished');
-      writeClipboard(text)
-        .then(() => uev('terminal-copy', 'success'))
-        .catch(() => {
-          uev('terminal-copy', 'clipboard-write-failed');
-          toast(t('error.copy'));
-        });
+      uev('terminal-copy', copyRoute === 'deck' ? 'keydown-deck' : 'keydown-native',
+        null, null, context);
+      copyTerminalText({
+        read: () => copyRoute === 'deck' ? copyTerminalSelection(pane) : term.getSelection(),
+        write: text => writeClipboard(text, context),
+      }).then(outcome => {
+        uev('terminal-copy', outcome, null, null, context);
+        if (outcome !== 'success') copyNotice(outcome === 'selection-vanished'
+          ? 'error.copyEmpty' : 'error.copy');
+      });
       return false;
     }
     /* ghost suggestion: Tab or → applies it in place; Esc dismisses */

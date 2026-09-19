@@ -98,6 +98,9 @@
 // pane, user input, output that trimmed it away (xterm fires no event for
 // that; `writeParsed` notices), a buffer switch, Deck clearing it, disposal,
 // or other. A wheel freeze adopts it into a Deck lease and logs no end.
+// Lifecycle and copy events share numeric run/pane/selection IDs, retained
+// after cancellation. Pointer revokes add focus/hit flags; empty ranges add
+// cell deltas. Finish errors belong to selection events, never copy attempts.
 import { duev, inv, uev } from './state.js';
 import { toast } from './dialogs.js';
 import {
@@ -105,7 +108,6 @@ import {
   nativeSelectionEndLabel,
   nativeSelectionRows,
   retryOnStaleGrid,
-  selectionCopyFailureCode,
   selectionEdgeScrollLines,
   selectionFinishFailureReason,
   selectionFinishIsEmpty,
@@ -118,15 +120,12 @@ import {
 } from './pure.js';
 import { formatNumber, t } from './i18n.js';
 
+// Numeric IDs are local to this webview lifetime; no session/content identity.
+const traceRun = Date.now();
+let nextPaneTrace = 1;
 let nextSelectionToken = 1;
 const controllers = new Set();
 let physicalPointerOwner = null;
-/* Forensics for `revoker-*`: when the last pointerup was seen anywhere. A
-   trailing pointerdown that kills a frozen selection is classified by how
-   long after the finishing release it arrived — a replayed/synthetic event
-   lands within tens of ms, a trackpad lift-off tap within a few hundred, a
-   deliberate re-click later. */
-let lastPointerUpAt = 0;
 
 function terminalCell(pane, clientX, clientY) {
   const screen = pane.body.querySelector('.xterm-screen');
@@ -138,6 +137,12 @@ function terminalCell(pane, clientX, clientY) {
 
 function terminalSelectionController(pane, onModeChange) {
   const model = createTerminalSelectionModel();
+  const tracePane = nextPaneTrace++;
+  let lastSelectionToken = 0;
+  let lastGesture = null;
+  let lastPointerUpAt = 0; // release on this pane, not an unrelated split
+  let lastWindowFocusAt = 0;
+  const traceContext = () => ({ run: traceRun, pane: tracePane, selection: token || lastSelectionToken });
   let gesture = null;
   let selected = false;
   let frozen = false;
@@ -187,17 +192,18 @@ function terminalSelectionController(pane, onModeChange) {
      destroyed) and `b` is milliseconds since promotion, -1 when never
      promoted. No terminal text, session name or error text can enter. */
   const sev = (detail, a = 0) =>
-    uev('terminal-selection', detail, a, promotedAt ? Date.now() - promotedAt : -1);
+    uev('terminal-selection', detail, a, promotedAt ? Date.now() - promotedAt : -1, traceContext());
   /* `sev` spends its second integer on the selection's age. These two probes
      need both slots for their own numbers, so they name them explicitly.
      `sevPair` is always on (it fires only when something is already wrong);
      `dsevPair` is per-update volume and stays behind --debug-logging. */
   const clampCount = value => Math.max(0, Math.min(99999, Math.trunc(value) || 0));
-  const sevPair = (detail, a, b) => uev('terminal-selection', detail, clampCount(a), clampCount(b));
-  const dsevPair = (detail, a, b) => duev('terminal-selection', detail, clampCount(a), clampCount(b));
+  const sevPair = (detail, a, b) => uev('terminal-selection', detail, clampCount(a), clampCount(b), traceContext());
+  const dsevPair = (detail, a, b) => duev('terminal-selection', detail, clampCount(a), clampCount(b), traceContext());
 
   const logNativeEnd = (ended, label) => {
-    if (label) uev('terminal-selection', label, ended.rows, Math.min(Date.now() - ended.at, 3600000));
+    if (label) uev('terminal-selection', label, ended.rows, Math.min(Date.now() - ended.at, 3600000),
+      { ...traceContext(), selection: ended.token });
   };
   const endNative = label => {
     const ended = native;
@@ -419,6 +425,7 @@ function terminalSelectionController(pane, onModeChange) {
     gesture.promoted = true;
     ownerTrace.promoted = 1;
     token = nextSelectionToken++;
+    lastSelectionToken = token;
     frozen = false;
     promotedAt = Date.now();
     coalescedMoves = 0;
@@ -461,7 +468,7 @@ function terminalSelectionController(pane, onModeChange) {
        `cancel-pointer` follows). Attribute WHERE it came from so a failed
        ⌘C can be traced to a synthetic/replayed event, a trackpad lift-off
        tap, or a real re-click: the label classifies isTrusted + pointerType,
-       `a` is the click count, `b` is ms since the last pointerup anywhere.
+       `a` is the click count, `b` is ms since the last pointerup on this pane.
        Ordinary clicks with nothing to destroy stay silent, like cancel. */
     if (selected || gesture?.promoted) {
       const label = !event.isTrusted ? 'revoker-synthetic'
@@ -471,7 +478,17 @@ function terminalSelectionController(pane, onModeChange) {
       const sinceUp = lastPointerUpAt
         ? Math.min(Date.now() - lastPointerUpAt, 3600000) : -1;
       uev('terminal-selection', label,
-        Math.max(0, Math.min(9, event.detail || 0)), sinceUp);
+        Math.max(0, Math.min(9, event.detail || 0)), sinceUp, traceContext());
+      const inside = [...pane.body.querySelectorAll('.deck-selection-band')].some(band => {
+        const rect = band.getBoundingClientRect();
+        return event.clientX >= rect.left && event.clientX < rect.right
+          && event.clientY >= rect.top && event.clientY < rect.bottom;
+      });
+      // Flags: window focused, terminal focused, inside highlight, frozen.
+      uev('terminal-selection', 'pointer-context', (document.hasFocus() ? 1 : 0)
+        | (document.activeElement === pane.term.textarea ? 2 : 0)
+        | (inside ? 4 : 0) | (frozen ? 8 : 0),
+        lastWindowFocusAt ? Math.min(Date.now() - lastWindowFocusAt, 3600000) : -1, traceContext());
     }
     // Keep the physical compatibility sequence trusted for click/link. A
     // later terminal-cell transition explicitly transfers ownership to tmux.
@@ -505,8 +522,8 @@ function terminalSelectionController(pane, onModeChange) {
   };
 
   const pointerEnd = event => {
-    lastPointerUpAt = Date.now();
     if (!gesture || (event.pointerId != null && event.pointerId !== gesture.pointerId)) return;
+    lastPointerUpAt = Date.now();
     const ended = gesture;
     ended.x = event.clientX ?? ended.x;
     ended.y = event.clientY ?? ended.y;
@@ -519,6 +536,7 @@ function terminalSelectionController(pane, onModeChange) {
     gesture = null;
     if (physicalPointerOwner === api) physicalPointerOwner = null;
     ownerTrace.ended = 1;
+    lastGesture = { at: Date.now(), promoted: ended.promoted };
     if (!ended.promoted) {
       ownerTrace.trustedClick = 1;
       return;
@@ -528,11 +546,15 @@ function terminalSelectionController(pane, onModeChange) {
     model.finish();
     const generation = model.snapshot().generation;
     const currentToken = token;
+    const dragAnchor = model.snapshot().anchor;
+    let finalCell = null;
     const finalPoint = { x: ended.x, y: ended.y };
     queue(() => retryOnStaleGrid({
       prepare: async () => {
         const finalUpdate = await updateAt(currentToken, finalPoint, false);
-        model.move({ row: finalUpdate.cell.row, col: finalUpdate.cell.col });
+        // model.finish() deliberately rejects later moves. Use the actual
+        // synchronized release cell for diagnostics, not its last move cell.
+        finalCell = finalUpdate.cell;
         if (currentToken !== token || !model.apply(generation, finalUpdate.status)) {
           throw new Error('selection-missing');
         }
@@ -556,9 +578,8 @@ function terminalSelectionController(pane, onModeChange) {
          cursor is placed by VISIBLE row while the anchor is pinned to
          content. Edge-scrolled drags select rows the pointer never sat on by
          design and are not compared. */
-      const dragged = model.snapshot();
-      const pointerRows = !edgeScrolled && dragged.anchor && dragged.active
-        ? Math.abs(dragged.active.row - dragged.anchor.row) + 1 : 0;
+      const pointerRows = !edgeScrolled && dragAnchor && finalCell
+        ? Math.abs(finalCell.row - dragAnchor.row) + 1 : 0;
       const selectedRows = selectionStatusRows(status);
       if (pointerRows && selectedRows !== pointerRows) {
         sevPair('span-mismatch', pointerRows, selectedRows);
@@ -567,9 +588,10 @@ function terminalSelectionController(pane, onModeChange) {
       if (onModeChange) onModeChange(true, lastStatus, { dragging: false, frozen: true });
     })).catch(error => {
       if (currentToken === token && !disposed && selectionFinishIsEmpty(error)) {
+        if (dragAnchor && finalCell) sevPair('empty-range',
+          Math.abs(finalCell.row - dragAnchor.row), Math.abs(finalCell.col - dragAnchor.col));
         cancel(false, 'empty');
       } else if (currentToken === token && !disposed) {
-        uev('terminal-copy', selectionCopyFailureCode(error));
         sev('finish-failed', selectionFinishFailureReason(error));
         cancel(false, null);
         toast(t('error.selectionChanged'));
@@ -646,16 +668,11 @@ function terminalSelectionController(pane, onModeChange) {
     if (!selected || !copyToken) return null;
     await opChain.catch(() => {});
     if (!selected || token !== copyToken || disposed) return null;
-    try {
-      const result = await inv('terminal_selection_copy', {
-        name: pane.session, token: copyToken,
-      });
-      if (!selected || token !== copyToken || disposed) return null;
-      return result.text;
-    } catch (error) {
-      uev('terminal-copy', selectionCopyFailureCode(error));
-      throw error;
-    }
+    const result = await inv('terminal_selection_copy', {
+      name: pane.session, token: copyToken,
+    });
+    if (!selected || token !== copyToken || disposed) return null;
+    return result.text;
   };
 
   const freezeNative = async () => {
@@ -669,6 +686,7 @@ function terminalSelectionController(pane, onModeChange) {
     const { anchor, active } = cells;
 
     token = nextSelectionToken++;
+    lastSelectionToken = token;
     frozen = false;
     promotedAt = Date.now();
     const currentToken = token;
@@ -696,7 +714,7 @@ function terminalSelectionController(pane, onModeChange) {
       return true;
     } catch (error) {
       if (currentToken === token && !disposed) {
-        sev('freeze-failed');
+        sev('freeze-failed', selectionFinishFailureReason(error));
         await cancel(true, null);
       }
       return false;
@@ -766,10 +784,12 @@ function terminalSelectionController(pane, onModeChange) {
     document.removeEventListener('pointercancel', pointerCancel, true);
     document.removeEventListener('mousemove', compatibilityMove, true);
     window.removeEventListener('blur', blur);
+    window.removeEventListener('focus', windowFocus);
     document.removeEventListener('visibilitychange', visibility);
     controllers.delete(api);
   };
   /* Only a drag in progress dies with the window (see the header). */
+  const windowFocus = () => { lastWindowFocusAt = Date.now(); };
   const blur = () => { if (gesture) cancel(false, 'blur'); };
   const visibility = () => { if (document.hidden && gesture) cancel(false, 'hidden'); };
 
@@ -779,15 +799,23 @@ function terminalSelectionController(pane, onModeChange) {
   document.addEventListener('pointercancel', pointerCancel, true);
   document.addEventListener('mousemove', compatibilityMove, true);
   window.addEventListener('blur', blur);
+  window.addEventListener('focus', windowFocus);
   document.addEventListener('visibilitychange', visibility);
 
   const api = {
-    copy, cancel, dispose, freezeNative, prepareInput, resize, scroll,
+    copy, cancel, dispose, freezeNative, prepareInput, resize, scroll, traceContext,
+    // Only on an unsuccessful copy: no per-click log volume. Distinguishes
+    // a never-promoted click from a promoted drag that was later revoked.
+    traceUnavailable: context => uev('terminal-selection', 'copy-empty-gesture',
+      gesture ? 3 : lastGesture ? (lastGesture.promoted ? 2 : 1) : 0,
+      gesture ? Math.min(Date.now() - pressAt, 3600000)
+        : lastGesture ? Math.min(Date.now() - lastGesture.at, 3600000) : -1, context),
     render: renderOverlay, writeParsed,
     hasSelection: () => selected,
+    hasNativeSelection: () => !!pane.term.hasSelection(),
     isDragging: () => !!gesture?.promoted,
     isFrozen: () => frozen,
-    ageMs: () => (promotedAt ? Date.now() - promotedAt : -1),
+    ageMs: () => (promotedAt ? Date.now() - promotedAt : native ? Date.now() - native.at : -1),
     allowLinkActivation: () => !gesture?.promoted && Date.now() >= suppressLinkUntil,
     status: () => lastStatus,
     ownership: () => ({
@@ -813,13 +841,15 @@ function terminalSelectionController(pane, onModeChange) {
     }
     if (has) {
       if (!native) {
+        lastSelectionToken = nextSelectionToken++;
         native = {
+          token: lastSelectionToken,
           at: Date.now(),
           rows: nativeSelectionRows(pane.term.getSelectionPosition?.()),
           buffer: pane.term.buffer.active.type,
         };
         uev('terminal-selection', 'native-select', native.rows,
-          Date.now() - pressAt < 1000 ? pressDetail : 0);
+          Date.now() - pressAt < 1000 ? pressDetail : 0, traceContext());
       }
       return;
     }
@@ -864,18 +894,23 @@ export const cancelAllTerminalSelections = (reason = 'leave') => {
 };
 
 /* ⌘C forensics: a `keydown-none` in the focused pane is ambiguous while
-   another pane still holds a live Deck selection — that split is what
+   another pane still holds a live Deck or native selection — that split is what
    separates "the selection was revoked" from "⌘C went to the wrong pane
    because the drag never moved keyboard focus". Returns how many OTHER
-   panes hold one and the youngest one's age in ms (-1 when none). */
+   panes hold one, the youngest one's age in ms (-1 when none), and its IDs. */
 export const terminalSelectionElsewhere = pane => {
   let count = 0;
   let ageMs = -1;
+  let context = null;
   for (const controller of controllers) {
-    if (controller === pane?.selection || !controller.hasSelection()) continue;
+    if (controller === pane?.selection
+        || (!controller.hasSelection() && !controller.hasNativeSelection())) continue;
     count++;
     const age = controller.ageMs();
-    if (age >= 0 && (ageMs < 0 || age < ageMs)) ageMs = age;
+    if (age >= 0 && (ageMs < 0 || age < ageMs)) {
+      ageMs = age;
+      context = controller.traceContext();
+    }
   }
-  return { count, ageMs };
+  return { count, ageMs, context };
 };

@@ -78,16 +78,18 @@ export const listen = (ev, cb) => window.__TAURI__
    production). ONLY event codes plus a short slug and numbers ever cross to
    the backend — never free-form strings, so no typed characters, IME text,
    command lines, prompt contents, paths or URLs can end up in a log. The
-   backend whitelists the code and sanitizes the slug again. */
-export const uev = (code, detail, a, b) => inv('ui_event', {
+   backend whitelists the code and sanitizes the slug again. Terminal events
+   may also carry numeric run/pane/selection/attempt IDs, never session names. */
+export const uev = (code, detail, a, b, context) => inv('ui_event', {
   code,
+  context: context ?? null,
   detail: detail == null ? null : String(detail).slice(0, 64),
   a: a == null ? null : Math.trunc(Number(a)),
   b: b == null ? null : Math.trunc(Number(b)),
 }).catch(() => {});
 /* Verbose diagnostics are maintainer-only and enabled at launch with
    --debug-logging. They retain the same structured/privacy contract. */
-export const duev = (code, detail, a, b) => { if (globalThis.window?.__DECK_DEBUG) uev(code, detail, a, b); };
+export const duev = (code, detail, a, b, context) => { if (globalThis.window?.__DECK_DEBUG) uev(code, detail, a, b, context); };
 /* error CLASS only — the message can quote user input, so it stays out */
 export const errClass = e => {
   const m = /([A-Za-z]+Error)/.exec(String((e && e.name) || e || ''));

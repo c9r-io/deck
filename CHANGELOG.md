@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Terminal copy reports when no text is selected, including a selection lost
+  while copying, and leaves the clipboard untouched for empty snapshots.
+  Repeated copy attempts share a short notification cooldown.
+- Copy and selection diagnostics carry numeric run, pane, selection and attempt
+  IDs. Pointer cancellation records focus and highlight hit state; empty ranges
+  record cell deltas. Duplicate key-capture and copy-labelled drag errors are
+  retired. No selected text or session names enter these events.
+
 ## 0.6.8 — 2026-09-16 (Nightly)
 
 - Voice input types straight into the session. The header microphone starts

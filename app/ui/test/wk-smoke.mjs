@@ -5,7 +5,7 @@
 let $, ctx, inv, state, store, panes, provider, render, pollNow, boardData;
 let renameCardInline, renderSuggest, resetSuggest;
 let showLinkCtx, toggleSidebar, addSplit, backToBoard, openSession, strToB64;
-let closePaneBySid, focusPane, cancelTerminalSelection, copyTerminalSelection;
+let closePaneBySid, focusPane, cancelTerminalSelection, copyTerminalSelection, terminalSelectionElsewhere;
 let refreshQueue, toggleQueuePanel;
 let activateTheme, persistThemeChoice, persistInbound, applyFontScale, getFontScale;
 let toggleAutomations;
@@ -20,7 +20,7 @@ if (typeof window !== 'undefined') {
   } = await import('../js/terminal.js'));
   ({ addSplit, backToBoard, closePaneBySid, focusPane, openSession, strToB64, terminalLogicalLine } = await import('../js/layout.js'));
   ({ tokenizeTerminalLinks } = await import('../js/pure.js'));
-  ({ cancelTerminalSelection, copyTerminalSelection } = await import('../js/selection.js'));
+  ({ cancelTerminalSelection, copyTerminalSelection, terminalSelectionElsewhere } = await import('../js/selection.js'));
   ({ refreshQueue, toggleQueuePanel } = await import('../js/scheduler.js'));
   ({ activateTheme } = await import('../js/theme.js'));
   ({ persistThemeChoice, persistInbound } = await import('../js/dialogs.js'));
@@ -671,6 +671,38 @@ async function selectionSmoke(card) {
   await report('selection-empty-click', emptyEnded && emptyToasts === 0
     && !pane.term.hasSelection(), emptyEnded ? 1 : 0, emptyToasts);
 
+  // Empty copies are consumed, give one notice even during key repeat, and
+  // leave the actual system clipboard untouched (independent native oracle).
+  const beforeEmptyCopy = await inv('smoke_clipboard_metrics');
+  const beforeEmptyNotice = document.querySelectorAll('#toasts .toast').length;
+  const emptyKeys = Array.from({ length: 3 }, () => new KeyboardEvent('keydown', {
+    key: 'c', metaKey: true, bubbles: true, cancelable: true,
+  }));
+  for (const key of emptyKeys) pane.term.textarea.dispatchEvent(key);
+  await pause(100);
+  const afterEmptyCopy = await inv('smoke_clipboard_metrics');
+  await report('selection-copy-unavailable', emptyKeys.every(key => key.defaultPrevented)
+    && afterEmptyCopy.hash === beforeEmptyCopy.hash && afterEmptyCopy.bytes === beforeEmptyCopy.bytes
+    && document.querySelectorAll('#toasts .toast').length === beforeEmptyNotice + 1);
+
+  // An xterm-native selection in a different split must be diagnosed too,
+  // without copying that pane's text behind the user's back.
+  if (neighbor) {
+    neighbor.term.select(0, neighbor.term.buffer.active.viewportY, 1);
+    const elsewhere = terminalSelectionElsewhere(pane);
+    const otherKey = new KeyboardEvent('keydown', {
+      key: 'c', metaKey: true, bubbles: true, cancelable: true,
+    });
+    pane.term.textarea.dispatchEvent(otherKey);
+    await pause(100);
+    const afterOtherCopy = await inv('smoke_clipboard_metrics');
+    await report('selection-copy-unavailable', otherKey.defaultPrevented
+      && elsewhere.count === 1 && elsewhere.context.pane === neighbor.selection.traceContext().pane
+      && afterOtherCopy.hash === beforeEmptyCopy.hash && afterOtherCopy.bytes === beforeEmptyCopy.bytes, 3);
+    neighbor.term.clearSelection();
+  }
+
+
   await cancelTerminalSelection(pane);
   await inv('scroll_bottom', { name: card.session });
 
@@ -722,7 +754,20 @@ async function selectionSmoke(card) {
   }
   await report('selection-resize', resizeExact,
     resizeText?.length || 0, resizeExpected.length);
-  await cancelTerminalSelection(pane);
+  await pause(1600); // copy notices are rate limited
+  const beforeRaceCopy = await inv('smoke_clipboard_metrics');
+  const beforeRaceNotice = document.querySelectorAll('#toasts .toast').length;
+  const raceKey = new KeyboardEvent('keydown', {
+    key: 'c', metaKey: true, bubbles: true, cancelable: true,
+  });
+  pane.term.textarea.dispatchEvent(raceKey);
+  await cancelTerminalSelection(pane); // revoke while copy awaits its operation chain
+  const raceNotified = await waitFor(() =>
+    document.querySelectorAll('#toasts .toast').length > beforeRaceNotice, 1000);
+  const afterRaceCopy = await inv('smoke_clipboard_metrics');
+  await report('selection-copy-unavailable', resizeExact && raceKey.defaultPrevented && raceNotified
+    && beforeRaceCopy.hash === afterRaceCopy.hash && beforeRaceCopy.bytes === afterRaceCopy.bytes, 2);
+
   await inv('scroll_bottom', { name: card.session });
 
   /* Real wheel routing: two sub-threshold pixel events must combine into one

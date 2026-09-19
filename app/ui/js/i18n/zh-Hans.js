@@ -168,6 +168,8 @@ const dictionary = {
   'error.targetSave': '无法保存目标栏目',
   'error.retire': 'shell 已退出，但无法移除卡片；deck 将安全重试',
   'error.attach': '连接 session 失败',
+  'error.copyEmpty': '没有可复制的选区，请重新选择文字',
+  'error.copyElsewhere': '选区位于另一个窗格，请切换到该窗格复制',
   'error.copy': '复制失败，剪贴板未改动',
   'error.fileLarge': '文件过大，无法附加（最大 32 MB）',
   'error.fileAttach': '无法附加文件',

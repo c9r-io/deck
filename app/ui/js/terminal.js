@@ -547,21 +547,21 @@ export function resetSuggest(nextPane = null) {
   showQuickBar(false, nextPane);
 }
 
-export async function writeClipboard(text) {
+export async function writeClipboard(text, context = null) {
   try {
     const result = await copyExact(text, value => inv('write_clipboard', { text: value }));
     return result;
   } catch (nativeError) {
-    uev('clipboard-write', 'pbcopy-failed', text.length);
+    uev('clipboard-write', 'pbcopy-failed', text.length, null, context);
     if (!navigator.clipboard || !navigator.clipboard.writeText) {
-      uev('clipboard-write', 'web-unavailable', text.length);
+      uev('clipboard-write', 'web-unavailable', text.length, null, context);
       throw nativeError;
     }
     try {
       const result = await copyExact(text, value => navigator.clipboard.writeText(value));
       return result;
     } catch (webError) {
-      uev('clipboard-write', 'web-failed', text.length);
+      uev('clipboard-write', 'web-failed', text.length, null, context);
       throw webError;
     }
   }

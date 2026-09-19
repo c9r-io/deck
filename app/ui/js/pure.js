@@ -616,6 +616,17 @@ export function terminalCopyRoute(event, hasDeckSelection, hasNativeSelection) {
   return null;
 }
 
+/** Copy has one terminal outcome. Losing a selection while awaiting its
+ * snapshot must not write an empty clipboard or report success. Error text
+ * stays private; callers log only this closed outcome and their captured IDs. */
+export async function copyTerminalText({ read, write }) {
+  let text;
+  try { text = await read(); } catch (error) { return selectionCopyFailureCode(error); }
+  if (typeof text !== 'string' || text.length === 0) return 'selection-vanished';
+  try { await write(text); } catch { return 'clipboard-write-failed'; }
+  return 'success';
+}
+
 /** Serialize PTY resizes and remember only the newest confirmed grid. A
  * failed or explicitly invalidated grid is retryable instead of becoming a
  * permanent false confirmation. */

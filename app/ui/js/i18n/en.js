@@ -169,6 +169,8 @@ const dictionary = {
   'error.targetSave': 'the target group could not be saved',
   'error.retire': 'shell exited, but its card could not be retired; deck will retry safely',
   'error.attach': 'attach failed',
+  'error.copyEmpty': 'Nothing selected to copy — select the text again',
+  'error.copyElsewhere': 'The selection is in another pane — focus that pane to copy',
   'error.copy': 'copy failed — clipboard was not changed',
   'error.fileLarge': 'file too large to attach (32MB max)',
   'error.fileAttach': 'could not attach file',

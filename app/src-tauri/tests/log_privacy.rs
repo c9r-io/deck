@@ -2,7 +2,7 @@
 //!
 //! 1. The ONLY frontend→log channel is the `ui_event` command, whose backend
 //!    formatter admits nothing but a whitelisted code, a closed detail and
-//!    two integers. The formatter is unit-tested in diagnostics.rs
+//!    two integers and optional numeric terminal correlation IDs. The formatter is unit-tested in diagnostics.rs
 //!    (`ui_events_admit_no_free_form_content`), every (code, detail) pair the
 //!    frontend can emit is pushed through it there
 //!    (`every_frontend_event_label_survives_the_formatter`), and the writer

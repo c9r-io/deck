@@ -14,7 +14,7 @@ import {
   copyExact, createTerminalResizeCoordinator, newSessionColumn, createTerminalSelectionModel,
   projectDefaults, newSessionPlan, collapseHome, isNotDirectoryError,
   reorderById,
-  terminalCopyRoute, terminalSelectionEdgeLines,
+  terminalCopyRoute, copyTerminalText, terminalSelectionEdgeLines,
   isComposingKeyEvent, isPlainShiftKeydown, shouldRouteImeKeydownThroughInput,
   AGENT_HISTORY_VERTICAL_UP, terminalAgentComposerGeometry, terminalAgentHistoryUpRoute,
   terminalNativeSelectionCells, terminalSelectionOverlayRows, terminalSelectionWheelRoute,
@@ -1322,4 +1322,32 @@ test('project defaults are optional trimmed strings and only the Board entries r
   assert.equal(isNotDirectoryError(null), false);
   assert.equal(startCommand({ cmd: '', launched: false }), '', 'no command, nothing to send');
   assert.equal(startCommand(null), '');
+});
+
+
+test('terminal copy never writes an empty or cancelled snapshot and distinguishes writer failures', async () => {
+  const writes = [];
+  const write = text => { writes.push(text); };
+  for (const text of [null, undefined, '']) {
+    assert.equal(await copyTerminalText({ read: () => text, write }), 'selection-vanished');
+  }
+  let finishRead;
+  const pending = copyTerminalText({ read: () => new Promise(resolve => { finishRead = resolve; }), write });
+  assert.deepEqual(writes, []);
+  finishRead(null); // cancellation while the backend snapshot was in flight
+  assert.equal(await pending, 'selection-vanished');
+  assert.deepEqual(writes, []);
+  for (const [error, outcome] of [
+    ['selection-missing-cleared', 'selection-missing'],
+    ['private backend error', 'snapshot-failed'],
+  ]) {
+    assert.equal(await copyTerminalText({ read: async () => { throw new Error(error); }, write }), outcome);
+  }
+  assert.deepEqual(writes, []);
+  const text = ' 中文 😀 é\n ';
+  assert.equal(await copyTerminalText({ read: () => text, write }), 'success');
+  assert.equal(await copyTerminalText({ read: () => '   ', write }), 'success');
+  assert.deepEqual(writes, [text, '   '], 'preserve exact whitespace and Unicode');
+  assert.equal(await copyTerminalText({ read: () => text,
+    write: async () => { throw new Error('private clipboard failure'); } }), 'clipboard-write-failed');
 });

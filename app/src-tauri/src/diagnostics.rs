@@ -1,6 +1,6 @@
 //! Structured, content-free diagnostics: the closed `ui_event` whitelist
-//! (code + per-code detail policy + two ints), log size/reset, and sanitized
-//! exports. Nothing free-form from the webview ever reaches `app.log`.
+//! (code + per-code detail policy + two ints + optional numeric terminal IDs),
+//! log size/reset, and sanitized exports. Nothing free-form from the webview ever reaches `app.log`.
 //!
 //! # Contract
 //! `~/.deck/app.log` (0600) collects backend + frontend diagnostics.
@@ -9,7 +9,8 @@
 //! logging is STRUCTURED ONLY: the `ui_event` command takes a whitelisted
 //! code + a detail vetted by that code's OWN closed policy (enum values /
 //! version pattern — no generic slug rule) + two ints, and redacts everything
-//! else — never add a free-form frontend log channel (log_privacy tests
+//! else. Terminal events optionally add run/pane/selection/attempt integer IDs
+//! (no text or session name) — never add a free-form log channel (log_privacy tests
 //! enforce this). Backend log lines never interpolate raw error Display text
 //! or a raw session NAME: `crate::error::err_code()` maps errors to stable
 //! path-free categories (the full error goes only to the operation's caller)
@@ -23,7 +24,7 @@
 //! documented once: CLAUDE.md "Run and gates" and `datadir.rs`.)
 //!
 //! Clipboard diagnostics are always structured and content-free. Copy records
-//! terminal key capture, Deck/native/no-selection routing, snapshot loss and
+//! Deck/native/no-selection routing, snapshot loss and
 //! a `pbcopy`/Web Clipboard writer FAILURE (a successful write is silent:
 //! the v0.5.7 success lines never revealed the empty-pasteboard bug below,
 //! `terminal-copy success` already marks a copy that completed). `pbcopy` is spawned with
@@ -36,7 +37,19 @@
 //! separately after a bracketed paste; a fresh agent settles before the first
 //! paste): a PTY write that fails is still `pty-write-fail`. Only fixed labels
 //! and character counts enter `app.log`; clipboard text, errors and session
-//! names never do.
+//! names never do. The redundant key-capture line is retired. Each copy emits
+//! a route and one outcome (or just no-selection); drag finish failures no
+//! longer masquerade as copy failures. IDs are captured before async work,
+//! so cancellations and overlapping copies cannot misattribute the outcome.
+//! `pointer-context`: a flags = window focused(1), terminal focused(2), inside
+//! highlight(4), frozen(8); b = ms since window focus (-1 if unknown).
+//! `empty-range`: a/b are frontend
+//! row/column deltas; backend `[selection] empty` supplies content deltas and
+//! whether distinct content endpoints collapsed to the same tmux placement.
+//! `copy-empty-gesture`: a = no release(0), click(1), promoted drag(2), pending
+//! press(3); b = ms since that pane's last release (press for 3). Emitted only on an empty copy, not per click.
+//! `source-elsewhere` carries the source pane's IDs and a/b = destination pane
+//! and copy attempt; it diagnoses focus mistakes without copying another pane.
 //! ⌘C can only report what it FOUND, so `terminal-selection` records the
 //! selection's own life: `promote` / `start-ok` / `finish-ok` (or
 //! `start-failed` / `update-failed` / `finish-failed` / `freeze-failed`,
@@ -59,11 +72,11 @@
 //! selection revoked before ⌘C arrives): `revoker-<class>` pairs with
 //! `cancel-pointer` and classifies the destroying pointerdown by provenance
 //! (trusted pointerType mouse/touch/pen/unknown, or synthetic when isTrusted
-//! is false; its ints are click count and ms since the last pointerup — the
+//! is false; its ints are click count and ms since this pane's last pointerup — the
 //! one label whose `b` is not selection age); `native-cleared` marks an xterm
 //! selection appearing while Deck owned the drag (WKWebView's late
 //! compatibility-mouse replay); and `terminal-copy keydown-elsewhere` replaces
-//! `keydown-none` when another pane still holds a live Deck selection (count +
+//! `keydown-none` when another pane still holds a live Deck/native selection (count +
 //! its age), separating "revoked" from "⌘C reached the wrong pane".
 //! A native xterm word/line selection has its own lifecycle: `native-select`
 //! (a = rows, b = click count of the press that made it, 0 when none) and one
@@ -192,6 +205,7 @@ const SMOKE_CHECKS: &[&str] = &[
     "selection-repeat",
     "selection-blur",
     "selection-empty-click",
+    "selection-copy-unavailable",
     "selection-scroll-stable",
     "selection-scroll-cursor",
     "selection-overlay",
@@ -351,6 +365,9 @@ const SMOKE_CHECKS: &[&str] = &[
 /// b = pointer moves folded into it) is the frontend half of drag lag and is
 /// verbose enough to stay behind --debug-logging.
 const SELECTION_EVENTS: &[&str] = &[
+    "pointer-context",
+    "empty-range",
+    "copy-empty-gesture",
     "promote",
     "span-mismatch",
     "update-rtt",
@@ -422,11 +439,11 @@ const UI_EVENT_SPECS: &[(&str, DetailPolicy)] = &[
     (
         "terminal-copy",
         DetailPolicy::Closed(&[
-            "key-capture",
             "keydown-deck",
             "keydown-native",
             "keydown-none",
             "keydown-elsewhere",
+            "source-elsewhere",
             "success",
             "selection-vanished",
             "selection-missing",
@@ -483,9 +500,49 @@ pub(crate) fn format_ui_event(
     Some(s)
 }
 
+/// Terminal-only correlation; numeric, ephemeral frontend IDs, never a
+/// session name or content hash. Unknown fields and non-integers are refused.
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct TerminalEventContext {
+    run: u64,
+    pane: u32,
+    selection: u32,
+    #[serde(default)]
+    attempt: u32,
+}
+
+fn format_scoped_ui_event(
+    code: &str,
+    detail: Option<&str>,
+    a: Option<i64>,
+    b: Option<i64>,
+    context: Option<&TerminalEventContext>,
+) -> Option<String> {
+    let mut line = format_ui_event(code, detail, a, b)?;
+    if matches!(
+        code,
+        "terminal-copy" | "terminal-selection" | "clipboard-write"
+    ) {
+        if let Some(c) = context {
+            line.push_str(&format!(
+                " run={} pane={} selection={} attempt={}",
+                c.run, c.pane, c.selection, c.attempt
+            ));
+        }
+    }
+    Some(line)
+}
+
 #[tauri::command]
-pub(crate) fn ui_event(code: String, detail: Option<String>, a: Option<i64>, b: Option<i64>) {
-    match format_ui_event(&code, detail.as_deref(), a, b) {
+pub(crate) fn ui_event(
+    code: String,
+    detail: Option<String>,
+    a: Option<i64>,
+    b: Option<i64>,
+    context: Option<TerminalEventContext>,
+) {
+    match format_scoped_ui_event(&code, detail.as_deref(), a, b, context.as_ref()) {
         Some(line) => applog(&line),
         None => applog("[ui] unknown-event"),
     }
@@ -716,6 +773,7 @@ mod tests {
                 ("selection.js", "sev('", "terminal-selection"),
                 // `sevPair(` / `dsevPair(` — the two-integer probes.
                 ("selection.js", "sevPair('", "terminal-selection"),
+                ("selection.js", "dsevPair('", "terminal-selection"),
             ];
             for (owner, marker, code) in indirect {
                 if file == owner {
@@ -806,6 +864,48 @@ mod tests {
                 "revoke reason cancel-{reason} must stay loggable"
             );
         }
+    }
+
+    #[test]
+    fn terminal_context_is_numeric_scoped_and_preserves_redaction() {
+        let c: TerminalEventContext = serde_json::from_value(serde_json::json!({
+            "run": 123456, "pane": 2, "selection": 19, "attempt": 3
+        }))
+        .unwrap();
+        let line =
+            format_scoped_ui_event("terminal-copy", Some("keydown-none"), None, None, Some(&c))
+                .unwrap();
+        assert_eq!(
+            line,
+            "[ui] terminal-copy keydown-none run=123456 pane=2 selection=19 attempt=3"
+        );
+        // The disk/export sanitizer must preserve correlation IDs, unlike
+        // credential-shaped keys such as `token`, which it intentionally hides.
+        assert_eq!(crate::redact::sanitize_log(&line), line);
+        let empty = "[selection] sess-abcde empty selection=19 rows=0 cols=1 collapsed=1";
+        assert_eq!(crate::redact::sanitize_log(empty), empty);
+        assert!(
+            format_scoped_ui_event("terminal-copy", Some("secret-text"), None, None, Some(&c))
+                .unwrap()
+                .contains("<redacted>")
+        );
+        assert_eq!(
+            format_scoped_ui_event("ping-recv", None, None, None, Some(&c)).unwrap(),
+            "[ui] ping-recv"
+        );
+        for bad in [
+            serde_json::json!({"run": 1, "pane": "private-session", "selection": 1}),
+            serde_json::json!({"run": 1, "pane": 2, "selection": 1, "text": "secret"}),
+            serde_json::json!({"run": 1, "pane": -1, "selection": 1}),
+            serde_json::json!({"run": 1, "pane": 2, "selection": 1.5}),
+        ] {
+            assert!(serde_json::from_value::<TerminalEventContext>(bad).is_err());
+        }
+        assert!(
+            format_ui_event("terminal-copy", Some("key-capture"), None, None)
+                .unwrap()
+                .contains("<redacted>")
+        );
     }
 
     #[test]
