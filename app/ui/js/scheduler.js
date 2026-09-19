@@ -512,6 +512,8 @@ export function toggleQueuePanel(open) {
   ctx.queueOpen = open !== undefined ? open : !ctx.queueOpen;
   $('queue-panel').style.display = ctx.queueOpen ? 'flex' : 'none';
   if (ctx.queueOpen) {
+    if ($('buffer-panel')) $('buffer-panel').hidden = true;
+    $('buffer-btn')?.setAttribute('aria-pressed', 'false');
     resetListForm();
     renderQueueUI();
     $('q-text').focus();

@@ -117,6 +117,41 @@ test('Board serialization persists manual follow-up and excludes runtime card st
   assert.equal('tail' in serialized.cards[0], false);
 });
 
+test('Board serialization keeps a card buffer independent from description and runtime state', () => {
+  const buffer = { revision: 1, collecting: false, entries: [{
+    id: 'N1', kind: 'manual', text: 'note', revision: 1, createdAt: 1, updatedAt: 1, copies: [],
+  }] };
+  const [card] = boardData([], [{
+    id: 'a', projectId: 'p', columnId: 'c', title: 'A', desc: 'description', cmd: '', dir: '/tmp',
+    session: 'deck-a-0001', buffer, status: 'running',
+  }]).cards;
+  assert.deepEqual(card.buffer, buffer);
+  assert.equal(card.desc, 'description');
+  assert.equal('status' in card, false);
+});
+
+test('Board serialization retains the channel collection and frozen initial queue journal', () => {
+  const buffer = { revision: 1, collecting: true, entries: [] };
+  const channelRun = { groupKey: 'default/T1/C1/R1', firstEventId: 'Ev1', connectionId: 'default',
+    workspaceId: 'T1', channelId: 'C1', ruleId: 'R1', lastCollectedAt: 10, idleMinutes: 30,
+    collecting: true, initialSteps: [{ operationId: 'B1', text: 'frozen', mode: 'at', at: 10,
+      tpl: 'triage', tplIdx: 1, tplTotal: 1 }], initialQueued: false };
+  const [card] = boardData([], [{ id: 'a', projectId: 'p', columnId: 'c', title: 'A', desc: '', cmd: '',
+    dir: '/tmp', session: 'deck-a-0001', buffer, channelRun }]).cards;
+  assert.deepEqual(card.channelRun, channelRun);
+});
+
+test('Board serialization retains Connector frozen task plans and project presets', () => {
+  const connectorRun = { handle: 'a'.repeat(64), presetId: 'R1', initialQueued: false,
+    initialSteps: [{ operationId: 'B1', text: 'frozen', mode: 'at', at: 10, tpl: 'R1', tplIdx: 1, tplTotal: 1 }] };
+  const project = { id: 'p', name: 'P', columns: [{ id: 'c', name: 'C' }],
+    presets: [{ id: 'R1', name: 'Fix', columnId: 'c', title: 'Task', dir: '~/work', cmd: 'codex', steps: ['frozen'] }] };
+  const card = boardData([project], [{ id: 'a', projectId: 'p', columnId: 'c', title: 'A', desc: '', cmd: 'codex', dir: '/tmp',
+    session: 'deck-a-0001', connectorRun }]);
+  assert.deepEqual(card.projects[0].presets, project.presets);
+  assert.deepEqual(card.cards[0].connectorRun, connectorRun);
+});
+
 test('the Board fixture is exactly the shape persistence.js writes', async () => {
   // fixtures/board.json is the one document both sides pin: this test proves
   // it is what the frontend serializes, documents.rs proves what the backend
@@ -443,6 +478,24 @@ test('the project defaults dialog edits two trimmed strings and chips only fill 
   promise = projectDefaultsDialog({ name: 'Cedar' });
   fakeDocument.getElementById('pdf-no').fire('click');
   assert.equal(await promise, null);
+});
+
+test('project defaults creates a bounded desktop task preset in the same Board draft', async () => {
+  const promise = projectDefaultsDialog({ name: 'Atlas', dir: '~/work', cmd: 'codex', recent: [],
+    presets: [], columns: [{ id: 'C1', name: 'Working' }] });
+  fakeDocument.getElementById('pdf-preset-add').fire('click');
+  fakeDocument.getElementById('pdf-preset-name').value = 'Fix issue';
+  fakeDocument.getElementById('pdf-preset-column').value = 'C1';
+  fakeDocument.getElementById('pdf-preset-title').value = 'Remote fix';
+  fakeDocument.getElementById('pdf-preset-dir').value = '~/work';
+  fakeDocument.getElementById('pdf-preset-cmd').value = 'codex';
+  fakeDocument.getElementById('pdf-preset-steps').value = 'inspect\nfix';
+  fakeDocument.getElementById('pdf-preset-done').fire('click');
+  fakeDocument.getElementById('pdf-yes').fire('click');
+  const result = await promise;
+  assert.equal(result.presets.length, 1);
+  assert.deepEqual({ ...result.presets[0], id: 'stable' }, { id: 'stable', name: 'Fix issue', columnId: 'C1',
+    title: 'Remote fix', dir: '~/work', cmd: 'codex', steps: ['inspect', 'fix'] });
 });
 
 test('voice settings save only preferences, preserve unrelated fields and roll back on failure', async () => {

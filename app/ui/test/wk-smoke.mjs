@@ -7,12 +7,14 @@ let renameCardInline, renderSuggest, resetSuggest;
 let showLinkCtx, toggleSidebar, addSplit, backToBoard, openSession, strToB64;
 let closePaneBySid, focusPane, cancelTerminalSelection, copyTerminalSelection, terminalSelectionElsewhere;
 let refreshQueue, toggleQueuePanel;
+let renderBufferUI;
+let drainChannel, drainConnector;
 let activateTheme, persistThemeChoice, persistInbound, applyFontScale, getFontScale;
 let toggleAutomations;
 let terminalLogicalLine, tokenizeTerminalLinks;
 if (typeof window !== 'undefined') {
   ({ $, ctx, inv, state, store } = await import('../js/state.js'));
-  ({ panes, provider, render, pollNow } = await import('../js/board.js'));
+  ({ panes, provider, render, pollNow, renderBufferUI } = await import('../js/board.js'));
   ({ boardData } = await import('../js/persistence.js'));
   ({
     renameCardInline, renderSuggest, resetSuggest,
@@ -27,6 +29,8 @@ if (typeof window !== 'undefined') {
   ({ persistThemeChoice, persistInbound } = await import('../js/dialogs.js'));
   ({ toggleAutomations } = await import('../js/automation.js'));
   ({ applyFontScale, getFontScale } = await import('../js/font-scale.js'));
+  ({ drainChannel } = await import('../js/inbound.js'));
+  ({ drainConnector } = await import('../js/connector.js'));
 }
 
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -1757,6 +1761,73 @@ async function multilinePromptSmoke(card) {
   await report('multiline-prompt', mask === 511, mask, 511);
 }
 
+async function bufferSmoke(main, project, column) {
+  const stopped = await provider.create({
+    projectId: project.id, columnId: column.id, title: 'buffer-stopped-smoke', cmd: '', dir: '/tmp',
+  });
+  state.view = 'board'; state.projectId = project.id; render();
+  const cardEl = document.querySelector(`.card[data-sid="${stopped.id}"]`);
+  cardEl.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+  $('ctx').querySelector('[data-a="buffer"]')?.click();
+  const openedOnBoard = !$('buffer-panel').hidden && state.view === 'board' && stopped.status === 'stopped';
+  $('buffer-new').value = 'board-only note'; $('buffer-add').click();
+  const added = await waitFor(() => provider.get(stopped.id)?.buffer?.entries?.length === 1);
+  const field = document.querySelector('#buffer-list textarea');
+  field.value = 'edited board-only note'; field.dispatchEvent(new Event('change', { bubbles: true }));
+  const edited = await waitFor(() => provider.get(stopped.id)?.buffer?.entries?.[0]?.text === 'edited board-only note');
+  await report('buffer-board-stopped', openedOnBoard && added && edited, added ? 1 : 0, edited ? 1 : 0);
+  const base = structuredClone(provider.get(stopped.id).buffer);
+  const a = structuredClone(base), b = structuredClone(base);
+  a.revision++; a.entries[0].text = 'winner'; a.entries[0].revision++;
+  b.revision++; b.entries[0].text = 'stale overwrite'; b.entries[0].revision++;
+  const raced = await Promise.allSettled([
+    provider.setBuffer(stopped.id, base.revision, a), provider.setBuffer(stopped.id, base.revision, b),
+  ]);
+  await report('buffer-cas', raced.filter(result => result.status === 'fulfilled').length === 1
+    && provider.get(stopped.id).buffer.entries[0].text === 'winner', raced.filter(result => result.status === 'fulfilled').length);
+  $('buffer-close').click();
+
+  await openSession(main.id); $('buffer-btn').click();
+  $('buffer-new').value = ': # immutable buffer smoke'; $('buffer-add').click();
+  await waitFor(() => provider.get(main.id)?.buffer?.entries?.some(e => e.text.includes('immutable')));
+  $('buffer-new').value = 'second selected snapshot'; $('buffer-add').click();
+  const mainAdded = await waitFor(() => provider.get(main.id)?.buffer?.entries?.length === 2);
+  renderBufferUI();
+  for (const row of document.querySelectorAll('.buffer-row')) row.querySelector('input[type=checkbox]').click();
+  $('buffer-queue').click();
+  const copied = await waitFor(() => {
+    const copies = provider.get(main.id)?.buffer?.entries.flatMap(entry => entry.copies || []) || [];
+    return copies.length === 2 && copies.some(copy => copy.text === ': # immutable buffer smoke')
+      && copies.some(copy => copy.text === 'second selected snapshot');
+  }, 5000);
+  const immutableBase = structuredClone(provider.get(main.id).buffer);
+  const tampered = structuredClone(immutableBase); tampered.revision++;
+  tampered.entries[0].copies[0].text = 'changed after admission';
+  let immutableRejected = false;
+  try { await provider.setBuffer(main.id, immutableBase.revision, tampered); }
+  catch (_) { immutableRejected = provider.get(main.id).buffer.entries[0].copies[0].text !== 'changed after admission'; }
+  await report('buffer-queue-copy', mainAdded && copied && immutableRejected, mainAdded ? 1 : 0,
+    copied && immutableRejected ? 1 : 0);
+  const operationIds = new Set(provider.get(main.id)?.buffer?.entries.flatMap(entry => entry.copies || []).map(copy => copy.operationId));
+  const queuedItems = (await inv('queue_list')).items?.filter(item => operationIds.has(item.operation_id)) || [];
+  for (const item of queuedItems) await inv('queue_remove', { id: item.id });
+  await refreshQueue();
+  $('buffer-close').click();
+
+  const protectedCard = await provider.create({
+    projectId: project.id, columnId: column.id, title: 'buffer-exit-smoke', cmd: '', dir: '/tmp',
+  });
+  await openSession(protectedCard.id);
+  await provider.setBuffer(protectedCard.id, 0, {
+    revision: 1, collecting: false, entries: [{ id: 'Nprotect', kind: 'manual', text: 'retain', revision: 1,
+      createdAt: Date.now(), updatedAt: Date.now(), copies: [] }],
+  });
+  await inv('pty_write', { name: protectedCard.session, dataB64: strToB64('exit\r') });
+  await waitFor(async () => { await pollNow(); return provider.get(protectedCard.id)?.status === 'stopped'; }, 5000);
+  await report('buffer-natural-exit-retained', !!provider.get(protectedCard.id), 1, 1);
+  return stopped;
+}
+
 async function settingsNavigationSmoke() {
   const { openSettings, selectSettingsSection, resetApplicationLogs } = await import('../js/dialogs.js');
   await openSettings();
@@ -1927,6 +1998,7 @@ export async function run() {
     stage = 13;
     await dropdownSmoke(main);
     await multilinePromptSmoke(main);
+    await bufferSmoke(main, project, column);
     stage = 14;
     await inv('queue_add', { args: {
       session: main.session, cardId: main.id, dir: main.dir, cmd: main.cmd,
@@ -2029,6 +2101,190 @@ export async function verifyRestart() {
     await report('done', !smokeFailed, 1, 0);
   } catch (error) {
     await report('done', false, 0, 8);
+  }
+}
+
+// Focused fresh-root scratchpad scenario. It deliberately leaves the panel
+// open with manual/external entries and evidence-backed queued/canceled badges
+// so the native window can be captured for visual review.
+export async function verifyBuffer() {
+  try {
+    await waitFor(() => provider.projects().length > 0);
+    const project = provider.projects()[0];
+    const column = project.columns.find(c => c.semantic === 'working') || project.columns[0];
+    const main = await provider.create({
+      projectId: project.id, columnId: column.id, title: 'scratchpad evidence', cmd: '', dir: '/tmp',
+    });
+    render();
+    await openSession(main.id);
+    await bufferSmoke(main, project, column);
+
+    const { upsertExternal } = await import('../js/buffer-model.js');
+    let card = provider.get(main.id);
+    const external = upsertExternal(card.buffer, {
+      id: 'Esmoke1', text: 'External review: confirm the release checklist and linked incident.', now: Date.now(),
+      source: { type: 'channel', eventId: 'smoke-event-1', channel: '#release', at: Math.floor(Date.now() / 1000),
+        links: ['https://example.com/incidents/42'] },
+    });
+    await provider.setBuffer(card.id, card.buffer.revision, external.buffer);
+
+    await openSession(main.id);
+    $('buffer-btn').click();
+    $('buffer-new').value = 'Queue this after the external review is resolved.';
+    $('buffer-add').click();
+    await waitFor(() => provider.get(main.id)?.buffer?.entries?.length === 4);
+    renderBufferUI();
+    const rows = [...document.querySelectorAll('.buffer-row')];
+    const latest = rows.find(row => row.querySelector('textarea')?.value.startsWith('Queue this'));
+    latest?.querySelector('input[type=checkbox]')?.click();
+    $('buffer-queue').click();
+    await waitFor(async () => {
+      await refreshQueue(); renderBufferUI();
+      return [...document.querySelectorAll('.buffer-copies [data-state]')]
+        .some(badge => badge.dataset.state === 'queued');
+    }, 5000);
+    const readonlyExternal = rows.some(row => row.querySelector('textarea[readonly]')?.value.startsWith('External review'));
+    const states = new Set([...document.querySelectorAll('.buffer-copies [data-state]')].map(badge => badge.dataset.state));
+    await report('buffer-visual-fixture', readonlyExternal && states.has('queued') && states.has('canceled'), states.size, 2);
+    await report('done', !smokeFailed, 1, 0);
+  } catch (error) {
+    await inv('ui_event', { code: 'js-reject', detail: (error && error.name) || 'error', a: 16, b: 0 });
+    await report('done', false, 0, 16);
+  }
+}
+
+export async function verifyChannel() {
+  try {
+    await waitFor(() => provider.projects().length > 0);
+    const project = provider.projects()[0];
+    state.projectId = project.id; state.view = 'board'; render();
+    const { openSettings, renderConnectorSettings, selectSettingsSection } = await import('../js/dialogs.js');
+    await openSettings(); selectSettingsSection('integrations'); await renderConnectorSettings();
+    const settingsVisible = !$('set-channel-enabled').closest('.set-group').hidden
+      && $('set-channel-bot').type === 'password' && $('set-channel-app').type === 'password';
+    $('set-close').click();
+    await provider.saveTemplate(project.id, 'channel smoke', ['Inspect {{msg.text}}']);
+    await provider.saveTemplate(project.id, '{text}', ['Inspect {{msg.text}}']);
+    const { openAutomations } = await import('../js/automation.js');
+    await openAutomations({ trigger: 'channel' });
+    $('auto-channel-ids').value = 'C0123';
+    $('auto-sender-users').value = 'U0123';
+    $('auto-match-kind').value = 'regex'; $('auto-match-kind').dispatchEvent(new Event('change'));
+    $('auto-match-value').value = 'INC-(?<incident>[0-9]+)'; $('auto-match-capture').value = 'incident';
+    $('auto-idle').value = '30'; $('auto-template').value = 'channel smoke';
+    $('auto-save').click();
+    const saved = await waitFor(() => ctx.settings.inbound.channelRules?.length === 1);
+    const rule = ctx.settings.inbound.channelRules?.[0];
+    await report('channel-ui', settingsVisible && saved && rule?.match?.groupCapture === 'incident'
+      && rule?.idleMinutes === 30, settingsVisible ? 1 : 0, saved ? 1 : 0);
+    const column = project.columns.find(value => value.semantic === 'working') || project.columns[0];
+    await inv('channel_smoke_seed', { projectId: project.id, columnId: column.id, scenario: 'dedupe' });
+    await drainChannel();
+    const routed = await waitFor(() => store.cards.find(card => card.origin?.source === 'channel'
+      && card.buffer?.entries?.length === 2 && card.channelRun?.initialQueued === true));
+    let card = store.cards.find(value => value.origin?.source === 'channel');
+    const pending = await inv('channel_pending');
+    const queue = await inv('queue_list');
+    const firstOperation = card?.channelRun?.initialSteps?.[0]?.operationId;
+    const routedOk = routed && card?.buffer?.entries?.length === 2
+      && new Set(card.buffer.entries.map(entry => entry.source.eventId)).size === 2
+      && card.connectorRun === undefined && card.channelRun?.initialQueued === true
+      && queue.operations?.some(operation => operation.id === firstOperation)
+      && pending.length === 0;
+    const before = { cards: store.cards.length, entries: card?.buffer?.entries?.length, queue: queue.operations?.length };
+    await drainChannel();
+    card = provider.get(card.id);
+    const afterQueue = await inv('queue_list');
+    const replayOk = store.cards.length === before.cards && card.buffer.entries.length === before.entries
+      && afterQueue.operations?.length === before.queue;
+    await provider.setChannelRun(card.id, card.channelRun.groupKey, { collecting: false });
+    const stopped = provider.get(card.id);
+    await inv('smoke_fault_set', { kind: 'queue-save', count: 1 });
+    await inv('channel_smoke_seed', { projectId: project.id, columnId: column.id, scenario: 'backlog' });
+    await waitFor(() => store.cards.some(value => value.id !== card.id
+      && value.origin?.source === 'channel' && value.buffer?.entries?.length === 3));
+    await inv('smoke_fault_set', { kind: 'queue-save', count: 0 }); await drainChannel();
+    const backlog = store.cards.find(value => value.id !== card.id && value.origin?.source === 'channel');
+    await waitFor(() => provider.get(backlog?.id)?.channelRun?.initialQueued === true);
+    const backlogOk = backlog?.buffer?.entries?.length === 3 && backlog.channelRun?.initialQueued === true;
+    await provider.setChannelRun(backlog.id, backlog.channelRun.groupKey,
+      { collecting: false, lastCollectedAt: Math.floor(Date.now() / 1000) - 120 });
+    await inv('channel_smoke_seed', { projectId: project.id, columnId: column.id, scenario: 'expiry' });
+    await waitFor(() => store.cards.some(value => ![card.id, backlog.id].includes(value.id)
+      && value.origin?.source === 'channel'));
+    const expiry = store.cards.find(value => ![card.id, backlog.id].includes(value.id) && value.origin?.source === 'channel');
+    const oldSourceAt = expiry?.buffer?.entries?.[0]?.source?.at || 0;
+    const expiryOk = expiry?.buffer?.entries?.length === 1 && expiry.channelRun?.collecting === true
+      && expiry.channelRun.lastCollectedAt - oldSourceAt >= 100;
+    await provider.setChannelRun(expiry.id, expiry.channelRun.groupKey, { collecting: false });
+    const beforeAckCards = store.cards.length;
+    const ackIds = await inv('channel_smoke_seed', { projectId: project.id, columnId: column.id,
+      scenario: 'ack-failure' });
+    const ackLeftPending = await waitFor(async () => (await inv('channel_pending')).some(item => item.id === ackIds[0])
+      && store.cards.some(value => value.buffer?.entries?.some(entry => entry.source?.eventId === 'SmokeAckFailure1')));
+    const ackCard = store.cards.find(value => value.buffer?.entries?.some(entry => entry.source?.eventId === 'SmokeAckFailure1'));
+    await drainChannel();
+    const ackCleared = await waitFor(async () => !(await inv('channel_pending')).some(item => item.id === ackIds[0]));
+    const ackOk = ackLeftPending && ackCleared && store.cards.length === beforeAckCards + 1
+      && ackCard?.buffer?.entries?.filter(entry => entry.source?.eventId === 'SmokeAckFailure1').length === 1;
+    await report('channel-dedupe', routedOk && replayOk, card?.buffer?.entries?.length || 0, before.queue || 0);
+    await report('channel-backlog', backlogOk, backlog?.buffer?.entries?.length || 0, backlog?.channelRun?.initialQueued ? 1 : 0);
+    await report('channel-expiry', expiryOk, expiry?.buffer?.entries?.length || 0,
+      expiry?.channelRun?.lastCollectedAt - oldSourceAt || 0);
+    await report('channel-stop', stopped.buffer.entries.length === 2 && stopped.buffer.collecting === false
+      && stopped.channelRun.collecting === false, stopped.buffer.entries.length, stopped.channelRun.collecting ? 1 : 0);
+    await report('channel-ack-failure', ackOk, ackCard?.buffer?.entries?.length || 0, ackCleared ? 1 : 0);
+    await report('channel-route', routedOk && replayOk && backlogOk && expiryOk && ackOk && stopped.buffer.entries.length === 2
+      && stopped.buffer.collecting === false && stopped.channelRun.collecting === false, before.entries, before.queue);
+    await report('done', !smokeFailed, 1, 0);
+  } catch (_) { await report('done', false, 0, 17); }
+}
+
+export async function verifyConnector() {
+  try {
+    await waitFor(() => provider.projects().length > 0);
+    const project = provider.projects()[0]; const column = project.columns[0];
+    const { openSettings, renderConnectorSettings, selectSettingsSection } = await import('../js/dialogs.js');
+    await openSettings(); selectSettingsSection('integrations'); await renderConnectorSettings();
+    const settingsOk = $('set-connector-toggle').dataset.enabled === 'false'
+      && $('set-connector-pair').disabled === true;
+    $('set-close').click();
+    const card = await provider.create({ projectId: project.id, columnId: column.id,
+      title: 'connector smoke', cmd: '', dir: '/tmp' });
+    await inv('connector_smoke_window', { visible: false });
+    await inv('connector_smoke_seed', { cardId: card.id, expectedRevision: '0' });
+    await drainConnector();
+    const applied = await waitFor(() => provider.get(card.id)?.buffer?.entries?.some(entry => entry.text === 'smoke connector note'));
+    await inv('connector_smoke_window', { visible: true });
+    await drainConnector();
+    const current = provider.get(card.id); const pending = await inv('connector_pending');
+    const applyOk = applied && current.buffer.entries.filter(entry => entry.text === 'smoke connector note').length === 1
+      && pending.length === 0;
+    await report('connector-settings', settingsOk, $('set-connector-toggle').dataset.enabled === 'false' ? 1 : 0,
+      $('set-connector-pair').disabled ? 1 : 0);
+    await report('connector-apply', applyOk, current.buffer?.entries?.length || 0, pending.length);
+    await report('connector-route', settingsOk && applyOk, current.buffer.entries.length, pending.length);
+    await report('done', !smokeFailed, 1, 0);
+  } catch (_) { await inv('connector_smoke_window', { visible: true }).catch(() => {}); await report('done', false, 0, 18); }
+}
+
+// Held open for the opt-in SwiftCore → real loopback TLS → native journal →
+// WK Board transport check. The fixture is private to the isolated smoke root.
+export async function verifyConnectorTransport() {
+  try {
+    await waitFor(() => provider.projects().length > 0);
+    const project = provider.projects()[0]; const column = project.columns[0];
+    const { addManual, emptyBuffer } = await import('../js/buffer-model.js');
+    const seeded = addManual(emptyBuffer(), { id: 'Nconnectortransport', text: 'transport seed', now: Date.now() });
+    const card = await provider.create({ projectId: project.id, columnId: column.id,
+      title: 'connector transport', cmd: '', dir: '/tmp', buffer: seeded.buffer });
+    await inv('connector_smoke_window', { visible: false });
+    await inv('connector_smoke_transport', { cardId: card.id });
+    await report('connector-transport-ready', provider.get(card.id)?.status === 'stopped'
+      && provider.get(card.id)?.cmd === '' && provider.get(card.id)?.buffer?.entries?.length === 1, 1, 0);
+  } catch (_) {
+    await inv('connector_smoke_window', { visible: true }).catch(() => {});
+    await report('connector-transport-ready', false, 0, 1);
   }
 }
 

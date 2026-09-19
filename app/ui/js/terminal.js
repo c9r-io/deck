@@ -24,7 +24,7 @@
 import { $, ctx, duev, inv, state, uev } from './state.js';
 import { collapseHome, isComposingKeyEvent, isNotDirectoryError, newSessionColumn, newSessionPlan } from './pure.js';
 import { choiceDialog, confirmDialog, inlineRename, toast, promptDialog } from './dialogs.js';
-import { closeSession, openProjectDefaults, panes, provider, renameTab, render, switchProject, activeProject } from './board.js';
+import { closeSession, openBuffer, openProjectDefaults, panes, provider, renameTab, render, switchProject, activeProject } from './board.js';
 import { backToBoard, openSession } from './layout.js';
 import { formatNumber, onLocaleChange, t } from './i18n.js';
 import { formatShortcut, registerShortcutAction } from './shortcuts.js';
@@ -34,6 +34,7 @@ import { strToB64 } from './terminal-bytes.js';
 import { linkMenuItems } from './terminal-links-model.js';
 import { writeClipboard } from './terminal-clipboard.js';
 import { createResumeCache, resumeCommands, resumeTarget } from './resume-model.js';
+import { retainedBuffer } from './buffer-model.js';
 
 /* ---------- context menus ---------- */
 /* The one dismissal for the shared #ctx element. Every menu that installs a
@@ -92,9 +93,10 @@ export function showSessionCtx(e, sid) {
     ? e.currentTarget.querySelector('.name, .card-title') : null;
   const ctx = $('ctx');
   ctx.onkeydown = null;
-  ctx.innerHTML = '<button data-a="rename"></button><button data-a="desc"></button><button data-a="here"></button><hr><button data-a="close" class="danger"></button>';
+  ctx.innerHTML = '<button data-a="rename"></button><button data-a="desc"></button><button data-a="buffer"></button><button data-a="here"></button><hr><button data-a="close" class="danger"></button>';
   ctx.querySelector('[data-a="rename"]').textContent = t('menu.renameCard');
   ctx.querySelector('[data-a="desc"]').textContent = t(s.desc ? 'menu.editDescription' : 'menu.addDescription');
+  ctx.querySelector('[data-a="buffer"]').textContent = t('buffer.open');
   ctx.querySelector('[data-a="here"]').textContent = t('menu.newSessionHere');
   ctx.querySelector('[data-a="close"]').textContent = t('menu.closeSession');
   ctx.onclick = ev => {
@@ -102,6 +104,7 @@ export function showSessionCtx(e, sid) {
     ctx.style.display = 'none';
     if (a === 'rename') renameCardInline(sid, renameHost);
     if (a === 'desc') editDescInline(sid);
+    if (a === 'buffer') openBuffer(sid);
     if (a === 'here') newSession(s.dir, { projectId: s.projectId });
     if (a === 'close') closeSession(sid);
   };
@@ -143,7 +146,12 @@ export function showProjectCtx(e, pid) {
     if (a === 'remove') {
       if (provider.projects().length <= 1) { toast(t('project.atLeastOne')); return; }
       const n = provider.list(pid).length;
-      if (!(await confirmDialog(t('project.delete', { name: p.name, sessions: n ? t('project.deleteSessions', { count: formatNumber(n) }) : '' })))) return;
+      const buffered = provider.list(pid).filter(retainedBuffer);
+      if (!(await confirmDialog(t(buffered.length ? 'project.deleteBuffers' : 'project.delete', {
+        name: p.name, sessions: n ? t('project.deleteSessions', { count: formatNumber(n) }) : '',
+        cards: formatNumber(buffered.length),
+        entries: formatNumber(buffered.reduce((sum, card) => sum + (card.buffer?.entries?.length || 0), 0)),
+      })))) return;
       /* nothing is removed unless every card's schedule was cancelled and
          persisted first (the toast explains a refusal) */
       if (!(await provider.removeProject(pid))) return;

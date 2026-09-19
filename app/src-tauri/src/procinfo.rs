@@ -22,6 +22,35 @@ pub(crate) struct ProcessInfo {
     pub(crate) tty_pgid: u32,
 }
 
+/// Stable process birth identity used by the Connector generation token.
+/// Kept separate from the hot process-table scan so existing board polling
+/// does not widen its data or cost.
+#[cfg(target_os = "macos")]
+pub(crate) fn process_start(pid: u32) -> Option<(u64, u32)> {
+    use std::ffi::c_void;
+    let mut info = std::mem::MaybeUninit::<libc::proc_bsdinfo>::zeroed();
+    let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+    let got = unsafe {
+        libc::proc_pidinfo(
+            pid as libc::pid_t,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            info.as_mut_ptr().cast::<c_void>(),
+            size,
+        )
+    };
+    if got != size {
+        return None;
+    }
+    let info = unsafe { info.assume_init() };
+    Some((info.pbi_start_tvsec, info.pbi_start_tvusec as u32))
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn process_start(_pid: u32) -> Option<(u64, u32)> {
+    None
+}
+
 #[cfg(target_os = "macos")]
 fn list_pids() -> Vec<libc::pid_t> {
     use std::ffi::c_void;

@@ -10,6 +10,7 @@ fn qi(id: &str, mode: &str) -> QueueItem {
         id: id.into(),
         session: "s".into(),
         card_id: "card-s".into(),
+        operation_id: None,
         dir: String::new(),
         cmd: String::new(),
         text: "x".into(),
@@ -64,6 +65,7 @@ fn qs(items: Vec<QueueItem>) -> QueueState {
         cancelled: Vec::new(),
         reviews: Vec::new(),
         review_completed: HashSet::new(),
+        operations: Vec::new(),
     };
     migrate_groups(&mut q);
     q
@@ -547,6 +549,7 @@ fn expired_rules_purge() {
 #[test]
 fn add_validation_rejects_bad_combinations() {
     let base = || QueueAddArgs {
+        operation_id: None,
         session: "s".into(),
         card_id: "card-s".into(),
         dir: String::new(),
@@ -648,6 +651,7 @@ fn chain_quiet_time_is_per_item() {
 #[test]
 fn add_validation_covers_quiet_and_start() {
     let base = || QueueAddArgs {
+        operation_id: None,
         session: "s".into(),
         card_id: "card-s".into(),
         dir: String::new(),
@@ -1775,6 +1779,7 @@ impl FakeDisk {
 
 fn add_args(session: &str, text: &str) -> QueueAddArgs {
     QueueAddArgs {
+        operation_id: None,
         session: session.into(),
         card_id: format!("card-{session}"),
         dir: String::new(),
@@ -1796,6 +1801,68 @@ fn add_args(session: &str, text: &str) -> QueueAddArgs {
         tpl_total: None,
         group: None,
     }
+}
+
+#[test]
+fn buffer_queue_operation_is_durable_idempotent_evidence() {
+    let mut q = qs(Vec::new());
+    let mut args = add_args("s", "immutable copy");
+    args.operation_id = Some("Bcopy1".into());
+    add_item(&mut q, args.clone(), normalize_prompt(&args.text)).unwrap();
+    let item = q.items[0].id.clone();
+    add_item(&mut q, args.clone(), normalize_prompt(&args.text)).unwrap();
+    assert_eq!(
+        q.items.len(),
+        1,
+        "a repeated operation cannot enqueue twice"
+    );
+    assert_eq!(q.operations.len(), 1);
+
+    let mut conflict = args.clone();
+    conflict.text = "different text".into();
+    assert!(add_item(&mut q, conflict.clone(), normalize_prompt(&conflict.text)).is_err());
+    finalize_delivery(&mut q, &item, "delivery-copy1", NOW, false);
+    q.deliveries.clear(); // the ordinary 200-row audit may rotate
+    assert_eq!(q.operations[0].state, "delivered");
+    assert!(q.items.is_empty());
+
+    let mut queued = add_args("s", "cancel me");
+    queued.operation_id = Some("Bcopy2".into());
+    add_item(&mut q, queued.clone(), normalize_prompt(&queued.text)).unwrap();
+    let queued_id = q.items[0].id.clone();
+    remove_item(&mut q, &queued_id).unwrap();
+    assert_eq!(
+        q.operations
+            .iter()
+            .find(|op| op.id == "Bcopy2")
+            .unwrap()
+            .state,
+        "canceled"
+    );
+    clear_session_items(&mut q, "s");
+    add_item(&mut q, queued.clone(), normalize_prompt(&queued.text)).unwrap();
+    assert!(
+        q.items.is_empty(),
+        "a canceled operation stays reserved after session/card cleanup"
+    );
+    let mut changed_old = queued.clone();
+    changed_old.text = "replayed with changed intent".into();
+    assert!(add_item(
+        &mut q,
+        changed_old.clone(),
+        normalize_prompt(&changed_old.text)
+    )
+    .is_err());
+    let seed = q.operations[0].clone();
+    while q.operations.len() < MAX_QUEUE_OPERATIONS {
+        let mut operation = seed.clone();
+        operation.id = format!("Bfill{}", q.operations.len());
+        q.operations.push(operation);
+    }
+    add_item(&mut q, args.clone(), normalize_prompt(&args.text)).unwrap();
+    let mut full = add_args("s", "new after full");
+    full.operation_id = Some("BnewAfterFull".into());
+    assert!(add_item(&mut q, full.clone(), normalize_prompt(&full.text)).is_err());
 }
 
 /// Every user-driven mutation, run twice: once against a healthy disk

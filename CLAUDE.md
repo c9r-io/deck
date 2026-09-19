@@ -53,8 +53,10 @@ same commit as the behaviour it describes.
   first run; the UI must never auto-save defaults over an existing file; every
   Board mutation goes through the one transaction queue (`persistence.js`);
   future schema versions are refused untouched (`storage.rs`). Inspection opt-in uses
-  sticky v2 envelopes on queue.json and settings.json only, plus a settings
-  barrier; deck.json and ordinary v1 data stay v1.
+  sticky v2 envelopes on queue.json and settings.json plus a settings barrier.
+  A retained card buffer, channel/Connector run journal, or project task preset upgrades deck.json to sticky v3, idempotent buffer
+  queue operations upgrade queue.json to sticky v3, and enabled channel
+  connections/rules upgrade settings.json to sticky v3; ordinary data stays v1.
 - **The signed `deck-app` binary is never a pane executable**, and no
   `/bin/sh -c`, script or shell argv appears on the shell-restore path
   (`commands::restore_start_args`, `tests/edr_quiet.rs`).

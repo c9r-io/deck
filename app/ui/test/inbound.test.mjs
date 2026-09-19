@@ -69,7 +69,8 @@ test('the planner refuses to double-create and reports dangling rules honestly',
 });
 
 test('inbound settings normalize to a closed shape and drop rules the backend would refuse', () => {
-  assert.deepEqual(normalizeInbound(undefined), { sources: { slack: { enabled: false } }, rules: [] });
+  assert.deepEqual(normalizeInbound(undefined), { sources: { slack: { enabled: false } }, rules: [],
+    channelConnection: { enabled: false, connectionId: 'default' }, channelRules: [] });
   assert.deepEqual(normalizeInbound({ sources: { slack: { enabled: 'yes' }, notion: { enabled: true } } }).sources,
     { slack: { enabled: false } });
   const good = { id: 'R1', source: 'slack', badge: 'deck', projectId: 'P1', columnId: 'C1', cmd: 'claude', template: 't', dir: '' };
@@ -90,7 +91,8 @@ test('inbound settings normalize to a closed shape and drop rules the backend wo
   const settings = normalizeSettings({ inbound: { rules: [good] }, future: { kept: 1 } });
   assert.equal(settings.inbound.rules.length, 1);
   assert.deepEqual(settings.future, { kept: 1 });
-  assert.deepEqual(normalizeSettings({}).inbound, { sources: { slack: { enabled: false } }, rules: [] });
+  assert.deepEqual(normalizeSettings({}).inbound, { sources: { slack: { enabled: false } }, rules: [],
+    channelConnection: { enabled: false, connectionId: 'default' }, channelRules: [] });
 });
 
 /* ---------- 自动化: clock rules ---------- */

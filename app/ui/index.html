@@ -60,10 +60,10 @@
           <button class="btn primary" id="auto-new" data-i18n="automation.new">＋ New</button>
           <button class="btn icon-btn" id="auto-close" data-i18n-title="automation.closeDrawer" title="Close">✕</button>
         </div>
-        <div class="q-hint auto-hint" data-i18n="automation.hint">A clock or a Slack badge opens a fresh card here, launches the command and sends the template.</div>
+        <div class="q-hint auto-hint" data-i18n="automation.hint">Clock and Slack badge automations create sessions. A channel monitor creates one on its first match, then only collects later messages.</div>
         <div id="auto-list"></div>
         <div id="auto-editor" hidden>
-          <div class="set-row">
+          <div class="set-row q-p q-p-clock q-p-slack">
             <label for="auto-name" data-i18n="automation.name">Name</label>
             <input id="auto-name" autocomplete="off" spellcheck="false" maxlength="120" placeholder="morning tests" data-i18n-placeholder="automation.namePlaceholder">
           </div>
@@ -72,6 +72,7 @@
             <div class="seg" id="auto-trigger" role="radiogroup" aria-label="Trigger" data-i18n-aria-label="automation.trigger">
               <button type="button" data-v="clock" aria-pressed="true" data-i18n="automation.trigger.clock">clock</button>
               <button type="button" data-v="slack" aria-pressed="false" data-i18n="automation.trigger.slack">Slack badge</button>
+              <button type="button" data-v="channel" aria-pressed="false" data-i18n="automation.trigger.channel">Slack channel</button>
             </div>
           </div>
           <div class="set-row q-p q-p-slack">
@@ -79,6 +80,17 @@
             <input id="auto-badge" autocomplete="off" spellcheck="false" maxlength="64" placeholder="bug">
           </div>
           <div class="set-hint auto-editor-hint q-p q-p-slack" id="auto-slack-state"></div>
+          <div class="q-p q-p-channel auto-channel-fields">
+            <div class="set-row"><label for="auto-channel-ids" data-i18n="automation.channelIds">Channel IDs</label><input id="auto-channel-ids" autocomplete="off" spellcheck="false" placeholder="C0123, G0456"></div>
+            <div class="set-row"><label for="auto-sender-users" data-i18n="automation.senderUsers">Allowed user IDs</label><input id="auto-sender-users" autocomplete="off" spellcheck="false" placeholder="U0123, W0456"></div>
+            <div class="set-row"><label for="auto-sender-bots" data-i18n="automation.senderBots">Allowed bot IDs</label><input id="auto-sender-bots" autocomplete="off" spellcheck="false" placeholder="B0123"></div>
+            <div class="set-row"><label for="auto-match-kind" data-i18n="automation.matcher">Match</label><select id="auto-match-kind"><option value="contains" data-i18n="automation.match.contains">contains</option><option value="keywords" data-i18n="automation.match.keywords">any keyword</option><option value="regex" data-i18n="automation.match.regex">regular expression</option></select><input id="auto-match-value" autocomplete="off" spellcheck="false"></div>
+            <label class="q-review-option"><input type="checkbox" id="auto-match-case"><span data-i18n="automation.caseSensitive">Case sensitive</span></label>
+            <div class="set-row" id="auto-capture-row"><label for="auto-match-capture" data-i18n="automation.capture">Incident capture name</label><input id="auto-match-capture" autocomplete="off" spellcheck="false" placeholder="incident"></div>
+            <label class="q-review-option"><input type="checkbox" id="auto-threads" checked><span data-i18n="automation.includeThreads">Include thread replies</span></label>
+            <div class="set-row"><label for="auto-idle" data-i18n="automation.idleMinutes">Collect until idle</label><input id="auto-idle" type="number" min="0" max="10080" value="30"><span data-i18n="automation.minutes">minutes</span></div>
+            <div class="set-hint" data-i18n="automation.channelHint">Messages are grouped only by this rule’s channel and optional named regex capture. 0 keeps collecting until you stop it manually.</div>
+          </div>
           <div class="set-row q-p q-p-clock">
             <label data-i18n="automation.when">When</label>
             <select id="auto-unit">
@@ -111,15 +123,15 @@
             <select id="auto-template"></select>
             <button class="btn" id="auto-tpl-manage" type="button" data-i18n="automation.manageTemplates">Templates…</button>
           </div>
-          <div class="set-row">
+          <div class="set-row q-p q-p-clock q-p-slack">
             <label data-i18n="automation.finish">When done</label>
             <div class="seg" id="auto-finish" role="radiogroup" aria-label="When done" data-i18n-aria-label="automation.finish">
               <button type="button" data-v="close" aria-pressed="true" data-i18n="automation.finish.close">close the card</button>
               <button type="button" data-v="keep" aria-pressed="false" data-i18n="automation.finish.keep">keep it</button>
             </div>
           </div>
-          <label class="q-review-option"><input type="checkbox" id="auto-review"><span data-i18n="queue.review.option">Inspect after every row, including the last</span></label>
-          <p class="q-hint" data-i18n="automation.plan">Creates a new session; the command may restore its own context. Inspection applies only to new runs.</p>
+          <label class="q-review-option q-p q-p-clock q-p-slack"><input type="checkbox" id="auto-review"><span data-i18n="queue.review.option">Inspect after every row, including the last</span></label>
+          <p class="q-hint q-p q-p-clock q-p-slack" data-i18n="automation.plan">Creates a new session; the command may restore its own context. Inspection applies only to new runs.</p>
           <div class="set-actions" style="gap:8px">
             <button class="btn" id="auto-cancel" data-i18n="common.cancel">Cancel</button>
             <button class="btn primary" id="auto-save" data-i18n="common.save">Save</button>
@@ -150,9 +162,16 @@
         <button class="btn icon-btn" id="split-down" title="Split down (⌘⇧D)">⬓</button>
         <button class="btn icon-btn voice-btn" id="voice-btn" type="button" aria-pressed="false" data-phase="idle" data-i18n-title="voice.phase.idle" data-i18n-aria-label="voice.phase.idle"><svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="7" y="2" width="6" height="10" rx="3"/><path d="M4 9v1a6 6 0 0 0 12 0V9M10 16v3M7 19h6"/></svg><span id="voice-time" class="voice-time" hidden></span></button>
         <div id="voice-caption" class="voice-caption" aria-hidden="true" hidden></div>
+        <button class="btn icon-btn" id="buffer-btn" type="button" aria-pressed="false" data-i18n-title="buffer.title" title="Card scratchpad">▤<span class="cnt" id="buffer-count"></span></button>
         <button class="btn icon-btn" id="queue-btn" title="Scheduled prompts — send prompts to this session later" data-i18n-title="queue.title"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8.8" r="5"/><path d="M8 6.2v2.6l1.8 1.2"/><path d="M13.9 2.8l-1.7 1.5M2.1 2.8l1.7 1.5" stroke-linecap="round"/></svg><span class="cnt" id="queue-cnt"></span></button>
         <button class="btn danger" id="sess-close" title="Close session (terminates the shell and removes the card)" data-i18n="session.close" data-i18n-title="session.closeTitle">Close</button>
       </div>
+      <section id="buffer-panel" hidden aria-labelledby="buffer-title">
+        <div class="buffer-head"><strong id="buffer-title" data-i18n="buffer.title">Card scratchpad</strong><b id="buffer-collecting" hidden data-i18n="buffer.collecting">Collecting</b><button class="btn" id="buffer-stop" hidden data-i18n="buffer.stop">Stop collecting</button><span data-i18n="buffer.hint">Notes stay with this card and are never sent automatically.</span><button class="btn" id="buffer-close" type="button" data-i18n="common.close">Close</button></div>
+        <div id="buffer-list"></div>
+        <div id="buffer-empty" data-i18n="buffer.empty">No notes yet.</div>
+        <div class="buffer-add"><textarea id="buffer-new" rows="2" maxlength="32768" data-i18n-placeholder="buffer.placeholder" placeholder="Add a note…"></textarea><button class="btn" id="buffer-add" data-i18n="common.add">Add</button><button class="btn primary" id="buffer-queue" disabled data-i18n="buffer.queue">Queue selected copy</button></div>
+      </section>
       <div id="queue-panel">
         <div id="queue-list" tabindex="-1"></div>
         <div class="q-new" id="q-new">
@@ -392,6 +411,22 @@
               <div class="set-hint" data-i18n="settings.inboundSlackHint">Tokens are kept in your macOS Keychain, never under ~/.deck, and are never shown again here. The user token finds your badged messages (search, about a minute behind); the app token hears new badges instantly. Only your own reactions count. There is no token without installing the app yourself: Slack has no OAuth redirect to a local app and no API that mints app-level tokens.</div>
             </details>
           </div>
+          <div class="set-group">
+            <div class="set-row"><label data-i18n="settings.channelMonitor">Slack channel monitor</label><span id="set-channel-status" style="color:var(--muted)"></span></div>
+            <div class="set-hint" data-i18n="settings.channelMonitorHint">Collects only explicitly allowed channels and senders into card scratchpads. It never writes to Slack and cannot backfill gaps.</div>
+            <div class="set-row"><label for="set-channel-enabled" data-i18n="settings.slackConnect">Connect</label><input type="checkbox" id="set-channel-enabled"><button class="btn" id="set-channel-setup" style="margin-left:auto" data-i18n="settings.inboundSetup">Create the Slack app…</button></div>
+            <div class="set-row"><label for="set-channel-bot" data-i18n="settings.channelBotToken">Bot token</label><input type="password" id="set-channel-bot" autocomplete="off" spellcheck="false" placeholder="xoxb-…"><button class="btn" id="set-channel-bot-clear" data-i18n="common.clear">Clear</button></div>
+            <div class="set-row"><label for="set-channel-app" data-i18n="settings.channelAppToken">App token</label><input type="password" id="set-channel-app" autocomplete="off" spellcheck="false" placeholder="xapp-…"><button class="btn" id="set-channel-app-clear" data-i18n="common.clear">Clear</button></div>
+            <details class="set-details"><summary data-i18n="settings.details">Learn more</summary><div class="set-hint" data-i18n="settings.channelMonitorDetails">Uses separate least-privilege bot and Socket Mode credentials stored in Keychain. Rules are configured per project under Automations. Disconnects create an explicit unresolved gap; Slack retries are finite.</div></details>
+          </div>
+          <div class="set-group">
+            <div class="set-row"><label data-i18n="connector.title">Phone Connector</label><span id="set-connector-status" style="color:var(--muted)"></span></div>
+            <div class="set-hint" data-i18n="connector.hint">Off by default. When enabled, deck listens only on the selected local address over pinned HTTPS.</div>
+            <div class="set-row"><label for="set-connector-address" data-i18n="connector.address">Local address</label><select id="set-connector-address"></select><input id="set-connector-port" type="number" min="1024" max="65535" value="47631"><button class="btn" id="set-connector-toggle" data-i18n="connector.enable">Enable</button></div>
+            <div class="set-actions"><button class="btn" id="set-connector-pair" data-i18n="connector.pair">Pair a device…</button><button class="btn" id="set-connector-reset" data-i18n="connector.reset">Reset and re-pair…</button></div>
+            <div id="set-connector-pairing" hidden><img id="set-connector-qr" alt=""><div class="set-hint" id="set-connector-expiry"></div></div>
+            <div id="set-connector-devices"></div>
+          </div>
         </section>
         <section class="set-panel" id="set-panel-data" aria-labelledby="set-heading-data" hidden>
           <h2 id="set-heading-data" data-i18n="settings.data">Data & logs</h2>
@@ -534,6 +569,19 @@
     <div class="set-row"><label for="pdf-cmd" data-i18n="projectDefaults.cmd">Default command</label><input id="pdf-cmd" autocomplete="off" spellcheck="false" maxlength="200" placeholder="claude"></div>
     <div class="pdf-chips" id="pdf-chips" hidden></div>
     <p class="set-hint" data-i18n="projectDefaults.hint">Both may stay empty: ＋ / ⌘N then open a shell in your home directory, as today. The command is sent once, when the session is created; reopening a stopped card returns to its shell. “New session in this directory”, “new session in the parent folder” and a split’s “new shell here” keep their own directory and never run it. A new automation starts with these two values filled in; existing rules are untouched.</p>
+    <h3 data-i18n="presets.title">Phone task presets</h3>
+    <div id="pdf-presets"></div>
+    <button class="btn" type="button" id="pdf-preset-add" data-i18n="presets.add">Add preset</button>
+    <div id="pdf-preset-editor" hidden>
+      <div class="set-row"><label for="pdf-preset-name" data-i18n="presets.name">Name</label><input id="pdf-preset-name" maxlength="120"></div>
+      <div class="set-row"><label for="pdf-preset-column" data-i18n="automation.column">Group</label><select id="pdf-preset-column"></select></div>
+      <div class="set-row"><label for="pdf-preset-title" data-i18n="presets.cardTitle">Card title</label><input id="pdf-preset-title" maxlength="120"></div>
+      <div class="set-row"><label for="pdf-preset-dir" data-i18n="automation.dir">Directory</label><input id="pdf-preset-dir"></div>
+      <div class="set-row"><label for="pdf-preset-cmd" data-i18n="automation.cmd">Command</label><input id="pdf-preset-cmd" maxlength="200" placeholder="codex"></div>
+      <div class="set-row"><label for="pdf-preset-steps" data-i18n="presets.steps">Initial steps</label><textarea id="pdf-preset-steps" rows="4"></textarea></div>
+      <div class="set-hint" data-i18n="presets.hint">One step per line, up to 20. Commands are fixed on this Mac and must launch Codex or Claude.</div>
+      <div class="set-actions"><button class="btn" type="button" id="pdf-preset-delete" data-i18n="common.delete">Delete</button><button class="btn" type="button" id="pdf-preset-done" data-i18n="common.done">Done</button></div>
+    </div>
     <div class="cfm-actions">
       <button class="btn" id="pdf-no" data-i18n="common.cancel">Cancel</button>
       <button class="btn primary" id="pdf-yes" data-i18n="common.save">Save</button>

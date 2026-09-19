@@ -266,6 +266,7 @@ pub(crate) fn validate_settings(v: &Value) -> Result<(), DeckError> {
         ErrorKind::InvalidDoc,
         "inbound must be an object",
     ))?;
+    crate::inbound_channel::validate_settings(v)?;
     if let Some(sources) = obj.get("sources") {
         let sources = sources.as_object().ok_or(DeckError::new(
             ErrorKind::InvalidDoc,
@@ -1003,6 +1004,15 @@ fn set_secret(slot: &str, value: &str) -> Result<(), DeckError> {
         ErrorKind::Invalid,
         "unknown credential slot",
     ))?;
+    if !matches!(
+        slot,
+        keychain::Slot::SlackUserToken | keychain::Slot::SlackAppToken
+    ) {
+        return Err(DeckError::new(
+            ErrorKind::Invalid,
+            "unknown credential slot",
+        ));
+    }
     let clearing = value.trim().is_empty();
     if !clearing {
         let trimmed = value.trim();
@@ -1195,6 +1205,18 @@ mod tests {
         assert!(validate_settings(&json!({"rules": [rule("deck"), dup]})).is_err());
         let many: Vec<Value> = (0..MAX_RULES + 1).map(|i| rule(&format!("b{i}"))).collect();
         assert!(validate_settings(&json!({"rules": many})).is_err());
+        assert_eq!(
+            set_secret("slack-channel-bot-token", "xoxb-never-read")
+                .unwrap_err()
+                .kind(),
+            ErrorKind::Invalid,
+            "channel credentials use the epoch-aware channel commands only"
+        );
+        assert_eq!(
+            set_secret("connector-identity", "").unwrap_err().kind(),
+            ErrorKind::Invalid,
+            "connector identity can only be cleared through its lifecycle command"
+        );
     }
 
     fn clock_rule(id: &str, schedule: Value) -> Value {

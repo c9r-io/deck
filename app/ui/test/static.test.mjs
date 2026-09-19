@@ -82,7 +82,7 @@ test('the updater, relaunch and server restart stay backend-owned', () => {
 
 test('the canonical dictionary has no unused keys outside documented dynamic families', () => {
   const source = read('app/ui/index.html') + production;
-  const dynamic = /^(?:attention\.column|attention\.filter|automation\.run|automation\.wd|board\.default|session\.status|settings\.shortcut|notice|tmux\.notice|voice\.phase|voice\.error|voice\.notice)\./;
+  const dynamic = /^(?:attention\.column|attention\.filter|automation\.run|automation\.wd|board\.default|buffer\.state|session\.status|settings\.shortcut|notice|tmux\.notice|voice\.phase|voice\.error|voice\.notice)\./;
   const unused = Object.keys(en).filter(key => !dynamic.test(key) && !source.includes(key));
   assert.deepEqual(unused, []);
 });

@@ -19,12 +19,16 @@ import { collapseHome, createConfirmationCounter, createExitRetirementTracker, e
 import { confirmDialog, inlineRename, projectDefaultsDialog, toast } from './dialogs.js';
 import { clearSeparators, closePaneBySid, hasPane, leaveSessionView, openSession, renderSessionView, updatePaneChrome } from './layout.js';
 import { SHELL_FG, invalidateResumeSuggestions, showProjectCtx, showSessionCtx } from './terminal.js';
-import { refreshQueuePlans, renderQueueUI, setQueueChip, updateQuietHints } from './scheduler.js';
+import { refreshQueue, refreshQueuePlans, renderQueueUI, setQueueChip, updateQuietHints } from './scheduler.js';
 import { formatNumber, t } from './i18n.js';
 import { formatShortcut } from './shortcuts.js';
 import { renderAutomations, ruleOf } from './automation.js';
 import { createDefaultColumns, migrateColumnSemantics } from './board-defaults.js';
 import { attentionStatusText, refreshAttention } from './attention.js';
+import { addManual, addQueueCopy, bufferLimitError, copyEvidence, deleteEntry, editEntry, emptyBuffer, retainedBuffer } from './buffer-model.js';
+import { nextCollectedAt } from './channel-model.js';
+import { normalizeTaskPresets } from './connector-model.js';
+import { formatDateTime, onLocaleChange } from './i18n.js';
 export { migrateColumnSemantics } from './board-defaults.js';
 
 export const defaultColumns = () => createDefaultColumns(genId, t);
@@ -60,10 +64,13 @@ export const provider = {
     await mutateBoard(draft => {
       const p = draft.projects.find(x => x.id === pid);
       if (!p) throw new Error('project no longer exists');
+      const presets = normalizeTaskPresets(values.presets, p.columns);
       const current = projectDefaults(p);
-      if (current.dir === next.dir && current.cmd === next.cmd) return { noop: true };
+      if (current.dir === next.dir && current.cmd === next.cmd
+        && JSON.stringify(p.presets || []) === JSON.stringify(presets)) return { noop: true };
       if (next.dir) p.dir = next.dir; else delete p.dir;
       if (next.cmd) p.cmd = next.cmd; else delete p.cmd;
+      if (presets.length) p.presets = presets; else delete p.presets;
     });
     emit('projects');
   },
@@ -181,20 +188,22 @@ export const provider = {
     return result;
   },
 
-  async create({ projectId, columnId, title, cmd, dir, desc = '', origin }, opts = {}) {
-    const id = genId('S');
+  async create({ id = null, projectId, columnId, title, cmd, dir, desc = '', origin, buffer, channelRun, connectorRun }, opts = {}) {
+    id ||= genId('S');
     const card = {
       id, projectId, columnId, title, cmd, dir, desc,
       session: sessionName(title, id),
       pinned: false,
       launched: initialLaunched(cmd),   // a command is sent once, on the first start
-      ...(origin ? { origin } : {}),
+      ...(origin ? { origin } : {}), ...(buffer ? { buffer } : {}), ...(channelRun ? { channelRun } : {}),
+      ...(connectorRun ? { connectorRun } : {}),
       status: 'stopped', mem: null, tail: [],
     };
     let sideEffect;
     try {
       await mutateBoard(async draft => {
         if (!draft.projects.some(p => p.id === projectId)) throw new Error('project no longer exists');
+        if (draft.cards.some(existing => existing.id === id)) throw new Error('card identity already exists');
         if (opts.beforePersist) sideEffect = await opts.beforePersist(card);
         draft.cards.push(card);
       });
@@ -211,25 +220,39 @@ export const provider = {
      write fails — so a directory that does not exist, a refused start or a
      failed save never leaves a card on the Board. Returns the card and what
      the start did; a command sent here is the card's one launch. */
-  async createStarted(fields) {
+  async createStarted(fields, opts = {}) {
     let started = null;
-    const card = await this.create(fields, {
-      beforePersist: async card => {
-        const result = await inv('start_session', {
+    let effectAttempted = false;
+    let card;
+    try {
+      card = await this.create(fields, {
+        beforePersist: async card => {
+          if (opts.validateHandle) await inv('connector_validate', { handle: opts.validateHandle });
+          effectAttempted = true;
+          const result = await inv('start_session', {
           name: card.session, dir: card.dir, cmd: card.cmd,
           restoreShell: !!ctx.settings.sessionRestore,
-        });
-        started = {
-          created: !!result.created, restored: !!result.restored,
-          commandSent: !!result.created && !!String(card.cmd || '').trim(),
-        };
-        if (started.commandSent) card.launched = true;
-        return started;
-      },
-      rollback: async card => {
-        if (started && started.created) await inv('kill_session', { name: card.session });
-      },
-    });
+          });
+          if (opts.requireCreated && !result.created) {
+            const error = new Error('deterministic session already exists without its card');
+            error.stage = 'orphan';
+            throw error;
+          }
+          started = {
+            created: !!result.created, restored: !!result.restored,
+            commandSent: !!result.created && !!String(card.cmd || '').trim(),
+          };
+          if (started.commandSent) card.launched = true;
+          return started;
+        },
+        rollback: async card => {
+          if (started && started.created) await inv('kill_session', { name: card.session });
+        },
+      });
+    } catch (error) {
+      if (error && typeof error === 'object') error.effectAttempted = effectAttempted;
+      throw error;
+    }
     return { card, started };
   },
 
@@ -247,6 +270,7 @@ export const provider = {
         await mutateBoard(async draft => {
           const card = draft.cards.find(c => c.id === sid);
           if (!card) return { noop: true };
+          if (opts.automatic && retainedBuffer(card)) return { noop: true, protected: true };
           closedCard = card;
           if (!opts.cancelled && !(await this.cancelSchedule(card, { quiet: opts.quiet }))) {
             const error = new Error('schedule cancellation failed');
@@ -325,6 +349,105 @@ export const provider = {
     });
     const c = this.get(sid);
     if (c) emit('list', c);
+  },
+  async setBuffer(sid, expectedRevision, buffer) {
+    await mutateBoard(draft => {
+      const c = draft.cards.find(x => x.id === sid);
+      if (!c) throw new Error('card no longer exists');
+      if ((c.buffer?.revision || 0) !== expectedRevision) {
+        const error = new Error('buffer revision conflict');
+        error.stage = 'conflict';
+        throw error;
+      }
+      for (const entry of c.buffer?.entries || []) {
+        const proposed = buffer?.entries?.find(item => item.id === entry.id);
+        if (!proposed) continue; // explicit entry deletion also deletes its copies
+        const changedExternal = entry.kind === 'external' && (proposed.kind !== 'external'
+          || proposed.text !== entry.text || proposed.revision !== entry.revision
+          || proposed.createdAt !== entry.createdAt || proposed.updatedAt !== entry.updatedAt
+          || JSON.stringify(proposed.source) !== JSON.stringify(entry.source));
+        const changedCopy = (entry.copies || []).some(copy => {
+          const next = (proposed.copies || []).find(value => value.operationId === copy.operationId);
+          return !next || next.text !== copy.text || next.entryRevision !== copy.entryRevision
+            || next.createdAt !== copy.createdAt;
+        });
+        if (changedExternal || changedCopy) {
+          const error = new Error('external buffer entries are immutable');
+          error.stage = 'immutable';
+          throw error;
+        }
+      }
+      c.buffer = buffer;
+    });
+    const c = this.get(sid);
+    if (c) emit('list', c);
+  },
+  async setChannelRun(sid, expectedGroupKey, update) {
+    await mutateBoard(draft => {
+      const card = draft.cards.find(value => value.id === sid);
+      if (!card || card.channelRun?.groupKey !== expectedGroupKey) {
+        const error = new Error('channel run changed'); error.stage = 'conflict'; throw error;
+      }
+      card.channelRun = { ...card.channelRun, ...update };
+      if (update.collecting === false && card.buffer) {
+        card.buffer = { ...card.buffer, collecting: false, revision: (card.buffer.revision || 0) + 1 };
+      }
+    });
+    const card = this.get(sid); if (card) emit('list', card);
+  },
+  async appendChannelEvent(sid, expectedRevision, expectedGroupKey, buffer, collectedAt) {
+    await mutateBoard(draft => {
+      const card = draft.cards.find(value => value.id === sid);
+      if (!card || card.channelRun?.groupKey !== expectedGroupKey
+        || (card.buffer?.revision || 0) !== expectedRevision || card.channelRun.collecting !== true) {
+        const error = new Error('channel collection changed'); error.stage = 'conflict'; throw error;
+      }
+      for (const entry of card.buffer?.entries || []) {
+        if (entry.kind !== 'external') continue;
+        const proposed = buffer.entries.find(value => value.id === entry.id);
+        if (!proposed || proposed.text !== entry.text || JSON.stringify(proposed.source) !== JSON.stringify(entry.source)) {
+          const error = new Error('external buffer entries are immutable'); error.stage = 'immutable'; throw error;
+        }
+      }
+      card.buffer = buffer;
+      card.channelRun.lastCollectedAt = nextCollectedAt(card.channelRun, collectedAt);
+    });
+    const card = this.get(sid); if (card) emit('list', card);
+  },
+  async queueChannelPlan(sid, expectedGroupKey) {
+    let admitted = false;
+    await mutateBoard(async draft => {
+      const card = draft.cards.find(value => value.id === sid);
+      const run = card?.channelRun;
+      if (!card || run?.groupKey !== expectedGroupKey) return { noop: true };
+      if (run.initialQueued) { admitted = true; return { noop: true }; }
+      for (const step of run.initialSteps || []) {
+        await inv('queue_add', { args: { session: card.session, cardId: card.id,
+          operationId: step.operationId, dir: card.dir, cmd: card.cmd, text: step.text,
+          mode: step.mode, at: step.at, tpl: step.tpl, tplIdx: step.tplIdx, tplTotal: step.tplTotal } });
+      }
+      run.initialQueued = true;
+      admitted = true;
+    });
+    const card = this.get(sid); if (card) emit('list', card);
+    return admitted;
+  },
+  async queueConnectorPlan(sid, expectedHandle) {
+    let admitted = false;
+    await mutateBoard(async draft => {
+      const card = draft.cards.find(value => value.id === sid);
+      const run = card?.connectorRun;
+      if (!card || run?.handle !== expectedHandle) return { noop: true };
+      if (run.initialQueued) { admitted = true; return { noop: true }; }
+      for (const step of run.initialSteps || []) {
+        await inv('queue_add', { args: { session: card.session, cardId: card.id,
+          operationId: step.operationId, dir: card.dir, cmd: card.cmd, text: step.text,
+          mode: step.mode, at: step.at, tpl: step.tpl, tplIdx: step.tplIdx, tplTotal: step.tplTotal } });
+      }
+      run.initialQueued = true; admitted = true;
+    });
+    const card = this.get(sid); if (card) emit('list', card);
+    return admitted;
   },
   /* the launch command was delivered: it never runs again on a reopen */
   async markLaunched(sid) {
@@ -420,6 +543,167 @@ export const provider = {
   },
 };
 
+/* ---------- card scratchpad ------------------------------------------------ */
+let bufferTargetId = null;
+const bufferSelected = new Set();
+const bufferLimitKey = error => ({ entries: 'buffer.limit.entries', copies: 'buffer.limit.copies', entry: 'buffer.limit.entry', total: 'buffer.limit.total' })[error];
+
+async function persistBuffer(card, expectedRevision, next) {
+  const error = bufferLimitError(next);
+  if (error) { toast(t(bufferLimitKey(error))); return false; }
+  try { await provider.setBuffer(card.id, expectedRevision, next); return true; }
+  catch (failure) {
+    toast(t(failure?.stage === 'conflict' ? 'buffer.conflict' : 'buffer.saveFailed'));
+    return false;
+  }
+}
+
+const bufferEvidence = copy => copyEvidence(copy, ctx.queueCache);
+
+export function renderBufferUI() {
+  const panel = $('buffer-panel');
+  if (!panel || panel.hidden) return;
+  const card = provider.get(bufferTargetId || state.sessionId);
+  if (!card) { panel.hidden = true; return; }
+  const buffer = card.buffer || emptyBuffer();
+  $('buffer-collecting').hidden = !buffer.collecting;
+  $('buffer-stop').hidden = !buffer.collecting || !card.channelRun;
+  const list = $('buffer-list'); list.replaceChildren();
+  for (const entry of buffer.entries) {
+    const row = document.createElement('article'); row.className = 'buffer-row'; row.dataset.id = entry.id;
+    const check = document.createElement('input'); check.type = 'checkbox'; check.checked = bufferSelected.has(entry.id);
+    check.setAttribute('aria-label', t('buffer.select'));
+    check.onchange = () => { check.checked ? bufferSelected.add(entry.id) : bufferSelected.delete(entry.id); syncBufferQueueButton(); };
+    const body = document.createElement('div'); body.className = 'buffer-body';
+    const meta = document.createElement('div'); meta.className = 'buffer-meta';
+    const source = entry.kind === 'external'
+      ? [entry.source?.type, entry.source?.channel, entry.source?.at ? formatDateTime(entry.source.at < 1e12 ? entry.source.at * 1000 : entry.source.at) : null].filter(Boolean).join(' · ')
+      : t('buffer.manual');
+    meta.textContent = `${source} · ${t('buffer.revision', { revision: formatNumber(entry.revision) })}`;
+    const field = document.createElement('textarea'); field.value = entry.text; field.rows = 2; field.maxLength = 32768;
+    field.setAttribute('aria-label', t('buffer.edit'));
+    if (entry.kind === 'external') field.readOnly = true;
+    field.onchange = entry.kind === 'external' ? null : async () => {
+      const result = editEntry(buffer, entry.id, field.value, Date.now());
+      if (result.error) { toast(t(bufferLimitKey(result.error))); field.value = entry.text; return; }
+      if (await persistBuffer(card, buffer.revision || 0, result.buffer)) renderBufferUI();
+    };
+    const links = document.createElement('div'); links.className = 'buffer-links';
+    for (const href of (entry.source?.links || []).filter(value => /^https?:\/\//.test(value))) {
+      const a = document.createElement('a'); a.href = href; a.textContent = href; a.target = '_blank'; a.rel = 'noreferrer'; links.appendChild(a);
+    }
+    const copies = document.createElement('div'); copies.className = 'buffer-copies';
+    for (const copy of entry.copies || []) {
+      const badge = document.createElement('span'); badge.textContent = t(`buffer.state.${bufferEvidence(copy)}`); badge.dataset.state = bufferEvidence(copy); copies.appendChild(badge);
+    }
+    const del = document.createElement('button'); del.className = 'btn buffer-del'; del.textContent = t('common.delete');
+    del.onclick = async () => {
+      if (!await confirmDialog(t('buffer.deleteConfirm'))) return;
+      bufferSelected.delete(entry.id);
+      if (await persistBuffer(card, buffer.revision || 0, deleteEntry(buffer, entry.id))) renderBufferUI();
+    };
+    body.append(meta, field, links, copies); row.append(check, body, del); list.appendChild(row);
+  }
+  $('buffer-empty').hidden = buffer.entries.length > 0;
+  $('buffer-count').textContent = buffer.entries.length ? String(buffer.entries.length) : '';
+  syncBufferQueueButton();
+}
+
+function syncBufferQueueButton() { $('buffer-queue').disabled = bufferSelected.size === 0; }
+
+export async function queueBufferEntries(sid, requests) {
+  const card = provider.get(sid);
+  if (!card) return false;
+  const base = card.buffer || emptyBuffer(); let next = base; const prepared = [];
+  for (const request of requests) {
+    const operationId = request.operationId || genId('B');
+    const result = addQueueCopy(next, request.entryId, operationId, Date.now());
+    if (result.error) { toast(t(bufferLimitKey(result.error))); return false; }
+    next = result.buffer; prepared.push({ operationId, text: result.copy.text,
+      at: Math.floor(result.copy.createdAt / 1000) });
+  }
+  // Persist every selected immutable snapshot in one Board CAS before the
+  // first scheduler write. An edit arriving midway cannot split one action
+  // across source revisions, and a stale panel never drops a new entry.
+  if (!await persistBuffer(card, base.revision || 0, next)) return false;
+  let queued = false;
+  try {
+    await mutateBoard(async draft => {
+      const current = draft.cards.find(value => value.id === card.id && value.session === card.session);
+      if (!current) return { noop: true };
+      const copies = (current.buffer?.entries || []).flatMap(entry => entry.copies || []);
+      if (!prepared.every(item => copies.some(copy => copy.operationId === item.operationId
+        && copy.text === item.text && copy.state === 'uncertain'))) return { noop: true };
+      for (const copy of prepared) {
+        await inv('queue_add', { args: { session: current.session, cardId: current.id,
+          operationId: copy.operationId, dir: current.dir, cmd: current.cmd,
+          text: copy.text, mode: 'at', at: copy.at } });
+      }
+      for (const copy of copies) {
+        if (prepared.some(item => item.operationId === copy.operationId)) copy.state = 'queued';
+      }
+      current.buffer.revision = (current.buffer.revision || 0) + 1;
+      queued = true;
+    });
+  } catch (_) { toast(t('buffer.queueUncertain')); }
+  const latest = provider.get(card.id); if (latest) emit('list', latest);
+  return queued;
+}
+
+export const queueBufferEntry = (sid, entryId, operationId) =>
+  queueBufferEntries(sid, [{ entryId, operationId }]);
+
+async function queueSelectedBufferEntries() {
+  const sid = bufferTargetId || state.sessionId;
+  const submitted = [...bufferSelected];
+  await queueBufferEntries(sid, submitted.map(entryId => ({ entryId })));
+  submitted.forEach(entryId => bufferSelected.delete(entryId));
+  await refreshQueue(); renderBufferUI();
+}
+
+export async function openBuffer(sid) {
+  bufferTargetId = sid;
+  if ($('buffer-panel').parentElement !== document.body) document.body.appendChild($('buffer-panel'));
+  $('queue-panel').style.display = 'none'; $('buffer-panel').hidden = false;
+  $('buffer-btn').setAttribute('aria-pressed', 'true'); renderBufferUI();
+}
+
+export function initBuffer() {
+  $('buffer-btn').onclick = () => {
+    bufferTargetId = state.sessionId;
+    if ($('buffer-panel').parentElement !== document.body) document.body.appendChild($('buffer-panel'));
+    const panel = $('buffer-panel'); panel.hidden = !panel.hidden;
+    $('buffer-btn').setAttribute('aria-pressed', String(!panel.hidden));
+    if (!panel.hidden) { $('queue-panel').style.display = 'none'; renderBufferUI(); }
+  };
+  $('buffer-add').onclick = async () => {
+    const target = bufferTargetId || state.sessionId;
+    const card = provider.get(target); const field = $('buffer-new'); const submitted = field.value; const text = submitted.trim();
+    if (!card || !text) { field.focus(); return; }
+    const result = addManual(card.buffer || emptyBuffer(), { id: genId('N'), text, now: Date.now() });
+    if (result.error) { toast(t(bufferLimitKey(result.error))); return; }
+    if (await persistBuffer(card, card.buffer?.revision || 0, result.buffer)) {
+      if ((bufferTargetId || state.sessionId) === target && field.value === submitted) field.value = '';
+      renderBufferUI();
+    }
+  };
+  $('buffer-queue').onclick = queueSelectedBufferEntries;
+  $('buffer-stop').onclick = async () => {
+    const card = provider.get(bufferTargetId || state.sessionId);
+    if (!card?.channelRun) return;
+    try { await provider.setChannelRun(card.id, card.channelRun.groupKey, { collecting: false }); renderBufferUI(); }
+    catch (_) { toast(t('buffer.saveFailed')); }
+  };
+  $('buffer-close').onclick = () => { $('buffer-panel').hidden = true; bufferTargetId = null; $('buffer-btn').setAttribute('aria-pressed', 'false'); };
+  provider.subscribe((event, card) => {
+    if (event !== 'list' || card?.id !== bufferTargetId || $('buffer-panel').hidden) return;
+    if (document.activeElement?.closest?.('#buffer-panel')) return;
+    renderBufferUI();
+  });
+  window.addEventListener('deck-voice-session-changed', renderBufferUI);
+  onLocaleChange(renderBufferUI);
+}
+
 /* a card an automation created: tell the run ledger it is over. Unknown
    cards are a backend no-op, so every close path may call this. */
 function noteRunEnded(card) {
@@ -438,6 +722,7 @@ function noteRunEnded(card) {
 const runConfirm = createConfirmationCounter(3);
 const runRetirement = createExitRetirementTracker();
 function observeRunFinish(c, info) {
+  if (retainedBuffer(c)) { runConfirm.forget(c.id); return; }
   if (!info.alive || !c.origin) { runConfirm.forget(c.id); return; }
   const holds = runFinishHolds({
     rule: ruleOf(c.origin),
@@ -523,7 +808,12 @@ async function pollSessionsNow() {
        close it without ceremony. Only live→dead transitions count, so cards
        that were already stopped (e.g. after an app restart) stay. */
     if (!info.alive && c.status !== 'stopped') {
-      exitRetirement.observe(c.id);
+      if (retainedBuffer(c)) {
+        c.status = 'stopped';
+        emit('status', c);
+      } else {
+        exitRetirement.observe(c.id);
+      }
       continue;
     }
     const status = effectiveCardStatus(info.alive, info.agent,
@@ -559,7 +849,7 @@ async function pollSessionsNow() {
   await exitRetirement.drain({
     get: sid => provider.get(sid),
     markStopped: c => { c.status = 'stopped'; emit('status', c); },
-    close: c => ctx.tmuxRestarting ? { ok: false, applied: false } : provider.close(c.id, { quiet: true, detail: true }),
+    close: c => ctx.tmuxRestarting ? { ok: false, applied: false } : provider.close(c.id, { quiet: true, detail: true, automatic: true }),
     failed: () => toast(t('error.retire')),
     succeeded: c => {
       closePaneBySid(c.id, { detach: false });
@@ -570,7 +860,7 @@ async function pollSessionsNow() {
   await runRetirement.drain({
     get: sid => provider.get(sid),
     markStopped: c => { c.status = 'stopped'; emit('status', c); },
-    close: c => ctx.tmuxRestarting ? { ok: false, applied: false } : provider.close(c.id, { quiet: true, detail: true }),
+    close: c => ctx.tmuxRestarting ? { ok: false, applied: false } : provider.close(c.id, { quiet: true, detail: true, automatic: true }),
     failed: () => { uev('inbound', 'run-close-fail'); toast(t('automation.runCloseFailed')); },
     succeeded: c => {
       closePaneBySid(c.id, { detach: false });
@@ -945,6 +1235,7 @@ export async function openProjectDefaults(pid, opener = null) {
   const result = await projectDefaultsDialog({
     name: p.name, dir: current.dir, cmd: current.cmd,
     recent: Array.isArray(recent) ? recent.filter(c => typeof c === 'string') : [],
+    presets: p.presets || [], columns: p.columns,
   });
   if (result) {
     try { await provider.setProjectDefaults(pid, result); }
@@ -1021,8 +1312,12 @@ export async function closeSession(sid, needConfirm = false) {
   const s = provider.get(sid);
   if (!s) return;
   const live = s.status !== 'stopped';
-  if (needConfirm &&
-      !(await confirmDialog(t('session.closeConfirm', { name: s.title, live: live ? t('session.closeLive') : '' })))) return;
+  const hasBuffer = retainedBuffer(s);
+  if ((needConfirm || hasBuffer) &&
+      !(await confirmDialog(t(hasBuffer ? 'session.closeBufferConfirm' : 'session.closeConfirm', {
+        name: s.title, live: live ? t('session.closeLive') : '',
+        count: formatNumber(s.buffer?.entries?.length || 0),
+      })))) return;
   state.destructiveCards.add(sid);
   try {
     const result = await provider.close(sid, { detail: true });

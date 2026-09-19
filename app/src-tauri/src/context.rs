@@ -6,6 +6,7 @@
 //! readiness states are deliberately outside this module.
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::error::DeckError;
 use crate::tmux::{pane_target, PaneRow};
@@ -245,6 +246,64 @@ pub(crate) fn raw_probe(session: &str) -> Result<RawProbe, DeckError> {
     let mut probe = probe_from_row(&row);
     probe.foreground_argv = foreground_from_tty(&row.tty);
     Ok(probe)
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ConnectorProbe {
+    pub(crate) identity: PaneIdentity,
+    pub(crate) agent: Option<String>,
+    pub(crate) foreground_pid: u32,
+    pub(crate) start_seconds: u64,
+    pub(crate) start_micros: u32,
+    pub(crate) generation: String,
+}
+
+/// Strong generation for remote input: exact tmux pane identity plus the
+/// recognized foreground agent's kernel pid and birth instant.
+pub(crate) fn connector_probe(session: &str) -> Result<ConnectorProbe, DeckError> {
+    let row = crate::tmux::pane_row(&pane_target(session))?;
+    let device = crate::procinfo::tty_device(&row.tty)
+        .ok_or_else(|| DeckError::new(crate::error::ErrorKind::ContextChanged, "target-changed"))?;
+    let table = crate::procinfo::processes();
+    let pid = crate::procinfo::foreground_leader(&table, device)
+        .ok_or_else(|| DeckError::new(crate::error::ErrorKind::ContextChanged, "target-changed"))?;
+    let argv = crate::procinfo::argv0(pid).and_then(|v| sanitize_process(&v));
+    let tmux_name = sanitize_process(&row.command);
+    let foreground = argv
+        .clone()
+        .or_else(|| tmux_name.clone())
+        .ok_or_else(|| DeckError::new(crate::error::ErrorKind::ContextChanged, "target-changed"))?;
+    let agent = [argv, tmux_name]
+        .into_iter()
+        .flatten()
+        .map(|v| v.to_ascii_lowercase())
+        .find(|v| matches!(v.as_str(), "codex" | "claude"));
+    let (start_seconds, start_micros) = crate::procinfo::process_start(pid)
+        .ok_or_else(|| DeckError::new(crate::error::ErrorKind::ContextChanged, "target-changed"))?;
+    let identity = PaneIdentity {
+        server_pid: row.server_pid,
+        session_id: row.session_id,
+        window_id: row.window_id,
+        pane_id: row.pane_id,
+        pane_pid: row.pane_pid,
+    };
+    let material = format!(
+        "{}:{}:{}:{}:{}:{pid}:{start_seconds}:{start_micros}:{foreground}",
+        identity.server_pid,
+        identity.session_id,
+        identity.window_id,
+        identity.pane_id,
+        identity.pane_pid
+    );
+    let generation = format!("{:x}", Sha256::digest(material.as_bytes()));
+    Ok(ConnectorProbe {
+        identity,
+        agent,
+        foreground_pid: pid,
+        start_seconds,
+        start_micros,
+        generation,
+    })
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]

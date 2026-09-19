@@ -12,6 +12,7 @@ const KINDS: &[&str] = &[
     "board-save",
     "settings-save",
     "queue-save",
+    "channel-inbox-save",
     "queue-cancel",
     "tmux-after-stop",
     "tmux-after-socket",

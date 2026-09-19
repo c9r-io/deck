@@ -21,8 +21,9 @@
 //! appear in the user's `tmux ls`. Production debug: `tmux -L deck ls`;
 //! source bundles use `tmux -L deck-dev ls`.
 
-use std::io::Write;
-use std::process::{Command, Stdio};
+use std::io::{Read, Write};
+use std::os::fd::AsRawFd;
+use std::process::{Command, Output, Stdio};
 
 use crate::applog;
 use crate::error::{DeckError, ErrorKind};
@@ -206,6 +207,22 @@ pub(super) fn command_with_stdin(
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| DeckError::new(ErrorKind::TmuxMissing, format!("tmux not runnable: {e}")))?;
+    if crate::session_runtime::deadline_active() {
+        let result = bounded_stdin_output(&mut child, input);
+        if result.is_err() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        let out = result?;
+        if !out.status.success() {
+            return Err(DeckError::classified(format!(
+                "tmux {} failed: {}",
+                args.first().unwrap_or(&""),
+                String::from_utf8_lossy(&out.stderr).trim()
+            )));
+        }
+        return Ok(String::from_utf8_lossy(&out.stdout).into_owned());
+    }
     let write_result = child
         .stdin
         .as_mut()
@@ -231,6 +248,92 @@ pub(super) fn command_with_stdin(
         )));
     }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+fn bounded_stdin_output(
+    child: &mut std::process::Child,
+    input: &[u8],
+) -> Result<Output, DeckError> {
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| DeckError::new(ErrorKind::Tmux, "tmux stdin unavailable"))?;
+    let mut stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| DeckError::new(ErrorKind::Tmux, "tmux stdout unavailable"))?;
+    let mut stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| DeckError::new(ErrorKind::Tmux, "tmux stderr unavailable"))?;
+    for fd in [stdin.as_raw_fd(), stdout.as_raw_fd(), stderr.as_raw_fd()] {
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+        if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+            return Err(DeckError::new(ErrorKind::Tmux, "tmux pipe unavailable"));
+        }
+    }
+    let mut written = 0usize;
+    let mut stdin = Some(stdin);
+    let mut out = Vec::new();
+    let mut err = Vec::new();
+    let mut exited = None;
+    loop {
+        crate::session_runtime::check_deadline()?;
+        if written < input.len() {
+            match stdin.as_mut().unwrap().write(&input[written..]) {
+                Ok(0) => {
+                    return Err(DeckError::new(ErrorKind::Tmux, "tmux stdin closed"));
+                }
+                Ok(count) => written += count,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(_) => return Err(DeckError::new(ErrorKind::Tmux, "tmux stdin failed")),
+            }
+        }
+        if written == input.len() {
+            stdin.take();
+        }
+        let mut caught_up = true;
+        for (pipe, bytes) in [
+            (&mut stdout as &mut dyn Read, &mut out),
+            (&mut stderr as &mut dyn Read, &mut err),
+        ] {
+            let mut buffer = [0u8; 8192];
+            let mut drained = false;
+            for _ in 0..64 {
+                match pipe.read(&mut buffer) {
+                    Ok(0) => {
+                        drained = true;
+                        break;
+                    }
+                    Ok(count) => {
+                        bytes.extend_from_slice(&buffer[..count]);
+                        if bytes.len() > 8 * 1024 * 1024 {
+                            return Err(DeckError::new(ErrorKind::Tmux, "tmux output limit"));
+                        }
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        drained = true;
+                        break;
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(_) => return Err(DeckError::new(ErrorKind::Tmux, "tmux output failed")),
+                }
+            }
+            caught_up &= drained;
+        }
+        if let Some(status) = exited.filter(|_| caught_up) {
+            return Ok(Output {
+                status,
+                stdout: out,
+                stderr: err,
+            });
+        }
+        exited = child
+            .try_wait()
+            .map_err(|_| DeckError::new(ErrorKind::Tmux, "tmux wait failed"))?;
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
 }
 
 /// Owned-argument variant used for bounded command batches whose numeric
@@ -696,5 +799,26 @@ mod tests {
             );
         }
         assert!(validate_session_name("deck-web-1@2").is_ok());
+    }
+
+    #[test]
+    fn stdin_transport_inherits_deadline_and_preserves_literal_bytes() {
+        let input = b"literal\nbytes\twithout-shell-expansion";
+        let mut cat = Command::new("/bin/sh");
+        let _deadline = crate::session_runtime::Deadline::until(
+            std::time::Instant::now() + std::time::Duration::from_secs(1),
+        );
+        assert_eq!(
+            command_with_stdin(&mut cat, &["-c", "cat"], input).unwrap(),
+            String::from_utf8_lossy(input)
+        );
+        drop(_deadline);
+
+        let begin = std::time::Instant::now();
+        let mut stalled = Command::new("/bin/sh");
+        let _deadline =
+            crate::session_runtime::Deadline::until(begin + std::time::Duration::from_millis(60));
+        assert!(command_with_stdin(&mut stalled, &["-c", "sleep 2"], b"").is_err());
+        assert!(begin.elapsed() < std::time::Duration::from_secs(1));
     }
 }

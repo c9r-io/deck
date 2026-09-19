@@ -280,7 +280,13 @@ pub(crate) fn finalize_delivery(
         mode: item.mode.clone(),
         at: now,
         assumed,
+        operation_id: item.operation_id.clone(),
     });
+    if let Some(operation_id) = &item.operation_id {
+        if let Some(operation) = q.operations.iter_mut().find(|op| &op.id == operation_id) {
+            operation.state = "delivered".into();
+        }
+    }
     if q.deliveries.len() > MAX_DELIVERIES {
         let n = q.deliveries.len() - MAX_DELIVERIES;
         q.deliveries.drain(..n);
@@ -318,6 +324,7 @@ pub(crate) fn finalize_delivery(
                     id,
                     session: item.session.clone(),
                     card_id: item.card_id.clone(),
+                    operation_id: None,
                     dir: item.dir.clone(),
                     cmd: item.cmd.clone(),
                     text: step.clone(),
@@ -445,6 +452,14 @@ pub(crate) fn recover_interrupted(q: &mut QueueState) -> Vec<String> {
     let cancelled: HashSet<&str> = q.cancelled.iter().map(|t| t.session.as_str()).collect();
     q.pending
         .retain(|p| !cancelled.contains(p.snapshot.session.as_str()));
+    for operation in &mut q.operations {
+        if q.items
+            .iter()
+            .any(|item| item.id == operation.item && item.state == "ambiguous")
+        {
+            operation.state = "uncertain".into();
+        }
+    }
     notes
 }
 

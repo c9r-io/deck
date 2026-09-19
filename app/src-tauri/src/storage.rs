@@ -1,9 +1,10 @@
 //! Review-aware opt-in uses envelope v2 (sticky) for queue.json and
-//! settings.json ONLY; v0/v1 load unchanged and every other document stays v1.
+//! settings.json. Card buffers and idempotent buffer queue operations use
+//! sticky v3 envelopes for deck.json and queue.json respectively.
 //! A settings v2 barrier precedes the first reviewed queue save, preventing old
-//! automation finish rules from treating a refused queue as empty. deck.json is
-//! deliberately outside the door: an old reader without rules cannot auto-close
-//! a run, and a card's `origin.reviewEach` alone must not lock the whole Board.
+//! automation finish rules from treating a refused queue as empty. deck.json
+//! joins the version door only once it retains scratchpad content; a card's
+//! `origin.reviewEach` alone still does not lock the whole Board.
 //! One reliable persistence layer for every deck data file
 //! (deck.json / queue.json / history.json / settings.json).
 //!
@@ -66,9 +67,9 @@ use serde::de::DeserializeOwned;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-// v2 protects opt-in human checkpoints from older readers ignoring new fields.
-// Ordinary documents keep v1; once upgraded, a document never downgrades itself.
-pub const SCHEMA_VERSION: u64 = 2;
+// v2 protects opt-in human checkpoints; v3 protects retained scratchpad and
+// channel/idempotency fields. Ordinary documents keep v1; upgrades are sticky.
+pub const SCHEMA_VERSION: u64 = 3;
 
 /// The two documents whose review fields an old reader could misinterpret as
 /// ordinary state (queue rows it would resend; finish rules it would apply).
@@ -86,6 +87,37 @@ fn uses_review(v: &serde_json::Value) -> bool {
                 || uses_review(v)
         }),
         serde_json::Value::Array(a) => a.iter().any(uses_review),
+        _ => false,
+    }
+}
+
+fn uses_buffer(v: &serde_json::Value) -> bool {
+    match v {
+        serde_json::Value::Object(o) => {
+            o.get("buffer").is_some_and(|buffer| {
+                buffer.get("collecting").and_then(|v| v.as_bool()) == Some(true)
+                    || buffer
+                        .get("entries")
+                        .and_then(|v| v.as_array())
+                        .is_some_and(|entries| !entries.is_empty())
+            }) || o.get("channelRun").is_some_and(|run| run.is_object())
+                || o.get("connectorRun").is_some_and(|run| run.is_object())
+                || o.get("presets")
+                    .and_then(|v| v.as_array())
+                    .is_some_and(|presets| !presets.is_empty())
+                || o.get("channelRules")
+                    .and_then(|v| v.as_array())
+                    .is_some_and(|rules| !rules.is_empty())
+                || o.get("channelConnection").is_some_and(|connection| {
+                    connection.get("enabled").and_then(|v| v.as_bool()) == Some(true)
+                })
+                || o.get("operation_id").is_some_and(|v| v.is_string())
+                || o.get("operations")
+                    .and_then(|v| v.as_array())
+                    .is_some_and(|operations| !operations.is_empty())
+                || o.values().any(uses_buffer)
+        }
+        serde_json::Value::Array(a) => a.iter().any(uses_buffer),
         _ => false,
     }
 }
@@ -327,11 +359,16 @@ fn save_checked_locked(
     // reaching here with a broken envelope means the file was never loaded
     // (or was replaced behind our back) — refuse rather than destroy it.
     let name = path.file_name().unwrap_or_default().to_string_lossy();
-    let mut version = minimum_version.max(if review_gated(&name) && uses_review(&data) {
+    let feature_version = if matches!(name.as_ref(), "deck.json" | "queue.json" | "settings.json")
+        && uses_buffer(&data)
+    {
+        3
+    } else if review_gated(&name) && uses_review(&data) {
         2
     } else {
         1
-    });
+    };
+    let mut version = minimum_version.max(feature_version);
     let existing = match std::fs::read(path) {
         Ok(bytes) => {
             let raw = std::str::from_utf8(&bytes).map_err(|_| {
@@ -968,6 +1005,73 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(&board).unwrap()).unwrap();
         assert_eq!(board_raw["schema_version"], 1);
         assert!(envelope_payload_for(&board_raw, 1).is_ok());
+    }
+
+    #[test]
+    fn buffer_documents_upgrade_to_sticky_v3_and_old_readers_refuse_them() {
+        let dir = tdir("buffer-version");
+        let board = dir.join("deck.json");
+        save_typed::<serde_json::Value>(&board, r#"{"cards":[]}"#).unwrap();
+        let plain: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&board).unwrap()).unwrap();
+        assert_eq!(plain["schema_version"], 1);
+        save_typed::<serde_json::Value>(
+            &board,
+            r#"{"cards":[{"buffer":{"revision":1,"collecting":true,"entries":[]}}]}"#,
+        )
+        .unwrap();
+        let buffered: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&board).unwrap()).unwrap();
+        assert_eq!(buffered["schema_version"], 3);
+        assert!(matches!(
+            envelope_payload_for(&buffered, 2),
+            Err(DocErr::Newer(3))
+        ));
+        let preset_dir = tdir("preset-version");
+        let preset_board = preset_dir.join("deck.json");
+        save_typed::<serde_json::Value>(
+            &preset_board,
+            r#"{"projects":[{"presets":[{"id":"R1"}]}],"cards":[]}"#,
+        )
+        .unwrap();
+        let preset: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&preset_board).unwrap()).unwrap();
+        assert_eq!(preset["schema_version"], 3);
+        assert!(matches!(
+            envelope_payload_for(&preset, 2),
+            Err(DocErr::Newer(3))
+        ));
+        save_typed::<serde_json::Value>(&board, r#"{"cards":[]}"#).unwrap();
+        let cleared: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&board).unwrap()).unwrap();
+        assert_eq!(
+            cleared["schema_version"], 3,
+            "clearing the buffer cannot make an older writer safe"
+        );
+
+        let queue = dir.join("queue.json");
+        save_typed::<serde_json::Value>(&queue, r#"{"operations":[{"id":"B1"}]}"#).unwrap();
+        let operation: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&queue).unwrap()).unwrap();
+        assert_eq!(operation["schema_version"], 3);
+        assert!(matches!(
+            envelope_payload_for(&operation, 2),
+            Err(DocErr::Newer(3))
+        ));
+
+        let settings = dir.join("settings.json");
+        save_typed::<serde_json::Value>(
+            &settings,
+            r#"{"channelConnection":{"enabled":true},"channelRules":[{"id":"R1"}]}"#,
+        )
+        .unwrap();
+        let channel: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
+        assert_eq!(channel["schema_version"], 3);
+        assert!(matches!(
+            envelope_payload_for(&channel, 2),
+            Err(DocErr::Newer(3))
+        ));
     }
 
     #[test]

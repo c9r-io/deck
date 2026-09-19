@@ -39,6 +39,7 @@
 //!   fail closed when the hooks are not armed.
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::atomic::Ordering as AtomicOrdering;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -162,12 +163,14 @@ pub(crate) fn smoke_flush_queue(state: State<'_, Queues>) -> Result<bool, DeckEr
     Ok(flush_dirty(&state.q, &state.dirty, &save_queue))
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct QueueAddArgs {
     pub(crate) session: String,
     #[serde(default)]
     pub(crate) card_id: String,
+    #[serde(default)]
+    pub(crate) operation_id: Option<String>,
     pub(crate) dir: String,
     pub(crate) cmd: String,
     pub(crate) text: String,
@@ -329,7 +332,31 @@ pub(crate) fn validate_add(a: &QueueAddArgs) -> Result<(), DeckError> {
             "scheduled prompt needs a valid card identity",
         ));
     }
+    if a.operation_id.as_deref().is_some_and(|id| {
+        id.is_empty()
+            || id.len() > 128
+            || !id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-'))
+    }) {
+        return Err(DeckError::new(
+            ErrorKind::Invalid,
+            "invalid queue operation identity",
+        ));
+    }
     Ok(())
+}
+
+fn operation_fingerprint(args: &QueueAddArgs, normalized_text: &str) -> String {
+    // Hash the complete normalized intent. A transport retry repeats the
+    // original `at`; changing any target, launch context or schedule field is
+    // a conflicting reuse of the operation identity.
+    let mut value = serde_json::to_value(args).expect("QueueAddArgs serializes");
+    value["text"] = serde_json::Value::String(normalized_text.to_string());
+    format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(&value).expect("queue intent serializes"))
+    )
 }
 
 /// Collision-proof id: ms clock + process-wide counter, verified against the
@@ -369,6 +396,27 @@ fn add_item_bound(
     binding: Option<PaneIdentity>,
     expected_process: Option<String>,
 ) -> Result<(), DeckError> {
+    if let Some(operation_id) = args.operation_id.as_deref() {
+        if let Some(existing) = q.operations.iter().find(|op| op.id == operation_id) {
+            let fingerprint = operation_fingerprint(&args, &text);
+            if existing.session == args.session
+                && existing.card_id == args.card_id
+                && existing.fingerprint == fingerprint
+            {
+                return Ok(());
+            }
+            return Err(DeckError::new(
+                ErrorKind::Other,
+                "queue operation identity was already used",
+            ));
+        }
+    }
+    if args.operation_id.is_some() && q.operations.len() >= MAX_QUEUE_OPERATIONS {
+        return Err(DeckError::new(
+            ErrorKind::Other,
+            "queue operation ledger is full; no new scratchpad copy operations can be accepted",
+        ));
+    }
     // Scheduling for a session again means it is alive again (the UI can
     // only add prompts from a live card), so a stale tombstone from an
     // earlier card of the same name must not silently swallow the schedule.
@@ -416,10 +464,15 @@ fn add_item_bound(
     if args.review_each || inherited_review {
         q.review_completed.remove(&args.session);
     }
+    let operation_id = args.operation_id.clone();
+    let operation_fingerprint = operation_id
+        .as_ref()
+        .map(|_| operation_fingerprint(&args, &text));
     q.items.push(QueueItem {
         id,
         session: args.session,
         card_id: args.card_id,
+        operation_id: operation_id.clone(),
         dir: args.dir,
         cmd: args.cmd,
         text,
@@ -464,6 +517,17 @@ fn add_item_bound(
         review_each: args.review_each || inherited_review,
         review: None,
     });
+    if let (Some(id), Some(fingerprint)) = (operation_id, operation_fingerprint) {
+        let item = q.items.last().expect("queue item just appended");
+        q.operations.push(QueueOperation {
+            id,
+            item: item.id.clone(),
+            session: item.session.clone(),
+            card_id: item.card_id.clone(),
+            fingerprint,
+            state: "queued".into(),
+        });
+    }
     Ok(())
 }
 
@@ -559,6 +623,11 @@ pub(crate) fn remove_item(q: &mut QueueState, id: &str) -> Result<bool, DeckErro
     invalidate_review_successor(q, id);
     let n0 = q.items.len();
     q.items.retain(|i| i.id != id);
+    if n0 != q.items.len() {
+        for operation in q.operations.iter_mut().filter(|op| op.item == id) {
+            operation.state = "canceled".into();
+        }
+    }
     Ok(q.items.len() != n0)
 }
 
@@ -631,6 +700,9 @@ pub(crate) fn retry_item(q: &mut QueueState, id: &str) -> Result<(), DeckError> 
         item.last_error = None;
         item.last_attempt_at = None;
         item.delivery = None;
+        for operation in q.operations.iter_mut().filter(|op| op.item == id) {
+            operation.state = "queued".into();
+        }
     } else if q.deliveries.iter().any(|d| d.item == id) {
         return Ok(()); // repeated resolution of a consumed once item
     }
@@ -810,6 +882,11 @@ pub(crate) fn clear_session_items(q: &mut QueueState, session: &str) {
     q.items.retain(|i| i.session != session);
     q.last_fired.remove(session);
     q.review_completed.remove(session);
+    for operation in q.operations.iter_mut().filter(|op| op.session == session) {
+        if operation.state != "delivered" {
+            operation.state = "canceled".into();
+        }
+    }
 }
 
 /// Cancel a whole set of sessions in ONE transaction — deleting a project

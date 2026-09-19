@@ -8,6 +8,7 @@
 mod agent_status;
 mod applog;
 mod commands;
+mod connector;
 mod context;
 mod datadir;
 mod diagnostics;
@@ -16,6 +17,7 @@ mod drops;
 mod error;
 mod history;
 mod inbound;
+mod inbound_channel;
 mod inbound_clock;
 mod inbound_slack;
 mod instance_lock;
@@ -159,6 +161,8 @@ fn main() {
             tmux_lifecycle::reconcile_on_boot();
             scheduler::spawn_scheduler(app.handle().clone());
             inbound::spawn_inbound(app.handle().clone());
+            inbound_channel::spawn_channel(app.handle().clone());
+            connector::spawn_connector(app.handle().clone());
             // Agent-status socket: content-free state words from agent hooks
             // (see agent_status.rs). Re-points already-installed hook
             // entries at this install's bundled helper and retires the
@@ -253,6 +257,14 @@ fn main() {
                         "m.verifyVoice()"
                     } else if mode == "resume" {
                         "m.verifyResume()"
+                    } else if mode == "buffer" {
+                        "m.verifyBuffer()"
+                    } else if mode == "channel" {
+                        "m.verifyChannel()"
+                    } else if mode == "connector" {
+                        "m.verifyConnector()"
+                    } else if mode == "connector-transport" {
+                        "m.verifyConnectorTransport()"
                     } else {
                         "m.run()"
                     };
@@ -361,6 +373,30 @@ fn main() {
             inbound::inbound_set_secret,
             inbound::inbound_check_now,
             inbound::inbound_setup,
+            inbound_channel::channel_pending,
+            inbound_channel::channel_ack,
+            inbound_channel::channel_status,
+            inbound_channel::channel_token_set,
+            inbound_channel::channel_token_clear,
+            inbound_channel::channel_manifest_url,
+            inbound_channel::channel_setup,
+            inbound_channel::channel_smoke_seed,
+            connector::connector_status,
+            connector::connector_addresses,
+            connector::connector_enable,
+            connector::connector_disable,
+            connector::connector_pairing,
+            connector::connector_revoke,
+            connector::connector_reset_identity,
+            connector::connector_pending,
+            connector::connector_claim,
+            connector::connector_complete,
+            connector::connector_validate,
+            connector::connector_validate_admission,
+            connector::connector_execute_native,
+            connector::connector_smoke_seed,
+            connector::connector_smoke_transport,
+            connector::connector_smoke_window,
             smoke_faults::smoke_fault_set,
             smoke_faults::smoke_clipboard_metrics,
         ])

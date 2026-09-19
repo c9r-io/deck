@@ -6,8 +6,9 @@
 // ordinary rules and existing runs keep their existing timing.
 // An automation is an inbound rule (settings.json `inbound.rules`, validated
 // by settings-model.js and inbound.rs alike) with one of two TRIGGERS: a
-// clock (`source: 'clock'`, a schedule; its badge IS its id) or a Slack
-// badge (`source: 'slack'`, the emoji name; one automation per badge across
+// clock (`source: 'clock'`, a schedule), Slack badge (`source: 'slack'`, the
+// emoji name), or a scoped read-only Slack channel monitor. Badge rules are
+// one automation per badge across
 // every project, because the dispatcher matches a badge to ONE rule). Both
 // share the rest of the shape — the column it creates cards in, directory,
 // command, template and a finish mode — and both go through the same
@@ -58,6 +59,7 @@ import { formatNumber, onLocaleChange, t } from './i18n.js';
 import { formatShortcut } from './shortcuts.js';
 import { DEFAULT_GRACE_MIN } from './settings-model.js';
 import { openTemplates } from './templates.js';
+import { CHANNEL_IDLE_DEFAULT, normalizeChannelRule } from './channel-model.js';
 
 /* the Board, layout and terminal actions this drawer calls, handed in by
    `initAutomation(deps)` so board.js and terminal.js may import this module
@@ -70,12 +72,15 @@ let editing = null;   // null | { id } (existing) | { id: null } (new)
 let runsCache = [];
 let unsubscribe = null;
 
-const allRules = () => ((ctx.settings && ctx.settings.inbound && ctx.settings.inbound.rules) || []);
+const ordinaryRules = () => ctx.settings?.inbound?.rules || [];
+const channelRules = () => (ctx.settings?.inbound?.channelRules || []).map(rule => ({ ...rule, source: 'channel' }));
+const allRules = () => [...ordinaryRules(), ...channelRules()];
 
 export const rulesOf = (projectId = state.projectId) => projectRules(allRules(), projectId);
 
 /* the automation behind a card's origin, whatever its trigger */
-export const ruleOf = origin => ruleByOrigin(allRules(), origin);
+export const ruleOf = origin => origin?.source === 'channel'
+  ? channelRules().find(rule => rule.id === origin.badge) || null : ruleByOrigin(ordinaryRules(), origin);
 
 export const isOpen = () => !$('auto-drawer').hidden;
 
@@ -143,7 +148,9 @@ function ruleEl(rule) {
   el.querySelector('.ar-del').title = t('automation.delete');
   el.querySelector('.ar-del').onclick = async () => {
     if (!(await confirmDialog(t('automation.deleteConfirm', { name: ruleLabel(rule) })))) return;
-    await persistInbound({ ...ctx.settings.inbound, rules: ctx.settings.inbound.rules.filter(r => r.id !== rule.id) });
+    await persistInbound(rule.source === 'channel'
+      ? { ...ctx.settings.inbound, channelRules: ctx.settings.inbound.channelRules.filter(r => r.id !== rule.id) }
+      : { ...ctx.settings.inbound, rules: ctx.settings.inbound.rules.filter(r => r.id !== rule.id) });
     renderAutomations();
   };
   const kv = el.querySelector('.ar-kv');
@@ -217,7 +224,7 @@ function buildGraceOptions(value) {
 }
 
 /* the editor shows the controls of the chosen trigger and nothing of the
-   other: every trigger-bound control carries `q-p-clock` or `q-p-slack` */
+   others: every trigger-bound control carries a matching `q-p-*` class */
 function syncEditor() {
   const trigger = segGet('auto-trigger');
   document.querySelectorAll('#auto-editor .q-p').forEach(el => {
@@ -227,6 +234,7 @@ function syncEditor() {
   $('auto-days').hidden = trigger !== 'clock' || unit !== 'week';
   $('auto-dom').hidden = trigger !== 'clock' || unit !== 'month';
   $('auto-slack-state').textContent = t(slackConnected() ? 'automation.slackOn' : 'automation.slackOffHint');
+  $('auto-capture-row').hidden = trigger !== 'channel' || $('auto-match-kind').value !== 'regex';
 }
 
 function fillTargets(rule) {
@@ -257,10 +265,20 @@ function fillTargets(rule) {
 export function openEditor(rule) {
   editing = { id: rule ? rule.id : null };
   const clock = !rule || rule.source === 'clock';
+  const channel = rule?.source === 'channel';
   const schedule = clock && rule ? rule.schedule : { unit: 'day', days: [], minute: 540 };
-  segSet('auto-trigger', clock ? 'clock' : 'slack');
+  segSet('auto-trigger', channel ? 'channel' : clock ? 'clock' : 'slack');
   $('auto-name').value = rule ? rule.name : '';
-  $('auto-badge').value = rule && !clock ? rule.badge : '';
+  $('auto-badge').value = rule?.source === 'slack' ? rule.badge : '';
+  $('auto-channel-ids').value = channel ? rule.channelIds.join(', ') : '';
+  $('auto-sender-users').value = channel ? rule.senderUserIds.join(', ') : '';
+  $('auto-sender-bots').value = channel ? rule.senderBotIds.join(', ') : '';
+  $('auto-match-kind').value = channel ? rule.match.kind : 'contains';
+  $('auto-match-value').value = channel ? (rule.match.kind === 'keywords' ? rule.match.keywords.join(', ') : rule.match.value || '') : '';
+  $('auto-match-capture').value = channel ? rule.match.groupCapture || '' : '';
+  $('auto-match-case').checked = channel && rule.match.caseSensitive === true;
+  $('auto-threads').checked = !channel || rule.includeThreads !== false;
+  $('auto-idle').value = channel ? rule.idleMinutes : CHANNEL_IDLE_DEFAULT;
   $('auto-unit').value = schedule.unit;
   buildDayControls();
   if (schedule.unit === 'week') {
@@ -279,7 +297,7 @@ export function openEditor(rule) {
   segSet('auto-finish', rule ? (rule.finish === 'close' ? 'close' : 'keep') : 'close');
   syncEditor();
   $('auto-editor').hidden = false;
-  $('auto-name').focus();
+  $(channel ? 'auto-channel-ids' : 'auto-name').focus();
 }
 
 function closeEditor() {
@@ -293,6 +311,22 @@ function readEditor() {
   const project = activeProject();
   if (!project) return null;
   const previous = editing.id ? allRules().find(r => r.id === editing.id) || null : null;
+  if (segGet('auto-trigger') === 'channel') {
+    const split = value => value.split(',').map(part => part.trim()).filter(Boolean);
+    const kind = $('auto-match-kind').value;
+    const raw = { id: previous?.source === 'channel' ? previous.id : genId('R'), enabled: true,
+      connectionId: 'default', channelIds: split($('auto-channel-ids').value),
+      senderUserIds: split($('auto-sender-users').value), senderBotIds: split($('auto-sender-bots').value),
+      match: { kind, ...(kind === 'keywords' ? { keywords: split($('auto-match-value').value) }
+        : { value: $('auto-match-value').value.trim() }), caseSensitive: $('auto-match-case').checked,
+        ...(kind === 'regex' ? { groupCapture: $('auto-match-capture').value.trim() } : {}) },
+      includeThreads: $('auto-threads').checked, projectId: project.id, columnId: $('auto-column').value,
+      dir: $('auto-dir').value, cmd: $('auto-cmd').value, template: $('auto-template').value,
+      idleMinutes: Number($('auto-idle').value) };
+    const rule = normalizeChannelRule(raw);
+    if (!rule) { toast(t('automation.invalidChannelRule')); return null; }
+    return { ...rule, source: 'channel' };
+  }
   const fields = {
     trigger: segGet('auto-trigger'),
     name: $('auto-name').value, columnId: $('auto-column').value, template: $('auto-template').value,
@@ -312,9 +346,17 @@ function readEditor() {
 }
 
 async function saveRule(rule) {
+  if (rule.source === 'channel') {
+    const stored = { ...rule }; delete stored.source;
+    const rules = [...ctx.settings.inbound.channelRules.filter(value => value.id !== rule.id && value.id !== editing?.id), stored];
+    const inbound = { ...ctx.settings.inbound, channelRules: rules,
+      rules: ctx.settings.inbound.rules.filter(value => value.id !== editing?.id) };
+    const ok = await persistInbound(inbound); renderAutomations(); return ok;
+  }
   /* a trigger change gives the rule a new id: the old entry goes */
   const rules = mergeRules(ctx.settings.inbound.rules, rule, editing && editing.id);
-  const ok = await persistInbound({ ...ctx.settings.inbound, rules });
+  const ok = await persistInbound({ ...ctx.settings.inbound, rules,
+    channelRules: ctx.settings.inbound.channelRules.filter(value => value.id !== editing?.id) });
   renderAutomations();
   return ok;
 }
@@ -322,10 +364,11 @@ async function saveRule(rule) {
 /* rules pointing at a project that is gone fire into nothing forever;
    drop them the moment the Board says so */
 async function pruneOrphans() {
-  const kept = liveRules(allRules(), store.projects);
-  if (!kept) return;
+  const kept = liveRules(ordinaryRules(), store.projects);
+  const channelKept = liveRules(ctx.settings.inbound.channelRules, store.projects);
+  if (!kept && !channelKept) return;
   uev('inbound', 'rule-orphaned');
-  await persistInbound({ ...ctx.settings.inbound, rules: kept });
+  await persistInbound({ ...ctx.settings.inbound, ...(kept ? { rules: kept } : {}), ...(channelKept ? { channelRules: channelKept } : {}) });
 }
 
 /* ---------- drawer ---------- */
@@ -339,7 +382,10 @@ export async function openAutomations({ from = null, trigger = null } = {}) {
   closeEditor();
   await refreshRuns();
   renderAutomations();
-  if (trigger) { openEditor(null); segSet('auto-trigger', trigger); syncEditor(); }
+  if (trigger) {
+    openEditor(null); segSet('auto-trigger', trigger); syncEditor();
+    if (trigger === 'channel') $('auto-channel-ids').focus();
+  }
   else if (!rulesOf().length) openEditor(null);
 }
 
@@ -391,6 +437,7 @@ export function showNewSessionMenu(anchor) {
     menuLabel(t('menu.autoHeading'), true),
     menuItem('◷ ' + t('menu.autoClock'), { run: go(() => openAutomations({ from: anchor, trigger: 'clock' })) }),
     menuItem('◇ ' + t('menu.autoSlack'), { run: go(() => openAutomations({ from: anchor, trigger: 'slack' })) }),
+    menuItem('▤ ' + t('menu.autoChannel'), { run: go(() => openAutomations({ from: anchor, trigger: 'channel' })) }),
     document.createElement('hr'),
     menuLabel(t('menu.manageHeading')),
     menuItem('⚑ ' + t('menu.projectDefaults'), { sub: p ? projectDefaultsSummary(p) : '', run: go(() => openProjectDefaults(p && p.id, anchor)) }),
@@ -434,6 +481,7 @@ export function initAutomation(deps) {
     if (await saveRule(rule)) { closeEditor(); toast(t('automation.saved')); }
   };
   $('auto-unit').addEventListener('change', syncEditor);
+  $('auto-match-kind').addEventListener('change', syncEditor);
   $('auto-trigger').querySelectorAll('button').forEach(b => {
     b.onclick = () => { segSet('auto-trigger', b.dataset.v); syncEditor(); };
   });

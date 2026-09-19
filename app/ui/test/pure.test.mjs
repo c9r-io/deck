@@ -394,6 +394,33 @@ test('all overlapping Board mutations serialize from the latest committed JSON',
   assert.equal(h3.disk, JSON.stringify(h3.state));
 });
 
+test('durable queue admission and deletion share one ordered Board barrier', async () => {
+  const events = [];
+  const deletedFirst = boardHarness();
+  await Promise.all([
+    deletedFirst.queue.enqueue(draft => { draft.cards = []; events.push('delete'); }),
+    deletedFirst.queue.enqueue(async draft => {
+      if (!draft.cards.some(card => card.id === 'a')) return { noop: true };
+      events.push('admit-after-delete');
+    }),
+  ]);
+  assert.deepEqual(events, ['delete'], 'an admission queued after deletion rechecks and has no side effect');
+
+  const inFlight = boardHarness({ failWrites: 1 });
+  const admitted = inFlight.queue.enqueue(async draft => {
+    assert.ok(draft.cards.some(card => card.id === 'a'));
+    events.push('admit');
+  });
+  const removed = inFlight.queue.enqueue(draft => {
+    draft.cards = draft.cards.filter(card => card.id !== 'a');
+    events.push('clear');
+  });
+  await assert.rejects(admitted, /disk full/);
+  await removed;
+  assert.deepEqual(events.slice(-2), ['admit', 'clear'], 'delete waits, then clears even after the admission save fails');
+  assert.equal(inFlight.state.cards.some(card => card.id === 'a'), false);
+});
+
 test('a failed Board persist does not poison the next transaction or write an old snapshot', async () => {
   const h = boardHarness({ failWrites: 1 });
   await assert.rejects(h.queue.enqueue(draft => { draft.cards[0].title = 'not committed'; }));

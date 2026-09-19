@@ -124,6 +124,7 @@
 //!   `dirty` retries the exact snapshot. `flush_dirty` runs before the
 //!   empty-queue fast path.
 
+pub(crate) mod connector;
 mod delivery;
 mod ops;
 mod review;
@@ -162,6 +163,9 @@ pub(crate) struct QueueItem {
     /// Stable Board identity chosen when the task was created.
     #[serde(default)]
     card_id: String,
+    /// Caller-owned idempotency key for one buffer-copy action.
+    #[serde(default)]
+    operation_id: Option<String>,
     dir: String,
     cmd: String,
     text: String,
@@ -271,10 +275,24 @@ pub(crate) struct DeliveryRecord {
     at: u64,
     #[serde(default)]
     assumed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    operation_id: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub(crate) struct QueueOperation {
+    id: String,
+    item: String,
+    session: String,
+    card_id: String,
+    fingerprint: String,
+    /// queued | delivered | canceled | uncertain
+    state: String,
 }
 
 /// How many delivery audit records queue.json retains (oldest dropped first).
 pub(crate) const MAX_DELIVERIES: usize = 200;
+pub(crate) const MAX_QUEUE_OPERATIONS: usize = 10_000;
 
 /// Ledger entry for an in-flight delivery, persisted together with the
 /// firing intent. Carries a full snapshot of the item so the delivery can be
@@ -321,6 +339,12 @@ pub(crate) struct QueueState {
     reviews: Vec<ReviewRecord>,
     #[serde(default)]
     review_completed: HashSet<String>,
+    /// Durable idempotency/evidence ledger for buffer copies. Records outlive
+    /// item/history rotation and session cancellation: queue cancellation can
+    /// commit before a later Board removal fails, so dropping them there
+    /// would make a retained card's old operation replayable.
+    #[serde(default)]
+    operations: Vec<QueueOperation>,
 }
 
 pub(crate) struct Queues {

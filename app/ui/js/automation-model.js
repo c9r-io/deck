@@ -39,9 +39,10 @@ export function scheduleText(schedule) {
 /* what a rule's trigger reads as on its head line */
 export const triggerText = rule => (rule.source === 'clock'
   ? scheduleText(rule.schedule)
-  : t('automation.trigger.badge', { badge: rule.badge }));
+  : rule.source === 'channel' ? t('automation.trigger.channelSummary', { count: formatNumber(rule.channelIds.length) })
+    : t('automation.trigger.badge', { badge: rule.badge }));
 
-export const ruleLabel = rule => rule.name || (rule.source === 'clock' ? rule.id : `:${rule.badge}:`);
+export const ruleLabel = rule => rule.name || (rule.source === 'clock' || rule.source === 'channel' ? rule.id : `:${rule.badge}:`);
 
 /* one recorded run as a line: its outcome decides the mark and the words;
    `openable` says a running run still has a card to open */
@@ -72,13 +73,18 @@ export function ruleFacts(rule, { columnName = null, home = '', slackConnected =
     ['automation.kv.target', `${columnName || t('automation.missingTarget')} · ${rule.dir || home}`],
     ['automation.kv.cmd', rule.cmd || t('automation.shellOnly')],
     ['automation.kv.template', rule.template],
-    ['queue.plan', t(rule.reviewEach ? 'queue.review.enabled' : 'queue.review.disabled')],
-    ['automation.kv.finish', t(rule.finish === 'close' ? 'automation.finish.close' : 'automation.finish.keep')],
   ];
+  if (rule.source !== 'channel') {
+    rows.push(['queue.plan', t(rule.reviewEach ? 'queue.review.enabled' : 'queue.review.disabled')]);
+    rows.push(['automation.kv.finish', t(rule.finish === 'close' ? 'automation.finish.close' : 'automation.finish.keep')]);
+  }
   if (rule.source === 'clock') {
     const next = rule.enabled ? nextScheduleSlot(rule.schedule, nowSecs, rule.since) : null;
     rows.push(['automation.kv.grace', graceText(rule.graceMin ?? DEFAULT_GRACE_MIN)]);
     rows.push(['automation.kv.next', rule.enabled ? (next ? fmtClock(next, new Date(nowSecs * 1000)) : '—') : t('automation.paused')]);
+  } else if (rule.source === 'channel') {
+    rows.push(['automation.kv.scope', [...rule.channelIds, ...rule.senderUserIds, ...rule.senderBotIds].join(', ')]);
+    rows.push(['automation.kv.idle', rule.idleMinutes === 0 ? t('automation.manualStop') : t('automation.idleValue', { count: formatNumber(rule.idleMinutes) })]);
   } else {
     rows.push(['automation.kv.connection', t(slackConnected ? 'automation.slackOn' : 'automation.slackOff')]);
   }

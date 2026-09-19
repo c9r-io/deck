@@ -1,4 +1,5 @@
 import { DEFAULT_VOICE_PREFERENCES, normalizeVoicePreferences } from './voice-preferences-model.js';
+import { normalizeChannelConfig } from './channel-model.js';
 
 const THEMES = new Set(['deck-dark', 'light', 'system', 'high-contrast']);
 const ACCENTS = new Set(['teal', 'blue', 'purple', 'orange']);
@@ -73,6 +74,8 @@ const MAX_INBOUND_RULES = 32;
 export const DEFAULT_INBOUND = Object.freeze({
   sources: Object.freeze({ slack: Object.freeze({ enabled: false }) }),
   rules: Object.freeze([]),
+  channelConnection: Object.freeze({ enabled: false, connectionId: 'default' }),
+  channelRules: Object.freeze([]),
 });
 
 /* A clock rule's schedule, or null when it is not one the backend accepts:
@@ -134,7 +137,7 @@ export function normalizeInbound(value) {
     rules.push(rule);
     if (rules.length >= MAX_INBOUND_RULES) break;
   }
-  return { sources, rules };
+  return { sources, rules, ...normalizeChannelConfig(raw) };
 }
 
 export const DEFAULT_SETTINGS = Object.freeze({

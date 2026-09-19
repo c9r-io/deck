@@ -5,14 +5,15 @@ import './board.js';
 import { $, ctx, genId, initInputDiagnostics, inv, listen, state, store, uev } from './state.js';
 import { initDialogs, loadSettings, toast } from './dialogs.js';
 import {
-  activeProject, panes, markSessionsStoppedForServerRestart, migrateColumnSemantics, newSessionSummary, openProjectDefaults, pollNow,
+  activeProject, initBuffer, panes, markSessionsStoppedForServerRestart, migrateColumnSemantics, newSessionSummary, openProjectDefaults, pollNow,
   projectDefaultsSummary, prepareCardsForServerRestart, provider, render, startPolling, stopPolling, switchProject,
 } from './board.js';
 import { initLayout, leaveSessionView, openSession } from './layout.js';
 import { initTerminalChrome, newDefaultSession } from './terminal.js';
 import { initScheduler, refreshQueue } from './scheduler.js';
 import { initTemplates } from './templates.js';
-import { drainInbound, initInbound } from './inbound.js';
+import { drainChannel, drainInbound, initInbound } from './inbound.js';
+import { drainConnector, initConnector } from './connector.js';
 import { initAutomation } from './automation.js';
 import { initDropdowns } from './dropdown.js';
 import { initAttention } from './attention.js';
@@ -285,8 +286,10 @@ function initModules() {
   initAttention({ pollNow, provider, render, switchProject, leaveSessionView, openSession });
   initLayout();
   initScheduler({ provider, pollNow });
+  initBuffer();
   initTemplates({ provider });
   initInbound();
+  initConnector();
   initAutomation({ activeProject, newSessionSummary, openProjectDefaults, projectDefaultsSummary, provider, openSession, newDefaultSession });
   wireChrome();
 }
@@ -373,6 +376,8 @@ export async function boot() {
   startPolling();
   refreshQueue();
   drainInbound();
+  drainChannel();
+  drainConnector();
   setTimeout(checkForUpdate, 4000);
   /* runtime cadence comes from a Rust thread (App Nap freezes JS timers) */
   listen('update-check', checkForUpdate).catch(() => uev('listen-fail', 'update-check'));

@@ -83,6 +83,20 @@ pub(crate) struct BoardProject {
     #[allow(dead_code)]
     #[serde(default)]
     cmd: Option<String>,
+    #[serde(default)]
+    presets: Vec<TaskPreset>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TaskPreset {
+    id: String,
+    name: String,
+    column_id: String,
+    title: String,
+    dir: String,
+    cmd: String,
+    steps: Vec<String>,
 }
 #[derive(serde::Deserialize)]
 pub(crate) struct BoardColumn {
@@ -113,6 +127,304 @@ pub(crate) struct BoardCard {
     #[allow(dead_code)]
     dir: String,
     session: String,
+    /// Optional card-local scratchpad. Its text is independent from desc and
+    /// queued prompts; old boards have no field and therefore an empty buffer.
+    #[serde(default)]
+    buffer: Option<CardBuffer>,
+    #[serde(default, rename = "channelRun")]
+    channel_run: Option<ChannelRun>,
+    #[serde(default, rename = "connectorRun")]
+    connector_run: Option<ConnectorRun>,
+}
+
+const BUFFER_MAX_ENTRIES: usize = 256;
+const BUFFER_MAX_COPIES: usize = 256;
+const BUFFER_MAX_ENTRY_BYTES: usize = 32 * 1024;
+const BUFFER_MAX_BYTES: usize = 1024 * 1024;
+const BUFFER_MAX_SERIALIZED_BYTES: usize = 2 * 1024 * 1024;
+
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CardBuffer {
+    #[serde(default)]
+    revision: u64,
+    #[serde(default)]
+    collecting: bool,
+    #[serde(default)]
+    entries: Vec<BufferEntry>,
+    #[serde(default, flatten)]
+    extra: HashMap<String, serde_json::Value>,
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BufferEntry {
+    id: String,
+    kind: String,
+    text: String,
+    revision: u64,
+    created_at: u64,
+    updated_at: u64,
+    #[serde(default)]
+    source: Option<BufferSource>,
+    #[serde(default)]
+    copies: Vec<BufferCopy>,
+    #[serde(default, flatten)]
+    extra: HashMap<String, serde_json::Value>,
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BufferSource {
+    #[serde(rename = "type")]
+    source_type: String,
+    event_id: String,
+    #[serde(default)]
+    connection: Option<String>,
+    #[serde(default)]
+    channel: Option<String>,
+    #[serde(default)]
+    rule: Option<String>,
+    #[serde(default)]
+    at: Option<u64>,
+    #[serde(default)]
+    links: Vec<String>,
+    #[serde(default)]
+    workspace_id: Option<String>,
+    #[serde(default)]
+    message_ts: Option<String>,
+    #[serde(default)]
+    thread_ts: Option<String>,
+    #[serde(default)]
+    sender_user_id: Option<String>,
+    #[serde(default)]
+    sender_bot_id: Option<String>,
+    #[serde(default, flatten)]
+    extra: HashMap<String, serde_json::Value>,
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BufferCopy {
+    operation_id: String,
+    entry_revision: u64,
+    text: String,
+    created_at: u64,
+    state: String,
+    #[serde(default, flatten)]
+    extra: HashMap<String, serde_json::Value>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ChannelRun {
+    group_key: String,
+    first_event_id: String,
+    connection_id: String,
+    workspace_id: String,
+    channel_id: String,
+    rule_id: String,
+    last_collected_at: u64,
+    idle_minutes: u32,
+    collecting: bool,
+    #[serde(default)]
+    initial_steps: Vec<ChannelStep>,
+    #[serde(default)]
+    initial_queued: bool,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ChannelStep {
+    operation_id: String,
+    text: String,
+    mode: String,
+    #[serde(default)]
+    at: Option<u64>,
+    tpl: String,
+    tpl_idx: usize,
+    tpl_total: usize,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ConnectorRun {
+    handle: String,
+    preset_id: String,
+    #[serde(default)]
+    initial_steps: Vec<ChannelStep>,
+    #[serde(default)]
+    initial_queued: bool,
+}
+
+fn validate_connector_run(card_id: &str, run: &ConnectorRun) -> Result<(), DeckError> {
+    let valid = run.handle.len() == 64
+        && run.handle.chars().all(|c| c.is_ascii_hexdigit())
+        && bounded_buffer_id(&run.preset_id)
+        && run.initial_steps.len() <= 20
+        && run.initial_steps.iter().enumerate().all(|(index, step)| {
+            bounded_buffer_id(&step.operation_id)
+                && !step.text.is_empty()
+                && step.text.len() <= 2000
+                && matches!(step.mode.as_str(), "at" | "chain")
+                && (step.mode == "at") == step.at.is_some()
+                && step.tpl == run.preset_id
+                && step.tpl_idx == index + 1
+                && step.tpl_total == run.initial_steps.len()
+        });
+    let _ = run.initial_queued;
+    if valid {
+        Ok(())
+    } else {
+        Err(DeckError::new(
+            ErrorKind::InvalidDoc,
+            format!("card {card_id}: invalid connector run"),
+        ))
+    }
+}
+
+fn validate_channel_run(
+    card_id: &str,
+    run: &ChannelRun,
+    buffer: Option<&CardBuffer>,
+) -> Result<(), DeckError> {
+    let valid = run.group_key.len() <= 1024
+        && run.group_key.starts_with("default/")
+        && !run.first_event_id.is_empty()
+        && run.first_event_id.len() <= 128
+        && run.connection_id == "default"
+        && run.workspace_id.starts_with('T')
+        && (run.channel_id.starts_with('C') || run.channel_id.starts_with('G'))
+        && bounded_buffer_id(&run.rule_id)
+        && run.last_collected_at > 0
+        && run.idle_minutes <= 7 * 24 * 60
+        && run.initial_steps.len() <= BUFFER_MAX_COPIES
+        && buffer.is_some_and(|value| value.collecting == run.collecting)
+        && run.initial_steps.iter().enumerate().all(|(index, step)| {
+            bounded_buffer_id(&step.operation_id)
+                && !step.text.is_empty()
+                && step.text.len() <= BUFFER_MAX_ENTRY_BYTES
+                && matches!(step.mode.as_str(), "at" | "chain")
+                && (step.mode == "at") == step.at.is_some()
+                && !step.tpl.is_empty()
+                && step.tpl.len() <= 120
+                && step.tpl_idx == index + 1
+                && step.tpl_total == run.initial_steps.len()
+        });
+    let _ = (run.initial_queued, &run.workspace_id);
+    if valid {
+        Ok(())
+    } else {
+        Err(DeckError::new(
+            ErrorKind::InvalidDoc,
+            format!("card {card_id}: invalid channel run"),
+        ))
+    }
+}
+
+fn bounded_buffer_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-'))
+}
+
+fn validate_buffer(card_id: &str, buffer: &CardBuffer) -> Result<(), DeckError> {
+    if buffer.entries.len() > BUFFER_MAX_ENTRIES {
+        return Err(DeckError::new(
+            ErrorKind::InvalidDoc,
+            format!("card {card_id}: too many buffer entries"),
+        ));
+    }
+    let mut ids = HashSet::new();
+    let mut operations = HashSet::new();
+    let mut copies = 0usize;
+    let mut bytes = 0usize;
+    for entry in &buffer.entries {
+        if !bounded_buffer_id(&entry.id) || !ids.insert(entry.id.as_str()) {
+            return Err(DeckError::new(
+                ErrorKind::InvalidDoc,
+                format!("card {card_id}: invalid or duplicate buffer entry id"),
+            ));
+        }
+        if !matches!(entry.kind.as_str(), "manual" | "external")
+            || entry.revision == 0
+            || entry.created_at == 0
+            || entry.updated_at < entry.created_at
+            || entry.text.len() > BUFFER_MAX_ENTRY_BYTES
+        {
+            return Err(DeckError::new(
+                ErrorKind::InvalidDoc,
+                format!("card {card_id}: invalid buffer entry"),
+            ));
+        }
+        match (&entry.kind[..], &entry.source) {
+            ("manual", None) => {}
+            ("external", Some(source))
+                if !source.event_id.is_empty()
+                    && source.event_id.len() <= 256
+                    && !source.event_id.chars().any(char::is_control)
+                    && !source.source_type.is_empty()
+                    && source.source_type.len() <= 64
+                    && source.connection.as_ref().is_none_or(|v| v.len() <= 128)
+                    && source.channel.as_ref().is_none_or(|v| v.len() <= 128)
+                    && source.rule.as_ref().is_none_or(|v| v.len() <= 128)
+                    && source.at.is_none_or(|at| at > 0)
+                    && source.links.len() <= 16
+                    && source.links.iter().all(|v| {
+                        v.len() <= 2048 && (v.starts_with("https://") || v.starts_with("http://"))
+                    })
+                    && source
+                        .workspace_id
+                        .as_ref()
+                        .is_none_or(|v| v.starts_with('T') && v.len() <= 64)
+                    && source.message_ts.as_ref().is_none_or(|v| v.len() <= 32)
+                    && source.thread_ts.as_ref().is_none_or(|v| v.len() <= 32)
+                    && source.sender_user_id.as_ref().is_none_or(|v| v.len() <= 64)
+                    && source.sender_bot_id.as_ref().is_none_or(|v| v.len() <= 64) => {}
+            _ => {
+                return Err(DeckError::new(
+                    ErrorKind::InvalidDoc,
+                    format!("card {card_id}: invalid buffer source"),
+                ))
+            }
+        }
+        bytes = bytes.saturating_add(entry.text.len());
+        copies += entry.copies.len();
+        for copy in &entry.copies {
+            if !bounded_buffer_id(&copy.operation_id)
+                || !operations.insert(copy.operation_id.as_str())
+                || copy.entry_revision == 0
+                || copy.created_at == 0
+                || copy.text.len() > BUFFER_MAX_ENTRY_BYTES
+                || !matches!(
+                    copy.state.as_str(),
+                    "queued" | "delivered" | "canceled" | "uncertain"
+                )
+            {
+                return Err(DeckError::new(
+                    ErrorKind::InvalidDoc,
+                    format!("card {card_id}: invalid buffer queue copy"),
+                ));
+            }
+            bytes = bytes.saturating_add(copy.text.len());
+        }
+    }
+    let serialized = serde_json::to_vec(buffer)
+        .map(|value| value.len())
+        .unwrap_or(usize::MAX);
+    if copies > BUFFER_MAX_COPIES
+        || bytes > BUFFER_MAX_BYTES
+        || serialized > BUFFER_MAX_SERIALIZED_BYTES
+    {
+        return Err(DeckError::new(
+            ErrorKind::InvalidDoc,
+            format!("card {card_id}: buffer capacity exceeded"),
+        ));
+    }
+    let _ = (buffer.revision, buffer.collecting);
+    Ok(())
 }
 
 fn launched_default() -> bool {
@@ -158,6 +470,41 @@ fn validate_board(b: &BoardDocRaw) -> Result<(), DeckError> {
                 ));
             }
         }
+        if p.presets.len() > 50 {
+            return Err(DeckError::new(
+                ErrorKind::InvalidDoc,
+                format!("project {} has too many task presets", p.id),
+            ));
+        }
+        let mut preset_ids = HashSet::new();
+        for preset in &p.presets {
+            let supported = crate::context::expected_from_command(&preset.cmd)
+                .is_some_and(|name| matches!(name.as_str(), "codex" | "claude"));
+            if !bounded_buffer_id(&preset.id)
+                || !preset_ids.insert(preset.id.as_str())
+                || preset.name.is_empty()
+                || preset.name.len() > 120
+                || preset.title.is_empty()
+                || preset.title.len() > 120
+                || preset.dir.is_empty()
+                || preset.dir.len() > 1024
+                || preset.dir.chars().any(char::is_control)
+                || preset.cmd.is_empty()
+                || preset.cmd.len() > 200
+                || !supported
+                || !col_ids.contains(preset.column_id.as_str())
+                || preset.steps.len() > 20
+                || preset
+                    .steps
+                    .iter()
+                    .any(|step| step.is_empty() || step.len() > 2000)
+            {
+                return Err(DeckError::new(
+                    ErrorKind::InvalidDoc,
+                    format!("project {} has an invalid task preset", p.id),
+                ));
+            }
+        }
     }
     let mut card_ids = HashSet::new();
     let mut sessions = HashSet::new();
@@ -182,6 +529,15 @@ fn validate_board(b: &BoardDocRaw) -> Result<(), DeckError> {
                 ErrorKind::InvalidDoc,
                 format!("card {}: session name is already used", c.id),
             ));
+        }
+        if let Some(buffer) = &c.buffer {
+            validate_buffer(&c.id, buffer)?;
+        }
+        if let Some(run) = &c.channel_run {
+            validate_channel_run(&c.id, run, c.buffer.as_ref())?;
+        }
+        if let Some(run) = &c.connector_run {
+            validate_connector_run(&c.id, run)?;
         }
         let Some(project) = b.projects.iter().find(|p| p.id == c.project_id) else {
             return Err(DeckError::new(
@@ -354,6 +710,7 @@ impl TryFrom<SettingsDocRaw> for SettingsDoc {
         }
         if let Some(inbound) = &raw.inbound {
             crate::inbound::validate_settings(inbound)?;
+            crate::inbound_channel::validate_settings(inbound)?;
         }
         Ok(SettingsDoc(raw))
     }
@@ -415,6 +772,15 @@ pub(crate) fn board_path() -> PathBuf {
 #[tauri::command]
 pub(crate) fn load_board() -> Result<LoadedDoc, DeckError> {
     Ok(to_loaded(storage::load_typed::<BoardDoc>(&board_path())?))
+}
+
+/// Connector read seam: the returned bytes are the committed, fully typed
+/// Board payload selected by normal recovery. Callers project closed DTOs;
+/// they never receive a mutable document handle.
+pub(crate) fn connector_board_payload() -> Result<String, DeckError> {
+    storage::load_typed::<BoardDoc>(&board_path())?
+        .map(|loaded| loaded.payload)
+        .ok_or_else(|| DeckError::new(ErrorKind::Missing, "board is not initialized"))
 }
 
 /// The same full business validation as load, BEFORE anything touches disk:
@@ -702,6 +1068,88 @@ mod tests {
         assert!(serde_json::from_str::<BoardDoc>(r#"{"projects":[],"cards":[]}"#).is_ok());
     }
 
+    #[test]
+    fn board_buffer_is_optional_bounded_and_validated_without_losing_old_boards() {
+        let legacy = board(&card("s1", "P1", "C1", "deck-t-ab12"));
+        assert!(serde_json::from_str::<BoardDoc>(&legacy).is_ok());
+        let mut value: serde_json::Value = serde_json::from_str(&legacy).unwrap();
+        value["cards"][0]["buffer"] = serde_json::json!({
+            "revision": 2, "collecting": false, "entries": [{
+                "id": "N1", "kind": "manual", "text": "keep me", "revision": 1,
+                "createdAt": 1, "updatedAt": 1, "copies": [{
+                    "operationId": "B1", "entryRevision": 1, "text": "keep me",
+                    "createdAt": 2, "state": "queued"
+                }]
+            }]
+        });
+        assert!(serde_json::from_value::<BoardDoc>(value.clone()).is_ok());
+        value["cards"][0]["buffer"]["entries"][0]["text"] =
+            serde_json::json!("x".repeat(BUFFER_MAX_ENTRY_BYTES + 1));
+        assert!(serde_json::from_value::<BoardDoc>(value).is_err());
+
+        let entries: Vec<_> = (0..32)
+            .map(|i| {
+                serde_json::json!({
+                    "id":format!("N{i}"),"kind":"manual","text":"\n".repeat(BUFFER_MAX_ENTRY_BYTES),
+                    "revision":1,"createdAt":1,"updatedAt":1,"copies":[]
+                })
+            })
+            .collect();
+        let escaped: CardBuffer = serde_json::from_value(serde_json::json!({
+            "revision":1,"collecting":false,"entries":entries
+        }))
+        .unwrap();
+        assert!(
+            validate_buffer("s1", &escaped).is_err(),
+            "2 MiB serialized cap counts JSON escaping"
+        );
+        let extended: CardBuffer = serde_json::from_value(serde_json::json!({
+            "revision":1,"collecting":false,"entries":[{
+                "id":"N1","kind":"manual","text":"small","revision":1,
+                "createdAt":1,"updatedAt":1,"copies":[],
+                "futureMetadata":"x".repeat(BUFFER_MAX_SERIALIZED_BYTES)
+            }]
+        }))
+        .unwrap();
+        assert!(
+            validate_buffer("s1", &extended).is_err(),
+            "unknown nested metadata is preserved in the serialized capacity measurement"
+        );
+    }
+
+    #[test]
+    fn board_channel_run_requires_a_matching_collecting_buffer_and_bounded_frozen_plan() {
+        let mut value: serde_json::Value =
+            serde_json::from_str(&board(&card("s1", "P1", "C1", "deck-t-ab12"))).unwrap();
+        value["cards"][0]["buffer"] =
+            serde_json::json!({"revision":1,"collecting":true,"entries":[]});
+        value["cards"][0]["channelRun"] = serde_json::json!({
+            "groupKey":"default/T1/C1/R1","firstEventId":"Ev1","connectionId":"default",
+            "workspaceId":"T1","channelId":"C1","ruleId":"R1","lastCollectedAt":10,
+            "idleMinutes":30,"collecting":true,"initialQueued":false,
+            "initialSteps":[{"operationId":"B1","text":"frozen","mode":"at","at":10,
+                "tpl":"triage","tplIdx":1,"tplTotal":1}]
+        });
+        assert!(serde_json::from_value::<BoardDoc>(value.clone()).is_ok());
+        value["cards"][0]["buffer"]["collecting"] = serde_json::json!(false);
+        assert!(serde_json::from_value::<BoardDoc>(value).is_err());
+    }
+
+    #[test]
+    fn board_connector_run_keeps_a_bounded_frozen_initial_plan() {
+        let mut value: serde_json::Value =
+            serde_json::from_str(&board(&card("s1", "P1", "C1", "deck-t-ab12"))).unwrap();
+        value["cards"][0]["connectorRun"] = serde_json::json!({
+            "handle":"a".repeat(64),"presetId":"R1","initialQueued":false,
+            "initialSteps":[{"operationId":"B1","text":"frozen","mode":"at","at":10,
+                "tpl":"R1","tplIdx":1,"tplTotal":1}]
+        });
+        assert!(serde_json::from_value::<BoardDoc>(value.clone()).is_ok());
+        value["cards"][0]["connectorRun"]["initialSteps"][0]["text"] =
+            serde_json::json!("x".repeat(2001));
+        assert!(serde_json::from_value::<BoardDoc>(value).is_err());
+    }
+
     /// Project defaults (04) are optional strings: a board without them is
     /// what every earlier version wrote, and a wrong type is refused rather
     /// than guessed at.
@@ -742,6 +1190,25 @@ mod tests {
             serde_json::from_str::<BoardDoc>(&null_defaults).is_ok(),
             "null reads as no default"
         );
+    }
+
+    #[test]
+    fn project_task_presets_are_bounded_and_reference_a_real_column() {
+        let plain = board(&card("s1", "P1", "C1", "deck-t-ab12"));
+        let with_preset = plain.replacen(
+            "\"name\":\"main\"",
+            "\"name\":\"main\",\"presets\":[{\"id\":\"R1\",\"name\":\"Fix\",\"columnId\":\"C1\",\"title\":\"Remote task\",\"dir\":\"~/work\",\"cmd\":\"codex\",\"steps\":[\"inspect\",\"fix\"]}]",
+            1,
+        );
+        assert!(serde_json::from_str::<BoardDoc>(&with_preset).is_ok());
+        assert!(
+            serde_json::from_str::<BoardDoc>(&with_preset.replace("\"codex\"", "\"bash\""))
+                .is_err()
+        );
+        assert!(serde_json::from_str::<BoardDoc>(
+            &with_preset.replace("\"columnId\":\"C1\"", "\"columnId\":\"missing\"")
+        )
+        .is_err());
     }
 
     #[test]

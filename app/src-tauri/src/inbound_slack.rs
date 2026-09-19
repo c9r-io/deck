@@ -89,7 +89,11 @@ fn note_slack_error(name: &str) {
 
 /// One Slack Web API call — always POST with a form body, as every method
 /// documents. `Err` is a closed code suitable for logs.
-fn call(method: &str, token: &str, params: &[(&str, &str)]) -> Result<Value, &'static str> {
+pub(crate) fn call(
+    method: &str,
+    token: &str,
+    params: &[(&str, &str)],
+) -> Result<Value, &'static str> {
     let form: Vec<String> = params
         .iter()
         .map(|(k, v)| format!("{}={}", encode(k), encode(v)))
@@ -390,6 +394,9 @@ pub(crate) fn verify(slot: Slot, value: &str) -> Result<(), &'static str> {
     match slot {
         Slot::SlackUserToken => call("auth.test", value, &[]).map(|_| ()),
         Slot::SlackAppToken => call("apps.connections.open", value, &[]).map(|_| ()),
+        Slot::SlackChannelBotToken => call("auth.test", value, &[]).map(|_| ()),
+        Slot::SlackChannelAppToken => call("apps.connections.open", value, &[]).map(|_| ()),
+        Slot::ConnectorIdentity => Err("slot"),
     }
 }
 

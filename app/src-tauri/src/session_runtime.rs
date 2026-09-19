@@ -44,6 +44,9 @@ pub(crate) fn check_deadline() -> Result<(), DeckError> {
         Ok(())
     }
 }
+pub(crate) fn deadline_active() -> bool {
+    DEADLINE.with(|deadline| deadline.get().is_some())
+}
 fn error(code: &str) -> DeckError {
     DeckError::new(ErrorKind::Tmux, code)
 }

@@ -20,9 +20,99 @@ import { provider } from './board.js';
 import { toast } from './dialogs.js';
 import { planInbound } from './pure.js';
 import { t } from './i18n.js';
+import { bufferLimitError, emptyBuffer, upsertExternal } from './buffer-model.js';
+import { channelDigestId, channelRunExpired, channelSource, channelTemplatePlan, collectingCard, unfinishedChannelPlans } from './channel-model.js';
+import { expandHome } from './pure.js';
 
 let draining = false;
 let again = false;
+let channelDraining = false;
+let channelAgain = false;
+
+async function reconcileChannelCard(card) {
+  const run = card.channelRun;
+  if (!run || run.initialQueued || !Array.isArray(run.initialSteps)) return true;
+  try {
+    return await provider.queueChannelPlan(card.id, run.groupKey);
+  } catch (_) {
+    toast(t('channel.queueFailed')); uev('inbound', 'channel-queue-fail'); return false;
+  }
+}
+
+async function ackChannel(id) {
+  try { await inv('channel_ack', { id }); return true; }
+  catch (_) { uev('inbound', 'ack-fail'); return false; }
+}
+
+async function handleChannel(item) {
+  const exact = store.cards.find(card => card.origin?.source === 'channel' && card.origin.key === item.operationKey);
+  if (exact) {
+    await ackChannel(item.id);
+    await reconcileChannelCard(exact);
+    return;
+  }
+  for (const card of [...store.cards]) {
+    if (channelRunExpired(card.channelRun, Math.floor(Date.now() / 1000))) {
+      try { await provider.setChannelRun(card.id, card.channelRun.groupKey, { collecting: false }); }
+      catch (_) { toast(t('channel.expirySaveFailed')); return; }
+    }
+  }
+  let card = collectingCard(store.cards, item);
+  const entryId = await channelDigestId('E', item.operationKey);
+  if (card) {
+    const base = card.buffer || emptyBuffer();
+    const added = upsertExternal(base, { id: entryId, text: item.body, source: channelSource(item), now: item.occurredAt * 1000 });
+    if (added.error === 'immutable') { toast(t('channel.eventConflict')); return; }
+    if (added.error || bufferLimitError(added.buffer)) { toast(t('channel.bufferFull')); return; }
+    if (!added.noop) {
+      try { await provider.appendChannelEvent(card.id, base.revision || 0, item.groupKey, added.buffer, Math.floor(Date.now() / 1000)); }
+      catch (_) { channelAgain = true; return; }
+    }
+    await ackChannel(item.id);
+    return;
+  }
+  const project = store.projects.find(value => value.id === item.target.projectId);
+  const column = project?.columns.find(value => value.id === item.target.columnId);
+  const plan = channelTemplatePlan(item, project, Math.floor(Date.now() / 1000));
+  if (!project || !column || plan.error) { toast(t(plan.error ? 'channel.noTemplate' : 'channel.noTarget')); return; }
+  const operationIds = await Promise.all(plan.texts.map((_, index) => channelDigestId('B', `${item.operationKey}/step/${index}`)));
+  const initialSteps = plan.texts.map((text, index) => ({ operationId: operationIds[index], text,
+    mode: index ? 'chain' : 'at', at: index ? null : plan.at,
+    tpl: plan.template, tplIdx: index + 1, tplTotal: plan.texts.length }));
+  const added = upsertExternal(emptyBuffer(), { id: entryId, text: item.body, source: channelSource(item), now: item.occurredAt * 1000 });
+  if (added.error || bufferLimitError(added.buffer)) { toast(t('channel.bufferFull')); return; }
+  added.buffer.collecting = true;
+  const id = await channelDigestId('S', item.operationKey);
+  const channelRun = { groupKey: item.groupKey, firstEventId: item.eventId, connectionId: item.connectionId,
+    workspaceId: item.workspaceId, channelId: item.channelId, ruleId: item.ruleId,
+    lastCollectedAt: Math.floor(Date.now() / 1000), idleMinutes: item.target.idleMinutes, collecting: true,
+    initialSteps, initialQueued: false };
+  try {
+    ({ card } = await provider.createStarted({ id, projectId: project.id, columnId: column.id,
+      title: plan.title, dir: expandHome(item.target.dir, ctx.HOME), cmd: item.target.cmd,
+      desc: plan.template, origin: { source: 'channel', key: item.operationKey, badge: item.ruleId },
+      buffer: added.buffer, channelRun }, { requireCreated: true }));
+  } catch (error) {
+    toast(t(error?.stage === 'orphan' ? 'channel.orphan' : 'channel.createFailed'));
+    return;
+  }
+  await ackChannel(item.id);
+  await reconcileChannelCard(card);
+}
+
+export async function drainChannel() {
+  if (channelDraining) { channelAgain = true; return; }
+  channelDraining = true;
+  try {
+    do {
+      channelAgain = false;
+      for (const card of unfinishedChannelPlans(store.cards)) await reconcileChannelCard(card);
+      let items;
+      try { items = await inv('channel_pending'); } catch (_) { return; }
+      for (const item of items || []) await handleChannel(item);
+    } while (channelAgain);
+  } finally { channelDraining = false; }
+}
 
 export async function drainInbound() {
   if (draining) { again = true; return; }
@@ -100,5 +190,8 @@ async function handleInbound(item) {
 /* DOM wiring, run once at boot (app.js) so the module can be imported
    without a document. */
 export function initInbound() {
+  listen('channel-changed', drainChannel).catch(() => uev('listen-fail', 'channel-changed'));
   listen('inbound-changed', drainInbound).catch(() => uev('listen-fail', 'inbound-changed'));
+  const timer = setInterval(() => drainChannel(), 60_000);
+  timer.unref?.();
 }
