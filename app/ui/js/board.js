@@ -453,6 +453,7 @@ function observeRunFinish(c, info) {
 }
 
 /* ---------- polling ---------- */
+let pollEpoch = 0;
 let activePoll = null;
 let followUp = null;
 /* Event-driven callers (pty-exit, attention open/retry) react to something
@@ -460,6 +461,7 @@ let followUp = null;
    would let them attach to a session that has since died. Queue exactly one
    follow-up and resolve every waiter with it. */
 export function pollNow() {
+  if (ctx.tmuxRestarting) return Promise.resolve(false);
   if (activePoll) {
     if (!followUp) {
       let resolve;
@@ -477,6 +479,8 @@ export function pollNow() {
   return activePoll;
 }
 async function pollSessionsNow() {
+  const epoch = pollEpoch;
+  if (ctx.tmuxRestarting) return false;
   if (!store.cards.length) {
     ctx.attention.record([], []);
     refreshAttention();
@@ -494,6 +498,7 @@ async function pollSessionsNow() {
       names, tailFor, checkpointShells: !!ctx.settings.sessionRestore,
     });
   } catch (e) {
+    if (epoch !== pollEpoch || ctx.tmuxRestarting) return false;
     /* a silently dead poll leaves every card gray — log once per distinct
        error so app.log shows WHY the board went stale */
     if (String(e) !== state.lastPollError) {
@@ -505,6 +510,7 @@ async function pollSessionsNow() {
     refreshAttention();
     return false;
   }
+  if (epoch !== pollEpoch || ctx.tmuxRestarting) return false;
   if (state.lastPollError) { state.lastPollError = null; uev('poll-recovered'); }
   const visible = new Set([...panes.values()].filter(p => state.view === 'session' && p.attached && p.renderedGen === p.attachedGen).map(p => p.sid));
   ctx.attention.record(store.cards, infos, visible);
@@ -551,17 +557,18 @@ async function pollSessionsNow() {
   await exitRetirement.drain({
     get: sid => provider.get(sid),
     markStopped: c => { c.status = 'stopped'; emit('status', c); },
-    close: c => provider.close(c.id, { quiet: true, detail: true }),
+    close: c => ctx.tmuxRestarting ? { ok: false, applied: false } : provider.close(c.id, { quiet: true, detail: true }),
     failed: () => toast(t('error.retire')),
     succeeded: c => {
       closePaneBySid(c.id, { detach: false });
       toast(t('session.closedExited', { name: c.title }));
     },
   });
+  if (epoch !== pollEpoch || ctx.tmuxRestarting) return false;
   await runRetirement.drain({
     get: sid => provider.get(sid),
     markStopped: c => { c.status = 'stopped'; emit('status', c); },
-    close: c => provider.close(c.id, { quiet: true, detail: true }),
+    close: c => ctx.tmuxRestarting ? { ok: false, applied: false } : provider.close(c.id, { quiet: true, detail: true }),
     failed: () => { uev('inbound', 'run-close-fail'); toast(t('automation.runCloseFailed')); },
     succeeded: c => {
       closePaneBySid(c.id, { detach: false });
@@ -585,11 +592,24 @@ export function startPolling() {
   pollNow();
 }
 export function stopPolling() {
+  pollEpoch++;
   clearInterval(ctx.pollTimer);
   ctx.pollTimer = null;
   exitRetirement.clear();
   runRetirement.clear();
   runConfirm.clear();
+}
+
+// Persist the one-time command barrier for reviewed live sessions, including
+// a previous successful launch whose markLaunched write failed. A queued Board
+// barrier also lets already-started close transactions finish before restart.
+export async function prepareCardsForServerRestart(sessions) {
+  const names = new Set(sessions.map(s => s.name));
+  await mutateBoard(draft => {
+    for (const card of draft.cards) {
+      if (names.has(card.session)) card.launched = true;
+    }
+  });
 }
 
 /// Intentional whole-server replacement is not a set of natural shell exits.

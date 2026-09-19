@@ -2398,3 +2398,53 @@ fn inspecting_one_list_never_marks_another_pending_list_inspected() {
     assert!(!q.review_completed.contains("s"));
     assert!(q.items.is_empty());
 }
+
+#[test]
+fn restart_pause_survives_reload_and_save_failure_preserves_the_queue() {
+    let mut other = qi("other", "at");
+    other.session = "untouched".into();
+    let original = qs(vec![
+        qi("first", "at"),
+        qi("next", "chain"),
+        rule(60),
+        other,
+    ]);
+    let qm = Mutex::new(original.clone());
+    let fail = |_: &QueueState| {
+        Err(crate::error::DeckError::new(
+            crate::error::ErrorKind::DiskFull,
+            "fixture",
+        ))
+    };
+    assert!(with_queue(&qm, &fail, |q| pause_restart_sessions(q, &["s".into()])).is_err());
+    assert_eq!(
+        serde_json::to_value(&*qm.lock().unwrap()).unwrap(),
+        serde_json::to_value(&original).unwrap()
+    );
+    let disk = std::cell::RefCell::new(String::new());
+    let save = |q: &QueueState| {
+        *disk.borrow_mut() = serde_json::to_string(q).unwrap();
+        Ok(())
+    };
+    assert_eq!(
+        with_queue(&qm, &save, |q| pause_restart_sessions(q, &["s".into()])).unwrap(),
+        3
+    );
+    let restored: QueueState = serde_json::from_str(&disk.borrow()).unwrap();
+    assert!(restored
+        .items
+        .iter()
+        .filter(|i| i.session == "s")
+        .all(|i| i.paused));
+    assert!(
+        !restored
+            .items
+            .iter()
+            .find(|i| i.id == "other")
+            .unwrap()
+            .paused
+    );
+    assert!(select_due(&restored, NOW, 720, &HashMap::new())
+        .iter()
+        .all(|i| i.session == "untouched"));
+}

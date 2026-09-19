@@ -198,6 +198,7 @@ pub(crate) fn attach_session(
     cols: u16,
     rows: u16,
 ) -> Result<u64, DeckError> {
+    let _activity = crate::restart::activity_guard()?;
     crate::tmux::validate_session_name(&name)?;
     // replace any previous attachment for this session; closing its gate
     // releases an emitter that may be waiting on ACKs that will never come
@@ -703,6 +704,7 @@ pub(crate) fn pty_write(
     name: String,
     data_b64: String,
 ) -> Result<(), DeckError> {
+    let _activity = crate::restart::activity_guard()?;
     let bytes = B64
         .decode(data_b64)
         .map_err(|e| DeckError::classified(e.to_string()))?;

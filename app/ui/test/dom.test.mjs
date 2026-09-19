@@ -475,3 +475,12 @@ test('voice settings save only preferences, preserve unrelated fields and roll b
   assert.equal(await persistVoicePreferences({ languages: [], defaultLanguage: 'system' }), false);
   delete window.dispatchEvent;
 });
+
+test('a committed launch barrier replaces the old in-memory launched flag', async () => {
+  window.__TAURI__ = { core: { invoke: async () => {} } };
+  store.projects = [{ id: 'p', name: 'p', columns: [{ id: 'c', name: 'c' }] }];
+  store.cards = [{ id: 'a', projectId: 'p', columnId: 'c', title: 'A', cmd: 'claude', dir: '/tmp', session: 'deck-a-0001', launched: false, status: 'stopped' }];
+  await mutateBoard(draft => { draft.cards[0].launched = true; });
+  assert.equal(store.cards[0].launched, true);
+  assert.equal(store.cards[0].status, 'stopped', 'runtime state is still preserved');
+});

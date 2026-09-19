@@ -119,6 +119,31 @@ All automated tests use `deck-smoke*` sockets. Never point a smoke command at
 `-L deck`, never delete `~/.deck`, and do not use a production card/session as
 a fixture.
 
+### Graceful agent exit and restart timing
+
+- [ ] In an isolated build, enable terminal output recovery and create test
+      Claude Code and Codex sessions. Restart while idle, while running, with
+      draft input, in copy mode, and with a slow exit hook. Verify real CLI
+      versions separately: raw-mode fixture tests do not certify CLI behavior.
+- [ ] Successful exit returns to shell, stable resume hints are saved, and
+      opening retained cards starts only a shell. With recovery disabled,
+      the modal discloses that Deck will not save exit hints.
+- [ ] A slow/refused exit or failed snapshot aborts before kill-server. Some
+      agents may already have exited. The service PID remains unchanged.
+- [ ] All agents share a 2s exit budget; preparation has 3s and the backend
+      response has 8s. After 300ms the modal shows phase/progress. A blocked
+      filesystem may retain the backend locks after the timeout response;
+      when it returns it must not proceed to a late kill.
+- [ ] Queued prompts for affected sessions remain paused after replacement
+      and after app relaunch. An in-flight delivery makes restart return busy.
+      Old poll/attach replies do not reopen, delete or revive cards.
+- [ ] Inspect content-free `[tmux-restart]` anchors: `begin`, `validated`,
+      `classified`, `exit-request`, `agents-exited`/`exit-timeout`,
+      `output-stable`, `snapshot-saved`/`snapshot-failed`, `prepared`,
+      `queue-paused`, `stopping`, `stopped`, `starting`, `verified`, `finish`.
+      A hard response timeout adds `watchdog-timeout`. Logs contain durations,
+      counts and hashed session tags, never prompt/resume text or paths.
+
 ### Isolated same-build and failure recovery
 
 - [ ] Launch a debug smoke bundle with a fresh absolute data directory and a

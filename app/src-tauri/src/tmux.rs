@@ -157,12 +157,19 @@ pub(crate) fn tmux_conf_text(deck_dir: &std::path::Path) -> String {
 /// sets the same for the attach client.
 pub(crate) fn tmux(args: &[&str]) -> Result<String, DeckError> {
     let conf = tmux_conf();
-    let out = Command::new(tmux_program()?)
-        .args(["-f", &conf, "-L", socket()])
-        .args(args)
-        .env("LANG", "en_US.UTF-8")
-        .output()
-        .map_err(|e| DeckError::new(ErrorKind::TmuxMissing, format!("tmux not runnable: {e}")))?;
+    let out = crate::restart::command_output(
+        Command::new(tmux_program()?)
+            .args(["-f", &conf, "-L", socket()])
+            .args(args)
+            .env("LANG", "en_US.UTF-8"),
+    )
+    .map_err(|e| {
+        if e.kind() == std::io::ErrorKind::TimedOut {
+            DeckError::new(ErrorKind::Tmux, "tmux-restart-timeout")
+        } else {
+            DeckError::new(ErrorKind::TmuxMissing, format!("tmux not runnable: {e}"))
+        }
+    })?;
     if !out.status.success() {
         return Err(DeckError::classified(format!(
             "tmux {} failed: {}",
@@ -231,12 +238,19 @@ pub(super) fn command_with_stdin(
 /// shell; `;` is an explicit tmux command separator, never shell syntax.
 pub(crate) fn tmux_owned(args: &[String]) -> Result<String, DeckError> {
     let conf = tmux_conf();
-    let out = Command::new(tmux_program()?)
-        .args(["-f", &conf, "-L", socket()])
-        .args(args)
-        .env("LANG", "en_US.UTF-8")
-        .output()
-        .map_err(|e| DeckError::new(ErrorKind::TmuxMissing, format!("tmux not runnable: {e}")))?;
+    let out = crate::restart::command_output(
+        Command::new(tmux_program()?)
+            .args(["-f", &conf, "-L", socket()])
+            .args(args)
+            .env("LANG", "en_US.UTF-8"),
+    )
+    .map_err(|e| {
+        if e.kind() == std::io::ErrorKind::TimedOut {
+            DeckError::new(ErrorKind::Tmux, "tmux-restart-timeout")
+        } else {
+            DeckError::new(ErrorKind::TmuxMissing, format!("tmux not runnable: {e}"))
+        }
+    })?;
     if !out.status.success() {
         return Err(DeckError::classified(format!(
             "tmux {} failed: {}",

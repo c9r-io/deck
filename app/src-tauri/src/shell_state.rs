@@ -482,6 +482,121 @@ fn capture(observation: &ShellObservation) -> Result<ShellSnapshot, DeckError> {
     })
 }
 
+/// Explicit restart bypasses the periodic throttle and waits for durable writes.
+/// Advance the epoch so a periodic capture made before agent exit cannot later
+/// overwrite the resume hint. The existing IO/epoch guard still honors clear.
+pub(crate) fn checkpoint_before_restart(
+    rows: &[crate::tmux::PaneRow],
+    progress: &dyn Fn(&str, usize, usize),
+) -> Result<(), DeckError> {
+    let epoch = {
+        let mut tracker = TRACKER.lock_or_recover();
+        tracker.epoch += 1;
+        tracker.epoch
+    };
+    let began = std::time::Instant::now();
+    let mut snapshots = capture_restart_rows(rows)?;
+    // Settle all panes together, not 100ms per card. Compare the bounded text
+    // twice; a still-changing tail gets one more observation, then aborts.
+    let mut stable = snapshots.is_empty();
+    for _ in 0..2 {
+        if stable {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        crate::restart::check_deadline()?;
+        let next = capture_restart_rows(rows)?;
+        stable = snapshots
+            .iter()
+            .zip(&next)
+            .all(|(a, b)| a.transcript == b.transcript);
+        snapshots = next;
+    }
+    if !stable {
+        return Err(DeckError::new(
+            ErrorKind::Recovery,
+            "tmux-restart-output-unstable",
+        ));
+    }
+    applog(&format!(
+        "[tmux-restart] output-stable sessions={} elapsed_ms={}",
+        snapshots.len(),
+        began.elapsed().as_millis()
+    ));
+    for (index, snapshot) in snapshots.iter().enumerate() {
+        crate::restart::check_deadline()?;
+        let began = std::time::Instant::now();
+        if !save_snapshot(snapshot, epoch)? {
+            return Err(DeckError::new(
+                ErrorKind::Recovery,
+                "tmux-restart-snapshot-cancelled",
+            ));
+        }
+        applog(&format!(
+            "[tmux-restart] snapshot-saved {} bytes={} elapsed_ms={}",
+            crate::applog::session_tag(&snapshot.session),
+            snapshot.transcript.len(),
+            began.elapsed().as_millis()
+        ));
+        progress("saving", index + 1, snapshots.len());
+    }
+    crate::restart::check_deadline()
+}
+
+fn capture_restart_rows(rows: &[crate::tmux::PaneRow]) -> Result<Vec<ShellSnapshot>, DeckError> {
+    if !crate::restart::unchanged_rows(rows, &crate::tmux::list_panes()?) {
+        return Err(DeckError::new(
+            ErrorKind::Recovery,
+            "tmux-restart-snapshot-target-changed",
+        ));
+    }
+    let mut snapshots: Vec<ShellSnapshot> = Vec::new();
+    for row in rows {
+        crate::restart::check_deadline()?;
+        let observation = ShellObservation {
+            session: row.session_name.clone(),
+            activity: row.window_activity,
+            cwd: row.path.clone(),
+            foreground: row.command.clone(),
+        };
+        if crate::context::shell_process(Some(&row.command)) && !checkpoint_eligible(&observation) {
+            return Err(DeckError::new(
+                ErrorKind::Recovery,
+                "tmux-restart-snapshot-invalid-cwd",
+            ));
+        }
+        if checkpoint_eligible(&observation) {
+            // Capture the verified pane, not whichever pane is now selected.
+            let raw = tmux(&[
+                "capture-pane",
+                "-p",
+                "-J",
+                "-t",
+                &row.pane_id,
+                "-S",
+                &format!("-{MAX_TRANSCRIPT_LINES}"),
+            ])?;
+            let snapshot = ShellSnapshot {
+                session: observation.session,
+                cwd: observation.cwd,
+                transcript: sanitize_transcript(&raw),
+                updated: now_epoch(),
+            };
+            // A user may have added tmux panes outside Deck. Preserve their
+            // bounded shell tails together instead of overwriting one file.
+            if let Some(existing) = snapshots.iter_mut().find(|s| s.session == snapshot.session) {
+                existing.transcript = sanitize_transcript(&format!(
+                    "{}\n{}",
+                    existing.transcript, snapshot.transcript
+                ));
+            } else {
+                snapshots.push(snapshot);
+            }
+        }
+    }
+    Ok(snapshots)
+}
+
 /// Select a small fair batch and checkpoint it off the poll request thread.
 /// The caller invokes this every 2.5s, but disk/capture work runs at most once
 /// per 15s and at most two sessions per run.  Only changed idle-shell panes
@@ -491,6 +606,9 @@ pub(crate) fn schedule_checkpoints(observations: Vec<ShellObservation>, enabled:
     if !enabled {
         return;
     }
+    let Ok(_activity) = crate::restart::activity_guard() else {
+        return;
+    };
     let now = now_epoch();
     let (epoch, work): (u64, Vec<ShellObservation>) = {
         let mut tracker = TRACKER.lock_or_recover();

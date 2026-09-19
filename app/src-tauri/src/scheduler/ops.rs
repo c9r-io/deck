@@ -571,6 +571,34 @@ pub(crate) fn pause_item(q: &mut QueueState, id: &str, paused: bool) -> Result<(
     Ok(())
 }
 
+/// The restart holds the exclusive activity guard, so no delivery/finalizer can
+/// race this transaction. Keep these rows paused after restart: an old command
+/// must not silently start its agent in the freshly created server.
+pub(crate) fn pause_for_server_restart(
+    state: &Queues,
+    sessions: &[String],
+) -> Result<usize, DeckError> {
+    with_queue(&state.q, &save_queue, |q| {
+        pause_restart_sessions(q, sessions)
+    })
+}
+
+pub(super) fn pause_restart_sessions(
+    q: &mut QueueState,
+    sessions: &[String],
+) -> Result<usize, DeckError> {
+    let ids: Vec<_> = q
+        .items
+        .iter()
+        .filter(|i| sessions.contains(&i.session) && !i.paused)
+        .map(|i| i.id.clone())
+        .collect();
+    for id in &ids {
+        pause_item(q, id, true)?;
+    }
+    Ok(ids.len())
+}
+
 /// Pure core of queue_retry.
 pub(crate) fn retry_item(q: &mut QueueState, id: &str) -> Result<(), DeckError> {
     if q.items.iter().any(|i| i.id == id && is_review(i)) {
@@ -827,6 +855,7 @@ pub(crate) fn queue_send_now(
     id: String,
     accept_process_mismatch: bool,
 ) -> Result<(), DeckError> {
+    let _activity = crate::restart::activity_guard()?;
     let item = state
         .q
         .lock()

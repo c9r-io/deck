@@ -148,6 +148,10 @@ pub(crate) fn spawn_scheduler(app: AppHandle) {
             let act = activity.clone();
             std::thread::spawn(move || {
                 let state = app2.state::<Queues>();
+                let Ok(_activity) = crate::restart::activity_guard() else {
+                    release_session(&state.busy, &session);
+                    return;
+                };
                 let res = send_one_safe(
                     &state.q,
                     &state.dirty,

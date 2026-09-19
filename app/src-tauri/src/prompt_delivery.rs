@@ -55,6 +55,7 @@ impl Transport for TmuxTransport {
 }
 
 pub(crate) fn deliver(request: LiteralRequest<'_>) -> Result<LiteralOutcome, DeckError> {
+    let _activity = crate::restart::activity_guard()?;
     deliver_with(request, &TmuxTransport)
 }
 

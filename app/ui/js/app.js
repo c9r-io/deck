@@ -6,7 +6,7 @@ import { $, ctx, genId, initInputDiagnostics, inv, listen, state, store, uev } f
 import { initDialogs, loadSettings, toast } from './dialogs.js';
 import {
   activeProject, panes, markSessionsStoppedForServerRestart, migrateColumnSemantics, newSessionSummary, openProjectDefaults, pollNow,
-  projectDefaultsSummary, provider, render, startPolling, stopPolling, switchProject,
+  projectDefaultsSummary, prepareCardsForServerRestart, provider, render, startPolling, stopPolling, switchProject,
 } from './board.js';
 import { initLayout, leaveSessionView, openSession } from './layout.js';
 import { initTerminalChrome, newDefaultSession } from './terminal.js';
@@ -125,6 +125,7 @@ function showTmuxLifecycle(status, manual = false) {
       attached: status.attachedSessionCount || 0,
       active: status.foregroundSessionCount || 0,
     });
+  if (!ctx.settings.sessionRestore) $('tmux-lifecycle-message').textContent += '\n' + t('tmux.restoreOff');
   renderImpactList(status);
   $('tmux-lifecycle-modal').dataset.manual = manual && !status.pendingRestart ? 'true' : 'false';
   $('tmux-lifecycle-modal').style.display = 'flex';
@@ -171,12 +172,24 @@ async function restartTmuxServer() {
   $('tmux-view-sessions').disabled = true;
   $('tmux-restart').textContent = t('tmux.restarting');
   stopPolling();
-  leaveSessionView();
+  const detachedSessions = [...panes.keys()];
+  // Backend validates the reviewed attached-client counts before detaching.
+  leaveSessionView({ detach: false });
   state.view = 'board';
   state.sessionId = null;
   markSessionsStoppedForServerRestart();
   render();
+  const requestId = genId('R');
+  let unlisten = null;
+  const began = performance.now();
   try {
+    unlisten = await listen('tmux-restart-progress', event => {
+      const progress = event.payload;
+      if (!ctx.tmuxRestarting || progress.requestId !== requestId || performance.now() - began < 300) return;
+      const key = { exiting: 'tmux.progress.exiting', saving: 'tmux.progress.saving', replacing: 'tmux.progress.replacing' }[progress.phase];
+      if (key) $('tmux-restart').textContent = t(key, progress);
+    });
+    await prepareCardsForServerRestart(status.sessions || []);
     ctx.tmuxServerStatus = await inv('restart_tmux_server', {
       expectedPid: status.serverPid || 0,
       expectedStartedAt: status.serverStartedAt || 0,
@@ -184,16 +197,28 @@ async function restartTmuxServer() {
       expectedSessionCount: status.sessionCount || 0,
       expectedPaneCount: status.paneCount || 0,
       force: !status.pendingRestart,
+      restoreShells: !!ctx.settings.sessionRestore,
+      requestId,
     });
     $('tmux-lifecycle-modal').style.display = 'none';
     toast(t('tmux.restartComplete'));
     inv('acknowledge_tmux_lifecycle_notice').catch(() => {});
   } catch (error) {
     const changed = String(error).includes('impact-changed');
-    toast(t(changed ? 'tmux.impactChanged' : 'tmux.restartFailed'));
-    await refreshTmuxLifecycle();
-    if (ctx.tmuxServerStatus?.pendingRestart) showTmuxLifecycle(ctx.tmuxServerStatus, false);
+    const message = String(error);
+    const key = changed ? 'tmux.impactChanged'
+      : message.includes('agent-timeout') ? 'tmux.agentTimeout'
+      : message.includes('snapshot-failed') ? 'tmux.snapshotFailed'
+      : message.includes('restart-busy') ? 'tmux.restartBusy'
+      : message.includes('restart-timeout') ? 'tmux.restartTimeout' : 'tmux.restartFailed';
+    toast(t(key));
+    if (!message.includes('restart-timeout')) {
+      await refreshTmuxLifecycle();
+      if (ctx.tmuxServerStatus?.pendingRestart) showTmuxLifecycle(ctx.tmuxServerStatus, false);
+    }
   } finally {
+    unlisten?.();
+    await Promise.allSettled(detachedSessions.map(name => inv('detach_session', { name })));
     ctx.tmuxRestarting = false;
     $('tmux-restart').disabled = false;
     $('tmux-later').disabled = false;

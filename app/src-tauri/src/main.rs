@@ -27,6 +27,7 @@ mod prompt_delivery;
 mod pty;
 mod redact;
 mod relaunch;
+mod restart;
 mod scheduler;
 mod shell_state;
 mod smoke_faults;

@@ -141,6 +141,7 @@ struct ServerSnapshot {
     metadata: MetadataRead,
     sessions: Vec<SessionImpact>,
     impact_token: String,
+    panes: Vec<tmux::PaneRow>,
 }
 
 impl ServerSnapshot {
@@ -230,6 +231,7 @@ fn read_disk() -> LifecycleDisk {
 }
 
 fn write_disk(disk: &LifecycleDisk) -> Result<(), DeckError> {
+    crate::restart::check_deadline()?;
     crate::datadir::create_private_dir(&crate::datadir::deck_dir())?;
     let bytes = serde_json::to_vec(disk)
         .map_err(|_| DeckError::new(ErrorKind::Other, "lifecycle-state-encode"))?;
@@ -525,11 +527,13 @@ fn probe_server() -> Probe {
     }
 
     let mut pane_identities = Vec::new();
+    let mut pane_rows = Vec::new();
     if !sessions.is_empty() {
         let Ok(rows) = tmux::list_panes() else {
             return Probe::Unreachable;
         };
-        for row in rows {
+        pane_rows = rows;
+        for row in &pane_rows {
             let Some(session) = sessions
                 .iter_mut()
                 .find(|session| session.name == row.session_name)
@@ -540,7 +544,12 @@ fn probe_server() -> Probe {
             if !crate::context::shell_process(Some(&row.command)) {
                 session.has_foreground_process = true;
             }
-            pane_identities.push((row.session_name, row.pane_id, row.pane_pid, row.command));
+            pane_identities.push((
+                row.session_name.clone(),
+                row.pane_id.clone(),
+                row.pane_pid,
+                row.command.clone(),
+            ));
         }
         if sessions.iter().any(|session| session.pane_count == 0) {
             return Probe::Unreachable;
@@ -566,6 +575,7 @@ fn probe_server() -> Probe {
         metadata,
         sessions,
         impact_token,
+        panes: pane_rows,
     }))
 }
 
@@ -668,6 +678,7 @@ fn clean_confirmed_intent_socket(intent: &RestartIntent) -> Result<(), DeckError
 
 fn wait_for_old_server_exit(old: &ServerSnapshot) -> Result<(), DeckError> {
     for _ in 0..50 {
+        crate::restart::check_deadline()?;
         match probe_server() {
             Probe::Absent => break,
             Probe::Reachable(snapshot)
@@ -725,6 +736,9 @@ fn complete_restart(
     });
     write_disk(&disk)?;
 
+    crate::restart::check_deadline()?;
+    let stop_started = std::time::Instant::now();
+    applog("[tmux-restart] stopping");
     match tmux(&["kill-server"]) {
         Ok(_) => {}
         Err(error) if absent_error(error.message()) => {}
@@ -734,6 +748,10 @@ fn complete_restart(
         return Err(DeckError::new(ErrorKind::Tmux, "injected-tmux-after-stop"));
     }
     wait_for_old_server_exit(old)?;
+    applog(&format!(
+        "[tmux-restart] stopped elapsed_ms={}",
+        stop_started.elapsed().as_millis()
+    ));
     if crate::smoke_faults::take("tmux-after-socket") {
         return Err(DeckError::new(
             ErrorKind::Tmux,
@@ -742,6 +760,7 @@ fn complete_restart(
     }
 
     disk.operation.as_mut().unwrap().phase = RestartPhase::Starting;
+    crate::restart::check_deadline()?;
     write_disk(&disk)?;
     if crate::smoke_faults::take("tmux-before-start") {
         return Err(DeckError::new(
@@ -749,7 +768,13 @@ fn complete_restart(
             "injected-tmux-before-start",
         ));
     }
+    let start_started = std::time::Instant::now();
+    applog("[tmux-restart] starting");
     let fresh = start_current_server(build)?;
+    applog(&format!(
+        "[tmux-restart] verified elapsed_ms={}",
+        start_started.elapsed().as_millis()
+    ));
 
     disk.operation.as_mut().unwrap().phase = RestartPhase::Verifying;
     write_disk(&disk)?;
@@ -1072,16 +1097,82 @@ pub(crate) fn acknowledge_tmux_lifecycle_notice() -> Result<(), DeckError> {
 }
 
 #[tauri::command]
-pub(crate) fn restart_tmux_server(
-    pty_state: tauri::State<'_, crate::pty::PtyState>,
+#[allow(clippy::too_many_arguments)] // Preserve the existing flat IPC confirmation fields.
+pub(crate) async fn restart_tmux_server(
+    app: tauri::AppHandle,
     expected_pid: u32,
     expected_started_at: u64,
     expected_impact_token: String,
     expected_session_count: u32,
     expected_pane_count: u32,
     force: bool,
+    restore_shells: bool,
+    request_id: String,
 ) -> Result<ServerStatus, DeckError> {
+    use tauri::{Emitter, Manager};
+    // Tauri's synchronous command handler would block the webview event loop
+    // during exit hooks. All IO, deadlines and guards belong to this worker.
+    let started = std::time::Instant::now();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::restart::run_bounded(started + crate::restart::TOTAL_BUDGET, move || {
+            let _deadline = crate::restart::Deadline::until(started + crate::restart::TOTAL_BUDGET);
+            let progress = |phase: &str, completed: usize, total: usize| {
+                let _ = app.emit(
+                    "tmux-restart-progress",
+                    serde_json::json!({
+                        "requestId": request_id, "phase": phase, "completed": completed,
+                        "total": total, "elapsedMs": started.elapsed().as_millis() as u64,
+                    }),
+                );
+            };
+            applog("[tmux-restart] begin prepare_budget_ms=3000 total_budget_ms=8000");
+            let result = restart_tmux_server_inner(
+                &app.state::<crate::pty::PtyState>(),
+                &app.state::<crate::scheduler::Queues>(),
+                expected_pid,
+                expected_started_at,
+                expected_impact_token,
+                expected_session_count,
+                expected_pane_count,
+                force,
+                restore_shells,
+                started,
+                &progress,
+            );
+            applog(&format!(
+                "[tmux-restart] finish result={} elapsed_ms={}",
+                result
+                    .as_ref()
+                    .map(|_| "ok")
+                    .unwrap_or_else(crate::restart::failure_reason),
+                started.elapsed().as_millis()
+            ));
+            let _ = app.emit("queue-changed", ());
+            result
+        })
+    })
+    .await
+    .map_err(|_| DeckError::new(ErrorKind::Other, "tmux-restart-worker-failed"))?
+}
+
+#[allow(clippy::too_many_arguments)]
+fn restart_tmux_server_inner(
+    pty_state: &crate::pty::PtyState,
+    queues: &crate::scheduler::Queues,
+    expected_pid: u32,
+    expected_started_at: u64,
+    expected_impact_token: String,
+    expected_session_count: u32,
+    expected_pane_count: u32,
+    force: bool,
+    restore_shells: bool,
+    started: std::time::Instant,
+    progress: &dyn Fn(&str, usize, usize),
+) -> Result<ServerStatus, DeckError> {
+    let preparation_deadline =
+        crate::restart::Deadline::until(started + crate::restart::PREPARE_BUDGET);
     let _guard = try_operation()?;
+    let _activity = crate::restart::exclusive()?;
     if APP_UPDATE_INSTALLING.load(Ordering::Acquire) {
         return Err(DeckError::new(ErrorKind::Other, "app-update-installing"));
     }
@@ -1123,9 +1214,58 @@ pub(crate) fn restart_tmux_server(
             "tmux-server-impact-changed",
         ));
     }
+    applog(&format!(
+        "[tmux-restart] validated sessions={} panes={} elapsed_ms={}",
+        snapshot.sessions.len(),
+        snapshot.pane_count(),
+        started.elapsed().as_millis()
+    ));
     pty_state.detach_all();
-    complete_restart(&build, &snapshot, "restartCompleted")?;
-    Ok(status_from_probe(build, probe_server()))
+    let prepared_rows = crate::restart::prepare(&snapshot.panes, restore_shells, progress)?;
+    // Foreground changes caused by graceful exit are expected. Refresh the
+    // content-free intent so crash recovery compares the post-exit identity.
+    let post_exit = match probe_server() {
+        Probe::Reachable(current)
+            if current.pid == snapshot.pid && current.started_at == snapshot.started_at =>
+        {
+            current
+        }
+        _ => {
+            return Err(DeckError::new(
+                ErrorKind::Tmux,
+                "tmux-server-impact-changed",
+            ))
+        }
+    };
+    let checked_rows = tmux::list_panes()?;
+    if !crate::restart::unchanged_rows(&prepared_rows, &checked_rows) {
+        return Err(DeckError::new(
+            ErrorKind::Tmux,
+            "tmux-server-impact-changed",
+        ));
+    }
+    let paused = crate::scheduler::pause_for_server_restart(
+        queues,
+        &snapshot
+            .sessions
+            .iter()
+            .map(|s| s.name.clone())
+            .collect::<Vec<_>>(),
+    )?;
+    applog(&format!(
+        "[tmux-restart] queue-paused count={paused} elapsed_ms={}",
+        started.elapsed().as_millis()
+    ));
+    crate::restart::check_deadline()?;
+    drop(preparation_deadline);
+    let _replace_deadline = crate::restart::Deadline::until(
+        (std::time::Instant::now() + Duration::from_secs(5))
+            .min(started + crate::restart::TOTAL_BUDGET),
+    );
+    progress("replacing", 0, 0);
+    pty_state.detach_all();
+    let fresh = complete_restart(&build, &post_exit, "restartCompleted")?;
+    Ok(status_from_probe(build, Probe::Reachable(Box::new(fresh))))
 }
 
 #[cfg(test)]
@@ -1581,6 +1721,7 @@ mod tests {
     #[test]
     fn interrupted_confirmation_resumes_only_for_the_same_pid_and_impact() {
         let snapshot = ServerSnapshot {
+            panes: Vec::new(),
             pid: 42,
             started_at: 10,
             socket_path: PathBuf::from("/private/tmp/tmux-501/test"),

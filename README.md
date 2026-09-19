@@ -102,6 +102,18 @@ is sent once, so whatever you left at the prompt — an agent's resume hint, for
 instance — is where you look first, and restarting the program is your call.
 The one exception is a card whose first start never delivered its command.
 
+A confirmed service restart first asks recognized native Claude Code/Codex
+foreground processes to exit, sharing a two-second exit window across all
+panes. With terminal output recovery enabled, Deck waits for stable shell
+output and saves the bounded tails before killing the server. Exit/capture
+failure aborts before the kill; a partial exit is possible and is not undone.
+Preparation has a three-second budget and the backend returns a result within
+eight seconds. A stalled filesystem worker retains the restart locks until it
+returns, and its expired deadline prevents a later kill. Pending prompts for
+reviewed sessions are durably paused before replacement and stay paused until
+the user resumes them. Other foreground programs retain the ordinary restart
+behavior; unknown launchers are not sent guessed exit keys.
+
 **A real terminal.** Full xterm with truecolor, ⌘C/⌘V, clickable existing
 local file paths, and complete HTTP(S) URLs even across terminal soft wraps.
 Drag directly over terminal cells; holding at either vertical

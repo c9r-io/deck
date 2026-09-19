@@ -933,7 +933,7 @@ export function ensureAttached(pane, opts = {}) {
 async function attachPane(pane, { allowStart = true } = {}) {
   const card = provider.get(pane.sid);
   const outcome = { created: false, restored: false, attached: false, commandSent: false };
-  if (!card) return outcome;
+  if (!card || ctx.tmuxRestarting) return outcome;
   try {
     if (card.status === 'stopped' && allowStart) {
       const cmd = startCommand(card);
@@ -946,6 +946,7 @@ async function attachPane(pane, { allowStart = true } = {}) {
       outcome.commandSent = outcome.created && !!cmd;
       if (outcome.commandSent) await provider.markLaunched(card.id);
     }
+    if (ctx.tmuxRestarting || panes.get(card.session) !== pane) return outcome;
     const gen = await inv('attach_session', { name: card.session, cols: pane.term.cols, rows: pane.term.rows });
     /* max(): the first pty-data event can arrive BEFORE this invoke resolves;
        the handler below already advanced ptyGens then, and regressing it
@@ -973,6 +974,7 @@ async function attachPane(pane, { allowStart = true } = {}) {
 }
 
 export async function addSplit(targetSid, dir, before, newSid, opts = {}) {
+  if (ctx.tmuxRestarting) return;
   const card = provider.get(newSid);
   if (!card || state.view !== 'session' || !ctx.layout) return;
   if (newSid === targetSid) return;
@@ -1122,6 +1124,7 @@ export function showSplitPicker(dir) {
 
 /* ---------- session view ---------- */
 export async function openSession(sid, opts = {}) {
+  if (ctx.tmuxRestarting) return false;
   const card = provider.get(sid);
   if (!card) return;
   ctx.attentionReturn = opts.attentionReturn || (state.view === 'session' ? ctx.attentionReturn : null);
@@ -1158,7 +1161,7 @@ export async function openSession(sid, opts = {}) {
   return attached;
 }
 
-export function leaveSessionView({ switchingSession = false } = {}) {
+export function leaveSessionView({ switchingSession = false, detach = true } = {}) {
   window.dispatchEvent(new CustomEvent('deck-session-leave', { detail: { switchingSession } }));
   cancelAllTerminalSelections('leave');
   resetSuggest(null);
@@ -1169,7 +1172,7 @@ export function leaveSessionView({ switchingSession = false } = {}) {
     p.disposeLinks?.();
     if (p.selection) p.selection.dispose();
     p.scrollCursorObserver?.disconnect();
-    inv('detach_session', { name: p.session }).catch(() => {});
+    if (detach) inv('detach_session', { name: p.session }).catch(() => {});
     try { p.term.dispose(); } catch (e) { /* fine */ }
     p.el.remove();
   });
