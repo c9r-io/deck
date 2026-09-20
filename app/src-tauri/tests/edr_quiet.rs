@@ -219,6 +219,35 @@ fn bundled_status_helper_has_no_process_or_persistence_surface() {
 }
 
 #[test]
+fn mcp_sidecars_keep_the_reviewed_process_boundary() {
+    let adapter = std::fs::read_to_string(manifest("mcp-adapter/src/main.rs")).unwrap();
+    assert!(!adapter.contains("Command::new("));
+    for forbidden in ["launchctl", "LaunchAgents", "LaunchDaemons", "osascript"] {
+        assert!(
+            !adapter.contains(forbidden),
+            "MCP adapter introduced {forbidden}"
+        );
+    }
+
+    let runner = std::fs::read_to_string(manifest("mcp-runner/src/main.rs")).unwrap();
+    assert_eq!(runner.matches("Command::new(").count(), 1);
+    assert!(runner.contains("Command::new(\"/bin/zsh\")"));
+    for forbidden in [
+        "launchctl",
+        "LaunchAgents",
+        "LaunchDaemons",
+        "osascript",
+        "Command::new(\"sh\")",
+        "Command::new(\"bash\")",
+    ] {
+        assert!(
+            !runner.contains(forbidden),
+            "MCP runner introduced {forbidden}"
+        );
+    }
+}
+
+#[test]
 fn nothing_touches_launchd_login_items_or_a_home_executable() {
     for (name, src) in all_sources() {
         for token in ["launchctl", "LaunchAgents", "LaunchDaemons", "SMAppService"] {

@@ -24,6 +24,7 @@ mod instance_lock;
 mod keychain;
 mod launch_args;
 mod links;
+mod mcp;
 mod procinfo;
 mod prompt_delivery;
 mod pty;
@@ -163,6 +164,7 @@ fn main() {
             inbound::spawn_inbound(app.handle().clone());
             inbound_channel::spawn_channel(app.handle().clone());
             connector::spawn_connector(app.handle().clone());
+            mcp::spawn(app.handle().clone());
             // Agent-status socket: content-free state words from agent hooks
             // (see agent_status.rs). Re-points already-installed hook
             // entries at this install's bundled helper and retires the
@@ -400,6 +402,21 @@ fn main() {
             connector::connector_smoke_seed,
             connector::connector_smoke_transport,
             connector::connector_smoke_window,
+            mcp::mcp_status,
+            mcp::mcp_adapter_path,
+            mcp::mcp_enable,
+            mcp::mcp_disable,
+            mcp::mcp_client_add,
+            mcp::mcp_client_revoke,
+            mcp::mcp_pending,
+            mcp::mcp_claim,
+            mcp::mcp_validate,
+            mcp::mcp_start_session,
+            mcp::mcp_complete,
+            mcp::mcp_card_closed,
+            mcp::mcp_takeover,
+            mcp::mcp_return_control,
+            mcp::mcp_session_ui,
             smoke_faults::smoke_fault_set,
             smoke_faults::smoke_clipboard_metrics,
         ])

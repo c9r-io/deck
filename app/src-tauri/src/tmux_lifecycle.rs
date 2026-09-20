@@ -18,6 +18,8 @@
 //! The updater takes the same gate before setting its creation embargo. Cards
 //! are marked stopped before polling so a
 //! whole-server restart is not mistaken for natural card exits.
+//! A managed MCP runner cannot use ordinary shell restoration, so an explicit
+//! restart is refused until its MCP cards are closed through the Board path.
 //!
 //! Production Stable/Nightly intentionally share socket `deck` because
 //! promotion copies identical candidate bytes. Debug development uses
@@ -1237,6 +1239,7 @@ fn restart_tmux_server_inner(
         crate::session_runtime::Deadline::until(started + crate::restart::PREPARE_BUDGET);
     let _guard = try_operation()?;
     let _activity = crate::session_runtime::exclusive()?;
+    crate::mcp::guard_server_restart()?;
     // The read-only client is still an attached tmux client. Stop it before
     // capturing/rechecking restart impact so it cannot keep the old server
     // alive or perturb attached-client counts during replacement.

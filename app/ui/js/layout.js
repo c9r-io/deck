@@ -21,7 +21,7 @@
 // selection, diagnostics and context-menu callbacks; those adapters own copy
 // routing and link gestures. Pane teardown disposes their link listeners.
 import { $, ctx, dotTitle, duev, inv, listen, setMemChip, state, store, uev } from './state.js';
-import { choiceDialog, inlineRename, toast } from './dialogs.js';
+import { choiceDialog, confirmDialog, inlineRename, toast } from './dialogs.js';
 import { t } from './i18n.js';
 import { markSessionSeen, panes, pollNow, provider, render, renderSidebar, updateSidebarSelection, activeProject } from './board.js';
 import { SHELL_FG, acceptGhost, feedMirror, maybeRecordCommand, mountQuickBar, nextShellTitle, renderSuggest, resetSuggest, showLinkCtx, updateGhost } from './terminal.js';
@@ -720,6 +720,9 @@ async function attachPane(pane, { allowStart = true } = {}) {
   if (!card || ctx.tmuxRestarting) return outcome;
   try {
     if (card.status === 'stopped' && allowStart) {
+      // A managed runner may only be created through the durable MCP/Board
+      // transaction. Never turn a stopped MCP card into an ordinary shell.
+      if (card.origin?.source === 'mcp') return outcome;
       const cmd = startCommand(card);
       const started = await inv('start_session', {
         name: card.session, dir: card.dir, cmd,
@@ -998,6 +1001,21 @@ export function renderSessionView() {
   };
   setMemChip($('sess-mem'), s);
   $('sess-path').textContent = (s.cmd ? '$ ' + s.cmd + '  ·  ' : '') + s.dir;
+  $('queue-btn').disabled = s.origin?.source === 'mcp';
+  $('voice-btn').disabled = s.origin?.source === 'mcp';
+  const mcp = $('mcp-control-btn');
+  mcp.hidden = s.origin?.source !== 'mcp';
+  if (!mcp.hidden) {
+    const cardId = s.id;
+    inv('mcp_session_ui', { cardId }).then(status => {
+      if (provider.get(cardId) !== s || state.sessionId !== cardId || !status.managed) return;
+      mcp.dataset.human = String(status.humanControl === true);
+      const action = t(status.humanControl ? 'mcp.return' : 'mcp.takeover');
+      const task = status.jobState || t('mcp.noJob');
+      mcp.textContent = t('mcp.sessionStatus', { client: status.clientName || 'MCP', task, action });
+      mcp.title = [t(status.activeJob ? 'mcp.activeJob' : 'mcp.idle'), status.recentError || ''].filter(Boolean).join(' · ');
+    }).catch(() => {});
+  }
 }
 
 /* DOM wiring, run once at boot (app.js) so the module can be imported
@@ -1018,6 +1036,18 @@ export function initLayout() {
   $('split-right').onclick = e => { e.stopPropagation(); showSplitPicker('row'); };
 
   $('split-down').onclick = e => { e.stopPropagation(); showSplitPicker('col'); };
+
+  $('mcp-control-btn').onclick = async e => {
+    e.stopPropagation();
+    const cardId = state.sessionId;
+    if (!cardId) return;
+    const human = $('mcp-control-btn').dataset.human === 'true';
+    if (!human && !(await confirmDialog(t('mcp.takeoverConfirm')))) return;
+    try {
+      await inv(human ? 'mcp_return_control' : 'mcp_takeover', { sessionId: cardId });
+      renderSessionView();
+    } catch (_) { toast(t('mcp.actionFailed')); }
+  };
 
   registerShortcutAction('splitRight', () => showSplitPicker('row'));
 

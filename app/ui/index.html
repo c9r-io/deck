@@ -158,6 +158,7 @@
         <span class="sess-path" id="sess-path"></span>
         <div class="sess-spacer"></div>
         <span class="mem-chip" id="sess-mem" title="Memory of the whole session process tree: shell + agent + spawned children" data-i18n-title="session.memory"></span>
+        <button class="btn" id="mcp-control-btn" type="button" hidden></button>
         <button class="btn icon-btn" id="split-right" title="Split right (⌘D)">◧</button>
         <button class="btn icon-btn" id="split-down" title="Split down (⌘⇧D)">⬓</button>
         <button class="btn icon-btn voice-btn" id="voice-btn" type="button" aria-pressed="false" data-phase="idle" data-i18n-title="voice.phase.idle" data-i18n-aria-label="voice.phase.idle"><svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="7" y="2" width="6" height="10" rx="3"/><path d="M4 9v1a6 6 0 0 0 12 0V9M10 16v3M7 19h6"/></svg><span id="voice-time" class="voice-time" hidden></span></button>
@@ -426,6 +427,12 @@
             <div class="set-actions"><button class="btn" id="set-connector-pair" data-i18n="connector.pair">Pair a device…</button><button class="btn" id="set-connector-reset" data-i18n="connector.reset">Reset and re-pair…</button></div>
             <div id="set-connector-pairing" hidden><img id="set-connector-qr" alt=""><div class="set-hint" id="set-connector-expiry"></div></div>
             <div id="set-connector-devices"></div>
+          </div>
+          <div class="set-group">
+            <div class="set-row"><label data-i18n="mcp.title">MCP terminal control</label><span id="set-mcp-status" style="color:var(--muted)"></span></div>
+            <div class="set-hint" data-i18n="mcp.hint">Off by default. An authorized MCP client can execute code with your account permissions and receive terminal output. This trusted-host mode is not an OS sandbox.</div>
+            <div class="set-actions"><button class="btn" id="set-mcp-toggle" data-i18n="mcp.enable">Enable</button><button class="btn" id="set-mcp-add" data-i18n="mcp.add">Authorize this project…</button></div>
+            <div id="set-mcp-clients"></div>
           </div>
         </section>
         <section class="set-panel" id="set-panel-data" aria-labelledby="set-heading-data" hidden>

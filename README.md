@@ -1,5 +1,12 @@
 # deck
 
+Deck includes an opt-in, trusted-host MCP terminal control MVP for creating
+visible managed shell cards and executing bounded, tracked jobs from ChatGPT or
+another MCP client. See [docs/mcp.md](docs/mcp.md), the
+[architecture ADR](docs/mcp-architecture.md), and the
+[validation record](docs/mcp-validation.md). It is disabled by default and is
+not an operating-system sandbox.
+
 **A native macOS app for managing multiple terminal agent sessions.** Run
 Claude Code, Codex, or other CLIs in persistent terminals, organize them on a
 board, and find the sessions that need your attention.

@@ -231,10 +231,12 @@ export const provider = {
         beforePersist: async card => {
           if (opts.validateHandle) await inv('connector_validate', { handle: opts.validateHandle });
           effectAttempted = true;
-          const result = await inv('start_session', {
-          name: card.session, dir: card.dir, cmd: card.cmd,
-          restoreShell: !!ctx.settings.sessionRestore,
-          });
+          const result = opts.start
+            ? await opts.start(card)
+            : await inv('start_session', {
+              name: card.session, dir: card.dir, cmd: card.cmd,
+              restoreShell: !!ctx.settings.sessionRestore,
+            });
           if (opts.requireCreated && !result.created) {
             const error = new Error('deterministic session already exists without its card');
             error.stage = 'orphan';
@@ -300,6 +302,9 @@ export const provider = {
       }
       if (closedCard) {
         noteRunEnded(closedCard);
+        if (closedCard.origin?.source === 'mcp') {
+          await inv('mcp_card_closed', { cardId: closedCard.id }).catch(() => {});
+        }
         emit('list', closedCard);
         return { ok: true, applied: true };
       }

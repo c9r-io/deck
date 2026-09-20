@@ -44,6 +44,14 @@ fi
 if [ -f binaries/deck-status-helper-aarch64-apple-darwin ]; then
   cp binaries/deck-status-helper-aarch64-apple-darwin "$APP/Contents/MacOS/deck-status-helper"
 fi
+# MCP adapter and managed terminal runner, built by build.rs into binaries/.
+# They remain ordinary signed bundle sidecars and are never installed globally.
+if [ -f binaries/deck-mcp-aarch64-apple-darwin ]; then
+  cp binaries/deck-mcp-aarch64-apple-darwin "$APP/Contents/MacOS/deck-mcp"
+fi
+if [ -f binaries/deck-mcp-runner-aarch64-apple-darwin ]; then
+  cp binaries/deck-mcp-runner-aarch64-apple-darwin "$APP/Contents/MacOS/deck-mcp-runner"
+fi
 VER=$(python3 -c "import json;print(json.load(open('tauri.conf.json'))['version'])")
 cat > "$APP/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>

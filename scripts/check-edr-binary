@@ -5,17 +5,39 @@ app_path=${1:?usage: scripts/check-edr-binary /path/to/deck.app}
 info="$app_path/Contents/Info.plist"
 test -f "$info"
 executable=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$info")
-targets=("$app_path/Contents/MacOS/$executable" "$app_path/Contents/MacOS/deck-status-helper")
+targets=(
+  "$app_path/Contents/MacOS/$executable"
+  "$app_path/Contents/MacOS/deck-status-helper"
+  "$app_path/Contents/MacOS/deck-mcp"
+  "$app_path/Contents/MacOS/deck-mcp-runner"
+)
 for target in "${targets[@]}"; do
   test -f "$target"
   for forbidden in \
     launchctl LaunchAgents LaunchDaemons SMAppService osascript \
-    /bin/sh /bin/bash /bin/zsh --deck-shell-bootstrap
+    /bin/sh /bin/bash --deck-shell-bootstrap
   do
-    if strings -a "$target" | grep -Fq -- "$forbidden"; then
+    if strings -a "$target" | grep -F -- "$forbidden" >/dev/null; then
       echo "$target contains forbidden EDR token: $forbidden" >&2
       exit 1
     fi
   done
 done
+# Only the runner may carry a shell executable path. The app reports the
+# capability without embedding it as an executable token, and the adapter is
+# protocol-only.
+for target in \
+  "$app_path/Contents/MacOS/$executable" \
+  "$app_path/Contents/MacOS/deck-status-helper" \
+  "$app_path/Contents/MacOS/deck-mcp"
+do
+  if strings -a "$target" | grep -F -- /bin/zsh >/dev/null; then
+    echo "$target contains forbidden EDR token: /bin/zsh" >&2
+    exit 1
+  fi
+done
+# The MCP runner has one reviewed shell boundary: a fresh fixed zsh child for
+# each visible job. Source-level EDR tests enforce that it is the only process
+# spawn; the bundle scan ensures the expected absolute executable is present.
+strings -a "$app_path/Contents/MacOS/deck-mcp-runner" | grep -F -- /bin/zsh >/dev/null
 echo "EDR binary vocabulary clean: ${targets[*]}"

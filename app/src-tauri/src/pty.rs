@@ -4,6 +4,8 @@
 //! cannot invalidate a newly attached pane or its read receipt.
 //! Reader threads carry a generation counter so a stale thread never removes
 //! a newer attachment.
+//! Every webview write first passes the MCP control fence: MCP-owned managed
+//! panes refuse keyboard/paste bytes until the local user takes control.
 //!
 //! # Contract
 //! Flow control is END-TO-END. Every event carries the attachment's
@@ -704,6 +706,7 @@ pub(crate) fn pty_write(
     name: String,
     data_b64: String,
 ) -> Result<(), DeckError> {
+    crate::mcp::guard_terminal_input(&name)?;
     let _activity = crate::session_runtime::activity_guard()?;
     let bytes = B64
         .decode(data_b64)

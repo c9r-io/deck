@@ -1,37 +1,57 @@
-/// Build the status-helper sidecar (a standalone zero-dependency crate) and
-/// place it where tauri's externalBin expects it. tauri_build validates that
-/// path on EVERY cargo build — not just at bundle time — so the helper must
-/// exist before `tauri_build::build()` runs. Always release profile: the
-/// artifact ships inside every bundle, debug ones included. A separate
-/// target dir avoids the cargo-in-cargo file lock.
-fn build_status_helper() {
-    println!("cargo:rerun-if-changed=status-helper/src");
-    println!("cargo:rerun-if-changed=status-helper/Cargo.toml");
+/// Build signed bundle sidecars before tauri validates `externalBin`.
+/// A separate target directory avoids the cargo-in-cargo workspace lock.
+/// None is installed under the user's home directory: status-helper is used
+/// by explicit agent hooks, deck-mcp is a user-launched STDIO adapter, and
+/// deck-mcp-runner exists only as an MCP-managed tmux pane process.
+fn build_sidecars() {
     let triple = std::env::var("TARGET").expect("cargo sets TARGET");
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
-    let status = std::process::Command::new(cargo)
-        .args([
-            "build",
-            "--release",
-            "--locked",
-            "--manifest-path",
+    for (package, manifest, binary, target_dir) in [
+        (
+            "status-helper",
             "status-helper/Cargo.toml",
-            "--target-dir",
+            "deck-status-helper",
             "status-helper/target",
-            "--target",
-            &triple,
-        ])
-        // a coverage/lint wrapper around the OUTER build must not leak into
-        // the sidecar build (llvm-cov's flags would corrupt the artifact)
-        .env_remove("RUSTFLAGS")
-        .env_remove("CARGO_ENCODED_RUSTFLAGS")
-        .env_remove("RUSTC_WORKSPACE_WRAPPER")
-        .status()
-        .expect("failed to run cargo for status-helper");
-    assert!(status.success(), "status-helper build failed");
-    let built = format!("status-helper/target/{triple}/release/deck-status-helper");
-    let dest = format!("binaries/deck-status-helper-{triple}");
-    std::fs::copy(&built, &dest).expect("failed to place status-helper sidecar");
+        ),
+        (
+            "mcp-runner",
+            "mcp-runner/Cargo.toml",
+            "deck-mcp-runner",
+            "mcp-runner/target",
+        ),
+        (
+            "mcp-adapter",
+            "mcp-adapter/Cargo.toml",
+            "deck-mcp",
+            "mcp-adapter/target",
+        ),
+    ] {
+        println!("cargo:rerun-if-changed={package}/src");
+        println!("cargo:rerun-if-changed={manifest}");
+        let status = std::process::Command::new(&cargo)
+            .args([
+                "build",
+                "--release",
+                "--locked",
+                "--manifest-path",
+                manifest,
+                "--target-dir",
+                target_dir,
+                "--target",
+                &triple,
+            ])
+            // A coverage/lint wrapper around the OUTER build must not leak
+            // into the sidecar build.
+            .env_remove("RUSTFLAGS")
+            .env_remove("CARGO_ENCODED_RUSTFLAGS")
+            .env_remove("RUSTC_WORKSPACE_WRAPPER")
+            .status()
+            .unwrap_or_else(|_| panic!("failed to run cargo for {package}"));
+        assert!(status.success(), "{package} build failed");
+        let built = format!("{target_dir}/{triple}/release/{binary}");
+        let dest = format!("binaries/{binary}-{triple}");
+        std::fs::copy(&built, &dest).unwrap_or_else(|_| panic!("failed to place {binary} sidecar"));
+    }
 }
 
 /// Stage the no-build frontend for `tauri::generate_context!`: a fresh copy
@@ -148,7 +168,7 @@ fn build_speech_bridge() {
 
 fn main() {
     build_speech_bridge();
-    build_status_helper();
+    build_sidecars();
     stage_frontend();
     println!("cargo:rerun-if-env-changed=DECK_BUILD_COMMIT");
     let supplied = std::env::var("DECK_BUILD_COMMIT").ok();

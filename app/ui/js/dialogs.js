@@ -2,7 +2,7 @@
 // Voice preferences commit through the settings writer before notifying the
 // recorder; edits never request microphone access or download language assets.
 // Part of deck's no-build frontend: native ES modules, no bundler.
-import { $, ctx, genId, inv, uev } from './state.js';
+import { $, ctx, genId, inv, state, store, uev } from './state.js';
 import { inlineRenameValue, isComposingKeyEvent } from './pure.js';
 import { applyTranslations, formatNumber, getLocale, onLocaleChange, setLocale, t, translateNotice } from './i18n.js';
 import {
@@ -491,6 +491,7 @@ export async function openSettings() {
   renderVoicePreferences();
   renderInboundSettings();
   renderConnectorSettings();
+  renderMcpSettings();
   $('set-ver').textContent = 'deck ' + ($('app-ver').textContent || 'v?');
   $('set-upd-status').textContent = '';
   $('settings-modal').style.display = 'flex';
@@ -723,6 +724,42 @@ export async function renderConnectorSettings() {
   }
 }
 
+export async function renderMcpSettings() {
+  let status = null;
+  try { status = await inv('mcp_status'); } catch (_) {}
+  $('set-mcp-status').textContent = t(status?.enabled ? 'mcp.on' : 'mcp.off');
+  $('set-mcp-toggle').textContent = t(status?.enabled ? 'mcp.disable' : 'mcp.enable');
+  $('set-mcp-toggle').dataset.enabled = String(status?.enabled === true);
+  $('set-mcp-add').disabled = !status?.enabled;
+  const clients = $('set-mcp-clients'); clients.replaceChildren();
+  for (const client of status?.clients || []) {
+    const row = document.createElement('div'); row.className = 'set-row';
+    const label = document.createElement('span');
+    label.textContent = client.name;
+    const scope = document.createElement('span'); scope.style.color = 'var(--muted)';
+    scope.textContent = t('mcp.projectCount', { count: formatNumber(client.projects?.length || 0) });
+    row.append(label, scope);
+    if (!client.revoked) {
+      const copy = document.createElement('button'); copy.className = 'btn'; copy.textContent = t('mcp.copyConfig');
+      copy.onclick = async () => {
+        try {
+          const command = await inv('mcp_adapter_path');
+          const config = `[mcp_servers.deck]\ncommand = ${JSON.stringify(command)}\nargs = ["--client-id", ${JSON.stringify(client.id)}]\ndefault_tools_approval_mode = "writes"\n`;
+          await inv('write_clipboard', { text: config }); toast(t('mcp.configCopied'));
+        } catch (_) { toast(t('mcp.actionFailed')); }
+      };
+      const revoke = document.createElement('button'); revoke.className = 'btn'; revoke.textContent = t('mcp.revoke');
+      revoke.onclick = async () => {
+        if (!await confirmDangerDialog(t('mcp.revokeConfirm', { name: client.name }), t('mcp.revoke'))) return;
+        try { await inv('mcp_client_revoke', { clientId: client.id }); await renderMcpSettings(); }
+        catch (_) { toast(t('mcp.actionFailed')); }
+      };
+      row.append(copy, revoke);
+    }
+    clients.appendChild(row);
+  }
+}
+
 /* One durable write for every rule/source change; a failed save leaves the
    previous settings visible instead of a rule the poller never learned. */
 export async function persistInbound(inbound) {
@@ -839,6 +876,25 @@ export function initDialogs() {
       else await inv('connector_enable', { address: $('set-connector-address').value, port: Number($('set-connector-port').value) });
     } catch (_) { toast(t('connector.actionFailed')); }
     await renderConnectorSettings();
+  };
+  $('set-mcp-toggle').onclick = async () => {
+    const enabled = $('set-mcp-toggle').dataset.enabled === 'true';
+    if (!enabled && !(await confirmDangerDialog(t('mcp.enableConfirm'), t('mcp.enable')))) return;
+    try { await inv(enabled ? 'mcp_disable' : 'mcp_enable'); }
+    catch (_) { toast(t('mcp.actionFailed')); }
+    await renderMcpSettings();
+  };
+  $('set-mcp-add').onclick = async () => {
+    const project = store.projects.find(value => value.id === state.projectId);
+    if (!project) { toast(t('mcp.noProject')); return; }
+    const name = await promptDialog(t('mcp.clientName'), 'ChatGPT');
+    if (!name) return;
+    const root = project.dir || ctx.HOME;
+    if (!(await confirmDangerDialog(t('mcp.authorizeConfirm', { name: project.name, root }), t('mcp.add')))) return;
+    try {
+      await inv('mcp_client_add', { name, projects: [{ projectId: project.id, roots: [root] }] });
+      await renderMcpSettings();
+    } catch (_) { toast(t('mcp.actionFailed')); }
   };
   $('set-connector-pair').onclick = async () => {
     try {

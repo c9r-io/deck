@@ -14,6 +14,7 @@ import { initScheduler, refreshQueue } from './scheduler.js';
 import { initTemplates } from './templates.js';
 import { drainChannel, drainInbound, initInbound } from './inbound.js';
 import { drainConnector, initConnector } from './connector.js';
+import { initMcp } from './mcp.js';
 import { initAutomation } from './automation.js';
 import { initDropdowns } from './dropdown.js';
 import { initAttention } from './attention.js';
@@ -290,6 +291,7 @@ function initModules() {
   initTemplates({ provider });
   initInbound();
   initConnector();
+  initMcp();
   initAutomation({ activeProject, newSessionSummary, openProjectDefaults, projectDefaultsSummary, provider, openSession, newDefaultSession });
   wireChrome();
 }

@@ -2,6 +2,8 @@ target/
 node_modules/
 # built by app/src-tauri/build.rs from app/status-helper (committed source)
 app/src-tauri/binaries/deck-status-helper-*
+app/src-tauri/binaries/deck-mcp-*
+app/src-tauri/binaries/deck-mcp-runner-*
 .DS_Store
 .playwright-cli/
 

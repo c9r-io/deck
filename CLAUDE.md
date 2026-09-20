@@ -91,6 +91,7 @@ loaded by `ui/index.html`; xterm.js vendored in `app/ui/vendor/`. Backend
 | tmux sidecar, socket, server conf | `tmux.rs` |
 | Server lifecycle: protocol metadata, reuse/replace, restart transaction, channel sockets | `tmux_lifecycle.rs`, `restart.rs` (exit/restart policy), `session_runtime.rs` (shared guards and deadlines) (+ `docs/tmux-server-lifecycle.md`) |
 | PTY attach bridge with end-to-end flow control | `pty.rs` |
+| Opt-in MCP terminal control: local grants/ledger/fencing, STDIO adapter, visible pane runner, Board bridge | `mcp.rs`, `mcp-adapter/`, `mcp-runner/`, `ui/js/mcp.js` (+ `docs/mcp.md`, `docs/mcp-architecture.md`) |
 | Native on-device voice input typed straight into the pane (one mic, one bound pane, no draft), shared literal paste | `native/SpeechBridge.swift`, `voice.rs`, `prompt_delivery.rs`, `ui/js/voice.js`, `voice-model.js`, `voice-target.js`, `voice-settings.js` (+ `docs/voice-input.md`) |
 | Terminal scroll + token-bound selection lease commands | `terminal.rs`, `terminal_selection.rs`, `terminal_scroll.rs` |
 | Pointer/selection authority, overlay, wheel routing (frontend) | `ui/js/selection.js`, `layout.js` |
@@ -188,8 +189,10 @@ Status semantics (card colour) are documented on `effectiveCardStatus` in
 
 ## Invariants
 
-- Sessions are started with a plain shell + `send-keys` of the command, NOT by exec'ing
-  the command, so the session survives agent exit and scrollback stays inspectable.
+- Ordinary sessions are started with a plain shell + `send-keys` of the command,
+  NOT by exec'ing the command, so the session survives agent exit and scrollback
+  stays inspectable. The explicit exception is an MCP-managed session, whose
+  pane executable is the signed `deck-mcp-runner`, never `deck-app`.
 - **A launch command is sent once.** The durable card flag `launched` records
   it; reopening a stopped card starts the shell only (`pure.js` `startCommand`),
   never the program. Boards without the field read as launched. The scheduler's
@@ -203,5 +206,12 @@ Status semantics (card colour) are documented on `effectiveCardStatus` in
   starts tmux inside the Board transaction and kills it if the write fails; a
   directory that no longer exists (`NotDir`) asks the user (cancel / edit the
   project defaults / a shell in `$HOME`) and never leaves a stopped card behind.
+- **MCP shell authority is separate from Phone Connector.** MCP uses its own
+  disabled-by-default 0600 state/socket, client/project grants, operation and
+  job ids, generations, leases, and control epochs. It never accepts a Phone
+  token or operation kind. Board intents still go through
+  `provider.createStarted` / `provider.close`; jobs run in the visible tmux
+  pane's signed runner, and scripts never enter argv, logs, or a temporary
+  file. See `mcp.rs` and `docs/mcp-architecture.md`.
 - Use harmless card commands (e.g. `while true; do date; sleep 1; done`) when
   testing — a card whose command is `claude` will really launch Claude Code.

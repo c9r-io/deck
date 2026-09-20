@@ -6,6 +6,8 @@
 //! variables or temporary files. Buffer loading and guarded paste share a batch.
 //! Every entry, including injected transports, holds shared session activity
 //! through cleanup and Enter. Transport injection cannot bypass restart exclusion.
+//! MCP-managed panes also pass the shared MCP control fence, so scheduler,
+//! voice, Connector-derived, and other literal delivery cannot bypass takeover.
 use crate::context::{self, PaneIdentity, RawProbe};
 use crate::error::{DeckError, ErrorKind};
 use crate::tmux::{tmux_owned, tmux_with_stdin};
@@ -57,6 +59,7 @@ impl Transport for TmuxTransport {
 }
 
 pub(crate) fn deliver(request: LiteralRequest<'_>) -> Result<LiteralOutcome, DeckError> {
+    crate::mcp::guard_terminal_input(request.session)?;
     deliver_with(request, &TmuxTransport)
 }
 
