@@ -179,7 +179,7 @@ impl Default for DiskDoc {
 }
 
 struct Runtime {
-    app: AppHandle,
+    app: Option<AppHandle>,
     path: PathBuf,
     socket: PathBuf,
     doc: Mutex<Result<DiskDoc, DeckError>>,
@@ -187,6 +187,12 @@ struct Runtime {
     /// Fences every terminal/Board side-effect dispatch against control
     /// transfer, revoke, disable, and close admission.
     delivery: Mutex<()>,
+}
+
+fn emit_changed(runtime: &Runtime) {
+    if let Some(app) = &runtime.app {
+        let _ = app.emit("mcp-changed", ());
+    }
 }
 
 static RUNTIME: OnceLock<Arc<Runtime>> = OnceLock::new();
@@ -917,7 +923,7 @@ fn session_create(runtime: &Runtime, client_id: &str, arguments: Value) -> Resul
             Ok(operation)
         })
         .map_err(map_error)?;
-    let _ = runtime.app.emit("mcp-changed", ());
+    emit_changed(runtime);
     Ok(operation_view(&operation))
 }
 
@@ -1381,7 +1387,10 @@ fn session_close(runtime: &Runtime, client_id: &str, arguments: Value) -> Result
         }
         let session = authorized_session(doc, client_id, &args.session_id)?.clone();
         check_control(&session, client_id, &args.expected_generation, args.control_epoch)?;
-        let active = send_runner(&session, &json!({"kind":"ping"})).ok().and_then(|value| value.get("job").cloned()).is_some();
+        let active = send_runner(&session, &json!({"kind":"ping"}))
+            .ok()
+            .and_then(|value| value.get("job").cloned())
+            .is_some_and(|job| !job.is_null());
         if active && !args.confirm_running { return Err(DeckError::new(ErrorKind::Locked, "session has a running job")); }
         let managed = doc.sessions.iter_mut().find(|item| item.session_id == session.session_id).ok_or_else(|| DeckError::new(ErrorKind::Missing, "session not found"))?;
         managed.closing = true;
@@ -1389,7 +1398,7 @@ fn session_close(runtime: &Runtime, client_id: &str, arguments: Value) -> Result
         doc.operations.push(operation.clone());
         Ok(operation)
     }).map_err(map_error)?;
-    let _ = runtime.app.emit("mcp-changed", ());
+    emit_changed(runtime);
     Ok(operation_view(&operation))
 }
 
@@ -1497,7 +1506,7 @@ pub(crate) fn spawn(app: AppHandle) {
     let path = dir.join("mcp.json");
     let socket = dir.join("mcp-control.sock");
     let runtime = Arc::new(Runtime {
-        app,
+        app: Some(app),
         path: path.clone(),
         socket: socket.clone(),
         doc: Mutex::new(load(&path)),
@@ -2223,6 +2232,135 @@ pub(crate) fn guard_server_restart() -> Result<(), DeckError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    struct FakeRunner {
+        socket: PathBuf,
+        stop: Arc<AtomicBool>,
+        thread: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl FakeRunner {
+        fn start(root: &Path, generation: &str) -> Self {
+            let socket = root.join("runner.sock");
+            let listener = UnixListener::bind(&socket).unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let stop = Arc::new(AtomicBool::new(false));
+            let thread_stop = stop.clone();
+            let generation = generation.to_owned();
+            let thread = std::thread::spawn(move || {
+                while !thread_stop.load(Ordering::SeqCst) {
+                    let Ok((mut stream, _)) = listener.accept() else {
+                        std::thread::sleep(Duration::from_millis(2));
+                        continue;
+                    };
+                    let mut line = String::new();
+                    if BufReader::new(stream.try_clone().unwrap())
+                        .read_line(&mut line)
+                        .is_err()
+                    {
+                        continue;
+                    }
+                    let request: Value = serde_json::from_str(&line).unwrap_or(Value::Null);
+                    let kind = request.get("kind").and_then(Value::as_str).unwrap_or("");
+                    let job_id = request
+                        .get("job_id")
+                        .and_then(Value::as_str)
+                        .unwrap_or("job_a");
+                    let response = match kind {
+                        "ping" => json!({"ok":true,"generation":generation,"job":null}),
+                        "read" => json!({
+                            "ok":true,
+                            "generation":generation,
+                            "job":{"jobId":job_id,"state":"exited","exitCode":0,
+                                "terminationSignal":null,"interruptRequested":false,
+                                "timeoutRequested":false,"startedAt":1,"endedAt":2},
+                            "output":"done\n","nextCursor":5,"gap":false,"droppedBytes":0
+                        }),
+                        "exec" => json!({
+                            "ok":true,
+                            "generation":generation,
+                            "job":{"jobId":job_id,"state":"exited","exitCode":0}
+                        }),
+                        "input" | "interrupt" | "control" => {
+                            json!({"ok":true,"generation":generation})
+                        }
+                        _ => json!({"ok":false,"generation":generation,"error":"invalid-request"}),
+                    };
+                    serde_json::to_writer(&mut stream, &response).unwrap();
+                    stream.write_all(b"\n").unwrap();
+                }
+            });
+            Self {
+                socket,
+                stop,
+                thread: Some(thread),
+            }
+        }
+    }
+
+    impl Drop for FakeRunner {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::SeqCst);
+            let _ = UnixStream::connect(&self.socket);
+            if let Some(thread) = self.thread.take() {
+                thread.join().unwrap();
+            }
+            let _ = std::fs::remove_file(&self.socket);
+        }
+    }
+
+    fn test_root(tag: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "deck-mcp-{tag}-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    fn client_record(root: &Path) -> Client {
+        Client {
+            id: "client_a".into(),
+            name: "Client A".into(),
+            revoked_at: None,
+            allow_create: true,
+            projects: vec![ProjectScope {
+                project_id: "P1".into(),
+                roots: vec![root.display().to_string()],
+            }],
+        }
+    }
+
+    fn session_record(root: &Path, runner: &FakeRunner) -> ManagedSession {
+        ManagedSession {
+            session_id: "mcp_a".into(),
+            card_id: "M1".into(),
+            tmux_session: "deck-mcp-test".into(),
+            project_id: "P1".into(),
+            title: "MCP shell".into(),
+            cwd: root.display().to_string(),
+            generation: "g_a".into(),
+            runner_socket: runner.socket.display().to_string(),
+            owner_client_id: "client_a".into(),
+            control_owner: Some("client_a".into()),
+            control_epoch: 1,
+            lease_expires_at: Some(now_ms() + 60_000),
+            human_lock: false,
+            closing: false,
+            created_at: now_ms(),
+        }
+    }
+
+    fn request(tool: &str, arguments: Value) -> WireRequest {
+        WireRequest {
+            version: VERSION,
+            client_id: "client_a".into(),
+            tool: tool.into(),
+            arguments,
+        }
+    }
 
     fn operation(kind: &str, state: &str) -> Operation {
         Operation {
@@ -2390,5 +2528,373 @@ mod tests {
         assert_eq!(error.kind(), ErrorKind::Recovery);
         std::fs::remove_file(path).unwrap();
         std::fs::remove_dir(root).unwrap();
+    }
+
+    #[test]
+    fn command_surface_exercises_local_authorization_and_board_reconciliation() {
+        let root = test_root("commands");
+        let runner = FakeRunner::start(&root, "g_a");
+        let mut doc = DiskDoc::default();
+        doc.config.enabled = true;
+        doc.config.clients.push(client_record(&root));
+        doc.sessions.push(session_record(&root, &runner));
+        let path = root.join("mcp.json");
+        save(&path, &doc).unwrap();
+        let runtime = Arc::new(Runtime {
+            app: None,
+            path,
+            socket: root.join("control.sock"),
+            doc: Mutex::new(Ok(doc)),
+            io: Mutex::new(()),
+            delivery: Mutex::new(()),
+        });
+        assert!(RUNTIME.set(runtime.clone()).is_ok());
+
+        let status = mcp_status().unwrap();
+        assert!(status.enabled);
+        assert!(!status.socket_ready);
+        assert_eq!(status.clients.len(), 1);
+        assert!(mcp_adapter_path().is_err());
+        assert!(mcp_client_add("".into(), vec![]).is_err());
+        assert!(mcp_client_add(
+            "Bad scope".into(),
+            vec![ProjectScopeInput {
+                project_id: "bad id".into(),
+                roots: vec![root.display().to_string()],
+            }],
+        )
+        .is_err());
+        let added = mcp_client_add(
+            "Client B".into(),
+            vec![ProjectScopeInput {
+                project_id: "P2".into(),
+                roots: vec![root.display().to_string()],
+            }],
+        )
+        .unwrap();
+        assert_eq!(added.name, "Client B");
+
+        let unmanaged = mcp_session_ui("missing".into()).unwrap();
+        assert!(!unmanaged.managed);
+        let managed = mcp_session_ui("M1".into()).unwrap();
+        assert!(managed.managed);
+        assert!(!managed.human_control);
+        assert_eq!(managed.client_name.as_deref(), Some("Client A"));
+        assert!(guard_terminal_input("deck-mcp-test").is_err());
+        assert!(guard_server_restart().is_err());
+        assert!(runner_socket_matches(
+            runner.socket.to_str().unwrap(),
+            "g_a"
+        ));
+        assert!(!runner_socket_matches(
+            runner.socket.to_str().unwrap(),
+            "g_other"
+        ));
+
+        mcp_takeover("mcp_a".into()).unwrap();
+        assert!(guard_terminal_input("deck-mcp-test").is_ok());
+        mcp_return_control("M1".into()).unwrap();
+        assert!(guard_terminal_input("deck-mcp-test").is_err());
+
+        mcp_disable().unwrap();
+        assert!(!mcp_status().unwrap().enabled);
+        assert!(mcp_pending().unwrap().is_empty());
+        mcp_enable().unwrap();
+
+        let create = session_create(
+            &runtime,
+            "client_a",
+            json!({"request_id":"command_create","project_id":"P1","cwd":root.display().to_string()}),
+        )
+        .unwrap();
+        let create_id = create["operationId"].as_str().unwrap().to_owned();
+        assert_eq!(mcp_pending().unwrap().len(), 1);
+        let claimed = mcp_claim(create_id.clone()).unwrap();
+        assert_eq!(claimed.kind, "session-create");
+        mcp_validate(create_id.clone()).unwrap();
+        assert!(mcp_complete(create_id.clone(), "invalid".into(), None, None).is_err());
+        mcp_complete(
+            create_id,
+            "committed".into(),
+            None,
+            Some("deck-created".into()),
+        )
+        .unwrap();
+
+        let created_session = runtime
+            .read(|doc| {
+                doc.sessions
+                    .iter()
+                    .find(|session| session.tmux_session == "deck-created")
+                    .cloned()
+                    .unwrap()
+            })
+            .unwrap();
+        let close = session_close(
+            &runtime,
+            "client_a",
+            json!({
+                "request_id":"command_close",
+                "session_id":created_session.session_id,
+                "expected_generation":created_session.generation,
+                "control_epoch":1,
+                "confirm_running":false
+            }),
+        )
+        .unwrap();
+        let close_id = close["operationId"].as_str().unwrap().to_owned();
+        mcp_claim(close_id.clone()).unwrap();
+        mcp_validate(close_id.clone()).unwrap();
+        mcp_complete(close_id, "committed".into(), None, None).unwrap();
+
+        assert!(mcp_claim("missing".into()).is_err());
+        assert!(mcp_validate("missing".into()).is_err());
+        assert!(mcp_start_session(
+            "missing".into(),
+            "deck-valid".into(),
+            root.display().to_string()
+        )
+        .is_err());
+        mcp_client_revoke(added.id).unwrap();
+        mcp_card_closed("M1".into()).unwrap();
+        assert!(guard_server_restart().is_ok());
+        assert!(guard_terminal_input("ordinary-session").is_ok());
+
+        drop(runner);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn production_routes_cover_authorized_job_and_control_lifecycle() {
+        let root = test_root("routes");
+        let runner = FakeRunner::start(&root, "g_a");
+        let mut doc = DiskDoc::default();
+        doc.config.enabled = true;
+        doc.config.clients.push(client_record(&root));
+        doc.sessions.push(session_record(&root, &runner));
+        let path = root.join("mcp.json");
+        save(&path, &doc).unwrap();
+        let runtime = Arc::new(Runtime {
+            app: None,
+            path,
+            socket: root.join("control.sock"),
+            doc: Mutex::new(Ok(doc)),
+            io: Mutex::new(()),
+            delivery: Mutex::new(()),
+        });
+
+        assert_eq!(
+            route(
+                &runtime,
+                WireRequest {
+                    version: 99,
+                    client_id: "client_a".into(),
+                    tool: "deck_capabilities".into(),
+                    arguments: json!({}),
+                }
+            )["error"]["code"],
+            "AUTH_REQUIRED"
+        );
+        assert_eq!(
+            route(&runtime, request("unknown", json!({})))["error"]["code"],
+            "UNSUPPORTED"
+        );
+        assert!(route(&runtime, request("deck_capabilities", json!({})))["ok"] == true);
+        assert_eq!(
+            route(&runtime, request("deck_sessions_list", json!({})))["sessions"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            route(
+                &runtime,
+                request("deck_session_inspect", json!({"session_id":"mcp_a"}))
+            )["sessionGeneration"],
+            "g_a"
+        );
+
+        let control = |request_id: &str, action: &str, epoch: Option<u64>| {
+            let mut value = json!({
+                "request_id":request_id,
+                "session_id":"mcp_a",
+                "expected_generation":"g_a",
+                "action":action,
+                "lease_ms":2_000
+            });
+            if let Some(epoch) = epoch {
+                value["control_epoch"] = json!(epoch);
+            }
+            route(&runtime, request("deck_session_control", value))
+        };
+        assert_eq!(
+            control("control_request", "request", None)["state"],
+            "committed"
+        );
+        assert_eq!(
+            control("control_renew", "renew", Some(2))["state"],
+            "committed"
+        );
+        assert_eq!(
+            control("control_release", "release", Some(2))["state"],
+            "committed"
+        );
+        assert_eq!(
+            control("control_again", "request", None)["state"],
+            "committed"
+        );
+
+        let exec_arguments = json!({
+            "request_id":"exec_a",
+            "session_id":"mcp_a",
+            "expected_generation":"g_a",
+            "control_epoch":4,
+            "script":"printf 'done\\n'",
+            "cwd":root.display().to_string(),
+            "wait_ms":10,
+            "execution_timeout_ms":1_000
+        });
+        let executed = route(&runtime, request("deck_exec", exec_arguments.clone()));
+        assert_eq!(executed["state"], "exited");
+        let job_id = executed["jobId"].as_str().unwrap().to_owned();
+        assert_eq!(
+            route(&runtime, request("deck_exec", exec_arguments))["jobId"],
+            job_id
+        );
+
+        let read = route(
+            &runtime,
+            request(
+                "deck_job_read",
+                json!({"job_id":job_id,"max_bytes":1024,"wait_ms":0}),
+            ),
+        );
+        assert_eq!(read["exitCode"], 0);
+        assert_eq!(read["output"], "done\n");
+        assert_eq!(
+            route(
+                &runtime,
+                request(
+                    "deck_job_input",
+                    json!({"request_id":"input_a","job_id":job_id,"session_generation":"g_a","control_epoch":4,"input":"yes\n"}),
+                ),
+            )["state"],
+            "committed"
+        );
+        assert_eq!(
+            route(
+                &runtime,
+                request(
+                    "deck_job_interrupt",
+                    json!({"request_id":"interrupt_a","job_id":job_id,"session_generation":"g_a","control_epoch":4}),
+                ),
+            )["state"],
+            "committed"
+        );
+
+        let create = route(
+            &runtime,
+            request(
+                "deck_session_create",
+                json!({"request_id":"create_a","project_id":"P1","cwd":root.display().to_string(),"title":"Visible shell"}),
+            ),
+        );
+        assert_eq!(create["state"], "accepted");
+        let operation_id = create["operationId"].as_str().unwrap();
+        assert_eq!(
+            route(
+                &runtime,
+                request("deck_operation_get", json!({"operation_id":operation_id}),),
+            )["kind"],
+            "session-create"
+        );
+
+        let close = route(
+            &runtime,
+            request(
+                "deck_session_close",
+                json!({"request_id":"close_a","session_id":"mcp_a","expected_generation":"g_a","control_epoch":4,"confirm_running":false}),
+            ),
+        );
+        assert_eq!(close["state"], "accepted", "{close}");
+
+        assert_eq!(
+            route(&runtime, request("deck_exec", json!({})))["error"]["code"],
+            "INVALID_ARGUMENTS"
+        );
+        assert_eq!(
+            route(
+                &runtime,
+                request(
+                    "deck_job_read",
+                    json!({"job_id":job_id,"cursor":"wrong:cursor:1"}),
+                ),
+            )["error"]["code"],
+            "OUTPUT_CURSOR_INVALID"
+        );
+
+        drop(runtime);
+        drop(runner);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn validation_and_error_mapping_cover_rejected_boundaries() {
+        assert!(!valid_id(""));
+        assert!(!valid_id("bad id"));
+        assert!(valid_id("good_ID-1"));
+        assert!(!valid_title("\n"));
+        assert!(!valid_title(&"x".repeat(121)));
+        assert_eq!(sha(b"same"), sha(b"same"));
+        assert!(random_id("test_").unwrap().starts_with("test_"));
+        assert!(parse::<Empty>(json!({"extra":true})).is_err());
+        assert!(runner_error(&json!({"error":"session-busy"})).is_some());
+        assert!(runner_error(&json!({"error":"control-revoked"})).is_some());
+        assert!(runner_error(&json!({"error":"job-not-found"})).is_some());
+        assert!(runner_error(&json!({"error":"job-not-running"})).is_some());
+        assert!(runner_error(&json!({"error":"request-id-conflict"})).is_some());
+        assert!(runner_error(&json!({"error":"capacity-exceeded"})).is_some());
+        assert!(runner_error(&json!({"error":"invalid-cwd"})).is_some());
+        assert!(runner_error(&json!({"error":"other"})).is_none());
+
+        for (kind, code) in [
+            (ErrorKind::Perm, "PERMISSION_DENIED"),
+            (ErrorKind::Missing, "SESSION_NOT_FOUND"),
+            (ErrorKind::NotDir, "CONTEXT_CHANGED"),
+            (ErrorKind::ContextChanged, "CONTEXT_CHANGED"),
+            (ErrorKind::ControlRevoked, "CONTROL_REVOKED"),
+            (ErrorKind::RequestConflict, "REQUEST_ID_CONFLICT"),
+            (ErrorKind::DiskFull, "CAPACITY_EXCEEDED"),
+            (ErrorKind::Locked, "SESSION_BUSY"),
+            (ErrorKind::Other, "INTERNAL_ERROR"),
+        ] {
+            assert_eq!(
+                map_error(DeckError::new(kind, "test"))["error"]["code"],
+                code
+            );
+        }
+
+        let root = test_root("validation");
+        let missing = root.join("missing");
+        assert!(canonical_scope(missing.to_str().unwrap(), &[]).is_err());
+        assert!(canonical_scope(root.to_str().unwrap(), &["/elsewhere".into()]).is_err());
+        assert_eq!(load(&root.join("absent.json")).unwrap().version, VERSION);
+
+        let mut invalid = DiskDoc {
+            version: VERSION + 1,
+            ..DiskDoc::default()
+        };
+        assert!(validate_doc(&invalid).is_err());
+        invalid.version = VERSION;
+        invalid.config.clients.push(Client {
+            id: "bad id".into(),
+            name: "Bad".into(),
+            revoked_at: None,
+            allow_create: false,
+            projects: vec![],
+        });
+        assert!(validate_doc(&invalid).is_err());
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
