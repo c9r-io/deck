@@ -25,6 +25,7 @@ mod keychain;
 mod launch_args;
 mod links;
 mod mcp;
+mod mcp_fs;
 mod procinfo;
 mod prompt_delivery;
 mod pty;
@@ -408,6 +409,8 @@ fn main() {
             mcp::mcp_disable,
             mcp::mcp_client_add,
             mcp::mcp_client_revoke,
+            mcp::mcp_execution_grant,
+            mcp::mcp_execution_revoke,
             mcp::mcp_pending,
             mcp::mcp_claim,
             mcp::mcp_validate,

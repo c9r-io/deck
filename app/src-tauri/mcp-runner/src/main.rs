@@ -5,7 +5,11 @@
 //! a user-only Unix socket, executes each job in a fresh zsh process, mirrors
 //! combined output into the real pane, and retains a bounded copy for cursor
 //! reads. Script bytes never appear in argv, the environment, or a temporary
-//! file. The runner has no network, model, persistence, or Board authority.
+//! file. Fresh jobs receive the versioned sanitized developer environment,
+//! not the runner's complete host environment. Process exit and each output
+//! pipe's EOF are reported separately. The runner has no model, persistence,
+//! or Board authority; trusted-host jobs retain the user's ordinary OS/network
+//! permissions and the environment profile is not a sandbox.
 
 use base64::Engine;
 use serde::{Deserialize, Serialize};
@@ -177,6 +181,9 @@ struct JobView {
     timeout_requested: bool,
     base_cursor: u64,
     end_cursor: u64,
+    stdout_eof: bool,
+    stderr_eof: bool,
+    output_complete: bool,
 }
 
 struct Job {
@@ -193,6 +200,8 @@ struct Job {
     base_cursor: u64,
     child: Option<Arc<Mutex<Child>>>,
     stdin: Option<ChildStdin>,
+    stdout_eof: bool,
+    stderr_eof: bool,
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -221,6 +230,9 @@ impl Job {
             timeout_requested: self.timeout_requested,
             base_cursor: self.base_cursor,
             end_cursor: self.base_cursor + self.output.len() as u64,
+            stdout_eof: self.stdout_eof,
+            stderr_eof: self.stderr_eof,
+            output_complete: self.stdout_eof && self.stderr_eof,
         }
     }
 }
@@ -311,6 +323,15 @@ fn mirror(
                 Err(_) => break,
             }
         }
+        let mut inner = shared.inner.lock().recover();
+        if let Some(job) = inner.jobs.get_mut(&job_id) {
+            if stderr {
+                job.stderr_eof = true;
+            } else {
+                job.stdout_eof = true;
+            }
+        }
+        shared.changed.notify_all();
     });
 }
 
@@ -359,9 +380,23 @@ fn spawn_job(
     command
         .args(["-d", "-f", "-c", "source /dev/fd/3"])
         .current_dir(cwd)
+        .env_clear()
+        .env(
+            "PATH",
+            "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+        )
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    // Preserve only ordinary developer/runtime coordinates. Authentication
+    // variables, agent sockets and application-specific secrets are excluded.
+    for key in [
+        "HOME", "USER", "LOGNAME", "TMPDIR", "LANG", "LC_ALL", "TERM",
+    ] {
+        if let Some(value) = std::env::var_os(key) {
+            command.env(key, value);
+        }
+    }
     // SAFETY: only async-signal-safe dup2/setpgid/close calls run after fork.
     unsafe {
         command.pre_exec(move || {
@@ -376,11 +411,6 @@ fn spawn_job(
     }
     let mut child = command.spawn().map_err(|_| "spawn-failed")?;
     drop(script_read);
-    script_write
-        .write_all(script.as_bytes())
-        .and_then(|_| script_write.flush())
-        .map_err(|_| "dispatch-unknown")?;
-    drop(script_write);
     let stdout = child.stdout.take().ok_or("spawn-failed")?;
     let stderr = child.stderr.take().ok_or("spawn-failed")?;
     let stdin = child.stdin.take().ok_or("spawn-failed")?;
@@ -393,11 +423,17 @@ fn spawn_job(
         job.state = JobState::Running;
         job.child = Some(child.clone());
         job.stdin = Some(stdin);
-        inner.active = Some(job_id.into());
         shared.changed.notify_all();
     }
     mirror(shared.clone(), job_id.into(), stdout, false);
     mirror(shared.clone(), job_id.into(), stderr, true);
+    // Start draining child output before writing a large script. A child may
+    // emit startup output before consuming descriptor 3.
+    let dispatch_unknown = script_write
+        .write_all(script.as_bytes())
+        .and_then(|_| script_write.flush())
+        .is_err();
+    drop(script_write);
 
     let waiter = shared.clone();
     let waiter_id = job_id.to_string();
@@ -466,7 +502,11 @@ fn spawn_job(
             }
         });
     }
-    Ok(())
+    if dispatch_unknown {
+        Err("dispatch-unknown")
+    } else {
+        Ok(())
+    }
 }
 
 fn wait_for_job(shared: &Arc<Shared>, job_id: &str, wait_ms: u64) {
@@ -550,14 +590,23 @@ fn handle(shared: &Arc<Shared>, request: Request) -> Response {
                         base_cursor: 0,
                         child: None,
                         stdin: None,
+                        stdout_eof: false,
+                        stderr_eof: false,
                     },
                 );
+                // Starting is an active reservation, not an idle session.
+                inner.active = Some(job_id.clone());
             }
             if let Err(error) = spawn_job(shared, &job_id, &script, &cwd, timeout_ms) {
-                let mut inner = shared.inner.lock().recover();
-                if let Some(job) = inner.jobs.get_mut(&job_id) {
-                    job.state = JobState::Lost;
-                    job.ended_at = Some(now_ms());
+                if error != "dispatch-unknown" {
+                    let mut inner = shared.inner.lock().recover();
+                    if let Some(job) = inner.jobs.get_mut(&job_id) {
+                        job.state = JobState::Lost;
+                        job.ended_at = Some(now_ms());
+                    }
+                    if inner.active.as_deref() == Some(&job_id) {
+                        inner.active = None;
+                    }
                 }
                 return Response::error(&shared.generation, error);
             }
@@ -641,21 +690,35 @@ fn handle(shared: &Arc<Shared>, request: Request) -> Response {
             if bytes.len() > MAX_INPUT {
                 return Response::error(&shared.generation, "invalid-request");
             }
+            let mut stdin = {
+                let mut inner = shared.inner.lock().recover();
+                if inner.control != ControlMode::Mcp || inner.active.as_deref() != Some(&job_id) {
+                    return Response::error(&shared.generation, "job-not-running");
+                }
+                let Some(job) = inner.jobs.get_mut(&job_id) else {
+                    return Response::error(&shared.generation, "job-not-found");
+                };
+                if job.state != JobState::Running {
+                    return Response::error(&shared.generation, "job-not-running");
+                }
+                let Some(stdin) = job.stdin.take() else {
+                    return Response::error(&shared.generation, "job-not-running");
+                };
+                stdin
+            };
+            let wrote = stdin.write_all(&bytes).and_then(|_| stdin.flush()).is_ok();
             let mut inner = shared.inner.lock().recover();
-            if inner.control != ControlMode::Mcp || inner.active.as_deref() != Some(&job_id) {
-                return Response::error(&shared.generation, "job-not-running");
-            }
-            let Some(job) = inner.jobs.get_mut(&job_id) else {
-                return Response::error(&shared.generation, "job-not-found");
-            };
-            if job.state != JobState::Running {
-                return Response::error(&shared.generation, "job-not-running");
-            }
-            let Some(stdin) = job.stdin.as_mut() else {
-                return Response::error(&shared.generation, "job-not-running");
-            };
-            if stdin.write_all(&bytes).and_then(|_| stdin.flush()).is_err() {
+            let still_bound = inner.control == ControlMode::Mcp
+                && inner.active.as_deref() == Some(&job_id)
+                && inner
+                    .jobs
+                    .get(&job_id)
+                    .is_some_and(|job| job.state == JobState::Running);
+            if !wrote || !still_bound {
                 return Response::error(&shared.generation, "job-state-unknown");
+            }
+            if let Some(job) = inner.jobs.get_mut(&job_id) {
+                job.stdin = Some(stdin);
             }
             Response::empty(&shared.generation)
         }
@@ -716,6 +779,8 @@ fn handle(shared: &Arc<Shared>, request: Request) -> Response {
                             base_cursor: 0,
                             child: None,
                             stdin: None,
+                            stdout_eof: false,
+                            stderr_eof: false,
                         },
                     );
                     Some(id)

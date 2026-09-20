@@ -64,6 +64,44 @@ struct SessionInput {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct ProjectPathInput {
+    project_id: String,
+    #[serde(default)]
+    root_index: usize,
+    #[serde(default)]
+    path: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct ProjectReadInput {
+    project_id: String,
+    #[serde(default)]
+    root_index: usize,
+    path: String,
+    #[serde(default)]
+    cursor: Option<String>,
+    #[serde(default)]
+    max_bytes: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct ProjectSearchInput {
+    project_id: String,
+    #[serde(default)]
+    root_index: usize,
+    #[serde(default)]
+    path: String,
+    query: String,
+    #[serde(default)]
+    cursor: Option<String>,
+    #[serde(default)]
+    max_results: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 enum ControlAction {
     Request,
@@ -163,7 +201,7 @@ fn annotations(read_only: bool, destructive: bool, idempotent: bool) -> ToolAnno
         .read_only(read_only)
         .destructive(destructive)
         .idempotent(idempotent)
-        .open_world(false)
+        .open_world(!read_only)
 }
 
 fn tool<T: JsonSchema + 'static>(
@@ -185,6 +223,21 @@ impl DeckServer {
             tool::<Empty>(
                 "deck_capabilities",
                 "Report Deck connection, trusted-host execution semantics, limits, and the workspaces authorized for this client. Call this first.",
+                ro.clone(),
+            ),
+            tool::<ProjectPathInput>(
+                "deck_project_list",
+                "List one approved project directory through Deck's bounded descriptor-relative reader. This does not start a shell or follow symbolic links.",
+                ro.clone(),
+            ),
+            tool::<ProjectReadInput>(
+                "deck_project_read",
+                "Read a bounded UTF-8 segment of one regular file below an approved project root. Continue only with the returned version-bound cursor.",
+                ro.clone(),
+            ),
+            tool::<ProjectSearchInput>(
+                "deck_project_search",
+                "Perform a bounded literal source search below an approved project root without a shell, regex engine, Git helper, or repository script.",
                 ro.clone(),
             ),
             tool::<Empty>(
@@ -267,7 +320,7 @@ impl DeckServer {
                 .set_write_timeout(Some(std::time::Duration::from_secs(10)))
                 .map_err(|_| "DECK_UNAVAILABLE")?;
             let request = DeckRequest {
-                version: 1,
+                version: 2,
                 client_id: &client_id,
                 tool: tool_name,
                 arguments,
@@ -305,6 +358,18 @@ impl DeckServer {
     async fn dispatch(&self, name: &str, arguments: Value) -> CallToolResult {
         match name {
             "deck_capabilities" => self.invoke::<Empty>("deck_capabilities", arguments).await,
+            "deck_project_list" => {
+                self.invoke::<ProjectPathInput>("deck_project_list", arguments)
+                    .await
+            }
+            "deck_project_read" => {
+                self.invoke::<ProjectReadInput>("deck_project_read", arguments)
+                    .await
+            }
+            "deck_project_search" => {
+                self.invoke::<ProjectSearchInput>("deck_project_search", arguments)
+                    .await
+            }
             "deck_sessions_list" => self.invoke::<Empty>("deck_sessions_list", arguments).await,
             "deck_session_create" => {
                 self.invoke::<CreateInput>("deck_session_create", arguments)

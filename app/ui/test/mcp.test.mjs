@@ -25,6 +25,7 @@ test('create starts the managed runner before persisting and commits the real ca
     calls.push([cmd, args]);
     if (cmd === 'mcp_pending') { const value = items; items = []; return value; }
     if (cmd === 'mcp_claim') return pending;
+    if (cmd === 'mcp_validate') return;
     if (cmd === 'mcp_start_session') return { created: true };
     if (cmd === 'save_board' || cmd === 'mcp_complete') return;
     throw new Error(`unexpected ${cmd}`);
@@ -71,10 +72,12 @@ test('close uses the ordinary Board close transaction and commits after persiste
     if (cmd === 'mcp_pending') { const value = items; items = []; return value; }
     if (cmd === 'mcp_claim') return pending;
     if (cmd === 'queue_clear_sessions') return { removed: 0 };
+    if (cmd === 'mcp_validate') return;
     if (cmd === 'kill_session' || cmd === 'save_board' || cmd === 'mcp_complete') return;
     throw new Error(`unexpected ${cmd}`);
   } } };
   await drainMcp();
   assert.equal(store.cards.length, 0, JSON.stringify(calls));
+  assert.ok(calls.findIndex(([cmd]) => cmd === 'mcp_validate') < calls.findIndex(([cmd]) => cmd === 'kill_session'));
   assert.equal(calls.find(([cmd]) => cmd === 'mcp_complete')[1].state, 'committed');
 });

@@ -1,8 +1,9 @@
-# MCP terminal control
+# MCP project access and trusted-host execution
 
-Deck can expose explicitly authorized, visible shell sessions to an MCP
-client. The feature is off by default. It is for trusted development work on
-the host; it is not an OS sandbox.
+Deck separates connection, structured project reading, managed-session
+creation, short-lived trusted-host execution, interactive stdin, and output
+sharing. Structured reads do not start a shell. Execution uses the logged-in
+account and is not an OS sandbox.
 
 ## Enable and authorize
 
@@ -15,9 +16,12 @@ item or background service is created.
 1. Build/run Deck normally and open **Settings → Integrations**.
 2. Enable **MCP terminal control** and accept the code-execution warning.
 3. Select the intended Deck project and choose **Authorize this project**.
-   Name the client and confirm the canonical project root.
-4. Copy the generated local client configuration. Treat its client id as a
-   local bearer capability and do not paste it into a chat transcript.
+   Confirm the explicit canonical project root, then separately decide whether
+   the integration may create managed sessions. Deck never falls back to the
+   home directory for a project without a directory.
+4. Copy the local client configuration. A newly created session still cannot
+   execute. Open its card and choose **Approve 15 min** locally. Control-lease
+   Request/Renew never creates or extends this execution window.
 
 Disabling the feature or revoking a client fences new side effects, advances
 session control epochs, and hands managed panes to the local user. It does not
@@ -83,19 +87,22 @@ authentication, Origin/Host validation, and deployment review.
 | Tool | Semantics |
 |---|---|
 | `deck_capabilities` | Read limits, trusted-host mode, shell semantics, and the caller's minimal authorized workspaces. |
+| `deck_project_list` | Bounded directory listing below one approved root, without a shell or helper. |
+| `deck_project_read` | Bounded UTF-8 regular-file segments with a version-bound cursor. |
+| `deck_project_search` | Bounded literal source search with file/depth/result budgets. |
 | `deck_sessions_list` | List only sessions owned by this client. Quiet output is never called ready. |
 | `deck_session_create` | Journal creation of a dedicated visible shell card; poll the returned operation until committed. |
 | `deck_operation_get` | Read Board/control delivery state, not program completion. |
 | `deck_session_inspect` | Read generation, control, active job, staleness, and bounded pane context. |
 | `deck_session_control` | Request, renew, or release a fenced lease. It cannot override human takeover. |
-| `deck_exec` | Start one arbitrary authorized zsh script in the visible pane. One foreground job per session. |
+| `deck_exec` | Start one arbitrary zsh script only while matching local execution and control grants are valid. |
 | `deck_job_read` | Incrementally read retained combined output and independently reported exit state. |
 | `deck_job_input` | Write only to the named still-running child's stdin. Never falls back to terminal typing. |
 | `deck_job_interrupt` | Request SIGINT for the active job's owned process group; read again to confirm exit. |
 | `deck_session_close` | Use Deck's ordinary close transaction; running jobs require explicit confirmation. |
 
-All input schemas reject unknown fields. Write tools have side-effect
-annotations; annotations are not authorization. A nonzero exit code is a
+All input schemas reject unknown fields. Host write tools advertise
+`openWorldHint=true`; annotations are not authorization. A nonzero exit code is a
 normal execution result, not an MCP transport error.
 
 ## Execution, output, and lifecycle
@@ -112,6 +119,8 @@ normal execution result, not an MCP transport error.
   outlive it; they are not represented as the completed foreground job.
 - Closing an adapter or losing a network connection does not kill a task.
   Adapter exit does not close the session.
+- Process exit and output completion are separate. `stdoutEof`, `stderrEof`
+  and `outputComplete` report whether retained tail output has finished.
 - After Deck GUI exit, tmux programs may continue, but MCP control is
   unavailable. On reopen, Deck never restores an old control lease or replays a
   script. Unverifiable jobs are `unknown`/`lost`.
@@ -124,7 +133,26 @@ hashed request identities, operations, job bindings, and session metadata. It
 does not retain scripts or terminal output. Runner output disappears when its
 session ends; per-job memory is bounded. Closing a card removes its active
 session/job bindings, while operation ids remain until the bounded ledger is
-explicitly managed by a future version. Corrupt MCP configuration fails closed.
+explicitly managed by a future version. Corrupt and future-version MCP
+configuration fails closed. v1 state migrates to v2 disabled: old clients are
+retained only as revoked display records, pending writes become ambiguous, and
+local reauthorization is required.
+
+## Security boundary and residual risk
+
+Descriptor-relative reads reject traversal, unverified symlinks, special
+files, `.git`, common credential/cache directories, private-key extensions and
+real `.env` names; `.env.example` and `.env.sample` remain readable. This is a
+defense-in-depth name policy, not a promise that unknown names or hard links
+cannot contain secrets. Authorization is rechecked before returning a result,
+but bytes already transmitted cannot be recalled.
+
+An approved script can use every permission of the Deck account, including
+reading outside the project and using the network. Cwd, worktrees, tmux,
+0700/0600 files, command digests, and the sanitized environment profile are
+not a sandbox. A digest binds submitted script bytes and request context; it
+does not freeze referenced files, interpreters, dependencies, or network
+responses. Strong containment requires a future scheme-C backend.
 
 ## Instructions for ChatGPT
 

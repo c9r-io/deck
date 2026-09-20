@@ -1,7 +1,11 @@
-//! Local MCP control service and durable authorization/operation ledger.
+//! Local MCP structured-read/control service and durable authorization ledger.
 //!
 //! This is deliberately separate from Phone Connector: its socket, client
-//! records, scopes, operation ids, sessions, and jobs are disjoint. The
+//! records, project scopes, short-lived execution grants, operation ids,
+//! sessions, and jobs are disjoint. Creating a session never grants execution;
+//! only the local Tauri command may create or expand an execution window.
+//! Project list/read/search use descriptor-relative no-follow filesystem IO in
+//! `mcp_fs.rs` and never start a shell or repository helper. The
 //! listener is disabled by default and is a 0600 Unix socket under Deck's
 //! private data directory; every connection must also have Deck's effective
 //! uid. The thin `deck-mcp` sidecar provides MCP STDIO and never receives a
@@ -9,7 +13,7 @@
 //!
 //! Board creation and close intents are journaled here, then handed to the
 //! webview's one serialized Board transaction (`mcp.js`). The managed runner
-//! reports job exit independently from that control-operation state. Scripts
+//! reports process exit and output EOF independently from that control-operation state. Scripts
 //! are never persisted or logged: only their SHA-256 request hash and bounded
 //! runner output exist. On restart, an accepted operation is not replayed;
 //! it becomes ambiguous unless the deterministic result can be observed.
@@ -25,13 +29,13 @@ use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter};
 
 use crate::error::{DeckError, ErrorKind};
 use crate::sync::LockRecover;
 
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;
 const MAX_STATE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_REQUEST_BYTES: usize = 256 * 1024;
 const MAX_RESPONSE_BYTES: usize = 128 * 1024;
@@ -45,6 +49,10 @@ const MAX_SCRIPT_BYTES: usize = 128 * 1024;
 const MAX_INPUT_BYTES: usize = 32 * 1024;
 const DEFAULT_LEASE_MS: u64 = 60_000;
 const MAX_LEASE_MS: u64 = 5 * 60_000;
+const DEFAULT_EXECUTION_GRANT_MS: u64 = 15 * 60_000;
+const MAX_EXECUTION_GRANT_MS: u64 = 8 * 60 * 60_000;
+const POLICY_VERSION: u32 = 2;
+const ENVIRONMENT_PROFILE: &str = "developer-sanitized-v1";
 
 fn now_ms() -> u64 {
     SystemTime::now()
@@ -126,6 +134,8 @@ struct ManagedSession {
     lease_expires_at: Option<u64>,
     human_lock: bool,
     #[serde(default)]
+    output_shared: bool,
+    #[serde(default)]
     closing: bool,
     created_at: u64,
 }
@@ -154,6 +164,32 @@ struct JobBinding {
     session_generation: String,
     request_hash: String,
     operation_id: String,
+    #[serde(default)]
+    allow_output: bool,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ExecutionGrant {
+    grant_id: String,
+    client_id: String,
+    credential_version: u64,
+    project_id: String,
+    session_id: String,
+    session_generation: String,
+    profile: String,
+    environment_profile: String,
+    environment_profile_version: u32,
+    issued_at: u64,
+    expires_at: u64,
+    issued_monotonic_ms: u64,
+    duration_ms: u64,
+    allow_stdin: bool,
+    allow_output: bool,
+    grant_version: u64,
+    revocation_version: u64,
+    service_instance: String,
+    revoked_at: Option<u64>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -164,6 +200,8 @@ struct DiskDoc {
     sessions: Vec<ManagedSession>,
     operations: Vec<Operation>,
     jobs: Vec<JobBinding>,
+    #[serde(default)]
+    execution_grants: Vec<ExecutionGrant>,
 }
 
 impl Default for DiskDoc {
@@ -174,6 +212,7 @@ impl Default for DiskDoc {
             sessions: Vec::new(),
             operations: Vec::new(),
             jobs: Vec::new(),
+            execution_grants: Vec::new(),
         }
     }
 }
@@ -187,6 +226,14 @@ struct Runtime {
     /// Fences every terminal/Board side-effect dispatch against control
     /// transfer, revoke, disable, and close admission.
     delivery: Mutex<()>,
+    service_instance: String,
+    started: Instant,
+}
+
+impl Runtime {
+    fn monotonic_ms(&self) -> u64 {
+        self.started.elapsed().as_millis().min(u64::MAX as u128) as u64
+    }
 }
 
 fn emit_changed(runtime: &Runtime) {
@@ -223,6 +270,34 @@ fn load(path: &Path) -> Result<DiskDoc, DeckError> {
     }
     let mut doc: DiskDoc = serde_json::from_slice(&bytes)
         .map_err(|_| DeckError::new(ErrorKind::Recovery, "MCP state is unreadable"))?;
+    if doc.version == 1 {
+        // v1 clients combined project access and host execution. Preserve the
+        // non-secret display records for local review, but fail closed: no old
+        // client, lease, pending write, or session receives a v2 execution
+        // window implicitly.
+        doc.version = VERSION;
+        doc.config.enabled = false;
+        for client in &mut doc.config.clients {
+            client.revoked_at.get_or_insert_with(now_ms);
+        }
+        for session in &mut doc.sessions {
+            session.control_owner = None;
+            session.control_epoch = session.control_epoch.saturating_add(1);
+            session.lease_expires_at = None;
+            session.human_lock = true;
+        }
+        for operation in &mut doc.operations {
+            if matches!(operation.state.as_str(), "accepted" | "executing") {
+                operation.state = "ambiguous".into();
+                operation.code = Some("v2-reauthorization-required".into());
+                operation.updated_at = now_ms();
+            }
+        }
+        doc.execution_grants.clear();
+        validate_doc(&doc)?;
+        save(path, &doc)?;
+        return Ok(doc);
+    }
     validate_doc(&doc)?;
     let mut changed = false;
     for operation in &mut doc.operations {
@@ -291,10 +366,12 @@ fn validate_doc(doc: &DiskDoc) -> Result<(), DeckError> {
                 && Path::new(&session.runner_socket).is_absolute()
         });
     let mut operation_ids = HashSet::new();
+    let mut request_keys = HashSet::new();
     let operations_valid = doc.operations.len() <= MAX_OPERATIONS
         && doc.operations.iter().all(|operation| {
             valid_id(&operation.operation_id)
                 && operation_ids.insert(operation.operation_id.clone())
+                && request_keys.insert((operation.client_id.clone(), operation.request_id.clone()))
                 && valid_id(&operation.client_id)
                 && valid_id(&operation.request_id)
                 && operation.request_hash.len() == 64
@@ -312,7 +389,21 @@ fn validate_doc(doc: &DiskDoc) -> Result<(), DeckError> {
                 && session_ids.contains(&job.session_id)
                 && operation_ids.contains(&job.operation_id)
         });
-    if clients_valid && sessions_valid && operations_valid && jobs_valid {
+    let mut grant_ids = HashSet::new();
+    let grants_valid = doc.execution_grants.len() <= MAX_OPERATIONS
+        && doc.execution_grants.iter().all(|grant| {
+            valid_id(&grant.grant_id)
+                && grant_ids.insert(grant.grant_id.clone())
+                && valid_id(&grant.client_id)
+                && valid_id(&grant.project_id)
+                && valid_id(&grant.session_id)
+                && valid_id(&grant.session_generation)
+                && valid_id(&grant.service_instance)
+                && grant.duration_ms <= MAX_EXECUTION_GRANT_MS
+                && grant.expires_at >= grant.issued_at
+                && grant.environment_profile == ENVIRONMENT_PROFILE
+        });
+    if clients_valid && sessions_valid && operations_valid && jobs_valid && grants_valid {
         Ok(())
     } else {
         Err(DeckError::new(ErrorKind::Recovery, "MCP state is invalid"))
@@ -459,11 +550,61 @@ fn check_control(
     Ok(())
 }
 
+fn active_execution_grant<'a>(
+    runtime: &Runtime,
+    doc: &'a DiskDoc,
+    client_id: &str,
+    session: &ManagedSession,
+    require_stdin: bool,
+) -> Result<&'a ExecutionGrant, DeckError> {
+    let elapsed = runtime.monotonic_ms();
+    doc.execution_grants
+        .iter()
+        .rev()
+        .find(|grant| {
+            grant.client_id == client_id
+                && grant.project_id == session.project_id
+                && grant.session_id == session.session_id
+                && grant.session_generation == session.generation
+                && grant.service_instance == runtime.service_instance
+                && grant.revoked_at.is_none()
+                && grant.grant_version > grant.revocation_version
+                && elapsed >= grant.issued_monotonic_ms
+                && elapsed.saturating_sub(grant.issued_monotonic_ms) < grant.duration_ms
+                && now_ms() < grant.expires_at
+                && (!require_stdin || grant.allow_stdin)
+        })
+        .ok_or_else(|| {
+            DeckError::new(
+                ErrorKind::Perm,
+                if require_stdin {
+                    "interactive stdin is not locally authorized"
+                } else {
+                    "a local execution grant is required"
+                },
+            )
+        })
+}
+
 fn error_value(code: &str, message: &str, next_action: &str) -> Value {
     json!({"ok":false,"error":{"code":code,"message":message,"nextAction":next_action}})
 }
 
 fn map_error(error: DeckError) -> Value {
+    if error.kind() == ErrorKind::Perm && error.message().contains("execution grant") {
+        return error_value(
+            "EXECUTION_GRANT_REQUIRED",
+            error.message(),
+            "Ask the local Deck user to approve a short trusted-host execution window.",
+        );
+    }
+    if error.kind() == ErrorKind::Perm && error.message().contains("stdin") {
+        return error_value(
+            "STDIN_NOT_AUTHORIZED",
+            error.message(),
+            "Ask the local Deck user to approve interactive stdin for this execution window.",
+        );
+    }
     let (code, next) = match error.kind() {
         ErrorKind::Perm => (
             "PERMISSION_DENIED",
@@ -748,6 +889,44 @@ struct CloseArgs {
     confirm_running: bool,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProjectPathArgs {
+    project_id: String,
+    #[serde(default)]
+    root_index: usize,
+    #[serde(default)]
+    path: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FileReadArgs {
+    project_id: String,
+    #[serde(default)]
+    root_index: usize,
+    path: String,
+    #[serde(default)]
+    cursor: Option<String>,
+    #[serde(default)]
+    max_bytes: Option<usize>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SearchArgs {
+    project_id: String,
+    #[serde(default)]
+    root_index: usize,
+    #[serde(default)]
+    path: String,
+    query: String,
+    #[serde(default)]
+    cursor: Option<String>,
+    #[serde(default)]
+    max_results: Option<usize>,
+}
+
 fn parse<T: for<'de> Deserialize<'de>>(value: Value) -> Result<T, Value> {
     serde_json::from_value(value).map_err(|_| {
         error_value(
@@ -756,6 +935,229 @@ fn parse<T: for<'de> Deserialize<'de>>(value: Value) -> Result<T, Value> {
             "Correct the arguments and retry only after checking any prior request id.",
         )
     })
+}
+
+fn read_root(
+    runtime: &Runtime,
+    client_id: &str,
+    project_id: &str,
+    root_index: usize,
+) -> Result<(PathBuf, Vec<String>), Value> {
+    runtime
+        .read(|doc| {
+            let project = scoped_project(client(doc, client_id)?, project_id)?;
+            let root = project
+                .roots
+                .get(root_index)
+                .ok_or_else(|| DeckError::new(ErrorKind::Perm, "read root is not authorized"))?;
+            Ok((PathBuf::from(root), project.roots.clone()))
+        })
+        .map_err(map_error)?
+        .map_err(map_error)
+}
+
+fn recheck_read(
+    runtime: &Runtime,
+    client_id: &str,
+    project_id: &str,
+    roots: &[String],
+) -> Result<(), Value> {
+    runtime
+        .read(|doc| {
+            let project = scoped_project(client(doc, client_id)?, project_id)?;
+            if project.roots != roots {
+                return Err(DeckError::new(
+                    ErrorKind::ContextChanged,
+                    "project read authorization changed during the request",
+                ));
+            }
+            Ok(())
+        })
+        .map_err(map_error)?
+        .map_err(map_error)
+}
+
+fn page_cursor(
+    runtime: &Runtime,
+    client_id: &str,
+    project_id: &str,
+    root_index: usize,
+    query: &str,
+    snapshot: &str,
+    offset: usize,
+) -> String {
+    let payload = format!(
+        "{}\0{client_id}\0{project_id}\0{root_index}\0{query}\0{snapshot}\0{offset}",
+        runtime.service_instance
+    );
+    format!("{offset}.{}", sha(payload.as_bytes()))
+}
+
+fn cursor_offset(
+    runtime: &Runtime,
+    cursor: Option<&str>,
+    client_id: &str,
+    project_id: &str,
+    root_index: usize,
+    query: &str,
+    snapshot: &str,
+) -> Result<usize, Value> {
+    let Some(cursor) = cursor else { return Ok(0) };
+    let (offset, _) = cursor.split_once('.').ok_or_else(|| {
+        error_value(
+            "OUTPUT_CURSOR_INVALID",
+            "read cursor is invalid",
+            "Restart the read without a cursor.",
+        )
+    })?;
+    let offset = offset.parse::<usize>().map_err(|_| {
+        error_value(
+            "OUTPUT_CURSOR_INVALID",
+            "read cursor is invalid",
+            "Restart the read without a cursor.",
+        )
+    })?;
+    if page_cursor(
+        runtime, client_id, project_id, root_index, query, snapshot, offset,
+    ) != cursor
+    {
+        return Err(error_value(
+            "CONTENT_CHANGED",
+            "the target or authorization changed since the cursor was issued",
+            "Restart the read or search from the beginning.",
+        ));
+    }
+    Ok(offset)
+}
+
+fn project_list(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<Value, Value> {
+    let args: ProjectPathArgs = parse(arguments)?;
+    let (root, roots) = read_root(runtime, client_id, &args.project_id, args.root_index)?;
+    let (entries, version) = crate::mcp_fs::list(&root, &args.path).map_err(|message| {
+        error_value(
+            "READ_DENIED",
+            &message,
+            "Choose a regular, non-sensitive path inside the approved root.",
+        )
+    })?;
+    recheck_read(runtime, client_id, &args.project_id, &roots)?;
+    Ok(
+        json!({"ok":true,"projectId":args.project_id,"rootIndex":args.root_index,"path":args.path,"entries":entries,"version":version,"truncated":false}),
+    )
+}
+
+fn project_read(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<Value, Value> {
+    let args: FileReadArgs = parse(arguments)?;
+    let (root, roots) = read_root(runtime, client_id, &args.project_id, args.root_index)?;
+    // Read metadata/content once at offset zero to obtain the descriptor-bound
+    // version. Subsequent cursor validation binds that version before slicing.
+    let file_version = crate::mcp_fs::identity(&root, &args.path).map_err(|message| {
+        error_value(
+            "READ_DENIED",
+            &message,
+            "Choose a regular UTF-8, non-sensitive file inside the approved root.",
+        )
+    })?;
+    let snapshot = sha(&serde_json::to_vec(&file_version).unwrap_or_default());
+    let offset = cursor_offset(
+        runtime,
+        args.cursor.as_deref(),
+        client_id,
+        &args.project_id,
+        args.root_index,
+        &args.path,
+        &snapshot,
+    )?;
+    let (content, next, truncated, version) = crate::mcp_fs::read(
+        &root,
+        &args.path,
+        offset as u64,
+        args.max_bytes.unwrap_or(32 * 1024),
+    )
+    .map_err(|message| {
+        error_value(
+            "READ_DENIED",
+            &message,
+            "Restart if the file changed, or choose a smaller regular UTF-8 file.",
+        )
+    })?;
+    if version != file_version {
+        return Err(error_value(
+            "CONTENT_CHANGED",
+            "the file changed during the read",
+            "Restart reading without a cursor.",
+        ));
+    }
+    recheck_read(runtime, client_id, &args.project_id, &roots)?;
+    let cursor = truncated.then(|| {
+        page_cursor(
+            runtime,
+            client_id,
+            &args.project_id,
+            args.root_index,
+            &args.path,
+            &snapshot,
+            next as usize,
+        )
+    });
+    Ok(
+        json!({"ok":true,"projectId":args.project_id,"rootIndex":args.root_index,"path":args.path,"content":content,"version":version,"nextCursor":cursor,"truncated":truncated}),
+    )
+}
+
+fn project_search(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<Value, Value> {
+    let args: SearchArgs = parse(arguments)?;
+    let limit = args.max_results.unwrap_or(50);
+    if !(1..=100).contains(&limit) {
+        return Err(error_value(
+            "INVALID_ARGUMENTS",
+            "search result limit is invalid",
+            "Use max_results from 1 through 100.",
+        ));
+    }
+    let (root, roots) = read_root(runtime, client_id, &args.project_id, args.root_index)?;
+    let results = crate::mcp_fs::search(&root, &args.path, &args.query).map_err(|message| {
+        error_value(
+            "SEARCH_LIMIT_OR_DENIED",
+            &message,
+            "Narrow the literal query or search path.",
+        )
+    })?;
+    let snapshot = sha(&serde_json::to_vec(&results).unwrap_or_default());
+    let key = format!("{}\0{}", args.path, args.query);
+    let offset = cursor_offset(
+        runtime,
+        args.cursor.as_deref(),
+        client_id,
+        &args.project_id,
+        args.root_index,
+        &key,
+        &snapshot,
+    )?;
+    if offset > results.len() {
+        return Err(error_value(
+            "CONTENT_CHANGED",
+            "search results changed",
+            "Restart the search without a cursor.",
+        ));
+    }
+    let end = offset.saturating_add(limit).min(results.len());
+    let page = &results[offset..end];
+    recheck_read(runtime, client_id, &args.project_id, &roots)?;
+    let cursor = (end < results.len()).then(|| {
+        page_cursor(
+            runtime,
+            client_id,
+            &args.project_id,
+            args.root_index,
+            &key,
+            &snapshot,
+            end,
+        )
+    });
+    Ok(
+        json!({"ok":true,"projectId":args.project_id,"path":args.path,"query":args.query,"matches":page,"nextCursor":cursor,"truncated":end < results.len()}),
+    )
 }
 
 fn capabilities(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<Value, Value> {
@@ -775,7 +1177,7 @@ fn capabilities(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<
                 "ok": true,
                 "adapterVersion": "0.1.0",
                 "deckConnection": "connected",
-                "protocolVersion": 1,
+                "protocolVersion": 2,
                 "executionMode": "trusted-host",
                 "realOsSandbox": false,
                 "shellSemantics": {
@@ -798,12 +1200,13 @@ fn capabilities(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<
                     "operations": MAX_OPERATIONS
                 },
                 "interactiveInput": true,
+                "structuredProjectRead": true,
                 "reliableJobExitTracking": true,
                 "authorizedWorkspaces": client.projects,
                 "mayCreateSession": client.allow_create,
                 "featureEnabled": doc.config.enabled,
                 "manualActionRequired": if doc.config.enabled { Value::Null } else { json!("Open Deck Settings and enable MCP terminal control.") },
-                "tools": ["deck_capabilities","deck_sessions_list","deck_session_create","deck_operation_get","deck_session_inspect","deck_session_control","deck_exec","deck_job_read","deck_job_input","deck_job_interrupt","deck_session_close"]
+                "tools": ["deck_capabilities","deck_project_list","deck_project_read","deck_project_search","deck_sessions_list","deck_session_create","deck_operation_get","deck_session_inspect","deck_session_control","deck_exec","deck_job_read","deck_job_input","deck_job_interrupt","deck_session_close"]
             }))
         })
         .map_err(map_error)?
@@ -863,23 +1266,35 @@ fn session_create(runtime: &Runtime, client_id: &str, arguments: Value) -> Resul
         ));
     }
     let hash = request_hash("deck_session_create", &arguments);
-    let existing = runtime
-        .read(|doc| {
-            client(doc, client_id)?;
-            Ok(existing_operation(doc, client_id, &args.request_id, &hash)?.cloned())
-        })
-        .map_err(map_error)?
-        .map_err(map_error)?;
-    if let Some(operation) = existing {
-        return Ok(operation_view(&operation));
-    }
     let title = args.title.unwrap_or_else(|| "MCP shell".into());
     let operation = runtime
         .write(|doc| {
+            client(doc, client_id)?;
+            // Request-key lookup, fingerprint comparison, capacity reservation,
+            // and insertion are one persisted transaction. A separate read here
+            // allowed two concurrent callers to reserve two create plans.
+            if let Some(existing) = existing_operation(doc, client_id, &args.request_id, &hash)? {
+                return Ok(existing.clone());
+            }
             if doc.operations.len() >= MAX_OPERATIONS || doc.sessions.len() >= MAX_SESSIONS {
                 return Err(DeckError::new(
                     ErrorKind::DiskFull,
                     "MCP operation capacity reached",
+                ));
+            }
+            // Accepted creates reserve a future managed-session slot.
+            let reserved = doc
+                .operations
+                .iter()
+                .filter(|operation| {
+                    operation.kind == "session-create"
+                        && matches!(operation.state.as_str(), "accepted" | "executing")
+                })
+                .count();
+            if doc.sessions.len().saturating_add(reserved) >= MAX_SESSIONS {
+                return Err(DeckError::new(
+                    ErrorKind::DiskFull,
+                    "MCP managed-session capacity reached",
                 ));
             }
             let client = client(doc, client_id)?;
@@ -951,22 +1366,25 @@ fn inspect(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<Value
         .map_err(map_error)?
         .map_err(map_error)?;
     let runner = send_runner(&session, &json!({"kind":"ping"}));
-    let terminal = crate::tmux::tmux(&[
-        "capture-pane",
-        "-p",
-        "-S",
-        "-40",
-        "-t",
-        &crate::tmux::pane_target(&session.tmux_session),
-    ])
-    .ok()
-    .map(|value| {
-        if value.len() > 16 * 1024 {
-            String::from_utf8_lossy(&value.as_bytes()[value.len() - 16 * 1024..]).into_owned()
-        } else {
-            value
-        }
-    });
+    let terminal = (session.output_shared && !session.human_lock)
+        .then(|| {
+            crate::tmux::tmux(&[
+                "capture-pane",
+                "-p",
+                "-S",
+                "-40",
+                "-t",
+                &crate::tmux::pane_target(&session.tmux_session),
+            ])
+        })
+        .and_then(Result::ok)
+        .map(|value| {
+            if value.len() > 16 * 1024 {
+                String::from_utf8_lossy(&value.as_bytes()[value.len() - 16 * 1024..]).into_owned()
+            } else {
+                value
+            }
+        });
     Ok(json!({
         "ok": true,
         "sessionId": session.session_id,
@@ -1059,7 +1477,26 @@ fn exec(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<Value, V
             "Use a non-empty script within the advertised limits.",
         ));
     }
-    let hash = request_hash("deck_exec", &arguments);
+    // Protocol-v2 fingerprinting is independent of JSON object key order.
+    // The script itself is never journaled; only its byte length and digest
+    // participate in the stable request fingerprint.
+    let script_digest = sha(args.script.as_bytes());
+    let hash = sha(serde_json::to_vec(&json!([
+        "deck-exec-v2",
+        &args.request_id,
+        &args.session_id,
+        &args.expected_generation,
+        args.control_epoch,
+        &args.cwd,
+        args.wait_ms,
+        args.execution_timeout_ms,
+        args.script.len(),
+        &script_digest,
+        ENVIRONMENT_PROFILE,
+        POLICY_VERSION
+    ]))
+    .unwrap_or_default()
+    .as_slice());
     let prepared = runtime
         .write(|doc| {
             let client = client(doc, client_id)?.clone();
@@ -1072,6 +1509,7 @@ fn exec(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<Value, V
             }
             let session = doc.sessions.iter().find(|session| session.session_id == args.session_id && session.owner_client_id == client_id).cloned().ok_or_else(|| DeckError::new(ErrorKind::Missing, "session not found"))?;
             check_control(&session, client_id, &args.expected_generation, args.control_epoch)?;
+            let grant = active_execution_grant(runtime, doc, client_id, &session, false)?.clone();
             if session.closing {
                 return Err(DeckError::new(ErrorKind::Locked, "session is closing"));
             }
@@ -1079,8 +1517,8 @@ fn exec(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<Value, V
             let cwd = canonical_scope(args.cwd.as_deref().unwrap_or(&session.cwd), &project.roots)?;
             let operation_id = random_id("op_")?;
             let job_id = random_id("job_")?;
-            let binding = JobBinding { job_id: job_id.clone(), client_id: client_id.into(), session_id: session.session_id.clone(), session_generation: session.generation.clone(), request_hash: hash.clone(), operation_id: operation_id.clone() };
-            let operation = Operation { operation_id, client_id: client_id.into(), request_id: args.request_id.clone(), request_hash: hash.clone(), kind: "exec".into(), state: "accepted".into(), code: None, result: Some(json!({"jobId":job_id,"sessionId":session.session_id,"sessionGeneration":session.generation})), accepted_at: now_ms(), updated_at: now_ms() };
+            let binding = JobBinding { job_id: job_id.clone(), client_id: client_id.into(), session_id: session.session_id.clone(), session_generation: session.generation.clone(), request_hash: hash.clone(), operation_id: operation_id.clone(), allow_output: grant.allow_output };
+            let operation = Operation { operation_id, client_id: client_id.into(), request_id: args.request_id.clone(), request_hash: hash.clone(), kind: "exec".into(), state: "accepted".into(), code: None, result: Some(json!({"jobId":job_id,"sessionId":session.session_id,"sessionGeneration":session.generation,"executionGrantId":grant.grant_id,"executionGrantVersion":grant.grant_version,"policyVersion":POLICY_VERSION,"environmentProfile":ENVIRONMENT_PROFILE,"scriptDigest":script_digest,"scriptLength":args.script.len(),"cwd":cwd})), accepted_at: now_ms(), updated_at: now_ms() };
             doc.jobs.push(binding.clone());
             doc.operations.push(operation.clone());
             Ok((operation, Some(binding), Some((session, cwd))))
@@ -1105,6 +1543,23 @@ fn exec(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<Value, V
         }
         return Ok(operation_view(&operation));
     };
+    // Final admission is deliberately adjacent to runner dispatch. Revocation,
+    // takeover, expiry, generation changes, and policy changes after the
+    // durable intent was accepted prevent the side effect.
+    runtime
+        .read(|doc| {
+            let current = authorized_session(doc, client_id, &session.session_id)?;
+            check_control(
+                current,
+                client_id,
+                &args.expected_generation,
+                args.control_epoch,
+            )?;
+            active_execution_grant(runtime, doc, client_id, current, false)?;
+            Ok::<(), DeckError>(())
+        })
+        .map_err(map_error)?
+        .map_err(map_error)?;
     let runner = send_runner(
         &session,
         &json!({"kind":"exec","job_id":binding.job_id,"request_hash":hash,"script":args.script,"cwd":cwd,"wait_ms":args.wait_ms.unwrap_or(1_000),"timeout_ms":args.execution_timeout_ms}),
@@ -1188,6 +1643,12 @@ fn job_read(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<Valu
                 .cloned()
                 .ok_or_else(|| DeckError::new(ErrorKind::Missing, "job not found"))?;
             let session = authorized_session(doc, client_id, &binding.session_id)?.clone();
+            if !binding.allow_output || !session.output_shared || session.human_lock {
+                return Err(DeckError::new(
+                    ErrorKind::Perm,
+                    "job output sharing is paused",
+                ));
+            }
             Ok((binding, session))
         })
         .map_err(map_error)?
@@ -1214,7 +1675,7 @@ fn job_read(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<Valu
         .and_then(Value::as_u64)
         .unwrap_or(cursor);
     Ok(
-        json!({"ok":true,"sessionId":session.session_id,"sessionGeneration":session.generation,"jobId":binding.job_id,"state":value.get("job").and_then(|job| job.get("state")).cloned().unwrap_or(json!("unknown")),"exitCode":value.get("job").and_then(|job| job.get("exitCode")).cloned().unwrap_or(Value::Null),"terminationSignal":value.get("job").and_then(|job| job.get("terminationSignal")).cloned().unwrap_or(Value::Null),"interruptRequested":value.get("job").and_then(|job| job.get("interruptRequested")).cloned().unwrap_or(json!(false)),"timeoutRequested":value.get("job").and_then(|job| job.get("timeoutRequested")).cloned().unwrap_or(json!(false)),"output":value.get("output").cloned().unwrap_or(json!("")),"outputKind":"pty_combined","nextCursor":format!("{}:{}:{}",session.generation,binding.job_id,next),"truncated":value.get("gap").cloned().unwrap_or(json!(false)),"gap":value.get("gap").cloned().unwrap_or(json!(false)),"droppedBytes":value.get("droppedBytes").cloned().unwrap_or(json!(0)),"startedAt":value.get("job").and_then(|job| job.get("startedAt")).cloned().unwrap_or(Value::Null),"endedAt":value.get("job").and_then(|job| job.get("endedAt")).cloned().unwrap_or(Value::Null),"nextAction":if value.get("job").and_then(|job| job.get("state")).and_then(Value::as_str)==Some("exited") {"Evaluate the exit code and output; exit 0 alone does not prove the requested work is correct."} else {"Continue reading with nextCursor; do not submit the original command again."}}),
+        json!({"ok":true,"sessionId":session.session_id,"sessionGeneration":session.generation,"jobId":binding.job_id,"state":value.get("job").and_then(|job| job.get("state")).cloned().unwrap_or(json!("unknown")),"exitCode":value.get("job").and_then(|job| job.get("exitCode")).cloned().unwrap_or(Value::Null),"terminationSignal":value.get("job").and_then(|job| job.get("terminationSignal")).cloned().unwrap_or(Value::Null),"interruptRequested":value.get("job").and_then(|job| job.get("interruptRequested")).cloned().unwrap_or(json!(false)),"timeoutRequested":value.get("job").and_then(|job| job.get("timeoutRequested")).cloned().unwrap_or(json!(false)),"processComplete":matches!(value.get("job").and_then(|job| job.get("state")).and_then(Value::as_str),Some("exited" | "lost")),"stdoutEof":value.get("job").and_then(|job| job.get("stdoutEof")).cloned().unwrap_or(json!(false)),"stderrEof":value.get("job").and_then(|job| job.get("stderrEof")).cloned().unwrap_or(json!(false)),"outputComplete":value.get("job").and_then(|job| job.get("outputComplete")).cloned().unwrap_or(json!(false)),"output":value.get("output").cloned().unwrap_or(json!("")),"outputKind":"pty_combined","nextCursor":format!("{}:{}:{}",session.generation,binding.job_id,next),"truncated":value.get("gap").cloned().unwrap_or(json!(false)),"gap":value.get("gap").cloned().unwrap_or(json!(false)),"droppedBytes":value.get("droppedBytes").cloned().unwrap_or(json!(0)),"startedAt":value.get("job").and_then(|job| job.get("startedAt")).cloned().unwrap_or(Value::Null),"endedAt":value.get("job").and_then(|job| job.get("endedAt")).cloned().unwrap_or(Value::Null),"nextAction":if value.get("job").and_then(|job| job.get("outputComplete")).and_then(Value::as_bool)==Some(true) {"Evaluate the exit code and output; exit 0 alone does not prove the requested work is correct."} else {"Continue reading with nextCursor; process exit does not imply that all output has reached EOF."}}),
     )
 }
 
@@ -1279,6 +1740,9 @@ fn job_side_effect(
                 .ok_or_else(|| DeckError::new(ErrorKind::Missing, "job not found"))?;
             let session = authorized_session(doc, client_id, &binding.session_id)?.clone();
             check_control(&session, client_id, &generation, epoch)?;
+            if input.is_some() {
+                active_execution_grant(runtime, doc, client_id, &session, true)?;
+            }
             let operation = Operation {
                 operation_id: random_id("op_")?,
                 client_id: client_id.into(),
@@ -1387,14 +1851,17 @@ fn session_close(runtime: &Runtime, client_id: &str, arguments: Value) -> Result
         }
         let session = authorized_session(doc, client_id, &args.session_id)?.clone();
         check_control(&session, client_id, &args.expected_generation, args.control_epoch)?;
-        let active = send_runner(&session, &json!({"kind":"ping"}))
-            .ok()
-            .and_then(|value| value.get("job").cloned())
-            .is_some_and(|job| !job.is_null());
+        let runner = send_runner(&session, &json!({"kind":"ping"})).map_err(|_| {
+            DeckError::new(
+                ErrorKind::ContextChanged,
+                "managed runner state is unknown; remote close is refused",
+            )
+        })?;
+        let active = runner.get("job").is_some_and(|job| !job.is_null());
         if active && !args.confirm_running { return Err(DeckError::new(ErrorKind::Locked, "session has a running job")); }
         let managed = doc.sessions.iter_mut().find(|item| item.session_id == session.session_id).ok_or_else(|| DeckError::new(ErrorKind::Missing, "session not found"))?;
         managed.closing = true;
-        let operation = Operation { operation_id:random_id("op_")?, client_id:client_id.into(), request_id:args.request_id, request_hash:hash, kind:"session-close".into(), state:"accepted".into(), code:None, result:Some(json!({"sessionId":session.session_id,"cardId":session.card_id,"confirmRunning":args.confirm_running})), accepted_at:now_ms(), updated_at:now_ms() };
+        let operation = Operation { operation_id:random_id("op_")?, client_id:client_id.into(), request_id:args.request_id, request_hash:hash, kind:"session-close".into(), state:"accepted".into(), code:None, result:Some(json!({"sessionId":session.session_id,"cardId":session.card_id,"sessionGeneration":session.generation,"controlEpoch":session.control_epoch,"confirmRunning":args.confirm_running})), accepted_at:now_ms(), updated_at:now_ms() };
         doc.operations.push(operation.clone());
         Ok(operation)
     }).map_err(map_error)?;
@@ -1412,6 +1879,9 @@ fn route(runtime: &Runtime, request: WireRequest) -> Value {
     }
     let result = match request.tool.as_str() {
         "deck_capabilities" => capabilities(runtime, &request.client_id, request.arguments),
+        "deck_project_list" => project_list(runtime, &request.client_id, request.arguments),
+        "deck_project_read" => project_read(runtime, &request.client_id, request.arguments),
+        "deck_project_search" => project_search(runtime, &request.client_id, request.arguments),
         "deck_sessions_list" => sessions_list(runtime, &request.client_id, request.arguments),
         "deck_session_create" => session_create(runtime, &request.client_id, request.arguments),
         "deck_operation_get" => operation_get(runtime, &request.client_id, request.arguments),
@@ -1512,6 +1982,8 @@ pub(crate) fn spawn(app: AppHandle) {
         doc: Mutex::new(load(&path)),
         io: Mutex::new(()),
         delivery: Mutex::new(()),
+        service_instance: random_id("svc_").unwrap_or_else(|_| "svc_unavailable".into()),
+        started: Instant::now(),
     });
     let _ = RUNTIME.set(runtime.clone());
     std::thread::Builder::new()
@@ -1604,6 +2076,12 @@ pub(crate) fn mcp_disable() -> Result<(), DeckError> {
     let _delivery = runtime.delivery.lock_or_recover();
     let sessions = runtime.write(|doc| {
         doc.config.enabled = false;
+        for grant in &mut doc.execution_grants {
+            if grant.revoked_at.is_none() {
+                grant.revoked_at = Some(now_ms());
+                grant.revocation_version = grant.grant_version;
+            }
+        }
         let sessions = doc.sessions.clone();
         let closing = doc
             .operations
@@ -1642,6 +2120,7 @@ pub(crate) fn mcp_disable() -> Result<(), DeckError> {
 pub(crate) fn mcp_client_add(
     name: String,
     projects: Vec<ProjectScopeInput>,
+    allow_create: bool,
 ) -> Result<ClientView, DeckError> {
     if !valid_title(&name) || projects.is_empty() || projects.len() > MAX_PROJECTS_PER_CLIENT {
         return Err(DeckError::new(
@@ -1687,7 +2166,7 @@ pub(crate) fn mcp_client_add(
             id: random_id("client_")?,
             name,
             revoked_at: None,
-            allow_create: true,
+            allow_create,
             projects: scopes,
         };
         doc.config.clients.push(client.clone());
@@ -1731,6 +2210,14 @@ pub(crate) fn mcp_client_revoke(client_id: String) -> Result<(), DeckError> {
                 .filter_map(|operation| operation.result.as_ref()?.get("sessionId")?.as_str())
                 .map(str::to_owned)
                 .collect::<HashSet<_>>();
+            for grant in doc
+                .execution_grants
+                .iter_mut()
+                .filter(|grant| grant.client_id == client_id && grant.revoked_at.is_none())
+            {
+                grant.revoked_at = Some(now_ms());
+                grant.revocation_version = grant.grant_version;
+            }
             for session in doc
                 .sessions
                 .iter_mut()
@@ -1759,6 +2246,101 @@ pub(crate) fn mcp_client_revoke(client_id: String) -> Result<(), DeckError> {
         let _ = send_runner(&session, &json!({"kind":"control","mode":"human"}));
     }
     Ok(())
+}
+
+/// Create a short-lived trusted-host execution window. This command is only
+/// exposed to the local Tauri UI; there is intentionally no MCP route for it.
+#[tauri::command]
+pub(crate) fn mcp_execution_grant(
+    session_id: String,
+    duration_ms: Option<u64>,
+    allow_stdin: bool,
+    allow_output: bool,
+) -> Result<(), DeckError> {
+    let runtime = runtime()?;
+    let _delivery = runtime.delivery.lock_or_recover();
+    let duration = duration_ms
+        .unwrap_or(DEFAULT_EXECUTION_GRANT_MS)
+        .clamp(60_000, MAX_EXECUTION_GRANT_MS);
+    let service_instance = runtime.service_instance.clone();
+    let monotonic = runtime.monotonic_ms();
+    runtime.write(|doc| {
+        let session = doc
+            .sessions
+            .iter()
+            .find(|session| session.session_id == session_id || session.card_id == session_id)
+            .cloned()
+            .ok_or_else(|| DeckError::new(ErrorKind::Missing, "MCP session not found"))?;
+        client(doc, &session.owner_client_id)?;
+        let version = doc
+            .execution_grants
+            .iter()
+            .filter(|grant| grant.session_id == session.session_id)
+            .map(|grant| grant.grant_version)
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1);
+        for grant in doc
+            .execution_grants
+            .iter_mut()
+            .filter(|grant| grant.session_id == session.session_id && grant.revoked_at.is_none())
+        {
+            grant.revoked_at = Some(now_ms());
+            grant.revocation_version = grant.grant_version;
+        }
+        let granted_session_id = session.session_id.clone();
+        doc.execution_grants.push(ExecutionGrant {
+            grant_id: random_id("grant_")?,
+            client_id: session.owner_client_id,
+            credential_version: 1,
+            project_id: session.project_id,
+            session_id: session.session_id,
+            session_generation: session.generation,
+            profile: "trusted-host-v1".into(),
+            environment_profile: ENVIRONMENT_PROFILE.into(),
+            environment_profile_version: 1,
+            issued_at: now_ms(),
+            expires_at: now_ms().saturating_add(duration),
+            issued_monotonic_ms: monotonic,
+            duration_ms: duration,
+            allow_stdin,
+            allow_output,
+            grant_version: version,
+            revocation_version: version.saturating_sub(1),
+            service_instance,
+            revoked_at: None,
+        });
+        if let Some(managed) = doc
+            .sessions
+            .iter_mut()
+            .find(|managed| managed.session_id == granted_session_id)
+        {
+            managed.output_shared = allow_output;
+        }
+        Ok(())
+    })
+}
+
+#[tauri::command]
+pub(crate) fn mcp_execution_revoke(session_id: String) -> Result<(), DeckError> {
+    let runtime = runtime()?;
+    let _delivery = runtime.delivery.lock_or_recover();
+    runtime.write(|doc| {
+        let session = doc
+            .sessions
+            .iter()
+            .find(|session| session.session_id == session_id || session.card_id == session_id)
+            .ok_or_else(|| DeckError::new(ErrorKind::Missing, "MCP session not found"))?;
+        for grant in doc
+            .execution_grants
+            .iter_mut()
+            .filter(|grant| grant.session_id == session.session_id && grant.revoked_at.is_none())
+        {
+            grant.revoked_at = Some(now_ms());
+            grant.revocation_version = grant.grant_version;
+        }
+        Ok(())
+    })
 }
 
 #[derive(Clone, Serialize)]
@@ -1818,7 +2400,9 @@ pub(crate) fn mcp_claim(operation_id: String) -> Result<PendingView, DeckError> 
 
 #[tauri::command]
 pub(crate) fn mcp_validate(operation_id: String) -> Result<(), DeckError> {
-    runtime()?.read(|doc| {
+    let runtime = runtime()?;
+    let _delivery = runtime.delivery.lock_or_recover();
+    runtime.read(|doc| {
         if !doc.config.enabled {
             return Err(DeckError::new(ErrorKind::Perm, "MCP control is disabled"));
         }
@@ -1834,7 +2418,33 @@ pub(crate) fn mcp_validate(operation_id: String) -> Result<(), DeckError> {
                     "MCP operation is no longer executable",
                 )
             })?;
-        client(doc, &operation.client_id).map(|_| ())
+        client(doc, &operation.client_id)?;
+        if operation.kind == "session-close" {
+            let result = operation.result.as_ref().ok_or_else(|| {
+                DeckError::new(ErrorKind::ContextChanged, "MCP close plan is missing")
+            })?;
+            let session_id = result
+                .get("sessionId")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let generation = result
+                .get("sessionGeneration")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let epoch = result
+                .get("controlEpoch")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            let session = authorized_session(doc, &operation.client_id, session_id)?;
+            check_control(session, &operation.client_id, generation, epoch)?;
+            if !session.closing {
+                return Err(DeckError::new(
+                    ErrorKind::ContextChanged,
+                    "MCP close plan is no longer current",
+                ));
+            }
+        }
+        Ok(())
     })?
 }
 
@@ -1989,6 +2599,7 @@ pub(crate) fn mcp_complete(
                 control_epoch: 1,
                 lease_expires_at: authorized.then(|| now_ms() + DEFAULT_LEASE_MS),
                 human_lock: !authorized,
+                output_shared: false,
                 closing: false,
                 created_at: now_ms(),
             };
@@ -2064,6 +2675,7 @@ pub(crate) fn mcp_takeover(session_id: String) -> Result<(), DeckError> {
         session.control_epoch = session.control_epoch.saturating_add(1);
         session.lease_expires_at = None;
         session.human_lock = true;
+        session.output_shared = false;
         Ok(session.clone())
     })?;
     let response = send_runner(&session, &json!({"kind":"control","mode":"human"}))?;
@@ -2089,6 +2701,7 @@ pub(crate) fn mcp_return_control(session_id: String) -> Result<(), DeckError> {
             .cloned()
             .ok_or_else(|| DeckError::new(ErrorKind::Missing, "MCP session not found"))?;
         client(doc, &session.owner_client_id)?;
+        active_execution_grant(runtime, doc, &session.owner_client_id, &session, false)?;
         Ok::<ManagedSession, DeckError>(session)
     })??;
     let response = send_runner(&session, &json!({"kind":"control","mode":"mcp"}))?;
@@ -2125,11 +2738,16 @@ pub(crate) struct SessionUiView {
     client_name: Option<String>,
     job_state: Option<String>,
     recent_error: Option<String>,
+    execution_grant_active: bool,
+    execution_expires_at: Option<u64>,
+    stdin_allowed: bool,
+    output_shared: bool,
 }
 
 #[tauri::command]
 pub(crate) fn mcp_session_ui(card_id: String) -> Result<SessionUiView, DeckError> {
-    let session = runtime()?.read(|doc| {
+    let runtime = runtime()?;
+    let session = runtime.read(|doc| {
         doc.sessions
             .iter()
             .find(|session| session.card_id == card_id)
@@ -2145,9 +2763,13 @@ pub(crate) fn mcp_session_ui(card_id: String) -> Result<SessionUiView, DeckError
             client_name: None,
             job_state: None,
             recent_error: None,
+            execution_grant_active: false,
+            execution_expires_at: None,
+            stdin_allowed: false,
+            output_shared: false,
         });
     };
-    let (client_name, recent_error) = runtime()?.read(|doc| {
+    let (client_name, recent_error, grant) = runtime.read(|doc| {
         let name = doc
             .config
             .clients
@@ -2169,7 +2791,22 @@ pub(crate) fn mcp_session_ui(card_id: String) -> Result<SessionUiView, DeckError
                         == Some(&session.session_id)
             })
             .and_then(|operation| operation.code.clone());
-        (name, error)
+        let grant = doc
+            .execution_grants
+            .iter()
+            .rev()
+            .find(|grant| {
+                grant.session_id == session.session_id
+                    && grant.service_instance == runtime.service_instance
+                    && grant.revoked_at.is_none()
+                    && now_ms() < grant.expires_at
+                    && runtime
+                        .monotonic_ms()
+                        .saturating_sub(grant.issued_monotonic_ms)
+                        < grant.duration_ms
+            })
+            .cloned();
+        (name, error, grant)
     })?;
     let runner = send_runner(&session, &json!({"kind":"ping"})).ok();
     let job_state = runner
@@ -2187,6 +2824,10 @@ pub(crate) fn mcp_session_ui(card_id: String) -> Result<SessionUiView, DeckError
         client_name,
         job_state,
         recent_error,
+        execution_grant_active: grant.is_some(),
+        execution_expires_at: grant.as_ref().map(|grant| grant.expires_at),
+        stdin_allowed: grant.as_ref().is_some_and(|grant| grant.allow_stdin),
+        output_shared: session.output_shared,
     })
 }
 
@@ -2348,8 +2989,33 @@ mod tests {
             control_epoch: 1,
             lease_expires_at: Some(now_ms() + 60_000),
             human_lock: false,
+            output_shared: true,
             closing: false,
             created_at: now_ms(),
+        }
+    }
+
+    fn execution_grant(session: &ManagedSession) -> ExecutionGrant {
+        ExecutionGrant {
+            grant_id: "grant_test".into(),
+            client_id: session.owner_client_id.clone(),
+            credential_version: 1,
+            project_id: session.project_id.clone(),
+            session_id: session.session_id.clone(),
+            session_generation: session.generation.clone(),
+            profile: "trusted-host-v1".into(),
+            environment_profile: ENVIRONMENT_PROFILE.into(),
+            environment_profile_version: 1,
+            issued_at: now_ms(),
+            expires_at: now_ms() + 60_000,
+            issued_monotonic_ms: 0,
+            duration_ms: 60_000,
+            allow_stdin: true,
+            allow_output: true,
+            grant_version: 1,
+            revocation_version: 0,
+            service_instance: "svc_test".into(),
+            revoked_at: None,
         }
     }
 
@@ -2395,6 +3061,7 @@ mod tests {
             session_generation: "g_a".into(),
             request_hash: "a".repeat(64),
             operation_id: "op_a".into(),
+            allow_output: true,
         };
         assert_eq!(
             decode_cursor(Some("g_a:job_a:42".into()), &binding).unwrap(),
@@ -2436,6 +3103,7 @@ mod tests {
             control_epoch: 2,
             lease_expires_at: None,
             human_lock: true,
+            output_shared: false,
             closing: false,
             created_at: 1,
         };
@@ -2485,6 +3153,7 @@ mod tests {
             control_epoch: 2,
             lease_expires_at: Some(now_ms() + 10_000),
             human_lock: false,
+            output_shared: true,
             closing: false,
             created_at: 1,
         });
@@ -2537,7 +3206,9 @@ mod tests {
         let mut doc = DiskDoc::default();
         doc.config.enabled = true;
         doc.config.clients.push(client_record(&root));
-        doc.sessions.push(session_record(&root, &runner));
+        let session = session_record(&root, &runner);
+        doc.execution_grants.push(execution_grant(&session));
+        doc.sessions.push(session);
         let path = root.join("mcp.json");
         save(&path, &doc).unwrap();
         let runtime = Arc::new(Runtime {
@@ -2547,6 +3218,8 @@ mod tests {
             doc: Mutex::new(Ok(doc)),
             io: Mutex::new(()),
             delivery: Mutex::new(()),
+            service_instance: "svc_test".into(),
+            started: Instant::now(),
         });
         assert!(RUNTIME.set(runtime.clone()).is_ok());
 
@@ -2555,13 +3228,14 @@ mod tests {
         assert!(!status.socket_ready);
         assert_eq!(status.clients.len(), 1);
         assert!(mcp_adapter_path().is_err());
-        assert!(mcp_client_add("".into(), vec![]).is_err());
+        assert!(mcp_client_add("".into(), vec![], false).is_err());
         assert!(mcp_client_add(
             "Bad scope".into(),
             vec![ProjectScopeInput {
                 project_id: "bad id".into(),
                 roots: vec![root.display().to_string()],
             }],
+            false,
         )
         .is_err());
         let added = mcp_client_add(
@@ -2570,6 +3244,7 @@ mod tests {
                 project_id: "P2".into(),
                 roots: vec![root.display().to_string()],
             }],
+            true,
         )
         .unwrap();
         assert_eq!(added.name, "Client B");
@@ -2640,12 +3315,9 @@ mod tests {
                 "control_epoch":1,
                 "confirm_running":false
             }),
-        )
-        .unwrap();
-        let close_id = close["operationId"].as_str().unwrap().to_owned();
-        mcp_claim(close_id.clone()).unwrap();
-        mcp_validate(close_id.clone()).unwrap();
-        mcp_complete(close_id, "committed".into(), None, None).unwrap();
+        );
+        assert_eq!(close.unwrap_err()["error"]["code"], "CONTEXT_CHANGED");
+        mcp_card_closed(created_session.card_id).unwrap();
 
         assert!(mcp_claim("missing".into()).is_err());
         assert!(mcp_validate("missing".into()).is_err());
@@ -2671,7 +3343,8 @@ mod tests {
         let mut doc = DiskDoc::default();
         doc.config.enabled = true;
         doc.config.clients.push(client_record(&root));
-        doc.sessions.push(session_record(&root, &runner));
+        let session = session_record(&root, &runner);
+        doc.sessions.push(session);
         let path = root.join("mcp.json");
         save(&path, &doc).unwrap();
         let runtime = Arc::new(Runtime {
@@ -2681,6 +3354,8 @@ mod tests {
             doc: Mutex::new(Ok(doc)),
             io: Mutex::new(()),
             delivery: Mutex::new(()),
+            service_instance: "svc_test".into(),
+            started: Instant::now(),
         });
 
         assert_eq!(
@@ -2745,6 +3420,22 @@ mod tests {
             "committed"
         );
 
+        let denied = route(
+            &runtime,
+            request(
+                "deck_exec",
+                json!({"request_id":"exec_without_grant","session_id":"mcp_a","expected_generation":"g_a","control_epoch":4,"script":"print forbidden","cwd":root.display().to_string()}),
+            ),
+        );
+        assert_eq!(denied["error"]["code"], "EXECUTION_GRANT_REQUIRED");
+        runtime
+            .write(|doc| {
+                let session = doc.sessions[0].clone();
+                doc.execution_grants.push(execution_grant(&session));
+                Ok(())
+            })
+            .unwrap();
+
         let exec_arguments = json!({
             "request_id":"exec_a",
             "session_id":"mcp_a",
@@ -2756,7 +3447,7 @@ mod tests {
             "execution_timeout_ms":1_000
         });
         let executed = route(&runtime, request("deck_exec", exec_arguments.clone()));
-        assert_eq!(executed["state"], "exited");
+        assert_eq!(executed["state"], "exited", "{executed}");
         let job_id = executed["jobId"].as_str().unwrap().to_owned();
         assert_eq!(
             route(&runtime, request("deck_exec", exec_arguments))["jobId"],
@@ -2895,6 +3586,62 @@ mod tests {
             projects: vec![],
         });
         assert!(validate_doc(&invalid).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn concurrent_create_reserves_one_operation_and_one_plan() {
+        let root = test_root("concurrent-create");
+        let mut doc = DiskDoc::default();
+        doc.config.enabled = true;
+        doc.config.clients.push(client_record(&root));
+        let runtime = Arc::new(Runtime {
+            app: None,
+            path: root.join("mcp.json"),
+            socket: root.join("control.sock"),
+            doc: Mutex::new(Ok(doc)),
+            io: Mutex::new(()),
+            delivery: Mutex::new(()),
+            service_instance: "svc_concurrent".into(),
+            started: Instant::now(),
+        });
+        let barrier = Arc::new(std::sync::Barrier::new(3));
+        let mut threads = Vec::new();
+        for _ in 0..2 {
+            let runtime = runtime.clone();
+            let barrier = barrier.clone();
+            let cwd = root.display().to_string();
+            threads.push(std::thread::spawn(move || {
+                barrier.wait();
+                session_create(
+                    &runtime,
+                    "client_a",
+                    json!({"request_id":"same_create","project_id":"P1","cwd":cwd}),
+                )
+                .unwrap()["operationId"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned()
+            }));
+        }
+        barrier.wait();
+        let ids = threads
+            .into_iter()
+            .map(|thread| thread.join().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(ids[0], ids[1]);
+        runtime
+            .read(|doc| {
+                assert_eq!(doc.operations.len(), 1);
+                assert_eq!(
+                    doc.operations
+                        .iter()
+                        .filter(|operation| operation.kind == "session-create")
+                        .count(),
+                    1
+                );
+            })
+            .unwrap();
         std::fs::remove_dir_all(root).unwrap();
     }
 }

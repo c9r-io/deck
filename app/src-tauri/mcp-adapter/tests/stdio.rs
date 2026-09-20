@@ -101,14 +101,24 @@ fn initializes_lists_and_calls_over_stdio_without_stdout_noise() {
     input.flush().unwrap();
     let listed = read_response(&mut output, 2);
     let tools = listed["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 11);
+    assert_eq!(tools.len(), 14);
     let exec = tools
         .iter()
         .find(|tool| tool["name"] == "deck_exec")
         .unwrap();
     assert_eq!(exec["annotations"]["readOnlyHint"], false);
+    assert_eq!(exec["annotations"]["openWorldHint"], true);
     assert_eq!(exec["inputSchema"]["additionalProperties"], false);
     assert_eq!(exec["outputSchema"]["required"][0], "ok");
+    for name in [
+        "deck_project_list",
+        "deck_project_read",
+        "deck_project_search",
+    ] {
+        let tool = tools.iter().find(|tool| tool["name"] == name).unwrap();
+        assert_eq!(tool["annotations"]["readOnlyHint"], true);
+        assert_eq!(tool["annotations"]["openWorldHint"], false);
+    }
 
     writeln!(input, "{}", json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"deck_capabilities","arguments":{"unknown":true}}})).unwrap();
     input.flush().unwrap();

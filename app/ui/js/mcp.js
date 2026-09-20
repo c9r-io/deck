@@ -56,6 +56,9 @@ async function closeSession(pending) {
     await finish(pending.operationId, 'committed');
     return;
   }
+  // Revalidate the principal, generation, control epoch and current revoke
+  // state immediately before entering the authoritative Board close path.
+  await inv('mcp_validate', { operationId: pending.operationId });
   const result = await provider.close(card.id, { detail: true, quiet: true });
   await finish(pending.operationId, result.ok ? 'committed' : 'rejected',
     result.ok ? null : 'close-failed').catch(() => {});

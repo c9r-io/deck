@@ -889,10 +889,12 @@ export function initDialogs() {
     if (!project) { toast(t('mcp.noProject')); return; }
     const name = await promptDialog(t('mcp.clientName'), 'ChatGPT');
     if (!name) return;
-    const root = project.dir || ctx.HOME;
+    const root = project.dir;
+    if (!root) { toast(t('mcp.projectRootRequired')); return; }
     if (!(await confirmDangerDialog(t('mcp.authorizeConfirm', { name: project.name, root }), t('mcp.add')))) return;
+    const allowCreate = await confirmDialog(t('mcp.allowCreateConfirm'));
     try {
-      await inv('mcp_client_add', { name, projects: [{ projectId: project.id, roots: [root] }] });
+      await inv('mcp_client_add', { name, projects: [{ projectId: project.id, roots: [root] }], allowCreate });
       await renderMcpSettings();
     } catch (_) { toast(t('mcp.actionFailed')); }
   };

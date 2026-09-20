@@ -31,7 +31,10 @@ fn wait_for(socket: &Path, job: &str) -> Value {
             socket,
             json!({"kind":"read","job_id":job,"cursor":0,"max_bytes":32768,"wait_ms":100}),
         );
-        if value["job"]["state"] != "running" && value["job"]["state"] != "starting" {
+        if value["job"]["state"] != "running"
+            && value["job"]["state"] != "starting"
+            && value["job"]["outputComplete"] == true
+        {
             return value;
         }
         assert!(Instant::now() < limit, "job did not exit: {value}");
@@ -54,6 +57,7 @@ fn reports_exit_input_and_interrupt_without_terminal_markers() {
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
+        .env("DECK_SYNTHETIC_SECRET", "must-not-reach-job")
         .spawn()
         .unwrap();
     let mut runner = Runner(child);
@@ -71,6 +75,15 @@ fn reports_exit_input_and_interrupt_without_terminal_markers() {
     let done = wait_for(&socket, "job_ok");
     assert_eq!(done["job"]["exitCode"], 17);
     assert_eq!(done["output"], "fake exited 0\n");
+    assert_eq!(done["job"]["outputComplete"], true);
+
+    call(
+        &socket,
+        json!({"kind":"exec","job_id":"job_env","request_hash":"hash_env","script":"if [[ -n ${DECK_SYNTHETIC_SECRET-} ]]; then print leaked; exit 9; fi; print clean","cwd":"/tmp","wait_ms":0}),
+    );
+    let clean = wait_for(&socket, "job_env");
+    assert_eq!(clean["job"]["exitCode"], 0);
+    assert_eq!(clean["output"], "clean\n");
 
     call(
         &socket,

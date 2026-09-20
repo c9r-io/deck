@@ -1004,7 +1004,9 @@ export function renderSessionView() {
   $('queue-btn').disabled = s.origin?.source === 'mcp';
   $('voice-btn').disabled = s.origin?.source === 'mcp';
   const mcp = $('mcp-control-btn');
+  const grant = $('mcp-grant-btn');
   mcp.hidden = s.origin?.source !== 'mcp';
+  grant.hidden = mcp.hidden;
   if (!mcp.hidden) {
     const cardId = s.id;
     inv('mcp_session_ui', { cardId }).then(status => {
@@ -1014,6 +1016,13 @@ export function renderSessionView() {
       const task = status.jobState || t('mcp.noJob');
       mcp.textContent = t('mcp.sessionStatus', { client: status.clientName || 'MCP', task, action });
       mcp.title = [t(status.activeJob ? 'mcp.activeJob' : 'mcp.idle'), status.recentError || ''].filter(Boolean).join(' · ');
+      grant.dataset.active = String(status.executionGrantActive === true);
+      grant.textContent = status.executionGrantActive
+        ? t('mcp.revokeExecution')
+        : t('mcp.approveExecution');
+      grant.title = status.executionGrantActive && status.executionExpiresAt
+        ? t('mcp.executionUntil', { time: new Date(status.executionExpiresAt).toLocaleTimeString() })
+        : t('mcp.executionRequired');
     }).catch(() => {});
   }
 }
@@ -1045,6 +1054,21 @@ export function initLayout() {
     if (!human && !(await confirmDialog(t('mcp.takeoverConfirm')))) return;
     try {
       await inv(human ? 'mcp_return_control' : 'mcp_takeover', { sessionId: cardId });
+      renderSessionView();
+    } catch (_) { toast(t('mcp.actionFailed')); }
+  };
+
+  $('mcp-grant-btn').onclick = async e => {
+    e.stopPropagation();
+    const sessionId = state.sessionId;
+    if (!sessionId) return;
+    const active = $('mcp-grant-btn').dataset.active === 'true';
+    if (!active && !(await confirmDialog(t('mcp.approveExecutionConfirm')))) return;
+    try {
+      if (active) await inv('mcp_execution_revoke', { sessionId });
+      else await inv('mcp_execution_grant', {
+        sessionId, durationMs: 15 * 60 * 1000, allowStdin: true, allowOutput: true,
+      });
       renderSessionView();
     } catch (_) { toast(t('mcp.actionFailed')); }
   };

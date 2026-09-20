@@ -1,6 +1,6 @@
 # Deck MCP terminal control architecture
 
-Status: accepted MVP ADR, 2026-09-20.
+Status: protocol-v2 scheme-B ADR, 2026-09-21.
 
 ## Decision
 
@@ -11,7 +11,8 @@ each MCP-managed tmux session.
 The adapter owns only MCP framing, strict schemas, annotations, and conversion
 to structured results. Deck owns feature enablement, client and project scope,
 Board operations, idempotency, control epochs, generations, and the job
-ledger. The runner owns one visible session's actual processes, bounded output,
+ledger. `mcp_fs.rs` owns descriptor-relative structured reads without child
+processes. The runner owns one visible session's actual processes, bounded output,
 stdin binding, process-group interruption, and exit status. Phone Connector
 tokens, routes, kinds, and journals are not accepted by any MCP interface.
 
@@ -58,10 +59,12 @@ Control operations use `accepted`, `executing`, `committed`, `rejected`, and
 `ambiguous`. Jobs separately use `starting`, `running`, `exited`, and `lost`.
 Terminal text is context, never completion evidence.
 
-Every write verifies the principal, active grant, project/session scope,
-session generation, control epoch, lease, job binding, and current target. A
+Every exec verifies the adapter principal, execution-grant and policy versions,
+service-start identity, project/session scope, canonical cwd, generation,
+control epoch, lease, environment profile, script digest/length, timeout and
+request identity. A
 single delivery fence serializes dispatch with revoke, disable, close,
-takeover, and return. Human takeover advances the epoch before enabling Deck
+takeover, and return. Human takeover advances the epoch and pauses output sharing before enabling Deck
 keyboard input. The runner discards ordinary pane input while MCP owns control
 and routes MCP input only to the named running child's stdin.
 
@@ -71,7 +74,10 @@ different arguments return `REQUEST_ID_CONFLICT`. The fixed ledger bounds are
 2,000 operations and 1,000 jobs. Reaching a bound fails closed instead of
 evicting replay protection. Scripts and input bytes are not persisted.
 
-After Deck crashes, deterministic Board operations can be reconciled. An
+Execution grants use a monotonic in-process deadline plus a wall-clock display
+deadline and are bound to a random service-start identity. Restart never
+restores them, and control Request/Renew cannot extend them. After Deck crashes,
+deterministic Board operations can be reconciled. An
 accepted/executing non-Board side effect becomes `ambiguous`; it is never
 automatically replayed. Control ownership is cleared and its epoch advanced.
 

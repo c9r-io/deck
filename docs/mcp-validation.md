@@ -1,6 +1,9 @@
 # MCP validation record
 
-Date: 2026-09-20. Status words below are evidence labels, not forecasts.
+Date: 2026-09-21. Status words below are evidence labels, not forecasts.
+
+Historical signed-smoke results below apply to protocol v1. They are not proof
+that the protocol-v2 scheme-B UI has been exercised in an installed signed app.
 
 ## Automated evidence
 
