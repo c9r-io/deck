@@ -410,6 +410,8 @@ fn main() {
             mcp::mcp_disable,
             mcp::mcp_client_add,
             mcp::mcp_client_revoke,
+            mcp::mcp_client_delete,
+            mcp::mcp_scope_preview,
             mcp::mcp_execution_grant,
             mcp::mcp_execution_revoke,
             mcp::mcp_pending,

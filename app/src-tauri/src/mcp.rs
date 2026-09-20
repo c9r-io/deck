@@ -4,6 +4,9 @@
 //! records, project scopes, short-lived execution grants, operation ids,
 //! sessions, and jobs are disjoint. Creating a session never grants execution;
 //! only the local Tauri command may create or expand an execution window.
+//! Authorization roots are canonicalized directories before the UI confirms
+//! them. Client deletion is available only after revocation has fenced live
+//! authority; it removes the display authorization but retains ledger history.
 //! Project list/read/search use descriptor-relative no-follow filesystem IO in
 //! `mcp_fs.rs` and never start a shell or repository helper. The
 //! listener is disabled by default and is a 0600 Unix socket under Deck's
@@ -2655,6 +2658,23 @@ pub(crate) struct ProjectScopeInput {
     roots: Vec<String>,
 }
 
+fn canonical_project_root(root: &str) -> Result<String, DeckError> {
+    let path = std::fs::canonicalize(root)
+        .map_err(|_| DeckError::new(ErrorKind::NotDir, "authorized root is unavailable"))?;
+    if !path.is_dir() {
+        return Err(DeckError::new(
+            ErrorKind::NotDir,
+            "authorized root is not a directory",
+        ));
+    }
+    Ok(path.display().to_string())
+}
+
+#[tauri::command]
+pub(crate) fn mcp_scope_preview(root: String) -> Result<String, DeckError> {
+    canonical_project_root(&root)
+}
+
 #[tauri::command]
 pub(crate) fn mcp_enable() -> Result<(), DeckError> {
     let runtime = runtime()?;
@@ -2749,13 +2769,7 @@ pub(crate) fn mcp_client_add(
         let roots = project
             .roots
             .into_iter()
-            .map(|root| {
-                std::fs::canonicalize(root)
-                    .map(|path| path.display().to_string())
-                    .map_err(|_| {
-                        DeckError::new(ErrorKind::NotDir, "authorized root is unavailable")
-                    })
-            })
+            .map(|root| canonical_project_root(&root))
             .collect::<Result<Vec<_>, _>>()?;
         scopes.push(ProjectScope {
             project_id: project.project_id,
@@ -2899,6 +2913,59 @@ pub(crate) fn mcp_client_revoke(client_id: String) -> Result<(), DeckError> {
             "client is revoked locally but one or more runner fences are unconfirmed",
         ));
     }
+    Ok(())
+}
+
+/// Remove a local authorization display record after revocation has already
+/// fenced its sessions and pending side effects. Historical sessions,
+/// operations, jobs, grants, and audit links intentionally retain the opaque
+/// client id so deleting a client cannot erase the security ledger.
+#[tauri::command]
+pub(crate) fn mcp_client_delete(client_id: String) -> Result<(), DeckError> {
+    if !valid_id(&client_id) {
+        return Err(DeckError::new(ErrorKind::Invalid, "invalid MCP client id"));
+    }
+    let runtime = runtime()?;
+    let _delivery = runtime.delivery.lock_or_recover();
+    runtime
+        .read(|doc| {
+            doc.config
+                .clients
+                .iter()
+                .find(|client| client.id == client_id)
+                .map(|client| client.revoked_at.is_some())
+        })?
+        .ok_or_else(|| DeckError::new(ErrorKind::Missing, "MCP client not found"))?
+        .then_some(())
+        .ok_or_else(|| {
+            DeckError::new(ErrorKind::Perm, "revoke the MCP client before deleting it")
+        })?;
+    if runtime.app.is_some() {
+        crate::keychain::clear_mcp_credential(&client_id)?;
+    }
+    runtime.write(|doc| {
+        let index = doc
+            .config
+            .clients
+            .iter()
+            .position(|client| client.id == client_id && client.revoked_at.is_some())
+            .ok_or_else(|| DeckError::new(ErrorKind::Missing, "revoked MCP client not found"))?;
+        doc.config.clients.remove(index);
+        audit(
+            doc,
+            "client-deleted",
+            AuditLink {
+                principal_id: Some(&client_id),
+                ..Default::default()
+            },
+        )?;
+        Ok(())
+    })?;
+    runtime
+        .emergency
+        .lock_or_recover()
+        .clients
+        .remove(&client_id);
     Ok(())
 }
 
@@ -4283,6 +4350,14 @@ mod tests {
         )
         .unwrap();
         assert_eq!(added.name, "Client B");
+        assert_eq!(
+            mcp_scope_preview(root.display().to_string()).unwrap(),
+            std::fs::canonicalize(&root).unwrap().display().to_string()
+        );
+        assert_eq!(
+            mcp_client_delete(added.id.clone()).unwrap_err().kind(),
+            ErrorKind::Perm
+        );
 
         let unmanaged = mcp_session_ui("missing".into()).unwrap();
         assert!(!unmanaged.managed);
@@ -4363,7 +4438,19 @@ mod tests {
             root.display().to_string()
         )
         .is_err());
-        mcp_client_revoke(added.id).unwrap();
+        mcp_client_revoke(added.id.clone()).unwrap();
+        mcp_client_delete(added.id.clone()).unwrap();
+        assert!(mcp_status()
+            .unwrap()
+            .clients
+            .iter()
+            .all(|client| client.id != added.id));
+        assert!(runtime
+            .read(|doc| doc.audit.iter().any(|event| {
+                event.kind == "client-deleted"
+                    && event.principal_id.as_deref() == Some(added.id.as_str())
+            }))
+            .unwrap());
         mcp_card_closed("M1".into()).unwrap();
         assert!(guard_server_restart().is_ok());
         assert!(guard_terminal_input("ordinary-session").is_ok());

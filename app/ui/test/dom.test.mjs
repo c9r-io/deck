@@ -9,8 +9,8 @@ globalThis.document = fakeDocument;
 globalThis.window = { __TAURI__: null, __DECK_DEBUG: false };
 
 const {
-  cfmDone, choiceDialog, confirmDangerDialog, confirmDialog, initDialogs, inlineRename, persistSessionRestoreChoice, persistUpdateChannelChoice,
-  projectDefaultsDialog, promptDialog, persistThemeChoice, filterSettings, selectSettingsSection, resetApplicationLogs, refreshLogSize,
+  cfmDone, choiceDialog, confirmDangerDialog, confirmDialog, initDialogs, inlineRename, mcpAuthorizationDialog, persistSessionRestoreChoice, persistUpdateChannelChoice,
+  projectDefaultsDialog, promptDialog, persistThemeChoice, filterSettings, renderMcpSettings, selectSettingsSection, resetApplicationLogs, refreshLogSize,
 } = await import('../js/dialogs.js');
 const { ctx, store } = await import('../js/state.js');
 const { boardData, flushBoardMutations, mutateBoard, mutateBoardDebounced } = await import('../js/persistence.js');
@@ -71,6 +71,62 @@ test('prompt dialog does not submit Chinese IME preedit on Enter', async () => {
   assert.equal(fakeDocument.getElementById('ppd').style.display, 'flex');
   input.fire('keydown', { key: 'Enter', keyCode: 13, isComposing: false });
   assert.equal(await pending, '中文输入');
+});
+
+test('MCP authorization requires an explicit project and shows its directory', async () => {
+  const pending = mcpAuthorizationDialog([
+    { id: 'P1', name: 'Deck', dir: '/Users/test/deck' },
+    { id: 'P2', name: 'No directory', dir: '' },
+  ]);
+  const modal = fakeDocument.getElementById('mcp-auth');
+  const name = fakeDocument.getElementById('mcp-auth-name');
+  const project = fakeDocument.getElementById('mcp-auth-project');
+  const root = fakeDocument.getElementById('mcp-auth-root');
+  const proceed = fakeDocument.getElementById('mcp-auth-yes');
+  assert.equal(modal.style.display, 'flex');
+  assert.equal(project.value, '', 'no global/current project is inherited');
+  assert.equal(root.value, '');
+  assert.equal(proceed.disabled, true);
+  assert.equal(project.options.length, 3, 'projects without default directories remain selectable');
+
+  project.value = 'P1';
+  project.fire('change');
+  assert.equal(root.value, '/Users/test/deck', 'configured directory is a visible editable initial value');
+  assert.equal(proceed.disabled, false);
+  project.value = 'P2';
+  project.fire('change');
+  assert.equal(root.value, '');
+  assert.equal(proceed.disabled, true);
+  root.value = '/Users/test/explicit';
+  root.fire('input');
+  assert.equal(proceed.disabled, false);
+  proceed.fire('click');
+  assert.deepEqual(await pending, {
+    name: 'ChatGPT', root: '/Users/test/explicit',
+    project: { id: 'P2', name: 'No directory', dir: '' },
+  });
+  assert.equal(modal.style.display, 'none');
+  assert.equal(name.oninput, null);
+});
+
+test('MCP settings delete only an already-revoked client after confirmation', async () => {
+  const calls = [];
+  window.__TAURI__ = { core: { invoke: async (cmd, args) => {
+    calls.push([cmd, args]);
+    if (cmd === 'mcp_status') return { enabled: true, outputRetentionMs: 86_400_000,
+      clients: [{ id: 'client_old', name: 'Old client', revoked: true, projects: [{ projectId: 'P1', roots: ['/tmp'] }] }] };
+    if (cmd === 'mcp_client_delete') return;
+    throw new Error(`unexpected ${cmd}`);
+  } } };
+  await renderMcpSettings();
+  const row = fakeDocument.getElementById('set-mcp-clients').children[0];
+  const remove = row.children.at(-1);
+  assert.equal(remove.textContent, 'Delete');
+  remove.fire('click');
+  assert.equal(fakeDocument.getElementById('cfm').style.display, 'flex');
+  cfmDone(true);
+  await tick(); await tick();
+  assert.ok(calls.some(([cmd, args]) => cmd === 'mcp_client_delete' && args.clientId === 'client_old'));
 });
 
 test('inline rename restores the old DOM value when async persistence rejects', async () => {

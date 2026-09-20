@@ -15,10 +15,14 @@ item or background service is created.
 
 1. Build/run Deck normally and open **Settings → Integrations**.
 2. Enable **MCP terminal control** and accept the code-execution warning.
-3. Select the intended Deck project and choose **Authorize this project**.
-   Confirm the explicit canonical project root, then separately decide whether
-   the integration may create managed sessions. Deck never falls back to the
-   home directory for a project without a directory.
+3. Choose **Authorize MCP client**, name the client, and explicitly select one
+   of Deck's projects in the authorization dialog. The dialog starts without a
+   selected project and requires an explicit authorization directory. A
+   project's configured directory is filled in as an editable initial value;
+   a project without one stays selectable and starts with a blank directory.
+   Confirm the canonical directory returned by the backend, then separately
+   decide whether the integration may create managed sessions. Deck never
+   inherits the Board's current project or falls back to the home directory.
 4. Copy the local client configuration. The copied `client_id` is a public
    display identifier; its bearer credential remains in the login Keychain and
    never appears in argv. A newly created session still cannot execute. Open
@@ -29,7 +33,10 @@ item or background service is created.
 Disabling the feature or revoking a client fences new side effects, advances
 session control epochs, and hands managed panes to the local user. It does not
 undo code already executed and does not automatically terminate a running
-program.
+program. A revoked client can then be deleted from Settings. Deletion removes
+its authorization display record and Keychain credential, but retains opaque
+client ids in historical sessions, operations, jobs, grants, and audit events;
+deleting a client is not a way to erase the security ledger.
 
 Stopping the STDIO client stops only the Adapter. Quit Deck through the normal
 app lifecycle when desired; neither action implicitly kills a managed tmux

@@ -2,7 +2,7 @@
 // Voice preferences commit through the settings writer before notifying the
 // recorder; edits never request microphone access or download language assets.
 // Part of deck's no-build frontend: native ES modules, no bundler.
-import { $, ctx, genId, inv, state, store, uev } from './state.js';
+import { $, ctx, genId, inv, store, uev } from './state.js';
 import { inlineRenameValue, isComposingKeyEvent } from './pure.js';
 import { applyTranslations, formatNumber, getLocale, onLocaleChange, setLocale, t, translateNotice } from './i18n.js';
 import {
@@ -734,11 +734,12 @@ export async function renderMcpSettings() {
   $('set-mcp-retention').value = String(status?.outputRetentionMs || 24 * 60 * 60 * 1000);
   const clients = $('set-mcp-clients'); clients.replaceChildren();
   for (const client of status?.clients || []) {
-    const row = document.createElement('div'); row.className = 'set-row';
+    const row = document.createElement('div'); row.className = 'set-row mcp-client-row';
     const label = document.createElement('span');
     label.textContent = client.name;
     const scope = document.createElement('span'); scope.style.color = 'var(--muted)';
-    scope.textContent = t('mcp.projectCount', { count: formatNumber(client.projects?.length || 0) });
+    scope.textContent = t('mcp.projectCount', { count: formatNumber(client.projects?.length || 0) })
+      + (client.revoked ? ` · ${t('mcp.revoked')}` : '');
     row.append(label, scope);
     if (!client.revoked) {
       const copy = document.createElement('button'); copy.className = 'btn'; copy.textContent = t('mcp.copyConfig');
@@ -756,6 +757,14 @@ export async function renderMcpSettings() {
         catch (_) { toast(t('mcp.actionFailed')); }
       };
       row.append(copy, revoke);
+    } else {
+      const remove = document.createElement('button'); remove.className = 'btn set-danger'; remove.textContent = t('mcp.delete');
+      remove.onclick = async () => {
+        if (!await confirmDangerDialog(t('mcp.deleteConfirm', { name: client.name }), t('mcp.delete'))) return;
+        try { await inv('mcp_client_delete', { clientId: client.id }); await renderMcpSettings(); }
+        catch (_) { toast(t('mcp.actionFailed')); }
+      };
+      row.append(remove);
     }
     clients.appendChild(row);
   }
@@ -865,6 +874,62 @@ export function promptDialog(msg, initial = '') {
   });
 }
 
+/* MCP authorization must never inherit an invisible global project choice.
+   This dialog starts with no selection and requires an explicit directory.
+   A project's configured directory is only a visible, editable initial value;
+   the native backend canonicalizes the submitted authorization root. */
+let mcpAuthDone = null;
+export function mcpAuthorizationDialog(projects) {
+  return new Promise(resolve => {
+    if (mcpAuthDone) mcpAuthDone(null);
+    const modal = $('mcp-auth');
+    const name = $('mcp-auth-name');
+    const select = $('mcp-auth-project');
+    const root = $('mcp-auth-root');
+    const save = $('mcp-auth-yes');
+    const available = (projects || []).filter(project => project?.id && typeof project.name === 'string');
+    select.replaceChildren();
+    const placeholder = document.createElement('option');
+    placeholder.value = ''; placeholder.textContent = t('mcp.chooseProject');
+    select.appendChild(placeholder);
+    for (const project of available) {
+      const option = document.createElement('option');
+      option.value = project.id; option.textContent = project.name;
+      select.appendChild(option);
+    }
+    name.value = 'ChatGPT'; select.value = ''; root.value = ''; save.disabled = true;
+    const selected = () => available.find(project => project.id === select.value) || null;
+    const refresh = () => {
+      const project = selected();
+      save.disabled = !project || !name.value.trim() || !root.value.trim();
+    };
+    const done = value => {
+      modal.style.display = 'none'; modal.onkeydown = null;
+      name.oninput = null; root.oninput = null; select.onchange = null; mcpAuthDone = null;
+      resolve(value);
+    };
+    mcpAuthDone = done;
+    name.oninput = refresh; root.oninput = refresh;
+    select.onchange = () => {
+      const project = selected();
+      root.value = typeof project?.dir === 'string' ? project.dir.trim() : '';
+      refresh();
+    };
+    save.onclick = () => {
+      const project = selected();
+      const clientName = name.value.trim();
+      const authorizationRoot = root.value.trim();
+      if (project && clientName && authorizationRoot) done({ name: clientName, project, root: authorizationRoot });
+    };
+    $('mcp-auth-no').onclick = () => done(null);
+    modal.onkeydown = event => {
+      if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); done(null); }
+    };
+    modal.style.display = 'flex';
+    name.focus(); name.select();
+  });
+}
+
 /* DOM wiring, run once at boot (app.js) so the module can be imported
    without a document. */
 export function initDialogs() {
@@ -886,12 +951,12 @@ export function initDialogs() {
     await renderMcpSettings();
   };
   $('set-mcp-add').onclick = async () => {
-    const project = store.projects.find(value => value.id === state.projectId);
-    if (!project) { toast(t('mcp.noProject')); return; }
-    const name = await promptDialog(t('mcp.clientName'), 'ChatGPT');
-    if (!name) return;
-    const root = project.dir;
-    if (!root) { toast(t('mcp.projectRootRequired')); return; }
+    const authorization = await mcpAuthorizationDialog(store.projects);
+    if (!authorization) return;
+    const { name, project } = authorization;
+    let root;
+    try { root = await inv('mcp_scope_preview', { root: authorization.root }); }
+    catch (_) { toast(t('mcp.projectRootRequired')); return; }
     if (!(await confirmDangerDialog(t('mcp.authorizeConfirm', { name: project.name, root }), t('mcp.add')))) return;
     const allowCreate = await confirmDialog(t('mcp.allowCreateConfirm'));
     try {

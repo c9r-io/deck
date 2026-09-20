@@ -432,8 +432,8 @@
           <div class="set-group">
             <div class="set-row"><label data-i18n="mcp.title">MCP terminal control</label><span id="set-mcp-status" style="color:var(--muted)"></span></div>
             <div class="set-hint" data-i18n="mcp.hint">Off by default. An authorized MCP client can execute code with your account permissions and receive terminal output. This trusted-host mode is not an OS sandbox.</div>
-            <div class="set-actions"><button class="btn" id="set-mcp-toggle" data-i18n="mcp.enable">Enable</button><button class="btn" id="set-mcp-add" data-i18n="mcp.add">Authorize this project…</button></div>
-            <div class="set-row"><label for="set-mcp-retention" data-i18n="mcp.outputRetention">Managed output retention</label><select id="set-mcp-retention"><option value="3600000" data-i18n="mcp.retention1h">1 hour</option><option value="86400000" data-i18n="mcp.retention24h">24 hours</option><option value="259200000" data-i18n="mcp.retention3d">3 days</option><option value="604800000" data-i18n="mcp.retention7d">7 days</option></select></div>
+            <div class="set-actions mcp-settings-actions"><button class="btn" id="set-mcp-toggle" data-i18n="mcp.enable">Enable</button><button class="btn" id="set-mcp-add" data-i18n="mcp.add">Authorize this project…</button></div>
+            <div class="set-row mcp-retention-row"><label for="set-mcp-retention" data-i18n="mcp.outputRetention">Managed output retention</label><select id="set-mcp-retention"><option value="3600000" data-i18n="mcp.retention1h">1 hour</option><option value="86400000" data-i18n="mcp.retention24h">24 hours</option><option value="259200000" data-i18n="mcp.retention3d">3 days</option><option value="604800000" data-i18n="mcp.retention7d">7 days</option></select></div>
             <div id="set-mcp-clients"></div>
           </div>
         </section>
@@ -553,6 +553,19 @@
     <div class="cfm-actions">
       <button class="btn" id="ppd-no" data-i18n="common.cancel">Cancel</button>
       <button class="btn primary" id="ppd-yes" data-i18n="common.save">Save</button>
+    </div>
+  </div>
+</div>
+<div id="mcp-auth" role="dialog" aria-modal="true" aria-labelledby="mcp-auth-title">
+  <div id="mcp-auth-box">
+    <h2 id="mcp-auth-title" data-i18n="mcp.authorizeTitle">Authorize MCP client</h2>
+    <div class="set-row"><label for="mcp-auth-name" data-i18n="mcp.clientName">Name this MCP client</label><input type="text" id="mcp-auth-name" maxlength="120" autocomplete="off" spellcheck="false"></div>
+    <div class="set-row"><label for="mcp-auth-project" data-i18n="mcp.project">Project</label><select id="mcp-auth-project"></select></div>
+    <div class="set-row"><label for="mcp-auth-root" data-i18n="mcp.directory">Authorized directory</label><input type="text" id="mcp-auth-root" autocomplete="off" spellcheck="false" data-i18n-placeholder="mcp.directoryPlaceholder" placeholder="/path/to/project"></div>
+    <p class="set-hint" data-i18n="mcp.authorizeHint">Choose the project and directory explicitly. A configured project directory is filled in but remains editable. Its canonical path will be shown again before Deck creates the authorization.</p>
+    <div class="cfm-actions">
+      <button class="btn" id="mcp-auth-no" data-i18n="common.cancel">Cancel</button>
+      <button class="btn primary" id="mcp-auth-yes" data-i18n="common.continue">Continue</button>
     </div>
   </div>
 </div>
