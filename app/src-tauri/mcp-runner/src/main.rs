@@ -21,16 +21,21 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const PROTOCOL: u32 = 1;
 const MAX_REQUEST: usize = 256 * 1024;
-const MAX_SCRIPT: usize = 128 * 1024;
+const MAX_SCRIPT: usize = 32 * 1024;
+const MAX_READ: usize = 16 * 1024;
+const MAX_RESPONSE: usize = 128 * 1024;
 const MAX_INPUT: usize = 32 * 1024;
 const RETAINED_OUTPUT: usize = 1024 * 1024;
 const RETAINED_OUTPUT_PER_SESSION: usize = 16 * 1024 * 1024;
 const MAX_JOBS: usize = 256;
+const SCRIPT_WRITE_TIMEOUT: Duration = Duration::from_secs(2);
+const INPUT_WRITE_TIMEOUT: Duration = Duration::from_secs(1);
 
 fn now_ms() -> u64 {
     SystemTime::now()
@@ -61,6 +66,7 @@ enum Request {
         wait_ms: u64,
         #[serde(default)]
         timeout_ms: Option<u64>,
+        context: DispatchContext,
     },
     Read {
         job_id: String,
@@ -74,18 +80,46 @@ enum Request {
     Input {
         job_id: String,
         data_b64: String,
+        context: DispatchContext,
     },
     Interrupt {
         job_id: String,
+        context: DispatchContext,
     },
     Control {
         mode: ControlMode,
+        service_instance: String,
+        control_epoch: u64,
+        #[serde(default)]
+        holder_id: Option<String>,
+    },
+    Retention {
+        service_instance: String,
+        output_retention_ms: u64,
+    },
+    RevokeGrant {
+        service_instance: String,
+        grant_id: String,
+        grant_version: u64,
     },
     Shutdown,
 }
 
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DispatchContext {
+    service_instance: String,
+    holder_id: String,
+    control_epoch: u64,
+    grant_id: String,
+    grant_version: u64,
+    policy_version: u64,
+    intent_hash: String,
+    expires_at: u64,
+}
+
 fn default_read() -> usize {
-    32 * 1024
+    MAX_READ
 }
 
 /// Consume complete UTF-8 units while allowing genuinely invalid PTY bytes to
@@ -113,6 +147,7 @@ fn complete_utf8_prefix(bytes: &[u8]) -> usize {
 enum ControlMode {
     Mcp,
     Human,
+    Fenced,
 }
 
 #[derive(Serialize)]
@@ -135,6 +170,8 @@ struct Response {
     dropped_bytes: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     control: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    deletion_reason: Option<&'static str>,
 }
 
 impl Response {
@@ -150,6 +187,7 @@ impl Response {
             gap: None,
             dropped_bytes: None,
             control: None,
+            deletion_reason: None,
         }
     }
     fn empty(generation: &str) -> Self {
@@ -164,6 +202,7 @@ impl Response {
             gap: None,
             dropped_bytes: None,
             control: None,
+            deletion_reason: None,
         }
     }
 }
@@ -189,6 +228,11 @@ struct JobView {
 struct Job {
     id: String,
     request_hash: String,
+    holder_id: String,
+    control_epoch: u64,
+    intent_hash: String,
+    grant_id: String,
+    grant_version: u64,
     state: JobState,
     exit_code: Option<i32>,
     signal: Option<i32>,
@@ -242,12 +286,17 @@ struct Inner {
     order: VecDeque<String>,
     active: Option<String>,
     control: ControlMode,
+    control_epoch: u64,
+    holder_id: Option<String>,
+    revoked_grants: HashMap<String, u64>,
     stopping: bool,
     retained_output: usize,
 }
 
 struct Shared {
     generation: String,
+    service_instance: String,
+    output_retention_ms: AtomicU64,
     initial_cwd: PathBuf,
     inner: Mutex<Inner>,
     changed: Condvar,
@@ -259,6 +308,74 @@ fn valid_id(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+}
+
+fn valid_hash(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn admit_exec_context(
+    shared: &Shared,
+    inner: &mut Inner,
+    context: &DispatchContext,
+) -> Result<(), &'static str> {
+    if context.service_instance != shared.service_instance
+        || !valid_id(&context.holder_id)
+        || !valid_id(&context.grant_id)
+        || !valid_hash(&context.intent_hash)
+        || context.grant_version == 0
+        || context.policy_version == 0
+        || context.expires_at <= now_ms()
+        || inner
+            .revoked_grants
+            .get(&context.grant_id)
+            .is_some_and(|version| *version >= context.grant_version)
+    {
+        return Err("dispatch-context-invalid");
+    }
+    if inner.control != ControlMode::Mcp || context.control_epoch < inner.control_epoch {
+        return Err("control-revoked");
+    }
+    if context.control_epoch == inner.control_epoch
+        && inner
+            .holder_id
+            .as_deref()
+            .is_some_and(|holder| holder != context.holder_id)
+    {
+        return Err("holder-conflict");
+    }
+    if context.control_epoch > inner.control_epoch || inner.holder_id.is_none() {
+        inner.control_epoch = context.control_epoch;
+        inner.holder_id = Some(context.holder_id.clone());
+    }
+    Ok(())
+}
+
+fn check_job_context(
+    shared: &Shared,
+    inner: &Inner,
+    job: &Job,
+    context: &DispatchContext,
+    allow_expired_or_revoked: bool,
+) -> Result<(), &'static str> {
+    if context.service_instance != shared.service_instance
+        || (!allow_expired_or_revoked && context.expires_at <= now_ms())
+        || context.control_epoch != inner.control_epoch
+        || context.control_epoch != job.control_epoch
+        || inner.holder_id.as_deref() != Some(&context.holder_id)
+        || job.holder_id != context.holder_id
+        || job.intent_hash != context.intent_hash
+        || job.grant_id != context.grant_id
+        || job.grant_version != context.grant_version
+        || (!allow_expired_or_revoked
+            && inner
+                .revoked_grants
+                .get(&context.grant_id)
+                .is_some_and(|version| *version >= context.grant_version))
+    {
+        return Err("control-revoked");
+    }
+    Ok(())
 }
 
 fn append_output(shared: &Arc<Shared>, job_id: &str, bytes: &[u8]) {
@@ -356,8 +473,117 @@ fn make_script_pipe() -> std::io::Result<(OwnedFd, OwnedFd)> {
             return Err(error);
         }
     }
+    // The parent must never block the control plane indefinitely while a
+    // child refuses to consume its script pipe.
+    let flags = unsafe { libc::fcntl(fds[1], libc::F_GETFL) };
+    if flags < 0 || unsafe { libc::fcntl(fds[1], libc::F_SETFL, flags | libc::O_NONBLOCK) } != 0 {
+        let error = std::io::Error::last_os_error();
+        unsafe {
+            libc::close(fds[0]);
+            libc::close(fds[1]);
+        }
+        return Err(error);
+    }
     // SAFETY: pipe returned two new owned descriptors.
     Ok(unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) })
+}
+
+fn wait_writable(fd: i32, deadline: Instant) -> std::io::Result<()> {
+    loop {
+        let now = Instant::now();
+        if now >= deadline {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "write deadline",
+            ));
+        }
+        let remaining = deadline.saturating_duration_since(now).as_millis().min(100) as i32;
+        let mut descriptor = libc::pollfd {
+            fd,
+            events: libc::POLLOUT,
+            revents: 0,
+        };
+        let result = unsafe { libc::poll(&mut descriptor, 1, remaining.max(1)) };
+        if result > 0 {
+            return Ok(());
+        }
+        if result < 0 && std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted {
+            return Err(std::io::Error::last_os_error());
+        }
+    }
+}
+
+fn bounded_write(
+    writer: &mut (impl Write + AsRawFd),
+    bytes: &[u8],
+    timeout: Duration,
+) -> std::io::Result<()> {
+    let deadline = Instant::now() + timeout;
+    let mut offset = 0;
+    while offset < bytes.len() {
+        match writer.write(&bytes[offset..]) {
+            Ok(0) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::WriteZero,
+                    "short write",
+                ))
+            }
+            Ok(count) => offset += count,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                wait_writable(writer.as_raw_fd(), deadline)?;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    writer.flush()
+}
+
+fn bounded_job_input(
+    shared: &Shared,
+    job_id: &str,
+    context: &DispatchContext,
+    stdin: &mut ChildStdin,
+    bytes: &[u8],
+) -> std::io::Result<()> {
+    let deadline = Instant::now() + INPUT_WRITE_TIMEOUT;
+    let mut offset = 0;
+    while offset < bytes.len() {
+        {
+            let inner = shared.inner.lock().recover();
+            let current = inner
+                .jobs
+                .get(job_id)
+                .filter(|job| job.state == JobState::Running);
+            if inner.control != ControlMode::Mcp
+                || inner.active.as_deref() != Some(job_id)
+                || current.is_none_or(|job| {
+                    check_job_context(shared, &inner, job, context, false).is_err()
+                })
+            {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "input fenced",
+                ));
+            }
+        }
+        let end = (offset + 4096).min(bytes.len());
+        match stdin.write(&bytes[offset..end]) {
+            Ok(0) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::WriteZero,
+                    "short write",
+                ))
+            }
+            Ok(count) => offset += count,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                wait_writable(stdin.as_raw_fd(), deadline)?;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    stdin.flush()
 }
 
 fn spawn_job(
@@ -403,7 +629,11 @@ fn spawn_job(
             if libc::dup2(read_fd, 3) < 0 || libc::setpgid(0, 0) < 0 {
                 return Err(std::io::Error::last_os_error());
             }
-            if read_fd != 3 {
+            if read_fd == 3 {
+                if libc::fcntl(3, libc::F_SETFD, 0) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+            } else {
                 libc::close(read_fd);
             }
             Ok(())
@@ -414,6 +644,18 @@ fn spawn_job(
     let stdout = child.stdout.take().ok_or("spawn-failed")?;
     let stderr = child.stderr.take().ok_or("spawn-failed")?;
     let stdin = child.stdin.take().ok_or("spawn-failed")?;
+    let stdin_flags = unsafe { libc::fcntl(stdin.as_raw_fd(), libc::F_GETFL) };
+    if stdin_flags < 0
+        || unsafe {
+            libc::fcntl(
+                stdin.as_raw_fd(),
+                libc::F_SETFL,
+                stdin_flags | libc::O_NONBLOCK,
+            )
+        } != 0
+    {
+        return Err("spawn-failed");
+    }
     let child = Arc::new(Mutex::new(child));
     {
         let mut inner = shared.inner.lock().recover();
@@ -429,10 +671,8 @@ fn spawn_job(
     mirror(shared.clone(), job_id.into(), stderr, true);
     // Start draining child output before writing a large script. A child may
     // emit startup output before consuming descriptor 3.
-    let dispatch_unknown = script_write
-        .write_all(script.as_bytes())
-        .and_then(|_| script_write.flush())
-        .is_err();
+    let dispatch_unknown =
+        bounded_write(&mut script_write, script.as_bytes(), SCRIPT_WRITE_TIMEOUT).is_err();
     drop(script_write);
 
     let waiter = shared.clone();
@@ -532,6 +772,8 @@ fn handle(shared: &Arc<Shared>, request: Request) -> Response {
             let mut response = Response::empty(&shared.generation);
             response.control = Some(if inner.control == ControlMode::Mcp {
                 "mcp"
+            } else if inner.control == ControlMode::Fenced {
+                "fenced"
             } else {
                 "human"
             });
@@ -547,17 +789,22 @@ fn handle(shared: &Arc<Shared>, request: Request) -> Response {
             cwd,
             wait_ms,
             timeout_ms,
+            context,
         } => {
             if !valid_id(&job_id) || !valid_id(&request_hash) {
                 return Response::error(&shared.generation, "invalid-request");
             }
             {
                 let mut inner = shared.inner.lock().recover();
-                if inner.control != ControlMode::Mcp {
-                    return Response::error(&shared.generation, "control-revoked");
+                if let Err(error) = admit_exec_context(shared, &mut inner, &context) {
+                    return Response::error(&shared.generation, error);
                 }
                 if let Some(existing) = inner.jobs.get(&job_id) {
-                    if existing.request_hash != request_hash {
+                    if existing.request_hash != request_hash
+                        || existing.intent_hash != context.intent_hash
+                        || existing.control_epoch != context.control_epoch
+                        || existing.holder_id != context.holder_id
+                    {
                         return Response::error(&shared.generation, "request-id-conflict");
                     }
                     drop(inner);
@@ -579,6 +826,11 @@ fn handle(shared: &Arc<Shared>, request: Request) -> Response {
                     Job {
                         id: job_id.clone(),
                         request_hash,
+                        holder_id: context.holder_id,
+                        control_epoch: context.control_epoch,
+                        intent_hash: context.intent_hash,
+                        grant_id: context.grant_id,
+                        grant_version: context.grant_version,
                         state: JobState::Starting,
                         exit_code: None,
                         signal: None,
@@ -622,7 +874,7 @@ fn handle(shared: &Arc<Shared>, request: Request) -> Response {
             max_bytes,
             wait_ms,
         } => {
-            if !valid_id(&job_id) || !(1..=64 * 1024).contains(&max_bytes) {
+            if !valid_id(&job_id) || !(1..=MAX_READ).contains(&max_bytes) {
                 return Response::error(&shared.generation, "invalid-request");
             }
             if wait_ms > 0 {
@@ -646,10 +898,20 @@ fn handle(shared: &Arc<Shared>, request: Request) -> Response {
                     },
                 );
             }
-            let inner = shared.inner.lock().recover();
-            let Some(job) = inner.jobs.get(&job_id) else {
+            let mut inner = shared.inner.lock().recover();
+            let Some(job) = inner.jobs.get_mut(&job_id) else {
                 return Response::error(&shared.generation, "job-not-found");
             };
+            let expired = job.ended_at.is_some_and(|ended| {
+                now_ms().saturating_sub(ended) >= shared.output_retention_ms.load(Ordering::SeqCst)
+            });
+            if expired && !job.output.is_empty() {
+                let removed = job.output.len();
+                job.output.clear();
+                job.base_cursor = job.base_cursor.saturating_add(removed as u64);
+                inner.retained_output = inner.retained_output.saturating_sub(removed);
+            }
+            let job = inner.jobs.get(&job_id).expect("job retained");
             let requested = cursor.unwrap_or(job.base_cursor);
             let gap = requested < job.base_cursor;
             if requested > job.base_cursor + job.output.len() as u64 {
@@ -678,9 +940,14 @@ fn handle(shared: &Arc<Shared>, request: Request) -> Response {
             response.next_cursor = Some(start + bytes.len() as u64);
             response.gap = Some(gap);
             response.dropped_bytes = Some(start.saturating_sub(requested));
+            response.deletion_reason = expired.then_some("retention-expired");
             response
         }
-        Request::Input { job_id, data_b64 } => {
+        Request::Input {
+            job_id,
+            data_b64,
+            context,
+        } => {
             if !valid_id(&job_id) || data_b64.len() > MAX_INPUT.saturating_mul(2) {
                 return Response::error(&shared.generation, "invalid-request");
             }
@@ -695,6 +962,11 @@ fn handle(shared: &Arc<Shared>, request: Request) -> Response {
                 if inner.control != ControlMode::Mcp || inner.active.as_deref() != Some(&job_id) {
                     return Response::error(&shared.generation, "job-not-running");
                 }
+                if let Some(job) = inner.jobs.get(&job_id) {
+                    if let Err(error) = check_job_context(shared, &inner, job, &context, false) {
+                        return Response::error(&shared.generation, error);
+                    }
+                }
                 let Some(job) = inner.jobs.get_mut(&job_id) else {
                     return Response::error(&shared.generation, "job-not-found");
                 };
@@ -706,10 +978,12 @@ fn handle(shared: &Arc<Shared>, request: Request) -> Response {
                 };
                 stdin
             };
-            let wrote = stdin.write_all(&bytes).and_then(|_| stdin.flush()).is_ok();
+            let wrote = bounded_job_input(shared, &job_id, &context, &mut stdin, &bytes).is_ok();
             let mut inner = shared.inner.lock().recover();
             let still_bound = inner.control == ControlMode::Mcp
                 && inner.active.as_deref() == Some(&job_id)
+                && inner.control_epoch == context.control_epoch
+                && inner.holder_id.as_deref() == Some(&context.holder_id)
                 && inner
                     .jobs
                     .get(&job_id)
@@ -722,11 +996,16 @@ fn handle(shared: &Arc<Shared>, request: Request) -> Response {
             }
             Response::empty(&shared.generation)
         }
-        Request::Interrupt { job_id } => {
+        Request::Interrupt { job_id, context } => {
             let child = {
                 let mut inner = shared.inner.lock().recover();
                 if inner.control != ControlMode::Mcp || inner.active.as_deref() != Some(&job_id) {
                     return Response::error(&shared.generation, "job-not-running");
+                }
+                if let Some(job) = inner.jobs.get(&job_id) {
+                    if let Err(error) = check_job_context(shared, &inner, job, &context, true) {
+                        return Response::error(&shared.generation, error);
+                    }
                 }
                 let Some(job) = inner.jobs.get_mut(&job_id) else {
                     return Response::error(&shared.generation, "job-not-found");
@@ -753,13 +1032,25 @@ fn handle(shared: &Arc<Shared>, request: Request) -> Response {
                 Response::error(&shared.generation, "job-state-unknown")
             }
         }
-        Request::Control { mode } => {
+        Request::Control {
+            mode,
+            service_instance,
+            control_epoch,
+            holder_id,
+        } => {
             let human_job = {
                 let mut inner = shared.inner.lock().recover();
+                if service_instance != shared.service_instance
+                    || control_epoch < inner.control_epoch
+                {
+                    return Response::error(&shared.generation, "dispatch-context-invalid");
+                }
                 if mode == ControlMode::Mcp && inner.active.is_some() {
                     return Response::error(&shared.generation, "session-busy");
                 }
                 inner.control = mode;
+                inner.control_epoch = control_epoch;
+                inner.holder_id = holder_id;
                 if mode == ControlMode::Human && inner.active.is_none() {
                     let id = format!("human_{}", now_ms());
                     inner.order.push_back(id.clone());
@@ -768,6 +1059,11 @@ fn handle(shared: &Arc<Shared>, request: Request) -> Response {
                         Job {
                             id: id.clone(),
                             request_hash: "human-control".into(),
+                            holder_id: "local-human".into(),
+                            control_epoch,
+                            intent_hash: "human-control".into(),
+                            grant_id: "local-human".into(),
+                            grant_version: 1,
                             state: JobState::Starting,
                             exit_code: None,
                             signal: None,
@@ -803,10 +1099,42 @@ fn handle(shared: &Arc<Shared>, request: Request) -> Response {
             let mut response = Response::empty(&shared.generation);
             response.control = Some(if mode == ControlMode::Mcp {
                 "mcp"
+            } else if mode == ControlMode::Fenced {
+                "fenced"
             } else {
                 "human"
             });
             response
+        }
+        Request::Retention {
+            service_instance,
+            output_retention_ms,
+        } => {
+            if service_instance != shared.service_instance
+                || !(60_000..=7 * 24 * 60 * 60_000).contains(&output_retention_ms)
+            {
+                return Response::error(&shared.generation, "dispatch-context-invalid");
+            }
+            shared
+                .output_retention_ms
+                .store(output_retention_ms, Ordering::SeqCst);
+            Response::empty(&shared.generation)
+        }
+        Request::RevokeGrant {
+            service_instance,
+            grant_id,
+            grant_version,
+        } => {
+            if service_instance != shared.service_instance || !valid_id(&grant_id) {
+                return Response::error(&shared.generation, "dispatch-context-invalid");
+            }
+            let mut inner = shared.inner.lock().recover();
+            inner
+                .revoked_grants
+                .entry(grant_id)
+                .and_modify(|version| *version = (*version).max(grant_version))
+                .or_insert(grant_version);
+            Response::empty(&shared.generation)
         }
         Request::Shutdown => {
             let mut inner = shared.inner.lock().recover();
@@ -839,7 +1167,11 @@ fn serve_connection(shared: Arc<Shared>, mut stream: UnixStream) {
         }
         Err(_) => Response::error(&shared.generation, "internal-error"),
     };
-    if let Ok(bytes) = serde_json::to_vec(&response) {
+    if let Ok(mut bytes) = serde_json::to_vec(&response) {
+        if bytes.len() + 1 > MAX_RESPONSE {
+            bytes = serde_json::to_vec(&Response::error(&shared.generation, "response-too-large"))
+                .unwrap_or_default();
+        }
         let _ = stream.write_all(&bytes);
         let _ = stream.write_all(b"\n");
         let _ = stream.flush();
@@ -869,27 +1201,240 @@ fn stdin_forwarder(shared: Arc<Shared>) {
     });
 }
 
-fn parse_args() -> Option<(PathBuf, String)> {
+fn parse_args() -> Option<(PathBuf, String, String, u64)> {
     let mut args = std::env::args_os().skip(1);
     let mut socket = None;
     let mut generation = None;
+    let mut service_instance = None;
+    let mut output_retention_ms = None;
     while let Some(arg) = args.next() {
         match arg.to_str()? {
             "--socket" => socket = args.next().map(PathBuf::from),
             "--generation" => generation = args.next()?.into_string().ok(),
+            "--service-instance" => service_instance = args.next()?.into_string().ok(),
+            "--output-retention-ms" => {
+                output_retention_ms = args.next()?.to_str()?.parse::<u64>().ok()
+            }
             _ => return None,
         }
     }
     let socket = socket?;
     let generation = generation?;
-    if !socket.is_absolute() || !valid_id(&generation) {
+    let service_instance = service_instance?;
+    let output_retention_ms = output_retention_ms?;
+    if !socket.is_absolute() || !valid_id(&generation) || !valid_id(&service_instance) {
         return None;
     }
-    Some((socket, generation))
+    if !(60_000..=7 * 24 * 60 * 60_000).contains(&output_retention_ms) {
+        return None;
+    }
+    Some((socket, generation, service_instance, output_retention_ms))
+}
+
+#[cfg(test)]
+#[allow(clippy::items_after_test_module)]
+mod tests {
+    use super::*;
+
+    fn shared() -> Arc<Shared> {
+        Arc::new(Shared {
+            generation: "g_test".into(),
+            service_instance: "svc_current".into(),
+            output_retention_ms: AtomicU64::new(60_000),
+            initial_cwd: PathBuf::from("/tmp"),
+            inner: Mutex::new(Inner {
+                jobs: HashMap::new(),
+                order: VecDeque::new(),
+                active: None,
+                control: ControlMode::Fenced,
+                control_epoch: 0,
+                holder_id: None,
+                revoked_grants: HashMap::new(),
+                stopping: false,
+                retained_output: 0,
+            }),
+            changed: Condvar::new(),
+        })
+    }
+
+    fn context(service: &str, epoch: u64, holder: &str) -> DispatchContext {
+        DispatchContext {
+            service_instance: service.into(),
+            holder_id: holder.into(),
+            control_epoch: epoch,
+            grant_id: "grant_test".into(),
+            grant_version: 1,
+            policy_version: 2,
+            intent_hash: "a".repeat(64),
+            expires_at: now_ms() + 60_000,
+        }
+    }
+
+    #[test]
+    fn stale_epoch_and_old_service_are_fenced_before_spawn() {
+        let shared = shared();
+        assert!(
+            handle(
+                &shared,
+                Request::Control {
+                    mode: ControlMode::Mcp,
+                    service_instance: "svc_current".into(),
+                    control_epoch: 3,
+                    holder_id: Some("holder_new".into()),
+                }
+            )
+            .ok
+        );
+        let stale = handle(
+            &shared,
+            Request::Exec {
+                job_id: "job_stale".into(),
+                request_hash: "b".repeat(64),
+                script: "printf stale".into(),
+                cwd: "/tmp".into(),
+                wait_ms: 0,
+                timeout_ms: None,
+                context: context("svc_current", 2, "holder_old"),
+            },
+        );
+        assert_eq!(stale.error, Some("control-revoked"));
+        let old_service = handle(
+            &shared,
+            Request::Exec {
+                job_id: "job_old_service".into(),
+                request_hash: "c".repeat(64),
+                script: "printf old".into(),
+                cwd: "/tmp".into(),
+                wait_ms: 0,
+                timeout_ms: None,
+                context: context("svc_previous", 3, "holder_new"),
+            },
+        );
+        assert_eq!(old_service.error, Some("dispatch-context-invalid"));
+        assert!(
+            handle(
+                &shared,
+                Request::RevokeGrant {
+                    service_instance: "svc_current".into(),
+                    grant_id: "grant_test".into(),
+                    grant_version: 1,
+                }
+            )
+            .ok
+        );
+        let revoked = handle(
+            &shared,
+            Request::Exec {
+                job_id: "job_revoked".into(),
+                request_hash: "e".repeat(64),
+                script: "printf revoked".into(),
+                cwd: "/tmp".into(),
+                wait_ms: 0,
+                timeout_ms: None,
+                context: context("svc_current", 3, "holder_new"),
+            },
+        );
+        assert_eq!(revoked.error, Some("dispatch-context-invalid"));
+        assert!(shared.inner.lock().recover().jobs.is_empty());
+    }
+
+    #[test]
+    fn duplicate_dispatch_returns_one_job() {
+        let shared = shared();
+        assert!(
+            handle(
+                &shared,
+                Request::Control {
+                    mode: ControlMode::Mcp,
+                    service_instance: "svc_current".into(),
+                    control_epoch: 1,
+                    holder_id: Some("holder_a".into()),
+                }
+            )
+            .ok
+        );
+        let context = context("svc_current", 1, "holder_a");
+        let request = || Request::Exec {
+            job_id: "job_once".into(),
+            request_hash: "d".repeat(64),
+            script: ":".into(),
+            cwd: "/tmp".into(),
+            wait_ms: 1_000,
+            timeout_ms: None,
+            context: context.clone(),
+        };
+        let first = handle(&shared, request());
+        assert!(first.ok, "{:?}", first.error);
+        let second = handle(&shared, request());
+        assert!(second.ok, "{:?}", second.error);
+        assert_eq!(shared.inner.lock().recover().jobs.len(), 1);
+    }
+
+    #[test]
+    fn script_pipe_write_has_a_deadline_when_reader_stalls() {
+        let (_reader, writer) = make_script_pipe().unwrap();
+        let mut writer = std::fs::File::from(writer);
+        let error = bounded_write(
+            &mut writer,
+            &vec![b'x'; 1024 * 1024],
+            Duration::from_millis(10),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+    }
+
+    #[test]
+    fn expired_output_reports_a_gap_without_deleting_job_metadata() {
+        let shared = shared();
+        shared.output_retention_ms.store(1, Ordering::SeqCst);
+        {
+            let mut inner = shared.inner.lock().recover();
+            inner.jobs.insert(
+                "job_expired".into(),
+                Job {
+                    id: "job_expired".into(),
+                    request_hash: "request".into(),
+                    holder_id: "holder_a".into(),
+                    control_epoch: 1,
+                    intent_hash: "a".repeat(64),
+                    grant_id: "grant_test".into(),
+                    grant_version: 1,
+                    state: JobState::Exited,
+                    exit_code: Some(0),
+                    signal: None,
+                    started_at: now_ms().saturating_sub(10),
+                    ended_at: Some(now_ms().saturating_sub(10)),
+                    interrupt_requested: false,
+                    timeout_requested: false,
+                    output: VecDeque::from(b"secret tail".to_vec()),
+                    base_cursor: 0,
+                    child: None,
+                    stdin: None,
+                    stdout_eof: true,
+                    stderr_eof: true,
+                },
+            );
+            inner.retained_output = 11;
+        }
+        let response = handle(
+            &shared,
+            Request::Read {
+                job_id: "job_expired".into(),
+                cursor: Some(0),
+                max_bytes: 100,
+                wait_ms: 0,
+            },
+        );
+        assert!(response.ok);
+        assert_eq!(response.output.as_deref(), Some(""));
+        assert_eq!(response.gap, Some(true));
+        assert_eq!(response.deletion_reason, Some("retention-expired"));
+        assert!(response.job.is_some());
+    }
 }
 
 fn main() {
-    let Some((socket, generation)) = parse_args() else {
+    let Some((socket, generation, service_instance, output_retention_ms)) = parse_args() else {
         std::process::exit(64);
     };
     let Some(parent) = socket.parent() else {
@@ -915,12 +1460,17 @@ fn main() {
     }
     let shared = Arc::new(Shared {
         generation,
+        service_instance,
+        output_retention_ms: AtomicU64::new(output_retention_ms),
         initial_cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")),
         inner: Mutex::new(Inner {
             jobs: HashMap::new(),
             order: VecDeque::new(),
             active: None,
-            control: ControlMode::Mcp,
+            control: ControlMode::Fenced,
+            control_epoch: 0,
+            holder_id: None,
+            revoked_grants: HashMap::new(),
             stopping: false,
             retained_output: 0,
         }),

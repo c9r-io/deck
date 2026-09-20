@@ -19,9 +19,12 @@ item or background service is created.
    Confirm the explicit canonical project root, then separately decide whether
    the integration may create managed sessions. Deck never falls back to the
    home directory for a project without a directory.
-4. Copy the local client configuration. A newly created session still cannot
-   execute. Open its card and choose **Approve 15 min** locally. Control-lease
-   Request/Renew never creates or extends this execution window.
+4. Copy the local client configuration. The copied `client_id` is a public
+   display identifier; its bearer credential remains in the login Keychain and
+   never appears in argv. A newly created session still cannot execute. Open
+   its card, choose **Approve execution…**, select the window (15 minutes is
+   the default), and separately choose stdin and output-sharing permissions.
+   Control-lease Request/Renew never creates or extends this window.
 
 Disabling the feature or revoking a client fences new side effects, advances
 session control epochs, and hands managed panes to the local user. It does not
@@ -94,7 +97,7 @@ authentication, Origin/Host validation, and deployment review.
 | `deck_session_create` | Journal creation of a dedicated visible shell card; poll the returned operation until committed. |
 | `deck_operation_get` | Read Board/control delivery state, not program completion. |
 | `deck_session_inspect` | Read generation, control, active job, staleness, and bounded pane context. |
-| `deck_session_control` | Request, renew, or release a fenced lease. It cannot override human takeover. |
+| `deck_session_control` | Request, renew, or release a holder-bound fenced lease. Another flow using the same client cannot replace an active holder. |
 | `deck_exec` | Start one arbitrary zsh script only while matching local execution and control grants are valid. |
 | `deck_job_read` | Incrementally read retained combined output and independently reported exit state. |
 | `deck_job_input` | Write only to the named still-running child's stdin. Never falls back to terminal typing. |
@@ -111,7 +114,7 @@ normal execution result, not an MCP transport error.
   between `deck_exec` calls.
 - Default wait is 1 second; maximum wait is 5 seconds. A wait timeout returns
   `running` and never resubmits or kills the job.
-- Script and input limits are 128 KiB and 32 KiB. Each read is at most 64 KiB;
+- Script and input limits are 32 KiB and 32 KiB. Each read is at most 16 KiB;
   each job retains 1 MiB. A cursor is bound to the job and generation. Gaps and
   dropped byte counts are explicit. stdout/stderr are `pty_combined`.
 - Execution timeout requests SIGINT. `interrupt_requested` is not an exit.
@@ -128,15 +131,22 @@ normal execution result, not an MCP transport error.
   same pane. Exit that shell before using **Return to MCP**. Full-screen TUI
   automation is not part of the MVP.
 
+Managed output has both capacity limits and the locally configurable
+1-hour/24-hour/3-day/7-day retention period. Expiry clears only output bytes;
+job metadata and request-id replay tombstones remain. Reads report a cursor gap
+and `retention-expired`. This does not alter tmux scrollback.
+
 `mcp.json` is 0600 in Deck's private 0700 data directory. It retains grants,
 hashed request identities, operations, job bindings, and session metadata. It
 does not retain scripts or terminal output. Runner output disappears when its
 session ends; per-job memory is bounded. Closing a card removes its active
 session/job bindings, while operation ids remain until the bounded ledger is
 explicitly managed by a future version. Corrupt and future-version MCP
-configuration fails closed. v1 state migrates to v2 disabled: old clients are
-retained only as revoked display records, pending writes become ambiguous, and
-local reauthorization is required.
+configuration fails closed. State schema v3 is distinct from Deck control
+protocol v3 and from the MCP standard version negotiated by the SDK. v1/v2
+state migrates to v3 disabled: old clients are retained only as revoked display
+records, pending/admitted writes become ambiguous, bearer credentials and
+execution grants are not synthesized, and local reauthorization is required.
 
 ## Security boundary and residual risk
 
@@ -180,14 +190,17 @@ node scripts/mcp-e2e.mjs \
   --adapter /path/to/deck.app/Contents/MacOS/deck-mcp \
   --socket /absolute/private/data/mcp-control.sock \
   --client-id CLIENT_ID_FROM_DECK \
+  --credential-file /path/to/synthetic-credential-fixture \
   --project-id PROJECT_ID \
   --cwd /absolute/disposable/repository
 ```
 
-The script uses the production STDIO protocol and production Deck/runner
+The credential fixture is delivered through an inherited pipe, not argv. The
+script uses the production STDIO protocol and production Deck/runner
 paths. It creates and closes a visible card, intentionally obtains exit 1,
 applies a fix, obtains exit 0, checks `git diff`, idempotency and request-id
 conflict, continues a cursor read, sends bound Unicode stdin, refuses late
-stdin, and interrupts a long-running job. It must never target a real business
-repository. UI takeover is a separate manual step because the local human,
-not a remote client, owns that transition.
+stdin, and interrupts a long-running job. It first proves execution is denied,
+then waits for an explicit local execution-window approval. It must never target
+a real business repository. UI takeover is a separate manual step because the
+local human, not a remote client, owns that transition.

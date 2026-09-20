@@ -648,8 +648,10 @@ name = "deck-mcp"
 version = "0.1.0"
 dependencies = [
  "dirs 5.0.1",
+ "libc",
  "rmcp",
  "schemars 1.2.2",
+ "security-framework",
  "serde",
  "serde_json",
  "tokio",

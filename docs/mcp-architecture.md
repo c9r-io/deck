@@ -1,6 +1,6 @@
 # Deck MCP terminal control architecture
 
-Status: protocol-v2 scheme-B ADR, 2026-09-21.
+Status: control-protocol-v3 / state-schema-v3 scheme-B ADR, 2026-09-21.
 
 ## Decision
 
@@ -51,7 +51,12 @@ reports the exact recorded generation; an unrelated same-name tmux session is
 never adopted.
 
 Close uses `provider.close`, including scheduler cancellation and the ordinary
-Board persistence path. MCP never writes `deck.json`.
+Board persistence path. While holding the Board mutation slot it exchanges the
+executing close plan for a target-bound admission token immediately before the
+first queue-cancellation side effect. Queue cancellation and tmux termination
+both verify that token. A takeover ordered before admission rejects the close;
+a revocation ordered after admission does not falsely claim that prior effects
+were rolled back. MCP never writes `deck.json`.
 
 ## State and fencing
 
@@ -59,7 +64,7 @@ Control operations use `accepted`, `executing`, `committed`, `rejected`, and
 `ambiguous`. Jobs separately use `starting`, `running`, `exited`, and `lost`.
 Terminal text is context, never completion evidence.
 
-Every exec verifies the adapter principal, execution-grant and policy versions,
+Every exec verifies the authenticated adapter principal, holder, execution-grant and policy versions,
 service-start identity, project/session scope, canonical cwd, generation,
 control epoch, lease, environment profile, script digest/length, timeout and
 request identity. A
@@ -67,6 +72,13 @@ single delivery fence serializes dispatch with revoke, disable, close,
 takeover, and return. Human takeover advances the epoch and pauses output sharing before enabling Deck
 keyboard input. The runner discards ordinary pane input while MCP owns control
 and routes MCP input only to the named running child's stdin.
+
+Runner dispatch carries the service-start identity, generation (fixed by the
+runner process), holder/epoch, grant and policy versions, expiry, and intent
+hash. The runner starts fenced, rejects old service identities and stale epochs,
+deduplicates job ids, and applies explicit grant-revocation barriers. A missing
+barrier acknowledgement is reported as uncertain even though the in-process
+admission gate is already closed.
 
 Side-effect request ids are retained in `mcp.json` and are never silently
 recycled. Equal request id and arguments return the recorded operation;
@@ -91,8 +103,11 @@ tests is equally privileged. Same-UID malicious code is outside the protection
 provided by a 0600 socket and 0600 state file.
 
 The local service accepts only same-effective-UID Unix-socket peers. The
-adapter presents a random per-client id created in Deck. It cannot expand its
-recorded project roots. Diagnostics record only closed status/error codes;
+adapter presents a random public per-client id plus a separate bearer read from
+the login Keychain. The bearer is neither argv nor display state and is never
+forwarded to the runner/job. An inherited credential FD exists only for
+synthetic isolated harnesses. The adapter cannot expand its recorded project
+roots. Diagnostics record only closed status/error codes;
 terminal output, scripts, and stdin are returned through the functional MCP
 channel and excluded from `app.log`.
 

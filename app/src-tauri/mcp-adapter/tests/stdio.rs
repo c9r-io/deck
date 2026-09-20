@@ -4,6 +4,8 @@ use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixListener;
+use std::os::unix::process::CommandExt;
+use std::os::unix::{io::AsRawFd, net::UnixStream};
 use std::process::{Command, Stdio};
 
 fn read_response(reader: &mut BufReader<std::process::ChildStdout>, id: u64) -> Value {
@@ -20,20 +22,40 @@ fn read_response(reader: &mut BufReader<std::process::ChildStdout>, id: u64) -> 
     }
 }
 
-#[test]
-fn negotiates_away_from_an_unsupported_protocol_version() {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_deck-mcp"))
-        .args([
-            "--client-id",
-            "client_test",
-            "--socket",
-            "/tmp/deck-mcp-intentionally-absent.sock",
-        ])
+fn spawn_adapter(args: &[&str]) -> std::process::Child {
+    let (mut sender, receiver) = UnixStream::pair().unwrap();
+    let receiver_fd = receiver.as_raw_fd();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_deck-mcp"));
+    command
+        .args(args)
+        .args(["--credential-fd", "3"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
+        .stderr(Stdio::piped());
+    // SAFETY: the closure only duplicates the already-open synthetic credential
+    // socket onto a fixed child descriptor before exec.
+    unsafe {
+        command.pre_exec(move || {
+            if libc::dup2(receiver_fd, 3) < 0 || libc::fcntl(3, libc::F_SETFD, 0) < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let child = command.spawn().unwrap();
+    sender.write_all(b"mcp_synthetic_test").unwrap();
+    sender.shutdown(std::net::Shutdown::Write).unwrap();
+    child
+}
+
+#[test]
+fn negotiates_away_from_an_unsupported_protocol_version() {
+    let mut child = spawn_adapter(&[
+        "--client-id",
+        "client_test",
+        "--socket",
+        "/tmp/deck-mcp-intentionally-absent.sock",
+    ]);
     let mut input = child.stdin.take().unwrap();
     let mut output = BufReader::new(child.stdout.take().unwrap());
     writeln!(input, "{}", json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"1900-01-01","capabilities":{},"clientInfo":{"name":"deck-test-client","version":"1"}}})).unwrap();
@@ -61,6 +83,8 @@ fn initializes_lists_and_calls_over_stdio_without_stdout_noise() {
             .unwrap();
         let request: Value = serde_json::from_str(&request).unwrap();
         assert_eq!(request["clientId"], "client_test");
+        assert_eq!(request["credential"], "mcp_synthetic_test");
+        assert_eq!(request["version"], 3);
         assert_eq!(request["tool"], "deck_capabilities");
         writeln!(
             stream,
@@ -70,14 +94,8 @@ fn initializes_lists_and_calls_over_stdio_without_stdout_noise() {
         .unwrap();
     });
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_deck-mcp"))
-        .args(["--client-id", "client_test", "--socket"])
-        .arg(&socket)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
+    let socket_text = socket.to_str().unwrap();
+    let mut child = spawn_adapter(&["--client-id", "client_test", "--socket", socket_text]);
     let mut input = child.stdin.take().unwrap();
     let mut output = BufReader::new(child.stdout.take().unwrap());
 

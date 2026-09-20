@@ -3,6 +3,7 @@
 // Deck must already be open with an explicitly authorized disposable project.
 import { spawn } from 'node:child_process';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
 function options(argv) {
   const values = {};
@@ -12,7 +13,7 @@ function options(argv) {
     if (!key?.startsWith('--') || value === undefined) throw new Error('arguments must be --name value pairs');
     values[key.slice(2)] = value;
   }
-  for (const key of ['adapter', 'socket', 'client-id', 'project-id', 'cwd']) {
+  for (const key of ['adapter', 'socket', 'client-id', 'credential-file', 'project-id', 'cwd']) {
     if (!values[key]) throw new Error(`missing --${key}`);
   }
   return values;
@@ -20,9 +21,11 @@ function options(argv) {
 
 const config = options(process.argv.slice(2));
 const prefix = `e2e_${Date.now()}_${process.pid}`;
-const child = spawn(config.adapter, ['--client-id', config['client-id'], '--socket', config.socket], {
-  stdio: ['pipe', 'pipe', 'pipe'],
+const holderId = `${prefix}_holder`;
+const child = spawn(config.adapter, ['--client-id', config['client-id'], '--socket', config.socket, '--credential-fd', '3'], {
+  stdio: ['pipe', 'pipe', 'pipe', 'pipe'],
 });
+child.stdio[3].end(readFileSync(config['credential-file']));
 let nextId = 1;
 let buffered = '';
 let stderr = '';
@@ -83,7 +86,7 @@ async function readToExit(jobId, cursor) {
   let output = '';
   for (let count = 0; count < 100; count += 1) {
     const result = await call('deck_job_read', {
-      job_id: jobId, cursor, max_bytes: 32 * 1024, wait_ms: 500,
+      job_id: jobId, cursor, max_bytes: 16 * 1024, wait_ms: 500,
     });
     output += result.output;
     cursor = result.nextCursor;
@@ -98,6 +101,7 @@ async function execJob(session, requestId, script, waitMs = 100) {
     session_id: session.sessionId,
     expected_generation: session.sessionGeneration,
     control_epoch: session.controlEpoch,
+    holder_id: holderId,
     script,
     cwd: config.cwd,
     wait_ms: waitMs,
@@ -132,8 +136,28 @@ try {
 
   const sessions = await call('deck_sessions_list');
   assert.equal(sessions.sessions.length, 1);
-  const session = sessions.sessions[0];
+  let session = sessions.sessions[0];
+  const controlled = await call('deck_session_control', {
+    request_id: `${prefix}_control`, session_id: session.sessionId,
+    expected_generation: session.sessionGeneration, action: 'request', holder_id: holderId,
+  });
+  session = { ...session, ...controlled.result };
   assert.equal(session.controlOwner, config['client-id']);
+  await expectError('deck_exec', {
+    request_id: `${prefix}_before_grant`, session_id: session.sessionId,
+    expected_generation: session.sessionGeneration, control_epoch: session.controlEpoch,
+    holder_id: holderId, script: 'print MUST_NOT_RUN', cwd: config.cwd,
+  }, 'EXECUTION_GRANT_REQUIRED');
+  process.stderr.write('Approve the local execution window in the isolated Deck UI.\n');
+  let approved = false;
+  for (let count = 0; count < 600; count += 1) {
+    const inspected = await call('deck_session_inspect', {
+      session_id: session.sessionId, holder_id: holderId,
+    });
+    if (inspected.mayStartNextJob) { approved = true; break; }
+    await new Promise(resolve => setTimeout(resolve, 500));
+  }
+  assert.equal(approved, true, 'local execution approval did not arrive');
 
   const failing = await execJob(session, `${prefix}_failing`, `git init -q
 cat > calc.sh <<'EOF'
@@ -175,6 +199,7 @@ git add calc.sh test.sh
     session_id: session.sessionId,
     expected_generation: session.sessionGeneration,
     control_epoch: session.controlEpoch,
+    holder_id: holderId,
     script: 'for n in 1 2 3; do print -- "chunk-$n"; sleep 0.4; done',
     cwd: config.cwd,
     wait_ms: 50,
@@ -182,7 +207,7 @@ git add calc.sh test.sh
   const firstRead = await call('deck_job_read', {
     job_id: longStarted.jobId,
     cursor: longStarted.outputCursor,
-    max_bytes: 32 * 1024,
+    max_bytes: 16 * 1024,
     wait_ms: 100,
   });
   assert.equal(firstRead.state, 'running');
@@ -194,6 +219,7 @@ git add calc.sh test.sh
     session_id: session.sessionId,
     expected_generation: session.sessionGeneration,
     control_epoch: session.controlEpoch,
+    holder_id: holderId,
     script: 'IFS= read -r answer; print -- "answer=$answer"',
     cwd: config.cwd,
     wait_ms: 50,
@@ -203,6 +229,7 @@ git add calc.sh test.sh
     job_id: interactive.jobId,
     session_generation: session.sessionGeneration,
     control_epoch: session.controlEpoch,
+    holder_id: holderId,
     input: 'hello 世界\n',
   });
   const interactiveDone = await readToExit(interactive.jobId, interactive.outputCursor);
@@ -213,6 +240,7 @@ git add calc.sh test.sh
     job_id: interactive.jobId,
     session_generation: session.sessionGeneration,
     control_epoch: session.controlEpoch,
+    holder_id: holderId,
     input: 'MUST_NOT_RUN\n',
   }, 'JOB_NOT_RUNNING');
 
@@ -221,6 +249,7 @@ git add calc.sh test.sh
     session_id: session.sessionId,
     expected_generation: session.sessionGeneration,
     control_epoch: session.controlEpoch,
+    holder_id: holderId,
     script: `trap 'print interrupted; exit 130' INT
 while true; do sleep 1; done`,
     cwd: config.cwd,
@@ -231,6 +260,7 @@ while true; do sleep 1; done`,
     job_id: interrupted.jobId,
     session_generation: session.sessionGeneration,
     control_epoch: session.controlEpoch,
+    holder_id: holderId,
   });
   const interruptedDone = await readToExit(interrupted.jobId, interrupted.outputCursor);
   assert.equal(interruptedDone.interruptRequested, true);
@@ -241,6 +271,7 @@ while true; do sleep 1; done`,
     session_id: session.sessionId,
     expected_generation: session.sessionGeneration,
     control_epoch: session.controlEpoch,
+    holder_id: holderId,
     confirm_running: false,
   });
   const closeDone = await waitOperation(close.operationId);

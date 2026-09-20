@@ -35,7 +35,8 @@ use tauri::{AppHandle, Emitter};
 use crate::error::{DeckError, ErrorKind};
 use crate::sync::LockRecover;
 
-const VERSION: u32 = 2;
+const STATE_VERSION: u32 = 3;
+const CONTROL_PROTOCOL: u32 = 3;
 const MAX_STATE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_REQUEST_BYTES: usize = 256 * 1024;
 const MAX_RESPONSE_BYTES: usize = 128 * 1024;
@@ -45,12 +46,17 @@ const MAX_ROOTS_PER_PROJECT: usize = 16;
 const MAX_SESSIONS: usize = 64;
 const MAX_OPERATIONS: usize = 2000;
 const MAX_JOBS: usize = 1000;
-const MAX_SCRIPT_BYTES: usize = 128 * 1024;
+const MAX_AUDIT_EVENTS: usize = 2_000;
+const AUDIT_RETENTION_MS: u64 = 30 * 24 * 60 * 60_000;
+const MAX_SCRIPT_BYTES: usize = 32 * 1024;
+const MAX_READ_BYTES: usize = 16 * 1024;
 const MAX_INPUT_BYTES: usize = 32 * 1024;
 const DEFAULT_LEASE_MS: u64 = 60_000;
 const MAX_LEASE_MS: u64 = 5 * 60_000;
 const DEFAULT_EXECUTION_GRANT_MS: u64 = 15 * 60_000;
 const MAX_EXECUTION_GRANT_MS: u64 = 8 * 60 * 60_000;
+const DEFAULT_OUTPUT_RETENTION_MS: u64 = 24 * 60 * 60_000;
+const MAX_OUTPUT_RETENTION_MS: u64 = 7 * 24 * 60 * 60_000;
 const POLICY_VERSION: u32 = 2;
 const ENVIRONMENT_PROFILE: &str = "developer-sanitized-v1";
 
@@ -63,6 +69,17 @@ fn now_ms() -> u64 {
 
 fn sha(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
+}
+
+fn secret_hash_matches(expected: &str, actual: &str) -> bool {
+    if expected.len() != actual.len() {
+        return false;
+    }
+    expected
+        .bytes()
+        .zip(actual.bytes())
+        .fold(0u8, |difference, (left, right)| difference | (left ^ right))
+        == 0
 }
 
 fn random_id(prefix: &str) -> Result<String, DeckError> {
@@ -93,11 +110,27 @@ fn valid_title(value: &str) -> bool {
         && !value.chars().any(|character| character.is_control())
 }
 
-#[derive(Clone, Default, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Config {
     enabled: bool,
     clients: Vec<Client>,
+    #[serde(default = "default_output_retention_ms")]
+    output_retention_ms: u64,
+}
+
+fn default_output_retention_ms() -> u64 {
+    DEFAULT_OUTPUT_RETENTION_MS
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            clients: Vec::new(),
+            output_retention_ms: DEFAULT_OUTPUT_RETENTION_MS,
+        }
+    }
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -105,6 +138,10 @@ struct Config {
 struct Client {
     id: String,
     name: String,
+    #[serde(default)]
+    credential_hash: String,
+    #[serde(default)]
+    credential_version: u64,
     revoked_at: Option<u64>,
     allow_create: bool,
     projects: Vec<ProjectScope>,
@@ -130,6 +167,8 @@ struct ManagedSession {
     runner_socket: String,
     owner_client_id: String,
     control_owner: Option<String>,
+    #[serde(default)]
+    control_holder: Option<String>,
     control_epoch: u64,
     lease_expires_at: Option<u64>,
     human_lock: bool,
@@ -153,6 +192,8 @@ struct Operation {
     result: Option<Value>,
     accepted_at: u64,
     updated_at: u64,
+    #[serde(default)]
+    admission_hash: Option<String>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -164,6 +205,10 @@ struct JobBinding {
     session_generation: String,
     request_hash: String,
     operation_id: String,
+    #[serde(default)]
+    grant_id: String,
+    #[serde(default)]
+    grant_version: u64,
     #[serde(default)]
     allow_output: bool,
 }
@@ -192,6 +237,21 @@ struct ExecutionGrant {
     revoked_at: Option<u64>,
 }
 
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct AuditEvent {
+    event_id: String,
+    at: u64,
+    kind: String,
+    principal_id: Option<String>,
+    session_id: Option<String>,
+    operation_id: Option<String>,
+    job_id: Option<String>,
+    grant_id: Option<String>,
+    reason_code: Option<String>,
+    policy_version: u32,
+}
+
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct DiskDoc {
@@ -202,19 +262,53 @@ struct DiskDoc {
     jobs: Vec<JobBinding>,
     #[serde(default)]
     execution_grants: Vec<ExecutionGrant>,
+    #[serde(default)]
+    audit: Vec<AuditEvent>,
 }
 
 impl Default for DiskDoc {
     fn default() -> Self {
         Self {
-            version: VERSION,
+            version: STATE_VERSION,
             config: Config::default(),
             sessions: Vec::new(),
             operations: Vec::new(),
             jobs: Vec::new(),
             execution_grants: Vec::new(),
+            audit: Vec::new(),
         }
     }
+}
+
+#[derive(Default)]
+struct AuditLink<'a> {
+    principal_id: Option<&'a str>,
+    session_id: Option<&'a str>,
+    operation_id: Option<&'a str>,
+    job_id: Option<&'a str>,
+    grant_id: Option<&'a str>,
+    reason_code: Option<&'a str>,
+}
+
+fn audit(doc: &mut DiskDoc, kind: &str, link: AuditLink<'_>) -> Result<(), DeckError> {
+    let cutoff = now_ms().saturating_sub(AUDIT_RETENTION_MS);
+    doc.audit.retain(|event| event.at >= cutoff);
+    if doc.audit.len() >= MAX_AUDIT_EVENTS {
+        doc.audit.remove(0);
+    }
+    doc.audit.push(AuditEvent {
+        event_id: random_id("audit_")?,
+        at: now_ms(),
+        kind: kind.into(),
+        principal_id: link.principal_id.map(str::to_owned),
+        session_id: link.session_id.map(str::to_owned),
+        operation_id: link.operation_id.map(str::to_owned),
+        job_id: link.job_id.map(str::to_owned),
+        grant_id: link.grant_id.map(str::to_owned),
+        reason_code: link.reason_code.map(str::to_owned),
+        policy_version: POLICY_VERSION,
+    });
+    Ok(())
 }
 
 struct Runtime {
@@ -226,8 +320,17 @@ struct Runtime {
     /// Fences every terminal/Board side-effect dispatch against control
     /// transfer, revoke, disable, and close admission.
     delivery: Mutex<()>,
+    emergency: Mutex<EmergencyFences>,
     service_instance: String,
     started: Instant,
+}
+
+#[derive(Default)]
+struct EmergencyFences {
+    disabled: bool,
+    clients: HashSet<String>,
+    human_sessions: HashSet<String>,
+    execution_sessions: HashSet<String>,
 }
 
 impl Runtime {
@@ -275,13 +378,14 @@ fn load(path: &Path) -> Result<DiskDoc, DeckError> {
         // non-secret display records for local review, but fail closed: no old
         // client, lease, pending write, or session receives a v2 execution
         // window implicitly.
-        doc.version = VERSION;
+        doc.version = STATE_VERSION;
         doc.config.enabled = false;
         for client in &mut doc.config.clients {
             client.revoked_at.get_or_insert_with(now_ms);
         }
         for session in &mut doc.sessions {
             session.control_owner = None;
+            session.control_holder = None;
             session.control_epoch = session.control_epoch.saturating_add(1);
             session.lease_expires_at = None;
             session.human_lock = true;
@@ -290,6 +394,36 @@ fn load(path: &Path) -> Result<DiskDoc, DeckError> {
             if matches!(operation.state.as_str(), "accepted" | "executing") {
                 operation.state = "ambiguous".into();
                 operation.code = Some("v2-reauthorization-required".into());
+                operation.updated_at = now_ms();
+            }
+        }
+        doc.execution_grants.clear();
+        validate_doc(&doc)?;
+        save(path, &doc)?;
+        return Ok(doc);
+    }
+    if doc.version == 2 {
+        doc.version = STATE_VERSION;
+        doc.config.enabled = false;
+        for client in &mut doc.config.clients {
+            client.revoked_at.get_or_insert_with(now_ms);
+            client.credential_hash.clear();
+            client.credential_version = 0;
+        }
+        for session in &mut doc.sessions {
+            session.control_owner = None;
+            session.control_holder = None;
+            session.control_epoch = session.control_epoch.saturating_add(1);
+            session.lease_expires_at = None;
+            session.human_lock = true;
+        }
+        for operation in &mut doc.operations {
+            if matches!(
+                operation.state.as_str(),
+                "accepted" | "executing" | "admitted"
+            ) {
+                operation.state = "ambiguous".into();
+                operation.code = Some("v3-reauthorization-required".into());
                 operation.updated_at = now_ms();
             }
         }
@@ -320,6 +454,7 @@ fn load(path: &Path) -> Result<DiskDoc, DeckError> {
     for session in &mut doc.sessions {
         if session.control_owner.is_some() {
             session.control_owner = None;
+            session.control_holder = None;
             session.control_epoch = session.control_epoch.saturating_add(1);
             session.lease_expires_at = None;
             changed = true;
@@ -333,12 +468,17 @@ fn load(path: &Path) -> Result<DiskDoc, DeckError> {
 
 fn validate_doc(doc: &DiskDoc) -> Result<(), DeckError> {
     let mut client_ids = HashSet::new();
-    let clients_valid = doc.version == VERSION
+    let clients_valid = doc.version == STATE_VERSION
+        && (60_000..=MAX_OUTPUT_RETENTION_MS).contains(&doc.config.output_retention_ms)
         && doc.config.clients.len() <= MAX_CLIENTS
         && doc.config.clients.iter().all(|client| {
             valid_id(&client.id)
                 && client_ids.insert(client.id.clone())
                 && valid_title(&client.name)
+                && ((client.credential_version > 0 && client.credential_hash.len() == 64)
+                    || (client.revoked_at.is_some()
+                        && client.credential_version == 0
+                        && client.credential_hash.is_empty()))
                 && client.projects.len() <= MAX_PROJECTS_PER_CLIENT
                 && client.projects.iter().all(|project| {
                     valid_id(&project.project_id)
@@ -362,6 +502,10 @@ fn validate_doc(doc: &DiskDoc) -> Result<(), DeckError> {
                     .control_owner
                     .as_ref()
                     .is_none_or(|owner| valid_id(owner))
+                && session
+                    .control_holder
+                    .as_ref()
+                    .is_none_or(|holder| valid_id(holder))
                 && Path::new(&session.cwd).is_absolute()
                 && Path::new(&session.runner_socket).is_absolute()
         });
@@ -377,7 +521,7 @@ fn validate_doc(doc: &DiskDoc) -> Result<(), DeckError> {
                 && operation.request_hash.len() == 64
                 && matches!(
                     operation.state.as_str(),
-                    "accepted" | "executing" | "committed" | "rejected" | "ambiguous"
+                    "accepted" | "executing" | "admitted" | "committed" | "rejected" | "ambiguous"
                 )
         });
     let mut job_ids = HashSet::new();
@@ -403,7 +547,24 @@ fn validate_doc(doc: &DiskDoc) -> Result<(), DeckError> {
                 && grant.expires_at >= grant.issued_at
                 && grant.environment_profile == ENVIRONMENT_PROFILE
         });
-    if clients_valid && sessions_valid && operations_valid && jobs_valid && grants_valid {
+    let audit_valid = doc.audit.len() <= MAX_AUDIT_EVENTS
+        && doc.audit.iter().all(|event| {
+            valid_id(&event.event_id)
+                && valid_id(&event.kind)
+                && event.principal_id.as_deref().is_none_or(valid_id)
+                && event.session_id.as_deref().is_none_or(valid_id)
+                && event.operation_id.as_deref().is_none_or(valid_id)
+                && event.job_id.as_deref().is_none_or(valid_id)
+                && event.grant_id.as_deref().is_none_or(valid_id)
+                && event.reason_code.as_deref().is_none_or(valid_id)
+        });
+    if clients_valid
+        && sessions_valid
+        && operations_valid
+        && jobs_valid
+        && grants_valid
+        && audit_valid
+    {
         Ok(())
     } else {
         Err(DeckError::new(ErrorKind::Recovery, "MCP state is invalid"))
@@ -528,6 +689,7 @@ fn check_control(
     client_id: &str,
     generation: &str,
     epoch: u64,
+    holder_id: &str,
 ) -> Result<(), DeckError> {
     if session.generation != generation {
         return Err(DeckError::new(
@@ -537,6 +699,7 @@ fn check_control(
     }
     if session.human_lock
         || session.control_owner.as_deref() != Some(client_id)
+        || session.control_holder.as_deref() != Some(holder_id)
         || session.control_epoch != epoch
         || session
             .lease_expires_at
@@ -563,6 +726,12 @@ fn active_execution_grant<'a>(
         .rev()
         .find(|grant| {
             grant.client_id == client_id
+                && doc
+                    .config
+                    .clients
+                    .iter()
+                    .find(|client| client.id == client_id)
+                    .is_some_and(|client| client.credential_version == grant.credential_version)
                 && grant.project_id == session.project_id
                 && grant.session_id == session.session_id
                 && grant.session_generation == session.generation
@@ -584,6 +753,58 @@ fn active_execution_grant<'a>(
                 },
             )
         })
+}
+
+fn record_expired_grants(runtime: &Runtime) -> Result<(), DeckError> {
+    let wall = now_ms();
+    let elapsed = runtime.monotonic_ms();
+    let expired = runtime.read(|doc| {
+        doc.execution_grants
+            .iter()
+            .filter(|grant| {
+                grant.service_instance == runtime.service_instance
+                    && grant.revoked_at.is_none()
+                    && (wall >= grant.expires_at
+                        || elapsed.saturating_sub(grant.issued_monotonic_ms) >= grant.duration_ms)
+                    && !doc.audit.iter().any(|event| {
+                        event.kind == "grant-expired"
+                            && event.grant_id.as_deref() == Some(&grant.grant_id)
+                    })
+            })
+            .map(|grant| {
+                (
+                    grant.client_id.clone(),
+                    grant.session_id.clone(),
+                    grant.grant_id.clone(),
+                )
+            })
+            .collect::<Vec<_>>()
+    })?;
+    if expired.is_empty() {
+        return Ok(());
+    }
+    runtime.write(|doc| {
+        for (principal_id, session_id, grant_id) in &expired {
+            if doc.audit.iter().any(|event| {
+                event.kind == "grant-expired"
+                    && event.grant_id.as_deref() == Some(grant_id.as_str())
+            }) {
+                continue;
+            }
+            audit(
+                doc,
+                "grant-expired",
+                AuditLink {
+                    principal_id: Some(principal_id),
+                    session_id: Some(session_id),
+                    grant_id: Some(grant_id),
+                    reason_code: Some("deadline-reached"),
+                    ..Default::default()
+                },
+            )?;
+        }
+        Ok(())
+    })
 }
 
 fn error_value(code: &str, message: &str, next_action: &str) -> Value {
@@ -697,9 +918,16 @@ fn send_runner(session: &ManagedSession, request: &Value) -> Result<Value, DeckE
     stream
         .set_write_timeout(Some(Duration::from_secs(7)))
         .map_err(DeckError::from)?;
-    serde_json::to_writer(&mut stream, request)
+    let mut frame = serde_json::to_vec(request)
         .map_err(|_| DeckError::new(ErrorKind::Other, "runner request encoding failed"))?;
-    stream.write_all(b"\n").map_err(DeckError::from)?;
+    frame.push(b'\n');
+    if frame.len() > MAX_REQUEST_BYTES {
+        return Err(DeckError::new(
+            ErrorKind::Invalid,
+            "encoded runner request exceeds its bound",
+        ));
+    }
+    stream.write_all(&frame).map_err(DeckError::from)?;
     stream.flush().map_err(DeckError::from)?;
     let mut bytes = Vec::new();
     BufReader::new(stream)
@@ -721,6 +949,23 @@ fn send_runner(session: &ManagedSession, request: &Value) -> Result<Value, DeckE
         ));
     }
     Ok(value)
+}
+
+fn send_runner_control(
+    runtime: &Runtime,
+    session: &ManagedSession,
+    mode: &str,
+) -> Result<Value, DeckError> {
+    send_runner(
+        session,
+        &json!({
+            "kind": "control",
+            "mode": mode,
+            "service_instance": runtime.service_instance,
+            "control_epoch": session.control_epoch,
+            "holder_id": session.control_holder,
+        }),
+    )
 }
 
 fn runner_socket_matches(socket: &str, generation: &str) -> bool {
@@ -754,6 +999,10 @@ fn runner_error(value: &Value) -> Option<(&'static str, &'static str)> {
             "CONTROL_REVOKED",
             "Inspect control state and wait for the local user to return control.",
         )),
+        "dispatch-context-invalid" | "holder-conflict" => Some((
+            "CONTROL_REVOKED",
+            "Acquire current control and submit a new request under the active service context.",
+        )),
         "job-not-found" => Some(("JOB_NOT_FOUND", "Refresh the authorized job state.")),
         "job-not-running" => Some((
             "JOB_NOT_RUNNING",
@@ -771,6 +1020,10 @@ fn runner_error(value: &Value) -> Option<(&'static str, &'static str)> {
             "INVALID_ARGUMENTS",
             "Correct the rejected arguments before retrying.",
         )),
+        "response-too-large" => Some((
+            "RESPONSE_TOO_LARGE",
+            "Read the existing job again with a smaller max_bytes value; do not re-execute it.",
+        )),
         _ => None,
     }
 }
@@ -780,6 +1033,7 @@ fn runner_error(value: &Value) -> Option<(&'static str, &'static str)> {
 struct WireRequest {
     version: u32,
     client_id: String,
+    credential: String,
     tool: String,
     arguments: Value,
 }
@@ -808,9 +1062,11 @@ struct OperationArgs {
 #[serde(deny_unknown_fields)]
 struct SessionArgs {
     session_id: String,
+    #[serde(default)]
+    holder_id: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Copy, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum ControlAction {
     Request,
@@ -825,6 +1081,7 @@ struct ControlArgs {
     session_id: String,
     expected_generation: String,
     action: ControlAction,
+    holder_id: String,
     #[serde(default)]
     control_epoch: Option<u64>,
     #[serde(default)]
@@ -838,6 +1095,7 @@ struct ExecArgs {
     session_id: String,
     expected_generation: String,
     control_epoch: u64,
+    holder_id: String,
     script: String,
     #[serde(default)]
     cwd: Option<String>,
@@ -866,6 +1124,7 @@ struct InputArgs {
     job_id: String,
     session_generation: String,
     control_epoch: u64,
+    holder_id: String,
     input: String,
 }
 
@@ -876,6 +1135,7 @@ struct InterruptArgs {
     job_id: String,
     session_generation: String,
     control_epoch: u64,
+    holder_id: String,
 }
 
 #[derive(Deserialize)]
@@ -885,6 +1145,7 @@ struct CloseArgs {
     session_id: String,
     expected_generation: String,
     control_epoch: u64,
+    holder_id: String,
     #[serde(default)]
     confirm_running: bool,
 }
@@ -1072,7 +1333,7 @@ fn project_read(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<
         &root,
         &args.path,
         offset as u64,
-        args.max_bytes.unwrap_or(32 * 1024),
+        args.max_bytes.unwrap_or(MAX_READ_BYTES),
     )
     .map_err(|message| {
         error_value(
@@ -1116,13 +1377,35 @@ fn project_search(runtime: &Runtime, client_id: &str, arguments: Value) -> Resul
         ));
     }
     let (root, roots) = read_root(runtime, client_id, &args.project_id, args.root_index)?;
-    let results = crate::mcp_fs::search(&root, &args.path, &args.query).map_err(|message| {
+    let deadline = Instant::now() + Duration::from_millis(750);
+    let outcome = crate::mcp_fs::search_controlled(&root, &args.path, &args.query, || {
+        if Instant::now() >= deadline {
+            return crate::mcp_fs::SearchControl::Deadline;
+        }
+        let authorized = runtime
+            .read(|doc| {
+                scoped_project(client(doc, client_id)?, &args.project_id)
+                    .map(|project| project.roots == roots)
+            })
+            .ok()
+            .and_then(Result::ok)
+            .unwrap_or(false);
+        if authorized {
+            crate::mcp_fs::SearchControl::Continue
+        } else {
+            crate::mcp_fs::SearchControl::Cancelled
+        }
+    })
+    .map_err(|message| {
         error_value(
             "SEARCH_LIMIT_OR_DENIED",
             &message,
             "Narrow the literal query or search path.",
         )
     })?;
+    let results = outcome.matches;
+    let search_complete = outcome.complete;
+    let stop_reason = outcome.stop_reason;
     let snapshot = sha(&serde_json::to_vec(&results).unwrap_or_default());
     let key = format!("{}\0{}", args.path, args.query);
     let offset = cursor_offset(
@@ -1141,23 +1424,33 @@ fn project_search(runtime: &Runtime, client_id: &str, arguments: Value) -> Resul
             "Restart the search without a cursor.",
         ));
     }
-    let end = offset.saturating_add(limit).min(results.len());
-    let page = &results[offset..end];
+    let mut end = offset.saturating_add(limit).min(results.len());
     recheck_read(runtime, client_id, &args.project_id, &roots)?;
-    let cursor = (end < results.len()).then(|| {
-        page_cursor(
-            runtime,
-            client_id,
-            &args.project_id,
-            args.root_index,
-            &key,
-            &snapshot,
-            end,
-        )
-    });
-    Ok(
-        json!({"ok":true,"projectId":args.project_id,"path":args.path,"query":args.query,"matches":page,"nextCursor":cursor,"truncated":end < results.len()}),
-    )
+    loop {
+        let cursor = (search_complete && end < results.len()).then(|| {
+            page_cursor(
+                runtime,
+                client_id,
+                &args.project_id,
+                args.root_index,
+                &key,
+                &snapshot,
+                end,
+            )
+        });
+        let response = json!({"ok":true,"projectId":args.project_id,"path":args.path,"query":args.query,"matches":&results[offset..end],"nextCursor":cursor,"truncated":!search_complete || end < results.len(),"complete":search_complete && end == results.len(),"stopReason":stop_reason});
+        if serde_json::to_vec(&response).is_ok_and(|bytes| bytes.len() < MAX_RESPONSE_BYTES) {
+            return Ok(response);
+        }
+        if end == offset {
+            return Err(error_value(
+                "RESPONSE_TOO_LARGE",
+                "one encoded search result exceeds the response budget",
+                "Narrow the search path or query.",
+            ));
+        }
+        end -= 1;
+    }
 }
 
 fn capabilities(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<Value, Value> {
@@ -1177,7 +1470,8 @@ fn capabilities(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<
                 "ok": true,
                 "adapterVersion": "0.1.0",
                 "deckConnection": "connected",
-                "protocolVersion": 2,
+                "controlProtocolVersion": CONTROL_PROTOCOL,
+                "stateSchemaVersion": STATE_VERSION,
                 "executionMode": "trusted-host",
                 "realOsSandbox": false,
                 "shellSemantics": {
@@ -1190,8 +1484,8 @@ fn capabilities(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<
                 "limits": {
                     "scriptBytes": MAX_SCRIPT_BYTES,
                     "inputBytes": MAX_INPUT_BYTES,
-                    "readBytesDefault": 32 * 1024,
-                    "readBytesMax": 64 * 1024,
+                    "readBytesDefault": MAX_READ_BYTES,
+                    "readBytesMax": MAX_READ_BYTES,
                     "waitMsMax": 5000,
                     "retainedOutputBytesPerJob": 1024 * 1024,
                     "retainedOutputBytesPerSession": 16 * 1024 * 1024,
@@ -1199,6 +1493,7 @@ fn capabilities(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<
                     "managedSessions": MAX_SESSIONS,
                     "operations": MAX_OPERATIONS
                 },
+                "outputRetentionMs": doc.config.output_retention_ms,
                 "interactiveInput": true,
                 "structuredProjectRead": true,
                 "reliableJobExitTracking": true,
@@ -1238,9 +1533,10 @@ fn sessions_list(runtime: &Runtime, client_id: &str, arguments: Value) -> Result
                 "title": session.title,
                 "sessionGeneration": session.generation,
                 "controlOwner": session.control_owner,
+                "controlHolder": session.control_holder,
                 "controlEpoch": session.control_epoch,
                 "activeJob": runner.as_ref().and_then(|value| value.get("job")).cloned(),
-                "foreground": runner.as_ref().and_then(|value| value.get("job")).is_some().then_some("managed-job"),
+                "foreground": runner.as_ref().and_then(|value| value.get("job")).is_some_and(|job| !job.is_null()).then_some("managed-job"),
                 "readiness": "unknown",
                 "readinessConfidence": "not-inferred-from-quiet",
                 "stale": runner.is_none()
@@ -1333,6 +1629,7 @@ fn session_create(runtime: &Runtime, client_id: &str, arguments: Value) -> Resul
                 result: Some(result),
                 accepted_at: now_ms(),
                 updated_at: now_ms(),
+                admission_hash: None,
             };
             doc.operations.push(operation.clone());
             Ok(operation)
@@ -1366,7 +1663,40 @@ fn inspect(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<Value
         .map_err(map_error)?
         .map_err(map_error)?;
     let runner = send_runner(&session, &json!({"kind":"ping"}));
-    let terminal = (session.output_shared && !session.human_lock)
+    let emergency_human = runtime
+        .emergency
+        .lock_or_recover()
+        .human_sessions
+        .contains(&session.session_id);
+    let denial = if runner.is_err() {
+        Some("RUNNER_UNAVAILABLE")
+    } else if session.closing {
+        Some("TARGET_CLOSING")
+    } else if session.human_lock || emergency_human {
+        Some("HUMAN_CONTROL")
+    } else if session.control_owner.as_deref() != Some(client_id) {
+        Some("CONTROL_REVOKED")
+    } else if args.holder_id.as_deref() != session.control_holder.as_deref() {
+        Some("HOLDER_MISMATCH")
+    } else if session
+        .lease_expires_at
+        .is_none_or(|deadline| deadline <= now_ms())
+    {
+        Some("CONTROL_LEASE_EXPIRED")
+    } else if runner
+        .as_ref()
+        .ok()
+        .and_then(|value| value.get("job"))
+        .is_some_and(|job| !job.is_null())
+    {
+        Some("SESSION_BUSY")
+    } else {
+        runtime
+            .read(|doc| active_execution_grant(runtime, doc, client_id, &session, false).is_err())
+            .map_err(map_error)?
+            .then_some("EXECUTION_GRANT_REQUIRED")
+    };
+    let terminal = (session.output_shared && !session.human_lock && !emergency_human)
         .then(|| {
             crate::tmux::tmux(&[
                 "capture-pane",
@@ -1390,23 +1720,25 @@ fn inspect(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<Value
         "sessionId": session.session_id,
         "sessionGeneration": session.generation,
         "controlOwner": session.control_owner,
+        "controlHolder": session.control_holder,
         "controlEpoch": session.control_epoch,
         "leaseExpiresAt": session.lease_expires_at,
-        "humanLock": session.human_lock,
+        "humanLock": session.human_lock || emergency_human,
         "activeJob": runner.as_ref().ok().and_then(|value| value.get("job")).cloned(),
         "foreground": runner.as_ref().ok().and_then(|value| value.get("job")).is_some().then_some("managed-job"),
         "readiness": "unknown",
         "terminalContext": terminal,
         "terminalContextBounded": true,
         "stale": runner.is_err(),
-        "mayStartNextJob": runner.as_ref().ok().is_some_and(|value| value.get("job").is_none()) && session.control_owner.as_deref() == Some(client_id) && !session.human_lock
+        "mayStartNextJob": denial.is_none(),
+        "mayStartNextJobReason": denial,
     }))
 }
 
 fn session_control(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<Value, Value> {
     let _delivery = runtime.delivery.lock_or_recover();
     let args: ControlArgs = parse(arguments.clone())?;
-    if !valid_id(&args.request_id) {
+    if !valid_id(&args.request_id) || !valid_id(&args.holder_id) {
         return Err(error_value(
             "INVALID_ARGUMENTS",
             "request id is invalid",
@@ -1414,6 +1746,7 @@ fn session_control(runtime: &Runtime, client_id: &str, arguments: Value) -> Resu
         ));
     }
     let hash = request_hash("deck_session_control", &arguments);
+    let action = args.action;
     let operation = runtime
         .write(|doc| {
             client(doc, client_id)?;
@@ -1433,30 +1766,66 @@ fn session_control(runtime: &Runtime, client_id: &str, arguments: Value) -> Resu
             }
             match args.action {
                 ControlAction::Request => {
-                    if session.human_lock || session.control_owner.as_deref().is_some_and(|owner| owner != client_id) {
+                    let lease_active = session.lease_expires_at.is_some_and(|lease| lease > now_ms());
+                    if session.human_lock
+                        || (lease_active
+                            && (session.control_owner.as_deref() != Some(client_id)
+                                || session.control_holder.as_deref() != Some(&args.holder_id)))
+                    {
                         return Err(DeckError::new(ErrorKind::Perm, "user owns terminal control"));
                     }
-                    session.control_epoch = session.control_epoch.saturating_add(1);
+                    if !lease_active {
+                        session.control_epoch = session.control_epoch.saturating_add(1);
+                    }
                     session.control_owner = Some(client_id.into());
+                    session.control_holder = Some(args.holder_id.clone());
                     session.lease_expires_at = Some(now_ms() + args.lease_ms.unwrap_or(DEFAULT_LEASE_MS).clamp(1_000, MAX_LEASE_MS));
                 }
                 ControlAction::Renew => {
-                    check_control(session, client_id, &args.expected_generation, args.control_epoch.unwrap_or(0))?;
+                    check_control(session, client_id, &args.expected_generation, args.control_epoch.unwrap_or(0), &args.holder_id)?;
                     session.lease_expires_at = Some(now_ms() + args.lease_ms.unwrap_or(DEFAULT_LEASE_MS).clamp(1_000, MAX_LEASE_MS));
                 }
                 ControlAction::Release => {
-                    check_control(session, client_id, &args.expected_generation, args.control_epoch.unwrap_or(0))?;
+                    check_control(session, client_id, &args.expected_generation, args.control_epoch.unwrap_or(0), &args.holder_id)?;
                     session.control_owner = None;
+                    session.control_holder = None;
                     session.lease_expires_at = None;
                     session.control_epoch = session.control_epoch.saturating_add(1);
                 }
             }
-            let result = json!({"sessionId":session.session_id,"sessionGeneration":session.generation,"controlOwner":session.control_owner,"controlEpoch":session.control_epoch,"leaseExpiresAt":session.lease_expires_at});
-            let operation = Operation { operation_id: random_id("op_")?, client_id: client_id.into(), request_id: args.request_id, request_hash: hash, kind: "session-control".into(), state: "committed".into(), code: None, result: Some(result), accepted_at: now_ms(), updated_at: now_ms() };
+            let result = json!({"sessionId":session.session_id,"sessionGeneration":session.generation,"controlOwner":session.control_owner,"controlHolder":session.control_holder,"controlEpoch":session.control_epoch,"leaseExpiresAt":session.lease_expires_at});
+            let session_id = session.session_id.clone();
+            let operation = Operation { operation_id: random_id("op_")?, client_id: client_id.into(), request_id: args.request_id, request_hash: hash, kind: "session-control".into(), state: "committed".into(), code: None, result: Some(result), accepted_at: now_ms(), updated_at: now_ms(), admission_hash: None };
             doc.operations.push(operation.clone());
+            audit(doc, "control-changed", AuditLink { principal_id: Some(client_id), session_id: Some(&session_id), operation_id: Some(&operation.operation_id), ..Default::default() })?;
             Ok(operation)
         })
         .map_err(map_error)?;
+    let session_id = operation
+        .result
+        .as_ref()
+        .and_then(|result| result.get("sessionId"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let session = runtime
+        .read(|doc| authorized_session(doc, client_id, session_id).cloned())
+        .map_err(map_error)?
+        .map_err(map_error)?;
+    let mode = if matches!(action, ControlAction::Release) {
+        "fenced"
+    } else {
+        "mcp"
+    };
+    let fenced = send_runner_control(runtime, &session, mode)
+        .ok()
+        .is_some_and(|value| value.get("ok").and_then(Value::as_bool) == Some(true));
+    if !fenced {
+        return Err(error_value(
+            "OPERATION_AMBIGUOUS",
+            "the control decision is durable but the runner fence is unconfirmed",
+            "Inspect the session locally; do not assume the prior holder can still run or is stopped.",
+        ));
+    }
     Ok(operation_view(&operation))
 }
 
@@ -1487,6 +1856,7 @@ fn exec(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<Value, V
         &args.session_id,
         &args.expected_generation,
         args.control_epoch,
+        &args.holder_id,
         &args.cwd,
         args.wait_ms,
         args.execution_timeout_ms,
@@ -1508,7 +1878,7 @@ fn exec(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<Value, V
                 return Err(DeckError::new(ErrorKind::DiskFull, "MCP operation capacity reached"));
             }
             let session = doc.sessions.iter().find(|session| session.session_id == args.session_id && session.owner_client_id == client_id).cloned().ok_or_else(|| DeckError::new(ErrorKind::Missing, "session not found"))?;
-            check_control(&session, client_id, &args.expected_generation, args.control_epoch)?;
+            check_control(&session, client_id, &args.expected_generation, args.control_epoch, &args.holder_id)?;
             let grant = active_execution_grant(runtime, doc, client_id, &session, false)?.clone();
             if session.closing {
                 return Err(DeckError::new(ErrorKind::Locked, "session is closing"));
@@ -1517,18 +1887,19 @@ fn exec(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<Value, V
             let cwd = canonical_scope(args.cwd.as_deref().unwrap_or(&session.cwd), &project.roots)?;
             let operation_id = random_id("op_")?;
             let job_id = random_id("job_")?;
-            let binding = JobBinding { job_id: job_id.clone(), client_id: client_id.into(), session_id: session.session_id.clone(), session_generation: session.generation.clone(), request_hash: hash.clone(), operation_id: operation_id.clone(), allow_output: grant.allow_output };
-            let operation = Operation { operation_id, client_id: client_id.into(), request_id: args.request_id.clone(), request_hash: hash.clone(), kind: "exec".into(), state: "accepted".into(), code: None, result: Some(json!({"jobId":job_id,"sessionId":session.session_id,"sessionGeneration":session.generation,"executionGrantId":grant.grant_id,"executionGrantVersion":grant.grant_version,"policyVersion":POLICY_VERSION,"environmentProfile":ENVIRONMENT_PROFILE,"scriptDigest":script_digest,"scriptLength":args.script.len(),"cwd":cwd})), accepted_at: now_ms(), updated_at: now_ms() };
+            let binding = JobBinding { job_id: job_id.clone(), client_id: client_id.into(), session_id: session.session_id.clone(), session_generation: session.generation.clone(), request_hash: hash.clone(), operation_id: operation_id.clone(), grant_id: grant.grant_id.clone(), grant_version: grant.grant_version, allow_output: grant.allow_output };
+            let operation = Operation { operation_id, client_id: client_id.into(), request_id: args.request_id.clone(), request_hash: hash.clone(), kind: "exec".into(), state: "accepted".into(), code: None, result: Some(json!({"jobId":job_id,"sessionId":session.session_id,"sessionGeneration":session.generation,"executionGrantId":grant.grant_id,"executionGrantVersion":grant.grant_version,"policyVersion":POLICY_VERSION,"environmentProfile":ENVIRONMENT_PROFILE,"scriptDigest":script_digest,"scriptLength":args.script.len(),"cwd":cwd})), accepted_at: now_ms(), updated_at: now_ms(), admission_hash: None };
             doc.jobs.push(binding.clone());
             doc.operations.push(operation.clone());
-            Ok((operation, Some(binding), Some((session, cwd))))
+            audit(doc, "exec-intent", AuditLink { principal_id: Some(client_id), session_id: Some(&session.session_id), operation_id: Some(&operation.operation_id), job_id: Some(&binding.job_id), grant_id: Some(&grant.grant_id), reason_code: None })?;
+            Ok((operation, Some(binding), Some((session, cwd, grant))))
         })
         .map_err(map_error)?;
     let (mut operation, binding, dispatch) = prepared;
     let Some(binding) = binding else {
         return Ok(operation_view(&operation));
     };
-    let Some((session, cwd)) = dispatch else {
+    let Some((session, cwd, _accepted_grant)) = dispatch else {
         let runner = send_runner(
             &runtime
                 .read(|doc| authorized_session(doc, client_id, &binding.session_id).cloned())
@@ -1546,7 +1917,7 @@ fn exec(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<Value, V
     // Final admission is deliberately adjacent to runner dispatch. Revocation,
     // takeover, expiry, generation changes, and policy changes after the
     // durable intent was accepted prevent the side effect.
-    runtime
+    let grant = runtime
         .read(|doc| {
             let current = authorized_session(doc, client_id, &session.session_id)?;
             check_control(
@@ -1554,22 +1925,40 @@ fn exec(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<Value, V
                 client_id,
                 &args.expected_generation,
                 args.control_epoch,
+                &args.holder_id,
             )?;
-            active_execution_grant(runtime, doc, client_id, current, false)?;
-            Ok::<(), DeckError>(())
+            Ok::<ExecutionGrant, DeckError>(
+                active_execution_grant(runtime, doc, client_id, current, false)?.clone(),
+            )
         })
         .map_err(map_error)?
         .map_err(map_error)?;
+    let context = json!({
+        "service_instance": runtime.service_instance,
+        "holder_id": args.holder_id,
+        "control_epoch": args.control_epoch,
+        "grant_id": grant.grant_id,
+        "grant_version": grant.grant_version,
+        "policy_version": POLICY_VERSION,
+        "intent_hash": hash,
+        "expires_at": grant.expires_at,
+    });
     let runner = send_runner(
         &session,
-        &json!({"kind":"exec","job_id":binding.job_id,"request_hash":hash,"script":args.script,"cwd":cwd,"wait_ms":args.wait_ms.unwrap_or(1_000),"timeout_ms":args.execution_timeout_ms}),
+        &json!({"kind":"exec","job_id":binding.job_id,"request_hash":hash,"script":args.script,"cwd":cwd,"wait_ms":args.wait_ms.unwrap_or(1_000),"timeout_ms":args.execution_timeout_ms,"context":context}),
     );
     let committed = runner
         .as_ref()
         .ok()
         .is_some_and(|value| value.get("ok").and_then(Value::as_bool) == Some(true));
     let rejected = runner.as_ref().ok().and_then(runner_error);
-    let _ = runtime.write(|doc| {
+    let audit_grant_id = operation
+        .result
+        .as_ref()
+        .and_then(|result| result.get("executionGrantId"))
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let journaled = runtime.write(|doc| {
         if let Some(saved) = doc
             .operations
             .iter_mut()
@@ -1596,8 +1985,31 @@ fn exec(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<Value, V
             saved.updated_at = now_ms();
             operation = saved.clone();
         }
+        audit(
+            doc,
+            "exec-dispatch",
+            AuditLink {
+                principal_id: Some(client_id),
+                session_id: Some(&session.session_id),
+                operation_id: Some(&operation.operation_id),
+                job_id: Some(&binding.job_id),
+                grant_id: audit_grant_id.as_deref(),
+                reason_code: (!committed).then_some(if rejected.is_some() {
+                    "runner-rejected"
+                } else {
+                    "dispatch-unknown"
+                }),
+            },
+        )?;
         Ok(())
     });
+    if journaled.is_err() {
+        return Err(error_value(
+            "OPERATION_AMBIGUOUS",
+            "job dispatch occurred but its audit result could not be persisted",
+            "Inspect the live job; do not re-execute it.",
+        ));
+    }
     match runner {
         Ok(value) if committed => Ok(
             json!({"ok":true,"operationId":operation.operation_id,"jobId":binding.job_id,"sessionId":session.session_id,"sessionGeneration":session.generation,"state":value.get("job").and_then(|job| job.get("state")).cloned().unwrap_or(json!("unknown")),"initialOutput":"","outputCursor":format!("{}:{}:0",session.generation,binding.job_id)}),
@@ -1654,12 +2066,12 @@ fn job_read(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<Valu
         .map_err(map_error)?
         .map_err(map_error)?;
     let cursor = decode_cursor(args.cursor, &binding)?;
-    let max_bytes = args.max_bytes.unwrap_or(32 * 1024);
-    if !(4..=64 * 1024).contains(&max_bytes) || args.wait_ms.unwrap_or(0) > 5_000 {
+    let max_bytes = args.max_bytes.unwrap_or(MAX_READ_BYTES);
+    if !(4..=MAX_READ_BYTES).contains(&max_bytes) || args.wait_ms.unwrap_or(0) > 5_000 {
         return Err(error_value(
             "INVALID_ARGUMENTS",
             "read limits are invalid",
-            "Use max_bytes 4..65536 and wait_ms up to 5000.",
+            "Use max_bytes 4..16384 and wait_ms up to 5000.",
         ));
     }
     let value = send_runner(&session, &json!({"kind":"read","job_id":binding.job_id,"cursor":cursor,"max_bytes":max_bytes,"wait_ms":args.wait_ms.unwrap_or(0)})).map_err(map_error)?;
@@ -1686,7 +2098,7 @@ fn job_side_effect(
     arguments: Value,
 ) -> Result<Value, Value> {
     let _delivery = runtime.delivery.lock_or_recover();
-    let (request_id, job_id, generation, epoch, input) = if tool == "deck_job_input" {
+    let (request_id, job_id, generation, epoch, holder_id, input) = if tool == "deck_job_input" {
         let args: InputArgs = parse(arguments.clone())?;
         if args.input.len() > MAX_INPUT_BYTES {
             return Err(error_value(
@@ -1700,6 +2112,7 @@ fn job_side_effect(
             args.job_id,
             args.session_generation,
             args.control_epoch,
+            args.holder_id,
             Some(args.input),
         )
     } else {
@@ -1709,6 +2122,7 @@ fn job_side_effect(
             args.job_id,
             args.session_generation,
             args.control_epoch,
+            args.holder_id,
             None,
         )
     };
@@ -1739,9 +2153,34 @@ fn job_side_effect(
                 .cloned()
                 .ok_or_else(|| DeckError::new(ErrorKind::Missing, "job not found"))?;
             let session = authorized_session(doc, client_id, &binding.session_id)?.clone();
-            check_control(&session, client_id, &generation, epoch)?;
-            if input.is_some() {
-                active_execution_grant(runtime, doc, client_id, &session, true)?;
+            check_control(&session, client_id, &generation, epoch, &holder_id)?;
+            let grant = doc
+                .execution_grants
+                .iter()
+                .find(|grant| {
+                    grant.grant_id == binding.grant_id
+                        && grant.grant_version == binding.grant_version
+                        && grant.client_id == client_id
+                        && grant.session_id == session.session_id
+                        && grant.session_generation == session.generation
+                        && grant.service_instance == runtime.service_instance
+                })
+                .cloned()
+                .ok_or_else(|| DeckError::new(ErrorKind::ContextChanged, "job grant changed"))?;
+            if input.is_some()
+                && (grant.revoked_at.is_some()
+                    || grant.grant_version <= grant.revocation_version
+                    || !grant.allow_stdin
+                    || now_ms() >= grant.expires_at
+                    || runtime
+                        .monotonic_ms()
+                        .saturating_sub(grant.issued_monotonic_ms)
+                        >= grant.duration_ms)
+            {
+                return Err(DeckError::new(
+                    ErrorKind::Perm,
+                    "interactive stdin is not locally authorized",
+                ));
             }
             let operation = Operation {
                 operation_id: random_id("op_")?,
@@ -1759,19 +2198,30 @@ fn job_side_effect(
                 result: Some(json!({"jobId":job_id,"sessionId":session.session_id})),
                 accepted_at: now_ms(),
                 updated_at: now_ms(),
+                admission_hash: None,
             };
             doc.operations.push(operation.clone());
-            Ok((operation, Some((binding, session))))
+            Ok((operation, Some((binding, session, grant))))
         })
         .map_err(map_error)?;
     let (operation, target) = prepared;
-    let Some((binding, session)) = target else {
+    let Some((binding, session, grant)) = target else {
         return Ok(operation_view(&operation));
     };
+    let context = json!({
+        "service_instance": runtime.service_instance,
+        "holder_id": holder_id,
+        "control_epoch": epoch,
+        "grant_id": grant.grant_id,
+        "grant_version": grant.grant_version,
+        "policy_version": POLICY_VERSION,
+        "intent_hash": binding.request_hash,
+        "expires_at": if input.is_some() { grant.expires_at } else { u64::MAX },
+    });
     let request = if let Some(input) = input {
-        json!({"kind":"input","job_id":binding.job_id,"data_b64":base64::engine::general_purpose::STANDARD.encode(input.as_bytes())})
+        json!({"kind":"input","job_id":binding.job_id,"data_b64":base64::engine::general_purpose::STANDARD.encode(input.as_bytes()),"context":context})
     } else {
-        json!({"kind":"interrupt","job_id":binding.job_id})
+        json!({"kind":"interrupt","job_id":binding.job_id,"context":context})
     };
     let result = send_runner(&session, &request);
     let committed = result
@@ -1850,7 +2300,7 @@ fn session_close(runtime: &Runtime, client_id: &str, arguments: Value) -> Result
             return Err(DeckError::new(ErrorKind::DiskFull, "MCP operation capacity reached"));
         }
         let session = authorized_session(doc, client_id, &args.session_id)?.clone();
-        check_control(&session, client_id, &args.expected_generation, args.control_epoch)?;
+        check_control(&session, client_id, &args.expected_generation, args.control_epoch, &args.holder_id)?;
         let runner = send_runner(&session, &json!({"kind":"ping"})).map_err(|_| {
             DeckError::new(
                 ErrorKind::ContextChanged,
@@ -1861,7 +2311,7 @@ fn session_close(runtime: &Runtime, client_id: &str, arguments: Value) -> Result
         if active && !args.confirm_running { return Err(DeckError::new(ErrorKind::Locked, "session has a running job")); }
         let managed = doc.sessions.iter_mut().find(|item| item.session_id == session.session_id).ok_or_else(|| DeckError::new(ErrorKind::Missing, "session not found"))?;
         managed.closing = true;
-        let operation = Operation { operation_id:random_id("op_")?, client_id:client_id.into(), request_id:args.request_id, request_hash:hash, kind:"session-close".into(), state:"accepted".into(), code:None, result:Some(json!({"sessionId":session.session_id,"cardId":session.card_id,"sessionGeneration":session.generation,"controlEpoch":session.control_epoch,"confirmRunning":args.confirm_running})), accepted_at:now_ms(), updated_at:now_ms() };
+        let operation = Operation { operation_id:random_id("op_")?, client_id:client_id.into(), request_id:args.request_id, request_hash:hash, kind:"session-close".into(), state:"accepted".into(), code:None, result:Some(json!({"sessionId":session.session_id,"cardId":session.card_id,"sessionGeneration":session.generation,"controlEpoch":session.control_epoch,"holderId":args.holder_id,"confirmRunning":args.confirm_running})), accepted_at:now_ms(), updated_at:now_ms(), admission_hash:None };
         doc.operations.push(operation.clone());
         Ok(operation)
     }).map_err(map_error)?;
@@ -1870,13 +2320,89 @@ fn session_close(runtime: &Runtime, client_id: &str, arguments: Value) -> Result
 }
 
 fn route(runtime: &Runtime, request: WireRequest) -> Value {
-    if request.version != VERSION || !valid_id(&request.client_id) {
+    if request.version != CONTROL_PROTOCOL
+        || !valid_id(&request.client_id)
+        || request.credential.len() > 128
+    {
         return error_value(
             "AUTH_REQUIRED",
             "invalid MCP control request",
             "Use the bundled deck-mcp adapter and an authorized client id.",
         );
     }
+    let emergency_auth_blocked = {
+        let emergency = runtime.emergency.lock_or_recover();
+        emergency.disabled || emergency.clients.contains(&request.client_id)
+    };
+    let authenticated = !emergency_auth_blocked
+        && runtime
+            .read(|doc| {
+                doc.config.enabled
+                    && doc.config.clients.iter().any(|client| {
+                        client.id == request.client_id
+                            && client.revoked_at.is_none()
+                            && client.credential_version > 0
+                            && secret_hash_matches(
+                                &client.credential_hash,
+                                &sha(request.credential.as_bytes()),
+                            )
+                    })
+            })
+            .unwrap_or(false);
+    if !authenticated {
+        return error_value(
+            "AUTH_REQUIRED",
+            "MCP credential is invalid or revoked",
+            "Reauthorize this integration locally in Deck.",
+        );
+    }
+    let request_session = request
+        .arguments
+        .get("session_id")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .or_else(|| {
+            let job_id = request.arguments.get("job_id")?.as_str()?;
+            runtime
+                .read(|doc| {
+                    doc.jobs
+                        .iter()
+                        .find(|job| job.job_id == job_id && job.client_id == request.client_id)
+                        .map(|job| job.session_id.clone())
+                })
+                .ok()
+                .flatten()
+        });
+    if let Some(session_id) = request_session.as_deref() {
+        let emergency = runtime.emergency.lock_or_recover();
+        if emergency.human_sessions.contains(session_id)
+            && matches!(
+                request.tool.as_str(),
+                "deck_session_control"
+                    | "deck_exec"
+                    | "deck_job_read"
+                    | "deck_job_input"
+                    | "deck_session_close"
+            )
+        {
+            return error_value(
+                "HUMAN_CONTROL",
+                "local takeover has fenced remote access",
+                "Wait for the local user to explicitly return control.",
+            );
+        }
+        if emergency.execution_sessions.contains(session_id)
+            && matches!(request.tool.as_str(), "deck_exec" | "deck_job_input")
+        {
+            return error_value(
+                "EXECUTION_GRANT_REQUIRED",
+                "local execution authority was revoked",
+                "Ask the local Deck user to approve a new execution window.",
+            );
+        }
+    }
+    let audit_tool = request.tool.clone();
+    let audit_principal = request.client_id.clone();
     let result = match request.tool.as_str() {
         "deck_capabilities" => capabilities(runtime, &request.client_id, request.arguments),
         "deck_project_list" => project_list(runtime, &request.client_id, request.arguments),
@@ -1902,6 +2428,36 @@ fn route(runtime: &Runtime, request: WireRequest) -> Value {
             "Refresh tools/list and use an advertised tool.",
         )),
     };
+    if let Err(error) = &result {
+        let kind = if audit_tool.starts_with("deck_project_") {
+            Some("read-denied")
+        } else if matches!(
+            audit_tool.as_str(),
+            "deck_exec" | "deck_job_input" | "deck_session_create" | "deck_session_close"
+        ) {
+            Some("request-denied")
+        } else {
+            None
+        };
+        if let Some(kind) = kind {
+            let reason = error
+                .get("error")
+                .and_then(|value| value.get("code"))
+                .and_then(Value::as_str)
+                .unwrap_or("rejected");
+            let _ = runtime.write(|doc| {
+                audit(
+                    doc,
+                    kind,
+                    AuditLink {
+                        principal_id: Some(&audit_principal),
+                        reason_code: Some(reason),
+                        ..Default::default()
+                    },
+                )
+            });
+        }
+    }
     result.unwrap_or_else(|error| error)
 }
 
@@ -1982,6 +2538,7 @@ pub(crate) fn spawn(app: AppHandle) {
         doc: Mutex::new(load(&path)),
         io: Mutex::new(()),
         delivery: Mutex::new(()),
+        emergency: Mutex::new(EmergencyFences::default()),
         service_instance: random_id("svc_").unwrap_or_else(|_| "svc_unavailable".into()),
         started: Instant::now(),
     });
@@ -2012,6 +2569,7 @@ pub(crate) struct StatusView {
     enabled: bool,
     socket_ready: bool,
     clients: Vec<ClientView>,
+    output_retention_ms: u64,
 }
 
 #[derive(Serialize)]
@@ -2027,9 +2585,11 @@ pub(crate) struct ClientView {
 #[tauri::command]
 pub(crate) fn mcp_status() -> Result<StatusView, DeckError> {
     let runtime = runtime()?;
+    let emergency = runtime.emergency.lock_or_recover();
     runtime.read(|doc| StatusView {
-        enabled: doc.config.enabled,
+        enabled: doc.config.enabled && !emergency.disabled,
         socket_ready: runtime.socket.exists(),
+        output_retention_ms: doc.config.output_retention_ms,
         clients: doc
             .config
             .clients
@@ -2037,12 +2597,45 @@ pub(crate) fn mcp_status() -> Result<StatusView, DeckError> {
             .map(|client| ClientView {
                 id: client.id.clone(),
                 name: client.name.clone(),
-                revoked: client.revoked_at.is_some(),
+                revoked: client.revoked_at.is_some() || emergency.clients.contains(&client.id),
                 allow_create: client.allow_create,
                 projects: client.projects.clone(),
             })
             .collect(),
     })
+}
+
+#[tauri::command]
+pub(crate) fn mcp_output_retention(duration_ms: u64) -> Result<(), DeckError> {
+    if !(60_000..=MAX_OUTPUT_RETENTION_MS).contains(&duration_ms) {
+        return Err(DeckError::new(
+            ErrorKind::Invalid,
+            "MCP output retention must be between one minute and seven days",
+        ));
+    }
+    let runtime = runtime()?;
+    let _delivery = runtime.delivery.lock_or_recover();
+    let sessions = runtime.write(|doc| {
+        doc.config.output_retention_ms = duration_ms;
+        Ok(doc.sessions.clone())
+    })?;
+    let mut uncertain = false;
+    for session in sessions {
+        let applied = send_runner(
+            &session,
+            &json!({"kind":"retention","service_instance":runtime.service_instance,"output_retention_ms":duration_ms}),
+        )
+        .ok()
+        .is_some_and(|value| value.get("ok").and_then(Value::as_bool) == Some(true));
+        uncertain |= !applied;
+    }
+    if uncertain {
+        return Err(DeckError::new(
+            ErrorKind::ContextChanged,
+            "retention is saved for new runners but one or more live runners did not confirm it",
+        ));
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -2064,16 +2657,20 @@ pub(crate) struct ProjectScopeInput {
 
 #[tauri::command]
 pub(crate) fn mcp_enable() -> Result<(), DeckError> {
-    runtime()?.write(|doc| {
+    let runtime = runtime()?;
+    runtime.write(|doc| {
         doc.config.enabled = true;
         Ok(())
-    })
+    })?;
+    runtime.emergency.lock_or_recover().disabled = false;
+    Ok(())
 }
 
 #[tauri::command]
 pub(crate) fn mcp_disable() -> Result<(), DeckError> {
     let runtime = runtime()?;
     let _delivery = runtime.delivery.lock_or_recover();
+    runtime.emergency.lock_or_recover().disabled = true;
     let sessions = runtime.write(|doc| {
         doc.config.enabled = false;
         for grant in &mut doc.execution_grants {
@@ -2092,6 +2689,7 @@ pub(crate) fn mcp_disable() -> Result<(), DeckError> {
             .collect::<HashSet<_>>();
         for session in &mut doc.sessions {
             session.control_owner = None;
+            session.control_holder = None;
             session.control_epoch = session.control_epoch.saturating_add(1);
             session.lease_expires_at = None;
             session.human_lock = true;
@@ -2110,8 +2708,17 @@ pub(crate) fn mcp_disable() -> Result<(), DeckError> {
         }
         Ok(sessions)
     })?;
+    let mut uncertain = false;
     for session in sessions {
-        let _ = send_runner(&session, &json!({"kind":"control","mode":"human"}));
+        uncertain |= send_runner_control(runtime, &session, "fenced")
+            .ok()
+            .is_none_or(|value| value.get("ok").and_then(Value::as_bool) != Some(true));
+    }
+    if uncertain {
+        return Err(DeckError::new(
+            ErrorKind::ContextChanged,
+            "MCP is disabled locally but one or more runner fences are unconfirmed",
+        ));
     }
     Ok(())
 }
@@ -2155,7 +2762,13 @@ pub(crate) fn mcp_client_add(
             roots,
         });
     }
-    runtime()?.write(|doc| {
+    let runtime = runtime()?;
+    let client_id = random_id("client_")?;
+    let credential = random_id("mcp_")?;
+    if runtime.app.is_some() {
+        crate::keychain::set_mcp_credential(&client_id, &credential)?;
+    }
+    let result = runtime.write(|doc| {
         if doc.config.clients.len() >= MAX_CLIENTS {
             return Err(DeckError::new(
                 ErrorKind::DiskFull,
@@ -2163,8 +2776,10 @@ pub(crate) fn mcp_client_add(
             ));
         }
         let client = Client {
-            id: random_id("client_")?,
+            id: client_id.clone(),
             name,
+            credential_hash: sha(credential.as_bytes()),
+            credential_version: 1,
             revoked_at: None,
             allow_create,
             projects: scopes,
@@ -2177,13 +2792,31 @@ pub(crate) fn mcp_client_add(
             allow_create: client.allow_create,
             projects: client.projects,
         })
-    })
+    });
+    if result.is_err() && runtime.app.is_some() {
+        let _ = crate::keychain::clear_mcp_credential(&client_id);
+    }
+    result
 }
 
 #[tauri::command]
 pub(crate) fn mcp_client_revoke(client_id: String) -> Result<(), DeckError> {
     let runtime = runtime()?;
     let _delivery = runtime.delivery.lock_or_recover();
+    runtime
+        .read(|doc| {
+            doc.config
+                .clients
+                .iter()
+                .any(|client| client.id == client_id)
+        })?
+        .then_some(())
+        .ok_or_else(|| DeckError::new(ErrorKind::Missing, "MCP client not found"))?;
+    runtime
+        .emergency
+        .lock_or_recover()
+        .clients
+        .insert(client_id.clone());
     let sessions =
         runtime.write(|doc| {
             let client = doc
@@ -2224,6 +2857,7 @@ pub(crate) fn mcp_client_revoke(client_id: String) -> Result<(), DeckError> {
                 .filter(|session| session.owner_client_id == client_id)
             {
                 session.control_owner = None;
+                session.control_holder = None;
                 session.control_epoch = session.control_epoch.saturating_add(1);
                 session.lease_expires_at = None;
                 session.human_lock = true;
@@ -2240,10 +2874,30 @@ pub(crate) fn mcp_client_revoke(client_id: String) -> Result<(), DeckError> {
                     session.closing = false;
                 }
             }
+            audit(
+                doc,
+                "client-revoked",
+                AuditLink {
+                    principal_id: Some(&client_id),
+                    ..Default::default()
+                },
+            )?;
             Ok(sessions)
         })?;
+    let mut uncertain = false;
     for session in sessions {
-        let _ = send_runner(&session, &json!({"kind":"control","mode":"human"}));
+        uncertain |= send_runner_control(runtime, &session, "fenced")
+            .ok()
+            .is_none_or(|value| value.get("ok").and_then(Value::as_bool) != Some(true));
+    }
+    if runtime.app.is_some() {
+        crate::keychain::clear_mcp_credential(&client_id)?;
+    }
+    if uncertain {
+        return Err(DeckError::new(
+            ErrorKind::ContextChanged,
+            "client is revoked locally but one or more runner fences are unconfirmed",
+        ));
     }
     Ok(())
 }
@@ -2264,83 +2918,165 @@ pub(crate) fn mcp_execution_grant(
         .clamp(60_000, MAX_EXECUTION_GRANT_MS);
     let service_instance = runtime.service_instance.clone();
     let monotonic = runtime.monotonic_ms();
-    runtime.write(|doc| {
-        let session = doc
-            .sessions
-            .iter()
-            .find(|session| session.session_id == session_id || session.card_id == session_id)
-            .cloned()
-            .ok_or_else(|| DeckError::new(ErrorKind::Missing, "MCP session not found"))?;
-        client(doc, &session.owner_client_id)?;
-        let version = doc
-            .execution_grants
-            .iter()
-            .filter(|grant| grant.session_id == session.session_id)
-            .map(|grant| grant.grant_version)
-            .max()
-            .unwrap_or(0)
-            .saturating_add(1);
-        for grant in doc
-            .execution_grants
-            .iter_mut()
-            .filter(|grant| grant.session_id == session.session_id && grant.revoked_at.is_none())
-        {
-            grant.revoked_at = Some(now_ms());
-            grant.revocation_version = grant.grant_version;
-        }
-        let granted_session_id = session.session_id.clone();
-        doc.execution_grants.push(ExecutionGrant {
-            grant_id: random_id("grant_")?,
-            client_id: session.owner_client_id,
-            credential_version: 1,
-            project_id: session.project_id,
-            session_id: session.session_id,
-            session_generation: session.generation,
-            profile: "trusted-host-v1".into(),
-            environment_profile: ENVIRONMENT_PROFILE.into(),
-            environment_profile_version: 1,
-            issued_at: now_ms(),
-            expires_at: now_ms().saturating_add(duration),
-            issued_monotonic_ms: monotonic,
-            duration_ms: duration,
-            allow_stdin,
-            allow_output,
-            grant_version: version,
-            revocation_version: version.saturating_sub(1),
-            service_instance,
-            revoked_at: None,
-        });
-        if let Some(managed) = doc
-            .sessions
-            .iter_mut()
-            .find(|managed| managed.session_id == granted_session_id)
-        {
-            managed.output_shared = allow_output;
-        }
-        Ok(())
-    })
+    let (session, revoked) =
+        runtime.write(|doc| {
+            let session = doc
+                .sessions
+                .iter()
+                .find(|session| session.session_id == session_id || session.card_id == session_id)
+                .cloned()
+                .ok_or_else(|| DeckError::new(ErrorKind::Missing, "MCP session not found"))?;
+            let session_for_runner = session.clone();
+            let credential_version = client(doc, &session.owner_client_id)?.credential_version;
+            let version = doc
+                .execution_grants
+                .iter()
+                .filter(|grant| grant.session_id == session.session_id)
+                .map(|grant| grant.grant_version)
+                .max()
+                .unwrap_or(0)
+                .saturating_add(1);
+            let mut revoked = Vec::new();
+            for grant in doc.execution_grants.iter_mut().filter(|grant| {
+                grant.session_id == session.session_id && grant.revoked_at.is_none()
+            }) {
+                grant.revoked_at = Some(now_ms());
+                grant.revocation_version = grant.grant_version;
+                revoked.push((grant.grant_id.clone(), grant.grant_version));
+            }
+            let granted_session_id = session.session_id.clone();
+            let principal_id = session.owner_client_id.clone();
+            let grant_id = random_id("grant_")?;
+            doc.execution_grants.push(ExecutionGrant {
+                grant_id: grant_id.clone(),
+                client_id: session.owner_client_id,
+                credential_version,
+                project_id: session.project_id,
+                session_id: session.session_id,
+                session_generation: session.generation,
+                profile: "trusted-host-v1".into(),
+                environment_profile: ENVIRONMENT_PROFILE.into(),
+                environment_profile_version: 1,
+                issued_at: now_ms(),
+                expires_at: now_ms().saturating_add(duration),
+                issued_monotonic_ms: monotonic,
+                duration_ms: duration,
+                allow_stdin,
+                allow_output,
+                grant_version: version,
+                revocation_version: version.saturating_sub(1),
+                service_instance,
+                revoked_at: None,
+            });
+            if let Some(managed) = doc
+                .sessions
+                .iter_mut()
+                .find(|managed| managed.session_id == granted_session_id)
+            {
+                managed.output_shared = allow_output;
+            }
+            audit(
+                doc,
+                "grant-approved",
+                AuditLink {
+                    principal_id: Some(&principal_id),
+                    session_id: Some(&granted_session_id),
+                    grant_id: Some(&grant_id),
+                    ..Default::default()
+                },
+            )?;
+            Ok((session_for_runner, revoked))
+        })?;
+    let mut uncertain = false;
+    for (grant_id, grant_version) in revoked {
+        uncertain |= send_runner(
+            &session,
+            &json!({"kind":"revoke-grant","service_instance":runtime.service_instance,"grant_id":grant_id,"grant_version":grant_version}),
+        )
+        .ok()
+        .is_none_or(|value| value.get("ok").and_then(Value::as_bool) != Some(true));
+    }
+    if uncertain {
+        return Err(DeckError::new(
+            ErrorKind::ContextChanged,
+            "the new grant is saved but an older runner grant fence is unconfirmed",
+        ));
+    }
+    runtime
+        .emergency
+        .lock_or_recover()
+        .execution_sessions
+        .remove(&session.session_id);
+    Ok(())
 }
 
 #[tauri::command]
 pub(crate) fn mcp_execution_revoke(session_id: String) -> Result<(), DeckError> {
     let runtime = runtime()?;
     let _delivery = runtime.delivery.lock_or_recover();
-    runtime.write(|doc| {
-        let session = doc
-            .sessions
-            .iter()
-            .find(|session| session.session_id == session_id || session.card_id == session_id)
-            .ok_or_else(|| DeckError::new(ErrorKind::Missing, "MCP session not found"))?;
-        for grant in doc
-            .execution_grants
-            .iter_mut()
-            .filter(|grant| grant.session_id == session.session_id && grant.revoked_at.is_none())
-        {
-            grant.revoked_at = Some(now_ms());
-            grant.revocation_version = grant.grant_version;
-        }
-        Ok(())
-    })
+    let fenced_session_id = runtime
+        .read(|doc| {
+            doc.sessions
+                .iter()
+                .find(|session| session.session_id == session_id || session.card_id == session_id)
+                .map(|session| session.session_id.clone())
+        })?
+        .ok_or_else(|| DeckError::new(ErrorKind::Missing, "MCP session not found"))?;
+    runtime
+        .emergency
+        .lock_or_recover()
+        .execution_sessions
+        .insert(fenced_session_id);
+    let (session, revoked) =
+        runtime.write(|doc| {
+            let session = doc
+                .sessions
+                .iter()
+                .find(|session| session.session_id == session_id || session.card_id == session_id)
+                .cloned()
+                .ok_or_else(|| DeckError::new(ErrorKind::Missing, "MCP session not found"))?;
+            let mut revoked = Vec::new();
+            for grant in doc.execution_grants.iter_mut().filter(|grant| {
+                grant.session_id == session.session_id && grant.revoked_at.is_none()
+            }) {
+                grant.revoked_at = Some(now_ms());
+                grant.revocation_version = grant.grant_version;
+                revoked.push((grant.grant_id.clone(), grant.grant_version));
+            }
+            audit(
+                doc,
+                "grant-revoked",
+                AuditLink {
+                    principal_id: Some(&session.owner_client_id),
+                    session_id: Some(&session.session_id),
+                    ..Default::default()
+                },
+            )?;
+            if let Some(managed) = doc
+                .sessions
+                .iter_mut()
+                .find(|managed| managed.session_id == session.session_id)
+            {
+                managed.output_shared = false;
+            }
+            Ok((session, revoked))
+        })?;
+    let mut uncertain = false;
+    for (grant_id, grant_version) in revoked {
+        uncertain |= send_runner(
+            &session,
+            &json!({"kind":"revoke-grant","service_instance":runtime.service_instance,"grant_id":grant_id,"grant_version":grant_version}),
+        )
+        .ok()
+        .is_none_or(|value| value.get("ok").and_then(Value::as_bool) != Some(true));
+    }
+    if uncertain {
+        return Err(DeckError::new(
+            ErrorKind::ContextChanged,
+            "execution is revoked locally but the runner revocation fence is unconfirmed",
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Clone, Serialize)]
@@ -2410,7 +3146,8 @@ pub(crate) fn mcp_validate(operation_id: String) -> Result<(), DeckError> {
             .operations
             .iter()
             .find(|operation| {
-                operation.operation_id == operation_id && operation.state == "executing"
+                operation.operation_id == operation_id
+                    && matches!(operation.state.as_str(), "executing" | "admitted")
             })
             .ok_or_else(|| {
                 DeckError::new(
@@ -2435,14 +3172,139 @@ pub(crate) fn mcp_validate(operation_id: String) -> Result<(), DeckError> {
                 .get("controlEpoch")
                 .and_then(Value::as_u64)
                 .unwrap_or(0);
+            let holder = result.get("holderId").and_then(Value::as_str).unwrap_or("");
             let session = authorized_session(doc, &operation.client_id, session_id)?;
-            check_control(session, &operation.client_id, generation, epoch)?;
+            check_control(session, &operation.client_id, generation, epoch, holder)?;
             if !session.closing {
                 return Err(DeckError::new(
                     ErrorKind::ContextChanged,
                     "MCP close plan is no longer current",
                 ));
             }
+        }
+        Ok(())
+    })?
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CloseAdmissionView {
+    admission: String,
+}
+
+/// Linearize a remote close inside the Board transaction, immediately before
+/// its first durable queue-cancellation side effect. Once admitted, later
+/// revocation does not pretend that the already-admitted close never started.
+#[tauri::command]
+pub(crate) fn mcp_close_admit(operation_id: String) -> Result<CloseAdmissionView, DeckError> {
+    let runtime = runtime()?;
+    close_admit(runtime, &operation_id)
+}
+
+fn close_admit(runtime: &Runtime, operation_id: &str) -> Result<CloseAdmissionView, DeckError> {
+    let _delivery = runtime.delivery.lock_or_recover();
+    let admission = random_id("close_")?;
+    let admission_hash = sha(admission.as_bytes());
+    runtime.write(|doc| {
+        if !doc.config.enabled {
+            return Err(DeckError::new(ErrorKind::Perm, "MCP control is disabled"));
+        }
+        let index = doc
+            .operations
+            .iter()
+            .position(|operation| {
+                operation.operation_id == operation_id
+                    && operation.kind == "session-close"
+                    && operation.state == "executing"
+            })
+            .ok_or_else(|| {
+                DeckError::new(
+                    ErrorKind::ContextChanged,
+                    "MCP close operation is no longer admissible",
+                )
+            })?;
+        let operation = doc.operations[index].clone();
+        client(doc, &operation.client_id)?;
+        let result = operation.result.as_ref().ok_or_else(|| {
+            DeckError::new(ErrorKind::ContextChanged, "MCP close plan is missing")
+        })?;
+        let session_id = result
+            .get("sessionId")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let generation = result
+            .get("sessionGeneration")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let epoch = result
+            .get("controlEpoch")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        let holder = result.get("holderId").and_then(Value::as_str).unwrap_or("");
+        let session = authorized_session(doc, &operation.client_id, session_id)?;
+        check_control(session, &operation.client_id, generation, epoch, holder)?;
+        if !session.closing {
+            return Err(DeckError::new(
+                ErrorKind::ContextChanged,
+                "MCP close plan is no longer current",
+            ));
+        }
+        let saved = &mut doc.operations[index];
+        saved.state = "admitted".into();
+        saved.admission_hash = Some(admission_hash);
+        saved.updated_at = now_ms();
+        Ok(())
+    })?;
+    Ok(CloseAdmissionView { admission })
+}
+
+/// Validate an already-linearized close at each native side-effect boundary.
+/// This does not re-run revocation checks: revocation ordered after admission
+/// cannot roll back queue cancellation that may already have committed.
+pub(crate) fn validate_close_admission(
+    admission: Option<&str>,
+    tmux_sessions: &[String],
+) -> Result<(), DeckError> {
+    validate_close_admission_with(runtime()?, admission, tmux_sessions)
+}
+
+fn validate_close_admission_with(
+    runtime: &Runtime,
+    admission: Option<&str>,
+    tmux_sessions: &[String],
+) -> Result<(), DeckError> {
+    let Some(admission) = admission else {
+        return Ok(());
+    };
+    let hash = sha(admission.as_bytes());
+    runtime.read(|doc| {
+        let operation = doc
+            .operations
+            .iter()
+            .find(|operation| {
+                operation.kind == "session-close"
+                    && operation.state == "admitted"
+                    && operation.admission_hash.as_deref() == Some(&hash)
+            })
+            .ok_or_else(|| {
+                DeckError::new(ErrorKind::ContextChanged, "MCP close admission is invalid")
+            })?;
+        let session_id = operation
+            .result
+            .as_ref()
+            .and_then(|result| result.get("sessionId"))
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let session = doc
+            .sessions
+            .iter()
+            .find(|session| session.session_id == session_id)
+            .ok_or_else(|| DeckError::new(ErrorKind::ContextChanged, "MCP close target changed"))?;
+        if tmux_sessions.len() != 1 || tmux_sessions[0] != session.tmux_session {
+            return Err(DeckError::new(
+                ErrorKind::ContextChanged,
+                "MCP close admission target changed",
+            ));
         }
         Ok(())
     })?
@@ -2495,6 +3357,7 @@ pub(crate) fn mcp_start_session(
         .get("generation")
         .and_then(Value::as_str)
         .ok_or_else(|| DeckError::new(ErrorKind::Invalid, "MCP create plan is invalid"))?;
+    let output_retention_ms = runtime.read(|doc| doc.config.output_retention_ms)?;
     if crate::tmux::tmux(&["has-session", "-t", &crate::tmux::session_target(&name)]).is_ok() {
         if runner_socket_matches(socket, generation) {
             return Ok(StartResult { created: true });
@@ -2519,6 +3382,10 @@ pub(crate) fn mcp_start_session(
         socket.into(),
         "--generation".into(),
         generation.into(),
+        "--service-instance".into(),
+        runtime.service_instance.clone(),
+        "--output-retention-ms".into(),
+        output_retention_ms.to_string(),
     ];
     crate::tmux::tmux_owned(&args)?;
     let ready = (0..40).any(|_| {
@@ -2595,9 +3462,10 @@ pub(crate) fn mcp_complete(
                 generation: get("generation")?,
                 runner_socket: get("runnerSocket")?,
                 owner_client_id: operation.client_id.clone(),
-                control_owner: authorized.then(|| operation.client_id.clone()),
+                control_owner: None,
+                control_holder: None,
                 control_epoch: 1,
-                lease_expires_at: authorized.then(|| now_ms() + DEFAULT_LEASE_MS),
+                lease_expires_at: None,
                 human_lock: !authorized,
                 output_shared: false,
                 closing: false,
@@ -2639,7 +3507,7 @@ pub(crate) fn mcp_complete(
         Ok(created_session)
     })?;
     if let Some(session) = switch_to_human {
-        let _ = send_runner(&session, &json!({"kind":"control","mode":"human"}));
+        let _ = send_runner_control(runtime, &session, "human");
     }
     Ok(())
 }
@@ -2665,6 +3533,19 @@ pub(crate) fn mcp_card_closed(card_id: String) -> Result<(), DeckError> {
 pub(crate) fn mcp_takeover(session_id: String) -> Result<(), DeckError> {
     let runtime = runtime()?;
     let _delivery = runtime.delivery.lock_or_recover();
+    let fenced_session_id = runtime
+        .read(|doc| {
+            doc.sessions
+                .iter()
+                .find(|session| session.session_id == session_id || session.card_id == session_id)
+                .map(|session| session.session_id.clone())
+        })?
+        .ok_or_else(|| DeckError::new(ErrorKind::Missing, "MCP session not found"))?;
+    runtime
+        .emergency
+        .lock_or_recover()
+        .human_sessions
+        .insert(fenced_session_id);
     let session = runtime.write(|doc| {
         let session = doc
             .sessions
@@ -2672,13 +3553,24 @@ pub(crate) fn mcp_takeover(session_id: String) -> Result<(), DeckError> {
             .find(|session| session.session_id == session_id || session.card_id == session_id)
             .ok_or_else(|| DeckError::new(ErrorKind::Missing, "MCP session not found"))?;
         session.control_owner = None;
+        session.control_holder = None;
         session.control_epoch = session.control_epoch.saturating_add(1);
         session.lease_expires_at = None;
         session.human_lock = true;
         session.output_shared = false;
-        Ok(session.clone())
+        let session = session.clone();
+        audit(
+            doc,
+            "human-takeover",
+            AuditLink {
+                principal_id: Some(&session.owner_client_id),
+                session_id: Some(&session.session_id),
+                ..Default::default()
+            },
+        )?;
+        Ok(session)
     })?;
-    let response = send_runner(&session, &json!({"kind":"control","mode":"human"}))?;
+    let response = send_runner_control(runtime, &session, "human")?;
     if response.get("ok").and_then(Value::as_bool) == Some(true) {
         Ok(())
     } else {
@@ -2704,7 +3596,7 @@ pub(crate) fn mcp_return_control(session_id: String) -> Result<(), DeckError> {
         active_execution_grant(runtime, doc, &session.owner_client_id, &session, false)?;
         Ok::<ManagedSession, DeckError>(session)
     })??;
-    let response = send_runner(&session, &json!({"kind":"control","mode":"mcp"}))?;
+    let response = send_runner_control(runtime, &session, "mcp")?;
     if response.get("ok").and_then(Value::as_bool) != Some(true) {
         return Err(DeckError::new(
             ErrorKind::Locked,
@@ -2721,10 +3613,17 @@ pub(crate) fn mcp_return_control(session_id: String) -> Result<(), DeckError> {
             })?;
         session.human_lock = false;
         session.control_epoch = session.control_epoch.saturating_add(1);
-        session.control_owner = Some(session.owner_client_id.clone());
-        session.lease_expires_at = Some(now_ms() + DEFAULT_LEASE_MS);
+        session.control_owner = None;
+        session.control_holder = None;
+        session.lease_expires_at = None;
         Ok(())
-    })
+    })?;
+    runtime
+        .emergency
+        .lock_or_recover()
+        .human_sessions
+        .remove(&session.session_id);
+    Ok(())
 }
 
 #[derive(Serialize)]
@@ -2733,6 +3632,7 @@ pub(crate) struct SessionUiView {
     managed: bool,
     human_control: bool,
     control_owner: Option<String>,
+    control_holder: Option<String>,
     control_epoch: u64,
     active_job: bool,
     client_name: Option<String>,
@@ -2747,6 +3647,7 @@ pub(crate) struct SessionUiView {
 #[tauri::command]
 pub(crate) fn mcp_session_ui(card_id: String) -> Result<SessionUiView, DeckError> {
     let runtime = runtime()?;
+    record_expired_grants(runtime)?;
     let session = runtime.read(|doc| {
         doc.sessions
             .iter()
@@ -2758,6 +3659,7 @@ pub(crate) fn mcp_session_ui(card_id: String) -> Result<SessionUiView, DeckError
             managed: false,
             human_control: false,
             control_owner: None,
+            control_holder: None,
             control_epoch: 0,
             active_job: false,
             client_name: None,
@@ -2809,6 +3711,11 @@ pub(crate) fn mcp_session_ui(card_id: String) -> Result<SessionUiView, DeckError
         (name, error, grant)
     })?;
     let runner = send_runner(&session, &json!({"kind":"ping"})).ok();
+    let emergency_human = runtime
+        .emergency
+        .lock_or_recover()
+        .human_sessions
+        .contains(&session.session_id);
     let job_state = runner
         .as_ref()
         .and_then(|value| value.get("job"))
@@ -2817,8 +3724,9 @@ pub(crate) fn mcp_session_ui(card_id: String) -> Result<SessionUiView, DeckError
         .map(str::to_owned);
     Ok(SessionUiView {
         managed: true,
-        human_control: session.human_lock,
+        human_control: session.human_lock || emergency_human,
         control_owner: session.control_owner,
+        control_holder: session.control_holder,
         control_epoch: session.control_epoch,
         active_job: job_state.is_some(),
         client_name,
@@ -2827,7 +3735,7 @@ pub(crate) fn mcp_session_ui(card_id: String) -> Result<SessionUiView, DeckError
         execution_grant_active: grant.is_some(),
         execution_expires_at: grant.as_ref().map(|grant| grant.expires_at),
         stdin_allowed: grant.as_ref().is_some_and(|grant| grant.allow_stdin),
-        output_shared: session.output_shared,
+        output_shared: session.output_shared && !emergency_human,
     })
 }
 
@@ -2923,7 +3831,7 @@ mod tests {
                             "generation":generation,
                             "job":{"jobId":job_id,"state":"exited","exitCode":0}
                         }),
-                        "input" | "interrupt" | "control" => {
+                        "input" | "interrupt" | "control" | "retention" | "revoke-grant" => {
                             json!({"ok":true,"generation":generation})
                         }
                         _ => json!({"ok":false,"generation":generation,"error":"invalid-request"}),
@@ -2965,6 +3873,8 @@ mod tests {
         Client {
             id: "client_a".into(),
             name: "Client A".into(),
+            credential_hash: sha(b"mcp_test"),
+            credential_version: 1,
             revoked_at: None,
             allow_create: true,
             projects: vec![ProjectScope {
@@ -2986,6 +3896,7 @@ mod tests {
             runner_socket: runner.socket.display().to_string(),
             owner_client_id: "client_a".into(),
             control_owner: Some("client_a".into()),
+            control_holder: Some("holder_a".into()),
             control_epoch: 1,
             lease_expires_at: Some(now_ms() + 60_000),
             human_lock: false,
@@ -3021,8 +3932,9 @@ mod tests {
 
     fn request(tool: &str, arguments: Value) -> WireRequest {
         WireRequest {
-            version: VERSION,
+            version: CONTROL_PROTOCOL,
             client_id: "client_a".into(),
+            credential: "mcp_test".into(),
             tool: tool.into(),
             arguments,
         }
@@ -3040,6 +3952,7 @@ mod tests {
             result: None,
             accepted_at: 1,
             updated_at: 1,
+            admission_hash: None,
         }
     }
 
@@ -3048,7 +3961,7 @@ mod tests {
         let doc = DiskDoc::default();
         assert!(!doc.config.enabled);
         validate_doc(&doc).unwrap();
-        assert_eq!(MAX_SCRIPT_BYTES, 128 * 1024);
+        assert_eq!(MAX_SCRIPT_BYTES, 32 * 1024);
         assert_eq!(MAX_RESPONSE_BYTES, 128 * 1024);
     }
 
@@ -3061,6 +3974,8 @@ mod tests {
             session_generation: "g_a".into(),
             request_hash: "a".repeat(64),
             operation_id: "op_a".into(),
+            grant_id: "grant_a".into(),
+            grant_version: 1,
             allow_output: true,
         };
         assert_eq!(
@@ -3100,6 +4015,7 @@ mod tests {
             runner_socket: "/tmp/runner.sock".into(),
             owner_client_id: "client_a".into(),
             control_owner: None,
+            control_holder: None,
             control_epoch: 2,
             lease_expires_at: None,
             human_lock: true,
@@ -3107,7 +4023,7 @@ mod tests {
             closing: false,
             created_at: 1,
         };
-        let error = check_control(&session, "client_a", "g_a", 1).unwrap_err();
+        let error = check_control(&session, "client_a", "g_a", 1, "holder_a").unwrap_err();
         assert_eq!(error.kind(), ErrorKind::ControlRevoked);
         assert_eq!(map_error(error)["error"]["code"], "CONTROL_REVOKED");
     }
@@ -3119,6 +4035,8 @@ mod tests {
         doc.config.clients.push(Client {
             id: "client_a".into(),
             name: "Client A".into(),
+            credential_hash: sha(b"mcp_test"),
+            credential_version: 1,
             revoked_at: None,
             allow_create: true,
             projects: vec![ProjectScope {
@@ -3150,6 +4068,7 @@ mod tests {
             runner_socket: "/tmp/runner.sock".into(),
             owner_client_id: "client_a".into(),
             control_owner: Some("client_a".into()),
+            control_holder: Some("holder_a".into()),
             control_epoch: 2,
             lease_expires_at: Some(now_ms() + 10_000),
             human_lock: false,
@@ -3159,9 +4078,10 @@ mod tests {
         });
         assert!(authorized_session(&doc, "client_missing", "mcp_a").is_err());
         let session = authorized_session(&doc, "client_a", "mcp_a").unwrap();
-        assert!(check_control(session, "client_a", "g_other", 2).is_err());
-        assert!(check_control(session, "client_a", "g_a", 1).is_err());
-        assert!(check_control(session, "client_a", "g_a", 2).is_ok());
+        assert!(check_control(session, "client_a", "g_other", 2, "holder_a").is_err());
+        assert!(check_control(session, "client_a", "g_a", 1, "holder_a").is_err());
+        assert!(check_control(session, "client_a", "g_a", 2, "other_holder").is_err());
+        assert!(check_control(session, "client_a", "g_a", 2, "holder_a").is_ok());
     }
 
     #[test]
@@ -3181,6 +4101,120 @@ mod tests {
         );
         std::fs::remove_file(path).unwrap();
         std::fs::remove_dir(root).unwrap();
+    }
+
+    #[test]
+    fn grant_expiry_is_audited_once_without_reviving_authority() {
+        let root = test_root("grant-expiry-audit");
+        let path = root.join("mcp.json");
+        let mut doc = DiskDoc::default();
+        doc.config.enabled = true;
+        doc.config.clients.push(client_record(&root));
+        let session = ManagedSession {
+            session_id: "mcp_a".into(),
+            card_id: "M1".into(),
+            tmux_session: "deck-mcp-test".into(),
+            project_id: "P1".into(),
+            title: "MCP shell".into(),
+            cwd: root.display().to_string(),
+            generation: "g_a".into(),
+            runner_socket: root.join("missing.sock").display().to_string(),
+            owner_client_id: "client_a".into(),
+            control_owner: Some("client_a".into()),
+            control_holder: Some("holder_a".into()),
+            control_epoch: 1,
+            lease_expires_at: Some(now_ms() + 60_000),
+            human_lock: false,
+            output_shared: true,
+            closing: false,
+            created_at: now_ms(),
+        };
+        let mut grant = execution_grant(&session);
+        grant.issued_at = now_ms().saturating_sub(1_000);
+        grant.expires_at = now_ms().saturating_sub(1);
+        grant.duration_ms = 100;
+        doc.execution_grants.push(grant);
+        doc.sessions.push(session.clone());
+        save(&path, &doc).unwrap();
+        let runtime = Runtime {
+            app: None,
+            path,
+            socket: root.join("control.sock"),
+            doc: Mutex::new(Ok(doc)),
+            io: Mutex::new(()),
+            delivery: Mutex::new(()),
+            emergency: Mutex::new(EmergencyFences::default()),
+            service_instance: "svc_test".into(),
+            started: Instant::now(),
+        };
+
+        record_expired_grants(&runtime).unwrap();
+        record_expired_grants(&runtime).unwrap();
+        runtime
+            .read(|doc| {
+                assert!(
+                    active_execution_grant(&runtime, doc, "client_a", &session, false).is_err()
+                );
+                assert_eq!(
+                    doc.audit
+                        .iter()
+                        .filter(|event| event.kind == "grant-expired")
+                        .count(),
+                    1
+                );
+            })
+            .unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn emergency_fence_survives_state_write_failure() {
+        let root = test_root("ef");
+        let runner = FakeRunner::start(&root, "g_a");
+        let mut doc = DiskDoc::default();
+        doc.config.enabled = true;
+        doc.config.clients.push(client_record(&root));
+        let session = session_record(&root, &runner);
+        doc.sessions.push(session.clone());
+        let runtime = Runtime {
+            app: None,
+            path: root.join("missing-parent/state.json"),
+            socket: root.join("control.sock"),
+            doc: Mutex::new(Ok(doc)),
+            io: Mutex::new(()),
+            delivery: Mutex::new(()),
+            emergency: Mutex::new(EmergencyFences::default()),
+            service_instance: "svc_test".into(),
+            started: Instant::now(),
+        };
+        runtime
+            .emergency
+            .lock_or_recover()
+            .human_sessions
+            .insert(session.session_id.clone());
+        assert!(runtime.write(|_| Ok(())).is_err());
+
+        let inspect = route(
+            &runtime,
+            request(
+                "deck_session_inspect",
+                json!({"session_id":"mcp_a","holder_id":"holder_a"}),
+            ),
+        );
+        assert_eq!(inspect["humanLock"], true);
+        assert!(inspect["terminalContext"].is_null());
+        assert_eq!(
+            route(
+                &runtime,
+                request(
+                    "deck_exec",
+                    json!({"session_id":"mcp_a","request_id":"blocked"}),
+                ),
+            )["error"]["code"],
+            "HUMAN_CONTROL"
+        );
+        drop(runner);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -3218,6 +4252,7 @@ mod tests {
             doc: Mutex::new(Ok(doc)),
             io: Mutex::new(()),
             delivery: Mutex::new(()),
+            emergency: Mutex::new(EmergencyFences::default()),
             service_instance: "svc_test".into(),
             started: Instant::now(),
         });
@@ -3313,10 +4348,11 @@ mod tests {
                 "session_id":created_session.session_id,
                 "expected_generation":created_session.generation,
                 "control_epoch":1,
+                "holder_id":"holder_a",
                 "confirm_running":false
             }),
         );
-        assert_eq!(close.unwrap_err()["error"]["code"], "CONTEXT_CHANGED");
+        assert_eq!(close.unwrap_err()["error"]["code"], "CONTROL_REVOKED");
         mcp_card_closed(created_session.card_id).unwrap();
 
         assert!(mcp_claim("missing".into()).is_err());
@@ -3343,7 +4379,10 @@ mod tests {
         let mut doc = DiskDoc::default();
         doc.config.enabled = true;
         doc.config.clients.push(client_record(&root));
-        let session = session_record(&root, &runner);
+        let mut session = session_record(&root, &runner);
+        session.control_owner = None;
+        session.control_holder = None;
+        session.lease_expires_at = None;
         doc.sessions.push(session);
         let path = root.join("mcp.json");
         save(&path, &doc).unwrap();
@@ -3354,6 +4393,7 @@ mod tests {
             doc: Mutex::new(Ok(doc)),
             io: Mutex::new(()),
             delivery: Mutex::new(()),
+            emergency: Mutex::new(EmergencyFences::default()),
             service_instance: "svc_test".into(),
             started: Instant::now(),
         });
@@ -3364,10 +4404,17 @@ mod tests {
                 WireRequest {
                     version: 99,
                     client_id: "client_a".into(),
+                    credential: "mcp_test".into(),
                     tool: "deck_capabilities".into(),
                     arguments: json!({}),
                 }
             )["error"]["code"],
+            "AUTH_REQUIRED"
+        );
+        let mut wrong_credential = request("deck_capabilities", json!({}));
+        wrong_credential.credential = "mcp_wrong".into();
+        assert_eq!(
+            route(&runtime, wrong_credential)["error"]["code"],
             "AUTH_REQUIRED"
         );
         assert_eq!(
@@ -3375,6 +4422,16 @@ mod tests {
             "UNSUPPORTED"
         );
         assert!(route(&runtime, request("deck_capabilities", json!({})))["ok"] == true);
+        assert_eq!(
+            route(
+                &runtime,
+                request(
+                    "deck_project_read",
+                    json!({"project_id":"P1","path":".env"}),
+                ),
+            )["error"]["code"],
+            "READ_DENIED"
+        );
         assert_eq!(
             route(&runtime, request("deck_sessions_list", json!({})))["sessions"]
                 .as_array()
@@ -3396,6 +4453,7 @@ mod tests {
                 "session_id":"mcp_a",
                 "expected_generation":"g_a",
                 "action":action,
+                "holder_id":"holder_a",
                 "lease_ms":2_000
             });
             if let Some(epoch) = epoch {
@@ -3408,6 +4466,16 @@ mod tests {
             "committed"
         );
         assert_eq!(
+            route(
+                &runtime,
+                request(
+                    "deck_session_control",
+                    json!({"request_id":"holder_conflict","session_id":"mcp_a","expected_generation":"g_a","action":"request","holder_id":"holder_other"}),
+                ),
+            )["error"]["code"],
+            "PERMISSION_DENIED"
+        );
+        assert_eq!(
             control("control_renew", "renew", Some(2))["state"],
             "committed"
         );
@@ -3415,16 +4483,14 @@ mod tests {
             control("control_release", "release", Some(2))["state"],
             "committed"
         );
-        assert_eq!(
-            control("control_again", "request", None)["state"],
-            "committed"
-        );
+        let control_again = control("control_again", "request", None);
+        assert_eq!(control_again["state"], "committed", "{control_again}");
 
         let denied = route(
             &runtime,
             request(
                 "deck_exec",
-                json!({"request_id":"exec_without_grant","session_id":"mcp_a","expected_generation":"g_a","control_epoch":4,"script":"print forbidden","cwd":root.display().to_string()}),
+                json!({"request_id":"exec_without_grant","session_id":"mcp_a","expected_generation":"g_a","control_epoch":4,"holder_id":"holder_a","script":"print forbidden","cwd":root.display().to_string()}),
             ),
         );
         assert_eq!(denied["error"]["code"], "EXECUTION_GRANT_REQUIRED");
@@ -3435,12 +4501,26 @@ mod tests {
                 Ok(())
             })
             .unwrap();
+        let grant_expiry = runtime
+            .read(|doc| doc.execution_grants.last().unwrap().expires_at)
+            .unwrap();
+        assert_eq!(
+            control("control_after_grant", "renew", Some(4))["state"],
+            "committed"
+        );
+        assert_eq!(
+            runtime
+                .read(|doc| doc.execution_grants.last().unwrap().expires_at)
+                .unwrap(),
+            grant_expiry
+        );
 
         let exec_arguments = json!({
             "request_id":"exec_a",
             "session_id":"mcp_a",
             "expected_generation":"g_a",
             "control_epoch":4,
+            "holder_id":"holder_a",
             "script":"printf 'done\\n'",
             "cwd":root.display().to_string(),
             "wait_ms":10,
@@ -3468,7 +4548,7 @@ mod tests {
                 &runtime,
                 request(
                     "deck_job_input",
-                    json!({"request_id":"input_a","job_id":job_id,"session_generation":"g_a","control_epoch":4,"input":"yes\n"}),
+                    json!({"request_id":"input_a","job_id":job_id,"session_generation":"g_a","control_epoch":4,"holder_id":"holder_a","input":"yes\n"}),
                 ),
             )["state"],
             "committed"
@@ -3478,7 +4558,7 @@ mod tests {
                 &runtime,
                 request(
                     "deck_job_interrupt",
-                    json!({"request_id":"interrupt_a","job_id":job_id,"session_generation":"g_a","control_epoch":4}),
+                    json!({"request_id":"interrupt_a","job_id":job_id,"session_generation":"g_a","control_epoch":4,"holder_id":"holder_a"}),
                 ),
             )["state"],
             "committed"
@@ -3505,10 +4585,68 @@ mod tests {
             &runtime,
             request(
                 "deck_session_close",
-                json!({"request_id":"close_a","session_id":"mcp_a","expected_generation":"g_a","control_epoch":4,"confirm_running":false}),
+                json!({"request_id":"close_a","session_id":"mcp_a","expected_generation":"g_a","control_epoch":4,"holder_id":"holder_a","confirm_running":false}),
             ),
         );
         assert_eq!(close["state"], "accepted", "{close}");
+        let close_id = close["operationId"].as_str().unwrap().to_owned();
+        runtime
+            .write(|doc| {
+                doc.operations
+                    .iter_mut()
+                    .find(|operation| operation.operation_id == close_id)
+                    .unwrap()
+                    .state = "executing".into();
+                let session = doc
+                    .sessions
+                    .iter_mut()
+                    .find(|session| session.session_id == "mcp_a")
+                    .unwrap();
+                session.human_lock = true;
+                session.control_owner = None;
+                session.control_epoch += 1;
+                Ok(())
+            })
+            .unwrap();
+        assert!(close_admit(&runtime, &close_id).is_err());
+
+        runtime
+            .write(|doc| {
+                let operation = doc
+                    .operations
+                    .iter_mut()
+                    .find(|operation| operation.operation_id == close_id)
+                    .unwrap();
+                operation.state = "executing".into();
+                let epoch = operation.result.as_ref().unwrap()["controlEpoch"]
+                    .as_u64()
+                    .unwrap();
+                let session = doc
+                    .sessions
+                    .iter_mut()
+                    .find(|session| session.session_id == "mcp_a")
+                    .unwrap();
+                session.human_lock = false;
+                session.control_owner = Some("client_a".into());
+                session.control_epoch = epoch;
+                Ok(())
+            })
+            .unwrap();
+        let admission = close_admit(&runtime, &close_id).unwrap().admission;
+        runtime
+            .write(|doc| {
+                doc.config.clients[0].revoked_at = Some(now_ms());
+                Ok(())
+            })
+            .unwrap();
+        validate_close_admission_with(&runtime, Some(&admission), &["deck-mcp-test".into()])
+            .unwrap();
+        runtime
+            .write(|doc| {
+                doc.config.clients[0].revoked_at = None;
+                Ok(())
+            })
+            .unwrap();
 
         assert_eq!(
             route(&runtime, request("deck_exec", json!({})))["error"]["code"],
@@ -3524,6 +4662,19 @@ mod tests {
             )["error"]["code"],
             "OUTPUT_CURSOR_INVALID"
         );
+        let audit_kinds = runtime
+            .read(|doc| {
+                doc.audit
+                    .iter()
+                    .map(|event| event.kind.clone())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap();
+        assert!(audit_kinds.iter().any(|kind| kind == "control-changed"));
+        assert!(audit_kinds.iter().any(|kind| kind == "exec-intent"));
+        assert!(audit_kinds.iter().any(|kind| kind == "exec-dispatch"));
+        assert!(audit_kinds.iter().any(|kind| kind == "request-denied"));
+        assert!(audit_kinds.iter().any(|kind| kind == "read-denied"));
 
         drop(runtime);
         drop(runner);
@@ -3570,23 +4721,71 @@ mod tests {
         let missing = root.join("missing");
         assert!(canonical_scope(missing.to_str().unwrap(), &[]).is_err());
         assert!(canonical_scope(root.to_str().unwrap(), &["/elsewhere".into()]).is_err());
-        assert_eq!(load(&root.join("absent.json")).unwrap().version, VERSION);
+        assert_eq!(
+            load(&root.join("absent.json")).unwrap().version,
+            STATE_VERSION
+        );
 
         let mut invalid = DiskDoc {
-            version: VERSION + 1,
+            version: STATE_VERSION + 1,
             ..DiskDoc::default()
         };
         assert!(validate_doc(&invalid).is_err());
-        invalid.version = VERSION;
+        invalid.version = STATE_VERSION;
         invalid.config.clients.push(Client {
             id: "bad id".into(),
             name: "Bad".into(),
+            credential_hash: sha(b"mcp_test"),
+            credential_version: 1,
             revoked_at: None,
             allow_create: false,
             projects: vec![],
         });
         assert!(validate_doc(&invalid).is_err());
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn v2_state_migration_revokes_clients_and_never_restores_execution() {
+        let root = test_root("v2-migration");
+        let path = root.join("mcp.json");
+        let runner = FakeRunner::start(&root, "g_a");
+        let mut doc = DiskDoc {
+            version: 2,
+            ..DiskDoc::default()
+        };
+        doc.config.enabled = true;
+        doc.config.clients.push(client_record(&root));
+        let session = session_record(&root, &runner);
+        doc.execution_grants.push(execution_grant(&session));
+        doc.sessions.push(session);
+        doc.operations.push(operation("exec", "accepted"));
+        std::fs::write(&path, serde_json::to_vec(&doc).unwrap()).unwrap();
+
+        let migrated = load(&path).unwrap();
+        assert_eq!(migrated.version, STATE_VERSION);
+        assert!(!migrated.config.enabled);
+        assert!(migrated.config.clients[0].revoked_at.is_some());
+        assert_eq!(migrated.config.clients[0].credential_version, 0);
+        assert!(migrated.execution_grants.is_empty());
+        assert_eq!(migrated.operations[0].state, "ambiguous");
+        assert_eq!(
+            migrated.operations[0].code.as_deref(),
+            Some("v3-reauthorization-required")
+        );
+        drop(runner);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn encoded_frames_fit_the_advertised_budget() {
+        let hostile = "\"\\\n\r\t\u{0001}".repeat(MAX_SCRIPT_BYTES / 6);
+        let request =
+            json!({"kind":"exec","script":hostile,"context":{"intent_hash":"a".repeat(64)}});
+        assert!(serde_json::to_vec(&request).unwrap().len() < MAX_REQUEST_BYTES);
+        let output = "\"\\\n\r\t\u{0001}".repeat(MAX_READ_BYTES / 6);
+        let response = json!({"ok":true,"output":output});
+        assert!(serde_json::to_vec(&response).unwrap().len() < MAX_RESPONSE_BYTES);
     }
 
     #[test]
@@ -3602,6 +4801,7 @@ mod tests {
             doc: Mutex::new(Ok(doc)),
             io: Mutex::new(()),
             delivery: Mutex::new(()),
+            emergency: Mutex::new(EmergencyFences::default()),
             service_instance: "svc_concurrent".into(),
             started: Instant::now(),
         });

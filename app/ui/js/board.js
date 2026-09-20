@@ -105,7 +105,9 @@ export const provider = {
     const sessions = (Array.isArray(cards) ? cards : [cards]).map(c => c.session);
     if (!sessions.length) return true;
     try {
-      await inv('queue_clear_sessions', { sessions });
+      await inv('queue_clear_sessions', {
+        sessions, mcpAdmission: opts.mcpAdmission || null,
+      });
       return true;
     } catch (e) {
       if (!opts.quiet) toast(t('error.scheduleCancel'));
@@ -276,13 +278,20 @@ export const provider = {
           if (!card) return { noop: true };
           if (opts.automatic && retainedBuffer(card)) return { noop: true, protected: true };
           closedCard = card;
-          if (!opts.cancelled && !(await this.cancelSchedule(card, { quiet: opts.quiet }))) {
+          // Remote close is linearized while holding the authoritative Board
+          // mutation slot, immediately before the first native side effect.
+          const admission = opts.mcpOperationId
+            ? (await inv('mcp_close_admit', { operationId: opts.mcpOperationId })).admission
+            : null;
+          if (!opts.cancelled && !(await this.cancelSchedule(card, {
+            quiet: opts.quiet, mcpAdmission: admission,
+          }))) {
             const error = new Error('schedule cancellation failed');
             error.stage = 'cancel';
             throw error;
           }
           try {
-            await inv('kill_session', { name: card.session });
+            await inv('kill_session', { name: card.session, mcpAdmission: admission });
           } catch (cause) {
             const error = new Error('session could not be closed');
             error.stage = 'kill'; error.cause = cause;

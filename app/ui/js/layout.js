@@ -1066,9 +1066,17 @@ export function initLayout() {
     if (!active && !(await confirmDialog(t('mcp.approveExecutionConfirm')))) return;
     try {
       if (active) await inv('mcp_execution_revoke', { sessionId });
-      else await inv('mcp_execution_grant', {
-        sessionId, durationMs: 15 * 60 * 1000, allowStdin: true, allowOutput: true,
-      });
+      else {
+        const minutes = await choiceDialog(t('mcp.executionDuration'), [5, 15, 30, 60].map(value => ({
+          id: String(value), label: t('mcp.minutes', { value }), primary: value === 15,
+        })));
+        if (!minutes) return;
+        const allowStdin = await confirmDialog(t('mcp.allowStdinConfirm'));
+        const allowOutput = await confirmDialog(t('mcp.allowOutputConfirm'));
+        await inv('mcp_execution_grant', {
+          sessionId, durationMs: Number(minutes) * 60 * 1000, allowStdin, allowOutput,
+        });
+      }
       renderSessionView();
     } catch (_) { toast(t('mcp.actionFailed')); }
   };

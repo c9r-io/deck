@@ -29,7 +29,7 @@ fn wait_for(socket: &Path, job: &str) -> Value {
     loop {
         let value = call(
             socket,
-            json!({"kind":"read","job_id":job,"cursor":0,"max_bytes":32768,"wait_ms":100}),
+            json!({"kind":"read","job_id":job,"cursor":0,"max_bytes":16384,"wait_ms":100}),
         );
         if value["job"]["state"] != "running"
             && value["job"]["state"] != "starting"
@@ -39,6 +39,19 @@ fn wait_for(socket: &Path, job: &str) -> Value {
         }
         assert!(Instant::now() < limit, "job did not exit: {value}");
     }
+}
+
+fn context(marker: char) -> Value {
+    json!({
+        "service_instance":"svc_test",
+        "holder_id":"holder_test",
+        "control_epoch":1,
+        "grant_id":"grant_test",
+        "grant_version":1,
+        "policy_version":2,
+        "intent_hash":marker.to_string().repeat(64),
+        "expires_at":u64::MAX
+    })
 }
 
 #[test]
@@ -53,6 +66,10 @@ fn reports_exit_input_and_interrupt_without_terminal_markers() {
             socket.to_str().unwrap(),
             "--generation",
             "g_test",
+            "--service-instance",
+            "svc_test",
+            "--output-retention-ms",
+            "60000",
         ])
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
@@ -66,10 +83,15 @@ fn reports_exit_input_and_interrupt_without_terminal_markers() {
         assert!(Instant::now() < limit, "runner socket was not created");
         std::thread::sleep(Duration::from_millis(10));
     }
+    let control = call(
+        &socket,
+        json!({"kind":"control","mode":"mcp","service_instance":"svc_test","control_epoch":1,"holder_id":"holder_test"}),
+    );
+    assert_eq!(control["ok"], true);
 
     let started = call(
         &socket,
-        json!({"kind":"exec","job_id":"job_ok","request_hash":"hash_ok","script":"printf 'fake exited 0\\n'; exit 17","cwd":"/tmp","wait_ms":0}),
+        json!({"kind":"exec","job_id":"job_ok","request_hash":"hash_ok","script":"printf 'fake exited 0\\n'; exit 17","cwd":"/tmp","wait_ms":0,"context":context('a')}),
     );
     assert!(started["ok"].as_bool().unwrap());
     let done = wait_for(&socket, "job_ok");
@@ -79,7 +101,7 @@ fn reports_exit_input_and_interrupt_without_terminal_markers() {
 
     call(
         &socket,
-        json!({"kind":"exec","job_id":"job_env","request_hash":"hash_env","script":"if [[ -n ${DECK_SYNTHETIC_SECRET-} ]]; then print leaked; exit 9; fi; print clean","cwd":"/tmp","wait_ms":0}),
+        json!({"kind":"exec","job_id":"job_env","request_hash":"hash_env","script":"if [[ -n ${DECK_SYNTHETIC_SECRET-} ]]; then print leaked; exit 9; fi; print clean","cwd":"/tmp","wait_ms":0,"context":context('b')}),
     );
     let clean = wait_for(&socket, "job_env");
     assert_eq!(clean["job"]["exitCode"], 0);
@@ -87,7 +109,7 @@ fn reports_exit_input_and_interrupt_without_terminal_markers() {
 
     call(
         &socket,
-        json!({"kind":"exec","job_id":"job_unicode","request_hash":"hash_unicode","script":"printf 'ab世界'","cwd":"/tmp","wait_ms":0}),
+        json!({"kind":"exec","job_id":"job_unicode","request_hash":"hash_unicode","script":"printf 'ab世界'","cwd":"/tmp","wait_ms":0,"context":context('c')}),
     );
     wait_for(&socket, "job_unicode");
     let first = call(
@@ -111,28 +133,28 @@ fn reports_exit_input_and_interrupt_without_terminal_markers() {
 
     call(
         &socket,
-        json!({"kind":"exec","job_id":"job_input","request_hash":"hash_input","script":"IFS= read -r line; printf 'got=%s\\n' \"$line\"","cwd":"/tmp","wait_ms":0}),
+        json!({"kind":"exec","job_id":"job_input","request_hash":"hash_input","script":"IFS= read -r line; printf 'got=%s\\n' \"$line\"","cwd":"/tmp","wait_ms":0,"context":context('d')}),
     );
     let input = call(
         &socket,
-        json!({"kind":"input","job_id":"job_input","data_b64":"aGVsbG8K"}),
+        json!({"kind":"input","job_id":"job_input","data_b64":"aGVsbG8K","context":context('d')}),
     );
     assert!(input["ok"].as_bool().unwrap());
     let done = wait_for(&socket, "job_input");
     assert_eq!(done["output"], "got=hello\n");
     let late = call(
         &socket,
-        json!({"kind":"input","job_id":"job_input","data_b64":"d2hvYW1pCg=="}),
+        json!({"kind":"input","job_id":"job_input","data_b64":"d2hvYW1pCg==","context":context('d')}),
     );
     assert_eq!(late["error"], "job-not-running");
 
     call(
         &socket,
-        json!({"kind":"exec","job_id":"job_interrupt","request_hash":"hash_interrupt","script":"sleep 30","cwd":"/tmp","wait_ms":0}),
+        json!({"kind":"exec","job_id":"job_interrupt","request_hash":"hash_interrupt","script":"sleep 30","cwd":"/tmp","wait_ms":0,"context":context('e')}),
     );
     let interrupted = call(
         &socket,
-        json!({"kind":"interrupt","job_id":"job_interrupt"}),
+        json!({"kind":"interrupt","job_id":"job_interrupt","context":context('e')}),
     );
     assert!(interrupted["ok"].as_bool().unwrap());
     let done = wait_for(&socket, "job_interrupt");

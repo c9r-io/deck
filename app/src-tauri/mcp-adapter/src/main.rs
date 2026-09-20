@@ -24,6 +24,7 @@ use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+const MAX_REQUEST: usize = 256 * 1024;
 const MAX_RESPONSE: u64 = 128 * 1024;
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -61,6 +62,9 @@ struct OperationInput {
 #[serde(deny_unknown_fields)]
 struct SessionInput {
     session_id: String,
+    /// Optional current flow holder used to evaluate mayStartNextJob.
+    #[serde(default)]
+    holder_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -116,6 +120,8 @@ struct ControlInput {
     session_id: String,
     expected_generation: String,
     action: ControlAction,
+    /// Stable identity for this control flow; another flow cannot replace it.
+    holder_id: String,
     #[serde(default)]
     control_epoch: Option<u64>,
     #[serde(default)]
@@ -129,6 +135,7 @@ struct ExecInput {
     session_id: String,
     expected_generation: String,
     control_epoch: u64,
+    holder_id: String,
     script: String,
     #[serde(default)]
     cwd: Option<String>,
@@ -157,6 +164,7 @@ struct JobInputInput {
     job_id: String,
     session_generation: String,
     control_epoch: u64,
+    holder_id: String,
     input: String,
 }
 
@@ -167,6 +175,7 @@ struct InterruptInput {
     job_id: String,
     session_generation: String,
     control_epoch: u64,
+    holder_id: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -176,6 +185,7 @@ struct CloseInput {
     session_id: String,
     expected_generation: String,
     control_epoch: u64,
+    holder_id: String,
     #[serde(default)]
     confirm_running: bool,
 }
@@ -185,6 +195,7 @@ struct CloseInput {
 struct DeckRequest<'a> {
     version: u32,
     client_id: &'a str,
+    credential: &'a str,
     tool: &'a str,
     arguments: Value,
 }
@@ -192,6 +203,7 @@ struct DeckRequest<'a> {
 #[derive(Clone)]
 struct DeckServer {
     client_id: String,
+    credential: String,
     socket: PathBuf,
     tools: Vec<Tool>,
 }
@@ -216,7 +228,7 @@ fn tool<T: JsonSchema + 'static>(
 }
 
 impl DeckServer {
-    fn new(client_id: String, socket: PathBuf) -> Self {
+    fn new(client_id: String, credential: String, socket: PathBuf) -> Self {
         let ro = annotations(true, false, true);
         let mutating = annotations(false, true, true);
         let tools = vec![
@@ -293,6 +305,7 @@ impl DeckServer {
         ];
         Self {
             client_id,
+            credential,
             socket,
             tools,
         }
@@ -311,6 +324,7 @@ impl DeckServer {
         }
         let socket = self.socket.clone();
         let client_id = self.client_id.clone();
+        let credential = self.credential.clone();
         let result = tokio::task::spawn_blocking(move || {
             let mut stream = UnixStream::connect(socket).map_err(|_| "DECK_UNAVAILABLE")?;
             stream
@@ -320,13 +334,18 @@ impl DeckServer {
                 .set_write_timeout(Some(std::time::Duration::from_secs(10)))
                 .map_err(|_| "DECK_UNAVAILABLE")?;
             let request = DeckRequest {
-                version: 2,
+                version: 3,
                 client_id: &client_id,
+                credential: &credential,
                 tool: tool_name,
                 arguments,
             };
-            serde_json::to_writer(&mut stream, &request).map_err(|_| "INTERNAL_ERROR")?;
-            stream.write_all(b"\n").map_err(|_| "DECK_UNAVAILABLE")?;
+            let mut frame = serde_json::to_vec(&request).map_err(|_| "INTERNAL_ERROR")?;
+            frame.push(b'\n');
+            if frame.len() > MAX_REQUEST {
+                return Err("REQUEST_TOO_LARGE");
+            }
+            stream.write_all(&frame).map_err(|_| "DECK_UNAVAILABLE")?;
             stream.flush().map_err(|_| "DECK_UNAVAILABLE")?;
             let mut line = Vec::new();
             BufReader::new(stream)
@@ -444,16 +463,20 @@ impl ServerHandler for DeckServer {
     }
 }
 
-fn parse_args() -> Result<(String, PathBuf), &'static str> {
+fn parse_args() -> Result<(String, PathBuf, Option<u32>), &'static str> {
     let mut args = std::env::args_os().skip(1);
     let mut client_id = None;
     let mut socket = std::env::var_os("DECK_MCP_SOCKET").map(PathBuf::from);
+    let mut credential_fd = None;
     while let Some(arg) = args.next() {
         match arg.to_str() {
             Some("--client-id") => {
                 client_id = args.next().and_then(|value| value.into_string().ok())
             }
             Some("--socket") => socket = args.next().map(PathBuf::from),
+            Some("--credential-fd") => {
+                credential_fd = args.next().and_then(|value| value.to_str()?.parse().ok())
+            }
             _ => return Err("usage: deck-mcp --client-id ID [--socket PATH]"),
         }
     }
@@ -467,21 +490,49 @@ fn parse_args() -> Result<(String, PathBuf), &'static str> {
     let socket =
         socket.or_else(|| dirs::home_dir().map(|home| home.join(".deck/mcp-control.sock")));
     match (client_id, socket) {
-        (Some(client), Some(path)) if path.is_absolute() => Ok((client, path)),
+        (Some(client), Some(path)) if path.is_absolute() => Ok((client, path, credential_fd)),
         _ => Err("usage: deck-mcp --client-id ID [--socket PATH]"),
     }
 }
 
 #[tokio::main]
 async fn main() {
-    let (client_id, socket) = match parse_args() {
+    let (client_id, socket, credential_fd) = match parse_args() {
         Ok(value) => value,
         Err(message) => {
             eprintln!("{message}");
             std::process::exit(64);
         }
     };
-    let service = DeckServer::new(client_id, socket)
+    let credential = if let Some(fd) = credential_fd {
+        let mut value = String::new();
+        match std::fs::File::open(format!("/dev/fd/{fd}"))
+            .and_then(|file| file.take(129).read_to_string(&mut value))
+        {
+            Ok(_) if value.len() <= 128 => value,
+            _ => {
+                eprintln!("deck-mcp credential pipe is invalid");
+                std::process::exit(78);
+            }
+        }
+    } else {
+        match security_framework::passwords::get_generic_password("io.c9r.deck.mcp", &client_id) {
+            Ok(bytes) => match String::from_utf8(bytes) {
+                Ok(value) => value,
+                Err(_) => {
+                    eprintln!("deck-mcp credential is invalid");
+                    std::process::exit(78);
+                }
+            },
+            Err(_) => {
+                eprintln!(
+                    "deck-mcp credential is unavailable; reauthorize this integration in Deck"
+                );
+                std::process::exit(78);
+            }
+        }
+    };
+    let service = DeckServer::new(client_id, credential, socket)
         .serve(rmcp::transport::stdio())
         .await;
     match service {

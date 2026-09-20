@@ -929,7 +929,9 @@ pub(crate) fn queue_clear_sessions(
     state: State<'_, Queues>,
     app: AppHandle,
     sessions: Vec<String>,
+    mcp_admission: Option<String>,
 ) -> Result<(), DeckError> {
+    crate::mcp::validate_close_admission(mcp_admission.as_deref(), &sessions)?;
     if crate::smoke_faults::take("queue-cancel") {
         return Err(DeckError::new(
             ErrorKind::Other,

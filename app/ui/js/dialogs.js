@@ -731,6 +731,7 @@ export async function renderMcpSettings() {
   $('set-mcp-toggle').textContent = t(status?.enabled ? 'mcp.disable' : 'mcp.enable');
   $('set-mcp-toggle').dataset.enabled = String(status?.enabled === true);
   $('set-mcp-add').disabled = !status?.enabled;
+  $('set-mcp-retention').value = String(status?.outputRetentionMs || 24 * 60 * 60 * 1000);
   const clients = $('set-mcp-clients'); clients.replaceChildren();
   for (const client of status?.clients || []) {
     const row = document.createElement('div'); row.className = 'set-row';
@@ -897,6 +898,12 @@ export function initDialogs() {
       await inv('mcp_client_add', { name, projects: [{ projectId: project.id, roots: [root] }], allowCreate });
       await renderMcpSettings();
     } catch (_) { toast(t('mcp.actionFailed')); }
+  };
+  $('set-mcp-retention').onchange = async () => {
+    try {
+      await inv('mcp_output_retention', { durationMs: Number($('set-mcp-retention').value) });
+    } catch (_) { toast(t('mcp.actionFailed')); }
+    await renderMcpSettings();
   };
   $('set-connector-pair').onclick = async () => {
     try {

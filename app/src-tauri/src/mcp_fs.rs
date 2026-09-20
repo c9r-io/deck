@@ -14,8 +14,8 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::{Component, Path};
 
 pub(crate) const MAX_FILE_BYTES: u64 = 4 * 1024 * 1024;
-pub(crate) const MAX_READ_BYTES: usize = 64 * 1024;
-pub(crate) const MAX_LIST_ENTRIES: usize = 256;
+pub(crate) const MAX_READ_BYTES: usize = 16 * 1024;
+pub(crate) const MAX_LIST_ENTRIES: usize = 32;
 pub(crate) const MAX_SEARCH_FILES: usize = 1_000;
 pub(crate) const MAX_SEARCH_RESULTS: usize = 200;
 pub(crate) const MAX_SEARCH_DEPTH: usize = 8;
@@ -30,7 +30,7 @@ pub(crate) struct FileVersion {
     modified_nanoseconds: i64,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Entry {
     pub(crate) name: String,
@@ -38,13 +38,26 @@ pub(crate) struct Entry {
     pub(crate) size: Option<u64>,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Match {
     pub(crate) path: String,
     pub(crate) line: usize,
     pub(crate) column: usize,
     pub(crate) preview: String,
+}
+
+pub(crate) enum SearchControl {
+    Continue,
+    Deadline,
+    Cancelled,
+}
+
+#[derive(Debug)]
+pub(crate) struct SearchOutcome {
+    pub(crate) matches: Vec<Match>,
+    pub(crate) complete: bool,
+    pub(crate) stop_reason: Option<&'static str>,
 }
 
 fn invalid(message: &'static str) -> String {
@@ -268,7 +281,12 @@ pub(crate) fn list(root: &Path, relative: &str) -> Result<(Vec<Entry>, FileVersi
     Ok((entries, directory_version))
 }
 
-pub(crate) fn search(root: &Path, relative: &str, needle: &str) -> Result<Vec<Match>, String> {
+pub(crate) fn search_controlled(
+    root: &Path,
+    relative: &str,
+    needle: &str,
+    mut control: impl FnMut() -> SearchControl,
+) -> Result<SearchOutcome, String> {
     if needle.is_empty() || needle.len() > 256 || needle.contains('\0') {
         return Err(invalid("search query is invalid"));
     }
@@ -276,10 +294,32 @@ pub(crate) fn search(root: &Path, relative: &str, needle: &str) -> Result<Vec<Ma
     let mut files = 0usize;
     let mut results = Vec::new();
     while let Some((directory, depth)) = pending.pop() {
+        match control() {
+            SearchControl::Continue => {}
+            SearchControl::Deadline => {
+                return Ok(SearchOutcome {
+                    matches: results,
+                    complete: false,
+                    stop_reason: Some("deadline"),
+                })
+            }
+            SearchControl::Cancelled => return Err(invalid("search authorization changed")),
+        }
         if depth > MAX_SEARCH_DEPTH {
             return Err(invalid("search depth limit exceeded"));
         }
         for entry in list(root, &directory)?.0 {
+            match control() {
+                SearchControl::Continue => {}
+                SearchControl::Deadline => {
+                    return Ok(SearchOutcome {
+                        matches: results,
+                        complete: false,
+                        stop_reason: Some("deadline"),
+                    })
+                }
+                SearchControl::Cancelled => return Err(invalid("search authorization changed")),
+            }
             let path = if directory.is_empty() {
                 entry.name.clone()
             } else {
@@ -310,13 +350,27 @@ pub(crate) fn search(root: &Path, relative: &str, needle: &str) -> Result<Vec<Ma
                         preview: line.chars().take(300).collect(),
                     });
                     if results.len() >= MAX_SEARCH_RESULTS {
-                        return Ok(results);
+                        return Ok(SearchOutcome {
+                            matches: results,
+                            complete: false,
+                            stop_reason: Some("result-limit"),
+                        });
                     }
                 }
             }
         }
     }
-    Ok(results)
+    Ok(SearchOutcome {
+        matches: results,
+        complete: true,
+        stop_reason: None,
+    })
+}
+
+#[cfg(test)]
+pub(crate) fn search(root: &Path, relative: &str, needle: &str) -> Result<Vec<Match>, String> {
+    search_controlled(root, relative, needle, || SearchControl::Continue)
+        .map(|outcome| outcome.matches)
 }
 
 #[cfg(test)]
@@ -344,6 +398,25 @@ mod tests {
         assert!(read(&root, ".env", 0, 64).is_err());
         assert!(read(&root, ".env.example", 0, 64).is_ok());
         assert_eq!(search(&root, "", "bounded").unwrap().len(), 1);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn controlled_search_reports_deadline_and_cancellation() {
+        let root =
+            std::env::temp_dir().join(format!("deck-mcp-fs-deadline-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("one.rs"), "needle\n").unwrap();
+
+        let partial = search_controlled(&root, "", "needle", || SearchControl::Deadline).unwrap();
+        assert!(!partial.complete);
+        assert_eq!(partial.stop_reason, Some("deadline"));
+        assert!(partial.matches.is_empty());
+        assert_eq!(
+            search_controlled(&root, "", "needle", || SearchControl::Cancelled).unwrap_err(),
+            "search authorization changed"
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 }

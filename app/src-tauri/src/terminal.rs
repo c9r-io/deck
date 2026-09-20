@@ -1328,7 +1328,7 @@ mod tests {
         assert!(scroll_bottom(bad.clone()).is_err());
         clear_history(bad.clone());
         assert!(terminal_metrics(bad.clone()).is_err());
-        assert!(crate::commands::kill_session(bad.clone()).is_err());
+        assert!(crate::commands::kill_session(bad.clone(), None).is_err());
 
         let grid = TerminalSelectionGrid { cols: 80, rows: 24 };
         assert!(terminal_selection_start(bad.clone(), 1, 0, 0, 0, 0, grid).is_err());

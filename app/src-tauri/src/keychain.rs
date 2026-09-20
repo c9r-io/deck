@@ -15,6 +15,7 @@ use security_framework::passwords::{
 use std::sync::Mutex;
 
 const SERVICE: &str = "io.c9r.deck";
+pub(crate) const MCP_SERVICE: &str = "io.c9r.deck.mcp";
 const MAX_LEN: usize = 512;
 
 /// Process-local copy of the closed slots after their first successful read. macOS
@@ -184,6 +185,48 @@ pub(crate) fn clear(slot: Slot) -> Result<(), DeckError> {
         Ok(()) => Ok(()),
         // errSecItemNotFound: nothing to clear is success.
         Err(e) if e.code() == -25300 => Ok(()),
+        Err(_) => Err(DeckError::new(ErrorKind::Other, "keychain")),
+    }
+}
+
+fn valid_mcp_account(account: &str) -> bool {
+    account.starts_with("client_")
+        && account.len() <= 128
+        && account
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+}
+
+pub(crate) fn set_mcp_credential(account: &str, value: &str) -> Result<(), DeckError> {
+    if !valid_mcp_account(account)
+        || !value.starts_with("mcp_")
+        || value.len() > 128
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+    {
+        return Err(DeckError::new(ErrorKind::Invalid, "invalid MCP credential"));
+    }
+    if crate::smoke_faults::enabled() {
+        return Ok(());
+    }
+    set_generic_password(MCP_SERVICE, account, value.as_bytes())
+        .map_err(|_| DeckError::new(ErrorKind::Other, "keychain"))
+}
+
+pub(crate) fn clear_mcp_credential(account: &str) -> Result<(), DeckError> {
+    if !valid_mcp_account(account) {
+        return Err(DeckError::new(
+            ErrorKind::Invalid,
+            "invalid MCP credential account",
+        ));
+    }
+    if crate::smoke_faults::enabled() {
+        return Ok(());
+    }
+    match delete_generic_password(MCP_SERVICE, account) {
+        Ok(()) => Ok(()),
+        Err(error) if error.code() == -25300 => Ok(()),
         Err(_) => Err(DeckError::new(ErrorKind::Other, "keychain")),
     }
 }
