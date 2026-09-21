@@ -112,7 +112,7 @@ fn initializes_lists_and_calls_over_stdio_without_stdout_noise() {
         let request: Value = serde_json::from_str(&request).unwrap();
         assert_eq!(request["clientId"], "client_test");
         assert_eq!(request["credential"], "mcp_synthetic_test");
-        assert_eq!(request["version"], 4);
+        assert_eq!(request["version"], 5);
         assert_eq!(request["tool"], "deck_capabilities");
         writeln!(
             stream,
@@ -147,7 +147,7 @@ fn initializes_lists_and_calls_over_stdio_without_stdout_noise() {
     input.flush().unwrap();
     let listed = read_response(&mut output, 2);
     let tools = listed["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 14);
+    assert_eq!(tools.len(), 15);
     let listed_names = tools
         .iter()
         .map(|tool| tool["name"].as_str().unwrap().to_owned())
@@ -176,6 +176,16 @@ fn initializes_lists_and_calls_over_stdio_without_stdout_noise() {
     assert_eq!(exec["annotations"]["readOnlyHint"], false);
     assert_eq!(exec["annotations"]["openWorldHint"], true);
     assert_eq!(exec["inputSchema"]["additionalProperties"], false);
+    assert!(exec["inputSchema"]["properties"]
+        .get("executable")
+        .is_some());
+    assert!(exec["inputSchema"]["properties"].get("script").is_none());
+    let shell = tools
+        .iter()
+        .find(|tool| tool["name"] == "deck_shell_exec")
+        .unwrap();
+    assert!(shell["description"].as_str().unwrap().contains("High-risk"));
+    assert!(shell["inputSchema"]["properties"].get("script").is_some());
     assert_eq!(exec["outputSchema"]["required"][0], "ok");
     for name in [
         "deck_project_list",
@@ -288,7 +298,7 @@ fn a_lost_answer_to_a_side_effect_is_ambiguous_not_unavailable() {
         json!({"jsonrpc":"2.0","method":"notifications/initialized"})
     )
     .unwrap();
-    writeln!(input, "{}", json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"deck_exec","arguments":{"request_id":"r","session_id":"s","expected_generation":"g","control_epoch":1,"holder_id":"h","script":"true"}}})).unwrap();
+    writeln!(input, "{}", json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"deck_exec","arguments":{"request_id":"r","session_id":"s","expected_generation":"g","control_epoch":1,"holder_id":"h","executable":"/usr/bin/true","args":[]}}})).unwrap();
     input.flush().unwrap();
     let exec = read_response(&mut output, 2);
     assert_eq!(

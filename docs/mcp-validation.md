@@ -3,13 +3,14 @@
 Date: 2026-09-21. Status words below are evidence labels, not forecasts.
 
 Historical signed-smoke results below apply to protocol v1. They are not proof
-that the current control-protocol-v4 scheme-B UI has been exercised in an
+that the current control-protocol-v5 scheme-B UI has been exercised in an
 installed signed app.
 
 ## Scheme-B remaining-requirement matrix
 
-The current source uses control protocol v4, state schema v5 and runner
-protocol 2 (see the 2026-09-21 F1–F4 section for what v4/v5 changed). The MCP standard protocol version is negotiated independently by
+The current source uses control protocol v5, state schema v6 and runner
+protocol 3. v5/v6/3 makes structured direct launch the default and gates the
+arbitrary-shell fallback behind a separate local approval. The MCP standard protocol version is negotiated independently by
 the SDK. Rows below describe the v3-era evidence; the 2026-09-21 remediation
 section supersedes them where they differ.
 
@@ -54,11 +55,12 @@ section supersedes them where they differ.
 
 ## Automated evidence
 
-- **PASS** — official-SDK STDIO adapter initializes, lists all 14 tools,
+- **PASS** — official-SDK STDIO adapter initializes, lists all 15 tools,
   advertises strict schemas and annotations, rejects unknown arguments, calls
   a separate mock Deck service, returns structured content, and emits only MCP
   JSON on stdout: `cargo test -p deck-mcp --test stdio`.
-- **PASS** — production runner executes a real zsh child, ignores a forged
+- **PASS** — production runner executes structured direct children and an
+  explicitly selected real zsh fallback, ignores a forged
   completion-looking output line, reports exit 17, routes interactive input to
   the exact job, refuses late input, sends SIGINT to the owned process group,
   and confirms signal 2: `cargo test -p deck-mcp-runner --test runner`.

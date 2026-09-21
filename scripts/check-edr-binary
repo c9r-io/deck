@@ -36,9 +36,10 @@ do
     exit 1
   fi
 done
-# The MCP runner has one reviewed shell boundary: a fresh fixed zsh child for
-# each locally approved job. Source-level EDR tests (tests/edr_quiet.rs) bind
-# it to the literal /bin/zsh in spawn_job; its presence is not checked here,
+# The MCP runner has one reviewed shell boundary: a fresh fixed zsh child only
+# for the separately approved high-risk fallback. Structured jobs use direct
+# exec. Source-level EDR tests (tests/edr_quiet.rs) bind the fallback to the
+# literal /bin/zsh in spawn_job; its presence is not checked here,
 # because release codegen may encode that 8-byte literal as immediates rather
 # than a string. The bundle scan ensures no human-takeover shell script remains.
 runner="$app_path/Contents/MacOS/deck-mcp-runner"

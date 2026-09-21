@@ -542,16 +542,23 @@ fn mcp_sidecars_keep_the_reviewed_process_boundary() {
         let violations = spawn_vocabulary_violations(name, production_region(source));
         assert!(violations.is_empty(), "{violations:#?}");
     }
-    // The ONE shell spawn: the runner's literal /bin/zsh inside spawn_job,
-    // used only for a locally approved trusted-host job. Human takeover
-    // starts no shell, so no other /bin/zsh appears in production code.
+    // Both reviewed trusted-host spawn sites live in spawn_job: the structured
+    // default uses the locally authorized executable verbatim, while the
+    // separately approved fallback uses one literal /bin/zsh. Human takeover
+    // starts no process, and shell names are rejected on the direct path.
     let production = production_region(&runner);
     assert_eq!(
         constructor_sites(production, "Command"),
-        vec![SpawnSite {
-            function: "spawn_job".into(),
-            argument: "\"/bin/zsh\"".into(),
-        }]
+        vec![
+            SpawnSite {
+                function: "spawn_job".into(),
+                argument: "executable".into(),
+            },
+            SpawnSite {
+                function: "spawn_job".into(),
+                argument: "\"/bin/zsh\"".into(),
+            },
+        ]
     );
     assert_eq!(
         production.matches("/bin/zsh").count(),

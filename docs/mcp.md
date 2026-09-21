@@ -27,7 +27,9 @@ item or background service is created.
    display identifier; its bearer credential remains in the login Keychain and
    never appears in argv. A newly created session still cannot execute. Open
    its card, choose **Approve execution…**, select the window (15 minutes is
-   the default), and separately choose stdin and output-sharing permissions.
+   the default), and separately choose stdin, output-sharing, and high-risk
+   arbitrary-shell fallback permissions. Leave shell fallback off unless a
+   task cannot be expressed as a structured executable plus argument vector.
    Control-lease Request/Renew never creates or extends this window.
 
 Disabling the feature or revoking a client fences new side effects in memory
@@ -99,7 +101,7 @@ authentication, Origin/Host validation, and deployment review.
 
 | Tool | Semantics |
 |---|---|
-| `deck_capabilities` | Read limits, trusted-host mode, shell semantics, and the caller's minimal authorized workspaces. |
+| `deck_capabilities` | Read limits, structured-direct defaults, high-risk shell-fallback semantics, and the caller's minimal authorized workspaces. |
 | `deck_project_list` | Bounded directory listing below one approved root, without a shell or helper. |
 | `deck_project_read` | Bounded UTF-8 regular-file segments with a version-bound cursor. |
 | `deck_project_search` | Bounded literal source search with file/depth/result budgets. |
@@ -108,7 +110,8 @@ authentication, Origin/Host validation, and deployment review.
 | `deck_operation_get` | Read Board/control delivery state, not program completion (use `deck_job_read` for exit and output EOF). |
 | `deck_session_inspect` | Read generation, control, active job metadata, staleness, runner version, current execution-authorization status, and the independent session output-sharing gate. It never returns terminal screen content. |
 | `deck_session_control` | Request, renew, or release a holder-bound fenced lease. Another flow using the same client cannot replace an active holder. |
-| `deck_exec` | Start one arbitrary zsh script only while matching local execution and control grants are valid. |
+| `deck_exec` | Default path: start one non-shell executable with an exact argument vector while matching local execution and control grants are valid. |
+| `deck_shell_exec` | High-risk fallback: start arbitrary zsh source only while a separate local shell approval and the ordinary execution/control grants are valid. |
 | `deck_job_read` | Incrementally read retained combined output and independently reported exit state. |
 | `deck_job_input` | Write only to the named still-running child's stdin. Never falls back to terminal typing. |
 | `deck_job_interrupt` | Request SIGINT for the active job's owned process group; read again to confirm exit. |
@@ -135,7 +138,7 @@ every side effect is also bound to a server-issued value that only moves
 forward, so a request whose record Deck has retired can never be applied a
 second time:
 
-- `deck_exec`, `deck_job_input`, `deck_job_interrupt`, `deck_session_close`,
+- `deck_exec`, `deck_shell_exec`, `deck_job_input`, `deck_job_interrupt`, `deck_session_close`,
   and control `renew`/`release` name the session's `control_epoch`;
 - `deck_session_control` (all three actions) names the session's
   `control_sequence` (`controlSequence` in inspect, sessions list and every
@@ -208,7 +211,8 @@ or stdin, not that the revocation's cleanup, the runner barrier or a running
 job has finished — `activeJob` and `foreground` still report the real job,
 and nothing is interrupted. A naturally lapsed grant stays `expired`.
 `expiresAtUnixMs` is Unix epoch milliseconds. The
-`stdinApprovedForActiveGrant` value is only the local grant option: holder,
+`stdinApprovedForActiveGrant` and `shellApprovedForActiveGrant` values are only
+the local grant options: holder,
 epoch, lease, human lock, active-job, and runner checks still apply.
 `outputSharing.sessionGateOpen` is the session-level read gate after human
 takeover/emergency fencing. It is intentionally independent of execution
@@ -221,11 +225,18 @@ disabling MCP keep their own effect on output.
 
 ## Execution, output, and lifecycle
 
-- tmux/session and filesystem state persist; shell-local state does not persist
-  between `deck_exec` calls.
+- `deck_exec` passes `executable` and each `args` entry directly to the OS; no
+  shell parses them. Known shell interpreters are refused on this path. argv
+  is visible in ordinary host process metadata, so never put secrets there.
+- `deck_shell_exec` is an explicitly labeled fallback. Its source reaches a
+  fresh `/bin/zsh -d -f /dev/fd/3` over an inherited pipe, never argv,
+  environment, logs, or a plaintext script file. Shell-local state does not
+  persist between calls. Filesystem changes from either path do persist.
 - Default wait is 1 second; maximum wait is 5 seconds. A wait timeout returns
   `running` and never resubmits or kills the job.
-- Script and input limits are 32 KiB and 32 KiB. Each read is at most 16 KiB;
+- Executable names are limited to 4 KiB; direct launch accepts at most 256
+  arguments and 64 KiB total argument bytes. Shell source and input limits are
+  32 KiB and 32 KiB. Each read is at most 16 KiB;
   each job retains 1 MiB. A cursor is bound to the job and generation. Gaps and
   dropped byte counts are explicit. stdout/stderr are `pty_combined`.
 - Execution timeout requests SIGINT. `interrupt_requested` is not an exit.
@@ -263,11 +274,11 @@ session ends; per-job memory is bounded. Closing a card removes its session,
 job bindings and grants; the journal retires records as described under the
 exact replay window, keeps at most 64 job bindings per session and one live
 execution grant per session, and bounds each client's share. Corrupt and
-future-version MCP configuration fails closed. State schema v5 is distinct
-from Deck control protocol v4 and from the MCP standard version negotiated by
-the SDK. v3/v4 state upgrades in place to v5, adding the control and create
-sequences at 0 (sticky: an older build refuses it untouched, because without
-the sequences a retired request could be accepted again). Clients, grants,
+future-version MCP configuration fails closed. State schema v6 is distinct
+from Deck control protocol v5 and from the MCP standard version negotiated by
+the SDK. v3/v4/v5 state upgrades in place to v6: control/create sequences are
+added at 0 and the shell grant defaults to false (sticky: an older build
+refuses the new state untouched). Clients, grants,
 sessions and history are kept; nothing is re-paired. v1/v2 state migrates disabled: old clients are retained only as
 revoked display records, pending/admitted writes become ambiguous, bearer
 credentials and execution grants are not synthesized, and local

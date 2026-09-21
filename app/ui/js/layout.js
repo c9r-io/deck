@@ -24,7 +24,7 @@
 // selection, diagnostics and context-menu callbacks; those adapters own copy
 // routing and link gestures. Pane teardown disposes their link listeners.
 import { $, ctx, dotTitle, duev, inv, listen, setMemChip, state, store, uev } from './state.js';
-import { choiceDialog, confirmDialog, inlineRename, toast } from './dialogs.js';
+import { choiceDialog, confirmDangerDialog, confirmDialog, inlineRename, toast } from './dialogs.js';
 import { t } from './i18n.js';
 import { markSessionSeen, panes, pollNow, provider, render, renderSidebar, updateSidebarSelection, activeProject } from './board.js';
 import { SHELL_FG, acceptGhost, feedMirror, maybeRecordCommand, mountQuickBar, nextShellTitle, renderSuggest, resetSuggest, showLinkCtx, updateGhost } from './terminal.js';
@@ -1035,7 +1035,10 @@ export function renderSessionView() {
         ? t('mcp.revokeExecution')
         : t('mcp.approveExecution');
       grant.title = status.executionGrantActive && status.executionExpiresAt
-        ? t('mcp.executionUntil', { time: new Date(status.executionExpiresAt).toLocaleTimeString() })
+        ? [
+          t('mcp.executionUntil', { time: new Date(status.executionExpiresAt).toLocaleTimeString() }),
+          status.shellAllowed ? t('mcp.shellFallbackEnabled') : t('mcp.shellFallbackDisabled'),
+        ].join(' ')
         : t('mcp.executionRequired');
     }).catch(() => {});
   }
@@ -1090,8 +1093,9 @@ export function initLayout() {
         if (!minutes) return;
         const allowStdin = await confirmDialog(t('mcp.allowStdinConfirm'));
         const allowOutput = await confirmDialog(t('mcp.allowOutputConfirm'));
+        const allowShell = await confirmDangerDialog(t('mcp.allowShellConfirm'), t('mcp.allowShellAction'));
         await inv('mcp_execution_grant', {
-          sessionId, durationMs: Number(minutes) * 60 * 1000, allowStdin, allowOutput,
+          sessionId, durationMs: Number(minutes) * 60 * 1000, allowStdin, allowOutput, allowShell,
         });
       }
       renderSessionView();

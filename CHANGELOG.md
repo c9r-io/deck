@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- MCP execution now defaults to a structured executable plus exact argument
+  vector (`deck_exec`) without a shell. Arbitrary zsh moved to the explicitly
+  high-risk `deck_shell_exec` fallback and requires a separate local approval;
+  the fallback also runs `/dev/fd/3` directly instead of using `-c source`.
+  This updates control protocol 5, state schema 6, and runner protocol 3.
 - MCP and Phone Connector requests can no longer be applied twice after Deck
   drops their history. MCP control and session-create calls now carry a
   sequence value (control protocol 4, state schema 5), renewals are journaled
