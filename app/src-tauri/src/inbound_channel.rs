@@ -15,7 +15,9 @@
 //! does not promise Slack will retry forever; a later disconnect still leaves
 //! the explicit unresolved gap. Message bodies live only in this private durable
 //! inbox and the eventual card buffer. Tokens live only in closed Keychain
-//! slots. The adapter never writes to Slack.
+//! slots, read once per connection attempt; a missing token is re-read only
+//! after a Deck credential change or a 5 min backstop, never per tick. The
+//! adapter never writes to Slack.
 //!
 //! Channel text is untrusted agent input. Admission (`channel_agent_command`)
 //! is the shared Slack/Connector policy: a remote target command must be
@@ -983,6 +985,18 @@ fn credentials_unchanged(epoch: u64) -> bool {
     CREDENTIAL_EPOCH.load(Ordering::SeqCst) == epoch
 }
 
+/// With a token missing, the socket loop does not re-query the Keychain on
+/// every tick: only a Deck credential save/clear (which bumps the epoch) or a
+/// long backstop leads to the next read.
+const MISSING_TOKEN_RECHECK: Duration = Duration::from_secs(300);
+
+fn wait_for_credential_change(epoch: u64) {
+    let deadline = std::time::Instant::now() + MISSING_TOKEN_RECHECK;
+    while credentials_unchanged(epoch) && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_secs(2));
+    }
+}
+
 fn note_rejected(code: &'static str) {
     REJECTED_COUNT.fetch_add(1, Ordering::Relaxed);
     LIVE.lock_or_recover().last_error = Some(code);
@@ -1291,7 +1305,7 @@ fn socket_loop(app: AppHandle) {
             keychain::get(Slot::SlackChannelAppToken),
         ) else {
             set_gap(false, Some("no-token"));
-            std::thread::sleep(Duration::from_secs(10));
+            wait_for_credential_change(credential_epoch);
             continue;
         };
         if !credentials_unchanged(credential_epoch) {
