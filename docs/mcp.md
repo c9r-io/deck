@@ -283,6 +283,16 @@ reauthorization is required.
 
 ## Security boundary and residual risk
 
+`client_id` is public, not a credential. If the user selects **Always Allow**
+for deck-mcp's login Keychain prompt, any process running as the same macOS
+user can invoke `deck-mcp --client-id X`, obtain that client's bearer through
+the approved Keychain access, and exercise all permissions granted to that
+client. Command execution still requires a currently open, locally approved
+execution window for the target managed session; the remembered Keychain
+decision does not create that window. Use per-client authorization scopes,
+avoid **Always Allow** on accounts that run untrusted same-user code, and
+revoke the client in Deck if its identity may have been reused.
+
 Descriptor-relative reads reject traversal, unverified symlinks and special
 files (FIFOs, sockets and devices are refused without blocking). One name
 policy applies to list, read and search: `.git`, `.ssh`, `.gnupg`, `.aws`,
