@@ -18,7 +18,8 @@
 //! - `normalize_prompt` is the ONE text normalization: CRs are folded,
 //!   newlines are kept (a prompt may be many lines), and an empty result is
 //!   refused; blank steps are dropped from a step list.
-//! - `channel_queue_add` is the external-message admission path. It uses the
+//! - `channel_queue_add` is the external-message admission path (Slack
+//!   channel rules and every Connector-originated row). It uses the
 //!   same durable queue transaction but first requires the card command to
 //!   be exactly `claude` or `codex` (`inbound_channel::channel_agent_command`),
 //!   so every channel row is process-bound. A process-bound row is pasted

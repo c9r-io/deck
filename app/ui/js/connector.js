@@ -81,7 +81,8 @@ async function queueBuffer(handle, request) {
         const copy = copies.find(value => value.operationId === item.operationId);
         if (!copy || copy.text !== item.text || copy.state !== 'uncertain') throw new Error('immutable copy missing');
         attempted = true;
-        await inv('queue_add', { args: { session: card.session, cardId: card.id,
+        // phone text: the native agent-only gate is the authority, not this check
+        await inv('channel_queue_add', { args: { session: card.session, cardId: card.id,
           operationId: copy.operationId, dir: card.dir, cmd: card.cmd, text: copy.text,
           mode: 'at', at: item.at } });
         copy.state = 'queued';

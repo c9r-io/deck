@@ -472,7 +472,7 @@ export const provider = {
       if (!card || run?.handle !== expectedHandle) return { noop: true };
       if (run.initialQueued) { admitted = true; return { noop: true }; }
       for (const step of run.initialSteps || []) {
-        await inv('queue_add', { args: { session: card.session, cardId: card.id,
+        await inv('channel_queue_add', { args: { session: card.session, cardId: card.id,
           operationId: step.operationId, dir: card.dir, cmd: card.cmd, text: step.text,
           mode: step.mode, at: step.at, tpl: step.tpl, tplIdx: step.tplIdx, tplTotal: step.tplTotal } });
       }
