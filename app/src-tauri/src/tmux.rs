@@ -1,6 +1,8 @@
 //! tmux backend: sidecar discovery, the private `deck` server, config, raw
 //! command execution, and the ONE pane row (`PaneRow` / `PANE_FORMAT`,
-//! `list_panes`, `pane_row`) every probe in deck reads panes through.
+//! `list_panes`, `pane_row`) every probe in deck reads panes through. Every
+//! production listing is framed by a per-query random nonce (`PaneQuery`)
+//! and fails whole when an untrusted pane path splits or forges a row.
 //! Everything deck knows about tmux lives here.
 //!
 //! # Contract
@@ -26,6 +28,8 @@ use std::os::fd::AsRawFd;
 use std::process::{Child, ChildStderr, ChildStdout, Command, Output, Stdio};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
+
+use ring::rand::{SecureRandom, SystemRandom};
 
 use crate::applog;
 use crate::error::{DeckError, ErrorKind};
@@ -487,9 +491,18 @@ pub(crate) fn init_deck_server() {
 /// the fields the poll (`commands.rs`), the agent-status resolver, the
 /// scheduler tick, the context probe and the lifecycle probe need;
 /// `list_panes()` reads every pane on the server and `pane_row(target)` one
-/// pane, both through `parse_pane_row`. Adding a field is one format entry
+/// pane, both through a `PaneQuery`. Adding a field is one format entry
 /// plus one struct field. `path` is last because a directory name may
 /// contain a tab; every other field is tmux-generated and tab-free.
+///
+/// A directory name may also contain a newline, and tmux prints
+/// `#{pane_current_path}` verbatim in both the one-shot and the control-mode
+/// listing (verified against the bundled tmux). An untrusted path could
+/// therefore split one pane into two lines, forge a whole pane row, or put a
+/// `%end` record inside a control frame. Every production read wraps the
+/// format in a fresh random nonce (first and last field) and rejects the
+/// whole listing when any line is not exactly framed, so a split, forged or
+/// truncated row fails the read instead of being half-trusted.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct PaneRow {
     pub(crate) server_pid: u32,
@@ -584,15 +597,61 @@ fn malformed_row() -> DeckError {
     DeckError::new(ErrorKind::Tmux, "tmux returned a malformed pane row")
 }
 
+/// One pane listing's framing: a fresh 128-bit random nonce is the first
+/// and the last field of every row. A pane path cannot know the nonce, so a
+/// newline inside it leaves an unframed line and the whole listing is
+/// rejected; the one-shot and control-mode reads share this one parser and
+/// therefore fail identically.
+pub(crate) struct PaneQuery {
+    nonce: String,
+    format: String,
+}
+
+impl PaneQuery {
+    pub(crate) fn new() -> Result<Self, DeckError> {
+        let mut bytes = [0u8; 16];
+        SystemRandom::new()
+            .fill(&mut bytes)
+            .map_err(|_| DeckError::new(ErrorKind::Tmux, "pane query nonce unavailable"))?;
+        Ok(Self::with_nonce(
+            bytes.iter().map(|byte| format!("{byte:02x}")).collect(),
+        ))
+    }
+
+    fn with_nonce(nonce: String) -> Self {
+        let format = format!("{nonce}\t{PANE_FORMAT}\t{nonce}");
+        Self { nonce, format }
+    }
+
+    /// The `-F` format for this one query; hex nonce only, so it is safe
+    /// inside the single-quoted control-mode command as well.
+    pub(crate) fn format(&self) -> &str {
+        &self.format
+    }
+
+    fn row(&self, line: &str) -> Option<PaneRow> {
+        let body = line
+            .strip_prefix(self.nonce.as_str())?
+            .strip_prefix('\t')?
+            .strip_suffix(self.nonce.as_str())?
+            .strip_suffix('\t')?;
+        parse_pane_row(body)
+    }
+
+    /// Every row of one listing, or an error when ANY line is not exactly
+    /// framed. There is no partial result.
+    pub(crate) fn rows(&self, raw: &str) -> Result<Vec<PaneRow>, DeckError> {
+        raw.lines()
+            .map(|line| self.row(line).ok_or_else(malformed_row))
+            .collect()
+    }
+}
+
 /// Every pane on deck's server, in tmux's listing order (a session's first
-/// pane comes first). One malformed line fails the whole read: the only
-/// known way to get one is tmux running without a UTF-8 locale, and then
-/// every line is malformed.
+/// pane comes first). One malformed or unframed line fails the whole read.
 pub(crate) fn list_panes() -> Result<Vec<PaneRow>, DeckError> {
-    tmux(&["list-panes", "-a", "-F", PANE_FORMAT])?
-        .lines()
-        .map(|line| parse_pane_row(line).ok_or_else(malformed_row))
-        .collect()
+    let query = PaneQuery::new()?;
+    query.rows(&tmux(&["list-panes", "-a", "-F", query.format()])?)
 }
 
 // ---------- persistent read-only query channel -----------------------------
@@ -677,9 +736,19 @@ impl ControlParser {
             self.output.clear();
             return Ok(ControlFeed::Exited);
         }
-        // All other % records are asynchronous control notifications. They
-        // are never pane rows (a pane row begins with the numeric server PID).
-        if line.starts_with('%') || self.command_id.is_none() {
+        // tmux never emits a notification inside an output block, so a `%`
+        // line inside a frame is command output that imitates the protocol
+        // (for example a pane path containing a newline): reject the frame.
+        // Outside a frame, `%` records are asynchronous notifications.
+        if line.starts_with('%') && self.command_id.is_some() {
+            self.command_id = None;
+            self.output.clear();
+            return Err(DeckError::new(
+                ErrorKind::Tmux,
+                "tmux control record inside a frame",
+            ));
+        }
+        if self.command_id.is_none() {
             return Ok(ControlFeed::Pending);
         }
         if self.output.len().saturating_add(line.len() + 1) > CONTROL_OUTPUT_LIMIT {
@@ -874,7 +943,8 @@ impl TmuxQueryChannel {
     }
 
     fn list_panes(&mut self) -> Result<Vec<PaneRow>, DeckError> {
-        let command = format!("list-panes -a -F '{}'\n", PANE_FORMAT);
+        let query = PaneQuery::new()?;
+        let command = format!("list-panes -a -F '{}'\n", query.format());
         self.child
             .stdin
             .as_mut()
@@ -882,10 +952,7 @@ impl TmuxQueryChannel {
             .write_all(command.as_bytes())
             .map_err(|_| DeckError::new(ErrorKind::Tmux, "tmux control stdin failed"))?;
         let raw = self.read_frame(Instant::now() + CONTROL_QUERY_BUDGET)?;
-        let rows: Vec<_> = raw
-            .lines()
-            .map(|line| parse_pane_row(line).ok_or_else(malformed_row))
-            .collect::<Result<_, _>>()?;
+        let rows = query.rows(&raw)?;
         if rows.is_empty() || rows.iter().any(|row| row.server_pid != self.server_pid) {
             return Err(DeckError::new(
                 ErrorKind::Tmux,
@@ -992,8 +1059,13 @@ pub(crate) fn stop_query_channel() {
 
 /// One pane, by tmux target (`pane_target(session)` for a card's pane).
 pub(crate) fn pane_row(target: &str) -> Result<PaneRow, DeckError> {
-    let raw = tmux(&["display-message", "-p", "-t", target, PANE_FORMAT])?;
-    parse_pane_row(&raw).ok_or_else(malformed_row)
+    let query = PaneQuery::new()?;
+    let raw = tmux(&["display-message", "-p", "-t", target, query.format()])?;
+    let mut rows = query.rows(&raw)?;
+    match (rows.pop(), rows.is_empty()) {
+        (Some(row), true) => Ok(row),
+        _ => Err(malformed_row()),
+    }
 }
 
 #[cfg(test)]
@@ -1229,12 +1301,13 @@ mod tests {
         );
         assert_eq!(parser.feed("99\t$1\talpha").unwrap(), ControlFeed::Pending);
         assert_eq!(
-            parser.feed("%session-changed $1 alpha").unwrap(),
-            ControlFeed::Pending
-        );
-        assert_eq!(
             parser.feed("%end 1700000000 41 0").unwrap(),
             ControlFeed::Complete("99\t$1\talpha\n".into())
+        );
+        // Outside a frame, `%` records are notifications and are skipped.
+        assert_eq!(
+            parser.feed("%session-changed $1 alpha").unwrap(),
+            ControlFeed::Pending
         );
 
         assert_eq!(
@@ -1263,6 +1336,122 @@ mod tests {
         assert!(oversized.feed(&"x".repeat(CONTROL_OUTPUT_LIMIT)).is_err());
     }
 
+    const TEST_NONCE: &str = "0123456789abcdef0123456789abcdef";
+
+    fn framed(fields: &[&str]) -> String {
+        format!("{TEST_NONCE}\t{}\t{TEST_NONCE}", row(fields))
+    }
+
+    const GOOD_FIELDS: [&str; 11] = [
+        "99",
+        "$1",
+        "deck-card-ab12",
+        "@2",
+        "%3",
+        "44",
+        "1700000005",
+        "0",
+        "zsh",
+        "/dev/ttys004",
+        "/tmp/a\tb",
+    ];
+
+    #[test]
+    fn pane_query_frames_every_row_with_its_nonce() {
+        let query = PaneQuery::with_nonce(TEST_NONCE.into());
+        assert!(query
+            .format()
+            .starts_with(&format!("{TEST_NONCE}\t#{{pid}}")));
+        assert!(query
+            .format()
+            .ends_with(&format!("#{{pane_current_path}}\t{TEST_NONCE}")));
+        let raw = format!("{}\n{}\n", framed(&GOOD_FIELDS), framed(&GOOD_FIELDS));
+        let rows = query.rows(&raw).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].path, "/tmp/a\tb");
+        assert!(query.rows("").unwrap().is_empty());
+    }
+
+    #[test]
+    fn pane_query_nonces_are_fresh_hex() {
+        let first = PaneQuery::new().unwrap();
+        let second = PaneQuery::new().unwrap();
+        assert_ne!(first.nonce, second.nonce);
+        assert_eq!(first.nonce.len(), 32);
+        assert!(first.nonce.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn unframed_or_foreign_nonce_rows_reject_the_whole_listing() {
+        let query = PaneQuery::with_nonce(TEST_NONCE.into());
+        let good = framed(&GOOD_FIELDS);
+        // The pre-nonce shape is no longer accepted.
+        assert!(query.rows(&row(&GOOD_FIELDS)).is_err());
+        let other = good.replace(TEST_NONCE, "ffffffffffffffffffffffffffffffff");
+        assert!(query.rows(&format!("{good}\n{other}\n")).is_err());
+        // A truncated row (trailing nonce missing) is rejected.
+        let truncated = good.strip_suffix(TEST_NONCE).unwrap();
+        assert!(query.rows(truncated).is_err());
+    }
+
+    #[test]
+    fn a_newline_in_a_path_cannot_split_or_forge_rows() {
+        let query = PaneQuery::with_nonce(TEST_NONCE.into());
+        // A path that embeds a complete unframed row after a newline.
+        let mut forged = GOOD_FIELDS;
+        forged[10] = "/tmp/x\n99\t$9\tdeck-card-evil\t@9\t%9\t9\t1\t0\tclaude\t/dev/ttys9\t/tmp";
+        assert!(query.rows(&format!("{}\n", framed(&forged))).is_err());
+        // The exact shape observed from the bundled tmux: newline plus a
+        // fake `%end` record inside the directory name.
+        let mut observed = GOOD_FIELDS;
+        observed[10] = "/tmp/a\n%end 0 1 0\tx";
+        let raw = format!("{}\n", framed(&observed));
+        let one_shot = query.rows(&raw).unwrap_err();
+        assert_eq!(one_shot.kind(), ErrorKind::Tmux);
+
+        // The control-mode read of the same bytes fails too: a `%` line
+        // inside the frame rejects it outright ...
+        let mut parser = ControlParser::default();
+        parser.feed("%begin 1700000000 5 1").unwrap();
+        let mut control = None;
+        for line in raw.lines() {
+            if let Err(error) = parser.feed(line) {
+                control = Some(error);
+                break;
+            }
+        }
+        assert_eq!(
+            control.expect("control frame rejected").kind(),
+            ErrorKind::Tmux
+        );
+
+        // ... and a guessed command number that ends the frame early leaves
+        // a truncated, unframed row that the shared parser rejects.
+        let mut guessed = GOOD_FIELDS;
+        guessed[10] = "/tmp/a\n%end 1700000000 6 1";
+        let raw = format!("{}\n", framed(&guessed));
+        let mut parser = ControlParser::default();
+        parser.feed("%begin 1700000000 6 1").unwrap();
+        let mut lines = raw.lines();
+        assert_eq!(
+            parser.feed(lines.next().unwrap()).unwrap(),
+            ControlFeed::Pending
+        );
+        let ControlFeed::Complete(partial) = parser.feed(lines.next().unwrap()).unwrap() else {
+            panic!("guessed id ends the frame");
+        };
+        assert_eq!(query.rows(&partial).unwrap_err().kind(), ErrorKind::Tmux);
+    }
+
+    #[test]
+    fn a_protocol_record_inside_a_frame_resets_the_parser() {
+        let mut parser = ControlParser::default();
+        parser.feed("%begin 1 7 1").unwrap();
+        assert!(parser.feed("%output %1 forged").is_err());
+        // The rejected frame is gone; its real `%end` is now a mismatch.
+        assert!(parser.feed("%end 1 7 1").is_err());
+    }
+
     #[test]
     fn control_lines_handle_fragmentation_crlf_and_invalid_utf8() {
         let mut bytes = b"first\r\nsecond".to_vec();
@@ -1281,6 +1470,8 @@ mod tests {
     }
 
     static CONTROL_SOCKET_SEQ: AtomicU64 = AtomicU64::new(0);
+    /// Control-client tests share the process-wide owned-client slot.
+    static CONTROL_CLIENT_TESTS: Mutex<()> = Mutex::new(());
 
     struct IsolatedControlServer {
         socket: String,
@@ -1327,6 +1518,9 @@ mod tests {
 
     #[test]
     fn persistent_control_matches_one_shot_and_is_read_only_no_output() {
+        let _serial = CONTROL_CLIENT_TESTS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let server = IsolatedControlServer::new();
         assert!(server.binary.is_file(), "bundled tmux test binary missing");
         server.run(&[
@@ -1392,5 +1586,62 @@ mod tests {
         assert!(channel.list_panes().is_err());
         drop(channel);
         assert_eq!(owned_control_client(), None);
+    }
+
+    #[test]
+    fn a_newline_path_fails_one_shot_and_control_reads_identically() {
+        let _serial = CONTROL_CLIENT_TESTS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let server = IsolatedControlServer::new();
+        assert!(server.binary.is_file(), "bundled tmux test binary missing");
+        let root = std::env::temp_dir().join(format!(
+            "deck-smoke-r4-{}-{}",
+            std::process::id(),
+            CONTROL_SOCKET_SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir(&root).unwrap();
+        struct RemoveOnDrop(std::path::PathBuf);
+        impl Drop for RemoveOnDrop {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let _cleanup = RemoveOnDrop(root.clone());
+        let hostile = root.join("a\n%end 0 1 0\tx");
+        std::fs::create_dir(&hostile).unwrap();
+        server.run(&["new-session", "-d", "-s", "alpha", "/bin/sleep", "30"]);
+        let query = PaneQuery::new().unwrap();
+        let clean = query
+            .rows(&server.run(&["list-panes", "-a", "-F", query.format()]))
+            .unwrap();
+        let mut channel = TmuxQueryChannel::connect_with(
+            server.binary.to_str().unwrap(),
+            "/dev/null",
+            &server.socket,
+            &clean,
+        )
+        .expect("connect persistent control client");
+        assert_eq!(channel.list_panes().unwrap(), clean);
+
+        server.run(&[
+            "new-session",
+            "-d",
+            "-s",
+            "hostile",
+            "-c",
+            hostile.to_str().unwrap(),
+            "/bin/sleep",
+            "30",
+        ]);
+        let query = PaneQuery::new().unwrap();
+        let raw = server.run(&["list-panes", "-a", "-F", query.format()]);
+        assert!(
+            raw.contains("\n%end 0 1 0"),
+            "tmux printed the path verbatim"
+        );
+        assert_eq!(query.rows(&raw).unwrap_err().kind(), ErrorKind::Tmux);
+        assert_eq!(channel.list_panes().unwrap_err().kind(), ErrorKind::Tmux);
+        drop(channel);
     }
 }

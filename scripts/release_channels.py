@@ -300,6 +300,60 @@ def assert_promotion_has_no_build_commands(path: Path) -> None:
         raise ReleaseError("promotion workflow contains a forbidden build command")
 
 
+APP_BUILD = re.compile(r"tauri-apps/tauri-action@|\bcargo tauri build\b|\btauri build\b")
+CARGO_AUDIT = "cargo audit --file app/src-tauri/Cargo.lock"
+GATE_COMMAND = re.compile(
+    r"cargo (?:audit|test|clippy|fmt|llvm-cov)\b|scripts/(?:ui-tests|check-edr-binary|check-workflows)\b"
+    r"|node app/ui/js/check\.mjs|python3 -m unittest"
+)
+SOFT_FAIL = re.compile(r"\|\|\s*(?:true|:)\b|\|\|\s*exit 0\b")
+
+
+def workflow_jobs(text: str) -> dict[str, str]:
+    """Top-level jobs of one workflow as {name: body}, by indentation only."""
+    jobs_at = re.search(r"^jobs:\n", text, re.M)
+    if not jobs_at:
+        return {}
+    jobs: dict[str, str] = {}
+    name = None
+    for line in text[jobs_at.end():].splitlines():
+        header = re.match(r"^  ([A-Za-z0-9_-]+):\s*$", line)
+        if header:
+            name = header.group(1)
+            jobs[name] = ""
+        elif name is not None and (line.startswith("   ") or not line.strip()):
+            jobs[name] += line + "\n"
+        elif line and not line.startswith(" "):
+            break
+    return jobs
+
+
+def job_needs(body: str) -> set[str]:
+    inline = re.search(r"^    needs:\s*\[([^\]]*)\]", body, re.M)
+    if inline:
+        return {item.strip() for item in inline.group(1).split(",") if item.strip()}
+    single = re.search(r"^    needs:\s*([A-Za-z0-9_-]+)\s*$", body, re.M)
+    return {single.group(1)} if single else set()
+
+
+def assert_workflow_gates(path: Path) -> None:
+    """Fail closed on a gate that cannot fail, and on an app build that does
+    not depend on a job running the RustSec audit."""
+    text = path.read_text()
+    if re.search(r"^\s*continue-on-error:", text, re.M):
+        raise ReleaseError(f"{path.name}: continue-on-error is not allowed")
+    for line in text.splitlines():
+        if GATE_COMMAND.search(line) and SOFT_FAIL.search(line):
+            raise ReleaseError(f"{path.name}: a gate command must not be soft-failed")
+    jobs = workflow_jobs(text)
+    for name, body in jobs.items():
+        if not APP_BUILD.search(body):
+            continue
+        gated = [need for need in job_needs(body) if CARGO_AUDIT in jobs.get(need, "")]
+        if not gated and CARGO_AUDIT not in body:
+            raise ReleaseError(f"{path.name}: app build job {name} does not depend on cargo audit")
+
+
 def cli() -> int:
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command", required=True)
@@ -330,6 +384,8 @@ def cli() -> int:
     sums.add_argument("names", nargs="+")
     no_build = sub.add_parser("assert-no-build")
     no_build.add_argument("path", type=Path)
+    gates = sub.add_parser("assert-workflow-gates")
+    gates.add_argument("paths", type=Path, nargs="+")
     provenance = sub.add_parser("provenance")
     provenance.add_argument("--dir", type=Path, required=True)
     provenance.add_argument("--dmg", required=True)
@@ -375,6 +431,9 @@ def cli() -> int:
             write_sums(args.dir, args.names, args.output)
         elif args.command == "assert-no-build":
             assert_promotion_has_no_build_commands(args.path)
+        elif args.command == "assert-workflow-gates":
+            for path in args.paths:
+                assert_workflow_gates(path)
         elif args.command == "provenance":
             data = create_provenance(
                 args.dir, args.dmg, args.version, args.tag, args.commit,

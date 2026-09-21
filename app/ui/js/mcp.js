@@ -1,14 +1,28 @@
 // Desktop bridge for Deck MCP Board operations. Native owns authorization,
 // scopes and the durable operation ledger; this module is the only MCP path
 // into the Board's serialized persist-before-commit transaction.
+//
+// Close outcomes: refused before admission (card shown in a pane, plan no
+// longer current) → rejected; failed after admission (a queue/tmux side
+// effect may have run) → ambiguous, never rejected; committed only after the
+// Board write. A failed report to native is surfaced as a toast with no free
+// text — native keeps the operation pending/admitted and restart turns it
+// ambiguous, so nothing is guessed. Pending work that predates a Deck restart
+// is never replayed here: native marks it ambiguous on load.
 import { inv, listen } from './state.js';
 import { provider } from './board.js';
+import { toast } from './dialogs.js';
+import { t } from './i18n.js';
 
 let draining = false;
 let again = false;
 
 async function finish(operationId, state, code = null, tmuxSession = null) {
-  return inv('mcp_complete', { operationId, state, code, tmuxSession });
+  try {
+    await inv('mcp_complete', { operationId, state, code, tmuxSession });
+  } catch (_) {
+    toast(t('mcp.boardSyncFailed'));
+  }
 }
 
 async function createSession(pending) {
@@ -46,8 +60,15 @@ async function createSession(pending) {
     await finish(pending.operationId, 'committed', null, card.session);
   } catch (error) {
     await finish(pending.operationId, error?.effectAttempted ? 'ambiguous' : 'rejected',
-      error?.stage === 'orphan' ? 'orphan-session' : 'create-failed').catch(() => {});
+      error?.stage === 'orphan' ? 'orphan-session' : 'create-failed');
   }
+}
+
+export function closeOutcome(result) {
+  if (result.ok) return { state: 'committed', code: null };
+  if (result.stage === 'shown') return { state: 'rejected', code: 'card-shown' };
+  if (result.admitted) return { state: 'ambiguous', code: 'close-failed' };
+  return { state: 'rejected', code: 'close-failed' };
 }
 
 async function closeSession(pending) {
@@ -59,8 +80,8 @@ async function closeSession(pending) {
   const result = await provider.close(card.id, {
     detail: true, quiet: true, mcpOperationId: pending.operationId,
   });
-  await finish(pending.operationId, result.ok ? 'committed' : 'rejected',
-    result.ok ? null : 'close-failed').catch(() => {});
+  const outcome = closeOutcome(result);
+  await finish(pending.operationId, outcome.state, outcome.code);
 }
 
 async function handle(item) {
@@ -71,7 +92,7 @@ async function handle(item) {
     if (pending.kind === 'session-close') return await closeSession(pending);
     await finish(pending.operationId, 'rejected', 'unsupported-operation');
   } catch (_) {
-    await finish(pending.operationId, 'ambiguous', 'board-transaction-unknown').catch(() => {});
+    await finish(pending.operationId, 'ambiguous', 'board-transaction-unknown');
   }
 }
 

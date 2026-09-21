@@ -336,6 +336,8 @@ pub(crate) fn kill_session(name: String, mcp_admission: Option<String>) -> Resul
     crate::mcp::validate_close_admission(mcp_admission.as_deref(), std::slice::from_ref(&name))?;
     let _activity = crate::session_runtime::activity_guard()?;
     validate_session_name(&name)?;
+    // An MCP-managed pane: its runner stops the job groups first (bounded).
+    crate::mcp::stop_managed_jobs(&name);
     idempotent_kill_result(tmux(&["kill-session", "-t", &session_target(&name)]))?;
     // Closing a card is also a privacy deletion: its transcript, backup and
     // quarantined recovery copies must not outlive the card.

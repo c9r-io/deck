@@ -8,8 +8,10 @@ installed signed app.
 
 ## Scheme-B remaining-requirement matrix
 
-The current source uses control protocol v3 and state schema v3. The MCP
-standard protocol version is negotiated independently by the SDK.
+The current source uses control protocol v3, state schema v4 and runner
+protocol 2. The MCP standard protocol version is negotiated independently by
+the SDK. Rows below describe the v3-era evidence; the 2026-09-21 remediation
+section supersedes them where they differ.
 
 | ID | Status | Implementation evidence | Automated evidence | Remaining limit |
 |---|---|---|---|---|
@@ -39,12 +41,16 @@ standard protocol version is negotiated independently by the SDK.
 - Remote close is merely `executing` until the Board mutation slot calls
   `mcp_close_admit`. Queue cancellation is the first effect after that point;
   both native effects validate the same target-bound token.
-- Revoke/takeover closes the in-memory gate before runner fencing. A missing
-  runner acknowledgement returns an uncertainty error and never claims that a
-  running process stopped.
-- Output reads authenticate before lookup and recheck sharing/read authority
-  before return. Retention gaps are explicit; transmitted bytes cannot be
-  recalled.
+- Revoke/takeover/disable close the in-memory gate BEFORE waiting for the
+  delivery lock, then fence the runner. A missing runner acknowledgement
+  returns an uncertainty error and never claims that a running process
+  stopped.
+- Output reads authenticate before lookup, check the job binding and the
+  session sharing gate, and run the same gate again after the runner read
+  returns; a takeover, pause, revocation or generation change during the wait
+  drops the bytes. (Before the remediation the second check did not exist,
+  although this record claimed it.) Retention gaps are explicit; transmitted
+  bytes cannot be recalled. Inspect returns no terminal content.
 
 ## Automated evidence
 
@@ -109,6 +115,59 @@ start the installed app or read the user's Deck state.
   acceptance. Those require the separately authorized environment described
   below; source and isolated automation do not substitute for that result.
 
+## 2026-09-21 remediation of acceptance blockers (control/runner group)
+
+Isolated evidence only: private temporary directories, bundled tmux on unique
+`deck-smoke-h1-*` sockets with `-f /dev/null`, synthetic service instances.
+The installed app, `~/.deck`, the production `deck` socket and the retained
+acceptance session were not touched.
+
+- **Return to MCP after the window expired (the observed failure).** Root
+  cause: `mcp_return_control` required an active execution grant. Fixed; the
+  return needs no grant, persists a new epoch with no holder first, re-fences
+  on runner failure, and reports stable codes. Tests:
+  `return_after_takeover_needs_no_grant_and_restores_nothing`,
+  `return_is_refused_with_stable_codes_and_changes_nothing`.
+- **Human control / signals (runner).** Before (isolated tmux experiment,
+  pre-fix runner): runner pid == pgid == tpgid (foreground), job pgid ≠ tpgid;
+  in human mode `send-keys C-c` killed the RUNNER and left the job group
+  (zsh + `sleep 600`) orphaned under PPID 1; `kill-session` and SIGTERM to the
+  runner orphaned it the same way. After: C-c interrupted the job group and
+  the runner stayed alive in human mode; `kill-session`, SIGTERM and the new
+  `stop` request each left no process of the job group. No stray process or
+  tmux server remained. Tests: `human_interrupt_key_reaches_the_job_group_not_the_runner`,
+  `runner_termination_kills_the_live_job_group`,
+  `stop_escalates_and_reaps_the_job_group`,
+  `a_job_stopped_by_job_control_is_reported_and_still_stoppable`,
+  `human_takeover_never_starts_a_shell_job`.
+- **Large requests to the runner.** Before: 100/100 execs with a 32-KiB script
+  failed (accepted socket inherited O_NONBLOCK). After: 0/100 exec and 0/100
+  16-KiB read failures. Test:
+  `large_scripts_and_full_reads_cross_the_accepted_socket_intact`.
+- **Restart staleness.** `a_restarted_deck_is_reported_stale_but_can_still_stop`,
+  `a_runner_from_before_a_restart_is_stale_but_still_fenced_and_stoppable`.
+- **Emergency ordering.** `takeover_fences_before_waiting_for_an_in_flight_dispatch`.
+- **Output after takeover.** `job_read_drops_output_when_a_takeover_lands_during_the_wait`.
+- **Remote close.** Before: `close_admit` wrote `admitted`, `mcp_complete`
+  accepted only `executing`, and the webview swallowed the error, so no
+  remote close could commit. Tests:
+  `a_remote_close_commits_after_admission_and_never_sticks`,
+  `restart_turns_pending_board_operations_ambiguous`, and the UI tests in
+  `app/ui/test/mcp.test.mjs`.
+- **Journal lifetime.** `compaction_keeps_three_thousand_epochs_bounded`,
+  `sustained_use_stays_within_the_journal` (700 routed cycles, beyond the
+  pre-fix limit reached at cycle 667), `many_grants_never_block_a_takeover`,
+  `a_retired_request_id_is_rejected_never_reexecuted`,
+  `a_full_journal_still_admits_an_interrupt_and_names_a_real_recovery`,
+  `v3_state_upgrades_stickily_and_future_state_is_refused`,
+  `a_control_replay_never_resends_a_runner_side_effect`.
+- **Adapter.** `a_lost_answer_to_a_side_effect_is_ambiguous_not_unavailable`;
+  registry/annotation assertions in
+  `initializes_lists_and_calls_over_stdio_without_stdout_noise`. A release
+  `deck-mcp` exits 64 for `--socket` and `--credential-fd`.
+- **NOT RUN** — signed app, WKWebView, Keychain and real Tunnel acceptance
+  (see below), and the E2E client against an isolated app.
+
 ## Ordinary ChatGPT manual acceptance
 
 Status: **MANUAL_PENDING**. Protocol and local execution can be automated;
@@ -132,8 +191,10 @@ and ChatGPT confirmations require the user.
    fix it, rerun to exit zero, and show `git diff`.
 7. Run a long task and continue with `deck_job_read`; test stdin and interrupt.
 8. In Deck choose **Take control**. Confirm the running process remains visible
-   and subsequent old-epoch MCP writes fail. Exit the human shell, choose
-   **Return to MCP**, and continue with the new epoch.
+   and subsequent old-epoch MCP writes fail. Stop any running job with
+   **Ctrl-C** in the pane (takeover starts no shell), choose **Return to MCP**
+   — also after the execution window expired — and continue only after MCP
+   requests control again under the new epoch.
 9. Close the test card, revoke the client, and remove only the disposable test
    project. Confirm no Codex CLI, Claude Code, LLM API, or agent process ran in
    the managed session.

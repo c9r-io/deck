@@ -2014,7 +2014,7 @@ export async function run() {
     await refreshQueue();
     const hooklessReady = contextItem?.expected_process == null
       && contextItem?.attempts === 0 && probe?.status === 'ready';
-    await inv('queue_send_now', { id: contextItem.id, acceptProcessMismatch: false });
+    await inv('queue_send_now', { id: contextItem.id });
     const compatibilitySent = !(await inv('queue_list')).items?.some(item => item.id === contextItem.id);
     const noPolicy = !$('q-policy') && !document.querySelector('#queue-list .q-policy');
     await inv('queue_add', { args: {
@@ -2171,72 +2171,33 @@ export async function verifyChannel() {
     $('auto-sender-users').value = 'U0123';
     $('auto-match-kind').value = 'regex'; $('auto-match-kind').dispatchEvent(new Event('change'));
     $('auto-match-value').value = 'INC-(?<incident>[0-9]+)'; $('auto-match-capture').value = 'incident';
+    // Admission: a command with arguments is refused at save; a bare agent
+    // command saves. Saving never launches anything (no Slack connection).
     $('auto-cmd').value = 'claude --version';
     $('auto-idle').value = '30'; $('auto-template').value = 'channel smoke';
+    $('auto-save').click(); // readEditor refuses synchronously, before any await
+    const refused = !(ctx.settings.inbound.channelRules?.length) && !$('auto-editor').hidden;
+    $('auto-cmd').value = 'claude';
     $('auto-save').click();
     const saved = await waitFor(() => ctx.settings.inbound.channelRules?.length === 1);
     const rule = ctx.settings.inbound.channelRules?.[0];
-    await report('channel-ui', settingsVisible && saved && rule?.match?.groupCapture === 'incident'
-      && rule?.idleMinutes === 30, settingsVisible ? 1 : 0, saved ? 1 : 0);
+    await report('channel-ui', settingsVisible && refused && saved && rule?.match?.groupCapture === 'incident'
+      && rule?.idleMinutes === 30 && rule?.cmd === 'claude', settingsVisible ? 1 : 0, refused && saved ? 1 : 0);
+    // The debug seed stages events whose target command is runtime-blocked,
+    // so this smoke never starts an agent: they must stay pending and no
+    // card, session or queue row may appear.
     const column = project.columns.find(value => value.semantic === 'working') || project.columns[0];
-    await inv('channel_smoke_seed', { projectId: project.id, columnId: column.id, scenario: 'dedupe' });
+    const cardsBefore = store.cards.length;
+    const queueBefore = (await inv('queue_list')).operations?.length || 0;
+    const seeded = await inv('channel_smoke_seed', { projectId: project.id, columnId: column.id, scenario: 'dedupe' });
     await drainChannel();
-    const routed = await waitFor(() => store.cards.find(card => card.origin?.source === 'channel'
-      && card.buffer?.entries?.length === 2 && card.channelRun?.initialQueued === true));
-    let card = store.cards.find(value => value.origin?.source === 'channel');
     const pending = await inv('channel_pending');
-    const queue = await inv('queue_list');
-    const firstOperation = card?.channelRun?.initialSteps?.[0]?.operationId;
-    const routedOk = routed && card?.buffer?.entries?.length === 2
-      && new Set(card.buffer.entries.map(entry => entry.source.eventId)).size === 2
-      && card.connectorRun === undefined && card.channelRun?.initialQueued === true
-      && queue.operations?.some(operation => operation.id === firstOperation)
-      && pending.length === 0;
-    const before = { cards: store.cards.length, entries: card?.buffer?.entries?.length, queue: queue.operations?.length };
-    await drainChannel();
-    card = provider.get(card.id);
-    const afterQueue = await inv('queue_list');
-    const replayOk = store.cards.length === before.cards && card.buffer.entries.length === before.entries
-      && afterQueue.operations?.length === before.queue;
-    await provider.setChannelRun(card.id, card.channelRun.groupKey, { collecting: false });
-    const stopped = provider.get(card.id);
-    await inv('smoke_fault_set', { kind: 'queue-save', count: 1 });
-    await inv('channel_smoke_seed', { projectId: project.id, columnId: column.id, scenario: 'backlog' });
-    await waitFor(() => store.cards.some(value => value.id !== card.id
-      && value.origin?.source === 'channel' && value.buffer?.entries?.length === 3));
-    await inv('smoke_fault_set', { kind: 'queue-save', count: 0 }); await drainChannel();
-    const backlog = store.cards.find(value => value.id !== card.id && value.origin?.source === 'channel');
-    await waitFor(() => provider.get(backlog?.id)?.channelRun?.initialQueued === true);
-    const backlogOk = backlog?.buffer?.entries?.length === 3 && backlog.channelRun?.initialQueued === true;
-    await provider.setChannelRun(backlog.id, backlog.channelRun.groupKey,
-      { collecting: false, lastCollectedAt: Math.floor(Date.now() / 1000) - 120 });
-    await inv('channel_smoke_seed', { projectId: project.id, columnId: column.id, scenario: 'expiry' });
-    await waitFor(() => store.cards.some(value => ![card.id, backlog.id].includes(value.id)
-      && value.origin?.source === 'channel'));
-    const expiry = store.cards.find(value => ![card.id, backlog.id].includes(value.id) && value.origin?.source === 'channel');
-    const oldSourceAt = expiry?.buffer?.entries?.[0]?.source?.at || 0;
-    const expiryOk = expiry?.buffer?.entries?.length === 1 && expiry.channelRun?.collecting === true
-      && expiry.channelRun.lastCollectedAt - oldSourceAt >= 100;
-    await provider.setChannelRun(expiry.id, expiry.channelRun.groupKey, { collecting: false });
-    const beforeAckCards = store.cards.length;
-    const ackIds = await inv('channel_smoke_seed', { projectId: project.id, columnId: column.id,
-      scenario: 'ack-failure' });
-    const ackLeftPending = await waitFor(async () => (await inv('channel_pending')).some(item => item.id === ackIds[0])
-      && store.cards.some(value => value.buffer?.entries?.some(entry => entry.source?.eventId === 'SmokeAckFailure1')));
-    const ackCard = store.cards.find(value => value.buffer?.entries?.some(entry => entry.source?.eventId === 'SmokeAckFailure1'));
-    await drainChannel();
-    const ackCleared = await waitFor(async () => !(await inv('channel_pending')).some(item => item.id === ackIds[0]));
-    const ackOk = ackLeftPending && ackCleared && store.cards.length === beforeAckCards + 1
-      && ackCard?.buffer?.entries?.filter(entry => entry.source?.eventId === 'SmokeAckFailure1').length === 1;
-    await report('channel-dedupe', routedOk && replayOk, card?.buffer?.entries?.length || 0, before.queue || 0);
-    await report('channel-backlog', backlogOk, backlog?.buffer?.entries?.length || 0, backlog?.channelRun?.initialQueued ? 1 : 0);
-    await report('channel-expiry', expiryOk, expiry?.buffer?.entries?.length || 0,
-      expiry?.channelRun?.lastCollectedAt - oldSourceAt || 0);
-    await report('channel-stop', stopped.buffer.entries.length === 2 && stopped.buffer.collecting === false
-      && stopped.channelRun.collecting === false, stopped.buffer.entries.length, stopped.channelRun.collecting ? 1 : 0);
-    await report('channel-ack-failure', ackOk, ackCard?.buffer?.entries?.length || 0, ackCleared ? 1 : 0);
-    await report('channel-route', routedOk && replayOk && backlogOk && expiryOk && ackOk && stopped.buffer.entries.length === 2
-      && stopped.buffer.collecting === false && stopped.channelRun.collecting === false, before.entries, before.queue);
+    const queueAfter = (await inv('queue_list')).operations?.length || 0;
+    const blockedOk = seeded.every(id => pending.some(item => item.id === id))
+      && store.cards.length === cardsBefore && !store.cards.some(card => card.origin?.source === 'channel')
+      && queueAfter === queueBefore;
+    for (const id of seeded) await inv('channel_ack', { id });
+    await report('channel-route', blockedOk, pending.length, store.cards.length - cardsBefore);
     await report('done', !smokeFailed, 1, 0);
   } catch (_) { await report('done', false, 0, 17); }
 }

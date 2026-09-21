@@ -17,7 +17,14 @@ same commit as the behaviour it describes.
   automatic retirement is an automation run whose rule says "close the
   card" (`runFinishHolds` in `pure.js`, driven by the `board.js` poll):
   the user chose it per rule, it never fires while a pane shows the card,
-  and it goes through the same close path as a click. Nothing else retires
+  and it goes through the same close path as a click. The only other
+  card creation/retirement not caused by a click is an explicit MCP request
+  (`mcp.js`, `mcp.rs`), and it is not automatic: a locally authorized client
+  names one target; create needs the client's create permission, close needs
+  the client's current control generation/epoch/holder and is refused under
+  human lock or while any pane shows the card; both are idempotent by request
+  id and go through `provider.createStarted` / `provider.close`; a Deck
+  restart never replays either (they become ambiguous). Nothing else retires
   or relocates a card on its own.
 - **deck is EDR-QUIET by rule** (a corporate EDR flagged it and IT demanded the
   app be stopped; `tests/edr_quiet.rs` enforces each point):
@@ -27,7 +34,16 @@ same commit as the behaviour it describes.
   `open -n`s the installed bundle. Never spawns `ps`, `date`, `osascript`
   or a shell: process facts (pid/ppid/footprint/tty/foreground group/argv[0])
   come from libproc + `KERN_PROCARGS2` in `procinfo.rs`, local time from
-  `localtime_r`, and a duplicate instance just logs and exits. Never
+  `localtime_r`, and a duplicate instance just logs and exits. Default
+  paths, structured reads, metadata and readiness queries never start a
+  shell. The ONE exception: for a locally approved, unexpired trusted-host
+  MCP job, the signed `deck-mcp-runner` starts a literal `/bin/zsh -d -f`
+  at its single fixed entry (`spawn_job`). Human takeover starts no shell.
+  This is not an OS sandbox, carries no promise of EDR invisibility, and
+  `-d -f` does not skip `/etc/zshenv`. deck-app never builds a shell path
+  at runtime, and no dynamic concatenation, alias or variable-level
+  allowlist entry may hide a process spawn (`tests/edr_quiet.rs` binds each
+  computed executable to an exact file and function). Never
   writes an executable under `~`: hook commands name the helper INSIDE the
   signed bundle (see agent hooks). Remaining spawns are low-frequency,
   fixed-argument system tools (`open`, `plutil`, `pbcopy`, `sw_vers`,

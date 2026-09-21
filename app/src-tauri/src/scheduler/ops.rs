@@ -19,9 +19,20 @@
 //!   newlines are kept (a prompt may be many lines), and an empty result is
 //!   refused; blank steps are dropped from a step list.
 //! - `channel_queue_add` is the external-message admission path. It uses the
-//!   same durable queue transaction but first requires an explicitly
-//!   recognized Codex or Claude launch command, so channel text can never be
-//!   submitted to a compatibility-mode shell.
+//!   same durable queue transaction but first requires the card command to
+//!   be exactly `claude` or `codex` (`inbound_channel::channel_agent_command`),
+//!   so every channel row is process-bound. A process-bound row is pasted
+//!   only while that program is the pane's foreground command AND has
+//!   bracketed paste enabled, both checked atomically in tmux with the paste
+//!   and again with Enter (`delivery::literal_request`). No path clears a
+//!   row's expected process: channel text cannot be sent to a shell by the
+//!   queue. Residual window: an agent that exits after the atomic check but
+//!   before it reads the pasted bytes leaves them in the tty for the shell;
+//!   they arrive wrapped in bracketed-paste marks (zsh's default
+//!   `bracketed-paste` binding inserts them into the line editor rather than
+//!   running them; not yet verified against every shell configuration), and
+//!   the separate Enter is refused because the foreground changed. Saving a
+//!   list as a template is the user adopting that text as their own.
 //! - The firing contract (`firing_conflict`): while an item is mid-send
 //!   ("firing" persisted, the paste possibly in flight), awaiting an
 //!   ambiguous-delivery decision, or standing as a review checkpoint,
@@ -31,9 +42,9 @@
 //!   the uncertain delivery as sent. Either edit invalidates a review
 //!   successor's permit (`review.rs`).
 //! - `queue_send_now` is manual immediate delivery: it re-probes the target,
-//!   refuses while the session already has a send in progress, and may
-//!   bypass exactly one observed foreground-process mismatch for that one
-//!   send when the caller confirmed it — never the pane binding.
+//!   refuses while the session already has a send in progress, and applies
+//!   exactly the same identity and foreground-process guards as a scheduled
+//!   send. There is no mismatch bypass.
 //! - `queue_update` takes a text OR a step list, never both: the row editor
 //!   edits one prompt, the list footer edits a repeating rule's steps.
 //! - `next_queue_id` is collision-proof against the live queue (ms clock +
@@ -561,10 +572,7 @@ pub(crate) fn channel_queue_add(
     app: AppHandle,
     args: QueueAddArgs,
 ) -> Result<(), DeckError> {
-    if !crate::context::expected_from_command(&args.cmd)
-        .as_deref()
-        .is_some_and(|value| matches!(value, "codex" | "claude"))
-    {
+    if crate::inbound_channel::channel_agent_command(&args.cmd).is_none() {
         return Err(DeckError::new(
             ErrorKind::Invalid,
             "channel automation requires a supported agent",
@@ -946,15 +954,13 @@ pub(crate) fn queue_clear_sessions(
     Ok(())
 }
 
-/// Immediate delivery is one-shot. It can bypass only a freshly proven
-/// foreground mismatch; exact identity remains mandatory in both probes and
-/// the atomic paste guard. No persisted protection is weakened.
+/// Immediate delivery is one-shot and uses the scheduled send's guards
+/// unchanged: exact identity and the expected foreground process.
 #[tauri::command]
 pub(crate) fn queue_send_now(
     state: State<'_, Queues>,
     app: AppHandle,
     id: String,
-    accept_process_mismatch: bool,
 ) -> Result<(), DeckError> {
     let _activity = crate::session_runtime::activity_guard()?;
     let item = state
@@ -969,40 +975,16 @@ pub(crate) fn queue_send_now(
             ErrorKind::Missing,
             "scheduled prompt not found",
         ))?;
-    let observed = current_context_probe(&item);
-    if accept_process_mismatch && observed.status != ContextStatus::ForegroundDifferent {
-        return Err(DeckError::new(
-            ErrorKind::Other,
-            "one-shot process bypass requires a current foreground mismatch",
-        ));
-    }
     if !claim_session(&state.busy, &item.session) {
         return Err(DeckError::new(
             ErrorKind::Other,
             "this session already has a scheduled send in progress",
         ));
     }
-    let prepare_once = |source: &QueueItem, cancelled: &dyn Fn() -> bool| {
-        let mut one_shot = source.clone();
-        if accept_process_mismatch {
-            one_shot.expected_process = None;
-        }
-        prepare_context(&one_shot, cancelled)
-    };
-    let final_once = |source: &QueueItem| {
-        let mut one_shot = source.clone();
-        if accept_process_mismatch {
-            one_shot.expected_process = None;
-        }
-        final_context_probe(&one_shot)
-    };
-    let fire_once = |source: &QueueItem| {
-        let mut one_shot = source.clone();
-        if accept_process_mismatch {
-            one_shot.expected_process = None;
-        }
-        fire_item(&one_shot)
-    };
+    let prepare_once =
+        |source: &QueueItem, cancelled: &dyn Fn() -> bool| prepare_context(source, cancelled);
+    let final_once = |source: &QueueItem| final_context_probe(source);
+    let fire_once = |source: &QueueItem| fire_item(source);
     let result = send_one_safe_requested(
         &state.q,
         &state.dirty,

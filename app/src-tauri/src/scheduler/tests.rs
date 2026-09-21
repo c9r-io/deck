@@ -2515,3 +2515,23 @@ fn restart_pause_survives_reload_and_save_failure_preserves_the_queue() {
         .iter()
         .all(|i| i.session == "untouched"));
 }
+
+#[test]
+fn process_bound_delivery_requires_paste_mode_and_compatibility_does_not() {
+    let pane = crate::context::PaneIdentity {
+        server_pid: 1,
+        session_id: "$1".into(),
+        window_id: "@1".into(),
+        pane_id: "%1".into(),
+        pane_pid: 2,
+    };
+    let bound = qi("a", "at");
+    let request = delivery::literal_request(&bound, &pane, "d1");
+    assert_eq!(request.expected_process, Some("codex"));
+    assert!(request.require_paste_mode);
+    let mut compatibility = qi("b", "at");
+    compatibility.expected_process = None;
+    let request = delivery::literal_request(&compatibility, &pane, "d2");
+    assert!(request.expected_process.is_none());
+    assert!(!request.require_paste_mode);
+}

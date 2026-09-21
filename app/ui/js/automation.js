@@ -59,7 +59,7 @@ import { formatNumber, onLocaleChange, t } from './i18n.js';
 import { formatShortcut } from './shortcuts.js';
 import { DEFAULT_GRACE_MIN } from './settings-model.js';
 import { openTemplates } from './templates.js';
-import { CHANNEL_IDLE_DEFAULT, normalizeChannelRule } from './channel-model.js';
+import { CHANNEL_IDLE_DEFAULT, channelBlockReason, normalizeChannelRule } from './channel-model.js';
 
 /* the Board, layout and terminal actions this drawer calls, handed in by
    `initAutomation(deps)` so board.js and terminal.js may import this module
@@ -137,6 +137,12 @@ function ruleEl(rule) {
     + '<div class="ar-body"><div class="ar-kv"></div><div class="ar-runs"></div></div>';
   el.querySelector('.ar-name').textContent = ruleLabel(rule);
   el.querySelector('.ar-when').textContent = triggerText(rule);
+  const blocked = rule.source === 'channel' && channelBlockReason(rule, project);
+  if (blocked) {
+    el.classList.add('off');
+    el.querySelector('.ar-when').textContent = t(blocked === 'command'
+      ? 'automation.channelBlocked.command' : 'automation.channelBlocked.template');
+  }
   const pause = el.querySelector('.ar-pause');
   if (pause) {
     pause.textContent = rule.enabled ? '⏸' : '▶';
@@ -325,6 +331,12 @@ function readEditor() {
       idleMinutes: Number($('auto-idle').value) };
     const rule = normalizeChannelRule(raw);
     if (!rule) { toast(t('automation.invalidChannelRule')); return null; }
+    const blocked = channelBlockReason(rule, project);
+    if (blocked) {
+      toast(t(blocked === 'command' ? 'automation.invalidChannelCommand' : 'automation.invalidChannelTemplate'));
+      $(blocked === 'command' ? 'auto-cmd' : 'auto-template').focus();
+      return null;
+    }
     return { ...rule, source: 'channel' };
   }
   const fields = {

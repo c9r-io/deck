@@ -10,6 +10,30 @@
 //! pipe's EOF are reported separately. The runner has no model, persistence,
 //! or Board authority; trusted-host jobs retain the user's ordinary OS/network
 //! permissions and the environment profile is not a sandbox.
+//!
+//! Process ownership: tmux execs the runner as the pane's session leader and
+//! foreground process group. Each job is `zsh -d -f` (spawn_job) in its OWN process
+//! group (pid == pgid) with piped stdio, so the job is a background group of
+//! the same terminal. The runner never starts any other shell: human takeover
+//! only changes who may type into the active job's stdin.
+//!
+//! Signals: SIGINT/SIGQUIT/SIGTSTP/SIGHUP/SIGTERM are blocked in every runner
+//! thread and consumed by one `sigwait` thread, so terminal keys never kill or
+//! stop the runner itself. In human mode a terminal ^C becomes
+//! `killpg(active job, SIGINT)` — the local stop key. SIGHUP (tmux
+//! kill-session) and SIGTERM make the runner `killpg(SIGKILL)` every live job
+//! group before exiting. The `stop` request (sent by Deck before a close)
+//! escalates SIGINT → SIGTERM → SIGKILL with bounded waits and reports whether
+//! every job leader was reaped. Jobs start with default dispositions and an
+//! empty signal mask. These guarantees cover only jobs that stay in their
+//! process group: a descendant that calls setsid/setpgid, or a group member
+//! that outlives the leader, is outside the runner's reach (trusted-host is
+//! not an OS sandbox). A job stopped by SIGTTIN/SIGTTOU (it touched the tty
+//! from the background) is reported as `stopped`, never as `running`.
+//!
+//! Every control/exec/input/interrupt/grant request names Deck's service
+//! instance. A mismatch means Deck restarted after this runner was created;
+//! the runner answers `runner-stale` and accepts only ping, read and stop.
 
 use base64::Engine;
 use serde::{Deserialize, Serialize};
@@ -20,12 +44,21 @@ use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::process::{ChildStdin, Command, Stdio};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-const PROTOCOL: u32 = 1;
+const PROTOCOL: u32 = 2;
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+const BUILD: Option<&str> = match option_env!("DECK_BUILD_SHA") {
+    Some(value) => Some(value),
+    None => option_env!("GITHUB_SHA"),
+};
+const MAX_CONNECTIONS: usize = 16;
+const CONNECTION_TIMEOUT: Duration = Duration::from_secs(5);
+/// Bounded escalation used by `stop`: each signal gets this long to reap.
+const STOP_STEP: Duration = Duration::from_millis(1_000);
 const MAX_REQUEST: usize = 256 * 1024;
 const MAX_SCRIPT: usize = 32 * 1024;
 const MAX_READ: usize = 16 * 1024;
@@ -56,7 +89,12 @@ impl<'a, T> Recover<MutexGuard<'a, T>> for std::sync::LockResult<MutexGuard<'a, 
 #[derive(Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 enum Request {
-    Ping,
+    Ping {
+        /// When present, the response says whether this runner still belongs
+        /// to that Deck service instance (`serviceCurrent`).
+        #[serde(default)]
+        service_instance: Option<String>,
+    },
     Exec {
         job_id: String,
         request_hash: String,
@@ -101,6 +139,12 @@ enum Request {
         service_instance: String,
         grant_id: String,
         grant_version: u64,
+    },
+    /// Fence control and terminate every live job group with bounded
+    /// escalation. Bound to the generation, not the service instance, so a
+    /// runner orphaned by a Deck restart can still be stopped before close.
+    Stop {
+        generation: String,
     },
     Shutdown,
 }
@@ -172,22 +216,20 @@ struct Response {
     control: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     deletion_reason: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    service_current: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    runner_version: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    runner_build: Option<&'static str>,
 }
 
 impl Response {
     fn error(generation: &str, error: &'static str) -> Self {
         Self {
             ok: false,
-            protocol: PROTOCOL,
-            generation: generation.into(),
             error: Some(error),
-            job: None,
-            output: None,
-            next_cursor: None,
-            gap: None,
-            dropped_bytes: None,
-            control: None,
-            deletion_reason: None,
+            ..Self::empty(generation)
         }
     }
     fn empty(generation: &str) -> Self {
@@ -203,6 +245,9 @@ impl Response {
             dropped_bytes: None,
             control: None,
             deletion_reason: None,
+            service_current: None,
+            runner_version: None,
+            runner_build: None,
         }
     }
 }
@@ -242,7 +287,10 @@ struct Job {
     timeout_requested: bool,
     output: VecDeque<u8>,
     base_cursor: u64,
-    child: Option<Arc<Mutex<Child>>>,
+    /// Unreaped job leader; also its process-group id. Cleared under the
+    /// `Inner` lock in the same critical section that reaps the leader, so a
+    /// signal sent while holding that lock can never reach a reused PID.
+    pid: Option<i32>,
     stdin: Option<ChildStdin>,
     stdout_eof: bool,
     stderr_eof: bool,
@@ -252,17 +300,52 @@ struct Job {
 enum JobState {
     Starting,
     Running,
+    /// Stopped by a job-control signal (typically SIGTTIN/SIGTTOU).
+    Stopped,
     Exited,
     Lost,
 }
 
 impl Job {
+    fn new(id: String, request_hash: String, context: &DispatchContext) -> Self {
+        Self {
+            id,
+            request_hash,
+            holder_id: context.holder_id.clone(),
+            control_epoch: context.control_epoch,
+            intent_hash: context.intent_hash.clone(),
+            grant_id: context.grant_id.clone(),
+            grant_version: context.grant_version,
+            state: JobState::Starting,
+            exit_code: None,
+            signal: None,
+            started_at: now_ms(),
+            ended_at: None,
+            interrupt_requested: false,
+            timeout_requested: false,
+            output: VecDeque::new(),
+            base_cursor: 0,
+            pid: None,
+            stdin: None,
+            stdout_eof: false,
+            stderr_eof: false,
+        }
+    }
+
+    fn live(&self) -> bool {
+        matches!(
+            self.state,
+            JobState::Starting | JobState::Running | JobState::Stopped
+        )
+    }
+
     fn view(&self) -> JobView {
         JobView {
             job_id: self.id.clone(),
             state: match self.state {
                 JobState::Starting => "starting",
                 JobState::Running => "running",
+                JobState::Stopped => "stopped",
                 JobState::Exited => "exited",
                 JobState::Lost => "lost",
             },
@@ -297,9 +380,94 @@ struct Shared {
     generation: String,
     service_instance: String,
     output_retention_ms: AtomicU64,
-    initial_cwd: PathBuf,
     inner: Mutex<Inner>,
     changed: Condvar,
+    connections: AtomicUsize,
+}
+
+/// Send `signal` to every live job group. Must be called with `inner` held so
+/// the PIDs cannot be reaped (and reused) concurrently.
+fn signal_live_groups(inner: &Inner, signal: i32) -> usize {
+    let mut sent = 0;
+    for job in inner.jobs.values() {
+        if let Some(pid) = job.pid {
+            // SAFETY: `pid` is an unreaped leader of its own process group;
+            // the waiter clears it under this same lock before reaping.
+            if unsafe { libc::killpg(pid, signal) } == 0 {
+                sent += 1;
+            }
+            if signal != libc::SIGKILL && job.state == JobState::Stopped {
+                // A stopped group cannot act on INT/TERM until continued.
+                unsafe { libc::killpg(pid, libc::SIGCONT) };
+            }
+        }
+    }
+    sent
+}
+
+/// Signals that must never stop or kill the runner through its terminal.
+fn runner_signal_set() -> libc::sigset_t {
+    // SAFETY: sigemptyset/sigaddset initialize a local sigset_t.
+    unsafe {
+        let mut set = std::mem::zeroed::<libc::sigset_t>();
+        libc::sigemptyset(&mut set);
+        for signal in [
+            libc::SIGINT,
+            libc::SIGQUIT,
+            libc::SIGTSTP,
+            libc::SIGHUP,
+            libc::SIGTERM,
+        ] {
+            libc::sigaddset(&mut set, signal);
+        }
+        set
+    }
+}
+
+/// Consume terminal/lifecycle signals on one thread. Called after the main
+/// thread blocked `runner_signal_set` so every thread inherits the mask.
+fn signal_thread(shared: Arc<Shared>, socket: PathBuf) {
+    std::thread::spawn(move || {
+        let set = runner_signal_set();
+        loop {
+            let mut signal = 0;
+            // SAFETY: `set` is initialized and every member is blocked.
+            if unsafe { libc::sigwait(&set, &mut signal) } != 0 {
+                continue;
+            }
+            match signal {
+                libc::SIGINT => {
+                    // The local stop key: only the human may use it, and only
+                    // against the one active job group.
+                    let mut inner = shared.inner.lock().recover();
+                    if inner.control != ControlMode::Human {
+                        continue;
+                    }
+                    let Some(id) = inner.active.clone() else {
+                        continue;
+                    };
+                    if let Some(job) = inner.jobs.get_mut(&id) {
+                        if let Some(pid) = job.pid {
+                            job.interrupt_requested = true;
+                            // SAFETY: see `signal_live_groups`.
+                            unsafe { libc::killpg(pid, libc::SIGINT) };
+                            if job.state == JobState::Stopped {
+                                unsafe { libc::killpg(pid, libc::SIGCONT) };
+                            }
+                        }
+                    }
+                }
+                libc::SIGHUP | libc::SIGTERM => {
+                    let inner = shared.inner.lock().recover();
+                    signal_live_groups(&inner, libc::SIGKILL);
+                    let _ = std::fs::remove_file(&socket);
+                    std::process::exit(0);
+                }
+                // ^\ and ^Z are swallowed: they must not stop the runner.
+                _ => {}
+            }
+        }
+    });
 }
 
 fn valid_id(value: &str) -> bool {
@@ -319,8 +487,10 @@ fn admit_exec_context(
     inner: &mut Inner,
     context: &DispatchContext,
 ) -> Result<(), &'static str> {
-    if context.service_instance != shared.service_instance
-        || !valid_id(&context.holder_id)
+    if context.service_instance != shared.service_instance {
+        return Err("runner-stale");
+    }
+    if !valid_id(&context.holder_id)
         || !valid_id(&context.grant_id)
         || !valid_hash(&context.intent_hash)
         || context.grant_version == 0
@@ -358,8 +528,10 @@ fn check_job_context(
     context: &DispatchContext,
     allow_expired_or_revoked: bool,
 ) -> Result<(), &'static str> {
-    if context.service_instance != shared.service_instance
-        || (!allow_expired_or_revoked && context.expires_at <= now_ms())
+    if context.service_instance != shared.service_instance {
+        return Err("runner-stale");
+    }
+    if (!allow_expired_or_revoked && context.expires_at <= now_ms())
         || context.control_epoch != inner.control_epoch
         || context.control_epoch != job.control_epoch
         || inner.holder_id.as_deref() != Some(&context.holder_id)
@@ -623,10 +795,27 @@ fn spawn_job(
             command.env(key, value);
         }
     }
-    // SAFETY: only async-signal-safe dup2/setpgid/close calls run after fork.
+    // SAFETY: only async-signal-safe dup2/setpgid/close/signal/sigprocmask
+    // calls run after fork.
     unsafe {
         command.pre_exec(move || {
             if libc::dup2(read_fd, 3) < 0 || libc::setpgid(0, 0) < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            // The runner blocks terminal signals for its sigwait thread; a
+            // job must start with ordinary dispositions and an empty mask.
+            for signal in [
+                libc::SIGINT,
+                libc::SIGQUIT,
+                libc::SIGTSTP,
+                libc::SIGHUP,
+                libc::SIGTERM,
+            ] {
+                libc::signal(signal, libc::SIG_DFL);
+            }
+            let mut empty = std::mem::zeroed::<libc::sigset_t>();
+            libc::sigemptyset(&mut empty);
+            if libc::sigprocmask(libc::SIG_SETMASK, &empty, std::ptr::null_mut()) != 0 {
                 return Err(std::io::Error::last_os_error());
             }
             if read_fd == 3 {
@@ -656,14 +845,17 @@ fn spawn_job(
     {
         return Err("spawn-failed");
     }
-    let child = Arc::new(Mutex::new(child));
+    let pid = child.id() as i32;
+    // The std Child handle is dropped without waiting: the waiter below owns
+    // reaping through waitpid so PID clearing and reaping share one lock.
+    drop(child);
     {
         let mut inner = shared.inner.lock().recover();
         let Some(job) = inner.jobs.get_mut(job_id) else {
             return Err("job-not-found");
         };
         job.state = JobState::Running;
-        job.child = Some(child.clone());
+        job.pid = Some(pid);
         job.stdin = Some(stdin);
         shared.changed.notify_all();
     }
@@ -677,69 +869,24 @@ fn spawn_job(
 
     let waiter = shared.clone();
     let waiter_id = job_id.to_string();
-    std::thread::spawn(move || loop {
-        let status = child.lock().recover().try_wait();
-        match status {
-            Ok(Some(status)) => {
-                use std::os::unix::process::ExitStatusExt;
-                let mut inner = waiter.inner.lock().recover();
-                if let Some(job) = inner.jobs.get_mut(&waiter_id) {
-                    job.state = JobState::Exited;
-                    job.exit_code = status.code();
-                    job.signal = status.signal();
-                    job.ended_at = Some(now_ms());
-                    job.stdin = None;
-                    job.child = None;
-                }
-                if inner.active.as_deref() == Some(&waiter_id) {
-                    inner.active = None;
-                }
-                waiter.changed.notify_all();
-                break;
-            }
-            Ok(None) => std::thread::sleep(Duration::from_millis(25)),
-            Err(_) => {
-                let mut inner = waiter.inner.lock().recover();
-                if let Some(job) = inner.jobs.get_mut(&waiter_id) {
-                    job.state = JobState::Lost;
-                    job.ended_at = Some(now_ms());
-                    job.stdin = None;
-                    job.child = None;
-                }
-                if inner.active.as_deref() == Some(&waiter_id) {
-                    inner.active = None;
-                }
-                waiter.changed.notify_all();
-                break;
-            }
-        }
-    });
+    std::thread::spawn(move || reap_job(&waiter, &waiter_id, pid));
 
     if let Some(timeout) = timeout_ms.filter(|value| *value > 0) {
         let timed = shared.clone();
         let timed_id = job_id.to_string();
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(timeout));
-            let child = {
-                let mut inner = timed.inner.lock().recover();
-                let Some(job) = inner.jobs.get_mut(&timed_id) else {
-                    return;
-                };
-                if job.state != JobState::Running {
-                    return;
-                }
-                job.timeout_requested = true;
-                job.interrupt_requested = true;
-                job.child.clone()
+            let mut inner = timed.inner.lock().recover();
+            let Some(job) = inner.jobs.get_mut(&timed_id) else {
+                return;
             };
-            if let Some(child) = child {
-                let child = child.lock().recover();
-                if child.id() > 0 {
-                    // SAFETY: this child was placed in a fresh process group
-                    // whose id is its pid. No PID is used after Child reports exit.
-                    unsafe { libc::kill(-(child.id() as i32), libc::SIGINT) };
-                }
-            }
+            let Some(pid) = job.pid else {
+                return;
+            };
+            job.timeout_requested = true;
+            job.interrupt_requested = true;
+            // SAFETY: `pid` is unreaped while the lock is held.
+            unsafe { libc::killpg(pid, libc::SIGINT) };
         });
     }
     if dispatch_unknown {
@@ -747,6 +894,115 @@ fn spawn_job(
     } else {
         Ok(())
     }
+}
+
+/// Poll one job leader until it is reaped. Stop/continue events update the
+/// reported state; exit reaps the leader and clears its PID inside one `Inner`
+/// critical section, so signal senders (who also hold `Inner`) never target a
+/// reused PID.
+fn reap_job(shared: &Arc<Shared>, job_id: &str, pid: i32) {
+    loop {
+        {
+            let mut inner = shared.inner.lock().recover();
+            let mut status = 0;
+            // SAFETY: `pid` is this runner's unreaped child; WNOHANG keeps the
+            // critical section short.
+            let result = unsafe {
+                libc::waitpid(
+                    pid,
+                    &mut status,
+                    libc::WNOHANG | libc::WUNTRACED | libc::WCONTINUED,
+                )
+            };
+            if result == pid {
+                let terminal = !libc::WIFSTOPPED(status) && !libc::WIFCONTINUED(status);
+                if let Some(job) = inner.jobs.get_mut(job_id) {
+                    if libc::WIFSTOPPED(status) {
+                        job.state = JobState::Stopped;
+                    } else if libc::WIFCONTINUED(status) {
+                        job.state = JobState::Running;
+                    } else {
+                        job.state = JobState::Exited;
+                        job.exit_code = libc::WIFEXITED(status).then(|| libc::WEXITSTATUS(status));
+                        job.signal = libc::WIFSIGNALED(status).then(|| libc::WTERMSIG(status));
+                        job.ended_at = Some(now_ms());
+                        job.stdin = None;
+                        job.pid = None;
+                    }
+                }
+                if terminal {
+                    if inner.active.as_deref() == Some(job_id) {
+                        inner.active = None;
+                    }
+                    shared.changed.notify_all();
+                    return;
+                }
+                shared.changed.notify_all();
+            } else if result < 0
+                && std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted
+            {
+                if let Some(job) = inner.jobs.get_mut(job_id) {
+                    job.state = JobState::Lost;
+                    job.ended_at = Some(now_ms());
+                    job.stdin = None;
+                    job.pid = None;
+                }
+                if inner.active.as_deref() == Some(job_id) {
+                    inner.active = None;
+                }
+                shared.changed.notify_all();
+                return;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+/// Make room for one new job by forgetting the oldest finished jobs. A live
+/// job is never evicted; Deck retires the matching bindings in the same order.
+fn evict_finished_jobs(inner: &mut Inner) -> bool {
+    while inner.jobs.len() >= MAX_JOBS {
+        let Some(position) = inner.order.iter().position(|id| {
+            inner.active.as_deref() != Some(id.as_str())
+                && inner.jobs.get(id).is_none_or(|job| !job.live())
+        }) else {
+            return false;
+        };
+        if let Some(id) = inner.order.remove(position) {
+            if let Some(job) = inner.jobs.remove(&id) {
+                inner.retained_output = inner.retained_output.saturating_sub(job.output.len());
+            }
+        }
+    }
+    true
+}
+
+/// Fence control, then escalate SIGINT → SIGTERM → SIGKILL against every live
+/// job group, waiting a bounded time after each step. Returns true only when
+/// every job leader has been reaped.
+fn stop_all_jobs(shared: &Arc<Shared>) -> bool {
+    let mut inner = shared.inner.lock().recover();
+    inner.control = ControlMode::Fenced;
+    inner.holder_id = None;
+    for signal in [libc::SIGINT, libc::SIGTERM, libc::SIGKILL] {
+        if inner.jobs.values().all(|job| job.pid.is_none()) {
+            return true;
+        }
+        for job in inner.jobs.values_mut() {
+            if job.pid.is_some() {
+                job.interrupt_requested = true;
+            }
+        }
+        signal_live_groups(&inner, signal);
+        let (guard, _) = shared
+            .changed
+            .wait_timeout_while(inner, STOP_STEP, |state| {
+                state.jobs.values().any(|job| job.pid.is_some())
+            })
+            .unwrap_or_else(|error| error.into_inner());
+        inner = guard;
+    }
+    inner.jobs.values().all(|job| job.pid.is_none())
 }
 
 fn wait_for_job(shared: &Arc<Shared>, job_id: &str, wait_ms: u64) {
@@ -758,18 +1014,19 @@ fn wait_for_job(shared: &Arc<Shared>, job_id: &str, wait_ms: u64) {
     let _ = shared
         .changed
         .wait_timeout_while(inner, Duration::from_millis(limit), |state| {
-            state
-                .jobs
-                .get(job_id)
-                .is_some_and(|job| matches!(job.state, JobState::Starting | JobState::Running))
+            state.jobs.get(job_id).is_some_and(Job::live)
         });
 }
 
 fn handle(shared: &Arc<Shared>, request: Request) -> Response {
     match request {
-        Request::Ping => {
+        Request::Ping { service_instance } => {
             let inner = shared.inner.lock().recover();
             let mut response = Response::empty(&shared.generation);
+            response.service_current =
+                service_instance.map(|value| value == shared.service_instance);
+            response.runner_version = Some(VERSION);
+            response.runner_build = BUILD;
             response.control = Some(if inner.control == ControlMode::Mcp {
                 "mcp"
             } else if inner.control == ControlMode::Fenced {
@@ -817,34 +1074,13 @@ fn handle(shared: &Arc<Shared>, request: Request) -> Response {
                 if inner.active.is_some() {
                     return Response::error(&shared.generation, "session-busy");
                 }
-                if inner.jobs.len() >= MAX_JOBS {
+                if !evict_finished_jobs(&mut inner) {
                     return Response::error(&shared.generation, "capacity-exceeded");
                 }
                 inner.order.push_back(job_id.clone());
                 inner.jobs.insert(
                     job_id.clone(),
-                    Job {
-                        id: job_id.clone(),
-                        request_hash,
-                        holder_id: context.holder_id,
-                        control_epoch: context.control_epoch,
-                        intent_hash: context.intent_hash,
-                        grant_id: context.grant_id,
-                        grant_version: context.grant_version,
-                        state: JobState::Starting,
-                        exit_code: None,
-                        signal: None,
-                        started_at: now_ms(),
-                        ended_at: None,
-                        interrupt_requested: false,
-                        timeout_requested: false,
-                        output: VecDeque::new(),
-                        base_cursor: 0,
-                        child: None,
-                        stdin: None,
-                        stdout_eof: false,
-                        stderr_eof: false,
-                    },
+                    Job::new(job_id.clone(), request_hash, &context),
                 );
                 // Starting is an active reservation, not an idle session.
                 inner.active = Some(job_id.clone());
@@ -892,8 +1128,7 @@ fn handle(shared: &Arc<Shared>, request: Request) -> Response {
                     Duration::from_millis(limit),
                     |state| {
                         state.jobs.get(&job_id).is_some_and(|job| {
-                            matches!(job.state, JobState::Starting | JobState::Running)
-                                && job.base_cursor + job.output.len() as u64 == initial_end
+                            job.live() && job.base_cursor + job.output.len() as u64 == initial_end
                         })
                     },
                 );
@@ -957,6 +1192,9 @@ fn handle(shared: &Arc<Shared>, request: Request) -> Response {
             if bytes.len() > MAX_INPUT {
                 return Response::error(&shared.generation, "invalid-request");
             }
+            if context.service_instance != shared.service_instance {
+                return Response::error(&shared.generation, "runner-stale");
+            }
             let mut stdin = {
                 let mut inner = shared.inner.lock().recover();
                 if inner.control != ControlMode::Mcp || inner.active.as_deref() != Some(&job_id) {
@@ -997,35 +1235,34 @@ fn handle(shared: &Arc<Shared>, request: Request) -> Response {
             Response::empty(&shared.generation)
         }
         Request::Interrupt { job_id, context } => {
-            let child = {
-                let mut inner = shared.inner.lock().recover();
-                if inner.control != ControlMode::Mcp || inner.active.as_deref() != Some(&job_id) {
-                    return Response::error(&shared.generation, "job-not-running");
-                }
-                if let Some(job) = inner.jobs.get(&job_id) {
-                    if let Err(error) = check_job_context(shared, &inner, job, &context, true) {
-                        return Response::error(&shared.generation, error);
-                    }
-                }
-                let Some(job) = inner.jobs.get_mut(&job_id) else {
-                    return Response::error(&shared.generation, "job-not-found");
-                };
-                if job.state != JobState::Running {
-                    return Response::error(&shared.generation, "job-not-running");
-                }
-                job.interrupt_requested = true;
-                job.child.clone()
-            };
-            let Some(child) = child else {
-                return Response::error(&shared.generation, "job-state-unknown");
-            };
-            let child = child.lock().recover();
-            if child.id() == 0 {
-                return Response::error(&shared.generation, "job-state-unknown");
+            let mut inner = shared.inner.lock().recover();
+            if context.service_instance != shared.service_instance {
+                return Response::error(&shared.generation, "runner-stale");
             }
-            // SAFETY: child identity and process group remain owned by the
-            // active Child handle until the waiter records its exit.
-            let sent = unsafe { libc::kill(-(child.id() as i32), libc::SIGINT) } == 0;
+            if inner.control != ControlMode::Mcp || inner.active.as_deref() != Some(&job_id) {
+                return Response::error(&shared.generation, "job-not-running");
+            }
+            if let Some(job) = inner.jobs.get(&job_id) {
+                if let Err(error) = check_job_context(shared, &inner, job, &context, true) {
+                    return Response::error(&shared.generation, error);
+                }
+            }
+            let Some(job) = inner.jobs.get_mut(&job_id) else {
+                return Response::error(&shared.generation, "job-not-found");
+            };
+            if !matches!(job.state, JobState::Running | JobState::Stopped) {
+                return Response::error(&shared.generation, "job-not-running");
+            }
+            let Some(pid) = job.pid else {
+                return Response::error(&shared.generation, "job-state-unknown");
+            };
+            job.interrupt_requested = true;
+            let stopped = job.state == JobState::Stopped;
+            // SAFETY: `pid` is unreaped while `inner` is held (see reap_job).
+            let sent = unsafe { libc::killpg(pid, libc::SIGINT) } == 0;
+            if stopped {
+                unsafe { libc::killpg(pid, libc::SIGCONT) };
+            }
             if sent {
                 Response::empty(&shared.generation)
             } else {
@@ -1038,11 +1275,14 @@ fn handle(shared: &Arc<Shared>, request: Request) -> Response {
             control_epoch,
             holder_id,
         } => {
-            let human_job = {
+            // Human mode only re-routes the pane keyboard to the active job's
+            // stdin and enables the ^C stop key. It never starts a shell.
+            {
                 let mut inner = shared.inner.lock().recover();
-                if service_instance != shared.service_instance
-                    || control_epoch < inner.control_epoch
-                {
+                if service_instance != shared.service_instance {
+                    return Response::error(&shared.generation, "runner-stale");
+                }
+                if control_epoch < inner.control_epoch {
                     return Response::error(&shared.generation, "dispatch-context-invalid");
                 }
                 if mode == ControlMode::Mcp && inner.active.is_some() {
@@ -1051,50 +1291,6 @@ fn handle(shared: &Arc<Shared>, request: Request) -> Response {
                 inner.control = mode;
                 inner.control_epoch = control_epoch;
                 inner.holder_id = holder_id;
-                if mode == ControlMode::Human && inner.active.is_none() {
-                    let id = format!("human_{}", now_ms());
-                    inner.order.push_back(id.clone());
-                    inner.jobs.insert(
-                        id.clone(),
-                        Job {
-                            id: id.clone(),
-                            request_hash: "human-control".into(),
-                            holder_id: "local-human".into(),
-                            control_epoch,
-                            intent_hash: "human-control".into(),
-                            grant_id: "local-human".into(),
-                            grant_version: 1,
-                            state: JobState::Starting,
-                            exit_code: None,
-                            signal: None,
-                            started_at: now_ms(),
-                            ended_at: None,
-                            interrupt_requested: false,
-                            timeout_requested: false,
-                            output: VecDeque::new(),
-                            base_cursor: 0,
-                            child: None,
-                            stdin: None,
-                            stdout_eof: false,
-                            stderr_eof: false,
-                        },
-                    );
-                    Some(id)
-                } else {
-                    None
-                }
-            };
-            if let Some(job_id) = human_job {
-                let cwd = shared.initial_cwd.to_string_lossy().into_owned();
-                if let Err(error) = spawn_job(shared, &job_id, "exec /bin/zsh -d -f -s", &cwd, None)
-                {
-                    let mut inner = shared.inner.lock().recover();
-                    if let Some(job) = inner.jobs.get_mut(&job_id) {
-                        job.state = JobState::Lost;
-                        job.ended_at = Some(now_ms());
-                    }
-                    return Response::error(&shared.generation, error);
-                }
             }
             let mut response = Response::empty(&shared.generation);
             response.control = Some(if mode == ControlMode::Mcp {
@@ -1110,9 +1306,10 @@ fn handle(shared: &Arc<Shared>, request: Request) -> Response {
             service_instance,
             output_retention_ms,
         } => {
-            if service_instance != shared.service_instance
-                || !(60_000..=7 * 24 * 60 * 60_000).contains(&output_retention_ms)
-            {
+            if service_instance != shared.service_instance {
+                return Response::error(&shared.generation, "runner-stale");
+            }
+            if !(60_000..=7 * 24 * 60 * 60_000).contains(&output_retention_ms) {
                 return Response::error(&shared.generation, "dispatch-context-invalid");
             }
             shared
@@ -1125,7 +1322,10 @@ fn handle(shared: &Arc<Shared>, request: Request) -> Response {
             grant_id,
             grant_version,
         } => {
-            if service_instance != shared.service_instance || !valid_id(&grant_id) {
+            if service_instance != shared.service_instance {
+                return Response::error(&shared.generation, "runner-stale");
+            }
+            if !valid_id(&grant_id) {
                 return Response::error(&shared.generation, "dispatch-context-invalid");
             }
             let mut inner = shared.inner.lock().recover();
@@ -1135,6 +1335,19 @@ fn handle(shared: &Arc<Shared>, request: Request) -> Response {
                 .and_modify(|version| *version = (*version).max(grant_version))
                 .or_insert(grant_version);
             Response::empty(&shared.generation)
+        }
+        Request::Stop { generation } => {
+            if generation != shared.generation {
+                return Response::error(&shared.generation, "invalid-request");
+            }
+            let stopped = stop_all_jobs(shared);
+            let mut response = if stopped {
+                Response::empty(&shared.generation)
+            } else {
+                Response::error(&shared.generation, "stop-unconfirmed")
+            };
+            response.control = Some("fenced");
+            response
         }
         Request::Shutdown => {
             let mut inner = shared.inner.lock().recover();
@@ -1147,7 +1360,18 @@ fn handle(shared: &Arc<Shared>, request: Request) -> Response {
     }
 }
 
+/// Serve one request. The listener is non-blocking (so the accept loop can
+/// observe `stopping`), and macOS hands that O_NONBLOCK to accepted sockets:
+/// every accepted stream is switched back to blocking I/O with bounded
+/// timeouts before it is read. Without this, any request larger than one
+/// socket buffer failed with WouldBlock.
 fn serve_connection(shared: Arc<Shared>, mut stream: UnixStream) {
+    if stream.set_nonblocking(false).is_err()
+        || stream.set_read_timeout(Some(CONNECTION_TIMEOUT)).is_err()
+        || stream.set_write_timeout(Some(CONNECTION_TIMEOUT)).is_err()
+    {
+        return;
+    }
     let limited = stream
         .try_clone()
         .map(|copy| copy.take((MAX_REQUEST + 1) as u64));
@@ -1178,13 +1402,33 @@ fn serve_connection(shared: Arc<Shared>, mut stream: UnixStream) {
     }
 }
 
+/// Pane keyboard → active job stdin, only in human mode. A terminal EOF (^D at
+/// the start of a line) is not the end of the pane: it closes the active
+/// job's stdin in human mode, and the forwarder keeps reading afterwards.
 fn stdin_forwarder(shared: Arc<Shared>) {
     std::thread::spawn(move || {
         let mut input = std::io::stdin();
         let mut buffer = [0u8; 4096];
-        while let Ok(count) = input.read(&mut buffer) {
+        loop {
+            let count = match input.read(&mut buffer) {
+                Ok(count) => count,
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(_) => return,
+            };
             if count == 0 {
-                break;
+                {
+                    let mut inner = shared.inner.lock().recover();
+                    if inner.control == ControlMode::Human {
+                        if let Some(id) = inner.active.clone() {
+                            if let Some(job) = inner.jobs.get_mut(&id) {
+                                job.stdin = None;
+                            }
+                        }
+                    }
+                }
+                // A closed (non-tty) stdin keeps returning EOF; back off.
+                std::thread::sleep(Duration::from_millis(50));
+                continue;
             }
             let mut inner = shared.inner.lock().recover();
             if inner.control != ControlMode::Human {
@@ -1241,7 +1485,7 @@ mod tests {
             generation: "g_test".into(),
             service_instance: "svc_current".into(),
             output_retention_ms: AtomicU64::new(60_000),
-            initial_cwd: PathBuf::from("/tmp"),
+            connections: AtomicUsize::new(0),
             inner: Mutex::new(Inner {
                 jobs: HashMap::new(),
                 order: VecDeque::new(),
@@ -1310,7 +1554,7 @@ mod tests {
                 context: context("svc_previous", 3, "holder_new"),
             },
         );
-        assert_eq!(old_service.error, Some("dispatch-context-invalid"));
+        assert_eq!(old_service.error, Some("runner-stale"));
         assert!(
             handle(
                 &shared,
@@ -1336,6 +1580,91 @@ mod tests {
         );
         assert_eq!(revoked.error, Some("dispatch-context-invalid"));
         assert!(shared.inner.lock().recover().jobs.is_empty());
+    }
+
+    #[test]
+    fn human_takeover_never_starts_a_shell_job() {
+        let shared = shared();
+        let human = handle(
+            &shared,
+            Request::Control {
+                mode: ControlMode::Human,
+                service_instance: "svc_current".into(),
+                control_epoch: 2,
+                holder_id: None,
+            },
+        );
+        assert!(human.ok);
+        let inner = shared.inner.lock().recover();
+        assert!(inner.jobs.is_empty(), "takeover must not create a job");
+        assert!(inner.active.is_none());
+        assert!(inner.control == ControlMode::Human);
+    }
+
+    #[test]
+    fn a_foreign_service_instance_is_reported_stale() {
+        let shared = shared();
+        let control = handle(
+            &shared,
+            Request::Control {
+                mode: ControlMode::Mcp,
+                service_instance: "svc_restarted".into(),
+                control_epoch: 9,
+                holder_id: Some("holder_a".into()),
+            },
+        );
+        assert_eq!(control.error, Some("runner-stale"));
+        let retention = handle(
+            &shared,
+            Request::Retention {
+                service_instance: "svc_restarted".into(),
+                output_retention_ms: 60_000,
+            },
+        );
+        assert_eq!(retention.error, Some("runner-stale"));
+        assert!(shared.inner.lock().recover().control == ControlMode::Fenced);
+    }
+
+    #[test]
+    fn finished_jobs_are_evicted_but_live_jobs_are_not() {
+        let shared = shared();
+        let mut inner = shared.inner.lock().recover();
+        for index in 0..MAX_JOBS {
+            let id = format!("job_{index}");
+            let mut job = Job::new(id.clone(), "hash".into(), &context("svc_current", 1, "h"));
+            job.state = if index == 0 {
+                JobState::Running
+            } else {
+                JobState::Exited
+            };
+            inner.order.push_back(id.clone());
+            inner.jobs.insert(id, job);
+        }
+        inner.active = Some("job_0".into());
+        assert!(evict_finished_jobs(&mut inner));
+        assert!(inner.jobs.contains_key("job_0"), "the live job survives");
+        assert!(
+            !inner.jobs.contains_key("job_1"),
+            "the oldest finished job goes"
+        );
+        for job in inner.jobs.values_mut() {
+            job.state = JobState::Running;
+        }
+        assert_eq!(inner.jobs.len(), MAX_JOBS - 1);
+        let id = "job_extra".to_string();
+        inner.order.push_back(id.clone());
+        inner.jobs.insert(
+            id,
+            Job::new(
+                "job_extra".into(),
+                "hash".into(),
+                &context("svc_current", 1, "h"),
+            ),
+        );
+        assert!(
+            !evict_finished_jobs(&mut inner),
+            "live jobs are never evicted"
+        );
     }
 
     #[test]
@@ -1408,7 +1737,7 @@ mod tests {
                     timeout_requested: false,
                     output: VecDeque::from(b"secret tail".to_vec()),
                     base_cursor: 0,
-                    child: None,
+                    pid: None,
                     stdin: None,
                     stdout_eof: true,
                     stderr_eof: true,
@@ -1458,11 +1787,19 @@ fn main() {
         let _ = std::fs::remove_file(&socket);
         std::process::exit(73);
     }
+    // Block terminal/lifecycle signals before any thread exists so every
+    // runner thread inherits the mask; `signal_thread` consumes them.
+    let signals = runner_signal_set();
+    // SAFETY: `signals` is initialized; this runs before any thread spawn.
+    if unsafe { libc::pthread_sigmask(libc::SIG_BLOCK, &signals, std::ptr::null_mut()) } != 0 {
+        let _ = std::fs::remove_file(&socket);
+        std::process::exit(71);
+    }
     let shared = Arc::new(Shared {
         generation,
         service_instance,
         output_retention_ms: AtomicU64::new(output_retention_ms),
-        initial_cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")),
+        connections: AtomicUsize::new(0),
         inner: Mutex::new(Inner {
             jobs: HashMap::new(),
             order: VecDeque::new(),
@@ -1476,13 +1813,23 @@ fn main() {
         }),
         changed: Condvar::new(),
     });
+    signal_thread(shared.clone(), socket.clone());
     stdin_forwarder(shared.clone());
     println!("Deck MCP managed shell ready");
     while !shared.inner.lock().recover().stopping {
         match listener.accept() {
             Ok((stream, _)) => {
+                // Bounded concurrency: excess connections are closed at once.
+                if shared.connections.fetch_add(1, Ordering::SeqCst) >= MAX_CONNECTIONS {
+                    shared.connections.fetch_sub(1, Ordering::SeqCst);
+                    drop(stream);
+                    continue;
+                }
                 let state = shared.clone();
-                std::thread::spawn(move || serve_connection(state, stream));
+                std::thread::spawn(move || {
+                    serve_connection(state.clone(), stream);
+                    state.connections.fetch_sub(1, Ordering::SeqCst);
+                });
             }
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                 std::thread::sleep(Duration::from_millis(10));

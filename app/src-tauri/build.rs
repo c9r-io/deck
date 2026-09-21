@@ -6,6 +6,13 @@
 fn build_sidecars() {
     let triple = std::env::var("TARGET").expect("cargo sets TARGET");
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+    // Sidecars follow the outer profile. tauri-build copies each sidecar
+    // over the workspace binary of the same name in the outer target dir, so
+    // a debug build must place debug sidecars there: debug-only test seams
+    // (the adapter's --socket) exist only in debug binaries, and a release
+    // sidecar would silently replace the binary the adapter tests execute.
+    let release = std::env::var("PROFILE").as_deref() == Ok("release");
+    let profile = if release { "release" } else { "debug" };
     for (package, manifest, binary, target_dir) in [
         (
             "status-helper",
@@ -28,10 +35,13 @@ fn build_sidecars() {
     ] {
         println!("cargo:rerun-if-changed={package}/src");
         println!("cargo:rerun-if-changed={manifest}");
-        let status = std::process::Command::new(&cargo)
+        let mut command = std::process::Command::new(&cargo);
+        command.arg("build");
+        if release {
+            command.arg("--release");
+        }
+        let status = command
             .args([
-                "build",
-                "--release",
                 "--locked",
                 "--manifest-path",
                 manifest,
@@ -48,7 +58,7 @@ fn build_sidecars() {
             .status()
             .unwrap_or_else(|_| panic!("failed to run cargo for {package}"));
         assert!(status.success(), "{package} build failed");
-        let built = format!("{target_dir}/{triple}/release/{binary}");
+        let built = format!("{target_dir}/{triple}/{profile}/{binary}");
         let dest = format!("binaries/{binary}-{triple}");
         std::fs::copy(&built, &dest).unwrap_or_else(|_| panic!("failed to place {binary} sidecar"));
     }

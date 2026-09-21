@@ -2,9 +2,31 @@
 //!
 //! The listener is disabled by default and exposes only the closed v1 HTTPS
 //! routes. TLS identity is Keychain-only; the private durable file contains
-//! device token hashes, configuration and an append-only command-id ledger.
-//! Board mutations remain webview-owned and are handed over through an opaque
+//! device token hashes, configuration and the command journal. Board
+//! mutations remain webview-owned and are handed over through an opaque
 //! journal handle after accepted intent is durable.
+//!
+//! Journal (file format v2; v1 is upgraded on load, a v1 reader refuses v2):
+//! only unresolved (accepted/executing) entries carry their request, capped
+//! at `MAX_COMMANDS`. Every committed write compacts resolved entries to
+//! tombstones (id, kind, request hash, state, code, result) so an exact
+//! replay or recovery query still gets the original answer and a reused id
+//! with a different body is still refused. At most `MAX_TOMBSTONES` are kept;
+//! dropping one marks its device `history_pruned`, after which an unknown id
+//! of that device is `expired` (410), never `not-found` (404), because a
+//! phone retries a proven-absent id. Revocation drops the device's
+//! tombstones; a revoked device without unresolved work is pruned when a
+//! pairing needs its slot. Each write encodes once and is atomic (temp file,
+//! file fsync, rename, directory fsync).
+//!
+//! Phone reach: send-message and output require the card's SAVED command to
+//! be Codex/Claude (`queue_target_supported`); a foreground agent in a plain
+//! shell card does not qualify. Phone text is an agent prompt, not a shell
+//! line, but a prompt can still lead the agent to run commands.
+//!
+//! Network: `connector_enable` records the interface carrying the chosen
+//! address; a restart binds only while the address is on that interface.
+//! A pairing emits `connector-changed` so the desktop can show it at once.
 
 mod server;
 
@@ -28,9 +50,18 @@ use crate::keychain::{self, Slot};
 use crate::scheduler::Queues;
 use crate::sync::LockRecover;
 
-const VERSION: u32 = 1;
+/// v2 compacts terminal journal entries to tombstones (no request body) and
+/// may record the listener interface. A v1 file is upgraded in memory and
+/// persisted as v2 on the next write; a v1 reader refuses v2 untouched.
+const VERSION: u32 = 2;
 const MAX_DEVICES: usize = 32;
+/// Unresolved (accepted/executing) commands: the only entries that carry a
+/// request body.
 const MAX_COMMANDS: usize = 2000;
+/// Terminal tombstones kept for exact replay and recovery answers. The oldest
+/// is dropped first and its device is marked, so an id the host no longer
+/// knows is answered `expired`, never `not-found` (which a phone may retry).
+const MAX_TOMBSTONES: usize = 4000;
 const MAX_STATE_BYTES: usize = 16 * 1024 * 1024;
 const TERMINAL_RESERVE_BYTES: usize = 2 * 1024;
 const MAX_RESULT_BYTES: usize = 1024;
@@ -96,6 +127,10 @@ struct Config {
     enabled: bool,
     address: String,
     port: u16,
+    /// Interface that carried `address` when the user enabled the listener.
+    /// A restart binds only while the address is still on that interface.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    interface: Option<String>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -106,6 +141,10 @@ struct Device {
     token_hash: String,
     paired_at: u64,
     revoked_at: Option<u64>,
+    /// Some of this device's tombstones were dropped at capacity, so an id the
+    /// host no longer knows cannot be proven never-accepted.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    history_pruned: bool,
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
@@ -164,7 +203,15 @@ struct JournalEntry {
     handle: String,
     device_id: String,
     request_hash: String,
-    request: CommandRequest,
+    /// Immutable device command id and kind; kept after compaction.
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    kind: String,
+    /// Present exactly while the command is unresolved (accepted/executing);
+    /// a terminal entry is a tombstone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    request: Option<CommandRequest>,
     state: String,
     code: Option<String>,
     result: Option<Value>,
@@ -308,9 +355,8 @@ fn load(path: &Path) -> Result<DiskDoc, DeckError> {
     }
     let mut doc: DiskDoc = serde_json::from_slice(&bytes)
         .map_err(|_| DeckError::new(ErrorKind::Recovery, "connector state is unreadable"))?;
-    if doc.version != VERSION
+    if !(1..=VERSION).contains(&doc.version)
         || doc.devices.len() > MAX_DEVICES
-        || doc.commands.len() > MAX_COMMANDS
         || doc.host_id.is_empty()
         || doc
             .identity_address
@@ -323,11 +369,38 @@ fn load(path: &Path) -> Result<DiskDoc, DeckError> {
         || doc.identity_address.is_some() != doc.identity_fingerprint.is_some()
         || (doc.config.enabled
             && (doc.config.port < 1024 || doc.config.address.parse::<Ipv4Addr>().is_err()))
+        || doc
+            .config
+            .interface
+            .as_ref()
+            .is_some_and(|name| !interface_name(name))
     {
         return Err(DeckError::new(
             ErrorKind::Recovery,
             "connector state is invalid",
         ));
+    }
+    let migrating = doc.version == 1;
+    if migrating {
+        // A v1 entry always carries its request and has no id/kind copy.
+        if doc
+            .commands
+            .iter()
+            .any(|c| !c.id.is_empty() || !c.kind.is_empty() || c.request.is_none())
+            || doc.config.interface.is_some()
+            || doc.devices.iter().any(|d| d.history_pruned)
+        {
+            return Err(DeckError::new(
+                ErrorKind::Recovery,
+                "connector journal records are invalid",
+            ));
+        }
+        for c in &mut doc.commands {
+            if let Some(request) = &c.request {
+                c.id = request.id.clone();
+                c.kind = request.kind.clone();
+            }
+        }
     }
     let mut device_ids = HashSet::new();
     if doc.devices.iter().any(|d| {
@@ -345,27 +418,46 @@ fn load(path: &Path) -> Result<DiskDoc, DeckError> {
     }
     let mut handles = HashSet::new();
     if doc.commands.iter().any(|c| {
-        let canonical = serde_json::to_vec(&c.request).ok();
         !handles.insert(&c.handle)
             || !device_ids.contains(&c.device_id)
-            || c.handle != sha(format!("{}\0{}", c.device_id, c.request.id).as_bytes())
-            || canonical
-                .as_deref()
-                .is_none_or(|bytes| c.request_hash != sha(bytes))
-            || validate_command(&c.request).is_err()
-            || !validate_terminal(&c.request, &c.state, c.code.as_deref(), c.result.as_ref())
+            || !command_id(&c.id)
+            || !command_kind(&c.kind)
+            || c.handle != sha(format!("{}\0{}", c.device_id, c.id).as_bytes())
+            || !validate_terminal(&c.kind, &c.state, c.code.as_deref(), c.result.as_ref())
+            || match &c.request {
+                Some(request) => {
+                    request.id != c.id
+                        || request.kind != c.kind
+                        || serde_json::to_vec(request)
+                            .map(|bytes| c.request_hash != sha(&bytes))
+                            .unwrap_or(true)
+                        || validate_command(request).is_err()
+                        || !(migrating || unresolved(&c.state))
+                }
+                None => {
+                    unresolved(&c.state)
+                        || c.request_hash.len() != 64
+                        || !c.request_hash.bytes().all(|b| b.is_ascii_hexdigit())
+                }
+            }
     }) {
         return Err(DeckError::new(
             ErrorKind::Recovery,
             "connector journal records are invalid",
         ));
     }
-    ensure_admission_budget(&doc).map_err(|_| {
-        DeckError::new(
+    let pending = doc.commands.iter().filter(|c| unresolved(&c.state)).count();
+    let tombstones = doc.commands.len() - pending;
+    if pending > MAX_COMMANDS
+        || (!migrating && tombstones > MAX_TOMBSTONES)
+        || over_admission_budget(bytes.len(), &doc)
+    {
+        return Err(DeckError::new(
             ErrorKind::Recovery,
             "connector state exceeds its reserved capacity",
-        )
-    })?;
+        ));
+    }
+    doc.version = VERSION;
     let mut changed = false;
     for c in &mut doc.commands {
         if c.state == "executing" {
@@ -375,15 +467,93 @@ fn load(path: &Path) -> Result<DiskDoc, DeckError> {
             changed = true;
         }
     }
+    compact(&mut doc);
     if changed {
         save(path, &doc)?;
     }
     Ok(doc)
 }
+
+fn unresolved(state: &str) -> bool {
+    matches!(state, "accepted" | "executing")
+}
+
+fn command_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "send-message"
+            | "buffer-add"
+            | "buffer-edit"
+            | "buffer-delete"
+            | "buffer-queue"
+            | "task-create"
+            | "queue-pause"
+            | "queue-cancel"
+    )
+}
+
+fn interface_name(name: &str) -> bool {
+    !name.is_empty() && name.len() <= 32 && name.bytes().all(|b| b.is_ascii_graphic())
+}
+
+/// Reduce every resolved entry to its tombstone and bound the tombstone
+/// history. Runs on every committed write, so a terminal entry is never
+/// persisted with its request body. Dropping the oldest tombstone marks its
+/// device: that device's unknown ids are then answered `expired`.
+fn compact(doc: &mut DiskDoc) {
+    for c in &mut doc.commands {
+        if !unresolved(&c.state) {
+            c.request = None;
+        }
+    }
+    let mut excess = doc
+        .commands
+        .iter()
+        .filter(|c| c.request.is_none())
+        .count()
+        .saturating_sub(MAX_TOMBSTONES);
+    if excess == 0 {
+        return;
+    }
+    let mut pruned = HashSet::new();
+    doc.commands.retain(|c| {
+        if excess > 0 && c.request.is_none() {
+            excess -= 1;
+            pruned.insert(c.device_id.clone());
+            false
+        } else {
+            true
+        }
+    });
+    for device in &mut doc.devices {
+        if pruned.contains(&device.id) {
+            device.history_pruned = true;
+        }
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    static ENCODES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+fn encode(doc: &DiskDoc) -> Result<Vec<u8>, DeckError> {
+    #[cfg(test)]
+    ENCODES.with(|count| count.set(count.get() + 1));
+    serde_json::to_vec(doc)
+        .map_err(|_| DeckError::new(ErrorKind::Other, "connector state encoding failed"))
+}
+
 fn save(path: &Path, doc: &DiskDoc) -> Result<(), DeckError> {
-    let bytes = serde_json::to_vec(doc)
-        .map_err(|_| DeckError::new(ErrorKind::Other, "connector state encoding failed"))?;
-    if bytes.len() > MAX_STATE_BYTES {
+    persist(path, doc, false)
+}
+
+/// Encode once, check the byte cap (plus, for an admission, the terminal
+/// reserve of every unresolved command) and atomically replace the file:
+/// unique temp file, file fsync, rename, parent-directory fsync.
+fn persist(path: &Path, doc: &DiskDoc, admission: bool) -> Result<(), DeckError> {
+    let bytes = encode(doc)?;
+    if bytes.len() > MAX_STATE_BYTES || (admission && over_admission_budget(bytes.len(), doc)) {
         return Err(DeckError::new(
             ErrorKind::DiskFull,
             "connector state capacity reached",
@@ -392,19 +562,14 @@ fn save(path: &Path, doc: &DiskDoc) -> Result<(), DeckError> {
     crate::datadir::atomic_write(path, &bytes)
 }
 
+fn over_admission_budget(encoded_len: usize, doc: &DiskDoc) -> bool {
+    let pending = doc.commands.iter().filter(|c| unresolved(&c.state)).count();
+    encoded_len.saturating_add(pending.saturating_mul(TERMINAL_RESERVE_BYTES)) > MAX_STATE_BYTES
+}
+
+#[cfg(test)]
 fn ensure_admission_budget(doc: &DiskDoc) -> Result<(), DeckError> {
-    let encoded = serde_json::to_vec(doc)
-        .map_err(|_| DeckError::new(ErrorKind::Other, "connector state encoding failed"))?;
-    let unresolved = doc
-        .commands
-        .iter()
-        .filter(|command| matches!(command.state.as_str(), "accepted" | "executing"))
-        .count();
-    if encoded
-        .len()
-        .saturating_add(unresolved.saturating_mul(TERMINAL_RESERVE_BYTES))
-        > MAX_STATE_BYTES
-    {
+    if over_admission_budget(encode(doc)?.len(), doc) {
         return Err(DeckError::new(
             ErrorKind::DiskFull,
             "connector state capacity reached",
@@ -413,12 +578,7 @@ fn ensure_admission_budget(doc: &DiskDoc) -> Result<(), DeckError> {
     Ok(())
 }
 
-fn validate_terminal(
-    request: &CommandRequest,
-    state: &str,
-    code: Option<&str>,
-    result: Option<&Value>,
-) -> bool {
+fn validate_terminal(kind: &str, state: &str, code: Option<&str>, result: Option<&Value>) -> bool {
     if code.is_some_and(|value| {
         value.is_empty()
             || value.len() > 64
@@ -435,9 +595,9 @@ fn validate_terminal(
     match state {
         "accepted" | "executing" => code.is_none() && result.is_none(),
         "rejected" | "ambiguous" => result.is_none(),
-        "delivered" => request.kind == "send-message" && code.is_none() && result.is_none(),
+        "delivered" => kind == "send-message" && code.is_none() && result.is_none(),
         "applied" => {
-            if matches!(request.kind.as_str(), "queue-pause" | "queue-cancel") {
+            if matches!(kind, "queue-pause" | "queue-cancel") {
                 return code.is_none() && result.is_none();
             }
             let Some(object) = result.and_then(Value::as_object) else {
@@ -460,7 +620,7 @@ fn validate_terminal(
                     })
             };
             code.is_none()
-                && match request.kind.as_str() {
+                && match kind {
                     "task-create" => object.len() == 1 && id("cardId"),
                     "buffer-add" | "buffer-edit" | "buffer-delete" => {
                         object.len() == 3 && id("cardId") && id("entryId") && revision()
@@ -486,11 +646,23 @@ impl Runtime {
         &self,
         f: impl FnOnce(&mut DiskDoc) -> Result<T, DeckError>,
     ) -> Result<T, DeckError> {
+        self.transact(false, f)
+    }
+    /// One committed mutation: the candidate is compacted, encoded once and
+    /// written durably before it replaces the in-memory document. The clone
+    /// is the rollback of a failed write; compaction keeps it small (request
+    /// bodies exist only for unresolved commands).
+    fn transact<T>(
+        &self,
+        admission: bool,
+        f: impl FnOnce(&mut DiskDoc) -> Result<T, DeckError>,
+    ) -> Result<T, DeckError> {
         let mut guard = self.doc.lock_or_recover();
         let doc = guard.as_mut().map_err(|e| e.clone())?;
         let mut next = doc.clone();
         let out = f(&mut next)?;
-        save(&self.path, &next)?;
+        compact(&mut next);
+        persist(&self.path, &next, admission)?;
         *doc = next;
         Ok(out)
     }
@@ -552,9 +724,18 @@ impl Runtime {
             }
             Ok(ExecutingCommand {
                 device_id: c.device_id.clone(),
-                request: c.request.clone(),
+                request: c.body()?.clone(),
             })
         })?
+    }
+}
+
+impl JournalEntry {
+    /// The request of an unresolved command (a tombstone has none).
+    fn body(&self) -> Result<&CommandRequest, DeckError> {
+        self.request
+            .as_ref()
+            .ok_or_else(|| DeckError::new(ErrorKind::Other, "command is not pending"))
     }
 }
 
@@ -598,16 +779,7 @@ fn start_server(runtime: Arc<Runtime>) -> Result<(), DeckError> {
     if !cfg.enabled {
         return Ok(());
     }
-    let ip = cfg
-        .address
-        .parse::<Ipv4Addr>()
-        .map_err(|_| DeckError::new(ErrorKind::Invalid, "invalid connector address"))?;
-    if !connector_network_address(ip) || !local_ipv4_addresses().contains(&ip) {
-        return Err(DeckError::new(
-            ErrorKind::Invalid,
-            "connector address is not an available private-network address",
-        ));
-    }
+    listener_network_ok(&cfg, &local_ipv4_interfaces())?;
     let identity = identity_get()?
         .ok_or_else(|| DeckError::new(ErrorKind::Missing, "connector identity is missing"))?;
     if identity.address != cfg.address {
@@ -719,11 +891,13 @@ pub(crate) async fn connector_enable(address: String, port: u16) -> Result<Statu
                 i
             }
         };
+        let interface = interface_of(ip, &local_ipv4_interfaces());
         r.with_doc(|d| {
             d.config = Config {
                 enabled: true,
                 address: address.clone(),
                 port,
+                interface,
             };
             d.identity_address = Some(identity.address.clone());
             d.identity_fingerprint = Some(identity.fingerprint.clone());
@@ -834,16 +1008,30 @@ pub(crate) fn connector_pairing() -> Result<PairingView, DeckError> {
 }
 #[tauri::command]
 pub(crate) fn connector_revoke(device_id: String) -> Result<(), DeckError> {
-    rt()?.with_doc(|d| {
-        let x = d
-            .devices
-            .iter_mut()
-            .find(|x| x.id == device_id)
-            .ok_or_else(|| DeckError::new(ErrorKind::Missing, "device not found"))?;
-        x.revoked_at = Some(now());
-        invalidate_commands(d, Some(&device_id), "device-revoked");
-        Ok(())
-    })
+    rt()?.with_doc(|d| revoke_device(d, &device_id))
+}
+
+fn revoke_device(d: &mut DiskDoc, device_id: &str) -> Result<(), DeckError> {
+    let x = d
+        .devices
+        .iter_mut()
+        .find(|x| x.id == device_id)
+        .ok_or_else(|| DeckError::new(ErrorKind::Missing, "device not found"))?;
+    x.revoked_at = Some(now());
+    // A revoked token can never query or replay its history, so its
+    // tombstones are dropped. An entry that was executing stays (as
+    // ambiguous) until the device record itself is pruned, so an in-flight
+    // native step still finds its journal entry.
+    let in_flight = d
+        .commands
+        .iter()
+        .filter(|c| c.device_id == device_id && c.state == "executing")
+        .map(|c| c.handle.clone())
+        .collect::<HashSet<_>>();
+    invalidate_commands(d, Some(device_id), "device-revoked");
+    d.commands
+        .retain(|c| c.device_id != device_id || in_flight.contains(&c.handle));
+    Ok(())
 }
 
 #[derive(Clone, Serialize)]
@@ -862,9 +1050,11 @@ pub(crate) fn connector_pending() -> Result<Vec<PendingView>, DeckError> {
         d.commands
             .iter()
             .filter(|c| c.state == "accepted")
-            .map(|c| PendingView {
-                handle: c.handle.clone(),
-                request: c.request.clone(),
+            .filter_map(|c| {
+                Some(PendingView {
+                    handle: c.handle.clone(),
+                    request: c.request.clone()?,
+                })
             })
             .collect()
     })
@@ -887,6 +1077,7 @@ pub(crate) fn connector_smoke_seed(
             enabled: true,
             address: "127.0.0.1".into(),
             port: 18443,
+            interface: None,
         };
         if !doc.devices.iter().any(|device| device.id == "device_smoke") {
             doc.devices.push(Device {
@@ -895,6 +1086,7 @@ pub(crate) fn connector_smoke_seed(
                 token_hash: "a".repeat(64),
                 paired_at: now(),
                 revoked_at: None,
+                history_pruned: false,
             });
         }
         Ok(())
@@ -979,6 +1171,7 @@ pub(crate) fn connector_smoke_transport(card_id: String) -> Result<SmokeTranspor
                 enabled: false,
                 address: "127.0.0.1".into(),
                 port: 0,
+                interface: None,
             };
             doc.identity_address = Some(identity.address.clone());
             doc.identity_fingerprint = Some(identity.fingerprint.clone());
@@ -993,6 +1186,7 @@ pub(crate) fn connector_smoke_transport(card_id: String) -> Result<SmokeTranspor
                 enabled: true,
                 address: "127.0.0.1".into(),
                 port: 0,
+                interface: None,
             },
             identity,
             epoch,
@@ -1002,6 +1196,7 @@ pub(crate) fn connector_smoke_transport(card_id: String) -> Result<SmokeTranspor
                 enabled: true,
                 address: "127.0.0.1".into(),
                 port,
+                interface: None,
             };
             Ok(())
         }) {
@@ -1069,11 +1264,12 @@ pub(crate) fn connector_claim(handle: String) -> Result<PendingView, DeckError> 
         if c.state != "accepted" {
             return Err(DeckError::new(ErrorKind::Other, "command is not pending"));
         }
+        let request = c.body()?.clone();
         c.state = "executing".into();
         c.updated_at = now();
         Ok(PendingView {
             handle: c.handle.clone(),
-            request: c.request.clone(),
+            request,
         })
     })
 }
@@ -1102,7 +1298,7 @@ pub(crate) fn connector_complete(
         if c.state != "executing" {
             return Err(DeckError::new(ErrorKind::Other, "command is not executing"));
         }
-        if !validate_terminal(&c.request, &state, code.as_deref(), result.as_ref()) {
+        if !validate_terminal(&c.kind, &state, code.as_deref(), result.as_ref()) {
             return Err(DeckError::new(
                 ErrorKind::Invalid,
                 "command result is invalid",
@@ -1140,7 +1336,7 @@ pub(crate) fn connector_validate(handle: String) -> Result<bool, DeckError> {
                 "command authorization changed",
             ));
         }
-        Ok(c.request.clone())
+        c.body().cloned()
     })??;
     validate_applicable(&request)?;
     Ok(true)
@@ -1238,7 +1434,7 @@ pub(crate) fn connector_validate_admission(handle: String) -> Result<bool, DeckE
                 "command authorization changed",
             ));
         }
-        Ok(command.request.clone())
+        command.body().cloned()
     })??;
     let (_, board) = board_value()?;
     validate_admission_board(&handle, &request, &board)?;
@@ -1300,6 +1496,9 @@ fn execute_native(
             }
             let card = committed_card(req.card_id.as_deref().ok_or(("rejected", "missing-card"))?)
                 .map_err(|_| ("rejected", "missing-card"))?;
+            if !card.agent_target {
+                return Err(("rejected", "unsupported-target"));
+            }
             let probe = crate::context::connector_probe(&card.session)
                 .map_err(|_| ("rejected", "target-changed"))?;
             if !matches!(
@@ -1334,6 +1533,7 @@ fn execute_native(
                     text: &p.text,
                     submit: true,
                     require_bracketed: true,
+                    require_paste_mode: false,
                 },
                 &transport,
             );
@@ -1500,6 +1700,10 @@ impl crate::prompt_delivery::Transport for ConnectorTransport<'_> {
 struct InternalCard {
     id: String,
     session: String,
+    /// The card's SAVED command is Codex or Claude. Phone text and phone
+    /// output reads are limited to such cards; a live foreground agent in an
+    /// ordinary shell card does not qualify.
+    agent_target: bool,
 }
 fn board_value() -> Result<(String, Value), DeckError> {
     let raw = crate::documents::connector_board_payload()?;
@@ -1510,6 +1714,9 @@ fn board_value() -> Result<(String, Value), DeckError> {
 }
 fn committed_card(id: &str) -> Result<InternalCard, DeckError> {
     let (_, v) = board_value()?;
+    card_in(&v, id)
+}
+fn card_in(v: &Value, id: &str) -> Result<InternalCard, DeckError> {
     let c = v
         .get("cards")
         .and_then(Value::as_array)
@@ -1525,6 +1732,7 @@ fn committed_card(id: &str) -> Result<InternalCard, DeckError> {
             .and_then(Value::as_str)
             .ok_or_else(|| DeckError::new(ErrorKind::InvalidDoc, "card session missing"))?
             .into(),
+        agent_target: queue_target_supported(c),
     })
 }
 
@@ -1860,6 +2068,9 @@ impl Runtime {
                 return Err(DeckError::new(ErrorKind::Perm, "connector unavailable"));
             }
             if d.devices.len() >= MAX_DEVICES {
+                prune_revoked_devices(d);
+            }
+            if d.devices.len() >= MAX_DEVICES {
                 return Err(DeckError::new(
                     ErrorKind::DiskFull,
                     "device capacity reached",
@@ -1871,10 +2082,15 @@ impl Runtime {
                 token_hash,
                 paired_at: now(),
                 revoked_at: None,
+                history_pruned: false,
             });
             Ok(d.host_id.clone())
         })?;
         *pairing = None;
+        // The desktop hides the spent QR and names the new device at once.
+        if let Some(app) = &self.app {
+            let _ = app.emit("connector-changed", ());
+        }
         Ok(json!({"version":1,"hostId":host_id,"deviceId":device_id,"token":token}))
     }
     pub(super) fn accept(
@@ -1892,7 +2108,7 @@ impl Runtime {
             .map_err(|_| DeckError::new(ErrorKind::Invalid, "invalid command"))?;
         let request_hash = sha(&canonical);
         let handle = sha(format!("{device_id}\0{}", request.id).as_bytes());
-        let result = self.with_doc(|d| {
+        let result = self.transact(true, |d| {
             if !d.config.enabled
                 || !d
                     .devices
@@ -1909,13 +2125,13 @@ impl Runtime {
                     ));
                 }
                 return Ok(CommandResult {
-                    id: old.request.id.clone(),
+                    id: old.id.clone(),
                     state: external_state(&old.state),
                     code: old.code.clone(),
                     result: old.result.clone(),
                 });
             }
-            if d.commands.len() >= MAX_COMMANDS {
+            if d.commands.iter().filter(|c| unresolved(&c.state)).count() >= MAX_COMMANDS {
                 return Err(DeckError::new(
                     ErrorKind::DiskFull,
                     "command journal is full",
@@ -1926,14 +2142,15 @@ impl Runtime {
                 handle,
                 device_id: device_id.into(),
                 request_hash,
-                request: request.clone(),
+                id: request.id.clone(),
+                kind: request.kind.clone(),
+                request: Some(request.clone()),
                 state: "accepted".into(),
                 code: None,
                 result: None,
                 accepted_at: at,
                 updated_at: at,
             });
-            ensure_admission_budget(d)?;
             Ok(CommandResult {
                 id: request.id,
                 state: "accepted".into(),
@@ -1946,6 +2163,10 @@ impl Runtime {
         }
         Ok(result)
     }
+    /// A tombstone answers with its original terminal result. Once any of a
+    /// device's tombstones were dropped, an id its history no longer holds is
+    /// `expired`: the host cannot prove it was never accepted, and `not-found`
+    /// would invite the phone to retry (re-execute) it.
     pub(super) fn command_result(
         &self,
         device_id: &str,
@@ -1953,18 +2174,50 @@ impl Runtime {
     ) -> Result<CommandResult, DeckError> {
         let handle = sha(format!("{device_id}\0{id}").as_bytes());
         self.read(|d| {
-            d.commands
+            if let Some(c) = d
+                .commands
                 .iter()
                 .find(|c| c.handle == handle && c.device_id == device_id)
-                .map(|c| CommandResult {
-                    id: c.request.id.clone(),
+            {
+                return Ok(CommandResult {
+                    id: c.id.clone(),
                     state: external_state(&c.state),
                     code: c.code.clone(),
                     result: c.result.clone(),
-                })
-                .ok_or_else(|| DeckError::new(ErrorKind::Missing, "command not found"))
+                });
+            }
+            if d.devices
+                .iter()
+                .any(|device| device.id == device_id && device.history_pruned)
+            {
+                return Err(DeckError::new(ErrorKind::ContextChanged, COMMAND_EXPIRED));
+            }
+            Err(DeckError::new(ErrorKind::Missing, "command not found"))
         })?
     }
+}
+
+pub(super) const COMMAND_EXPIRED: &str = "command outcome expired";
+
+/// Free device capacity held by revoked devices with no unresolved command.
+/// Their tokens can no longer authenticate, so nothing can query or replay
+/// their history; the record and its tombstones go together (every journal
+/// entry must name an existing device).
+fn prune_revoked_devices(doc: &mut DiskDoc) {
+    let busy = doc
+        .commands
+        .iter()
+        .filter(|c| unresolved(&c.state))
+        .map(|c| c.device_id.clone())
+        .collect::<HashSet<_>>();
+    let removed = doc
+        .devices
+        .iter()
+        .filter(|d| d.revoked_at.is_some() && !busy.contains(&d.id))
+        .map(|d| d.id.clone())
+        .collect::<HashSet<_>>();
+    doc.devices.retain(|d| !removed.contains(&d.id));
+    doc.commands.retain(|c| !removed.contains(&c.device_id));
 }
 
 pub(super) fn snapshot(app: &AppHandle) -> Result<Value, DeckError> {
@@ -1993,7 +2246,7 @@ pub(super) fn snapshot(app: &AppHandle) -> Result<Value, DeckError> {
                 "title":c.get("title")?.as_str()?,
                 "status":status,
                 "generation":probe.as_ref().map(|p|p.generation.clone()),
-                "canSend":probe.as_ref().is_some_and(|p|p.agent.is_some()),
+                "canSend":queue_target_supported(c) && probe.as_ref().is_some_and(|p|p.agent.is_some()),
                 "canQueue":queue_target_supported(c),
                 "buffer":{
                     "revision":buffer.and_then(|v|v.get("revision")).and_then(Value::as_u64).unwrap_or(0),
@@ -2063,20 +2316,52 @@ fn bounded_output(text: String, history_size: usize) -> (String, bool) {
     (text[start..].to_string(), truncated)
 }
 
+/// The side effects of an output read, injectable so the target check is
+/// provably ahead of every pane access.
+trait OutputIo {
+    fn card(&self, id: &str) -> Result<InternalCard, DeckError>;
+    fn probe(&self, session: &str) -> Result<crate::context::ConnectorProbe, DeckError>;
+    fn tmux(&self, args: &[String]) -> Result<String, DeckError>;
+}
+
+struct LiveOutput;
+
+impl OutputIo for LiveOutput {
+    fn card(&self, id: &str) -> Result<InternalCard, DeckError> {
+        committed_card(id)
+    }
+    fn probe(&self, session: &str) -> Result<crate::context::ConnectorProbe, DeckError> {
+        crate::context::connector_probe(session)
+    }
+    fn tmux(&self, args: &[String]) -> Result<String, DeckError> {
+        crate::tmux::tmux_owned(args)
+    }
+}
+
 pub(super) fn output(card_id: &str) -> Result<Value, DeckError> {
-    let card = committed_card(card_id)?;
-    let before = crate::context::connector_probe(&card.session)?;
-    let history_size = crate::tmux::tmux_owned(&[
-        "display-message".into(),
-        "-p".into(),
-        "-t".into(),
-        before.identity.pane_id.clone(),
-        "#{history_size}".into(),
-    ])?
-    .trim()
-    .parse::<usize>()
-    .map_err(|_| DeckError::new(ErrorKind::Tmux, "output-history-unavailable"))?;
-    let text = crate::tmux::tmux_owned(&[
+    output_with(&LiveOutput, card_id)
+}
+
+/// Phone output reads are limited to Codex/Claude cards (by saved command).
+/// An ordinary shell card's scrollback is never captured for a phone.
+fn output_with(io: &dyn OutputIo, card_id: &str) -> Result<Value, DeckError> {
+    let card = io.card(card_id)?;
+    if !card.agent_target {
+        return Err(DeckError::new(ErrorKind::Invalid, "unsupported-target"));
+    }
+    let before = io.probe(&card.session)?;
+    let history_size = io
+        .tmux(&[
+            "display-message".into(),
+            "-p".into(),
+            "-t".into(),
+            before.identity.pane_id.clone(),
+            "#{history_size}".into(),
+        ])?
+        .trim()
+        .parse::<usize>()
+        .map_err(|_| DeckError::new(ErrorKind::Tmux, "output-history-unavailable"))?;
+    let text = io.tmux(&[
         "capture-pane".into(),
         "-p".into(),
         "-t".into(),
@@ -2084,8 +2369,10 @@ pub(super) fn output(card_id: &str) -> Result<Value, DeckError> {
         "-S".into(),
         "-200".into(),
     ])?;
-    let after = crate::context::connector_probe(&card.session)?;
-    if before.generation != after.generation || committed_card(card_id)?.session != card.session {
+    let after = io.probe(&card.session)?;
+    let still = io.card(card_id)?;
+    if before.generation != after.generation || still.session != card.session || !still.agent_target
+    {
         return Err(DeckError::new(ErrorKind::ContextChanged, "target-changed"));
     }
     let (text, truncated) = bounded_output(text, history_size);
@@ -2096,6 +2383,17 @@ pub(super) fn output(card_id: &str) -> Result<Value, DeckError> {
 }
 
 fn local_ipv4_addresses() -> Vec<Ipv4Addr> {
+    let mut out = local_ipv4_interfaces()
+        .into_iter()
+        .map(|(ip, _)| ip)
+        .collect::<Vec<_>>();
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// Connector-eligible IPv4 addresses with the interface that carries each.
+fn local_ipv4_interfaces() -> Vec<(Ipv4Addr, String)> {
     unsafe {
         let mut head = std::ptr::null_mut();
         if libc::getifaddrs(&mut head) != 0 {
@@ -2105,20 +2403,59 @@ fn local_ipv4_addresses() -> Vec<Ipv4Addr> {
         let mut p = head;
         while !p.is_null() {
             let a = &*p;
-            if !a.ifa_addr.is_null() && (*a.ifa_addr).sa_family as i32 == libc::AF_INET {
+            if !a.ifa_addr.is_null()
+                && !a.ifa_name.is_null()
+                && (*a.ifa_addr).sa_family as i32 == libc::AF_INET
+            {
                 let sin = &*(a.ifa_addr as *const libc::sockaddr_in);
                 let ip = Ipv4Addr::from(u32::from_be(sin.sin_addr.s_addr));
-                if connector_network_address(ip) {
-                    out.push(ip);
+                let name = std::ffi::CStr::from_ptr(a.ifa_name)
+                    .to_string_lossy()
+                    .into_owned();
+                if connector_network_address(ip) && interface_name(&name) {
+                    out.push((ip, name));
                 }
             }
             p = a.ifa_next;
         }
         libc::freeifaddrs(head);
-        out.sort();
-        out.dedup();
         out
     }
+}
+
+fn interface_of(ip: Ipv4Addr, interfaces: &[(Ipv4Addr, String)]) -> Option<String> {
+    interfaces
+        .iter()
+        .find(|(candidate, _)| *candidate == ip)
+        .map(|(_, name)| name.clone())
+}
+
+/// A restart listens only where the user enabled it: the saved address must
+/// be on an eligible interface and, once recorded, on the same interface. A
+/// different network that happens to hand out the same private address is a
+/// changed context, not a place to listen.
+fn listener_network_ok(cfg: &Config, interfaces: &[(Ipv4Addr, String)]) -> Result<(), DeckError> {
+    let ip = cfg
+        .address
+        .parse::<Ipv4Addr>()
+        .map_err(|_| DeckError::new(ErrorKind::Invalid, "invalid connector address"))?;
+    if !connector_network_address(ip) || interface_of(ip, interfaces).is_none() {
+        return Err(DeckError::new(
+            ErrorKind::Invalid,
+            "connector address is not an available private-network address",
+        ));
+    }
+    if cfg
+        .interface
+        .as_ref()
+        .is_some_and(|recorded| !interfaces.iter().any(|(a, n)| *a == ip && n == recorded))
+    {
+        return Err(DeckError::new(
+            ErrorKind::ContextChanged,
+            "connector network changed",
+        ));
+    }
+    Ok(())
 }
 
 /// Addresses on which Connector may listen. RFC1918 covers ordinary LANs,
@@ -2160,6 +2497,7 @@ mod tests {
             enabled: true,
             address: "127.0.0.1".into(),
             port: 8443,
+            interface: None,
         };
         save(&path, &doc).unwrap();
         let r = Arc::new(Runtime {
@@ -2182,6 +2520,331 @@ mod tests {
             expected_revision: Some("1".into()),
             payload: json!({"text":text}),
         }
+    }
+
+    fn device(id: &str) -> Device {
+        Device {
+            id: id.into(),
+            name: format!("device-{id}"),
+            token_hash: sha(format!("token-{id}").as_bytes()),
+            paired_at: 1,
+            revoked_at: None,
+            history_pruned: false,
+        }
+    }
+    fn tombstone(device_id: &str, request: &CommandRequest, state: &str) -> JournalEntry {
+        JournalEntry {
+            handle: sha(format!("{device_id}\0{}", request.id).as_bytes()),
+            device_id: device_id.into(),
+            request_hash: sha(&serde_json::to_vec(request).unwrap()),
+            id: request.id.clone(),
+            kind: request.kind.clone(),
+            request: None,
+            state: state.into(),
+            code: Some("fixture".into()),
+            result: None,
+            accepted_at: 1,
+            updated_at: 1,
+        }
+    }
+    fn pending(device_id: &str, request: &CommandRequest, state: &str) -> JournalEntry {
+        JournalEntry {
+            request: Some(request.clone()),
+            code: None,
+            ..tombstone(device_id, request, state)
+        }
+    }
+
+    #[test]
+    fn resolved_commands_are_persisted_as_tombstones_that_replay_their_result() {
+        let (r, _app) = test_runtime("tombstone-replay");
+        r.with_doc(|d| {
+            d.devices.push(device("D"));
+            Ok(())
+        })
+        .unwrap();
+        let body = request("T1", "secret phone note");
+        r.accept(1, "D", body.clone()).unwrap();
+        let handle = sha(b"D\0T1");
+        r.with_doc(|d| {
+            let c = d.commands.iter_mut().find(|c| c.handle == handle).unwrap();
+            c.state = "applied".into();
+            c.result = Some(json!({"cardId":"C1","entryId":"E1","revision":"2"}));
+            Ok(())
+        })
+        .unwrap();
+        let entry = r.read(|d| d.commands[0].clone()).unwrap();
+        assert!(entry.request.is_none(), "terminal entry keeps no body");
+        let file = std::fs::read_to_string(&r.path).unwrap();
+        assert!(!file.contains("secret phone note"));
+        assert!(file.contains("\"version\":2"));
+
+        let replay = r.accept(1, "D", body).unwrap();
+        assert_eq!(replay.state, "applied");
+        assert_eq!(replay.result.as_ref().unwrap()["entryId"], "E1");
+        let query = r.command_result("D", "T1").unwrap();
+        assert_eq!(query.id, "T1");
+        assert_eq!(query.state, "applied");
+        assert_eq!(
+            r.accept(1, "D", request("T1", "other")).unwrap_err().kind(),
+            ErrorKind::ContextChanged
+        );
+        let reloaded = load(&r.path).unwrap();
+        assert!(reloaded.commands[0].request.is_none());
+        assert_eq!(reloaded.commands[0].id, "T1");
+    }
+
+    #[test]
+    fn dropped_tombstones_mark_the_device_so_unknown_ids_are_expired_not_missing() {
+        let (r, _app) = test_runtime("tombstone-bound");
+        r.with_doc(|d| {
+            d.devices.push(device("D"));
+            d.devices.push(device("E"));
+            d.commands = (0..MAX_TOMBSTONES)
+                .map(|i| tombstone("D", &request(&format!("I{i}"), "a"), "rejected"))
+                .collect();
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(
+            r.command_result("E", "never-sent").unwrap_err().kind(),
+            ErrorKind::Missing,
+            "a device with complete history may prove absence"
+        );
+        r.accept(1, "E", request("fresh", "a")).unwrap();
+        r.with_doc(|d| {
+            d.commands.last_mut().unwrap().state = "rejected".into();
+            Ok(())
+        })
+        .unwrap();
+        let doc = r.read(Clone::clone).unwrap();
+        assert_eq!(doc.commands.len(), MAX_TOMBSTONES);
+        assert!(doc.commands.iter().all(|c| c.id != "I0"));
+        assert!(
+            doc.devices
+                .iter()
+                .find(|d| d.id == "D")
+                .unwrap()
+                .history_pruned
+        );
+        assert!(
+            !doc.devices
+                .iter()
+                .find(|d| d.id == "E")
+                .unwrap()
+                .history_pruned
+        );
+        let expired = r.command_result("D", "I0").unwrap_err();
+        assert_eq!(expired.kind(), ErrorKind::ContextChanged);
+        assert_eq!(expired.message(), COMMAND_EXPIRED);
+        assert_eq!(r.command_result("D", "I1").unwrap().state, "rejected");
+        assert_eq!(load(&r.path).unwrap().commands.len(), MAX_TOMBSTONES);
+    }
+
+    #[test]
+    fn admission_encodes_the_document_once() {
+        let (r, _app) = test_runtime("single-encode");
+        r.with_doc(|d| {
+            d.devices.push(device("D"));
+            Ok(())
+        })
+        .unwrap();
+        ENCODES.with(|count| count.set(0));
+        r.accept(1, "D", request("once", "a")).unwrap();
+        assert_eq!(ENCODES.with(std::cell::Cell::get), 1);
+    }
+
+    #[test]
+    fn v1_state_loads_compacted_and_newer_versions_are_refused_untouched() {
+        let (r, _app) = test_runtime("v1-migration");
+        let done = request("done", "old body");
+        let open = request("open", "queued body");
+        let mut doc = r.read(Clone::clone).unwrap();
+        doc.devices.push(device("D"));
+        doc.commands = vec![
+            JournalEntry {
+                state: "applied".into(),
+                code: None,
+                result: Some(json!({"cardId":"C1","entryId":"E1","revision":"2"})),
+                ..pending("D", &done, "applied")
+            },
+            pending("D", &open, "accepted"),
+        ];
+        let mut v1 = serde_json::to_value(&doc).unwrap();
+        v1["version"] = json!(1);
+        for entry in v1["commands"].as_array_mut().unwrap() {
+            let entry = entry.as_object_mut().unwrap();
+            entry.remove("id");
+            entry.remove("kind");
+        }
+        std::fs::write(&r.path, serde_json::to_vec(&v1).unwrap()).unwrap();
+        let loaded = load(&r.path).unwrap();
+        assert_eq!(loaded.version, VERSION);
+        assert_eq!(loaded.commands[0].id, "done");
+        assert!(loaded.commands[0].request.is_none());
+        assert_eq!(loaded.commands[1].request.as_ref(), Some(&open));
+
+        // A v1 entry without its request is not a v1 file.
+        let mut broken = v1.clone();
+        broken["commands"][1]
+            .as_object_mut()
+            .unwrap()
+            .remove("request");
+        std::fs::write(&r.path, serde_json::to_vec(&broken).unwrap()).unwrap();
+        assert_eq!(load(&r.path).err().unwrap().kind(), ErrorKind::Recovery);
+
+        let mut future = v1;
+        future["version"] = json!(VERSION + 1);
+        let bytes = serde_json::to_vec(&future).unwrap();
+        std::fs::write(&r.path, &bytes).unwrap();
+        assert_eq!(load(&r.path).err().unwrap().kind(), ErrorKind::Recovery);
+        assert_eq!(std::fs::read(&r.path).unwrap(), bytes, "refused untouched");
+    }
+
+    #[test]
+    fn revocation_drops_history_and_frees_device_capacity_only_when_idle() {
+        let mut doc = DiskDoc::fresh().unwrap();
+        doc.devices = (0..MAX_DEVICES).map(|i| device(&format!("D{i}"))).collect();
+        doc.commands = vec![
+            tombstone("D0", &request("old", "a"), "rejected"),
+            pending("D0", &request("queued", "a"), "accepted"),
+            pending("D0", &request("running", "a"), "executing"),
+            tombstone("D1", &request("kept", "a"), "rejected"),
+        ];
+        revoke_device(&mut doc, "D0").unwrap();
+        let d0 = doc
+            .commands
+            .iter()
+            .filter(|c| c.device_id == "D0")
+            .collect::<Vec<_>>();
+        assert_eq!(d0.len(), 1, "only the in-flight entry survives");
+        assert_eq!(d0[0].id, "running");
+        assert_eq!(d0[0].state, "ambiguous");
+        assert!(doc.commands.iter().any(|c| c.id == "kept"));
+
+        prune_revoked_devices(&mut doc);
+        assert_eq!(
+            doc.devices.len(),
+            MAX_DEVICES - 1,
+            "an idle revoked device is freed"
+        );
+        assert!(doc.commands.iter().all(|c| c.device_id != "D0"));
+
+        // A revoked device that still has unresolved work keeps its slot.
+        doc.devices.push(device("D0"));
+        doc.devices[0].revoked_at = Some(1);
+        let busy = doc.devices[0].id.clone();
+        doc.commands
+            .push(pending(&busy, &request("busy", "a"), "executing"));
+        prune_revoked_devices(&mut doc);
+        assert_eq!(doc.devices.len(), MAX_DEVICES);
+        assert!(doc.devices.iter().any(|d| d.id == busy));
+    }
+
+    #[test]
+    fn pairing_reuses_a_revoked_device_slot() {
+        let (r, _app) = test_runtime("device-capacity");
+        r.with_doc(|d| {
+            d.devices = (0..MAX_DEVICES).map(|i| device(&format!("D{i}"))).collect();
+            Ok(())
+        })
+        .unwrap();
+        let arm = |r: &Runtime| {
+            *r.pairing.lock_or_recover() = Some(Pairing {
+                code: "code".into(),
+                expires_at: now() + 30,
+            });
+        };
+        arm(&r);
+        assert_eq!(
+            r.pair(1, "code", "full").unwrap_err().kind(),
+            ErrorKind::DiskFull
+        );
+        r.with_doc(|d| revoke_device(d, "D3")).unwrap();
+        arm(&r);
+        let paired = r.pair(1, "code", "phone 33").unwrap();
+        let devices = r.read(|d| d.devices.clone()).unwrap();
+        assert_eq!(devices.len(), MAX_DEVICES);
+        assert!(devices.iter().all(|d| d.id != "D3"));
+        assert!(devices.iter().any(|d| d.id == paired["deviceId"]));
+    }
+
+    struct FakeOutput {
+        agent: bool,
+        pane_calls: std::cell::Cell<usize>,
+    }
+    impl OutputIo for FakeOutput {
+        fn card(&self, id: &str) -> Result<InternalCard, DeckError> {
+            Ok(InternalCard {
+                id: id.into(),
+                session: "deck-card-0001".into(),
+                agent_target: self.agent,
+            })
+        }
+        fn probe(&self, _: &str) -> Result<crate::context::ConnectorProbe, DeckError> {
+            self.pane_calls.set(self.pane_calls.get() + 1);
+            Err(DeckError::new(ErrorKind::NoSession, "fixture"))
+        }
+        fn tmux(&self, _: &[String]) -> Result<String, DeckError> {
+            self.pane_calls.set(self.pane_calls.get() + 1);
+            Err(DeckError::new(ErrorKind::Tmux, "fixture"))
+        }
+    }
+
+    #[test]
+    fn phone_output_and_send_are_limited_to_saved_agent_cards() {
+        let shell = FakeOutput {
+            agent: false,
+            pane_calls: std::cell::Cell::new(0),
+        };
+        let refused = output_with(&shell, "C1").unwrap_err();
+        assert_eq!(refused.kind(), ErrorKind::Invalid);
+        assert_eq!(refused.message(), "unsupported-target");
+        assert_eq!(shell.pane_calls.get(), 0, "no pane is touched");
+
+        let agent = FakeOutput {
+            agent: true,
+            pane_calls: std::cell::Cell::new(0),
+        };
+        assert!(output_with(&agent, "C1").is_err());
+        assert_eq!(agent.pane_calls.get(), 1, "an agent card reaches the probe");
+
+        let board = json!({"cards":[
+            {"id":"S","session":"deck-s-0001","cmd":""},
+            {"id":"Z","session":"deck-z-0001","cmd":"/bin/zsh"},
+            {"id":"A","session":"deck-a-0001","cmd":"claude"},
+        ]});
+        assert!(!card_in(&board, "S").unwrap().agent_target);
+        assert!(!card_in(&board, "Z").unwrap().agent_target);
+        assert!(card_in(&board, "A").unwrap().agent_target);
+    }
+
+    #[test]
+    fn restart_listens_only_on_the_recorded_interface() {
+        let lan: Ipv4Addr = "192.168.1.20".parse().unwrap();
+        let config = |interface: Option<&str>| Config {
+            enabled: true,
+            address: lan.to_string(),
+            port: 47631,
+            interface: interface.map(str::to_owned),
+        };
+        let here = vec![(lan, "en0".to_string())];
+        let elsewhere = vec![(lan, "en7".to_string())];
+        assert!(listener_network_ok(&config(Some("en0")), &here).is_ok());
+        assert_eq!(
+            listener_network_ok(&config(Some("en0")), &elsewhere)
+                .unwrap_err()
+                .kind(),
+            ErrorKind::ContextChanged
+        );
+        assert!(listener_network_ok(&config(None), &elsewhere).is_ok());
+        assert_eq!(
+            listener_network_ok(&config(Some("en0")), &[])
+                .unwrap_err()
+                .kind(),
+            ErrorKind::Invalid
+        );
+        assert_eq!(interface_of(lan, &here).as_deref(), Some("en0"));
     }
 
     #[test]
@@ -2347,6 +3010,7 @@ mod tests {
                         token_hash: sha(format!("token-{id}").as_bytes()),
                         paired_at: 1,
                         revoked_at: None,
+                        history_pruned: false,
                     });
                 }
                 Ok(())
@@ -2607,25 +3271,25 @@ mod tests {
     fn terminal_results_are_closed_and_kind_specific() {
         let request = request("result", "text");
         assert!(validate_terminal(
-            &request,
+            &request.kind,
             "applied",
             None,
             Some(&json!({"cardId":"C1","entryId":"E1","revision":"2"}))
         ));
         assert!(!validate_terminal(
-            &request,
+            &request.kind,
             "applied",
             None,
             Some(&json!({"cardId":"C1","entryId":"E1","revision":"2","extra":true}))
         ));
         assert!(!validate_terminal(
-            &request,
+            &request.kind,
             "rejected",
             Some("UPPER_CASE"),
             None
         ));
         assert!(!validate_terminal(
-            &request,
+            &request.kind,
             "applied",
             None,
             Some(&json!({"cardId":"C1","entryId":"E1","revision":"x".repeat(129)}))
@@ -2643,6 +3307,7 @@ mod tests {
                     token_hash: "a".repeat(64),
                     paired_at: 1,
                     revoked_at: None,
+                    history_pruned: false,
                 });
                 Ok(())
             })
@@ -2652,10 +3317,12 @@ mod tests {
         assert_eq!(accepted.state, "accepted");
         assert_eq!(
             runtime
-                .read(|doc| doc.commands[0].request.payload["text"]
-                    .as_str()
-                    .unwrap()
-                    .len())
+                .read(
+                    |doc| doc.commands[0].request.as_ref().unwrap().payload["text"]
+                        .as_str()
+                        .unwrap()
+                        .len()
+                )
                 .unwrap(),
             MAX_TEXT
         );
@@ -2702,6 +3369,7 @@ mod tests {
             token_hash: "a".repeat(64),
             paired_at: 1,
             revoked_at: None,
+            history_pruned: false,
         });
         let make = |index: usize| {
             let request = request(&format!("I{index}"), &"x".repeat(MAX_TEXT));
@@ -2709,7 +3377,9 @@ mod tests {
                 handle: sha(format!("D\0{}", request.id).as_bytes()),
                 device_id: "D".into(),
                 request_hash: sha(&serde_json::to_vec(&request).unwrap()),
-                request,
+                id: request.id.clone(),
+                kind: request.kind.clone(),
+                request: Some(request),
                 state: "accepted".into(),
                 code: None,
                 result: None,
@@ -2746,11 +3416,13 @@ mod tests {
             "revision":"9"
         }));
         assert!(validate_terminal(
-            &terminal.request,
+            &terminal.kind,
             &terminal.state,
             None,
             terminal.result.as_ref()
         ));
+        // Every committed write compacts; the terminal result always fits.
+        compact(&mut doc);
         save(&runtime.path, &doc).unwrap();
         let reloaded = load(&runtime.path).unwrap();
         assert_eq!(reloaded.commands.last().unwrap().state, "applied");
@@ -2915,6 +3587,7 @@ mod tests {
                 token_hash: "h".into(),
                 paired_at: 1,
                 revoked_at: None,
+                history_pruned: false,
             });
             d.devices.push(Device {
                 id: "D2".into(),
@@ -2922,6 +3595,7 @@ mod tests {
                 token_hash: "h2".into(),
                 paired_at: 1,
                 revoked_at: None,
+                history_pruned: false,
             });
             Ok(())
         })
@@ -2950,7 +3624,7 @@ mod tests {
     }
 
     #[test]
-    fn executing_recovers_ambiguous_and_ledger_never_reuses_capacity() {
+    fn executing_recovers_ambiguous_and_unresolved_capacity_is_bounded() {
         let (r, _app) = test_runtime("crash");
         r.with_doc(|d| {
             d.devices.push(Device {
@@ -2959,13 +3633,16 @@ mod tests {
                 token_hash: "a".repeat(64),
                 paired_at: 1,
                 revoked_at: None,
+                history_pruned: false,
             });
             let request = request("I", "a");
             d.commands.push(JournalEntry {
                 handle: sha(b"D\0I"),
                 device_id: "D".into(),
                 request_hash: sha(&serde_json::to_vec(&request).unwrap()),
-                request,
+                id: request.id.clone(),
+                kind: request.kind.clone(),
+                request: Some(request),
                 state: "executing".into(),
                 code: None,
                 result: None,
@@ -2983,8 +3660,10 @@ mod tests {
                 handle: format!("H{i}"),
                 device_id: "D".into(),
                 request_hash: "X".into(),
-                request: request(&format!("I{i}"), "a"),
-                state: "rejected".into(),
+                id: request(&format!("I{i}"), "a").id.clone(),
+                kind: request(&format!("I{i}"), "a").kind.clone(),
+                request: Some(request(&format!("I{i}"), "a")),
+                state: "accepted".into(),
                 code: None,
                 result: None,
                 accepted_at: 1,
@@ -2996,6 +3675,30 @@ mod tests {
             r.accept(1, "D", request("new", "a")).unwrap_err().kind(),
             ErrorKind::DiskFull
         );
+    }
+
+    #[test]
+    fn terminal_history_does_not_consume_unresolved_command_capacity() {
+        let (r, _app) = test_runtime("terminal-capacity");
+        r.with_doc(|d| {
+            d.devices.push(device("D"));
+            d.commands = (0..MAX_COMMANDS)
+                .map(|i| tombstone("D", &request(&format!("I{i}"), "a"), "rejected"))
+                .collect();
+            Ok(())
+        })
+        .unwrap();
+        let accepted = r.accept(1, "D", request("after-history", "a")).unwrap();
+        assert_eq!(accepted.state, "accepted");
+        let replay = r.accept(1, "D", request("I0", "a")).unwrap();
+        assert_eq!(replay.state, "rejected");
+        assert_eq!(
+            r.accept(1, "D", request("I0", "different"))
+                .unwrap_err()
+                .kind(),
+            ErrorKind::ContextChanged
+        );
+        assert_eq!(r.command_result("D", "I0").unwrap().state, "rejected");
     }
 
     #[test]
@@ -3067,6 +3770,7 @@ mod tests {
                     token_hash: sha(format!("deck-device-v1\0{token}").as_bytes()),
                     paired_at: 1,
                     revoked_at: None,
+                    history_pruned: false,
                 });
                 Ok(())
             })

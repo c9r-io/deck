@@ -1,6 +1,7 @@
 # Deck MCP terminal control architecture
 
-Status: control-protocol-v3 / state-schema-v3 scheme-B ADR, 2026-09-21.
+Status: control-protocol-v3 / state-schema-v4 / runner-protocol-2 scheme-B
+ADR, 2026-09-21.
 
 ## Decision
 
@@ -12,7 +13,11 @@ The adapter owns only MCP framing, strict schemas, annotations, and conversion
 to structured results. Deck owns feature enablement, client and project scope,
 Board operations, idempotency, control epochs, generations, and the job
 ledger. `mcp_fs.rs` owns descriptor-relative structured reads without child
-processes. The runner owns one visible session's actual processes, bounded output,
+processes: non-blocking `O_NOFOLLOW` opens with a type check on the same
+descriptor, one name policy shared by list/read/identity/search, and a root
+policy that refuses `/`, the account home and its ancestors, and excluded
+directories. That policy governs structured reads only; it is not file
+isolation for trusted-host jobs. The runner owns one visible session's actual processes, bounded output,
 stdin binding, process-group interruption, and exit status. Phone Connector
 tokens, routes, kinds, and journals are not accepted by any MCP interface.
 
@@ -32,9 +37,24 @@ The signed runner is the tmux pane process. Each `deck_exec` starts a fresh
 `/bin/zsh -d -f` child in that same pane. Script bytes arrive over a 0600 Unix
 socket and an inherited pipe, never argv, environment, or a plaintext script
 file. stdout/stderr are mirrored to the pane and retained as bounded combined
-PTY output; `Child` and its private process group supply exit and interrupt
-identity. stdin is a job-owned pipe, so input after exit is refused rather
-than falling through to a parent shell.
+PTY output; the job's private process group (pid == pgid, a background group
+of the pane's terminal) supplies exit and interrupt identity, and the runner
+reaps the leader itself so no signal can reach a reused PID. stdin is a
+job-owned pipe, so input after exit is refused rather than falling through to
+a parent shell.
+
+Process and signal ownership. The runner is the pane's session leader and
+foreground process group. It blocks SIGINT/SIGQUIT/SIGTSTP/SIGHUP/SIGTERM in
+all threads and consumes them on one `sigwait` thread: terminal keys never
+kill or stop the runner. In human mode a terminal ^C becomes
+`killpg(job, SIGINT)` — the local stop key; in MCP/fenced mode it is ignored
+(Deck blocks the keyboard anyway). SIGHUP (tmux kill-session) and SIGTERM make
+the runner SIGKILL every live job group before exiting. Before a card close
+Deck sends `stop` (bound to the generation only, so it also works on a stale
+runner): SIGINT → SIGTERM → SIGKILL with bounded waits, confirmed by reaping.
+Jobs start with default dispositions and an empty mask. A job stopped by
+SIGTTIN/SIGTTOU is reported `stopped`. Descendants that call setsid/setpgid,
+or group members that outlive the leader, are outside these guarantees.
 
 This preserves visible execution and file changes with a smaller contract than
 shell hooks. It intentionally does not preserve `cd`, `export`, aliases, or
@@ -56,42 +76,68 @@ executing close plan for a target-bound admission token immediately before the
 first queue-cancellation side effect. Queue cancellation and tmux termination
 both verify that token. A takeover ordered before admission rejects the close;
 a revocation ordered after admission does not falsely claim that prior effects
-were rolled back. MCP never writes `deck.json`.
+were rolled back. After admission the only outcomes are `committed` (the Board
+write finished) or `ambiguous` (a side effect may have run); `closing` is
+cleared on every outcome, and a repeated completion with the same result is a
+no-op. A remote close is refused (`card-shown`) while any pane shows the card.
+MCP never writes `deck.json`.
 
 ## State and fencing
 
-Control operations use `accepted`, `executing`, `committed`, `rejected`, and
-`ambiguous`. Jobs separately use `starting`, `running`, `exited`, and `lost`.
-Terminal text is context, never completion evidence.
+Control operations use `accepted`, `executing`, `admitted` (close only),
+`committed`, `rejected`, and `ambiguous`. Jobs separately use `starting`,
+`running`, `stopped`, `exited`, and `lost`. Terminal text is never returned
+and never completion evidence.
 
 Every exec verifies the authenticated adapter principal, holder, execution-grant and policy versions,
 service-start identity, project/session scope, canonical cwd, generation,
 control epoch, lease, environment profile, script digest/length, timeout and
 request identity. A
 single delivery fence serializes dispatch with revoke, disable, close,
-takeover, and return. Human takeover advances the epoch and pauses output sharing before enabling Deck
-keyboard input. The runner discards ordinary pane input while MCP owns control
-and routes MCP input only to the named running child's stdin.
+takeover, and return. Emergency actions (takeover, revoke, disable, execution
+revoke) set their in-memory fence BEFORE waiting for that lock, and every
+dispatch re-checks the fences after acquiring it, immediately before the
+runner call; a dispatch already on the wire completes and is then fenced by
+the runner epoch. These local commands run off the UI thread. Human takeover
+advances the epoch, pauses output sharing and closes every existing job
+binding's output before enabling Deck keyboard input; it starts no shell. The
+runner discards ordinary pane input while MCP owns control and routes MCP
+input only to the named running child's stdin. Return to MCP needs no
+execution grant: it persists a new epoch with no holder first, then tells the
+runner; a runner failure re-fences.
 
 Runner dispatch carries the service-start identity, generation (fixed by the
 runner process), holder/epoch, grant and policy versions, expiry, and intent
-hash. The runner starts fenced, rejects old service identities and stale epochs,
-deduplicates job ids, and applies explicit grant-revocation barriers. A missing
-barrier acknowledgement is reported as uncertain even though the in-process
-admission gate is already closed.
+hash. The runner starts fenced, answers `runner-stale` to an old service
+identity (a runner created before a Deck restart can only be pinged, read and
+stopped), rejects stale epochs, deduplicates job ids, and applies explicit
+grant-revocation barriers. A missing barrier acknowledgement is reported as
+uncertain even though the in-process admission gate is already closed. Runner
+connections are switched to blocking I/O with 5-second timeouts and capped at
+16; the control socket likewise has timeouts and a cap of 32.
 
-Side-effect request ids are retained in `mcp.json` and are never silently
-recycled. Equal request id and arguments return the recorded operation;
-different arguments return `REQUEST_ID_CONFLICT`. The fixed ledger bounds are
-2,000 operations and 1,000 jobs. Reaching a bound fails closed instead of
-evicting replay protection. Scripts and input bytes are not persisted.
+Side-effect request ids are fingerprinted over the parsed arguments (null ≡
+omitted). Equal request id and arguments return the recorded operation
+without repeating any side effect (including runner control); different
+arguments return `REQUEST_ID_CONFLICT`. Each record carries the session and
+control epoch it was bound to. A terminal record is retired once its session
+is gone or its epoch is no longer current — a replay then fails generation or
+epoch checks, so retirement never turns an old request into a new one. Board
+creates/closes keep a 32-per-client window; renewals are not journaled; each
+client may hold 500 of the 2,000 records; 64 slots are reserved for
+interrupts. Job bindings are capped at 64 per session (the runner retires its
+oldest finished jobs the same way), and execution grants at the newest per
+session plus those still referenced by a binding. Nonterminal and ambiguous
+records of a live session are never retired. Scripts and input bytes are not
+persisted.
 
 Execution grants use a monotonic in-process deadline plus a wall-clock display
 deadline and are bound to a random service-start identity. Restart never
-restores them, and control Request/Renew cannot extend them. After Deck crashes,
-deterministic Board operations can be reconciled. An
-accepted/executing non-Board side effect becomes `ambiguous`; it is never
-automatically replayed. Control ownership is cleared and its epoch advanced.
+restores them, and control Request/Renew cannot extend them. After Deck
+restarts, every accepted/executing/admitted operation — Board create and close
+included — becomes `ambiguous` (`deck-restarted`); nothing is replayed.
+Control ownership is cleared and its epoch advanced, and `closing` flags are
+cleared.
 
 ## Security boundary
 
@@ -105,9 +151,13 @@ provided by a 0600 socket and 0600 state file.
 The local service accepts only same-effective-UID Unix-socket peers. The
 adapter presents a random public per-client id plus a separate bearer read from
 the login Keychain. The bearer is neither argv nor display state and is never
-forwarded to the runner/job. An inherited credential FD exists only for
-synthetic isolated harnesses. The adapter cannot expand its recorded project
-roots. Diagnostics record only closed status/error codes;
+forwarded to the runner/job. The adapter resolves the socket from the account
+database (not `$HOME`) and sends the bearer only after `getpeereid` shows the
+peer runs as the same user; it does not verify the peer's code signature, so a
+same-UID process that already replaced Deck's socket remains out of scope.
+Socket, environment and credential-FD overrides are compiled into debug builds
+only, for synthetic isolated harnesses. The adapter cannot expand its recorded
+project roots. Diagnostics record only closed status/error codes;
 terminal output, scripts, and stdin are returned through the functional MCP
 channel and excluded from `app.log`.
 

@@ -25,7 +25,7 @@ import { choiceDialog, confirmDialog, inlineRename, toast } from './dialogs.js';
 import { t } from './i18n.js';
 import { markSessionSeen, panes, pollNow, provider, render, renderSidebar, updateSidebarSelection, activeProject } from './board.js';
 import { SHELL_FG, acceptGhost, feedMirror, maybeRecordCommand, mountQuickBar, nextShellTitle, renderSuggest, resetSuggest, showLinkCtx, updateGhost } from './terminal.js';
-import { AGENT_HISTORY_VERTICAL_UP, collapseHome, isNotDirectoryError, newSessionColumn, startCommand, createTerminalResizeCoordinator, createTerminalWheelAccumulator, createTerminalWheelFrameScheduler, isComposingKeyEvent, isPlainShiftKeydown, isTerminalAutoReply, scrollResultView, shouldRouteImeKeydownThroughInput, shQuote, terminalAgentComposerGeometry, terminalAgentHistoryUpRoute, terminalSelectionWheelRoute, terminalWheelLines } from './pure.js';
+import { AGENT_HISTORY_VERTICAL_UP, collapseHome, isNotDirectoryError, mcpErrorKey, newSessionColumn, startCommand, createTerminalResizeCoordinator, createTerminalWheelAccumulator, createTerminalWheelFrameScheduler, isComposingKeyEvent, isPlainShiftKeydown, isTerminalAutoReply, scrollResultView, shouldRouteImeKeydownThroughInput, shQuote, terminalAgentComposerGeometry, terminalAgentHistoryUpRoute, terminalSelectionWheelRoute, terminalWheelLines } from './pure.js';
 import { toggleQueuePanel } from './scheduler.js';
 import { cancelAllTerminalSelections, cancelTerminalSelection, copyTerminalSelection, hasTerminalSelection, terminalSelectionElsewhere, wireTerminalSelection } from './selection.js';
 import { getTerminalTheme, onThemeChange, syncThemeIntegrations } from './theme.js';
@@ -1013,9 +1013,12 @@ export function renderSessionView() {
       if (provider.get(cardId) !== s || state.sessionId !== cardId || !status.managed) return;
       mcp.dataset.human = String(status.humanControl === true);
       const action = t(status.humanControl ? 'mcp.return' : 'mcp.takeover');
-      const task = status.jobState || t('mcp.noJob');
+      const task = status.stale ? t('mcp.stale') : (status.jobState || t('mcp.noJob'));
       mcp.textContent = t('mcp.sessionStatus', { client: status.clientName || 'MCP', task, action });
-      mcp.title = [t(status.activeJob ? 'mcp.activeJob' : 'mcp.idle'), status.recentError || ''].filter(Boolean).join(' · ');
+      mcp.title = [
+        t(status.stale ? 'mcp.staleHint' : (status.activeJob ? 'mcp.activeJob' : 'mcp.idle')),
+        status.recentError || '',
+      ].filter(Boolean).join(' · ');
       grant.dataset.active = String(status.executionGrantActive === true);
       grant.textContent = status.executionGrantActive
         ? t('mcp.revokeExecution')
@@ -1054,8 +1057,11 @@ export function initLayout() {
     if (!human && !(await confirmDialog(t('mcp.takeoverConfirm')))) return;
     try {
       await inv(human ? 'mcp_return_control' : 'mcp_takeover', { sessionId: cardId });
-      renderSessionView();
-    } catch (_) { toast(t('mcp.actionFailed')); }
+    } catch (error) {
+      // One sentence per stable machine code; never the raw text.
+      toast(t(mcpErrorKey(error)));
+    }
+    renderSessionView();
   };
 
   $('mcp-grant-btn').onclick = async e => {

@@ -47,7 +47,23 @@ pub(crate) fn fire_item(item: &QueueItem) -> Result<(), DeckError> {
         ErrorKind::Other,
         "delivery identity is missing",
     ))?;
-    let result = crate::prompt_delivery::deliver(crate::prompt_delivery::LiteralRequest {
+    let result = crate::prompt_delivery::deliver(literal_request(item, pane, delivery))?;
+    if result == crate::prompt_delivery::LiteralOutcome::EnterRefused {
+        applog("[queue] Enter refused after paste — prompt left in the input");
+    }
+    Ok(())
+}
+
+/// A process-bound item (Codex/Claude expected) is delivered only while that
+/// program has bracketed paste enabled, checked atomically with the paste
+/// and again with Enter. A compatibility-mode item (no expected process) is
+/// the user's own shell text and keeps the plain guard.
+pub(crate) fn literal_request<'a>(
+    item: &'a QueueItem,
+    pane: &'a PaneIdentity,
+    delivery: &'a str,
+) -> crate::prompt_delivery::LiteralRequest<'a> {
+    crate::prompt_delivery::LiteralRequest {
         session: &item.session,
         pane,
         expected_process: item.expected_process.as_deref(),
@@ -55,11 +71,8 @@ pub(crate) fn fire_item(item: &QueueItem) -> Result<(), DeckError> {
         text: &item.text,
         submit: true,
         require_bracketed: false,
-    })?;
-    if result == crate::prompt_delivery::LiteralOutcome::EnterRefused {
-        applog("[queue] Enter refused after paste — prompt left in the input");
+        require_paste_mode: item.expected_process.is_some(),
     }
-    Ok(())
 }
 
 pub(crate) const READY_PROBE_INTERVAL_MS: u64 = 250;

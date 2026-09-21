@@ -1,6 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { connectorBufferOperationId, connectorId, normalizeTaskPreset, normalizeTaskPresets, unfinishedConnectorPlans } from '../js/connector-model.js';
+import { connectorBufferOperationId, connectorId, newlyPairedDevice, normalizeTaskPreset, normalizeTaskPresets, unfinishedConnectorPlans } from '../js/connector-model.js';
+
+test('a pairing is identified as the one new active device', () => {
+  const before = [{ id: 'D1', revoked: false }, { id: 'D2', revoked: true }];
+  assert.equal(newlyPairedDevice(before, before), null);
+  assert.deepEqual(newlyPairedDevice(before, [...before, { id: 'D3', name: 'phone', revoked: false }]),
+    { id: 'D3', name: 'phone', revoked: false });
+  assert.equal(newlyPairedDevice(before, [{ id: 'D1', revoked: true }]), null);
+  assert.equal(newlyPairedDevice(null, null), null);
+});
 
 const columns = [{ id: 'C1' }];
 const preset = { id: 'R1', name: 'Fix issue', columnId: 'C1', title: 'Remote task', dir: '~/work', cmd: 'codex', steps: ['inspect', 'fix'] };

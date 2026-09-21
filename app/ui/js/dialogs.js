@@ -1,10 +1,12 @@
 // dialogs.js — confirm/prompt/choice dialogs, project defaults, toasts, inline rename, settings modal
 // Voice preferences commit through the settings writer before notifying the
 // recorder; edits never request microphone access or download language assets.
+// Enabling Phone Connector needs an explicit danger confirmation that states
+// what a paired phone can do; a pairing is announced (name, time) at once.
 // Part of deck's no-build frontend: native ES modules, no bundler.
-import { $, ctx, genId, inv, store, uev } from './state.js';
+import { $, ctx, genId, inv, listen, store, uev } from './state.js';
 import { inlineRenameValue, isComposingKeyEvent } from './pure.js';
-import { applyTranslations, formatNumber, getLocale, onLocaleChange, setLocale, t, translateNotice } from './i18n.js';
+import { applyTranslations, formatDateTime, formatNumber, getLocale, onLocaleChange, setLocale, t, translateNotice } from './i18n.js';
 import {
   CUSTOMIZABLE_SHORTCUT_ACTIONS, FONT_SCALE_MAX, FONT_SCALE_MIN, FONT_SCALE_STEP, SHORTCUT_ACTIONS,
   normalizeSettings, parseSettings, serializeSettings,
@@ -13,7 +15,7 @@ import { normalizeVoicePreferences } from './voice-preferences-model.js';
 import { createVoiceSettings } from './voice-settings.js';
 import { activateTheme } from './theme.js';
 import { applyFontScale } from './font-scale.js';
-import { normalizeTaskPreset, normalizeTaskPresets } from './connector-model.js';
+import { newlyPairedDevice, normalizeTaskPreset, normalizeTaskPresets } from './connector-model.js';
 import {
   formatShortcut, isSafeShortcut, registerShortcutAction, shortcutConflict, shortcutFromEvent,
 } from './shortcuts.js';
@@ -687,9 +689,29 @@ export async function renderInboundSettings() {
   }
 }
 
+// Devices seen by the last settings render; a pairing is the difference.
+let connectorDevices = [];
+const pairedTime = seconds => formatDateTime(new Date(seconds * 1000), { dateStyle: 'medium', timeStyle: 'short' });
+
+// A pairing emits `connector-changed`. While a QR code is shown, the new
+// device is announced by name and time and the spent code is hidden, so a
+// pairing by someone who saw the code cannot go unnoticed.
+export async function connectorPairingChanged() {
+  if ($('set-connector-pairing').hidden) return;
+  const before = connectorDevices;
+  let status;
+  try { status = await inv('connector_status'); } catch (_) { return; }
+  const device = newlyPairedDevice(before, status?.devices);
+  if (!device) return;
+  $('set-connector-pairing').hidden = true;
+  toast(t('connector.pairedNotice', { name: device.name, time: pairedTime(device.pairedAt) }));
+  await renderConnectorSettings();
+}
+
 export async function renderConnectorSettings() {
   let status = null; let addresses = [];
   try { [status, addresses] = await Promise.all([inv('connector_status'), inv('connector_addresses')]); } catch (_) {}
+  connectorDevices = status?.devices || [];
   const select = $('set-connector-address'); select.replaceChildren();
   for (const address of addresses || []) {
     const option = document.createElement('option'); option.value = address; option.textContent = address; select.appendChild(option);
@@ -709,7 +731,8 @@ export async function renderConnectorSettings() {
   for (const device of status?.devices || []) {
     const row = document.createElement('div'); row.className = 'set-row';
     const label = document.createElement('span'); label.textContent = device.name;
-    const state = document.createElement('span'); state.textContent = t(device.revoked ? 'connector.revoked' : 'connector.paired');
+    const state = document.createElement('span');
+    state.textContent = device.revoked ? t('connector.revoked') : t('connector.pairedAt', { time: pairedTime(device.pairedAt) });
     row.append(label, state);
     if (!device.revoked) {
       const revoke = document.createElement('button'); revoke.className = 'btn'; revoke.textContent = t('connector.revoke');
@@ -950,7 +973,7 @@ export function mcpAuthorizationDialog(projects, options = {}) {
         showError(projectError, select, t('mcp.projectUnavailable')); select.focus(); return;
       }
       if (!preview?.ok || !preview.root) {
-        const key = ({ not_found: 'mcp.rootNotFound', not_directory: 'mcp.rootNotDirectory', not_accessible: 'mcp.rootNotAccessible' })[preview?.error] || 'mcp.rootUnavailable';
+        const key = ({ not_found: 'mcp.rootNotFound', not_directory: 'mcp.rootNotDirectory', not_accessible: 'mcp.rootNotAccessible', too_broad: 'mcp.rootTooBroad' })[preview?.error] || 'mcp.rootUnavailable';
         showError(rootError, root, t(key)); root.focus(); return;
       }
       done({ name: clientName, project, root: preview.root });
@@ -968,9 +991,11 @@ export function mcpAuthorizationDialog(projects, options = {}) {
    without a document. */
 export function initDialogs() {
   $('cfm-yes').onclick = () => cfmDone(true);
+  listen('connector-changed', connectorPairingChanged).catch(() => uev('listen-fail', 'connector-changed'));
 
   $('set-connector-toggle').onclick = async () => {
     const enabled = $('set-connector-toggle').dataset.enabled === 'true';
+    if (!enabled && !(await confirmDangerDialog(t('connector.enableConfirm'), t('connector.enable')))) return;
     try {
       if (enabled) await inv('connector_disable');
       else await inv('connector_enable', { address: $('set-connector-address').value, port: Number($('set-connector-port').value) });

@@ -34,7 +34,7 @@ export class FakeElement {
   querySelectorAll() { return []; }
   replaceChildren(...nodes) { this.children = nodes; }
   appendChild(node) { this.children.push(node); return node; }
-  append(node) { this.children.push(node); }
+  append(...nodes) { this.children.push(...nodes); }
   remove() { this.isConnected = false; }
   focus() { fakeDocument.activeElement = this; }
   select() { this.selected = true; }

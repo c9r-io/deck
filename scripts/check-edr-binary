@@ -37,7 +37,13 @@ do
   fi
 done
 # The MCP runner has one reviewed shell boundary: a fresh fixed zsh child for
-# each visible job. Source-level EDR tests enforce that it is the only process
-# spawn; the bundle scan ensures the expected absolute executable is present.
-strings -a "$app_path/Contents/MacOS/deck-mcp-runner" | grep -F -- /bin/zsh >/dev/null
+# each locally approved job. Source-level EDR tests enforce that it is the
+# only process spawn; the bundle scan ensures the expected absolute
+# executable is present and that no human-takeover shell script remains.
+runner="$app_path/Contents/MacOS/deck-mcp-runner"
+strings -a "$runner" | grep -F -- /bin/zsh >/dev/null
+if strings -a "$runner" | grep -F -- "exec /bin/zsh" >/dev/null; then
+  echo "$runner contains forbidden EDR token: exec /bin/zsh" >&2
+  exit 1
+fi
 echo "EDR binary vocabulary clean: ${targets[*]}"

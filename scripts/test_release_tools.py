@@ -203,6 +203,41 @@ class ReleaseChannelTests(unittest.TestCase):
         with self.assertRaises(rc.ReleaseError):
             rc.assert_promotion_has_no_build_commands(path)
 
+    def test_workflow_gates_fail_closed(self) -> None:
+        directory = Path(tempfile.mkdtemp(prefix="deck-gates-test-"))
+        path = directory / "build.yml"
+        gated = (
+            "jobs:\n"
+            "  gate:\n"
+            "    runs-on: macos-15\n"
+            "    steps:\n"
+            "      - run: cargo audit --file app/src-tauri/Cargo.lock\n"
+            "  build:\n"
+            "    needs: [gate]\n"
+            "    steps:\n"
+            "      - uses: tauri-apps/tauri-action@0000000000000000000000000000000000000000\n"
+        )
+        path.write_text(gated)
+        rc.assert_workflow_gates(path)
+        for broken in (
+            gated.replace("    needs: [gate]\n", ""),
+            gated.replace("cargo audit --file", "cargo test --file"),
+            gated.replace("Cargo.lock\n", "Cargo.lock || true\n"),
+            gated.replace("    runs-on: macos-15\n", "    runs-on: macos-15\n    continue-on-error: true\n"),
+            "jobs:\n  t:\n    steps:\n      - run: cargo test || true\n",
+        ):
+            path.write_text(broken)
+            with self.assertRaises(rc.ReleaseError, msg=broken):
+                rc.assert_workflow_gates(path)
+        path.write_text("jobs:\n  t:\n    steps:\n      - run: gh release upload x || true\n")
+        rc.assert_workflow_gates(path)
+
+    def test_repository_workflows_gate_every_app_build_on_the_audit(self) -> None:
+        for path in (ROOT / ".github/workflows").glob("*.yml"):
+            rc.assert_workflow_gates(path)
+        stable = (ROOT / ".github/workflows/release.yml").read_text()
+        self.assertIn("needs: [resolve, gate]", stable)
+
     def test_nightly_tags_are_ignored_by_stable_resolver(self) -> None:
         with self.assertRaises(rc.ReleaseError):
             rc.require_stable_tag(self.tag)

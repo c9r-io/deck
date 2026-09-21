@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 // Independent JSON-RPC client for a real, isolated Deck MCP smoke run.
 // Deck must already be open with an explicitly authorized disposable project.
+// `--adapter` must be a DEBUG deck-mcp build: release adapters refuse the
+// --socket / --credential-fd test seams. Leave the created card unopened —
+// a remote close is refused while a pane shows the card.
 import { spawn } from 'node:child_process';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';

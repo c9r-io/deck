@@ -30,10 +30,13 @@ item or background service is created.
    the default), and separately choose stdin and output-sharing permissions.
    Control-lease Request/Renew never creates or extends this window.
 
-Disabling the feature or revoking a client fences new side effects, advances
-session control epochs, and hands managed panes to the local user. It does not
-undo code already executed and does not automatically terminate a running
-program. A revoked client can then be deleted from Settings. Deletion removes
+Disabling the feature or revoking a client fences new side effects in memory
+first (before waiting for any in-flight dispatch), advances session control
+epochs, closes existing job output to MCP, and hands managed panes to the
+local user: the pane keyboard reaches the running job and **Ctrl-C** in the
+pane stops it. It does not undo code already executed and does not
+automatically terminate a running program. A revoked client can then be
+deleted from Settings. Deletion removes
 its authorization display record and Keychain credential, but retains opaque
 client ids in historical sessions, operations, jobs, grants, and audit events;
 deleting a client is not a way to erase the security ledger.
@@ -100,10 +103,10 @@ authentication, Origin/Host validation, and deployment review.
 | `deck_project_list` | Bounded directory listing below one approved root, without a shell or helper. |
 | `deck_project_read` | Bounded UTF-8 regular-file segments with a version-bound cursor. |
 | `deck_project_search` | Bounded literal source search with file/depth/result budgets. |
-| `deck_sessions_list` | List only sessions owned by this client. Quiet output is never called ready. |
+| `deck_sessions_list` | List only sessions owned by this client, with active-job metadata and staleness. No readiness is inferred from quiet output. |
 | `deck_session_create` | Journal creation of a dedicated visible shell card; poll the returned operation until committed. |
-| `deck_operation_get` | Read Board/control delivery state, not program completion. |
-| `deck_session_inspect` | Read generation, control, active job, staleness, bounded pane context, current execution-authorization status, and the independent session output-sharing gate. |
+| `deck_operation_get` | Read Board/control delivery state, not program completion (use `deck_job_read` for exit and output EOF). |
+| `deck_session_inspect` | Read generation, control, active job metadata, staleness, runner version, current execution-authorization status, and the independent session output-sharing gate. It never returns terminal screen content. |
 | `deck_session_control` | Request, renew, or release a holder-bound fenced lease. Another flow using the same client cannot replace an active holder. |
 | `deck_exec` | Start one arbitrary zsh script only while matching local execution and control grants are valid. |
 | `deck_job_read` | Incrementally read retained combined output and independently reported exit state. |
@@ -111,14 +114,39 @@ authentication, Origin/Host validation, and deployment review.
 | `deck_job_interrupt` | Request SIGINT for the active job's owned process group; read again to confirm exit. |
 | `deck_session_close` | Use Deck's ordinary close transaction; running jobs require explicit confirmation. |
 
-All input schemas reject unknown fields. Host write tools advertise
-`openWorldHint=true`; annotations are not authorization. A nonzero exit code is a
+All input schemas reject unknown fields. Side-effecting tools advertise
+`readOnlyHint=false`, `destructiveHint=true`, `idempotentHint=false` and
+`openWorldHint=true`; annotations are not authorization. A client may hide
+side-effecting tools under its own policy — that is client behaviour, not a
+Deck state, and Deck never relabels them to avoid it. A nonzero exit code is a
 normal execution result, not an MCP transport error.
 
-`deck_capabilities.tools` is added by the Adapter from its production tool
-registry. It means “exposed by this Adapter,” not “authorized for every call.”
-The same response separately retains the control service's workspace scope,
-`mayCreateSession`, execution mode, feature state, and connection state.
+`deck_capabilities.tools` is added by the Adapter from the same static
+registry that answers `tools/list` (a contract test keeps them identical). It
+means “exposed by this Adapter,” not “authorized for every call.” The response
+also carries non-secret build identity: `deckVersion`/`deckBuild` from the
+control service and `adapterVersion`/`adapterBuild` from the Adapter; inspect
+reports the pane's `runnerVersion`. While the feature is off every tool
+returns `FEATURE_DISABLED`; an adapter/app protocol skew returns
+`PROTOCOL_MISMATCH` (never `AUTH_REQUIRED`).
+
+Exact replay window. Every side effect carries a `request_id`. Replaying the
+same id with the same (parsed) arguments returns the recorded operation and
+never repeats its effect; an optional field sent as `null` is the same request
+as omitting it; the same id with different arguments is `REQUEST_ID_CONFLICT`.
+Deck keeps a record exactly replayable while its session exists and the
+control epoch it was bound to is current. Once the epoch advances (release,
+takeover, return, revoke) or the session closes, the record is retired and a
+replay is rejected deterministically (`CONTROL_REVOKED` /
+`SESSION_NOT_FOUND`) — it is never executed again. Board creates and closes are
+kept for the last 32 per client. Renewals are not journaled (their response
+has `operationId: null`). If `CAPACITY_EXCEEDED` appears, release and request
+control again: the new epoch retires the session's older records. The journal
+reserves room so `deck_job_interrupt` is never refused for capacity.
+
+If the Adapter loses Deck's answer after sending a side effect it returns
+`OPERATION_AMBIGUOUS`: inspect, or repeat with the SAME `request_id` — never a
+new one.
 
 For `deck_session_control`, the caller creates a fresh stable opaque
 `holder_id` (1–128 ASCII letters, digits, `_`, or `-`) before the first
@@ -129,6 +157,12 @@ accepted `controlHolder`, current `sessionGeneration`, and server-assigned
 subsequent `renew`, `release`, exec, or input. `lease_ms` is optional for
 request/renew and must be 1000–300000 milliseconds. Renew/release require the
 returned epoch; release does not accept `lease_ms`.
+
+Returning control (local **Return to MCP**) never needs, creates or extends an
+execution window and restores no holder, lease or output sharing: MCP must
+request control again under the new epoch. It is refused while a job still
+runs (`SESSION_BUSY` locally — stop it with **Ctrl-C** in the pane) and for a
+stale runner.
 
 `deck_session_inspect.executionAuthorization.status` is `none`, `active`,
 `expired`, or `revoked` for the authenticated caller and current session
@@ -150,17 +184,26 @@ permits output reads.
   each job retains 1 MiB. A cursor is bound to the job and generation. Gaps and
   dropped byte counts are explicit. stdout/stderr are `pty_combined`.
 - Execution timeout requests SIGINT. `interrupt_requested` is not an exit.
-- The foreground shell's exit is tracked. Detached/background descendants may
-  outlive it; they are not represented as the completed foreground job.
+- The job's own process group is the unit of control. Closing the card first
+  asks the runner to stop it (SIGINT → SIGTERM → SIGKILL, about one second
+  each), and the runner SIGKILLs live job groups if tmux kills the pane.
+  Descendants that leave the group (setsid/setpgid) or outlive its leader are
+  outside Deck's reach; trusted-host is not an OS sandbox.
+- A job that touches the terminal from the background (for example a password
+  prompt) is stopped by the kernel and reported as `stopped`, not `running`.
 - Closing an adapter or losing a network connection does not kill a task.
   Adapter exit does not close the session.
 - Process exit and output completion are separate. `stdoutEof`, `stderrEof`
   and `outputComplete` report whether retained tail output has finished.
 - After Deck GUI exit, tmux programs may continue, but MCP control is
-  unavailable. On reopen, Deck never restores an old control lease or replays a
-  script. Unverifiable jobs are `unknown`/`lost`.
-- An idle human takeover starts a simple persistent zsh command reader in the
-  same pane. Exit that shell before using **Return to MCP**. Full-screen TUI
+  unavailable. On reopen, Deck never restores an old control lease or replays
+  anything that was accepted but not finished — not a script, not a Board
+  create or close: such operations become `ambiguous` (`deck-restarted`).
+  Runners created by the earlier Deck process are `stale`
+  (`RUNNER_STALE`): they can only be closed.
+- Human takeover never starts a shell. It hands the pane keyboard to the
+  running job's stdin and makes **Ctrl-C** in the pane interrupt that job's
+  process group (the runner itself ignores terminal signals). Full-screen TUI
   automation is not part of the MVP.
 
 Managed output has both capacity limits and the locally configurable
@@ -171,23 +214,55 @@ and `retention-expired`. This does not alter tmux scrollback.
 `mcp.json` is 0600 in Deck's private 0700 data directory. It retains grants,
 hashed request identities, operations, job bindings, and session metadata. It
 does not retain scripts or terminal output. Runner output disappears when its
-session ends; per-job memory is bounded. Closing a card removes its active
-session/job bindings, while operation ids remain until the bounded ledger is
-explicitly managed by a future version. Corrupt and future-version MCP
-configuration fails closed. State schema v3 is distinct from Deck control
-protocol v3 and from the MCP standard version negotiated by the SDK. v1/v2
-state migrates to v3 disabled: old clients are retained only as revoked display
-records, pending/admitted writes become ambiguous, bearer credentials and
-execution grants are not synthesized, and local reauthorization is required.
+session ends; per-job memory is bounded. Closing a card removes its session,
+job bindings and grants; the journal retires records as described under the
+exact replay window, keeps at most 64 job bindings per session and one live
+execution grant per session, and bounds each client's share. Corrupt and
+future-version MCP configuration fails closed. State schema v4 is distinct
+from Deck control protocol v3 and from the MCP standard version negotiated by
+the SDK. v3 state upgrades in place to v4 (sticky: a v3 build refuses it
+untouched). v1/v2 state migrates disabled: old clients are retained only as
+revoked display records, pending/admitted writes become ambiguous, bearer
+credentials and execution grants are not synthesized, and local
+reauthorization is required.
 
 ## Security boundary and residual risk
 
-Descriptor-relative reads reject traversal, unverified symlinks, special
-files, `.git`, common credential/cache directories, private-key extensions and
-real `.env` names; `.env.example` and `.env.sample` remain readable. This is a
-defense-in-depth name policy, not a promise that unknown names or hard links
-cannot contain secrets. Authorization is rechecked before returning a result,
-but bytes already transmitted cannot be recalled.
+Descriptor-relative reads reject traversal, unverified symlinks and special
+files (FIFOs, sockets and devices are refused without blocking). One name
+policy applies to list, read and search: `.git`, `.ssh`, `.gnupg`, `.aws`,
+`.kube`, `.docker`, `.deck`, `.netrc`, `.npmrc`, `.pypirc`, `.pgpass`,
+`.vault-token`, `.git-credentials`, shell `*_history` dot files,
+`credentials*`/`.credentials.json`/`application_default_credentials.json`,
+`id_rsa`/`id_dsa`/`id_ecdsa`/`id_ed25519` keys (their `.pub` halves stay
+readable), `*.pem`/`*.p12`/`*.pfx`/`*.key`, Terraform state, `.config/gh`,
+`.config/gcloud`, `.codex/auth.json` and real `.env` names; `.env.example` and
+`.env.sample` remain readable. Names compare case-insensitively, including the
+non-ASCII spellings APFS folds to ASCII, and dot-file names with other
+non-ASCII characters are refused. An authorized root may not be `/`, the
+account home or one of its parents, or lie inside an excluded directory; a
+root stored by an older build that violates this is refused on every read and
+must be re-authorized. This is a defense-in-depth name policy for structured
+reads, not a promise that unknown names or hard links cannot contain secrets,
+and it is not file isolation: an approved trusted-host job can read anything
+the Deck account can.
+
+Structured-read errors use closed codes: `INVALID_ARGUMENTS` (path shape,
+query or byte bounds), `READ_DENIED` (absent, excluded, special, binary or
+non-UTF-8 targets — absence is deliberately not distinguished from
+exclusion), `READ_LIMIT` (over the 4 MiB file bound), `CONTENT_CHANGED`, and
+`CONTEXT_CHANGED` (scope changed during a search). A search target may be a
+directory or one regular file. Listing returns at most 32 entries by name with
+`truncated: true` when more exist; search still visits every entry. Search
+reads whole files up to 4 MiB; `complete: false` with `stopReason`
+(`deadline`, `result-limit`, `file-limit`, `skipped-entries`) and a `skipped`
+count means some files were not covered, so an empty result is only
+conclusive when `complete` is true. Binary files are excluded by policy and do
+not make a search incomplete. Authorization is rechecked before returning a
+result (for `deck_job_read`, again after the runner read returns: a takeover,
+sharing pause, revocation or generation change during the wait drops the
+bytes), but bytes already transmitted cannot be recalled. A takeover
+permanently closes the output of every job that existed before it.
 
 An approved script can use every permission of the Deck account, including
 reading outside the project and using the network. Cwd, worktrees, tmux,
@@ -215,7 +290,9 @@ prove the requested behavior is correct.
 
 After opening an isolated Deck smoke build and authorizing a disposable Git
 directory, run the independent client against the paths copied from that
-instance:
+instance. `--socket` and `--credential-fd` exist only in a DEBUG Adapter build
+(a release Adapter always uses the account's private Deck socket and the
+Keychain), so point `--adapter` at a debug `deck-mcp`:
 
 ```sh
 node scripts/mcp-e2e.mjs \

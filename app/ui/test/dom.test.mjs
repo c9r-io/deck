@@ -9,7 +9,7 @@ globalThis.document = fakeDocument;
 globalThis.window = { __TAURI__: null, __DECK_DEBUG: false };
 
 const {
-  cfmDone, choiceDialog, confirmDangerDialog, confirmDialog, initDialogs, inlineRename, mcpAuthorizationDialog, persistSessionRestoreChoice, persistUpdateChannelChoice,
+  cfmDone, choiceDialog, confirmDangerDialog, confirmDialog, connectorPairingChanged, initDialogs, renderConnectorSettings, inlineRename, mcpAuthorizationDialog, persistSessionRestoreChoice, persistUpdateChannelChoice,
   projectDefaultsDialog, promptDialog, persistThemeChoice, filterSettings, renderMcpSettings, selectSettingsSection, resetApplicationLogs, refreshLogSize,
 } = await import('../js/dialogs.js');
 const { ctx, store } = await import('../js/state.js');
@@ -672,4 +672,52 @@ test('a committed launch barrier replaces the old in-memory launched flag', asyn
   await mutateBoard(draft => { draft.cards[0].launched = true; });
   assert.equal(store.cards[0].launched, true);
   assert.equal(store.cards[0].status, 'stopped', 'runtime state is still preserved');
+});
+
+test('enabling Phone Connector requires an explicit confirmation of what a paired phone can do', async () => {
+  const calls = [];
+  window.__TAURI__ = { core: { invoke: async cmd => {
+    calls.push(cmd);
+    if (cmd === 'connector_status') return { enabled: false, running: false, address: '', port: 47631, devices: [] };
+    if (cmd === 'connector_addresses') return ['192.168.1.20'];
+    return {};
+  } } };
+  await renderConnectorSettings();
+  const toggle = fakeDocument.getElementById('set-connector-toggle');
+  assert.equal(toggle.dataset.enabled, 'false');
+  const cancelled = toggle.onclick();
+  assert.equal(fakeDocument.getElementById('cfm').style.display, 'flex');
+  assert.match(fakeDocument.getElementById('cfm-msg').textContent, /submit prompts/);
+  cfmDone(false);
+  await cancelled;
+  assert.equal(calls.filter(cmd => cmd === 'connector_enable').length, 0, 'cancel never enables');
+
+  const accepted = toggle.onclick();
+  cfmDone(true);
+  await accepted;
+  assert.equal(calls.filter(cmd => cmd === 'connector_enable').length, 1);
+});
+
+test('a pairing is announced by name and time and hides the spent QR code', async () => {
+  const phone = { id: 'D1', name: 'Old phone', pairedAt: 1_790_000_000, revoked: false };
+  let devices = [phone];
+  window.__TAURI__ = { core: { invoke: async cmd => {
+    if (cmd === 'connector_status') return { enabled: true, running: true, address: '192.168.1.20', port: 47631, devices };
+    if (cmd === 'connector_addresses') return ['192.168.1.20'];
+    throw new Error(`unexpected ${cmd}`);
+  } } };
+  await renderConnectorSettings();
+  const row = fakeDocument.getElementById('set-connector-devices').children[0];
+  assert.match(row.children[1].textContent, /^paired /, 'each device shows when it was paired');
+
+  const pairing = fakeDocument.getElementById('set-connector-pairing');
+  pairing.hidden = false;
+  await connectorPairingChanged();
+  assert.equal(pairing.hidden, false, 'no new device, the QR code stays');
+
+  devices = [phone, { id: 'D2', name: 'Unknown iPhone', pairedAt: 1_790_000_100, revoked: false }];
+  await connectorPairingChanged();
+  assert.equal(pairing.hidden, true);
+  assert.match(fakeDocument.getElementById('toasts').children.at(-1).textContent, /Paired “Unknown iPhone”/);
+  assert.equal(fakeDocument.getElementById('set-connector-devices').children.length, 2);
 });

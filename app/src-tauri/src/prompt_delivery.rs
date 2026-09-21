@@ -1,7 +1,11 @@
 //! Shared byte-literal prompt injection. The scheduler owns its ledger;
 //! immediate input owns its draft. Both pin identity/foreground and separate
 //! paste from Enter. Errors after transport begins can be ambiguous: callers
-//! must not blindly retry. Interactive multi-line input requires paste mode.
+//! must not blindly retry. Interactive multi-line input requires paste mode;
+//! `require_paste_mode` requires it for ANY text: the scheduler sets it for
+//! every process-bound item, so a prompt only lands while the expected
+//! program has bracketed paste enabled (an agent that is still starting or
+//! has just exited has not), and a shell never receives an unmarked prompt.
 //! Prompt bytes travel only on stdin, never in process arguments, environment
 //! variables or temporary files. Buffer loading and guarded paste share a batch.
 //! Every entry, including injected transports, holds shared session activity
@@ -30,6 +34,7 @@ pub(crate) struct LiteralRequest<'a> {
     pub text: &'a str,
     pub submit: bool,
     pub require_bracketed: bool,
+    pub require_paste_mode: bool,
 }
 
 /// The IO boundary is shared by production delivery and its tests. Tests drive
@@ -76,6 +81,7 @@ pub(crate) fn deliver_with(
         text,
         submit,
         require_bracketed,
+        require_paste_mode,
     } = request;
     if delivery.is_empty()
         || !delivery
@@ -124,7 +130,7 @@ pub(crate) fn deliver_with(
         }
         None => identity_condition,
     };
-    let condition = if require_bracketed && text.contains('\n') {
+    let condition = if require_paste_mode || (require_bracketed && text.contains('\n')) {
         format!("#{{&&:{condition},#{{==:#{{bracketed_paste_flag}},1}}}}")
     } else {
         condition

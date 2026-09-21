@@ -1,4 +1,10 @@
-use super::{buffer, output, snapshot, CommandRequest, Config, Identity, Runtime};
+//! HTTPS listener for the closed v1 routes. Every unauthenticated byte is
+//! bounded: at most `MAX_CONNECTIONS` connections and `MAX_PER_SOURCE` per
+//! source address, a 5s TLS handshake, a 10s header read, a 30s connection
+//! and a 4 KiB pairing body. A command body is read only after its Bearer
+//! token authorizes.
+
+use super::{buffer, output, snapshot, CommandRequest, Config, Identity, Runtime, COMMAND_EXPIRED};
 use http_body_util::{BodyExt, Full, Limited};
 use hyper::body::{Bytes, Incoming};
 use hyper::{Method, Request, Response, StatusCode};
@@ -17,9 +23,50 @@ const MAX_BODY: usize = 256 * 1024;
 const MAX_RESPONSE: usize = 4 * 1024 * 1024;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 const CONNECTION_TIMEOUT: Duration = Duration::from_secs(30);
-const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_CONNECTIONS: usize = 16;
+/// One address cannot hold every slot: a phone needs at most a couple of
+/// concurrent requests, and slow unauthenticated connections from one peer
+/// must not lock out another.
+const MAX_PER_SOURCE: usize = 4;
+const MAX_PAIR_BODY: usize = 4 * 1024;
 const MAX_NATIVE_JOBS: usize = 8;
+
+/// Per-source connection accounting; a slot is released when its guard drops.
+#[derive(Clone, Default)]
+struct SourceSlots(Arc<std::sync::Mutex<std::collections::HashMap<IpAddr, usize>>>);
+
+struct SourceSlot {
+    slots: SourceSlots,
+    source: IpAddr,
+}
+
+impl SourceSlots {
+    fn try_acquire(&self, source: IpAddr) -> Option<SourceSlot> {
+        let mut held = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let count = held.entry(source).or_insert(0);
+        if *count >= MAX_PER_SOURCE {
+            return None;
+        }
+        *count += 1;
+        Some(SourceSlot {
+            slots: self.clone(),
+            source,
+        })
+    }
+}
+
+impl Drop for SourceSlot {
+    fn drop(&mut self) {
+        let mut held = self.slots.0.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(count) = held.get_mut(&self.source) {
+            *count -= 1;
+            if *count == 0 {
+                held.remove(&self.source);
+            }
+        }
+    }
+}
 
 type Resp = Response<Full<Bytes>>;
 
@@ -47,6 +94,10 @@ fn error(status: StatusCode, code: &'static str) -> Resp {
 fn mapped(error_value: &DeckError) -> Resp {
     if error_value.message() == "connector unavailable" {
         return error(StatusCode::SERVICE_UNAVAILABLE, "connector-disabled");
+    }
+    if error_value.message() == COMMAND_EXPIRED {
+        // Not 404: the outcome is unknown, so the phone must not retry.
+        return error(StatusCode::GONE, "expired");
     }
     match error_value.kind() {
         ErrorKind::Missing => error(StatusCode::NOT_FOUND, "not-found"),
@@ -123,10 +174,14 @@ async fn run(
     let _ = ready.send(Some(bound_port));
     let acceptor = tokio_rustls::TlsAcceptor::from(tls);
     let connections = Arc::new(tokio::sync::Semaphore::new(MAX_CONNECTIONS));
+    let sources = SourceSlots::default();
     let jobs = Arc::new(tokio::sync::Semaphore::new(MAX_NATIVE_JOBS));
     while runtime.server_epoch.load(Ordering::SeqCst) == epoch {
         let accepted = tokio::time::timeout(Duration::from_millis(500), listener.accept()).await;
-        let Ok(Ok((tcp, _))) = accepted else {
+        let Ok(Ok((tcp, peer))) = accepted else {
+            continue;
+        };
+        let Some(source_slot) = sources.try_acquire(peer.ip()) else {
             continue;
         };
         let Ok(connection_permit) = connections.clone().try_acquire_owned() else {
@@ -137,6 +192,7 @@ async fn run(
         let jobs = jobs.clone();
         tokio::spawn(async move {
             let _connection_permit = connection_permit;
+            let _source_slot = source_slot;
             let Ok(Ok(tls_stream)) =
                 tokio::time::timeout(HANDSHAKE_TIMEOUT, acceptor.accept(tcp)).await
             else {
@@ -163,17 +219,17 @@ async fn run(
         .compare_exchange(epoch, 0, Ordering::SeqCst, Ordering::SeqCst);
 }
 
-async fn body(request: Request<Incoming>) -> Result<Vec<u8>, Resp> {
+async fn body(request: Request<Incoming>, limit: usize) -> Result<Vec<u8>, Resp> {
     if request
         .headers()
         .get("content-length")
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.parse::<usize>().ok())
-        .is_some_and(|length| length > MAX_BODY)
+        .is_some_and(|length| length > limit)
     {
         return Err(error(StatusCode::PAYLOAD_TOO_LARGE, "body-too-large"));
     }
-    Limited::new(request.into_body(), MAX_BODY)
+    Limited::new(request.into_body(), limit)
         .collect()
         .await
         .map(|collected| collected.to_bytes().to_vec())
@@ -278,7 +334,7 @@ async fn handle(
     let bearer = token(&request);
 
     if method == Method::POST && path == "/v1/pair" {
-        let bytes = match body(request).await {
+        let bytes = match body(request, MAX_PAIR_BODY).await {
             Ok(value) => value,
             Err(response) => return response,
         };
@@ -296,7 +352,16 @@ async fn handle(
     }
 
     if method == Method::POST && path == "/v1/commands" {
-        let bytes = match body(request).await {
+        // Authenticate from the headers before reading (or waiting for) any
+        // body; the native step authorizes again under the current epoch.
+        let authorized = bearer
+            .as_deref()
+            .ok_or_else(|| DeckError::new(ErrorKind::Perm, "unauthorized"))
+            .and_then(|token| state.authorize(epoch, token));
+        if let Err(failure) = authorized {
+            return mapped(&failure);
+        }
+        let bytes = match body(request, MAX_BODY).await {
             Ok(value) => value,
             Err(response) => return response,
         };
@@ -401,6 +466,33 @@ mod tests {
         let disabled = mapped(&DeckError::new(ErrorKind::Other, "connector unavailable"));
         assert_eq!(disabled.status(), StatusCode::SERVICE_UNAVAILABLE);
         assert_ne!(disabled.status(), StatusCode::UNAUTHORIZED);
+        let expired = mapped(&DeckError::new(ErrorKind::ContextChanged, COMMAND_EXPIRED));
+        assert_eq!(expired.status(), StatusCode::GONE);
+    }
+
+    #[test]
+    fn unauthenticated_resources_are_bounded_per_source_and_in_time() {
+        assert_eq!(HANDSHAKE_TIMEOUT, Duration::from_secs(5));
+        const { assert!(MAX_PER_SOURCE >= 2 && MAX_PER_SOURCE <= 4) };
+        const { assert!(MAX_PER_SOURCE < MAX_CONNECTIONS) };
+        assert_eq!(MAX_PAIR_BODY, 4 * 1024);
+
+        let slots = SourceSlots::default();
+        let one: IpAddr = "192.0.2.1".parse().unwrap();
+        let two: IpAddr = "192.0.2.2".parse().unwrap();
+        let held = (0..MAX_PER_SOURCE)
+            .map(|_| slots.try_acquire(one).unwrap())
+            .collect::<Vec<_>>();
+        assert!(slots.try_acquire(one).is_none(), "one source is capped");
+        let other = slots.try_acquire(two);
+        assert!(other.is_some(), "another source still gets a slot");
+        drop(held);
+        assert!(
+            slots.try_acquire(one).is_some(),
+            "dropped slots are released"
+        );
+        drop(other);
+        assert!(slots.0.lock().unwrap().get(&two).is_none());
     }
 
     #[test]
@@ -412,6 +504,7 @@ mod tests {
             enabled: true,
             address: "127.0.0.1".into(),
             port: 8443,
+            interface: None,
         };
         super::super::save(&path, &doc).unwrap();
         let runtime = Arc::new(Runtime {
@@ -457,6 +550,7 @@ mod tests {
             enabled: true,
             address: "127.0.0.1".into(),
             port: 0,
+            interface: None,
         };
         super::super::save(&path, &doc).unwrap();
         let runtime = Arc::new(Runtime {
@@ -481,6 +575,7 @@ mod tests {
                 enabled: true,
                 address: "127.0.0.1".into(),
                 port: 0,
+                interface: None,
             },
             identity,
             1,
@@ -498,7 +593,7 @@ mod tests {
         let tcp = TcpStream::connect(("127.0.0.1", port)).unwrap();
         tcp.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
         let name = ServerName::IpAddress("127.0.0.1".parse::<IpAddr>().unwrap().into());
-        let conn = rustls::ClientConnection::new(client, name).unwrap();
+        let conn = rustls::ClientConnection::new(client.clone(), name).unwrap();
         let mut stream = rustls::StreamOwned::new(conn, tcp);
         let body = br#"{"code":"smoke-code","deviceName":"fixture"}"#;
         write!(
@@ -514,6 +609,24 @@ mod tests {
         assert!(response.starts_with("HTTP/1.1 200"));
         assert!(response.contains("\"deviceId\""));
         assert!(response.contains("\"token\""));
+
+        // An unauthenticated command must be refused from its headers alone:
+        // the server never waits for (or buffers) a body it has not
+        // authenticated. The declared body is never sent.
+        let tcp = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        tcp.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+        let name = ServerName::IpAddress("127.0.0.1".parse::<IpAddr>().unwrap().into());
+        let conn = rustls::ClientConnection::new(client.clone(), name).unwrap();
+        let mut stream = rustls::StreamOwned::new(conn, tcp);
+        write!(
+            stream,
+            "POST /v1/commands HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: 200000\r\n\r\n"
+        )
+        .unwrap();
+        stream.flush().unwrap();
+        let mut head = [0u8; 12];
+        stream.read_exact(&mut head).unwrap();
+        assert_eq!(&head, b"HTTP/1.1 401");
         runtime.server_epoch.store(2, Ordering::SeqCst);
         let _ = std::fs::remove_file(path);
     }

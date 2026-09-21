@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+root=$(cd "$(dirname "$0")/.." && pwd)
+# Gate semantics first (offline): no soft-failed gate, and every app build
+# depends on a job that runs the RustSec audit.
+python3 "$root/scripts/release_channels.py" assert-workflow-gates "$root"/.github/workflows/*.yml
+
 version=1.7.7
 archive=actionlint_1.7.7_darwin_arm64.tar.gz
 expected=2693315b9093aeacb4ebd91a993fea54fc215057bf0da2659056b4bc033873db

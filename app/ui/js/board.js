@@ -272,15 +272,23 @@ export const provider = {
     }
     const operation = (async () => {
       let closedCard = null;
+      let admission = null;
       try {
         await mutateBoard(async draft => {
           const card = draft.cards.find(c => c.id === sid);
           if (!card) return { noop: true };
           if (opts.automatic && retainedBuffer(card)) return { noop: true, protected: true };
+          // A remote (MCP) close never retires a card a pane is showing: the
+          // person looking at it decides. Refused before any side effect.
+          if (opts.mcpOperationId && hasPane(card.session)) {
+            const error = new Error('card is shown in a pane');
+            error.stage = 'shown';
+            throw error;
+          }
           closedCard = card;
           // Remote close is linearized while holding the authoritative Board
           // mutation slot, immediately before the first native side effect.
-          const admission = opts.mcpOperationId
+          admission = opts.mcpOperationId
             ? (await inv('mcp_close_admit', { operationId: opts.mcpOperationId })).admission
             : null;
           if (!opts.cancelled && !(await this.cancelSchedule(card, {
@@ -307,7 +315,9 @@ export const provider = {
         if (!opts.quiet && error.stage === 'kill') toast(t('error.sessionClose'));
         if (!opts.quiet && error.stage !== 'cancel' && error.stage !== 'kill') toast(t('error.sessionSave'));
         if (c) emit('status', c);
-        return { ok: false, applied: false };
+        // `admitted`: an MCP close passed admission, so a side effect may
+        // have run and its outcome is unknown rather than rejected.
+        return { ok: false, applied: false, stage: error?.stage || null, admitted: !!admission };
       }
       if (closedCard) {
         noteRunEnded(closedCard);

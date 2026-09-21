@@ -149,7 +149,9 @@ test('retired features do not return', () => {
   // a persisted scheduler safety policy (context protection is automatic)
   assert.doesNotMatch(scheduler, /queue_set_policy|safetyPolicy|acceptRisk/);
   assert.doesNotMatch(html, /id="q-policy"/);
-  assert.match(scheduler, /acceptProcessMismatch: mismatch/);
+  // a one-shot foreground-mismatch bypass (external text could reach a shell)
+  assert.doesNotMatch(scheduler + read('app/src-tauri/src/scheduler/ops.rs'),
+    /acceptProcessMismatch|accept_process_mismatch|manualMismatchConfirm/);
   // a webview-side shell recovery layer (restore is tmux history)
   assert.doesNotMatch(layout + html + read('app/src-tauri/src/main.rs'),
     /shell-recovery|recoverychip|load_shell_snapshot/);

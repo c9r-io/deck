@@ -65,10 +65,10 @@ export async function runReviewSmoke(restart = false) {
     await report('review-atomic-list', own().length === 3 && own().every(i => i.review_each)
       && new Set(own().map(i => i.group)).size === 1);
     const first = own().find(i => i.seq === 1).id;
-    await inv('queue_send_now', { id: first, acceptProcessMismatch: false });
+    await inv('queue_send_now', { id: first });
     await wait(async () => { await refreshQueue(); return own().some(i => i.id === first && i.state === 'review'); });
     const second = own().find(i => i.seq === 2).id;
-    try { await inv('queue_send_now', { id: second, acceptProcessMismatch: false }); } catch {}
+    try { await inv('queue_send_now', { id: second }); } catch {}
     await refreshQueue();
     await report('review-no-bypass', own().find(i => i.id === second)?.state === 'pending'
       && ctx.queueCache.deliveries.filter(d => d.session === card.session).length === 1);
@@ -117,7 +117,7 @@ export async function runReviewSmoke(restart = false) {
       const until = (ctx.queueCache.last_fired[card.session] + 61) * 1000;
       while (Date.now() < until) await pause(Math.min(1000, until - Date.now()));
       const id = own().find(i => i.seq === seq && !i.review).id;
-      await inv('queue_send_now', { id, acceptProcessMismatch: false });
+      await inv('queue_send_now', { id });
       await wait(async () => { await refreshQueue(); return own().some(i => i.id === id && i.state === 'review'); });
       await report(seq === 2 ? 'review-second' : 'review-last', own().some(i => i.id === id && i.state === 'review'));
       if (seq === 2) {

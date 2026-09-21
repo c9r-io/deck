@@ -177,6 +177,20 @@ export function collapseHome(dir, home) {
 export const isNotDirectoryError = error =>
   /not a directory/i.test(String((error && error.message) || error || ''));
 
+/* Local MCP control commands fail with one stable machine code as the whole
+   wire string (mcp.rs). Each maps to one localized sentence; anything else
+   gets the generic sentence — free text is never shown or logged. */
+const MCP_ERROR_KEYS = {
+  'mcp-session-busy': 'mcp.errorBusy',
+  'mcp-runner-stale': 'mcp.errorStale',
+  'mcp-client-revoked': 'mcp.errorRevoked',
+  'mcp-feature-disabled': 'mcp.errorDisabled',
+  'mcp-runner-unconfirmed': 'mcp.errorUnconfirmed',
+  'mcp-fence-unpersisted': 'mcp.errorUnpersisted',
+};
+export const mcpErrorKey = error =>
+  MCP_ERROR_KEYS[String((error && error.message) || error || '')] || 'mcp.actionFailed';
+
 /* ---------- queue grouping (mirrors the backend's group semantics) ---------- */
 /* items carry an explicit group id (assigned by the backend, which is also
    what the scheduler's chain ordering runs on) — one panel group per group

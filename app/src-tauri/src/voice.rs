@@ -390,6 +390,7 @@ fn deliver_with(
             text: &text,
             submit: false,
             require_bracketed: true,
+            require_paste_mode: false,
         },
         transport,
     );

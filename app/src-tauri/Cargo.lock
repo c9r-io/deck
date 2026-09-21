@@ -647,7 +647,6 @@ dependencies = [
 name = "deck-mcp"
 version = "0.7.4"
 dependencies = [
- "dirs 5.0.1",
  "libc",
  "rmcp",
  "schemars 1.2.2",

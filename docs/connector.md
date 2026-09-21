@@ -1,15 +1,35 @@
 # Phone Connector
 
-Phone Connector is disabled by default. When explicitly enabled in **Settings → Integrations & automation**, deck listens on the selected private-network address over HTTPS. Eligible IPv4 addresses are RFC1918 private space, 169.254/16 link-local space, and RFC6598 100.64/10 shared space commonly used by direct VPNs; arbitrary public interfaces are never offered or accepted. The address is checked again whenever the saved listener starts. Pairing uses a five-minute, single-use QR descriptor. The TLS private key remains in the macOS Keychain. The host journal stores only each device token's hash; the raw token exists on the host only in the one-time in-memory pairing response and is stored by the phone in the iOS Keychain. The desktop UI receives only the generated SVG, expiry, public fingerprint, and device summaries.
+Phone Connector is disabled by default. Enabling it in **Settings → Integrations & automation** asks for confirmation, because a paired phone can:
 
-Changing to an address outside the current certificate requires **Reset and re-pair** while Connector is disabled. Reset removes the Connector identity, paired devices, and its remote-command journal. Revoking one device prevents its pending commands from running. Disabling Connector stops accepting and claiming remote work; it does not clear ordinary deck queues.
+- read the recent output of Codex and Claude cards;
+- submit prompts to Codex and Claude sessions — a prompt can lead the agent to run commands, so this is equivalent to running code under your macOS account, with whatever permissions the saved card command and the agent's own configuration grant;
+- start sessions from project presets.
 
-Projects can define up to 50 phone task presets under **Project defaults**. A preset fixes its group, card title, directory, Codex or Claude launch command, and up to 20 initial steps on the Mac. The phone receives only each preset's ID and name and cannot supply executable text, paths, or command flags.
+A paired device keeps these abilities until it is revoked. Disabling Connector stops the listener; it does not revoke devices, so their tokens work again when Connector is re-enabled on the same identity. **Revoke** a device (or **Reset and re-pair**) to end its access.
+
+When enabled, deck listens on the selected private-network address over HTTPS. Eligible IPv4 addresses are RFC1918 private space, 169.254/16 link-local space, and RFC6598 100.64/10 shared space commonly used by direct VPNs; arbitrary public interfaces are never offered or accepted. deck records the interface (for example `en0`) that carried the address when you enabled Connector. Whenever the saved listener starts again, the address must still be available on that same interface; the same private address on a different interface is treated as a different network and Connector stays off until you enable it again.
+
+Pairing uses a five-minute, single-use QR descriptor. Anyone who sees the QR code and can reach the Mac during those five minutes can pair, so the desktop shows each new pairing immediately (device name and time), hides the spent code, and lists every device with the time it was paired. The TLS private key remains in the macOS Keychain. The host journal stores only each device token's hash; the raw token exists on the host only in the one-time in-memory pairing response and is stored by the phone in the iOS Keychain. The desktop UI receives only the generated SVG, expiry, public fingerprint, and device summaries.
+
+Changing to an address outside the current certificate requires **Reset and re-pair** while Connector is disabled. Reset removes the Connector identity, paired devices, and its remote-command journal. Revoking one device prevents its pending commands from running and drops its command history; a revoked device's slot is reused when a new device pairs and all 32 slots are taken.
+
+## What the phone can send
+
+The phone never supplies a shell command line, path, or command flag. That does not mean phone text cannot cause commands to run: text is delivered as a **prompt to an agent**, and an agent may act on it.
+
+- **Send message** and **output** work only on cards whose *saved* command is a recognized Codex or Claude launch command, and send additionally requires that agent to be the pane's live foreground process. An ordinary shell card — even one where you started an agent by hand — is never readable or writable from the phone.
+- **Task presets.** Projects can define up to 50 phone task presets under **Project defaults**. A preset fixes its group, card title, directory, Codex or Claude launch command, and up to 20 initial steps on the Mac. The phone receives only each preset's ID and name.
+- **Scratchpad queueing** is offered only when the saved card command is a recognized Codex or Claude launch configuration and the snapshot reports `canQueue`. Other cards still support notes but reject remote queue requests. The phone cannot replace the saved command.
 
 Remote commands first enter a bounded native journal and are then handled by the same serialized Board writer as desktop actions. Buffer edits use the visible buffer revision and manual-entry rules. Queue requests persist immutable copies before scheduler admission and retain deterministic operation IDs. Task creation starts the deterministic session before committing a card with its frozen initial plan; an unknown matching session is left as an ambiguous orphan and is never adopted.
 
-Phone scratchpad queueing is offered only when the saved card command is a recognized Codex or Claude launch configuration and the snapshot reports `canQueue`. Other cards still support notes but reject remote queue requests. The phone cannot replace the saved command.
-
 Connector uses the existing local network, including a VPN that already provides direct reachability and assigns an address in the allowed ranges above; it does not create a network, public relay, or APNs path. The iOS app refreshes when opened or returned to the foreground and does not promise background delivery. See the [iOS client README](../connector/ios/README.md) for the required Xcode, Simulator, signing, and physical-device gates.
 
-The host retains at most 2,000 command identities in a 16 MiB journal and does not recycle old IDs. Buffer limits are 256 entries, 256 copies, 32 KiB per text, 1 MiB aggregate text, and 2 MiB serialized JSON. HTTP requests are limited to 256 KiB and encoded responses to 4 MiB. A result marked ambiguous is not retried automatically.
+## Limits and replay
+
+The host holds at most 2,000 unresolved (accepted or executing) commands in a 16 MiB journal. Once a command reaches a final state it is reduced to a tombstone — its id, request hash, state, code and small result, without the request body — so resolved history never exhausts capacity. Replaying a known id with the same body returns the original result; a different body is rejected (`409`). At most 4,000 tombstones are kept; the oldest is dropped first. After any of a device's tombstones have been dropped, a query for an id the host no longer holds answers `410 expired` instead of `404`, because the host can no longer prove the id was never accepted; the phone keeps such an operation unresolved and does not retry it.
+
+Buffer limits are 256 entries, 256 copies, 32 KiB per text, 1 MiB aggregate text, and 2 MiB serialized JSON. Command requests are limited to 256 KiB and are read only after the request's device token is authorized; pairing requests are limited to 4 KiB. The listener accepts at most 16 connections, at most 4 from one source address, with a 5-second TLS handshake, a 10-second header read and a 30-second connection limit. Encoded responses are limited to 4 MiB. A result marked ambiguous is not retried automatically.
+
+The journal file is format version 2. Version 1 files are upgraded when loaded (resolved entries become tombstones) and written as version 2 on the next change; an older deck refuses a version 2 file instead of reading it.

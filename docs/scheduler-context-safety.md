@@ -44,8 +44,12 @@ Every delivery uses the following order:
 6. Re-select and probe again immediately before persisting firing intent.
 7. After intent, one synchronous tmux command queue loads prompt plus CR into
    a private buffer and atomically checks the identity persisted in step 3
-   and, when present, the foreground process before literal paste. The
-   refusal branch deletes the buffer and sends nothing.
+   and, when present, the foreground process before literal paste. When a
+   foreground process is expected, the same condition also requires the pane
+   to have bracketed paste enabled, for single-line text too: an agent that
+   is still starting, or has just exited, has not enabled it. The separate
+   Enter repeats the whole condition. The refusal branch deletes the buffer
+   and sends nothing.
 
 Only the transition into `firing` increments attempts and creates the pending
 ledger. Context waiting cannot become ambiguous after a crash. Existing
@@ -59,9 +63,10 @@ target, foreground different, identity changed, session missing, startup
 failed/timeout, probe failed, or cancelled/revised. It does not infer agent readiness from terminal
 text, quiet time, output activity or hooks.
 
-- Foreground mismatch: keep waiting, cancel/reschedule, or request a one-shot
-  immediate send. The latter requires a pointer-confirmed warning and bypasses
-  only the process comparison for that send.
+- Foreground mismatch: keep waiting or cancel/reschedule. Manual immediate
+  send applies the same guard and reports the mismatch; there is no bypass.
+  A list can hold external (Slack channel) text, and nothing on a queue row
+  records its origin, so no path may clear a row's expected process.
 - Identity mismatch: only reachable while deck is waiting for a session it
   just started. The pane is churning, so the item keeps waiting and the next
   pass re-observes it.
@@ -85,7 +90,8 @@ blocked after every update, with chain groups stalled behind their head step.
 | Session or pane recreated between deliveries | The new generation is observed and persisted; `expected_process` still gates the send. |
 | Pane replaced while deck waits for the session it started | Startup polling stops on the mismatch without an attempt. |
 | Probe passed -> intent | Fresh item and revision comparison, then a second metadata probe. |
-| Final probe -> paste | The synchronous tmux condition checks both exact identity and optional foreground process; either change takes the refusal branch. |
+| Final probe -> paste | The synchronous tmux condition checks exact identity and, for a process-bound row, the foreground process and bracketed paste; any change takes the refusal branch. |
+| Paste landed -> program reads it | Not closable from tmux. If the agent exits after the atomic check and before it reads the bytes, they stay in the tty for the next reader (the shell). They are wrapped in bracketed-paste marks, which zsh's default binding inserts into the line editor instead of running (not verified for every shell configuration), and the Enter step is refused because the foreground changed. |
 | Intent persisted -> accepted send | Existing pending-ledger and ambiguous-on-crash contract applies. |
 | Delete during send | Existing tombstone and session-reaping contract applies. |
 
@@ -100,6 +106,10 @@ delivery with no expected process deliberately retains the residual risk that
 literal input can be interpreted by a shell — including by a shell that came
 back after a restart before the user relaunched their agent; the UI explains
 that fact without asking the user to configure a policy.
+
+Saving a list that holds external text as a project template is the user
+adopting that text as their own: a template has no origin, and a template
+used on a shell card is compatibility delivery.
 
 
 ## Human inspection checkpoints (C v01)

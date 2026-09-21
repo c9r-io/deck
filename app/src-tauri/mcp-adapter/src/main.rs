@@ -4,6 +4,19 @@
 //! does not launch Deck, tmux, a model, or an agent; it validates tool inputs,
 //! forwards one bounded request to Deck's user-only Unix socket, and maps the
 //! structured response back to MCP.
+//!
+//! Tools are one static registry: `tools/list` and `capabilities.tools` are
+//! the same list (`tests/stdio.rs` checks). Mutating tools are annotated
+//! `readOnlyHint=false, destructiveHint=true, idempotentHint=false`; a client
+//! may choose to hide them, which is a client policy, not a Deck state.
+//!
+//! The bearer credential is sent only to a socket at the fixed private path
+//! (`<home from getpwuid>/.deck/mcp-control.sock`) whose peer has this
+//! process's effective uid. Release builds accept no socket, environment or
+//! credential-descriptor override; those exist only in debug builds for the
+//! synthetic harnesses. Once a request has been written, a transport failure
+//! is `OPERATION_AMBIGUOUS` for side-effecting tools: the caller must query
+//! or replay with the SAME request_id, never a new one.
 
 #![allow(dead_code)] // schema carriers are intentionally validated then forwarded as JSON
 
@@ -24,6 +37,21 @@ use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+const BUILD: Option<&str> = match option_env!("DECK_BUILD_SHA") {
+    Some(value) => Some(value),
+    None => option_env!("GITHUB_SHA"),
+};
+/// Deck may legitimately take longer than one runner round trip: a request
+/// can wait for the delivery lock behind an in-flight job dispatch.
+const RESPONSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+const MUTATING: [&str; 6] = [
+    "deck_session_create",
+    "deck_session_control",
+    "deck_exec",
+    "deck_job_input",
+    "deck_job_interrupt",
+    "deck_session_close",
+];
 const MAX_REQUEST: usize = 256 * 1024;
 const MAX_RESPONSE: u64 = 128 * 1024;
 
@@ -234,7 +262,9 @@ fn tool<T: JsonSchema + 'static>(
 impl DeckServer {
     fn new(client_id: String, credential: String, socket: PathBuf) -> Self {
         let ro = annotations(true, false, true);
-        let mutating = annotations(false, true, true);
+        // Exact replay is idempotent only inside Deck's retention window, so
+        // no side-effecting tool claims idempotence.
+        let mutating = annotations(false, true, false);
         let tools = vec![
             tool::<Empty>(
                 "deck_capabilities",
@@ -243,7 +273,7 @@ impl DeckServer {
             ),
             tool::<ProjectPathInput>(
                 "deck_project_list",
-                "List one approved project directory through Deck's bounded descriptor-relative reader. This does not start a shell or follow symbolic links.",
+                "List one approved project directory through Deck's bounded descriptor-relative reader (at most 32 entries by name; truncated=true when more exist). This does not start a shell or follow symbolic links.",
                 ro.clone(),
             ),
             tool::<ProjectReadInput>(
@@ -253,7 +283,7 @@ impl DeckServer {
             ),
             tool::<ProjectSearchInput>(
                 "deck_project_search",
-                "Perform a bounded literal source search below an approved project root without a shell, regex engine, Git helper, or repository script.",
+                "Perform a bounded literal source search of one directory tree or one regular file below an approved project root, without a shell, regex engine, Git helper, or repository script. complete=false with a stopReason and skipped count means some files were not covered.",
                 ro.clone(),
             ),
             tool::<Empty>(
@@ -273,7 +303,7 @@ impl DeckServer {
             ),
             tool::<SessionInput>(
                 "deck_session_inspect",
-                "Inspect one authorized MCP session, its generation, control owner, active job, and bounded terminal context.",
+                "Inspect one authorized MCP session: its generation, control owner and epoch, human lock, execution window, output-sharing gate, and active job metadata. It never returns terminal screen content.",
                 ro.clone(),
             ),
             tool::<ControlInput>(
@@ -284,7 +314,7 @@ impl DeckServer {
             tool::<ExecInput>(
                 "deck_exec",
                 "Execute an arbitrary user-authorized script as one fresh zsh job in the visible managed Deck pane. Files persist, but cd, export, aliases, and functions do not cross calls.",
-                annotations(false, true, true),
+                mutating.clone(),
             ),
             tool::<ReadInput>(
                 "deck_job_read",
@@ -329,10 +359,15 @@ impl DeckServer {
         let socket = self.socket.clone();
         let client_id = self.client_id.clone();
         let credential = self.credential.clone();
+        let mutating = MUTATING.contains(&tool_name);
         let result = tokio::task::spawn_blocking(move || {
             let mut stream = UnixStream::connect(socket).map_err(|_| "DECK_UNAVAILABLE")?;
+            // The bearer goes only to a peer running as this same user.
+            if !peer_is_same_user(&stream) {
+                return Err("DECK_UNAVAILABLE");
+            }
             stream
-                .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+                .set_read_timeout(Some(RESPONSE_TIMEOUT))
                 .map_err(|_| "DECK_UNAVAILABLE")?;
             stream
                 .set_write_timeout(Some(std::time::Duration::from_secs(10)))
@@ -349,15 +384,29 @@ impl DeckServer {
             if frame.len() > MAX_REQUEST {
                 return Err("REQUEST_TOO_LARGE");
             }
-            stream.write_all(&frame).map_err(|_| "DECK_UNAVAILABLE")?;
-            stream.flush().map_err(|_| "DECK_UNAVAILABLE")?;
+            // From the first written byte on, Deck may have acted.
+            let sent_failure = if mutating {
+                "OPERATION_AMBIGUOUS"
+            } else {
+                "DECK_UNAVAILABLE"
+            };
+            stream.write_all(&frame).map_err(|_| sent_failure)?;
+            stream.flush().map_err(|_| sent_failure)?;
             let mut line = Vec::new();
             BufReader::new(stream)
                 .take(MAX_RESPONSE + 1)
                 .read_until(b'\n', &mut line)
-                .map_err(|_| "DECK_UNAVAILABLE")?;
+                .map_err(|_| sent_failure)?;
+            if line.is_empty() {
+                // The connection closed without an answer.
+                return Err(sent_failure);
+            }
             if line.len() as u64 > MAX_RESPONSE || !line.ends_with(b"\n") {
-                return Err("INTERNAL_ERROR");
+                return Err(if mutating {
+                    "OPERATION_AMBIGUOUS"
+                } else {
+                    "INTERNAL_ERROR"
+                });
             }
             serde_json::from_slice::<Value>(&line).map_err(|_| "INTERNAL_ERROR")
         })
@@ -370,6 +419,7 @@ impl DeckServer {
                 if tool_name == "deck_capabilities" {
                     if let Some(object) = value.as_object_mut() {
                         object.insert("adapterVersion".into(), json!(VERSION));
+                        object.insert("adapterBuild".into(), json!(BUILD));
                         object.insert(
                             "tools".into(),
                             json!(self
@@ -386,6 +436,10 @@ impl DeckServer {
                 }
                 CallToolResult::structured(value)
             }
+            Ok(Err("OPERATION_AMBIGUOUS")) => CallToolResult::structured_error(json!({
+                "ok": false,
+                "error": {"code":"OPERATION_AMBIGUOUS","message":"The request reached Deck but its answer was lost; the side effect may or may not have happened.","nextAction":"Inspect with deck_operation_get / deck_session_inspect, or repeat this call with the SAME request_id. Never retry with a new request_id."}
+            })),
             Ok(Err(code)) => CallToolResult::structured_error(json!({
                 "ok": false,
                 "error": {"code":code,"message":"Deck is not available through its local control socket.","nextAction":"Open Deck, enable MCP control, and verify this client id is authorized."}
@@ -611,21 +665,74 @@ impl ServerHandler for DeckServer {
     }
 }
 
+#[cfg(target_os = "macos")]
+fn peer_is_same_user(stream: &UnixStream) -> bool {
+    use std::os::fd::AsRawFd;
+    let mut uid = 0;
+    let mut gid = 0;
+    // SAFETY: getpeereid writes two scalars for this connected socket.
+    unsafe {
+        libc::getpeereid(stream.as_raw_fd(), &mut uid, &mut gid) == 0 && uid == libc::geteuid()
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn peer_is_same_user(_stream: &UnixStream) -> bool {
+    false
+}
+
+/// The account's home directory from the user database, not `$HOME`: an
+/// inherited environment must not redirect the credential.
+fn account_home() -> Option<PathBuf> {
+    use std::ffi::CStr;
+    let mut buffer = vec![0 as libc::c_char; 16 * 1024];
+    // SAFETY: zeroed passwd is a valid out-parameter for getpwuid_r.
+    let mut entry: libc::passwd = unsafe { std::mem::zeroed() };
+    let mut result = std::ptr::null_mut();
+    // SAFETY: every pointer refers to live, correctly sized storage.
+    let status = unsafe {
+        libc::getpwuid_r(
+            libc::geteuid(),
+            &mut entry,
+            buffer.as_mut_ptr(),
+            buffer.len(),
+            &mut result,
+        )
+    };
+    if status != 0 || result.is_null() || entry.pw_dir.is_null() {
+        return None;
+    }
+    // SAFETY: pw_dir points into `buffer`, NUL-terminated by getpwuid_r.
+    let dir = unsafe { CStr::from_ptr(entry.pw_dir) };
+    use std::os::unix::ffi::OsStrExt;
+    Some(PathBuf::from(std::ffi::OsStr::from_bytes(dir.to_bytes())))
+}
+
+const USAGE: &str = "usage: deck-mcp --client-id ID";
+
 fn parse_args() -> Result<(String, PathBuf, Option<u32>), &'static str> {
     let mut args = std::env::args_os().skip(1);
     let mut client_id = None;
+    // Test seams exist only in debug builds; a release adapter always talks
+    // to the one private Deck socket and reads the Keychain.
+    #[cfg(debug_assertions)]
     let mut socket = std::env::var_os("DECK_MCP_SOCKET").map(PathBuf::from);
+    #[cfg(not(debug_assertions))]
+    let socket: Option<PathBuf> = None;
+    #[cfg_attr(not(debug_assertions), allow(unused_mut))]
     let mut credential_fd = None;
     while let Some(arg) = args.next() {
         match arg.to_str() {
             Some("--client-id") => {
                 client_id = args.next().and_then(|value| value.into_string().ok())
             }
+            #[cfg(debug_assertions)]
             Some("--socket") => socket = args.next().map(PathBuf::from),
+            #[cfg(debug_assertions)]
             Some("--credential-fd") => {
                 credential_fd = args.next().and_then(|value| value.to_str()?.parse().ok())
             }
-            _ => return Err("usage: deck-mcp --client-id ID [--socket PATH]"),
+            _ => return Err(USAGE),
         }
     }
     let client_id = client_id.filter(|value| {
@@ -635,11 +742,10 @@ fn parse_args() -> Result<(String, PathBuf, Option<u32>), &'static str> {
                 .bytes()
                 .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
     });
-    let socket =
-        socket.or_else(|| dirs::home_dir().map(|home| home.join(".deck/mcp-control.sock")));
+    let socket = socket.or_else(|| account_home().map(|home| home.join(".deck/mcp-control.sock")));
     match (client_id, socket) {
         (Some(client), Some(path)) if path.is_absolute() => Ok((client, path, credential_fd)),
-        _ => Err("usage: deck-mcp --client-id ID [--socket PATH]"),
+        _ => Err(USAGE),
     }
 }
 

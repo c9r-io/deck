@@ -8,18 +8,40 @@
 //! them. Client deletion is available only after revocation has fenced live
 //! authority; it removes the display authorization but retains ledger history.
 //! Project list/read/search use descriptor-relative no-follow filesystem IO in
-//! `mcp_fs.rs` and never start a shell or repository helper. The
-//! listener is disabled by default and is a 0600 Unix socket under Deck's
-//! private data directory; every connection must also have Deck's effective
-//! uid. The thin `deck-mcp` sidecar provides MCP STDIO and never receives a
-//! Phone token or unrestricted backend credential.
+//! `mcp_fs.rs` and never start a shell or repository helper. The control
+//! socket (0600, Deck's private data directory, same-effective-uid peers
+//! only, bounded connections with timeouts) always listens; the FEATURE is
+//! disabled by default and while it is off every tool — capabilities included
+//! — answers `FEATURE_DISABLED`. The thin `deck-mcp` sidecar provides MCP
+//! STDIO and never receives a Phone token or unrestricted backend credential.
 //!
 //! Board creation and close intents are journaled here, then handed to the
 //! webview's one serialized Board transaction (`mcp.js`). The managed runner
 //! reports process exit and output EOF independently from that control-operation state. Scripts
 //! are never persisted or logged: only their SHA-256 request hash and bounded
-//! runner output exist. On restart, an accepted operation is not replayed;
-//! it becomes ambiguous unless the deterministic result can be observed.
+//! runner output exist. On restart NOTHING accepted is replayed — Board
+//! creates and closes included: every accepted/executing/admitted operation
+//! becomes `ambiguous` (`deck-restarted`). A close goes executing → admitted →
+//! committed|ambiguous; `closing` is cleared on every outcome.
+//!
+//! Journal lifetime (`compact`): records carry the session and control epoch
+//! they were bound to and are retired once the session is gone or the epoch is
+//! no longer current, so a replay fails generation/epoch checks instead of
+//! executing again. Board operations keep a per-client window; renewals are
+//! not journaled; per-client quotas and an interrupt reserve keep one client
+//! from starving another or stopping work. Grants are bounded to the newest
+//! per session plus those a job binding references.
+//!
+//! Human control: takeover/revoke/disable set an in-memory fence BEFORE
+//! waiting for the delivery lock; every dispatch re-checks it under the lock.
+//! Takeover closes existing job output to MCP for good and gives the pane
+//! keyboard (and the ^C stop key) to the human; it starts no shell. Return to
+//! MCP needs no execution grant and restores no holder, lease or sharing: it
+//! persists a new epoch first and re-fences if the runner does not confirm.
+//! A runner created by an earlier Deck process is `stale` (`RUNNER_STALE`)
+//! and can only be closed; `stop_managed_jobs` stops its job groups first.
+//! Local-command failures are stable machine codes (`mcp-*`) the webview maps
+//! to one sentence each.
 
 use base64::Engine;
 use ring::rand::{SecureRandom, SystemRandom};
@@ -38,8 +60,13 @@ use tauri::{AppHandle, Emitter};
 use crate::error::{DeckError, ErrorKind};
 use crate::sync::LockRecover;
 
-const STATE_VERSION: u32 = 3;
+const STATE_VERSION: u32 = 4;
 const CONTROL_PROTOCOL: u32 = 3;
+const DECK_VERSION: &str = env!("CARGO_PKG_VERSION");
+const DECK_BUILD: Option<&str> = match option_env!("DECK_BUILD_SHA") {
+    Some(value) => Some(value),
+    None => option_env!("GITHUB_SHA"),
+};
 const MAX_STATE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_REQUEST_BYTES: usize = 256 * 1024;
 const MAX_RESPONSE_BYTES: usize = 128 * 1024;
@@ -48,7 +75,19 @@ const MAX_PROJECTS_PER_CLIENT: usize = 64;
 const MAX_ROOTS_PER_PROJECT: usize = 16;
 const MAX_SESSIONS: usize = 64;
 const MAX_OPERATIONS: usize = 2000;
-const MAX_JOBS: usize = 1000;
+/// Slots only `deck_job_interrupt` may use: stopping work never fails
+/// because ordinary requests filled the journal.
+const INTERRUPT_RESERVE: usize = 64;
+/// One client may hold at most this many journal entries.
+const MAX_OPERATIONS_PER_CLIENT: usize = 500;
+/// Terminal session-create records kept per client for exact replay.
+const CREATE_REPLAY_WINDOW: usize = 32;
+/// Job bindings kept per session; the runner retires jobs the same way.
+const MAX_JOBS_PER_SESSION: usize = 64;
+const MAX_JOBS: usize = MAX_SESSIONS * MAX_JOBS_PER_SESSION;
+const MAX_GRANTS: usize = MAX_SESSIONS + MAX_JOBS;
+const MAX_CONNECTIONS: usize = 32;
+const CONNECTION_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_AUDIT_EVENTS: usize = 2_000;
 const AUDIT_RETENTION_MS: u64 = 30 * 24 * 60 * 60_000;
 const MAX_SCRIPT_BYTES: usize = 32 * 1024;
@@ -197,6 +236,14 @@ struct Operation {
     updated_at: u64,
     #[serde(default)]
     admission_hash: Option<String>,
+    /// Session this request targeted (the new session for a create).
+    #[serde(default)]
+    session_id: Option<String>,
+    /// Control epoch the request was bound to. A terminal record whose epoch
+    /// is older than the session's current epoch can be retired: any replay
+    /// of it fails `check_control` deterministically.
+    #[serde(default)]
+    control_epoch: Option<u64>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -435,22 +482,33 @@ fn load(path: &Path) -> Result<DiskDoc, DeckError> {
         save(path, &doc)?;
         return Ok(doc);
     }
-    validate_doc(&doc)?;
     let mut changed = false;
+    if doc.version == 3 {
+        // v4 adds per-operation session/epoch binding (absent on v3 records,
+        // which are retired only when their session closes) and canonical
+        // request fingerprints. The bump is sticky: v3 builds refuse v4 state
+        // untouched instead of dropping the binding fields.
+        doc.version = STATE_VERSION;
+        changed = true;
+    }
+    validate_doc(&doc)?;
     for operation in &mut doc.operations {
-        if matches!(operation.state.as_str(), "accepted" | "executing")
-            && matches!(operation.kind.as_str(), "session-create" | "session-close")
-        {
-            // The webview can reconcile deterministic card ids through the
-            // one Board transaction after restart; it will not repeat an
-            // already-visible card or close.
-            operation.state = "accepted".into();
-            operation.updated_at = now_ms();
-            changed = true;
-        } else if matches!(operation.state.as_str(), "accepted" | "executing") {
+        // Nothing accepted before a restart is replayed — not even a Board
+        // create or close. Its outcome is unknown, so it is ambiguous; the
+        // client inspects state and decides under a new request id.
+        if matches!(
+            operation.state.as_str(),
+            "accepted" | "executing" | "admitted"
+        ) {
             operation.state = "ambiguous".into();
             operation.code = Some("deck-restarted".into());
             operation.updated_at = now_ms();
+            changed = true;
+        }
+    }
+    for session in &mut doc.sessions {
+        if session.closing {
+            session.closing = false;
             changed = true;
         }
     }
@@ -463,10 +521,105 @@ fn load(path: &Path) -> Result<DiskDoc, DeckError> {
             changed = true;
         }
     }
+    changed |= compact(&mut doc, None);
     if changed {
         save(path, &doc)?;
     }
     Ok(doc)
+}
+
+/// Retire journal records whose replay can no longer have an effect, and
+/// execution grants that can no longer authorize anything. Never touches a
+/// non-terminal operation. Returns whether anything was removed.
+///
+/// Exact-replay window (the protocol promise, see `docs/mcp.md`):
+/// * a request stays exactly replayable while its session exists and its
+///   bound control epoch is current;
+/// * once the epoch advances or the session closes, a replay is rejected by
+///   generation/epoch checks — never executed again;
+/// * the last `CREATE_REPLAY_WINDOW` terminal creates per client are kept;
+///   an older create request id is outside the window.
+///
+/// `current_service` (when known) also retires grants issued by an earlier
+/// Deck process: they can never be active again.
+fn compact(doc: &mut DiskDoc, current_service: Option<&str>) -> bool {
+    let before = (
+        doc.operations.len(),
+        doc.execution_grants.len(),
+        doc.jobs.len(),
+    );
+    let sessions = doc
+        .sessions
+        .iter()
+        .map(|session| (session.session_id.clone(), session.control_epoch))
+        .collect::<std::collections::HashMap<_, _>>();
+    let terminal = |operation: &Operation| {
+        matches!(
+            operation.state.as_str(),
+            "committed" | "rejected" | "ambiguous"
+        )
+    };
+    let mut creates_kept = std::collections::HashMap::<String, usize>::new();
+    let mut keep = vec![true; doc.operations.len()];
+    for (index, operation) in doc.operations.iter().enumerate().rev() {
+        if !terminal(operation) {
+            continue;
+        }
+        if matches!(operation.kind.as_str(), "session-create" | "session-close") {
+            // Board operations stay queryable (and exactly replayable) for a
+            // bounded per-client window, even after their session is gone.
+            let kept = creates_kept
+                .entry(format!("{}\0{}", operation.client_id, operation.kind))
+                .or_default();
+            *kept += 1;
+            keep[index] = *kept <= CREATE_REPLAY_WINDOW;
+            continue;
+        }
+        let Some(session_id) = operation.session_id.as_deref() else {
+            // Pre-v4 record: retire only once its named session is gone; a
+            // record that names no session is kept (it cannot be judged).
+            let target = operation
+                .result
+                .as_ref()
+                .and_then(|result| result.get("sessionId"))
+                .and_then(Value::as_str);
+            keep[index] = target.is_none_or(|id| sessions.contains_key(id));
+            continue;
+        };
+        keep[index] = match sessions.get(session_id) {
+            None => false,
+            Some(current) => operation
+                .control_epoch
+                .is_none_or(|epoch| epoch >= *current),
+        };
+    }
+    let mut flags = keep.into_iter();
+    doc.operations.retain(|_| flags.next().unwrap_or(true));
+    doc.jobs
+        .retain(|job| sessions.contains_key(&job.session_id));
+    let referenced = doc
+        .jobs
+        .iter()
+        .map(|job| job.grant_id.clone())
+        .collect::<HashSet<_>>();
+    let mut newest = HashSet::new();
+    let mut keep_grants = vec![true; doc.execution_grants.len()];
+    for (index, grant) in doc.execution_grants.iter().enumerate().rev() {
+        let latest = newest.insert(grant.session_id.clone());
+        let live_service = current_service.is_none_or(|service| grant.service_instance == service);
+        keep_grants[index] = sessions.contains_key(&grant.session_id)
+            && live_service
+            && (latest || referenced.contains(&grant.grant_id));
+    }
+    let mut flags = keep_grants.into_iter();
+    doc.execution_grants
+        .retain(|_| flags.next().unwrap_or(true));
+    before
+        != (
+            doc.operations.len(),
+            doc.execution_grants.len(),
+            doc.jobs.len(),
+        )
 }
 
 fn validate_doc(doc: &DiskDoc) -> Result<(), DeckError> {
@@ -521,6 +674,7 @@ fn validate_doc(doc: &DiskDoc) -> Result<(), DeckError> {
                 && request_keys.insert((operation.client_id.clone(), operation.request_id.clone()))
                 && valid_id(&operation.client_id)
                 && valid_id(&operation.request_id)
+                && operation.session_id.as_deref().is_none_or(valid_id)
                 && operation.request_hash.len() == 64
                 && matches!(
                     operation.state.as_str(),
@@ -534,10 +688,12 @@ fn validate_doc(doc: &DiskDoc) -> Result<(), DeckError> {
                 && job_ids.insert(job.job_id.clone())
                 && valid_id(&job.client_id)
                 && session_ids.contains(&job.session_id)
-                && operation_ids.contains(&job.operation_id)
+                // The exec record may already be retired (older epoch); the
+                // binding stays readable for its session's lifetime.
+                && valid_id(&job.operation_id)
         });
     let mut grant_ids = HashSet::new();
-    let grants_valid = doc.execution_grants.len() <= MAX_OPERATIONS
+    let grants_valid = doc.execution_grants.len() <= MAX_GRANTS
         && doc.execution_grants.iter().all(|grant| {
             valid_id(&grant.grant_id)
                 && grant_ids.insert(grant.grant_id.clone())
@@ -836,7 +992,23 @@ fn error_value(code: &str, message: &str, next_action: &str) -> Value {
     json!({"ok":false,"error":{"code":code,"message":message,"nextAction":next_action}})
 }
 
+/// Stable machine codes carried as the DeckError message on local Tauri
+/// commands. The webview maps each to one localized sentence; no free text.
+const RUNNER_STALE: &str = "mcp-runner-stale";
+const SESSION_BUSY: &str = "mcp-session-busy";
+const CLIENT_REVOKED: &str = "mcp-client-revoked";
+const FEATURE_DISABLED: &str = "mcp-feature-disabled";
+const RUNNER_UNCONFIRMED: &str = "mcp-runner-unconfirmed";
+const FENCE_UNPERSISTED: &str = "mcp-fence-unpersisted";
+
 fn map_error(error: DeckError) -> Value {
+    if error.message() == RUNNER_STALE {
+        return error_value(
+            "RUNNER_STALE",
+            "Deck restarted after this managed session was created",
+            "Ask the local Deck user to close this session, then create a new one.",
+        );
+    }
     if error.kind() == ErrorKind::Perm && error.message().contains("execution grant") {
         return error_value(
             "EXECUTION_GRANT_REQUIRED",
@@ -877,7 +1049,7 @@ fn map_error(error: DeckError) -> Value {
         ),
         ErrorKind::DiskFull => (
             "CAPACITY_EXCEEDED",
-            "Resolve or clear old MCP operations in Deck before retrying.",
+            "Release control and request it again (a new control epoch retires this session's older request records, whose ids then stay rejected), or close finished managed sessions.",
         ),
         ErrorKind::Locked => (
             "SESSION_BUSY",
@@ -891,11 +1063,70 @@ fn map_error(error: DeckError) -> Value {
     error_value(code, error.message(), next)
 }
 
-fn request_hash(tool: &str, arguments: &Value) -> String {
-    let mut bytes = tool.as_bytes().to_vec();
+/// Fingerprint the PARSED arguments, not the raw JSON: an optional field sent
+/// as null and the same field omitted are the same request, and key order
+/// never matters.
+fn request_hash<T: Serialize>(tool: &str, arguments: &T) -> String {
+    let mut bytes = b"deck-request-v4\0".to_vec();
+    bytes.extend(tool.as_bytes());
     bytes.push(0);
-    bytes.extend(serde_json::to_vec(arguments).unwrap_or_default());
+    bytes.extend(
+        serde_json::to_value(arguments)
+            .and_then(|value| serde_json::to_vec(&value))
+            .unwrap_or_default(),
+    );
     sha(&bytes)
+}
+
+/// Retire what can be retired, then reserve one journal slot for `client_id`.
+/// Only an interrupt may use the last `INTERRUPT_RESERVE` slots, and no
+/// client may hold more than `MAX_OPERATIONS_PER_CLIENT` records.
+fn reserve_operation(
+    runtime: &Runtime,
+    doc: &mut DiskDoc,
+    client_id: &str,
+    interrupt: bool,
+) -> Result<(), DeckError> {
+    compact(doc, Some(&runtime.service_instance));
+    let limit = if interrupt {
+        MAX_OPERATIONS
+    } else {
+        MAX_OPERATIONS - INTERRUPT_RESERVE
+    };
+    let own = doc
+        .operations
+        .iter()
+        .filter(|operation| operation.client_id == client_id)
+        .count();
+    if doc.operations.len() >= limit || (!interrupt && own >= MAX_OPERATIONS_PER_CLIENT) {
+        return Err(DeckError::new(
+            ErrorKind::DiskFull,
+            "MCP operation capacity reached",
+        ));
+    }
+    Ok(())
+}
+
+/// Emergency fences are in-memory and set BEFORE the local command waits for
+/// the delivery lock. Every side-effect path re-checks them after acquiring
+/// that lock, immediately before touching the runner.
+fn emergency_denial(runtime: &Runtime, client_id: &str, session_id: &str) -> Option<Value> {
+    let emergency = runtime.emergency.lock_or_recover();
+    if emergency.disabled || emergency.clients.contains(client_id) {
+        return Some(error_value(
+            "AUTH_REQUIRED",
+            "MCP authority was revoked locally",
+            "Reauthorize this integration locally in Deck.",
+        ));
+    }
+    if emergency.human_sessions.contains(session_id) {
+        return Some(error_value(
+            "HUMAN_CONTROL",
+            "local takeover has fenced remote access",
+            "Wait for the local user to explicitly return control.",
+        ));
+    }
+    None
 }
 
 fn existing_operation<'a>(
@@ -920,17 +1151,23 @@ fn existing_operation<'a>(
     Ok(None)
 }
 
+/// Operation state is the control decision only; process completion and
+/// output EOF are reported by `deck_job_read`. Internal plan fields (the
+/// runner socket path) never leave Deck.
 fn operation_view(operation: &Operation) -> Value {
+    let mut result = operation.result.clone();
+    if let Some(Value::Object(fields)) = result.as_mut() {
+        fields.remove("runnerSocket");
+    }
     json!({
         "ok": true,
         "operationId": operation.operation_id,
         "kind": operation.kind,
         "state": operation.state,
         "code": operation.code,
-        "result": operation.result,
+        "result": result,
         "acceptedAt": operation.accepted_at,
-        "updatedAt": operation.updated_at,
-        "shellJobComplete": false
+        "updatedAt": operation.updated_at
     })
 }
 
@@ -993,6 +1230,50 @@ fn send_runner_control(
     )
 }
 
+/// Ping a runner and learn whether it still belongs to this Deck process.
+/// `None` means unreachable or unparseable.
+struct RunnerProbe {
+    current: bool,
+    job: Value,
+    version: Option<String>,
+}
+
+fn probe_runner(runtime: &Runtime, session: &ManagedSession) -> Option<RunnerProbe> {
+    let value = send_runner(
+        session,
+        &json!({"kind":"ping","service_instance":runtime.service_instance}),
+    )
+    .ok()?;
+    if value.get("ok").and_then(Value::as_bool) != Some(true) {
+        return None;
+    }
+    Some(RunnerProbe {
+        // A runner that predates `serviceCurrent` cannot prove it is current.
+        current: value.get("serviceCurrent").and_then(Value::as_bool) == Some(true),
+        job: value.get("job").cloned().unwrap_or(Value::Null),
+        version: value
+            .get("runnerVersion")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+    })
+}
+
+/// Classify a runner control reply for local commands.
+fn runner_control_result(response: Result<Value, DeckError>) -> Result<(), DeckError> {
+    match response {
+        Ok(value) if value.get("ok").and_then(Value::as_bool) == Some(true) => Ok(()),
+        Ok(value) => Err(match value.get("error").and_then(Value::as_str) {
+            Some("runner-stale") => DeckError::new(ErrorKind::ContextChanged, RUNNER_STALE),
+            Some("session-busy") => DeckError::new(ErrorKind::Locked, SESSION_BUSY),
+            _ => DeckError::new(ErrorKind::ContextChanged, RUNNER_UNCONFIRMED),
+        }),
+        Err(_) => Err(DeckError::new(
+            ErrorKind::ContextChanged,
+            RUNNER_UNCONFIRMED,
+        )),
+    }
+}
+
 fn runner_socket_matches(socket: &str, generation: &str) -> bool {
     let Ok(mut stream) = UnixStream::connect(socket) else {
         return false;
@@ -1019,6 +1300,10 @@ fn runner_error(value: &Value) -> Option<(&'static str, &'static str)> {
         "session-busy" => Some((
             "SESSION_BUSY",
             "Read or interrupt the active job before retrying.",
+        )),
+        "runner-stale" => Some((
+            "RUNNER_STALE",
+            "Deck restarted after this session was created; ask the local user to close it and create a new session.",
         )),
         "control-revoked" => Some((
             "CONTROL_REVOKED",
@@ -1067,13 +1352,13 @@ struct WireRequest {
 #[serde(deny_unknown_fields)]
 struct Empty {}
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct CreateArgs {
     request_id: String,
     project_id: String,
     cwd: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     title: Option<String>,
 }
 
@@ -1091,7 +1376,7 @@ struct SessionArgs {
     holder_id: Option<String>,
 }
 
-#[derive(Clone, Copy, Deserialize)]
+#[derive(Clone, Copy, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum ControlAction {
     Request,
@@ -1099,7 +1384,7 @@ enum ControlAction {
     Release,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct ControlArgs {
     request_id: String,
@@ -1107,9 +1392,9 @@ struct ControlArgs {
     expected_generation: String,
     action: ControlAction,
     holder_id: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     control_epoch: Option<u64>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     lease_ms: Option<u64>,
 }
 
@@ -1142,7 +1427,7 @@ struct ReadArgs {
     wait_ms: Option<u64>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct InputArgs {
     request_id: String,
@@ -1153,7 +1438,7 @@ struct InputArgs {
     input: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct InterruptArgs {
     request_id: String,
@@ -1163,7 +1448,7 @@ struct InterruptArgs {
     holder_id: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct CloseArgs {
     request_id: String,
@@ -1316,19 +1601,44 @@ fn cursor_offset(
     Ok(offset)
 }
 
+/// One closed code per structured-read failure class. Absent and excluded
+/// paths share READ_DENIED so a denial never reveals out-of-scope names.
+fn fs_error(error: crate::mcp_fs::FsError, denied_action: &str) -> Value {
+    use crate::mcp_fs::FsErrorKind;
+    let (code, next_action) = match error.kind {
+        FsErrorKind::Invalid => (
+            "INVALID_ARGUMENTS",
+            "Use a relative path without traversal and arguments within the documented bounds.",
+        ),
+        FsErrorKind::Denied => ("READ_DENIED", denied_action),
+        FsErrorKind::Limit => (
+            "READ_LIMIT",
+            "The target exceeds the structured read size bound; choose a smaller file.",
+        ),
+        FsErrorKind::Changed => (
+            "CONTENT_CHANGED",
+            "Restart the read or search without a cursor.",
+        ),
+        FsErrorKind::Cancelled => (
+            "CONTEXT_CHANGED",
+            "Call deck_capabilities to confirm the current project scope before retrying.",
+        ),
+    };
+    error_value(code, error.message, next_action)
+}
+
 fn project_list(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<Value, Value> {
     let args: ProjectPathArgs = parse(arguments)?;
     let (root, roots) = read_root(runtime, client_id, &args.project_id, args.root_index)?;
-    let (entries, version) = crate::mcp_fs::list(&root, &args.path).map_err(|message| {
-        error_value(
-            "READ_DENIED",
-            &message,
-            "Choose a regular, non-sensitive path inside the approved root.",
+    let listing = crate::mcp_fs::list(&root, &args.path).map_err(|error| {
+        fs_error(
+            error,
+            "Choose an existing, non-sensitive directory inside the approved root.",
         )
     })?;
     recheck_read(runtime, client_id, &args.project_id, &roots)?;
     Ok(
-        json!({"ok":true,"projectId":args.project_id,"rootIndex":args.root_index,"path":args.path,"entries":entries,"version":version,"truncated":false}),
+        json!({"ok":true,"projectId":args.project_id,"rootIndex":args.root_index,"path":args.path,"entries":listing.entries,"version":listing.version,"truncated":listing.truncated}),
     )
 }
 
@@ -1337,10 +1647,9 @@ fn project_read(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<
     let (root, roots) = read_root(runtime, client_id, &args.project_id, args.root_index)?;
     // Read metadata/content once at offset zero to obtain the descriptor-bound
     // version. Subsequent cursor validation binds that version before slicing.
-    let file_version = crate::mcp_fs::identity(&root, &args.path).map_err(|message| {
-        error_value(
-            "READ_DENIED",
-            &message,
+    let file_version = crate::mcp_fs::identity(&root, &args.path).map_err(|error| {
+        fs_error(
+            error,
             "Choose a regular UTF-8, non-sensitive file inside the approved root.",
         )
     })?;
@@ -1360,11 +1669,10 @@ fn project_read(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<
         offset as u64,
         args.max_bytes.unwrap_or(MAX_READ_BYTES),
     )
-    .map_err(|message| {
-        error_value(
-            "READ_DENIED",
-            &message,
-            "Restart if the file changed, or choose a smaller regular UTF-8 file.",
+    .map_err(|error| {
+        fs_error(
+            error,
+            "Choose a regular UTF-8, non-sensitive file inside the approved root.",
         )
     })?;
     if version != file_version {
@@ -1421,16 +1729,16 @@ fn project_search(runtime: &Runtime, client_id: &str, arguments: Value) -> Resul
             crate::mcp_fs::SearchControl::Cancelled
         }
     })
-    .map_err(|message| {
-        error_value(
-            "SEARCH_LIMIT_OR_DENIED",
-            &message,
-            "Narrow the literal query or search path.",
+    .map_err(|error| {
+        fs_error(
+            error,
+            "Choose an existing, non-sensitive file or directory inside the approved root.",
         )
     })?;
     let results = outcome.matches;
     let search_complete = outcome.complete;
     let stop_reason = outcome.stop_reason;
+    let skipped = outcome.skipped;
     let snapshot = sha(&serde_json::to_vec(&results).unwrap_or_default());
     let key = format!("{}\0{}", args.path, args.query);
     let offset = cursor_offset(
@@ -1463,7 +1771,7 @@ fn project_search(runtime: &Runtime, client_id: &str, arguments: Value) -> Resul
                 end,
             )
         });
-        let response = json!({"ok":true,"projectId":args.project_id,"path":args.path,"query":args.query,"matches":&results[offset..end],"nextCursor":cursor,"truncated":!search_complete || end < results.len(),"complete":search_complete && end == results.len(),"stopReason":stop_reason});
+        let response = json!({"ok":true,"projectId":args.project_id,"path":args.path,"query":args.query,"matches":&results[offset..end],"nextCursor":cursor,"truncated":!search_complete || end < results.len(),"complete":search_complete && end == results.len(),"stopReason":stop_reason,"skipped":skipped});
         if serde_json::to_vec(&response).is_ok_and(|bytes| bytes.len() < MAX_RESPONSE_BYTES) {
             return Ok(response);
         }
@@ -1480,9 +1788,6 @@ fn project_search(runtime: &Runtime, client_id: &str, arguments: Value) -> Resul
 
 fn capabilities(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<Value, Value> {
     parse::<Empty>(arguments)?;
-    // Keep the control process free of an executable shell path. The runner
-    // alone owns the reviewed zsh spawn boundary.
-    let shell = format!("{} -d -f", Path::new("/bin").join("zsh").display());
     runtime
         .read(|doc| {
             let client = doc
@@ -1496,10 +1801,12 @@ fn capabilities(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<
                 "deckConnection": "connected",
                 "controlProtocolVersion": CONTROL_PROTOCOL,
                 "stateSchemaVersion": STATE_VERSION,
+                "deckVersion": DECK_VERSION,
+                "deckBuild": DECK_BUILD,
                 "executionMode": "trusted-host",
                 "realOsSandbox": false,
                 "shellSemantics": {
-                    "shell": shell,
+                    "shell": "zsh -d -f",
                     "perJobShellState": true,
                     "filesystemChangesPersist": true,
                     "cdExportAliasFunctionPersistAcrossExec": false,
@@ -1522,9 +1829,7 @@ fn capabilities(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<
                 "structuredProjectRead": true,
                 "reliableJobExitTracking": true,
                 "authorizedWorkspaces": client.projects,
-                "mayCreateSession": client.allow_create,
-                "featureEnabled": doc.config.enabled,
-                "manualActionRequired": if doc.config.enabled { Value::Null } else { json!("Open Deck Settings and enable MCP terminal control.") }
+                "mayCreateSession": client.allow_create
             }))
         })
         .map_err(map_error)?
@@ -1548,7 +1853,7 @@ fn sessions_list(runtime: &Runtime, client_id: &str, arguments: Value) -> Result
     let values = sessions
         .into_iter()
         .map(|session| {
-            let runner = send_runner(&session, &json!({"kind":"ping"})).ok();
+            let runner = probe_runner(runtime, &session);
             json!({
                 "sessionId": session.session_id,
                 "cardId": session.card_id,
@@ -1558,11 +1863,9 @@ fn sessions_list(runtime: &Runtime, client_id: &str, arguments: Value) -> Result
                 "controlOwner": session.control_owner,
                 "controlHolder": session.control_holder,
                 "controlEpoch": session.control_epoch,
-                "activeJob": runner.as_ref().and_then(|value| value.get("job")).cloned(),
-                "foreground": runner.as_ref().and_then(|value| value.get("job")).is_some_and(|job| !job.is_null()).then_some("managed-job"),
-                "readiness": "unknown",
-                "readinessConfidence": "not-inferred-from-quiet",
-                "stale": runner.is_none()
+                "activeJob": runner.as_ref().map(|probe| probe.job.clone()),
+                "foreground": runner.as_ref().is_some_and(|probe| !probe.job.is_null()).then_some("managed-job"),
+                "stale": runner.as_ref().is_none_or(|probe| !probe.current)
             })
         })
         .collect::<Vec<_>>();
@@ -1584,8 +1887,8 @@ fn session_create(runtime: &Runtime, client_id: &str, arguments: Value) -> Resul
             "Use ids returned by Deck and a short printable title.",
         ));
     }
-    let hash = request_hash("deck_session_create", &arguments);
-    let title = args.title.unwrap_or_else(|| "MCP shell".into());
+    let hash = request_hash("deck_session_create", &args);
+    let title = args.title.clone().unwrap_or_else(|| "MCP shell".into());
     let operation = runtime
         .write(|doc| {
             client(doc, client_id)?;
@@ -1595,7 +1898,8 @@ fn session_create(runtime: &Runtime, client_id: &str, arguments: Value) -> Resul
             if let Some(existing) = existing_operation(doc, client_id, &args.request_id, &hash)? {
                 return Ok(existing.clone());
             }
-            if doc.operations.len() >= MAX_OPERATIONS || doc.sessions.len() >= MAX_SESSIONS {
+            reserve_operation(runtime, doc, client_id, false)?;
+            if doc.sessions.len() >= MAX_SESSIONS {
                 return Err(DeckError::new(
                     ErrorKind::DiskFull,
                     "MCP operation capacity reached",
@@ -1634,7 +1938,7 @@ fn session_create(runtime: &Runtime, client_id: &str, arguments: Value) -> Resul
                 .join(format!("{generation}.sock"));
             let result = json!({
                 "cardId": card_id,
-                "sessionId": session_id,
+                "sessionId": &session_id,
                 "projectId": args.project_id,
                 "title": title,
                 "cwd": cwd,
@@ -1644,7 +1948,7 @@ fn session_create(runtime: &Runtime, client_id: &str, arguments: Value) -> Resul
             let operation = Operation {
                 operation_id,
                 client_id: client_id.into(),
-                request_id: args.request_id,
+                request_id: args.request_id.clone(),
                 request_hash: hash,
                 kind: "session-create".into(),
                 state: "accepted".into(),
@@ -1653,6 +1957,8 @@ fn session_create(runtime: &Runtime, client_id: &str, arguments: Value) -> Resul
                 accepted_at: now_ms(),
                 updated_at: now_ms(),
                 admission_hash: None,
+                session_id: Some(session_id),
+                control_epoch: None,
             };
             doc.operations.push(operation.clone());
             Ok(operation)
@@ -1685,7 +1991,7 @@ fn inspect(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<Value
         .read(|doc| authorized_session(doc, client_id, &args.session_id).cloned())
         .map_err(map_error)?
         .map_err(map_error)?;
-    let runner = send_runner(&session, &json!({"kind":"ping"}));
+    let runner = probe_runner(runtime, &session);
     let emergency_human = runtime
         .emergency
         .lock_or_recover()
@@ -1710,8 +2016,14 @@ fn inspect(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<Value
         })
         .map_err(map_error)?
         .map_err(map_error)?;
-    let denial = if runner.is_err() {
+    let job = runner
+        .as_ref()
+        .map(|probe| probe.job.clone())
+        .unwrap_or(Value::Null);
+    let denial = if runner.is_none() {
         Some("RUNNER_UNAVAILABLE")
+    } else if runner.as_ref().is_some_and(|probe| !probe.current) {
+        Some("RUNNER_STALE")
     } else if session.closing {
         Some("TARGET_CLOSING")
     } else if session.human_lock || emergency_human {
@@ -1725,12 +2037,7 @@ fn inspect(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<Value
         .is_none_or(|deadline| deadline <= now_ms())
     {
         Some("CONTROL_LEASE_EXPIRED")
-    } else if runner
-        .as_ref()
-        .ok()
-        .and_then(|value| value.get("job"))
-        .is_some_and(|job| !job.is_null())
-    {
+    } else if !job.is_null() {
         Some("SESSION_BUSY")
     } else {
         runtime
@@ -1738,25 +2045,8 @@ fn inspect(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<Value
             .map_err(map_error)?
             .then_some("EXECUTION_GRANT_REQUIRED")
     };
-    let terminal = (session.output_shared && !session.human_lock && !emergency_human)
-        .then(|| {
-            crate::tmux::tmux(&[
-                "capture-pane",
-                "-p",
-                "-S",
-                "-40",
-                "-t",
-                &crate::tmux::pane_target(&session.tmux_session),
-            ])
-        })
-        .and_then(Result::ok)
-        .map(|value| {
-            if value.len() > 16 * 1024 {
-                String::from_utf8_lossy(&value.as_bytes()[value.len() - 16 * 1024..]).into_owned()
-            } else {
-                value
-            }
-        });
+    // Terminal screen content is deliberately NOT returned: output reaches a
+    // client only through deck_job_read, gated per job binding.
     Ok(json!({
         "ok": true,
         "sessionId": session.session_id,
@@ -1776,20 +2066,17 @@ fn inspect(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<Value
             "sessionGateOpen": session.output_shared && !session.human_lock && !emergency_human,
             "independentOfExecutionAuthorization": true
         },
-        "activeJob": runner.as_ref().ok().and_then(|value| value.get("job")).cloned(),
-        "foreground": runner.as_ref().ok().and_then(|value| value.get("job")).is_some().then_some("managed-job"),
-        "readiness": "unknown",
-        "terminalContext": terminal,
-        "terminalContextBounded": true,
-        "stale": runner.is_err(),
+        "activeJob": job,
+        "foreground": (!job.is_null()).then_some("managed-job"),
+        "stale": runner.as_ref().is_none_or(|probe| !probe.current),
+        "runnerVersion": runner.as_ref().and_then(|probe| probe.version.clone()),
         "mayStartNextJob": denial.is_none(),
         "mayStartNextJobReason": denial,
     }))
 }
 
 fn session_control(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<Value, Value> {
-    let _delivery = runtime.delivery.lock_or_recover();
-    let args: ControlArgs = parse(arguments.clone())?;
+    let args: ControlArgs = parse(arguments)?;
     if !valid_id(&args.request_id) || !valid_id(&args.holder_id) {
         return Err(error_value(
             "INVALID_ARGUMENTS",
@@ -1830,16 +2117,31 @@ fn session_control(runtime: &Runtime, client_id: &str, arguments: Value) -> Resu
         }
         _ => {}
     }
-    let hash = request_hash("deck_session_control", &arguments);
+    let hash = request_hash("deck_session_control", &args);
     let action = args.action;
-    let operation = runtime
+    let _delivery = runtime.delivery.lock_or_recover();
+    if let Some(denied) = emergency_denial(runtime, client_id, &args.session_id) {
+        return Err(denied);
+    }
+    // (operation, session, replayed)
+    let (operation, session, replayed) = runtime
         .write(|doc| {
             client(doc, client_id)?;
             if let Some(existing) = existing_operation(doc, client_id, &args.request_id, &hash)? {
-                return Ok(existing.clone());
+                // An exact replay returns the recorded decision only. It never
+                // re-sends a runner control side effect: after a holder change
+                // that would re-install a stale control context.
+                let session = doc
+                    .sessions
+                    .iter()
+                    .find(|session| session.session_id == args.session_id)
+                    .cloned();
+                return Ok((existing.clone(), session, true));
             }
-            if doc.operations.len() >= MAX_OPERATIONS {
-                return Err(DeckError::new(ErrorKind::DiskFull, "MCP operation capacity reached"));
+            // A renew changes no epoch and is naturally idempotent, so it is
+            // answered without consuming a journal slot.
+            if !matches!(action, ControlAction::Renew) {
+                reserve_operation(runtime, doc, client_id, false)?;
             }
             let session = doc
                 .sessions
@@ -1879,44 +2181,45 @@ fn session_control(runtime: &Runtime, client_id: &str, arguments: Value) -> Resu
                 }
             }
             let result = json!({"sessionId":session.session_id,"sessionGeneration":session.generation,"controlOwner":session.control_owner,"controlHolder":session.control_holder,"controlEpoch":session.control_epoch,"leaseExpiresAt":session.lease_expires_at});
-            let session_id = session.session_id.clone();
-            let operation = Operation { operation_id: random_id("op_")?, client_id: client_id.into(), request_id: args.request_id, request_hash: hash, kind: "session-control".into(), state: "committed".into(), code: None, result: Some(result), accepted_at: now_ms(), updated_at: now_ms(), admission_hash: None };
-            doc.operations.push(operation.clone());
-            audit(doc, "control-changed", AuditLink { principal_id: Some(client_id), session_id: Some(&session_id), operation_id: Some(&operation.operation_id), ..Default::default() })?;
-            Ok(operation)
+            let session = session.clone();
+            let operation = Operation { operation_id: random_id("op_")?, client_id: client_id.into(), request_id: args.request_id.clone(), request_hash: hash.clone(), kind: "session-control".into(), state: "committed".into(), code: None, result: Some(result), accepted_at: now_ms(), updated_at: now_ms(), admission_hash: None, session_id: Some(session.session_id.clone()), control_epoch: Some(session.control_epoch) };
+            if !matches!(action, ControlAction::Renew) {
+                doc.operations.push(operation.clone());
+            }
+            audit(doc, "control-changed", AuditLink { principal_id: Some(client_id), session_id: Some(&session.session_id), operation_id: Some(&operation.operation_id), ..Default::default() })?;
+            Ok((operation, Some(session), false))
         })
         .map_err(map_error)?;
-    let session_id = operation
-        .result
-        .as_ref()
-        .and_then(|result| result.get("sessionId"))
-        .and_then(Value::as_str)
-        .unwrap_or("");
-    let session = runtime
-        .read(|doc| authorized_session(doc, client_id, session_id).cloned())
-        .map_err(map_error)?
-        .map_err(map_error)?;
+    if matches!(action, ControlAction::Renew) && !replayed {
+        // Renewals are not journaled: there is no operation to query later.
+        let mut view = operation_view(&operation);
+        view["operationId"] = Value::Null;
+        return Ok(view);
+    }
+    if replayed {
+        return Ok(operation_view(&operation));
+    }
+    let Some(session) = session else {
+        return Ok(operation_view(&operation));
+    };
     let mode = if matches!(action, ControlAction::Release) {
         "fenced"
     } else {
         "mcp"
     };
-    let fenced = send_runner_control(runtime, &session, mode)
-        .ok()
-        .is_some_and(|value| value.get("ok").and_then(Value::as_bool) == Some(true));
-    if !fenced {
-        return Err(error_value(
+    match runner_control_result(send_runner_control(runtime, &session, mode)) {
+        Ok(()) => Ok(operation_view(&operation)),
+        Err(error) if error.message() == RUNNER_STALE => Err(map_error(error)),
+        Err(_) => Err(error_value(
             "OPERATION_AMBIGUOUS",
             "the control decision is durable but the runner fence is unconfirmed",
             "Inspect the session locally; do not assume the prior holder can still run or is stopped.",
-        ));
+        )),
     }
-    Ok(operation_view(&operation))
 }
 
 fn exec(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<Value, Value> {
-    let _delivery = runtime.delivery.lock_or_recover();
-    let args: ExecArgs = parse(arguments.clone())?;
+    let args: ExecArgs = parse(arguments)?;
     if !valid_id(&args.request_id)
         || args.script.is_empty()
         || args.script.len() > MAX_SCRIPT_BYTES
@@ -1952,6 +2255,10 @@ fn exec(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<Value, V
     ]))
     .unwrap_or_default()
     .as_slice());
+    let _delivery = runtime.delivery.lock_or_recover();
+    if let Some(denied) = emergency_denial(runtime, client_id, &args.session_id) {
+        return Err(denied);
+    }
     let prepared = runtime
         .write(|doc| {
             let client = client(doc, client_id)?.clone();
@@ -1959,10 +2266,20 @@ fn exec(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<Value, V
                 let job = existing.result.as_ref().and_then(|result| result.get("jobId")).and_then(Value::as_str).and_then(|job_id| doc.jobs.iter().find(|job| job.job_id == job_id)).cloned();
                 return Ok((existing.clone(), job, None));
             }
-            if doc.operations.len() >= MAX_OPERATIONS || doc.jobs.len() >= MAX_JOBS {
+            reserve_operation(runtime, doc, client_id, false)?;
+            let session = doc.sessions.iter().find(|session| session.session_id == args.session_id && session.owner_client_id == client_id).cloned().ok_or_else(|| DeckError::new(ErrorKind::Missing, "session not found"))?;
+            // Keep a bounded window of bindings per session. The runner holds
+            // at most one live job and retires finished jobs oldest-first, so
+            // the oldest binding here is never the live one.
+            let bound = doc.jobs.iter().filter(|job| job.session_id == session.session_id).count();
+            if bound >= MAX_JOBS_PER_SESSION {
+                if let Some(oldest) = doc.jobs.iter().position(|job| job.session_id == session.session_id) {
+                    doc.jobs.remove(oldest);
+                }
+            }
+            if doc.jobs.len() >= MAX_JOBS {
                 return Err(DeckError::new(ErrorKind::DiskFull, "MCP operation capacity reached"));
             }
-            let session = doc.sessions.iter().find(|session| session.session_id == args.session_id && session.owner_client_id == client_id).cloned().ok_or_else(|| DeckError::new(ErrorKind::Missing, "session not found"))?;
             check_control(&session, client_id, &args.expected_generation, args.control_epoch, &args.holder_id)?;
             let grant = active_execution_grant(runtime, doc, client_id, &session, false)?.clone();
             if session.closing {
@@ -1973,7 +2290,7 @@ fn exec(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<Value, V
             let operation_id = random_id("op_")?;
             let job_id = random_id("job_")?;
             let binding = JobBinding { job_id: job_id.clone(), client_id: client_id.into(), session_id: session.session_id.clone(), session_generation: session.generation.clone(), request_hash: hash.clone(), operation_id: operation_id.clone(), grant_id: grant.grant_id.clone(), grant_version: grant.grant_version, allow_output: grant.allow_output };
-            let operation = Operation { operation_id, client_id: client_id.into(), request_id: args.request_id.clone(), request_hash: hash.clone(), kind: "exec".into(), state: "accepted".into(), code: None, result: Some(json!({"jobId":job_id,"sessionId":session.session_id,"sessionGeneration":session.generation,"executionGrantId":grant.grant_id,"executionGrantVersion":grant.grant_version,"policyVersion":POLICY_VERSION,"environmentProfile":ENVIRONMENT_PROFILE,"scriptDigest":script_digest,"scriptLength":args.script.len(),"cwd":cwd})), accepted_at: now_ms(), updated_at: now_ms(), admission_hash: None };
+            let operation = Operation { operation_id, client_id: client_id.into(), request_id: args.request_id.clone(), request_hash: hash.clone(), kind: "exec".into(), state: "accepted".into(), code: None, result: Some(json!({"jobId":job_id,"sessionId":session.session_id,"sessionGeneration":session.generation,"executionGrantId":grant.grant_id,"executionGrantVersion":grant.grant_version,"policyVersion":POLICY_VERSION,"environmentProfile":ENVIRONMENT_PROFILE,"scriptDigest":script_digest,"scriptLength":args.script.len(),"cwd":cwd})), accepted_at: now_ms(), updated_at: now_ms(), admission_hash: None, session_id: Some(session.session_id.clone()), control_epoch: Some(args.control_epoch) };
             doc.jobs.push(binding.clone());
             doc.operations.push(operation.clone());
             audit(doc, "exec-intent", AuditLink { principal_id: Some(client_id), session_id: Some(&session.session_id), operation_id: Some(&operation.operation_id), job_id: Some(&binding.job_id), grant_id: Some(&grant.grant_id), reason_code: None })?;
@@ -2018,6 +2335,9 @@ fn exec(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<Value, V
         })
         .map_err(map_error)?
         .map_err(map_error)?;
+    // A takeover/revoke/disable that set its fence while this request waited
+    // for the delivery lock wins: nothing reaches the runner.
+    let fenced = emergency_denial(runtime, client_id, &session.session_id);
     let context = json!({
         "service_instance": runtime.service_instance,
         "holder_id": args.holder_id,
@@ -2028,10 +2348,13 @@ fn exec(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<Value, V
         "intent_hash": hash,
         "expires_at": grant.expires_at,
     });
-    let runner = send_runner(
-        &session,
-        &json!({"kind":"exec","job_id":binding.job_id,"request_hash":hash,"script":args.script,"cwd":cwd,"wait_ms":args.wait_ms.unwrap_or(1_000),"timeout_ms":args.execution_timeout_ms,"context":context}),
-    );
+    let runner = match &fenced {
+        Some(_) => Ok(json!({"ok":false,"error":"control-revoked"})),
+        None => send_runner(
+            &session,
+            &json!({"kind":"exec","job_id":binding.job_id,"request_hash":hash,"script":args.script,"cwd":cwd,"wait_ms":args.wait_ms.unwrap_or(1_000),"timeout_ms":args.execution_timeout_ms,"context":context}),
+        ),
+    };
     let committed = runner
         .as_ref()
         .ok()
@@ -2070,6 +2393,10 @@ fn exec(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<Value, V
             saved.updated_at = now_ms();
             operation = saved.clone();
         }
+        if rejected.is_some() {
+            // The runner never created this job: drop its binding.
+            doc.jobs.retain(|job| job.job_id != binding.job_id);
+        }
         audit(
             doc,
             "exec-dispatch",
@@ -2094,6 +2421,9 @@ fn exec(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<Value, V
             "job dispatch occurred but its audit result could not be persisted",
             "Inspect the live job; do not re-execute it.",
         ));
+    }
+    if let Some(denied) = fenced {
+        return Err(denied);
     }
     match runner {
         Ok(value) if committed => Ok(
@@ -2130,26 +2460,51 @@ fn decode_cursor(cursor: Option<String>, binding: &JobBinding) -> Result<u64, Va
 
 fn job_read(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<Value, Value> {
     let args: ReadArgs = parse(arguments)?;
-    let (binding, session) = runtime
-        .read(|doc| {
-            client(doc, client_id)?;
-            let binding = doc
-                .jobs
-                .iter()
-                .find(|job| job.job_id == args.job_id && job.client_id == client_id)
-                .cloned()
-                .ok_or_else(|| DeckError::new(ErrorKind::Missing, "job not found"))?;
-            let session = authorized_session(doc, client_id, &binding.session_id)?.clone();
-            if !binding.allow_output || !session.output_shared || session.human_lock {
-                return Err(DeckError::new(
-                    ErrorKind::Perm,
-                    "job output sharing is paused",
-                ));
-            }
-            Ok((binding, session))
-        })
-        .map_err(map_error)?
-        .map_err(map_error)?;
+    // The same output gate runs before the runner read and again after it
+    // returns (the read may wait up to 5 s). Bytes read across a takeover,
+    // sharing pause, revocation or generation change are dropped. The gate is
+    // the job binding plus the session's independent sharing switch — never
+    // the execution grant.
+    let gate = || -> Result<(JobBinding, ManagedSession), Value> {
+        let (binding, session) = runtime
+            .read(|doc| {
+                client(doc, client_id)?;
+                let binding = doc
+                    .jobs
+                    .iter()
+                    .find(|job| job.job_id == args.job_id && job.client_id == client_id)
+                    .cloned()
+                    .ok_or_else(|| DeckError::new(ErrorKind::Missing, "job not found"))?;
+                let session = authorized_session(doc, client_id, &binding.session_id)?.clone();
+                Ok((binding, session))
+            })
+            .map_err(map_error)?
+            .map_err(map_error)?;
+        if let Some(denied) = emergency_denial(runtime, client_id, &session.session_id) {
+            return Err(denied);
+        }
+        if session.human_lock {
+            return Err(error_value(
+                "HUMAN_CONTROL",
+                "the local user controls this session",
+                "Wait for the local user to explicitly return control.",
+            ));
+        }
+        if session.generation != binding.session_generation {
+            return Err(map_error(DeckError::new(
+                ErrorKind::ContextChanged,
+                "session generation changed",
+            )));
+        }
+        if !binding.allow_output || !session.output_shared {
+            return Err(map_error(DeckError::new(
+                ErrorKind::Perm,
+                "job output sharing is paused",
+            )));
+        }
+        Ok((binding, session))
+    };
+    let (binding, session) = gate()?;
     let cursor = decode_cursor(args.cursor, &binding)?;
     let max_bytes = args.max_bytes.unwrap_or(MAX_READ_BYTES);
     if !(4..=MAX_READ_BYTES).contains(&max_bytes) || args.wait_ms.unwrap_or(0) > 5_000 {
@@ -2160,6 +2515,9 @@ fn job_read(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<Valu
         ));
     }
     let value = send_runner(&session, &json!({"kind":"read","job_id":binding.job_id,"cursor":cursor,"max_bytes":max_bytes,"wait_ms":args.wait_ms.unwrap_or(0)})).map_err(map_error)?;
+    // Linearization: authority is judged at return time. Output already
+    // delivered by an earlier call cannot be recalled.
+    gate()?;
     if value.get("ok").and_then(Value::as_bool) != Some(true) {
         return Err(error_value(
             "JOB_STATE_UNKNOWN",
@@ -2182,35 +2540,39 @@ fn job_side_effect(
     tool: &str,
     arguments: Value,
 ) -> Result<Value, Value> {
-    let _delivery = runtime.delivery.lock_or_recover();
-    let (request_id, job_id, generation, epoch, holder_id, input) = if tool == "deck_job_input" {
-        let args: InputArgs = parse(arguments.clone())?;
-        if args.input.len() > MAX_INPUT_BYTES {
-            return Err(error_value(
-                "INVALID_ARGUMENTS",
-                "input exceeds its bound",
-                "Send a smaller input chunk.",
-            ));
-        }
-        (
-            args.request_id,
-            args.job_id,
-            args.session_generation,
-            args.control_epoch,
-            args.holder_id,
-            Some(args.input),
-        )
-    } else {
-        let args: InterruptArgs = parse(arguments.clone())?;
-        (
-            args.request_id,
-            args.job_id,
-            args.session_generation,
-            args.control_epoch,
-            args.holder_id,
-            None,
-        )
-    };
+    let (request_id, job_id, generation, epoch, holder_id, input, hash) =
+        if tool == "deck_job_input" {
+            let args: InputArgs = parse(arguments)?;
+            if args.input.len() > MAX_INPUT_BYTES {
+                return Err(error_value(
+                    "INVALID_ARGUMENTS",
+                    "input exceeds its bound",
+                    "Send a smaller input chunk.",
+                ));
+            }
+            let hash = request_hash(tool, &args);
+            (
+                args.request_id,
+                args.job_id,
+                args.session_generation,
+                args.control_epoch,
+                args.holder_id,
+                Some(args.input),
+                hash,
+            )
+        } else {
+            let args: InterruptArgs = parse(arguments)?;
+            let hash = request_hash(tool, &args);
+            (
+                args.request_id,
+                args.job_id,
+                args.session_generation,
+                args.control_epoch,
+                args.holder_id,
+                None,
+                hash,
+            )
+        };
     if !valid_id(&request_id) {
         return Err(error_value(
             "INVALID_ARGUMENTS",
@@ -2218,19 +2580,16 @@ fn job_side_effect(
             "Use a stable opaque request id.",
         ));
     }
-    let hash = request_hash(tool, &arguments);
+    let _delivery = runtime.delivery.lock_or_recover();
     let prepared = runtime
         .write(|doc| {
             client(doc, client_id)?;
             if let Some(existing) = existing_operation(doc, client_id, &request_id, &hash)? {
                 return Ok((existing.clone(), None));
             }
-            if doc.operations.len() >= MAX_OPERATIONS {
-                return Err(DeckError::new(
-                    ErrorKind::DiskFull,
-                    "MCP operation capacity reached",
-                ));
-            }
+            // Interrupt may use the reserved slots: stopping work must not
+            // fail because ordinary requests filled the journal.
+            reserve_operation(runtime, doc, client_id, input.is_none())?;
             let binding = doc
                 .jobs
                 .iter()
@@ -2284,6 +2643,8 @@ fn job_side_effect(
                 accepted_at: now_ms(),
                 updated_at: now_ms(),
                 admission_hash: None,
+                session_id: Some(session.session_id.clone()),
+                control_epoch: Some(epoch),
             };
             doc.operations.push(operation.clone());
             Ok((operation, Some((binding, session, grant))))
@@ -2293,6 +2654,21 @@ fn job_side_effect(
     let Some((binding, session, grant)) = target else {
         return Ok(operation_view(&operation));
     };
+    if let Some(denied) = emergency_denial(runtime, client_id, &session.session_id) {
+        let _ = runtime.write(|doc| {
+            if let Some(saved) = doc
+                .operations
+                .iter_mut()
+                .find(|saved| saved.operation_id == operation.operation_id)
+            {
+                saved.state = "rejected".into();
+                saved.code = Some("CONTROL_REVOKED".into());
+                saved.updated_at = now_ms();
+            }
+            Ok(())
+        });
+        return Err(denied);
+    }
     let context = json!({
         "service_instance": runtime.service_instance,
         "holder_id": holder_id,
@@ -2368,8 +2744,7 @@ fn job_side_effect(
 }
 
 fn session_close(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<Value, Value> {
-    let _delivery = runtime.delivery.lock_or_recover();
-    let args: CloseArgs = parse(arguments.clone())?;
+    let args: CloseArgs = parse(arguments)?;
     if !valid_id(&args.request_id) {
         return Err(error_value(
             "INVALID_ARGUMENTS",
@@ -2377,26 +2752,59 @@ fn session_close(runtime: &Runtime, client_id: &str, arguments: Value) -> Result
             "Use a stable opaque request id.",
         ));
     }
-    let hash = request_hash("deck_session_close", &arguments);
+    let hash = request_hash("deck_session_close", &args);
+    let _delivery = runtime.delivery.lock_or_recover();
+    if let Some(denied) = emergency_denial(runtime, client_id, &args.session_id) {
+        return Err(denied);
+    }
+    // Replay, authorization and control are checked first without I/O. The
+    // runner ping happens OUTSIDE the state write: the doc lock also guards
+    // every terminal keystroke (`guard_terminal_input`). No job can start
+    // meanwhile because exec needs the delivery lock held here.
+    let session = runtime
+        .read(|doc| {
+            client(doc, client_id)?;
+            if let Some(existing) = existing_operation(doc, client_id, &args.request_id, &hash)? {
+                return Ok(Err(existing.clone()));
+            }
+            let session = authorized_session(doc, client_id, &args.session_id)?.clone();
+            check_control(
+                &session,
+                client_id,
+                &args.expected_generation,
+                args.control_epoch,
+                &args.holder_id,
+            )?;
+            Ok(Ok(session))
+        })
+        .map_err(map_error)?
+        .map_err(map_error)?;
+    let session = match session {
+        Ok(session) => session,
+        Err(existing) => return Ok(operation_view(&existing)),
+    };
+    let runner = send_runner(&session, &json!({"kind":"ping"})).map_err(|_| {
+        map_error(DeckError::new(
+            ErrorKind::ContextChanged,
+            "managed runner state is unknown; remote close is refused",
+        ))
+    })?;
+    let active = runner.get("job").is_some_and(|job| !job.is_null());
+    if active && !args.confirm_running {
+        return Err(map_error(DeckError::new(
+            ErrorKind::Locked,
+            "session has a running job",
+        )));
+    }
     let operation = runtime.write(|doc| {
         client(doc, client_id)?;
         if let Some(existing) = existing_operation(doc, client_id, &args.request_id, &hash)? { return Ok(existing.clone()); }
-        if doc.operations.len() >= MAX_OPERATIONS {
-            return Err(DeckError::new(ErrorKind::DiskFull, "MCP operation capacity reached"));
-        }
-        let session = authorized_session(doc, client_id, &args.session_id)?.clone();
-        check_control(&session, client_id, &args.expected_generation, args.control_epoch, &args.holder_id)?;
-        let runner = send_runner(&session, &json!({"kind":"ping"})).map_err(|_| {
-            DeckError::new(
-                ErrorKind::ContextChanged,
-                "managed runner state is unknown; remote close is refused",
-            )
-        })?;
-        let active = runner.get("job").is_some_and(|job| !job.is_null());
-        if active && !args.confirm_running { return Err(DeckError::new(ErrorKind::Locked, "session has a running job")); }
+        reserve_operation(runtime, doc, client_id, false)?;
+        let current = authorized_session(doc, client_id, &args.session_id)?.clone();
+        check_control(&current, client_id, &args.expected_generation, args.control_epoch, &args.holder_id)?;
         let managed = doc.sessions.iter_mut().find(|item| item.session_id == session.session_id).ok_or_else(|| DeckError::new(ErrorKind::Missing, "session not found"))?;
         managed.closing = true;
-        let operation = Operation { operation_id:random_id("op_")?, client_id:client_id.into(), request_id:args.request_id, request_hash:hash, kind:"session-close".into(), state:"accepted".into(), code:None, result:Some(json!({"sessionId":session.session_id,"cardId":session.card_id,"sessionGeneration":session.generation,"controlEpoch":session.control_epoch,"holderId":args.holder_id,"confirmRunning":args.confirm_running})), accepted_at:now_ms(), updated_at:now_ms(), admission_hash:None };
+        let operation = Operation { operation_id:random_id("op_")?, client_id:client_id.into(), request_id:args.request_id.clone(), request_hash:hash.clone(), kind:"session-close".into(), state:"accepted".into(), code:None, result:Some(json!({"sessionId":session.session_id,"cardId":session.card_id,"sessionGeneration":session.generation,"controlEpoch":session.control_epoch,"holderId":args.holder_id,"confirmRunning":args.confirm_running})), accepted_at:now_ms(), updated_at:now_ms(), admission_hash:None, session_id: Some(session.session_id.clone()), control_epoch: Some(args.control_epoch) };
         doc.operations.push(operation.clone());
         Ok(operation)
     }).map_err(map_error)?;
@@ -2405,20 +2813,37 @@ fn session_close(runtime: &Runtime, client_id: &str, arguments: Value) -> Result
 }
 
 fn route(runtime: &Runtime, request: WireRequest) -> Value {
-    if request.version != CONTROL_PROTOCOL
-        || !valid_id(&request.client_id)
-        || request.credential.len() > 128
-    {
+    if request.version != CONTROL_PROTOCOL {
+        return error_value(
+            "PROTOCOL_MISMATCH",
+            "the adapter and Deck speak different control protocol versions",
+            "Use the deck-mcp adapter bundled with the running Deck build.",
+        );
+    }
+    if !valid_id(&request.client_id) || request.credential.len() > 128 {
         return error_value(
             "AUTH_REQUIRED",
             "invalid MCP control request",
             "Use the bundled deck-mcp adapter and an authorized client id.",
         );
     }
-    let emergency_auth_blocked = {
-        let emergency = runtime.emergency.lock_or_recover();
-        emergency.disabled || emergency.clients.contains(&request.client_id)
-    };
+    // The socket always listens (it is private and same-uid only). While the
+    // feature is off every tool — including capabilities — is refused with
+    // this distinct code; it discloses nothing about clients or scopes.
+    let disabled = runtime.emergency.lock_or_recover().disabled
+        || !runtime.read(|doc| doc.config.enabled).unwrap_or(false);
+    if disabled {
+        return error_value(
+            "FEATURE_DISABLED",
+            "MCP terminal control is disabled in Deck",
+            "Ask the local Deck user to enable MCP terminal control in Settings.",
+        );
+    }
+    let emergency_auth_blocked = runtime
+        .emergency
+        .lock_or_recover()
+        .clients
+        .contains(&request.client_id);
     let authenticated = !emergency_auth_blocked
         && runtime
             .read(|doc| {
@@ -2562,8 +2987,18 @@ fn same_uid(_stream: &UnixStream) -> bool {
     false
 }
 
+/// Live control connections; excess connections are closed immediately.
+static CONNECTIONS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 fn handle_connection(runtime: Arc<Runtime>, mut stream: UnixStream) {
     if !same_uid(&stream) {
+        return;
+    }
+    // A same-uid peer that connects and never sends a full request cannot pin
+    // a thread forever; neither can one that never reads its response.
+    if stream.set_read_timeout(Some(CONNECTION_TIMEOUT)).is_err()
+        || stream.set_write_timeout(Some(CONNECTION_TIMEOUT)).is_err()
+    {
         return;
     }
     let cloned = stream.try_clone();
@@ -2641,8 +3076,16 @@ pub(crate) fn spawn(app: AppHandle) {
                 return;
             }
             for stream in listener.incoming().flatten() {
+                use std::sync::atomic::Ordering;
+                if CONNECTIONS.fetch_add(1, Ordering::SeqCst) >= MAX_CONNECTIONS {
+                    CONNECTIONS.fetch_sub(1, Ordering::SeqCst);
+                    continue;
+                }
                 let runtime = runtime.clone();
-                std::thread::spawn(move || handle_connection(runtime, stream));
+                std::thread::spawn(move || {
+                    handle_connection(runtime, stream);
+                    CONNECTIONS.fetch_sub(1, Ordering::SeqCst);
+                });
             }
         })
         .ok();
@@ -2786,6 +3229,10 @@ fn canonical_project_root_with_access(
         }
         _ => DeckError::new(ErrorKind::Other, "authorized root could not be inspected"),
     })?;
+    // `/`, the account home, its ancestors and excluded directories would turn
+    // a project scope into account-wide structured reads.
+    crate::mcp_fs::root_policy(&path)
+        .map_err(|error| DeckError::new(ErrorKind::Invalid, error.message))?;
     Ok(path.display().to_string())
 }
 
@@ -2804,6 +3251,7 @@ pub(crate) fn mcp_scope_preview(root: String) -> ScopePreview {
                 ErrorKind::Missing => "not_found",
                 ErrorKind::NotDir => "not_directory",
                 ErrorKind::Perm => "not_accessible",
+                ErrorKind::Invalid => "too_broad",
                 _ => "unavailable",
             }),
         },
@@ -2821,11 +3269,14 @@ pub(crate) fn mcp_enable() -> Result<(), DeckError> {
     Ok(())
 }
 
-#[tauri::command]
+/// Disable fences every client in memory BEFORE waiting for the delivery lock,
+/// then persists and hands every managed pane to the local user (human mode:
+/// the keyboard and the ^C stop key reach the job; MCP reaches nothing).
+#[tauri::command(async)]
 pub(crate) fn mcp_disable() -> Result<(), DeckError> {
     let runtime = runtime()?;
-    let _delivery = runtime.delivery.lock_or_recover();
     runtime.emergency.lock_or_recover().disabled = true;
+    let _delivery = runtime.delivery.lock_or_recover();
     let sessions = runtime.write(|doc| {
         doc.config.enabled = false;
         for grant in &mut doc.execution_grants {
@@ -2834,7 +3285,6 @@ pub(crate) fn mcp_disable() -> Result<(), DeckError> {
                 grant.revocation_version = grant.grant_version;
             }
         }
-        let sessions = doc.sessions.clone();
         let closing = doc
             .operations
             .iter()
@@ -2849,6 +3299,10 @@ pub(crate) fn mcp_disable() -> Result<(), DeckError> {
             session.lease_expires_at = None;
             session.human_lock = true;
         }
+        // The human now owns every pane; no earlier binding reads what follows.
+        for job in &mut doc.jobs {
+            job.allow_output = false;
+        }
         for operation in &mut doc.operations {
             if operation.state == "accepted" {
                 operation.state = "rejected".into();
@@ -2861,13 +3315,12 @@ pub(crate) fn mcp_disable() -> Result<(), DeckError> {
                 session.closing = false;
             }
         }
-        Ok(sessions)
+        Ok(doc.sessions.clone())
     })?;
     let mut uncertain = false;
     for session in sessions {
-        uncertain |= send_runner_control(runtime, &session, "fenced")
-            .ok()
-            .is_none_or(|value| value.get("ok").and_then(Value::as_bool) != Some(true));
+        uncertain |=
+            runner_control_result(send_runner_control(runtime, &session, "human")).is_err();
     }
     if uncertain {
         return Err(DeckError::new(
@@ -2966,10 +3419,11 @@ fn validate_new_client_scopes(
     Ok(scopes)
 }
 
-#[tauri::command]
+/// Revocation fences the client in memory BEFORE waiting for the delivery
+/// lock, persists, then hands the client's panes to the local user.
+#[tauri::command(async)]
 pub(crate) fn mcp_client_revoke(client_id: String) -> Result<(), DeckError> {
     let runtime = runtime()?;
-    let _delivery = runtime.delivery.lock_or_recover();
     runtime
         .read(|doc| {
             doc.config
@@ -2984,6 +3438,7 @@ pub(crate) fn mcp_client_revoke(client_id: String) -> Result<(), DeckError> {
         .lock_or_recover()
         .clients
         .insert(client_id.clone());
+    let _delivery = runtime.delivery.lock_or_recover();
     let sessions =
         runtime.write(|doc| {
             let client = doc
@@ -2993,12 +3448,6 @@ pub(crate) fn mcp_client_revoke(client_id: String) -> Result<(), DeckError> {
                 .find(|client| client.id == client_id)
                 .ok_or_else(|| DeckError::new(ErrorKind::Missing, "MCP client not found"))?;
             client.revoked_at = Some(now_ms());
-            let sessions = doc
-                .sessions
-                .iter()
-                .filter(|session| session.owner_client_id == client_id)
-                .cloned()
-                .collect::<Vec<_>>();
             let closing = doc
                 .operations
                 .iter()
@@ -3029,6 +3478,9 @@ pub(crate) fn mcp_client_revoke(client_id: String) -> Result<(), DeckError> {
                 session.lease_expires_at = None;
                 session.human_lock = true;
             }
+            for job in doc.jobs.iter_mut().filter(|job| job.client_id == client_id) {
+                job.allow_output = false;
+            }
             for operation in doc.operations.iter_mut().filter(|operation| {
                 operation.client_id == client_id && operation.state == "accepted"
             }) {
@@ -3049,13 +3501,17 @@ pub(crate) fn mcp_client_revoke(client_id: String) -> Result<(), DeckError> {
                     ..Default::default()
                 },
             )?;
-            Ok(sessions)
+            Ok(doc
+                .sessions
+                .iter()
+                .filter(|session| session.owner_client_id == client_id)
+                .cloned()
+                .collect::<Vec<_>>())
         })?;
     let mut uncertain = false;
     for session in sessions {
-        uncertain |= send_runner_control(runtime, &session, "fenced")
-            .ok()
-            .is_none_or(|value| value.get("ok").and_then(Value::as_bool) != Some(true));
+        uncertain |=
+            runner_control_result(send_runner_control(runtime, &session, "human")).is_err();
     }
     if runtime.app.is_some() {
         crate::keychain::clear_mcp_credential(&client_id)?;
@@ -3124,14 +3580,29 @@ pub(crate) fn mcp_client_delete(client_id: String) -> Result<(), DeckError> {
 
 /// Create a short-lived trusted-host execution window. This command is only
 /// exposed to the local Tauri UI; there is intentionally no MCP route for it.
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn mcp_execution_grant(
     session_id: String,
     duration_ms: Option<u64>,
     allow_stdin: bool,
     allow_output: bool,
 ) -> Result<(), DeckError> {
-    let runtime = runtime()?;
+    execution_grant(
+        runtime()?,
+        session_id,
+        duration_ms,
+        allow_stdin,
+        allow_output,
+    )
+}
+
+fn execution_grant(
+    runtime: &Runtime,
+    session_id: String,
+    duration_ms: Option<u64>,
+    allow_stdin: bool,
+    allow_output: bool,
+) -> Result<(), DeckError> {
     let _delivery = runtime.delivery.lock_or_recover();
     let duration = duration_ms
         .unwrap_or(DEFAULT_EXECUTION_GRANT_MS)
@@ -3167,6 +3638,16 @@ pub(crate) fn mcp_execution_grant(
             let granted_session_id = session.session_id.clone();
             let principal_id = session.owner_client_id.clone();
             let grant_id = random_id("grant_")?;
+            // Bounded by construction: superseded, closed-session and
+            // earlier-process grants are retired before a new one is added,
+            // so a later write (a takeover) can never fail validation.
+            compact(doc, Some(&runtime.service_instance));
+            if doc.execution_grants.len() >= MAX_GRANTS {
+                return Err(DeckError::new(
+                    ErrorKind::DiskFull,
+                    "MCP execution grant capacity reached",
+                ));
+            }
             doc.execution_grants.push(ExecutionGrant {
                 grant_id: grant_id.clone(),
                 client_id: session.owner_client_id,
@@ -3230,23 +3711,16 @@ pub(crate) fn mcp_execution_grant(
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn mcp_execution_revoke(session_id: String) -> Result<(), DeckError> {
     let runtime = runtime()?;
-    let _delivery = runtime.delivery.lock_or_recover();
-    let fenced_session_id = runtime
-        .read(|doc| {
-            doc.sessions
-                .iter()
-                .find(|session| session.session_id == session_id || session.card_id == session_id)
-                .map(|session| session.session_id.clone())
-        })?
-        .ok_or_else(|| DeckError::new(ErrorKind::Missing, "MCP session not found"))?;
+    let fenced_session_id = resolve_session_id(runtime, &session_id)?;
     runtime
         .emergency
         .lock_or_recover()
         .execution_sessions
         .insert(fenced_session_id);
+    let _delivery = runtime.delivery.lock_or_recover();
     let (session, revoked) =
         runtime.write(|doc| {
             let session = doc
@@ -3333,7 +3807,11 @@ pub(crate) fn mcp_pending() -> Result<Vec<PendingView>, DeckError> {
 
 #[tauri::command]
 pub(crate) fn mcp_claim(operation_id: String) -> Result<PendingView, DeckError> {
-    runtime()?.write(|doc| {
+    claim(runtime()?, &operation_id)
+}
+
+fn claim(runtime: &Runtime, operation_id: &str) -> Result<PendingView, DeckError> {
+    runtime.write(|doc| {
         if !doc.config.enabled {
             return Err(DeckError::new(ErrorKind::Perm, "MCP control is disabled"));
         }
@@ -3633,23 +4111,45 @@ pub(crate) fn mcp_complete(
     code: Option<String>,
     tmux_session: Option<String>,
 ) -> Result<(), DeckError> {
+    complete(runtime()?, operation_id, state, code, tmux_session)
+}
+
+fn complete(
+    runtime: &Runtime,
+    operation_id: String,
+    state: String,
+    code: Option<String>,
+    tmux_session: Option<String>,
+) -> Result<(), DeckError> {
     if !matches!(state.as_str(), "committed" | "rejected" | "ambiguous") {
         return Err(DeckError::new(
             ErrorKind::Invalid,
             "invalid MCP operation result",
         ));
     }
-    let runtime = runtime()?;
     let _delivery = runtime.delivery.lock_or_recover();
     let switch_to_human = runtime.write(|doc| {
         let index = doc
             .operations
             .iter()
-            .position(|operation| {
-                operation.operation_id == operation_id && operation.state == "executing"
-            })
-            .ok_or_else(|| DeckError::new(ErrorKind::Missing, "MCP operation not executing"))?;
+            .position(|operation| operation.operation_id == operation_id)
+            .ok_or_else(|| DeckError::new(ErrorKind::Missing, "MCP operation not found"))?;
         let operation = doc.operations[index].clone();
+        // Transitions: executing → committed|rejected|ambiguous; a close that
+        // was admitted (its first Board side effect may have run) →
+        // committed|ambiguous only. Repeating the recorded terminal state is
+        // an idempotent no-op; anything else is refused.
+        match (operation.state.as_str(), state.as_str()) {
+            ("executing", _) => {}
+            ("admitted", "committed" | "ambiguous") if operation.kind == "session-close" => {}
+            (recorded, requested) if recorded == requested => return Ok(None),
+            _ => {
+                return Err(DeckError::new(
+                    ErrorKind::ContextChanged,
+                    "MCP operation cannot take that result",
+                ))
+            }
+        }
         let authorized = doc.config.enabled
             && doc
                 .config
@@ -3724,6 +4224,7 @@ pub(crate) fn mcp_complete(
         saved.state = state;
         saved.code = code;
         saved.updated_at = now_ms();
+        compact(doc, Some(&runtime.service_instance));
         Ok(created_session)
     })?;
     if let Some(session) = switch_to_human {
@@ -3736,7 +4237,8 @@ pub(crate) fn mcp_complete(
 /// operation. The card is already durably absent when this is called.
 #[tauri::command]
 pub(crate) fn mcp_card_closed(card_id: String) -> Result<(), DeckError> {
-    runtime()?.write(|doc| {
+    let runtime = runtime()?;
+    let removed = runtime.write(|doc| {
         let removed = doc
             .sessions
             .iter()
@@ -3745,32 +4247,54 @@ pub(crate) fn mcp_card_closed(card_id: String) -> Result<(), DeckError> {
             .collect::<HashSet<_>>();
         doc.sessions.retain(|session| session.card_id != card_id);
         doc.jobs.retain(|job| !removed.contains(&job.session_id));
-        Ok(())
-    })
+        // Records and grants of a closed session can no longer act.
+        compact(doc, Some(&runtime.service_instance));
+        Ok(removed)
+    })?;
+    let mut emergency = runtime.emergency.lock_or_recover();
+    for session_id in removed {
+        emergency.human_sessions.remove(&session_id);
+        emergency.execution_sessions.remove(&session_id);
+    }
+    Ok(())
 }
 
-#[tauri::command]
-pub(crate) fn mcp_takeover(session_id: String) -> Result<(), DeckError> {
-    let runtime = runtime()?;
-    let _delivery = runtime.delivery.lock_or_recover();
-    let fenced_session_id = runtime
+fn resolve_session_id(runtime: &Runtime, session_id: &str) -> Result<String, DeckError> {
+    runtime
         .read(|doc| {
             doc.sessions
                 .iter()
                 .find(|session| session.session_id == session_id || session.card_id == session_id)
                 .map(|session| session.session_id.clone())
         })?
-        .ok_or_else(|| DeckError::new(ErrorKind::Missing, "MCP session not found"))?;
+        .ok_or_else(|| DeckError::new(ErrorKind::Missing, "MCP session not found"))
+}
+
+/// Local takeover. The in-memory fence is set FIRST — before waiting for the
+/// delivery lock that an in-flight exec may hold — so no new remote request
+/// passes route or dispatch after this point. Then the takeover is persisted
+/// (new epoch, holder/lease cleared, output sharing off, and every existing
+/// job binding's output closed to MCP for good) and the runner hands the pane
+/// keyboard and the ^C stop key to the human. Errors are stable codes; the
+/// fence holds whatever happens afterwards.
+#[tauri::command(async)]
+pub(crate) fn mcp_takeover(session_id: String) -> Result<(), DeckError> {
+    takeover(runtime()?, &session_id)
+}
+
+fn takeover(runtime: &Runtime, session_id: &str) -> Result<(), DeckError> {
+    let fenced_session_id = resolve_session_id(runtime, session_id)?;
     runtime
         .emergency
         .lock_or_recover()
         .human_sessions
-        .insert(fenced_session_id);
-    let session = runtime.write(|doc| {
+        .insert(fenced_session_id.clone());
+    let _delivery = runtime.delivery.lock_or_recover();
+    let persisted = runtime.write(|doc| {
         let session = doc
             .sessions
             .iter_mut()
-            .find(|session| session.session_id == session_id || session.card_id == session_id)
+            .find(|session| session.session_id == fenced_session_id)
             .ok_or_else(|| DeckError::new(ErrorKind::Missing, "MCP session not found"))?;
         session.control_owner = None;
         session.control_holder = None;
@@ -3779,6 +4303,15 @@ pub(crate) fn mcp_takeover(session_id: String) -> Result<(), DeckError> {
         session.human_lock = true;
         session.output_shared = false;
         let session = session.clone();
+        // Output produced from here on may include the human's own typing
+        // into the job: no pre-takeover binding may ever read it.
+        for job in doc
+            .jobs
+            .iter_mut()
+            .filter(|job| job.session_id == session.session_id)
+        {
+            job.allow_output = false;
+        }
         audit(
             doc,
             "human-takeover",
@@ -3789,21 +4322,46 @@ pub(crate) fn mcp_takeover(session_id: String) -> Result<(), DeckError> {
             },
         )?;
         Ok(session)
-    })?;
-    let response = send_runner_control(runtime, &session, "human")?;
-    if response.get("ok").and_then(Value::as_bool) == Some(true) {
-        Ok(())
-    } else {
-        Err(DeckError::new(
-            ErrorKind::ContextChanged,
-            "MCP writes are fenced but terminal handoff is uncertain",
-        ))
+    });
+    let session = match &persisted {
+        Ok(session) => session.clone(),
+        Err(_) => {
+            // Still hand the keyboard over under a higher epoch; the
+            // in-memory fence keeps MCP out for this Deck run.
+            let mut session = runtime
+                .read(|doc| {
+                    doc.sessions
+                        .iter()
+                        .find(|session| session.session_id == fenced_session_id)
+                        .cloned()
+                })?
+                .ok_or_else(|| DeckError::new(ErrorKind::Missing, "MCP session not found"))?;
+            session.control_epoch = session.control_epoch.saturating_add(1);
+            session.control_holder = None;
+            session
+        }
+    };
+    runner_control_result(send_runner_control(runtime, &session, "human"))?;
+    if persisted.is_err() {
+        return Err(DeckError::new(ErrorKind::Other, FENCE_UNPERSISTED));
     }
+    Ok(())
 }
 
-#[tauri::command]
+/// Local return of a human-locked session to MCP. It needs no execution
+/// grant, creates or extends none, restores no holder, lease or output
+/// sharing, and never revives an old epoch: the persisted state moves to a
+/// NEW epoch with no holder, then the runner is told. A runner failure
+/// re-fences (human lock back on, another new epoch). Machine codes:
+/// SESSION_BUSY (a job still runs; stop it locally first), RUNNER_STALE
+/// (Deck restarted since the session was created; close it),
+/// CLIENT_REVOKED / FEATURE_DISABLED (nothing to return to).
+#[tauri::command(async)]
 pub(crate) fn mcp_return_control(session_id: String) -> Result<(), DeckError> {
-    let runtime = runtime()?;
+    return_control(runtime()?, &session_id)
+}
+
+fn return_control(runtime: &Runtime, session_id: &str) -> Result<(), DeckError> {
     let _delivery = runtime.delivery.lock_or_recover();
     let session = runtime.read(|doc| {
         let session = doc
@@ -3812,32 +4370,87 @@ pub(crate) fn mcp_return_control(session_id: String) -> Result<(), DeckError> {
             .find(|session| session.session_id == session_id || session.card_id == session_id)
             .cloned()
             .ok_or_else(|| DeckError::new(ErrorKind::Missing, "MCP session not found"))?;
-        client(doc, &session.owner_client_id)?;
-        active_execution_grant(runtime, doc, &session.owner_client_id, &session, false)?;
-        Ok::<ManagedSession, DeckError>(session)
+        if !doc.config.enabled {
+            return Err(DeckError::new(ErrorKind::Perm, FEATURE_DISABLED));
+        }
+        if client(doc, &session.owner_client_id).is_err() {
+            return Err(DeckError::new(ErrorKind::Perm, CLIENT_REVOKED));
+        }
+        Ok(session)
     })??;
-    let response = send_runner_control(runtime, &session, "mcp")?;
-    if response.get("ok").and_then(Value::as_bool) != Some(true) {
-        return Err(DeckError::new(
-            ErrorKind::Locked,
-            "managed job is still running",
-        ));
+    {
+        let emergency = runtime.emergency.lock_or_recover();
+        if emergency.disabled {
+            return Err(DeckError::new(ErrorKind::Perm, FEATURE_DISABLED));
+        }
+        if emergency.clients.contains(&session.owner_client_id) {
+            return Err(DeckError::new(ErrorKind::Perm, CLIENT_REVOKED));
+        }
     }
-    runtime.write(|doc| {
-        let session = doc
+    match probe_runner(runtime, &session) {
+        None => {
+            return Err(DeckError::new(
+                ErrorKind::ContextChanged,
+                RUNNER_UNCONFIRMED,
+            ))
+        }
+        Some(probe) if !probe.current => {
+            return Err(DeckError::new(ErrorKind::ContextChanged, RUNNER_STALE))
+        }
+        Some(probe) if !probe.job.is_null() => {
+            return Err(DeckError::new(ErrorKind::Locked, SESSION_BUSY))
+        }
+        Some(_) => {}
+    }
+    let returned = runtime.write(|doc| {
+        let current = doc
             .sessions
             .iter_mut()
-            .find(|item| item.card_id == session.card_id && item.generation == session.generation)
+            .find(|item| {
+                item.session_id == session.session_id && item.generation == session.generation
+            })
             .ok_or_else(|| {
                 DeckError::new(ErrorKind::ContextChanged, "MCP session generation changed")
             })?;
-        session.human_lock = false;
-        session.control_epoch = session.control_epoch.saturating_add(1);
-        session.control_owner = None;
-        session.control_holder = None;
-        session.lease_expires_at = None;
-        Ok(())
+        current.human_lock = false;
+        current.control_epoch = current.control_epoch.saturating_add(1);
+        current.control_owner = None;
+        current.control_holder = None;
+        current.lease_expires_at = None;
+        let current = current.clone();
+        audit(
+            doc,
+            "human-return",
+            AuditLink {
+                principal_id: Some(&current.owner_client_id),
+                session_id: Some(&current.session_id),
+                ..Default::default()
+            },
+        )?;
+        Ok(current)
     })?;
+    if let Err(error) = runner_control_result(send_runner_control(runtime, &returned, "mcp")) {
+        // Re-fence: the persisted state must not claim MCP control that the
+        // runner never confirmed. The in-memory fence is still in place.
+        let refenced = runtime.write(|doc| {
+            Ok(doc
+                .sessions
+                .iter_mut()
+                .find(|item| item.session_id == returned.session_id)
+                .map(|current| {
+                    current.human_lock = true;
+                    current.control_epoch = current.control_epoch.saturating_add(1);
+                    current.control_owner = None;
+                    current.control_holder = None;
+                    current.lease_expires_at = None;
+                    current.clone()
+                }))
+        });
+        if let Ok(Some(current)) = refenced {
+            let _ = send_runner_control(runtime, &current, "human");
+        }
+        return Err(error);
+    }
     runtime
         .emergency
         .lock_or_recover()
@@ -3850,6 +4463,9 @@ pub(crate) fn mcp_return_control(session_id: String) -> Result<(), DeckError> {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SessionUiView {
     managed: bool,
+    /// The runner is unreachable or belongs to an earlier Deck process: it can
+    /// only be closed.
+    stale: bool,
     human_control: bool,
     control_owner: Option<String>,
     control_holder: Option<String>,
@@ -3864,7 +4480,7 @@ pub(crate) struct SessionUiView {
     output_shared: bool,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn mcp_session_ui(card_id: String) -> Result<SessionUiView, DeckError> {
     let runtime = runtime()?;
     record_expired_grants(runtime)?;
@@ -3877,6 +4493,7 @@ pub(crate) fn mcp_session_ui(card_id: String) -> Result<SessionUiView, DeckError
     let Some(session) = session else {
         return Ok(SessionUiView {
             managed: false,
+            stale: false,
             human_control: false,
             control_owner: None,
             control_holder: None,
@@ -3930,7 +4547,7 @@ pub(crate) fn mcp_session_ui(card_id: String) -> Result<SessionUiView, DeckError
             .cloned();
         (name, error, grant)
     })?;
-    let runner = send_runner(&session, &json!({"kind":"ping"})).ok();
+    let runner = probe_runner(runtime, &session);
     let emergency_human = runtime
         .emergency
         .lock_or_recover()
@@ -3938,12 +4555,12 @@ pub(crate) fn mcp_session_ui(card_id: String) -> Result<SessionUiView, DeckError
         .contains(&session.session_id);
     let job_state = runner
         .as_ref()
-        .and_then(|value| value.get("job"))
-        .and_then(|job| job.get("state"))
+        .and_then(|probe| probe.job.get("state"))
         .and_then(Value::as_str)
         .map(str::to_owned);
     Ok(SessionUiView {
         managed: true,
+        stale: runner.as_ref().is_none_or(|probe| !probe.current),
         human_control: session.human_lock || emergency_human,
         control_owner: session.control_owner,
         control_holder: session.control_holder,
@@ -3966,18 +4583,50 @@ pub(crate) fn guard_terminal_input(tmux_session: &str) -> Result<(), DeckError> 
     let Some(runtime) = RUNTIME.get() else {
         return Ok(());
     };
-    runtime.read(|doc| {
-        if let Some(session) = doc
-            .sessions
+    let session = runtime.read(|doc| {
+        doc.sessions
             .iter()
             .find(|session| session.tmux_session == tmux_session)
+            .map(|session| (session.session_id.clone(), session.human_lock))
+    })?;
+    match session {
+        None | Some((_, true)) => Ok(()),
+        // A takeover whose state write failed still hands the keyboard over
+        // for this Deck run: the in-memory fence is authoritative.
+        Some((session_id, false))
+            if runtime
+                .emergency
+                .lock_or_recover()
+                .human_sessions
+                .contains(&session_id) =>
         {
-            if !session.human_lock {
-                return Err(DeckError::new(ErrorKind::Perm, "MCP owns terminal control"));
-            }
+            Ok(())
         }
-        Ok(())
-    })?
+        Some(_) => Err(DeckError::new(ErrorKind::Perm, "MCP owns terminal control")),
+    }
+}
+
+/// Close path hook (`commands::kill_session`): before tmux kills a managed
+/// pane, ask its runner to stop every job group with bounded escalation
+/// (SIGINT → SIGTERM → SIGKILL). Best effort by design — the runner's SIGHUP
+/// handler still SIGKILLs live job groups when the pane dies — and it works
+/// for a stale runner too, because `stop` is bound to the generation only.
+pub(crate) fn stop_managed_jobs(tmux_session: &str) {
+    let Some(runtime) = RUNTIME.get() else {
+        return;
+    };
+    let Ok(Some(session)) = runtime.read(|doc| {
+        doc.sessions
+            .iter()
+            .find(|session| session.tmux_session == tmux_session)
+            .cloned()
+    }) else {
+        return;
+    };
+    let _ = send_runner(
+        &session,
+        &json!({"kind":"stop","generation":session.generation}),
+    );
 }
 
 /// Managed runner panes cannot be reconstructed by the ordinary shell
@@ -4003,10 +4652,24 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};
 
+    /// In-process runner double. Every connection is served on its own
+    /// thread so a held request never blocks unrelated ones.
     struct FakeRunner {
         socket: PathBuf,
         stop: Arc<AtomicBool>,
         thread: Option<std::thread::JoinHandle<()>>,
+        /// Every request received, in order.
+        seen: Arc<Mutex<Vec<Value>>>,
+        /// A managed job is live: ping reports it and control mcp is busy.
+        busy: Arc<AtomicBool>,
+        /// Requests of this kind park until `release` is sent.
+        hold: Arc<Mutex<Option<HeldKind>>>,
+    }
+
+    struct HeldKind {
+        kind: String,
+        entered: std::sync::mpsc::Sender<()>,
+        release: std::sync::mpsc::Receiver<()>,
     }
 
     impl FakeRunner {
@@ -4015,57 +4678,147 @@ mod tests {
             let listener = UnixListener::bind(&socket).unwrap();
             listener.set_nonblocking(true).unwrap();
             let stop = Arc::new(AtomicBool::new(false));
+            let seen = Arc::new(Mutex::new(Vec::new()));
+            let busy = Arc::new(AtomicBool::new(false));
+            let hold: Arc<Mutex<Option<HeldKind>>> = Arc::new(Mutex::new(None));
             let thread_stop = stop.clone();
             let generation = generation.to_owned();
+            let (thread_seen, thread_busy, thread_hold) =
+                (seen.clone(), busy.clone(), hold.clone());
             let thread = std::thread::spawn(move || {
                 while !thread_stop.load(Ordering::SeqCst) {
-                    let Ok((mut stream, _)) = listener.accept() else {
+                    let Ok((stream, _)) = listener.accept() else {
                         std::thread::sleep(Duration::from_millis(2));
                         continue;
                     };
-                    let mut line = String::new();
-                    if BufReader::new(stream.try_clone().unwrap())
-                        .read_line(&mut line)
-                        .is_err()
-                    {
-                        continue;
-                    }
-                    let request: Value = serde_json::from_str(&line).unwrap_or(Value::Null);
-                    let kind = request.get("kind").and_then(Value::as_str).unwrap_or("");
-                    let job_id = request
-                        .get("job_id")
-                        .and_then(Value::as_str)
-                        .unwrap_or("job_a");
-                    let response = match kind {
-                        "ping" => json!({"ok":true,"generation":generation,"job":null}),
-                        "read" => json!({
-                            "ok":true,
-                            "generation":generation,
-                            "job":{"jobId":job_id,"state":"exited","exitCode":0,
-                                "terminationSignal":null,"interruptRequested":false,
-                                "timeoutRequested":false,"startedAt":1,"endedAt":2},
-                            "output":"done\n","nextCursor":5,"gap":false,"droppedBytes":0
-                        }),
-                        "exec" => json!({
-                            "ok":true,
-                            "generation":generation,
-                            "job":{"jobId":job_id,"state":"exited","exitCode":0}
-                        }),
-                        "input" | "interrupt" | "control" | "retention" | "revoke-grant" => {
-                            json!({"ok":true,"generation":generation})
-                        }
-                        _ => json!({"ok":false,"generation":generation,"error":"invalid-request"}),
-                    };
-                    if serde_json::to_writer(&mut stream, &response).is_ok() {
-                        let _ = stream.write_all(b"\n");
-                    }
+                    let (generation, seen, busy, hold) = (
+                        generation.clone(),
+                        thread_seen.clone(),
+                        thread_busy.clone(),
+                        thread_hold.clone(),
+                    );
+                    std::thread::spawn(move || {
+                        Self::serve(stream, &generation, &seen, &busy, &hold)
+                    });
                 }
             });
             Self {
                 socket,
                 stop,
                 thread: Some(thread),
+                seen,
+                busy,
+                hold,
             }
+        }
+
+        fn serve(
+            mut stream: UnixStream,
+            generation: &str,
+            seen: &Mutex<Vec<Value>>,
+            busy: &AtomicBool,
+            hold: &Mutex<Option<HeldKind>>,
+        ) {
+            stream.set_nonblocking(false).unwrap();
+            let mut line = String::new();
+            if BufReader::new(stream.try_clone().unwrap())
+                .read_line(&mut line)
+                .is_err()
+            {
+                return;
+            }
+            let request: Value = serde_json::from_str(&line).unwrap_or(Value::Null);
+            seen.lock().unwrap().push(request.clone());
+            let kind = request.get("kind").and_then(Value::as_str).unwrap_or("");
+            let held = {
+                let mut slot = hold.lock().unwrap();
+                if slot.as_ref().is_some_and(|held| held.kind == kind) {
+                    slot.take()
+                } else {
+                    None
+                }
+            };
+            if let Some(held) = held {
+                held.entered.send(()).unwrap();
+                held.release
+                    .recv_timeout(Duration::from_secs(10))
+                    .expect("held runner request was never released");
+            }
+            let job_id = request
+                .get("job_id")
+                .and_then(Value::as_str)
+                .unwrap_or("job_a");
+            let service = request
+                .get("service_instance")
+                .or_else(|| {
+                    request
+                        .get("context")
+                        .and_then(|context| context.get("service_instance"))
+                })
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let stale = service == "svc_stale";
+            let live = busy.load(Ordering::SeqCst);
+            let response = match kind {
+                "ping" => json!({"ok":true,"generation":generation,
+                    "job": if live { json!({"jobId":"job_live","state":"running"}) } else { Value::Null },
+                    "serviceCurrent":!service.is_empty() && !stale,"runnerVersion":"0.1.0"}),
+                _ if stale => json!({"ok":false,"generation":generation,"error":"runner-stale"}),
+                "control" if live && request["mode"] == "mcp" => {
+                    json!({"ok":false,"generation":generation,"error":"session-busy"})
+                }
+                "read" => json!({
+                    "ok":true,
+                    "generation":generation,
+                    "job":{"jobId":job_id,"state":"exited","exitCode":0,
+                        "terminationSignal":null,"interruptRequested":false,
+                        "timeoutRequested":false,"startedAt":1,"endedAt":2},
+                    "output":"done\n","nextCursor":5,"gap":false,"droppedBytes":0
+                }),
+                "exec" => json!({
+                    "ok":true,
+                    "generation":generation,
+                    "job":{"jobId":job_id,"state":"exited","exitCode":0}
+                }),
+                "input" | "interrupt" | "control" | "retention" | "revoke-grant" | "stop" => {
+                    json!({"ok":true,"generation":generation})
+                }
+                _ => json!({"ok":false,"generation":generation,"error":"invalid-request"}),
+            };
+            if serde_json::to_writer(&mut stream, &response).is_ok() {
+                let _ = stream.write_all(b"\n");
+            }
+        }
+
+        fn count(&self, kind: &str) -> usize {
+            self.seen
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|request| request["kind"] == kind)
+                .count()
+        }
+
+        fn last(&self, kind: &str) -> Option<Value> {
+            self.seen
+                .lock()
+                .unwrap()
+                .iter()
+                .rev()
+                .find(|request| request["kind"] == kind)
+                .cloned()
+        }
+
+        /// Park the next request of `kind`; returns (entered, release).
+        fn hold(&self, kind: &str) -> (std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>) {
+            let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+            let (release_tx, release_rx) = std::sync::mpsc::channel();
+            *self.hold.lock().unwrap() = Some(HeldKind {
+                kind: kind.into(),
+                entered: entered_tx,
+                release: release_rx,
+            });
+            (entered_rx, release_tx)
         }
     }
 
@@ -4081,10 +4834,13 @@ mod tests {
     }
 
     fn test_root(tag: &str) -> PathBuf {
+        // A per-process counter instead of a timestamp keeps runner socket
+        // paths below SUN_LEN under a long macOS TMPDIR.
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let root = std::env::temp_dir().join(format!(
             "deck-mcp-{tag}-{}-{}",
             std::process::id(),
-            now_ms()
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
         std::fs::create_dir_all(&root).unwrap();
         root
@@ -4274,6 +5030,14 @@ mod tests {
         assert_eq!(not_directory.error, Some("not_directory"));
         let valid = mcp_scope_preview(root.display().to_string());
         assert!(valid.ok);
+        let whole_disk = mcp_scope_preview("/".into());
+        assert!(!whole_disk.ok);
+        assert_eq!(whole_disk.error, Some("too_broad"));
+        let home = crate::mcp_fs::home_directory().unwrap();
+        assert_eq!(
+            mcp_scope_preview(home.display().to_string()).error,
+            Some("too_broad")
+        );
         let inaccessible = canonical_project_root_with_access(root.to_str().unwrap(), |_| {
             Err(std::io::Error::new(
                 std::io::ErrorKind::PermissionDenied,
@@ -4321,6 +5085,8 @@ mod tests {
             accepted_at: 1,
             updated_at: 1,
             admission_hash: None,
+            session_id: None,
+            control_epoch: None,
         }
     }
 
@@ -4799,7 +5565,8 @@ mod tests {
                     arguments: json!({}),
                 }
             )["error"]["code"],
-            "AUTH_REQUIRED"
+            "PROTOCOL_MISMATCH",
+            "an adapter/app version skew is not reported as an auth failure"
         );
         let mut wrong_credential = request("deck_capabilities", json!({}));
         wrong_credential.credential = "mcp_wrong".into();
@@ -4821,6 +5588,26 @@ mod tests {
                 ),
             )["error"]["code"],
             "READ_DENIED"
+        );
+        std::fs::write(root.join("target.txt"), "DECK_SYNTHETIC_ROUTE_MARKER\n").unwrap();
+        let file_search = route(
+            &runtime,
+            request(
+                "deck_project_search",
+                json!({"project_id":"P1","path":"target.txt","query":"DECK_SYNTHETIC_ROUTE_MARKER"}),
+            ),
+        );
+        assert_eq!(file_search["matches"].as_array().unwrap().len(), 1);
+        assert_eq!(file_search["complete"], true);
+        assert_eq!(
+            route(
+                &runtime,
+                request(
+                    "deck_project_search",
+                    json!({"project_id":"P1","path":"../outside","query":"x"}),
+                ),
+            )["error"]["code"],
+            "INVALID_ARGUMENTS"
         );
         assert_eq!(
             route(&runtime, request("deck_sessions_list", json!({})))["sessions"]
@@ -5250,6 +6037,713 @@ mod tests {
                 );
             })
             .unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// Runtime + fake runner + one managed session (`mcp_a`, card `M1`).
+    fn fixture(tag: &str, service: &str) -> (Arc<Runtime>, FakeRunner, PathBuf) {
+        let root = test_root(tag);
+        let runner = FakeRunner::start(&root, "g_a");
+        let mut doc = DiskDoc::default();
+        doc.config.enabled = true;
+        doc.config.clients.push(client_record(&root));
+        doc.sessions.push(session_record(&root, &runner));
+        let path = root.join("mcp.json");
+        save(&path, &doc).unwrap();
+        let runtime = Arc::new(Runtime {
+            app: None,
+            path,
+            socket: root.join("control.sock"),
+            doc: Mutex::new(Ok(doc)),
+            io: Mutex::new(()),
+            delivery: Mutex::new(()),
+            emergency: Mutex::new(EmergencyFences::default()),
+            service_instance: service.into(),
+            started: Instant::now(),
+        });
+        (runtime, runner, root)
+    }
+
+    fn session_state(runtime: &Runtime) -> ManagedSession {
+        runtime.read(|doc| doc.sessions[0].clone()).unwrap()
+    }
+
+    fn expired_grant(session: &ManagedSession) -> ExecutionGrant {
+        let mut grant = execution_grant(session);
+        grant.issued_at = now_ms().saturating_sub(120_000);
+        grant.expires_at = now_ms().saturating_sub(60_000);
+        grant
+    }
+
+    #[test]
+    fn return_after_takeover_needs_no_grant_and_restores_nothing() {
+        // The acceptance failure: epoch 2 → takeover → grant already expired →
+        // return was refused with "a local execution grant is required".
+        let (runtime, runner, root) = fixture("return-expired", "svc_test");
+        runtime
+            .write(|doc| {
+                let grant = expired_grant(&doc.sessions[0]);
+                doc.execution_grants.push(grant);
+                doc.sessions[0].control_epoch = 2;
+                Ok(())
+            })
+            .unwrap();
+        takeover(&runtime, "M1").unwrap();
+        let taken = session_state(&runtime);
+        assert!(taken.human_lock);
+        assert_eq!(taken.control_epoch, 3);
+        assert!(taken.control_owner.is_none() && taken.control_holder.is_none());
+        assert!(taken.lease_expires_at.is_none());
+        assert!(!taken.output_shared);
+        assert_eq!(runner.last("control").unwrap()["mode"], "human");
+        let grants_before = runtime.read(|doc| doc.execution_grants.len()).unwrap();
+
+        return_control(&runtime, "M1").unwrap();
+        let returned = session_state(&runtime);
+        assert!(!returned.human_lock);
+        assert_eq!(returned.control_epoch, 4, "a new epoch, never the old one");
+        assert!(returned.control_owner.is_none() && returned.control_holder.is_none());
+        assert!(returned.lease_expires_at.is_none());
+        assert!(!returned.output_shared, "sharing is not restored");
+        let control = runner.last("control").unwrap();
+        assert_eq!(control["mode"], "mcp");
+        assert_eq!(control["control_epoch"], 4);
+        assert!(control["holder_id"].is_null());
+        runtime
+            .read(|doc| {
+                assert_eq!(
+                    doc.execution_grants.len(),
+                    grants_before,
+                    "no grant created"
+                );
+                assert!(matches!(
+                    execution_authorization(&runtime, doc, "client_a", &doc.sessions[0]),
+                    ExecutionAuthorization::Expired(_)
+                ));
+            })
+            .unwrap();
+        assert!(!runtime
+            .emergency
+            .lock_or_recover()
+            .human_sessions
+            .contains("mcp_a"));
+        // The pre-takeover holder's epoch is dead.
+        assert!(check_control(&returned, "client_a", "g_a", 2, "holder_a").is_err());
+        drop(runner);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn return_is_refused_with_stable_codes_and_changes_nothing() {
+        let (runtime, runner, root) = fixture("return-refused", "svc_test");
+        takeover(&runtime, "mcp_a").unwrap();
+        let fenced = session_state(&runtime);
+
+        runner.busy.store(true, Ordering::SeqCst);
+        let busy = return_control(&runtime, "M1").unwrap_err();
+        assert_eq!(busy.message(), SESSION_BUSY);
+        assert_eq!(session_state(&runtime).control_epoch, fenced.control_epoch);
+        assert!(session_state(&runtime).human_lock);
+        runner.busy.store(false, Ordering::SeqCst);
+
+        runtime
+            .write(|doc| {
+                doc.config.clients[0].revoked_at = Some(now_ms());
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(
+            return_control(&runtime, "M1").unwrap_err().message(),
+            CLIENT_REVOKED
+        );
+        runtime
+            .write(|doc| {
+                doc.config.clients[0].revoked_at = None;
+                doc.config.enabled = false;
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(
+            return_control(&runtime, "M1").unwrap_err().message(),
+            FEATURE_DISABLED
+        );
+        let after = session_state(&runtime);
+        assert!(after.human_lock);
+        assert_eq!(after.control_epoch, fenced.control_epoch);
+        drop(runner);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_runner_from_before_a_restart_is_stale_but_still_fenced_and_stoppable() {
+        let (runtime, runner, root) = fixture("stale", "svc_stale");
+        let error = takeover(&runtime, "M1").unwrap_err();
+        assert_eq!(error.message(), RUNNER_STALE);
+        assert!(session_state(&runtime).human_lock, "the fence is durable");
+        assert_eq!(
+            return_control(&runtime, "M1").unwrap_err().message(),
+            RUNNER_STALE
+        );
+        let inspect = route(
+            &runtime,
+            request("deck_session_inspect", json!({"session_id":"mcp_a"})),
+        );
+        assert_eq!(inspect["stale"], true);
+        assert_eq!(inspect["mayStartNextJobReason"], "RUNNER_STALE");
+        // `stop` is bound to the generation only: a stale runner still stops.
+        assert_eq!(runner.count("stop"), 0);
+        let session = session_state(&runtime);
+        send_runner(
+            &session,
+            &json!({"kind":"stop","generation":session.generation}),
+        )
+        .unwrap();
+        assert_eq!(runner.count("stop"), 1);
+        drop(runner);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn takeover_fences_before_waiting_for_an_in_flight_dispatch() {
+        let (runtime, runner, root) = fixture("fence-first", "svc_test");
+        // An exec holds the delivery lock across runner I/O.
+        let delivery = runtime.delivery.lock_or_recover();
+        let local = runtime.clone();
+        let takeover_thread = std::thread::spawn(move || takeover(&local, "M1"));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !runtime
+            .emergency
+            .lock_or_recover()
+            .human_sessions
+            .contains("mcp_a")
+        {
+            assert!(Instant::now() < deadline, "fence waited for the lock");
+            std::thread::yield_now();
+        }
+        // While the lock is still held, every new remote request is refused.
+        let exec = route(
+            &runtime,
+            request(
+                "deck_exec",
+                json!({"request_id":"late","session_id":"mcp_a","expected_generation":"g_a","control_epoch":1,"holder_id":"holder_a","script":"true"}),
+            ),
+        );
+        assert_eq!(exec["error"]["code"], "HUMAN_CONTROL");
+        assert!(emergency_denial(&runtime, "client_a", "mcp_a").is_some());
+        drop(delivery);
+        takeover_thread.join().unwrap().unwrap();
+        assert!(session_state(&runtime).human_lock);
+        drop(runner);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn job_read_drops_output_when_a_takeover_lands_during_the_wait() {
+        let (runtime, runner, root) = fixture("read-recheck", "svc_test");
+        runtime
+            .write(|doc| {
+                let grant = execution_grant(&doc.sessions[0]);
+                doc.jobs.push(JobBinding {
+                    job_id: "job_a".into(),
+                    client_id: "client_a".into(),
+                    session_id: "mcp_a".into(),
+                    session_generation: "g_a".into(),
+                    request_hash: "a".repeat(64),
+                    operation_id: "op_exec".into(),
+                    grant_id: grant.grant_id.clone(),
+                    grant_version: 1,
+                    allow_output: true,
+                });
+                doc.execution_grants.push(grant);
+                Ok(())
+            })
+            .unwrap();
+        let read = || {
+            route(
+                &runtime,
+                request(
+                    "deck_job_read",
+                    json!({"job_id":"job_a","max_bytes":1024,"wait_ms":5000}),
+                ),
+            )
+        };
+        assert_eq!(read()["output"], "done\n", "baseline read is allowed");
+
+        let (entered, release) = runner.hold("read");
+        let reader = {
+            let runtime = runtime.clone();
+            std::thread::spawn(move || {
+                route(
+                    &runtime,
+                    request(
+                        "deck_job_read",
+                        json!({"job_id":"job_a","max_bytes":1024,"wait_ms":5000}),
+                    ),
+                )
+            })
+        };
+        entered.recv_timeout(Duration::from_secs(5)).unwrap();
+        // Takeover while the runner read is in flight. The runner control
+        // call is served on its own connection, so this completes.
+        takeover(&runtime, "M1").unwrap();
+        release.send(()).unwrap();
+        let late = reader.join().unwrap();
+        assert_eq!(late["error"]["code"], "HUMAN_CONTROL", "{late}");
+        assert!(late.get("output").is_none(), "no bytes after takeover");
+
+        // Return + a fresh grant does not reopen the pre-takeover job.
+        return_control(&runtime, "M1").unwrap();
+        runtime
+            .write(|doc| {
+                doc.sessions[0].output_shared = true;
+                Ok(())
+            })
+            .unwrap();
+        let reopened = read();
+        assert_eq!(reopened["error"]["code"], "PERMISSION_DENIED", "{reopened}");
+        let inspect = route(
+            &runtime,
+            request("deck_session_inspect", json!({"session_id":"mcp_a"})),
+        );
+        assert!(inspect.get("terminalContext").is_none());
+        assert!(inspect.get("readiness").is_none());
+        drop(runner);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    fn close_plan(runtime: &Runtime) -> String {
+        let close = route(
+            runtime,
+            request(
+                "deck_session_close",
+                json!({"request_id":format!("close_{}", now_ms()),"session_id":"mcp_a","expected_generation":"g_a","control_epoch":1,"holder_id":"holder_a"}),
+            ),
+        );
+        assert_eq!(close["state"], "accepted", "{close}");
+        close["operationId"].as_str().unwrap().to_owned()
+    }
+
+    #[test]
+    fn a_remote_close_commits_after_admission_and_never_sticks() {
+        let (runtime, runner, root) = fixture("close-a", "svc_test");
+        let operation_id = close_plan(&runtime);
+        assert!(session_state(&runtime).closing);
+        claim(&runtime, &operation_id).unwrap();
+        let admission = close_admit(&runtime, &operation_id).unwrap().admission;
+        validate_close_admission_with(&runtime, Some(&admission), &["deck-mcp-test".into()])
+            .unwrap();
+        // After admission a side effect may have run: rejected is not allowed.
+        assert!(complete(
+            &runtime,
+            operation_id.clone(),
+            "rejected".into(),
+            None,
+            None
+        )
+        .is_err());
+        complete(
+            &runtime,
+            operation_id.clone(),
+            "committed".into(),
+            None,
+            None,
+        )
+        .unwrap();
+        runtime
+            .read(|doc| assert!(doc.sessions.is_empty(), "committed close removes it"))
+            .unwrap();
+        // A repeated completion is idempotent; a different one is refused.
+        complete(
+            &runtime,
+            operation_id.clone(),
+            "committed".into(),
+            None,
+            None,
+        )
+        .unwrap();
+        drop(runner);
+        std::fs::remove_dir_all(root).unwrap();
+
+        // Failure after admission: ambiguous, and `closing` is cleared.
+        let (runtime, runner, root) = fixture("close-b", "svc_test");
+        let operation_id = close_plan(&runtime);
+        claim(&runtime, &operation_id).unwrap();
+        close_admit(&runtime, &operation_id).unwrap();
+        complete(
+            &runtime,
+            operation_id.clone(),
+            "ambiguous".into(),
+            Some("close-failed".into()),
+            None,
+        )
+        .unwrap();
+        assert!(!session_state(&runtime).closing, "closing never sticks");
+        let view = route(
+            &runtime,
+            request("deck_operation_get", json!({"operation_id":operation_id})),
+        );
+        assert_eq!(view["state"], "ambiguous");
+        drop(runner);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn restart_turns_pending_board_operations_ambiguous() {
+        let root = test_root("restart-board");
+        let path = root.join("mcp.json");
+        let runner = FakeRunner::start(&root, "g_a");
+        let mut doc = DiskDoc::default();
+        doc.config.enabled = true;
+        doc.config.clients.push(client_record(&root));
+        let mut session = session_record(&root, &runner);
+        session.closing = true;
+        doc.sessions.push(session);
+        for (id, kind, state) in [
+            ("op_create", "session-create", "accepted"),
+            ("op_close", "session-close", "admitted"),
+            ("op_exec", "session-create", "executing"),
+        ] {
+            let mut item = operation(kind, state);
+            item.operation_id = id.into();
+            item.request_id = format!("request_{id}");
+            item.result = Some(json!({"sessionId":"mcp_a"}));
+            doc.operations.push(item);
+        }
+        save(&path, &doc).unwrap();
+        let recovered = load(&path).unwrap();
+        for item in &recovered.operations {
+            assert_eq!(item.state, "ambiguous", "{}", item.operation_id);
+            assert_eq!(item.code.as_deref(), Some("deck-restarted"));
+        }
+        assert!(!recovered.sessions[0].closing);
+        drop(runner);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_control_replay_never_resends_a_runner_side_effect() {
+        let (runtime, runner, root) = fixture("control-replay", "svc_test");
+        runtime
+            .write(|doc| {
+                let session = &mut doc.sessions[0];
+                session.control_owner = None;
+                session.control_holder = None;
+                session.lease_expires_at = None;
+                Ok(())
+            })
+            .unwrap();
+        let control =
+            |arguments: Value| route(&runtime, request("deck_session_control", arguments));
+        let first = control(
+            json!({"request_id":"req_a","session_id":"mcp_a","expected_generation":"g_a","action":"request","holder_id":"holder_a"}),
+        );
+        assert_eq!(first["state"], "committed", "{first}");
+        let epoch = first["result"]["controlEpoch"].as_u64().unwrap();
+        let release = json!({"request_id":"rel_a","session_id":"mcp_a","expected_generation":"g_a","action":"release","holder_id":"holder_a","control_epoch":epoch});
+        assert_eq!(control(release.clone())["state"], "committed");
+        let taken = control(
+            json!({"request_id":"req_b","session_id":"mcp_a","expected_generation":"g_a","action":"request","holder_id":"holder_b"}),
+        );
+        assert_eq!(taken["state"], "committed");
+        let controls = runner.count("control");
+        // Replaying A's old release must not fence B's runner context.
+        let replay = control(release);
+        assert_eq!(replay["state"], "committed");
+        assert_eq!(
+            runner.count("control"),
+            controls,
+            "replay sent a runner control"
+        );
+        assert_eq!(
+            session_state(&runtime).control_holder.as_deref(),
+            Some("holder_b")
+        );
+        // null and omitted are the same request, not a conflict.
+        let with_null = control(
+            json!({"request_id":"req_b","session_id":"mcp_a","expected_generation":"g_a","action":"request","holder_id":"holder_b","lease_ms":null,"control_epoch":null}),
+        );
+        assert_eq!(
+            with_null["operationId"], taken["operationId"],
+            "{with_null}"
+        );
+        drop(runner);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// Grant a fresh window directly (the local UI path) for route tests.
+    fn grant_window(runtime: &Runtime) {
+        super::execution_grant(runtime, "mcp_a".into(), Some(60_000), true, true).unwrap();
+    }
+
+    fn control_request(runtime: &Runtime, request_id: &str) -> u64 {
+        let value = route(
+            runtime,
+            request(
+                "deck_session_control",
+                json!({"request_id":request_id,"session_id":"mcp_a","expected_generation":"g_a","action":"request","holder_id":"holder_a"}),
+            ),
+        );
+        assert_eq!(value["state"], "committed", "{value}");
+        value["result"]["controlEpoch"].as_u64().unwrap()
+    }
+
+    fn release(runtime: &Runtime, request_id: &str, epoch: u64) {
+        let value = route(
+            runtime,
+            request(
+                "deck_session_control",
+                json!({"request_id":request_id,"session_id":"mcp_a","expected_generation":"g_a","action":"release","holder_id":"holder_a","control_epoch":epoch}),
+            ),
+        );
+        assert_eq!(value["state"], "committed", "{value}");
+    }
+
+    fn exec_request(request_id: &str, epoch: u64) -> WireRequest {
+        request(
+            "deck_exec",
+            json!({"request_id":request_id,"session_id":"mcp_a","expected_generation":"g_a","control_epoch":epoch,"holder_id":"holder_a","script":"true","wait_ms":0}),
+        )
+    }
+
+    fn unowned(runtime: &Runtime) {
+        runtime
+            .write(|doc| {
+                let session = &mut doc.sessions[0];
+                session.control_owner = None;
+                session.control_holder = None;
+                session.lease_expires_at = None;
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn compaction_keeps_three_thousand_epochs_bounded() {
+        // Pure ledger model of 3000 request/exec/release cycles: each cycle
+        // journals three records bound to its epoch.
+        let root = test_root("compact-model");
+        let runner = FakeRunner::start(&root, "g_a");
+        let mut doc = DiskDoc::default();
+        doc.sessions.push(session_record(&root, &runner));
+        for cycle in 0..3_000u64 {
+            let epoch = cycle * 2 + 1;
+            doc.sessions[0].control_epoch = epoch;
+            for kind in ["session-control", "exec", "session-control"] {
+                let mut record = operation(kind, "committed");
+                record.operation_id = format!("op_{}", doc.operations.len() + cycle as usize * 3);
+                record.request_id = format!("{kind}_{cycle}_{}", doc.operations.len());
+                record.session_id = Some("mcp_a".into());
+                record.control_epoch = Some(epoch);
+                doc.operations.push(record);
+            }
+            doc.sessions[0].control_epoch = epoch + 1;
+            compact(&mut doc, Some("svc_test"));
+            assert!(
+                doc.operations.len() <= 3,
+                "cycle {cycle}: {}",
+                doc.operations.len()
+            );
+        }
+        validate_doc(&doc).unwrap();
+        drop(runner);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn sustained_use_stays_within_the_journal() {
+        // End-to-end through the routes. 700 cycles journal 2100 records —
+        // past the pre-fix global limit of 2000 (it failed at cycle 667).
+        // Each debug-build write serializes the audit-capped document, so the
+        // 3000-cycle bound is covered by the pure model test above.
+        let (runtime, runner, root) = fixture("sustained", "svc_test");
+        unowned(&runtime);
+        super::execution_grant(
+            &runtime,
+            "mcp_a".into(),
+            Some(MAX_EXECUTION_GRANT_MS),
+            true,
+            true,
+        )
+        .unwrap();
+        for cycle in 0..700 {
+            let epoch = control_request(&runtime, &format!("req_{cycle}"));
+            let executed = route(&runtime, exec_request(&format!("exec_{cycle}"), epoch));
+            assert_eq!(executed["state"], "exited", "cycle {cycle}: {executed}");
+            release(&runtime, &format!("rel_{cycle}"), epoch);
+        }
+        runtime
+            .read(|doc| {
+                assert!(
+                    doc.operations.len() < 16,
+                    "journal grew: {}",
+                    doc.operations.len()
+                );
+                assert!(doc.jobs.len() <= MAX_JOBS_PER_SESSION);
+                assert!(doc.execution_grants.len() <= 2);
+            })
+            .unwrap();
+        assert_eq!(runner.count("exec"), 700);
+        drop(runner);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn many_grants_never_block_a_takeover() {
+        let (runtime, runner, root) = fixture("grants", "svc_test");
+        for _ in 0..2_001 {
+            grant_window(&runtime);
+        }
+        assert!(runtime.read(|doc| doc.execution_grants.len()).unwrap() <= 2);
+        takeover(&runtime, "M1").unwrap();
+        assert!(session_state(&runtime).human_lock, "takeover persisted");
+        assert_eq!(runner.last("control").unwrap()["mode"], "human");
+        drop(runner);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_retired_request_id_is_rejected_never_reexecuted() {
+        let (runtime, runner, root) = fixture("retired", "svc_test");
+        unowned(&runtime);
+        grant_window(&runtime);
+        let epoch = control_request(&runtime, "req_old");
+        let first = route(&runtime, exec_request("exec_once", epoch));
+        assert_eq!(first["state"], "exited");
+        // Exact replay inside the window: same job, no second dispatch.
+        let again = route(&runtime, exec_request("exec_once", epoch));
+        assert_eq!(again["jobId"], first["jobId"]);
+        assert_eq!(runner.count("exec"), 1);
+        release(&runtime, "rel_old", epoch);
+        let next = control_request(&runtime, "req_new");
+        // Force retirement, then replay the old request id verbatim.
+        runtime
+            .write(|doc| {
+                compact(doc, Some("svc_test"));
+                assert!(doc
+                    .operations
+                    .iter()
+                    .all(|operation| operation.request_id != "exec_once"));
+                Ok(())
+            })
+            .unwrap();
+        let replay = route(&runtime, exec_request("exec_once", epoch));
+        assert_eq!(replay["error"]["code"], "CONTROL_REVOKED", "{replay}");
+        assert_eq!(runner.count("exec"), 1, "a retired request was re-executed");
+        assert!(next > epoch);
+        drop(runner);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_full_journal_still_admits_an_interrupt_and_names_a_real_recovery() {
+        let (runtime, runner, root) = fixture("reserve", "svc_test");
+        grant_window(&runtime);
+        let executed = route(&runtime, exec_request("exec_live", 1));
+        let job_id = executed["jobId"].as_str().unwrap().to_owned();
+        runtime
+            .write(|doc| {
+                while doc.operations.len() < MAX_OPERATIONS - INTERRUPT_RESERVE {
+                    let mut filler = operation("exec", "committed");
+                    filler.operation_id = format!("op_fill_{}", doc.operations.len());
+                    filler.request_id = format!("fill_{}", doc.operations.len());
+                    filler.client_id = format!("client_fill_{}", doc.operations.len() % 8);
+                    filler.session_id = Some("mcp_a".into());
+                    filler.control_epoch = Some(1);
+                    doc.operations.push(filler);
+                }
+                Ok(())
+            })
+            .unwrap();
+        let blocked = route(&runtime, exec_request("exec_full", 1));
+        assert_eq!(blocked["error"]["code"], "CAPACITY_EXCEEDED");
+        assert!(blocked["error"]["nextAction"]
+            .as_str()
+            .unwrap()
+            .contains("control epoch"));
+        let interrupt = route(
+            &runtime,
+            request(
+                "deck_job_interrupt",
+                json!({"request_id":"stop_now","job_id":job_id,"session_generation":"g_a","control_epoch":1,"holder_id":"holder_a"}),
+            ),
+        );
+        assert_eq!(interrupt["state"], "committed", "{interrupt}");
+        drop(runner);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn v3_state_upgrades_stickily_and_future_state_is_refused() {
+        let root = test_root("v4");
+        let path = root.join("mcp.json");
+        let mut doc = DiskDoc {
+            version: 3,
+            ..DiskDoc::default()
+        };
+        doc.config.clients.push(client_record(&root));
+        let mut old = operation("session-control", "committed");
+        old.result = Some(json!({"sessionId":"mcp_gone"}));
+        doc.operations.push(old);
+        // A v3 file never contains the v4 fields.
+        let mut bytes = serde_json::to_value(&doc).unwrap();
+        for operation in bytes["operations"].as_array_mut().unwrap() {
+            let fields = operation.as_object_mut().unwrap();
+            fields.remove("sessionId");
+            fields.remove("controlEpoch");
+        }
+        std::fs::write(&path, serde_json::to_vec(&bytes).unwrap()).unwrap();
+        let upgraded = load(&path).unwrap();
+        assert_eq!(upgraded.version, 4);
+        assert!(
+            upgraded.operations.is_empty(),
+            "a v3 record of a closed session is retired"
+        );
+        let saved: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(saved["version"], 4, "the upgrade is written back (sticky)");
+        // The v3 build accepted exactly version 3; the same rule refuses 5 here.
+        let mut future = saved.clone();
+        future["version"] = json!(5);
+        std::fs::write(&path, serde_json::to_vec(&future).unwrap()).unwrap();
+        assert_eq!(load(&path).err().unwrap().kind(), ErrorKind::Recovery);
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            serde_json::to_vec(&future).unwrap(),
+            "refused state is left untouched"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn protocol_views_are_honest_about_state_and_identity() {
+        let (runtime, runner, root) = fixture("views", "svc_test");
+        let capabilities = route(&runtime, request("deck_capabilities", json!({})));
+        assert_eq!(capabilities["deckVersion"], DECK_VERSION);
+        assert_eq!(capabilities["stateSchemaVersion"], 4);
+        assert_eq!(capabilities["shellSemantics"]["shell"], "zsh -d -f");
+        assert!(capabilities.get("featureEnabled").is_none());
+        let create = route(
+            &runtime,
+            request(
+                "deck_session_create",
+                json!({"request_id":"create_view","project_id":"P1","cwd":root.display().to_string()}),
+            ),
+        );
+        assert!(create.get("shellJobComplete").is_none());
+        assert!(create["result"].get("runnerSocket").is_none());
+        assert!(create["result"].get("sessionId").is_some());
+        let listed = route(&runtime, request("deck_sessions_list", json!({})));
+        assert!(listed["sessions"][0].get("readiness").is_none());
+        runtime
+            .write(|doc| {
+                doc.config.enabled = false;
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(
+            route(&runtime, request("deck_capabilities", json!({})))["error"]["code"],
+            "FEATURE_DISABLED"
+        );
+        drop(runner);
         std::fs::remove_dir_all(root).unwrap();
     }
 }

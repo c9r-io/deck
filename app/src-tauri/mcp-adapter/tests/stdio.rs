@@ -124,6 +124,27 @@ fn initializes_lists_and_calls_over_stdio_without_stdout_noise() {
     let listed = read_response(&mut output, 2);
     let tools = listed["result"]["tools"].as_array().unwrap();
     assert_eq!(tools.len(), 14);
+    let listed_names = tools
+        .iter()
+        .map(|tool| tool["name"].as_str().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    for tool in tools {
+        let read_only = tool["annotations"]["readOnlyHint"] == true;
+        // A side-effecting tool is idempotent only inside Deck's replay
+        // window, so none may claim idempotence.
+        if !read_only {
+            assert_eq!(tool["annotations"]["idempotentHint"], false, "{tool}");
+            assert_eq!(tool["annotations"]["destructiveHint"], true, "{tool}");
+        }
+    }
+    let inspect = tools
+        .iter()
+        .find(|tool| tool["name"] == "deck_session_inspect")
+        .unwrap();
+    assert!(!inspect["description"]
+        .as_str()
+        .unwrap()
+        .contains("terminal context"));
     let exec = tools
         .iter()
         .find(|tool| tool["name"] == "deck_exec")
@@ -177,9 +198,15 @@ fn initializes_lists_and_calls_over_stdio_without_stdout_noise() {
         called["result"]["structuredContent"]["tools"]
             .as_array()
             .unwrap()
-            .len(),
-        14
+            .iter()
+            .map(|name| name.as_str().unwrap().to_owned())
+            .collect::<Vec<_>>(),
+        listed_names,
+        "capabilities.tools and tools/list are one registry"
     );
+    assert!(called["result"]["structuredContent"]
+        .get("adapterBuild")
+        .is_some());
     assert_eq!(
         called["result"]["structuredContent"]["mayCreateSession"],
         false
@@ -190,6 +217,66 @@ fn initializes_lists_and_calls_over_stdio_without_stdout_noise() {
     mock.join().unwrap();
     std::fs::remove_file(&socket).unwrap();
     std::fs::remove_dir(&root).unwrap();
+}
+
+#[test]
+fn a_lost_answer_to_a_side_effect_is_ambiguous_not_unavailable() {
+    let root = std::env::temp_dir().join(format!("deck-mcp-ambig-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir(&root).unwrap();
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let socket = root.join("control.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    // Deck reads the whole request, then the connection dies unanswered.
+    let mock = std::thread::spawn(move || {
+        for _ in 0..2 {
+            let (stream, _) = listener.accept().unwrap();
+            let mut request = String::new();
+            BufReader::new(stream.try_clone().unwrap())
+                .read_line(&mut request)
+                .unwrap();
+            drop(stream);
+        }
+    });
+    let mut child = spawn_adapter(&[
+        "--client-id",
+        "client_test",
+        "--socket",
+        socket.to_str().unwrap(),
+    ]);
+    let mut input = child.stdin.take().unwrap();
+    let mut output = BufReader::new(child.stdout.take().unwrap());
+    writeln!(input, "{}", json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1"}}})).unwrap();
+    input.flush().unwrap();
+    read_response(&mut output, 1);
+    writeln!(
+        input,
+        "{}",
+        json!({"jsonrpc":"2.0","method":"notifications/initialized"})
+    )
+    .unwrap();
+    writeln!(input, "{}", json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"deck_exec","arguments":{"request_id":"r","session_id":"s","expected_generation":"g","control_epoch":1,"holder_id":"h","script":"true"}}})).unwrap();
+    input.flush().unwrap();
+    let exec = read_response(&mut output, 2);
+    assert_eq!(
+        exec["result"]["structuredContent"]["error"]["code"],
+        "OPERATION_AMBIGUOUS"
+    );
+    assert!(exec["result"]["structuredContent"]["error"]["nextAction"]
+        .as_str()
+        .unwrap()
+        .contains("SAME request_id"));
+    writeln!(input, "{}", json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"deck_sessions_list","arguments":{}}})).unwrap();
+    input.flush().unwrap();
+    let list = read_response(&mut output, 3);
+    assert_eq!(
+        list["result"]["structuredContent"]["error"]["code"], "DECK_UNAVAILABLE",
+        "a read-only call has no side effect to be ambiguous about"
+    );
+    drop(input);
+    assert!(child.wait().unwrap().success());
+    mock.join().unwrap();
+    std::fs::remove_dir_all(&root).unwrap();
 }
 
 #[test]

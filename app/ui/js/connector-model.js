@@ -1,4 +1,5 @@
-// Pure Connector desktop shapes: task presets and deterministic journal IDs.
+// Pure Connector desktop shapes: task presets, deterministic journal IDs and
+// pairing detection.
 const LOCAL_ID = /^[A-Za-z0-9_-]{1,128}$/;
 export const PRESET_MAX = 50;
 
@@ -40,6 +41,14 @@ export async function connectorId(prefix, handle, suffix = '') {
 export async function connectorBufferOperationId(handle, entryId) {
   const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(`connector-buffer:${handle}:${entryId}`));
   return 'B' + [...new Uint8Array(hash)].slice(0, 16).map(byte => byte.toString(16).padStart(2, '0')).join('');
+}
+
+// The device that a pairing added: present and active now, absent before.
+// A pairing is shown to the user at once so a device paired by someone who
+// saw the QR code cannot appear unnoticed.
+export function newlyPairedDevice(before, after) {
+  const known = new Set((before || []).map(device => device.id));
+  return (after || []).find(device => !device.revoked && !known.has(device.id)) || null;
 }
 
 export const unfinishedConnectorPlans = cards => (cards || [])

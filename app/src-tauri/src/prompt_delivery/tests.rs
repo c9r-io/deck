@@ -55,6 +55,7 @@ fn request(pane: &PaneIdentity) -> LiteralRequest<'_> {
         text: "a;b #{x} 'quoted'",
         submit: true,
         require_bracketed: true,
+        require_paste_mode: false,
     }
 }
 
@@ -432,4 +433,24 @@ fn stdin_pipe_keeps_full_prompt_out_of_live_argv_and_preserves_every_byte() {
         .run(&["list-buffers".into()])
         .unwrap()
         .contains("deck-send-privacy"));
+}
+
+#[test]
+fn paste_mode_gate_applies_to_single_line_text_and_guards_enter() {
+    // An agent that has not (yet) enabled bracketed paste is not reading its
+    // prompt; bytes pasted then would be typed into whatever reads the tty
+    // next, including a shell after the agent exits.
+    let _scope = crate::session_runtime::test_activity_scope();
+    let io = FakeTransport::default();
+    let pane = probe().identity;
+    let mut req = request(&pane);
+    req.expected_process = Some("zsh");
+    req.require_bracketed = false;
+    req.require_paste_mode = true;
+    req.text = "one line";
+    assert_eq!(deliver_with(req, &io).unwrap(), LiteralOutcome::Submitted);
+    let calls = io.calls.borrow();
+    assert!(calls[0][9].contains("#{bracketed_paste_flag},1"));
+    assert!(!calls[0][9].contains("pane_in_mode"));
+    assert_eq!(calls[0][9], calls[1][4], "Enter re-checks the same guard");
 }

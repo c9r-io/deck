@@ -49,7 +49,7 @@ import { chainWhenSuffix, contextLabel, fmtWhen, listStartCalls, localizedChainQ
 import { $, ctx, inv, listen, state, uev } from './state.js';
 import { blockedBy, chainQuietHint, CHAIN_QUIET_SECS, contextStatusKey, fmtEvery, groupQueue, groupSteps, hasWindow, hmToMin, isoDate, isoTime, itemDead, listKey, listRepeats, listScheduleArgs, localEpoch, MAX_QUIET_SECS, MIN_QUIET_SECS, minToHM, nextFire, promptSummary, promptTooltip, quietSecsOf, winHas } from './pure.js';
 export { blockedBy, chainQuietHint, contextStatusKey, fmtEvery, groupQueue, groupSteps, hasWindow, hmToMin, itemDead, minToHM, nextFire, promptSummary, promptTooltip, winHas };
-import { autoGrowField, confirmDangerDialog, confirmDialog, inlineRename, toast, promptDialog } from './dialogs.js';
+import { autoGrowField, confirmDialog, inlineRename, toast, promptDialog } from './dialogs.js';
 // Board access is injected at boot; the queue view has no view-core imports.
 let provider, pollNow;
 import { strToB64 } from './terminal-bytes.js';
@@ -98,22 +98,19 @@ async function refreshItemProbe(item) {
   return result;
 }
 
+/* Send now uses the scheduled send's guards unchanged: a foreground
+   mismatch is reported, never bypassed (a list may hold external text). */
 async function manualSendNow(item) {
   let probe;
   try { probe = await refreshItemProbe(item); }
   catch (e) { toast(t('queue.context.probeFailed')); return; }
-  const mismatch = probe.status === 'foreground-different';
-  if (probe.status !== 'ready' && !mismatch) {
+  if (probe.status !== 'ready') {
     toast(t(contextStatusKey(probe.status)));
     return;
   }
   const target = probe.current_process || t('queue.context.noProcess');
-  const message = mismatch
-    ? t('queue.manualMismatchConfirm', { expected: probe.expected_process || '?', current: target })
-    : t('queue.manualReadyConfirm', { current: target });
-  const accepted = mismatch ? await confirmDangerDialog(message) : await confirmDialog(message);
-  if (!accepted) return;
-  inv('queue_send_now', { id: item.id, acceptProcessMismatch: mismatch })
+  if (!(await confirmDialog(t('queue.manualReadyConfirm', { current: target })))) return;
+  inv('queue_send_now', { id: item.id })
     .catch(() => toast(t('error.operation', { operation: t('queue.manualNow') })));
 }
 

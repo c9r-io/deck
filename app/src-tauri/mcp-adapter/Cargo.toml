@@ -5,7 +5,7 @@ edition = "2021"
 license = "MIT"
 
 [dependencies]
-dirs = "5"
+libc = "0.2"
 rmcp = { version = "3.4.0", default-features = false, features = ["server", "macros", "transport-io"] }
 schemars = "1"
 serde = { version = "1", features = ["derive"] }
@@ -13,5 +13,3 @@ serde_json = "1"
 security-framework = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
-[dev-dependencies]
-libc = "0.2"
