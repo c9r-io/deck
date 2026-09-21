@@ -20,7 +20,7 @@ function commandError(error, fallback = 'invalid-command') {
   if (/revision/i.test(text)) return 'revision-changed';
   if (/missing|not found|no longer exists/i.test(text)) return 'target-missing';
   if (/capacity|too many|full/i.test(text)) return 'capacity';
-  if (/immutable/i.test(text)) return 'immutable';
+  if (/immutable|leading-command/i.test(text)) return 'immutable';
   if (/unsupported.{0,24}target|supported.{0,12}agent|agent.only/i.test(text)) return 'unsupported-target';
   return fallback;
 }

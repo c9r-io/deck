@@ -694,6 +694,7 @@ const dictionary = {
   'buffer.limit.entries': 'This card already has 256 scratchpad entries.',
   'buffer.limit.copies': 'This card already has 256 queued scratchpad copies.',
   'buffer.limit.entry': 'A scratchpad entry or queued copy cannot exceed 32 KiB.',
+  'buffer.leadingCommand': 'A channel message starting with ! or / cannot be queued as-is. Copy it into a manual note to queue it yourself.',
   'buffer.limit.total': 'This card’s scratchpad cannot exceed 1 MiB.',
   'buffer.state.queued': 'Queued copy',
   'buffer.state.delivered': 'Terminal delivery confirmed',

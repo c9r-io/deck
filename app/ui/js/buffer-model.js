@@ -1,6 +1,8 @@
 // buffer-model.js — pure card scratchpad schema, bounds and delivery evidence.
 // A buffer belongs to one persisted card. Queueing stores an immutable copy;
-// later source edits never alter text already handed to the scheduler.
+// later source edits never alter text already handed to the scheduler. An
+// external message whose first character is `!` or `/` never queues as-is
+// (`leadingCommand`), on the desktop or through the Connector.
 
 export const BUFFER_MAX_ENTRIES = 256;
 export const BUFFER_MAX_COPIES = 256;
@@ -75,6 +77,13 @@ export function deleteEntry(buffer, id) {
   return next;
 }
 
+// An external (Slack) message is untrusted agent input: like a channel
+// template, it may never make `!` (shell mode) or `/` (slash command) the
+// first character the agent reads. The user adopts such text by copying it
+// into a manual note, which is theirs to queue.
+const LEADING_COMMAND = /^\s*[!/]/;
+export const leadingCommand = entry => entry?.kind === 'external' && LEADING_COMMAND.test(String(entry.text || ''));
+
 export function addQueueCopy(buffer, id, operationId, now) {
   const next = structuredClone(buffer || emptyBuffer());
   const entry = next.entries.find(item => item.id === id);
@@ -82,6 +91,7 @@ export function addQueueCopy(buffer, id, operationId, now) {
   entry.copies ||= [];
   const prior = entry.copies.find(copy => copy.operationId === operationId);
   if (prior) return { buffer: next, copy: prior };
+  if (leadingCommand(entry)) return { buffer: next, error: 'leading-command' };
   const copy = {
     operationId, entryRevision: entry.revision || 0, text: entry.text,
     createdAt: now, state: 'uncertain',

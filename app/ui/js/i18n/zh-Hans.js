@@ -693,6 +693,7 @@ const dictionary = {
   'buffer.limit.entries': '此卡片已有 256 条暂存区条目。',
   'buffer.limit.copies': '此卡片已有 256 个排队副本。',
   'buffer.limit.entry': '单条暂存区条目或排队副本不能超过 32 KiB。',
+  'buffer.leadingCommand': '以 ! 或 / 开头的频道消息不能直接排队。请复制为人工笔记后再排队。',
   'buffer.limit.total': '此卡片暂存区不能超过 1 MiB。',
   'buffer.state.queued': '已排队副本',
   'buffer.state.delivered': '终端投递已确认',

@@ -578,7 +578,8 @@ export const provider = {
 /* ---------- card scratchpad ------------------------------------------------ */
 let bufferTargetId = null;
 const bufferSelected = new Set();
-const bufferLimitKey = error => ({ entries: 'buffer.limit.entries', copies: 'buffer.limit.copies', entry: 'buffer.limit.entry', total: 'buffer.limit.total' })[error];
+const bufferLimitKey = error => ({ entries: 'buffer.limit.entries', copies: 'buffer.limit.copies', entry: 'buffer.limit.entry', total: 'buffer.limit.total',
+  'leading-command': 'buffer.leadingCommand' })[error];
 
 async function persistBuffer(card, expectedRevision, next) {
   const error = bufferLimitError(next);
