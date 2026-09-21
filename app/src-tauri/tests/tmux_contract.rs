@@ -359,12 +359,12 @@ impl Drop for Server {
     }
 }
 
-/// Restored text is pane OUTPUT, never shell INPUT. The same sequence starts
-/// an initially empty server, loads a private buffer, creates the pane, and
-/// has the SERVER write the buffer to `#{pane_tty}` — which must resolve to
-/// the pane just created even when older, busier sessions exist — before
-/// deleting it. No shell script, no deck executable, no argv carrying text;
-/// tmux retains the text in its own scrollback.
+/// Restored text is pane OUTPUT, never shell INPUT. `new-session` reports its
+/// own tty and a second fixed tmux batch writes the private buffer to that
+/// exact device. A persistent control client attached to an older card must
+/// not redirect the history through its ambient current-pane context. No
+/// shell script, no deck executable, no argv carrying text; tmux retains the
+/// text in its own scrollback.
 #[test]
 fn shell_restore_bootstrap_becomes_tmux_history_without_executing_text() {
     let s = Server(format!(
@@ -413,7 +413,25 @@ fn shell_restore_bootstrap_becomes_tmux_history_without_executing_text() {
         "/bin/cat",
     ]);
     s.run_raw_checked(&["send-keys", "-t", "=busy:", "activity", "Enter"]);
-    s.run_with_stdin_checked(
+
+    // Production polling keeps this read-only client attached to the first
+    // available session. It is the condition the old ambient `#{pane_tty}`
+    // restore test omitted and the condition that redirected later cards.
+    let mut control = Command::new(tmux_bin())
+        .args(["-f", "/dev/null", "-L", &s.0, "-C", "attach-session"])
+        .args(["-r", "-f", "ignore-size,no-output", "-t", "=older"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn persistent control client");
+    sleep(Duration::from_millis(100));
+    assert!(
+        control.try_wait().unwrap().is_none(),
+        "control client attached"
+    );
+
+    let created = s.run_with_stdin_checked(
         &[
             "load-buffer",
             "-b",
@@ -422,6 +440,9 @@ fn shell_restore_bootstrap_becomes_tmux_history_without_executing_text() {
             ";",
             "new-session",
             "-d",
+            "-P",
+            "-F",
+            "#{pane_tty}",
             "-s",
             "t",
             "-x",
@@ -429,18 +450,21 @@ fn shell_restore_bootstrap_becomes_tmux_history_without_executing_text() {
             "-y",
             "12",
             "/bin/cat",
-            ";",
-            "save-buffer",
-            "-b",
-            buffer,
-            "#{pane_tty}",
-            ";",
-            "delete-buffer",
-            "-b",
-            buffer,
         ],
         &payload,
     );
+    let tty = String::from_utf8(created).unwrap().trim().to_string();
+    assert!(tty.starts_with("/dev/"), "new pane tty: {tty:?}");
+    s.run_raw_checked(&[
+        "save-buffer",
+        "-b",
+        buffer,
+        &tty,
+        ";",
+        "delete-buffer",
+        "-b",
+        buffer,
+    ]);
 
     let mut captured = String::new();
     for _ in 0..200 {
@@ -517,6 +541,8 @@ fn shell_restore_bootstrap_becomes_tmux_history_without_executing_text() {
             > 0,
         "restored output must live in tmux scrollback"
     );
+    let _ = control.kill();
+    let _ = control.wait();
     let _ = std::fs::remove_dir_all(root);
 }
 

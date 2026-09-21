@@ -131,10 +131,11 @@ pub(crate) struct StartSessionResult {
 /// "new shell" is deck's doing or the login shell's rc files. Server
 /// defaults come from `-f tmux.conf` at server spawn; nothing is re-set
 /// per session.
-/// The restored-shell start as ONE tmux server sequence: keep an empty server
-/// alive, load the sanitized transcript from stdin into a private buffer,
-/// create the pane the ORDINARY way (tmux's own login shell, no command),
-/// have the SERVER write the buffer to the new pane's tty, then discard it.
+/// Restored-shell creation keeps an empty server alive, loads the sanitized
+/// transcript from stdin into a private buffer, and creates the pane the
+/// ORDINARY way (tmux's own login shell, no command). `new-session` prints
+/// that new pane's tty from its own format context; a second fixed tmux batch
+/// writes the buffer to that validated device and discards it.
 /// No `/bin/sh -c`, no script, no shell argv: the earlier inline-script
 /// bootstrap was an EDR signature, and the signed deck binary must never be
 /// a pane executable (macOS Local Network Privacy would attribute the shell
@@ -151,15 +152,40 @@ pub(crate) fn restore_start_args(name: &str, dir: &str, buffer: &str) -> Vec<Str
         ";",
         "new-session",
         "-d",
+        "-P",
+        "-F",
+        crate::shell_state::RESTORE_TTY_FORMAT,
         "-s",
         name,
         "-c",
         dir,
-        ";",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
+}
+
+fn restore_tty(output: &str) -> Result<String, DeckError> {
+    let tty = output.strip_suffix('\n').unwrap_or(output);
+    if tty.is_empty()
+        || tty.contains(['\n', '\r', '\t'])
+        || !tty.starts_with("/dev/")
+        || crate::procinfo::tty_device(tty).is_none()
+    {
+        return Err(DeckError::new(
+            ErrorKind::Recovery,
+            "shell restore returned an invalid pane tty",
+        ));
+    }
+    Ok(tty.to_string())
+}
+
+pub(crate) fn restore_emit_args(buffer: &str, tty: &str) -> Vec<String> {
+    [
         "save-buffer",
         "-b",
         buffer,
-        crate::shell_state::RESTORE_TTY_FORMAT,
+        tty,
         ";",
         "delete-buffer",
         "-b",
@@ -242,14 +268,17 @@ pub(crate) fn start_session(
             },
         );
     let (start, restored) = if let Some(bootstrap) = bootstrap.as_ref() {
-        // One sequence: the pane is created exactly like a clean shell
-        // (tmux's own login shell, no command), then the SERVER writes the
-        // private buffer to that pane's tty and discards it. The write
-        // follows the fork immediately, so it lands before the shell's
-        // first prompt; a slow rc file can only reorder text, never run it.
+        // The pane is created exactly like a clean shell (tmux's own login
+        // shell, no command). `new-session -P` returns THIS pane's tty; never
+        // let an attached control client's ambient target choose the device.
         let args = restore_start_args(&name, &dir, &bootstrap.buffer);
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
-        let restored_start = tmux_with_stdin(&args, &bootstrap.output);
+        let restored_start = tmux_with_stdin(&args, &bootstrap.output).and_then(|output| {
+            let tty = restore_tty(&output)?;
+            let emit = restore_emit_args(&bootstrap.buffer, &tty);
+            let emit: Vec<&str> = emit.iter().map(String::as_str).collect();
+            tmux(&emit)
+        });
         match restored_start {
             Ok(output) => (Ok(output), true),
             Err(error) => {
@@ -692,7 +721,7 @@ mod tests {
     /// command, the bytes travel stdin → private buffer → pane tty inside the
     /// tmux server, and nothing on the path is a shell or a script.
     #[test]
-    fn restore_start_is_one_tmux_sequence_with_no_shell_and_no_argv_payload() {
+    fn restore_start_uses_the_created_pane_tty_with_no_shell_or_argv_payload() {
         let args = restore_start_args("sess", "/tmp/dir", "deck-restore-7");
         let steps: Vec<Vec<&str>> = args
             .split(|a| a == ";")
@@ -706,20 +735,34 @@ mod tests {
         );
         assert_eq!(
             steps[2],
-            ["new-session", "-d", "-s", "sess", "-c", "/tmp/dir"],
-            "the pane is created exactly like a clean shell: no command argument"
+            [
+                "new-session",
+                "-d",
+                "-P",
+                "-F",
+                crate::shell_state::RESTORE_TTY_FORMAT,
+                "-s",
+                "sess",
+                "-c",
+                "/tmp/dir"
+            ],
+            "new-session itself reports the created pane tty"
         );
+        assert_eq!(steps.len(), 3);
+        let emit = restore_emit_args("deck-restore-7", "/dev/ttys007");
         assert_eq!(
-            steps[3],
+            emit,
             [
                 "save-buffer",
                 "-b",
                 "deck-restore-7",
-                crate::shell_state::RESTORE_TTY_FORMAT
+                "/dev/ttys007",
+                ";",
+                "delete-buffer",
+                "-b",
+                "deck-restore-7"
             ]
         );
-        assert_eq!(steps[4], ["delete-buffer", "-b", "deck-restore-7"]);
-        assert_eq!(steps.len(), 5);
         for forbidden in [
             "sh",
             "/bin/",
@@ -730,9 +773,22 @@ mod tests {
             "deck-app",
         ] {
             assert!(
-                !args.iter().any(|a| a == forbidden || a.contains("/bin/")),
+                !args
+                    .iter()
+                    .chain(emit.iter())
+                    .any(|a| a == forbidden || a.contains("/bin/")),
                 "{forbidden} on the restore path"
             );
+        }
+    }
+
+    #[test]
+    fn restore_tty_accepts_one_real_device_and_rejects_ambiguous_output() {
+        let tty = "/dev/tty".to_string();
+        assert!(crate::procinfo::tty_device(&tty).is_some());
+        assert_eq!(restore_tty(&format!("{tty}\n")).unwrap(), tty);
+        for bad in ["", "/tmp/not-a-tty", "/dev/ttys001\n/dev/ttys002\n"] {
+            assert!(restore_tty(bad).is_err(), "accepted {bad:?}");
         }
     }
 

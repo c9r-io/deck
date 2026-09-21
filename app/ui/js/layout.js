@@ -9,7 +9,10 @@
 // A pane that is already open is only focused: a detached pane (shell exited,
 // attach failed) is never re-attached or restarted by a click; exit retirement
 // in board.js owns it. A pty-exit may land before its attach reply — the reply
-// never marks a pane attached once its generation has exited. A stopped card
+// never marks a pane attached once its generation has exited. Each pane is
+// synchronously fitted before attach and confirms that grid afterwards;
+// the asynchronous layout RAF must never attach tmux at xterm's 80x24 default.
+// A stopped card
 // reopens as its shell: the launch command is sent only while the card's
 // durable `launched` flag is false (pure.js startCommand). A caller that
 // already started the session (provider.createStarted) passes that outcome
@@ -734,7 +737,15 @@ async function attachPane(pane, { allowStart = true } = {}) {
       if (outcome.commandSent) await provider.markLaunched(card.id);
     }
     if (ctx.tmuxRestarting || panes.get(card.session) !== pane) return outcome;
+    /* renderLayout schedules its fit on RAF, but a fast restore/start can
+       reach attach first and otherwise shrink tmux to xterm's 80x24 default.
+       Fit synchronously while the mounted pane is still the intended owner,
+       then confirm the same grid after attach so an earlier pre-attach resize
+       rejection cannot remain the resize coordinator's last word. */
+    pane.fit.fit();
     const gen = await inv('attach_session', { name: card.session, cols: pane.term.cols, rows: pane.term.rows });
+    pane.invalidateSize();
+    await pane.syncSize();
     /* max(): the first pty-data event can arrive BEFORE this invoke resolves;
        the handler below already advanced ptyGens then, and regressing it
        would make us drop (and never ACK) the current stream */
