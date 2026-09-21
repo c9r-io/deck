@@ -11,8 +11,9 @@
 //! `mcp_fs.rs` and never start a shell or repository helper. The control
 //! socket (0600, Deck's private data directory, same-effective-uid peers
 //! only, bounded connections with timeouts) is bound only while the feature is
-//! enabled and is removed on disable. The thin `deck-mcp` sidecar maps an
-//! absent control socket to `FEATURE_DISABLED`; when connected, the service
+//! enabled and is removed on disable; while disabled its thread sleeps until
+//! `mcp_enable` wakes it instead of polling the socket path. The thin
+//! `deck-mcp` sidecar maps an absent control socket to `FEATURE_DISABLED`; when connected, the service
 //! also answers `FEATURE_DISABLED` if a disable races the request. The sidecar provides MCP
 //! STDIO and never receives a Phone token or unrestricted backend credential.
 //!
@@ -73,7 +74,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter};
 
@@ -3319,9 +3320,9 @@ fn route(runtime: &Runtime, request: WireRequest) -> Value {
             "Use the bundled deck-mcp adapter and an authorized client id.",
         );
     }
-    // The socket always listens (it is private and same-uid only). While the
-    // feature is off every tool — including capabilities — is refused with
-    // this distinct code; it discloses nothing about clients or scopes.
+    // The socket is bound only while enabled, but a disable can race a request
+    // already connected. Then every tool — including capabilities — is refused
+    // with this distinct code; it discloses nothing about clients or scopes.
     let disabled = runtime.emergency.lock_or_recover().disabled
         || !runtime.read(|doc| doc.config.enabled).unwrap_or(false);
     if disabled {
@@ -3484,6 +3485,29 @@ static CONNECTIONS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUs
 /// Serializes bind/remove decisions with enable and disable. The listener
 /// itself remains owned by the one control thread.
 static SOCKET_LIFECYCLE: Mutex<()> = Mutex::new(());
+/// Wakes the control thread when MCP is enabled. While disabled the thread
+/// waits here (a long backstop timeout only) rather than polling every tick.
+static CONTROL_WAKE: (Mutex<bool>, Condvar) = (Mutex::new(false), Condvar::new());
+/// Backstop re-check interval for the idle control thread.
+const DISABLED_IDLE: Duration = Duration::from_secs(60);
+
+fn wake_control_thread() {
+    let (flag, wake) = &CONTROL_WAKE;
+    *flag.lock_or_recover() = true;
+    wake.notify_all();
+}
+
+fn wait_for_enable() {
+    let (flag, wake) = &CONTROL_WAKE;
+    let mut woken = flag.lock_or_recover();
+    if !*woken {
+        woken = match wake.wait_timeout(woken, DISABLED_IDLE) {
+            Ok((guard, _)) => guard,
+            Err(poisoned) => poisoned.into_inner().0,
+        };
+    }
+    *woken = false;
+}
 
 fn handle_connection(runtime: Arc<Runtime>, mut stream: UnixStream) {
     if !same_uid(&stream) {
@@ -3629,8 +3653,13 @@ pub(crate) fn spawn(app: AppHandle) {
                         Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
                         Err(_) => listener = None,
                     }
+                    std::thread::sleep(Duration::from_millis(25));
+                } else if socket_should_listen(&runtime) {
+                    // enabled but the bind failed: retry on the slow tick
+                    std::thread::sleep(Duration::from_secs(1));
+                } else {
+                    wait_for_enable();
                 }
-                std::thread::sleep(Duration::from_millis(25));
             }
         })
         .ok();
@@ -3815,6 +3844,7 @@ pub(crate) fn mcp_enable() -> Result<(), DeckError> {
         })?;
         runtime.emergency.lock_or_recover().disabled = false;
     }
+    wake_control_thread();
     Ok(())
 }
 

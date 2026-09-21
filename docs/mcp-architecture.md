@@ -100,7 +100,7 @@ and never completion evidence.
 
 Every exec verifies the authenticated adapter principal, holder, execution-grant and policy versions,
 service-start identity, project/session scope, canonical cwd, generation,
-control epoch, lease, environment profile, script digest/length, timeout and
+control epoch, lease, environment profile, executable/argv digests and sizes, timeout and
 request identity. A
 single delivery fence serializes dispatch with revoke, disable, close,
 takeover, and return. Emergency actions (takeover, revoke, disable, execution
@@ -192,8 +192,8 @@ so release/request always fit; each client may hold 500 ordinary records;
 client). Under pressure, epochs whose lease lapsed are closed first. Job bindings are capped at 64 per session (the runner retires its
 oldest finished jobs the same way), and execution grants at the newest per
 session plus those still referenced by a binding. Nonterminal and ambiguous
-records of a live session are never retired. Scripts and input bytes are not
-persisted.
+records of a live session are never retired. Argv and input bytes are not
+persisted; only their digests are.
 
 Execution grants use a monotonic in-process deadline plus a wall-clock display
 deadline and are bound to a random service-start identity. Restart never
@@ -205,7 +205,7 @@ cleared.
 
 ## Security boundary
 
-This is trusted-host execution, not a sandbox. An authorized script has the
+This is trusted-host execution, not a sandbox. An authorized program has the
 macOS account's permissions and may access paths outside its initial cwd.
 Canonical root checks prevent accidental selection of another workspace; they
 do not create filesystem isolation. Code run by package managers, builds, and
@@ -222,7 +222,7 @@ same-UID process that already replaced Deck's socket remains out of scope.
 Socket, environment and credential-FD overrides are compiled into debug builds
 only, for synthetic isolated harnesses. The adapter cannot expand its recorded
 project roots. Diagnostics record only closed status/error codes;
-terminal output, scripts, and stdin are returned through the functional MCP
+terminal output, argv, and stdin are returned through the functional MCP
 channel and excluded from `app.log`.
 
 No launchd job, login item, PATH tmux fallback, home-directory executable,
