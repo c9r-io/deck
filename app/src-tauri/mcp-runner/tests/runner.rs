@@ -196,9 +196,16 @@ fn authentication_epoch_and_grant_fences_survive_attacker_requests() {
 
     let jump = call(
         &socket,
-        json!({"kind":"control","mode":"mcp","service_instance":"svc_test","control_epoch":u64::MAX,"holder_id":"attacker"}),
+        json!({"kind":"control","mode":"mcp","service_instance":"svc_test","control_epoch":5,"holder_id":"holder_test"}),
     );
-    assert_eq!(jump["error"], "dispatch-context-invalid");
+    assert_eq!(jump["ok"], true, "{jump}");
+    for epoch in [5, 4, 1] {
+        let replay = call(
+            &socket,
+            json!({"kind":"control","mode":"mcp","service_instance":"svc_test","control_epoch":epoch,"holder_id":"attacker"}),
+        );
+        assert_eq!(replay["error"], "dispatch-context-invalid", "{replay}");
+    }
 
     let mut forged = context('9');
     forged["grant_id"] = json!("grant_forged");
@@ -210,12 +217,12 @@ fn authentication_epoch_and_grant_fences_survive_attacker_requests() {
 
     let takeover = call(
         &socket,
-        json!({"kind":"control","mode":"human","service_instance":"svc_test","control_epoch":2,"holder_id":null}),
+        json!({"kind":"control","mode":"human","service_instance":"svc_test","control_epoch":6,"holder_id":null}),
     );
     assert_eq!(takeover["ok"], true, "{takeover}");
     let stolen = raw_call(
         &socket,
-        json!({"kind":"control","mode":"mcp","service_instance":"svc_test","control_epoch":3,"holder_id":"attacker","auth":"wrong"}),
+        json!({"kind":"control","mode":"mcp","service_instance":"svc_test","control_epoch":7,"holder_id":"attacker","auth":"wrong"}),
     );
     assert_eq!(stolen["error"], "authentication-failed");
     assert_eq!(call(&socket, json!({"kind":"ping"}))["control"], "human");

@@ -157,10 +157,14 @@ changed to 0600, and only then atomically renamed to their public paths. This
 avoids changing Deck's process-wide umask while other threads may create files.
 
 Only authenticated control requests may change the runner epoch, and they
-must advance it by exactly one. Renewals do not call the runner because they
-do not change the epoch. Exec/input/interrupt contexts must equal the current
-epoch and holder and cannot move either value. Thus a pane process cannot
-raise the epoch, invent a grant, or take MCP control back after Human/Fenced.
+must advance it monotonically: any value strictly greater than the runner's
+current epoch is accepted, while equality and rollback are rejected. Allowing
+a gap is required because Deck persists its fence first and may advance again
+after a failed runner call or while compacting a lapsed lease. Renewals do not
+call the runner because they do not change the epoch. Exec/input/interrupt
+contexts must equal the current epoch and holder and cannot move either value.
+Thus a pane process cannot raise the epoch, invent a grant, or take MCP control
+back after Human/Fenced; it does not possess the runner's in-memory key.
 
 A Deck restart intentionally loses the in-memory keys and cannot reclaim an
 old runner. Such a runner is stale and the new app cannot ping, read, or stop

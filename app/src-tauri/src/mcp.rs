@@ -49,6 +49,10 @@
 //! keyboard (and the ^C stop key) to the human; it starts no shell. Return to
 //! MCP needs no execution grant and restores no holder, lease or sharing: it
 //! persists a new epoch first and re-fences if the runner does not confirm.
+//! Authenticated runner control accepts any strictly newer Deck epoch so a
+//! persisted fence, lapsed-lease compaction, or failed acknowledgement cannot
+//! permanently desynchronize the two sides; equal and older epochs are
+//! rejected, and exec/input/interrupt still require an exact current epoch.
 //! A runner created by an earlier Deck process is `stale` (`RUNNER_STALE`)
 //! and cannot be called by the new process: each runner keeps an in-memory
 //! 256-bit key retrieved once by the launching Deck PID through kernel peer
@@ -5260,6 +5264,16 @@ mod tests {
         busy: Arc<AtomicBool>,
         /// Requests of this kind park until `release` is sent.
         hold: Arc<Mutex<Option<HeldKind>>>,
+        /// Runner control state uses the production monotonic epoch contract.
+        control: Arc<Mutex<FakeControl>>,
+        /// Reject one control request without advancing the runner epoch.
+        fail_next_control: Arc<AtomicBool>,
+    }
+
+    struct FakeControl {
+        epoch: u64,
+        mode: String,
+        holder: Option<String>,
     }
 
     struct HeldKind {
@@ -5277,24 +5291,45 @@ mod tests {
             let seen = Arc::new(Mutex::new(Vec::new()));
             let busy = Arc::new(AtomicBool::new(false));
             let hold: Arc<Mutex<Option<HeldKind>>> = Arc::new(Mutex::new(None));
+            let control = Arc::new(Mutex::new(FakeControl {
+                epoch: 0,
+                mode: "fenced".into(),
+                holder: None,
+            }));
+            let fail_next_control = Arc::new(AtomicBool::new(false));
             let thread_stop = stop.clone();
             let generation = generation.to_owned();
-            let (thread_seen, thread_busy, thread_hold) =
-                (seen.clone(), busy.clone(), hold.clone());
+            let (thread_seen, thread_busy, thread_hold, thread_control, thread_fail_control) = (
+                seen.clone(),
+                busy.clone(),
+                hold.clone(),
+                control.clone(),
+                fail_next_control.clone(),
+            );
             let thread = std::thread::spawn(move || {
                 while !thread_stop.load(Ordering::SeqCst) {
                     let Ok((stream, _)) = listener.accept() else {
                         std::thread::sleep(Duration::from_millis(2));
                         continue;
                     };
-                    let (generation, seen, busy, hold) = (
+                    let (generation, seen, busy, hold, control, fail_control) = (
                         generation.clone(),
                         thread_seen.clone(),
                         thread_busy.clone(),
                         thread_hold.clone(),
+                        thread_control.clone(),
+                        thread_fail_control.clone(),
                     );
                     std::thread::spawn(move || {
-                        Self::serve(stream, &generation, &seen, &busy, &hold)
+                        Self::serve(
+                            stream,
+                            &generation,
+                            &seen,
+                            &busy,
+                            &hold,
+                            &control,
+                            &fail_control,
+                        )
                     });
                 }
             });
@@ -5305,6 +5340,8 @@ mod tests {
                 seen,
                 busy,
                 hold,
+                control,
+                fail_next_control,
             }
         }
 
@@ -5314,6 +5351,8 @@ mod tests {
             seen: &Mutex<Vec<Value>>,
             busy: &AtomicBool,
             hold: &Mutex<Option<HeldKind>>,
+            control: &Mutex<FakeControl>,
+            fail_next_control: &AtomicBool,
         ) {
             stream.set_nonblocking(false).unwrap();
             let mut line = String::new();
@@ -5355,6 +5394,13 @@ mod tests {
                 .unwrap_or("");
             let stale = service == "svc_stale";
             let live = busy.load(Ordering::SeqCst);
+            let dispatch_matches = || {
+                let current = control.lock().unwrap();
+                let context = request.get("context").unwrap_or(&Value::Null);
+                current.mode == "mcp"
+                    && context.get("control_epoch").and_then(Value::as_u64) == Some(current.epoch)
+                    && context.get("holder_id").and_then(Value::as_str) == current.holder.as_deref()
+            };
             let response = match kind {
                 "claim" => json!({"ok":true,"generation":generation,
                     "auth":base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([7u8;32])}),
@@ -5362,8 +5408,23 @@ mod tests {
                     "job": if live { json!({"jobId":"job_live","state":"running"}) } else { Value::Null },
                     "serviceCurrent":!service.is_empty() && !stale,"runnerVersion":"0.1.0"}),
                 _ if stale => json!({"ok":false,"generation":generation,"error":"runner-stale"}),
+                "control" if fail_next_control.swap(false, Ordering::SeqCst) => {
+                    json!({"ok":false,"generation":generation,"error":"dispatch-context-invalid"})
+                }
                 "control" if live && request["mode"] == "mcp" => {
                     json!({"ok":false,"generation":generation,"error":"session-busy"})
+                }
+                "control" => {
+                    let epoch = request["control_epoch"].as_u64().unwrap_or(0);
+                    let mut current = control.lock().unwrap();
+                    if epoch <= current.epoch {
+                        json!({"ok":false,"generation":generation,"error":"dispatch-context-invalid"})
+                    } else {
+                        current.epoch = epoch;
+                        current.mode = request["mode"].as_str().unwrap_or("fenced").into();
+                        current.holder = request["holder_id"].as_str().map(str::to_owned);
+                        json!({"ok":true,"generation":generation})
+                    }
                 }
                 "read" => json!({
                     "ok":true,
@@ -5373,13 +5434,16 @@ mod tests {
                         "timeoutRequested":false,"startedAt":1,"endedAt":2},
                     "output":"done\n","nextCursor":5,"gap":false,"droppedBytes":0
                 }),
-                "exec" => json!({
+                "exec" if dispatch_matches() => json!({
                     "ok":true,
                     "generation":generation,
                     "job":{"jobId":job_id,"state":"exited","exitCode":0}
                 }),
-                "input" | "interrupt" | "control" | "retention" | "revoke-grant"
-                | "authorize-grant" | "stop" => {
+                "exec" | "input" | "interrupt" if !dispatch_matches() => {
+                    json!({"ok":false,"generation":generation,"error":"control-revoked"})
+                }
+                "input" | "interrupt" | "retention" | "revoke-grant" | "authorize-grant"
+                | "stop" => {
                     json!({"ok":true,"generation":generation})
                 }
                 _ => json!({"ok":false,"generation":generation,"error":"invalid-request"}),
@@ -5406,6 +5470,22 @@ mod tests {
                 .rev()
                 .find(|request| request["kind"] == kind)
                 .cloned()
+        }
+
+        fn set_control(&self, epoch: u64, mode: &str, holder: Option<&str>) {
+            *self.control.lock().unwrap() = FakeControl {
+                epoch,
+                mode: mode.into(),
+                holder: holder.map(str::to_owned),
+            };
+        }
+
+        fn control_epoch(&self) -> u64 {
+            self.control.lock().unwrap().epoch
+        }
+
+        fn fail_next_control(&self) {
+            self.fail_next_control.store(true, Ordering::SeqCst);
         }
 
         /// Park the next request of `kind`; returns (entered, release).
@@ -6701,6 +6781,9 @@ mod tests {
     fn fixture(tag: &str, service: &str) -> (Arc<Runtime>, FakeRunner, PathBuf) {
         let root = test_root(tag);
         let runner = FakeRunner::start(&root, "g_a");
+        // This fixture represents an already-established session. Tests that
+        // exercise creation use a fresh runner at epoch zero instead.
+        runner.set_control(1, "mcp", Some("holder_a"));
         let mut doc = DiskDoc::default();
         doc.config.enabled = true;
         doc.config.clients.push(client_record(&root));
@@ -6724,6 +6807,155 @@ mod tests {
 
     fn session_state(runtime: &Runtime) -> ManagedSession {
         runtime.read(|doc| doc.sessions[0].clone()).unwrap()
+    }
+
+    #[test]
+    fn authorized_create_control_job_takeover_return_and_release_stay_in_sync() {
+        let root = test_root("authorized-create-epoch");
+        let runner = FakeRunner::start(&root, "g_a");
+        let mut doc = DiskDoc::default();
+        doc.config.enabled = true;
+        doc.config.clients.push(client_record(&root));
+        let path = root.join("mcp.json");
+        let runtime = Arc::new(Runtime {
+            app: None,
+            path,
+            socket: root.join("control.sock"),
+            doc: Mutex::new(Ok(doc)),
+            io: Mutex::new(()),
+            delivery: Mutex::new(()),
+            emergency: Mutex::new(EmergencyFences::default()),
+            service_instance: "svc_test".into(),
+            runner_auth: Mutex::new(HashMap::new()),
+            started: Instant::now(),
+        });
+        let created = session_create(
+            &runtime,
+            "client_a",
+            json!({"request_id":"create_epoch","project_id":"P1","cwd":root.display().to_string(),"create_sequence":0}),
+        )
+        .unwrap();
+        let operation_id = created["operationId"].as_str().unwrap().to_owned();
+        runtime
+            .write(|doc| {
+                let operation = doc
+                    .operations
+                    .iter_mut()
+                    .find(|operation| operation.operation_id == operation_id)
+                    .unwrap();
+                operation.state = "executing".into();
+                let result = operation.result.as_mut().unwrap();
+                result["sessionId"] = json!("mcp_created");
+                result["cardId"] = json!("Mcreated");
+                result["generation"] = json!("g_a");
+                result["runnerSocket"] = json!(runner.socket.display().to_string());
+                operation.session_id = Some("mcp_created".into());
+                Ok(())
+            })
+            .unwrap();
+        complete(
+            &runtime,
+            operation_id,
+            "committed".into(),
+            None,
+            Some("deck-created".into()),
+        )
+        .unwrap();
+        assert_eq!(
+            runner.control_epoch(),
+            0,
+            "authorized create sends no control"
+        );
+
+        let request_control = |request_id: &str, sequence: u64| {
+            route(
+                &runtime,
+                request(
+                    "deck_session_control",
+                    json!({"request_id":request_id,"session_id":"mcp_created","expected_generation":"g_a","action":"request","holder_id":"holder_created","control_sequence":sequence}),
+                ),
+            )
+        };
+        let first = request_control("request_first", 0);
+        assert_eq!(first["state"], "committed", "{first}");
+        assert_eq!(first["result"]["controlEpoch"], 2);
+        assert_eq!(runner.control_epoch(), 2);
+
+        super::execution_grant(&runtime, "mcp_created".into(), Some(60_000), true, true).unwrap();
+        let exec = route(
+            &runtime,
+            request(
+                "deck_exec",
+                json!({"request_id":"exec_created","session_id":"mcp_created","expected_generation":"g_a","control_epoch":2,"holder_id":"holder_created","cwd":root.display().to_string(),"executable":"/usr/bin/true","args":[],"wait_ms":0}),
+            ),
+        );
+        assert_eq!(exec["state"], "exited", "{exec}");
+
+        takeover(&runtime, "mcp_created").unwrap();
+        assert_eq!(runner.control_epoch(), 3);
+        return_control(&runtime, "mcp_created").unwrap();
+        assert_eq!(runner.control_epoch(), 4);
+
+        let second = request_control("request_second", 1);
+        assert_eq!(second["state"], "committed", "{second}");
+        assert_eq!(second["result"]["controlEpoch"], 5);
+        let released = route(
+            &runtime,
+            request(
+                "deck_session_control",
+                json!({"request_id":"release_created","session_id":"mcp_created","expected_generation":"g_a","action":"release","holder_id":"holder_created","control_epoch":5,"control_sequence":2}),
+            ),
+        );
+        assert_eq!(released["state"], "committed", "{released}");
+        assert_eq!(runner.control_epoch(), 6);
+        drop(runtime);
+        drop(runner);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn lapsed_lease_epoch_gap_is_resynchronized_by_next_request() {
+        let (runtime, runner, root) = fixture("lapsed-epoch-gap", "svc_test");
+        runtime
+            .write(|doc| {
+                doc.sessions[0].lease_expires_at = Some(now_ms().saturating_sub(1));
+                close_lapsed_leases(doc);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(session_state(&runtime).control_epoch, 2);
+        assert_eq!(runner.control_epoch(), 1);
+        let requested = route(
+            &runtime,
+            request(
+                "deck_session_control",
+                json!({"request_id":"request_after_lapse","session_id":"mcp_a","expected_generation":"g_a","action":"request","holder_id":"holder_a","control_sequence":0}),
+            ),
+        );
+        assert_eq!(requested["state"], "committed", "{requested}");
+        assert_eq!(requested["result"]["controlEpoch"], 3);
+        assert_eq!(runner.control_epoch(), 3);
+        drop(runner);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn failed_runner_control_does_not_poison_the_next_takeover() {
+        let (runtime, runner, root) = fixture("failed-control-gap", "svc_test");
+        runner.fail_next_control();
+        assert_eq!(
+            takeover(&runtime, "mcp_a").unwrap_err().message(),
+            RUNNER_UNCONFIRMED
+        );
+        assert_eq!(session_state(&runtime).control_epoch, 2);
+        assert_eq!(runner.control_epoch(), 1);
+
+        takeover(&runtime, "mcp_a").unwrap();
+        assert_eq!(session_state(&runtime).control_epoch, 3);
+        assert_eq!(runner.control_epoch(), 3);
+        assert_eq!(runner.last("control").unwrap()["mode"], "human");
+        drop(runner);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -8570,6 +8802,7 @@ mod tests {
         // A second client with its own session, runner and job.
         let root_b = test_root("f3-interrupt-b");
         let runner_b = FakeRunner::start(&root_b, "g_b");
+        runner_b.set_control(1, "mcp", Some("holder_b"));
         runtime
             .write(|doc| {
                 let mut client_b = client_record(&root);

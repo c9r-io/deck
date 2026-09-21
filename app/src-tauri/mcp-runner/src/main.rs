@@ -40,8 +40,10 @@
 //!
 //! Every control/exec/input/interrupt/grant request also names Deck's service
 //! instance. A mismatch means Deck restarted after this runner was created.
-//! Control changes are authenticated and advance exactly one epoch; exec
-//! contexts never create grants or advance control.
+//! Control changes are authenticated and advance to any strictly greater
+//! epoch; gaps absorb Deck state changes that were persisted without a runner
+//! acknowledgement, while equality and rollback are rejected. Exec contexts
+//! never create grants or advance control and must match the current epoch.
 //! The socket directory is created 0700 in one operation (or an existing
 //! directory is accepted only at exactly 0700). The socket is bound under a
 //! private temporary name, made 0600, and atomically renamed into place, so a
@@ -1286,7 +1288,7 @@ fn handle(shared: &Arc<Shared>, request: Request) -> Response {
                 if service_instance != shared.service_instance {
                     return Response::error(&shared.generation, "runner-stale");
                 }
-                if control_epoch != inner.control_epoch.saturating_add(1) {
+                if control_epoch <= inner.control_epoch {
                     return Response::error(&shared.generation, "dispatch-context-invalid");
                 }
                 if mode == ControlMode::Mcp && inner.active.is_some() {
@@ -1819,6 +1821,38 @@ mod tests {
         assert!(inner.jobs.is_empty(), "takeover must not create a job");
         assert!(inner.active.is_none());
         assert!(inner.control == ControlMode::Human);
+    }
+
+    #[test]
+    fn control_epoch_starts_at_zero_and_only_moves_forward() {
+        let shared = shared();
+        assert_eq!(shared.inner.lock().recover().control_epoch, 0);
+        let forward = handle(
+            &shared,
+            Request::Control {
+                mode: ControlMode::Mcp,
+                service_instance: "svc_current".into(),
+                control_epoch: 4,
+                holder_id: Some("holder_new".into()),
+            },
+        );
+        assert!(forward.ok);
+        for epoch in [4, 3, 0] {
+            let rejected = handle(
+                &shared,
+                Request::Control {
+                    mode: ControlMode::Human,
+                    service_instance: "svc_current".into(),
+                    control_epoch: epoch,
+                    holder_id: None,
+                },
+            );
+            assert_eq!(rejected.error, Some("dispatch-context-invalid"));
+        }
+        let inner = shared.inner.lock().recover();
+        assert_eq!(inner.control_epoch, 4);
+        assert!(inner.control == ControlMode::Mcp);
+        assert_eq!(inner.holder_id.as_deref(), Some("holder_new"));
     }
 
     #[test]
