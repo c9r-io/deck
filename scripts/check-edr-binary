@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Auxiliary vocabulary scan only: `strings` cannot find short literals of
+# eight bytes or fewer when the compiler encodes them as immediates (for
+# example /bin/zsh or /bin/sh). tests/edr_quiet.rs is the authoritative gate.
 set -euo pipefail
 
 app_path=${1:?usage: scripts/check-edr-binary /path/to/deck.app}

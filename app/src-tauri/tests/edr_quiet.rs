@@ -16,6 +16,8 @@
 //! 4. nothing touches launchd, login items or `~/.deck/bin`;
 //! 5. the shell-restore path carries no script, shell argv or deck-as-pane
 //!    bootstrap (`commands::restore_start_args` pins the positive shape).
+//! 6. the disabled-by-default Connector owns the only production TCP bind,
+//!    and its enable path must call the private/local IPv4 validator first.
 //!
 //! The scanner is a pure function over `(relative path, source)`, so the
 //! negative tests below feed it in-memory samples. It is a review tripwire,
@@ -343,6 +345,17 @@ fn scan_one(name: &str, source: &str) -> Vec<String> {
     violations
 }
 
+fn tcp_bind_count(source: &str) -> usize {
+    let compact = source
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect::<String>();
+    ["TcpListener::bind(", "TcpSocket::bind(", "Server::bind("]
+        .iter()
+        .map(|token| compact.matches(token).count())
+        .sum()
+}
+
 #[test]
 fn scanner_rejects_aliases_whitespace_and_indirect_spawns() {
     let rejected = [
@@ -490,6 +503,49 @@ fn deck_app_never_constructs_a_shell_path() {
         .flat_map(|(name, src)| shell_path_violations(name, src))
         .collect();
     assert!(violations.is_empty(), "{violations:#?}");
+}
+
+#[test]
+fn connector_owns_the_only_production_tcp_listener() {
+    let sites = production_sources()
+        .into_iter()
+        .filter_map(|(name, source)| {
+            let count = tcp_bind_count(&source);
+            (count > 0).then_some((name, count))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(sites, vec![("connector/server.rs".into(), 1)]);
+    for sidecar in [
+        "mcp-adapter/src/main.rs",
+        "mcp-runner/src/main.rs",
+        "status-helper/src/main.rs",
+    ] {
+        let source = std::fs::read_to_string(manifest(sidecar)).unwrap();
+        assert_eq!(
+            tcp_bind_count(production_region(&source)),
+            0,
+            "{sidecar} introduced a TCP listener"
+        );
+    }
+
+    let connector = std::fs::read_to_string(manifest("src/connector/mod.rs")).unwrap();
+    let production = production_region(&connector);
+    assert!(production.contains("fn validate_connector_listener("));
+    let enable = production
+        .split("pub(crate) async fn connector_enable")
+        .nth(1)
+        .and_then(|tail| tail.split("#[tauri::command]").next())
+        .expect("connector_enable production body");
+    assert!(enable.contains("validate_connector_listener("));
+
+    for sample in [
+        "std::net::TcpListener::bind(\"127.0.0.1:0\")",
+        "tokio::net::TcpListener :: bind(addr).await",
+        "hyper::Server::bind(&addr)",
+        "TcpSocket::bind(addr)",
+    ] {
+        assert_eq!(tcp_bind_count(sample), 1, "scanner missed {sample}");
+    }
 }
 
 #[test]

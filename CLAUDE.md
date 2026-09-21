@@ -28,6 +28,8 @@ same commit as the behaviour it describes.
   or relocates a card on its own.
 - **deck is EDR-QUIET by rule** (a corporate EDR flagged it and IT demanded the
   app be stopped; `tests/edr_quiet.rs` enforces each point):
+  Connector is disabled by default; when the user enables it, it opens one
+  inbound HTTPS listener on the selected private IPv4 address.
   never touches launchd — no `launchctl` (not even a one-shot `submit`), no
   LaunchAgents/LaunchDaemons, no login items; post-update relaunch is a
   `setsid`-detached waiter (`relaunch.rs`) that waits for the old PID and

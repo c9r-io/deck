@@ -888,20 +888,7 @@ pub(crate) fn connector_status() -> Result<Status, DeckError> {
 #[tauri::command]
 pub(crate) async fn connector_enable(address: String, port: u16) -> Result<Status, DeckError> {
     tauri::async_runtime::spawn_blocking(move || {
-        let ip: Ipv4Addr = address
-            .parse()
-            .map_err(|_| DeckError::new(ErrorKind::Invalid, "invalid connector address"))?;
-        if !connector_network_address(ip)
-            || !local_ipv4_addresses().contains(&ip)
-            || ip.is_unspecified()
-            || ip.is_loopback()
-            || port < 1024
-        {
-            return Err(DeckError::new(
-                ErrorKind::Invalid,
-                "connector address or port is invalid",
-            ));
-        }
+        let ip = validate_connector_listener(&address, port, &local_ipv4_addresses())?;
         let r = rt()?.clone();
         let _lifecycle = r.lifecycle.lock_or_recover();
         let already_running = r
@@ -2511,6 +2498,28 @@ fn interface_of(ip: Ipv4Addr, interfaces: &[(Ipv4Addr, String)]) -> Option<Strin
         .map(|(_, name)| name.clone())
 }
 
+fn validate_connector_listener(
+    address: &str,
+    port: u16,
+    local: &[Ipv4Addr],
+) -> Result<Ipv4Addr, DeckError> {
+    let ip = address
+        .parse::<Ipv4Addr>()
+        .map_err(|_| DeckError::new(ErrorKind::Invalid, "invalid connector address"))?;
+    if port < 1024
+        || ip.is_unspecified()
+        || ip.is_loopback()
+        || !connector_network_address(ip)
+        || !local.contains(&ip)
+    {
+        return Err(DeckError::new(
+            ErrorKind::Invalid,
+            "connector address or port is invalid",
+        ));
+    }
+    Ok(ip)
+}
+
 /// A restart listens only where the user enabled it: the saved address must
 /// be on an eligible interface and, once recorded, on the same interface. A
 /// different network that happens to hand out the same private address is a
@@ -3753,6 +3762,19 @@ mod tests {
                 "{address}"
             );
         }
+        let local = ["192.168.31.101".parse().unwrap()];
+        assert_eq!(
+            validate_connector_listener("192.168.31.101", 9443, &local).unwrap(),
+            local[0]
+        );
+        for address in ["", "0.0.0.0", "127.0.0.1", "8.8.8.8"] {
+            assert!(
+                validate_connector_listener(address, 9443, &local).is_err(),
+                "{address:?} must never reach bind"
+            );
+        }
+        assert!(validate_connector_listener("192.168.31.101", 80, &local).is_err());
+        assert!(validate_connector_listener("10.0.0.2", 9443, &local).is_err());
     }
 
     #[test]
