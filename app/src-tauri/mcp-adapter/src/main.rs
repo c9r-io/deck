@@ -16,7 +16,8 @@
 //! credential-descriptor override; those exist only in debug builds for the
 //! synthetic harnesses. Once a request has been written, a transport failure
 //! is `OPERATION_AMBIGUOUS` for side-effecting tools: the caller must query
-//! or replay with the SAME request_id, never a new one.
+//! or replay with the SAME request_id, never a new one. An absent control
+//! socket is reported as `FEATURE_DISABLED`, matching the disabled service.
 
 #![allow(dead_code)] // schema carriers are intentionally validated then forwarded as JSON
 
@@ -383,7 +384,7 @@ impl DeckServer {
         let credential = self.credential.clone();
         let mutating = MUTATING.contains(&tool_name);
         let result = tokio::task::spawn_blocking(move || {
-            let mut stream = UnixStream::connect(socket).map_err(|_| "DECK_UNAVAILABLE")?;
+            let mut stream = UnixStream::connect(socket).map_err(|_| "FEATURE_DISABLED")?;
             // The bearer goes only to a peer running as this same user.
             if !peer_is_same_user(&stream) {
                 return Err("DECK_UNAVAILABLE");
@@ -464,7 +465,7 @@ impl DeckServer {
             })),
             Ok(Err(code)) => CallToolResult::structured_error(json!({
                 "ok": false,
-                "error": {"code":code,"message":"Deck is not available through its local control socket.","nextAction":"Open Deck, enable MCP control, and verify this client id is authorized."}
+                "error": {"code":code,"message":"Deck MCP is disabled or unavailable through its local control socket.","nextAction":"Open Deck, enable MCP control, and verify this client id is authorized."}
             })),
             Err(_) => CallToolResult::structured_error(json!({
                 "ok": false,

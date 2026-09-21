@@ -395,7 +395,7 @@ fn control_validation_rejects_before_connecting_and_valid_samples_cross_validati
         let response = read_response(&mut output, id);
         assert_eq!(
             response["result"]["structuredContent"]["error"]["code"],
-            "DECK_UNAVAILABLE"
+            "FEATURE_DISABLED"
         );
     }
     drop(input);
@@ -473,7 +473,7 @@ fn a_call_without_a_sequence_names_the_field_before_connecting() {
     let response = read_response(&mut output, 20);
     assert_eq!(
         response["result"]["structuredContent"]["error"]["code"],
-        "DECK_UNAVAILABLE"
+        "FEATURE_DISABLED"
     );
     drop(input);
     assert!(child.wait().unwrap().success());

@@ -128,8 +128,10 @@ registry that answers `tools/list` (a contract test keeps them identical). It
 means “exposed by this Adapter,” not “authorized for every call.” The response
 also carries non-secret build identity: `deckVersion`/`deckBuild` from the
 control service and `adapterVersion`/`adapterBuild` from the Adapter; inspect
-reports the pane's `runnerVersion`. While the feature is off every tool
-returns `FEATURE_DISABLED`; an adapter/app protocol skew returns
+reports the pane's `runnerVersion`. The private control socket exists only
+while the feature is enabled and is removed on disable. When it is absent,
+the Adapter returns `FEATURE_DISABLED`; if disable races an already-connected
+request, the service returns the same code. An adapter/app protocol skew returns
 `PROTOCOL_MISMATCH` (never `AUTH_REQUIRED`).
 
 Request identity and replay. Every side effect carries a `request_id`, and

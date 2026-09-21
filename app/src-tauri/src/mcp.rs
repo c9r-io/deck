@@ -10,9 +10,10 @@
 //! Project list/read/search use descriptor-relative no-follow filesystem IO in
 //! `mcp_fs.rs` and never start a shell or repository helper. The control
 //! socket (0600, Deck's private data directory, same-effective-uid peers
-//! only, bounded connections with timeouts) always listens; the FEATURE is
-//! disabled by default and while it is off every tool — capabilities included
-//! — answers `FEATURE_DISABLED`. The thin `deck-mcp` sidecar provides MCP
+//! only, bounded connections with timeouts) is bound only while the feature is
+//! enabled and is removed on disable. The thin `deck-mcp` sidecar maps an
+//! absent control socket to `FEATURE_DISABLED`; when connected, the service
+//! also answers `FEATURE_DISABLED` if a disable races the request. The sidecar provides MCP
 //! STDIO and never receives a Phone token or unrestricted backend credential.
 //!
 //! Board creation and close intents are journaled here, then handed to the
@@ -3480,6 +3481,9 @@ fn same_uid(_stream: &UnixStream) -> bool {
 
 /// Live control connections; excess connections are closed immediately.
 static CONNECTIONS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+/// Serializes bind/remove decisions with enable and disable. The listener
+/// itself remains owned by the one control thread.
+static SOCKET_LIFECYCLE: Mutex<()> = Mutex::new(());
 
 fn handle_connection(runtime: Arc<Runtime>, mut stream: UnixStream) {
     if !same_uid(&stream) {
@@ -3556,6 +3560,35 @@ fn bind_private_socket(socket: &Path) -> Result<UnixListener, DeckError> {
     Ok(listener)
 }
 
+fn socket_should_listen(runtime: &Runtime) -> bool {
+    runtime.read(|doc| doc.config.enabled).unwrap_or(false)
+        && !runtime.emergency.lock_or_recover().disabled
+}
+
+fn reconcile_control_socket(
+    runtime: &Runtime,
+    listener: &mut Option<UnixListener>,
+) -> Result<(), DeckError> {
+    let _lifecycle = SOCKET_LIFECYCLE.lock_or_recover();
+    if !socket_should_listen(runtime) {
+        *listener = None;
+        match std::fs::remove_file(&runtime.socket) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(DeckError::from(error)),
+        }
+        return Ok(());
+    }
+    if listener.is_some() {
+        return Ok(());
+    }
+    let _ = std::fs::remove_file(&runtime.socket);
+    let bound = bind_private_socket(&runtime.socket)?;
+    bound.set_nonblocking(true).map_err(DeckError::from)?;
+    *listener = Some(bound);
+    Ok(())
+}
+
 pub(crate) fn spawn(app: AppHandle) {
     let dir = crate::datadir::deck_dir();
     let path = dir.join("mcp.json");
@@ -3576,22 +3609,28 @@ pub(crate) fn spawn(app: AppHandle) {
     std::thread::Builder::new()
         .name("deck-mcp-control".into())
         .spawn(move || {
-            let _ = std::fs::remove_file(&socket);
-            let listener = match bind_private_socket(&socket) {
-                Ok(listener) => listener,
-                Err(_) => return,
-            };
-            for stream in listener.incoming().flatten() {
-                use std::sync::atomic::Ordering;
-                if CONNECTIONS.fetch_add(1, Ordering::SeqCst) >= MAX_CONNECTIONS {
-                    CONNECTIONS.fetch_sub(1, Ordering::SeqCst);
-                    continue;
+            let mut listener = None;
+            loop {
+                let _ = reconcile_control_socket(&runtime, &mut listener);
+                if let Some(bound) = &listener {
+                    match bound.accept() {
+                        Ok((stream, _)) => {
+                            use std::sync::atomic::Ordering;
+                            if CONNECTIONS.fetch_add(1, Ordering::SeqCst) >= MAX_CONNECTIONS {
+                                CONNECTIONS.fetch_sub(1, Ordering::SeqCst);
+                                continue;
+                            }
+                            let runtime = runtime.clone();
+                            std::thread::spawn(move || {
+                                handle_connection(runtime, stream);
+                                CONNECTIONS.fetch_sub(1, Ordering::SeqCst);
+                            });
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+                        Err(_) => listener = None,
+                    }
                 }
-                let runtime = runtime.clone();
-                std::thread::spawn(move || {
-                    handle_connection(runtime, stream);
-                    CONNECTIONS.fetch_sub(1, Ordering::SeqCst);
-                });
+                std::thread::sleep(Duration::from_millis(25));
             }
         })
         .ok();
@@ -3768,11 +3807,14 @@ pub(crate) fn mcp_scope_preview(root: String) -> ScopePreview {
 #[tauri::command]
 pub(crate) fn mcp_enable() -> Result<(), DeckError> {
     let runtime = runtime()?;
-    runtime.write(|doc| {
-        doc.config.enabled = true;
-        Ok(())
-    })?;
-    runtime.emergency.lock_or_recover().disabled = false;
+    {
+        let _lifecycle = SOCKET_LIFECYCLE.lock_or_recover();
+        runtime.write(|doc| {
+            doc.config.enabled = true;
+            Ok(())
+        })?;
+        runtime.emergency.lock_or_recover().disabled = false;
+    }
     Ok(())
 }
 
@@ -3786,6 +3828,14 @@ pub(crate) fn mcp_disable() -> Result<(), DeckError> {
 
 fn disable(runtime: &Runtime) -> Result<(), DeckError> {
     runtime.emergency.lock_or_recover().disabled = true;
+    {
+        let _lifecycle = SOCKET_LIFECYCLE.lock_or_recover();
+        match std::fs::remove_file(&runtime.socket) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(DeckError::from(error)),
+        }
+    }
     let _delivery = runtime.delivery.lock_or_recover();
     let sessions = runtime.write(|doc| {
         doc.config.enabled = false;
@@ -5722,6 +5772,57 @@ mod tests {
         );
 
         drop(runner);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn control_socket_exists_only_while_mcp_is_enabled() {
+        let root = test_root("conditional-control-socket");
+        let runtime = Runtime {
+            app: None,
+            path: root.join("mcp.json"),
+            socket: root.join("mcp-control.sock"),
+            doc: Mutex::new(Ok(DiskDoc::default())),
+            io: Mutex::new(()),
+            delivery: Mutex::new(()),
+            emergency: Mutex::new(EmergencyFences::default()),
+            service_instance: "svc_socket".into(),
+            runner_auth: Mutex::new(HashMap::new()),
+            started: Instant::now(),
+        };
+        let mut listener = None;
+        reconcile_control_socket(&runtime, &mut listener).unwrap();
+        assert!(listener.is_none());
+        assert!(!runtime.socket.exists());
+
+        runtime
+            .doc
+            .lock_or_recover()
+            .as_mut()
+            .unwrap()
+            .config
+            .enabled = true;
+        reconcile_control_socket(&runtime, &mut listener).unwrap();
+        assert!(listener.is_some());
+        assert_eq!(
+            std::fs::metadata(&runtime.socket)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+
+        runtime
+            .doc
+            .lock_or_recover()
+            .as_mut()
+            .unwrap()
+            .config
+            .enabled = false;
+        reconcile_control_socket(&runtime, &mut listener).unwrap();
+        assert!(listener.is_none());
+        assert!(!runtime.socket.exists());
         std::fs::remove_dir_all(root).unwrap();
     }
 
