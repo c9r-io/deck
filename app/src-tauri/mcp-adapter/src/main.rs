@@ -116,15 +116,19 @@ enum ControlAction {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct ControlInput {
+    /// Stable idempotency key. ASCII letters, digits, underscores, and hyphens; at most 128 bytes.
     request_id: String,
     session_id: String,
     expected_generation: String,
     action: ControlAction,
     /// Stable identity for this control flow; another flow cannot replace it.
     holder_id: String,
+    /// Required for renew and release; omitted for the initial request.
     #[serde(default)]
     control_epoch: Option<u64>,
+    /// Optional for request and renew; 1000..=300000 milliseconds. Not allowed for release.
     #[serde(default)]
+    #[schemars(range(min = 1000, max = 300000))]
     lease_ms: Option<u64>,
 }
 
@@ -362,7 +366,26 @@ impl DeckServer {
             Ok(Ok(value)) if value.get("ok").and_then(Value::as_bool) == Some(false) => {
                 CallToolResult::structured_error(value)
             }
-            Ok(Ok(value)) => CallToolResult::structured(value),
+            Ok(Ok(mut value)) => {
+                if tool_name == "deck_capabilities" {
+                    if let Some(object) = value.as_object_mut() {
+                        object.insert("adapterVersion".into(), json!(VERSION));
+                        object.insert(
+                            "tools".into(),
+                            json!(self
+                                .tools
+                                .iter()
+                                .map(|tool| tool.name.as_ref())
+                                .collect::<Vec<_>>()),
+                        );
+                        object.insert(
+                            "toolsSemantics".into(),
+                            json!("Adapter-exposed tools; each call remains subject to client authorization and runtime admission."),
+                        );
+                    }
+                }
+                CallToolResult::structured(value)
+            }
             Ok(Err(code)) => CallToolResult::structured_error(json!({
                 "ok": false,
                 "error": {"code":code,"message":"Deck is not available through its local control socket.","nextAction":"Open Deck, enable MCP control, and verify this client id is authorized."}
@@ -403,6 +426,9 @@ impl DeckServer {
                     .await
             }
             "deck_session_control" => {
+                if let Err(issue) = validate_control_arguments(&arguments) {
+                    return invalid_arguments(issue);
+                }
                 self.invoke::<ControlInput>("deck_session_control", arguments)
                     .await
             }
@@ -426,6 +452,128 @@ impl DeckServer {
             })),
         }
     }
+}
+
+#[derive(Debug)]
+struct ArgumentIssue {
+    field_path: &'static str,
+    category: &'static str,
+    expected: &'static str,
+}
+
+fn invalid_arguments(issue: ArgumentIssue) -> CallToolResult {
+    CallToolResult::structured_error(json!({
+        "ok": false,
+        "error": {
+            "code": "INVALID_ARGUMENTS",
+            "message": "Tool arguments do not match the advertised schema.",
+            "details": {
+                "fieldPath": issue.field_path,
+                "category": issue.category,
+                "expected": issue.expected
+            },
+            "nextAction": "Correct the identified field and use a new request_id unless retrying the exact same request."
+        }
+    }))
+}
+
+fn valid_control_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+}
+
+fn validate_control_arguments(arguments: &Value) -> Result<(), ArgumentIssue> {
+    let object = arguments.as_object().ok_or(ArgumentIssue {
+        field_path: "$",
+        category: "type",
+        expected: "object",
+    })?;
+    for field in [
+        "request_id",
+        "session_id",
+        "expected_generation",
+        "action",
+        "holder_id",
+    ] {
+        if object.get(field).and_then(Value::as_str).is_none() {
+            return Err(ArgumentIssue {
+                field_path: field,
+                category: if object.contains_key(field) {
+                    "type"
+                } else {
+                    "required"
+                },
+                expected: "non-null string",
+            });
+        }
+    }
+    for field in ["request_id", "holder_id"] {
+        if !valid_control_id(object[field].as_str().unwrap_or_default()) {
+            return Err(ArgumentIssue {
+                field_path: field,
+                category: "format",
+                expected: "1..=128 ASCII letters, digits, underscores, or hyphens",
+            });
+        }
+    }
+    let action = object["action"].as_str().unwrap_or_default();
+    if !matches!(action, "request" | "renew" | "release") {
+        return Err(ArgumentIssue {
+            field_path: "action",
+            category: "enum",
+            expected: "request, renew, or release",
+        });
+    }
+    let epoch = object.get("control_epoch").filter(|value| !value.is_null());
+    if epoch.is_some_and(|value| value.as_u64().is_none()) {
+        return Err(ArgumentIssue {
+            field_path: "control_epoch",
+            category: "type",
+            expected: "non-negative integer or null",
+        });
+    }
+    if action == "request" && epoch.is_some() {
+        return Err(ArgumentIssue {
+            field_path: "control_epoch",
+            category: "not_allowed",
+            expected: "omitted or null for request",
+        });
+    }
+    if matches!(action, "renew" | "release") && epoch.is_none() {
+        return Err(ArgumentIssue {
+            field_path: "control_epoch",
+            category: "required",
+            expected: "non-negative integer for renew and release",
+        });
+    }
+    let lease = object.get("lease_ms").filter(|value| !value.is_null());
+    if action == "release" && lease.is_some() {
+        return Err(ArgumentIssue {
+            field_path: "lease_ms",
+            category: "not_allowed",
+            expected: "omitted or null for release",
+        });
+    }
+    if let Some(value) = lease {
+        let Some(value) = value.as_u64() else {
+            return Err(ArgumentIssue {
+                field_path: "lease_ms",
+                category: "type",
+                expected: "integer in 1000..=300000",
+            });
+        };
+        if !(1_000..=300_000).contains(&value) {
+            return Err(ArgumentIssue {
+                field_path: "lease_ms",
+                category: "range",
+                expected: "integer in 1000..=300000",
+            });
+        }
+    }
+    Ok(())
 }
 
 impl ServerHandler for DeckServer {

@@ -103,7 +103,7 @@ authentication, Origin/Host validation, and deployment review.
 | `deck_sessions_list` | List only sessions owned by this client. Quiet output is never called ready. |
 | `deck_session_create` | Journal creation of a dedicated visible shell card; poll the returned operation until committed. |
 | `deck_operation_get` | Read Board/control delivery state, not program completion. |
-| `deck_session_inspect` | Read generation, control, active job, staleness, and bounded pane context. |
+| `deck_session_inspect` | Read generation, control, active job, staleness, bounded pane context, current execution-authorization status, and the independent session output-sharing gate. |
 | `deck_session_control` | Request, renew, or release a holder-bound fenced lease. Another flow using the same client cannot replace an active holder. |
 | `deck_exec` | Start one arbitrary zsh script only while matching local execution and control grants are valid. |
 | `deck_job_read` | Incrementally read retained combined output and independently reported exit state. |
@@ -114,6 +114,31 @@ authentication, Origin/Host validation, and deployment review.
 All input schemas reject unknown fields. Host write tools advertise
 `openWorldHint=true`; annotations are not authorization. A nonzero exit code is a
 normal execution result, not an MCP transport error.
+
+`deck_capabilities.tools` is added by the Adapter from its production tool
+registry. It means “exposed by this Adapter,” not “authorized for every call.”
+The same response separately retains the control service's workspace scope,
+`mayCreateSession`, execution mode, feature state, and connection state.
+
+For `deck_session_control`, the caller creates a fresh stable opaque
+`holder_id` (1–128 ASCII letters, digits, `_`, or `-`) before the first
+`request`. This is a candidate control-flow identity, not proof that control
+has already been granted. A successful committed response confirms the
+accepted `controlHolder`, current `sessionGeneration`, and server-assigned
+`controlEpoch`; only those returned generation/epoch values may be used for
+subsequent `renew`, `release`, exec, or input. `lease_ms` is optional for
+request/renew and must be 1000–300000 milliseconds. Renew/release require the
+returned epoch; release does not accept `lease_ms`.
+
+`deck_session_inspect.executionAuthorization.status` is `none`, `active`,
+`expired`, or `revoked` for the authenticated caller and current session
+generation. `expiresAtUnixMs` is Unix epoch milliseconds. The
+`stdinApprovedForActiveGrant` value is only the local grant option: holder,
+epoch, lease, human lock, active-job, and runner checks still apply.
+`outputSharing.sessionGateOpen` is the session-level read gate after human
+takeover/emergency fencing. It is intentionally independent of execution
+authorization and does not by itself prove that a particular job binding
+permits output reads.
 
 ## Execution, output, and lifecycle
 

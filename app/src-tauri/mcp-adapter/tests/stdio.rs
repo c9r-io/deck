@@ -63,6 +63,10 @@ fn negotiates_away_from_an_unsupported_protocol_version() {
     let initialized = read_response(&mut output, 1);
     assert_ne!(initialized["result"]["protocolVersion"], "1900-01-01");
     assert_eq!(initialized["result"]["serverInfo"]["name"], "deck-mcp");
+    assert_eq!(
+        initialized["result"]["serverInfo"]["version"],
+        env!("CARGO_PKG_VERSION")
+    );
     drop(input);
     assert!(child.wait().unwrap().success());
 }
@@ -89,7 +93,7 @@ fn initializes_lists_and_calls_over_stdio_without_stdout_noise() {
         writeln!(
             stream,
             "{}",
-            json!({"ok":true,"protocolVersion":1,"executionMode":"trusted-host"})
+            json!({"ok":true,"protocolVersion":1,"executionMode":"trusted-host","adapterVersion":"stale","tools":["stale"],"mayCreateSession":false})
         )
         .unwrap();
     });
@@ -137,6 +141,20 @@ fn initializes_lists_and_calls_over_stdio_without_stdout_noise() {
         assert_eq!(tool["annotations"]["readOnlyHint"], true);
         assert_eq!(tool["annotations"]["openWorldHint"], false);
     }
+    let control = tools
+        .iter()
+        .find(|tool| tool["name"] == "deck_session_control")
+        .unwrap();
+    let required = control["inputSchema"]["required"].as_array().unwrap();
+    assert!(required.iter().any(|value| value == "holder_id"));
+    assert_eq!(
+        control["inputSchema"]["properties"]["lease_ms"]["minimum"],
+        1000
+    );
+    assert_eq!(
+        control["inputSchema"]["properties"]["lease_ms"]["maximum"],
+        300000
+    );
 
     writeln!(input, "{}", json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"deck_capabilities","arguments":{"unknown":true}}})).unwrap();
     input.flush().unwrap();
@@ -151,10 +169,97 @@ fn initializes_lists_and_calls_over_stdio_without_stdout_noise() {
         called["result"]["structuredContent"]["executionMode"],
         "trusted-host"
     );
+    assert_eq!(
+        called["result"]["structuredContent"]["adapterVersion"],
+        env!("CARGO_PKG_VERSION")
+    );
+    assert_eq!(
+        called["result"]["structuredContent"]["tools"]
+            .as_array()
+            .unwrap()
+            .len(),
+        14
+    );
+    assert_eq!(
+        called["result"]["structuredContent"]["mayCreateSession"],
+        false
+    );
 
     drop(input);
     assert!(child.wait().unwrap().success());
     mock.join().unwrap();
     std::fs::remove_file(&socket).unwrap();
     std::fs::remove_dir(&root).unwrap();
+}
+
+#[test]
+fn control_validation_rejects_before_connecting_and_valid_samples_cross_validation() {
+    let mut child = spawn_adapter(&[
+        "--client-id",
+        "client_test",
+        "--socket",
+        "/tmp/deck-mcp-validation-absent.sock",
+    ]);
+    let mut input = child.stdin.take().unwrap();
+    let mut output = BufReader::new(child.stdout.take().unwrap());
+    writeln!(input, "{}", json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1"}}})).unwrap();
+    input.flush().unwrap();
+    read_response(&mut output, 1);
+    writeln!(
+        input,
+        "{}",
+        json!({"jsonrpc":"2.0","method":"notifications/initialized"})
+    )
+    .unwrap();
+
+    let invalid = [
+        json!({"request_id":"req_missing_holder","session_id":"s","expected_generation":"g","action":"request"}),
+        json!({"request_id":"req_low_lease","session_id":"s","expected_generation":"g","action":"request","holder_id":"holder_a","lease_ms":999}),
+        json!({"request_id":"req_renew_epoch","session_id":"s","expected_generation":"g","action":"renew","holder_id":"holder_a"}),
+        json!({"request_id":"req_release_lease","session_id":"s","expected_generation":"g","action":"release","holder_id":"holder_a","control_epoch":1,"lease_ms":1000}),
+        json!({"request_id":"x".repeat(129),"session_id":"s","expected_generation":"g","action":"request","holder_id":"holder_a"}),
+    ];
+    for (offset, arguments) in invalid.into_iter().enumerate() {
+        let id = 10 + offset as u64;
+        writeln!(input, "{}", json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":"deck_session_control","arguments":arguments}})).unwrap();
+        input.flush().unwrap();
+        let response = read_response(&mut output, id);
+        assert_eq!(
+            response["result"]["structuredContent"]["error"]["code"],
+            "INVALID_ARGUMENTS"
+        );
+    }
+
+    for (id, arguments) in [
+        (
+            20,
+            json!({"request_id":"req_valid_default","session_id":"s","expected_generation":"g","action":"request","holder_id":"holder_a"}),
+        ),
+        (
+            21,
+            json!({"request_id":"req_valid_lease","session_id":"s","expected_generation":"g","action":"request","holder_id":"holder_b","lease_ms":60000}),
+        ),
+        (
+            22,
+            json!({"request_id":"req_valid_renew","session_id":"s","expected_generation":"g","action":"renew","holder_id":"holder_b","control_epoch":2,"lease_ms":null}),
+        ),
+        (
+            23,
+            json!({"request_id":"req_valid_release","session_id":"s","expected_generation":"g","action":"release","holder_id":"holder_b","control_epoch":2,"lease_ms":null}),
+        ),
+        (
+            24,
+            json!({"request_id":"x".repeat(128),"session_id":"s","expected_generation":"g","action":"request","holder_id":"holder_b"}),
+        ),
+    ] {
+        writeln!(input, "{}", json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":"deck_session_control","arguments":arguments}})).unwrap();
+        input.flush().unwrap();
+        let response = read_response(&mut output, id);
+        assert_eq!(
+            response["result"]["structuredContent"]["error"]["code"],
+            "DECK_UNAVAILABLE"
+        );
+    }
+    drop(input);
+    assert!(child.wait().unwrap().success());
 }

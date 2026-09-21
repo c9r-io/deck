@@ -390,7 +390,7 @@ checks: `node --check`, `node --test app/ui/test/*.test.mjs`,
 `node app/ui/js/check.mjs`).
 
 Releases use strict numeric versions. `scripts/release-version set X.Y.Z`
-prepares a version commit. The manual `nightly` workflow builds and verifies an
+prepares a synchronized application and MCP Adapter version commit. The manual `nightly` workflow builds and verifies an
 immutable prerelease; the `promote` workflow copies that exact tested DMG and
 updater archive into Stable without rebuilding. Directly pushing a strict
 `vX.Y.Z` tag remains the emergency source-build path. The hourly resolver only

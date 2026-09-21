@@ -625,6 +625,10 @@ body.side-collapsed .side-new .label { display: none; }
 #mcp-auth-box .set-row { align-items: flex-start; margin-bottom: 10px; }
 #mcp-auth-box .set-row label { width: 138px; }
 #mcp-auth-box .set-row input, #mcp-auth-box .set-row select, #mcp-auth-box .set-row .dd { flex: 1; min-width: 0; }
+#mcp-auth-box .mcp-auth-field { flex: 1; min-width: 0; }
+#mcp-auth-box .mcp-auth-field input, #mcp-auth-box .mcp-auth-field select { box-sizing: border-box; width: 100%; }
+#mcp-auth-box .mcp-field-error { color: var(--danger); font-size: 0.84615rem; line-height: 1.35; margin: 5px 0 0; }
+#mcp-auth-box .mcp-field-error[hidden] { display: none; }
 #mcp-auth-root { flex: 1; min-width: 0; font-family: var(--mono); }
 #mcp-auth-box .set-hint { margin: 8px 0 14px; }
 .pdf-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 6px 118px; }

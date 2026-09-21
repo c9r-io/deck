@@ -119,7 +119,12 @@ try {
   assert.equal(initialized.result.serverInfo.name, 'deck-mcp');
   child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' })}\n`);
   const listed = await request('tools/list');
-  assert.equal(listed.result.tools.length, 11);
+  assert.equal(listed.result.tools.length, 14);
+  for (const name of ['deck_project_list', 'deck_project_read', 'deck_project_search']) {
+    assert.ok(listed.result.tools.some(tool => tool.name === name), `${name} is registered`);
+  }
+  const controlTool = listed.result.tools.find(tool => tool.name === 'deck_session_control');
+  assert.ok(controlTool.inputSchema.required.includes('holder_id'));
 
   const capabilities = await call('deck_capabilities');
   assert.equal(capabilities.executionMode, 'trusted-host');

@@ -18,8 +18,8 @@ standard protocol version is negotiated independently by the SDK.
 | R03 | Implemented and verified | nonblocking script/stdin pipes, `bounded_write`, per-chunk stdin recheck | `script_pipe_write_has_a_deadline_when_reader_stalls`; runner black-box stdin test | Bytes already accepted by a pipe cannot be recalled. |
 | R04 | Implemented and verified | encoded-frame checks, 32-KiB script and 16-KiB read budgets, response-sized search pages | `encoded_frames_fit_the_advertised_budget`; runner UTF-8 paging test | Transport failure remains non-retriable for side effects. |
 | R05 | Implemented but pending designated-environment verification | public client id plus Keychain bearer; Adapter Keychain/credential-FD read; wire authentication | Adapter STDIO synthetic credential-FD test; bad-credential route test | A signed installed Adapter/Keychain ACL prompt is R12. The credential-FD carrier is explicit and intended for isolated harnesses; ordinary launches read Keychain. |
-| R06 | Implemented and verified | `control_holder`, holder-bound Request/Renew/Release and exec/stdin/close | holder-conflict and control lifecycle assertions in `production_routes_cover_authorized_job_and_control_lifecycle` | Holder is a flow identifier, not a second human identity. |
-| R07 | Implemented and verified | `inspect` derives `mayStartNextJob` and a reason from the real grant/lease/holder/runner/closing gates | production route lifecycle assertions | Inspect never acquires or renews control. |
+| R06 | Implemented and verified | `control_holder`, strict action-specific Request/Renew/Release validation and exec/stdin/close fencing | Adapter STDIO independent request samples; holder-conflict and control lifecycle assertions in `production_routes_cover_authorized_job_and_control_lifecycle` | Holder is a caller-generated candidate flow identifier, not a second human identity or evidence of granted control. |
+| R07 | Implemented and verified | `inspect` derives `mayStartNextJob` and exposes separate read-only execution-authorization and session output-sharing states | `inspect_separates_execution_authorization_from_output_sharing`; production route lifecycle assertions | Inspect never acquires or renews control; the output session gate is not a job-binding decision. |
 | R08 | Implemented and verified | monotonic 750-ms search budget plus per-loop authorization callback and explicit incomplete result | `controlled_search_reports_deadline_and_cancellation` | Deadline cannot cancel an already-entered uninterruptible kernel read. |
 | R09 | Implemented and verified | bounded metadata-only `AuditEvent`; approval/revoke/expiry/control/intent/dispatch/takeover/denial events; memory-first emergency fences remain effective when state persistence fails | `grant_expiry_is_audited_once_without_reviving_authority`; `emergency_fence_survives_state_write_failure`; audit-kind assertions; privacy gates | A failed persistent revoke is effective only for the current service instance and is reported as unconfirmed across restart. Same-UID state is not tamper-proof audit. |
 | R10 | Implemented and verified | live configurable output retention; expired bytes preserve job/idempotency metadata and report a gap | `expired_output_reports_a_gap_without_deleting_job_metadata` | tmux scrollback is intentionally separate. |
@@ -95,8 +95,10 @@ start the installed app or read the user's Deck state.
   runner and status helper passed. A first run exposed a test-only debug
   environment credential carrier; it was removed, replaced by the explicit
   credential-FD harness, and the complete workspace rerun passed.
-- **PASS** — `cargo test -p deck-app mcp::tests -- --test-threads=1`: 15 MCP
-  control tests, including the newly added expiry/denial audit assertions.
+- **PASS** — `cargo test -p deck-app mcp::tests -- --test-threads=1`: 17 MCP
+  control tests, including strict control-argument side-effect checks, scope
+  preview classification, execution-authorization observation, and the
+  existing expiry/denial audit assertions.
 - **PASS** — `cargo clippy --workspace --all-targets -- -D warnings` and
   `cargo fmt --all`.
 - **PASS** — `scripts/ui-tests`: 247 tests with the repository coverage gate;

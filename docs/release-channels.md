@@ -61,8 +61,8 @@ scripts/release-version set 0.4.37
 scripts/release-version check
 ```
 
-The tool accepts only the three-number form, updates the two source manifests
-and the deck package entry in `Cargo.lock`, and rejects a version that is not
+The tool accepts only the three-number form, updates the application and MCP
+Adapter source manifests plus both package entries in `Cargo.lock`, and rejects a version that is not
 higher than local Stable or Nightly tags. The network-free parser and mutation
 logic has fixture tests; the workflow separately compares the requested version
 with GitHub Releases so a shallow or stale local tag set cannot weaken the gate.

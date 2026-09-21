@@ -716,6 +716,50 @@ fn check_control(
     Ok(())
 }
 
+#[derive(Clone, Copy)]
+enum ExecutionAuthorization<'a> {
+    None,
+    Active(&'a ExecutionGrant),
+    Expired(&'a ExecutionGrant),
+    Revoked(&'a ExecutionGrant),
+}
+
+fn execution_authorization<'a>(
+    runtime: &Runtime,
+    doc: &'a DiskDoc,
+    client_id: &str,
+    session: &ManagedSession,
+) -> ExecutionAuthorization<'a> {
+    let elapsed = runtime.monotonic_ms();
+    let Some(grant) = doc.execution_grants.iter().rev().find(|grant| {
+        grant.client_id == client_id
+            && grant.project_id == session.project_id
+            && grant.session_id == session.session_id
+            && grant.session_generation == session.generation
+    }) else {
+        return ExecutionAuthorization::None;
+    };
+    if grant.revoked_at.is_some() || grant.grant_version <= grant.revocation_version {
+        return ExecutionAuthorization::Revoked(grant);
+    }
+    let credential_current = doc
+        .config
+        .clients
+        .iter()
+        .find(|client| client.id == client_id)
+        .is_some_and(|client| client.credential_version == grant.credential_version);
+    if !credential_current || grant.service_instance != runtime.service_instance {
+        return ExecutionAuthorization::Revoked(grant);
+    }
+    if elapsed < grant.issued_monotonic_ms
+        || elapsed.saturating_sub(grant.issued_monotonic_ms) >= grant.duration_ms
+        || now_ms() >= grant.expires_at
+    {
+        return ExecutionAuthorization::Expired(grant);
+    }
+    ExecutionAuthorization::Active(grant)
+}
+
 fn active_execution_grant<'a>(
     runtime: &Runtime,
     doc: &'a DiskDoc,
@@ -723,39 +767,17 @@ fn active_execution_grant<'a>(
     session: &ManagedSession,
     require_stdin: bool,
 ) -> Result<&'a ExecutionGrant, DeckError> {
-    let elapsed = runtime.monotonic_ms();
-    doc.execution_grants
-        .iter()
-        .rev()
-        .find(|grant| {
-            grant.client_id == client_id
-                && doc
-                    .config
-                    .clients
-                    .iter()
-                    .find(|client| client.id == client_id)
-                    .is_some_and(|client| client.credential_version == grant.credential_version)
-                && grant.project_id == session.project_id
-                && grant.session_id == session.session_id
-                && grant.session_generation == session.generation
-                && grant.service_instance == runtime.service_instance
-                && grant.revoked_at.is_none()
-                && grant.grant_version > grant.revocation_version
-                && elapsed >= grant.issued_monotonic_ms
-                && elapsed.saturating_sub(grant.issued_monotonic_ms) < grant.duration_ms
-                && now_ms() < grant.expires_at
-                && (!require_stdin || grant.allow_stdin)
-        })
-        .ok_or_else(|| {
-            DeckError::new(
-                ErrorKind::Perm,
-                if require_stdin {
-                    "interactive stdin is not locally authorized"
-                } else {
-                    "a local execution grant is required"
-                },
-            )
-        })
+    match execution_authorization(runtime, doc, client_id, session) {
+        ExecutionAuthorization::Active(grant) if !require_stdin || grant.allow_stdin => Ok(grant),
+        _ => Err(DeckError::new(
+            ErrorKind::Perm,
+            if require_stdin {
+                "interactive stdin is not locally authorized"
+            } else {
+                "a local execution grant is required"
+            },
+        )),
+    }
 }
 
 fn record_expired_grants(runtime: &Runtime) -> Result<(), DeckError> {
@@ -1471,7 +1493,6 @@ fn capabilities(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<
                 .ok_or_else(|| DeckError::new(ErrorKind::Perm, "MCP client is not authorized"))?;
             Ok(json!({
                 "ok": true,
-                "adapterVersion": "0.1.0",
                 "deckConnection": "connected",
                 "controlProtocolVersion": CONTROL_PROTOCOL,
                 "stateSchemaVersion": STATE_VERSION,
@@ -1503,8 +1524,7 @@ fn capabilities(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<
                 "authorizedWorkspaces": client.projects,
                 "mayCreateSession": client.allow_create,
                 "featureEnabled": doc.config.enabled,
-                "manualActionRequired": if doc.config.enabled { Value::Null } else { json!("Open Deck Settings and enable MCP terminal control.") },
-                "tools": ["deck_capabilities","deck_project_list","deck_project_read","deck_project_search","deck_sessions_list","deck_session_create","deck_operation_get","deck_session_inspect","deck_session_control","deck_exec","deck_job_read","deck_job_input","deck_job_interrupt","deck_session_close"]
+                "manualActionRequired": if doc.config.enabled { Value::Null } else { json!("Open Deck Settings and enable MCP terminal control.") }
             }))
         })
         .map_err(map_error)?
@@ -1671,6 +1691,25 @@ fn inspect(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<Value
         .lock_or_recover()
         .human_sessions
         .contains(&session.session_id);
+    let (authorization_status, authorization_expiry, stdin_approved) = runtime
+        .read(|doc| {
+            Ok(
+                match execution_authorization(runtime, doc, client_id, &session) {
+                    ExecutionAuthorization::None => ("none", None, false),
+                    ExecutionAuthorization::Active(grant) => {
+                        ("active", Some(grant.expires_at), grant.allow_stdin)
+                    }
+                    ExecutionAuthorization::Expired(grant) => {
+                        ("expired", Some(grant.expires_at), false)
+                    }
+                    ExecutionAuthorization::Revoked(grant) => {
+                        ("revoked", Some(grant.expires_at), false)
+                    }
+                },
+            )
+        })
+        .map_err(map_error)?
+        .map_err(map_error)?;
     let denial = if runner.is_err() {
         Some("RUNNER_UNAVAILABLE")
     } else if session.closing {
@@ -1727,6 +1766,16 @@ fn inspect(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<Value
         "controlEpoch": session.control_epoch,
         "leaseExpiresAt": session.lease_expires_at,
         "humanLock": session.human_lock || emergency_human,
+        "executionAuthorization": {
+            "status": authorization_status,
+            "active": authorization_status == "active",
+            "expiresAtUnixMs": authorization_expiry,
+            "stdinApprovedForActiveGrant": stdin_approved
+        },
+        "outputSharing": {
+            "sessionGateOpen": session.output_shared && !session.human_lock && !emergency_human,
+            "independentOfExecutionAuthorization": true
+        },
         "activeJob": runner.as_ref().ok().and_then(|value| value.get("job")).cloned(),
         "foreground": runner.as_ref().ok().and_then(|value| value.get("job")).is_some().then_some("managed-job"),
         "readiness": "unknown",
@@ -1747,6 +1796,39 @@ fn session_control(runtime: &Runtime, client_id: &str, arguments: Value) -> Resu
             "request id is invalid",
             "Use a stable opaque request id.",
         ));
+    }
+    if let Some(lease_ms) = args.lease_ms {
+        if !(1_000..=MAX_LEASE_MS).contains(&lease_ms) {
+            return Err(error_value(
+                "INVALID_ARGUMENTS",
+                "lease_ms is outside the allowed range",
+                "Use an integer from 1000 through 300000 milliseconds.",
+            ));
+        }
+    }
+    match args.action {
+        ControlAction::Request if args.control_epoch.is_some() => {
+            return Err(error_value(
+                "INVALID_ARGUMENTS",
+                "control_epoch is not allowed for request",
+                "Omit control_epoch when requesting a new control lease.",
+            ));
+        }
+        ControlAction::Renew | ControlAction::Release if args.control_epoch.is_none() => {
+            return Err(error_value(
+                "INVALID_ARGUMENTS",
+                "control_epoch is required for this action",
+                "Use the current epoch returned by a successful control response.",
+            ));
+        }
+        ControlAction::Release if args.lease_ms.is_some() => {
+            return Err(error_value(
+                "INVALID_ARGUMENTS",
+                "lease_ms is not allowed for release",
+                "Omit lease_ms when releasing control.",
+            ));
+        }
+        _ => {}
     }
     let hash = request_hash("deck_session_control", &arguments);
     let action = args.action;
@@ -1782,11 +1864,11 @@ fn session_control(runtime: &Runtime, client_id: &str, arguments: Value) -> Resu
                     }
                     session.control_owner = Some(client_id.into());
                     session.control_holder = Some(args.holder_id.clone());
-                    session.lease_expires_at = Some(now_ms() + args.lease_ms.unwrap_or(DEFAULT_LEASE_MS).clamp(1_000, MAX_LEASE_MS));
+                    session.lease_expires_at = Some(now_ms() + args.lease_ms.unwrap_or(DEFAULT_LEASE_MS));
                 }
                 ControlAction::Renew => {
                     check_control(session, client_id, &args.expected_generation, args.control_epoch.unwrap_or(0), &args.holder_id)?;
-                    session.lease_expires_at = Some(now_ms() + args.lease_ms.unwrap_or(DEFAULT_LEASE_MS).clamp(1_000, MAX_LEASE_MS));
+                    session.lease_expires_at = Some(now_ms() + args.lease_ms.unwrap_or(DEFAULT_LEASE_MS));
                 }
                 ControlAction::Release => {
                     check_control(session, client_id, &args.expected_generation, args.control_epoch.unwrap_or(0), &args.holder_id)?;
@@ -2658,21 +2740,74 @@ pub(crate) struct ProjectScopeInput {
     roots: Vec<String>,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ScopePreview {
+    ok: bool,
+    root: Option<String>,
+    error: Option<&'static str>,
+}
+
 fn canonical_project_root(root: &str) -> Result<String, DeckError> {
-    let path = std::fs::canonicalize(root)
-        .map_err(|_| DeckError::new(ErrorKind::NotDir, "authorized root is unavailable"))?;
+    canonical_project_root_with_access(root, |path| std::fs::read_dir(path).map(|_| ()))
+}
+
+fn canonical_project_root_with_access(
+    root: &str,
+    access: impl FnOnce(&Path) -> std::io::Result<()>,
+) -> Result<String, DeckError> {
+    let path = std::fs::canonicalize(root).map_err(|error| match error.kind() {
+        std::io::ErrorKind::NotFound => {
+            DeckError::new(ErrorKind::Missing, "authorized root does not exist")
+        }
+        std::io::ErrorKind::PermissionDenied => {
+            DeckError::new(ErrorKind::Perm, "authorized root is not accessible")
+        }
+        std::io::ErrorKind::NotADirectory => {
+            DeckError::new(ErrorKind::NotDir, "authorized root is not a directory")
+        }
+        _ => DeckError::new(ErrorKind::Other, "authorized root could not be resolved"),
+    })?;
     if !path.is_dir() {
         return Err(DeckError::new(
             ErrorKind::NotDir,
             "authorized root is not a directory",
         ));
     }
+    access(&path).map_err(|error| match error.kind() {
+        std::io::ErrorKind::PermissionDenied => {
+            DeckError::new(ErrorKind::Perm, "authorized root is not accessible")
+        }
+        std::io::ErrorKind::NotFound => {
+            DeckError::new(ErrorKind::Missing, "authorized root does not exist")
+        }
+        std::io::ErrorKind::NotADirectory => {
+            DeckError::new(ErrorKind::NotDir, "authorized root is not a directory")
+        }
+        _ => DeckError::new(ErrorKind::Other, "authorized root could not be inspected"),
+    })?;
     Ok(path.display().to_string())
 }
 
 #[tauri::command]
-pub(crate) fn mcp_scope_preview(root: String) -> Result<String, DeckError> {
-    canonical_project_root(&root)
+pub(crate) fn mcp_scope_preview(root: String) -> ScopePreview {
+    match canonical_project_root(&root) {
+        Ok(root) => ScopePreview {
+            ok: true,
+            root: Some(root),
+            error: None,
+        },
+        Err(error) => ScopePreview {
+            ok: false,
+            root: None,
+            error: Some(match error.kind() {
+                ErrorKind::Missing => "not_found",
+                ErrorKind::NotDir => "not_directory",
+                ErrorKind::Perm => "not_accessible",
+                _ => "unavailable",
+            }),
+        },
+    }
 }
 
 #[tauri::command]
@@ -2755,28 +2890,11 @@ pub(crate) fn mcp_client_add(
             "invalid MCP client scope",
         ));
     }
-    let mut scopes = Vec::new();
-    for project in projects {
-        if !valid_id(&project.project_id)
-            || project.roots.is_empty()
-            || project.roots.len() > MAX_ROOTS_PER_PROJECT
-        {
-            return Err(DeckError::new(
-                ErrorKind::Invalid,
-                "invalid MCP project scope",
-            ));
-        }
-        let roots = project
-            .roots
-            .into_iter()
-            .map(|root| canonical_project_root(&root))
-            .collect::<Result<Vec<_>, _>>()?;
-        scopes.push(ProjectScope {
-            project_id: project.project_id,
-            roots,
-        });
-    }
     let runtime = runtime()?;
+    let enforce_projects = runtime.app.is_some();
+    let scopes = validate_new_client_scopes(projects, enforce_projects, |project_id| {
+        crate::documents::board_project_exists(project_id)
+    })?;
     let client_id = random_id("client_")?;
     let credential = random_id("mcp_")?;
     if runtime.app.is_some() {
@@ -2811,6 +2929,41 @@ pub(crate) fn mcp_client_add(
         let _ = crate::keychain::clear_mcp_credential(&client_id);
     }
     result
+}
+
+fn validate_new_client_scopes(
+    projects: Vec<ProjectScopeInput>,
+    enforce_projects: bool,
+    mut project_exists: impl FnMut(&str) -> Result<bool, DeckError>,
+) -> Result<Vec<ProjectScope>, DeckError> {
+    let mut scopes = Vec::new();
+    for project in projects {
+        if !valid_id(&project.project_id)
+            || project.roots.is_empty()
+            || project.roots.len() > MAX_ROOTS_PER_PROJECT
+        {
+            return Err(DeckError::new(
+                ErrorKind::Invalid,
+                "invalid MCP project scope",
+            ));
+        }
+        let roots = project
+            .roots
+            .into_iter()
+            .map(|root| canonical_project_root(&root))
+            .collect::<Result<Vec<_>, _>>()?;
+        if enforce_projects && !project_exists(&project.project_id)? {
+            return Err(DeckError::new(
+                ErrorKind::Missing,
+                "MCP project no longer exists",
+            ));
+        }
+        scopes.push(ProjectScope {
+            project_id: project.project_id,
+            roots,
+        });
+    }
+    Ok(scopes)
 }
 
 #[tauri::command]
@@ -3903,8 +4056,9 @@ mod tests {
                         }
                         _ => json!({"ok":false,"generation":generation,"error":"invalid-request"}),
                     };
-                    serde_json::to_writer(&mut stream, &response).unwrap();
-                    stream.write_all(b"\n").unwrap();
+                    if serde_json::to_writer(&mut stream, &response).is_ok() {
+                        let _ = stream.write_all(b"\n");
+                    }
                 }
             });
             Self {
@@ -3995,6 +4149,153 @@ mod tests {
             service_instance: "svc_test".into(),
             revoked_at: None,
         }
+    }
+
+    #[test]
+    fn inspect_separates_execution_authorization_from_output_sharing() {
+        let root = test_root("inspect");
+        let runner = FakeRunner::start(&root, "g_a");
+        let session = session_record(&root, &runner);
+        let mut doc = DiskDoc::default();
+        doc.config.enabled = true;
+        doc.config.clients.push(client_record(&root));
+        doc.sessions.push(session.clone());
+        let runtime = Runtime {
+            app: None,
+            path: root.join("mcp.json"),
+            socket: root.join("control.sock"),
+            doc: Mutex::new(Ok(doc)),
+            io: Mutex::new(()),
+            delivery: Mutex::new(()),
+            emergency: Mutex::new(EmergencyFences::default()),
+            service_instance: "svc_test".into(),
+            started: Instant::now(),
+        };
+        let view = || inspect(&runtime, "client_a", json!({"session_id":"mcp_a"})).unwrap();
+
+        let none = view();
+        assert_eq!(none["executionAuthorization"]["status"], "none");
+        assert_eq!(none["outputSharing"]["sessionGateOpen"], true);
+
+        runtime
+            .write(|doc| {
+                doc.execution_grants.push(execution_grant(&session));
+                Ok(())
+            })
+            .unwrap();
+        let active = view();
+        assert_eq!(active["executionAuthorization"]["status"], "active");
+        assert_eq!(
+            active["executionAuthorization"]["stdinApprovedForActiveGrant"],
+            true
+        );
+        runtime
+            .write(|doc| {
+                doc.sessions[0].control_owner = None;
+                doc.sessions[0].lease_expires_at = None;
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(
+            view()["executionAuthorization"]["status"],
+            "active",
+            "control lease is independent"
+        );
+        runtime
+            .write(|doc| {
+                doc.sessions[0].human_lock = true;
+                Ok(())
+            })
+            .unwrap();
+        let human = view();
+        assert_eq!(human["executionAuthorization"]["status"], "active");
+        assert_eq!(human["outputSharing"]["sessionGateOpen"], false);
+        assert!(
+            human.get("controlEpoch").is_some(),
+            "control metadata remains visible during takeover"
+        );
+        runtime
+            .write(|doc| {
+                doc.sessions[0].human_lock = false;
+                Ok(())
+            })
+            .unwrap();
+
+        runtime
+            .write(|doc| {
+                doc.execution_grants[0].expires_at = doc.execution_grants[0].issued_at;
+                Ok(())
+            })
+            .unwrap();
+        let expired = view();
+        assert_eq!(expired["executionAuthorization"]["status"], "expired");
+        assert_eq!(
+            expired["outputSharing"]["sessionGateOpen"], true,
+            "retained output sharing is independent"
+        );
+
+        runtime
+            .write(|doc| {
+                doc.execution_grants[0].revoked_at = Some(now_ms());
+                doc.execution_grants[0].revocation_version = 1;
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(view()["executionAuthorization"]["status"], "revoked");
+
+        runtime
+            .write(|doc| {
+                doc.sessions[0].output_shared = false;
+                Ok(())
+            })
+            .unwrap();
+        let paused = view();
+        assert_eq!(paused["executionAuthorization"]["status"], "revoked");
+        assert_eq!(paused["outputSharing"]["sessionGateOpen"], false);
+        assert!(
+            paused.get("controlEpoch").is_some(),
+            "control metadata remains visible"
+        );
+
+        drop(runner);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn scope_preview_classifies_paths_and_final_scope_check_rejects_stale_project() {
+        let root = test_root("scope-preview");
+        let missing = mcp_scope_preview(root.join("missing").display().to_string());
+        assert!(!missing.ok);
+        assert_eq!(missing.error, Some("not_found"));
+        let file = root.join("file.txt");
+        std::fs::write(&file, b"file").unwrap();
+        let not_directory = mcp_scope_preview(file.display().to_string());
+        assert!(!not_directory.ok);
+        assert_eq!(not_directory.error, Some("not_directory"));
+        let valid = mcp_scope_preview(root.display().to_string());
+        assert!(valid.ok);
+        let inaccessible = canonical_project_root_with_access(root.to_str().unwrap(), |_| {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "synthetic access denial",
+            ))
+        })
+        .unwrap_err();
+        assert_eq!(inaccessible.kind(), ErrorKind::Perm);
+
+        let stale = match validate_new_client_scopes(
+            vec![ProjectScopeInput {
+                project_id: "P1".into(),
+                roots: vec![root.display().to_string()],
+            }],
+            true,
+            |_| Ok(false),
+        ) {
+            Err(error) => error,
+            Ok(_) => panic!("stale project was accepted"),
+        };
+        assert_eq!(stale.kind(), ErrorKind::Missing);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     fn request(tool: &str, arguments: Value) -> WireRequest {
@@ -4350,8 +4651,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(added.name, "Client B");
+        let preview = mcp_scope_preview(root.display().to_string());
+        assert!(preview.ok);
         assert_eq!(
-            mcp_scope_preview(root.display().to_string()).unwrap(),
+            preview.root.unwrap(),
             std::fs::canonicalize(&root).unwrap().display().to_string()
         );
         assert_eq!(
@@ -4540,14 +4843,32 @@ mod tests {
                 "session_id":"mcp_a",
                 "expected_generation":"g_a",
                 "action":action,
-                "holder_id":"holder_a",
-                "lease_ms":2_000
+                "holder_id":"holder_a"
             });
+            if action != "release" {
+                value["lease_ms"] = json!(2_000);
+            }
             if let Some(epoch) = epoch {
                 value["control_epoch"] = json!(epoch);
             }
             route(&runtime, request("deck_session_control", value))
         };
+        let operation_count = runtime.read(|doc| doc.operations.len()).unwrap();
+        for arguments in [
+            json!({"request_id":"bad_lease_low","session_id":"mcp_a","expected_generation":"g_a","action":"request","holder_id":"holder_a","lease_ms":999}),
+            json!({"request_id":"bad_request_epoch","session_id":"mcp_a","expected_generation":"g_a","action":"request","holder_id":"holder_a","control_epoch":1}),
+            json!({"request_id":"bad_renew_epoch","session_id":"mcp_a","expected_generation":"g_a","action":"renew","holder_id":"holder_a"}),
+            json!({"request_id":"bad_release_lease","session_id":"mcp_a","expected_generation":"g_a","action":"release","holder_id":"holder_a","control_epoch":1,"lease_ms":1000}),
+        ] {
+            assert_eq!(
+                route(&runtime, request("deck_session_control", arguments))["error"]["code"],
+                "INVALID_ARGUMENTS"
+            );
+        }
+        assert_eq!(
+            runtime.read(|doc| doc.operations.len()).unwrap(),
+            operation_count
+        );
         assert_eq!(
             control("control_request", "request", None)["state"],
             "committed"

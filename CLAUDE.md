@@ -41,7 +41,7 @@ same commit as the behaviour it describes.
   release workflows run `scripts/check-edr-binary` over the packaged app.
 - **Never create a public candidate, Stable tag, feed update or promotion
   without the user's explicit authorization.** Release operation is documented
-  in `docs/release-channels.md`. `scripts/release-version` synchronizes the three numeric source/lock entries;
+  in `docs/release-channels.md`. `scripts/release-version` synchronizes the five application/Adapter source and lock entries;
   `scripts/release_channels.py` is the shared manifest/hash/provenance validator;
   `scripts/check-workflows` runs checksum-pinned actionlint. `nightly.yml`
   builds a signed/notarized immutable candidate and updates `nightly-feed` last.

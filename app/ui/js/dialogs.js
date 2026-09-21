@@ -879,7 +879,7 @@ export function promptDialog(msg, initial = '') {
    A project's configured directory is only a visible, editable initial value;
    the native backend canonicalizes the submitted authorization root. */
 let mcpAuthDone = null;
-export function mcpAuthorizationDialog(projects) {
+export function mcpAuthorizationDialog(projects, options = {}) {
   return new Promise(resolve => {
     if (mcpAuthDone) mcpAuthDone(null);
     const modal = $('mcp-auth');
@@ -887,6 +887,13 @@ export function mcpAuthorizationDialog(projects) {
     const select = $('mcp-auth-project');
     const root = $('mcp-auth-root');
     const save = $('mcp-auth-yes');
+    const projectError = $('mcp-auth-project-error');
+    const rootError = $('mcp-auth-root-error');
+    const previewRoot = options.previewRoot || (async value => ({ ok: true, root: value, error: null }));
+    const projectExists = options.projectExists || (projectId => available.some(project => project.id === projectId));
+    let generation = 0;
+    let pending = false;
+    let closed = false;
     const available = (projects || []).filter(project => project?.id && typeof project.name === 'string');
     select.replaceChildren();
     const placeholder = document.createElement('option');
@@ -897,29 +904,56 @@ export function mcpAuthorizationDialog(projects) {
       option.value = project.id; option.textContent = project.name;
       select.appendChild(option);
     }
-    name.value = 'ChatGPT'; select.value = ''; root.value = ''; save.disabled = true;
+    name.value = 'ChatGPT'; select.value = ''; root.value = ''; save.disabled = false;
     const selected = () => available.find(project => project.id === select.value) || null;
-    const refresh = () => {
-      const project = selected();
-      save.disabled = !project || !name.value.trim() || !root.value.trim();
+    const showError = (element, field, message) => {
+      element.textContent = message || '';
+      element.hidden = !message;
+      field.setAttribute('aria-invalid', message ? 'true' : 'false');
     };
     const done = value => {
+      if (closed) return;
+      closed = true; generation++;
       modal.style.display = 'none'; modal.onkeydown = null;
       name.oninput = null; root.oninput = null; select.onchange = null; mcpAuthDone = null;
       resolve(value);
     };
     mcpAuthDone = done;
-    name.oninput = refresh; root.oninput = refresh;
+    name.oninput = () => { generation++; };
+    root.oninput = () => { generation++; showError(rootError, root, ''); };
     select.onchange = () => {
+      generation++; showError(projectError, select, ''); showError(rootError, root, '');
       const project = selected();
       root.value = typeof project?.dir === 'string' ? project.dir.trim() : '';
-      refresh();
     };
-    save.onclick = () => {
+    save.onclick = async () => {
+      if (pending || closed) return;
       const project = selected();
       const clientName = name.value.trim();
       const authorizationRoot = root.value.trim();
-      if (project && clientName && authorizationRoot) done({ name: clientName, project, root: authorizationRoot });
+      if (!project) {
+        showError(projectError, select, t('mcp.projectRequired')); select.focus(); return;
+      }
+      if (!authorizationRoot) {
+        showError(rootError, root, t('mcp.rootRequired')); root.focus(); return;
+      }
+      if (!clientName) { name.focus(); return; }
+      const requestGeneration = generation;
+      pending = true; save.disabled = true;
+      let preview;
+      try { preview = await previewRoot(authorizationRoot); }
+      catch (_) { preview = { ok: false, error: 'unavailable' }; }
+      pending = false;
+      if (closed || requestGeneration !== generation) { save.disabled = false; return; }
+      save.disabled = false;
+      if (!selected() || selected().id !== project.id || !projectExists(project.id)) {
+        showError(projectError, select, t('mcp.projectUnavailable')); select.focus(); return;
+      }
+      if (!preview?.ok || !preview.root) {
+        const key = ({ not_found: 'mcp.rootNotFound', not_directory: 'mcp.rootNotDirectory', not_accessible: 'mcp.rootNotAccessible' })[preview?.error] || 'mcp.rootUnavailable';
+        showError(rootError, root, t(key)); root.focus(); return;
+      }
+      done({ name: clientName, project, root: preview.root });
     };
     $('mcp-auth-no').onclick = () => done(null);
     modal.onkeydown = event => {
@@ -951,18 +985,22 @@ export function initDialogs() {
     await renderMcpSettings();
   };
   $('set-mcp-add').onclick = async () => {
-    const authorization = await mcpAuthorizationDialog(store.projects);
+    const authorization = await mcpAuthorizationDialog(store.projects, {
+      previewRoot: root => inv('mcp_scope_preview', { root }),
+      projectExists: projectId => store.projects.some(project => project.id === projectId),
+    });
     if (!authorization) return;
     const { name, project } = authorization;
-    let root;
-    try { root = await inv('mcp_scope_preview', { root: authorization.root }); }
-    catch (_) { toast(t('mcp.projectRootRequired')); return; }
+    const root = authorization.root;
+    if (!store.projects.some(candidate => candidate.id === project.id)) { toast(t('mcp.projectUnavailable')); return; }
     if (!(await confirmDangerDialog(t('mcp.authorizeConfirm', { name: project.name, root }), t('mcp.add')))) return;
     const allowCreate = await confirmDialog(t('mcp.allowCreateConfirm'));
     try {
       await inv('mcp_client_add', { name, projects: [{ projectId: project.id, roots: [root] }], allowCreate });
       await renderMcpSettings();
-    } catch (_) { toast(t('mcp.actionFailed')); }
+    } catch (error) {
+      toast(String(error).includes('MCP project no longer exists') ? t('mcp.projectUnavailable') : t('mcp.actionFailed'));
+    }
   };
   $('set-mcp-retention').onchange = async () => {
     try {

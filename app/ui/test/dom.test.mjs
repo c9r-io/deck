@@ -86,7 +86,7 @@ test('MCP authorization requires an explicit project and shows its directory', a
   assert.equal(modal.style.display, 'flex');
   assert.equal(project.value, '', 'no global/current project is inherited');
   assert.equal(root.value, '');
-  assert.equal(proceed.disabled, true);
+  assert.equal(proceed.disabled, false);
   assert.equal(project.options.length, 3, 'projects without default directories remain selectable');
 
   project.value = 'P1';
@@ -96,7 +96,7 @@ test('MCP authorization requires an explicit project and shows its directory', a
   project.value = 'P2';
   project.fire('change');
   assert.equal(root.value, '');
-  assert.equal(proceed.disabled, true);
+  assert.equal(proceed.disabled, false);
   root.value = '/Users/test/explicit';
   root.fire('input');
   assert.equal(proceed.disabled, false);
@@ -107,6 +107,86 @@ test('MCP authorization requires an explicit project and shows its directory', a
   });
   assert.equal(modal.style.display, 'none');
   assert.equal(name.oninput, null);
+});
+
+test('MCP authorization keeps inputs and maps path failures to the root field', async () => {
+  const pending = mcpAuthorizationDialog(
+    [{ id: 'P1', name: 'Deck', dir: '/missing' }],
+    { previewRoot: async () => ({ ok: false, root: null, error: 'not_found' }) },
+  );
+  const project = fakeDocument.getElementById('mcp-auth-project');
+  const root = fakeDocument.getElementById('mcp-auth-root');
+  project.value = 'P1'; project.fire('change');
+  fakeDocument.getElementById('mcp-auth-yes').fire('click');
+  await tick();
+  assert.equal(fakeDocument.getElementById('mcp-auth').style.display, 'flex');
+  assert.equal(project.value, 'P1');
+  assert.equal(root.value, '/missing');
+  assert.equal(fakeDocument.activeElement, root);
+  assert.equal(fakeDocument.getElementById('mcp-auth-root-error').hidden, false);
+  fakeDocument.getElementById('mcp-auth-no').fire('click');
+  assert.equal(await pending, null);
+});
+
+test('MCP authorization ignores stale preview and suppresses duplicate submission', async () => {
+  let resolvePreview; let calls = 0;
+  const pending = mcpAuthorizationDialog(
+    [{ id: 'P1', name: 'Deck', dir: '/first' }],
+    { previewRoot: () => { calls++; return new Promise(resolve => { resolvePreview = resolve; }); } },
+  );
+  const project = fakeDocument.getElementById('mcp-auth-project');
+  const root = fakeDocument.getElementById('mcp-auth-root');
+  const proceed = fakeDocument.getElementById('mcp-auth-yes');
+  project.value = 'P1'; project.fire('change');
+  proceed.fire('click'); proceed.fire('click');
+  assert.equal(calls, 1);
+  root.value = '/second'; root.fire('input');
+  resolvePreview({ ok: true, root: '/canonical-first', error: null });
+  await tick();
+  assert.equal(fakeDocument.getElementById('mcp-auth').style.display, 'flex');
+  assert.equal(root.value, '/second');
+  fakeDocument.getElementById('mcp-auth-no').fire('click');
+  assert.equal(await pending, null);
+});
+
+test('MCP authorization distinguishes missing project and ignores preview after cancel', async () => {
+  let resolvePreview;
+  const pending = mcpAuthorizationDialog(
+    [{ id: 'P1', name: 'Deck', dir: '/valid' }],
+    { previewRoot: () => new Promise(resolve => { resolvePreview = resolve; }) },
+  );
+  const project = fakeDocument.getElementById('mcp-auth-project');
+  const proceed = fakeDocument.getElementById('mcp-auth-yes');
+  proceed.fire('click');
+  assert.equal(fakeDocument.activeElement, project);
+  assert.equal(fakeDocument.getElementById('mcp-auth-project-error').hidden, false);
+  project.value = 'P1'; project.fire('change'); proceed.fire('click');
+  fakeDocument.getElementById('mcp-auth-no').fire('click');
+  resolvePreview({ ok: true, root: '/valid', error: null });
+  await tick();
+  assert.equal(await pending, null);
+  assert.equal(fakeDocument.getElementById('mcp-auth').style.display, 'none');
+});
+
+test('MCP authorization keeps the form when the project disappears during preview', async () => {
+  let exists = true;
+  const pending = mcpAuthorizationDialog(
+    [{ id: 'P1', name: 'Deck', dir: '/valid' }],
+    {
+      previewRoot: async () => { exists = false; return { ok: true, root: '/valid', error: null }; },
+      projectExists: () => exists,
+    },
+  );
+  const project = fakeDocument.getElementById('mcp-auth-project');
+  project.value = 'P1'; project.fire('change');
+  fakeDocument.getElementById('mcp-auth-yes').fire('click');
+  await tick();
+  assert.equal(fakeDocument.getElementById('mcp-auth').style.display, 'flex');
+  assert.equal(project.value, 'P1');
+  assert.equal(fakeDocument.activeElement, project);
+  assert.equal(fakeDocument.getElementById('mcp-auth-project-error').hidden, false);
+  fakeDocument.getElementById('mcp-auth-no').fire('click');
+  assert.equal(await pending, null);
 });
 
 test('MCP settings delete only an already-revoked client after confirmation', async () => {

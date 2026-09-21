@@ -28,13 +28,18 @@ def parse_version(value: str) -> tuple[int, int, int]:
     return tuple(int(part) for part in match.groups())  # type: ignore[return-value]
 
 
-def paths(root: Path) -> tuple[Path, Path, Path]:
+def paths(root: Path) -> tuple[Path, Path, Path, Path]:
     base = root / "app" / "src-tauri"
-    return base / "tauri.conf.json", base / "Cargo.toml", base / "Cargo.lock"
+    return (
+        base / "tauri.conf.json",
+        base / "Cargo.toml",
+        base / "Cargo.lock",
+        base / "mcp-adapter" / "Cargo.toml",
+    )
 
 
-def source_versions(root: Path) -> tuple[str, str, str]:
-    tauri_path, cargo_path, lock_path = paths(root)
+def source_versions(root: Path) -> tuple[str, str, str, str, str]:
+    tauri_path, cargo_path, lock_path, adapter_path = paths(root)
     tauri_version = json.loads(tauri_path.read_text())["version"]
     cargo_text = cargo_path.read_text()
     cargo_match = re.search(r"(?ms)^\[package\]\n.*?^version\s*=\s*\"([^\"]+)\"", cargo_text)
@@ -46,7 +51,19 @@ def source_versions(root: Path) -> tuple[str, str, str]:
     )
     if not lock_match:
         raise VersionError("Cargo.lock deck-app package version not found")
-    return str(tauri_version), cargo_match.group(1), lock_match.group(1)
+    adapter_text = adapter_path.read_text()
+    adapter_match = re.search(r'(?ms)^\[package\]\n.*?^version\s*=\s*"([^"]+)"', adapter_text)
+    if not adapter_match:
+        raise VersionError("mcp-adapter Cargo.toml package version not found")
+    adapter_lock_match = re.search(
+        r'(?ms)^\[\[package\]\]\nname = "deck-mcp"\nversion = "([^"]+)"', lock_text
+    )
+    if not adapter_lock_match:
+        raise VersionError("Cargo.lock deck-mcp package version not found")
+    return (
+        str(tauri_version), cargo_match.group(1), lock_match.group(1),
+        adapter_match.group(1), adapter_lock_match.group(1),
+    )
 
 
 def local_published_versions(root: Path) -> list[str]:
@@ -70,7 +87,8 @@ def assert_consistent(root: Path, expected: str | None = None) -> str:
     if len(set(versions)) != 1:
         raise VersionError(
             "source versions disagree: "
-            f"tauri.conf.json={versions[0]}, Cargo.toml={versions[1]}, Cargo.lock={versions[2]}"
+            f"tauri.conf.json={versions[0]}, Cargo.toml={versions[1]}, Cargo.lock={versions[2]}, "
+            f"mcp-adapter/Cargo.toml={versions[3]}, Cargo.lock deck-mcp={versions[4]}"
         )
     if expected is not None and versions[0] != expected:
         raise VersionError(f"source version {versions[0]} does not equal requested {expected}")
@@ -95,7 +113,7 @@ def replace_once(pattern: str, replacement: str, text: str, label: str) -> str:
 
 def set_version(root: Path, version: str) -> None:
     parse_version(version)
-    tauri_path, cargo_path, lock_path = paths(root)
+    tauri_path, cargo_path, lock_path, adapter_path = paths(root)
     tauri_text = tauri_path.read_text()
     # Preserve the repository's deliberate compact formatting; only the
     # top-level application version changes.
@@ -116,12 +134,23 @@ def set_version(root: Path, version: str) -> None:
     )
     cargo_path.write_text(cargo_text)
 
+    adapter_text = adapter_path.read_text()
+    adapter_text = replace_once(
+        r'(^\[package\]\n(?:(?!^\[).)*?^version\s*=\s*)"[^"]+"',
+        rf'\g<1>"{version}"', adapter_text, "mcp-adapter Cargo.toml package",
+    )
+    adapter_path.write_text(adapter_text)
+
     lock_text = lock_path.read_text()
     lock_text = replace_once(
         r'(^\[\[package\]\]\nname = "deck-app"\nversion = )"[^"]+"',
         rf'\g<1>"{version}"',
         lock_text,
         "Cargo.lock deck-app package",
+    )
+    lock_text = replace_once(
+        r'(^\[\[package\]\]\nname = "deck-mcp"\nversion = )"[^"]+"',
+        rf'\g<1>"{version}"', lock_text, "Cargo.lock deck-mcp package",
     )
     lock_path.write_text(lock_text)
 

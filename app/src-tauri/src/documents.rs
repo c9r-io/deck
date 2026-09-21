@@ -783,6 +783,20 @@ pub(crate) fn connector_board_payload() -> Result<String, DeckError> {
         .ok_or_else(|| DeckError::new(ErrorKind::Missing, "board is not initialized"))
 }
 
+/// Check a project against the currently committed, fully validated Board.
+/// This is used immediately before creating a new authorization; it does not
+/// mutate existing authorizations when a project is later removed.
+pub(crate) fn board_project_exists(project_id: &str) -> Result<bool, DeckError> {
+    let payload = connector_board_payload()?;
+    let board = serde_json::from_str::<BoardDoc>(&payload)
+        .map_err(|error| DeckError::classified(format!("invalid committed board: {error}")))?;
+    Ok(board
+        .0
+        .projects
+        .iter()
+        .any(|project| project.id == project_id))
+}
+
 /// The same full business validation as load, BEFORE anything touches disk:
 /// an invalid document never overwrites the main file or rotates the .bak.
 pub(crate) fn save_validated<T: serde::de::DeserializeOwned>(

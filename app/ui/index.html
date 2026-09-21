@@ -560,8 +560,8 @@
   <div id="mcp-auth-box">
     <h2 id="mcp-auth-title" data-i18n="mcp.authorizeTitle">Authorize MCP client</h2>
     <div class="set-row"><label for="mcp-auth-name" data-i18n="mcp.clientName">Name this MCP client</label><input type="text" id="mcp-auth-name" maxlength="120" autocomplete="off" spellcheck="false"></div>
-    <div class="set-row"><label for="mcp-auth-project" data-i18n="mcp.project">Project</label><select id="mcp-auth-project"></select></div>
-    <div class="set-row"><label for="mcp-auth-root" data-i18n="mcp.directory">Authorized directory</label><input type="text" id="mcp-auth-root" autocomplete="off" spellcheck="false" data-i18n-placeholder="mcp.directoryPlaceholder" placeholder="/path/to/project"></div>
+    <div class="set-row"><label for="mcp-auth-project" data-i18n="mcp.project">Project</label><div class="mcp-auth-field"><select id="mcp-auth-project" aria-describedby="mcp-auth-project-error"></select><p class="mcp-field-error" id="mcp-auth-project-error" role="alert" hidden></p></div></div>
+    <div class="set-row"><label for="mcp-auth-root" data-i18n="mcp.directory">Authorized directory</label><div class="mcp-auth-field"><input type="text" id="mcp-auth-root" autocomplete="off" spellcheck="false" aria-describedby="mcp-auth-root-error" data-i18n-placeholder="mcp.directoryPlaceholder" placeholder="/path/to/project"><p class="mcp-field-error" id="mcp-auth-root-error" role="alert" hidden></p></div></div>
     <p class="set-hint" data-i18n="mcp.authorizeHint">Choose the project and directory explicitly. A configured project directory is filled in but remains editable. Its canonical path will be shown again before Deck creates the authorization.</p>
     <div class="cfm-actions">
       <button class="btn" id="mcp-auth-no" data-i18n="common.cancel">Cancel</button>

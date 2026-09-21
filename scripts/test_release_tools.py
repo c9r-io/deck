@@ -22,14 +22,19 @@ spec.loader.exec_module(rc)
 
 
 class VersionToolTests(unittest.TestCase):
-    def fixture(self, tauri: str = "0.4.37", cargo: str = "0.4.37", lock: str = "0.4.37") -> Path:
+    def fixture(self, tauri: str = "0.4.37", cargo: str = "0.4.37", lock: str = "0.4.37", adapter: str | None = None) -> Path:
         root = Path(tempfile.mkdtemp(prefix="deck-version-test-"))
         source = root / "app" / "src-tauri"
         source.mkdir(parents=True)
         (source / "tauri.conf.json").write_text(json.dumps({"version": tauri}, indent=2) + "\n")
         (source / "Cargo.toml").write_text(f'[package]\nname = "deck-app"\nversion = "{cargo}"\n')
+        (source / "mcp-adapter").mkdir()
+        (source / "mcp-adapter" / "Cargo.toml").write_text(
+            f'[package]\nname = "deck-mcp"\nversion = "{adapter or cargo}"\n'
+        )
         (source / "Cargo.lock").write_text(
             f'[[package]]\nname = "deck-app"\nversion = "{lock}"\n\n'
+            f'[[package]]\nname = "deck-mcp"\nversion = "{adapter or lock}"\n\n'
             '[[package]]\nname = "other"\nversion = "9.9.9"\n'
         )
         return root
@@ -43,6 +48,10 @@ class VersionToolTests(unittest.TestCase):
 
     def test_source_mismatch_fails(self) -> None:
         root = self.fixture(cargo="0.4.38")
+        with self.assertRaises(rv["VersionError"]):
+            rv["assert_consistent"](root)
+
+        root = self.fixture(adapter="0.4.36")
         with self.assertRaises(rv["VersionError"]):
             rv["assert_consistent"](root)
 
