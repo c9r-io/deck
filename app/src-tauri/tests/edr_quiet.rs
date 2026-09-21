@@ -10,7 +10,8 @@
 //! 2. aliases and lower-level spawns (`Command as`, `type X = Command`,
 //!    `posix_spawn`, `libc::exec*`, `libc::system`, ...) are forbidden, as
 //!    are tmux verbs that run a shell (`run-shell`, `pipe-pane`,
-//!    `display-popup`/`popup`) and any `if-shell` without `-F`;
+//!    `display-popup`/`popup`, the `#(...)` format job) and any `if-shell`
+//!    without `-F`;
 //! 3. deck-app never constructs a shell path at runtime (`"/bin"`,
 //!    `join("zsh")`, ...), and the MCP runner has no fixed shell spawn;
 //! 4. nothing touches launchd, login items or `~/.deck/bin`;
@@ -202,8 +203,12 @@ const FORBIDDEN_SPAWN_TOKENS: &[&str] = &[
     "libc::popen",
 ];
 
-/// tmux verbs that make the server itself run a shell command.
-const FORBIDDEN_TMUX_VERBS: &[&str] = &["run-shell", "pipe-pane", "display-popup", "\"popup\""];
+/// tmux verbs that make the server itself run a shell command, plus the
+/// `#(...)` format job, which tmux expands through `/bin/sh` in any format.
+/// Runtime values entering a format stay restricted to `sanitize_process`'s
+/// character set (`restart.rs`, `context.rs`).
+const FORBIDDEN_TMUX_VERBS: &[&str] =
+    &["run-shell", "pipe-pane", "display-popup", "\"popup\"", "#("];
 
 /// Spawn-vocabulary violations in one production file (empty when clean).
 fn spawn_vocabulary_violations(name: &str, source: &str) -> Vec<String> {
@@ -368,6 +373,7 @@ fn scanner_rejects_aliases_whitespace_and_indirect_spawns() {
         "fn f() { tmux(&[\"run-shell\", \"id\"]); }\n",
         "fn f() { tmux(&[\"pipe-pane\", \"-o\", \"cat\"]); }\n",
         "fn f() { tmux(&[\"display-popup\", \"sh\"]); }\n",
+        "fn f() { tmux(&[\"display-message\", \"-p\", \"#(id)\"]); }\n",
         "fn f() { args.extend([\"if-shell\".into(), \"-t\".into()]); }\n",
         "fn f() { format!(\"if-shell -t {t} 'true' ''\"); }\n",
         "fn f() { let s = Path::new(\"/bin\").join(\"zsh\"); }\n",

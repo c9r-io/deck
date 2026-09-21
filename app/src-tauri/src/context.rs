@@ -418,6 +418,11 @@ mod tests {
             None,
             "unsanitizable name is no name"
         );
+        // Sanitized names are pasted into tmux format expressions: a format
+        // job or a comparison-breaking character must never survive.
+        for hostile in ["#(id)", "a,b", "x}", "#{pid}"] {
+            assert_eq!(sanitize_process(hostile), None, "{hostile}");
+        }
         assert_eq!(foreground_from_tty("/dev/../etc/passwd"), None);
         assert_eq!(foreground_from_tty("not-a-tty"), None);
     }
