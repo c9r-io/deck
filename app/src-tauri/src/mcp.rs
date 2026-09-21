@@ -12,7 +12,10 @@
 //! socket (0600, Deck's private data directory, same-effective-uid peers
 //! only, bounded connections with timeouts) is bound only while the feature is
 //! enabled and is removed on disable; while disabled its thread sleeps until
-//! `mcp_enable` wakes it instead of polling the socket path. The thin
+//! `mcp_enable` wakes it instead of polling the socket path, and while
+//! enabled it blocks in `poll(2)` on the listener (1s lifecycle recheck), never
+//! a short sleep loop. Accepted streams are switched back to blocking I/O
+//! before their timeouts are set. The thin
 //! `deck-mcp` sidecar maps an absent control socket to `FEATURE_DISABLED`; when connected, the service
 //! also answers `FEATURE_DISABLED` if a disable races the request. The sidecar provides MCP
 //! STDIO and never receives a Phone token or unrestricted backend credential.
@@ -3490,6 +3493,9 @@ static SOCKET_LIFECYCLE: Mutex<()> = Mutex::new(());
 static CONTROL_WAKE: (Mutex<bool>, Condvar) = (Mutex::new(false), Condvar::new());
 /// Backstop re-check interval for the idle control thread.
 const DISABLED_IDLE: Duration = Duration::from_secs(60);
+/// Longest the enabled control thread blocks waiting for a connection before
+/// it re-runs the socket lifecycle check.
+const ENABLED_RECHECK: Duration = Duration::from_secs(1);
 
 fn wake_control_thread() {
     let (flag, wake) = &CONTROL_WAKE;
@@ -3509,13 +3515,30 @@ fn wait_for_enable() {
     *woken = false;
 }
 
+/// Sleep in the kernel until the listener has a pending connection, or for
+/// at most `ENABLED_RECHECK` so the thread still re-runs the lifecycle check
+/// (disable already unlinks the socket path itself, under `SOCKET_LIFECYCLE`).
+fn wait_for_connection(listener: &UnixListener) {
+    let mut fd = libc::pollfd {
+        fd: std::os::fd::AsRawFd::as_raw_fd(listener),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    // SAFETY: `fd` is one valid pollfd for a listener this thread owns.
+    unsafe { libc::poll(&mut fd, 1, ENABLED_RECHECK.as_millis() as libc::c_int) };
+}
+
 fn handle_connection(runtime: Arc<Runtime>, mut stream: UnixStream) {
     if !same_uid(&stream) {
         return;
     }
+    // macOS hands the listener's O_NONBLOCK to accepted sockets; without
+    // switching back, the timeouts below are inert and any request or
+    // response larger than one socket buffer fails with WouldBlock.
     // A same-uid peer that connects and never sends a full request cannot pin
     // a thread forever; neither can one that never reads its response.
-    if stream.set_read_timeout(Some(CONNECTION_TIMEOUT)).is_err()
+    if stream.set_nonblocking(false).is_err()
+        || stream.set_read_timeout(Some(CONNECTION_TIMEOUT)).is_err()
         || stream.set_write_timeout(Some(CONNECTION_TIMEOUT)).is_err()
     {
         return;
@@ -3650,10 +3673,11 @@ pub(crate) fn spawn(app: AppHandle) {
                                 CONNECTIONS.fetch_sub(1, Ordering::SeqCst);
                             });
                         }
-                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            wait_for_connection(bound);
+                        }
                         Err(_) => listener = None,
                     }
-                    std::thread::sleep(Duration::from_millis(25));
                 } else if socket_should_listen(&runtime) {
                     // enabled but the bind failed: retry on the slow tick
                     std::thread::sleep(Duration::from_secs(1));
@@ -4010,8 +4034,10 @@ fn validate_new_client_scopes(
     Ok(scopes)
 }
 
-/// Revocation fences the client in memory BEFORE waiting for the delivery
-/// lock, persists, then hands the client's panes to the local user.
+/// Revocation fences the client in memory and removes its Keychain bearer
+/// BEFORE waiting for the delivery lock, persists, then hands the client's
+/// panes to the local user. The bearer goes first so a failed state write
+/// cannot leave a client that re-authenticates after a Deck restart.
 #[tauri::command(async)]
 pub(crate) fn mcp_client_revoke(client_id: String) -> Result<(), DeckError> {
     client_revoke(runtime()?, client_id)
@@ -4032,6 +4058,11 @@ fn client_revoke(runtime: &Runtime, client_id: String) -> Result<(), DeckError> 
         .lock_or_recover()
         .clients
         .insert(client_id.clone());
+    let credential = if runtime.app.is_some() {
+        crate::keychain::clear_mcp_credential(&client_id)
+    } else {
+        Ok(())
+    };
     let _delivery = runtime.delivery.lock_or_recover();
     let sessions =
         runtime.write(|doc| {
@@ -4107,9 +4138,7 @@ fn client_revoke(runtime: &Runtime, client_id: String) -> Result<(), DeckError> 
         uncertain |=
             runner_control_result(send_runner_control(runtime, &session, "human")).is_err();
     }
-    if runtime.app.is_some() {
-        crate::keychain::clear_mcp_credential(&client_id)?;
-    }
+    credential?;
     if uncertain {
         return Err(DeckError::new(
             ErrorKind::ContextChanged,
