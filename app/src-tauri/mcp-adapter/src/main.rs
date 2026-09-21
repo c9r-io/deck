@@ -477,6 +477,13 @@ impl DeckServer {
             }
             "deck_sessions_list" => self.invoke::<Empty>("deck_sessions_list", arguments).await,
             "deck_session_create" => {
+                if let Err(issue) = validate_sequence(
+                    &arguments,
+                    "create_sequence",
+                    "non-negative integer (nextCreateSequence from deck_capabilities or deck_sessions_list)",
+                ) {
+                    return invalid_arguments(issue);
+                }
                 self.invoke::<CreateInput>("deck_session_create", arguments)
                     .await
             }
@@ -535,7 +542,11 @@ fn invalid_arguments(issue: ArgumentIssue) -> CallToolResult {
                 "category": issue.category,
                 "expected": issue.expected
             },
-            "nextAction": "Correct the identified field and use a new request_id unless retrying the exact same request."
+            "nextAction": if issue.category == "required" {
+                "Supply the identified field. If your tool list does not show it, the list is stale: refresh tool discovery (reconnect the MCP server) and retry."
+            } else {
+                "Correct the identified field and use a new request_id unless retrying the exact same request."
+            }
         }
     }))
 }
@@ -546,6 +557,25 @@ fn valid_control_id(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+}
+
+/// A missing sequence names the field: a client that omits it is usually
+/// holding a tool list discovered before the field existed, and a generic
+/// schema error would not say so.
+fn validate_sequence(
+    arguments: &Value,
+    field: &'static str,
+    expected: &'static str,
+) -> Result<(), ArgumentIssue> {
+    let value = arguments.as_object().and_then(|object| object.get(field));
+    if value.and_then(Value::as_u64).is_some() {
+        return Ok(());
+    }
+    Err(ArgumentIssue {
+        field_path: field,
+        category: if value.is_some() { "type" } else { "required" },
+        expected,
+    })
 }
 
 fn validate_control_arguments(arguments: &Value) -> Result<(), ArgumentIssue> {
@@ -582,21 +612,11 @@ fn validate_control_arguments(arguments: &Value) -> Result<(), ArgumentIssue> {
             });
         }
     }
-    if object
-        .get("control_sequence")
-        .and_then(Value::as_u64)
-        .is_none()
-    {
-        return Err(ArgumentIssue {
-            field_path: "control_sequence",
-            category: if object.contains_key("control_sequence") {
-                "type"
-            } else {
-                "required"
-            },
-            expected: "non-negative integer (controlSequence from deck_session_inspect)",
-        });
-    }
+    validate_sequence(
+        arguments,
+        "control_sequence",
+        "non-negative integer (controlSequence from deck_session_inspect)",
+    )?;
     let action = object["action"].as_str().unwrap_or_default();
     if !matches!(action, "request" | "renew" | "release") {
         return Err(ArgumentIssue {

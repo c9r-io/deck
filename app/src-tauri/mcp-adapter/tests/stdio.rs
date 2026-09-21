@@ -48,6 +48,30 @@ fn spawn_adapter(args: &[&str]) -> std::process::Child {
     child
 }
 
+/// Asserts one Protocol 4 sequence field in a tool's advertised inputSchema.
+fn assert_sequence_field(tool: &Value, field: &str) {
+    let schema = &tool["inputSchema"];
+    let name = &tool["name"];
+    assert!(
+        schema["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|value| value == field),
+        "{name}: {field} must be required: {schema}"
+    );
+    let property = &schema["properties"][field];
+    assert_eq!(
+        property["type"], "integer",
+        "{name}: {field} must be a non-nullable integer: {property}"
+    );
+    assert_eq!(property["minimum"], 0, "{name}: {field}: {property}");
+    assert!(
+        property.get("default").is_none(),
+        "{name}: {field} must not carry a default the server could fill in: {property}"
+    );
+}
+
 #[test]
 fn negotiates_away_from_an_unsupported_protocol_version() {
     let mut child = spawn_adapter(&[
@@ -168,16 +192,15 @@ fn initializes_lists_and_calls_over_stdio_without_stdout_noise() {
         .unwrap();
     let required = control["inputSchema"]["required"].as_array().unwrap();
     assert!(required.iter().any(|value| value == "holder_id"));
-    assert!(required.iter().any(|value| value == "control_sequence"));
     let create = tools
         .iter()
         .find(|tool| tool["name"] == "deck_session_create")
         .unwrap();
-    assert!(create["inputSchema"]["required"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|value| value == "create_sequence"));
+    // Protocol 4 binds every create and control change to a server-issued
+    // sequence. The advertised schema is what a client plans its calls from,
+    // so the field must be there, required, and a plain non-negative integer.
+    assert_sequence_field(create, "create_sequence");
+    assert_sequence_field(control, "control_sequence");
     assert_eq!(
         control["inputSchema"]["properties"]["lease_ms"]["minimum"],
         1000
@@ -359,6 +382,83 @@ fn control_validation_rejects_before_connecting_and_valid_samples_cross_validati
             "DECK_UNAVAILABLE"
         );
     }
+    drop(input);
+    assert!(child.wait().unwrap().success());
+}
+
+#[test]
+fn a_call_without_a_sequence_names_the_field_before_connecting() {
+    // A client still holding a Protocol 3 tool list sends no sequence. The
+    // adapter must name the missing field (and never reach Deck) so the
+    // client can tell its schema is stale instead of guessing a value.
+    let mut child = spawn_adapter(&[
+        "--client-id",
+        "client_test",
+        "--socket",
+        "/tmp/deck-mcp-sequence-absent.sock",
+    ]);
+    let mut input = child.stdin.take().unwrap();
+    let mut output = BufReader::new(child.stdout.take().unwrap());
+    writeln!(input, "{}", json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1"}}})).unwrap();
+    input.flush().unwrap();
+    read_response(&mut output, 1);
+    writeln!(
+        input,
+        "{}",
+        json!({"jsonrpc":"2.0","method":"notifications/initialized"})
+    )
+    .unwrap();
+
+    for (id, tool, arguments, field, category) in [
+        (
+            10,
+            "deck_session_create",
+            json!({"request_id":"req_create","project_id":"P1","cwd":"/tmp","title":null}),
+            "create_sequence",
+            "required",
+        ),
+        (
+            11,
+            "deck_session_create",
+            json!({"request_id":"req_create","project_id":"P1","cwd":"/tmp","create_sequence":null}),
+            "create_sequence",
+            "type",
+        ),
+        (
+            12,
+            "deck_session_control",
+            json!({"request_id":"req_control","session_id":"s","expected_generation":"g","action":"request","holder_id":"holder_a"}),
+            "control_sequence",
+            "required",
+        ),
+    ] {
+        writeln!(input, "{}", json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":tool,"arguments":arguments}})).unwrap();
+        input.flush().unwrap();
+        let response = read_response(&mut output, id);
+        let error = &response["result"]["structuredContent"]["error"];
+        assert_eq!(error["code"], "INVALID_ARGUMENTS", "{response}");
+        assert_eq!(error["details"]["fieldPath"], field, "{response}");
+        assert_eq!(error["details"]["category"], category, "{response}");
+        if category == "required" {
+            assert!(
+                error["nextAction"]
+                    .as_str()
+                    .unwrap()
+                    .contains("refresh tool discovery"),
+                "{response}"
+            );
+        }
+    }
+
+    // With the sequence present the call passes validation and only then
+    // fails on the absent socket.
+    writeln!(input, "{}", json!({"jsonrpc":"2.0","id":20,"method":"tools/call","params":{"name":"deck_session_create","arguments":{"request_id":"req_create","project_id":"P1","cwd":"/tmp","create_sequence":0}}})).unwrap();
+    input.flush().unwrap();
+    let response = read_response(&mut output, 20);
+    assert_eq!(
+        response["result"]["structuredContent"]["error"]["code"],
+        "DECK_UNAVAILABLE"
+    );
     drop(input);
     assert!(child.wait().unwrap().success());
 }

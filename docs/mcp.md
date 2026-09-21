@@ -148,6 +148,12 @@ second time:
 Neither sequence is an execution grant: advancing one never creates or
 extends an execution window.
 
+Both sequence fields are required in the advertised input schemas. A client
+keeps the tool list it discovered, so after upgrading across a schema change
+(0.7.5 added both fields) refresh the client's discovery — reconnect the MCP
+server — before creating or controlling sessions. A call without a sequence is
+refused before it reaches Deck with `INVALID_ARGUMENTS` naming the field.
+
 Replaying the same id with the same (parsed) arguments returns the recorded
 operation and never repeats its effect; an optional field sent as `null` is
 the same request as omitting it; the same id with different arguments is
