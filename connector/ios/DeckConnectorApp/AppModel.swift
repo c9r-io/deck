@@ -28,6 +28,11 @@ final class AppModel: ObservableObject {
     @Published var creatingTask = false
     @Published var message: String?
 
+    func commandFailureMessage(_ code: String?) -> String {
+        if code == "unsupported-target" { return ConnectorError.unsupportedTarget.localizedDescription }
+        return code ?? "The command was rejected."
+    }
+
     private let credentialStore = KeychainCredentialStore()
     private var client: DeckHTTPClient?
     private var journal: CommandJournal?
@@ -153,8 +158,13 @@ final class AppModel: ObservableObject {
         guard let client, let journal else { return }
         let epoch = bindingEpoch
         async let outputLoad: Void = loadOutput(cardID: card.id, client: client, journal: journal, epoch: epoch)
-        async let bufferLoad: Void = loadBuffer(cardID: card.id, client: client, journal: journal, epoch: epoch)
-        _ = await (outputLoad, bufferLoad)
+        if card.canQueue {
+            async let bufferLoad: Void = loadBuffer(cardID: card.id, client: client, journal: journal, epoch: epoch)
+            _ = await (outputLoad, bufferLoad)
+        } else {
+            buffers.removeValue(forKey: card.id)
+            _ = await outputLoad
+        }
     }
 
     private func loadOutput(cardID: String, client: DeckHTTPClient, journal: CommandJournal, epoch: UInt64) async {
@@ -270,18 +280,21 @@ final class AppModel: ObservableObject {
     }
 
     func bufferAdd(card: CardSummary, text: String) async -> MutationOutcome {
+        guard card.canQueue else { return .failed(ConnectorError.unsupportedTarget.localizedDescription) }
         guard pendingCardCommands[card.id]?.isEmpty ?? true else { return .pending(id: pendingCardCommands[card.id]?.first?.id, state: "original operation") }
         guard let revision = buffers[card.id]?.revision.value else { return .failed("Scratchpad is unavailable.") }
         return await execute(kind: "buffer-add", card: card, expectedRevision: revision, payload: ["text": .string(text)])
     }
 
     func bufferEdit(card: CardSummary, entry: BufferEntry, text: String) async -> MutationOutcome {
+        guard card.canQueue else { return .failed(ConnectorError.unsupportedTarget.localizedDescription) }
         guard pendingCardCommands[card.id]?.isEmpty ?? true else { return .pending(id: pendingCardCommands[card.id]?.first?.id, state: "original operation") }
         guard entry.kind == "manual", let revision = buffers[card.id]?.revision.value else { return .failed("Only manual notes can be edited.") }
         return await execute(kind: "buffer-edit", card: card, expectedRevision: revision, payload: ["entryId": .string(entry.id), "text": .string(text)])
     }
 
     func bufferDelete(card: CardSummary, entry: BufferEntry) async -> MutationOutcome {
+        guard card.canQueue else { return .failed(ConnectorError.unsupportedTarget.localizedDescription) }
         guard pendingCardCommands[card.id]?.isEmpty ?? true else { return .pending(id: pendingCardCommands[card.id]?.first?.id, state: "original operation") }
         guard let revision = buffers[card.id]?.revision.value else { return .failed("Scratchpad is unavailable.") }
         return await execute(kind: "buffer-delete", card: card, expectedRevision: revision, payload: ["entryId": .string(entry.id)])
@@ -305,10 +318,12 @@ final class AppModel: ObservableObject {
     }
 
     func setQueuePaused(card: CardSummary, item: QueueItem, paused: Bool) async {
+        guard card.canQueue else { message = ConnectorError.unsupportedTarget.localizedDescription; return }
         _ = await execute(kind: "queue-pause", card: card, expectedGeneration: card.generation, payload: ["itemId": .string(item.id), "paused": .bool(paused), "revision": .string(item.revision.value)])
     }
 
     func cancelQueue(card: CardSummary, item: QueueItem) async {
+        guard card.canQueue else { message = ConnectorError.unsupportedTarget.localizedDescription; return }
         _ = await execute(kind: "queue-cancel", card: card, expectedGeneration: card.generation, payload: ["itemId": .string(item.id), "revision": .string(item.revision.value)])
     }
 
@@ -340,13 +355,13 @@ final class AppModel: ObservableObject {
             }
             guard isCurrent(client: client, journal: journal, epoch: epoch) else { return .failed("Pairing changed.") }
             if result.state == .rejected || result.state == .ambiguous {
-                message = result.code.map { "Command \(result.state.rawValue): \($0)" } ?? "Command \(result.state.rawValue)."
+                message = commandFailureMessage(result.code)
             }
             if let cardID = command.cardId, let card = snapshot?.cards.first(where: { $0.id == cardID }) { await loadDetails(card: card) }
             switch result.state {
             case .applied, .delivered: return .applied
             case .accepted, .ambiguous: return .pending(id: command.id, state: result.state.rawValue)
-            case .rejected: return .failed(result.code ?? "rejected")
+            case .rejected: return .failed(commandFailureMessage(result.code))
             }
         } catch {
             guard isCurrent(client: client, journal: journal, epoch: epoch) else { return .failed("Pairing changed.") }

@@ -2,7 +2,11 @@
 
 Native iOS 17 SwiftUI client for the local Deck Connector protocol. It contains no shell, tmux, raw PTY, background daemon, public relay, or terminal write API. Terminal output is a bounded read-only snapshot.
 
-Scratchpad queueing is available only when the host reports `canQueue` for a recognized desktop-saved Codex or Claude launch configuration; a missing capability fails closed and the phone never supplies a shell command.
+Scratchpad reads, edits, queueing, and queue pause/cancel are available only
+when the host reports `canQueue` for an exact desktop-saved bare `codex` or
+`claude` command. A missing capability fails closed, `unsupported-target` is
+shown as an unavailable agent card, and the phone never supplies a shell
+command.
 
 ## Layout
 

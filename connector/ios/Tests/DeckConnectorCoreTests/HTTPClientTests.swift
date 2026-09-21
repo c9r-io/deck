@@ -37,12 +37,13 @@ private func waitForStarts(_ count: Int) async {
 /// Answers every request with `status` and an error envelope.
 private final class StatusURLProtocol: URLProtocol, @unchecked Sendable {
     nonisolated(unsafe) static var status = 200
+    nonisolated(unsafe) static var code = "expired"
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
         let response = HTTPURLResponse(url: request.url!, statusCode: Self.status, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"])!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-        client?.urlProtocol(self, didLoad: Data(#"{"error":{"code":"expired"}}"#.utf8))
+        client?.urlProtocol(self, didLoad: Data("{\"error\":{\"code\":\"\(Self.code)\"}}".utf8))
         client?.urlProtocolDidFinishLoading(self)
     }
     override func stopLoading() {}
@@ -57,12 +58,24 @@ struct HTTPClientTests {
     let client = try DeckHTTPClient(credential: credential, configuration: configuration)
     defer { client.invalidate() }
     StatusURLProtocol.status = 410
+    StatusURLProtocol.code = "expired"
     await #expect(throws: ConnectorError.commandExpired) { try await client.query(id: "op-1") }
     await #expect(throws: ConnectorError.commandExpired) {
         try await client.post(command: CommandRequest(id: "op-1", kind: "send-message", cardId: "card", expectedGeneration: "g", payload: ["text": .string("x")], seq: 1))
     }
     StatusURLProtocol.status = 404
     await #expect(throws: ConnectorError.commandNotFound) { try await client.query(id: "op-1") }
+}
+
+@Test func unsupportedTargetHasAnActionableClientError() async throws {
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.protocolClasses = [StatusURLProtocol.self]
+    let credential = DeviceCredential(origin: "https://deck.test", fingerprint: String(repeating: "0", count: 64), hostId: "host", deviceId: "device", token: "token")
+    let client = try DeckHTTPClient(credential: credential, configuration: configuration)
+    defer { client.invalidate() }
+    StatusURLProtocol.status = 400
+    StatusURLProtocol.code = "unsupported-target"
+    await #expect(throws: ConnectorError.unsupportedTarget) { try await client.buffer(cardID: "shell-card") }
 }
 
 @Test func cancellingSwiftTaskCancelsUnderlyingRequestAndResumesOnce() async throws {

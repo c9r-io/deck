@@ -31,12 +31,12 @@
 //! slot. Each write encodes once and is atomic (temp file, file fsync,
 //! rename, directory fsync).
 //!
-//! Phone reach: send-message and output require both a bare `codex`/`claude`
-//! SAVED command under the shared channel policy and a live agent foreground
-//! process. Output rechecks that foreground identity after capture, alongside
-//! the generation/card checks. A foreground agent in a plain shell card does
-//! not qualify. Phone text is an agent prompt, not a shell line, but a prompt
-//! can still lead the agent to run commands.
+//! Phone reach: every card-scoped route requires a bare `codex`/`claude` SAVED
+//! command under the shared channel policy. Send-message and output also
+//! require a live agent foreground process; output rechecks that identity
+//! after capture alongside the generation/card checks. A foreground agent in
+//! a plain shell card does not qualify. Phone text is an agent prompt, not a
+//! shell line, but a prompt can still lead the agent to run commands.
 //!
 //! Network: `connector_enable` records the interface carrying the chosen
 //! address; a restart binds only while the address is on that interface.
@@ -1532,9 +1532,7 @@ fn execute_native(
             }
             let card = committed_card(req.card_id.as_deref().ok_or(("rejected", "missing-card"))?)
                 .map_err(|_| ("rejected", "missing-card"))?;
-            if !card.agent_target {
-                return Err(("rejected", "unsupported-target"));
-            }
+            require_agent_card(&card).map_err(|_| ("rejected", "unsupported-target"))?;
             let probe = crate::context::connector_probe(&card.session)
                 .map_err(|_| ("rejected", "target-changed"))?;
             if !matches!(
@@ -1595,6 +1593,7 @@ fn execute_native(
                 .map_err(|_| ("rejected", "invalid-payload"))?;
             let card = committed_card(req.card_id.as_deref().ok_or(("rejected", "missing-card"))?)
                 .map_err(|_| ("rejected", "missing-card"))?;
+            require_agent_card(&card).map_err(|_| ("rejected", "unsupported-target"))?;
             let rev = p
                 .revision
                 .parse()
@@ -1779,12 +1778,37 @@ fn queue_target_supported(card: &Value) -> bool {
         .is_some()
 }
 
+fn require_agent_card(card: &InternalCard) -> Result<(), DeckError> {
+    if card.agent_target {
+        Ok(())
+    } else {
+        Err(DeckError::new(ErrorKind::Invalid, "unsupported-target"))
+    }
+}
+
 fn require_queue_target(card: &Value) -> Result<(), DeckError> {
     if queue_target_supported(card) {
         Ok(())
     } else {
         Err(DeckError::new(ErrorKind::Invalid, "unsupported-target"))
     }
+}
+
+fn validate_buffer_target(request: &CommandRequest, card: &Value) -> Result<(), DeckError> {
+    require_queue_target(card)?;
+    let current = card
+        .get("buffer")
+        .and_then(|buffer| buffer.get("revision"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0)
+        .to_string();
+    if request.expected_revision.as_deref() != Some(&current) {
+        return Err(DeckError::new(
+            ErrorKind::ContextChanged,
+            "revision-changed",
+        ));
+    }
+    Ok(())
 }
 
 fn validate_applicable(request: &CommandRequest) -> Result<(), DeckError> {
@@ -1880,21 +1904,7 @@ fn validate_applicable(request: &CommandRequest) -> Result<(), DeckError> {
                     .find(|c| c.get("id").and_then(Value::as_str) == Some(id))
             })
             .ok_or_else(|| DeckError::new(ErrorKind::Missing, "card not found"))?;
-        if request.kind == "buffer-queue" {
-            require_queue_target(card)?;
-        }
-        let current = card
-            .get("buffer")
-            .and_then(|b| b.get("revision"))
-            .and_then(Value::as_u64)
-            .unwrap_or(0)
-            .to_string();
-        if request.expected_revision.as_deref() != Some(&current) {
-            return Err(DeckError::new(
-                ErrorKind::ContextChanged,
-                "revision-changed",
-            ));
-        }
+        validate_buffer_target(request, card)?;
     }
     Ok(())
 }
@@ -2345,6 +2355,7 @@ pub(super) fn buffer(app: &AppHandle, card_id: &str) -> Result<Value, DeckError>
                 .find(|c| c.get("id").and_then(Value::as_str) == Some(card_id))
         })
         .ok_or_else(|| DeckError::new(ErrorKind::Missing, "card not found"))?;
+    require_queue_target(c)?;
     let mut out = c
         .get("buffer")
         .cloned()
@@ -2413,9 +2424,7 @@ pub(super) fn output(card_id: &str) -> Result<Value, DeckError> {
 /// capture, so output from a fallback shell is never returned to a phone.
 fn output_with(io: &dyn OutputIo, card_id: &str) -> Result<Value, DeckError> {
     let card = io.card(card_id)?;
-    if !card.agent_target {
-        return Err(DeckError::new(ErrorKind::Invalid, "unsupported-target"));
-    }
+    require_agent_card(&card)?;
     let before = io.probe(&card.session)?;
     if before.agent.is_none() {
         return Err(DeckError::new(ErrorKind::Invalid, "unsupported-target"));
@@ -3649,7 +3658,7 @@ mod tests {
     }
 
     #[test]
-    fn buffer_queue_requires_saved_trusted_agent_command_in_both_phases() {
+    fn every_card_route_requires_a_saved_trusted_agent_command() {
         assert!(queue_target_supported(&json!({"cmd":"codex"})));
         assert!(queue_target_supported(&json!({"cmd":"claude"})));
         for card in [
@@ -3663,6 +3672,32 @@ mod tests {
             let error = require_queue_target(&card).unwrap_err();
             assert_eq!(error.kind(), ErrorKind::Invalid);
             assert_eq!(error.message(), "unsupported-target");
+            let internal = InternalCard {
+                id: "C1".into(),
+                session: "deck-c1-0001".into(),
+                agent_target: false,
+            };
+            assert_eq!(
+                require_agent_card(&internal).unwrap_err().message(),
+                "unsupported-target"
+            );
+            for kind in ["buffer-add", "buffer-edit", "buffer-delete", "buffer-queue"] {
+                let request = CommandRequest {
+                    id: format!("{kind}-guard"),
+                    kind: kind.into(),
+                    card_id: Some("C1".into()),
+                    expected_generation: ExpectedGeneration::Missing,
+                    expected_revision: Some("0".into()),
+                    payload: Value::Null,
+                    seq: None,
+                };
+                assert_eq!(
+                    validate_buffer_target(&request, &card)
+                        .unwrap_err()
+                        .message(),
+                    "unsupported-target"
+                );
+            }
         }
 
         let handle = "a".repeat(64);

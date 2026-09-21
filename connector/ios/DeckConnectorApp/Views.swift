@@ -203,15 +203,23 @@ struct TaskDetailView: View {
                     noteSaveState = hasNewerDraft ? .savedWithNewerDraft : .saved
                     self.pendingAdd = nil
                 case .rejected:
-                    noteSaveState = .failed(result.code ?? String(localized: "taskDetail.note.rejected"))
+                    noteSaveState = .failed(model.commandFailureMessage(result.code))
                     self.pendingAdd = nil
                 case .accepted, .ambiguous, .delivered:
                     break
                 }
             }
-            if let pendingQueue, let result = receipts[pendingQueue.id], [.applied, .delivered].contains(result.state) {
-                if selection == pendingQueue.selection { selection.removeAll() }
-                self.pendingQueue = nil
+            if let pendingQueue, let result = receipts[pendingQueue.id] {
+                switch result.state {
+                case .applied, .delivered:
+                    if selection == pendingQueue.selection { selection.removeAll() }
+                    self.pendingQueue = nil
+                case .rejected:
+                    model.message = model.commandFailureMessage(result.code)
+                    self.pendingQueue = nil
+                case .accepted, .ambiguous:
+                    break
+                }
             }
         }
     }
@@ -369,7 +377,7 @@ struct TaskDetailView: View {
             }
                 .accessibilityIdentifier("deck.note.save")
                 .buttonStyle(.borderedProminent)
-                .disabled(!pending.isEmpty || pendingAdd != nil || noteSaveState == .pending || model.busyCards.contains(card.id) || addingNote || newNote.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .disabled(!card.canQueue || !pending.isEmpty || pendingAdd != nil || noteSaveState == .pending || model.busyCards.contains(card.id) || addingNote || newNote.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             noteSaveStatus
             if let buffer = model.buffers[card.id] {
                 ForEach(buffer.entries) { entry in
@@ -412,6 +420,9 @@ struct TaskDetailView: View {
                     Text(String(localized: "taskDetail.queue.unavailable")).font(.caption).foregroundStyle(.secondary)
                 }
                 Text(String(localized: "taskDetail.queue.explanation")).font(.caption).foregroundStyle(.secondary)
+            } else if !card.canQueue {
+                Label("Scratchpad unavailable: this is not a desktop-saved Codex or Claude card.", systemImage: "exclamationmark.circle")
+                    .font(.caption).foregroundStyle(.secondary)
             } else { ProgressView() }
         } header: { Text(String(localized: "taskDetail.scratchpad.title")) }
     }
@@ -533,7 +544,7 @@ private struct EditNoteView: View {
                         else { error = "The submitted version was saved. Your newer edits remain in this editor." }
                     case .rejected:
                         self.pendingOperation = nil
-                        error = result.code ?? "The edit was rejected."
+                        error = model.commandFailureMessage(result.code)
                     case .accepted, .ambiguous: break
                     }
                 }

@@ -123,6 +123,7 @@ public final class DeckHTTPClient: NSObject, URLSessionDelegate, URLSessionTaskD
         guard (200..<300).contains(http.statusCode) else {
             let code = (try? JSONDecoder().decode(ErrorEnvelope.self, from: data).error.code) ?? "http-\(http.statusCode)"
             if http.statusCode == 409 || http.statusCode == 412 { throw ConnectorError.conflict(code) }
+            if code == "unsupported-target" { throw ConnectorError.unsupportedTarget }
             throw ConnectorError.transport("Deck host error: \(code)")
         }
         do { return try JSONDecoder().decode(Response.self, from: data) }

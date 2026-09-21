@@ -106,6 +106,9 @@ fn mapped(error_value: &DeckError) -> Resp {
         // A phone build without command sequences cannot be admitted safely.
         return error(StatusCode::UPGRADE_REQUIRED, "upgrade-required");
     }
+    if error_value.message() == "unsupported-target" {
+        return error(StatusCode::BAD_REQUEST, "unsupported-target");
+    }
     match error_value.kind() {
         ErrorKind::Missing => error(StatusCode::NOT_FOUND, "not-found"),
         ErrorKind::Perm => error(StatusCode::UNAUTHORIZED, "unauthorized"),
