@@ -3,7 +3,7 @@
 Date: 2026-09-21. Status words below are evidence labels, not forecasts.
 
 Historical signed-smoke results below apply to protocol v1. They are not proof
-that the current control-protocol-v3 scheme-B UI has been exercised in an
+that the current control-protocol-v4 scheme-B UI has been exercised in an
 installed signed app.
 
 ## Scheme-B remaining-requirement matrix
@@ -90,9 +90,10 @@ section supersedes them where they differ.
 The repository-wide gate results and any environmental blockers are recorded
 in the implementation handoff for the change that introduced this document.
 
-## Current protocol-v3 workspace verification
+## Protocol-v3 workspace verification (historical, before F1–F4)
 
-The 2026-09-21 isolated rerun used synthetic principals, private temporary
+This rerun predates control protocol 4 / state schema 5; its counts are kept
+as recorded. The 2026-09-21 isolated rerun used synthetic principals, private temporary
 directories, independent Unix sockets and test-owned tmux servers. It did not
 start the installed app or read the user's Deck state.
 
@@ -186,6 +187,30 @@ Tunnel or phone was used. Protocol changes were approved by the maintainer.
 Remaining: C2–C5 are unchanged; the iOS Swift Testing target and the app
 target were not built here (no Xcode); signed-app/WebView/Keychain/Tunnel
 behaviour still needs a new signed nightly.
+
+Follow-up on the same protocol (no version change): `deck_session_inspect`
+reports a fenced-but-unpersisted execution revocation as `revoked`
+(`active=false`, no stdin, `EXECUTION_GRANT_REQUIRED`) —
+`inspect_reports_a_pending_execution_revoke_as_revoked`. Phone side: a
+version-1 journal record without `seq` gets one only from a host `404`,
+persisted before its retry, and a `410` is the terminal local state
+`expired` — `CommandJournalTests.swift` (Swift Testing, needs Xcode) and an
+isolated logic check against a fake host through the public
+`DeckConnectorCore` API.
+
+Last pre-nightly patch (no MCP protocol, MCP state or Connector wire/host
+journal change): execution revoke no longer closes the output-sharing gate —
+`execution_revoke_leaves_output_sharing_and_a_running_job_alone` (sharing
+unchanged, completed output still read through its binding, exec
+`EXECUTION_GRANT_REQUIRED`, stdin `STDIN_NOT_AUTHORIZED`, no interrupt or
+stop), `execution_revoke_never_opens_output_sharing`, and the persisted step
+of `inspect_reports_a_pending_execution_revoke_as_revoked`. The phone's
+local journal is schema 3 because it may now hold `expired`: v1/v2 files
+open unchanged and are written as 3 by the next atomic save, any other
+version is refused before its records, and v1/v2 files holding `expired` are
+refused — `CommandJournalTests.swift`, run here through an executing
+macro stand-in (not Swift Testing), plus the b103255 build refusing a v3 file
+without touching it.
 
 ## Ordinary ChatGPT manual acceptance
 

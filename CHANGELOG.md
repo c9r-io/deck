@@ -8,9 +8,19 @@
   and never extend a lease on replay, and release/request always fit in a
   full journal. Phone commands carry a device sequence that the host checks on
   every POST (journal format 3); older phone builds are asked to update.
+  A phone command saved by an older build and still pending gets its sequence
+  only when the host confirms it never arrived; an operation whose outcome the
+  host no longer keeps is marked expired and never sent again.
 - Revoking an execution window now also stops exec and stdin requests that
   were already past their first check, and remote closes re-check takeover,
-  client revocation and disable before admission.
+  client revocation and disable before admission. Session inspect reports the
+  window as revoked from that moment, not only once the revocation is saved.
+  Revoking an execution window no longer pauses output sharing: the output of
+  jobs that already ran stays readable while sharing is on.
+- The phone app's local command journal is now version 3, because it can
+  record an operation as expired. Earlier journals open unchanged and are
+  upgraded on their next save; an older phone build refuses the new file
+  instead of misreading it.
 
 - Failed session polls preserve running cards and queued prompts instead of
   treating an unavailable listing as exited sessions. Invalid working-directory

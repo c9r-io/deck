@@ -31,6 +31,9 @@ public enum ConnectorError: Error, Equatable, LocalizedError, Sendable {
     case revoked
     case conflict(String)
     case commandNotFound
+    /// 410: the host no longer holds this operation's outcome. It may or may
+    /// not have run; it is never sent again.
+    case commandExpired
     case capacityExceeded
     case upgradeRequired
     case transport(String)
@@ -49,6 +52,7 @@ public enum ConnectorError: Error, Equatable, LocalizedError, Sendable {
         case .revoked: "This phone was revoked by the Deck host."
         case let .conflict(code): "The host rejected stale state: \(code). Refresh before retrying."
         case .commandNotFound: "The host has no record of this operation. You may retry its original immutable ID and body."
+        case .commandExpired: "The host no longer keeps this operation's outcome. It may or may not have run, and it will not be sent again."
         case .capacityExceeded: "The local recovery archive has no safe space for another operation while unresolved operations and drafts are preserved."
         case .upgradeRequired: "The Deck host requires a newer version of this app. Update it before sending."
         case let .transport(message): message

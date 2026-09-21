@@ -145,6 +145,9 @@ second time:
   Each accepted create advances it, so concurrent creates are serialized:
   the loser receives `STALE_REQUEST` and re-reads the value.
 
+Neither sequence is an execution grant: advancing one never creates or
+extends an execution window.
+
 Replaying the same id with the same (parsed) arguments returns the recorded
 operation and never repeats its effect; an optional field sent as `null` is
 the same request as omitting it; the same id with different arguments is
@@ -193,13 +196,22 @@ stale runner.
 
 `deck_session_inspect.executionAuthorization.status` is `none`, `active`,
 `expired`, or `revoked` for the authenticated caller and current session
-generation. `expiresAtUnixMs` is Unix epoch milliseconds. The
+generation. `revoked` starts as soon as a local execution revocation has
+fenced, before it is persisted: it means the caller can no longer start exec
+or stdin, not that the revocation's cleanup, the runner barrier or a running
+job has finished — `activeJob` and `foreground` still report the real job,
+and nothing is interrupted. A naturally lapsed grant stays `expired`.
+`expiresAtUnixMs` is Unix epoch milliseconds. The
 `stdinApprovedForActiveGrant` value is only the local grant option: holder,
 epoch, lease, human lock, active-job, and runner checks still apply.
 `outputSharing.sessionGateOpen` is the session-level read gate after human
 takeover/emergency fencing. It is intentionally independent of execution
 authorization and does not by itself prove that a particular job binding
-permits output reads.
+permits output reads. Revoking an execution window does not itself close
+(or open) the session output-sharing gate: exec and stdin stop, while a job's
+retained output stays readable subject to sharing, client authorization,
+session generation and its job binding. Takeover, client revocation and
+disabling MCP keep their own effect on output.
 
 ## Execution, output, and lifecycle
 

@@ -281,7 +281,7 @@ private func request(_ id: String = "op-1", text: String = "hello") -> CommandRe
     #expect(first >= clock, "sequences stay above an earlier installation's")
     #expect(second > first)
     let saved = try #require(await storage.snapshot)
-    #expect(saved.version == 2)
+    #expect(saved.version == 3)
     #expect(saved.nextSequence == second + 1)
     #expect(saved.records.map(\.request.seq) == [first, second], "persisted before the POST")
     // The caller's unsequenced body still identifies the same operation.
@@ -307,6 +307,333 @@ private func request(_ id: String = "op-1", text: String = "hello") -> CommandRe
     #expect(await journal.allRecords().first?.request.seq == nil, "an old body stays immutable")
     let transport = MockTransport(post: .success(CommandResult(id: "next", state: .accepted, code: nil, result: nil)), query: .failure(MockFailure.offline))
     _ = try await journal.submit(request("next"), draftCardID: "card", using: transport)
-    #expect(await storage.snapshot?.version == 2)
+    #expect(await storage.snapshot?.version == 3)
     #expect(await transport.posted.first?.seq != nil)
+}
+
+// ---- Legacy (version-1) records and 410 expiry ----
+
+/// Answers like the host: 404 until admitted, then the admitted state; logs
+/// what the journal had persisted when each POST started.
+private actor RecordingHost: CommandTransport {
+    let storage: ControlledStorage
+    var queryError: ConnectorError? = .commandNotFound
+    var postError: ConnectorError?
+    var queried: [String] = []
+    var posted: [CommandRequest] = []
+    var persistedAtPost: [CommandRecord?] = []
+    init(storage: ControlledStorage) { self.storage = storage }
+    func setQueryError(_ error: ConnectorError?) { queryError = error }
+    func setPostError(_ error: ConnectorError?) { postError = error }
+    func query(id: String) async throws -> CommandResult {
+        queried.append(id)
+        if let queryError { throw queryError }
+        return CommandResult(id: id, state: .accepted, code: nil, result: nil)
+    }
+    func post(command: CommandRequest) async throws -> CommandResult {
+        posted.append(command)
+        persistedAtPost.append(await storage.snapshot?.records.first { $0.id == command.id })
+        if let postError { throw postError }
+        return CommandResult(id: command.id, state: .accepted, code: nil, result: nil)
+    }
+}
+
+private func legacyJournal(_ ids: [String], state: CommandRecord.LocalState = .unknown) -> JournalSnapshot {
+    let records = ids.map { CommandRecord(request: request($0), localState: state, result: nil, createdAt: Date(), updatedAt: Date()) }
+    return JournalSnapshot(binding: binding, records: records)
+}
+
+@Test func legacyRecordGetsASequenceOnlyFromAHost404AndPersistsItBeforeTheRetry() async throws {
+    let storage = ControlledStorage(snapshot: legacyJournal(["legacy"]))
+    let host = RecordingHost(storage: storage)
+    let journal = try await CommandJournal.open(storage: storage, binding: binding)
+    _ = await journal.recover(using: host)
+    let stored = try #require(await storage.snapshot?.records.first)
+    let seq = try #require(stored.request.seq)
+    #expect(stored.localState == .notFound)
+    #expect(stored.request.sequenced(nil) == request("legacy"), "same id and body")
+    #expect(await storage.snapshot?.nextSequence == seq + 1)
+    #expect(await storage.snapshot?.version == 3, "persisted as the v3 local schema")
+    #expect(await host.posted.isEmpty)
+    _ = try await journal.retryNotFound(id: "legacy", using: host)
+    #expect(await host.posted.map(\.seq) == [seq])
+    let atPost = try #require(await host.persistedAtPost.first ?? nil)
+    #expect(atPost.request.seq == seq && atPost.localState == .prepared, "persisted before the POST")
+    // Reopened (crash after the POST): recovered by query, never re-sequenced.
+    let reopened = try await CommandJournal.open(storage: storage, binding: binding)
+    await host.setQueryError(nil)
+    _ = await reopened.recover(using: host)
+    #expect(await storage.snapshot?.records.first?.request.seq == seq)
+    #expect(await storage.snapshot?.nextSequence == seq + 1)
+    #expect(await host.posted.count == 1)
+}
+
+@Test func legacyRecordIsNeverSequencedWithoutAHost404() async throws {
+    for failure in [ConnectorError.transport("offline"), .upgradeRequired, .commandExpired] {
+        let storage = ControlledStorage(snapshot: legacyJournal(["legacy", "stale"]))
+        let host = RecordingHost(storage: storage)
+        await host.setQueryError(failure)
+        let journal = try await CommandJournal.open(storage: storage, binding: binding)
+        _ = await journal.recover(using: host)
+        #expect(await storage.snapshot?.records.allSatisfy { $0.request.seq == nil } ?? true, "\(failure)")
+        await #expect(throws: ConnectorError.conflict("operation-not-confirmed-missing")) {
+            try await journal.retryNotFound(id: "legacy", using: host)
+        }
+        #expect(await host.posted.isEmpty)
+    }
+    // A 404 recorded by an older build is re-queried, never POSTed unsequenced.
+    let storage = ControlledStorage(snapshot: legacyJournal(["stale"], state: .notFound))
+    let host = RecordingHost(storage: storage)
+    let journal = try await CommandJournal.open(storage: storage, binding: binding)
+    await #expect(throws: ConnectorError.conflict("operation-not-confirmed-missing")) {
+        try await journal.retryNotFound(id: "stale", using: host)
+    }
+    _ = await journal.recover(using: host)
+    #expect(await host.queried == ["stale"])
+    #expect(await storage.snapshot?.records.first?.request.seq != nil)
+}
+
+@Test func a426RetryKeepsTheOneSequence() async throws {
+    let storage = ControlledStorage(snapshot: legacyJournal(["legacy"]))
+    let host = RecordingHost(storage: storage)
+    let journal = try await CommandJournal.open(storage: storage, binding: binding)
+    _ = await journal.recover(using: host)
+    let seq = try #require(await storage.snapshot?.records.first?.request.seq)
+    await host.setPostError(.upgradeRequired)
+    for _ in 0..<2 {
+        await #expect(throws: ConnectorError.upgradeRequired) { try await journal.retryNotFound(id: "legacy", using: host) }
+        #expect(await storage.snapshot?.records.first?.localState == .unknown)
+        _ = await journal.recover(using: host)
+    }
+    #expect(await host.posted.map(\.seq) == [seq, seq])
+    #expect(await storage.snapshot?.nextSequence == seq + 1)
+}
+
+@Test func severalLegacyRecordsGetUniqueIncreasingSequences() async throws {
+    let storage = ControlledStorage(snapshot: legacyJournal(["l1", "l2", "l3"]))
+    let host = RecordingHost(storage: storage)
+    _ = try await CommandJournal.open(storage: storage, binding: binding).recover(using: host)
+    let seqs = try #require(await storage.snapshot?.records.map(\.request.seq)).compactMap { $0 }
+    #expect(seqs.count == 3 && seqs == seqs.sorted() && Set(seqs).count == 3)
+    _ = try await CommandJournal.open(storage: storage, binding: binding).recover(using: host)
+    #expect(try #require(await storage.snapshot?.records.map(\.request.seq)).compactMap { $0 } == seqs)
+    #expect(await host.queried.count == 3, "a sequenced notFound is not re-queried")
+}
+
+@Test func a410IsATerminalExpiredStateAcrossReload() async throws {
+    let storage = ControlledStorage()
+    let host = RecordingHost(storage: storage)
+    await host.setPostError(.transport("offline"))
+    let journal = try await CommandJournal.open(storage: storage, binding: binding)
+    do { _ = try await journal.submit(request(), draftCardID: "card", using: host) } catch { }
+    let seq = await storage.snapshot?.records.first?.request.seq
+    await host.setQueryError(.commandExpired)
+    _ = await journal.recover(using: host)
+    _ = await journal.recover(using: host)
+    let record = try #require(await journal.allRecords().first)
+    #expect(record.localState == .expired)
+    #expect(record.localState != .resolved && record.localState != .notFound && record.result == nil)
+    #expect(record.request.seq == seq)
+    #expect(await storage.snapshot?.version == 3, "`expired` is only ever written as v3")
+    let reopened = try await CommandJournal.open(storage: storage, binding: binding)
+    #expect(await reopened.allRecords().first?.localState == .expired)
+    _ = await reopened.recover(using: host)
+    #expect(await host.queried == ["op-1"], "one GET, none after expiry or reload")
+    #expect(await host.posted.count == 1)
+    await #expect(throws: ConnectorError.conflict("operation-not-confirmed-missing")) {
+        try await reopened.retryNotFound(id: "op-1", using: host)
+    }
+}
+
+@Test func expiredRecordsLeaveTheReserveAndArePrunedButAmbiguousStays() async throws {
+    let now = Date()
+    var records = [CommandRecord(request: request("ambiguous"), localState: .expired, result: CommandResult(id: "ambiguous", state: .ambiguous, code: "delivery-unknown", result: nil), createdAt: now, updatedAt: now)]
+    records += (1..<ConnectorLimits.commandJournalEntries).map {
+        CommandRecord(request: request("expired-\($0)"), localState: .expired, result: nil, createdAt: now, updatedAt: now)
+    }
+    let storage = ControlledStorage(snapshot: JournalSnapshot(binding: binding, records: records))
+    let journal = try await CommandJournal.open(storage: storage, binding: binding)
+    _ = try await journal.submit(request("new"), draftCardID: nil, using: RecordingHost(storage: storage))
+    let saved = await journal.allRecords()
+    #expect(saved.count == ConnectorLimits.commandJournalEntries)
+    #expect(saved.contains { $0.id == "new" } && saved.contains { $0.id == "ambiguous" })
+    #expect(!saved.contains { $0.id == "expired-1" })
+}
+
+// ---- Local journal schema v3 (the file an older build wrote, on disk) ----
+
+private func scratchJournalDirectory() throws -> URL {
+    let url = FileManager.default.temporaryDirectory.appendingPathComponent("deck-journal-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+    return url
+}
+
+/// A record exactly as `JSONEncoder.deck` wrote it (sorted keys, ISO-8601).
+private func recordJSON(_ id: String, _ state: String, seq: UInt64?, result: String? = nil) -> String {
+    let seqField = seq.map { #","seq":\#($0)"# } ?? ""
+    let resultField = result.map { #""result":\#($0),"# } ?? ""
+    return #"{"createdAt":"2026-09-01T00:00:00Z","localState":"\#(state)","request":{"cardId":"card","expectedGeneration":"generation-1","id":"\#(id)","kind":"send-message","payload":{"text":"hello"}\#(seqField)},\#(resultField)"updatedAt":"2026-09-01T00:00:01Z"}"#
+}
+
+private func journalJSON(version: Int, records: [String], nextSequence: UInt64?) -> String {
+    let next = nextSequence.map { #","nextSequence":\#($0)"# } ?? ""
+    return #"{"binding":{"deviceID":"device","hostID":"host"},"drafts":{"card":{"cardID":"card","expectedGeneration":"generation-1","text":"draft","updatedAt":"2026-09-01T00:00:00Z"}}\#(next),"records":[\#(records.joined(separator: ","))],"version":\#(version)}"#
+}
+
+private func writeJournal(_ json: String, in directory: URL) throws -> Data {
+    let data = Data(json.utf8)
+    try data.write(to: directory.appendingPathComponent("journal.json"))
+    return data
+}
+
+private func fileBytes(_ directory: URL) throws -> Data { try Data(contentsOf: directory.appendingPathComponent("journal.json")) }
+
+private func fileVersion(_ directory: URL) throws -> Int {
+    let object = try JSONSerialization.jsonObject(with: fileBytes(directory)) as? [String: Any]
+    guard let version = object?["version"] as? Int else { throw ConnectorError.invalidResponse }
+    return version
+}
+
+private let ambiguousResult = #"{"code":"delivery-unknown","id":"ambiguous","state":"ambiguous"}"#
+private let appliedResult = #"{"id":"resolved","state":"applied"}"#
+
+@Test func versionOneFileMigratesLazilyToVersionThree() async throws {
+    let directory = try scratchJournalDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let original = try writeJournal(journalJSON(version: 1, records: [
+        recordJSON("legacy", "unknown", seq: nil),
+        recordJSON("resolved", "resolved", seq: nil, result: appliedResult),
+    ], nextSequence: nil), in: directory)
+    let storage = FileJournalStorage(directory: directory)
+    let journal = try await CommandJournal.open(storage: storage, binding: binding)
+    // Lazy: opening reads and upgrades in memory, and writes nothing.
+    #expect(try fileBytes(directory) == original)
+    let records = await journal.allRecords()
+    #expect(records.map(\.id) == ["legacy", "resolved"])
+    #expect(records.map(\.localState) == [.unknown, .resolved])
+    #expect(records.allSatisfy { $0.request.seq == nil }, "a v1 body stays unsequenced")
+    #expect(records[0].request == request("legacy"))
+    #expect(records[1].result?.state == .applied)
+    #expect(await journal.draft(for: "card")?.text == "draft")
+    // The next save writes version 3 with the records unchanged.
+    try await journal.saveDraft(MessageDraft(cardID: "other", text: "x", expectedGeneration: nil))
+    #expect(try fileVersion(directory) == 3)
+    let saved = try #require(try await storage.load())
+    #expect(saved.version == 3 && saved.records == records)
+    #expect(saved.nextSequence == 1)
+}
+
+@Test func versionTwoFileMigratesWithoutChangingAnyRecord() async throws {
+    let directory = try scratchJournalDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let original = try writeJournal(journalJSON(version: 2, records: [
+        recordJSON("prepared", "prepared", seq: 4001),
+        recordJSON("awaiting", "awaitingFinal", seq: 4002),
+        recordJSON("unknown", "unknown", seq: 4003),
+        recordJSON("ambiguous", "ambiguous", seq: 4004, result: ambiguousResult),
+        recordJSON("notFound", "notFound", seq: 4005),
+        recordJSON("resolved", "resolved", seq: 4006, result: appliedResult),
+        recordJSON("legacy", "unknown", seq: nil),
+    ], nextSequence: 5000), in: directory)
+    let storage = FileJournalStorage(directory: directory)
+    let journal = try await CommandJournal.open(storage: storage, binding: binding)
+    #expect(try fileBytes(directory) == original, "opening never rewrites")
+    let records = await journal.allRecords()
+    #expect(records.map(\.id) == ["prepared", "awaiting", "unknown", "ambiguous", "notFound", "resolved", "legacy"])
+    #expect(records.map(\.localState) == [.prepared, .awaitingFinal, .unknown, .ambiguous, .notFound, .resolved, .unknown])
+    #expect(records.map(\.request.seq) == [4001, 4002, 4003, 4004, 4005, 4006, nil])
+    #expect(!records.contains { $0.localState == .expired }, "nothing becomes expired by migration")
+    #expect(records[3].result?.state == .ambiguous && records[3].result?.code == "delivery-unknown")
+    #expect(records.allSatisfy { $0.request.sequenced(nil) == request($0.id) }, "ids and bodies unchanged")
+    try await journal.saveDraft(MessageDraft(cardID: "other", text: "x", expectedGeneration: nil))
+    #expect(try fileVersion(directory) == 3)
+    let saved = try #require(try await storage.load())
+    #expect(saved.records == records && saved.nextSequence == 5000)
+    #expect(saved.drafts["card"]?.text == "draft")
+
+    // Recovery after migration: a host 404 sequences only the unsequenced
+    // legacy record; ambiguous stays ambiguous with its own sequence.
+    let host = RecordingHost(storage: ControlledStorage())
+    _ = await journal.recover(using: host)
+    let recovered = try #require(try await storage.load())
+    let byID = Dictionary(uniqueKeysWithValues: recovered.records.map { ($0.id, $0) })
+    #expect(byID["ambiguous"]?.localState == .ambiguous && byID["ambiguous"]?.request.seq == 4004)
+    #expect(byID["ambiguous"]?.result?.state == .ambiguous)
+    #expect(byID["resolved"]?.localState == .resolved && byID["resolved"]?.request.seq == 4006)
+    for id in ["prepared", "awaiting", "unknown"] { #expect(byID[id]?.localState == .notFound, "\(id)") }
+    #expect(["prepared", "awaiting", "unknown", "notFound"].map { byID[$0]?.request.seq } == [4001, 4002, 4003, 4005])
+    let legacySeq = try #require(byID["legacy"]?.request.seq)
+    #expect(legacySeq >= 5000 && recovered.nextSequence == legacySeq + 1)
+    #expect(!recovered.records.contains { $0.localState == .expired })
+    #expect(recovered.version == 3)
+    #expect(await host.posted.isEmpty)
+}
+
+@Test func versionThreeExpiredReloadsWithoutAnyRequest() async throws {
+    let directory = try scratchJournalDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let original = try writeJournal(journalJSON(version: 3, records: [recordJSON("gone", "expired", seq: 4100)], nextSequence: 4101), in: directory)
+    let storage = FileJournalStorage(directory: directory)
+    let journal = try await CommandJournal.open(storage: storage, binding: binding)
+    let host = RecordingHost(storage: ControlledStorage())
+    _ = await journal.recover(using: host)
+    await #expect(throws: ConnectorError.conflict("operation-not-confirmed-missing")) {
+        try await journal.retryNotFound(id: "gone", using: host)
+    }
+    #expect(await host.queried.isEmpty, "no GET")
+    #expect(await host.posted.isEmpty, "no POST")
+    let record = try #require(await journal.allRecords().first)
+    #expect(record.localState == .expired && record.request.seq == 4100)
+    #expect(try fileBytes(directory) == original, "nothing to persist, no new seq")
+}
+
+@Test func aNewerJournalVersionIsRefusedBeforeItsRecordsAndLeftUntouched() async throws {
+    for version in [0, 4, 99] {
+        for state in ["unknown", "superseded"] {
+            let directory = try scratchJournalDirectory()
+            defer { try? FileManager.default.removeItem(at: directory) }
+            let original = try writeJournal(journalJSON(version: version, records: [recordJSON("op", state, seq: 7)], nextSequence: 8), in: directory)
+            await #expect(throws: ConnectorError.conflict("journal-version-unsupported"), "v\(version) \(state)") {
+                _ = try await CommandJournal.open(storage: FileJournalStorage(directory: directory), binding: binding)
+            }
+            #expect(try fileBytes(directory) == original)
+        }
+    }
+}
+
+@Test func anUnknownOrOutOfVersionStateFailsClosed() async throws {
+    // v3 with a state it does not define; v1/v2 never wrote `expired`.
+    for (version, state) in [(3, "vanished"), (2, "expired"), (1, "expired")] {
+        let directory = try scratchJournalDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let original = try writeJournal(journalJSON(version: version, records: [recordJSON("keep", "unknown", seq: 6), recordJSON("odd", state, seq: 7)], nextSequence: 8), in: directory)
+        var refused = false
+        do { _ = try await CommandJournal.open(storage: FileJournalStorage(directory: directory), binding: binding) } catch { refused = true }
+        #expect(refused, "v\(version) \(state) was opened")
+        #expect(try fileBytes(directory) == original, "no record was dropped or rewritten")
+    }
+}
+
+@Test func aFailedMigrationWriteLeavesTheVersionTwoFileIntact() async throws {
+    let directory = try scratchJournalDirectory()
+    defer {
+        try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+        try? FileManager.default.removeItem(at: directory)
+    }
+    let original = try writeJournal(journalJSON(version: 2, records: [recordJSON("pending", "unknown", seq: 4003)], nextSequence: 5000), in: directory)
+    let storage = FileJournalStorage(directory: directory)
+    let journal = try await CommandJournal.open(storage: storage, binding: binding)
+    // The atomic replacement cannot land in a read-only directory.
+    try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: directory.path)
+    await #expect(throws: (any Error).self) {
+        try await journal.saveDraft(MessageDraft(cardID: "other", text: "x", expectedGeneration: nil))
+    }
+    #expect(try fileBytes(directory) == original, "still the whole v2 file")
+    #expect(await journal.draft(for: "other") == nil, "memory did not commit")
+    let entries = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+    #expect(entries == ["journal.json"], "no partial file left behind: \(entries)")
+    try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+    try await journal.saveDraft(MessageDraft(cardID: "other", text: "x", expectedGeneration: nil))
+    #expect(try fileVersion(directory) == 3)
+    #expect(try await storage.load()?.records.first?.request.seq == 4003)
 }

@@ -40,7 +40,11 @@
 //! in-memory fence BEFORE waiting for the delivery lock; every side effect
 //! re-checks it under that lock as its last step (`emergency_denial`,
 //! `emergency_fence_error`), by operation class: an execution revocation
-//! refuses exec and stdin, never reads, interrupts or closes.
+//! refuses exec and stdin, never reads, interrupts or closes, and inspect
+//! reports its session's grant `revoked` from the fence on (read before the
+//! grants, so the view never returns to `active` while it persists). It does
+//! not itself change the session's output-sharing switch either way; reads
+//! stay gated by sharing, client authorization, generation and job binding.
 //! Takeover closes existing job output to MCP for good and gives the pane
 //! keyboard (and the ^C stop key) to the human; it starts no shell. Return to
 //! MCP needs no execution grant and restores no holder, lease or sharing: it
@@ -474,6 +478,7 @@ impl Runtime {
 /// released. Compiled out of every non-test build.
 #[cfg(test)]
 mod pause {
+    use crate::sync::LockRecover;
     use std::collections::HashMap;
     use std::path::{Path, PathBuf};
     use std::sync::mpsc::{channel, Receiver, Sender};
@@ -492,14 +497,13 @@ mod pause {
         let (entered_tx, entered_rx) = channel();
         let (release_tx, release_rx) = channel();
         points()
-            .lock()
-            .unwrap()
+            .lock_or_recover()
             .insert((path.to_owned(), point), (entered_tx, release_rx));
         (entered_rx, release_tx)
     }
 
     pub(super) fn reach(path: &Path, point: &'static str) {
-        let slot = points().lock().unwrap().remove(&(path.to_owned(), point));
+        let slot = points().lock_or_recover().remove(&(path.to_owned(), point));
         if let Some((entered, release)) = slot {
             entered.send(()).unwrap();
             release
@@ -2289,16 +2293,25 @@ fn inspect(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<Value
         .map_err(map_error)?
         .map_err(map_error)?;
     let runner = probe_runner(runtime, &session);
-    let emergency_human = runtime
-        .emergency
-        .lock_or_recover()
-        .human_sessions
-        .contains(&session.session_id);
+    // The execution fence is read BEFORE the grants: a revocation that has
+    // fenced but not yet persisted already refuses exec and stdin, so its
+    // grant reads `revoked` here, and once it persists the grant itself
+    // reads `revoked` — the view never returns to `active` in between.
+    let (emergency_human, execution_fenced) = {
+        let emergency = runtime.emergency.lock_or_recover();
+        (
+            emergency.human_sessions.contains(&session.session_id),
+            emergency.execution_fenced(&session.session_id),
+        )
+    };
     let (authorization_status, authorization_expiry, stdin_approved) = runtime
         .read(|doc| {
             Ok(
                 match execution_authorization(runtime, doc, client_id, &session) {
                     ExecutionAuthorization::None => ("none", None, false),
+                    ExecutionAuthorization::Active(grant) if execution_fenced => {
+                        ("revoked", Some(grant.expires_at), false)
+                    }
                     ExecutionAuthorization::Active(grant) => {
                         ("active", Some(grant.expires_at), grant.allow_stdin)
                     }
@@ -2336,11 +2349,10 @@ fn inspect(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<Value
         Some("CONTROL_LEASE_EXPIRED")
     } else if !job.is_null() {
         Some("SESSION_BUSY")
+    } else if authorization_status != "active" {
+        Some("EXECUTION_GRANT_REQUIRED")
     } else {
-        runtime
-            .read(|doc| active_execution_grant(runtime, doc, client_id, &session, false).is_err())
-            .map_err(map_error)?
-            .then_some("EXECUTION_GRANT_REQUIRED")
+        None
     };
     // Terminal screen content is deliberately NOT returned: output reaches a
     // client only through deck_job_read, gated per job binding.
@@ -4124,13 +4136,8 @@ fn execution_revoke(runtime: &Runtime, session_id: &str) -> Result<(), DeckError
                     ..Default::default()
                 },
             )?;
-            if let Some(managed) = doc
-                .sessions
-                .iter_mut()
-                .find(|managed| managed.session_id == session.session_id)
-            {
-                managed.output_shared = false;
-            }
+            // Output sharing is a separate local switch: revoking execution
+            // leaves it exactly as it was.
             Ok((session, revoked))
         });
     {
@@ -7494,6 +7501,192 @@ mod tests {
         grant_window(&runtime);
         let fresh = route(&runtime, exec_request("exec_fresh", 1));
         assert_eq!(fresh["state"], "exited", "{fresh}");
+        drop(runner);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    fn inspect_view(runtime: &Runtime) -> Value {
+        let value = route(
+            runtime,
+            request(
+                "deck_session_inspect",
+                json!({"session_id":"mcp_a","holder_id":"holder_a"}),
+            ),
+        );
+        assert_eq!(value["ok"], true, "{value}");
+        value
+    }
+
+    #[test]
+    fn inspect_reports_a_pending_execution_revoke_as_revoked() {
+        let (runtime, runner, root) = fixture("inspect-fence", "svc_test");
+        grant_window(&runtime);
+        let executed = route(&runtime, exec_request("exec_job", 1));
+        let job_id = executed["jobId"].as_str().unwrap().to_owned();
+        let before = inspect_view(&runtime);
+        assert_eq!(before["executionAuthorization"]["active"], true, "{before}");
+
+        // C1/C2: the fence is set, the grant revocation is not persisted yet.
+        let (entered, release) = pause::arm(&runtime.path, "revoke-fenced");
+        let revoking = runtime.clone();
+        let revoke_thread = std::thread::spawn(move || execution_revoke(&revoking, "M1"));
+        entered.recv_timeout(Duration::from_secs(10)).unwrap();
+        runtime
+            .read(|doc| assert!(doc.execution_grants[0].revoked_at.is_none()))
+            .unwrap();
+        let pending = inspect_view(&runtime);
+        let authorization = &pending["executionAuthorization"];
+        assert_eq!(authorization["status"], "revoked", "{pending}");
+        assert_eq!(authorization["active"], false);
+        assert_eq!(authorization["stdinApprovedForActiveGrant"], false);
+        assert_eq!(
+            authorization["expiresAtUnixMs"],
+            before["executionAuthorization"]["expiresAtUnixMs"]
+        );
+        assert_eq!(
+            pending["mayStartNextJobReason"], "EXECUTION_GRANT_REQUIRED",
+            "{pending}"
+        );
+        assert_eq!(pending["outputSharing"], before["outputSharing"]);
+        assert_eq!(pending["activeJob"], before["activeJob"]);
+        assert_eq!(pending["foreground"], before["foreground"]);
+        let exec = route(&runtime, exec_request("exec_pending", 1));
+        assert_eq!(exec["error"]["code"], "EXECUTION_GRANT_REQUIRED", "{exec}");
+        let input = route(&runtime, input_request("input_pending", &job_id));
+        assert_eq!(
+            input["error"]["code"], "EXECUTION_GRANT_REQUIRED",
+            "{input}"
+        );
+        assert_eq!(runner.count("interrupt"), 0, "nothing was interrupted");
+
+        // C3: persisted, fence lowered — still revoked, never active again.
+        release.send(()).unwrap();
+        revoke_thread.join().unwrap().unwrap();
+        assert!(!execution_fenced(&runtime, "mcp_a"));
+        let persisted = inspect_view(&runtime);
+        assert_eq!(persisted["executionAuthorization"]["status"], "revoked");
+        assert_eq!(persisted["executionAuthorization"]["active"], false);
+        assert_eq!(persisted["outputSharing"], before["outputSharing"]);
+        assert_eq!(persisted["outputSharing"]["sessionGateOpen"], true);
+
+        // C4: a later local approval is a new, active grant.
+        grant_window(&runtime);
+        let renewed = inspect_view(&runtime);
+        assert_eq!(renewed["executionAuthorization"]["status"], "active");
+        assert_eq!(
+            renewed["executionAuthorization"]["stdinApprovedForActiveGrant"],
+            true
+        );
+        let fresh = route(&runtime, exec_request("exec_fresh", 1));
+        assert_eq!(fresh["state"], "exited", "{fresh}");
+
+        // C5: a naturally expired grant stays `expired` under a pending fence.
+        runtime
+            .write(|doc| {
+                for grant in &mut doc.execution_grants {
+                    grant.expires_at = grant.issued_at;
+                }
+                Ok(())
+            })
+            .unwrap();
+        let (entered, release) = pause::arm(&runtime.path, "revoke-fenced");
+        let revoking = runtime.clone();
+        let revoke_thread = std::thread::spawn(move || execution_revoke(&revoking, "M1"));
+        entered.recv_timeout(Duration::from_secs(10)).unwrap();
+        let expired = inspect_view(&runtime);
+        assert_eq!(expired["executionAuthorization"]["status"], "expired");
+        assert_eq!(expired["executionAuthorization"]["active"], false);
+        release.send(()).unwrap();
+        revoke_thread.join().unwrap().unwrap();
+        drop(runner);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    fn read_job(runtime: &Runtime, job_id: &str) -> Value {
+        route(
+            runtime,
+            request("deck_job_read", json!({"job_id":job_id,"max_bytes":1024})),
+        )
+    }
+
+    #[test]
+    fn execution_revoke_leaves_output_sharing_and_a_running_job_alone() {
+        let (runtime, runner, root) = fixture("revoke-sharing", "svc_test");
+        grant_window(&runtime);
+        let executed = route(&runtime, exec_request("exec_job", 1));
+        let job_id = executed["jobId"].as_str().unwrap().to_owned();
+        // The job is running at the runner, and stdin reaches it: the later
+        // denial is the revocation, not JOB_NOT_RUNNING.
+        runner.busy.store(true, Ordering::SeqCst);
+        let baseline = route(&runtime, input_request("input_base", &job_id));
+        assert_eq!(baseline["state"], "committed", "{baseline}");
+        let before = inspect_view(&runtime);
+        assert_eq!(before["executionAuthorization"]["active"], true);
+        assert_eq!(before["outputSharing"]["sessionGateOpen"], true);
+        assert_eq!(before["activeJob"]["state"], "running", "{before}");
+        let (exec_count, input_count) = (runner.count("exec"), runner.count("input"));
+
+        execution_revoke(&runtime, "M1").unwrap();
+
+        let after = inspect_view(&runtime);
+        let authorization = &after["executionAuthorization"];
+        assert_eq!(authorization["status"], "revoked", "{after}");
+        assert_eq!(authorization["active"], false);
+        assert_eq!(authorization["stdinApprovedForActiveGrant"], false);
+        assert_eq!(after["outputSharing"], before["outputSharing"], "{after}");
+        assert!(session_state(&runtime).output_shared);
+        // A1: the job's output is read through its binding, not the grant.
+        runtime
+            .read(|doc| {
+                let binding = doc.jobs.iter().find(|job| job.job_id == job_id).unwrap();
+                let grant = doc
+                    .execution_grants
+                    .iter()
+                    .find(|grant| grant.grant_id == binding.grant_id)
+                    .unwrap();
+                assert!(grant.revoked_at.is_some(), "its grant is revoked");
+            })
+            .unwrap();
+        let read = read_job(&runtime, &job_id);
+        assert_eq!(read["ok"], true, "{read}");
+        assert_eq!(read["output"], "done\n", "{read}");
+        assert_eq!(read["gap"], false);
+        assert_eq!(read["droppedBytes"], 0);
+        // A2/A3: sharing grants no execution authority.
+        let exec = route(&runtime, exec_request("exec_after", 1));
+        assert_eq!(exec["error"]["code"], "EXECUTION_GRANT_REQUIRED", "{exec}");
+        // Once persisted, stdin is refused by the job's own (revoked) grant.
+        let input = route(&runtime, input_request("input_after", &job_id));
+        assert_eq!(input["error"]["code"], "STDIN_NOT_AUTHORIZED", "{input}");
+        assert_eq!(runner.count("exec"), exec_count);
+        assert_eq!(runner.count("input"), input_count);
+        // A4: revocation is not an interrupt.
+        assert_eq!(runner.count("interrupt"), 0);
+        assert_eq!(runner.count("stop"), 0);
+        assert_eq!(after["activeJob"], before["activeJob"]);
+        assert_eq!(after["foreground"], "managed-job");
+        runner.busy.store(false, Ordering::SeqCst);
+        drop(runner);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn execution_revoke_never_opens_output_sharing() {
+        let (runtime, runner, root) = fixture("revoke-unshared", "svc_test");
+        super::execution_grant(&runtime, "mcp_a".into(), Some(60_000), true, false).unwrap();
+        let executed = route(&runtime, exec_request("exec_job", 1));
+        let job_id = executed["jobId"].as_str().unwrap().to_owned();
+        assert_eq!(
+            inspect_view(&runtime)["outputSharing"]["sessionGateOpen"],
+            false
+        );
+        execution_revoke(&runtime, "M1").unwrap();
+        let after = inspect_view(&runtime);
+        assert_eq!(after["executionAuthorization"]["status"], "revoked");
+        assert_eq!(after["outputSharing"]["sessionGateOpen"], false, "{after}");
+        assert!(!session_state(&runtime).output_shared);
+        let read = read_job(&runtime, &job_id);
+        assert_eq!(read["error"]["code"], "PERMISSION_DENIED", "{read}");
         drop(runner);
         std::fs::remove_dir_all(root).unwrap();
     }

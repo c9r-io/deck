@@ -12,8 +12,14 @@ public struct JournalBinding: Codable, Equatable, Sendable {
 }
 
 public struct CommandRecord: Codable, Equatable, Sendable, Identifiable {
-    public enum LocalState: String, Codable, Sendable { case prepared, unknown, notFound, awaitingFinal, resolved, ambiguous }
-    public let request: CommandRequest
+    /// `expired`: the host answered 410 — the outcome left its retained
+    /// history. Terminal: never queried, re-sent or re-sequenced, and it says
+    /// nothing about whether the command ran. Only a version-3 journal may
+    /// hold it (see `JournalSnapshot.currentVersion`).
+    public enum LocalState: String, Codable, Sendable { case prepared, unknown, notFound, awaitingFinal, resolved, ambiguous, expired }
+    /// Immutable except for one step: a version-1 record without `seq` gets
+    /// one when the host proves its id absent (see `CommandJournal.recover`).
+    public internal(set) var request: CommandRequest
     public var localState: LocalState
     public var result: CommandResult?
     public let createdAt: Date
@@ -36,9 +42,13 @@ public struct MessageDraft: Codable, Equatable, Sendable {
 }
 
 public struct JournalSnapshot: Codable, Equatable, Sendable {
-    /// 2 adds `nextSequence`; a version-1 journal is upgraded on open and
-    /// written as version 2 on its next save.
-    public static let currentVersion = 2
+    /// The phone's local file only, not the Connector wire or host journal
+    /// format. 2 adds `nextSequence`; 3 adds the `expired` record state. A
+    /// version-1 or -2 journal is upgraded in memory on open, with every record
+    /// unchanged, and written as version 3 by its next save (atomically, so a
+    /// failed save leaves the old file whole). Any other version is refused
+    /// before its records are read, and the file is left untouched.
+    public static let currentVersion = 3
     public let version: Int
     public let binding: JournalBinding
     public var records: [CommandRecord]
@@ -59,8 +69,12 @@ public struct JournalSnapshot: Codable, Equatable, Sendable {
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         version = try values.decode(Int.self, forKey: .version)
+        guard (1...Self.currentVersion).contains(version) else { throw ConnectorError.conflict("journal-version-unsupported") }
         binding = try values.decode(JournalBinding.self, forKey: .binding)
         records = try values.decode([CommandRecord].self, forKey: .records)
+        if version < 3, records.contains(where: { $0.localState == .expired }) {
+            throw DecodingError.dataCorruptedError(forKey: .records, in: values, debugDescription: "expired before journal version 3")
+        }
         drafts = try values.decode([String: MessageDraft].self, forKey: .drafts)
         nextSequence = try values.decodeIfPresent(UInt64.self, forKey: .nextSequence) ?? 1
     }
@@ -113,10 +127,11 @@ public actor CommandJournal {
     public static func open(storage: any JournalStorage, binding: JournalBinding) async throws -> CommandJournal {
         let loaded = try await storage.load()
         if let loaded {
-            guard (1...JournalSnapshot.currentVersion).contains(loaded.version), loaded.binding == binding else { throw ConnectorError.conflict("journal-binding-mismatch") }
+            guard (1...JournalSnapshot.currentVersion).contains(loaded.version) else { throw ConnectorError.conflict("journal-version-unsupported") }
+            guard loaded.binding == binding else { throw ConnectorError.conflict("journal-binding-mismatch") }
             guard loaded.records.count <= ConnectorLimits.commandJournalEntries else { throw ConnectorError.capacityExceeded }
             // Version 1 records carry no sequence and keep their immutable
-            // bodies; the upgrade only adds the counter.
+            // bodies; the upgrade only adds the counter and the version.
             let upgraded = JournalSnapshot(binding: loaded.binding, records: loaded.records, drafts: loaded.drafts, nextSequence: loaded.nextSequence)
             return CommandJournal(storage: storage, state: upgraded)
         }
@@ -171,7 +186,7 @@ public actor CommandJournal {
         do {
             result = try await transport.post(command: request)
         } catch {
-            try? await persistState(id: request.id, localState: .unknown, result: nil, draftCardID: nil)
+            try? await recordPostFailure(id: request.id, error: error)
             throw error
         }
         guard result.id == request.id else {
@@ -182,12 +197,22 @@ public actor CommandJournal {
         return await record(id: request.id)?.result ?? result
     }
 
-    /// Explicitly retries an operation only after the host has proved that its original ID is absent.
+    /// Explicitly retries an operation only after the host has proved that its
+    /// original ID is absent, with its original ID, body and sequence. The
+    /// record is `prepared` again before the POST, so a crash after it is
+    /// recovered by query, never by another POST.
     public func retryNotFound(id: String, using transport: any CommandTransport) async throws -> CommandResult {
-        guard let record = await record(id: id), record.localState == .notFound else {
+        guard let record = await record(id: id), record.localState == .notFound, record.request.seq != nil else {
             throw ConnectorError.conflict("operation-not-confirmed-missing")
         }
-        let result = try await transport.post(command: record.request)
+        try await persistState(id: id, localState: .prepared, result: nil, draftCardID: nil)
+        let result: CommandResult
+        do {
+            result = try await transport.post(command: record.request)
+        } catch {
+            try? await recordPostFailure(id: id, error: error)
+            throw error
+        }
         guard result.id == id else { throw ConnectorError.invalidResponse }
         try await persistState(id: id, localState: localState(for: result), result: result, draftCardID: record.request.cardId)
         return await self.record(id: id)?.result ?? result
@@ -203,8 +228,10 @@ public actor CommandJournal {
                 try await persistState(id: record.id, localState: localState(for: result), result: result, draftCardID: record.request.cardId)
                 outcomes[record.id] = .success(result)
             } catch {
-                if error as? ConnectorError == .commandNotFound {
-                    try? await persistState(id: record.id, localState: .notFound, result: nil, draftCardID: nil)
+                switch error as? ConnectorError {
+                case .commandNotFound: try? await persistNotFound(id: record.id)
+                case .commandExpired: try? await persistExpired(id: record.id)
+                default: break
                 }
                 outcomes[record.id] = .failure(error)
             }
@@ -226,16 +253,57 @@ public actor CommandJournal {
             throw ConnectorError.transport("The original operation is pending recovery.")
         }
         let now = Date()
-        let clock = UInt64(max(0, (now.timeIntervalSince1970 * 1000).rounded(.down)))
-        let seq = max(state.nextSequence, clock)
-        let sequenced = request.sequenced(seq)
         var candidate = state
-        candidate.nextSequence = seq + 1
+        let sequenced = request.sequenced(Self.allocateSequence(&candidate, now: now))
         candidate.records.append(CommandRecord(request: sequenced, localState: .prepared, result: nil, createdAt: now, updatedAt: now))
         protectedResultIDs.insert(request.id)
         do { try await persistAndCommit(candidate, protecting: request.id) }
         catch { protectedResultIDs.remove(request.id); throw error }
         return (nil, sequenced)
+    }
+
+    private static func allocateSequence(_ snapshot: inout JournalSnapshot, now: Date) -> UInt64 {
+        let clock = UInt64(max(0, (now.timeIntervalSince1970 * 1000).rounded(.down)))
+        let seq = max(snapshot.nextSequence, clock)
+        snapshot.nextSequence = seq + 1
+        return seq
+    }
+
+    /// A 404 from the host proves the id was never admitted. A version-1
+    /// record has no `seq` (the host refuses it with 426), so this — and only
+    /// this — is where it gets one: in the same persisted write as `notFound`,
+    /// before any retry can POST it. ID and body stay the same.
+    private func persistNotFound(id: String) async throws {
+        await acquireTransaction()
+        defer { releaseTransaction() }
+        var candidate = state
+        guard let index = candidate.records.firstIndex(where: { $0.id == id }) else { throw ConnectorError.invalidResponse }
+        let record = candidate.records[index]
+        if [.resolved, .expired].contains(record.localState) || record.result?.state == .ambiguous { return }
+        if record.request.seq == nil {
+            candidate.records[index].request = record.request.sequenced(Self.allocateSequence(&candidate, now: Date()))
+        }
+        candidate.records[index].localState = .notFound
+        candidate.records[index].result = nil
+        candidate.records[index].updatedAt = Date()
+        try await persistAndCommit(candidate, protecting: id)
+    }
+
+    /// A 410 from the host: terminal, keeping whatever result was known.
+    private func persistExpired(id: String) async throws {
+        await acquireTransaction()
+        defer { releaseTransaction() }
+        var candidate = state
+        guard let index = candidate.records.firstIndex(where: { $0.id == id }) else { throw ConnectorError.invalidResponse }
+        if [.resolved, .expired].contains(candidate.records[index].localState) { return }
+        candidate.records[index].localState = .expired
+        candidate.records[index].updatedAt = Date()
+        try await persistAndCommit(candidate, protecting: id)
+    }
+
+    private func recordPostFailure(id: String, error: Error) async throws {
+        if error as? ConnectorError == .commandExpired { try await persistExpired(id: id) }
+        else { try await persistState(id: id, localState: .unknown, result: nil, draftCardID: nil) }
     }
 
     private func persistState(id: String, localState: CommandRecord.LocalState, result: CommandResult?, draftCardID: String?) async throws {
@@ -265,7 +333,12 @@ public actor CommandJournal {
     private func recoverableRecords() async -> [CommandRecord] {
         await acquireTransaction()
         defer { releaseTransaction() }
-        return state.records.filter { [.prepared, .unknown, .awaitingFinal, .ambiguous].contains($0.localState) }
+        // A `notFound` without `seq` is a version-1 record, or one whose 404
+        // came from an older build: it is queried again for fresh proof.
+        return state.records.filter {
+            [.prepared, .unknown, .awaitingFinal, .ambiguous].contains($0.localState)
+                || ($0.localState == .notFound && $0.request.seq == nil)
+        }
     }
 
     private func record(id: String) async -> CommandRecord? {
@@ -286,7 +359,8 @@ public actor CommandJournal {
         var candidate = proposed
         while !fits(candidate) {
             guard let index = candidate.records.firstIndex(where: {
-                $0.localState == .resolved && $0.id != id && !protectedResultIDs.contains($0.id)
+                [.resolved, .expired].contains($0.localState) && $0.result?.state != .ambiguous
+                    && $0.id != id && !protectedResultIDs.contains($0.id)
             }) else { throw ConnectorError.capacityExceeded }
             candidate.records.remove(at: index)
         }
@@ -300,7 +374,7 @@ public actor CommandJournal {
         let reserved = candidate.records.reduce(0) { total, record in
             switch record.localState {
             case .prepared, .unknown, .notFound, .awaitingFinal: total + ConnectorLimits.terminalResultReserveBytes
-            case .resolved, .ambiguous: total
+            case .resolved, .ambiguous, .expired: total
             }
         }
         return bytes + reserved <= ConnectorLimits.journalBytes

@@ -1,7 +1,11 @@
 # Deck MCP terminal control architecture
 
-Status: control-protocol-v3 / state-schema-v4 / runner-protocol-2 scheme-B
-ADR, 2026-09-21.
+Status: control-protocol-v4 / state-schema-v5 / runner-protocol-2 scheme-B
+ADR, 2026-09-21. The control protocol is Deck's own Adapter↔app protocol, not
+the MCP standard version (negotiated separately by the SDK); an Adapter built
+for protocol 3 gets `PROTOCOL_MISMATCH` and fails closed. v4 added the
+control/create sequences; state v5 stores them (a sticky upgrade from v3/v4 —
+an older build refuses v5 untouched).
 
 ## Decision
 
@@ -100,7 +104,9 @@ dispatch re-checks the fences after acquiring it, immediately before the
 runner call; a dispatch already on the wire completes and is then fenced by
 the runner epoch. These local commands run off the UI thread. Human takeover
 advances the epoch, pauses output sharing and closes every existing job
-binding's output before enabling Deck keyboard input; it starts no shell. The
+binding's output before enabling Deck keyboard input; it starts no shell.
+Execution revoke changes only execution authority: it leaves the session's
+output-sharing switch as it was and interrupts nothing. The
 runner discards ordinary pane input while MCP owns control and routes MCP
 input only to the named running child's stdin. Return to MCP needs no
 execution grant: it persists a new epoch with no holder first, then tells the
@@ -124,7 +130,10 @@ control epoch it was bound to, and a control record also the control
 sequence it produced. A terminal record is retired once its session is gone,
 its epoch is no longer current, or (control) a later change superseded it — a
 replay then fails the generation, epoch or sequence check (`STALE_REQUEST`),
-so retirement never turns an old request into a new one. Creates are bound to
+so retirement never turns an old request into a new one. A sequence is replay
+identity only: it is not an execution grant, and advancing it never creates
+or extends one; an exact renew replay returns its record and never extends the
+lease again. Creates are bound to
 the client's create sequence the same way; creates/closes stay queryable in a
 32-per-client window and a close is kept while its session is at the epoch it
 named. Control records (one per session) never draw from the ordinary pool,
