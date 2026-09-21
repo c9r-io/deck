@@ -30,11 +30,21 @@
 //! not an OS sandbox). A job stopped by SIGTTIN/SIGTTOU (it touched the tty
 //! from the background) is reported as `stopped`, never as `running`.
 //!
-//! Every control/exec/input/interrupt/grant request names Deck's service
-//! instance. A mismatch means Deck restarted after this runner was created;
-//! the runner answers `runner-stale` and accepts only ping, read and stop.
+//! Authentication: every runner generates an independent 256-bit random key
+//! in memory. The Deck process whose PID was fixed at launch may retrieve it
+//! exactly once; the kernel-reported Unix-socket peer PID, not the claimed
+//! JSON value, authorizes that bootstrap. Every later request carries the key
+//! and is compared in constant time. It is never argv, environment, a tmux
+//! option, or a file. A Deck restart cannot reclaim an old runner; closing
+//! the tmux pane remains the cleanup boundary and its SIGHUP path kills jobs.
+//!
+//! Every control/exec/input/interrupt/grant request also names Deck's service
+//! instance. A mismatch means Deck restarted after this runner was created.
+//! Control changes are authenticated and advance exactly one epoch; exec
+//! contexts never create grants or advance control.
 
 use base64::Engine;
+use ring::rand::{SecureRandom, SystemRandom};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Read, Write};
@@ -47,8 +57,9 @@ use std::process::{ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use subtle::ConstantTimeEq;
 
-const PROTOCOL: u32 = 3;
+const PROTOCOL: u32 = 4;
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const BUILD: Option<&str> = match option_env!("DECK_BUILD_SHA") {
     Some(value) => Some(value),
@@ -142,13 +153,28 @@ enum Request {
         grant_id: String,
         grant_version: u64,
     },
+    AuthorizeGrant {
+        service_instance: String,
+        grant_id: String,
+        grant_version: u64,
+        policy_version: u64,
+        expires_at: u64,
+    },
     /// Fence control and terminate every live job group with bounded
-    /// escalation. Bound to the generation, not the service instance, so a
-    /// runner orphaned by a Deck restart can still be stopped before close.
+    /// escalation. The launching Deck process authenticates this request;
+    /// after its restart, pane SIGHUP supplies the cleanup boundary instead.
     Stop {
         generation: String,
     },
     Shutdown,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ClaimRequest {
+    kind: String,
+    service_instance: String,
+    generation: String,
 }
 
 #[derive(Clone, Deserialize)]
@@ -224,6 +250,8 @@ struct Response {
     runner_version: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     runner_build: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    auth: Option<String>,
 }
 
 impl Response {
@@ -250,6 +278,7 @@ impl Response {
             service_current: None,
             runner_version: None,
             runner_build: None,
+            auth: None,
         }
     }
 }
@@ -374,8 +403,15 @@ struct Inner {
     control_epoch: u64,
     holder_id: Option<String>,
     revoked_grants: HashMap<String, u64>,
+    authorized_grants: HashMap<String, AuthorizedGrant>,
     stopping: bool,
     retained_output: usize,
+}
+
+struct AuthorizedGrant {
+    version: u64,
+    policy_version: u64,
+    expires_at: u64,
 }
 
 struct Shared {
@@ -385,6 +421,9 @@ struct Shared {
     inner: Mutex<Inner>,
     changed: Condvar,
     connections: AtomicUsize,
+    auth_key: [u8; 32],
+    deck_pid: libc::pid_t,
+    claimed: std::sync::atomic::AtomicBool,
 }
 
 /// Send `signal` to every live job group. Must be called with `inner` held so
@@ -505,20 +544,20 @@ fn admit_exec_context(
     {
         return Err("dispatch-context-invalid");
     }
-    if inner.control != ControlMode::Mcp || context.control_epoch < inner.control_epoch {
+    let Some(grant) = inner.authorized_grants.get(&context.grant_id) else {
+        return Err("dispatch-context-invalid");
+    };
+    if grant.version != context.grant_version
+        || grant.policy_version != context.policy_version
+        || grant.expires_at != context.expires_at
+    {
+        return Err("dispatch-context-invalid");
+    }
+    if inner.control != ControlMode::Mcp || context.control_epoch != inner.control_epoch {
         return Err("control-revoked");
     }
-    if context.control_epoch == inner.control_epoch
-        && inner
-            .holder_id
-            .as_deref()
-            .is_some_and(|holder| holder != context.holder_id)
-    {
+    if inner.holder_id.as_deref() != Some(&context.holder_id) {
         return Err("holder-conflict");
-    }
-    if context.control_epoch > inner.control_epoch || inner.holder_id.is_none() {
-        inner.control_epoch = context.control_epoch;
-        inner.holder_id = Some(context.holder_id.clone());
     }
     Ok(())
 }
@@ -1243,7 +1282,7 @@ fn handle(shared: &Arc<Shared>, request: Request) -> Response {
                 if service_instance != shared.service_instance {
                     return Response::error(&shared.generation, "runner-stale");
                 }
-                if control_epoch < inner.control_epoch {
+                if control_epoch != inner.control_epoch.saturating_add(1) {
                     return Response::error(&shared.generation, "dispatch-context-invalid");
                 }
                 if mode == ControlMode::Mcp && inner.active.is_some() {
@@ -1297,6 +1336,46 @@ fn handle(shared: &Arc<Shared>, request: Request) -> Response {
                 .or_insert(grant_version);
             Response::empty(&shared.generation)
         }
+        Request::AuthorizeGrant {
+            service_instance,
+            grant_id,
+            grant_version,
+            policy_version,
+            expires_at,
+        } => {
+            if service_instance != shared.service_instance {
+                return Response::error(&shared.generation, "runner-stale");
+            }
+            if !valid_id(&grant_id)
+                || grant_version == 0
+                || policy_version == 0
+                || expires_at <= now_ms()
+            {
+                return Response::error(&shared.generation, "dispatch-context-invalid");
+            }
+            let mut inner = shared.inner.lock().recover();
+            if inner
+                .revoked_grants
+                .get(&grant_id)
+                .is_some_and(|version| *version >= grant_version)
+            {
+                return Response::error(&shared.generation, "dispatch-context-invalid");
+            }
+            if inner.authorized_grants.len() >= MAX_JOBS
+                && !inner.authorized_grants.contains_key(&grant_id)
+            {
+                return Response::error(&shared.generation, "capacity-exceeded");
+            }
+            inner.authorized_grants.insert(
+                grant_id,
+                AuthorizedGrant {
+                    version: grant_version,
+                    policy_version,
+                    expires_at,
+                },
+            );
+            Response::empty(&shared.generation)
+        }
         Request::Stop { generation } => {
             if generation != shared.generation {
                 return Response::error(&shared.generation, "invalid-request");
@@ -1342,10 +1421,7 @@ fn serve_connection(shared: Arc<Shared>, mut stream: UnixStream) {
             let mut line = Vec::new();
             match reader.read_until(b'\n', &mut line) {
                 Ok(size) if size > 0 && size <= MAX_REQUEST && line.ends_with(b"\n") => {
-                    match serde_json::from_slice::<Request>(&line) {
-                        Ok(request) => handle(&shared, request),
-                        Err(_) => Response::error(&shared.generation, "invalid-request"),
-                    }
+                    authenticate_request(&shared, &stream, &line)
                 }
                 _ => Response::error(&shared.generation, "invalid-request"),
             }
@@ -1360,6 +1436,89 @@ fn serve_connection(shared: Arc<Shared>, mut stream: UnixStream) {
         let _ = stream.write_all(&bytes);
         let _ = stream.write_all(b"\n");
         let _ = stream.flush();
+    }
+}
+
+fn auth_matches(expected: &[u8; 32], encoded: &str) -> bool {
+    let Ok(actual) = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(encoded) else {
+        return false;
+    };
+    actual.len() == expected.len() && expected.ct_eq(actual.as_slice()).into()
+}
+
+#[cfg(target_os = "macos")]
+fn peer_pid(stream: &UnixStream) -> Option<libc::pid_t> {
+    let mut pid: libc::pid_t = 0;
+    let mut len = std::mem::size_of::<libc::pid_t>() as libc::socklen_t;
+    // SAFETY: `pid` and `len` point to valid storage for LOCAL_PEERPID.
+    let result = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_LOCAL,
+            libc::LOCAL_PEERPID,
+            (&mut pid as *mut libc::pid_t).cast(),
+            &mut len,
+        )
+    };
+    (result == 0 && len as usize == std::mem::size_of::<libc::pid_t>()).then_some(pid)
+}
+
+#[cfg(target_os = "linux")]
+fn peer_pid(stream: &UnixStream) -> Option<libc::pid_t> {
+    let mut credentials = libc::ucred {
+        pid: 0,
+        uid: 0,
+        gid: 0,
+    };
+    let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    // SAFETY: `credentials` and `len` point to valid storage for SO_PEERCRED.
+    let result = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            (&mut credentials as *mut libc::ucred).cast(),
+            &mut len,
+        )
+    };
+    (result == 0 && len as usize == std::mem::size_of::<libc::ucred>()).then_some(credentials.pid)
+}
+
+fn authenticate_request(shared: &Arc<Shared>, stream: &UnixStream, line: &[u8]) -> Response {
+    if let Ok(claim) = serde_json::from_slice::<ClaimRequest>(line) {
+        if claim.kind == "claim"
+            && claim.service_instance == shared.service_instance
+            && claim.generation == shared.generation
+            && peer_pid(stream) == Some(shared.deck_pid)
+            && shared
+                .claimed
+                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+        {
+            let mut response = Response::empty(&shared.generation);
+            response.auth =
+                Some(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(shared.auth_key));
+            return response;
+        }
+    }
+    let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(line) else {
+        return Response::error(&shared.generation, "authentication-failed");
+    };
+    let Some(fields) = value.as_object_mut() else {
+        return Response::error(&shared.generation, "authentication-failed");
+    };
+    let Some(auth) = fields
+        .remove("auth")
+        .and_then(|value| value.as_str().map(str::to_owned))
+    else {
+        return Response::error(&shared.generation, "authentication-failed");
+    };
+    if !auth_matches(&shared.auth_key, &auth) {
+        return Response::error(&shared.generation, "authentication-failed");
+    }
+    match serde_json::from_value::<Request>(value) {
+        Ok(request) => handle(shared, request),
+        Err(_) => Response::error(&shared.generation, "invalid-request"),
     }
 }
 
@@ -1406,12 +1565,13 @@ fn stdin_forwarder(shared: Arc<Shared>) {
     });
 }
 
-fn parse_args() -> Option<(PathBuf, String, String, u64)> {
+fn parse_args() -> Option<(PathBuf, String, String, u64, libc::pid_t)> {
     let mut args = std::env::args_os().skip(1);
     let mut socket = None;
     let mut generation = None;
     let mut service_instance = None;
     let mut output_retention_ms = None;
+    let mut deck_pid = None;
     while let Some(arg) = args.next() {
         match arg.to_str()? {
             "--socket" => socket = args.next().map(PathBuf::from),
@@ -1420,6 +1580,7 @@ fn parse_args() -> Option<(PathBuf, String, String, u64)> {
             "--output-retention-ms" => {
                 output_retention_ms = args.next()?.to_str()?.parse::<u64>().ok()
             }
+            "--deck-pid" => deck_pid = args.next()?.to_str()?.parse::<libc::pid_t>().ok(),
             _ => return None,
         }
     }
@@ -1427,13 +1588,20 @@ fn parse_args() -> Option<(PathBuf, String, String, u64)> {
     let generation = generation?;
     let service_instance = service_instance?;
     let output_retention_ms = output_retention_ms?;
+    let deck_pid = deck_pid.filter(|pid| *pid > 0)?;
     if !socket.is_absolute() || !valid_id(&generation) || !valid_id(&service_instance) {
         return None;
     }
     if !(60_000..=7 * 24 * 60 * 60_000).contains(&output_retention_ms) {
         return None;
     }
-    Some((socket, generation, service_instance, output_retention_ms))
+    Some((
+        socket,
+        generation,
+        service_instance,
+        output_retention_ms,
+        deck_pid,
+    ))
 }
 
 #[cfg(test)]
@@ -1455,10 +1623,21 @@ mod tests {
                 control_epoch: 0,
                 holder_id: None,
                 revoked_grants: HashMap::new(),
+                authorized_grants: HashMap::from([(
+                    "grant_test".into(),
+                    AuthorizedGrant {
+                        version: 1,
+                        policy_version: 2,
+                        expires_at: u64::MAX,
+                    },
+                )]),
                 stopping: false,
                 retained_output: 0,
             }),
             changed: Condvar::new(),
+            auth_key: [7; 32],
+            deck_pid: std::process::id() as libc::pid_t,
+            claimed: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -1471,7 +1650,7 @@ mod tests {
             grant_version: 1,
             policy_version: 2,
             intent_hash: "a".repeat(64),
-            expires_at: now_ms() + 60_000,
+            expires_at: u64::MAX,
         }
     }
 
@@ -1484,7 +1663,7 @@ mod tests {
                 Request::Control {
                     mode: ControlMode::Mcp,
                     service_instance: "svc_current".into(),
-                    control_epoch: 3,
+                    control_epoch: 1,
                     holder_id: Some("holder_new".into()),
                 }
             )
@@ -1500,7 +1679,7 @@ mod tests {
                 cwd: "/tmp".into(),
                 wait_ms: 0,
                 timeout_ms: None,
-                context: context("svc_current", 2, "holder_old"),
+                context: context("svc_current", 0, "holder_old"),
             },
         );
         assert_eq!(stale.error, Some("control-revoked"));
@@ -1514,7 +1693,7 @@ mod tests {
                 cwd: "/tmp".into(),
                 wait_ms: 0,
                 timeout_ms: None,
-                context: context("svc_previous", 3, "holder_new"),
+                context: context("svc_previous", 1, "holder_new"),
             },
         );
         assert_eq!(old_service.error, Some("runner-stale"));
@@ -1539,7 +1718,7 @@ mod tests {
                 cwd: "/tmp".into(),
                 wait_ms: 0,
                 timeout_ms: None,
-                context: context("svc_current", 3, "holder_new"),
+                context: context("svc_current", 1, "holder_new"),
             },
         );
         assert_eq!(revoked.error, Some("dispatch-context-invalid"));
@@ -1554,7 +1733,7 @@ mod tests {
             Request::Control {
                 mode: ControlMode::Human,
                 service_instance: "svc_current".into(),
-                control_epoch: 2,
+                control_epoch: 1,
                 holder_id: None,
             },
         );
@@ -1733,7 +1912,8 @@ mod tests {
 }
 
 fn main() {
-    let Some((socket, generation, service_instance, output_retention_ms)) = parse_args() else {
+    let Some((socket, generation, service_instance, output_retention_ms, deck_pid)) = parse_args()
+    else {
         std::process::exit(64);
     };
     let Some(parent) = socket.parent() else {
@@ -1765,6 +1945,11 @@ fn main() {
         let _ = std::fs::remove_file(&socket);
         std::process::exit(71);
     }
+    let mut auth_key = [0u8; 32];
+    if SystemRandom::new().fill(&mut auth_key).is_err() {
+        let _ = std::fs::remove_file(&socket);
+        std::process::exit(71);
+    }
     let shared = Arc::new(Shared {
         generation,
         service_instance,
@@ -1778,10 +1963,14 @@ fn main() {
             control_epoch: 0,
             holder_id: None,
             revoked_grants: HashMap::new(),
+            authorized_grants: HashMap::new(),
             stopping: false,
             retained_output: 0,
         }),
         changed: Condvar::new(),
+        auth_key,
+        deck_pid,
+        claimed: std::sync::atomic::AtomicBool::new(false),
     });
     signal_thread(shared.clone(), socket.clone());
     stdin_forwarder(shared.clone());

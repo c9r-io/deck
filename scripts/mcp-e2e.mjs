@@ -152,6 +152,7 @@ try {
   const sessions = await call('deck_sessions_list');
   assert.equal(sessions.sessions.length, 1);
   let session = sessions.sessions[0];
+  const initialEpoch = session.controlEpoch;
   const controlled = await call('deck_session_control', {
     request_id: `${prefix}_control`, session_id: session.sessionId,
     expected_generation: session.sessionGeneration, action: 'request', holder_id: holderId,
@@ -159,6 +160,7 @@ try {
   });
   session = { ...session, ...controlled.result };
   assert.equal(session.controlOwner, config['client-id']);
+  assert.equal(session.controlEpoch, initialEpoch + 1, 'runner control advances exactly one epoch');
   await expectError('deck_exec', {
     request_id: `${prefix}_before_grant`, session_id: session.sessionId,
     expected_generation: session.sessionGeneration, control_epoch: session.controlEpoch,
@@ -170,6 +172,8 @@ try {
     const inspected = await call('deck_session_inspect', {
       session_id: session.sessionId, holder_id: holderId,
     });
+    const inspectWire = JSON.stringify(inspected);
+    assert.doesNotMatch(inspectWire, /runnerSocket|runner[_-]?auth|authenticationKey/i);
     if (inspected.mayStartNextJob) {
       approved = true;
       break;

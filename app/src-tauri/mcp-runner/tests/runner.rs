@@ -5,6 +5,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 struct Runner(Child);
@@ -23,6 +24,8 @@ fn start_runner(tag: &str) -> (Runner, std::path::PathBuf, std::path::PathBuf) {
             "g_test",
             "--service-instance",
             "svc_test",
+            "--deck-pid",
+            &std::process::id().to_string(),
             "--output-retention-ms",
             "60000",
         ])
@@ -37,11 +40,13 @@ fn start_runner(tag: &str) -> (Runner, std::path::PathBuf, std::path::PathBuf) {
         assert!(Instant::now() < limit, "runner socket was not created");
         std::thread::sleep(Duration::from_millis(10));
     }
+    claim(&socket);
     let control = call(
         &socket,
         json!({"kind":"control","mode":"mcp","service_instance":"svc_test","control_epoch":1,"holder_id":"holder_test"}),
     );
-    assert_eq!(control["ok"], true);
+    assert_eq!(control["ok"], true, "{control}");
+    authorize_grant(&socket);
     (runner, socket, root)
 }
 
@@ -85,11 +90,54 @@ impl Drop for Runner {
 }
 
 fn call(socket: &Path, request: Value) -> Value {
+    let mut request = request;
+    request["auth"] = Value::String(
+        auth_keys()
+            .lock()
+            .unwrap()
+            .get(socket)
+            .expect("runner was claimed")
+            .clone(),
+    );
+    raw_call(socket, request)
+}
+
+fn raw_call(socket: &Path, request: Value) -> Value {
     let mut stream = UnixStream::connect(socket).unwrap();
     writeln!(stream, "{request}").unwrap();
     let mut response = String::new();
     BufReader::new(stream).read_line(&mut response).unwrap();
     serde_json::from_str(&response).unwrap()
+}
+
+fn auth_keys() -> &'static Mutex<std::collections::HashMap<std::path::PathBuf, String>> {
+    static KEYS: OnceLock<Mutex<std::collections::HashMap<std::path::PathBuf, String>>> =
+        OnceLock::new();
+    KEYS.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
+}
+
+fn claim(socket: &Path) -> String {
+    let response = raw_call(
+        socket,
+        json!({"kind":"claim","service_instance":"svc_test","generation":"g_test"}),
+    );
+    let key = response["auth"]
+        .as_str()
+        .unwrap_or_else(|| panic!("claim returned a key: {response}"))
+        .to_owned();
+    auth_keys()
+        .lock()
+        .unwrap()
+        .insert(socket.to_owned(), key.clone());
+    key
+}
+
+fn authorize_grant(socket: &Path) {
+    let response = call(
+        socket,
+        json!({"kind":"authorize-grant","service_instance":"svc_test","grant_id":"grant_test","grant_version":1,"policy_version":2,"expires_at":u64::MAX}),
+    );
+    assert_eq!(response["ok"], true, "{response}");
 }
 
 fn wait_for(socket: &Path, job: &str) -> Value {
@@ -123,6 +171,48 @@ fn context(marker: char) -> Value {
 }
 
 #[test]
+fn authentication_epoch_and_grant_fences_survive_attacker_requests() {
+    let (_runner, socket, root) = start_runner("auth-fences");
+    let missing = raw_call(
+        &socket,
+        json!({"kind":"ping","service_instance":"svc_test"}),
+    );
+    let wrong = raw_call(
+        &socket,
+        json!({"kind":"ping","service_instance":"svc_test","auth":"wrong"}),
+    );
+    assert_eq!(missing["error"], "authentication-failed");
+    assert_eq!(wrong["error"], missing["error"]);
+
+    let jump = call(
+        &socket,
+        json!({"kind":"control","mode":"mcp","service_instance":"svc_test","control_epoch":u64::MAX,"holder_id":"attacker"}),
+    );
+    assert_eq!(jump["error"], "dispatch-context-invalid");
+
+    let mut forged = context('9');
+    forged["grant_id"] = json!("grant_forged");
+    let exec = call(
+        &socket,
+        json!({"kind":"exec","job_id":"job_forged","request_hash":"hash_forged","executable":"/usr/bin/true","args":[],"cwd":root,"wait_ms":0,"context":forged}),
+    );
+    assert_eq!(exec["error"], "dispatch-context-invalid");
+
+    let takeover = call(
+        &socket,
+        json!({"kind":"control","mode":"human","service_instance":"svc_test","control_epoch":2,"holder_id":null}),
+    );
+    assert_eq!(takeover["ok"], true, "{takeover}");
+    let stolen = raw_call(
+        &socket,
+        json!({"kind":"control","mode":"mcp","service_instance":"svc_test","control_epoch":3,"holder_id":"attacker","auth":"wrong"}),
+    );
+    assert_eq!(stolen["error"], "authentication-failed");
+    assert_eq!(call(&socket, json!({"kind":"ping"}))["control"], "human");
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
 fn reports_exit_input_and_interrupt_without_terminal_markers() {
     let root = std::env::temp_dir().join(format!("deck-mcp-runner-test-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
@@ -136,6 +226,8 @@ fn reports_exit_input_and_interrupt_without_terminal_markers() {
             "g_test",
             "--service-instance",
             "svc_test",
+            "--deck-pid",
+            &std::process::id().to_string(),
             "--output-retention-ms",
             "60000",
         ])
@@ -151,11 +243,13 @@ fn reports_exit_input_and_interrupt_without_terminal_markers() {
         assert!(Instant::now() < limit, "runner socket was not created");
         std::thread::sleep(Duration::from_millis(10));
     }
+    claim(&socket);
     let control = call(
         &socket,
         json!({"kind":"control","mode":"mcp","service_instance":"svc_test","control_epoch":1,"holder_id":"holder_test"}),
     );
-    assert_eq!(control["ok"], true);
+    assert_eq!(control["ok"], true, "{control}");
+    authorize_grant(&socket);
 
     let started = call(
         &socket,

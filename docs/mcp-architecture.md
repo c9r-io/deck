@@ -1,11 +1,11 @@
 # Deck MCP terminal control architecture
 
-Status: control-protocol-v5 / state-schema-v6 / runner-protocol-3 scheme-B
+Status: control-protocol-v5 / state-schema-v6 / runner-protocol-4 scheme-B
 ADR, 2026-09-21. The control protocol is Deck's own Adapter↔app protocol, not
 the MCP standard version (negotiated separately by the SDK); an Adapter built
 for protocol 4 gets `PROTOCOL_MISMATCH` and fails closed. The current protocol
 exposes one structured execution tool; legacy state-schema-v6 `allowShell`
-fields are ignored, and runner protocol 3 accepts only direct launch requests.
+fields are ignored, and runner protocol 4 accepts only direct launch requests.
 
 ## Decision
 
@@ -56,9 +56,10 @@ all threads and consumes them on one `sigwait` thread: terminal keys never
 kill or stop the runner. In human mode a terminal ^C becomes
 `killpg(job, SIGINT)` — the local stop key; in MCP/fenced mode it is ignored
 (Deck blocks the keyboard anyway). SIGHUP (tmux kill-session) and SIGTERM make
-the runner SIGKILL every live job group before exiting. Before a card close
-Deck sends `stop` (bound to the generation only, so it also works on a stale
-runner): SIGINT → SIGTERM → SIGKILL with bounded waits, confirmed by reaping.
+the runner SIGKILL every live job group before exiting. Before a card close in
+the launching Deck process, Deck sends authenticated `stop`: SIGINT → SIGTERM
+→ SIGKILL with bounded waits, confirmed by reaping. After a Deck restart the
+key is gone and the tmux pane's SIGHUP cleanup supplies the close boundary.
 Jobs start with default dispositions and an empty mask. A job stopped by
 SIGTTIN/SIGTTOU is reported `stopped`. Descendants that call setsid/setpgid,
 or group members that outlive the leader, are outside these guarantees.
@@ -119,12 +120,46 @@ runner; a runner failure re-fences.
 Runner dispatch carries the service-start identity, generation (fixed by the
 runner process), holder/epoch, grant and policy versions, expiry, and intent
 hash. The runner starts fenced, answers `runner-stale` to an old service
-identity (a runner created before a Deck restart can only be pinged, read and
-stopped), rejects stale epochs, deduplicates job ids, and applies explicit
-grant-revocation barriers. A missing barrier acknowledgement is reported as
-uncertain even though the in-process admission gate is already closed. Runner
+identity, rejects stale epochs, deduplicates job ids, and applies explicit
+grant authorization and revocation barriers. An exec grant must first have
+been registered by the authenticated Deck process with the same version,
+policy version and expiry; an exec request never creates a grant or advances
+the runner epoch. A missing barrier acknowledgement is reported as uncertain
+even though the in-process admission gate is already closed. Runner
 connections are switched to blocking I/O with 5-second timeouts and capped at
 16; the control socket likewise has timeouts and a cap of 32.
+
+### Runner control authentication
+
+tmux `new-session` sends a command to an already-running tmux server, which
+later creates the pane process; an anonymous fd inherited by the Deck client
+is therefore not inherited by that pane. Passing a key in the pane command,
+environment, tmux options, or a file would expose it to other same-user
+processes and was rejected.
+
+Runner protocol 4 instead makes each runner generate an independent 256-bit
+CSPRNG key after binding its private socket. The pane argv contains only the
+launching Deck PID. Deck makes a one-time claim over the socket; the runner
+accepts it only when the kernel-reported peer PID (`LOCAL_PEERPID` on macOS,
+`SO_PEERCRED` in the Linux test build) equals that launch PID and the service
+instance and generation match. The PID is public but cannot be chosen by the
+connecting process. The key is returned once, retained only in the two
+processes' memory, and never enters argv, environment, a tmux option, or disk.
+Every later runner request, including ping/read/stop/shutdown, carries the key
+and uses a constant-time comparison; missing and incorrect keys receive the
+same `authentication-failed` response.
+
+Only authenticated control requests may change the runner epoch, and they
+must advance it by exactly one. Renewals do not call the runner because they
+do not change the epoch. Exec/input/interrupt contexts must equal the current
+epoch and holder and cannot move either value. Thus a pane process cannot
+raise the epoch, invent a grant, or take MCP control back after Human/Fenced.
+
+A Deck restart intentionally loses the in-memory keys and cannot reclaim an
+old runner. Such a runner is stale and the new app cannot ping, read, or stop
+it through the control socket; closing its tmux session remains safe because
+the pane SIGHUP path SIGKILLs its live job groups. This is the restart boundary
+required to keep the key off disk.
 
 Side-effect request ids are fingerprinted over the parsed arguments (null ≡
 omitted). Equal request id and arguments return the recorded operation

@@ -50,7 +50,9 @@
 //! MCP needs no execution grant and restores no holder, lease or sharing: it
 //! persists a new epoch first and re-fences if the runner does not confirm.
 //! A runner created by an earlier Deck process is `stale` (`RUNNER_STALE`)
-//! and can only be closed; `stop_managed_jobs` stops its job groups first.
+//! and cannot be called by the new process: each runner keeps an in-memory
+//! 256-bit key retrieved once by the launching Deck PID through kernel peer
+//! credentials. Closing its tmux pane invokes the runner's SIGHUP cleanup.
 //! Local-command failures are stable machine codes (`mcp-*`) the webview maps
 //! to one sentence each.
 
@@ -436,6 +438,8 @@ struct Runtime {
     delivery: Mutex<()>,
     emergency: Mutex<EmergencyFences>,
     service_instance: String,
+    /// Per-runner authentication keys exist only in this Deck process.
+    runner_auth: Mutex<HashMap<String, String>>,
     started: Instant,
 }
 
@@ -1463,8 +1467,8 @@ fn operation_view(operation: &Operation) -> Value {
     })
 }
 
-fn send_runner(session: &ManagedSession, request: &Value) -> Result<Value, DeckError> {
-    let mut stream = UnixStream::connect(&session.runner_socket)
+fn runner_exchange(socket: &str, generation: &str, request: &Value) -> Result<Value, DeckError> {
+    let mut stream = UnixStream::connect(socket)
         .map_err(|_| DeckError::new(ErrorKind::Missing, "managed runner is unavailable"))?;
     stream
         .set_read_timeout(Some(Duration::from_secs(7)))
@@ -1496,7 +1500,7 @@ fn send_runner(session: &ManagedSession, request: &Value) -> Result<Value, DeckE
     }
     let value: Value = serde_json::from_slice(&bytes)
         .map_err(|_| DeckError::new(ErrorKind::Other, "runner response is invalid"))?;
-    if value.get("generation").and_then(Value::as_str) != Some(&session.generation) {
+    if value.get("generation").and_then(Value::as_str) != Some(generation) {
         return Err(DeckError::new(
             ErrorKind::ContextChanged,
             "managed runner generation changed",
@@ -1505,12 +1509,55 @@ fn send_runner(session: &ManagedSession, request: &Value) -> Result<Value, DeckE
     Ok(value)
 }
 
+fn runner_auth(runtime: &Runtime, session: &ManagedSession) -> Result<String, DeckError> {
+    let mut keys = runtime.runner_auth.lock_or_recover();
+    if let Some(key) = keys.get(&session.runner_socket) {
+        return Ok(key.clone());
+    }
+    let response = runner_exchange(
+        &session.runner_socket,
+        &session.generation,
+        &json!({
+            "kind":"claim",
+            "service_instance":runtime.service_instance,
+            "generation":session.generation,
+        }),
+    )?;
+    let key = response
+        .get("auth")
+        .and_then(Value::as_str)
+        .filter(|encoded| {
+            base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(encoded)
+                .is_ok_and(|bytes| bytes.len() == 32)
+        })
+        .ok_or_else(|| DeckError::new(ErrorKind::Perm, "managed runner authentication failed"))?
+        .to_owned();
+    keys.insert(session.runner_socket.clone(), key.clone());
+    Ok(key)
+}
+
+fn send_runner(
+    runtime: &Runtime,
+    session: &ManagedSession,
+    request: &Value,
+) -> Result<Value, DeckError> {
+    let auth = runner_auth(runtime, session)?;
+    let mut authenticated = request.clone();
+    authenticated
+        .as_object_mut()
+        .ok_or_else(|| DeckError::new(ErrorKind::Invalid, "runner request must be an object"))?
+        .insert("auth".into(), Value::String(auth));
+    runner_exchange(&session.runner_socket, &session.generation, &authenticated)
+}
+
 fn send_runner_control(
     runtime: &Runtime,
     session: &ManagedSession,
     mode: &str,
 ) -> Result<Value, DeckError> {
     send_runner(
+        runtime,
         session,
         &json!({
             "kind": "control",
@@ -1532,6 +1579,7 @@ struct RunnerProbe {
 
 fn probe_runner(runtime: &Runtime, session: &ManagedSession) -> Option<RunnerProbe> {
     let value = send_runner(
+        runtime,
         session,
         &json!({"kind":"ping","service_instance":runtime.service_instance}),
     )
@@ -1566,25 +1614,30 @@ fn runner_control_result(response: Result<Value, DeckError>) -> Result<(), DeckE
     }
 }
 
-fn runner_socket_matches(socket: &str, generation: &str) -> bool {
-    let Ok(mut stream) = UnixStream::connect(socket) else {
-        return false;
+fn runner_socket_matches(runtime: &Runtime, socket: &str, generation: &str) -> bool {
+    let session = ManagedSession {
+        session_id: String::new(),
+        card_id: String::new(),
+        tmux_session: String::new(),
+        project_id: String::new(),
+        title: String::new(),
+        cwd: String::new(),
+        generation: generation.into(),
+        runner_socket: socket.into(),
+        owner_client_id: String::new(),
+        control_owner: None,
+        control_holder: None,
+        control_epoch: 0,
+        lease_expires_at: None,
+        human_lock: true,
+        output_shared: false,
+        closing: false,
+        created_at: 0,
+        control_sequence: 0,
     };
-    if stream.write_all(b"{\"kind\":\"ping\"}\n").is_err() {
-        return false;
-    }
-    let mut bytes = Vec::new();
-    BufReader::new(stream)
-        .take((MAX_RESPONSE_BYTES + 1) as u64)
-        .read_until(b'\n', &mut bytes)
-        .is_ok()
-        && bytes.len() <= MAX_RESPONSE_BYTES
-        && serde_json::from_slice::<Value>(&bytes)
-            .ok()
-            .is_some_and(|value| {
-                value.get("ok").and_then(Value::as_bool) == Some(true)
-                    && value.get("generation").and_then(Value::as_str) == Some(generation)
-            })
+    send_runner(runtime, &session, &json!({"kind":"ping"}))
+        .ok()
+        .is_some_and(|value| value.get("ok").and_then(Value::as_bool) == Some(true))
 }
 
 fn runner_error(value: &Value) -> Option<(&'static str, &'static str)> {
@@ -2667,6 +2720,7 @@ fn exec(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<Value, V
     };
     let Some((session, cwd, _accepted_grant)) = dispatch else {
         let runner = send_runner(
+            runtime,
             &runtime
                 .read(|doc| authorized_session(doc, client_id, &binding.session_id).cloned())
                 .map_err(map_error)?
@@ -2730,8 +2784,20 @@ fn exec(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<Value, V
             "intent_hash": hash,
             "expires_at": grant.expires_at,
         });
+        let authorization = json!({
+            "kind":"authorize-grant",
+            "service_instance":runtime.service_instance,
+            "grant_id":grant.grant_id,
+            "grant_version":grant.grant_version,
+            "policy_version":POLICY_VERSION,
+            "expires_at":grant.expires_at,
+        });
+        let authorized = send_runner(runtime, &session, &authorization)?;
+        if authorized.get("ok").and_then(Value::as_bool) != Some(true) {
+            return Ok(authorized);
+        }
         let request = json!({"kind":"exec","job_id":binding.job_id,"request_hash":hash,"executable":executable,"args":argv,"cwd":cwd,"wait_ms":args.wait_ms.unwrap_or(1_000),"timeout_ms":args.execution_timeout_ms,"context":context});
-        send_runner(&session, &request)
+        send_runner(runtime, &session, &request)
     });
     let reply = runner.as_ref().and_then(|runner| runner.as_ref().ok());
     let committed =
@@ -2909,7 +2975,7 @@ fn job_read(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<Valu
             "Use max_bytes 4..16384 and wait_ms up to 5000.",
         ));
     }
-    let value = send_runner(&session, &json!({"kind":"read","job_id":binding.job_id,"cursor":cursor,"max_bytes":max_bytes,"wait_ms":args.wait_ms.unwrap_or(0)})).map_err(map_error)?;
+    let value = send_runner(runtime, &session, &json!({"kind":"read","job_id":binding.job_id,"cursor":cursor,"max_bytes":max_bytes,"wait_ms":args.wait_ms.unwrap_or(0)})).map_err(map_error)?;
     // Linearization: authority is judged at return time. Output already
     // delivered by an earlier call cannot be recalled.
     gate()?;
@@ -3102,7 +3168,7 @@ fn job_side_effect(
     } else {
         json!({"kind":"interrupt","job_id":binding.job_id,"context":context})
     };
-    let result = send_runner(&session, &request);
+    let result = send_runner(runtime, &session, &request);
     let committed = result
         .as_ref()
         .ok()
@@ -3202,7 +3268,7 @@ fn session_close(runtime: &Runtime, client_id: &str, arguments: Value) -> Result
         Ok(session) => session,
         Err(existing) => return Ok(operation_view(&existing)),
     };
-    let runner = send_runner(&session, &json!({"kind":"ping"})).map_err(|_| {
+    let runner = send_runner(runtime, &session, &json!({"kind":"ping"})).map_err(|_| {
         map_error(DeckError::new(
             ErrorKind::ContextChanged,
             "managed runner state is unknown; remote close is refused",
@@ -3479,6 +3545,7 @@ pub(crate) fn spawn(app: AppHandle) {
         delivery: Mutex::new(()),
         emergency: Mutex::new(EmergencyFences::default()),
         service_instance: random_id("svc_").unwrap_or_else(|_| "svc_unavailable".into()),
+        runner_auth: Mutex::new(HashMap::new()),
         started: Instant::now(),
     });
     let _ = RUNTIME.set(runtime.clone());
@@ -3569,6 +3636,7 @@ pub(crate) fn mcp_output_retention(duration_ms: u64) -> Result<(), DeckError> {
     let mut uncertain = false;
     for session in sessions {
         let applied = send_runner(
+            runtime,
             &session,
             &json!({"kind":"retention","service_instance":runtime.service_instance,"output_retention_ms":duration_ms}),
         )
@@ -4118,6 +4186,7 @@ fn execution_grant(
     let mut uncertain = false;
     for (grant_id, grant_version) in revoked {
         uncertain |= send_runner(
+            runtime,
             &session,
             &json!({"kind":"revoke-grant","service_instance":runtime.service_instance,"grant_id":grant_id,"grant_version":grant_version}),
         )
@@ -4205,6 +4274,7 @@ fn execution_revoke(runtime: &Runtime, session_id: &str) -> Result<(), DeckError
     let mut uncertain = false;
     for (grant_id, grant_version) in revoked {
         uncertain |= send_runner(
+            runtime,
             &session,
             &json!({"kind":"revoke-grant","service_instance":runtime.service_instance,"grant_id":grant_id,"grant_version":grant_version}),
         )
@@ -4563,7 +4633,7 @@ pub(crate) fn mcp_start_session(
         .ok_or_else(|| DeckError::new(ErrorKind::Invalid, "MCP create plan is invalid"))?;
     let output_retention_ms = runtime.read(|doc| doc.config.output_retention_ms)?;
     if crate::tmux::tmux(&["has-session", "-t", &crate::tmux::session_target(&name)]).is_ok() {
-        if runner_socket_matches(socket, generation) {
+        if runner_socket_matches(runtime, socket, generation) {
             return Ok(StartResult { created: true });
         }
         return Err(DeckError::new(
@@ -4588,6 +4658,8 @@ pub(crate) fn mcp_start_session(
         generation.into(),
         "--service-instance".into(),
         runtime.service_instance.clone(),
+        "--deck-pid".into(),
+        std::process::id().to_string(),
         "--output-retention-ms".into(),
         output_retention_ms.to_string(),
     ];
@@ -5115,9 +5187,9 @@ pub(crate) fn guard_terminal_input(tmux_session: &str) -> Result<(), DeckError> 
 
 /// Close path hook (`commands::kill_session`): before tmux kills a managed
 /// pane, ask its runner to stop every job group with bounded escalation
-/// (SIGINT → SIGTERM → SIGKILL). Best effort by design — the runner's SIGHUP
-/// handler still SIGKILLs live job groups when the pane dies — and it works
-/// for a stale runner too, because `stop` is bound to the generation only.
+/// (SIGINT → SIGTERM → SIGKILL). Best effort by design — after a Deck restart
+/// the in-memory runner key is unavailable, and the runner's SIGHUP handler
+/// still SIGKILLs live job groups when the pane dies.
 pub(crate) fn stop_managed_jobs(tmux_session: &str) {
     let Some(runtime) = RUNTIME.get() else {
         return;
@@ -5131,6 +5203,7 @@ pub(crate) fn stop_managed_jobs(tmux_session: &str) {
         return;
     };
     let _ = send_runner(
+        runtime,
         &session,
         &json!({"kind":"stop","generation":session.generation}),
     );
@@ -5267,6 +5340,8 @@ mod tests {
             let stale = service == "svc_stale";
             let live = busy.load(Ordering::SeqCst);
             let response = match kind {
+                "claim" => json!({"ok":true,"generation":generation,
+                    "auth":base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([7u8;32])}),
                 "ping" => json!({"ok":true,"generation":generation,
                     "job": if live { json!({"jobId":"job_live","state":"running"}) } else { Value::Null },
                     "serviceCurrent":!service.is_empty() && !stale,"runnerVersion":"0.1.0"}),
@@ -5287,7 +5362,8 @@ mod tests {
                     "generation":generation,
                     "job":{"jobId":job_id,"state":"exited","exitCode":0}
                 }),
-                "input" | "interrupt" | "control" | "retention" | "revoke-grant" | "stop" => {
+                "input" | "interrupt" | "control" | "retention" | "revoke-grant"
+                | "authorize-grant" | "stop" => {
                     json!({"ok":true,"generation":generation})
                 }
                 _ => json!({"ok":false,"generation":generation,"error":"invalid-request"}),
@@ -5435,6 +5511,7 @@ mod tests {
             delivery: Mutex::new(()),
             emergency: Mutex::new(EmergencyFences::default()),
             service_instance: "svc_test".into(),
+            runner_auth: Mutex::new(HashMap::new()),
             started: Instant::now(),
         };
         let view = || inspect(&runtime, "client_a", json!({"session_id":"mcp_a"})).unwrap();
@@ -5796,6 +5873,7 @@ mod tests {
             delivery: Mutex::new(()),
             emergency: Mutex::new(EmergencyFences::default()),
             service_instance: "svc_test".into(),
+            runner_auth: Mutex::new(HashMap::new()),
             started: Instant::now(),
         };
 
@@ -5836,6 +5914,7 @@ mod tests {
             delivery: Mutex::new(()),
             emergency: Mutex::new(EmergencyFences::default()),
             service_instance: "svc_test".into(),
+            runner_auth: Mutex::new(HashMap::new()),
             started: Instant::now(),
         };
         runtime
@@ -5905,6 +5984,7 @@ mod tests {
             delivery: Mutex::new(()),
             emergency: Mutex::new(EmergencyFences::default()),
             service_instance: "svc_test".into(),
+            runner_auth: Mutex::new(HashMap::new()),
             started: Instant::now(),
         });
         assert!(RUNTIME.set(runtime.clone()).is_ok());
@@ -5954,10 +6034,12 @@ mod tests {
         assert!(guard_terminal_input("deck-mcp-test").is_err());
         assert!(guard_server_restart().is_err());
         assert!(runner_socket_matches(
+            &runtime,
             runner.socket.to_str().unwrap(),
             "g_a"
         ));
         assert!(!runner_socket_matches(
+            &runtime,
             runner.socket.to_str().unwrap(),
             "g_other"
         ));
@@ -6068,6 +6150,7 @@ mod tests {
             delivery: Mutex::new(()),
             emergency: Mutex::new(EmergencyFences::default()),
             service_instance: "svc_test".into(),
+            runner_auth: Mutex::new(HashMap::new()),
             started: Instant::now(),
         });
 
@@ -6533,6 +6616,7 @@ mod tests {
             delivery: Mutex::new(()),
             emergency: Mutex::new(EmergencyFences::default()),
             service_instance: "svc_concurrent".into(),
+            runner_auth: Mutex::new(HashMap::new()),
             started: Instant::now(),
         });
         let barrier = Arc::new(std::sync::Barrier::new(3));
@@ -6594,6 +6678,7 @@ mod tests {
             delivery: Mutex::new(()),
             emergency: Mutex::new(EmergencyFences::default()),
             service_instance: service.into(),
+            runner_auth: Mutex::new(HashMap::new()),
             started: Instant::now(),
         });
         (runtime, runner, root)
@@ -6744,6 +6829,7 @@ mod tests {
         assert_eq!(runner.count("stop"), 0);
         let session = session_state(&runtime);
         send_runner(
+            &runtime,
             &session,
             &json!({"kind":"stop","generation":session.generation}),
         )
@@ -7856,6 +7942,7 @@ mod tests {
             delivery: Mutex::new(()),
             emergency: Mutex::new(EmergencyFences::default()),
             service_instance: service.into(),
+            runner_auth: Mutex::new(HashMap::new()),
             started: Instant::now(),
         })
     }
