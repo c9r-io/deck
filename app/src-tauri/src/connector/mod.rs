@@ -42,7 +42,9 @@
 //!
 //! Network: `connector_enable` records the interface carrying the chosen
 //! address; a restart binds only while the address is on that interface.
-//! A pairing emits `connector-changed` so the desktop can show it at once.
+//! Pairing strips bidi, zero-width and tag characters from the supplied
+//! device name before validation and persistence, then emits
+//! `connector-changed` so the desktop can show it at once.
 
 mod server;
 
@@ -2081,7 +2083,10 @@ impl Runtime {
         code: &str,
         device_name: &str,
     ) -> Result<Value, DeckError> {
-        if device_name.trim().is_empty()
+        let device_name = crate::inbound_channel::strip_invisible(device_name)
+            .trim()
+            .to_owned();
+        if device_name.is_empty()
             || device_name.chars().count() > 80
             || device_name.chars().any(char::is_control)
         {
@@ -2116,7 +2121,7 @@ impl Runtime {
             }
             d.devices.push(Device {
                 id: device_id.clone(),
-                name: device_name.trim().into(),
+                name: device_name,
                 token_hash,
                 paired_at: now(),
                 revoked_at: None,
@@ -3982,6 +3987,29 @@ mod tests {
         })
         .unwrap();
         assert!(r.active_device(token).is_none());
+    }
+
+    #[test]
+    fn pairing_strips_invisible_device_name_characters() {
+        let (runtime, _app) = test_runtime("pair-device-name");
+        *runtime.pairing.lock_or_recover() = Some(Pairing {
+            code: "secret".into(),
+            expires_at: now() + 30,
+        });
+        assert_eq!(
+            runtime
+                .pair(1, "secret", "\u{202E}\u{200B}\u{E0001}")
+                .unwrap_err()
+                .message(),
+            "invalid device name"
+        );
+        runtime
+            .pair(1, "secret", "  My\u{202E} iPhone\u{200B}\u{E0001}  ")
+            .unwrap();
+        assert_eq!(
+            runtime.read(|doc| doc.devices[0].name.clone()).unwrap(),
+            "My iPhone"
+        );
     }
 
     #[test]
