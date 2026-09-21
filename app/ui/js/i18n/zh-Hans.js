@@ -834,8 +834,8 @@ const dictionary = {
   'presets.name': '名称',
   'presets.cardTitle': '卡片标题',
   'presets.steps': '初始步骤',
-  'presets.hint': '每行一个步骤，最多 20 条。命令固定在此 Mac 上，且必须启动 Codex 或 Claude。',
-  'presets.invalid': '请填写有效的分组、目录、Codex 或 Claude 命令，以及最多 20 条有界步骤。',
+  'presets.hint': '每行一个步骤，最多 20 条。命令必须严格为 codex 或 claude，不能带参数。',
+  'presets.invalid': '请填写有效的分组、目录、裸 codex 或 claude 命令，以及最多 20 条有界步骤。',
 };
 export { dictionary };
 export const zhHans = dictionary;

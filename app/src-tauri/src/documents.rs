@@ -478,8 +478,7 @@ fn validate_board(b: &BoardDocRaw) -> Result<(), DeckError> {
         }
         let mut preset_ids = HashSet::new();
         for preset in &p.presets {
-            let supported = crate::context::expected_from_command(&preset.cmd)
-                .is_some_and(|name| matches!(name.as_str(), "codex" | "claude"));
+            let supported = crate::inbound_channel::channel_agent_command(&preset.cmd).is_some();
             if !bounded_buffer_id(&preset.id)
                 || !preset_ids.insert(preset.id.as_str())
                 || preset.name.is_empty()
@@ -1219,6 +1218,10 @@ mod tests {
             serde_json::from_str::<BoardDoc>(&with_preset.replace("\"codex\"", "\"bash\""))
                 .is_err()
         );
+        assert!(serde_json::from_str::<BoardDoc>(
+            &with_preset.replace("\"codex\"", "\"codex --full-auto\"")
+        )
+        .is_err());
         assert!(serde_json::from_str::<BoardDoc>(
             &with_preset.replace("\"columnId\":\"C1\"", "\"columnId\":\"missing\"")
         )

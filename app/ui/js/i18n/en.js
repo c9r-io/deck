@@ -835,8 +835,8 @@ const dictionary = {
   'presets.name': 'Name',
   'presets.cardTitle': 'Card title',
   'presets.steps': 'Initial steps',
-  'presets.hint': 'One step per line, up to 20. Commands are fixed on this Mac and must launch Codex or Claude.',
-  'presets.invalid': 'Complete the preset with a valid group, directory, Codex or Claude command, and at most 20 bounded steps.',
+  'presets.hint': 'One step per line, up to 20. The command must be exactly codex or claude, with no flags.',
+  'presets.invalid': 'Complete the preset with a valid group, directory, bare codex or claude command, and at most 20 bounded steps.',
 };
 export { dictionary };
 export const en = dictionary;

@@ -31,8 +31,8 @@
 //! slot. Each write encodes once and is atomic (temp file, file fsync,
 //! rename, directory fsync).
 //!
-//! Phone reach: send-message and output require both a Codex/Claude SAVED
-//! command (`queue_target_supported`) and a live Codex/Claude foreground
+//! Phone reach: send-message and output require both a bare `codex`/`claude`
+//! SAVED command under the shared channel policy and a live agent foreground
 //! process. Output rechecks that foreground identity after capture, alongside
 //! the generation/card checks. A foreground agent in a plain shell card does
 //! not qualify. Phone text is an agent prompt, not a shell line, but a prompt
@@ -1775,8 +1775,8 @@ fn card_in(v: &Value, id: &str) -> Result<InternalCard, DeckError> {
 fn queue_target_supported(card: &Value) -> bool {
     card.get("cmd")
         .and_then(Value::as_str)
-        .and_then(crate::context::expected_from_command)
-        .is_some_and(|command| matches!(command.as_str(), "codex" | "claude"))
+        .and_then(crate::inbound_channel::channel_agent_command)
+        .is_some()
 }
 
 fn require_queue_target(card: &Value) -> Result<(), DeckError> {
@@ -1844,11 +1844,8 @@ fn validate_applicable(request: &CommandRequest) -> Result<(), DeckError> {
         {
             return Err(DeckError::new(ErrorKind::Invalid, "task preset is invalid"));
         }
-        let command = bounded("cmd", 200).and_then(crate::context::expected_from_command);
-        if !command
-            .as_deref()
-            .is_some_and(|x| matches!(x, "codex" | "claude"))
-        {
+        let command = bounded("cmd", 200).and_then(crate::inbound_channel::channel_agent_command);
+        if command.is_none() {
             return Err(DeckError::new(
                 ErrorKind::Invalid,
                 "task preset command is not supported",
@@ -3634,7 +3631,7 @@ mod tests {
         };
         let copy1 = buffer_operation_id(&handle, "E1");
         let copy2 = buffer_operation_id(&handle, "E2");
-        let board = json!({"cards":[{"id":"C1","cmd":"codex --full-auto","buffer":{"revision":9,"entries":[
+        let board = json!({"cards":[{"id":"C1","cmd":"codex","buffer":{"revision":9,"entries":[
             {"id":"E1","text":"frozen one","copies":[{"operationId":copy1}]},
             {"id":"E2","text":"frozen two","copies":[{"operationId":copy2}]},
             {"id":"manual-later","text":"allowed","copies":[]}
@@ -3653,14 +3650,15 @@ mod tests {
 
     #[test]
     fn buffer_queue_requires_saved_trusted_agent_command_in_both_phases() {
-        assert!(queue_target_supported(&json!({"cmd":"codex --full-auto"})));
-        assert!(queue_target_supported(
-            &json!({"cmd":"env FOO=1 /opt/bin/claude --x"})
-        ));
+        assert!(queue_target_supported(&json!({"cmd":"codex"})));
+        assert!(queue_target_supported(&json!({"cmd":"claude"})));
         for card in [
             json!({"cmd":""}),
             json!({"cmd":"/bin/zsh"}),
             json!({"cmd":"/bin/zsh -lc codex"}),
+            json!({"cmd":"codex --full-auto"}),
+            json!({"cmd":"claude --dangerously-skip-permissions"}),
+            json!({"cmd":"env FOO=1 /opt/bin/claude --x"}),
         ] {
             let error = require_queue_target(&card).unwrap_err();
             assert_eq!(error.kind(), ErrorKind::Invalid);

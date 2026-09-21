@@ -18,8 +18,9 @@
 //! slots. The adapter never writes to Slack.
 //!
 //! Channel text is untrusted agent input. Admission (`channel_agent_command`)
-//! is a runtime, per-rule policy: a rule's command must be exactly `claude`
-//! or `codex`. Settings and inbox validation stay structural, so a rule saved
+//! is the shared Slack/Connector policy: a remote target command must be
+//! exactly `claude` or `codex`. Channel settings and inbox validation stay
+//! structural, so a rule saved
 //! by an older deck with arguments still loads and is shown as blocked; a
 //! blocked rule never stages events and never counts as an active rule.
 //! `stage` enforces the same shape `load` checks, so a successful write is
@@ -166,7 +167,7 @@ fn valid_target(target: &ChannelTarget) -> bool {
         && target.idle_minutes <= 7 * 24 * 60
 }
 
-/// The ONE channel admission policy: a channel target launches exactly
+/// The ONE remote-agent admission policy shared by channels and Connector: a target launches exactly
 /// `claude` or `codex` - no arguments, environment prefix, path or shell
 /// syntax. Arguments are where approval and sandbox bypasses live
 /// (`--dangerously-skip-permissions`, `--yolo`, `-c approval_policy=...`,

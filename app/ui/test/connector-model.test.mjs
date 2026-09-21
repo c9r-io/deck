@@ -17,6 +17,8 @@ const preset = { id: 'R1', name: 'Fix issue', columnId: 'C1', title: 'Remote tas
 test('task presets retain only bounded desktop-owned Codex or Claude launch plans', () => {
   assert.deepEqual(normalizeTaskPreset(preset, columns), preset);
   assert.equal(normalizeTaskPreset({ ...preset, cmd: 'bash' }, columns), null);
+  assert.equal(normalizeTaskPreset({ ...preset, cmd: 'codex --full-auto' }, columns), null);
+  assert.equal(normalizeTaskPreset({ ...preset, cmd: '/opt/bin/claude' }, columns), null);
   assert.equal(normalizeTaskPreset({ ...preset, columnId: 'missing' }, columns), null);
   assert.deepEqual(normalizeTaskPresets([preset, preset], columns), [preset]);
 });
