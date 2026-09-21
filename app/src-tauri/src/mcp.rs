@@ -55,6 +55,8 @@
 //! credentials. Closing its tmux pane invokes the runner's SIGHUP cleanup.
 //! Local-command failures are stable machine codes (`mcp-*`) the webview maps
 //! to one sentence each.
+//! The control socket is bound under a private temporary name, made 0600, and
+//! atomically renamed into place; Deck never changes its process-wide umask.
 
 use base64::Engine;
 use ring::rand::{SecureRandom, SystemRandom};
@@ -3532,6 +3534,24 @@ fn handle_connection(runtime: Arc<Runtime>, mut stream: UnixStream) {
     }
 }
 
+fn bind_private_socket(socket: &Path) -> Result<UnixListener, DeckError> {
+    let parent = socket
+        .parent()
+        .ok_or_else(|| DeckError::new(ErrorKind::Invalid, "MCP socket path is invalid"))?;
+    // The private Deck directory and single-instance lock make this name
+    // exclusive; keeping it short also preserves macOS SUN_LEN headroom.
+    let temporary = parent.join(".mcp-bind");
+    let _ = std::fs::remove_file(&temporary);
+    let listener = UnixListener::bind(&temporary).map_err(DeckError::from)?;
+    if let Err(error) = std::fs::set_permissions(&temporary, std::fs::Permissions::from_mode(0o600))
+        .and_then(|_| std::fs::rename(&temporary, socket))
+    {
+        let _ = std::fs::remove_file(&temporary);
+        return Err(DeckError::from(error));
+    }
+    Ok(listener)
+}
+
 pub(crate) fn spawn(app: AppHandle) {
     let dir = crate::datadir::deck_dir();
     let path = dir.join("mcp.json");
@@ -3553,14 +3573,10 @@ pub(crate) fn spawn(app: AppHandle) {
         .name("deck-mcp-control".into())
         .spawn(move || {
             let _ = std::fs::remove_file(&socket);
-            let listener = match UnixListener::bind(&socket) {
+            let listener = match bind_private_socket(&socket) {
                 Ok(listener) => listener,
                 Err(_) => return,
             };
-            if std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600)).is_err() {
-                let _ = std::fs::remove_file(&socket);
-                return;
-            }
             for stream in listener.incoming().flatten() {
                 use std::sync::atomic::Ordering;
                 if CONNECTIONS.fetch_add(1, Ordering::SeqCst) >= MAX_CONNECTIONS {
@@ -5427,6 +5443,28 @@ mod tests {
         ));
         std::fs::create_dir_all(&root).unwrap();
         root
+    }
+
+    #[test]
+    fn control_socket_is_private_before_its_public_name_exists() {
+        let root = test_root("private-control-socket");
+        let socket = root.join("mcp-control.sock");
+        let listener = bind_private_socket(&socket).unwrap();
+        assert_eq!(
+            std::fs::metadata(&socket).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(
+            std::fs::read_dir(&root)
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|entry| entry.file_name() == ".mcp-bind")
+                .count(),
+            0
+        );
+        drop(listener);
+        std::fs::remove_file(socket).unwrap();
+        std::fs::remove_dir(root).unwrap();
     }
 
     fn client_record(root: &Path) -> Client {

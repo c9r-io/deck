@@ -149,6 +149,13 @@ Every later runner request, including ping/read/stop/shutdown, carries the key
 and uses a constant-time comparison; missing and incorrect keys receive the
 same `authentication-failed` response.
 
+Socket paths are never published with permissive creation modes. The runner
+creates a missing socket directory with mode 0700 in the creation operation
+and refuses an existing directory unless it is exactly 0700. Both the runner
+socket and Deck's control socket are bound under private temporary names,
+changed to 0600, and only then atomically renamed to their public paths. This
+avoids changing Deck's process-wide umask while other threads may create files.
+
 Only authenticated control requests may change the runner epoch, and they
 must advance it by exactly one. Renewals do not call the runner because they
 do not change the epoch. Exec/input/interrupt contexts must equal the current

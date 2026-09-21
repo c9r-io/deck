@@ -42,6 +42,10 @@
 //! instance. A mismatch means Deck restarted after this runner was created.
 //! Control changes are authenticated and advance exactly one epoch; exec
 //! contexts never create grants or advance control.
+//! The socket directory is created 0700 in one operation (or an existing
+//! directory is accepted only at exactly 0700). The socket is bound under a
+//! private temporary name, made 0600, and atomically renamed into place, so a
+//! process-wide umask is never changed and the published path is never lax.
 
 use base64::Engine;
 use ring::rand::{SecureRandom, SystemRandom};
@@ -49,7 +53,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::fd::AsRawFd;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -1604,6 +1608,58 @@ fn parse_args() -> Option<(PathBuf, String, String, u64, libc::pid_t)> {
     ))
 }
 
+fn ensure_private_dir(path: &Path) -> std::io::Result<()> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            if !metadata.file_type().is_dir() || metadata.permissions().mode() & 0o777 != 0o700 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "runner directory is not private",
+                ));
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let mut builder = std::fs::DirBuilder::new();
+            builder.recursive(true).mode(0o700).create(path)?;
+            let metadata = std::fs::symlink_metadata(path)?;
+            if !metadata.file_type().is_dir() || metadata.permissions().mode() & 0o777 != 0o700 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "runner directory is not private",
+                ));
+            }
+        }
+        Err(error) => return Err(error),
+    }
+    Ok(())
+}
+
+fn bind_private_socket(socket: &Path) -> std::io::Result<UnixListener> {
+    let parent = socket.parent().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "socket has no parent")
+    })?;
+    // Keep below macOS SUN_LEN while allowing concurrent runners in the
+    // shared private directory. Production names begin with a random
+    // generation, so this bounded prefix is independently collision-resistant.
+    let prefix = socket
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .unwrap_or("runner")
+        .chars()
+        .take(12)
+        .collect::<String>();
+    let temporary = parent.join(format!(".{prefix}"));
+    let _ = std::fs::remove_file(&temporary);
+    let listener = UnixListener::bind(&temporary)?;
+    if let Err(error) = std::fs::set_permissions(&temporary, std::fs::Permissions::from_mode(0o600))
+        .and_then(|_| std::fs::rename(&temporary, socket))
+    {
+        let _ = std::fs::remove_file(&temporary);
+        return Err(error);
+    }
+    Ok(listener)
+}
+
 #[cfg(test)]
 #[allow(clippy::items_after_test_module)]
 mod tests {
@@ -1639,6 +1695,27 @@ mod tests {
             deck_pid: std::process::id() as libc::pid_t,
             claimed: std::sync::atomic::AtomicBool::new(false),
         })
+    }
+
+    #[test]
+    fn private_directory_creation_never_repairs_a_lax_existing_directory() {
+        let root = std::env::temp_dir().join(format!(
+            "deck-mcp-runner-private-dir-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        ensure_private_dir(&root).unwrap();
+        assert_eq!(
+            std::fs::metadata(&root).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(
+            ensure_private_dir(&root).unwrap_err().kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::remove_dir(&root).unwrap();
     }
 
     fn context(service: &str, epoch: u64, holder: &str) -> DispatchContext {
@@ -1919,20 +1996,14 @@ fn main() {
     let Some(parent) = socket.parent() else {
         std::process::exit(64);
     };
-    if std::fs::create_dir_all(parent).is_err()
-        || std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700)).is_err()
-    {
+    if ensure_private_dir(parent).is_err() {
         std::process::exit(73);
     }
     let _ = std::fs::remove_file(&socket);
-    let listener = match UnixListener::bind(&socket) {
+    let listener = match bind_private_socket(&socket) {
         Ok(listener) => listener,
         Err(_) => std::process::exit(73),
     };
-    if std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600)).is_err() {
-        let _ = std::fs::remove_file(&socket);
-        std::process::exit(73);
-    }
     if listener.set_nonblocking(true).is_err() {
         let _ = std::fs::remove_file(&socket);
         std::process::exit(73);

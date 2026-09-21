@@ -2,6 +2,7 @@
 
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
+use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
@@ -10,11 +11,16 @@ use std::time::{Duration, Instant};
 
 struct Runner(Child);
 
+fn create_private_dir(path: &Path) {
+    let mut builder = std::fs::DirBuilder::new();
+    builder.mode(0o700).create(path).unwrap();
+}
+
 /// Start a runner in a private directory under MCP control (epoch 1).
 fn start_runner(tag: &str) -> (Runner, std::path::PathBuf, std::path::PathBuf) {
     let root = std::env::temp_dir().join(format!("deck-mcp-runner-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir(&root).unwrap();
+    create_private_dir(&root);
     let socket = root.join("runner.sock");
     let child = Command::new(env!("CARGO_BIN_EXE_deck-mcp-runner"))
         .args([
@@ -40,6 +46,10 @@ fn start_runner(tag: &str) -> (Runner, std::path::PathBuf, std::path::PathBuf) {
         assert!(Instant::now() < limit, "runner socket was not created");
         std::thread::sleep(Duration::from_millis(10));
     }
+    assert_eq!(
+        std::fs::metadata(&socket).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
     claim(&socket);
     let control = call(
         &socket,
@@ -216,7 +226,7 @@ fn authentication_epoch_and_grant_fences_survive_attacker_requests() {
 fn reports_exit_input_and_interrupt_without_terminal_markers() {
     let root = std::env::temp_dir().join(format!("deck-mcp-runner-test-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir(&root).unwrap();
+    create_private_dir(&root);
     let socket = root.join("runner.sock");
     let child = Command::new(env!("CARGO_BIN_EXE_deck-mcp-runner"))
         .args([
