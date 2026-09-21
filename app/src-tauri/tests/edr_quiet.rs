@@ -255,9 +255,9 @@ fn shell_path_violations(name: &str, source: &str) -> Vec<String> {
 /// merely because another feature already uses it.
 const ALLOWED_LITERAL_SITES: &[(&str, &str)] = &[
     ("links.rs", "/usr/bin/open"),
-    ("diagnostics.rs", "open"),
-    ("diagnostics.rs", "sw_vers"),
-    ("diagnostics.rs", "uname"),
+    ("diagnostics.rs", "/usr/bin/open"),
+    ("diagnostics.rs", "/usr/bin/sw_vers"),
+    ("diagnostics.rs", "/usr/bin/uname"),
     ("relaunch.rs", "/usr/bin/open"),
     ("relaunch.rs", "/usr/bin/plutil"),
     ("commands.rs", "/usr/bin/pbcopy"),
@@ -477,6 +477,13 @@ fn every_production_spawn_is_on_the_allowlist() {
         violations.extend(found);
     }
     assert!(violations.is_empty(), "{violations:#?}");
+    // a bare name resolves through PATH, which may hold a user-writable dir
+    for (file, tool) in ALLOWED_LITERAL_SITES {
+        assert!(
+            tool.starts_with("/usr/bin/"),
+            "({file}, {tool}) must name the absolute system tool"
+        );
+    }
     for (file, tool) in ALLOWED_LITERAL_SITES.iter().chain(DEBUG_ONLY_LITERALS) {
         assert!(
             used_literals.contains(&(file.to_string(), tool.to_string())),

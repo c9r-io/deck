@@ -655,10 +655,10 @@ pub(crate) fn export_logs() -> Result<PathBuf, DeckError> {
 
     let mut header = String::new();
     header.push_str(&format!("deck {}\n", env!("CARGO_PKG_VERSION")));
-    if let Ok(o) = Command::new("sw_vers").output() {
+    if let Ok(o) = Command::new("/usr/bin/sw_vers").output() {
         header.push_str(&String::from_utf8_lossy(&o.stdout));
     }
-    if let Ok(o) = Command::new("uname").arg("-m").output() {
+    if let Ok(o) = Command::new("/usr/bin/uname").arg("-m").output() {
         header.push_str(&format!("arch: {}", String::from_utf8_lossy(&o.stdout)));
     }
     // classification only — the absolute tmux path stays out of exports
@@ -672,7 +672,7 @@ pub(crate) fn export_logs() -> Result<PathBuf, DeckError> {
     let log = std::fs::read_to_string(data_dir.join("app.log")).unwrap_or_default();
     // created 0600 from the first byte — never world-readable-then-chmod
     crate::datadir::write_private(&path, build_export(&header, &log).as_bytes())?;
-    let _ = Command::new("open").arg("-R").arg(&path).status();
+    let _ = Command::new("/usr/bin/open").arg("-R").arg(&path).status();
     Ok(path)
 }
 

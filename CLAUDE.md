@@ -32,7 +32,8 @@ same commit as the behaviour it describes.
 - **deck is EDR-QUIET by rule** (a corporate EDR flagged it and IT demanded the
   app be stopped; `tests/edr_quiet.rs` enforces each point):
   Connector is disabled by default; when the user enables it, it opens one
-  inbound HTTPS listener on the selected private IPv4 address.
+  inbound HTTPS listener on the selected private IPv4 address (RFC1918,
+  169.254/16 or 100.64/10 — `docs/connector.md`; never public or 0.0.0.0).
   never touches launchd — no `launchctl` (not even a one-shot `submit`), no
   LaunchAgents/LaunchDaemons, no login items; post-update relaunch is a
   `setsid`-detached waiter (`relaunch.rs`) that waits for the old PID and
@@ -54,8 +55,9 @@ same commit as the behaviour it describes.
   computed executable to an exact file and function). Never
   writes an executable under `~`: hook commands name the helper INSIDE the
   signed bundle (see agent hooks). Remaining spawns are low-frequency,
-  fixed-argument system tools (`open`, `plutil`, `pbcopy`, `sw_vers`,
-  `uname`) plus the bundled tmux — which is the ONLY tmux deck
+  fixed-argument system tools named by absolute `/usr/bin` path (`open`,
+  `plutil`, `pbcopy`, `sw_vers`, `uname`; never a PATH lookup) plus the
+  bundled tmux — which is the ONLY tmux deck
   ever executes: `tmux::tmux_program()` resolves the signed sidecar next to
   deck's own executable and NEVER falls back to Homebrew/MacPorts or a PATH
   lookup (`/usr/local/bin` is user-writable on many Macs, and every deck
