@@ -37,8 +37,9 @@ same commit as the behaviour it describes.
   `localtime_r`, and a duplicate instance just logs and exits. Default
   paths, structured reads, metadata and readiness queries never start a
   shell. For a locally approved, unexpired trusted-host MCP job, the signed
-  `deck-mcp-runner` starts the requested executable and exact argv at its
-  single fixed entry (`spawn_job`). Execution authority permits any program,
+  `deck-mcp-runner` starts the requested absolute executable path and exact argv
+  at its single fixed entry (`spawn_job`); bare names never resolve through
+  the child PATH. Execution authority permits any program,
   including interpreters and shells; it is not a sandbox. Human takeover
   starts no shell.
   This is not an OS sandbox, carries no promise of EDR invisibility, and

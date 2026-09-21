@@ -38,7 +38,8 @@ Reliable stdin and process identity around command completion are difficult.
 ### B. Managed execution unit in the visible pane (chosen)
 
 The signed runner is the tmux pane process. `deck_exec` starts the requested
-executable with an exact argument vector in that same pane; no implicit shell
+absolute executable path with an exact argument vector in that same pane; bare
+names and relative paths are refused, and no implicit shell
 parses it. The executable may itself be an interpreter or shell. Execution
 approval therefore permits arbitrary programs with the logged-in user's
 permissions and is not a sandbox. argv remains visible in normal host process

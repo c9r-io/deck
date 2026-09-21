@@ -2111,8 +2111,10 @@ fn capabilities(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<
                 "directExecution": {
                     "default": true,
                     "arbitraryPrograms": true,
+                    "executableResolution": "absolute-path-only",
                     "argumentsVisibleInProcessMetadata": true,
                     "path": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+                    "pathPurpose": "child-process-environment",
                     "outputKind": "pty_combined"
                 },
                 "limits": {
@@ -2561,6 +2563,7 @@ fn valid_direct_launch(executable: &str, arguments: &[String]) -> bool {
     !executable.is_empty()
         && executable.len() <= MAX_EXECUTABLE_BYTES
         && !executable.chars().any(char::is_control)
+        && Path::new(executable).is_absolute()
         && arguments.len() <= MAX_ARGUMENTS
         && arguments.iter().all(|value| !value.as_bytes().contains(&0))
         && arguments.iter().map(String::len).sum::<usize>() <= MAX_ARGUMENT_BYTES
@@ -6407,6 +6410,9 @@ mod tests {
 
     #[test]
     fn validation_and_error_mapping_cover_rejected_boundaries() {
+        assert!(!valid_direct_launch("git", &[]));
+        assert!(!valid_direct_launch("./tool", &[]));
+        assert!(valid_direct_launch("/usr/bin/git", &[]));
         assert!(!valid_id(""));
         assert!(!valid_id("bad id"));
         assert!(valid_id("good_ID-1"));

@@ -185,6 +185,13 @@ fn initializes_lists_and_calls_over_stdio_without_stdout_noise() {
         .as_str()
         .unwrap()
         .contains("including an interpreter or shell"));
+    assert!(exec["description"].as_str().unwrap().contains("absolute"));
+    assert!(
+        exec["inputSchema"]["properties"]["executable"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("Absolute executable path")
+    );
     assert_eq!(exec["outputSchema"]["required"][0], "ok");
     for name in [
         "deck_project_list",

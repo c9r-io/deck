@@ -110,7 +110,7 @@ authentication, Origin/Host validation, and deployment review.
 | `deck_operation_get` | Read Board/control delivery state, not program completion (use `deck_job_read` for exit and output EOF). |
 | `deck_session_inspect` | Read generation, control, active job metadata, staleness, runner version, current execution-authorization status, and the independent session output-sharing gate. It never returns terminal screen content. |
 | `deck_session_control` | Request, renew, or release a holder-bound fenced lease. Another flow using the same client cannot replace an active holder. |
-| `deck_exec` | Start any program, including an interpreter or shell, with an exact argument vector while matching local execution and control grants are valid. |
+| `deck_exec` | Start any program, including an interpreter or shell, by absolute executable path with an exact argument vector while matching local execution and control grants are valid. |
 | `deck_job_read` | Incrementally read retained combined output and independently reported exit state. |
 | `deck_job_input` | Write only to the named still-running child's stdin. Never falls back to terminal typing. |
 | `deck_job_interrupt` | Request SIGINT for the active job's owned process group; read again to confirm exit. |
@@ -225,12 +225,13 @@ disabling MCP keep their own effect on output.
 
 - `deck_exec` passes `executable` and each `args` entry directly to the OS; no
   implicit shell parses them. The executable may itself be an interpreter or
-  shell. Execution approval therefore permits arbitrary programs with the
+  shell, but its path must be absolute: bare names and relative paths are
+  refused. Execution approval therefore permits arbitrary programs with the
   logged-in user's permissions and is not a sandbox. argv is visible in
   ordinary host process metadata, so never put secrets there.
 - Default wait is 1 second; maximum wait is 5 seconds. A wait timeout returns
   `running` and never resubmits or kills the job.
-- Executable names are limited to 4 KiB; direct launch accepts at most 256
+- Absolute executable paths are limited to 4 KiB; direct launch accepts at most 256
   arguments and 64 KiB total argument bytes. Input is limited to 32 KiB.
   Each read is at most 16 KiB;
   each job retains 1 MiB. A cursor is bound to the job and generation. Gaps and

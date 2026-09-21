@@ -190,8 +190,8 @@ struct ExecCommonInput {
 struct DirectExecInput {
     #[serde(flatten)]
     common: ExecCommonInput,
-    /// Executable path or name resolved through Deck's sanitized PATH. The
-    /// execution grant permits arbitrary programs, including interpreters and shells.
+    /// Absolute executable path. Bare names and relative paths are refused.
+    /// The execution grant permits arbitrary programs, including interpreters and shells.
     executable: String,
     /// Exact argv entries. They are visible in host process metadata, so do
     /// not place secrets in arguments.
@@ -335,7 +335,7 @@ impl DeckServer {
             ),
             tool::<DirectExecInput>(
                 "deck_exec",
-                "Launch any program, including an interpreter or shell, with an exact argument vector in the visible managed Deck pane. This runs as the logged-in user and is not a sandbox. No implicit shell parses the arguments; argv is visible in host process metadata, so do not put secrets there.",
+                "Launch any program, including an interpreter or shell, by absolute executable path with an exact argument vector in the visible managed Deck pane. Bare names and relative paths are refused. This runs as the logged-in user and is not a sandbox. No implicit shell parses the arguments; argv is visible in host process metadata, so do not put secrets there.",
                 mutating.clone(),
             ),
             tool::<ReadInput>(

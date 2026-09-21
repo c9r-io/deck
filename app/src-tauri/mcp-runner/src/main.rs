@@ -727,6 +727,7 @@ fn spawn_job(
             if executable.is_empty()
                 || executable.len() > MAX_EXECUTABLE
                 || executable.chars().any(char::is_control)
+                || !Path::new(executable).is_absolute()
                 || args.len() > MAX_ARGUMENTS
                 || args.iter().any(|value| value.as_bytes().contains(&0))
                 || args.iter().map(String::len).sum::<usize>() > MAX_ARGUMENT_BYTES
@@ -1661,6 +1662,24 @@ mod tests {
         let second = handle(&shared, request());
         assert!(second.ok, "{:?}", second.error);
         assert_eq!(shared.inner.lock().recover().jobs.len(), 1);
+    }
+
+    #[test]
+    fn relative_executables_are_rejected_before_spawn() {
+        let shared = shared();
+        assert_eq!(
+            spawn_job(
+                &shared,
+                "job_relative",
+                Launch::Direct {
+                    executable: "git",
+                    args: &[],
+                },
+                "/tmp",
+                None,
+            ),
+            Err("invalid-executable")
+        );
     }
 
     #[test]

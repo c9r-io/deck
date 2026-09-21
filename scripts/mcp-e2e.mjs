@@ -130,10 +130,13 @@ try {
   const controlTool = listed.result.tools.find(tool => tool.name === 'deck_session_control');
   assert.ok(controlTool.inputSchema.required.includes('holder_id'));
   assert.ok(controlTool.inputSchema.required.includes('control_sequence'));
+  const execTool = listed.result.tools.find(tool => tool.name === 'deck_exec');
+  assert.match(execTool.inputSchema.properties.executable.description, /Absolute executable path/);
 
   const capabilities = await call('deck_capabilities');
   assert.equal(capabilities.executionMode, 'structured-direct-default');
   assert.equal(capabilities.directExecution.arbitraryPrograms, true);
+  assert.equal(capabilities.directExecution.executableResolution, 'absolute-path-only');
   assert.equal(capabilities.realOsSandbox, false);
 
   const create = await call('deck_session_create', {
