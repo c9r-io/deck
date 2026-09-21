@@ -231,9 +231,11 @@ pub(crate) fn open_target(kind: String, value: String, cwd: String) -> Result<()
     };
     validate_open(&kind, &value, &resolved)?;
     let status = match kind.as_str() {
-        "url" => Command::new("open").arg(value.trim()).status(),
+        "url" => Command::new("/usr/bin/open").arg(value.trim()).status(),
         "editor-parent" => match crate::documents::editor_app() {
-            Some(app) => Command::new("open").args(["-a", &app, &resolved]).status(),
+            Some(app) => Command::new("/usr/bin/open")
+                .args(["-a", &app, &resolved])
+                .status(),
             None => {
                 return Err(DeckError::new(
                     ErrorKind::Missing,
@@ -242,10 +244,16 @@ pub(crate) fn open_target(kind: String, value: String, cwd: String) -> Result<()
             }
         },
         "editor" => match crate::documents::editor_app() {
-            Some(app) => Command::new("open").args(["-a", &app, &resolved]).status(),
-            None => Command::new("open").args(["-t", &resolved]).status(),
+            Some(app) => Command::new("/usr/bin/open")
+                .args(["-a", &app, &resolved])
+                .status(),
+            None => Command::new("/usr/bin/open")
+                .args(["-t", &resolved])
+                .status(),
         },
-        "reveal" => Command::new("open").args(["-R", &resolved]).status(),
+        "reveal" => Command::new("/usr/bin/open")
+            .args(["-R", &resolved])
+            .status(),
         _ => unreachable!("validate_open rejects unknown kinds"),
     }
     .map_err(DeckError::from)?;

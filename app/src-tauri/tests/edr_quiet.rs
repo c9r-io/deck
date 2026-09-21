@@ -254,7 +254,6 @@ fn shell_path_violations(name: &str, source: &str) -> Vec<String> {
 /// relative path). A new `open` in an unrelated module is not accepted
 /// merely because another feature already uses it.
 const ALLOWED_LITERAL_SITES: &[(&str, &str)] = &[
-    ("links.rs", "open"),
     ("links.rs", "/usr/bin/open"),
     ("diagnostics.rs", "open"),
     ("diagnostics.rs", "sw_vers"),
@@ -262,8 +261,8 @@ const ALLOWED_LITERAL_SITES: &[(&str, &str)] = &[
     ("relaunch.rs", "/usr/bin/open"),
     ("relaunch.rs", "/usr/bin/plutil"),
     ("commands.rs", "/usr/bin/pbcopy"),
-    ("inbound.rs", "open"),
-    ("inbound_channel.rs", "open"),
+    ("inbound.rs", "/usr/bin/open"),
+    ("inbound_channel.rs", "/usr/bin/open"),
 ];
 
 /// Computed executables, each reviewed at an exact file AND enclosing
@@ -383,7 +382,7 @@ fn scanner_rejects_aliases_whitespace_and_indirect_spawns() {
         "fn f() { args.extend([\"if-shell\".into(), \"-F\".into()]); }\n",
         "fn f() { format!(\"if-shell -F -t {t} '#{{x}}' 'a' ''\"); }\n",
         "fn f() { CommandBuilder::new(tmux_program()?); }\n",
-        "fn f() { Command::new(\"open\").status(); }\n",
+        "fn f() { Command::new(\"/usr/bin/open\").status(); }\n",
     ] {
         assert!(
             scan_one("links.rs", accepted).is_empty(),

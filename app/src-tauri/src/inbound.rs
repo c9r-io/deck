@@ -972,7 +972,7 @@ pub(crate) fn inbound_setup(source: String) -> Result<(), DeckError> {
         "slack" => crate::inbound_slack::setup_url(),
         _ => return Err(DeckError::new(ErrorKind::Invalid, "unknown source")),
     };
-    let status = std::process::Command::new("open")
+    let status = std::process::Command::new("/usr/bin/open")
         .arg(&url)
         .status()
         .map_err(|_| DeckError::new(ErrorKind::Other, "could not open the browser"))?;

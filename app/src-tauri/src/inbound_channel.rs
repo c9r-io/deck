@@ -1192,7 +1192,7 @@ pub(crate) fn channel_manifest_url() -> String {
 
 #[tauri::command]
 pub(crate) fn channel_setup() -> Result<(), DeckError> {
-    let status = std::process::Command::new("open")
+    let status = std::process::Command::new("/usr/bin/open")
         .arg(channel_manifest_url())
         .status()
         .map_err(|_| DeckError::new(ErrorKind::Other, "could not open the browser"))?;
