@@ -44,11 +44,10 @@ const BUILD: Option<&str> = match option_env!("DECK_BUILD_SHA") {
 /// Deck may legitimately take longer than one runner round trip: a request
 /// can wait for the delivery lock behind an in-flight job dispatch.
 const RESPONSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
-const MUTATING: [&str; 7] = [
+const MUTATING: [&str; 6] = [
     "deck_session_create",
     "deck_session_control",
     "deck_exec",
-    "deck_shell_exec",
     "deck_job_input",
     "deck_job_interrupt",
     "deck_session_close",
@@ -191,22 +190,13 @@ struct ExecCommonInput {
 struct DirectExecInput {
     #[serde(flatten)]
     common: ExecCommonInput,
-    /// Executable path or name resolved through Deck's sanitized PATH. Shell
-    /// interpreters are refused; use deck_shell_exec only when unavoidable.
+    /// Executable path or name resolved through Deck's sanitized PATH. The
+    /// execution grant permits arbitrary programs, including interpreters and shells.
     executable: String,
     /// Exact argv entries. They are visible in host process metadata, so do
     /// not place secrets in arguments.
     #[serde(default)]
     args: Vec<String>,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-struct ShellExecInput {
-    #[serde(flatten)]
-    common: ExecCommonInput,
-    /// High-risk arbitrary zsh source. Requires a separate local shell grant.
-    script: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -345,12 +335,7 @@ impl DeckServer {
             ),
             tool::<DirectExecInput>(
                 "deck_exec",
-                "Default execution path: launch one non-shell executable with an exact argument vector in the visible managed Deck pane. No shell parses the arguments. Arguments are visible in host process metadata; do not put secrets in argv.",
-                mutating.clone(),
-            ),
-            tool::<ShellExecInput>(
-                "deck_shell_exec",
-                "High-risk fallback: execute arbitrary zsh source only when a separate local shell approval is active. Prefer deck_exec; files persist, but shell state does not cross calls.",
+                "Launch any program, including an interpreter or shell, with an exact argument vector in the visible managed Deck pane. This runs as the logged-in user and is not a sandbox. No implicit shell parses the arguments; argv is visible in host process metadata, so do not put secrets there.",
                 mutating.clone(),
             ),
             tool::<ReadInput>(
@@ -531,10 +516,6 @@ impl DeckServer {
                     .await
             }
             "deck_exec" => self.invoke::<DirectExecInput>("deck_exec", arguments).await,
-            "deck_shell_exec" => {
-                self.invoke::<ShellExecInput>("deck_shell_exec", arguments)
-                    .await
-            }
             "deck_job_read" => self.invoke::<ReadInput>("deck_job_read", arguments).await,
             "deck_job_input" => {
                 self.invoke::<JobInputInput>("deck_job_input", arguments)

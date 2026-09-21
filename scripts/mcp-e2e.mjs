@@ -105,11 +105,12 @@ async function execJob(session, requestId, script, waitMs = 100) {
     expected_generation: session.sessionGeneration,
     control_epoch: session.controlEpoch,
     holder_id: holderId,
-    script,
+    executable: '/bin/zsh',
+    args: ['-c', script],
     cwd: config.cwd,
     wait_ms: waitMs,
   };
-  const started = await call('deck_shell_exec', args);
+  const started = await call('deck_exec', args);
   return { args, started, finished: await readToExit(started.jobId, started.outputCursor) };
 }
 
@@ -122,7 +123,7 @@ try {
   assert.equal(initialized.result.serverInfo.name, 'deck-mcp');
   child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' })}\n`);
   const listed = await request('tools/list');
-  assert.equal(listed.result.tools.length, 15);
+  assert.equal(listed.result.tools.length, 14);
   for (const name of ['deck_project_list', 'deck_project_read', 'deck_project_search']) {
     assert.ok(listed.result.tools.some(tool => tool.name === name), `${name} is registered`);
   }
@@ -132,7 +133,7 @@ try {
 
   const capabilities = await call('deck_capabilities');
   assert.equal(capabilities.executionMode, 'structured-direct-default');
-  assert.equal(capabilities.shellFallback.highRisk, true);
+  assert.equal(capabilities.directExecution.arbitraryPrograms, true);
   assert.equal(capabilities.realOsSandbox, false);
 
   const create = await call('deck_session_create', {
@@ -160,14 +161,13 @@ try {
     expected_generation: session.sessionGeneration, control_epoch: session.controlEpoch,
     holder_id: holderId, executable: '/usr/bin/printf', args: ['MUST_NOT_RUN'], cwd: config.cwd,
   }, 'EXECUTION_GRANT_REQUIRED');
-  process.stderr.write('Approve the local execution window and shell fallback in the isolated Deck UI.\n');
+  process.stderr.write('Approve the local execution window in the isolated Deck UI.\n');
   let approved = false;
   for (let count = 0; count < 600; count += 1) {
     const inspected = await call('deck_session_inspect', {
       session_id: session.sessionId, holder_id: holderId,
     });
-    if (inspected.mayStartNextJob
-        && inspected.executionAuthorization.shellApprovedForActiveGrant) {
+    if (inspected.mayStartNextJob) {
       approved = true;
       break;
     }
@@ -206,9 +206,9 @@ git add calc.sh test.sh
   assert.equal(failing.finished.exitCode, 1);
   assert.match(failing.finished.output, /expected 4, got 3/);
 
-  const retry = await call('deck_shell_exec', failing.args);
+  const retry = await call('deck_exec', failing.args);
   assert.equal(retry.jobId, failing.started.jobId);
-  await expectError('deck_shell_exec', { ...failing.args, script: 'print MUST_NOT_RUN' }, 'REQUEST_ID_CONFLICT');
+  await expectError('deck_exec', { ...failing.args, args: ['-c', 'print MUST_NOT_RUN'] }, 'REQUEST_ID_CONFLICT');
 
   const fixed = await execJob(session, `${prefix}_fixed`, `sed -i '' 's/print 3/print 4/' calc.sh
 ./test.sh`);
@@ -220,13 +220,14 @@ git add calc.sh test.sh
   assert.match(diff.finished.output, /-print 3/);
   assert.match(diff.finished.output, /\+print 4/);
 
-  const longStarted = await call('deck_shell_exec', {
+  const longStarted = await call('deck_exec', {
     request_id: `${prefix}_long`,
     session_id: session.sessionId,
     expected_generation: session.sessionGeneration,
     control_epoch: session.controlEpoch,
     holder_id: holderId,
-    script: 'for n in 1 2 3; do print -- "chunk-$n"; sleep 0.4; done',
+    executable: '/bin/zsh',
+    args: ['-c', 'for n in 1 2 3; do print -- "chunk-$n"; sleep 0.4; done'],
     cwd: config.cwd,
     wait_ms: 50,
   });
@@ -240,13 +241,14 @@ git add calc.sh test.sh
   const longDone = await readToExit(longStarted.jobId, firstRead.nextCursor);
   assert.match(firstRead.output + longDone.output, /chunk-3/);
 
-  const interactive = await call('deck_shell_exec', {
+  const interactive = await call('deck_exec', {
     request_id: `${prefix}_interactive`,
     session_id: session.sessionId,
     expected_generation: session.sessionGeneration,
     control_epoch: session.controlEpoch,
     holder_id: holderId,
-    script: 'IFS= read -r answer; print -- "answer=$answer"',
+    executable: '/bin/zsh',
+    args: ['-c', 'IFS= read -r answer; print -- "answer=$answer"'],
     cwd: config.cwd,
     wait_ms: 50,
   });
@@ -270,14 +272,15 @@ git add calc.sh test.sh
     input: 'MUST_NOT_RUN\n',
   }, 'JOB_NOT_RUNNING');
 
-  const interrupted = await call('deck_shell_exec', {
+  const interrupted = await call('deck_exec', {
     request_id: `${prefix}_interrupt_job`,
     session_id: session.sessionId,
     expected_generation: session.sessionGeneration,
     control_epoch: session.controlEpoch,
     holder_id: holderId,
-    script: `trap 'print interrupted; exit 130' INT
-while true; do sleep 1; done`,
+    executable: '/bin/zsh',
+    args: ['-c', `trap 'print interrupted; exit 130' INT
+while true; do sleep 1; done`],
     cwd: config.cwd,
     wait_ms: 50,
   });

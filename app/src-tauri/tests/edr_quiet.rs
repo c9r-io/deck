@@ -12,8 +12,7 @@
 //!    are tmux verbs that run a shell (`run-shell`, `pipe-pane`,
 //!    `display-popup`/`popup`) and any `if-shell` without `-F`;
 //! 3. deck-app never constructs a shell path at runtime (`"/bin"`,
-//!    `join("zsh")`, ...): the ONE shell spawn is the MCP runner's literal
-//!    `/bin/zsh` inside `spawn_job`, for a locally approved trusted-host job;
+//!    `join("zsh")`, ...), and the MCP runner has no fixed shell spawn;
 //! 4. nothing touches launchd, login items or `~/.deck/bin`;
 //! 5. the shell-restore path carries no script, shell argv or deck-as-pane
 //!    bootstrap (`commands::restore_start_args` pins the positive shape).
@@ -542,28 +541,20 @@ fn mcp_sidecars_keep_the_reviewed_process_boundary() {
         let violations = spawn_vocabulary_violations(name, production_region(source));
         assert!(violations.is_empty(), "{violations:#?}");
     }
-    // Both reviewed trusted-host spawn sites live in spawn_job: the structured
-    // default uses the locally authorized executable verbatim, while the
-    // separately approved fallback uses one literal /bin/zsh. Human takeover
-    // starts no process, and shell names are rejected on the direct path.
+    // The one reviewed trusted-host spawn site lives in spawn_job and uses the
+    // locally authorized executable verbatim. Human takeover starts no process.
     let production = production_region(&runner);
     assert_eq!(
         constructor_sites(production, "Command"),
-        vec![
-            SpawnSite {
-                function: "spawn_job".into(),
-                argument: "executable".into(),
-            },
-            SpawnSite {
-                function: "spawn_job".into(),
-                argument: "\"/bin/zsh\"".into(),
-            },
-        ]
+        vec![SpawnSite {
+            function: "spawn_job".into(),
+            argument: "executable".into(),
+        }]
     );
     assert_eq!(
         production.matches("/bin/zsh").count(),
-        1,
-        "the runner starts a shell only at its reviewed spawn_job entry"
+        0,
+        "the runner must not retain the removed fixed-shell launch point"
     );
     for forbidden in [
         "launchctl",

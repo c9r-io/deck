@@ -3,9 +3,9 @@
 Status: control-protocol-v5 / state-schema-v6 / runner-protocol-3 scheme-B
 ADR, 2026-09-21. The control protocol is Deck's own Adapter↔app protocol, not
 the MCP standard version (negotiated separately by the SDK); an Adapter built
-for protocol 4 gets `PROTOCOL_MISMATCH` and fails closed. v5 splits structured
-direct execution from the explicit shell fallback; state v6 adds a fail-closed
-`allowShell` grant bit and runner protocol 3 carries the two launch kinds.
+for protocol 4 gets `PROTOCOL_MISMATCH` and fails closed. The current protocol
+exposes one structured execution tool; legacy state-schema-v6 `allowShell`
+fields are ignored, and runner protocol 3 accepts only direct launch requests.
 
 ## Decision
 
@@ -37,14 +37,12 @@ Reliable stdin and process identity around command completion are difficult.
 
 ### B. Managed execution unit in the visible pane (chosen)
 
-The signed runner is the tmux pane process. By default `deck_exec` starts the
-requested non-shell executable with an exact argument vector in that same
-pane; no shell parses it. Known shell interpreters are refused. argv remains
-visible in normal host process metadata and must not carry secrets.
-`deck_shell_exec` is a separately locally approved high-risk fallback. It
-starts `/bin/zsh -d -f /dev/fd/3`; script bytes arrive over a 0600 Unix socket
-and inherited pipe, never argv, environment, or a plaintext script file.
-stdout/stderr from both paths are mirrored to the pane and retained as bounded combined
+The signed runner is the tmux pane process. `deck_exec` starts the requested
+executable with an exact argument vector in that same pane; no implicit shell
+parses it. The executable may itself be an interpreter or shell. Execution
+approval therefore permits arbitrary programs with the logged-in user's
+permissions and is not a sandbox. argv remains visible in normal host process
+metadata and must not carry secrets. stdout/stderr are mirrored to the pane and retained as bounded combined
 PTY output; the job's private process group (pid == pgid, a background group
 of the pane's terminal) supplies exit and interrupt identity, and the runner
 reaps the leader itself so no signal can reach a reused PID. stdin is a
@@ -66,8 +64,8 @@ or group members that outlive the leader, are outside these guarantees.
 
 This preserves visible execution and file changes with a smaller contract than
 shell hooks. It intentionally does not preserve `cd`, `export`, aliases, or
-functions across calls. Use `cwd`; use the shell fallback only when shell
-composition is genuinely required.
+functions across calls. Use `cwd`; invoke a shell explicitly through
+`deck_exec` only when composition is genuinely required.
 
 ## Board transaction
 

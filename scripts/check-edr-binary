@@ -15,7 +15,7 @@ for target in "${targets[@]}"; do
   test -f "$target"
   for forbidden in \
     launchctl LaunchAgents LaunchDaemons SMAppService osascript \
-    /bin/sh /bin/bash --deck-shell-bootstrap
+    /bin/sh /bin/bash /bin/zsh --deck-shell-bootstrap
   do
     if strings -a "$target" | grep -F -- "$forbidden" >/dev/null; then
       echo "$target contains forbidden EDR token: $forbidden" >&2
@@ -23,28 +23,4 @@ for target in "${targets[@]}"; do
     fi
   done
 done
-# Only the runner may carry a shell executable path. The app reports the
-# capability without embedding it as an executable token, and the adapter is
-# protocol-only.
-for target in \
-  "$app_path/Contents/MacOS/$executable" \
-  "$app_path/Contents/MacOS/deck-status-helper" \
-  "$app_path/Contents/MacOS/deck-mcp"
-do
-  if strings -a "$target" | grep -F -- /bin/zsh >/dev/null; then
-    echo "$target contains forbidden EDR token: /bin/zsh" >&2
-    exit 1
-  fi
-done
-# The MCP runner has one reviewed shell boundary: a fresh fixed zsh child only
-# for the separately approved high-risk fallback. Structured jobs use direct
-# exec. Source-level EDR tests (tests/edr_quiet.rs) bind the fallback to the
-# literal /bin/zsh in spawn_job; its presence is not checked here,
-# because release codegen may encode that 8-byte literal as immediates rather
-# than a string. The bundle scan ensures no human-takeover shell script remains.
-runner="$app_path/Contents/MacOS/deck-mcp-runner"
-if strings -a "$runner" | grep -F -- "exec /bin/zsh" >/dev/null; then
-  echo "$runner contains forbidden EDR token: exec /bin/zsh" >&2
-  exit 1
-fi
 echo "EDR binary vocabulary clean: ${targets[*]}"

@@ -37,10 +37,10 @@ same commit as the behaviour it describes.
   `localtime_r`, and a duplicate instance just logs and exits. Default
   paths, structured reads, metadata and readiness queries never start a
   shell. For a locally approved, unexpired trusted-host MCP job, the signed
-  `deck-mcp-runner` starts the requested non-shell executable and exact argv
-  at its single fixed entry (`spawn_job`). A separately approved high-risk
-  fallback starts literal `/bin/zsh -d -f /dev/fd/3` there; ordinary
-  `deck_exec` refuses known shell interpreters. Human takeover starts no shell.
+  `deck-mcp-runner` starts the requested executable and exact argv at its
+  single fixed entry (`spawn_job`). Execution authority permits any program,
+  including interpreters and shells; it is not a sandbox. Human takeover
+  starts no shell.
   This is not an OS sandbox, carries no promise of EDR invisibility, and
   `-d -f` does not skip `/etc/zshenv`. deck-app never builds a shell path
   at runtime, and no dynamic concatenation, alias or variable-level
@@ -230,7 +230,7 @@ Status semantics (card colour) are documented on `effectiveCardStatus` in
   token or operation kind. Board intents still go through
   `provider.createStarted` / `provider.close`; jobs run in the visible tmux
   pane's signed runner. Structured launch argv is visible in ordinary process
-  metadata and must not contain secrets; fallback scripts never enter argv,
-  logs, or a temporary file. See `mcp.rs` and `docs/mcp-architecture.md`.
+  metadata and must not contain secrets. See `mcp.rs` and
+  `docs/mcp-architecture.md`.
 - Use harmless card commands (e.g. `while true; do date; sleep 1; done`) when
   testing — a card whose command is `claude` will really launch Claude Code.

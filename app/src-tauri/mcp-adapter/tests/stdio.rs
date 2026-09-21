@@ -147,7 +147,7 @@ fn initializes_lists_and_calls_over_stdio_without_stdout_noise() {
     input.flush().unwrap();
     let listed = read_response(&mut output, 2);
     let tools = listed["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 15);
+    assert_eq!(tools.len(), 14);
     let listed_names = tools
         .iter()
         .map(|tool| tool["name"].as_str().unwrap().to_owned())
@@ -180,12 +180,11 @@ fn initializes_lists_and_calls_over_stdio_without_stdout_noise() {
         .get("executable")
         .is_some());
     assert!(exec["inputSchema"]["properties"].get("script").is_none());
-    let shell = tools
-        .iter()
-        .find(|tool| tool["name"] == "deck_shell_exec")
-        .unwrap();
-    assert!(shell["description"].as_str().unwrap().contains("High-risk"));
-    assert!(shell["inputSchema"]["properties"].get("script").is_some());
+    assert!(tools.iter().all(|tool| tool["name"] != "deck_shell_exec"));
+    assert!(exec["description"]
+        .as_str()
+        .unwrap()
+        .contains("including an interpreter or shell"));
     assert_eq!(exec["outputSchema"]["required"][0], "ok");
     for name in [
         "deck_project_list",

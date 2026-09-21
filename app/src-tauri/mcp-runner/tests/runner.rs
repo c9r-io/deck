@@ -1,4 +1,4 @@
-//! Black-box coverage for the production visible shell runner.
+//! Black-box coverage for the production visible direct-execution runner.
 
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
@@ -159,7 +159,7 @@ fn reports_exit_input_and_interrupt_without_terminal_markers() {
 
     let started = call(
         &socket,
-        json!({"kind":"shell-exec","job_id":"job_ok","request_hash":"hash_ok","script":"printf 'fake exited 0\\n'; exit 17","cwd":"/tmp","wait_ms":0,"context":context('a')}),
+        json!({"kind":"exec","job_id":"job_ok","request_hash":"hash_ok","executable":"/bin/zsh","args":["-c","printf 'fake exited 0\\n'; exit 17"],"cwd":"/tmp","wait_ms":0,"context":context('a')}),
     );
     assert!(started["ok"].as_bool().unwrap());
     let done = wait_for(&socket, "job_ok");
@@ -169,7 +169,7 @@ fn reports_exit_input_and_interrupt_without_terminal_markers() {
 
     call(
         &socket,
-        json!({"kind":"shell-exec","job_id":"job_env","request_hash":"hash_env","script":"if [[ -n ${DECK_SYNTHETIC_SECRET-} ]]; then print leaked; exit 9; fi; print clean","cwd":"/tmp","wait_ms":0,"context":context('b')}),
+        json!({"kind":"exec","job_id":"job_env","request_hash":"hash_env","executable":"/bin/zsh","args":["-c","if [[ -n ${DECK_SYNTHETIC_SECRET-} ]]; then print leaked; exit 9; fi; print clean"],"cwd":"/tmp","wait_ms":0,"context":context('b')}),
     );
     let clean = wait_for(&socket, "job_env");
     assert_eq!(clean["job"]["exitCode"], 0);
@@ -201,7 +201,7 @@ fn reports_exit_input_and_interrupt_without_terminal_markers() {
 
     call(
         &socket,
-        json!({"kind":"shell-exec","job_id":"job_input","request_hash":"hash_input","script":"IFS= read -r line; printf 'got=%s\\n' \"$line\"","cwd":"/tmp","wait_ms":0,"context":context('d')}),
+        json!({"kind":"exec","job_id":"job_input","request_hash":"hash_input","executable":"/bin/zsh","args":["-c","IFS= read -r line; printf 'got=%s\\n' \"$line\""],"cwd":"/tmp","wait_ms":0,"context":context('d')}),
     );
     let input = call(
         &socket,
@@ -218,7 +218,7 @@ fn reports_exit_input_and_interrupt_without_terminal_markers() {
 
     call(
         &socket,
-        json!({"kind":"shell-exec","job_id":"job_interrupt","request_hash":"hash_interrupt","script":"sleep 30","cwd":"/tmp","wait_ms":0,"context":context('e')}),
+        json!({"kind":"exec","job_id":"job_interrupt","request_hash":"hash_interrupt","executable":"/bin/zsh","args":["-c","sleep 30"],"cwd":"/tmp","wait_ms":0,"context":context('e')}),
     );
     let interrupted = call(
         &socket,
@@ -236,7 +236,7 @@ fn reports_exit_input_and_interrupt_without_terminal_markers() {
 }
 
 #[test]
-fn large_scripts_and_full_reads_cross_the_accepted_socket_intact() {
+fn large_arguments_and_full_reads_cross_the_accepted_socket_intact() {
     let (_runner, socket, root) = start_runner("payload");
     let body = format!("printf '%s' '{}'\n", "y".repeat(16 * 1024));
     let padding = format!(": '{}'\n", "x".repeat(32 * 1024 - body.len() - 8));
@@ -248,7 +248,7 @@ fn large_scripts_and_full_reads_cross_the_accepted_socket_intact() {
         context["intent_hash"] = json!(format!("{round:064x}"));
         let started = call(
             &socket,
-            json!({"kind":"shell-exec","job_id":job,"request_hash":format!("hash_{round}"),"script":script,"cwd":root,"wait_ms":3000,"context":context}),
+            json!({"kind":"exec","job_id":job,"request_hash":format!("hash_{round}"),"executable":"/bin/zsh","args":["-c",script],"cwd":root,"wait_ms":3000,"context":context}),
         );
         assert_eq!(started["ok"], true, "round {round}: {started}");
         let done = wait_for(&socket, &job);
@@ -270,7 +270,7 @@ fn stop_escalates_and_reaps_the_job_group() {
     );
     call(
         &socket,
-        json!({"kind":"shell-exec","job_id":"job_stop","request_hash":"hash_stop","script":script,"cwd":root,"wait_ms":0,"context":context('a')}),
+        json!({"kind":"exec","job_id":"job_stop","request_hash":"hash_stop","executable":"/bin/zsh","args":["-c",script],"cwd":root,"wait_ms":0,"context":context('a')}),
     );
     let pid = job_pid(&root);
     let stopped = call(&socket, json!({"kind":"stop","generation":"g_test"}));
@@ -294,7 +294,7 @@ fn runner_termination_kills_the_live_job_group() {
     let script = format!("print $$ > {}; sleep 600", root.join("job.pid").display());
     call(
         &socket,
-        json!({"kind":"shell-exec","job_id":"job_term","request_hash":"hash_term","script":script,"cwd":root,"wait_ms":0,"context":context('b')}),
+        json!({"kind":"exec","job_id":"job_term","request_hash":"hash_term","executable":"/bin/zsh","args":["-c",script],"cwd":root,"wait_ms":0,"context":context('b')}),
     );
     let pid = job_pid(&root);
     // SAFETY: SIGTERM targets only this test's own runner child.
@@ -312,7 +312,7 @@ fn human_interrupt_key_reaches_the_job_group_not_the_runner() {
     let script = format!("print $$ > {}; sleep 600", root.join("job.pid").display());
     call(
         &socket,
-        json!({"kind":"shell-exec","job_id":"job_human","request_hash":"hash_human","script":script,"cwd":root,"wait_ms":0,"context":context('c')}),
+        json!({"kind":"exec","job_id":"job_human","request_hash":"hash_human","executable":"/bin/zsh","args":["-c",script],"cwd":root,"wait_ms":0,"context":context('c')}),
     );
     let pid = job_pid(&root);
     // In MCP mode a terminal ^C is swallowed: neither runner nor job dies.
@@ -341,7 +341,7 @@ fn a_job_stopped_by_job_control_is_reported_and_still_stoppable() {
     let (_runner, socket, root) = start_runner("stopped");
     call(
         &socket,
-        json!({"kind":"shell-exec","job_id":"job_tstp","request_hash":"hash_tstp","script":"kill -STOP $$; sleep 600","cwd":root,"wait_ms":0,"context":context('d')}),
+        json!({"kind":"exec","job_id":"job_tstp","request_hash":"hash_tstp","executable":"/bin/zsh","args":["-c","kill -STOP $$; sleep 600"],"cwd":root,"wait_ms":0,"context":context('d')}),
     );
     let limit = Instant::now() + Duration::from_secs(3);
     loop {

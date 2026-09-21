@@ -2,19 +2,16 @@
 //!
 //! The runner is a signed bundle sidecar and is started only as the pane
 //! process of an explicitly created MCP session. It accepts structured direct
-//! launches and separately authorized shell fallbacks over a user-only Unix
-//! socket, executes each job in a fresh process, mirrors
+//! launches over a user-only Unix socket, executes each job in a fresh process, mirrors
 //! combined output into the real pane, and retains a bounded copy for cursor
-//! reads. Script bytes never appear in argv, the environment, or a temporary
-//! file. Fresh jobs receive the versioned sanitized developer environment,
+//! reads. Fresh jobs receive the versioned sanitized developer environment,
 //! not the runner's complete host environment. Process exit and each output
 //! pipe's EOF are reported separately. The runner has no model, persistence,
 //! or Board authority; trusted-host jobs retain the user's ordinary OS/network
 //! permissions and the environment profile is not a sandbox.
 //!
 //! Process ownership: tmux execs the runner as the pane's session leader and
-//! foreground process group. Each job (a direct executable by default, or
-//! `zsh -d -f /dev/fd/3` for the explicit fallback) is in its OWN process
+//! foreground process group. Each direct executable is in its OWN process
 //! group (pid == pgid) with piped stdio, so the job is a background group of
 //! the same terminal. The runner never starts any other shell: human takeover
 //! only changes who may type into the active job's stdin.
@@ -41,7 +38,7 @@ use base64::Engine;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Read, Write};
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::os::fd::AsRawFd;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::CommandExt;
@@ -62,7 +59,6 @@ const CONNECTION_TIMEOUT: Duration = Duration::from_secs(5);
 /// Bounded escalation used by `stop`: each signal gets this long to reap.
 const STOP_STEP: Duration = Duration::from_millis(1_000);
 const MAX_REQUEST: usize = 256 * 1024;
-const MAX_SCRIPT: usize = 32 * 1024;
 const MAX_EXECUTABLE: usize = 4 * 1024;
 const MAX_ARGUMENTS: usize = 256;
 const MAX_ARGUMENT_BYTES: usize = 64 * 1024;
@@ -72,7 +68,6 @@ const MAX_INPUT: usize = 32 * 1024;
 const RETAINED_OUTPUT: usize = 1024 * 1024;
 const RETAINED_OUTPUT_PER_SESSION: usize = 16 * 1024 * 1024;
 const MAX_JOBS: usize = 256;
-const SCRIPT_WRITE_TIMEOUT: Duration = Duration::from_secs(2);
 const INPUT_WRITE_TIMEOUT: Duration = Duration::from_secs(1);
 
 fn now_ms() -> u64 {
@@ -106,17 +101,6 @@ enum Request {
         executable: String,
         #[serde(default)]
         args: Vec<String>,
-        cwd: String,
-        #[serde(default)]
-        wait_ms: u64,
-        #[serde(default)]
-        timeout_ms: Option<u64>,
-        context: DispatchContext,
-    },
-    ShellExec {
-        job_id: String,
-        request_hash: String,
-        script: String,
         cwd: String,
         #[serde(default)]
         wait_ms: u64,
@@ -642,42 +626,6 @@ fn mirror(
     });
 }
 
-fn make_script_pipe() -> std::io::Result<(OwnedFd, OwnedFd)> {
-    let mut fds = [0; 2];
-    // SAFETY: fds points at two valid integers and successful pipe ownership
-    // is immediately transferred into OwnedFd.
-    if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    for fd in fds {
-        // SAFETY: both descriptors were returned by pipe and remain owned
-        // here. CLOEXEC prevents the child from retaining the write end;
-        // dup2 in pre_exec intentionally clears it for descriptor 3.
-        if unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) } != 0 {
-            let error = std::io::Error::last_os_error();
-            // SAFETY: construction of OwnedFd has not happened yet.
-            unsafe {
-                libc::close(fds[0]);
-                libc::close(fds[1]);
-            }
-            return Err(error);
-        }
-    }
-    // The parent must never block the control plane indefinitely while a
-    // child refuses to consume its script pipe.
-    let flags = unsafe { libc::fcntl(fds[1], libc::F_GETFL) };
-    if flags < 0 || unsafe { libc::fcntl(fds[1], libc::F_SETFL, flags | libc::O_NONBLOCK) } != 0 {
-        let error = std::io::Error::last_os_error();
-        unsafe {
-            libc::close(fds[0]);
-            libc::close(fds[1]);
-        }
-        return Err(error);
-    }
-    // SAFETY: pipe returned two new owned descriptors.
-    Ok(unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) })
-}
-
 fn wait_writable(fd: i32, deadline: Instant) -> std::io::Result<()> {
     loop {
         let now = Instant::now();
@@ -701,32 +649,6 @@ fn wait_writable(fd: i32, deadline: Instant) -> std::io::Result<()> {
             return Err(std::io::Error::last_os_error());
         }
     }
-}
-
-fn bounded_write(
-    writer: &mut (impl Write + AsRawFd),
-    bytes: &[u8],
-    timeout: Duration,
-) -> std::io::Result<()> {
-    let deadline = Instant::now() + timeout;
-    let mut offset = 0;
-    while offset < bytes.len() {
-        match writer.write(&bytes[offset..]) {
-            Ok(0) => {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::WriteZero,
-                    "short write",
-                ))
-            }
-            Ok(count) => offset += count,
-            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                wait_writable(writer.as_raw_fd(), deadline)?;
-            }
-            Err(error) => return Err(error),
-        }
-    }
-    writer.flush()
 }
 
 fn bounded_job_input(
@@ -781,9 +703,6 @@ enum Launch<'a> {
         executable: &'a str,
         args: &'a [String],
     },
-    Shell {
-        script: &'a str,
-    },
 }
 
 enum OwnedLaunch {
@@ -791,20 +710,6 @@ enum OwnedLaunch {
         executable: String,
         args: Vec<String>,
     },
-    Shell {
-        script: String,
-    },
-}
-
-fn forbidden_shell_executable(executable: &str) -> bool {
-    let name = Path::new(executable)
-        .file_name()
-        .and_then(|value| value.to_str())
-        .unwrap_or(executable);
-    matches!(
-        name,
-        "sh" | "bash" | "zsh" | "dash" | "fish" | "ksh" | "csh" | "tcsh" | "env"
-    )
 }
 
 fn spawn_job(
@@ -817,33 +722,22 @@ fn spawn_job(
     if !Path::new(cwd).is_absolute() || !Path::new(cwd).is_dir() {
         return Err("invalid-cwd");
     }
-    let (mut command, script_pipe, script) = match launch {
+    let mut command = match launch {
         Launch::Direct { executable, args } => {
             if executable.is_empty()
                 || executable.len() > MAX_EXECUTABLE
                 || executable.chars().any(char::is_control)
-                || forbidden_shell_executable(executable)
                 || args.len() > MAX_ARGUMENTS
-                || args.iter().any(|value| value.chars().any(char::is_control))
+                || args.iter().any(|value| value.as_bytes().contains(&0))
                 || args.iter().map(String::len).sum::<usize>() > MAX_ARGUMENT_BYTES
             {
                 return Err("invalid-executable");
             }
             let mut command = Command::new(executable);
             command.args(args);
-            (command, None, None)
-        }
-        Launch::Shell { script } => {
-            if script.is_empty() || script.len() > MAX_SCRIPT || script.as_bytes().contains(&0) {
-                return Err("invalid-script");
-            }
-            let pipe = make_script_pipe().map_err(|_| "spawn-failed")?;
-            let mut command = Command::new("/bin/zsh");
-            command.args(["-d", "-f", "/dev/fd/3"]);
-            (command, Some(pipe), Some(script))
+            command
         }
     };
-    let read_fd = script_pipe.as_ref().map(|(read, _)| read.as_raw_fd());
     command
         .current_dir(cwd)
         .env_clear()
@@ -863,11 +757,11 @@ fn spawn_job(
             command.env(key, value);
         }
     }
-    // SAFETY: only async-signal-safe dup2/setpgid/close/signal/sigprocmask
+    // SAFETY: only async-signal-safe setpgid/signal/sigprocmask
     // calls run after fork.
     unsafe {
         command.pre_exec(move || {
-            if read_fd.is_some_and(|fd| libc::dup2(fd, 3) < 0) || libc::setpgid(0, 0) < 0 {
+            if libc::setpgid(0, 0) < 0 {
                 return Err(std::io::Error::last_os_error());
             }
             // The runner blocks terminal signals for its sigwait thread; a
@@ -886,23 +780,10 @@ fn spawn_job(
             if libc::sigprocmask(libc::SIG_SETMASK, &empty, std::ptr::null_mut()) != 0 {
                 return Err(std::io::Error::last_os_error());
             }
-            if let Some(read_fd) = read_fd {
-                if read_fd == 3 {
-                    if libc::fcntl(3, libc::F_SETFD, 0) < 0 {
-                        return Err(std::io::Error::last_os_error());
-                    }
-                } else {
-                    libc::close(read_fd);
-                }
-            }
             Ok(())
         });
     }
     let mut child = command.spawn().map_err(|_| "spawn-failed")?;
-    let script_write = script_pipe.map(|(script_read, script_write)| {
-        drop(script_read);
-        std::fs::File::from(script_write)
-    });
     let stdout = child.stdout.take().ok_or("spawn-failed")?;
     let stderr = child.stderr.take().ok_or("spawn-failed")?;
     let stdin = child.stdin.take().ok_or("spawn-failed")?;
@@ -934,15 +815,6 @@ fn spawn_job(
     }
     mirror(shared.clone(), job_id.into(), stdout, false);
     mirror(shared.clone(), job_id.into(), stderr, true);
-    // Start draining child output before writing a large fallback script. A
-    // shell may emit startup output before consuming descriptor 3.
-    let dispatch_unknown = match (script_write, script) {
-        (Some(mut writer), Some(script)) => {
-            bounded_write(&mut writer, script.as_bytes(), SCRIPT_WRITE_TIMEOUT).is_err()
-        }
-        _ => false,
-    };
-
     let waiter = shared.clone();
     let waiter_id = job_id.to_string();
     std::thread::spawn(move || reap_job(&waiter, &waiter_id, pid));
@@ -965,11 +837,7 @@ fn spawn_job(
             unsafe { libc::killpg(pid, libc::SIGINT) };
         });
     }
-    if dispatch_unknown {
-        Err("dispatch-unknown")
-    } else {
-        Ok(())
-    }
+    Ok(())
 }
 
 /// Poll one job leader until it is reaped. Stop/continue events update the
@@ -1115,7 +983,7 @@ fn handle(shared: &Arc<Shared>, request: Request) -> Response {
             }
             response
         }
-        request @ Request::Exec { .. } | request @ Request::ShellExec { .. } => {
+        request @ Request::Exec { .. } => {
             let (job_id, request_hash, launch, cwd, wait_ms, timeout_ms, context) = match request {
                 Request::Exec {
                     job_id,
@@ -1130,23 +998,6 @@ fn handle(shared: &Arc<Shared>, request: Request) -> Response {
                     job_id,
                     request_hash,
                     OwnedLaunch::Direct { executable, args },
-                    cwd,
-                    wait_ms,
-                    timeout_ms,
-                    context,
-                ),
-                Request::ShellExec {
-                    job_id,
-                    request_hash,
-                    script,
-                    cwd,
-                    wait_ms,
-                    timeout_ms,
-                    context,
-                } => (
-                    job_id,
-                    request_hash,
-                    OwnedLaunch::Shell { script },
                     cwd,
                     wait_ms,
                     timeout_ms,
@@ -1193,7 +1044,6 @@ fn handle(shared: &Arc<Shared>, request: Request) -> Response {
             }
             let borrowed = match &launch {
                 OwnedLaunch::Direct { executable, args } => Launch::Direct { executable, args },
-                OwnedLaunch::Shell { script } => Launch::Shell { script },
             };
             if let Err(error) = spawn_job(shared, &job_id, borrowed, &cwd, timeout_ms) {
                 if error != "dispatch-unknown" {
@@ -1641,10 +1491,11 @@ mod tests {
         );
         let stale = handle(
             &shared,
-            Request::ShellExec {
+            Request::Exec {
                 job_id: "job_stale".into(),
                 request_hash: "b".repeat(64),
-                script: "printf stale".into(),
+                executable: "/usr/bin/true".into(),
+                args: vec![],
                 cwd: "/tmp".into(),
                 wait_ms: 0,
                 timeout_ms: None,
@@ -1654,10 +1505,11 @@ mod tests {
         assert_eq!(stale.error, Some("control-revoked"));
         let old_service = handle(
             &shared,
-            Request::ShellExec {
+            Request::Exec {
                 job_id: "job_old_service".into(),
                 request_hash: "c".repeat(64),
-                script: "printf old".into(),
+                executable: "/usr/bin/true".into(),
+                args: vec![],
                 cwd: "/tmp".into(),
                 wait_ms: 0,
                 timeout_ms: None,
@@ -1678,10 +1530,11 @@ mod tests {
         );
         let revoked = handle(
             &shared,
-            Request::ShellExec {
+            Request::Exec {
                 job_id: "job_revoked".into(),
                 request_hash: "e".repeat(64),
-                script: "printf revoked".into(),
+                executable: "/usr/bin/true".into(),
+                args: vec![],
                 cwd: "/tmp".into(),
                 wait_ms: 0,
                 timeout_ms: None,
@@ -1793,10 +1646,11 @@ mod tests {
             .ok
         );
         let context = context("svc_current", 1, "holder_a");
-        let request = || Request::ShellExec {
+        let request = || Request::Exec {
             job_id: "job_once".into(),
             request_hash: "d".repeat(64),
-            script: ":".into(),
+            executable: "/usr/bin/true".into(),
+            args: vec![],
             cwd: "/tmp".into(),
             wait_ms: 1_000,
             timeout_ms: None,
@@ -1807,19 +1661,6 @@ mod tests {
         let second = handle(&shared, request());
         assert!(second.ok, "{:?}", second.error);
         assert_eq!(shared.inner.lock().recover().jobs.len(), 1);
-    }
-
-    #[test]
-    fn script_pipe_write_has_a_deadline_when_reader_stalls() {
-        let (_reader, writer) = make_script_pipe().unwrap();
-        let mut writer = std::fs::File::from(writer);
-        let error = bounded_write(
-            &mut writer,
-            &vec![b'x'; 1024 * 1024],
-            Duration::from_millis(10),
-        )
-        .unwrap_err();
-        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
     }
 
     #[test]

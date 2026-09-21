@@ -18,7 +18,7 @@
 //! Board creation and close intents are journaled here, then handed to the
 //! webview's one serialized Board transaction (`mcp.js`). The managed runner
 //! reports process exit and output EOF independently from that control-operation state. Direct
-//! argv and fallback scripts are never persisted or logged: only bounded
+//! argv is never persisted or logged: only bounded
 //! metadata, SHA-256 digests, and runner output exist. On restart NOTHING accepted is replayed — Board
 //! creates and closes included: every accepted/executing/admitted operation
 //! becomes `ambiguous` (`deck-restarted`). A close goes executing → admitted →
@@ -114,7 +114,6 @@ const MAX_CONNECTIONS: usize = 32;
 const CONNECTION_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_AUDIT_EVENTS: usize = 2_000;
 const AUDIT_RETENTION_MS: u64 = 30 * 24 * 60 * 60_000;
-const MAX_SCRIPT_BYTES: usize = 32 * 1024;
 const MAX_EXECUTABLE_BYTES: usize = 4 * 1024;
 const MAX_ARGUMENTS: usize = 256;
 const MAX_ARGUMENT_BYTES: usize = 64 * 1024;
@@ -342,8 +341,10 @@ struct ExecutionGrant {
     duration_ms: u64,
     allow_stdin: bool,
     allow_output: bool,
-    #[serde(default)]
-    allow_shell: bool,
+    /// Accepted only so v6 files written before shell fallback was removed
+    /// continue to load. It is ignored and omitted on the next save.
+    #[serde(default, rename = "allowShell", skip_serializing)]
+    _legacy_allow_shell: Option<bool>,
     grant_version: u64,
     revocation_version: u64,
     service_instance: String,
@@ -637,10 +638,9 @@ fn load(path: &Path) -> Result<DiskDoc, DeckError> {
         changed = true;
     }
     if doc.version == 5 {
-        // v6 adds a separate, fail-closed arbitrary-shell permission. Older
-        // execution grants deserialize with allowShell=false, so an upgrade
-        // never turns an existing structured-execution approval into shell
-        // authority.
+        // v6 used to add a separate arbitrary-shell permission. The fallback
+        // has since been removed; the sticky version remains so older builds
+        // still refuse newer state, and legacy allowShell fields are ignored.
         doc.version = STATE_VERSION;
         changed = true;
     }
@@ -1099,19 +1099,12 @@ fn active_execution_grant<'a>(
     client_id: &str,
     session: &ManagedSession,
     require_stdin: bool,
-    require_shell: bool,
 ) -> Result<&'a ExecutionGrant, DeckError> {
     match execution_authorization(runtime, doc, client_id, session) {
-        ExecutionAuthorization::Active(grant)
-            if (!require_stdin || grant.allow_stdin) && (!require_shell || grant.allow_shell) =>
-        {
-            Ok(grant)
-        }
+        ExecutionAuthorization::Active(grant) if !require_stdin || grant.allow_stdin => Ok(grant),
         _ => Err(DeckError::new(
             ErrorKind::Perm,
-            if require_shell {
-                "the high-risk arbitrary-shell fallback is not locally authorized"
-            } else if require_stdin {
+            if require_stdin {
                 "interactive stdin is not locally authorized"
             } else {
                 "a local execution grant is required"
@@ -1207,13 +1200,6 @@ fn map_error(error: DeckError) -> Value {
             "EXECUTION_GRANT_REQUIRED",
             error.message(),
             "Ask the local Deck user to approve a short trusted-host execution window.",
-        );
-    }
-    if error.kind() == ErrorKind::Perm && error.message().contains("arbitrary-shell") {
-        return error_value(
-            "SHELL_NOT_AUTHORIZED",
-            error.message(),
-            "Ask the local Deck user to separately approve the high-risk shell fallback, or use deck_exec.",
         );
     }
     if error.kind() == ErrorKind::Perm && error.message().contains("stdin") {
@@ -1734,24 +1720,6 @@ struct DirectExecArgs {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ShellExecArgs {
-    #[serde(flatten)]
-    common: ExecCommon,
-    script: String,
-}
-
-enum ExecLaunch {
-    Direct {
-        executable: String,
-        args: Vec<String>,
-    },
-    Shell {
-        script: String,
-    },
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct ReadArgs {
     job_id: String,
     #[serde(default)]
@@ -2142,26 +2110,15 @@ fn capabilities(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<
                 "realOsSandbox": false,
                 "directExecution": {
                     "default": true,
-                    "shellInterpreter": false,
+                    "arbitraryPrograms": true,
                     "argumentsVisibleInProcessMetadata": true,
                     "path": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
-                    "outputKind": "pty_combined"
-                },
-                "shellFallback": {
-                    "tool": "deck_shell_exec",
-                    "highRisk": true,
-                    "requiresLocalShellApproval": true,
-                    "shell": "zsh -d -f /dev/fd/3",
-                    "perJobShellState": true,
-                    "filesystemChangesPersist": true,
-                    "cdExportAliasFunctionPersistAcrossExec": false,
                     "outputKind": "pty_combined"
                 },
                 "limits": {
                     "executableBytes": MAX_EXECUTABLE_BYTES,
                     "argumentCount": MAX_ARGUMENTS,
                     "argumentBytes": MAX_ARGUMENT_BYTES,
-                    "scriptBytes": MAX_SCRIPT_BYTES,
                     "inputBytes": MAX_INPUT_BYTES,
                     "readBytesDefault": MAX_READ_BYTES,
                     "readBytesMax": MAX_READ_BYTES,
@@ -2371,25 +2328,22 @@ fn inspect(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<Value
             emergency.execution_fenced(&session.session_id),
         )
     };
-    let (authorization_status, authorization_expiry, stdin_approved, shell_approved) = runtime
+    let (authorization_status, authorization_expiry, stdin_approved) = runtime
         .read(|doc| {
             Ok(
                 match execution_authorization(runtime, doc, client_id, &session) {
-                    ExecutionAuthorization::None => ("none", None, false, false),
+                    ExecutionAuthorization::None => ("none", None, false),
                     ExecutionAuthorization::Active(grant) if execution_fenced => {
-                        ("revoked", Some(grant.expires_at), false, false)
+                        ("revoked", Some(grant.expires_at), false)
                     }
-                    ExecutionAuthorization::Active(grant) => (
-                        "active",
-                        Some(grant.expires_at),
-                        grant.allow_stdin,
-                        grant.allow_shell,
-                    ),
+                    ExecutionAuthorization::Active(grant) => {
+                        ("active", Some(grant.expires_at), grant.allow_stdin)
+                    }
                     ExecutionAuthorization::Expired(grant) => {
-                        ("expired", Some(grant.expires_at), false, false)
+                        ("expired", Some(grant.expires_at), false)
                     }
                     ExecutionAuthorization::Revoked(grant) => {
-                        ("revoked", Some(grant.expires_at), false, false)
+                        ("revoked", Some(grant.expires_at), false)
                     }
                 },
             )
@@ -2440,8 +2394,7 @@ fn inspect(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<Value
             "status": authorization_status,
             "active": authorization_status == "active",
             "expiresAtUnixMs": authorization_expiry,
-            "stdinApprovedForActiveGrant": stdin_approved,
-            "shellApprovedForActiveGrant": shell_approved
+            "stdinApprovedForActiveGrant": stdin_approved
         },
         "outputSharing": {
             "sessionGateOpen": session.output_shared && !session.human_lock && !emergency_human,
@@ -2604,58 +2557,22 @@ fn session_control(runtime: &Runtime, client_id: &str, arguments: Value) -> Resu
     }
 }
 
-fn forbidden_shell_executable(executable: &str) -> bool {
-    let name = Path::new(executable)
-        .file_name()
-        .and_then(|value| value.to_str())
-        .unwrap_or(executable);
-    matches!(
-        name,
-        "sh" | "bash" | "zsh" | "dash" | "fish" | "ksh" | "csh" | "tcsh" | "env"
-    )
-}
-
 fn valid_direct_launch(executable: &str, arguments: &[String]) -> bool {
     !executable.is_empty()
         && executable.len() <= MAX_EXECUTABLE_BYTES
         && !executable.chars().any(char::is_control)
-        && !forbidden_shell_executable(executable)
         && arguments.len() <= MAX_ARGUMENTS
-        && arguments
-            .iter()
-            .all(|value| !value.chars().any(char::is_control))
+        && arguments.iter().all(|value| !value.as_bytes().contains(&0))
         && arguments.iter().map(String::len).sum::<usize>() <= MAX_ARGUMENT_BYTES
 }
 
-fn exec(runtime: &Runtime, client_id: &str, tool: &str, arguments: Value) -> Result<Value, Value> {
-    let (args, launch) = if tool == "deck_shell_exec" {
-        let shell: ShellExecArgs = parse(arguments)?;
-        (
-            shell.common,
-            ExecLaunch::Shell {
-                script: shell.script,
-            },
-        )
-    } else {
-        let direct: DirectExecArgs = parse(arguments)?;
-        (
-            direct.common,
-            ExecLaunch::Direct {
-                executable: direct.executable,
-                args: direct.args,
-            },
-        )
-    };
-    let launch_valid = match &launch {
-        ExecLaunch::Direct { executable, args } => valid_direct_launch(executable, args),
-        ExecLaunch::Shell { script } => {
-            !script.is_empty()
-                && script.len() <= MAX_SCRIPT_BYTES
-                && !script.as_bytes().contains(&0)
-        }
-    };
+fn exec(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<Value, Value> {
+    let direct: DirectExecArgs = parse(arguments)?;
+    let args = direct.common;
+    let executable = direct.executable;
+    let argv = direct.args;
     if !valid_id(&args.request_id)
-        || !launch_valid
+        || !valid_direct_launch(&executable, &argv)
         || args.wait_ms.unwrap_or(1_000) > 5_000
         || args
             .execution_timeout_ms
@@ -2664,43 +2581,23 @@ fn exec(runtime: &Runtime, client_id: &str, tool: &str, arguments: Value) -> Res
         return Err(error_value(
             "INVALID_ARGUMENTS",
             "exec arguments exceed their bounds",
-            "Use a non-shell executable and bounded argument vector, or the separately authorized shell fallback.",
+            "Use a bounded executable and exact argument vector.",
         ));
     }
     // Fingerprinting is independent of JSON object key order. Raw arguments
-    // and script bytes are never journaled; only bounded metadata and digests
+    // are never journaled; only bounded metadata and digests
     // participate in the stable request fingerprint.
-    let (launch_fingerprint, launch_metadata, operation_kind, require_shell) = match &launch {
-        ExecLaunch::Direct {
-            executable,
-            args: argv,
-        } => {
-            let executable_digest = sha(executable.as_bytes());
-            let argument_digest = sha(&serde_json::to_vec(argv).unwrap_or_default());
-            let argument_bytes = argv.iter().map(String::len).sum::<usize>();
-            (
-                json!([
-                    "direct",
-                    executable_digest,
-                    argument_digest,
-                    argv.len(),
-                    argument_bytes
-                ]),
-                json!({"launchKind":"direct","executableDigest":executable_digest,"argumentDigest":argument_digest,"argumentCount":argv.len(),"argumentBytes":argument_bytes}),
-                "exec",
-                false,
-            )
-        }
-        ExecLaunch::Shell { script } => {
-            let script_digest = sha(script.as_bytes());
-            (
-                json!(["shell", script.len(), script_digest]),
-                json!({"launchKind":"shell","scriptDigest":script_digest,"scriptLength":script.len()}),
-                "shell-exec",
-                true,
-            )
-        }
-    };
+    let executable_digest = sha(executable.as_bytes());
+    let argument_digest = sha(&serde_json::to_vec(&argv).unwrap_or_default());
+    let argument_bytes = argv.iter().map(String::len).sum::<usize>();
+    let launch_fingerprint = json!([
+        "direct",
+        executable_digest,
+        argument_digest,
+        argv.len(),
+        argument_bytes
+    ]);
+    let launch_metadata = json!({"launchKind":"direct","executableDigest":executable_digest,"argumentDigest":argument_digest,"argumentCount":argv.len(),"argumentBytes":argument_bytes});
     let hash = sha(serde_json::to_vec(&json!([
         "deck-exec-v3",
         &args.request_id,
@@ -2745,7 +2642,7 @@ fn exec(runtime: &Runtime, client_id: &str, tool: &str, arguments: Value) -> Res
                 return Err(DeckError::new(ErrorKind::DiskFull, "MCP operation capacity reached"));
             }
             check_control(&session, client_id, &args.expected_generation, args.control_epoch, &args.holder_id)?;
-            let grant = active_execution_grant(runtime, doc, client_id, &session, false, require_shell)?.clone();
+            let grant = active_execution_grant(runtime, doc, client_id, &session, false)?.clone();
             if session.closing {
                 return Err(DeckError::new(ErrorKind::Locked, "session is closing"));
             }
@@ -2754,7 +2651,7 @@ fn exec(runtime: &Runtime, client_id: &str, tool: &str, arguments: Value) -> Res
             let operation_id = random_id("op_")?;
             let job_id = random_id("job_")?;
             let binding = JobBinding { job_id: job_id.clone(), client_id: client_id.into(), session_id: session.session_id.clone(), session_generation: session.generation.clone(), request_hash: hash.clone(), operation_id: operation_id.clone(), grant_id: grant.grant_id.clone(), grant_version: grant.grant_version, allow_output: grant.allow_output };
-            let operation = Operation { operation_id, client_id: client_id.into(), request_id: args.request_id.clone(), request_hash: hash.clone(), kind: operation_kind.into(), state: "accepted".into(), code: None, result: Some(json!({"jobId":job_id,"sessionId":session.session_id,"sessionGeneration":session.generation,"executionGrantId":grant.grant_id,"executionGrantVersion":grant.grant_version,"policyVersion":POLICY_VERSION,"environmentProfile":ENVIRONMENT_PROFILE,"launch":launch_metadata.clone(),"cwd":cwd})), accepted_at: now_ms(), updated_at: now_ms(), admission_hash: None, session_id: Some(session.session_id.clone()), control_epoch: Some(args.control_epoch), control_sequence: None };
+            let operation = Operation { operation_id, client_id: client_id.into(), request_id: args.request_id.clone(), request_hash: hash.clone(), kind: "exec".into(), state: "accepted".into(), code: None, result: Some(json!({"jobId":job_id,"sessionId":session.session_id,"sessionGeneration":session.generation,"executionGrantId":grant.grant_id,"executionGrantVersion":grant.grant_version,"policyVersion":POLICY_VERSION,"environmentProfile":ENVIRONMENT_PROFILE,"launch":launch_metadata.clone(),"cwd":cwd})), accepted_at: now_ms(), updated_at: now_ms(), admission_hash: None, session_id: Some(session.session_id.clone()), control_epoch: Some(args.control_epoch), control_sequence: None };
             doc.jobs.push(binding.clone());
             doc.operations.push(operation.clone());
             audit(doc, "exec-intent", AuditLink { principal_id: Some(client_id), session_id: Some(&session.session_id), operation_id: Some(&operation.operation_id), job_id: Some(&binding.job_id), grant_id: Some(&grant.grant_id), reason_code: None })?;
@@ -2797,8 +2694,7 @@ fn exec(runtime: &Runtime, client_id: &str, tool: &str, arguments: Value) -> Res
                 args.control_epoch,
                 &args.holder_id,
             )?;
-            let grant =
-                active_execution_grant(runtime, doc, client_id, current, false, require_shell)?;
+            let grant = active_execution_grant(runtime, doc, client_id, current, false)?;
             if grant.grant_id != binding.grant_id || grant.grant_version != binding.grant_version {
                 return Err(DeckError::new(
                     ErrorKind::Perm,
@@ -2831,10 +2727,7 @@ fn exec(runtime: &Runtime, client_id: &str, tool: &str, arguments: Value) -> Res
             "intent_hash": hash,
             "expires_at": grant.expires_at,
         });
-        let request = match &launch {
-            ExecLaunch::Direct { executable, args: argv } => json!({"kind":"exec","job_id":binding.job_id,"request_hash":hash,"executable":executable,"args":argv,"cwd":cwd,"wait_ms":args.wait_ms.unwrap_or(1_000),"timeout_ms":args.execution_timeout_ms,"context":context}),
-            ExecLaunch::Shell { script } => json!({"kind":"shell-exec","job_id":binding.job_id,"request_hash":hash,"script":script,"cwd":cwd,"wait_ms":args.wait_ms.unwrap_or(1_000),"timeout_ms":args.execution_timeout_ms,"context":context}),
-        };
+        let request = json!({"kind":"exec","job_id":binding.job_id,"request_hash":hash,"executable":executable,"args":argv,"cwd":cwd,"wait_ms":args.wait_ms.unwrap_or(1_000),"timeout_ms":args.execution_timeout_ms,"context":context});
         send_runner(&session, &request)
     });
     let reply = runner.as_ref().and_then(|runner| runner.as_ref().ok());
@@ -3413,7 +3306,6 @@ fn route(runtime: &Runtime, request: WireRequest) -> Value {
                 request.tool.as_str(),
                 "deck_session_control"
                     | "deck_exec"
-                    | "deck_shell_exec"
                     | "deck_job_read"
                     | "deck_job_input"
                     | "deck_session_close"
@@ -3426,10 +3318,7 @@ fn route(runtime: &Runtime, request: WireRequest) -> Value {
             );
         }
         if emergency.execution_fenced(session_id)
-            && matches!(
-                request.tool.as_str(),
-                "deck_exec" | "deck_shell_exec" | "deck_job_input"
-            )
+            && matches!(request.tool.as_str(), "deck_exec" | "deck_job_input")
         {
             return error_value(
                 "EXECUTION_GRANT_REQUIRED",
@@ -3450,12 +3339,7 @@ fn route(runtime: &Runtime, request: WireRequest) -> Value {
         "deck_operation_get" => operation_get(runtime, &request.client_id, request.arguments),
         "deck_session_inspect" => inspect(runtime, &request.client_id, request.arguments),
         "deck_session_control" => session_control(runtime, &request.client_id, request.arguments),
-        "deck_exec" | "deck_shell_exec" => exec(
-            runtime,
-            &request.client_id,
-            &request.tool,
-            request.arguments,
-        ),
+        "deck_exec" => exec(runtime, &request.client_id, request.arguments),
         "deck_job_read" => job_read(runtime, &request.client_id, request.arguments),
         "deck_job_input" | "deck_job_interrupt" => job_side_effect(
             runtime,
@@ -3475,11 +3359,7 @@ fn route(runtime: &Runtime, request: WireRequest) -> Value {
             Some("read-denied")
         } else if matches!(
             audit_tool.as_str(),
-            "deck_exec"
-                | "deck_shell_exec"
-                | "deck_job_input"
-                | "deck_session_create"
-                | "deck_session_close"
+            "deck_exec" | "deck_job_input" | "deck_session_create" | "deck_session_close"
         ) {
             Some("request-denied")
         } else {
@@ -4129,7 +4009,6 @@ pub(crate) fn mcp_execution_grant(
     duration_ms: Option<u64>,
     allow_stdin: bool,
     allow_output: bool,
-    allow_shell: bool,
 ) -> Result<(), DeckError> {
     execution_grant(
         runtime()?,
@@ -4137,7 +4016,6 @@ pub(crate) fn mcp_execution_grant(
         duration_ms,
         allow_stdin,
         allow_output,
-        allow_shell,
     )
 }
 
@@ -4147,7 +4025,6 @@ fn execution_grant(
     duration_ms: Option<u64>,
     allow_stdin: bool,
     allow_output: bool,
-    allow_shell: bool,
 ) -> Result<(), DeckError> {
     let _delivery = runtime.delivery.lock_or_recover();
     let duration = duration_ms
@@ -4210,7 +4087,7 @@ fn execution_grant(
                 duration_ms: duration,
                 allow_stdin,
                 allow_output,
-                allow_shell,
+                _legacy_allow_shell: None,
                 grant_version: version,
                 revocation_version: version.saturating_sub(1),
                 service_instance,
@@ -5105,7 +4982,6 @@ pub(crate) struct SessionUiView {
     execution_expires_at: Option<u64>,
     stdin_allowed: bool,
     output_shared: bool,
-    shell_allowed: bool,
 }
 
 #[tauri::command(async)]
@@ -5134,7 +5010,6 @@ pub(crate) fn mcp_session_ui(card_id: String) -> Result<SessionUiView, DeckError
             execution_expires_at: None,
             stdin_allowed: false,
             output_shared: false,
-            shell_allowed: false,
         });
     };
     let (client_name, recent_error, grant) = runtime.read(|doc| {
@@ -5202,7 +5077,6 @@ pub(crate) fn mcp_session_ui(card_id: String) -> Result<SessionUiView, DeckError
         execution_expires_at: grant.as_ref().map(|grant| grant.expires_at),
         stdin_allowed: grant.as_ref().is_some_and(|grant| grant.allow_stdin),
         output_shared: session.output_shared && !emergency_human,
-        shell_allowed: grant.as_ref().is_some_and(|grant| grant.allow_shell),
     })
 }
 
@@ -5532,7 +5406,7 @@ mod tests {
             duration_ms: 60_000,
             allow_stdin: true,
             allow_output: true,
-            allow_shell: true,
+            _legacy_allow_shell: None,
             grant_version: 1,
             revocation_version: 0,
             service_instance: "svc_test".into(),
@@ -5578,10 +5452,9 @@ mod tests {
             active["executionAuthorization"]["stdinApprovedForActiveGrant"],
             true
         );
-        assert_eq!(
-            active["executionAuthorization"]["shellApprovedForActiveGrant"],
-            true
-        );
+        assert!(active["executionAuthorization"]
+            .get("shellApprovedForActiveGrant")
+            .is_none());
         runtime
             .write(|doc| {
                 doc.sessions[0].control_owner = None;
@@ -5733,7 +5606,6 @@ mod tests {
         let doc = DiskDoc::default();
         assert!(!doc.config.enabled);
         validate_doc(&doc).unwrap();
-        assert_eq!(MAX_SCRIPT_BYTES, 32 * 1024);
         assert_eq!(MAX_RESPONSE_BYTES, 128 * 1024);
     }
 
@@ -5929,8 +5801,7 @@ mod tests {
         runtime
             .read(|doc| {
                 assert!(
-                    active_execution_grant(&runtime, doc, "client_a", &session, false, false)
-                        .is_err()
+                    active_execution_grant(&runtime, doc, "client_a", &session, false).is_err()
                 );
                 assert_eq!(
                     doc.audit
@@ -6633,9 +6504,8 @@ mod tests {
 
     #[test]
     fn encoded_frames_fit_the_advertised_budget() {
-        let hostile = "\"\\\n\r\t\u{0001}".repeat(MAX_SCRIPT_BYTES / 6);
-        let request =
-            json!({"kind":"shell-exec","script":hostile,"context":{"intent_hash":"a".repeat(64)}});
+        let hostile = "\"\\\n\r\t\u{0001}".repeat(MAX_ARGUMENT_BYTES / 6);
+        let request = json!({"kind":"exec","executable":"/usr/bin/printf","args":[hostile],"context":{"intent_hash":"a".repeat(64)}});
         assert!(serde_json::to_vec(&request).unwrap().len() < MAX_REQUEST_BYTES);
         let output = "\"\\\n\r\t\u{0001}".repeat(MAX_READ_BYTES / 6);
         let response = json!({"ok":true,"output":output});
@@ -6728,31 +6598,16 @@ mod tests {
     }
 
     #[test]
-    fn structured_exec_refuses_shells_and_shell_fallback_needs_its_own_grant() {
+    fn execution_grant_allows_any_program_including_shells() {
         let (runtime, runner, root) = fixture("shell-boundary", "svc_test");
         runtime
             .write(|doc| {
-                let mut grant = execution_grant(&doc.sessions[0]);
-                grant.allow_shell = false;
-                doc.execution_grants.push(grant);
+                doc.execution_grants.push(execution_grant(&doc.sessions[0]));
                 Ok(())
             })
             .unwrap();
-        let common = json!({"request_id":"direct_shell","session_id":"mcp_a","expected_generation":"g_a","control_epoch":1,"holder_id":"holder_a","cwd":root.display().to_string()});
-        let mut direct = common.clone();
-        direct["executable"] = json!("/bin/zsh");
-        direct["args"] = json!(["-c", "true"]);
-        assert_eq!(
-            route(&runtime, request("deck_exec", direct))["error"]["code"],
-            "INVALID_ARGUMENTS"
-        );
-        let mut shell = common;
-        shell["request_id"] = json!("shell_denied");
-        shell["script"] = json!("true");
-        assert_eq!(
-            route(&runtime, request("deck_shell_exec", shell))["error"]["code"],
-            "SHELL_NOT_AUTHORIZED"
-        );
+        let direct = json!({"request_id":"direct_shell","session_id":"mcp_a","expected_generation":"g_a","control_epoch":1,"holder_id":"holder_a","cwd":root.display().to_string(),"executable":"/bin/zsh","args":["-c","true"]});
+        assert_eq!(route(&runtime, request("deck_exec", direct))["ok"], true);
         drop(runner);
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -7163,7 +7018,7 @@ mod tests {
 
     /// Grant a fresh window directly (the local UI path) for route tests.
     fn grant_window(runtime: &Runtime) {
-        super::execution_grant(runtime, "mcp_a".into(), Some(60_000), true, true, true).unwrap();
+        super::execution_grant(runtime, "mcp_a".into(), Some(60_000), true, true).unwrap();
     }
 
     fn control_request(runtime: &Runtime, request_id: &str) -> u64 {
@@ -7252,7 +7107,6 @@ mod tests {
             &runtime,
             "mcp_a".into(),
             Some(MAX_EXECUTION_GRANT_MS),
-            true,
             true,
             true,
         )
@@ -7410,14 +7264,18 @@ mod tests {
     }
 
     #[test]
-    fn pre_v6_grants_deserialize_without_shell_authority() {
+    fn legacy_allow_shell_is_ignored_and_not_reserialized() {
         let root = test_root("v5-shell-grant");
         let runner = FakeRunner::start(&root, "g_a");
         let session = session_record(&root, &runner);
         let mut value = serde_json::to_value(execution_grant(&session)).unwrap();
-        value.as_object_mut().unwrap().remove("allowShell");
+        value["allowShell"] = json!(true);
         let migrated: ExecutionGrant = serde_json::from_value(value).unwrap();
-        assert!(!migrated.allow_shell);
+        assert_eq!(migrated._legacy_allow_shell, Some(true));
+        assert!(serde_json::to_value(migrated)
+            .unwrap()
+            .get("allowShell")
+            .is_none());
         drop(runner);
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -7429,12 +7287,8 @@ mod tests {
         assert_eq!(capabilities["deckVersion"], DECK_VERSION);
         assert_eq!(capabilities["stateSchemaVersion"], STATE_VERSION);
         assert_eq!(capabilities["executionMode"], "structured-direct-default");
-        assert_eq!(capabilities["directExecution"]["shellInterpreter"], false);
-        assert_eq!(
-            capabilities["shellFallback"]["shell"],
-            "zsh -d -f /dev/fd/3"
-        );
-        assert_eq!(capabilities["shellFallback"]["highRisk"], true);
+        assert_eq!(capabilities["directExecution"]["arbitraryPrograms"], true);
+        assert!(capabilities.get("shellFallback").is_none());
         assert!(capabilities.get("featureEnabled").is_none());
         let create = route(
             &runtime,
@@ -7916,7 +7770,7 @@ mod tests {
     #[test]
     fn execution_revoke_never_opens_output_sharing() {
         let (runtime, runner, root) = fixture("revoke-unshared", "svc_test");
-        super::execution_grant(&runtime, "mcp_a".into(), Some(60_000), true, false, true).unwrap();
+        super::execution_grant(&runtime, "mcp_a".into(), Some(60_000), true, false).unwrap();
         let executed = route(&runtime, exec_request("exec_job", 1));
         let job_id = executed["jobId"].as_str().unwrap().to_owned();
         assert_eq!(
@@ -8419,7 +8273,7 @@ mod tests {
             assert_eq!(replay["error"]["code"], "CONTROL_REVOKED", "{replay}");
         }
         assert_eq!(runner.count("exec"), 2);
-        super::execution_grant(&reloaded, "mcp_a".into(), Some(60_000), true, true, true).unwrap();
+        super::execution_grant(&reloaded, "mcp_a".into(), Some(60_000), true, true).unwrap();
         let epoch = control_request(&reloaded, "req_c");
         let resumed = route(&reloaded, exec_request("exec_resumed", epoch));
         assert_eq!(resumed["state"], "exited", "{resumed}");
@@ -8530,7 +8384,6 @@ mod tests {
             &runtime,
             "mcp_a".into(),
             Some(MAX_EXECUTION_GRANT_MS),
-            true,
             true,
             true,
         )
