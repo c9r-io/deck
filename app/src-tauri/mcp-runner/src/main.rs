@@ -48,6 +48,9 @@
 //! directory is accepted only at exactly 0700). The socket is bound under a
 //! private temporary name, made 0600, and atomically renamed into place, so a
 //! process-wide umask is never changed and the published path is never lax.
+//! An idle runner holds no timer: the accept loop blocks, `Shutdown` exits
+//! from the connection that answered it, and each job's reaper blocks in
+//! `waitid(WNOWAIT)` until the leader has an event.
 
 use base64::Engine;
 use ring::rand::{SecureRandom, SystemRandom};
@@ -886,12 +889,20 @@ fn spawn_job(
     Ok(())
 }
 
-/// Poll one job leader until it is reaped. Stop/continue events update the
+/// Follow one job leader until it is reaped. Stop/continue events update the
 /// reported state; exit reaps the leader and clears its PID inside one `Inner`
 /// critical section, so signal senders (who also hold `Inner`) never target a
-/// reused PID.
+/// reused PID. Between events the thread blocks in `waitid(WNOWAIT)` without
+/// the lock: WNOWAIT leaves the event (and the zombie) in place for the
+/// WNOHANG `waitpid` below, so the PID stays reserved until that reap.
 fn reap_job(shared: &Arc<Shared>, job_id: &str, pid: i32) {
+    // A `waitid` wake-up that `waitpid` then finds nothing for must not spin.
+    let mut spurious = false;
     loop {
+        if spurious {
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        wait_for_child_event(pid);
         {
             let mut inner = shared.inner.lock().recover();
             let mut status = 0;
@@ -904,6 +915,7 @@ fn reap_job(shared: &Arc<Shared>, job_id: &str, pid: i32) {
                     libc::WNOHANG | libc::WUNTRACED | libc::WCONTINUED,
                 )
             };
+            spurious = result == 0;
             if result == pid {
                 let terminal = !libc::WIFSTOPPED(status) && !libc::WIFCONTINUED(status);
                 if let Some(job) = inner.jobs.get_mut(job_id) {
@@ -944,7 +956,32 @@ fn reap_job(shared: &Arc<Shared>, job_id: &str, pid: i32) {
                 return;
             }
         }
-        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+/// Block until `pid` has a reportable exit/stop/continue event, without
+/// consuming it. Falls back to a short sleep if `waitid` fails for a reason
+/// other than EINTR, so the caller's WNOHANG `waitpid` still decides.
+fn wait_for_child_event(pid: i32) {
+    loop {
+        // SAFETY: `info` is valid writable storage; `pid` is this runner's
+        // unreaped child, and WNOWAIT never reaps it.
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        let result = unsafe {
+            libc::waitid(
+                libc::P_PID,
+                pid as libc::id_t,
+                &mut info,
+                libc::WEXITED | libc::WSTOPPED | libc::WCONTINUED | libc::WNOWAIT,
+            )
+        };
+        if result == 0 {
+            return;
+        }
+        if std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted {
+            std::thread::sleep(Duration::from_millis(25));
+            return;
+        }
     }
 }
 
@@ -1406,11 +1443,10 @@ fn handle(shared: &Arc<Shared>, request: Request) -> Response {
     }
 }
 
-/// Serve one request. The listener is non-blocking (so the accept loop can
-/// observe `stopping`), and macOS hands that O_NONBLOCK to accepted sockets:
-/// every accepted stream is switched back to blocking I/O with bounded
-/// timeouts before it is read. Without this, any request larger than one
-/// socket buffer failed with WouldBlock.
+/// Serve one request. Every accepted stream is forced to blocking I/O with
+/// bounded timeouts before it is read: macOS hands a listener's O_NONBLOCK to
+/// accepted sockets, and a non-blocking stream failed any request larger than
+/// one socket buffer with WouldBlock.
 fn serve_connection(shared: Arc<Shared>, mut stream: UnixStream) {
     if stream.set_nonblocking(false).is_err()
         || stream.set_read_timeout(Some(CONNECTION_TIMEOUT)).is_err()
@@ -2038,10 +2074,6 @@ fn main() {
         Ok(listener) => listener,
         Err(_) => std::process::exit(73),
     };
-    if listener.set_nonblocking(true).is_err() {
-        let _ = std::fs::remove_file(&socket);
-        std::process::exit(73);
-    }
     // Block terminal/lifecycle signals before any thread exists so every
     // runner thread inherits the mask; `signal_thread` consumes them.
     let signals = runner_signal_set();
@@ -2080,7 +2112,10 @@ fn main() {
     signal_thread(shared.clone(), socket.clone());
     stdin_forwarder(shared.clone());
     println!("Deck MCP managed shell ready");
-    while !shared.inner.lock().recover().stopping {
+    // Blocking accept: an idle runner sleeps in the kernel instead of waking
+    // on a timer. `Shutdown` is answered on its own connection, which then
+    // ends the process itself (the accept below never returns for it).
+    loop {
         match listener.accept() {
             Ok((stream, _)) => {
                 // Bounded concurrency: excess connections are closed at once.
@@ -2090,16 +2125,19 @@ fn main() {
                     continue;
                 }
                 let state = shared.clone();
+                let socket = socket.clone();
                 std::thread::spawn(move || {
                     serve_connection(state.clone(), stream);
                     state.connections.fetch_sub(1, Ordering::SeqCst);
+                    if state.inner.lock().recover().stopping {
+                        let _ = std::fs::remove_file(&socket);
+                        std::process::exit(0);
+                    }
                 });
             }
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            Err(_) => std::thread::sleep(Duration::from_millis(25)),
+            // EINTR/ECONNABORTED and friends: accept again after a short
+            // pause so a persistent error cannot spin.
+            Err(_) => std::thread::sleep(Duration::from_millis(250)),
         }
     }
-    let _ = std::fs::remove_file(socket);
 }
