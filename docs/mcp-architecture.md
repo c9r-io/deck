@@ -149,6 +149,15 @@ Every later runner request, including ping/read/stop/shutdown, carries the key
 and uses a constant-time comparison; missing and incorrect keys receive the
 same `authentication-failed` response.
 
+The socket directory is writable by the pane's own jobs (same uid), so a
+socket path alone does not identify the runner: a job could move the runner
+socket aside and listen at its path. Before writing anything, including the
+claim, Deck therefore requires the kernel-reported peer of the connection to
+be the tmux pane process (`#{pane_pid}`; tmux execs the multi-argument
+runner command directly, without a shell). The PID is resolved once at claim
+and kept with the key, so the check adds no process spawn per request. An
+impostor receives no bytes and the call fails closed.
+
 Socket paths are never published with permissive creation modes. The runner
 creates a missing socket directory with mode 0700 in the creation operation
 and refuses an existing directory unless it is exactly 0700. Both the runner

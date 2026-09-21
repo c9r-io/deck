@@ -7,6 +7,10 @@
   placeholder. A badge rule with an empty (plain shell) command could
   previously paste someone else's Slack message into zsh and run it; such a
   rule is now shown as blocked and its badges are skipped until it is edited.
+- Deck now verifies, through kernel peer credentials, that a managed MCP
+  runner socket is served by the tmux pane's own process before it sends the
+  runner key, so a pane job can no longer move the socket aside and collect
+  the key.
 - MCP execution now uses one structured executable plus exact argument vector
   (`deck_exec`). Execution approval explicitly permits any program, including
   interpreters and shells, with the logged-in user's permissions; it is not a

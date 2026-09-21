@@ -61,7 +61,9 @@
 //! A runner created by an earlier Deck process is `stale` (`RUNNER_STALE`)
 //! and cannot be called by the new process: each runner keeps an in-memory
 //! 256-bit key retrieved once by the launching Deck PID through kernel peer
-//! credentials. Closing its tmux pane invokes the runner's SIGHUP cleanup.
+//! credentials. Deck in turn talks only to a socket whose kernel-reported
+//! peer is the tmux pane process (`runner_exchange`), so a pane job that
+//! moves the socket aside and listens in its place never receives the key. Closing its tmux pane invokes the runner's SIGHUP cleanup.
 //! Local-command failures are stable machine codes (`mcp-*`) the webview maps
 //! to one sentence each.
 //! The control socket is bound under a private temporary name, made 0600, and
@@ -449,8 +451,9 @@ struct Runtime {
     delivery: Mutex<()>,
     emergency: Mutex<EmergencyFences>,
     service_instance: String,
-    /// Per-runner authentication keys exist only in this Deck process.
-    runner_auth: Mutex<HashMap<String, String>>,
+    /// Per-runner authentication keys exist only in this Deck process, each
+    /// kept with the pane PID the runner was verified to run as.
+    runner_auth: Mutex<HashMap<String, RunnerAuth>>,
     started: Instant,
 }
 
@@ -1478,9 +1481,32 @@ fn operation_view(operation: &Operation) -> Value {
     })
 }
 
-fn runner_exchange(socket: &str, generation: &str, request: &Value) -> Result<Value, DeckError> {
+#[derive(Clone)]
+struct RunnerAuth {
+    key: String,
+    pid: libc::pid_t,
+}
+
+/// The runner socket directory is writable by the pane's own jobs (same
+/// uid), so its path proves nothing: a job could move the socket aside and
+/// listen in its place to collect the key. Every exchange, the claim
+/// included, therefore first checks through the kernel that the listening
+/// peer is the process tmux started as the pane (`#{pane_pid}`, resolved
+/// once at claim and kept with the key); nothing is written to another peer.
+fn runner_exchange(
+    socket: &str,
+    generation: &str,
+    runner_pid: libc::pid_t,
+    request: &Value,
+) -> Result<Value, DeckError> {
     let mut stream = UnixStream::connect(socket)
         .map_err(|_| DeckError::new(ErrorKind::Missing, "managed runner is unavailable"))?;
+    if peer_pid(&stream) != Some(runner_pid) {
+        return Err(DeckError::new(
+            ErrorKind::Perm,
+            "managed runner socket is not served by its pane",
+        ));
+    }
     stream
         .set_read_timeout(Some(Duration::from_secs(7)))
         .map_err(DeckError::from)?;
@@ -1520,14 +1546,16 @@ fn runner_exchange(socket: &str, generation: &str, request: &Value) -> Result<Va
     Ok(value)
 }
 
-fn runner_auth(runtime: &Runtime, session: &ManagedSession) -> Result<String, DeckError> {
+fn runner_auth(runtime: &Runtime, session: &ManagedSession) -> Result<RunnerAuth, DeckError> {
     let mut keys = runtime.runner_auth.lock_or_recover();
-    if let Some(key) = keys.get(&session.runner_socket) {
-        return Ok(key.clone());
+    if let Some(auth) = keys.get(&session.runner_socket) {
+        return Ok(auth.clone());
     }
+    let pid = runner_pane_pid(&session.tmux_session)?;
     let response = runner_exchange(
         &session.runner_socket,
         &session.generation,
+        pid,
         &json!({
             "kind":"claim",
             "service_instance":runtime.service_instance,
@@ -1544,8 +1572,50 @@ fn runner_auth(runtime: &Runtime, session: &ManagedSession) -> Result<String, De
         })
         .ok_or_else(|| DeckError::new(ErrorKind::Perm, "managed runner authentication failed"))?
         .to_owned();
-    keys.insert(session.runner_socket.clone(), key.clone());
-    Ok(key)
+    let auth = RunnerAuth { key, pid };
+    keys.insert(session.runner_socket.clone(), auth.clone());
+    Ok(auth)
+}
+
+/// The runner is the pane's own process: tmux execs a multi-argument pane
+/// command directly, without a shell.
+#[cfg(not(test))]
+fn runner_pane_pid(tmux_session: &str) -> Result<libc::pid_t, DeckError> {
+    let target = crate::tmux::pane_target(tmux_session);
+    crate::tmux::tmux(&["display-message", "-p", "-t", &target, "#{pane_pid}"])?
+        .trim()
+        .parse::<libc::pid_t>()
+        .ok()
+        .filter(|pid| *pid > 0)
+        .ok_or_else(|| DeckError::new(ErrorKind::Missing, "managed runner pane is unavailable"))
+}
+
+/// Unit tests serve fake runners from this process.
+#[cfg(test)]
+fn runner_pane_pid(_tmux_session: &str) -> Result<libc::pid_t, DeckError> {
+    Ok(std::process::id() as libc::pid_t)
+}
+
+#[cfg(target_os = "macos")]
+fn peer_pid(stream: &UnixStream) -> Option<libc::pid_t> {
+    let mut pid: libc::pid_t = 0;
+    let mut len = std::mem::size_of::<libc::pid_t>() as libc::socklen_t;
+    // SAFETY: `pid` and `len` point to valid storage for LOCAL_PEERPID.
+    let result = unsafe {
+        libc::getsockopt(
+            std::os::fd::AsRawFd::as_raw_fd(stream),
+            libc::SOL_LOCAL,
+            libc::LOCAL_PEERPID,
+            (&mut pid as *mut libc::pid_t).cast(),
+            &mut len,
+        )
+    };
+    (result == 0 && len as usize == std::mem::size_of::<libc::pid_t>()).then_some(pid)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn peer_pid(_stream: &UnixStream) -> Option<libc::pid_t> {
+    None
 }
 
 fn send_runner(
@@ -1558,8 +1628,13 @@ fn send_runner(
     authenticated
         .as_object_mut()
         .ok_or_else(|| DeckError::new(ErrorKind::Invalid, "runner request must be an object"))?
-        .insert("auth".into(), Value::String(auth));
-    runner_exchange(&session.runner_socket, &session.generation, &authenticated)
+        .insert("auth".into(), Value::String(auth.key));
+    runner_exchange(
+        &session.runner_socket,
+        &session.generation,
+        auth.pid,
+        &authenticated,
+    )
 }
 
 fn send_runner_control(
@@ -1625,11 +1700,16 @@ fn runner_control_result(response: Result<Value, DeckError>) -> Result<(), DeckE
     }
 }
 
-fn runner_socket_matches(runtime: &Runtime, socket: &str, generation: &str) -> bool {
+fn runner_socket_matches(
+    runtime: &Runtime,
+    tmux_session: &str,
+    socket: &str,
+    generation: &str,
+) -> bool {
     let session = ManagedSession {
         session_id: String::new(),
         card_id: String::new(),
-        tmux_session: String::new(),
+        tmux_session: tmux_session.into(),
         project_id: String::new(),
         title: String::new(),
         cwd: String::new(),
@@ -4762,7 +4842,7 @@ pub(crate) fn mcp_start_session(
         .ok_or_else(|| DeckError::new(ErrorKind::Invalid, "MCP create plan is invalid"))?;
     let output_retention_ms = runtime.read(|doc| doc.config.output_retention_ms)?;
     if crate::tmux::tmux(&["has-session", "-t", &crate::tmux::session_target(&name)]).is_ok() {
-        if runner_socket_matches(runtime, socket, generation) {
+        if runner_socket_matches(runtime, &name, socket, generation) {
             return Ok(StartResult { created: true });
         }
         return Err(DeckError::new(
@@ -5835,6 +5915,33 @@ mod tests {
     }
 
     #[test]
+    fn runner_exchange_writes_nothing_to_a_socket_another_process_serves() {
+        let root = test_root("runner-peer-pid");
+        let socket = root.join("runner.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let reader = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut received = Vec::new();
+            stream.read_to_end(&mut received).unwrap();
+            received
+        });
+        // this process serves the socket; any other pid is an impostor
+        let impostor = std::process::id() as libc::pid_t + 1;
+        let err = runner_exchange(
+            socket.to_str().unwrap(),
+            "g_a",
+            impostor,
+            &json!({"kind":"ping","auth":"secret"}),
+        )
+        .unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::Perm);
+        assert!(
+            reader.join().unwrap().is_empty(),
+            "no byte reaches the impostor"
+        );
+    }
+
+    #[test]
     fn control_socket_exists_only_while_mcp_is_enabled() {
         let root = test_root("conditional-control-socket");
         let runtime = Runtime {
@@ -6313,11 +6420,13 @@ mod tests {
         assert!(guard_server_restart().is_err());
         assert!(runner_socket_matches(
             &runtime,
+            "deck-mcp-test",
             runner.socket.to_str().unwrap(),
             "g_a"
         ));
         assert!(!runner_socket_matches(
             &runtime,
+            "deck-mcp-test",
             runner.socket.to_str().unwrap(),
             "g_other"
         ));
