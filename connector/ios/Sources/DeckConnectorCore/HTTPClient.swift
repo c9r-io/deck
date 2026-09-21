@@ -118,6 +118,7 @@ public final class DeckHTTPClient: NSObject, URLSessionDelegate, URLSessionTaskD
         guard let http = response as? HTTPURLResponse else { throw ConnectorError.invalidResponse }
         if http.statusCode == 401 || http.statusCode == 403 { throw ConnectorError.revoked }
         if http.statusCode == 404, path.hasPrefix("/v1/commands/") { throw ConnectorError.commandNotFound }
+        if http.statusCode == 426 { throw ConnectorError.upgradeRequired }
         guard (200..<300).contains(http.statusCode) else {
             let code = (try? JSONDecoder().decode(ErrorEnvelope.self, from: data).error.code) ?? "http-\(http.statusCode)"
             if http.statusCode == 409 || http.statusCode == 412 { throw ConnectorError.conflict(code) }

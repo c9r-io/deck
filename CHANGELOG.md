@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- MCP and Phone Connector requests can no longer be applied twice after Deck
+  drops their history. MCP control and session-create calls now carry a
+  sequence value (control protocol 4, state schema 5), renewals are journaled
+  and never extend a lease on replay, and release/request always fit in a
+  full journal. Phone commands carry a device sequence that the host checks on
+  every POST (journal format 3); older phone builds are asked to update.
+- Revoking an execution window now also stops exec and stdin requests that
+  were already past their first check, and remote closes re-check takeover,
+  client revocation and disable before admission.
+
 - Failed session polls preserve running cards and queued prompts instead of
   treating an unavailable listing as exited sessions. Invalid working-directory
   metadata no longer hides a live session. Polling and Slack credential

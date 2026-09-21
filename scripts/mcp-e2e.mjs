@@ -128,6 +128,7 @@ try {
   }
   const controlTool = listed.result.tools.find(tool => tool.name === 'deck_session_control');
   assert.ok(controlTool.inputSchema.required.includes('holder_id'));
+  assert.ok(controlTool.inputSchema.required.includes('control_sequence'));
 
   const capabilities = await call('deck_capabilities');
   assert.equal(capabilities.executionMode, 'trusted-host');
@@ -138,6 +139,7 @@ try {
     project_id: config['project-id'],
     cwd: config.cwd,
     title: 'MCP production E2E',
+    create_sequence: capabilities.nextCreateSequence,
   });
   const createDone = await waitOperation(create.operationId);
   assert.equal(createDone.state, 'committed', JSON.stringify(createDone));
@@ -148,6 +150,7 @@ try {
   const controlled = await call('deck_session_control', {
     request_id: `${prefix}_control`, session_id: session.sessionId,
     expected_generation: session.sessionGeneration, action: 'request', holder_id: holderId,
+    control_sequence: session.controlSequence,
   });
   session = { ...session, ...controlled.result };
   assert.equal(session.controlOwner, config['client-id']);

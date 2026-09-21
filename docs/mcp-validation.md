@@ -8,8 +8,8 @@ installed signed app.
 
 ## Scheme-B remaining-requirement matrix
 
-The current source uses control protocol v3, state schema v4 and runner
-protocol 2. The MCP standard protocol version is negotiated independently by
+The current source uses control protocol v4, state schema v5 and runner
+protocol 2 (see the 2026-09-21 F1–F4 section for what v4/v5 changed). The MCP standard protocol version is negotiated independently by
 the SDK. Rows below describe the v3-era evidence; the 2026-09-21 remediation
 section supersedes them where they differ.
 
@@ -167,6 +167,25 @@ acceptance session were not touched.
   `deck-mcp` exits 64 for `--socket` and `--credential-fd`.
 - **NOT RUN** — signed app, WKWebView, Keychain and real Tunnel acceptance
   (see below), and the E2E client against an isolated app.
+
+## 2026-09-21 F1–F4 follow-up (replay identity, revocation admission)
+
+Source-level and isolated-test evidence only (fake runner, temporary state
+directories, loopback TLS); no signed app, WebView, real tmux, Keychain,
+Tunnel or phone was used. Protocol changes were approved by the maintainer.
+
+| Finding | Change | Counterexample tests (current source) |
+|---|---|---|
+| F1 exec/stdin | a pending execution revocation fences exec/stdin at the final admission (counted per revocation; an approval lifts only an earlier unpersisted one); exec also requires the grant its intent was accepted under, and every final-admission refusal is journaled `rejected` | `f1_exec_past_route_is_stopped_by_a_pending_execution_revoke`, `f1_stdin_past_route_delivers_no_bytes_after_a_pending_execution_revoke`, `f1_an_approval_never_clears_a_revocation_that_persists_after_it`, `f1_revocation_after_the_commit_point_is_ordered_after_the_dispatch`, `f1_a_pending_execution_revoke_leaves_reads_and_interrupt_alone`, `f1_a_job_bound_to_a_revoked_grant_never_revives_under_a_new_grant` |
+| F1 close | close admission, validation and create start re-check disable, client revocation and takeover under the delivery lock | `f1_close_admission_rechecks_takeover_revocation_and_disable` |
+| F2 | control actions carry `control_sequence`, creates `create_sequence` (protocol 4, state 5); ambiguous closes outlive the result window | `f2_a_retired_control_request_is_never_applied_again`, `f2_a_retired_create_is_never_accepted_again`, `f2_an_ambiguous_exec_is_never_dispatched_again`, `f2_an_ambiguous_close_outlives_the_result_window`, `a_retired_request_id_is_rejected_never_reexecuted` |
+| C1 | renewals are journaled (real `operationId`), superseded by the sequence | `c1_an_exact_renew_replay_never_extends_the_lease` |
+| F3 | control pool outside the ordinary pool; lapsed epochs closed under pressure; per-client interrupt reserve cap | `f3_a_full_client_quota_recovers_by_release_and_request`, `f3_a_full_global_pool_recovers_by_release_and_request`, `f3_a_lapsed_lease_at_full_capacity_recovers_by_request_without_a_new_grant`, `f3_interrupt_reserve_survives_a_full_pool_and_one_greedy_client` |
+| F4 | phone `seq` checked by POST admission against the device floor (journal format 3; 426 without `seq`) | `f4_a_retired_command_is_never_admitted_again`, `f4_concurrent_identical_posts_admit_once`, `f4_crash_boundaries_never_admit_twice_or_guess_success`, `f4_http_post_admission_refuses_a_retired_command_without_a_prior_get` |
+
+Remaining: C2–C5 are unchanged; the iOS Swift Testing target and the app
+target were not built here (no Xcode); signed-app/WebView/Keychain/Tunnel
+behaviour still needs a new signed nightly.
 
 ## Ordinary ChatGPT manual acceptance
 

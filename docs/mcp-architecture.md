@@ -120,12 +120,17 @@ Side-effect request ids are fingerprinted over the parsed arguments (null ≡
 omitted). Equal request id and arguments return the recorded operation
 without repeating any side effect (including runner control); different
 arguments return `REQUEST_ID_CONFLICT`. Each record carries the session and
-control epoch it was bound to. A terminal record is retired once its session
-is gone or its epoch is no longer current — a replay then fails generation or
-epoch checks, so retirement never turns an old request into a new one. Board
-creates/closes keep a 32-per-client window; renewals are not journaled; each
-client may hold 500 of the 2,000 records; 64 slots are reserved for
-interrupts. Job bindings are capped at 64 per session (the runner retires its
+control epoch it was bound to, and a control record also the control
+sequence it produced. A terminal record is retired once its session is gone,
+its epoch is no longer current, or (control) a later change superseded it — a
+replay then fails the generation, epoch or sequence check (`STALE_REQUEST`),
+so retirement never turns an old request into a new one. Creates are bound to
+the client's create sequence the same way; creates/closes stay queryable in a
+32-per-client window and a close is kept while its session is at the epoch it
+named. Control records (one per session) never draw from the ordinary pool,
+so release/request always fit; each client may hold 500 ordinary records;
+64 slots beyond the ordinary pool are reserved for interrupts (16 per
+client). Under pressure, epochs whose lease lapsed are closed first. Job bindings are capped at 64 per session (the runner retires its
 oldest finished jobs the same way), and execution grants at the newest per
 session plus those still referenced by a binding. Nonterminal and ambiguous
 records of a live session are never retired. Scripts and input bytes are not

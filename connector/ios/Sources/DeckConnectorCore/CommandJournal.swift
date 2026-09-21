@@ -36,16 +36,33 @@ public struct MessageDraft: Codable, Equatable, Sendable {
 }
 
 public struct JournalSnapshot: Codable, Equatable, Sendable {
+    /// 2 adds `nextSequence`; a version-1 journal is upgraded on open and
+    /// written as version 2 on its next save.
+    public static let currentVersion = 2
     public let version: Int
     public let binding: JournalBinding
     public var records: [CommandRecord]
     public var drafts: [String: MessageDraft]
+    /// Lower bound for the next command's admission sequence.
+    public var nextSequence: UInt64
 
-    public init(binding: JournalBinding, records: [CommandRecord] = [], drafts: [String: MessageDraft] = [:]) {
-        self.version = 1
+    public init(binding: JournalBinding, records: [CommandRecord] = [], drafts: [String: MessageDraft] = [:], nextSequence: UInt64 = 1) {
+        self.version = Self.currentVersion
         self.binding = binding
         self.records = records
         self.drafts = drafts
+        self.nextSequence = nextSequence
+    }
+
+    private enum CodingKeys: String, CodingKey { case version, binding, records, drafts, nextSequence }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        version = try values.decode(Int.self, forKey: .version)
+        binding = try values.decode(JournalBinding.self, forKey: .binding)
+        records = try values.decode([CommandRecord].self, forKey: .records)
+        drafts = try values.decode([String: MessageDraft].self, forKey: .drafts)
+        nextSequence = try values.decodeIfPresent(UInt64.self, forKey: .nextSequence) ?? 1
     }
 }
 
@@ -96,9 +113,12 @@ public actor CommandJournal {
     public static func open(storage: any JournalStorage, binding: JournalBinding) async throws -> CommandJournal {
         let loaded = try await storage.load()
         if let loaded {
-            guard loaded.version == 1, loaded.binding == binding else { throw ConnectorError.conflict("journal-binding-mismatch") }
+            guard (1...JournalSnapshot.currentVersion).contains(loaded.version), loaded.binding == binding else { throw ConnectorError.conflict("journal-binding-mismatch") }
             guard loaded.records.count <= ConnectorLimits.commandJournalEntries else { throw ConnectorError.capacityExceeded }
-            return CommandJournal(storage: storage, state: loaded)
+            // Version 1 records carry no sequence and keep their immutable
+            // bodies; the upgrade only adds the counter.
+            let upgraded = JournalSnapshot(binding: loaded.binding, records: loaded.records, drafts: loaded.drafts, nextSequence: loaded.nextSequence)
+            return CommandJournal(storage: storage, state: upgraded)
         }
         return CommandJournal(storage: storage, state: JournalSnapshot(binding: binding))
     }
@@ -141,9 +161,11 @@ public actor CommandJournal {
     }
 
     public func submit(_ request: CommandRequest, draftCardID: String?, using transport: any CommandTransport) async throws -> CommandResult {
-        if let existing = try await prepare(request) {
+        let prepared = try await prepare(request)
+        if let existing = prepared.existing {
             return existing
         }
+        let request = prepared.request
 
         let result: CommandResult
         do {
@@ -190,21 +212,30 @@ public actor CommandJournal {
         return outcomes
     }
 
-    private func prepare(_ request: CommandRequest) async throws -> CommandResult? {
+    /// Records a new command with its admission sequence before any POST, or
+    /// answers an existing one. The sequence is `max(nextSequence, now in ms)`:
+    /// strictly increasing within this journal, and still above an earlier
+    /// installation's sequences if the journal file was lost while the
+    /// device credential survived.
+    private func prepare(_ request: CommandRequest) async throws -> (existing: CommandResult?, request: CommandRequest) {
         await acquireTransaction()
         defer { releaseTransaction() }
         if let existing = state.records.first(where: { $0.id == request.id }) {
-            guard existing.request == request else { throw ConnectorError.conflict("operation-id-reused") }
-            if let result = existing.result { protectedResultIDs.insert(request.id); return result }
+            guard existing.request.sequenced(nil) == request.sequenced(nil) else { throw ConnectorError.conflict("operation-id-reused") }
+            if let result = existing.result { protectedResultIDs.insert(request.id); return (result, existing.request) }
             throw ConnectorError.transport("The original operation is pending recovery.")
         }
         let now = Date()
+        let clock = UInt64(max(0, (now.timeIntervalSince1970 * 1000).rounded(.down)))
+        let seq = max(state.nextSequence, clock)
+        let sequenced = request.sequenced(seq)
         var candidate = state
-        candidate.records.append(CommandRecord(request: request, localState: .prepared, result: nil, createdAt: now, updatedAt: now))
+        candidate.nextSequence = seq + 1
+        candidate.records.append(CommandRecord(request: sequenced, localState: .prepared, result: nil, createdAt: now, updatedAt: now))
         protectedResultIDs.insert(request.id)
         do { try await persistAndCommit(candidate, protecting: request.id) }
         catch { protectedResultIDs.remove(request.id); throw error }
-        return nil
+        return (nil, sequenced)
     }
 
     private func persistState(id: String, localState: CommandRecord.LocalState, result: CommandResult?, draftCardID: String?) async throws {

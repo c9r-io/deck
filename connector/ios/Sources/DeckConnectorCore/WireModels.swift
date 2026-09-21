@@ -32,6 +32,7 @@ public enum ConnectorError: Error, Equatable, LocalizedError, Sendable {
     case conflict(String)
     case commandNotFound
     case capacityExceeded
+    case upgradeRequired
     case transport(String)
 
     public var errorDescription: String? {
@@ -49,6 +50,7 @@ public enum ConnectorError: Error, Equatable, LocalizedError, Sendable {
         case let .conflict(code): "The host rejected stale state: \(code). Refresh before retrying."
         case .commandNotFound: "The host has no record of this operation. You may retry its original immutable ID and body."
         case .capacityExceeded: "The local recovery archive has no safe space for another operation while unresolved operations and drafts are preserved."
+        case .upgradeRequired: "The Deck host requires a newer version of this app. Update it before sending."
         case let .transport(message): message
         }
     }
@@ -285,17 +287,28 @@ public struct CommandRequest: Codable, Equatable, Sendable {
     public let expectedGeneration: String?
     public let expectedRevision: String?
     public let payload: [String: JSONValue]
+    /// Admission sequence, assigned once by `CommandJournal` before the first
+    /// POST and reused by every retry. The host refuses a command whose
+    /// sequence is at or below its retired history, so a command can never be
+    /// admitted twice even after the host dropped its record.
+    public let seq: UInt64?
 
-    public init(id: String, kind: String, cardId: String? = nil, expectedGeneration: String? = nil, expectedRevision: String? = nil, payload: [String: JSONValue]) {
+    public init(id: String, kind: String, cardId: String? = nil, expectedGeneration: String? = nil, expectedRevision: String? = nil, payload: [String: JSONValue], seq: UInt64? = nil) {
         self.id = id
         self.kind = kind
         self.cardId = cardId
         self.expectedGeneration = expectedGeneration
         self.expectedRevision = expectedRevision
         self.payload = payload
+        self.seq = seq
     }
 
-    private enum CodingKeys: String, CodingKey { case id, kind, cardId, expectedGeneration, expectedRevision, payload }
+    /// The same command bound to `seq` (nil: the unsequenced body a caller builds).
+    public func sequenced(_ seq: UInt64?) -> CommandRequest {
+        CommandRequest(id: id, kind: kind, cardId: cardId, expectedGeneration: expectedGeneration, expectedRevision: expectedRevision, payload: payload, seq: seq)
+    }
+
+    private enum CodingKeys: String, CodingKey { case id, kind, cardId, expectedGeneration, expectedRevision, payload, seq }
 
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -305,6 +318,7 @@ public struct CommandRequest: Codable, Equatable, Sendable {
         expectedGeneration = try values.decodeIfPresent(String.self, forKey: .expectedGeneration)
         expectedRevision = try values.decodeIfPresent(String.self, forKey: .expectedRevision)
         payload = try values.decode([String: JSONValue].self, forKey: .payload)
+        seq = try values.decodeIfPresent(UInt64.self, forKey: .seq)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -316,6 +330,7 @@ public struct CommandRequest: Codable, Equatable, Sendable {
         else { try values.encodeNil(forKey: .expectedGeneration) }
         try values.encodeIfPresent(expectedRevision, forKey: .expectedRevision)
         try values.encode(payload, forKey: .payload)
+        try values.encodeIfPresent(seq, forKey: .seq)
     }
 }
 

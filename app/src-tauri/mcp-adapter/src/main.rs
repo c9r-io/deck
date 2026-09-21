@@ -78,6 +78,10 @@ struct CreateInput {
     /// Optional visible card title.
     #[serde(default)]
     title: Option<String>,
+    /// This client's current create sequence (`nextCreateSequence` from
+    /// deck_capabilities or deck_sessions_list). Deck accepts a create only at
+    /// the current value; a retry of the same logical create reuses it.
+    create_sequence: u64,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -154,6 +158,11 @@ struct ControlInput {
     /// Required for renew and release; omitted for the initial request.
     #[serde(default)]
     control_epoch: Option<u64>,
+    /// The session's current control sequence (`controlSequence` from
+    /// deck_session_inspect, deck_sessions_list, or the last control
+    /// response). Every accepted control change advances it; a retry of the
+    /// same logical change reuses the value it was first sent with.
+    control_sequence: u64,
     /// Optional for request and renew; 1000..=300000 milliseconds. Not allowed for release.
     #[serde(default)]
     #[schemars(range(min = 1000, max = 300000))]
@@ -373,7 +382,7 @@ impl DeckServer {
                 .set_write_timeout(Some(std::time::Duration::from_secs(10)))
                 .map_err(|_| "DECK_UNAVAILABLE")?;
             let request = DeckRequest {
-                version: 3,
+                version: 4,
                 client_id: &client_id,
                 credential: &credential,
                 tool: tool_name,
@@ -573,6 +582,21 @@ fn validate_control_arguments(arguments: &Value) -> Result<(), ArgumentIssue> {
             });
         }
     }
+    if object
+        .get("control_sequence")
+        .and_then(Value::as_u64)
+        .is_none()
+    {
+        return Err(ArgumentIssue {
+            field_path: "control_sequence",
+            category: if object.contains_key("control_sequence") {
+                "type"
+            } else {
+                "required"
+            },
+            expected: "non-negative integer (controlSequence from deck_session_inspect)",
+        });
+    }
     let action = object["action"].as_str().unwrap_or_default();
     if !matches!(action, "request" | "renew" | "release") {
         return Err(ArgumentIssue {
@@ -633,7 +657,7 @@ fn validate_control_arguments(arguments: &Value) -> Result<(), ArgumentIssue> {
 impl ServerHandler for DeckServer {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
-            .with_instructions("Use Deck MCP only for authorized development work. Call deck_capabilities first; retain operation, session, job, generation, cursor, and control epoch values; never blindly retry ambiguous work.")
+            .with_instructions("Use Deck MCP only for authorized development work. Call deck_capabilities first; retain operation, session, job, generation, cursor, control epoch, control sequence and create sequence values; never blindly retry ambiguous work.")
             .with_server_info(rmcp::model::Implementation::new("deck-mcp", VERSION))
     }
 

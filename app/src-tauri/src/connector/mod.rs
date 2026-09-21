@@ -6,18 +6,30 @@
 //! mutations remain webview-owned and are handed over through an opaque
 //! journal handle after accepted intent is durable.
 //!
-//! Journal (file format v2; v1 is upgraded on load, a v1 reader refuses v2):
-//! only unresolved (accepted/executing) entries carry their request, capped
-//! at `MAX_COMMANDS`. Every committed write compacts resolved entries to
-//! tombstones (id, kind, request hash, state, code, result) so an exact
+//! Journal (file format v3; v1/v2 are upgraded on load and persisted as v3
+//! on the next write, and an older reader refuses v3): only unresolved
+//! (accepted/executing) entries carry their request, capped at
+//! `MAX_COMMANDS`. Every committed write compacts resolved entries to
+//! tombstones (id, kind, seq, request hash, state, code, result) so an exact
 //! replay or recovery query still gets the original answer and a reused id
 //! with a different body is still refused. At most `MAX_TOMBSTONES` are kept;
-//! dropping one marks its device `history_pruned`, after which an unknown id
-//! of that device is `expired` (410), never `not-found` (404), because a
-//! phone retries a proven-absent id. Revocation drops the device's
-//! tombstones; a revoked device without unresolved work is pruned when a
-//! pairing needs its slot. Each write encodes once and is atomic (temp file,
-//! file fsync, rename, directory fsync).
+//! dropping one marks its device `history_pruned` (an unknown id is then
+//! `expired` (410) on GET, never `not-found` (404), because a phone retries
+//! a proven-absent id) and raises the device's `retired_through` to the
+//! dropped command's `seq`.
+//!
+//! Request identity: (device, id) plus the canonical body hash, and a
+//! device-assigned `seq` that the phone persists with the command before its
+//! first POST and reuses on every retry. Admission (`accept`, the one path
+//! behind POST /v1/commands) answers a known id from its record; otherwise it
+//! requires a `seq` (426 `upgrade-required` without one), refuses a `seq` at
+//! or below `retired_through` as `expired` (410) and a `seq` already held by
+//! another retained id (409) — so a command whose tombstone was dropped is
+//! never admitted again, whether or not the phone asked GET first, while any
+//! higher `seq` keeps working. Revocation drops the device's tombstones; a
+//! revoked device without unresolved work is pruned when a pairing needs its
+//! slot. Each write encodes once and is atomic (temp file, file fsync,
+//! rename, directory fsync).
 //!
 //! Phone reach: send-message and output require the card's SAVED command to
 //! be Codex/Claude (`queue_target_supported`); a foreground agent in a plain
@@ -51,9 +63,11 @@ use crate::scheduler::Queues;
 use crate::sync::LockRecover;
 
 /// v2 compacts terminal journal entries to tombstones (no request body) and
-/// may record the listener interface. A v1 file is upgraded in memory and
-/// persisted as v2 on the next write; a v1 reader refuses v2 untouched.
-const VERSION: u32 = 2;
+/// may record the listener interface. v3 adds the device admission floor
+/// (`retiredThrough`) and each entry's `seq`; a v2 reader would drop the
+/// floor and re-admit retired commands, so it refuses v3 untouched. Older
+/// files are upgraded in memory and persisted as v3 on the next write.
+const VERSION: u32 = 3;
 const MAX_DEVICES: usize = 32;
 /// Unresolved (accepted/executing) commands: the only entries that carry a
 /// request body.
@@ -145,6 +159,14 @@ struct Device {
     /// host no longer knows cannot be proven never-accepted.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     history_pruned: bool,
+    /// Highest `seq` among this device's dropped tombstones: a new command
+    /// must carry a higher one.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    retired_through: u64,
+}
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
@@ -159,6 +181,11 @@ pub(crate) struct CommandRequest {
     #[serde(default)]
     pub(crate) expected_revision: Option<String>,
     pub(crate) payload: Value,
+    /// Device-assigned admission sequence (see the module header). Optional
+    /// on the wire only so an older phone gets `upgrade-required` instead of
+    /// a parse failure, and so pre-v3 pending entries still load.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) seq: Option<u64>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -208,6 +235,8 @@ struct JournalEntry {
     id: String,
     #[serde(default)]
     kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    seq: Option<u64>,
     /// Present exactly while the command is unresolved (accepted/executing);
     /// a terminal entry is a tombstone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -515,19 +544,21 @@ fn compact(doc: &mut DiskDoc) {
     if excess == 0 {
         return;
     }
-    let mut pruned = HashSet::new();
+    let mut pruned = std::collections::HashMap::<String, u64>::new();
     doc.commands.retain(|c| {
         if excess > 0 && c.request.is_none() {
             excess -= 1;
-            pruned.insert(c.device_id.clone());
+            let floor = pruned.entry(c.device_id.clone()).or_default();
+            *floor = (*floor).max(c.seq.unwrap_or(0));
             false
         } else {
             true
         }
     });
     for device in &mut doc.devices {
-        if pruned.contains(&device.id) {
+        if let Some(floor) = pruned.get(&device.id) {
             device.history_pruned = true;
+            device.retired_through = device.retired_through.max(*floor);
         }
     }
 }
@@ -1087,6 +1118,7 @@ pub(crate) fn connector_smoke_seed(
                 paired_at: now(),
                 revoked_at: None,
                 history_pruned: false,
+                retired_through: 0,
             });
         }
         Ok(())
@@ -1100,6 +1132,8 @@ pub(crate) fn connector_smoke_seed(
         expected_generation: ExpectedGeneration::Missing,
         expected_revision: Some(expected_revision),
         payload: json!({"text":"smoke connector note"}),
+        // Debug-only seed: any fresh positive sequence is valid.
+        seq: Some(u64::from_be_bytes(random(8)?.try_into().unwrap_or([0; 8])) >> 1 | 1),
     };
     let handle = sha(format!("device_smoke\0{}", request.id).as_bytes());
     runtime.accept(epoch, "device_smoke", request.clone())?;
@@ -1881,6 +1915,12 @@ fn validate_command(r: &CommandRequest) -> Result<(), DeckError> {
     if r.id.is_empty() || r.id.len() > 128 || r.id.chars().any(|c| c.is_control()) {
         return Err(DeckError::new(ErrorKind::Invalid, "invalid command id"));
     }
+    if r.seq == Some(0) {
+        return Err(DeckError::new(
+            ErrorKind::Invalid,
+            "invalid command sequence",
+        ));
+    }
     if !matches!(
         r.kind.as_str(),
         "send-message"
@@ -2083,6 +2123,7 @@ impl Runtime {
                 paired_at: now(),
                 revoked_at: None,
                 history_pruned: false,
+                retired_through: 0,
             });
             Ok(d.host_id.clone())
         })?;
@@ -2131,6 +2172,29 @@ impl Runtime {
                     result: old.result.clone(),
                 });
             }
+            // An id this host does not hold: its seq proves it was never
+            // admitted before (see the module header). The check and the
+            // insertion below are one persisted transaction.
+            let Some(seq) = request.seq else {
+                return Err(DeckError::new(ErrorKind::Invalid, CLIENT_UPGRADE_REQUIRED));
+            };
+            let floor = d
+                .devices
+                .iter()
+                .find(|device| device.id == device_id)
+                .map_or(0, |device| device.retired_through);
+            if seq <= floor {
+                return Err(DeckError::new(ErrorKind::ContextChanged, COMMAND_EXPIRED));
+            }
+            if d.commands
+                .iter()
+                .any(|c| c.device_id == device_id && c.seq == Some(seq))
+            {
+                return Err(DeckError::new(
+                    ErrorKind::ContextChanged,
+                    "command sequence reused with a different id",
+                ));
+            }
             if d.commands.iter().filter(|c| unresolved(&c.state)).count() >= MAX_COMMANDS {
                 return Err(DeckError::new(
                     ErrorKind::DiskFull,
@@ -2144,6 +2208,7 @@ impl Runtime {
                 request_hash,
                 id: request.id.clone(),
                 kind: request.kind.clone(),
+                seq: Some(seq),
                 request: Some(request.clone()),
                 state: "accepted".into(),
                 code: None,
@@ -2198,6 +2263,8 @@ impl Runtime {
 }
 
 pub(super) const COMMAND_EXPIRED: &str = "command outcome expired";
+/// A command without `seq` from a phone build that predates it.
+pub(super) const CLIENT_UPGRADE_REQUIRED: &str = "connector client upgrade required";
 
 /// Free device capacity held by revoked devices with no unresolved command.
 /// Their tokens can no longer authenticate, so nothing can query or replay
@@ -2519,7 +2586,20 @@ mod tests {
             expected_generation: ExpectedGeneration::Missing,
             expected_revision: Some("1".into()),
             payload: json!({"text":text}),
+            seq: Some(next_seq()),
         }
+    }
+
+    /// Fresh, increasing phone sequences for test commands.
+    fn next_seq() -> u64 {
+        thread_local! {
+            static NEXT: std::cell::Cell<u64> = const { std::cell::Cell::new(1) };
+        }
+        NEXT.with(|next| {
+            let value = next.get();
+            next.set(value + 1);
+            value
+        })
     }
 
     fn device(id: &str) -> Device {
@@ -2530,6 +2610,7 @@ mod tests {
             paired_at: 1,
             revoked_at: None,
             history_pruned: false,
+            retired_through: 0,
         }
     }
     fn tombstone(device_id: &str, request: &CommandRequest, state: &str) -> JournalEntry {
@@ -2539,6 +2620,7 @@ mod tests {
             request_hash: sha(&serde_json::to_vec(request).unwrap()),
             id: request.id.clone(),
             kind: request.kind.clone(),
+            seq: request.seq,
             request: None,
             state: state.into(),
             code: Some("fixture".into()),
@@ -2577,7 +2659,7 @@ mod tests {
         assert!(entry.request.is_none(), "terminal entry keeps no body");
         let file = std::fs::read_to_string(&r.path).unwrap();
         assert!(!file.contains("secret phone note"));
-        assert!(file.contains("\"version\":2"));
+        assert!(file.contains("\"version\":3"));
 
         let replay = r.accept(1, "D", body).unwrap();
         assert_eq!(replay.state, "applied");
@@ -2908,6 +2990,7 @@ mod tests {
             )
             .then(|| "7".into()),
             payload,
+            seq: Some(1),
         };
 
         let valid = [
@@ -3011,6 +3094,7 @@ mod tests {
                         paired_at: 1,
                         revoked_at: None,
                         history_pruned: false,
+                        retired_through: 0,
                     });
                 }
                 Ok(())
@@ -3234,6 +3318,7 @@ mod tests {
                 expected_generation: ExpectedGeneration::Stopped,
                 expected_revision: None,
                 payload: json!({"unexpected":true}),
+                seq: None,
             };
             assert_eq!(
                 execute_native(&malformed, &"a".repeat(64), "D1", &queues),
@@ -3308,6 +3393,7 @@ mod tests {
                     paired_at: 1,
                     revoked_at: None,
                     history_pruned: false,
+                    retired_through: 0,
                 });
                 Ok(())
             })
@@ -3370,6 +3456,7 @@ mod tests {
             paired_at: 1,
             revoked_at: None,
             history_pruned: false,
+            retired_through: 0,
         });
         let make = |index: usize| {
             let request = request(&format!("I{index}"), &"x".repeat(MAX_TEXT));
@@ -3379,6 +3466,7 @@ mod tests {
                 request_hash: sha(&serde_json::to_vec(&request).unwrap()),
                 id: request.id.clone(),
                 kind: request.kind.clone(),
+                seq: request.seq,
                 request: Some(request),
                 state: "accepted".into(),
                 code: None,
@@ -3455,6 +3543,7 @@ mod tests {
             expected_generation: ExpectedGeneration::Missing,
             expected_revision: Some("1".into()),
             payload: json!({"entryIds":["E1","E2"]}),
+            seq: None,
         };
         let copy1 = buffer_operation_id(&handle, "E1");
         let copy2 = buffer_operation_id(&handle, "E2");
@@ -3499,6 +3588,7 @@ mod tests {
             expected_generation: ExpectedGeneration::Missing,
             expected_revision: Some("1".into()),
             payload: json!({"entryIds":["E1"]}),
+            seq: None,
         };
         let operation_id = buffer_operation_id(&handle, "E1");
         for cmd in ["", "/bin/zsh"] {
@@ -3588,6 +3678,7 @@ mod tests {
                 paired_at: 1,
                 revoked_at: None,
                 history_pruned: false,
+                retired_through: 0,
             });
             d.devices.push(Device {
                 id: "D2".into(),
@@ -3596,6 +3687,7 @@ mod tests {
                 paired_at: 1,
                 revoked_at: None,
                 history_pruned: false,
+                retired_through: 0,
             });
             Ok(())
         })
@@ -3634,6 +3726,7 @@ mod tests {
                 paired_at: 1,
                 revoked_at: None,
                 history_pruned: false,
+                retired_through: 0,
             });
             let request = request("I", "a");
             d.commands.push(JournalEntry {
@@ -3642,6 +3735,7 @@ mod tests {
                 request_hash: sha(&serde_json::to_vec(&request).unwrap()),
                 id: request.id.clone(),
                 kind: request.kind.clone(),
+                seq: request.seq,
                 request: Some(request),
                 state: "executing".into(),
                 code: None,
@@ -3662,6 +3756,7 @@ mod tests {
                 request_hash: "X".into(),
                 id: request(&format!("I{i}"), "a").id.clone(),
                 kind: request(&format!("I{i}"), "a").kind.clone(),
+                seq: None,
                 request: Some(request(&format!("I{i}"), "a")),
                 state: "accepted".into(),
                 code: None,
@@ -3680,17 +3775,21 @@ mod tests {
     #[test]
     fn terminal_history_does_not_consume_unresolved_command_capacity() {
         let (r, _app) = test_runtime("terminal-capacity");
+        let history = (0..MAX_COMMANDS)
+            .map(|i| request(&format!("I{i}"), "a"))
+            .collect::<Vec<_>>();
         r.with_doc(|d| {
             d.devices.push(device("D"));
-            d.commands = (0..MAX_COMMANDS)
-                .map(|i| tombstone("D", &request(&format!("I{i}"), "a"), "rejected"))
+            d.commands = history
+                .iter()
+                .map(|request| tombstone("D", request, "rejected"))
                 .collect();
             Ok(())
         })
         .unwrap();
         let accepted = r.accept(1, "D", request("after-history", "a")).unwrap();
         assert_eq!(accepted.state, "accepted");
-        let replay = r.accept(1, "D", request("I0", "a")).unwrap();
+        let replay = r.accept(1, "D", history[0].clone()).unwrap();
         assert_eq!(replay.state, "rejected");
         assert_eq!(
             r.accept(1, "D", request("I0", "different"))
@@ -3771,6 +3870,7 @@ mod tests {
                     paired_at: 1,
                     revoked_at: None,
                     history_pruned: false,
+                    retired_through: 0,
                 });
                 Ok(())
             })
@@ -3844,5 +3944,176 @@ mod tests {
         stream.read_exact(&mut b).unwrap();
         assert_eq!(&b, b"y");
         worker.join().unwrap();
+    }
+
+    // ---- F4: admission-side replay protection ----
+
+    fn reload(r: &Runtime) -> Arc<Runtime> {
+        Arc::new(Runtime {
+            app: None,
+            path: r.path.clone(),
+            doc: Mutex::new(load(&r.path)),
+            pairing: Mutex::new(None),
+            lifecycle: Mutex::new(()),
+            server_epoch: AtomicU64::new(1),
+            running_epoch: AtomicU64::new(1),
+        })
+    }
+
+    fn resolve(r: &Runtime, device_id: &str, id: &str, state: &str) {
+        let handle = sha(format!("{device_id}\0{id}").as_bytes());
+        r.with_doc(|d| {
+            let c = d.commands.iter_mut().find(|c| c.handle == handle).unwrap();
+            c.state = state.into();
+            if state == "applied" {
+                c.result = Some(json!({"cardId":"C1","entryId":"E1","revision":"2"}));
+            }
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    /// Accept and finish `first`, then push it out of the tombstone history
+    /// with later finished commands of the same device.
+    fn retire(r: &Runtime, first: &CommandRequest) {
+        r.accept(1, "D", first.clone()).unwrap();
+        resolve(r, "D", &first.id, "applied");
+        let later = (0..MAX_TOMBSTONES)
+            .map(|i| tombstone("D", &request(&format!("L{i}"), "later"), "rejected"))
+            .collect::<Vec<_>>();
+        r.with_doc(|d| {
+            d.commands.extend(later);
+            Ok(())
+        })
+        .unwrap();
+        let doc = r.read(Clone::clone).unwrap();
+        assert!(doc.commands.iter().all(|c| c.id != first.id), "not retired");
+        let device = doc.devices.iter().find(|d| d.id == "D").unwrap();
+        assert_eq!(device.retired_through, first.seq.unwrap());
+    }
+
+    fn accepted_count(r: &Runtime) -> usize {
+        r.read(|d| d.commands.iter().filter(|c| unresolved(&c.state)).count())
+            .unwrap()
+    }
+
+    #[test]
+    fn f4_a_retired_command_is_never_admitted_again() {
+        let (r, _app) = test_runtime("f4-retired");
+        r.with_doc(|d| {
+            d.devices.push(device("D"));
+            Ok(())
+        })
+        .unwrap();
+        let first = request("first", "send once");
+        retire(&r, &first);
+        let before = r.read(|d| d.commands.len()).unwrap();
+        // Exact replay, without asking GET first.
+        let replay = r.accept(1, "D", first.clone()).unwrap_err();
+        assert_eq!(replay.message(), COMMAND_EXPIRED);
+        assert_eq!(r.read(|d| d.commands.len()).unwrap(), before);
+        assert_eq!(
+            accepted_count(&r),
+            0,
+            "a retired command was admitted again"
+        );
+        // The same identity with another body: refused, never compared.
+        let mut changed = first.clone();
+        changed.payload = json!({"text":"changed"});
+        assert_eq!(
+            r.accept(1, "D", changed).unwrap_err().message(),
+            COMMAND_EXPIRED
+        );
+        // A new command in the same pruned state still works.
+        let fresh = r.accept(1, "D", request("fresh", "new work")).unwrap();
+        assert_eq!(fresh.state, "accepted");
+        // Inside the window a reused id conflicts; a reused seq conflicts.
+        let mut conflict = request("fresh", "other body");
+        conflict.seq = Some(next_seq());
+        assert_eq!(
+            r.accept(1, "D", conflict).unwrap_err().kind(),
+            ErrorKind::ContextChanged
+        );
+        let fresh_seq = r
+            .read(|d| d.commands.iter().find(|c| c.id == "fresh").unwrap().seq)
+            .unwrap();
+        let mut reused = request("reused-seq", "x");
+        reused.seq = fresh_seq;
+        assert_eq!(
+            r.accept(1, "D", reused).unwrap_err().kind(),
+            ErrorKind::ContextChanged
+        );
+        // A phone build without sequences cannot be admitted at all.
+        let mut legacy = request("legacy", "x");
+        legacy.seq = None;
+        assert_eq!(
+            r.accept(1, "D", legacy).unwrap_err().message(),
+            CLIENT_UPGRADE_REQUIRED
+        );
+        // Restart keeps the floor.
+        let reloaded = reload(&r);
+        assert_eq!(
+            reloaded.accept(1, "D", first).unwrap_err().message(),
+            COMMAND_EXPIRED
+        );
+        assert_eq!(accepted_count(&reloaded), 1, "only `fresh` is pending");
+    }
+
+    #[test]
+    fn f4_concurrent_identical_posts_admit_once() {
+        let (r, _app) = test_runtime("f4-concurrent");
+        r.with_doc(|d| {
+            d.devices.push(device("D"));
+            Ok(())
+        })
+        .unwrap();
+        let command = request("same", "once");
+        let barrier = Arc::new(std::sync::Barrier::new(4));
+        let threads = (0..4)
+            .map(|_| {
+                let (r, command, barrier) = (r.clone(), command.clone(), barrier.clone());
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    r.accept(1, "D", command).unwrap().state
+                })
+            })
+            .collect::<Vec<_>>();
+        for thread in threads {
+            assert_eq!(thread.join().unwrap(), "accepted");
+        }
+        assert_eq!(r.read(|d| d.commands.len()).unwrap(), 1);
+    }
+
+    #[test]
+    fn f4_crash_boundaries_never_admit_twice_or_guess_success() {
+        let (r, _app) = test_runtime("f4-crash");
+        r.with_doc(|d| {
+            d.devices.push(device("D"));
+            Ok(())
+        })
+        .unwrap();
+        // 1. Admission persisted, not yet dispatched, then a restart.
+        let waiting = request("waiting", "a");
+        r.accept(1, "D", waiting.clone()).unwrap();
+        let r = reload(&r);
+        assert_eq!(r.accept(1, "D", waiting).unwrap().state, "accepted");
+        assert_eq!(accepted_count(&r), 1);
+        // 2. Dispatched (executing), result never persisted, then a restart.
+        let dispatched = request("dispatched", "b");
+        r.accept(1, "D", dispatched.clone()).unwrap();
+        resolve(&r, "D", "dispatched", "executing");
+        let r = reload(&r);
+        let answer = r.accept(1, "D", dispatched).unwrap();
+        assert_eq!(
+            answer.state, "ambiguous",
+            "an unknown outcome is not guessed"
+        );
+        // 3. Result saved, HTTP receipt lost.
+        let finished = request("finished", "c");
+        r.accept(1, "D", finished.clone()).unwrap();
+        resolve(&r, "D", "finished", "applied");
+        assert_eq!(r.accept(1, "D", finished).unwrap().state, "applied");
+        assert_eq!(r.read(|d| d.commands.len()).unwrap(), 3);
+        assert_eq!(accepted_count(&r), 1, "only the first is still pending");
     }
 }

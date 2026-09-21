@@ -130,19 +130,44 @@ reports the pane's `runnerVersion`. While the feature is off every tool
 returns `FEATURE_DISABLED`; an adapter/app protocol skew returns
 `PROTOCOL_MISMATCH` (never `AUTH_REQUIRED`).
 
-Exact replay window. Every side effect carries a `request_id`. Replaying the
-same id with the same (parsed) arguments returns the recorded operation and
-never repeats its effect; an optional field sent as `null` is the same request
-as omitting it; the same id with different arguments is `REQUEST_ID_CONFLICT`.
-Deck keeps a record exactly replayable while its session exists and the
-control epoch it was bound to is current. Once the epoch advances (release,
-takeover, return, revoke) or the session closes, the record is retired and a
-replay is rejected deterministically (`CONTROL_REVOKED` /
-`SESSION_NOT_FOUND`) — it is never executed again. Board creates and closes are
-kept for the last 32 per client. Renewals are not journaled (their response
-has `operationId: null`). If `CAPACITY_EXCEEDED` appears, release and request
-control again: the new epoch retires the session's older records. The journal
-reserves room so `deck_job_interrupt` is never refused for capacity.
+Request identity and replay. Every side effect carries a `request_id`, and
+every side effect is also bound to a server-issued value that only moves
+forward, so a request whose record Deck has retired can never be applied a
+second time:
+
+- `deck_exec`, `deck_job_input`, `deck_job_interrupt`, `deck_session_close`,
+  and control `renew`/`release` name the session's `control_epoch`;
+- `deck_session_control` (all three actions) names the session's
+  `control_sequence` (`controlSequence` in inspect, sessions list and every
+  control response). Each accepted request, renew or release advances it;
+- `deck_session_create` names the client's `create_sequence`
+  (`nextCreateSequence` in `deck_capabilities` and `deck_sessions_list`).
+  Each accepted create advances it, so concurrent creates are serialized:
+  the loser receives `STALE_REQUEST` and re-reads the value.
+
+Replaying the same id with the same (parsed) arguments returns the recorded
+operation and never repeats its effect; an optional field sent as `null` is
+the same request as omitting it; the same id with different arguments is
+`REQUEST_ID_CONFLICT` while the record is kept. Deck keeps a record while its
+session exists and the epoch it named is current; for control it keeps only
+the session's latest change (renewals included — a renew has a real
+`operationId` and an exact replay never extends the lease again); creates and
+closes stay queryable for the last 32 per client, and a close is also kept
+while its session exists at the epoch it named. Once a record is retired, a
+replay is refused — `CONTROL_REVOKED`/`SESSION_NOT_FOUND` for epoch-bound
+tools, `STALE_REQUEST` for sequence-bound ones — and never executed; Deck does
+not pretend to compare it with arguments it no longer holds. A new request
+with a new `request_id` and the current epoch/sequence always works.
+
+Capacity. Control changes never need an ordinary journal slot (one record per
+session is kept), so the recovery for `CAPACITY_EXCEEDED` always runs:
+release and request control again (or, if the lease already lapsed, just
+request) — the new epoch retires the session's older records. When the pool
+is short, Deck also closes epochs whose lease has lapsed (holder cleared,
+epoch advanced), which retires their records. Each client may hold 500
+ordinary records; 64 slots are reserved for `deck_job_interrupt` beyond the
+ordinary pool, at most 16 of them per client. This bound is finite: the local
+Stop/Ctrl-C and takeover need no journal at all.
 
 If the Adapter loses Deck's answer after sending a side effect it returns
 `OPERATION_AMBIGUOUS`: inspect, or repeat with the SAME `request_id` — never a
@@ -154,9 +179,11 @@ For `deck_session_control`, the caller creates a fresh stable opaque
 has already been granted. A successful committed response confirms the
 accepted `controlHolder`, current `sessionGeneration`, and server-assigned
 `controlEpoch`; only those returned generation/epoch values may be used for
-subsequent `renew`, `release`, exec, or input. `lease_ms` is optional for
+subsequent `renew`, `release`, exec, or input, and each control call sends
+the latest returned `controlSequence`. `lease_ms` is optional for
 request/renew and must be 1000–300000 milliseconds. Renew/release require the
-returned epoch; release does not accept `lease_ms`.
+returned epoch; release does not accept `lease_ms`. A renew changes only the
+lease deadline: never the epoch and never an execution window.
 
 Returning control (local **Return to MCP**) never needs, creates or extends an
 execution window and restores no holder, lease or output sharing: MCP must
@@ -218,10 +245,12 @@ session ends; per-job memory is bounded. Closing a card removes its session,
 job bindings and grants; the journal retires records as described under the
 exact replay window, keeps at most 64 job bindings per session and one live
 execution grant per session, and bounds each client's share. Corrupt and
-future-version MCP configuration fails closed. State schema v4 is distinct
-from Deck control protocol v3 and from the MCP standard version negotiated by
-the SDK. v3 state upgrades in place to v4 (sticky: a v3 build refuses it
-untouched). v1/v2 state migrates disabled: old clients are retained only as
+future-version MCP configuration fails closed. State schema v5 is distinct
+from Deck control protocol v4 and from the MCP standard version negotiated by
+the SDK. v3/v4 state upgrades in place to v5, adding the control and create
+sequences at 0 (sticky: an older build refuses it untouched, because without
+the sequences a retired request could be accepted again). Clients, grants,
+sessions and history are kept; nothing is re-paired. v1/v2 state migrates disabled: old clients are retained only as
 revoked display records, pending/admitted writes become ambiguous, bearer
 credentials and execution grants are not synthesized, and local
 reauthorization is required.

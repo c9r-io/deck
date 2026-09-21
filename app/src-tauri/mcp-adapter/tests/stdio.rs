@@ -88,7 +88,7 @@ fn initializes_lists_and_calls_over_stdio_without_stdout_noise() {
         let request: Value = serde_json::from_str(&request).unwrap();
         assert_eq!(request["clientId"], "client_test");
         assert_eq!(request["credential"], "mcp_synthetic_test");
-        assert_eq!(request["version"], 3);
+        assert_eq!(request["version"], 4);
         assert_eq!(request["tool"], "deck_capabilities");
         writeln!(
             stream,
@@ -168,6 +168,16 @@ fn initializes_lists_and_calls_over_stdio_without_stdout_noise() {
         .unwrap();
     let required = control["inputSchema"]["required"].as_array().unwrap();
     assert!(required.iter().any(|value| value == "holder_id"));
+    assert!(required.iter().any(|value| value == "control_sequence"));
+    let create = tools
+        .iter()
+        .find(|tool| tool["name"] == "deck_session_create")
+        .unwrap();
+    assert!(create["inputSchema"]["required"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|value| value == "create_sequence"));
     assert_eq!(
         control["inputSchema"]["properties"]["lease_ms"]["minimum"],
         1000
@@ -301,10 +311,12 @@ fn control_validation_rejects_before_connecting_and_valid_samples_cross_validati
 
     let invalid = [
         json!({"request_id":"req_missing_holder","session_id":"s","expected_generation":"g","action":"request"}),
-        json!({"request_id":"req_low_lease","session_id":"s","expected_generation":"g","action":"request","holder_id":"holder_a","lease_ms":999}),
-        json!({"request_id":"req_renew_epoch","session_id":"s","expected_generation":"g","action":"renew","holder_id":"holder_a"}),
-        json!({"request_id":"req_release_lease","session_id":"s","expected_generation":"g","action":"release","holder_id":"holder_a","control_epoch":1,"lease_ms":1000}),
-        json!({"request_id":"x".repeat(129),"session_id":"s","expected_generation":"g","action":"request","holder_id":"holder_a"}),
+        json!({"request_id":"req_low_lease","session_id":"s","expected_generation":"g","action":"request","holder_id":"holder_a","lease_ms":999,"control_sequence":0}),
+        json!({"request_id":"req_renew_epoch","session_id":"s","expected_generation":"g","action":"renew","holder_id":"holder_a","control_sequence":0}),
+        json!({"request_id":"req_release_lease","session_id":"s","expected_generation":"g","action":"release","holder_id":"holder_a","control_epoch":1,"lease_ms":1000,"control_sequence":0}),
+        json!({"request_id":"x".repeat(129),"session_id":"s","expected_generation":"g","action":"request","holder_id":"holder_a","control_sequence":0}),
+        json!({"request_id":"req_no_sequence","session_id":"s","expected_generation":"g","action":"request","holder_id":"holder_a"}),
+        json!({"request_id":"req_bad_sequence","session_id":"s","expected_generation":"g","action":"request","holder_id":"holder_a","control_sequence":-1}),
     ];
     for (offset, arguments) in invalid.into_iter().enumerate() {
         let id = 10 + offset as u64;
@@ -320,23 +332,23 @@ fn control_validation_rejects_before_connecting_and_valid_samples_cross_validati
     for (id, arguments) in [
         (
             20,
-            json!({"request_id":"req_valid_default","session_id":"s","expected_generation":"g","action":"request","holder_id":"holder_a"}),
+            json!({"request_id":"req_valid_default","session_id":"s","expected_generation":"g","action":"request","holder_id":"holder_a","control_sequence":0}),
         ),
         (
             21,
-            json!({"request_id":"req_valid_lease","session_id":"s","expected_generation":"g","action":"request","holder_id":"holder_b","lease_ms":60000}),
+            json!({"request_id":"req_valid_lease","session_id":"s","expected_generation":"g","action":"request","holder_id":"holder_b","lease_ms":60000,"control_sequence":0}),
         ),
         (
             22,
-            json!({"request_id":"req_valid_renew","session_id":"s","expected_generation":"g","action":"renew","holder_id":"holder_b","control_epoch":2,"lease_ms":null}),
+            json!({"request_id":"req_valid_renew","session_id":"s","expected_generation":"g","action":"renew","holder_id":"holder_b","control_epoch":2,"lease_ms":null,"control_sequence":1}),
         ),
         (
             23,
-            json!({"request_id":"req_valid_release","session_id":"s","expected_generation":"g","action":"release","holder_id":"holder_b","control_epoch":2,"lease_ms":null}),
+            json!({"request_id":"req_valid_release","session_id":"s","expected_generation":"g","action":"release","holder_id":"holder_b","control_epoch":2,"lease_ms":null,"control_sequence":2}),
         ),
         (
             24,
-            json!({"request_id":"x".repeat(128),"session_id":"s","expected_generation":"g","action":"request","holder_id":"holder_b"}),
+            json!({"request_id":"x".repeat(128),"session_id":"s","expected_generation":"g","action":"request","holder_id":"holder_b","control_sequence":0}),
         ),
     ] {
         writeln!(input, "{}", json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":"deck_session_control","arguments":arguments}})).unwrap();

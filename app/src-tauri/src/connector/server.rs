@@ -4,7 +4,10 @@
 //! and a 4 KiB pairing body. A command body is read only after its Bearer
 //! token authorizes.
 
-use super::{buffer, output, snapshot, CommandRequest, Config, Identity, Runtime, COMMAND_EXPIRED};
+use super::{
+    buffer, output, snapshot, CommandRequest, Config, Identity, Runtime, CLIENT_UPGRADE_REQUIRED,
+    COMMAND_EXPIRED,
+};
 use http_body_util::{BodyExt, Full, Limited};
 use hyper::body::{Bytes, Incoming};
 use hyper::{Method, Request, Response, StatusCode};
@@ -98,6 +101,10 @@ fn mapped(error_value: &DeckError) -> Resp {
     if error_value.message() == COMMAND_EXPIRED {
         // Not 404: the outcome is unknown, so the phone must not retry.
         return error(StatusCode::GONE, "expired");
+    }
+    if error_value.message() == CLIENT_UPGRADE_REQUIRED {
+        // A phone build without command sequences cannot be admitted safely.
+        return error(StatusCode::UPGRADE_REQUIRED, "upgrade-required");
     }
     match error_value.kind() {
         ErrorKind::Missing => error(StatusCode::NOT_FOUND, "not-found"),
@@ -627,6 +634,175 @@ mod tests {
         let mut head = [0u8; 12];
         stream.read_exact(&mut head).unwrap();
         assert_eq!(&head, b"HTTP/1.1 401");
+        runtime.server_epoch.store(2, Ordering::SeqCst);
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// One HTTPS request over loopback; returns (status, body).
+    fn exchange(
+        client: &Arc<rustls::ClientConfig>,
+        port: u16,
+        head: &str,
+        body: &[u8],
+    ) -> (u16, String) {
+        let tcp = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        tcp.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let name = ServerName::IpAddress("127.0.0.1".parse::<IpAddr>().unwrap().into());
+        let conn = rustls::ClientConnection::new(client.clone(), name).unwrap();
+        let mut stream = rustls::StreamOwned::new(conn, tcp);
+        write!(
+            stream,
+            "{head}Host: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        )
+        .unwrap();
+        stream.write_all(body).unwrap();
+        stream.flush().unwrap();
+        let mut response = String::new();
+        let _ = stream.read_to_string(&mut response);
+        let status = response[9..12].parse().unwrap();
+        let body = response.split("\r\n\r\n").nth(1).unwrap_or("").to_owned();
+        (status, body)
+    }
+
+    #[test]
+    fn f4_http_post_admission_refuses_a_retired_command_without_a_prior_get() {
+        let path = std::env::temp_dir().join(format!(
+            "deck-connector-f4-http-{}-{}",
+            std::process::id(),
+            super::super::now()
+        ));
+        let mut doc = super::super::DiskDoc::fresh().unwrap();
+        doc.config = Config {
+            enabled: true,
+            address: "127.0.0.1".into(),
+            port: 0,
+            interface: None,
+        };
+        super::super::save(&path, &doc).unwrap();
+        let runtime = Arc::new(Runtime {
+            app: None,
+            path: path.clone(),
+            doc: Mutex::new(Ok(doc)),
+            pairing: Mutex::new(Some(super::super::Pairing {
+                code: "f4-code".into(),
+                expires_at: super::super::now() + 30,
+            })),
+            lifecycle: Mutex::new(()),
+            server_epoch: AtomicU64::new(1),
+            running_epoch: AtomicU64::new(0),
+        });
+        let identity = Identity::generate("127.0.0.1").unwrap();
+        let cert = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(&identity.cert_der)
+            .unwrap();
+        let config = Config {
+            enabled: true,
+            address: "127.0.0.1".into(),
+            port: 0,
+            interface: None,
+        };
+        let port = spawn(runtime.clone(), config, identity, 1).unwrap();
+        let mut roots = rustls::RootCertStore::empty();
+        roots.add(CertificateDer::from(cert)).unwrap();
+        let client = Arc::new(
+            rustls::ClientConfig::builder()
+                .with_root_certificates(roots)
+                .with_no_client_auth(),
+        );
+        let (status, paired) = exchange(
+            &client,
+            port,
+            "POST /v1/pair HTTP/1.1\r\n",
+            br#"{"code":"f4-code","deviceName":"fixture"}"#,
+        );
+        assert_eq!(status, 200, "{paired}");
+        let paired: Value = serde_json::from_str(&paired).unwrap();
+        let token = paired["token"].as_str().unwrap().to_owned();
+        let device = paired["deviceId"].as_str().unwrap().to_owned();
+        let post = |body: &Value| {
+            exchange(
+                &client,
+                port,
+                &format!("POST /v1/commands HTTP/1.1\r\nAuthorization: Bearer {token}\r\n"),
+                &serde_json::to_vec(body).unwrap(),
+            )
+        };
+        let command = |id: &str, seq: Option<u64>| {
+            let mut value = json!({"id":id,"kind":"buffer-add","cardId":"C1","expectedRevision":"1","payload":{"text":"phone note"}});
+            if let Some(seq) = seq {
+                value["seq"] = json!(seq);
+            }
+            value
+        };
+        let first = command("first", Some(1));
+        let (status, body) = post(&first);
+        assert_eq!(status, 202, "{body}");
+        // Two identical POSTs in flight: one admission.
+        let duplicate = command("dup", Some(2));
+        let threads = (0..2)
+            .map(|_| {
+                let (client, token, duplicate) = (client.clone(), token.clone(), duplicate.clone());
+                std::thread::spawn(move || {
+                    exchange(
+                        &client,
+                        port,
+                        &format!("POST /v1/commands HTTP/1.1\r\nAuthorization: Bearer {token}\r\n"),
+                        &serde_json::to_vec(&duplicate).unwrap(),
+                    )
+                    .0
+                })
+            })
+            .collect::<Vec<_>>();
+        for thread in threads {
+            assert_eq!(thread.join().unwrap(), 202);
+        }
+        // Finish `first`, then retire it behind later history.
+        let handle = super::super::sha(format!("{device}\0first").as_bytes());
+        runtime
+            .with_doc(|d| {
+                let c = d.commands.iter_mut().find(|c| c.handle == handle).unwrap();
+                c.state = "applied".into();
+                c.result = Some(json!({"cardId":"C1","entryId":"E1","revision":"2"}));
+                let template = c.clone();
+                for index in 0..super::super::MAX_TOMBSTONES {
+                    let id = format!("later-{index}");
+                    let mut later = template.clone();
+                    later.handle = super::super::sha(format!("{device}\0{id}").as_bytes());
+                    later.id = id;
+                    later.seq = Some(10 + index as u64);
+                    d.commands.push(later);
+                }
+                Ok(())
+            })
+            .unwrap();
+        let entries = runtime.read(|d| d.commands.len()).unwrap();
+        runtime
+            .read(|d| assert!(d.commands.iter().all(|c| c.id != "first")))
+            .unwrap();
+        // The exact retired command, POSTed directly (no GET first).
+        let (status, body) = post(&first);
+        assert_eq!(status, 410, "{body}");
+        assert!(body.contains("expired"));
+        assert_eq!(runtime.read(|d| d.commands.len()).unwrap(), entries);
+        runtime
+            .read(|d| {
+                assert_eq!(
+                    d.commands.iter().filter(|c| c.state == "accepted").count(),
+                    1,
+                    "only `dup` is pending"
+                );
+            })
+            .unwrap();
+        // An older phone build without sequences is told to upgrade.
+        let (status, body) = post(&command("legacy", None));
+        assert_eq!(status, 426, "{body}");
+        // New work keeps flowing.
+        let (status, body) = post(&command(
+            "next",
+            Some(super::super::MAX_TOMBSTONES as u64 + 100),
+        ));
+        assert_eq!(status, 202, "{body}");
         runtime.server_epoch.store(2, Ordering::SeqCst);
         let _ = std::fs::remove_file(path);
     }

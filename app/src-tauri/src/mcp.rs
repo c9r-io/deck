@@ -24,16 +24,23 @@
 //! becomes `ambiguous` (`deck-restarted`). A close goes executing → admitted →
 //! committed|ambiguous; `closing` is cleared on every outcome.
 //!
-//! Journal lifetime (`compact`): records carry the session and control epoch
-//! they were bound to and are retired once the session is gone or the epoch is
-//! no longer current, so a replay fails generation/epoch checks instead of
-//! executing again. Board operations keep a per-client window; renewals are
-//! not journaled; per-client quotas and an interrupt reserve keep one client
-//! from starving another or stopping work. Grants are bounded to the newest
-//! per session plus those a job binding references.
+//! Request identity and journal lifetime (`compact`): every side effect is
+//! bound to a server-issued value that only moves forward — the session's
+//! control epoch (exec, input, interrupt, close, renew, release), the
+//! session's control sequence (every control action) or the client's create
+//! sequence (create) — and a record is retired only once that value moved on,
+//! so a replay of a retired request fails its epoch/sequence check instead of
+//! executing again. Control records (one per session) sit outside the
+//! ordinary pool, so release/request always fit; per-client quotas and a
+//! bounded interrupt reserve keep one client from starving another or from
+//! stopping work, and lapsed leases are closed under pressure. Grants are
+//! bounded to the newest per session plus those a job binding references.
 //!
-//! Human control: takeover/revoke/disable set an in-memory fence BEFORE
-//! waiting for the delivery lock; every dispatch re-checks it under the lock.
+//! Human control: takeover/revoke/disable and execution revocation set an
+//! in-memory fence BEFORE waiting for the delivery lock; every side effect
+//! re-checks it under that lock as its last step (`emergency_denial`,
+//! `emergency_fence_error`), by operation class: an execution revocation
+//! refuses exec and stdin, never reads, interrupts or closes.
 //! Takeover closes existing job output to MCP for good and gives the pane
 //! keyboard (and the ^C stop key) to the human; it starts no shell. Return to
 //! MCP needs no execution grant and restores no holder, lease or sharing: it
@@ -48,7 +55,7 @@ use ring::rand::{SecureRandom, SystemRandom};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -60,8 +67,8 @@ use tauri::{AppHandle, Emitter};
 use crate::error::{DeckError, ErrorKind};
 use crate::sync::LockRecover;
 
-const STATE_VERSION: u32 = 4;
-const CONTROL_PROTOCOL: u32 = 3;
+const STATE_VERSION: u32 = 5;
+const CONTROL_PROTOCOL: u32 = 4;
 const DECK_VERSION: &str = env!("CARGO_PKG_VERSION");
 const DECK_BUILD: Option<&str> = match option_env!("DECK_BUILD_SHA") {
     Some(value) => Some(value),
@@ -75,12 +82,25 @@ const MAX_PROJECTS_PER_CLIENT: usize = 64;
 const MAX_ROOTS_PER_PROJECT: usize = 16;
 const MAX_SESSIONS: usize = 64;
 const MAX_OPERATIONS: usize = 2000;
-/// Slots only `deck_job_interrupt` may use: stopping work never fails
-/// because ordinary requests filled the journal.
+/// Room for control records. Only a session's latest control change is kept
+/// (older ones are superseded by the control sequence), so one slot per
+/// possible session always suffices: request, renew and release — the way out
+/// of a full journal — never compete with ordinary records.
+const CONTROL_RESERVE: usize = MAX_SESSIONS;
+/// Slots only `deck_job_interrupt` may use beyond the ordinary pool: stopping
+/// work does not fail because ordinary requests filled the journal.
 const INTERRUPT_RESERVE: usize = 64;
-/// One client may hold at most this many journal entries.
+/// Interrupt records one client may hold once the ordinary pool is full, so a
+/// single client cannot drain the interrupt reserve of every other client.
+const INTERRUPT_RESERVE_PER_CLIENT: usize = 16;
+/// Ordinary records (everything except control records and reserve
+/// interrupts) across all clients.
+const ORDINARY_OPERATIONS: usize = MAX_OPERATIONS - CONTROL_RESERVE - INTERRUPT_RESERVE;
+/// One client may hold at most this many non-control journal entries.
 const MAX_OPERATIONS_PER_CLIENT: usize = 500;
-/// Terminal session-create records kept per client for exact replay.
+/// Terminal session-create/close records kept per client so their results
+/// stay queryable. Replay safety does not depend on this window: creates are
+/// bound to the client's create sequence, closes to their session's epoch.
 const CREATE_REPLAY_WINDOW: usize = 32;
 /// Job bindings kept per session; the runner retires jobs the same way.
 const MAX_JOBS_PER_SESSION: usize = 64;
@@ -103,10 +123,32 @@ const POLICY_VERSION: u32 = 2;
 const ENVIRONMENT_PROFILE: &str = "developer-sanitized-v1";
 
 fn now_ms() -> u64 {
-    SystemTime::now()
+    let wall = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|value| value.as_millis() as u64)
-        .unwrap_or(0)
+        .unwrap_or(0);
+    #[cfg(test)]
+    let wall = wall.saturating_add(test_clock::skew());
+    wall
+}
+
+/// Injectable wall clock for tests: a per-thread forward skew, so a test can
+/// move time without sleeping and without touching other tests.
+#[cfg(test)]
+mod test_clock {
+    use std::cell::Cell;
+
+    thread_local! {
+        static SKEW_MS: Cell<u64> = const { Cell::new(0) };
+    }
+
+    pub(super) fn skew() -> u64 {
+        SKEW_MS.with(Cell::get)
+    }
+
+    pub(super) fn advance(ms: u64) {
+        SKEW_MS.with(|skew| skew.set(skew.get().saturating_add(ms)));
+    }
 }
 
 fn sha(bytes: &[u8]) -> String {
@@ -187,6 +229,10 @@ struct Client {
     revoked_at: Option<u64>,
     allow_create: bool,
     projects: Vec<ProjectScope>,
+    /// Creates this client has had accepted. A create must name the current
+    /// value, so a create whose record was retired can never be accepted again.
+    #[serde(default)]
+    create_sequence: u64,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -219,6 +265,10 @@ struct ManagedSession {
     #[serde(default)]
     closing: bool,
     created_at: u64,
+    /// Accepted MCP control changes (request, renew, release). A control
+    /// request must name the current value; see `session_control`.
+    #[serde(default)]
+    control_sequence: u64,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -244,6 +294,10 @@ struct Operation {
     /// of it fails `check_control` deterministically.
     #[serde(default)]
     control_epoch: Option<u64>,
+    /// For a control record: the session's control sequence this change
+    /// produced. A record whose sequence is no longer current is superseded.
+    #[serde(default)]
+    control_sequence: Option<u64>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -380,7 +434,33 @@ struct EmergencyFences {
     disabled: bool,
     clients: HashSet<String>,
     human_sessions: HashSet<String>,
-    execution_sessions: HashSet<String>,
+    /// Execution revocations that have set their fence and not yet finished
+    /// their locked section, counted per session (two may overlap). Only the
+    /// revocation itself lowers its count, so an approval that ran while it
+    /// was pending cannot lift it.
+    execution_pending: HashMap<String, usize>,
+    /// Execution revocations whose persistence failed. Only a later local
+    /// approval — ordered after it by the delivery lock — lifts this.
+    execution_unpersisted: HashSet<String>,
+}
+
+impl EmergencyFences {
+    fn execution_fenced(&self, session_id: &str) -> bool {
+        self.execution_pending
+            .get(session_id)
+            .is_some_and(|count| *count > 0)
+            || self.execution_unpersisted.contains(session_id)
+    }
+}
+
+/// What a side effect needs besides client, feature and human fences.
+#[derive(Clone, Copy, PartialEq)]
+enum Admission {
+    /// Control, read, interrupt and close: an execution window is not part of
+    /// their authority, so its revocation does not refuse them.
+    Control,
+    /// exec and stdin: a pending execution revocation also refuses them.
+    Execution,
 }
 
 impl Runtime {
@@ -388,6 +468,54 @@ impl Runtime {
         self.started.elapsed().as_millis().min(u64::MAX as u128) as u64
     }
 }
+
+/// Deterministic interleaving for tests: a test arms a named point of one
+/// runtime (keyed by its state path), the production path parks there until
+/// released. Compiled out of every non-test build.
+#[cfg(test)]
+mod pause {
+    use std::collections::HashMap;
+    use std::path::{Path, PathBuf};
+    use std::sync::mpsc::{channel, Receiver, Sender};
+    use std::sync::{Mutex, OnceLock};
+    use std::time::Duration;
+
+    type Slot = (Sender<()>, Receiver<()>);
+
+    fn points() -> &'static Mutex<HashMap<(PathBuf, &'static str), Slot>> {
+        static POINTS: OnceLock<Mutex<HashMap<(PathBuf, &'static str), Slot>>> = OnceLock::new();
+        POINTS.get_or_init(Default::default)
+    }
+
+    /// Park the next arrival at `point`; returns (entered, release).
+    pub(super) fn arm(path: &Path, point: &'static str) -> (Receiver<()>, Sender<()>) {
+        let (entered_tx, entered_rx) = channel();
+        let (release_tx, release_rx) = channel();
+        points()
+            .lock()
+            .unwrap()
+            .insert((path.to_owned(), point), (entered_tx, release_rx));
+        (entered_rx, release_tx)
+    }
+
+    pub(super) fn reach(path: &Path, point: &'static str) {
+        let slot = points().lock().unwrap().remove(&(path.to_owned(), point));
+        if let Some((entered, release)) = slot {
+            entered.send(()).unwrap();
+            release
+                .recv_timeout(Duration::from_secs(10))
+                .expect("paused point was never released");
+        }
+    }
+}
+
+#[cfg(test)]
+fn pause_point(runtime: &Runtime, point: &'static str) {
+    pause::reach(&runtime.path, point);
+}
+
+#[cfg(not(test))]
+fn pause_point(_runtime: &Runtime, _point: &'static str) {}
 
 fn emit_changed(runtime: &Runtime) {
     if let Some(app) = &runtime.app {
@@ -491,6 +619,14 @@ fn load(path: &Path) -> Result<DiskDoc, DeckError> {
         doc.version = STATE_VERSION;
         changed = true;
     }
+    if doc.version == 4 {
+        // v5 adds the per-session control sequence and per-client create
+        // sequence (both start at 0; nothing else changes). Sticky: a v4
+        // build refuses v5 state untouched, because dropping the sequences
+        // would let a retired request be accepted again.
+        doc.version = STATE_VERSION;
+        changed = true;
+    }
     validate_doc(&doc)?;
     for operation in &mut doc.operations {
         // Nothing accepted before a restart is replayed — not even a Board
@@ -532,13 +668,21 @@ fn load(path: &Path) -> Result<DiskDoc, DeckError> {
 /// execution grants that can no longer authorize anything. Never touches a
 /// non-terminal operation. Returns whether anything was removed.
 ///
-/// Exact-replay window (the protocol promise, see `docs/mcp.md`):
-/// * a request stays exactly replayable while its session exists and its
-///   bound control epoch is current;
-/// * once the epoch advances or the session closes, a replay is rejected by
-///   generation/epoch checks — never executed again;
-/// * the last `CREATE_REPLAY_WINDOW` terminal creates per client are kept;
-///   an older create request id is outside the window.
+/// Request identity (the protocol promise, see `docs/mcp.md`): a request is
+/// (client, request_id) plus its canonical argument fingerprint, and every
+/// side effect is bound to a server-issued value that only moves forward:
+/// * exec, input, interrupt, renew, release and close name the session's
+///   control epoch; a record is kept while its session exists and that epoch
+///   is current, and once the epoch advances (or the session closes) a replay
+///   fails the epoch/generation check — it is never executed again;
+/// * control request/renew/release name the session's control sequence;
+///   only the record of the latest change is kept, and a replay of an older
+///   one fails the sequence check (`STALE_REQUEST`);
+/// * a create names the client's create sequence; the last
+///   `CREATE_REPLAY_WINDOW` results per client stay queryable, and an older
+///   create fails the sequence check;
+/// * a close is also kept while its session exists at the epoch it named,
+///   whatever the window, so an ambiguous close is never re-admitted.
 ///
 /// `current_service` (when known) also retires grants issued by an earlier
 /// Deck process: they can never be active again.
@@ -551,28 +695,41 @@ fn compact(doc: &mut DiskDoc, current_service: Option<&str>) -> bool {
     let sessions = doc
         .sessions
         .iter()
-        .map(|session| (session.session_id.clone(), session.control_epoch))
-        .collect::<std::collections::HashMap<_, _>>();
+        .map(|session| {
+            (
+                session.session_id.clone(),
+                (session.control_epoch, session.control_sequence),
+            )
+        })
+        .collect::<HashMap<_, _>>();
     let terminal = |operation: &Operation| {
         matches!(
             operation.state.as_str(),
             "committed" | "rejected" | "ambiguous"
         )
     };
-    let mut creates_kept = std::collections::HashMap::<String, usize>::new();
+    let bound_live = |operation: &Operation| {
+        operation
+            .session_id
+            .as_deref()
+            .and_then(|id| sessions.get(id))
+            .is_some_and(|(epoch, _)| operation.control_epoch.is_some_and(|bound| bound >= *epoch))
+    };
+    let mut creates_kept = HashMap::<String, usize>::new();
     let mut keep = vec![true; doc.operations.len()];
     for (index, operation) in doc.operations.iter().enumerate().rev() {
         if !terminal(operation) {
             continue;
         }
         if matches!(operation.kind.as_str(), "session-create" | "session-close") {
-            // Board operations stay queryable (and exactly replayable) for a
-            // bounded per-client window, even after their session is gone.
+            // Board results stay queryable for a bounded per-client window,
+            // even after their session is gone.
             let kept = creates_kept
                 .entry(format!("{}\0{}", operation.client_id, operation.kind))
                 .or_default();
             *kept += 1;
-            keep[index] = *kept <= CREATE_REPLAY_WINDOW;
+            keep[index] = *kept <= CREATE_REPLAY_WINDOW
+                || (operation.kind == "session-close" && bound_live(operation));
             continue;
         }
         let Some(session_id) = operation.session_id.as_deref() else {
@@ -588,9 +745,12 @@ fn compact(doc: &mut DiskDoc, current_service: Option<&str>) -> bool {
         };
         keep[index] = match sessions.get(session_id) {
             None => false,
-            Some(current) => operation
-                .control_epoch
-                .is_none_or(|epoch| epoch >= *current),
+            Some((epoch, sequence)) => {
+                operation.control_epoch.is_none_or(|bound| bound >= *epoch)
+                    && operation
+                        .control_sequence
+                        .is_none_or(|produced| produced >= *sequence)
+            }
         };
     }
     let mut flags = keep.into_iter();
@@ -1000,8 +1160,17 @@ const CLIENT_REVOKED: &str = "mcp-client-revoked";
 const FEATURE_DISABLED: &str = "mcp-feature-disabled";
 const RUNNER_UNCONFIRMED: &str = "mcp-runner-unconfirmed";
 const FENCE_UNPERSISTED: &str = "mcp-fence-unpersisted";
+/// A request bound to a control or create sequence that is no longer current.
+const STALE_REQUEST: &str = "mcp-stale-request";
 
 fn map_error(error: DeckError) -> Value {
+    if error.message() == STALE_REQUEST {
+        return error_value(
+            "STALE_REQUEST",
+            "the request names a control or create sequence that is no longer current; it was not applied",
+            "Do not resubmit it unchanged. Inspect the current state (deck_session_inspect, deck_capabilities); send a NEW request with a new request_id and the current sequence only if the effect is still wanted.",
+        );
+    }
     if error.message() == RUNNER_STALE {
         return error_value(
             "RUNNER_STALE",
@@ -1049,7 +1218,7 @@ fn map_error(error: DeckError) -> Value {
         ),
         ErrorKind::DiskFull => (
             "CAPACITY_EXCEEDED",
-            "Release control and request it again (a new control epoch retires this session's older request records, whose ids then stay rejected), or close finished managed sessions.",
+            "Release control and request it again: control changes never need an ordinary slot, and the new epoch retires this session's older records (their request ids then stay rejected). A lapsed lease is closed automatically when capacity is short.",
         ),
         ErrorKind::Locked => (
             "SESSION_BUSY",
@@ -1078,39 +1247,113 @@ fn request_hash<T: Serialize>(tool: &str, arguments: &T) -> String {
     sha(&bytes)
 }
 
-/// Retire what can be retired, then reserve one journal slot for `client_id`.
-/// Only an interrupt may use the last `INTERRUPT_RESERVE` slots, and no
-/// client may hold more than `MAX_OPERATIONS_PER_CLIENT` records.
+/// Which journal pool a new record draws from.
+#[derive(Clone, Copy, PartialEq)]
+enum Slot {
+    Ordinary,
+    /// `deck_job_interrupt`: the ordinary pool first, then the interrupt
+    /// reserve (bounded per client).
+    Interrupt,
+    /// A control change. Called after the change is applied to the candidate
+    /// document, so compaction has already retired what it supersedes.
+    Control,
+}
+
+fn is_control_record(operation: &Operation) -> bool {
+    operation.kind == "session-control" && operation.control_sequence.is_some()
+}
+
+/// A lease that has run out can never become valid again at its epoch
+/// (renew and release need a live lease; a new request opens a new epoch),
+/// so under capacity pressure its epoch is closed: holder cleared, epoch
+/// advanced. The records bound to it are then retired by `compact`. A
+/// human-locked or closing session is left alone.
+fn close_lapsed_leases(doc: &mut DiskDoc) {
+    let now = now_ms();
+    for session in &mut doc.sessions {
+        if session.control_owner.is_some()
+            && !session.human_lock
+            && !session.closing
+            && session.lease_expires_at.is_none_or(|lease| lease <= now)
+        {
+            session.control_owner = None;
+            session.control_holder = None;
+            session.lease_expires_at = None;
+            session.control_epoch = session.control_epoch.saturating_add(1);
+        }
+    }
+}
+
+/// Retire what can be retired, then reserve one journal slot for `client_id`
+/// in `slot`'s pool. Control records never count against the ordinary pool,
+/// so release/request (which retire an epoch's records) always fit.
 fn reserve_operation(
     runtime: &Runtime,
     doc: &mut DiskDoc,
     client_id: &str,
-    interrupt: bool,
+    slot: Slot,
 ) -> Result<(), DeckError> {
     compact(doc, Some(&runtime.service_instance));
-    let limit = if interrupt {
-        MAX_OPERATIONS
-    } else {
-        MAX_OPERATIONS - INTERRUPT_RESERVE
+    let fits = |doc: &DiskDoc| {
+        let control = doc
+            .operations
+            .iter()
+            .filter(|op| is_control_record(op))
+            .count();
+        if slot == Slot::Control {
+            return control < CONTROL_RESERVE;
+        }
+        let others = doc.operations.len() - control;
+        let own = doc
+            .operations
+            .iter()
+            .filter(|op| op.client_id == client_id && !is_control_record(op))
+            .count();
+        if others < ORDINARY_OPERATIONS && own < MAX_OPERATIONS_PER_CLIENT {
+            return true;
+        }
+        slot == Slot::Interrupt
+            && others < MAX_OPERATIONS - CONTROL_RESERVE
+            && doc
+                .operations
+                .iter()
+                .filter(|op| op.client_id == client_id && op.kind == "job-interrupt")
+                .count()
+                < INTERRUPT_RESERVE_PER_CLIENT
     };
-    let own = doc
-        .operations
-        .iter()
-        .filter(|operation| operation.client_id == client_id)
-        .count();
-    if doc.operations.len() >= limit || (!interrupt && own >= MAX_OPERATIONS_PER_CLIENT) {
-        return Err(DeckError::new(
-            ErrorKind::DiskFull,
-            "MCP operation capacity reached",
-        ));
+    if fits(doc) {
+        return Ok(());
     }
-    Ok(())
+    if slot != Slot::Control {
+        close_lapsed_leases(doc);
+        compact(doc, Some(&runtime.service_instance));
+        if fits(doc) {
+            return Ok(());
+        }
+    }
+    Err(DeckError::new(
+        ErrorKind::DiskFull,
+        "MCP operation capacity reached",
+    ))
 }
 
 /// Emergency fences are in-memory and set BEFORE the local command waits for
-/// the delivery lock. Every side-effect path re-checks them after acquiring
-/// that lock, immediately before touching the runner.
-fn emergency_denial(runtime: &Runtime, client_id: &str, session_id: &str) -> Option<Value> {
+/// the delivery lock. Every side-effect path re-checks them while holding
+/// that lock, as its last step before the side effect (runner I/O or Board
+/// admission).
+///
+/// Linearization: a local command whose fence is visible to that check wins
+/// and nothing is dispatched. A fence set after the check belongs to a local
+/// command that is still waiting for the same delivery lock; it takes effect
+/// only after the in-flight dispatch finished, and is ordered after it (its
+/// audit event follows the dispatch's). Holding the fence mutex across runner
+/// I/O would make an emergency stop wait for that I/O, so it is not done.
+fn emergency_denial(
+    runtime: &Runtime,
+    client_id: &str,
+    session_id: &str,
+    admission: Admission,
+) -> Option<Value> {
     let emergency = runtime.emergency.lock_or_recover();
     if emergency.disabled || emergency.clients.contains(client_id) {
         return Some(error_value(
@@ -1124,6 +1367,38 @@ fn emergency_denial(runtime: &Runtime, client_id: &str, session_id: &str) -> Opt
             "HUMAN_CONTROL",
             "local takeover has fenced remote access",
             "Wait for the local user to explicitly return control.",
+        ));
+    }
+    if admission == Admission::Execution && emergency.execution_fenced(session_id) {
+        return Some(error_value(
+            "EXECUTION_GRANT_REQUIRED",
+            "local execution authority was revoked",
+            "Ask the local Deck user to approve a new execution window.",
+        ));
+    }
+    None
+}
+
+/// The emergency fences as a local-command error, for Board admissions
+/// (create start, close validation and admission). Checked while holding the
+/// delivery lock, before the state write (never inside it: the fence mutex is
+/// taken before the state lock elsewhere).
+fn emergency_fence_error(
+    runtime: &Runtime,
+    client_id: &str,
+    session_id: &str,
+) -> Option<DeckError> {
+    let emergency = runtime.emergency.lock_or_recover();
+    if emergency.disabled {
+        return Some(DeckError::new(ErrorKind::Perm, FEATURE_DISABLED));
+    }
+    if emergency.clients.contains(client_id) {
+        return Some(DeckError::new(ErrorKind::Perm, CLIENT_REVOKED));
+    }
+    if emergency.human_sessions.contains(session_id) {
+        return Some(DeckError::new(
+            ErrorKind::ControlRevoked,
+            "local takeover has fenced remote access",
         ));
     }
     None
@@ -1360,6 +1635,7 @@ struct CreateArgs {
     cwd: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     title: Option<String>,
+    create_sequence: u64,
 }
 
 #[derive(Deserialize)]
@@ -1396,6 +1672,7 @@ struct ControlArgs {
     control_epoch: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     lease_ms: Option<u64>,
+    control_sequence: u64,
 }
 
 #[derive(Deserialize)]
@@ -1829,7 +2106,8 @@ fn capabilities(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<
                 "structuredProjectRead": true,
                 "reliableJobExitTracking": true,
                 "authorizedWorkspaces": client.projects,
-                "mayCreateSession": client.allow_create
+                "mayCreateSession": client.allow_create,
+                "nextCreateSequence": client.create_sequence
             }))
         })
         .map_err(map_error)?
@@ -1838,15 +2116,17 @@ fn capabilities(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<
 
 fn sessions_list(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<Value, Value> {
     parse::<Empty>(arguments)?;
-    let sessions = runtime
+    let (sessions, next_create_sequence) = runtime
         .read(|doc| {
-            client(doc, client_id)?;
-            Ok(doc
-                .sessions
-                .iter()
-                .filter(|session| session.owner_client_id == client_id)
-                .cloned()
-                .collect::<Vec<_>>())
+            let create_sequence = client(doc, client_id)?.create_sequence;
+            Ok((
+                doc.sessions
+                    .iter()
+                    .filter(|session| session.owner_client_id == client_id)
+                    .cloned()
+                    .collect::<Vec<_>>(),
+                create_sequence,
+            ))
         })
         .map_err(map_error)?
         .map_err(map_error)?;
@@ -1863,13 +2143,14 @@ fn sessions_list(runtime: &Runtime, client_id: &str, arguments: Value) -> Result
                 "controlOwner": session.control_owner,
                 "controlHolder": session.control_holder,
                 "controlEpoch": session.control_epoch,
+                "controlSequence": session.control_sequence,
                 "activeJob": runner.as_ref().map(|probe| probe.job.clone()),
                 "foreground": runner.as_ref().is_some_and(|probe| !probe.job.is_null()).then_some("managed-job"),
                 "stale": runner.as_ref().is_none_or(|probe| !probe.current)
             })
         })
         .collect::<Vec<_>>();
-    Ok(json!({"ok":true,"sessions":values}))
+    Ok(json!({"ok":true,"sessions":values,"nextCreateSequence":next_create_sequence}))
 }
 
 fn session_create(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<Value, Value> {
@@ -1898,7 +2179,13 @@ fn session_create(runtime: &Runtime, client_id: &str, arguments: Value) -> Resul
             if let Some(existing) = existing_operation(doc, client_id, &args.request_id, &hash)? {
                 return Ok(existing.clone());
             }
-            reserve_operation(runtime, doc, client_id, false)?;
+            // A create must name the client's current create sequence, which
+            // advances on every accepted create: a create whose record left
+            // the result window can never be accepted again.
+            if args.create_sequence != client(doc, client_id)?.create_sequence {
+                return Err(DeckError::new(ErrorKind::ContextChanged, STALE_REQUEST));
+            }
+            reserve_operation(runtime, doc, client_id, Slot::Ordinary)?;
             if doc.sessions.len() >= MAX_SESSIONS {
                 return Err(DeckError::new(
                     ErrorKind::DiskFull,
@@ -1943,6 +2230,7 @@ fn session_create(runtime: &Runtime, client_id: &str, arguments: Value) -> Resul
                 "title": title,
                 "cwd": cwd,
                 "generation": generation,
+                "controlSequence": 0,
                 "runnerSocket": socket
             });
             let operation = Operation {
@@ -1959,7 +2247,16 @@ fn session_create(runtime: &Runtime, client_id: &str, arguments: Value) -> Resul
                 admission_hash: None,
                 session_id: Some(session_id),
                 control_epoch: None,
+                control_sequence: None,
             };
+            if let Some(client) = doc
+                .config
+                .clients
+                .iter_mut()
+                .find(|client| client.id == client_id)
+            {
+                client.create_sequence = client.create_sequence.saturating_add(1);
+            }
             doc.operations.push(operation.clone());
             Ok(operation)
         })
@@ -2054,6 +2351,7 @@ fn inspect(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<Value
         "controlOwner": session.control_owner,
         "controlHolder": session.control_holder,
         "controlEpoch": session.control_epoch,
+        "controlSequence": session.control_sequence,
         "leaseExpiresAt": session.lease_expires_at,
         "humanLock": session.human_lock || emergency_human,
         "executionAuthorization": {
@@ -2120,7 +2418,8 @@ fn session_control(runtime: &Runtime, client_id: &str, arguments: Value) -> Resu
     let hash = request_hash("deck_session_control", &args);
     let action = args.action;
     let _delivery = runtime.delivery.lock_or_recover();
-    if let Some(denied) = emergency_denial(runtime, client_id, &args.session_id) {
+    if let Some(denied) = emergency_denial(runtime, client_id, &args.session_id, Admission::Control)
+    {
         return Err(denied);
     }
     // (operation, session, replayed)
@@ -2138,11 +2437,6 @@ fn session_control(runtime: &Runtime, client_id: &str, arguments: Value) -> Resu
                     .cloned();
                 return Ok((existing.clone(), session, true));
             }
-            // A renew changes no epoch and is naturally idempotent, so it is
-            // answered without consuming a journal slot.
-            if !matches!(action, ControlAction::Renew) {
-                reserve_operation(runtime, doc, client_id, false)?;
-            }
             let session = doc
                 .sessions
                 .iter_mut()
@@ -2150,6 +2444,14 @@ fn session_control(runtime: &Runtime, client_id: &str, arguments: Value) -> Resu
                 .ok_or_else(|| DeckError::new(ErrorKind::Missing, "session not found"))?;
             if session.generation != args.expected_generation {
                 return Err(DeckError::new(ErrorKind::ContextChanged, "session generation changed"));
+            }
+            // Every accepted change advances the sequence, and a request must
+            // name the current value. A retry of a change whose record was
+            // superseded or retired therefore fails here — it is never
+            // applied a second time (a renew included: it cannot extend the
+            // lease again).
+            if args.control_sequence != session.control_sequence {
+                return Err(DeckError::new(ErrorKind::ContextChanged, STALE_REQUEST));
             }
             match args.action {
                 ControlAction::Request => {
@@ -2169,6 +2471,8 @@ fn session_control(runtime: &Runtime, client_id: &str, arguments: Value) -> Resu
                     session.lease_expires_at = Some(now_ms() + args.lease_ms.unwrap_or(DEFAULT_LEASE_MS));
                 }
                 ControlAction::Renew => {
+                    // Changes only the lease deadline: never the epoch, and
+                    // never an execution grant.
                     check_control(session, client_id, &args.expected_generation, args.control_epoch.unwrap_or(0), &args.holder_id)?;
                     session.lease_expires_at = Some(now_ms() + args.lease_ms.unwrap_or(DEFAULT_LEASE_MS));
                 }
@@ -2180,23 +2484,22 @@ fn session_control(runtime: &Runtime, client_id: &str, arguments: Value) -> Resu
                     session.control_epoch = session.control_epoch.saturating_add(1);
                 }
             }
-            let result = json!({"sessionId":session.session_id,"sessionGeneration":session.generation,"controlOwner":session.control_owner,"controlHolder":session.control_holder,"controlEpoch":session.control_epoch,"leaseExpiresAt":session.lease_expires_at});
+            session.control_sequence = session.control_sequence.saturating_add(1);
+            let result = json!({"sessionId":session.session_id,"sessionGeneration":session.generation,"controlOwner":session.control_owner,"controlHolder":session.control_holder,"controlEpoch":session.control_epoch,"controlSequence":session.control_sequence,"leaseExpiresAt":session.lease_expires_at});
             let session = session.clone();
-            let operation = Operation { operation_id: random_id("op_")?, client_id: client_id.into(), request_id: args.request_id.clone(), request_hash: hash.clone(), kind: "session-control".into(), state: "committed".into(), code: None, result: Some(result), accepted_at: now_ms(), updated_at: now_ms(), admission_hash: None, session_id: Some(session.session_id.clone()), control_epoch: Some(session.control_epoch) };
-            if !matches!(action, ControlAction::Renew) {
-                doc.operations.push(operation.clone());
-            }
+            // The change is applied first: compaction then retires what it
+            // supersedes (older control records, and an advanced epoch's
+            // records), and the control pool is never taken by ordinary work.
+            reserve_operation(runtime, doc, client_id, Slot::Control)?;
+            let operation = Operation { operation_id: random_id("op_")?, client_id: client_id.into(), request_id: args.request_id.clone(), request_hash: hash.clone(), kind: "session-control".into(), state: "committed".into(), code: None, result: Some(result), accepted_at: now_ms(), updated_at: now_ms(), admission_hash: None, session_id: Some(session.session_id.clone()), control_epoch: Some(session.control_epoch), control_sequence: Some(session.control_sequence) };
+            doc.operations.push(operation.clone());
             audit(doc, "control-changed", AuditLink { principal_id: Some(client_id), session_id: Some(&session.session_id), operation_id: Some(&operation.operation_id), ..Default::default() })?;
             Ok((operation, Some(session), false))
         })
         .map_err(map_error)?;
-    if matches!(action, ControlAction::Renew) && !replayed {
-        // Renewals are not journaled: there is no operation to query later.
-        let mut view = operation_view(&operation);
-        view["operationId"] = Value::Null;
-        return Ok(view);
-    }
-    if replayed {
+    // A renew changes only Deck's lease deadline; the runner's fence (epoch,
+    // holder) is unchanged, so nothing is sent.
+    if replayed || matches!(action, ControlAction::Renew) {
         return Ok(operation_view(&operation));
     }
     let Some(session) = session else {
@@ -2256,7 +2559,9 @@ fn exec(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<Value, V
     .unwrap_or_default()
     .as_slice());
     let _delivery = runtime.delivery.lock_or_recover();
-    if let Some(denied) = emergency_denial(runtime, client_id, &args.session_id) {
+    if let Some(denied) =
+        emergency_denial(runtime, client_id, &args.session_id, Admission::Execution)
+    {
         return Err(denied);
     }
     let prepared = runtime
@@ -2266,7 +2571,7 @@ fn exec(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<Value, V
                 let job = existing.result.as_ref().and_then(|result| result.get("jobId")).and_then(Value::as_str).and_then(|job_id| doc.jobs.iter().find(|job| job.job_id == job_id)).cloned();
                 return Ok((existing.clone(), job, None));
             }
-            reserve_operation(runtime, doc, client_id, false)?;
+            reserve_operation(runtime, doc, client_id, Slot::Ordinary)?;
             let session = doc.sessions.iter().find(|session| session.session_id == args.session_id && session.owner_client_id == client_id).cloned().ok_or_else(|| DeckError::new(ErrorKind::Missing, "session not found"))?;
             // Keep a bounded window of bindings per session. The runner holds
             // at most one live job and retires finished jobs oldest-first, so
@@ -2290,7 +2595,7 @@ fn exec(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<Value, V
             let operation_id = random_id("op_")?;
             let job_id = random_id("job_")?;
             let binding = JobBinding { job_id: job_id.clone(), client_id: client_id.into(), session_id: session.session_id.clone(), session_generation: session.generation.clone(), request_hash: hash.clone(), operation_id: operation_id.clone(), grant_id: grant.grant_id.clone(), grant_version: grant.grant_version, allow_output: grant.allow_output };
-            let operation = Operation { operation_id, client_id: client_id.into(), request_id: args.request_id.clone(), request_hash: hash.clone(), kind: "exec".into(), state: "accepted".into(), code: None, result: Some(json!({"jobId":job_id,"sessionId":session.session_id,"sessionGeneration":session.generation,"executionGrantId":grant.grant_id,"executionGrantVersion":grant.grant_version,"policyVersion":POLICY_VERSION,"environmentProfile":ENVIRONMENT_PROFILE,"scriptDigest":script_digest,"scriptLength":args.script.len(),"cwd":cwd})), accepted_at: now_ms(), updated_at: now_ms(), admission_hash: None, session_id: Some(session.session_id.clone()), control_epoch: Some(args.control_epoch) };
+            let operation = Operation { operation_id, client_id: client_id.into(), request_id: args.request_id.clone(), request_hash: hash.clone(), kind: "exec".into(), state: "accepted".into(), code: None, result: Some(json!({"jobId":job_id,"sessionId":session.session_id,"sessionGeneration":session.generation,"executionGrantId":grant.grant_id,"executionGrantVersion":grant.grant_version,"policyVersion":POLICY_VERSION,"environmentProfile":ENVIRONMENT_PROFILE,"scriptDigest":script_digest,"scriptLength":args.script.len(),"cwd":cwd})), accepted_at: now_ms(), updated_at: now_ms(), admission_hash: None, session_id: Some(session.session_id.clone()), control_epoch: Some(args.control_epoch), control_sequence: None };
             doc.jobs.push(binding.clone());
             doc.operations.push(operation.clone());
             audit(doc, "exec-intent", AuditLink { principal_id: Some(client_id), session_id: Some(&session.session_id), operation_id: Some(&operation.operation_id), job_id: Some(&binding.job_id), grant_id: Some(&grant.grant_id), reason_code: None })?;
@@ -2316,10 +2621,14 @@ fn exec(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<Value, V
         }
         return Ok(operation_view(&operation));
     };
-    // Final admission is deliberately adjacent to runner dispatch. Revocation,
-    // takeover, expiry, generation changes, and policy changes after the
-    // durable intent was accepted prevent the side effect.
-    let grant = runtime
+    pause_point(runtime, "exec-final");
+    // Final admission: the last step before the runner, still under the
+    // delivery lock (see `emergency_denial` for the linearization). Control,
+    // the SAME execution grant this intent was accepted under (a re-approval
+    // never adopts an older intent), and every emergency fence — a pending
+    // execution revocation included — must hold. Otherwise nothing is sent
+    // and the intent is rejected with the refusal's code.
+    let admitted = runtime
         .read(|doc| {
             let current = authorized_session(doc, client_id, &session.session_id)?;
             check_control(
@@ -2329,37 +2638,54 @@ fn exec(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<Value, V
                 args.control_epoch,
                 &args.holder_id,
             )?;
-            Ok::<ExecutionGrant, DeckError>(
-                active_execution_grant(runtime, doc, client_id, current, false)?.clone(),
-            )
+            let grant = active_execution_grant(runtime, doc, client_id, current, false)?;
+            if grant.grant_id != binding.grant_id || grant.grant_version != binding.grant_version {
+                return Err(DeckError::new(
+                    ErrorKind::Perm,
+                    "the execution window changed; a local execution grant is required",
+                ));
+            }
+            Ok(grant.clone())
         })
-        .map_err(map_error)?
-        .map_err(map_error)?;
-    // A takeover/revoke/disable that set its fence while this request waited
-    // for the delivery lock wins: nothing reaches the runner.
-    let fenced = emergency_denial(runtime, client_id, &session.session_id);
-    let context = json!({
-        "service_instance": runtime.service_instance,
-        "holder_id": args.holder_id,
-        "control_epoch": args.control_epoch,
-        "grant_id": grant.grant_id,
-        "grant_version": grant.grant_version,
-        "policy_version": POLICY_VERSION,
-        "intent_hash": hash,
-        "expires_at": grant.expires_at,
-    });
-    let runner = match &fenced {
-        Some(_) => Ok(json!({"ok":false,"error":"control-revoked"})),
-        None => send_runner(
+        .map_err(map_error)
+        .and_then(|admitted| admitted.map_err(map_error))
+        .and_then(|grant| {
+            match emergency_denial(
+                runtime,
+                client_id,
+                &session.session_id,
+                Admission::Execution,
+            ) {
+                Some(denied) => Err(denied),
+                None => Ok(grant),
+            }
+        });
+    let runner = admitted.as_ref().ok().map(|grant| {
+        let context = json!({
+            "service_instance": runtime.service_instance,
+            "holder_id": args.holder_id,
+            "control_epoch": args.control_epoch,
+            "grant_id": grant.grant_id,
+            "grant_version": grant.grant_version,
+            "policy_version": POLICY_VERSION,
+            "intent_hash": hash,
+            "expires_at": grant.expires_at,
+        });
+        send_runner(
             &session,
             &json!({"kind":"exec","job_id":binding.job_id,"request_hash":hash,"script":args.script,"cwd":cwd,"wait_ms":args.wait_ms.unwrap_or(1_000),"timeout_ms":args.execution_timeout_ms,"context":context}),
-        ),
-    };
-    let committed = runner
-        .as_ref()
-        .ok()
-        .is_some_and(|value| value.get("ok").and_then(Value::as_bool) == Some(true));
-    let rejected = runner.as_ref().ok().and_then(runner_error);
+        )
+    });
+    let reply = runner.as_ref().and_then(|runner| runner.as_ref().ok());
+    let committed =
+        reply.is_some_and(|value| value.get("ok").and_then(Value::as_bool) == Some(true));
+    let rejected = reply.and_then(runner_error);
+    let refused = admitted.as_ref().err().map(|denied| {
+        denied["error"]["code"]
+            .as_str()
+            .unwrap_or("ADMISSION_REFUSED")
+            .to_owned()
+    });
     let audit_grant_id = operation
         .result
         .as_ref()
@@ -2374,7 +2700,7 @@ fn exec(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<Value, V
         {
             saved.state = if committed {
                 "committed"
-            } else if rejected.is_some() {
+            } else if rejected.is_some() || refused.is_some() {
                 "rejected"
             } else {
                 "ambiguous"
@@ -2382,6 +2708,8 @@ fn exec(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<Value, V
             .into();
             saved.code = if committed {
                 None
+            } else if let Some(code) = &refused {
+                Some(code.clone())
             } else {
                 Some(
                     rejected
@@ -2393,7 +2721,7 @@ fn exec(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<Value, V
             saved.updated_at = now_ms();
             operation = saved.clone();
         }
-        if rejected.is_some() {
+        if rejected.is_some() || refused.is_some() {
             // The runner never created this job: drop its binding.
             doc.jobs.retain(|job| job.job_id != binding.job_id);
         }
@@ -2406,7 +2734,9 @@ fn exec(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<Value, V
                 operation_id: Some(&operation.operation_id),
                 job_id: Some(&binding.job_id),
                 grant_id: audit_grant_id.as_deref(),
-                reason_code: (!committed).then_some(if rejected.is_some() {
+                reason_code: (!committed).then_some(if refused.is_some() {
+                    "admission-refused"
+                } else if rejected.is_some() {
                     "runner-rejected"
                 } else {
                     "dispatch-unknown"
@@ -2416,15 +2746,21 @@ fn exec(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<Value, V
         Ok(())
     });
     if journaled.is_err() {
+        if let Err(denied) = admitted {
+            // Nothing was dispatched; the unrecorded intent turns ambiguous
+            // on restart and is never replayed.
+            return Err(denied);
+        }
         return Err(error_value(
             "OPERATION_AMBIGUOUS",
             "job dispatch occurred but its audit result could not be persisted",
             "Inspect the live job; do not re-execute it.",
         ));
     }
-    if let Some(denied) = fenced {
-        return Err(denied);
-    }
+    let runner = match admitted {
+        Err(denied) => return Err(denied),
+        Ok(_) => runner.unwrap_or_else(|| Err(DeckError::new(ErrorKind::Other, "not dispatched"))),
+    };
     match runner {
         Ok(value) if committed => Ok(
             json!({"ok":true,"operationId":operation.operation_id,"jobId":binding.job_id,"sessionId":session.session_id,"sessionGeneration":session.generation,"state":value.get("job").and_then(|job| job.get("state")).cloned().unwrap_or(json!("unknown")),"initialOutput":"","outputCursor":format!("{}:{}:0",session.generation,binding.job_id)}),
@@ -2480,7 +2816,9 @@ fn job_read(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<Valu
             })
             .map_err(map_error)?
             .map_err(map_error)?;
-        if let Some(denied) = emergency_denial(runtime, client_id, &session.session_id) {
+        if let Some(denied) =
+            emergency_denial(runtime, client_id, &session.session_id, Admission::Control)
+        {
             return Err(denied);
         }
         if session.human_lock {
@@ -2589,7 +2927,16 @@ fn job_side_effect(
             }
             // Interrupt may use the reserved slots: stopping work must not
             // fail because ordinary requests filled the journal.
-            reserve_operation(runtime, doc, client_id, input.is_none())?;
+            reserve_operation(
+                runtime,
+                doc,
+                client_id,
+                if input.is_none() {
+                    Slot::Interrupt
+                } else {
+                    Slot::Ordinary
+                },
+            )?;
             let binding = doc
                 .jobs
                 .iter()
@@ -2645,6 +2992,7 @@ fn job_side_effect(
                 admission_hash: None,
                 session_id: Some(session.session_id.clone()),
                 control_epoch: Some(epoch),
+                control_sequence: None,
             };
             doc.operations.push(operation.clone());
             Ok((operation, Some((binding, session, grant))))
@@ -2654,7 +3002,20 @@ fn job_side_effect(
     let Some((binding, session, grant)) = target else {
         return Ok(operation_view(&operation));
     };
-    if let Some(denied) = emergency_denial(runtime, client_id, &session.session_id) {
+    pause_point(runtime, "side-effect-final");
+    // Final admission under the delivery lock (see `emergency_denial`): stdin
+    // is refused by a pending execution revocation; an interrupt is not — it
+    // stops work and needs only its own client, control and job authority.
+    let admission = if input.is_some() {
+        Admission::Execution
+    } else {
+        Admission::Control
+    };
+    if let Some(denied) = emergency_denial(runtime, client_id, &session.session_id, admission) {
+        let code = denied["error"]["code"]
+            .as_str()
+            .unwrap_or("ADMISSION_REFUSED")
+            .to_owned();
         let _ = runtime.write(|doc| {
             if let Some(saved) = doc
                 .operations
@@ -2662,7 +3023,7 @@ fn job_side_effect(
                 .find(|saved| saved.operation_id == operation.operation_id)
             {
                 saved.state = "rejected".into();
-                saved.code = Some("CONTROL_REVOKED".into());
+                saved.code = Some(code);
                 saved.updated_at = now_ms();
             }
             Ok(())
@@ -2754,7 +3115,8 @@ fn session_close(runtime: &Runtime, client_id: &str, arguments: Value) -> Result
     }
     let hash = request_hash("deck_session_close", &args);
     let _delivery = runtime.delivery.lock_or_recover();
-    if let Some(denied) = emergency_denial(runtime, client_id, &args.session_id) {
+    if let Some(denied) = emergency_denial(runtime, client_id, &args.session_id, Admission::Control)
+    {
         return Err(denied);
     }
     // Replay, authorization and control are checked first without I/O. The
@@ -2799,12 +3161,12 @@ fn session_close(runtime: &Runtime, client_id: &str, arguments: Value) -> Result
     let operation = runtime.write(|doc| {
         client(doc, client_id)?;
         if let Some(existing) = existing_operation(doc, client_id, &args.request_id, &hash)? { return Ok(existing.clone()); }
-        reserve_operation(runtime, doc, client_id, false)?;
+        reserve_operation(runtime, doc, client_id, Slot::Ordinary)?;
         let current = authorized_session(doc, client_id, &args.session_id)?.clone();
         check_control(&current, client_id, &args.expected_generation, args.control_epoch, &args.holder_id)?;
         let managed = doc.sessions.iter_mut().find(|item| item.session_id == session.session_id).ok_or_else(|| DeckError::new(ErrorKind::Missing, "session not found"))?;
         managed.closing = true;
-        let operation = Operation { operation_id:random_id("op_")?, client_id:client_id.into(), request_id:args.request_id.clone(), request_hash:hash.clone(), kind:"session-close".into(), state:"accepted".into(), code:None, result:Some(json!({"sessionId":session.session_id,"cardId":session.card_id,"sessionGeneration":session.generation,"controlEpoch":session.control_epoch,"holderId":args.holder_id,"confirmRunning":args.confirm_running})), accepted_at:now_ms(), updated_at:now_ms(), admission_hash:None, session_id: Some(session.session_id.clone()), control_epoch: Some(args.control_epoch) };
+        let operation = Operation { operation_id:random_id("op_")?, client_id:client_id.into(), request_id:args.request_id.clone(), request_hash:hash.clone(), kind:"session-close".into(), state:"accepted".into(), code:None, result:Some(json!({"sessionId":session.session_id,"cardId":session.card_id,"sessionGeneration":session.generation,"controlEpoch":session.control_epoch,"holderId":args.holder_id,"confirmRunning":args.confirm_running})), accepted_at:now_ms(), updated_at:now_ms(), admission_hash:None, session_id: Some(session.session_id.clone()), control_epoch: Some(args.control_epoch), control_sequence: None };
         doc.operations.push(operation.clone());
         Ok(operation)
     }).map_err(map_error)?;
@@ -2901,7 +3263,7 @@ fn route(runtime: &Runtime, request: WireRequest) -> Value {
                 "Wait for the local user to explicitly return control.",
             );
         }
-        if emergency.execution_sessions.contains(session_id)
+        if emergency.execution_fenced(session_id)
             && matches!(request.tool.as_str(), "deck_exec" | "deck_job_input")
         {
             return error_value(
@@ -3274,7 +3636,10 @@ pub(crate) fn mcp_enable() -> Result<(), DeckError> {
 /// the keyboard and the ^C stop key reach the job; MCP reaches nothing).
 #[tauri::command(async)]
 pub(crate) fn mcp_disable() -> Result<(), DeckError> {
-    let runtime = runtime()?;
+    disable(runtime()?)
+}
+
+fn disable(runtime: &Runtime) -> Result<(), DeckError> {
     runtime.emergency.lock_or_recover().disabled = true;
     let _delivery = runtime.delivery.lock_or_recover();
     let sessions = runtime.write(|doc| {
@@ -3368,6 +3733,7 @@ pub(crate) fn mcp_client_add(
             revoked_at: None,
             allow_create,
             projects: scopes,
+            create_sequence: 0,
         };
         doc.config.clients.push(client.clone());
         Ok(ClientView {
@@ -3423,7 +3789,10 @@ fn validate_new_client_scopes(
 /// lock, persists, then hands the client's panes to the local user.
 #[tauri::command(async)]
 pub(crate) fn mcp_client_revoke(client_id: String) -> Result<(), DeckError> {
-    let runtime = runtime()?;
+    client_revoke(runtime()?, client_id)
+}
+
+fn client_revoke(runtime: &Runtime, client_id: String) -> Result<(), DeckError> {
     runtime
         .read(|doc| {
             doc.config
@@ -3703,25 +4072,34 @@ fn execution_grant(
             "the new grant is saved but an older runner grant fence is unconfirmed",
         ));
     }
+    // An approval lifts only a revocation that failed to persist BEFORE it
+    // (both ran under the delivery lock, so that one is ordered earlier and
+    // this approval's write revoked its grants durably). A revocation that is
+    // still pending keeps its own count.
     runtime
         .emergency
         .lock_or_recover()
-        .execution_sessions
+        .execution_unpersisted
         .remove(&session.session_id);
     Ok(())
 }
 
 #[tauri::command(async)]
 pub(crate) fn mcp_execution_revoke(session_id: String) -> Result<(), DeckError> {
-    let runtime = runtime()?;
-    let fenced_session_id = resolve_session_id(runtime, &session_id)?;
-    runtime
+    execution_revoke(runtime()?, &session_id)
+}
+
+fn execution_revoke(runtime: &Runtime, session_id: &str) -> Result<(), DeckError> {
+    let fenced_session_id = resolve_session_id(runtime, session_id)?;
+    *runtime
         .emergency
         .lock_or_recover()
-        .execution_sessions
-        .insert(fenced_session_id);
+        .execution_pending
+        .entry(fenced_session_id.clone())
+        .or_default() += 1;
+    pause_point(runtime, "revoke-fenced");
     let _delivery = runtime.delivery.lock_or_recover();
-    let (session, revoked) =
+    let persisted =
         runtime.write(|doc| {
             let session = doc
                 .sessions
@@ -3754,7 +4132,23 @@ pub(crate) fn mcp_execution_revoke(session_id: String) -> Result<(), DeckError> 
                 managed.output_shared = false;
             }
             Ok((session, revoked))
-        })?;
+        });
+    {
+        // Still under the delivery lock: the persisted revocation (or, when it
+        // failed, the sticky fence) replaces this revocation's pending count
+        // before any waiting request or approval can run.
+        let mut emergency = runtime.emergency.lock_or_recover();
+        if let Some(count) = emergency.execution_pending.get_mut(&fenced_session_id) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                emergency.execution_pending.remove(&fenced_session_id);
+            }
+        }
+        if persisted.is_err() {
+            emergency.execution_unpersisted.insert(fenced_session_id);
+        }
+    }
+    let (session, revoked) = persisted?;
     let mut uncertain = false;
     for (grant_id, grant_version) in revoked {
         uncertain |= send_runner(
@@ -3834,8 +4228,33 @@ fn claim(runtime: &Runtime, operation_id: &str) -> Result<PendingView, DeckError
 
 #[tauri::command]
 pub(crate) fn mcp_validate(operation_id: String) -> Result<(), DeckError> {
-    let runtime = runtime()?;
+    validate(runtime()?, &operation_id)
+}
+
+fn validate(runtime: &Runtime, operation_id: &str) -> Result<(), DeckError> {
     let _delivery = runtime.delivery.lock_or_recover();
+    let target = runtime.read(|doc| {
+        doc.operations
+            .iter()
+            .find(|operation| operation.operation_id == operation_id)
+            .map(|operation| {
+                (
+                    operation.client_id.clone(),
+                    operation
+                        .result
+                        .as_ref()
+                        .and_then(|result| result.get("sessionId"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_owned(),
+                )
+            })
+    })?;
+    if let Some((client_id, session_id)) = &target {
+        if let Some(error) = emergency_fence_error(runtime, client_id, session_id) {
+            return Err(error);
+        }
+    }
     runtime.read(|doc| {
         if !doc.config.enabled {
             return Err(DeckError::new(ErrorKind::Perm, "MCP control is disabled"));
@@ -3901,6 +4320,31 @@ pub(crate) fn mcp_close_admit(operation_id: String) -> Result<CloseAdmissionView
 
 fn close_admit(runtime: &Runtime, operation_id: &str) -> Result<CloseAdmissionView, DeckError> {
     let _delivery = runtime.delivery.lock_or_recover();
+    pause_point(runtime, "close-admit");
+    // Emergency fences first, under the delivery lock: a takeover, client
+    // revocation or disable that fenced while this admission waited wins.
+    let target = runtime.read(|doc| {
+        doc.operations
+            .iter()
+            .find(|operation| operation.operation_id == operation_id)
+            .map(|operation| {
+                (
+                    operation.client_id.clone(),
+                    operation
+                        .result
+                        .as_ref()
+                        .and_then(|result| result.get("sessionId"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_owned(),
+                )
+            })
+    })?;
+    if let Some((client_id, session_id)) = &target {
+        if let Some(error) = emergency_fence_error(runtime, client_id, session_id) {
+            return Err(error);
+        }
+    }
     let admission = random_id("close_")?;
     let admission_hash = sha(admission.as_bytes());
     runtime.write(|doc| {
@@ -4039,8 +4483,17 @@ pub(crate) fn mcp_start_session(
                 )
             })?;
         client(doc, &operation.client_id)?;
-        Ok::<Value, DeckError>(operation.result.clone().unwrap_or(Value::Null))
+        Ok::<(Value, String), DeckError>((
+            operation.result.clone().unwrap_or(Value::Null),
+            operation.client_id.clone(),
+        ))
     })??;
+    let (plan, client_id) = plan;
+    // A client revocation or disable that fenced while this start waited for
+    // the delivery lock wins (checked outside the state lock).
+    if let Some(error) = emergency_fence_error(runtime, &client_id, "") {
+        return Err(error);
+    }
     if plan.get("cwd").and_then(Value::as_str) != Some(&dir) {
         return Err(DeckError::new(
             ErrorKind::ContextChanged,
@@ -4190,6 +4643,7 @@ fn complete(
                 output_shared: false,
                 closing: false,
                 created_at: now_ms(),
+                control_sequence: 0,
             };
             doc.sessions.push(session.clone());
             created_session = (!authorized).then_some(session);
@@ -4254,7 +4708,7 @@ pub(crate) fn mcp_card_closed(card_id: String) -> Result<(), DeckError> {
     let mut emergency = runtime.emergency.lock_or_recover();
     for session_id in removed {
         emergency.human_sessions.remove(&session_id);
-        emergency.execution_sessions.remove(&session_id);
+        emergency.execution_unpersisted.remove(&session_id);
     }
     Ok(())
 }
@@ -4858,6 +5312,7 @@ mod tests {
                 project_id: "P1".into(),
                 roots: vec![root.display().to_string()],
             }],
+            create_sequence: 0,
         }
     }
 
@@ -4880,6 +5335,7 @@ mod tests {
             output_shared: true,
             closing: false,
             created_at: now_ms(),
+            control_sequence: 0,
         }
     }
 
@@ -5087,6 +5543,7 @@ mod tests {
             admission_hash: None,
             session_id: None,
             control_epoch: None,
+            control_sequence: None,
         }
     }
 
@@ -5156,6 +5613,7 @@ mod tests {
             output_shared: false,
             closing: false,
             created_at: 1,
+            control_sequence: 0,
         };
         let error = check_control(&session, "client_a", "g_a", 1, "holder_a").unwrap_err();
         assert_eq!(error.kind(), ErrorKind::ControlRevoked);
@@ -5177,6 +5635,7 @@ mod tests {
                 project_id: "P1".into(),
                 roots: vec![root.clone()],
             }],
+            create_sequence: 0,
         });
         let disabled = match client(&doc, "client_a") {
             Err(error) => error,
@@ -5209,6 +5668,7 @@ mod tests {
             output_shared: true,
             closing: false,
             created_at: 1,
+            control_sequence: 0,
         });
         assert!(authorized_session(&doc, "client_missing", "mcp_a").is_err());
         let session = authorized_session(&doc, "client_a", "mcp_a").unwrap();
@@ -5262,6 +5722,7 @@ mod tests {
             output_shared: true,
             closing: false,
             created_at: now_ms(),
+            control_sequence: 0,
         };
         let mut grant = execution_grant(&session);
         grant.issued_at = now_ms().saturating_sub(1_000);
@@ -5458,7 +5919,7 @@ mod tests {
         let create = session_create(
             &runtime,
             "client_a",
-            json!({"request_id":"command_create","project_id":"P1","cwd":root.display().to_string()}),
+            json!({"request_id":"command_create","project_id":"P1","cwd":root.display().to_string(),"create_sequence":0}),
         )
         .unwrap();
         let create_id = create["operationId"].as_str().unwrap().to_owned();
@@ -5638,14 +6099,15 @@ mod tests {
             if let Some(epoch) = epoch {
                 value["control_epoch"] = json!(epoch);
             }
+            value["control_sequence"] = json!(session_state(&runtime).control_sequence);
             route(&runtime, request("deck_session_control", value))
         };
         let operation_count = runtime.read(|doc| doc.operations.len()).unwrap();
         for arguments in [
-            json!({"request_id":"bad_lease_low","session_id":"mcp_a","expected_generation":"g_a","action":"request","holder_id":"holder_a","lease_ms":999}),
-            json!({"request_id":"bad_request_epoch","session_id":"mcp_a","expected_generation":"g_a","action":"request","holder_id":"holder_a","control_epoch":1}),
-            json!({"request_id":"bad_renew_epoch","session_id":"mcp_a","expected_generation":"g_a","action":"renew","holder_id":"holder_a"}),
-            json!({"request_id":"bad_release_lease","session_id":"mcp_a","expected_generation":"g_a","action":"release","holder_id":"holder_a","control_epoch":1,"lease_ms":1000}),
+            json!({"request_id":"bad_lease_low","session_id":"mcp_a","expected_generation":"g_a","action":"request","holder_id":"holder_a","lease_ms":999,"control_sequence":0}),
+            json!({"request_id":"bad_request_epoch","session_id":"mcp_a","expected_generation":"g_a","action":"request","holder_id":"holder_a","control_epoch":1,"control_sequence":0}),
+            json!({"request_id":"bad_renew_epoch","session_id":"mcp_a","expected_generation":"g_a","action":"renew","holder_id":"holder_a","control_sequence":0}),
+            json!({"request_id":"bad_release_lease","session_id":"mcp_a","expected_generation":"g_a","action":"release","holder_id":"holder_a","control_epoch":1,"lease_ms":1000,"control_sequence":0}),
         ] {
             assert_eq!(
                 route(&runtime, request("deck_session_control", arguments))["error"]["code"],
@@ -5665,7 +6127,7 @@ mod tests {
                 &runtime,
                 request(
                     "deck_session_control",
-                    json!({"request_id":"holder_conflict","session_id":"mcp_a","expected_generation":"g_a","action":"request","holder_id":"holder_other"}),
+                    json!({"request_id":"holder_conflict","session_id":"mcp_a","expected_generation":"g_a","action":"request","holder_id":"holder_other","control_sequence":session_state(&runtime).control_sequence}),
                 ),
             )["error"]["code"],
             "PERMISSION_DENIED"
@@ -5763,7 +6225,7 @@ mod tests {
             &runtime,
             request(
                 "deck_session_create",
-                json!({"request_id":"create_a","project_id":"P1","cwd":root.display().to_string(),"title":"Visible shell"}),
+                json!({"request_id":"create_a","project_id":"P1","cwd":root.display().to_string(),"title":"Visible shell","create_sequence":0}),
             ),
         );
         assert_eq!(create["state"], "accepted");
@@ -5935,6 +6397,7 @@ mod tests {
             revoked_at: None,
             allow_create: false,
             projects: vec![],
+            create_sequence: 0,
         });
         assert!(validate_doc(&invalid).is_err());
         std::fs::remove_dir_all(root).unwrap();
@@ -6011,7 +6474,7 @@ mod tests {
                 session_create(
                     &runtime,
                     "client_a",
-                    json!({"request_id":"same_create","project_id":"P1","cwd":cwd}),
+                    json!({"request_id":"same_create","project_id":"P1","cwd":cwd,"create_sequence":0}),
                 )
                 .unwrap()["operationId"]
                     .as_str()
@@ -6229,7 +6692,7 @@ mod tests {
             ),
         );
         assert_eq!(exec["error"]["code"], "HUMAN_CONTROL");
-        assert!(emergency_denial(&runtime, "client_a", "mcp_a").is_some());
+        assert!(emergency_denial(&runtime, "client_a", "mcp_a", Admission::Control).is_some());
         drop(delivery);
         takeover_thread.join().unwrap().unwrap();
         assert!(session_state(&runtime).human_lock);
@@ -6435,20 +6898,22 @@ mod tests {
         let control =
             |arguments: Value| route(&runtime, request("deck_session_control", arguments));
         let first = control(
-            json!({"request_id":"req_a","session_id":"mcp_a","expected_generation":"g_a","action":"request","holder_id":"holder_a"}),
+            json!({"request_id":"req_a","session_id":"mcp_a","expected_generation":"g_a","action":"request","holder_id":"holder_a","control_sequence":0}),
         );
         assert_eq!(first["state"], "committed", "{first}");
         let epoch = first["result"]["controlEpoch"].as_u64().unwrap();
-        let release = json!({"request_id":"rel_a","session_id":"mcp_a","expected_generation":"g_a","action":"release","holder_id":"holder_a","control_epoch":epoch});
+        let release = json!({"request_id":"rel_a","session_id":"mcp_a","expected_generation":"g_a","action":"release","holder_id":"holder_a","control_epoch":epoch,"control_sequence":1});
         assert_eq!(control(release.clone())["state"], "committed");
         let taken = control(
-            json!({"request_id":"req_b","session_id":"mcp_a","expected_generation":"g_a","action":"request","holder_id":"holder_b"}),
+            json!({"request_id":"req_b","session_id":"mcp_a","expected_generation":"g_a","action":"request","holder_id":"holder_b","control_sequence":2}),
         );
         assert_eq!(taken["state"], "committed");
         let controls = runner.count("control");
         // Replaying A's old release must not fence B's runner context.
+        // A's release was superseded by B's request: it is refused as stale
+        // (its sequence is no longer current), never applied again.
         let replay = control(release);
-        assert_eq!(replay["state"], "committed");
+        assert_eq!(replay["error"]["code"], "STALE_REQUEST", "{replay}");
         assert_eq!(
             runner.count("control"),
             controls,
@@ -6460,7 +6925,7 @@ mod tests {
         );
         // null and omitted are the same request, not a conflict.
         let with_null = control(
-            json!({"request_id":"req_b","session_id":"mcp_a","expected_generation":"g_a","action":"request","holder_id":"holder_b","lease_ms":null,"control_epoch":null}),
+            json!({"request_id":"req_b","session_id":"mcp_a","expected_generation":"g_a","action":"request","holder_id":"holder_b","lease_ms":null,"control_epoch":null,"control_sequence":2}),
         );
         assert_eq!(
             with_null["operationId"], taken["operationId"],
@@ -6480,7 +6945,7 @@ mod tests {
             runtime,
             request(
                 "deck_session_control",
-                json!({"request_id":request_id,"session_id":"mcp_a","expected_generation":"g_a","action":"request","holder_id":"holder_a"}),
+                json!({"request_id":request_id,"session_id":"mcp_a","expected_generation":"g_a","action":"request","holder_id":"holder_a","control_sequence":session_state(runtime).control_sequence}),
             ),
         );
         assert_eq!(value["state"], "committed", "{value}");
@@ -6492,7 +6957,7 @@ mod tests {
             runtime,
             request(
                 "deck_session_control",
-                json!({"request_id":request_id,"session_id":"mcp_a","expected_generation":"g_a","action":"release","holder_id":"holder_a","control_epoch":epoch}),
+                json!({"request_id":request_id,"session_id":"mcp_a","expected_generation":"g_a","action":"release","holder_id":"holder_a","control_epoch":epoch,"control_sequence":session_state(runtime).control_sequence}),
             ),
         );
         assert_eq!(value["state"], "committed", "{value}");
@@ -6642,7 +7107,7 @@ mod tests {
         let job_id = executed["jobId"].as_str().unwrap().to_owned();
         runtime
             .write(|doc| {
-                while doc.operations.len() < MAX_OPERATIONS - INTERRUPT_RESERVE {
+                while doc.operations.len() < ORDINARY_OPERATIONS {
                     let mut filler = operation("exec", "committed");
                     filler.operation_id = format!("op_fill_{}", doc.operations.len());
                     filler.request_id = format!("fill_{}", doc.operations.len());
@@ -6659,7 +7124,7 @@ mod tests {
         assert!(blocked["error"]["nextAction"]
             .as_str()
             .unwrap()
-            .contains("control epoch"));
+            .contains("Release control"));
         let interrupt = route(
             &runtime,
             request(
@@ -6693,16 +7158,16 @@ mod tests {
         }
         std::fs::write(&path, serde_json::to_vec(&bytes).unwrap()).unwrap();
         let upgraded = load(&path).unwrap();
-        assert_eq!(upgraded.version, 4);
+        assert_eq!(upgraded.version, 5);
         assert!(
             upgraded.operations.is_empty(),
             "a v3 record of a closed session is retired"
         );
         let saved: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        assert_eq!(saved["version"], 4, "the upgrade is written back (sticky)");
-        // The v3 build accepted exactly version 3; the same rule refuses 5 here.
+        assert_eq!(saved["version"], 5, "the upgrade is written back (sticky)");
+        // The v3 build accepted exactly version 3; the same rule refuses 6 here.
         let mut future = saved.clone();
-        future["version"] = json!(5);
+        future["version"] = json!(6);
         std::fs::write(&path, serde_json::to_vec(&future).unwrap()).unwrap();
         assert_eq!(load(&path).err().unwrap().kind(), ErrorKind::Recovery);
         assert_eq!(
@@ -6718,14 +7183,14 @@ mod tests {
         let (runtime, runner, root) = fixture("views", "svc_test");
         let capabilities = route(&runtime, request("deck_capabilities", json!({})));
         assert_eq!(capabilities["deckVersion"], DECK_VERSION);
-        assert_eq!(capabilities["stateSchemaVersion"], 4);
+        assert_eq!(capabilities["stateSchemaVersion"], 5);
         assert_eq!(capabilities["shellSemantics"]["shell"], "zsh -d -f");
         assert!(capabilities.get("featureEnabled").is_none());
         let create = route(
             &runtime,
             request(
                 "deck_session_create",
-                json!({"request_id":"create_view","project_id":"P1","cwd":root.display().to_string()}),
+                json!({"request_id":"create_view","project_id":"P1","cwd":root.display().to_string(),"create_sequence":0}),
             ),
         );
         assert!(create.get("shellJobComplete").is_none());
@@ -6744,6 +7209,1018 @@ mod tests {
             "FEATURE_DISABLED"
         );
         drop(runner);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    // ---- F1: execution revocation reaches the final admission ----
+
+    fn wait_until(mut ready: impl FnMut() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !ready() {
+            assert!(Instant::now() < deadline, "condition never became true");
+            std::thread::yield_now();
+        }
+    }
+
+    fn execution_fenced(runtime: &Runtime, session_id: &str) -> bool {
+        runtime
+            .emergency
+            .lock_or_recover()
+            .execution_fenced(session_id)
+    }
+
+    fn operation_by_request(runtime: &Runtime, request_id: &str) -> Option<Operation> {
+        runtime
+            .read(|doc| {
+                doc.operations
+                    .iter()
+                    .find(|operation| operation.request_id == request_id)
+                    .cloned()
+            })
+            .unwrap()
+    }
+
+    fn input_request(request_id: &str, job_id: &str) -> WireRequest {
+        request(
+            "deck_job_input",
+            json!({"request_id":request_id,"job_id":job_id,"session_generation":"g_a","control_epoch":1,"holder_id":"holder_a","input":"y\n"}),
+        )
+    }
+
+    fn interrupt_request(request_id: &str, job_id: &str) -> WireRequest {
+        request(
+            "deck_job_interrupt",
+            json!({"request_id":request_id,"job_id":job_id,"session_generation":"g_a","control_epoch":1,"holder_id":"holder_a"}),
+        )
+    }
+
+    #[test]
+    fn f1_exec_past_route_is_stopped_by_a_pending_execution_revoke() {
+        let (runtime, runner, root) = fixture("f1-exec", "svc_test");
+        grant_window(&runtime);
+        // Baseline: the same production path dispatches when nothing revokes.
+        let baseline = route(&runtime, exec_request("exec_base", 1));
+        assert_eq!(baseline["state"], "exited", "{baseline}");
+        assert_eq!(runner.count("exec"), 1);
+        // The request passes route, persists its intent and parks right
+        // before its final admission.
+        let (entered, release) = pause::arm(&runtime.path, "exec-final");
+        let racing = runtime.clone();
+        let exec_thread = std::thread::spawn(move || route(&racing, exec_request("exec_raced", 1)));
+        entered.recv_timeout(Duration::from_secs(10)).unwrap();
+        // The local user revokes: the fence is set, persistence waits for the
+        // delivery lock the parked request holds.
+        let revoking = runtime.clone();
+        let revoke_thread = std::thread::spawn(move || execution_revoke(&revoking, "M1"));
+        wait_until(|| execution_fenced(&runtime, "mcp_a"));
+        release.send(()).unwrap();
+        let raced = exec_thread.join().unwrap();
+        revoke_thread.join().unwrap().unwrap();
+        assert_eq!(
+            runner.count("exec"),
+            1,
+            "an exec admitted after the revocation fence reached the runner: {raced}"
+        );
+        assert_eq!(
+            raced["error"]["code"], "EXECUTION_GRANT_REQUIRED",
+            "{raced}"
+        );
+        let record = operation_by_request(&runtime, "exec_raced").unwrap();
+        assert_eq!(record.state, "rejected");
+        let job_id = record.result.unwrap()["jobId"].as_str().unwrap().to_owned();
+        runtime
+            .read(|doc| assert!(doc.jobs.iter().all(|job| job.job_id != job_id)))
+            .unwrap();
+        drop(runner);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn f1_stdin_past_route_delivers_no_bytes_after_a_pending_execution_revoke() {
+        let (runtime, runner, root) = fixture("f1-input", "svc_test");
+        grant_window(&runtime);
+        let executed = route(&runtime, exec_request("exec_job", 1));
+        let job_id = executed["jobId"].as_str().unwrap().to_owned();
+        let baseline = route(&runtime, input_request("input_base", &job_id));
+        assert_eq!(baseline["state"], "committed", "{baseline}");
+        assert_eq!(runner.count("input"), 1);
+        let (entered, release) = pause::arm(&runtime.path, "side-effect-final");
+        let racing = runtime.clone();
+        let racing_job = job_id.clone();
+        let input_thread =
+            std::thread::spawn(move || route(&racing, input_request("input_raced", &racing_job)));
+        entered.recv_timeout(Duration::from_secs(10)).unwrap();
+        let revoking = runtime.clone();
+        let revoke_thread = std::thread::spawn(move || execution_revoke(&revoking, "M1"));
+        wait_until(|| execution_fenced(&runtime, "mcp_a"));
+        release.send(()).unwrap();
+        let raced = input_thread.join().unwrap();
+        revoke_thread.join().unwrap().unwrap();
+        assert_eq!(
+            runner.count("input"),
+            1,
+            "stdin bytes reached the runner after the revocation fence: {raced}"
+        );
+        assert_eq!(
+            raced["error"]["code"], "EXECUTION_GRANT_REQUIRED",
+            "{raced}"
+        );
+        assert_eq!(
+            operation_by_request(&runtime, "input_raced").unwrap().state,
+            "rejected"
+        );
+        drop(runner);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn f1_close_admission_rechecks_takeover_revocation_and_disable() {
+        for fence in ["takeover", "client-revoke", "disable"] {
+            let (runtime, runner, root) = fixture(&format!("f1-close-{fence}"), "svc_test");
+            let operation_id = close_plan(&runtime);
+            claim(&runtime, &operation_id).unwrap();
+            let (entered, release) = pause::arm(&runtime.path, "close-admit");
+            let admitting = runtime.clone();
+            let admitted_id = operation_id.clone();
+            let admit_thread =
+                std::thread::spawn(move || close_admit(&admitting, &admitted_id).map(|_| ()));
+            entered.recv_timeout(Duration::from_secs(10)).unwrap();
+            let fencing = runtime.clone();
+            let fence_thread = std::thread::spawn(move || match fence {
+                "takeover" => takeover(&fencing, "M1"),
+                "client-revoke" => client_revoke(&fencing, "client_a".into()),
+                _ => disable(&fencing),
+            });
+            wait_until(|| {
+                let emergency = runtime.emergency.lock_or_recover();
+                emergency.disabled
+                    || emergency.clients.contains("client_a")
+                    || emergency.human_sessions.contains("mcp_a")
+            });
+            release.send(()).unwrap();
+            let admitted = admit_thread.join().unwrap();
+            fence_thread.join().unwrap().unwrap();
+            assert!(admitted.is_err(), "{fence}: close admitted across a fence");
+            let record = runtime
+                .read(|doc| {
+                    doc.operations
+                        .iter()
+                        .find(|operation| operation.operation_id == operation_id)
+                        .cloned()
+                })
+                .unwrap()
+                .unwrap();
+            assert!(
+                !matches!(record.state.as_str(), "admitted" | "committed"),
+                "{fence}: {}",
+                record.state
+            );
+            // The Board reports the refusal; the card and session remain.
+            complete(
+                &runtime,
+                operation_id.clone(),
+                "rejected".into(),
+                None,
+                None,
+            )
+            .unwrap();
+            let session = session_state(&runtime);
+            assert_eq!(session.session_id, "mcp_a", "{fence}: session was removed");
+            assert!(!session.closing, "{fence}: closing stuck");
+            drop(runner);
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn f1_revocation_after_the_commit_point_is_ordered_after_the_dispatch() {
+        let (runtime, runner, root) = fixture("f1-inflight", "svc_test");
+        grant_window(&runtime);
+        // The exec is at the runner: it crossed the admission boundary.
+        let (entered, release) = runner.hold("exec");
+        let racing = runtime.clone();
+        let exec_thread =
+            std::thread::spawn(move || route(&racing, exec_request("exec_inflight", 1)));
+        entered.recv_timeout(Duration::from_secs(10)).unwrap();
+        let revoking = runtime.clone();
+        let revoke_thread = std::thread::spawn(move || execution_revoke(&revoking, "M1"));
+        wait_until(|| execution_fenced(&runtime, "mcp_a"));
+        release.send(()).unwrap();
+        let inflight = exec_thread.join().unwrap();
+        revoke_thread.join().unwrap().unwrap();
+        assert_eq!(inflight["state"], "exited", "{inflight}");
+        assert_eq!(runner.count("exec"), 1);
+        assert_eq!(
+            operation_by_request(&runtime, "exec_inflight")
+                .unwrap()
+                .state,
+            "committed"
+        );
+        // The revocation is linearized after the dispatch it waited for.
+        runtime
+            .read(|doc| {
+                let position = |kind: &str| {
+                    doc.audit
+                        .iter()
+                        .position(|event| event.kind == kind)
+                        .unwrap()
+                };
+                assert!(position("exec-dispatch") < position("grant-revoked"));
+            })
+            .unwrap();
+        let later = route(&runtime, exec_request("exec_after", 1));
+        assert_eq!(
+            later["error"]["code"], "EXECUTION_GRANT_REQUIRED",
+            "{later}"
+        );
+        assert_eq!(runner.count("exec"), 1);
+        drop(runner);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn f1_a_pending_execution_revoke_leaves_reads_and_interrupt_alone() {
+        let (runtime, runner, root) = fixture("f1-read", "svc_test");
+        grant_window(&runtime);
+        let executed = route(&runtime, exec_request("exec_job", 1));
+        let job_id = executed["jobId"].as_str().unwrap().to_owned();
+        let (entered, release) = pause::arm(&runtime.path, "revoke-fenced");
+        let revoking = runtime.clone();
+        let revoke_thread = std::thread::spawn(move || execution_revoke(&revoking, "M1"));
+        entered.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert!(execution_fenced(&runtime, "mcp_a"));
+        let read = route(
+            &runtime,
+            request("deck_job_read", json!({"job_id":job_id,"max_bytes":64})),
+        );
+        assert_eq!(read["ok"], true, "{read}");
+        let interrupt = route(&runtime, interrupt_request("stop_job", &job_id));
+        assert_eq!(interrupt["state"], "committed", "{interrupt}");
+        assert_eq!(runner.count("interrupt"), 1);
+        let exec = route(&runtime, exec_request("exec_blocked", 1));
+        assert_eq!(exec["error"]["code"], "EXECUTION_GRANT_REQUIRED", "{exec}");
+        release.send(()).unwrap();
+        revoke_thread.join().unwrap().unwrap();
+        drop(runner);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn f1_an_approval_never_clears_a_revocation_that_persists_after_it() {
+        let (runtime, runner, root) = fixture("f1-approve", "svc_test");
+        grant_window(&runtime);
+        let (entered, release) = pause::arm(&runtime.path, "revoke-fenced");
+        let revoking = runtime.clone();
+        let revoke_thread = std::thread::spawn(move || execution_revoke(&revoking, "M1"));
+        entered.recv_timeout(Duration::from_secs(10)).unwrap();
+        // An approval runs to completion while that revocation is pending.
+        grant_window(&runtime);
+        let exec = route(&runtime, exec_request("exec_between", 1));
+        assert_eq!(exec["error"]["code"], "EXECUTION_GRANT_REQUIRED", "{exec}");
+        assert_eq!(
+            runner.count("exec"),
+            0,
+            "the approval erased a pending revocation"
+        );
+        release.send(()).unwrap();
+        revoke_thread.join().unwrap().unwrap();
+        let after = route(&runtime, exec_request("exec_after", 1));
+        assert_eq!(
+            after["error"]["code"], "EXECUTION_GRANT_REQUIRED",
+            "{after}"
+        );
+        assert_eq!(runner.count("exec"), 0);
+        // Only a later explicit approval opens a new window.
+        grant_window(&runtime);
+        let fresh = route(&runtime, exec_request("exec_fresh", 1));
+        assert_eq!(fresh["state"], "exited", "{fresh}");
+        drop(runner);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn f1_a_job_bound_to_a_revoked_grant_never_revives_under_a_new_grant() {
+        let (runtime, runner, root) = fixture("f1-revive", "svc_test");
+        grant_window(&runtime);
+        let executed = route(&runtime, exec_request("exec_old", 1));
+        let job_id = executed["jobId"].as_str().unwrap().to_owned();
+        execution_revoke(&runtime, "M1").unwrap();
+        grant_window(&runtime);
+        let input = route(&runtime, input_request("input_old_grant", &job_id));
+        assert_eq!(input["ok"], false, "{input}");
+        assert_eq!(runner.count("input"), 0);
+        // The replayed exec returns its record and is never re-dispatched.
+        let replay = route(&runtime, exec_request("exec_old", 1));
+        assert_eq!(replay["jobId"], executed["jobId"], "{replay}");
+        assert_eq!(runner.count("exec"), 1);
+        drop(runner);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    // ---- F2 / C1 / F3: request identity, renew replay, capacity recovery ----
+
+    fn control(
+        runtime: &Runtime,
+        request_id: &str,
+        action: &str,
+        epoch: Option<u64>,
+        sequence: u64,
+    ) -> Value {
+        let mut arguments = json!({"request_id":request_id,"session_id":"mcp_a","expected_generation":"g_a","action":action,"holder_id":"holder_a","control_sequence":sequence});
+        if let Some(epoch) = epoch {
+            arguments["control_epoch"] = json!(epoch);
+        }
+        route(runtime, request("deck_session_control", arguments))
+    }
+
+    fn create(
+        runtime: &Runtime,
+        root: &Path,
+        request_id: &str,
+        sequence: u64,
+        title: &str,
+    ) -> Value {
+        route(
+            runtime,
+            request(
+                "deck_session_create",
+                json!({"request_id":request_id,"project_id":"P1","cwd":root.display().to_string(),"title":title,"create_sequence":sequence}),
+            ),
+        )
+    }
+
+    /// A new Deck process over the same state file (restart).
+    fn reload(runtime: &Runtime, service: &str) -> Arc<Runtime> {
+        Arc::new(Runtime {
+            app: None,
+            path: runtime.path.clone(),
+            socket: runtime.socket.clone(),
+            doc: Mutex::new(load(&runtime.path)),
+            io: Mutex::new(()),
+            delivery: Mutex::new(()),
+            emergency: Mutex::new(EmergencyFences::default()),
+            service_instance: service.into(),
+            started: Instant::now(),
+        })
+    }
+
+    /// Terminal exec records of `client_id`, bound to `session_id`/`epoch`.
+    fn fill(
+        runtime: &Runtime,
+        client_id: &str,
+        session_id: &str,
+        epoch: u64,
+        count: usize,
+        tag: &str,
+    ) {
+        runtime
+            .write(|doc| {
+                for index in 0..count {
+                    let mut filler = operation("exec", "committed");
+                    filler.operation_id = format!("op_{tag}_{index}");
+                    filler.request_id = format!("{tag}_{index}");
+                    filler.client_id = client_id.into();
+                    filler.session_id = Some(session_id.into());
+                    filler.control_epoch = Some(epoch);
+                    doc.operations.push(filler);
+                }
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    fn ordinary_count(runtime: &Runtime) -> usize {
+        runtime
+            .read(|doc| {
+                doc.operations
+                    .iter()
+                    .filter(|op| !is_control_record(op))
+                    .count()
+            })
+            .unwrap()
+    }
+
+    fn own_count(runtime: &Runtime, client_id: &str) -> usize {
+        runtime
+            .read(|doc| {
+                doc.operations
+                    .iter()
+                    .filter(|op| op.client_id == client_id && !is_control_record(op))
+                    .count()
+            })
+            .unwrap()
+    }
+
+    #[test]
+    fn f2_a_retired_control_request_is_never_applied_again() {
+        let (runtime, runner, root) = fixture("f2-control", "svc_test");
+        unowned(&runtime);
+        let first = control(&runtime, "req_first", "request", None, 0);
+        assert_eq!(first["state"], "committed", "{first}");
+        let epoch = first["result"]["controlEpoch"].as_u64().unwrap();
+        let released = control(&runtime, "rel_first", "release", Some(epoch), 1);
+        assert_eq!(released["state"], "committed", "{released}");
+        // The first request's record is retired by the release.
+        assert!(operation_by_request(&runtime, "req_first").is_none());
+        let before = session_state(&runtime);
+        assert!(!before.human_lock && before.control_owner.is_none());
+        let controls = runner.count("control");
+        let replay = control(&runtime, "req_first", "request", None, 0);
+        assert_eq!(replay["error"]["code"], "STALE_REQUEST", "{replay}");
+        let after = session_state(&runtime);
+        assert_eq!(after.control_owner, None);
+        assert_eq!(after.control_holder, None);
+        assert_eq!(after.lease_expires_at, None);
+        assert_eq!(after.control_epoch, before.control_epoch);
+        assert_eq!(after.control_sequence, before.control_sequence);
+        assert_eq!(
+            runner.count("control"),
+            controls,
+            "a replay reached the runner"
+        );
+        // Same after a local takeover and an explicit return.
+        takeover(&runtime, "M1").unwrap();
+        return_control(&runtime, "M1").unwrap();
+        let controls = runner.count("control");
+        let replay = control(&runtime, "req_first", "request", None, 0);
+        assert_eq!(replay["error"]["code"], "STALE_REQUEST", "{replay}");
+        assert_eq!(session_state(&runtime).control_owner, None);
+        assert_eq!(runner.count("control"), controls);
+        // Same after a restart.
+        let reloaded = reload(&runtime, "svc_reloaded");
+        let replay = control(&reloaded, "req_first", "request", None, 0);
+        assert_eq!(replay["error"]["code"], "STALE_REQUEST", "{replay}");
+        assert_eq!(session_state(&reloaded).control_owner, None);
+        assert_eq!(runner.count("control"), controls);
+        // New requests are never locked out.
+        let sequence = session_state(&reloaded).control_sequence;
+        let fresh = control(&reloaded, "req_fresh", "request", None, sequence);
+        assert_eq!(fresh["state"], "committed", "{fresh}");
+        // Same identity, different arguments: a conflict while the record is
+        // kept; once superseded, stale (never re-accepted, never compared).
+        let conflict = control(&reloaded, "req_fresh", "request", None, sequence + 7);
+        assert_eq!(
+            conflict["error"]["code"], "REQUEST_ID_CONFLICT",
+            "{conflict}"
+        );
+        let moved = control(
+            &reloaded,
+            "req_moved",
+            "renew",
+            Some(fresh["result"]["controlEpoch"].as_u64().unwrap()),
+            sequence + 1,
+        );
+        assert_eq!(moved["state"], "committed", "{moved}");
+        let stale = control(&reloaded, "req_fresh", "request", None, sequence + 7);
+        assert_eq!(stale["error"]["code"], "STALE_REQUEST", "{stale}");
+        drop(runner);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn f2_a_retired_create_is_never_accepted_again() {
+        let (runtime, runner, root) = fixture("f2-create", "svc_test");
+        let first = create(&runtime, &root, "create_first", 0, "First");
+        assert_eq!(first["state"], "accepted", "{first}");
+        let first_id = first["operationId"].as_str().unwrap().to_owned();
+        claim(&runtime, &first_id).unwrap();
+        complete(
+            &runtime,
+            first_id,
+            "committed".into(),
+            None,
+            Some("deck-mcp-first".into()),
+        )
+        .unwrap();
+        // Push it out of the result window with later, finished creates.
+        for index in 1..=CREATE_REPLAY_WINDOW as u64 {
+            let later = create(&runtime, &root, &format!("create_{index}"), index, "Later");
+            assert_eq!(later["state"], "accepted", "{later}");
+            let id = later["operationId"].as_str().unwrap().to_owned();
+            claim(&runtime, &id).unwrap();
+            complete(
+                &runtime,
+                id,
+                "rejected".into(),
+                Some("create-failed".into()),
+                None,
+            )
+            .unwrap();
+        }
+        assert!(operation_by_request(&runtime, "create_first").is_none());
+        let sessions = runtime.read(|doc| doc.sessions.len()).unwrap();
+        let operations = runtime.read(|doc| doc.operations.len()).unwrap();
+        let pending = || {
+            runtime
+                .read(|doc| {
+                    doc.operations
+                        .iter()
+                        .filter(|op| op.state == "accepted")
+                        .count()
+                })
+                .unwrap()
+        };
+        let replay = create(&runtime, &root, "create_first", 0, "First");
+        assert_eq!(replay["error"]["code"], "STALE_REQUEST", "{replay}");
+        assert_eq!(runtime.read(|doc| doc.sessions.len()).unwrap(), sessions);
+        assert_eq!(
+            runtime.read(|doc| doc.operations.len()).unwrap(),
+            operations
+        );
+        assert_eq!(pending(), 0, "a retired create was accepted again");
+        // A different body under the retired identity is stale too — Deck
+        // does not pretend to have compared it with deleted arguments.
+        let changed = create(&runtime, &root, "create_first", 0, "Changed");
+        assert_eq!(changed["error"]["code"], "STALE_REQUEST", "{changed}");
+        // Inside the window the same identity with other arguments conflicts.
+        let last = format!("create_{}", CREATE_REPLAY_WINDOW);
+        let conflict = create(&runtime, &root, &last, CREATE_REPLAY_WINDOW as u64, "Other");
+        assert_eq!(
+            conflict["error"]["code"], "REQUEST_ID_CONFLICT",
+            "{conflict}"
+        );
+        let reloaded = reload(&runtime, "svc_reloaded");
+        let replay = create(&reloaded, &root, "create_first", 0, "First");
+        assert_eq!(replay["error"]["code"], "STALE_REQUEST", "{replay}");
+        // A new create at the current sequence still works.
+        let next = CREATE_REPLAY_WINDOW as u64 + 1;
+        let fresh = create(&reloaded, &root, "create_fresh", next, "Fresh");
+        assert_eq!(fresh["state"], "accepted", "{fresh}");
+        let listed = route(&reloaded, request("deck_sessions_list", json!({})));
+        assert_eq!(listed["nextCreateSequence"], next + 1);
+        drop(runner);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn f2_an_ambiguous_exec_is_never_dispatched_again() {
+        let (runtime, runner, root) = fixture("f2-unknown", "svc_test");
+        grant_window(&runtime);
+        // The runner vanishes: Deck cannot prove whether dispatch happened.
+        drop(runner);
+        let lost = route(&runtime, exec_request("exec_lost", 1));
+        assert_eq!(lost["error"]["code"], "OPERATION_AMBIGUOUS", "{lost}");
+        assert_eq!(
+            operation_by_request(&runtime, "exec_lost").unwrap().state,
+            "ambiguous"
+        );
+        let runner = FakeRunner::start(&root, "g_a");
+        let replay = route(&runtime, exec_request("exec_lost", 1));
+        assert_eq!(replay["ok"], true, "{replay}");
+        assert_eq!(
+            runner.count("exec"),
+            0,
+            "an ambiguous exec was dispatched again"
+        );
+        // Restart: the record's epoch is closed, the replay is refused.
+        let reloaded = reload(&runtime, "svc_reloaded");
+        let replay = route(&reloaded, exec_request("exec_lost", 1));
+        assert_eq!(replay["error"]["code"], "CONTROL_REVOKED", "{replay}");
+        assert_eq!(runner.count("exec"), 0);
+        drop(runner);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn f2_an_ambiguous_close_outlives_the_result_window() {
+        let (runtime, runner, root) = fixture("f2-close", "svc_test");
+        let close = |request_id: &str| {
+            route(
+                &runtime,
+                request(
+                    "deck_session_close",
+                    json!({"request_id":request_id,"session_id":"mcp_a","expected_generation":"g_a","control_epoch":1,"holder_id":"holder_a"}),
+                ),
+            )
+        };
+        let unknown = close("close_unknown");
+        let unknown_id = unknown["operationId"].as_str().unwrap().to_owned();
+        claim(&runtime, &unknown_id).unwrap();
+        close_admit(&runtime, &unknown_id).unwrap();
+        complete(
+            &runtime,
+            unknown_id.clone(),
+            "ambiguous".into(),
+            Some("close-failed".into()),
+            None,
+        )
+        .unwrap();
+        for index in 0..CREATE_REPLAY_WINDOW {
+            let later = close(&format!("close_{index}"));
+            let id = later["operationId"].as_str().unwrap().to_owned();
+            claim(&runtime, &id).unwrap();
+            complete(
+                &runtime,
+                id,
+                "rejected".into(),
+                Some("close-failed".into()),
+                None,
+            )
+            .unwrap();
+        }
+        let replay = close("close_unknown");
+        assert_eq!(replay["operationId"], unknown_id.as_str(), "{replay}");
+        assert_eq!(replay["state"], "ambiguous");
+        runtime
+            .read(|doc| {
+                assert!(
+                    doc.operations.iter().all(|op| op.state != "accepted"),
+                    "re-admitted"
+                );
+                assert!(!doc.sessions[0].closing);
+            })
+            .unwrap();
+        drop(runner);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn c1_an_exact_renew_replay_never_extends_the_lease() {
+        let (runtime, runner, root) = fixture("c1-renew", "svc_test");
+        unowned(&runtime);
+        grant_window(&runtime);
+        let grant = runtime
+            .read(|doc| doc.execution_grants.last().unwrap().clone())
+            .unwrap();
+        let requested = control(&runtime, "req_a", "request", None, 0);
+        let epoch = requested["result"]["controlEpoch"].as_u64().unwrap();
+        let renew = control(&runtime, "renew_a", "renew", Some(epoch), 1);
+        assert_eq!(renew["state"], "committed", "{renew}");
+        assert!(
+            renew["operationId"].is_string(),
+            "a renew has a queryable operation"
+        );
+        let first_deadline = renew["result"]["leaseExpiresAt"].as_u64().unwrap();
+        test_clock::advance(30_000);
+        let replay = control(&runtime, "renew_a", "renew", Some(epoch), 1);
+        assert_eq!(replay["operationId"], renew["operationId"], "{replay}");
+        assert_eq!(replay["result"]["leaseExpiresAt"], first_deadline);
+        assert_eq!(
+            session_state(&runtime).lease_expires_at,
+            Some(first_deadline),
+            "the replay extended the lease"
+        );
+        let queried = route(
+            &runtime,
+            request(
+                "deck_operation_get",
+                json!({"operation_id":renew["operationId"]}),
+            ),
+        );
+        assert_eq!(queried["kind"], "session-control");
+        // A new logical renew extends it.
+        let renewed = control(&runtime, "renew_b", "renew", Some(epoch), 2);
+        let second_deadline = renewed["result"]["leaseExpiresAt"].as_u64().unwrap();
+        assert!(second_deadline >= first_deadline + 30_000);
+        // The superseded renew is stale now and changes nothing.
+        let stale = control(&runtime, "renew_a", "renew", Some(epoch), 1);
+        assert_eq!(stale["error"]["code"], "STALE_REQUEST", "{stale}");
+        assert_eq!(
+            session_state(&runtime).lease_expires_at,
+            Some(second_deadline)
+        );
+        // The execution window never moves with the lease.
+        let current = runtime
+            .read(|doc| doc.execution_grants.last().unwrap().clone())
+            .unwrap();
+        assert_eq!(
+            (current.grant_id.clone(), current.expires_at),
+            (grant.grant_id.clone(), grant.expires_at)
+        );
+        // Sustained renewals keep one control record per session.
+        let mut sequence = 3;
+        let mut last = Value::Null;
+        for index in 0..200 {
+            let value = control(
+                &runtime,
+                &format!("renew_many_{index}"),
+                "renew",
+                Some(epoch),
+                sequence,
+            );
+            assert_eq!(value["state"], "committed", "{value}");
+            sequence += 1;
+            last = value;
+        }
+        assert_eq!(
+            runtime
+                .read(|doc| doc
+                    .operations
+                    .iter()
+                    .filter(|op| is_control_record(op))
+                    .count())
+                .unwrap(),
+            1
+        );
+        // After the context ends, the latest renew cannot restore control.
+        takeover(&runtime, "M1").unwrap();
+        return_control(&runtime, "M1").unwrap();
+        let replay = control(
+            &runtime,
+            "renew_many_199",
+            "renew",
+            Some(epoch),
+            sequence - 1,
+        );
+        // Either the recorded (historical) receipt of that very renew, or a
+        // stale refusal once it is retired — never a new effect.
+        assert!(
+            replay["operationId"] == last["operationId"]
+                || replay["error"]["code"] == "STALE_REQUEST",
+            "{replay}"
+        );
+        assert_eq!(
+            session_state(&runtime).control_owner,
+            None,
+            "a renew replay restored control"
+        );
+        assert_eq!(session_state(&runtime).lease_expires_at, None);
+        let reloaded = reload(&runtime, "svc_reloaded");
+        let replay = control(&reloaded, "renew_a", "renew", Some(epoch), 1);
+        assert_eq!(replay["error"]["code"], "STALE_REQUEST", "{replay}");
+        assert_eq!(session_state(&reloaded).lease_expires_at, None);
+        drop(runner);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn f3_a_full_client_quota_recovers_by_release_and_request() {
+        let (runtime, runner, root) = fixture("f3-client", "svc_test");
+        unowned(&runtime);
+        grant_window(&runtime);
+        let epoch = control_request(&runtime, "req_a");
+        let before = route(&runtime, exec_request("exec_before", epoch));
+        assert_eq!(before["state"], "exited", "{before}");
+        let own = own_count(&runtime, "client_a");
+        fill(
+            &runtime,
+            "client_a",
+            "mcp_a",
+            epoch,
+            MAX_OPERATIONS_PER_CLIENT - own,
+            "own",
+        );
+        let blocked = route(&runtime, exec_request("exec_blocked", epoch));
+        assert_eq!(blocked["error"]["code"], "CAPACITY_EXCEEDED", "{blocked}");
+        assert_eq!(runner.count("exec"), 1);
+        // The recovery the error names, performed for real.
+        release(&runtime, "rel_a", epoch);
+        let next = control_request(&runtime, "req_b");
+        assert!(
+            own_count(&runtime, "client_a") < 8,
+            "the old epoch was not retired"
+        );
+        let after = route(&runtime, exec_request("exec_after", next));
+        assert_eq!(after["state"], "exited", "{after}");
+        assert_eq!(runner.count("exec"), 2);
+        let replay = route(&runtime, exec_request("exec_before", epoch));
+        assert_eq!(replay["error"]["code"], "CONTROL_REVOKED", "{replay}");
+        assert_eq!(runner.count("exec"), 2, "a retired exec ran again");
+        // The boundary survives a restart; new work continues.
+        let reloaded = reload(&runtime, "svc_reloaded");
+        for (request_id, bound) in [("exec_before", epoch), ("exec_after", next)] {
+            let replay = route(&reloaded, exec_request(request_id, bound));
+            assert_eq!(replay["error"]["code"], "CONTROL_REVOKED", "{replay}");
+        }
+        assert_eq!(runner.count("exec"), 2);
+        super::execution_grant(&reloaded, "mcp_a".into(), Some(60_000), true, true).unwrap();
+        let epoch = control_request(&reloaded, "req_c");
+        let resumed = route(&reloaded, exec_request("exec_resumed", epoch));
+        assert_eq!(resumed["state"], "exited", "{resumed}");
+        assert_eq!(runner.count("exec"), 3);
+        drop(runner);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// A second managed session owned by another client, for global tests.
+    fn add_other_session(runtime: &Runtime, lease_expires_at: Option<u64>) {
+        runtime
+            .write(|doc| {
+                let mut other = doc.sessions[0].clone();
+                other.session_id = "mcp_b".into();
+                other.card_id = "M2".into();
+                other.owner_client_id = "client_b".into();
+                other.control_owner = Some("client_b".into());
+                other.control_holder = Some("holder_b".into());
+                other.lease_expires_at = lease_expires_at;
+                doc.sessions.push(other);
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    fn fill_others(runtime: &Runtime, session_id: &str, mut count: usize) {
+        let mut client = 0;
+        while count > 0 {
+            let chunk = count.min(MAX_OPERATIONS_PER_CLIENT);
+            fill(
+                runtime,
+                &format!("client_fill_{client}"),
+                session_id,
+                1,
+                chunk,
+                &format!("fill{client}"),
+            );
+            count -= chunk;
+            client += 1;
+        }
+    }
+
+    #[test]
+    fn f3_a_full_global_pool_recovers_by_release_and_request() {
+        let (runtime, runner, root) = fixture("f3-global", "svc_test");
+        unowned(&runtime);
+        grant_window(&runtime);
+        add_other_session(&runtime, Some(now_ms() + 600_000));
+        let epoch = control_request(&runtime, "req_a");
+        let before = route(&runtime, exec_request("exec_before", epoch));
+        assert_eq!(before["state"], "exited", "{before}");
+        fill(&runtime, "client_a", "mcp_a", epoch, 300, "own");
+        fill_others(
+            &runtime,
+            "mcp_b",
+            ORDINARY_OPERATIONS - ordinary_count(&runtime),
+        );
+        assert_eq!(ordinary_count(&runtime), ORDINARY_OPERATIONS);
+        assert!(own_count(&runtime, "client_a") < MAX_OPERATIONS_PER_CLIENT);
+        let blocked = route(&runtime, exec_request("exec_blocked", epoch));
+        assert_eq!(blocked["error"]["code"], "CAPACITY_EXCEEDED", "{blocked}");
+        release(&runtime, "rel_a", epoch);
+        let next = control_request(&runtime, "req_b");
+        let after = route(&runtime, exec_request("exec_after", next));
+        assert_eq!(after["state"], "exited", "{after}");
+        assert_eq!(runner.count("exec"), 2);
+        let replay = route(&runtime, exec_request("exec_before", epoch));
+        assert_eq!(replay["error"]["code"], "CONTROL_REVOKED", "{replay}");
+        assert_eq!(runner.count("exec"), 2);
+        drop(runner);
+        std::fs::remove_dir_all(root).unwrap();
+
+        // Another client whose lease lapsed holds the whole pool: its dead
+        // epoch is closed under pressure and this client proceeds.
+        let (runtime, runner, root) = fixture("f3-lapsed", "svc_test");
+        unowned(&runtime);
+        grant_window(&runtime);
+        add_other_session(&runtime, Some(now_ms().saturating_sub(1)));
+        let epoch = control_request(&runtime, "req_a");
+        fill_others(
+            &runtime,
+            "mcp_b",
+            ORDINARY_OPERATIONS - ordinary_count(&runtime),
+        );
+        let proceeded = route(&runtime, exec_request("exec_after_lapse", epoch));
+        assert_eq!(proceeded["state"], "exited", "{proceeded}");
+        runtime
+            .read(|doc| {
+                let other = doc
+                    .sessions
+                    .iter()
+                    .find(|s| s.session_id == "mcp_b")
+                    .unwrap();
+                assert_eq!(other.control_owner, None);
+                assert_eq!(other.control_epoch, 2);
+                assert!(doc.operations.len() < 16);
+            })
+            .unwrap();
+        drop(runner);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn f3_a_lapsed_lease_at_full_capacity_recovers_by_request_without_a_new_grant() {
+        let (runtime, runner, root) = fixture("f3-lapse", "svc_test");
+        unowned(&runtime);
+        super::execution_grant(
+            &runtime,
+            "mcp_a".into(),
+            Some(MAX_EXECUTION_GRANT_MS),
+            true,
+            true,
+        )
+        .unwrap();
+        let grant = runtime
+            .read(|doc| doc.execution_grants.last().unwrap().clone())
+            .unwrap();
+        let epoch = control_request(&runtime, "req_a");
+        let own = own_count(&runtime, "client_a");
+        fill(
+            &runtime,
+            "client_a",
+            "mcp_a",
+            epoch,
+            MAX_OPERATIONS_PER_CLIENT - own,
+            "own",
+        );
+        // The lease runs out naturally.
+        test_clock::advance(DEFAULT_LEASE_MS + 1);
+        let blocked = route(&runtime, exec_request("exec_blocked", epoch));
+        assert_eq!(blocked["ok"], false, "{blocked}");
+        let released = control(
+            &runtime,
+            "rel_late",
+            "release",
+            Some(epoch),
+            session_state(&runtime).control_sequence,
+        );
+        assert_eq!(released["error"]["code"], "CONTROL_REVOKED", "{released}");
+        let next = control_request(&runtime, "req_b");
+        assert!(next > epoch);
+        let current = runtime
+            .read(|doc| doc.execution_grants.last().unwrap().clone())
+            .unwrap();
+        assert_eq!(
+            (current.grant_id.clone(), current.expires_at),
+            (grant.grant_id.clone(), grant.expires_at),
+            "control changed the execution window"
+        );
+        let after = route(&runtime, exec_request("exec_after", next));
+        assert_eq!(after["state"], "exited", "{after}");
+        assert_eq!(runner.count("exec"), 1);
+        drop(runner);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn f3_interrupt_reserve_survives_a_full_pool_and_one_greedy_client() {
+        let (runtime, runner, root) = fixture("f3-interrupt", "svc_test");
+        grant_window(&runtime);
+        let executed = route(&runtime, exec_request("exec_live", 1));
+        let job_id = executed["jobId"].as_str().unwrap().to_owned();
+        // A second client with its own session, runner and job.
+        let root_b = test_root("f3-interrupt-b");
+        let runner_b = FakeRunner::start(&root_b, "g_b");
+        runtime
+            .write(|doc| {
+                let mut client_b = client_record(&root);
+                client_b.id = "client_b".into();
+                client_b.credential_hash = sha(b"mcp_test_b");
+                doc.config.clients.push(client_b);
+                let mut session_b = session_record(&root, &runner_b);
+                session_b.session_id = "mcp_b".into();
+                session_b.card_id = "M2".into();
+                session_b.generation = "g_b".into();
+                session_b.owner_client_id = "client_b".into();
+                session_b.control_owner = Some("client_b".into());
+                session_b.control_holder = Some("holder_b".into());
+                doc.sessions.push(session_b.clone());
+                let mut grant_b = execution_grant(&session_b);
+                grant_b.grant_id = "grant_b".into();
+                doc.execution_grants.push(grant_b);
+                doc.jobs.push(JobBinding {
+                    job_id: "job_b".into(),
+                    client_id: "client_b".into(),
+                    session_id: "mcp_b".into(),
+                    session_generation: "g_b".into(),
+                    request_hash: "b".repeat(64),
+                    operation_id: "op_b".into(),
+                    grant_id: "grant_b".into(),
+                    grant_version: 1,
+                    allow_output: true,
+                });
+                Ok(())
+            })
+            .unwrap();
+        fill_others(
+            &runtime,
+            "mcp_a",
+            ORDINARY_OPERATIONS - ordinary_count(&runtime),
+        );
+        let blocked = route(&runtime, exec_request("exec_full", 1));
+        assert_eq!(blocked["error"]["code"], "CAPACITY_EXCEEDED", "{blocked}");
+        let first = route(&runtime, interrupt_request("stop_0", &job_id));
+        assert_eq!(first["state"], "committed", "{first}");
+        // Accepted is only a request: the job state comes from deck_job_read.
+        assert!(first.get("processComplete").is_none());
+        // An exact repeat uses no slot and sends nothing.
+        let interrupts = runner.count("interrupt");
+        let repeated = route(&runtime, interrupt_request("stop_0", &job_id));
+        assert_eq!(repeated["operationId"], first["operationId"]);
+        assert_eq!(runner.count("interrupt"), interrupts);
+        for index in 1..INTERRUPT_RESERVE_PER_CLIENT {
+            let value = route(
+                &runtime,
+                interrupt_request(&format!("stop_{index}"), &job_id),
+            );
+            assert_eq!(value["state"], "committed", "{value}");
+        }
+        let greedy = route(&runtime, interrupt_request("stop_greedy", &job_id));
+        assert_eq!(greedy["error"]["code"], "CAPACITY_EXCEEDED", "{greedy}");
+        // The other client can still stop its own work.
+        let other = route(
+            &runtime,
+            WireRequest {
+                version: CONTROL_PROTOCOL,
+                client_id: "client_b".into(),
+                credential: "mcp_test_b".into(),
+                tool: "deck_job_interrupt".into(),
+                arguments: json!({"request_id":"stop_b","job_id":"job_b","session_generation":"g_b","control_epoch":1,"holder_id":"holder_b"}),
+            },
+        );
+        assert_eq!(other["state"], "committed", "{other}");
+        assert_eq!(runner_b.count("interrupt"), 1);
+        drop(runner_b);
+        drop(runner);
+        std::fs::remove_dir_all(root_b).unwrap();
         std::fs::remove_dir_all(root).unwrap();
     }
 }

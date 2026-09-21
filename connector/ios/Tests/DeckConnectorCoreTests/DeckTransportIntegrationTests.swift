@@ -54,7 +54,10 @@ func realDeckLoopbackHTTPSAndWKBridgeTransport() async throws {
     let initialBuffer = try await client.buffer(cardID: fixture.cardId)
     let addID = UUID().uuidString.lowercased(), note = boundaryNote(operationID: addID)
     #expect(note.utf8.count == ConnectorLimits.commandTextUTF8Bytes)
-    let add = CommandRequest(id: addID, kind: "buffer-add", cardId: fixture.cardId, expectedRevision: initialBuffer.revision.value, payload: ["text": .string(note)])
+    // Direct POSTs bypass CommandJournal, so they carry their own admission sequences.
+    var nextSeq = UInt64(Date().timeIntervalSince1970 * 1000)
+    func seq() -> UInt64 { nextSeq += 1; return nextSeq }
+    let add = CommandRequest(id: addID, kind: "buffer-add", cardId: fixture.cardId, expectedRevision: initialBuffer.revision.value, payload: ["text": .string(note)], seq: seq())
     _ = try await client.post(command: add)
     #expect(try await waitForTerminal(client, id: addID).state == .applied)
     let afterAdd = try await client.buffer(cardID: fixture.cardId)
@@ -64,7 +67,7 @@ func realDeckLoopbackHTTPSAndWKBridgeTransport() async throws {
     #expect(try await waitForTerminal(client, id: addID).state == .applied)
     #expect(try await client.buffer(cardID: fixture.cardId).entries.filter { $0.text == note }.count == 1)
 
-    let changed = CommandRequest(id: addID, kind: "buffer-add", cardId: fixture.cardId, expectedRevision: initialBuffer.revision.value, payload: ["text": .string("changed body")])
+    let changed = CommandRequest(id: addID, kind: "buffer-add", cardId: fixture.cardId, expectedRevision: initialBuffer.revision.value, payload: ["text": .string("changed body")], seq: add.seq)
     var changedRejected = false
     do { changedRejected = try await client.post(command: changed).state == .rejected } catch { changedRejected = true }
     #expect(changedRejected)
@@ -72,7 +75,7 @@ func realDeckLoopbackHTTPSAndWKBridgeTransport() async throws {
     #expect(try await client.buffer(cardID: fixture.cardId).entries.filter { $0.text == note }.count == 1)
 
     let staleID = UUID().uuidString.lowercased()
-    let stale = CommandRequest(id: staleID, kind: "buffer-add", cardId: fixture.cardId, expectedRevision: initialBuffer.revision.value, payload: ["text": .string("must not appear")])
+    let stale = CommandRequest(id: staleID, kind: "buffer-add", cardId: fixture.cardId, expectedRevision: initialBuffer.revision.value, payload: ["text": .string("must not appear")], seq: seq())
     _ = try await client.post(command: stale)
     #expect(try await waitForTerminal(client, id: staleID).state == .rejected)
     #expect(!(try await client.buffer(cardID: fixture.cardId)).entries.contains { $0.text == "must not appear" })
@@ -80,7 +83,7 @@ func realDeckLoopbackHTTPSAndWKBridgeTransport() async throws {
     let current = try await client.buffer(cardID: fixture.cardId)
     let added = try #require(current.entries.first(where: { $0.text == note }))
     let queueID = UUID().uuidString.lowercased()
-    let queue = CommandRequest(id: queueID, kind: "buffer-queue", cardId: fixture.cardId, expectedGeneration: nil, expectedRevision: current.revision.value, payload: ["entryIds": .strings([added.id])])
+    let queue = CommandRequest(id: queueID, kind: "buffer-queue", cardId: fixture.cardId, expectedGeneration: nil, expectedRevision: current.revision.value, payload: ["entryIds": .strings([added.id])], seq: seq())
     _ = try await client.post(command: queue)
     #expect(try await waitForTerminal(client, id: queueID).state == .rejected)
     let finalBuffer = try await client.buffer(cardID: fixture.cardId)

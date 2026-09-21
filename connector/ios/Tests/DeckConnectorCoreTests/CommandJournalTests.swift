@@ -196,6 +196,9 @@ private func request(_ id: String = "op-1", text: String = "hello") -> CommandRe
     await transport.setPost(.success(CommandResult(id: "op-1", state: .accepted, code: nil, result: nil)))
     _ = try await journal.retryNotFound(id: "op-1", using: transport)
     #expect(await transport.posted.map(\.id) == ["op-1", "op-1"])
+    let sequences = await transport.posted.map(\.seq)
+    #expect(sequences.first != nil && sequences.first! != nil)
+    #expect(Set(sequences).count == 1, "a retry reuses the original admission sequence")
 }
 
 @Test func fullArchivePrunesOnlyConfirmedResolvedRecord() async throws {
@@ -263,4 +266,47 @@ private func request(_ id: String = "op-1", text: String = "hello") -> CommandRe
     await #expect(throws: ConnectorError.invalidResponse) { try await journal.submit(request(), draftCardID: "card", using: transport) }
     #expect(await journal.allRecords().first?.localState == .prepared)
     #expect(await journal.allRecords().first?.result == nil)
+}
+
+@Test func submitPersistsAnAdmissionSequenceBeforeTheFirstPost() async throws {
+    let storage = ControlledStorage()
+    let transport = MockTransport(post: .failure(MockFailure.offline), query: .failure(MockFailure.offline))
+    let journal = try await CommandJournal.open(storage: storage, binding: binding)
+    let clock = UInt64(Date().timeIntervalSince1970 * 1000)
+    do { _ = try await journal.submit(request("op-1"), draftCardID: "card", using: transport) } catch { }
+    do { _ = try await journal.submit(request("op-2"), draftCardID: "card", using: transport) } catch { }
+    let posted = await transport.posted
+    let first = try #require(posted.first?.seq)
+    let second = try #require(posted.last?.seq)
+    #expect(first >= clock, "sequences stay above an earlier installation's")
+    #expect(second > first)
+    let saved = try #require(await storage.snapshot)
+    #expect(saved.version == 2)
+    #expect(saved.nextSequence == second + 1)
+    #expect(saved.records.map(\.request.seq) == [first, second], "persisted before the POST")
+    // The caller's unsequenced body still identifies the same operation.
+    await #expect(throws: ConnectorError.transport("The original operation is pending recovery.")) {
+        try await journal.submit(request("op-1"), draftCardID: "card", using: transport)
+    }
+    await #expect(throws: ConnectorError.conflict("operation-id-reused")) {
+        try await journal.submit(request("op-1", text: "changed"), draftCardID: "card", using: transport)
+    }
+    #expect(await transport.posted.count == 2)
+}
+
+@Test func versionOneJournalUpgradesWithoutRewritingItsRecords() async throws {
+    let old = CommandRecord(request: request("legacy"), localState: .unknown, result: nil, createdAt: Date(), updatedAt: Date())
+    var encoded = try JSONSerialization.jsonObject(with: JSONEncoder().encode(JournalSnapshot(binding: binding, records: [old]))) as! [String: Any]
+    encoded["version"] = 1
+    encoded.removeValue(forKey: "nextSequence")
+    let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .deferredToDate
+    let stored = try decoder.decode(JournalSnapshot.self, from: JSONSerialization.data(withJSONObject: encoded))
+    #expect(stored.version == 1 && stored.nextSequence == 1)
+    let storage = ControlledStorage(snapshot: stored)
+    let journal = try await CommandJournal.open(storage: storage, binding: binding)
+    #expect(await journal.allRecords().first?.request.seq == nil, "an old body stays immutable")
+    let transport = MockTransport(post: .success(CommandResult(id: "next", state: .accepted, code: nil, result: nil)), query: .failure(MockFailure.offline))
+    _ = try await journal.submit(request("next"), draftCardID: "card", using: transport)
+    #expect(await storage.snapshot?.version == 2)
+    #expect(await transport.posted.first?.seq != nil)
 }
