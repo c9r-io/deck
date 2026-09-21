@@ -1,4 +1,6 @@
-//! Closed Connector projection and revision-checked queue mutations.
+//! Closed Connector projection and revision-checked queue mutations. Snapshot
+//! callers supply the eligible card predicate; items for every other card are
+//! omitted so the phone cannot discover queues for unsupported targets.
 
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -24,13 +26,17 @@ pub(crate) struct OperationDto {
     pub(crate) state: String,
 }
 
-pub(crate) fn snapshot(state: &Queues) -> (String, Vec<QueueDto>, Vec<OperationDto>) {
+pub(crate) fn snapshot(
+    state: &Queues,
+    include_card: impl Fn(&str) -> bool,
+) -> (String, Vec<QueueDto>, Vec<OperationDto>) {
     let q = state.q.lock_or_recover();
     let bytes = serde_json::to_vec(&*q).unwrap_or_default();
     let revision = format!("{:x}", Sha256::digest(&bytes));
     let items = q
         .items
         .iter()
+        .filter(|item| include_card(&item.card_id))
         .map(|i| QueueDto {
             id: i.id.clone(),
             card_id: i.card_id.clone(),
@@ -172,7 +178,14 @@ mod tests {
             || Ok(()),
         )
         .unwrap();
-        assert!(snapshot(&queues).1[0].paused);
+        assert!(snapshot(&queues, |_| true).1[0].paused);
         assert_eq!(saves.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn snapshot_omits_queue_items_for_ineligible_cards() {
+        let queues = queues();
+        assert_eq!(snapshot(&queues, |card_id| card_id == "C1").1.len(), 1);
+        assert!(snapshot(&queues, |card_id| card_id == "other").1.is_empty());
     }
 }

@@ -35,8 +35,10 @@
 //! command under the shared channel policy. Send-message and output also
 //! require a live agent foreground process; output rechecks that identity
 //! after capture alongside the generation/card checks. A foreground agent in
-//! a plain shell card does not qualify. Phone text is an agent prompt, not a
-//! shell line, but a prompt can still lead the agent to run commands.
+//! a plain shell card does not qualify. The snapshot exposes only those saved
+//! agent cards and queue items belonging to them. Phone text is an agent
+//! prompt, not a shell line, but a prompt can still lead the agent to run
+//! commands.
 //!
 //! Network: `connector_enable` records the interface carrying the chosen
 //! address; a restart binds only while the address is on that interface.
@@ -2285,8 +2287,18 @@ fn prune_revoked_devices(doc: &mut DiskDoc) {
 
 pub(super) fn snapshot(app: &AppHandle) -> Result<Value, DeckError> {
     let (revision, b) = board_value()?;
+    let eligible_card_ids = b
+        .get("cards")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|card| queue_target_supported(card))
+        .filter_map(|card| card.get("id").and_then(Value::as_str))
+        .collect::<HashSet<_>>();
     let queue = app.state::<Queues>();
-    let (_, items, _) = crate::scheduler::connector::snapshot(&queue);
+    let (_, items, _) = crate::scheduler::connector::snapshot(&queue, |card_id| {
+        eligible_card_ids.contains(card_id)
+    });
     let projects = b.get("projects").and_then(Value::as_array).into_iter().flatten().filter_map(|p| {
         let columns = p.get("columns").and_then(Value::as_array).into_iter().flatten().filter_map(|c| Some(json!({"id":c.get("id")?.as_str()?,"name":c.get("name")?.as_str()?}))).collect::<Vec<_>>();
         let presets = p.get("presets").and_then(Value::as_array).into_iter().flatten().filter_map(|x| Some(json!({"id":x.get("id")?.as_str()?,"name":x.get("name")?.as_str()?}))).collect::<Vec<_>>();
@@ -2297,6 +2309,7 @@ pub(super) fn snapshot(app: &AppHandle) -> Result<Value, DeckError> {
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
+        .filter(|card| queue_target_supported(card))
         .filter_map(|c| {
             let id = c.get("id")?.as_str()?;
             let session = c.get("session")?.as_str()?;
@@ -2310,7 +2323,7 @@ pub(super) fn snapshot(app: &AppHandle) -> Result<Value, DeckError> {
                 "status":status,
                 "generation":probe.as_ref().map(|p|p.generation.clone()),
                 "canSend":queue_target_supported(c) && probe.as_ref().is_some_and(|p|p.agent.is_some()),
-                "canQueue":queue_target_supported(c),
+                "canQueue":true,
                 "buffer":{
                     "revision":buffer.and_then(|v|v.get("revision")).and_then(Value::as_u64).unwrap_or(0),
                     "collecting":buffer.and_then(|v|v.get("collecting")).and_then(Value::as_bool).unwrap_or(false),
@@ -2348,7 +2361,7 @@ pub(super) fn buffer(app: &AppHandle, card_id: &str) -> Result<Value, DeckError>
         .cloned()
         .unwrap_or_else(|| json!({"revision":0,"collecting":false,"entries":[]}));
     let queues = app.state::<Queues>();
-    let (_, _, ops) = crate::scheduler::connector::snapshot(&queues);
+    let (_, _, ops) = crate::scheduler::connector::snapshot(&queues, |_| true);
     if let Some(entries) = out.get_mut("entries").and_then(Value::as_array_mut) {
         for e in entries {
             if let Some(copies) = e.get_mut("copies").and_then(Value::as_array_mut) {

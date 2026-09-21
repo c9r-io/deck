@@ -22,6 +22,11 @@ The phone never supplies a shell command line, path, or command flag. That does 
 - **Task presets.** Projects can define up to 50 phone task presets under **Project defaults**. A preset fixes its group, card title, directory, bare `codex` or `claude` command, and up to 20 initial steps on the Mac. The phone receives only each preset's ID and name.
 - **Scratchpad reads, note add/edit/delete, queueing, and queue pause/cancel** work only when the saved card command is exactly bare `codex` or `claude` and the snapshot reports `canQueue`. Ordinary shell cards reject all of these routes with `unsupported-target`; the phone cannot replace the saved command.
 
+`GET /v1/snapshot` follows the same boundary: it lists only cards whose saved
+command is exactly bare `codex` or `claude`, and its queue array contains only
+items belonging to those listed cards. Ordinary shell cards and their queued
+items are not exposed to the phone.
+
 Remote commands first enter a bounded native journal and are then handled by the same serialized Board writer as desktop actions. Buffer edits use the visible buffer revision and manual-entry rules. Queue requests persist immutable copies before scheduler admission and retain deterministic operation IDs. Task creation starts the deterministic session before committing a card with its frozen initial plan; an unknown matching session is left as an ambiguous orphan and is never adopted.
 
 Connector uses the existing local network, including a VPN that already provides direct reachability and assigns an address in the allowed ranges above; it does not create a network, public relay, or APNs path. The iOS app refreshes when opened or returned to the foreground and does not promise background delivery. See the [iOS client README](../connector/ios/README.md) for the required Xcode, Simulator, signing, and physical-device gates.
