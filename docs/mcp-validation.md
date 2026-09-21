@@ -214,6 +214,17 @@ refused — `CommandJournalTests.swift`, run here through an executing
 macro stand-in (not Swift Testing), plus the b103255 build refusing a v3 file
 without touching it.
 
+Current source also makes the two output-sharing layers observable without a
+protocol or state-schema change: inspect reports open/closed retained job
+binding counts beside the session gate, and job reads distinguish
+`SESSION_OUTPUT_SHARING_PAUSED` from the permanent
+`JOB_OUTPUT_BINDING_CLOSED`. `natural_expiry_leaves_completed_retained_output_readable`
+proves expiry alone leaves retained output readable;
+`reapprove_then_expiry_keeps_takeover_closed_job_distinct_from_fresh_job`
+covers takeover → return → reapprove → fresh job → expiry; and
+`session_pause_is_distinct_from_an_open_job_binding` binds the two denial
+classes.
+
 ## Ordinary ChatGPT manual acceptance
 
 Status: **MANUAL_PENDING**. Protocol and local execution can be automated;

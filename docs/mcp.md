@@ -217,11 +217,22 @@ epoch, lease, human lock, active-job, and runner checks still apply.
 `outputSharing.sessionGateOpen` is the session-level read gate after human
 takeover/emergency fencing. It is intentionally independent of execution
 authorization and does not by itself prove that a particular job binding
-permits output reads. Revoking an execution window does not itself close
+permits output reads. `jobBindingsOpen` and `jobBindingsClosed` count the
+current session generation's retained bindings for this client, making a
+permanent per-job closure visible without claiming that the session gate is an
+effective job permission. Revoking an execution window does not itself close
 (or open) the session output-sharing gate: exec and stdin stop, while a job's
 retained output stays readable subject to sharing, client authorization,
 session generation and its job binding. Takeover, client revocation and
 disabling MCP keep their own effect on output.
+
+`deck_job_read` returns `SESSION_OUTPUT_SHARING_PAUSED` when the recoverable
+session gate is closed. It returns `JOB_OUTPUT_BINDING_CLOSED` when that exact
+historical binding does not permit output; local takeover closes every existing
+binding permanently, and reopening the session gate or approving a later
+execution window does not revive it. These checks run before and after a
+blocking runner read. Execution-grant expiry and revocation are not read-gate
+reasons.
 
 ## Execution, output, and lifecycle
 

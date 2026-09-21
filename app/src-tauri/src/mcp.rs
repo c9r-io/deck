@@ -50,6 +50,9 @@
 //! grants, so the view never returns to `active` while it persists). It does
 //! not itself change the session's output-sharing switch either way; reads
 //! stay gated by sharing, client authorization, generation and job binding.
+//! Inspect reports the session gate and open/closed binding counts separately;
+//! a read distinguishes a recoverable session pause from a binding that local
+//! takeover closed permanently.
 //! Takeover closes existing job output to MCP for good and gives the pane
 //! keyboard (and the ^C stop key) to the human; it starts no shell. Return to
 //! MCP needs no execution grant and restores no holder, lease or sharing: it
@@ -2474,25 +2477,48 @@ fn inspect(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<Value
             emergency.execution_fenced(&session.session_id),
         )
     };
-    let (authorization_status, authorization_expiry, stdin_approved) = runtime
+    let (
+        authorization_status,
+        authorization_expiry,
+        stdin_approved,
+        job_bindings_open,
+        job_bindings_closed,
+    ) = runtime
         .read(|doc| {
-            Ok(
-                match execution_authorization(runtime, doc, client_id, &session) {
-                    ExecutionAuthorization::None => ("none", None, false),
-                    ExecutionAuthorization::Active(grant) if execution_fenced => {
-                        ("revoked", Some(grant.expires_at), false)
-                    }
-                    ExecutionAuthorization::Active(grant) => {
-                        ("active", Some(grant.expires_at), grant.allow_stdin)
-                    }
-                    ExecutionAuthorization::Expired(grant) => {
-                        ("expired", Some(grant.expires_at), false)
-                    }
-                    ExecutionAuthorization::Revoked(grant) => {
-                        ("revoked", Some(grant.expires_at), false)
-                    }
-                },
-            )
+            let authorization = match execution_authorization(runtime, doc, client_id, &session) {
+                ExecutionAuthorization::None => ("none", None, false),
+                ExecutionAuthorization::Active(grant) if execution_fenced => {
+                    ("revoked", Some(grant.expires_at), false)
+                }
+                ExecutionAuthorization::Active(grant) => {
+                    ("active", Some(grant.expires_at), grant.allow_stdin)
+                }
+                ExecutionAuthorization::Expired(grant) => {
+                    ("expired", Some(grant.expires_at), false)
+                }
+                ExecutionAuthorization::Revoked(grant) => {
+                    ("revoked", Some(grant.expires_at), false)
+                }
+            };
+            let bindings = doc.jobs.iter().filter(|job| {
+                job.client_id == client_id
+                    && job.session_id == session.session_id
+                    && job.session_generation == session.generation
+            });
+            let (open, closed) = bindings.fold((0u64, 0u64), |(open, closed), job| {
+                if job.allow_output {
+                    (open + 1, closed)
+                } else {
+                    (open, closed + 1)
+                }
+            });
+            Ok((
+                authorization.0,
+                authorization.1,
+                authorization.2,
+                open,
+                closed,
+            ))
         })
         .map_err(map_error)?
         .map_err(map_error)?;
@@ -2544,7 +2570,9 @@ fn inspect(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<Value
         },
         "outputSharing": {
             "sessionGateOpen": session.output_shared && !session.human_lock && !emergency_human,
-            "independentOfExecutionAuthorization": true
+            "independentOfExecutionAuthorization": true,
+            "jobBindingsOpen": job_bindings_open,
+            "jobBindingsClosed": job_bindings_closed
         },
         "activeJob": job,
         "foreground": (!job.is_null()).then_some("managed-job"),
@@ -3008,6 +3036,64 @@ fn decode_cursor(cursor: Option<String>, binding: &JobBinding) -> Result<u64, Va
         })
 }
 
+/// Evaluate the complete control-side read gate for one retained job binding.
+/// This is deliberately independent of the execution grant and control lease.
+/// Keep the failure codes distinct: reopening the session gate can fix a
+/// session pause, but it can never revive a binding closed by takeover.
+fn job_read_gate(
+    runtime: &Runtime,
+    client_id: &str,
+    job_id: &str,
+) -> Result<(JobBinding, ManagedSession), Value> {
+    let (binding, session) = runtime
+        .read(|doc| {
+            client(doc, client_id)?;
+            let binding = doc
+                .jobs
+                .iter()
+                .find(|job| job.job_id == job_id && job.client_id == client_id)
+                .cloned()
+                .ok_or_else(|| DeckError::new(ErrorKind::Missing, "job not found"))?;
+            let session = authorized_session(doc, client_id, &binding.session_id)?.clone();
+            Ok((binding, session))
+        })
+        .map_err(map_error)?
+        .map_err(map_error)?;
+    if let Some(denied) =
+        emergency_denial(runtime, client_id, &session.session_id, Admission::Control)
+    {
+        return Err(denied);
+    }
+    if session.human_lock {
+        return Err(error_value(
+            "HUMAN_CONTROL",
+            "the local user controls this session",
+            "Wait for the local user to explicitly return control.",
+        ));
+    }
+    if session.generation != binding.session_generation {
+        return Err(map_error(DeckError::new(
+            ErrorKind::ContextChanged,
+            "session generation changed",
+        )));
+    }
+    if !binding.allow_output {
+        return Err(error_value(
+            "JOB_OUTPUT_BINDING_CLOSED",
+            "this job's output-sharing binding is closed",
+            "This historical binding cannot be restored. Start a new job while session output sharing is open.",
+        ));
+    }
+    if !session.output_shared {
+        return Err(error_value(
+            "SESSION_OUTPUT_SHARING_PAUSED",
+            "session output sharing is paused",
+            "Ask the local Deck user to approve output sharing for this session.",
+        ));
+    }
+    Ok((binding, session))
+}
+
 fn job_read(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<Value, Value> {
     let args: ReadArgs = parse(arguments)?;
     // The same output gate runs before the runner read and again after it
@@ -3015,47 +3101,7 @@ fn job_read(runtime: &Runtime, client_id: &str, arguments: Value) -> Result<Valu
     // sharing pause, revocation or generation change are dropped. The gate is
     // the job binding plus the session's independent sharing switch — never
     // the execution grant.
-    let gate = || -> Result<(JobBinding, ManagedSession), Value> {
-        let (binding, session) = runtime
-            .read(|doc| {
-                client(doc, client_id)?;
-                let binding = doc
-                    .jobs
-                    .iter()
-                    .find(|job| job.job_id == args.job_id && job.client_id == client_id)
-                    .cloned()
-                    .ok_or_else(|| DeckError::new(ErrorKind::Missing, "job not found"))?;
-                let session = authorized_session(doc, client_id, &binding.session_id)?.clone();
-                Ok((binding, session))
-            })
-            .map_err(map_error)?
-            .map_err(map_error)?;
-        if let Some(denied) =
-            emergency_denial(runtime, client_id, &session.session_id, Admission::Control)
-        {
-            return Err(denied);
-        }
-        if session.human_lock {
-            return Err(error_value(
-                "HUMAN_CONTROL",
-                "the local user controls this session",
-                "Wait for the local user to explicitly return control.",
-            ));
-        }
-        if session.generation != binding.session_generation {
-            return Err(map_error(DeckError::new(
-                ErrorKind::ContextChanged,
-                "session generation changed",
-            )));
-        }
-        if !binding.allow_output || !session.output_shared {
-            return Err(map_error(DeckError::new(
-                ErrorKind::Perm,
-                "job output sharing is paused",
-            )));
-        }
-        Ok((binding, session))
-    };
+    let gate = || job_read_gate(runtime, client_id, &args.job_id);
     let (binding, session) = gate()?;
     let cursor = decode_cursor(args.cursor, &binding)?;
     let max_bytes = args.max_bytes.unwrap_or(MAX_READ_BYTES);
@@ -7475,11 +7521,17 @@ mod tests {
             })
             .unwrap();
         let reopened = read();
-        assert_eq!(reopened["error"]["code"], "PERMISSION_DENIED", "{reopened}");
+        assert_eq!(
+            reopened["error"]["code"], "JOB_OUTPUT_BINDING_CLOSED",
+            "{reopened}"
+        );
         let inspect = route(
             &runtime,
             request("deck_session_inspect", json!({"session_id":"mcp_a"})),
         );
+        assert_eq!(inspect["outputSharing"]["sessionGateOpen"], true);
+        assert_eq!(inspect["outputSharing"]["jobBindingsOpen"], 0);
+        assert_eq!(inspect["outputSharing"]["jobBindingsClosed"], 1);
         assert!(inspect.get("terminalContext").is_none());
         assert!(inspect.get("readiness").is_none());
         drop(runner);
@@ -8399,6 +8451,103 @@ mod tests {
     }
 
     #[test]
+    fn natural_expiry_leaves_completed_retained_output_readable() {
+        let (runtime, runner, root) = fixture("expiry-sharing", "svc_test");
+        grant_window(&runtime);
+        let executed = route(&runtime, exec_request("exec_completed", 1));
+        assert_eq!(executed["state"], "exited", "{executed}");
+        let job_id = executed["jobId"].as_str().unwrap().to_owned();
+
+        test_clock::advance(60_001);
+
+        let expired = inspect_view(&runtime);
+        assert_eq!(expired["executionAuthorization"]["status"], "expired");
+        assert_eq!(expired["outputSharing"]["sessionGateOpen"], true);
+        assert_eq!(expired["outputSharing"]["jobBindingsOpen"], 1);
+        assert_eq!(expired["outputSharing"]["jobBindingsClosed"], 0);
+        let read = read_job(&runtime, &job_id);
+        assert_eq!(read["ok"], true, "{read}");
+        assert_eq!(read["state"], "exited", "{read}");
+        assert_eq!(read["output"], "done\n", "{read}");
+
+        drop(runner);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn session_pause_is_distinct_from_an_open_job_binding() {
+        let (runtime, runner, root) = fixture("session-sharing-paused", "svc_test");
+        grant_window(&runtime);
+        let executed = route(&runtime, exec_request("exec_shared", 1));
+        let job_id = executed["jobId"].as_str().unwrap().to_owned();
+        assert_eq!(read_job(&runtime, &job_id)["ok"], true);
+
+        super::execution_grant(&runtime, "mcp_a".into(), Some(60_000), true, false).unwrap();
+
+        let view = inspect_view(&runtime);
+        assert_eq!(view["outputSharing"]["sessionGateOpen"], false);
+        assert_eq!(view["outputSharing"]["jobBindingsOpen"], 1);
+        assert_eq!(view["outputSharing"]["jobBindingsClosed"], 0);
+        let paused = read_job(&runtime, &job_id);
+        assert_eq!(
+            paused["error"]["code"], "SESSION_OUTPUT_SHARING_PAUSED",
+            "{paused}"
+        );
+
+        drop(runner);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn reapprove_then_expiry_keeps_takeover_closed_job_distinct_from_fresh_job() {
+        let (runtime, runner, root) = fixture("take-exp", "svc_test");
+        grant_window(&runtime);
+        let historical = route(&runtime, exec_request("exec_historical", 1));
+        assert_eq!(historical["state"], "exited", "{historical}");
+        let historical_job = historical["jobId"].as_str().unwrap().to_owned();
+        assert_eq!(read_job(&runtime, &historical_job)["ok"], true);
+
+        takeover(&runtime, "M1").unwrap();
+        return_control(&runtime, "M1").unwrap();
+        grant_window(&runtime);
+        let epoch = control_request(&runtime, "control_after_return");
+        let fresh = route(&runtime, exec_request("exec_fresh_after_return", epoch));
+        assert_eq!(fresh["state"], "exited", "{fresh}");
+        let fresh_job = fresh["jobId"].as_str().unwrap().to_owned();
+
+        let active = inspect_view(&runtime);
+        assert_eq!(active["executionAuthorization"]["status"], "active");
+        assert_eq!(active["outputSharing"]["sessionGateOpen"], true);
+        assert_eq!(active["outputSharing"]["jobBindingsOpen"], 1);
+        assert_eq!(active["outputSharing"]["jobBindingsClosed"], 1);
+        let historical_denied = read_job(&runtime, &historical_job);
+        assert_eq!(
+            historical_denied["error"]["code"], "JOB_OUTPUT_BINDING_CLOSED",
+            "{historical_denied}"
+        );
+        assert_eq!(read_job(&runtime, &fresh_job)["ok"], true);
+
+        test_clock::advance(60_001);
+
+        let expired = inspect_view(&runtime);
+        assert_eq!(expired["executionAuthorization"]["status"], "expired");
+        assert_eq!(expired["outputSharing"]["sessionGateOpen"], true);
+        assert_eq!(expired["outputSharing"]["jobBindingsOpen"], 1);
+        assert_eq!(expired["outputSharing"]["jobBindingsClosed"], 1);
+        let still_closed = read_job(&runtime, &historical_job);
+        assert_eq!(
+            still_closed["error"]["code"], "JOB_OUTPUT_BINDING_CLOSED",
+            "{still_closed}"
+        );
+        let fresh_after_expiry = read_job(&runtime, &fresh_job);
+        assert_eq!(fresh_after_expiry["ok"], true, "{fresh_after_expiry}");
+        assert_eq!(fresh_after_expiry["state"], "exited");
+
+        drop(runner);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn execution_revoke_never_opens_output_sharing() {
         let (runtime, runner, root) = fixture("revoke-unshared", "svc_test");
         super::execution_grant(&runtime, "mcp_a".into(), Some(60_000), true, false).unwrap();
@@ -8414,7 +8563,7 @@ mod tests {
         assert_eq!(after["outputSharing"]["sessionGateOpen"], false, "{after}");
         assert!(!session_state(&runtime).output_shared);
         let read = read_job(&runtime, &job_id);
-        assert_eq!(read["error"]["code"], "PERMISSION_DENIED", "{read}");
+        assert_eq!(read["error"]["code"], "JOB_OUTPUT_BINDING_CLOSED", "{read}");
         drop(runner);
         std::fs::remove_dir_all(root).unwrap();
     }

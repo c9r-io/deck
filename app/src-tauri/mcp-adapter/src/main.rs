@@ -326,7 +326,7 @@ impl DeckServer {
             ),
             tool::<SessionInput>(
                 "deck_session_inspect",
-                "Inspect one authorized MCP session: its generation, control owner and epoch, human lock, execution window, output-sharing gate, and active job metadata. It never returns terminal screen content.",
+                "Inspect one authorized MCP session: its generation, control owner and epoch, human lock, execution window, session output-sharing gate, open/closed retained job-binding counts, and active job metadata. The session gate alone is not effective permission for a particular job. It never returns terminal screen content.",
                 ro.clone(),
             ),
             tool::<ControlInput>(
