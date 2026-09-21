@@ -17,15 +17,18 @@ same commit as the behaviour it describes.
   automatic retirement is an automation run whose rule says "close the
   card" (`runFinishHolds` in `pure.js`, driven by the `board.js` poll):
   the user chose it per rule, it never fires while a pane shows the card,
-  and it goes through the same close path as a click. The only other
-  card creation/retirement not caused by a click is an explicit MCP request
-  (`mcp.js`, `mcp.rs`), and it is not automatic: a locally authorized client
-  names one target; create needs the client's create permission, close needs
-  the client's current control generation/epoch/holder and is refused under
-  human lock or while any pane shows the card; both are idempotent by request
-  id and go through `provider.createStarted` / `provider.close`; a Deck
-  restart never replays either (they become ambiguous). Nothing else retires
-  or relocates a card on its own.
+  and it goes through the same close path as a click. Other non-click card
+  creation/retirement paths are closed: an explicit MCP request (`mcp.js`,
+  `mcp.rs`) names one target; create needs the locally authorized client's
+  create permission, close needs its current control generation/epoch/holder
+  and is refused under human lock or while any pane shows the card; both are
+  idempotent by request id and go through `provider.createStarted` /
+  `provider.close`, and a Deck restart never replays either (they become
+  ambiguous). A paired Connector `task-create` (`connector.js`) may create
+  one card from a locally saved project preset, and the first message matched
+  by a saved Slack channel rule (`inbound.js`) may create that rule's
+  collection card; both use `provider.createStarted`, and neither moves or
+  retires a card. Nothing else retires or relocates a card on its own.
 - **deck is EDR-QUIET by rule** (a corporate EDR flagged it and IT demanded the
   app be stopped; `tests/edr_quiet.rs` enforces each point):
   Connector is disabled by default; when the user enables it, it opens one
