@@ -2535,3 +2535,27 @@ fn process_bound_delivery_requires_paste_mode_and_compatibility_does_not() {
     assert!(request.expected_process.is_none());
     assert!(!request.require_paste_mode);
 }
+
+#[test]
+fn external_rows_are_admitted_only_for_an_exact_agent_command() {
+    for cmd in ["claude", "codex"] {
+        let mut args = add_args("s", "external");
+        args.cmd = cmd.into();
+        assert!(ops::require_channel_agent(&args).is_ok(), "{cmd}");
+    }
+    for cmd in [
+        "",
+        "zsh",
+        "claude --yolo",
+        "/usr/local/bin/claude",
+        "FOO=1 codex",
+    ] {
+        let mut args = add_args("s", "external");
+        args.cmd = cmd.into();
+        assert_eq!(
+            ops::require_channel_agent(&args).unwrap_err().kind(),
+            ErrorKind::Invalid,
+            "{cmd:?}"
+        );
+    }
+}

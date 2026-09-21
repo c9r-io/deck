@@ -144,6 +144,7 @@ const INBOUND_OUTCOMES: &[&str] = &[
     "duplicate",
     "no-rule-target",
     "no-template",
+    "blocked",
     "create-fail",
     "queue-fail",
     "channel-queue-fail",

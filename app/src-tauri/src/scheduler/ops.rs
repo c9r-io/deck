@@ -18,8 +18,9 @@
 //! - `normalize_prompt` is the ONE text normalization: CRs are folded,
 //!   newlines are kept (a prompt may be many lines), and an empty result is
 //!   refused; blank steps are dropped from a step list.
-//! - `channel_queue_add` is the external-message admission path (Slack
-//!   channel rules and every Connector-originated row). It uses the
+//! - `channel_queue_add` (and `channel_queue_add_reviewed_list`) is the
+//!   external-message admission path (Slack channel rules, Slack badge
+//!   rules, and every Connector-originated row). It uses the
 //!   same durable queue transaction but first requires the card command to
 //!   be exactly `claude` or `codex` (`inbound_channel::channel_agent_command`),
 //!   so every channel row is process-bound. A process-bound row is pasted
@@ -573,13 +574,18 @@ pub(crate) fn channel_queue_add(
     app: AppHandle,
     args: QueueAddArgs,
 ) -> Result<(), DeckError> {
+    require_channel_agent(&args)?;
+    queue_add(state, app, args)
+}
+
+pub(super) fn require_channel_agent(args: &QueueAddArgs) -> Result<(), DeckError> {
     if crate::inbound_channel::channel_agent_command(&args.cmd).is_none() {
         return Err(DeckError::new(
             ErrorKind::Invalid,
             "channel automation requires a supported agent",
         ));
     }
-    queue_add(state, app, args)
+    Ok(())
 }
 
 /// The firing contract for user operations: while an item is mid-send
@@ -1076,4 +1082,17 @@ pub(crate) fn queue_add_reviewed_list(
     })?;
     let _ = app.emit("queue-changed", ());
     Ok(())
+}
+
+/// `queue_add_reviewed_list` behind the same agent-only admission as
+/// `channel_queue_add`, for a reviewed list that carries external text.
+#[tauri::command]
+pub(crate) fn channel_queue_add_reviewed_list(
+    state: State<'_, Queues>,
+    app: AppHandle,
+    args: QueueAddArgs,
+    texts: Vec<String>,
+) -> Result<(), DeckError> {
+    require_channel_agent(&args)?;
+    queue_add_reviewed_list(state, app, args, texts)
 }

@@ -49,6 +49,16 @@ hands the message to that skill, e.g. `/bug-fix {{msg.text}}`. A row may
 span many lines and is sent exactly as written; the message pasted into it
 is flattened, so its newlines become spaces and cannot reshape your prompt.
 
+A badge puts someone else's message into your session, so a badge rule
+follows the same admission as a channel rule: its command must be exactly
+`claude` or `codex` (never a bare shell, where the message would run as a
+command), and every template row must start with your own words rather than
+a placeholder. The editor refuses a badge rule that fails this, a stored one
+is listed as blocked, and a badge that reaches it is skipped before any card
+is created. The rows are queued through the native agent-only gate, so they
+are pasted only while that agent is the pane's foreground program. Clock
+rules send only your own text and keep any command.
+
 Badges that already exist when a rule is added are left alone. A message
 with several badges makes one card per rule; the same badge on the same
 message only ever makes one. Only your own reactions count. A badge rule

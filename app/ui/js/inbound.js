@@ -15,13 +15,17 @@
 // created run's ack carries the card id so the backend's run ledger can be
 // closed later by `inbound_run_ended`. A badge item's ack carries the card
 // id too, so a badge-started run is finished (and listed) like a clock one.
+// A badge item's text is someone else's Slack message, so it passes the
+// channel admission (`channelBlockReason`, acked `blocked` before any card
+// exists) and is queued through the native agent-only gate
+// (`channel_queue_add*`); a clock item's text is the user's own template.
 import { ctx, inv, listen, store, uev } from './state.js';
 import { provider } from './board.js';
 import { toast } from './dialogs.js';
 import { planInbound } from './pure.js';
 import { t } from './i18n.js';
 import { bufferLimitError, emptyBuffer, upsertExternal } from './buffer-model.js';
-import { channelDigestId, channelRunExpired, channelSource, channelTemplatePlan, collectingCard, unfinishedChannelPlans } from './channel-model.js';
+import { channelBlockReason, channelDigestId, channelRunExpired, channelSource, channelTemplatePlan, collectingCard, unfinishedChannelPlans } from './channel-model.js';
 import { expandHome } from './pure.js';
 
 let draining = false;
@@ -159,6 +163,13 @@ async function handleInbound(item) {
     toast(t('inbound.noTemplate', { badge: ruleLabel(item), template: plan.template }));
     return skip('no-template');
   }
+  /* a badge carries someone else's Slack message: the channel admission
+     applies (an exact agent command, no line led by a placeholder) */
+  const blocked = !clock && channelBlockReason(item.rule, store.projects.find(p => p.id === item.rule.projectId));
+  if (blocked) {
+    toast(t(blocked === 'command' ? 'inbound.blockedCommand' : 'inbound.blockedTemplate', { badge }));
+    return skip('blocked');
+  }
   let card;
   try {
     card = await provider.create(plan.card);
@@ -172,11 +183,11 @@ async function handleInbound(item) {
   let queued = 0;
   try {
     if (base.reviewEach) {
-      await inv('queue_add_reviewed_list', { args: { ...base, text: plan.steps[0], mode: 'at', at: now,
+      await inv(clock ? 'queue_add_reviewed_list' : 'channel_queue_add_reviewed_list', { args: { ...base, text: plan.steps[0], mode: 'at', at: now,
         tpl: plan.template, tplIdx: 1, tplTotal: plan.steps.length }, texts: plan.steps });
       queued = plan.steps.length;
     } else for (let k = 0; k < plan.steps.length; k++) {
-      await inv('queue_add', { args: { ...base, text: plan.steps[k],
+      await inv(clock ? 'queue_add' : 'channel_queue_add', { args: { ...base, text: plan.steps[k],
         mode: k === 0 ? 'at' : 'chain', at: k === 0 ? now : null,
         tpl: plan.template, tplIdx: k + 1, tplTotal: plan.steps.length } });
       queued++;

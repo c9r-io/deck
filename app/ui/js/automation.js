@@ -14,6 +14,9 @@
 // command, template and a finish mode — and both go through the same
 // dispatch (inbound.js) and the same run ledger (`inbound_runs`), so a
 // badge-started card is finished by `board.js` exactly like a clock run.
+// Both Slack triggers carry other people's text, so a badge rule obeys the
+// channel admission (`channelBlockReason`): the editor refuses to save one
+// that fails it and the list shows a stored one as blocked.
 // This module is only the drawer that lists the CURRENT project's rules of
 // either trigger, edits them through `persistInbound` (one durable settings
 // write), and shows each rule's next slot (clock) or last runs. What a rule
@@ -137,7 +140,7 @@ function ruleEl(rule) {
     + '<div class="ar-body"><div class="ar-kv"></div><div class="ar-runs"></div></div>';
   el.querySelector('.ar-name').textContent = ruleLabel(rule);
   el.querySelector('.ar-when').textContent = triggerText(rule);
-  const blocked = rule.source === 'channel' && channelBlockReason(rule, project);
+  const blocked = rule.source !== 'clock' && channelBlockReason(rule, project);
   if (blocked) {
     el.classList.add('off');
     el.querySelector('.ar-when').textContent = t(blocked === 'command'
@@ -352,6 +355,12 @@ function readEditor() {
   if (read.error) {
     toast(t(read.error, read.params));
     if (read.focus) $(read.focus).focus();
+    return null;
+  }
+  const blocked = read.rule.source === 'slack' && channelBlockReason(read.rule, project);
+  if (blocked) {
+    toast(t(blocked === 'command' ? 'automation.invalidChannelCommand' : 'automation.invalidChannelTemplate'));
+    $(blocked === 'command' ? 'auto-cmd' : 'auto-template').focus();
     return null;
   }
   return read.rule;

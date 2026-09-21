@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Slack badge rules now follow the channel admission: the command must be
+  exactly `claude` or `codex` and no template row may start with a message
+  placeholder. A badge rule with an empty (plain shell) command could
+  previously paste someone else's Slack message into zsh and run it; such a
+  rule is now shown as blocked and its badges are skipped until it is edited.
 - MCP execution now uses one structured executable plus exact argument vector
   (`deck_exec`). Execution approval explicitly permits any program, including
   interpreters and shells, with the logged-in user's permissions; it is not a
