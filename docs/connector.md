@@ -18,7 +18,7 @@ Changing to an address outside the current certificate requires **Reset and re-p
 
 The phone never supplies a shell command line, path, or command flag. That does not mean phone text cannot cause commands to run: text is delivered as a **prompt to an agent**, and an agent may act on it.
 
-- **Send message** and **output** work only on cards whose *saved* command is a recognized Codex or Claude launch command, and send additionally requires that agent to be the pane's live foreground process. An ordinary shell card — even one where you started an agent by hand — is never readable or writable from the phone.
+- **Send message** and **output** work only on cards whose *saved* command is a recognized Codex or Claude launch command and whose pane currently has Codex or Claude in the foreground. Output checks the foreground agent both before and after capture, so a saved agent card that has fallen back to a shell is not readable. An ordinary shell card — even one where you started an agent by hand — is never readable or writable from the phone.
 - **Task presets.** Projects can define up to 50 phone task presets under **Project defaults**. A preset fixes its group, card title, directory, Codex or Claude launch command, and up to 20 initial steps on the Mac. The phone receives only each preset's ID and name.
 - **Scratchpad queueing** is offered only when the saved card command is a recognized Codex or Claude launch configuration and the snapshot reports `canQueue`. Other cards still support notes but reject remote queue requests. The phone cannot replace the saved command.
 

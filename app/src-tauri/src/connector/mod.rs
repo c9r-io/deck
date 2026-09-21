@@ -31,10 +31,12 @@
 //! slot. Each write encodes once and is atomic (temp file, file fsync,
 //! rename, directory fsync).
 //!
-//! Phone reach: send-message and output require the card's SAVED command to
-//! be Codex/Claude (`queue_target_supported`); a foreground agent in a plain
-//! shell card does not qualify. Phone text is an agent prompt, not a shell
-//! line, but a prompt can still lead the agent to run commands.
+//! Phone reach: send-message and output require both a Codex/Claude SAVED
+//! command (`queue_target_supported`) and a live Codex/Claude foreground
+//! process. Output rechecks that foreground identity after capture, alongside
+//! the generation/card checks. A foreground agent in a plain shell card does
+//! not qualify. Phone text is an agent prompt, not a shell line, but a prompt
+//! can still lead the agent to run commands.
 //!
 //! Network: `connector_enable` records the interface carrying the chosen
 //! address; a restart binds only while the address is on that interface.
@@ -2409,14 +2411,18 @@ pub(super) fn output(card_id: &str) -> Result<Value, DeckError> {
     output_with(&LiveOutput, card_id)
 }
 
-/// Phone output reads are limited to Codex/Claude cards (by saved command).
-/// An ordinary shell card's scrollback is never captured for a phone.
+/// Phone output reads are limited to cards with a saved Codex/Claude command
+/// and a live Codex/Claude foreground process. Both are rechecked after the
+/// capture, so output from a fallback shell is never returned to a phone.
 fn output_with(io: &dyn OutputIo, card_id: &str) -> Result<Value, DeckError> {
     let card = io.card(card_id)?;
     if !card.agent_target {
         return Err(DeckError::new(ErrorKind::Invalid, "unsupported-target"));
     }
     let before = io.probe(&card.session)?;
+    if before.agent.is_none() {
+        return Err(DeckError::new(ErrorKind::Invalid, "unsupported-target"));
+    }
     let history_size = io
         .tmux(&[
             "display-message".into(),
@@ -2438,8 +2444,10 @@ fn output_with(io: &dyn OutputIo, card_id: &str) -> Result<Value, DeckError> {
     ])?;
     let after = io.probe(&card.session)?;
     let still = io.card(card_id)?;
-    if before.generation != after.generation || still.session != card.session || !still.agent_target
-    {
+    if after.agent.is_none() || !still.agent_target {
+        return Err(DeckError::new(ErrorKind::Invalid, "unsupported-target"));
+    }
+    if before.generation != after.generation || still.session != card.session {
         return Err(DeckError::new(ErrorKind::ContextChanged, "target-changed"));
     }
     let (text, truncated) = bounded_output(text, history_size);
@@ -2873,6 +2881,55 @@ mod tests {
         }
     }
 
+    struct SavedAgentWithForeground {
+        foreground_agents: Vec<Option<String>>,
+        probe_calls: std::cell::Cell<usize>,
+        pane_calls: std::cell::Cell<usize>,
+    }
+    impl OutputIo for SavedAgentWithForeground {
+        fn card(&self, id: &str) -> Result<InternalCard, DeckError> {
+            Ok(InternalCard {
+                id: id.into(),
+                session: "deck-card-0001".into(),
+                agent_target: true,
+            })
+        }
+        fn probe(&self, _: &str) -> Result<crate::context::ConnectorProbe, DeckError> {
+            let index = self.probe_calls.get();
+            self.probe_calls.set(index + 1);
+            Ok(crate::context::ConnectorProbe {
+                identity: crate::context::PaneIdentity {
+                    server_pid: 1,
+                    session_id: "$1".into(),
+                    window_id: "@1".into(),
+                    pane_id: "%1".into(),
+                    pane_pid: 2,
+                },
+                agent: self
+                    .foreground_agents
+                    .get(index)
+                    .or_else(|| self.foreground_agents.last())
+                    .cloned()
+                    .flatten(),
+                foreground_pid: 3,
+                start_seconds: 4,
+                start_micros: 5,
+                generation: "generation".into(),
+            })
+        }
+        fn tmux(&self, args: &[String]) -> Result<String, DeckError> {
+            self.pane_calls.set(self.pane_calls.get() + 1);
+            Ok(
+                if args.first().is_some_and(|arg| arg == "display-message") {
+                    "0"
+                } else {
+                    "secret"
+                }
+                .into(),
+            )
+        }
+    }
+
     #[test]
     fn phone_output_and_send_are_limited_to_saved_agent_cards() {
         let shell = FakeOutput {
@@ -2899,6 +2956,36 @@ mod tests {
         assert!(!card_in(&board, "S").unwrap().agent_target);
         assert!(!card_in(&board, "Z").unwrap().agent_target);
         assert!(card_in(&board, "A").unwrap().agent_target);
+    }
+
+    #[test]
+    fn phone_output_refuses_a_saved_agent_card_when_foreground_is_shell() {
+        let shell = SavedAgentWithForeground {
+            foreground_agents: vec![None],
+            probe_calls: std::cell::Cell::new(0),
+            pane_calls: std::cell::Cell::new(0),
+        };
+        let refused = output_with(&shell, "C1").unwrap_err();
+        assert_eq!(refused.kind(), ErrorKind::Invalid);
+        assert_eq!(refused.message(), "unsupported-target");
+        assert_eq!(shell.pane_calls.get(), 0, "no output is captured");
+    }
+
+    #[test]
+    fn phone_output_drops_captured_bytes_when_agent_returns_to_shell() {
+        let changed = SavedAgentWithForeground {
+            foreground_agents: vec![Some("claude".into()), None],
+            probe_calls: std::cell::Cell::new(0),
+            pane_calls: std::cell::Cell::new(0),
+        };
+        let refused = output_with(&changed, "C1").unwrap_err();
+        assert_eq!(refused.kind(), ErrorKind::Invalid);
+        assert_eq!(refused.message(), "unsupported-target");
+        assert_eq!(
+            changed.pane_calls.get(),
+            2,
+            "capture happened before recheck"
+        );
     }
 
     #[test]
