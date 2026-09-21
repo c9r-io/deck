@@ -1034,9 +1034,11 @@ export function renderSessionView() {
       grant.textContent = status.executionGrantActive
         ? t('mcp.revokeExecution')
         : t('mcp.approveExecution');
-      grant.title = status.executionGrantActive && status.executionExpiresAt
+      const executionTitle = status.executionGrantActive && status.executionExpiresAt
         ? t('mcp.executionUntil', { time: new Date(status.executionExpiresAt).toLocaleTimeString() })
         : t('mcp.executionRequired');
+      grant.title = [executionTitle, status.outputShared ? t('mcp.outputSharingActive') : '']
+        .filter(Boolean).join(' ');
     }).catch(() => {});
   }
 }

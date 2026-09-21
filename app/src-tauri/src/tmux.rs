@@ -1071,6 +1071,7 @@ pub(crate) fn pane_row(target: &str) -> Result<PaneRow, DeckError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::FileTypeExt;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     fn row(fields: &[&str]) -> String {
@@ -1476,6 +1477,7 @@ mod tests {
     struct IsolatedControlServer {
         socket: String,
         binary: std::path::PathBuf,
+        socket_path: Mutex<Option<std::path::PathBuf>>,
     }
 
     impl IsolatedControlServer {
@@ -1485,6 +1487,7 @@ mod tests {
                 socket: format!("deck-smoke-control-{}-{seq}", std::process::id()),
                 binary: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                     .join("binaries/tmux-aarch64-apple-darwin"),
+                socket_path: Mutex::new(None),
             }
         }
 
@@ -1503,16 +1506,49 @@ mod tests {
                 "tmux {args:?} failed: {}",
                 String::from_utf8_lossy(&output.stderr)
             );
+            let mut saved = self.socket_path.lock().unwrap_or_else(|e| e.into_inner());
+            if saved.is_none() {
+                let location = self.output(&["display-message", "-p", "#{socket_path}"]);
+                if location.status.success() {
+                    *saved = Some(std::path::PathBuf::from(
+                        String::from_utf8_lossy(&location.stdout).trim(),
+                    ));
+                }
+            }
             String::from_utf8(output.stdout)
                 .expect("tmux output utf8")
                 .trim_end()
                 .to_owned()
         }
+
+        fn socket_path(&self) -> Option<std::path::PathBuf> {
+            if let Some(path) = self
+                .socket_path
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone()
+            {
+                return Some(path);
+            }
+            let output = self.output(&["display-message", "-p", "#{socket_path}"]);
+            output
+                .status
+                .success()
+                .then(|| std::path::PathBuf::from(String::from_utf8_lossy(&output.stdout).trim()))
+        }
     }
 
     impl Drop for IsolatedControlServer {
         fn drop(&mut self) {
+            let socket = self.socket_path();
             let _ = self.output(&["kill-server"]);
+            if let Some(path) = socket.filter(|path| {
+                path.file_name().and_then(|name| name.to_str()) == Some(&self.socket)
+                    && std::fs::symlink_metadata(path)
+                        .is_ok_and(|metadata| metadata.file_type().is_socket())
+            }) {
+                let _ = std::fs::remove_file(path);
+            }
         }
     }
 

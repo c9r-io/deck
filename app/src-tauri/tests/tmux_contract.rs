@@ -2,10 +2,12 @@
 //! a bug that shipped (v0.4.9–0.4.12) so it can never silently regress.
 //!
 //! They run the committed static tmux sidecar against a THROWAWAY socket
-//! (`deck-test-*`), never the live `deck` socket.
+//! (`deck-test-*`), never the live `deck` socket. The Drop guard kills its
+//! server and removes that exact socket file, including after a panic.
 
 use std::fs::OpenOptions;
 use std::io::Write;
+use std::os::unix::fs::FileTypeExt;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::thread::sleep;
@@ -116,6 +118,17 @@ impl Server {
     }
     fn fmt(&self, f: &str) -> String {
         self.run(&["display-message", "-p", "-t", "t", f])
+    }
+    fn socket_path(&self) -> Option<PathBuf> {
+        let output = Command::new(tmux_bin())
+            .args(["-f", "/dev/null", "-L", &self.0])
+            .args(["display-message", "-p", "#{socket_path}"])
+            .output()
+            .ok()?;
+        output
+            .status
+            .success()
+            .then(|| PathBuf::from(String::from_utf8_lossy(&output.stdout).trim().to_owned()))
     }
     fn shell(&self, cmd: &str) {
         self.run(&["send-keys", "-t", "t", "-l", cmd]);
@@ -353,10 +366,29 @@ impl Server {
 
 impl Drop for Server {
     fn drop(&mut self) {
+        let socket = self.socket_path();
         let _ = Command::new(tmux_bin())
             .args(["-L", &self.0, "kill-server"])
             .output();
+        if let Some(path) = socket.filter(|path| {
+            path.file_name().and_then(|name| name.to_str()) == Some(&self.0)
+                && std::fs::symlink_metadata(path)
+                    .is_ok_and(|metadata| metadata.file_type().is_socket())
+        }) {
+            let _ = std::fs::remove_file(path);
+        }
     }
+}
+
+#[test]
+fn drop_removes_its_throwaway_socket_file() {
+    let path;
+    {
+        let server = Server::new("drop-cleanup");
+        path = server.socket_path().expect("test socket path");
+        assert!(path.exists());
+    }
+    assert!(!path.exists(), "Drop left the test socket behind: {path:?}");
 }
 
 /// Restored text is pane OUTPUT, never shell INPUT. `new-session` reports its

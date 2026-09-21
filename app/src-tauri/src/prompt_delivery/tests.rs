@@ -1,6 +1,8 @@
 use super::*;
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
+use std::os::unix::fs::FileTypeExt;
+use std::path::PathBuf;
 
 pub(crate) fn probe() -> RawProbe {
     RawProbe {
@@ -202,6 +204,17 @@ fn invalid_ids_cannot_reach_transport_and_failed_probe_keeps_expected_guard() {
 // Exercise the actual production guard against the bundled tmux on a private
 // throwaway socket. No deck/dev server, microphone, or real user input is used.
 struct IsolatedTmux(String);
+impl IsolatedTmux {
+    fn socket_path(&self) -> Option<PathBuf> {
+        self.run(&[
+            "display-message".into(),
+            "-p".into(),
+            "#{socket_path}".into(),
+        ])
+        .ok()
+        .map(|path| PathBuf::from(path.trim()))
+    }
+}
 impl Transport for IsolatedTmux {
     fn probe(&self, _: &str) -> Result<RawProbe, DeckError> {
         Ok(probe())
@@ -238,7 +251,15 @@ impl Transport for IsolatedTmux {
 }
 impl Drop for IsolatedTmux {
     fn drop(&mut self) {
+        let socket = self.socket_path();
         let _ = self.run(&["kill-server".into()]);
+        if let Some(path) = socket.filter(|path| {
+            path.file_name().and_then(|name| name.to_str()) == Some(&self.0)
+                && std::fs::symlink_metadata(path)
+                    .is_ok_and(|metadata| metadata.file_type().is_socket())
+        }) {
+            let _ = std::fs::remove_file(path);
+        }
     }
 }
 #[test]

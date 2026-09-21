@@ -209,6 +209,7 @@ pub(crate) fn prepare(
 mod tests {
     use super::*;
     use crate::session_runtime::bounded_output;
+    use std::os::unix::fs::FileTypeExt;
     use std::process::Command;
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -247,6 +248,11 @@ mod tests {
                 .map(|s| tmux::parse_pane_row(s).unwrap())
                 .collect())
         }
+        fn socket_path(&self) -> Option<std::path::PathBuf> {
+            self.run(&["display-message", "-p", "#{socket_path}"])
+                .ok()
+                .map(|path| std::path::PathBuf::from(path.trim()))
+        }
         fn fixture(&self, name: &str, keys: usize) {
             // Raw-mode fake agent: consume N control bytes, print an exit hint,
             // then return to an ordinary shell. No real credentials/model calls.
@@ -272,7 +278,15 @@ mod tests {
     }
     impl Drop for Server {
         fn drop(&mut self) {
+            let socket = self.socket_path();
             let _ = self.run(&["kill-server"]);
+            if let Some(path) = socket.filter(|path| {
+                path.file_name().and_then(|name| name.to_str()) == Some(&self.0)
+                    && std::fs::symlink_metadata(path)
+                        .is_ok_and(|metadata| metadata.file_type().is_socket())
+            }) {
+                let _ = std::fs::remove_file(path);
+            }
         }
     }
 

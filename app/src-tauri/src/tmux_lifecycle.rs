@@ -1342,6 +1342,7 @@ fn restart_tmux_server_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::FileTypeExt;
     use std::os::unix::net::UnixListener;
     use std::process::Command;
     use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
@@ -1459,6 +1460,10 @@ mod tests {
         }
 
         fn stop(&self) {
+            let socket_path = self
+                .output(&["display-message", "-p", "#{socket_path}"])
+                .stdout;
+            let socket_path = PathBuf::from(String::from_utf8_lossy(&socket_path).trim());
             let _ = self.output(&["kill-server"]);
             for _ in 0..30 {
                 if !self
@@ -1466,9 +1471,15 @@ mod tests {
                     .status
                     .success()
                 {
-                    return;
+                    break;
                 }
                 std::thread::sleep(Duration::from_millis(20));
+            }
+            if socket_path.file_name().and_then(|name| name.to_str()) == Some(&self.socket)
+                && std::fs::symlink_metadata(&socket_path)
+                    .is_ok_and(|metadata| metadata.file_type().is_socket())
+            {
+                let _ = std::fs::remove_file(socket_path);
             }
         }
     }
