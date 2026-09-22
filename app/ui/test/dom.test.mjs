@@ -200,13 +200,82 @@ test('MCP settings delete only an already-revoked client after confirmation', as
   } } };
   await renderMcpSettings();
   const row = fakeDocument.getElementById('set-mcp-clients').children[0];
-  const remove = row.children.at(-1);
-  assert.equal(remove.textContent, 'Delete');
-  remove.fire('click');
+  const actions = row.children[1];
+  const deleteButton = actions.children.at(-1);
+  assert.equal(deleteButton.textContent, 'Delete');
+  deleteButton.fire('click');
+  await tick();
   assert.equal(fakeDocument.getElementById('cfm').style.display, 'flex');
   cfmDone(true);
   await tick(); await tick();
   assert.ok(calls.some(([cmd, args]) => cmd === 'mcp_client_delete' && args.clientId === 'client_old'));
+});
+
+test('revoked MCP client deletion reports an orphan runtime without coupling cleanup to delete', async () => {
+  const calls = [];
+  window.__TAURI__ = { core: { invoke: async (cmd, args) => {
+    calls.push([cmd, args]);
+    if (cmd === 'mcp_status') return { enabled: true, outputRetentionMs: 86_400_000,
+      clients: [{ id: 'client_orphan', name: 'Revoked', revoked: true, projects: [] }] };
+    if (cmd === 'tunnel_helper_status') return { helperState: 'installed', tunnelState: 'stopped', runtimeExists: true };
+    if (cmd === 'mcp_client_delete') return;
+    throw new Error(`unexpected ${cmd}`);
+  } } };
+  await renderMcpSettings();
+  await tick();
+  const row = fakeDocument.getElementById('set-mcp-clients').children[0];
+  const actions = row.children[1];
+  const deleteButton = actions.children.find(button => button.textContent === 'Delete');
+  deleteButton.fire('click');
+  await tick();
+  assert.equal(fakeDocument.getElementById('chd').style.display, 'flex');
+  assert.match(fakeDocument.getElementById('chd-msg').textContent, /local Deck authority is gone/);
+  const choiceButtons = fakeDocument.getElementById('chd-actions').children;
+  choiceButtons.find(button => button.textContent === 'Delete Deck Client Anyway').fire('click');
+  await tick(); await tick();
+  assert.ok(calls.some(([cmd]) => cmd === 'mcp_client_delete'));
+  assert.ok(!calls.some(([cmd]) => cmd === 'tunnel_helper_stop' || cmd === 'tunnel_helper_remove'));
+});
+
+test('a hung optional Tunnel status cannot delay MCP client revoke', async () => {
+  const calls = [];
+  window.__TAURI__ = { core: { invoke: async (cmd, args) => {
+    calls.push([cmd, args]);
+    if (cmd === 'mcp_status') return { enabled: true, outputRetentionMs: 86_400_000,
+      clients: [{ id: 'client_live', name: 'Live', revoked: false, projects: [] }] };
+    if (cmd === 'tunnel_helper_status') return new Promise(() => {});
+    if (cmd === 'mcp_client_revoke') return;
+    throw new Error(`unexpected ${cmd}`);
+  } } };
+  await renderMcpSettings();
+  const row = fakeDocument.getElementById('set-mcp-clients').children[0];
+  const actions = row.children[1];
+  const revoke = actions.children.find(button => button.textContent === 'Revoke');
+  revoke.fire('click');
+  assert.equal(fakeDocument.getElementById('cfm').style.display, 'flex');
+  cfmDone(true);
+  await tick(); await tick();
+  assert.ok(calls.some(([cmd, args]) => cmd === 'mcp_client_revoke' && args.clientId === 'client_live'));
+});
+
+test('Tunnel actions expose stopped state and suppress double activation while pending', async () => {
+  let starts = 0;
+  window.__TAURI__ = { core: { invoke: async cmd => {
+    if (cmd === 'mcp_status') return { enabled: true, outputRetentionMs: 86_400_000,
+      clients: [{ id: 'client_tunnel', name: 'Tunnel', revoked: false, projects: [] }] };
+    if (cmd === 'tunnel_helper_status') return { helperState: 'installed', tunnelState: 'stopped', runtimeExists: true };
+    if (cmd === 'tunnel_helper_start') { starts++; return new Promise(() => {}); }
+    throw new Error(`unexpected ${cmd}`);
+  } } };
+  await renderMcpSettings();
+  await tick();
+  const row = fakeDocument.getElementById('set-mcp-clients').children[0];
+  assert.match(row.children.at(-1).textContent, /stopped/);
+  const start = row.children[1].children.find(button => button.textContent === 'Start Tunnel');
+  start.fire('click'); start.fire('click');
+  await tick();
+  assert.equal(starts, 1);
+  assert.equal(start.disabled, true);
 });
 
 test('inline rename restores the old DOM value when async persistence rejects', async () => {

@@ -5,6 +5,10 @@ creation, short-lived trusted-host execution, interactive stdin, and output
 sharing. Structured reads do not start a shell. Execution uses the logged-in
 account and is not an OS sandbox.
 
+ChatGPT Secure Tunnel support is an optional, independently removable helper;
+Deck MCP does not require it and Deck never owns its OpenAI credential. See
+[Optional Secure Tunnel helper](mcp-tunnel-helper.md).
+
 ## Enable and authorize
 
 For a development build, run `app/run.sh`; it builds Deck and all bundled

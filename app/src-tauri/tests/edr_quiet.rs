@@ -288,13 +288,16 @@ const ALLOWED_EXPRESSIONS: &[(&str, &str, &str)] = &[
     ("commands.rs", "tmux_available", "tmux_sidecar"),
     ("tmux_lifecycle.rs", "helper_version", "tmux_sidecar"),
     ("relaunch.rs", "helper_command", "executable"),
+    // Optional Tunnel integration executes only the separately signed helper
+    // selected by resolve_helper(); no webview-supplied executable or argv.
+    ("tunnel_helper.rs", "invoke", "&helper.path"),
 ];
 
 /// Debug-only smoke instrumentation may read the pasteboard back; it is
 /// compiled into isolated smoke builds only.
 const DEBUG_ONLY_LITERALS: &[(&str, &str)] = &[("smoke_faults.rs", "pbpaste")];
 
-const EXPECTED_COMMAND_SITES: usize = 23;
+const EXPECTED_COMMAND_SITES: usize = 24;
 
 type UsedLiteral = (String, String);
 type UsedExpression = (String, String, String);

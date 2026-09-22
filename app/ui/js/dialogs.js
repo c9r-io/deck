@@ -758,12 +758,15 @@ export async function renderMcpSettings() {
   const clients = $('set-mcp-clients'); clients.replaceChildren();
   for (const client of status?.clients || []) {
     const row = document.createElement('div'); row.className = 'set-row mcp-client-row';
+    const details = document.createElement('div'); details.className = 'mcp-client-details';
     const label = document.createElement('span');
     label.textContent = client.name;
     const scope = document.createElement('span'); scope.style.color = 'var(--muted)';
     scope.textContent = t('mcp.projectCount', { count: formatNumber(client.projects?.length || 0) })
       + (client.revoked ? ` · ${t('mcp.revoked')}` : '');
-    row.append(label, scope);
+    details.append(label, scope);
+    const actions = document.createElement('div'); actions.className = 'mcp-client-actions';
+    row.append(details, actions);
     if (!client.revoked) {
       const copy = document.createElement('button'); copy.className = 'btn'; copy.textContent = t('mcp.copyConfig');
       copy.onclick = async () => {
@@ -779,17 +782,107 @@ export async function renderMcpSettings() {
         try { await inv('mcp_client_revoke', { clientId: client.id }); await renderMcpSettings(); }
         catch (_) { toast(t('mcp.actionFailed')); }
       };
-      row.append(copy, revoke);
+      actions.append(copy, revoke);
     } else {
       const remove = document.createElement('button'); remove.className = 'btn set-danger'; remove.textContent = t('mcp.delete');
       remove.onclick = async () => {
-        if (!await confirmDangerDialog(t('mcp.deleteConfirm', { name: client.name }), t('mcp.delete'))) return;
+        remove.disabled = true;
+        let tunnel = null;
+        try { tunnel = await inv('tunnel_helper_status', { clientId: client.id }); } catch (_) {}
+        remove.disabled = false;
+        if (tunnel?.helperState === 'installed' && tunnel.runtimeExists) {
+          const choice = await choiceDialog(t('mcp.tunnelDeleteWarning'), [
+            { id: 'stop', label: t('mcp.tunnelStop') },
+            { id: 'remove-runtime', label: t('mcp.tunnelRemove') },
+            { id: 'delete-client', label: t('mcp.tunnelDeleteAnyway'), primary: true },
+          ]);
+          if (choice === 'stop' || choice === 'remove-runtime') {
+            const command = choice === 'stop' ? 'tunnel_helper_stop' : 'tunnel_helper_remove';
+            try { await inv(command, { clientId: client.id }); await renderMcpSettings(); }
+            catch (_) { toast(t('mcp.tunnelActionFailed')); }
+            return;
+          }
+          if (choice !== 'delete-client') return;
+        } else if (!await confirmDangerDialog(t('mcp.deleteConfirm', { name: client.name }), t('mcp.delete'))) return;
         try { await inv('mcp_client_delete', { clientId: client.id }); await renderMcpSettings(); }
         catch (_) { toast(t('mcp.actionFailed')); }
       };
-      row.append(remove);
+      actions.append(remove);
     }
     clients.appendChild(row);
+    renderTunnelForClient(client, row, actions);
+  }
+}
+
+/* Tunnel is an optional enhancement. This async branch never delays MCP
+   rendering and never participates in revoke/delete authority changes. */
+async function renderTunnelForClient(client, row, actions) {
+  const line = document.createElement('div'); line.className = 'mcp-tunnel-status';
+  line.textContent = t('mcp.tunnelChecking');
+  row.appendChild(line);
+  let status;
+  try { status = await inv('tunnel_helper_status', { clientId: client.id }); }
+  catch (_) { status = { helperState: 'helper_error' }; }
+  if (!line.isConnected) return;
+  if (status.helperState !== 'installed') {
+    line.textContent = t(status.helperState === 'helper_missing' ? 'mcp.tunnelOptionalMissing' : 'mcp.tunnelUnavailable');
+    if (status.helperState === 'helper_missing') {
+      const instructions = document.createElement('button'); instructions.className = 'btn';
+      instructions.textContent = t('mcp.tunnelInstallInstructions');
+      instructions.onclick = async () => {
+        instructions.disabled = true;
+        try {
+          await inv('write_clipboard', { text: 'docs/mcp-tunnel-helper.md' });
+          toast(t('mcp.tunnelInstructionsCopied'));
+        } catch (_) { toast(t('mcp.tunnelActionFailed')); }
+        finally { instructions.disabled = false; }
+      };
+      actions.append(instructions);
+    }
+    return;
+  }
+  const stateKey = `mcp.tunnelState.${status.tunnelState || 'error'}`;
+  line.textContent = `${t(status.developmentHelper ? 'mcp.tunnelDevelopmentHelper' : 'mcp.tunnelInstalled')} · ${t(stateKey)}`;
+  const buttons = [];
+  let pending = false;
+  const addAction = (label, command) => {
+    const button = document.createElement('button'); button.className = 'btn'; button.textContent = label;
+    button.onclick = async () => {
+      if (pending) return;
+      pending = true;
+      for (const item of buttons) item.disabled = true;
+      try { await inv(command, { clientId: client.id }); await renderMcpSettings(); }
+      catch (_) { pending = false; toast(t('mcp.tunnelActionFailed')); for (const item of buttons) item.disabled = false; }
+    };
+    buttons.push(button); actions.append(button);
+  };
+  if (status.tunnelState === 'stopped') addAction(t('mcp.tunnelStart'), 'tunnel_helper_start');
+  if (['starting', 'ready', 'unhealthy', 'stale'].includes(status.tunnelState)) addAction(t('mcp.tunnelStop'), 'tunnel_helper_stop');
+  if (['not_configured', 'key_missing'].includes(status.tunnelState)) {
+    const setup = document.createElement('button'); setup.className = 'btn'; setup.textContent = t('mcp.tunnelSetup');
+    setup.onclick = async () => {
+      if (pending) return;
+      pending = true;
+      setup.disabled = true;
+      try {
+        const command = await inv('tunnel_helper_setup_command', { clientId: client.id });
+        await inv('write_clipboard', { text: command }); toast(t('mcp.tunnelSetupCopied'));
+      } catch (_) { toast(t('mcp.tunnelActionFailed')); }
+      finally { pending = false; setup.disabled = false; }
+    };
+    buttons.push(setup); actions.append(setup);
+  }
+  if (status.tunnelId) {
+    const copy = document.createElement('button'); copy.className = 'btn'; copy.textContent = t('mcp.tunnelCopyId');
+    copy.onclick = async () => {
+      if (pending) return;
+      pending = true;
+      copy.disabled = true;
+      try { await inv('write_clipboard', { text: status.tunnelId }); toast(t('mcp.tunnelIdCopied')); }
+      catch (_) { toast(t('mcp.tunnelActionFailed')); }
+      finally { pending = false; copy.disabled = false; }
+    };
+    buttons.push(copy); actions.append(copy);
   }
 }
 

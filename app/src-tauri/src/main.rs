@@ -44,6 +44,7 @@ mod terminal_scroll;
 mod terminal_selection;
 mod tmux;
 mod tmux_lifecycle;
+mod tunnel_helper;
 mod updater;
 mod voice;
 
@@ -425,6 +426,11 @@ fn main() {
             mcp::mcp_takeover,
             mcp::mcp_return_control,
             mcp::mcp_session_ui,
+            tunnel_helper::tunnel_helper_status,
+            tunnel_helper::tunnel_helper_start,
+            tunnel_helper::tunnel_helper_stop,
+            tunnel_helper::tunnel_helper_remove,
+            tunnel_helper::tunnel_helper_setup_command,
             smoke_faults::smoke_fault_set,
             smoke_faults::smoke_clipboard_metrics,
         ])

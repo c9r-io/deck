@@ -786,10 +786,15 @@ body.side-collapsed .side-new .label { display: none; }
 }
 #set-mcp-clients { display: grid; gap: 8px; }
 #set-mcp-clients .mcp-client-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   padding-top: 8px;
   margin: 0;
   border-top: 1px solid var(--border-soft);
 }
+.mcp-client-details { display: grid; gap: 3px; min-width: 0; }
+.mcp-client-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.mcp-tunnel-status { grid-column: 1 / -1; color: var(--muted); font-size: 0.846154rem; margin-top: 4px; }
 .set-row input[type=password] { flex: 1; min-width: 0; font-family: var(--mono); }
 .btn.cfm-danger { background: var(--danger); border-color: var(--danger); color: var(--danger-contrast); font-weight: 600; }
 .btn.cfm-danger:hover { filter: brightness(1.1); }
