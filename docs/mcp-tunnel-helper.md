@@ -53,13 +53,39 @@ may use `DECK_TUNNEL_HELPER_PATH`; release builds do not compile that override.
 
 Deck contains no tunnel-client version, hash, path, release-manifest, or CLI
 policy. Those checks belong only to the helper. The initial helper recognizes
-the verified official arm64 `tunnel-client` 0.0.14 binary. Its Homebrew shell
-wrapper is not executed. Ambient PATH is not trusted.
+the verified official arm64 `tunnel-client` 0.0.14 binary by its SHA-256 pin
+alone (the pin fixes the version and CLI, so no `--version`/`--help` probe
+runs). Its Homebrew shell wrapper is not executed. Ambient PATH is not trusted.
 
-Both installed locations are writable by the login user in common setups.
-Static signature/hash verification followed by an immediate file recheck
-narrows but does not eliminate validate-to-exec replacement. This release does
-not claim an OS sandbox or race-free fd-based exec.
+File identity is device, inode, size, mtime and ctime; ctime cannot be set by
+the user, so a same-size overwrite with a restored mtime is detected. Deck
+records the helper's identity at validation and re-compares it immediately
+before every spawn. The helper records `tunnel-client`'s identity together
+with the hashed bytes, re-compares it before every run, and re-hashes the
+file immediately before `runtimes connect`, the only run handed the
+Runtime-key `file:` reference.
+
+Residual risk: both installed locations are writable by the login user in
+common setups, and exec is by path. A same-user attacker who swaps the file
+in the instant between the last check and `exec` is not stopped. This release
+does not claim an OS sandbox or race-free fd-based exec.
+
+### Process footprint (EDR)
+
+Deck's EDR-quiet rule covers Deck itself: the helper is the one executable
+outside Deck's bundle that Deck spawns, at the fixed path above, with closed
+argv and no shell. Deck runs the protocol handshake once per app session (per
+helper identity) and answers repeated status queries from a serialized
+3-second cache, so opening Settings costs at most one helper run per client.
+The helper's only process spawn is the verified `tunnel-client` (a census
+test in `tools/deck-tunnelctl/src/lib.rs` enforces it; CI also scans the
+release binary with `scripts/check-edr-binary`). A status query runs
+`tunnel-client` one to three times.
+
+`tunnel-client` itself is outside that promise. Its runtime runs in its own
+tmux session, keeps an outbound HTTPS connection to OpenAI, and keeps running
+after Deck or the helper exits until it is explicitly stopped. It does not
+survive a reboot.
 
 ## Setup and credentials
 
@@ -95,10 +121,20 @@ Production `setup` and `start` therefore use the verified bounded sequence:
 ```text
 Keychain read
   → new private temporary file
+  → re-hash tunnel-client
   → runtimes connect
-  → bounded status + successful control-plane poll (120 seconds)
+  → bounded status + successful control-plane poll
   → delete temporary file
 ```
+
+The whole `start` command is bounded to 120 seconds, below Deck's
+135-second kill (status 10s < 12s, stop/remove 8s < 10s), so the helper
+normally deletes the file itself. SIGINT, SIGTERM and SIGHUP also delete it
+before the helper exits. SIGKILL cannot be caught: every later helper command
+first removes `deck-tunnelctl-*` directories whose owning process is gone,
+accepting only a real mode-0700 directory owned by the current user and only a
+regular `runtime-key` file inside it. Key buffers read from Keychain or the
+terminal are zeroed when dropped.
 
 There is no plaintext retention, literal-argv fallback, or environment
 fallback. A future tunnel-client version requires a new helper compatibility

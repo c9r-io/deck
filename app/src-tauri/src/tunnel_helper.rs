@@ -3,22 +3,53 @@
 //! This module knows only the helper identity and protocol. It does not know
 //! tunnel-client paths, versions, hashes, configuration, or credentials. A
 //! missing, invalid, incompatible, or hung helper never affects MCP authority.
+//!
+//! Process boundary (EDR): the only spawn is `invoke`, which runs the helper
+//! at its one fixed path (or the debug-only override) after the signature,
+//! no-symlink and file-identity checks, with closed argv and no shell. The
+//! identity (device, inode, size, mtime, ctime) is re-compared immediately
+//! before every spawn. Spawns are kept rare: the protocol handshake runs once
+//! per app session per helper identity, and status queries are serialized
+//! and answered from a 3-second per-client cache (invalidated by every
+//! action), so a Settings render costs at most one helper run per client and
+//! never a parallel burst. Waiting blocks in poll(2) on the output pipes
+//! under one deadline. Deck's kill timeouts (status 12s, stop/remove 10s,
+//! start 135s) sit above the helper's own budgets (10s, 8s, 120s, in
+//! tools/deck-tunnelctl/src/cli.rs), so the helper normally finishes and
+//! removes its temporary Runtime-key file itself.
 
 use crate::error::{DeckError, ErrorKind};
+use crate::sync::LockRecover;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::io::{ErrorKind as IoKind, Read};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+use std::process::{Child, Command, Output, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 const HELPER_PATH: &str = "/Applications/Deck Tunnel Helper.app/Contents/MacOS/deck-tunnelctl";
 const PROTOCOL_VERSION: u32 = 1;
 const OUTPUT_LIMIT: usize = 64 * 1024;
+const STATUS_CACHE_TTL: Duration = Duration::from_secs(3);
 
-#[derive(Debug, Serialize)]
+/// The helper (path + identity) whose protocol handshake already succeeded.
+static VERIFIED_PROTOCOL: Mutex<Option<(PathBuf, FileIdentity)>> = Mutex::new(None);
+
+type StatusCache = HashMap<String, (Instant, u64, PathBuf, FileIdentity, HelperStatus)>;
+
+/// Recent status per client id. The mutex is held across the helper run, so
+/// concurrent row renders run one helper at a time and reuse the result.
+static STATUS_CACHE: Mutex<Option<StatusCache>> = Mutex::new(None);
+
+/// Bumped when any action finishes; older cached statuses no longer match.
+static STATUS_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct HelperStatus {
     helper_state: &'static str,
@@ -71,8 +102,8 @@ struct FileIdentity {
     device: u64,
     inode: u64,
     size: u64,
-    modified_seconds: i64,
-    modified_nanoseconds: i64,
+    modified: (i64, i64),
+    changed: (i64, i64),
 }
 
 #[tauri::command]
@@ -90,11 +121,36 @@ fn helper_status(client_id: &str) -> HelperStatus {
         Ok(helper) => helper,
         Err(code) => return unavailable(code, code),
     };
-    if let Err(code) = verify_protocol(&helper) {
+    let generation = STATUS_GENERATION.load(Ordering::SeqCst);
+    let mut cache = STATUS_CACHE.lock_or_recover();
+    let cache = cache.get_or_insert_with(HashMap::new);
+    cache.retain(|_, entry| entry.0.elapsed() < STATUS_CACHE_TTL);
+    if let Some((_, cached_generation, path, identity, status)) = cache.get(client_id) {
+        if *cached_generation == generation && *path == helper.path && *identity == helper.identity
+        {
+            return status.clone();
+        }
+    }
+    let status = query_status(&helper, client_id);
+    cache.insert(
+        client_id.to_string(),
+        (
+            Instant::now(),
+            generation,
+            helper.path.clone(),
+            helper.identity,
+            status.clone(),
+        ),
+    );
+    status
+}
+
+fn query_status(helper: &ResolvedHelper, client_id: &str) -> HelperStatus {
+    if let Err(code) = verify_protocol(helper) {
         return protocol_unavailable(code, helper.development);
     }
     let output = match invoke(
-        &helper,
+        helper,
         &["status", "--client-id", client_id, "--json"],
         Duration::from_secs(12),
     ) {
@@ -183,8 +239,9 @@ fn action(
         &helper,
         &[command, "--client-id", client_id, "--json"],
         timeout,
-    )
-    .map_err(error)?;
+    );
+    STATUS_GENERATION.fetch_add(1, Ordering::SeqCst);
+    let output = output.map_err(error)?;
     if !output.status.success() {
         return Err(error("helper_action_failed"));
     }
@@ -209,6 +266,10 @@ fn action(
 }
 
 fn verify_protocol(helper: &ResolvedHelper) -> Result<(), &'static str> {
+    let verified = Some((helper.path.clone(), helper.identity));
+    if *VERIFIED_PROTOCOL.lock_or_recover() == verified {
+        return Ok(());
+    }
     let output = invoke(helper, &["protocol", "--json"], Duration::from_secs(3))?;
     if !output.status.success() {
         return Err("helper_incompatible");
@@ -223,6 +284,7 @@ fn verify_protocol(helper: &ResolvedHelper) -> Result<(), &'static str> {
     {
         return Err("helper_incompatible");
     }
+    *VERIFIED_PROTOCOL.lock_or_recover() = verified;
     Ok(())
 }
 
@@ -295,8 +357,9 @@ fn file_identity(path: &Path) -> Result<FileIdentity, &'static str> {
         device: metadata.dev(),
         inode: metadata.ino(),
         size: metadata.size(),
-        modified_seconds: metadata.mtime(),
-        modified_nanoseconds: metadata.mtime_nsec(),
+        modified: (metadata.mtime(), metadata.mtime_nsec()),
+        // A same-size overwrite can restore mtime; ctime cannot be set.
+        changed: (metadata.ctime(), metadata.ctime_nsec()),
     })
 }
 
@@ -346,63 +409,83 @@ fn bounded_output(command: &mut Command, timeout: Duration) -> Result<Output, &'
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|_| "helper_spawn_failed")?;
-    let result = (|| {
-        let mut stdout = child.stdout.take().unwrap();
-        let mut stderr = child.stderr.take().unwrap();
-        for fd in [stdout.as_raw_fd(), stderr.as_raw_fd()] {
-            let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
-            if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0
-            {
-                return Err("helper_io_failed");
-            }
-        }
-        let mut out = Vec::new();
-        let mut err = Vec::new();
-        let mut exited = None;
-        loop {
-            if Instant::now() >= deadline {
-                return Err("helper_timeout");
-            }
-            let mut caught_up = true;
-            for (pipe, bytes) in [
-                (&mut stdout as &mut dyn Read, &mut out),
-                (&mut stderr as &mut dyn Read, &mut err),
-            ] {
-                let mut buffer = [0u8; 8192];
-                loop {
-                    match pipe.read(&mut buffer) {
-                        Ok(0) => break,
-                        Ok(count) => {
-                            bytes.extend_from_slice(&buffer[..count]);
-                            if bytes.len() > OUTPUT_LIMIT {
-                                return Err("helper_output_too_large");
-                            }
-                        }
-                        Err(error) if error.kind() == IoKind::WouldBlock => {
-                            caught_up = false;
-                            break;
-                        }
-                        Err(error) if error.kind() == IoKind::Interrupted => continue,
-                        Err(_) => return Err("helper_io_failed"),
-                    }
-                }
-            }
-            if let Some(status) = exited.filter(|_| caught_up) {
-                return Ok(Output {
-                    status,
-                    stdout: out,
-                    stderr: err,
-                });
-            }
-            exited = child.try_wait().map_err(|_| "helper_io_failed")?;
-            std::thread::sleep(Duration::from_millis(2));
-        }
-    })();
+    let result = collect(&mut child, deadline);
     if result.is_err() {
         let _ = child.kill();
         let _ = child.wait();
     }
     result
+}
+
+fn remaining(deadline: Instant) -> Result<Duration, &'static str> {
+    let left = deadline.saturating_duration_since(Instant::now());
+    if left.is_zero() {
+        return Err("helper_timeout");
+    }
+    Ok(left)
+}
+
+/// Blocks in poll(2) until output, EOF or the deadline (no periodic wake).
+/// After both pipes reach EOF the child is exiting; only that short window
+/// is awaited with a capped backoff.
+fn collect(child: &mut Child, deadline: Instant) -> Result<Output, &'static str> {
+    let mut stdout = child.stdout.take().ok_or("helper_io_failed")?;
+    let mut stderr = child.stderr.take().ok_or("helper_io_failed")?;
+    let mut captured = [Vec::new(), Vec::new()];
+    let mut open = [true, true];
+    while open[0] || open[1] {
+        let millis = remaining(deadline)?
+            .as_millis()
+            .clamp(1, libc::c_int::MAX as u128) as libc::c_int;
+        let mut fds = [stdout.as_raw_fd(), stderr.as_raw_fd()].map(|fd| libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        });
+        for (fd, open) in fds.iter_mut().zip(open) {
+            if !open {
+                fd.fd = -1; // poll(2) ignores negative descriptors
+            }
+        }
+        // SAFETY: `fds` is a live array of two pollfd values.
+        if unsafe { libc::poll(fds.as_mut_ptr(), 2, millis) } < 0 {
+            if std::io::Error::last_os_error().kind() == IoKind::Interrupted {
+                continue;
+            }
+            return Err("helper_io_failed");
+        }
+        for index in 0..2 {
+            if fds[index].revents == 0 {
+                continue;
+            }
+            let pipe: &mut dyn Read = if index == 0 { &mut stdout } else { &mut stderr };
+            let mut buffer = [0u8; 8192];
+            match pipe.read(&mut buffer) {
+                Ok(0) => open[index] = false,
+                Ok(count) => {
+                    captured[index].extend_from_slice(&buffer[..count]);
+                    if captured[index].len() > OUTPUT_LIMIT {
+                        return Err("helper_output_too_large");
+                    }
+                }
+                Err(error) if error.kind() == IoKind::Interrupted => {}
+                Err(_) => return Err("helper_io_failed"),
+            }
+        }
+    }
+    let mut pause = Duration::from_millis(1);
+    loop {
+        if let Some(status) = child.try_wait().map_err(|_| "helper_io_failed")? {
+            let [stdout, stderr] = captured;
+            return Ok(Output {
+                status,
+                stdout,
+                stderr,
+            });
+        }
+        std::thread::sleep(pause.min(remaining(deadline)?));
+        pause = (pause * 2).min(Duration::from_millis(50));
+    }
 }
 
 fn parse_json<T: for<'de> Deserialize<'de>>(bytes: &[u8]) -> Result<T, &'static str> {
@@ -534,6 +617,29 @@ mod tests {
     }
 
     #[test]
+    fn same_size_overwrite_with_restored_mtime_changes_identity() {
+        let base = std::env::temp_dir().join(format!("deck-helper-ctime-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir(&base).unwrap();
+        let target = base.join("helper");
+        fs::write(&target, b"fixture-a").unwrap();
+        let before = file_identity(&target).unwrap();
+        let modified = fs::metadata(&target).unwrap().modified().unwrap();
+        std::thread::sleep(Duration::from_millis(5));
+        fs::write(&target, b"fixture-b").unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&target)
+            .unwrap()
+            .set_modified(modified)
+            .unwrap();
+        let after = file_identity(&target).unwrap();
+        assert_eq!(after.modified, before.modified);
+        assert_ne!(after, before);
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
     fn setup_command_quoting_is_literal() {
         assert_eq!(shell_quote("a'b c"), "'a'\\''b c'");
     }
@@ -547,13 +653,24 @@ mod tests {
         let _ = fs::remove_dir_all(&base);
         fs::create_dir(&base).unwrap();
         let helper = base.join("helper");
-        fs::write(&helper, b"#!/bin/sh\nif [ \"$1\" = protocol ]; then echo '{\"protocolVersion\":1,\"toolVersion\":\"test\",\"capabilities\":[\"status\",\"start\",\"stop\",\"setup\",\"remove\"]}'; else echo '{\"protocolVersion\":1,\"state\":\"ready\",\"runtimeAlias\":\"deck-0123456789abcdef0123456789abcdef\",\"runtimeExists\":true,\"tunnelId\":\"tunnel_test\"}'; fi\n").unwrap();
+        let log = base.join("calls.log");
+        fs::write(&helper, format!("#!/bin/sh\necho \"$1\" >> '{}'\nif [ \"$1\" = protocol ]; then echo '{{\"protocolVersion\":1,\"toolVersion\":\"test\",\"capabilities\":[\"status\",\"start\",\"stop\",\"setup\",\"remove\"]}}'; else echo '{{\"protocolVersion\":1,\"state\":\"ready\",\"runtimeAlias\":\"deck-0123456789abcdef0123456789abcdef\",\"runtimeExists\":true,\"tunnelId\":\"tunnel_test\"}}'; fi\n", log.display())).unwrap();
         fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).unwrap();
         std::env::set_var("DECK_TUNNEL_HELPER_PATH", &helper);
         let status = helper_status("client_test");
         assert_eq!(status.helper_state, "installed");
         assert_eq!(status.tunnel_state.as_deref(), Some("ready"));
         assert!(status.runtime_exists);
+        // A second render reuses the cached status; after an action only the
+        // status is re-queried, never the per-session protocol handshake.
+        assert_eq!(helper_status("client_test").helper_state, "installed");
+        assert_eq!(fs::read_to_string(&log).unwrap(), "protocol\nstatus\n");
+        STATUS_GENERATION.fetch_add(1, Ordering::SeqCst);
+        assert_eq!(helper_status("client_test").helper_state, "installed");
+        assert_eq!(
+            fs::read_to_string(&log).unwrap(),
+            "protocol\nstatus\nstatus\n"
+        );
 
         fs::write(&helper, b"#!/bin/sh\necho '{\"protocolVersion\":99,\"toolVersion\":\"test\",\"capabilities\":[]}'\n").unwrap();
         let incompatible = helper_status("client_test");

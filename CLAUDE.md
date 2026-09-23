@@ -65,6 +65,16 @@ same commit as the behaviour it describes.
   retired after evidence capture: `scripts/edr_runtime.py` inventories only
   reviewed `deck-dev` / `deck-smoke-*` identities and cleanup is explicit;
   release workflows run `scripts/check-edr-binary` over the packaged app.
+  The one executable outside the bundle deck may spawn is the optional,
+  separately installed and signed Deck Tunnel Helper, only at
+  `/Applications/Deck Tunnel Helper.app/Contents/MacOS/deck-tunnelctl`
+  after its Team ID/identifier signature and file-identity checks, with
+  closed argv (`tunnel_helper.rs`; protocol once per session, status cached).
+  The helper in turn runs only the hash-pinned external `tunnel-client`
+  (census in `tools/deck-tunnelctl/src/lib.rs`; `tunnel-helper.yml` also runs
+  `check-edr-binary` on it). That `tunnel-client` runtime keeps an outbound
+  HTTPS connection in its own tmux session, outlives deck until explicitly
+  stopped or the Mac restarts (nothing relaunches it), and is OUTSIDE deck's EDR-quiet promise.
 - **Never create a public candidate, Stable tag, feed update or promotion
   without the user's explicit authorization.** Release operation is documented
   in `docs/release-channels.md`. `scripts/release-version` synchronizes the five application/Adapter source and lock entries;

@@ -1,15 +1,21 @@
+//! Exact-argv lifecycle calls to the verified tunnel-client. Every run goes
+//! through `Client::run`, the helper's one process spawn site: it rechecks
+//! the executable identity (and re-hashes it before `connect`, the only run
+//! handed the Runtime-key reference) and caps each timeout by the command's
+//! single deadline, so a whole helper command ends before Deck's kill.
+
 use serde::Deserialize;
 use serde_json::Value;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
+use crate::identity::Executable;
 use crate::process;
 use crate::protocol::TunnelState;
 
 const SHORT_TIMEOUT: Duration = Duration::from_secs(5);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
-const READY_TIMEOUT: Duration = Duration::from_secs(120);
 const READY_POLL_INTERVAL: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -31,16 +37,20 @@ struct StatusProjection {
 }
 
 pub struct Client {
-    executable: PathBuf,
+    executable: Executable,
+    deadline: Instant,
 }
 
 impl Client {
-    pub fn new(executable: PathBuf) -> Self {
-        Self { executable }
+    pub fn new(executable: Executable, deadline: Instant) -> Self {
+        Self {
+            executable,
+            deadline,
+        }
     }
 
     pub fn status(&self, alias: &str) -> Result<RuntimeStatus, &'static str> {
-        let output = self.run(["runtimes", "status", alias, "--json"], SHORT_TIMEOUT)?;
+        let output = self.run(&["runtimes", "status", alias, "--json"], SHORT_TIMEOUT)?;
         if !output.status.success() {
             if !self.alias_exists(alias)? {
                 return Ok(RuntimeStatus {
@@ -71,23 +81,21 @@ impl Client {
     ) -> Result<RuntimeStatus, &'static str> {
         let command_string =
             encode_command(&[adapter.to_string_lossy().as_ref(), "--client-id", client_id]);
-        let output = process::output(
-            Command::new(&self.executable).args([
-                "runtimes",
-                "connect",
-                "--alias",
-                alias,
-                "--mcp-command",
-                &command_string,
-                "--runtime-api-key",
-                secret_ref,
-                "--tunnel-id",
-                tunnel_id,
-                "--json",
-            ]),
-            CONNECT_TIMEOUT,
-        )
-        .map_err(map_io)?;
+        let args = [
+            "runtimes",
+            "connect",
+            "--alias",
+            alias,
+            "--mcp-command",
+            &command_string,
+            "--runtime-api-key",
+            secret_ref,
+            "--tunnel-id",
+            tunnel_id,
+            "--json",
+        ];
+        self.executable.recheck_contents()?;
+        let output = self.spawn(&args, CONNECT_TIMEOUT)?;
         if !output.status.success() {
             return Err("tunnel_client_connect_failed");
         }
@@ -95,7 +103,7 @@ impl Client {
     }
 
     pub fn stop(&self, alias: &str) -> Result<RuntimeStatus, &'static str> {
-        let output = self.run(["runtimes", "stop", alias, "--json"], SHORT_TIMEOUT)?;
+        let output = self.run(&["runtimes", "stop", alias, "--json"], SHORT_TIMEOUT)?;
         if !output.status.success() {
             return Err("tunnel_client_stop_failed");
         }
@@ -103,7 +111,7 @@ impl Client {
     }
 
     pub fn remove(&self, alias: &str) -> Result<(), &'static str> {
-        let output = self.run(["runtimes", "rm", alias, "--json"], SHORT_TIMEOUT)?;
+        let output = self.run(&["runtimes", "rm", alias, "--json"], SHORT_TIMEOUT)?;
         if output.status.success() {
             Ok(())
         } else {
@@ -111,16 +119,31 @@ impl Client {
         }
     }
 
-    fn run<const N: usize>(
+    /// A run that is not handed the key: identity recheck only.
+    fn run(&self, args: &[&str], timeout: Duration) -> Result<std::process::Output, &'static str> {
+        self.executable.recheck()?;
+        self.spawn(args, timeout)
+    }
+
+    /// The one spawn site. Callers recheck the executable first.
+    fn spawn(
         &self,
-        args: [&str; N],
+        args: &[&str],
         timeout: Duration,
     ) -> Result<std::process::Output, &'static str> {
-        process::output(Command::new(&self.executable).args(args), timeout).map_err(map_io)
+        let left = self.deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err("tunnel_client_timeout");
+        }
+        process::output(
+            Command::new(self.executable.path()).args(args),
+            timeout.min(left),
+        )
+        .map_err(map_io)
     }
 
     fn alias_exists(&self, alias: &str) -> Result<bool, &'static str> {
-        let output = self.run(["runtimes", "list", "--json"], SHORT_TIMEOUT)?;
+        let output = self.run(&["runtimes", "list", "--json"], SHORT_TIMEOUT)?;
         if !output.status.success() {
             return Err("tunnel_client_list_failed");
         }
@@ -137,7 +160,7 @@ impl Client {
 
     fn control_plane_poll_ok(&self, health_url_file: &str) -> Result<bool, &'static str> {
         let output = self.run(
-            [
+            &[
                 "health",
                 "--url-file",
                 health_url_file,
@@ -154,17 +177,18 @@ impl Client {
             .ok_or("tunnel_client_invalid_json")
     }
 
+    /// Polls until ready, bounded by the command deadline.
     fn wait_ready(&self, alias: &str) -> Result<RuntimeStatus, &'static str> {
-        let deadline = Instant::now() + READY_TIMEOUT;
         loop {
             let status = self.status(alias)?;
             if status.state == TunnelState::Ready {
                 return Ok(status);
             }
-            if Instant::now() >= deadline {
+            let left = self.deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
                 return Err("tunnel_client_readiness_timeout");
             }
-            std::thread::sleep(READY_POLL_INTERVAL);
+            std::thread::sleep(READY_POLL_INTERVAL.min(left));
         }
     }
 }
@@ -286,7 +310,10 @@ mod tests {
         let secret_value = b"runtime-secret-must-never-appear";
         let secret = SecretFile::create(secret_value).unwrap();
         let secret_path = secret.path().to_path_buf();
-        let client = Client::new(fake);
+        let client = Client::new(
+            crate::identity::development_executable(&fake).unwrap(),
+            Instant::now() + Duration::from_secs(30),
+        );
         let status = client
             .connect(
                 "deck-0123456789abcdef0123456789abcdef",

@@ -1,13 +1,20 @@
+//! Executable identity for the helper's two external programs.
+//!
+//! `tunnel-client` is accepted only at fixed install candidates (never PATH)
+//! and only when its SHA-256 matches the pinned official release. The pin
+//! already fixes the version and CLI surface, so no `--version` or `--help`
+//! probe runs. Verification records the identity (device, inode, size, mtime,
+//! ctime) of the hashed bytes; every later run first re-compares that
+//! identity, and the one run that receives the Runtime-key reference re-hashes
+//! the file. This narrows, but cannot eliminate, path-based validate-to-exec
+//! replacement by the same macOS user (see docs/mcp-tunnel-helper.md).
+
 use sha2::{Digest, Sha256};
-use std::fs;
-use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::fs::{self, Metadata, OpenOptions};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::time::Duration;
 
-use crate::process;
-
-const TUNNEL_CLIENT_VERSION: &str = "0.0.14";
+/// Official macOS arm64 tunnel-client 0.0.14.
 const TUNNEL_CLIENT_SHA256: &str =
     "309fd85da5a8c2ca8dae920deea8ac10a4d7934ed18ac46e7df0c200139cc9c5";
 const TUNNEL_CLIENT_CANDIDATES: [&str; 4] = [
@@ -18,14 +25,72 @@ const TUNNEL_CLIENT_CANDIDATES: [&str; 4] = [
 ];
 const PRODUCTION_ADAPTER: &str = "/Applications/deck.app/Contents/MacOS/deck-mcp";
 
-pub fn tunnel_client() -> Result<PathBuf, &'static str> {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FileIdentity {
+    device: u64,
+    inode: u64,
+    size: u64,
+    modified: (i64, i64),
+    changed: (i64, i64),
+}
+
+impl FileIdentity {
+    fn of(metadata: &Metadata) -> Self {
+        Self {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+            size: metadata.size(),
+            modified: (metadata.mtime(), metadata.mtime_nsec()),
+            changed: (metadata.ctime(), metadata.ctime_nsec()),
+        }
+    }
+}
+
+/// A validated tunnel-client, bound to the file identity seen at validation.
+#[derive(Debug)]
+pub struct Executable {
+    path: PathBuf,
+    identity: FileIdentity,
+    pinned: bool,
+}
+
+impl Executable {
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Before every run: the path still names the validated file.
+    pub fn recheck(&self) -> Result<(), &'static str> {
+        validate_direct_executable(&self.path)?;
+        let metadata = fs::symlink_metadata(&self.path).map_err(|_| "tunnel_client_replaced")?;
+        if FileIdentity::of(&metadata) != self.identity {
+            return Err("tunnel_client_replaced");
+        }
+        Ok(())
+    }
+
+    /// Immediately before the run that is handed the Runtime-key reference:
+    /// the identity recheck plus a fresh hash of the pinned contents.
+    pub fn recheck_contents(&self) -> Result<(), &'static str> {
+        self.recheck()?;
+        if self.pinned {
+            let (digest, identity) = hash_file(&self.path)?;
+            if digest != TUNNEL_CLIENT_SHA256 || identity != self.identity {
+                return Err("tunnel_client_replaced");
+            }
+        }
+        Ok(())
+    }
+}
+
+pub fn tunnel_client() -> Result<Executable, &'static str> {
     if let Some(path) = development_tunnel_client_path() {
-        return validate_development_executable(&path);
+        return development_executable(&path);
     }
     tunnel_client_from_candidates(&TUNNEL_CLIENT_CANDIDATES)
 }
 
-fn tunnel_client_from_candidates(candidates: &[&str]) -> Result<PathBuf, &'static str> {
+fn tunnel_client_from_candidates(candidates: &[&str]) -> Result<Executable, &'static str> {
     for candidate in candidates {
         if Path::new(candidate).exists() {
             return validate_tunnel_client(Path::new(candidate));
@@ -55,44 +120,60 @@ pub fn adapter() -> Result<PathBuf, &'static str> {
     Ok(path.to_path_buf())
 }
 
-fn validate_tunnel_client(candidate: &Path) -> Result<PathBuf, &'static str> {
+fn validate_tunnel_client(candidate: &Path) -> Result<Executable, &'static str> {
     let canonical = candidate
         .canonicalize()
         .map_err(|_| "tunnel_client_missing")?;
     validate_direct_executable(&canonical)?;
-    let bytes = fs::read(&canonical).map_err(|_| "tunnel_client_untrusted")?;
-    let digest = Sha256::digest(bytes);
-    let actual = digest
+    let (digest, identity) = hash_file(&canonical)?;
+    if digest != TUNNEL_CLIENT_SHA256 {
+        return Err("tunnel_client_untrusted");
+    }
+    let executable = Executable {
+        path: canonical,
+        identity,
+        pinned: true,
+    };
+    executable.recheck()?;
+    Ok(executable)
+}
+
+/// SHA-256 of one regular file read through a no-follow descriptor, with the
+/// identity of that same descriptor; a change while hashing is refused.
+fn hash_file(path: &Path) -> Result<(String, FileIdentity), &'static str> {
+    let mut file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+        .map_err(|_| "tunnel_client_untrusted")?;
+    let before = file.metadata().map_err(|_| "tunnel_client_untrusted")?;
+    if !before.is_file() {
+        return Err("tunnel_client_untrusted");
+    }
+    let mut hasher = Sha256::new();
+    std::io::copy(&mut file, &mut hasher).map_err(|_| "tunnel_client_untrusted")?;
+    let after = file.metadata().map_err(|_| "tunnel_client_untrusted")?;
+    let identity = FileIdentity::of(&before);
+    if FileIdentity::of(&after) != identity {
+        return Err("tunnel_client_replaced");
+    }
+    let digest = hasher
+        .finalize()
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect::<String>();
-    if actual != TUNNEL_CLIENT_SHA256 {
-        return Err("tunnel_client_untrusted");
-    }
-    let version = process::output(
-        Command::new(&canonical).arg("--version"),
-        Duration::from_secs(3),
-    )
-    .map_err(|_| "tunnel_client_probe_failed")?;
-    if !version.status.success()
-        || !String::from_utf8_lossy(&version.stdout).contains(TUNNEL_CLIENT_VERSION)
-    {
-        return Err("tunnel_client_incompatible");
-    }
-    let help = process::output(
-        Command::new(&canonical).args(["runtimes", "--help"]),
-        Duration::from_secs(3),
-    )
-    .map_err(|_| "tunnel_client_probe_failed")?;
-    let text = String::from_utf8_lossy(&help.stdout);
-    if !help.status.success()
-        || !["connect", "list", "status", "stop", "rm"]
-            .iter()
-            .all(|command| text.contains(command))
-    {
-        return Err("tunnel_client_incompatible");
-    }
-    Ok(canonical)
+    Ok((digest, identity))
+}
+
+/// Debug-only override and unit-test fixtures: identity-bound, not pinned.
+pub(crate) fn development_executable(path: &Path) -> Result<Executable, &'static str> {
+    let path = validate_development_executable(path)?;
+    let metadata = fs::symlink_metadata(&path).map_err(|_| "executable_missing")?;
+    Ok(Executable {
+        identity: FileIdentity::of(&metadata),
+        path,
+        pinned: false,
+    })
 }
 
 fn validate_development_executable(path: &Path) -> Result<PathBuf, &'static str> {
@@ -164,8 +245,8 @@ mod tests {
             Err("executable_untrusted")
         );
         assert_eq!(
-            validate_tunnel_client(&target),
-            Err("tunnel_client_untrusted")
+            validate_tunnel_client(&target).unwrap_err(),
+            "tunnel_client_untrusted"
         );
     }
 
@@ -182,17 +263,56 @@ mod tests {
             .iter()
             .any(|candidate| Path::new(candidate).exists())
         {
-            let path = tunnel_client().unwrap();
-            assert!(path.ends_with("libexec/tunnel-client"));
+            let executable = tunnel_client().unwrap();
+            assert!(executable.path().ends_with("libexec/tunnel-client"));
+            assert_eq!(executable.recheck_contents(), Ok(()));
         }
     }
 
     #[test]
     fn absent_candidates_report_missing_without_path_lookup() {
         assert_eq!(
-            tunnel_client_from_candidates(&["/definitely/not/a/tunnel-client"]),
-            Err("tunnel_client_missing")
+            tunnel_client_from_candidates(&["/definitely/not/a/tunnel-client"]).unwrap_err(),
+            "tunnel_client_missing"
         );
+    }
+
+    #[test]
+    fn same_size_replacement_with_restored_mtime_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("client");
+        fs::write(&target, b"fixture-a").unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o700)).unwrap();
+        let executable = development_executable(&target).unwrap();
+        assert_eq!(executable.recheck(), Ok(()));
+        let modified = fs::metadata(&target).unwrap().modified().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        fs::write(&target, b"fixture-b").unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&target)
+            .unwrap()
+            .set_modified(modified)
+            .unwrap();
+        assert_eq!(fs::metadata(&target).unwrap().modified().unwrap(), modified);
+        assert_eq!(executable.recheck(), Err("tunnel_client_replaced"));
+        assert_eq!(executable.recheck_contents(), Err("tunnel_client_replaced"));
+    }
+
+    #[test]
+    fn pinned_recheck_rehashes_the_contents() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("client");
+        fs::write(&target, b"fixture").unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o700)).unwrap();
+        let (_, identity) = hash_file(&target).unwrap();
+        let executable = Executable {
+            path: target.canonicalize().unwrap(),
+            identity,
+            pinned: true,
+        };
+        assert_eq!(executable.recheck(), Ok(()));
+        assert_eq!(executable.recheck_contents(), Err("tunnel_client_replaced"));
     }
 
     #[cfg(not(debug_assertions))]

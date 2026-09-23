@@ -1,10 +1,23 @@
-use std::io::{self, BufRead, Write};
+//! The closed helper CLI. Each command has one total time budget, kept
+//! strictly below the timeout after which Deck kills the helper
+//! (`app/src-tauri/src/tunnel_helper.rs`): status 10s < 12s, stop/remove
+//! 8s < 10s, start 120s < 135s. `setup` runs in the user's Terminal and gets
+//! its budget after the interactive prompts. Every command except `protocol`
+//! first sweeps Runtime-key files left by a helper that was SIGKILLed.
 
-use crate::identity;
+use std::io::{self, BufRead, Read, Write};
+use std::time::{Duration, Instant};
+
+use crate::identity::{self, Executable};
 use crate::protocol::{self, ActionResponse, StatusResponse, TunnelState};
-use crate::secret_file::SecretFile;
+use crate::secret_file::{self, KeyBytes, SecretFile};
 use crate::tunnel_client::{Client, RuntimeStatus};
 use crate::{keychain, runtime_alias, valid_client_id};
+
+const STATUS_BUDGET: Duration = Duration::from_secs(10);
+const CLEANUP_BUDGET: Duration = Duration::from_secs(8);
+const CONNECT_BUDGET: Duration = Duration::from_secs(120);
+const KEY_LIMIT: usize = 16 * 1024;
 
 pub fn run(args: &[String]) -> i32 {
     match parse(args).and_then(execute) {
@@ -87,6 +100,13 @@ fn execute(request: Request) -> Result<serde_json::Value, &'static str> {
         | Request::Remove(id) => id,
         Request::Protocol => unreachable!(),
     };
+    let deadline = Instant::now()
+        + match request {
+            Request::Status(_) => STATUS_BUDGET,
+            Request::Stop(_) | Request::Remove(_) => CLEANUP_BUDGET,
+            _ => CONNECT_BUDGET,
+        };
+    secret_file::sweep_stale();
     let alias = runtime_alias(client_id)?;
     let executable = match identity::tunnel_client() {
         Ok(path) => path,
@@ -102,7 +122,10 @@ fn execute(request: Request) -> Result<serde_json::Value, &'static str> {
         }
         Err(error) => return Err(error),
     };
-    let tunnel = Client::new(executable);
+    if let Request::Setup(_) = request {
+        return setup(executable, &alias, client_id);
+    }
+    let tunnel = Client::new(executable, deadline);
     match request {
         Request::Status(_) => {
             let mut status = tunnel.status(&alias)?;
@@ -140,12 +163,15 @@ fn execute(request: Request) -> Result<serde_json::Value, &'static str> {
                 error_code: None,
             })
         }
-        Request::Setup(_) => setup(&tunnel, &alias, client_id),
-        Request::Protocol => unreachable!(),
+        Request::Setup(_) | Request::Protocol => unreachable!(),
     }
 }
 
-fn setup(tunnel: &Client, alias: &str, client_id: &str) -> Result<serde_json::Value, &'static str> {
+fn setup(
+    executable: Executable,
+    alias: &str,
+    client_id: &str,
+) -> Result<serde_json::Value, &'static str> {
     require_verified_secret_lifecycle()?;
     eprint!("OpenAI Tunnel ID: ");
     io::stderr().flush().map_err(|_| "input_failed")?;
@@ -160,13 +186,11 @@ fn setup(tunnel: &Client, alias: &str, client_id: &str) -> Result<serde_json::Va
     }
     eprint!("OpenAI Runtime API key: ");
     io::stderr().flush().map_err(|_| "input_failed")?;
-    let mut key = read_secret()?;
-    let result = (|| {
-        keychain::set(client_id, &key)?;
-        connect_with_secret(tunnel, alias, tunnel_id, client_id, &key)
-    })();
-    key.fill(0);
-    action(alias.to_string(), result?)
+    let key = read_secret()?;
+    keychain::set(client_id, &key.0)?;
+    let tunnel = Client::new(executable, Instant::now() + CONNECT_BUDGET);
+    let status = connect_with_secret(&tunnel, alias, tunnel_id, client_id, &key.0)?;
+    action(alias.to_string(), status)
 }
 
 /// The live v0.0.14 gate was completed on 2026-09-23: the Runtime key was read
@@ -184,10 +208,8 @@ fn connect_with_key(
     tunnel_id: &str,
     client_id: &str,
 ) -> Result<RuntimeStatus, &'static str> {
-    let mut key = keychain::get(client_id)?.ok_or("key_missing")?;
-    let result = connect_with_secret(tunnel, alias, tunnel_id, client_id, &key);
-    key.fill(0);
-    result
+    let key = KeyBytes(keychain::get(client_id)?.ok_or("key_missing")?);
+    connect_with_secret(tunnel, alias, tunnel_id, client_id, &key.0)
 }
 
 fn connect_with_secret(
@@ -209,7 +231,7 @@ fn connect_with_secret(
     Ok(status)
 }
 
-fn read_secret() -> Result<Vec<u8>, &'static str> {
+fn read_secret() -> Result<KeyBytes, &'static str> {
     let fd = libc::STDIN_FILENO;
     let mut original = std::mem::MaybeUninit::<libc::termios>::uninit();
     let is_tty = unsafe { libc::isatty(fd) } == 1;
@@ -224,19 +246,23 @@ fn read_secret() -> Result<Vec<u8>, &'static str> {
         }
         original.write(hidden);
     }
-    let mut line = Vec::new();
-    let read = io::stdin().lock().read_until(b'\n', &mut line);
+    // Bounded and preallocated, so the buffer never reallocates and leaves
+    // an unzeroed copy behind.
+    let mut line = KeyBytes(Vec::with_capacity(KEY_LIMIT + 2));
+    let read = io::stdin()
+        .lock()
+        .take((KEY_LIMIT + 2) as u64)
+        .read_until(b'\n', &mut line.0);
     if is_tty {
         let original = unsafe { original.assume_init() };
         let _ = unsafe { libc::tcsetattr(fd, libc::TCSAFLUSH, &original) };
         eprintln!();
     }
     read.map_err(|_| "input_failed")?;
-    while matches!(line.last(), Some(b'\n' | b'\r')) {
-        line.pop();
+    while matches!(line.0.last(), Some(b'\n' | b'\r')) {
+        line.0.pop();
     }
-    if line.is_empty() || line.len() > 16 * 1024 {
-        line.fill(0);
+    if line.0.is_empty() || line.0.len() > KEY_LIMIT {
         return Err("key_invalid");
     }
     Ok(line)

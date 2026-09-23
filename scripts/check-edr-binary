@@ -1,19 +1,27 @@
 #!/usr/bin/env bash
 # Auxiliary vocabulary scan only: `strings` cannot find short literals of
 # eight bytes or fewer when the compiler encodes them as immediates (for
-# example /bin/zsh or /bin/sh). tests/edr_quiet.rs is the authoritative gate.
+# example /bin/zsh or /bin/sh). tests/edr_quiet.rs (deck.app) and the census
+# in tools/deck-tunnelctl/src/lib.rs (the optional helper) are authoritative.
+#
+# Usage: scripts/check-edr-binary /path/to/deck.app
+#        scripts/check-edr-binary /path/to/deck-tunnelctl   (one executable)
 set -euo pipefail
 
-app_path=${1:?usage: scripts/check-edr-binary /path/to/deck.app}
-info="$app_path/Contents/Info.plist"
-test -f "$info"
-executable=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$info")
-targets=(
-  "$app_path/Contents/MacOS/$executable"
-  "$app_path/Contents/MacOS/deck-status-helper"
-  "$app_path/Contents/MacOS/deck-mcp"
-  "$app_path/Contents/MacOS/deck-mcp-runner"
-)
+target_path=${1:?usage: scripts/check-edr-binary /path/to/deck.app | /path/to/executable}
+if [ -f "$target_path" ]; then
+  targets=("$target_path")
+else
+  info="$target_path/Contents/Info.plist"
+  test -f "$info"
+  executable=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$info")
+  targets=(
+    "$target_path/Contents/MacOS/$executable"
+    "$target_path/Contents/MacOS/deck-status-helper"
+    "$target_path/Contents/MacOS/deck-mcp"
+    "$target_path/Contents/MacOS/deck-mcp-runner"
+  )
+fi
 for target in "${targets[@]}"; do
   test -f "$target"
   for forbidden in \

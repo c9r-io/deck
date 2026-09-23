@@ -90,7 +90,10 @@ fn real_file_secret_lifecycle() {
     assert!(valid_client_id(&client_id), "invalid lifecycle client id");
     assert!(valid_tunnel_id(&tunnel_id), "invalid lifecycle Tunnel ID");
 
-    let executable = identity::tunnel_client().expect("supported tunnel-client is required");
+    let executable = identity::tunnel_client()
+        .expect("supported tunnel-client is required")
+        .path()
+        .to_path_buf();
     let adapter = identity::adapter().expect("signed installed deck-mcp is required");
     let alias = lifecycle_alias(&client_id);
     let mut captures = Captures::new();
@@ -360,7 +363,10 @@ fn step_c_extended_readiness_diagnostic() {
     assert!(valid_client_id(&client_id), "invalid lifecycle client id");
     assert!(valid_tunnel_id(&tunnel_id), "invalid lifecycle Tunnel ID");
 
-    let executable = identity::tunnel_client().expect("supported tunnel-client is required");
+    let executable = identity::tunnel_client()
+        .expect("supported tunnel-client is required")
+        .path()
+        .to_path_buf();
     let adapter = identity::adapter().expect("signed installed deck-mcp is required");
     let alias = lifecycle_alias(&client_id);
     let mut captures = Captures::new();
@@ -567,7 +573,10 @@ fn runtime_key_tunnel_metadata_probe() {
     assert!(valid_client_id(&client_id), "invalid lifecycle client id");
     assert!(valid_tunnel_id(&tunnel_id), "invalid lifecycle Tunnel ID");
 
-    let executable = identity::tunnel_client().expect("supported tunnel-client is required");
+    let executable = identity::tunnel_client()
+        .expect("supported tunnel-client is required")
+        .path()
+        .to_path_buf();
     let secret = Secret(
         keychain::get(&client_id)
             .expect("Keychain read failed")

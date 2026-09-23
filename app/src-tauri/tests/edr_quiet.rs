@@ -290,6 +290,9 @@ const ALLOWED_EXPRESSIONS: &[(&str, &str, &str)] = &[
     ("relaunch.rs", "helper_command", "executable"),
     // Optional Tunnel integration executes only the separately signed helper
     // selected by resolve_helper(); no webview-supplied executable or argv.
+    // The helper's own spawn census (one site: the hash-pinned tunnel-client)
+    // is `production_spawn_census_is_one_verified_tunnel_client_site` in
+    // tools/deck-tunnelctl/src/lib.rs, run by tunnel-helper.yml.
     ("tunnel_helper.rs", "invoke", "&helper.path"),
 ];
 
