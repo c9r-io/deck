@@ -101,6 +101,7 @@ loaded by `ui/index.html`; xterm.js vendored in `app/ui/vendor/`. Backend
 | Completion bar, links, context menus, the ONE new-session path (start first, persist after; project defaults for ＋/⌘N, context entries keep their directory and never a command) | `ui/js/terminal.js` (`newSession` / `newDefaultSession`), `provider.createStarted` + `openProjectDefaults` in `board.js`, `projectDefaults` / `newSessionPlan` in `pure.js`, `links.rs` |
 | Terminal link parsing and xterm adapter, copy routing and clipboard, PTY byte codecs | `ui/js/terminal-links-model.js`, `terminal-links.js`, `terminal-clipboard.js`, `terminal-bytes.js`; composed by `layout.js` |
 | Dropdowns (deck's own listbox over every `<select>`) | `ui/js/dropdown.js` |
+| Settings modal: sections and search, the ONE settings writer, font scale, shortcuts, theme/locale/channel choices, inbound/Connector/MCP settings; dialog primitives (confirm, choice, prompt, toast, inline rename, project defaults) stay separate | `ui/js/settings.js`, `ui/js/dialogs.js` |
 | Lists (the ⏱ panel): queue model, selection, delivery state machine, tick | `scheduler/` (+ `docs/scheduler-context-safety.md`), `context.rs`, `ui/js/scheduler.js`, `ui/js/queue-review.js`, `scheduler/review.rs` |
 | Templates (saved lists, shared by cards and automations) | `ui/js/templates.js` |
 | Needs-attention view (sidebar entry), runtime read state, tab done-dot | `ui/js/attention.js`, `ui/js/attention-model.js` |

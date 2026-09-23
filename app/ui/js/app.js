@@ -3,7 +3,8 @@
 import './persistence.js';
 import './board.js';
 import { $, ctx, genId, initInputDiagnostics, inv, listen, state, store, uev } from './state.js';
-import { initDialogs, loadSettings, toast } from './dialogs.js';
+import { initDialogs, toast } from './dialogs.js';
+import { initSettings, loadSettings } from './settings.js';
 import {
   activeProject, initBuffer, panes, markSessionsStoppedForServerRestart, migrateColumnSemantics, newSessionSummary, openProjectDefaults, pollNow,
   projectDefaultsSummary, prepareCardsForServerRestart, provider, render, startPolling, stopPolling, switchProject,
@@ -283,6 +284,7 @@ function initModules() {
   initInputDiagnostics();
   initDropdowns();
   initDialogs();
+  initSettings();
   initTerminalChrome();
   initAttention({ pollNow, provider, render, switchProject, leaveSessionView, openSession });
   initLayout();

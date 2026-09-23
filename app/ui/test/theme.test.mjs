@@ -119,7 +119,7 @@ test('production CSS and all pane lifecycle paths consume the registry', () => {
   const board = read('app/ui/js/board.js');
   const app = read('app/ui/js/app.js');
   const frontendWithoutRegistry = [
-    'app/ui/js/app.js', 'app/ui/js/board.js', 'app/ui/js/dialogs.js',
+    'app/ui/js/app.js', 'app/ui/js/board.js', 'app/ui/js/dialogs.js', 'app/ui/js/settings.js',
     'app/ui/js/layout.js', 'app/ui/js/scheduler.js', 'app/ui/js/selection.js',
     'app/ui/js/state.js', 'app/ui/js/terminal.js',
   ].map(read).join('\n');

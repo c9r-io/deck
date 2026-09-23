@@ -9,12 +9,16 @@ globalThis.document = fakeDocument;
 globalThis.window = { __TAURI__: null, __DECK_DEBUG: false };
 
 const {
-  cfmDone, choiceDialog, confirmDangerDialog, confirmDialog, connectorPairingChanged, initDialogs, renderConnectorSettings, inlineRename, mcpAuthorizationDialog, persistSessionRestoreChoice, persistUpdateChannelChoice,
-  projectDefaultsDialog, promptDialog, persistThemeChoice, filterSettings, renderMcpSettings, selectSettingsSection, resetApplicationLogs, refreshLogSize,
+  cfmDone, choiceDialog, confirmDangerDialog, confirmDialog, initDialogs, inlineRename, projectDefaultsDialog, promptDialog,
 } = await import('../js/dialogs.js');
+const {
+  connectorPairingChanged, initSettings, renderConnectorSettings, mcpAuthorizationDialog, persistSessionRestoreChoice, persistUpdateChannelChoice,
+  persistThemeChoice, filterSettings, renderMcpSettings, selectSettingsSection, resetApplicationLogs, refreshLogSize,
+} = await import('../js/settings.js');
 const { ctx, store } = await import('../js/state.js');
 const { boardData, flushBoardMutations, mutateBoard, mutateBoardDebounced } = await import('../js/persistence.js');
 initDialogs();
+initSettings();
 
 const tick = () => new Promise(resolve => setTimeout(resolve, 0));
 
@@ -704,7 +708,7 @@ test('project defaults creates a bounded desktop task preset in the same Board d
 });
 
 test('voice settings save only preferences, preserve unrelated fields and roll back on failure', async () => {
-  const { persistVoicePreferences, renderVoicePreferences } = await import('../js/dialogs.js');
+  const { persistVoicePreferences, renderVoicePreferences } = await import('../js/settings.js');
   const { normalizeSettings } = await import('../js/settings-model.js');
   const control = new FakeElement('input');
   fakeDocument.getElementById('settings-modal').querySelectorAll = () => [control];

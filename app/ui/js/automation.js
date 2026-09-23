@@ -55,7 +55,8 @@
 // This module is a LEAF of the import graph: what it needs from board.js,
 // layout.js and terminal.js arrives through `initAutomation(deps)`.
 import { $, ctx, genId, inv, listen, state, store, uev } from './state.js';
-import { confirmDialog, persistInbound, toast } from './dialogs.js';
+import { confirmDialog, toast } from './dialogs.js';
+import { persistInbound } from './settings.js';
 import { minToHM, projectDefaults, projectRules, ruleByOrigin, toggleClockRule } from './pure.js';
 import { composeRule, graceOptions, graceText, liveRules, mergeRules, recentRuns, ruleFacts, ruleLabel, runSummary, triggerText } from './automation-model.js';
 import { formatNumber, onLocaleChange, t } from './i18n.js';

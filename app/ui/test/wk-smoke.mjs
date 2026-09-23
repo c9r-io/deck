@@ -26,7 +26,7 @@ if (typeof window !== 'undefined') {
   ({ cancelTerminalSelection, copyTerminalSelection, terminalSelectionElsewhere } = await import('../js/selection.js'));
   ({ refreshQueue, toggleQueuePanel } = await import('../js/scheduler.js'));
   ({ activateTheme } = await import('../js/theme.js'));
-  ({ persistThemeChoice, persistInbound } = await import('../js/dialogs.js'));
+  ({ persistThemeChoice, persistInbound } = await import('../js/settings.js'));
   ({ toggleAutomations } = await import('../js/automation.js'));
   ({ applyFontScale, getFontScale } = await import('../js/font-scale.js'));
   ({ drainChannel } = await import('../js/inbound.js'));
@@ -1866,7 +1866,7 @@ async function bufferSmoke(main, project, column) {
 }
 
 async function settingsNavigationSmoke() {
-  const { openSettings, selectSettingsSection, resetApplicationLogs } = await import('../js/dialogs.js');
+  const { openSettings, selectSettingsSection, resetApplicationLogs } = await import('../js/settings.js');
   await openSettings();
   selectSettingsSection('data');
   const cancelled = resetApplicationLogs();
@@ -1904,7 +1904,7 @@ export async function verifySettings() {
   try {
     await settingsNavigationSmoke();
     await buttonForceTouchSmoke();
-    const { openSettings, selectSettingsSection } = await import('../js/dialogs.js');
+    const { openSettings, selectSettingsSection } = await import('../js/settings.js');
     const { setLocale } = await import('../js/i18n.js');
     await openSettings();
     const box = $('settings-box');
@@ -2196,7 +2196,7 @@ export async function verifyChannel() {
     await waitFor(() => provider.projects().length > 0);
     const project = provider.projects()[0];
     state.projectId = project.id; state.view = 'board'; render();
-    const { openSettings, renderConnectorSettings, selectSettingsSection } = await import('../js/dialogs.js');
+    const { openSettings, renderConnectorSettings, selectSettingsSection } = await import('../js/settings.js');
     await openSettings(); selectSettingsSection('integrations'); await renderConnectorSettings();
     const settingsVisible = !$('set-channel-enabled').closest('.set-group').hidden
       && $('set-channel-bot').type === 'password' && $('set-channel-app').type === 'password';
@@ -2251,7 +2251,7 @@ export async function verifyChannelFault() {
     // this isolated window without ever persisting them in the fixture.
     const baseline = await waitFor(async () => (await inv('channel_status')).connected, 180000);
     const before = await inv('channel_status');
-    const { openSettings, renderInboundSettings, selectSettingsSection } = await import('../js/dialogs.js');
+    const { openSettings, renderInboundSettings, selectSettingsSection } = await import('../js/settings.js');
     const { t } = await import('../js/i18n.js');
     await openSettings(); selectSettingsSection('integrations');
 
@@ -2292,7 +2292,7 @@ export async function verifyConnector() {
   try {
     await waitFor(() => provider.projects().length > 0);
     const project = provider.projects()[0]; const column = project.columns[0];
-    const { openSettings, renderConnectorSettings, selectSettingsSection } = await import('../js/dialogs.js');
+    const { openSettings, renderConnectorSettings, selectSettingsSection } = await import('../js/settings.js');
     await openSettings(); selectSettingsSection('integrations'); await renderConnectorSettings();
     const settingsOk = $('set-connector-toggle').dataset.enabled === 'false'
       && $('set-connector-pair').disabled === true;

@@ -37,7 +37,7 @@ test('i18n owns visible copy and translation parameters never enter innerHTML', 
 
 test('the updater, relaunch and server restart stay backend-owned', () => {
   const app = read('app/ui/js/app.js');
-  const dialogs = read('app/ui/js/dialogs.js');
+  const dialogs = read('app/ui/js/dialogs.js') + read('app/ui/js/settings.js');
   const html = read('app/ui/index.html');
   const capabilities = read('app/src-tauri/capabilities/default.json');
   // Endpoint selection, trust roots and downgrade refusal are unit-tested in
@@ -118,7 +118,7 @@ test('minimum-window layout keeps long localized panels bounded and scrollable',
 test('large font scaling reflows dense rows instead of clipping scaled line boxes', () => {
   const html = read('app/ui/style.css');
   const fontScale = read('app/ui/js/font-scale.js');
-  const dialogs = read('app/ui/js/dialogs.js');
+  const settings = read('app/ui/js/settings.js');
   assert.match(fontScale, /classList\?\.toggle\('font-scale-large', current >= 1\.4\)/);
   assert.match(html, /html\.font-scale-large \.set-row \{[^}]*flex-wrap: wrap;/);
   assert.match(html, /html\.font-scale-large \.shortcut-row \{[^}]*grid-template-columns: minmax\(0, 1fr\);/);
@@ -126,7 +126,7 @@ test('large font scaling reflows dense rows instead of clipping scaled line boxe
   assert.match(html, /html\.font-scale-large \.q-add,[\s\S]*?flex-wrap: wrap;/);
   assert.match(html, /\.card-meta \{[\s\S]*?min-height: 1\.53846rem;/);
   assert.doesNotMatch(html, /(?:\.card-meta|\.sess-head \.btn)[^{]*\{[^}]*(?:height: 20px|height: 47px|height: 28px)/);
-  assert.match(dialogs, /for \(const action of CUSTOMIZABLE_SHORTCUT_ACTIONS\)/,
+  assert.match(settings, /for \(const action of CUSTOMIZABLE_SHORTCUT_ACTIONS\)/,
     'fixed US/JIS font gestures stay out of the shortcut editor');
 });
 

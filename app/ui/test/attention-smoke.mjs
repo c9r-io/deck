@@ -268,7 +268,7 @@ export async function runAttentionSmoke() {
     stage = 5;
     const { openAutomations, closeAutomations } = await import('../js/automation.js');
     const { openTemplates, closeTemplates } = await import('../js/templates.js');
-    const { persistInbound } = await import('../js/dialogs.js');
+    const { persistInbound } = await import('../js/settings.js');
     const { switchProject } = await import('../js/board.js');
     await reset();
     const more = $('board-new-more');

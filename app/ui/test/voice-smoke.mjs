@@ -9,7 +9,7 @@ export async function runVoiceSmoke() {
   const { voiceInput: voice } = await import('../js/voice.js');
   const { setLocale, t } = await import('../js/i18n.js');
   const { activateTheme } = await import('../js/theme.js');
-  const { openSettings, selectSettingsSection, persistVoicePreferences } = await import('../js/dialogs.js');
+  const { openSettings, selectSettingsSection, persistVoicePreferences } = await import('../js/settings.js');
   let failed = false, stage = 0;
   const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
   const report = async (name, ok) => {
