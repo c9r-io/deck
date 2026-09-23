@@ -28,7 +28,11 @@ output_dir=$(cd "$output_dir" && pwd)
 scratch=$(mktemp -d)
 keychain="$scratch/helper-signing.keychain-db"
 keychain_password=$(openssl rand -hex 24)
+previous_keychains=()
 cleanup() {
+  if ((${#previous_keychains[@]})); then
+    security list-keychains -d user -s "${previous_keychains[@]}" >/dev/null 2>&1 || true
+  fi
   security delete-keychain "$keychain" >/dev/null 2>&1 || true
   rm -rf "$scratch"
 }
@@ -41,9 +45,15 @@ PY
 security create-keychain -p "$keychain_password" "$keychain"
 security unlock-keychain -p "$keychain_password" "$keychain"
 security set-keychain-settings -lut 21600 "$keychain"
+# codesign only searches keychains in the user's search list on CI, even when
+# --keychain names the imported keychain. Keep the previous list for cleanup.
+while IFS= read -r existing; do
+  previous_keychains+=("$existing")
+done < <(security list-keychains -d user | sed -E 's/^[[:space:]]*"(.*)"$/\1/')
+security list-keychains -d user -s "$keychain" "${previous_keychains[@]}"
 security import "$scratch/certificate.p12" -k "$keychain" \
   -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
-security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain"
+security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain" >/dev/null
 security find-identity -v -p codesigning "$keychain" | grep -Fq "$APPLE_SIGNING_IDENTITY"
 
 manifest=tools/deck-tunnelctl/Cargo.toml
