@@ -5,9 +5,9 @@ creation, short-lived trusted-host execution, interactive stdin, and output
 sharing. Structured reads do not start a shell. Execution uses the logged-in
 account and is not an OS sandbox.
 
-ChatGPT Secure Tunnel support is an optional, independently removable helper;
-Deck MCP does not require it and Deck never owns its OpenAI credential. See
-[Optional Secure Tunnel helper](mcp-tunnel-helper.md).
+For hosted ChatGPT, follow [Connect ChatGPT to Deck with Secure Tunnel](secure-tunnel.md).
+The optional Helper is described separately in the [technical reference](mcp-tunnel-helper.md).
+Deck MCP does not require the Helper, and Deck never owns its OpenAI credential.
 
 ## Enable and authorize
 
@@ -74,27 +74,12 @@ The equivalent supported CLI form is:
 codex mcp add deck -- /Applications/deck.app/Contents/MacOS/deck-mcp --client-id CLIENT_ID_FROM_DECK
 ```
 
-As verified against the official documentation on 2026-09-20, the ChatGPT
-desktop app can add a local STDIO server in **Settings → MCP servers**. ChatGPT
-web does not read local Codex configuration. For an ordinary hosted ChatGPT
-conversation, the documented private route is **Secure MCP Tunnel**: configure
-the tunnel client to launch the same STDIO command, enable ChatGPT Developer
-mode if allowed by the account/workspace, then create a Plugin connection of
-type **Tunnel** and select its `tunnel_id`. This avoids publishing Deck on the
-Internet. Deck does not create or configure the tunnel automatically.
-
-Official sources checked:
-
-- <https://learn.chatgpt.com/docs/extend/mcp?surface=cli> (canonical target of
-  the former `developers.openai.com/codex/mcp` URL)
-- <https://developers.openai.com/plugins/deploy/connect-chatgpt> (canonical
-  target of the former Apps SDK URL)
-- <https://modelcontextprotocol.io/specification/2026-07-28>
-
-Developer mode, Plugins, Tunnel availability, model tool support, and write
-confirmation depend on the current account and workspace policy. Do not infer
-availability from the client name. No statement about subscription or agent
-quota is made here.
+For a hosted ChatGPT conversation, the private remote route is **Secure MCP
+Tunnel**. See the [complete user guide](secure-tunnel.md) for OpenAI Tunnel and
+Runtime key creation, Deck authorization, Helper setup, ChatGPT connection,
+verification, and cleanup. ChatGPT web does not read local Codex configuration.
+Developer mode, Tunnel availability, model tool support, and write confirmation
+depend on account and workspace policy.
 
 Deck intentionally does not expose Streamable HTTP in this MVP: the supported
 ordinary-ChatGPT private route can reach STDIO through Secure MCP Tunnel. A

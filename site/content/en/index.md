@@ -20,6 +20,7 @@ deck has no cloud service, cloud account or remote server hosting your tasks. Sh
 | What happens when I close the window? | [Leave, close and recover](/guide/sessions/) |
 | How do I start work daily or from a Slack reaction? | [Reuse templates and automations](/guide/automations/) |
 | How do I dictate a prompt, change settings or fix a problem? | [Input, settings and troubleshooting](/guide/input-and-settings/) |
+| How do I connect ChatGPT to a Deck project? | [ChatGPT Secure Tunnel](/docs/integrations/chatgpt-secure-tunnel/) |
 
 ## Keep three distinctions in mind
 

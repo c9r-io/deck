@@ -1,5 +1,7 @@
 # Optional Secure Tunnel helper
 
+Looking for setup instructions? See [Connect ChatGPT to Deck with Secure Tunnel](secure-tunnel.md). This page is the technical and security reference for the optional Helper.
+
 Deck MCP works without `deck-tunnelctl`. Removing the helper does not disable
 Deck MCP, change MCP authorization, or prevent Deck from starting. Settings
 degrades to “optional helper not installed.”

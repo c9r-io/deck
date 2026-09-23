@@ -6,7 +6,8 @@ import { Marked } from 'marked';
 
 export const chapters = ['index', 'start', 'attention', 'prompts', 'sessions', 'automations', 'input-and-settings'];
 export const escapeHtml = text => text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
-const guidePath = (locale, slug) => `${locale === 'zh' ? '/zh' : ''}/guide/${slug === 'index' ? '' : `${slug}/`}`;
+const secureTunnelPath = '/docs/integrations/chatgpt-secure-tunnel/';
+const guidePath = (locale, slug) => slug === 'secure-tunnel' ? secureTunnelPath : `${locale === 'zh' ? '/zh' : ''}/guide/${slug === 'index' ? '' : `${slug}/`}`;
 
 export function renderMarkdown(source) {
   const headings = [];
@@ -39,12 +40,18 @@ export async function buildGuides(root, output, config) {
   for (const locale of ['en', 'zh']) {
     const zh = locale === 'zh';
     const home = zh ? '/zh/' : '/';
-    const pages = await Promise.all(chapters.map(async slug => ({ slug, ...renderMarkdown(await readFile(path.join(root, 'content', locale, `${slug}.md`), 'utf8')) })));
+    const slugs = zh ? chapters : [...chapters, 'secure-tunnel'];
+    const pages = await Promise.all(slugs.map(async slug => {
+      let source = await readFile(slug === 'secure-tunnel' ? path.join(root, '..', 'docs', 'secure-tunnel.md') : path.join(root, 'content', locale, `${slug}.md`), 'utf8');
+      if (slug === 'secure-tunnel') source = source.replace(/\]\((mcp(?:-tunnel-helper)?\.md)(#[^)]+)?\)/g, (_, file, anchor = '') => `](${config.githubUrl}/blob/main/docs/${file}${anchor})`);
+      return { slug, ...renderMarkdown(source) };
+    }));
     for (const [index, page] of pages.entries()) {
       const route = guidePath(locale, page.slug);
       const en = guidePath('en', page.slug);
-      const cn = guidePath('zh', page.slug);
-      const nav = pages.map(item => `<a href="${guidePath(locale, item.slug)}"${item.slug === page.slug ? ' aria-current="page"' : ''}>${escapeHtml(item.title)}</a>`).join('');
+      const cn = page.slug === 'secure-tunnel' ? null : guidePath('zh', page.slug);
+      const nav = pages.filter(item => item.slug !== 'secure-tunnel').map(item => `<a href="${guidePath(locale, item.slug)}"${item.slug === page.slug ? ' aria-current="page"' : ''}>${escapeHtml(item.title)}</a>`).join('');
+      const integrations = `<details open><summary>Integrations</summary><nav aria-label="Integrations"><a href="${secureTunnelPath}"${page.slug === 'secure-tunnel' ? ' aria-current="page"' : ''}>ChatGPT Secure Tunnel</a></nav></details>`;
       const toc = page.headings.map(item => `<a href="#${item.id}">${escapeHtml(item.text)}</a>`).join('');
       const previous = pages[index - 1];
       const next = pages[index + 1];
@@ -56,18 +63,18 @@ export async function buildGuides(root, output, config) {
 <meta name="theme-color" content="#0d1117">
 <link rel="canonical" href="${config.siteUrl}${route}">
 <link rel="alternate" hreflang="en" href="${config.siteUrl}${en}">
-<link rel="alternate" hreflang="zh-Hans" href="${config.siteUrl}${cn}">
+${cn ? `<link rel="alternate" hreflang="zh-Hans" href="${config.siteUrl}${cn}">` : ''}
 <link rel="alternate" hreflang="x-default" href="${config.siteUrl}${en}">
 <link rel="icon" href="/favicon.ico" sizes="32x32"><link rel="icon" href="/assets/icon.svg" type="image/svg+xml"><link rel="apple-touch-icon" href="/assets/icon-180.png">
 <link rel="stylesheet" href="/assets/site.css">
 </head><body>
 <a class="skip-link" href="#main">${zh ? '跳到正文' : 'Skip to content'}</a>
-<header class="site-header"><nav class="shell nav" aria-label="${zh ? '主导航' : 'Main navigation'}"><a class="brand" href="${home}"><span class="brand-mark" aria-hidden="true">▦</span>deck</a><div class="nav-links"><a class="guide-link" href="${guidePath(locale, 'index')}">${zh ? '使用指南' : 'Guide'}</a><a href="${config.githubUrl}">GitHub</a><a class="language-link" href="${zh ? en : cn}" lang="${zh ? 'en' : 'zh-Hans'}">${zh ? 'EN' : '中文'}</a><a class="button primary" href="${config.downloadUrl}">${zh ? '下载' : 'Download'} ${config.guideVersion}</a></div></nav></header>
+<header class="site-header"><nav class="shell nav" aria-label="${zh ? '主导航' : 'Main navigation'}"><a class="brand" href="${home}"><span class="brand-mark" aria-hidden="true">▦</span>deck</a><div class="nav-links"><a class="guide-link" href="${guidePath(locale, 'index')}">${zh ? '使用指南' : 'Guide'}</a><a href="${config.githubUrl}">GitHub</a><a class="language-link" href="${page.slug === 'secure-tunnel' ? guidePath('zh', 'index') : zh ? en : cn}" lang="${zh ? 'en' : 'zh-Hans'}">${zh ? 'EN' : '中文'}</a><a class="button primary" href="${page.slug === 'secure-tunnel' ? `${config.githubUrl}/releases` : config.downloadUrl}">${page.slug === 'secure-tunnel' ? 'Deck releases' : `${zh ? '下载' : 'Download'} ${config.guideVersion}`}</a></div></nav></header>
 <div class="shell guide-layout">
-<aside class="guide-sidebar"><details open><summary>${zh ? '使用指南' : 'User guide'}</summary><nav aria-label="${zh ? '指南章节' : 'Guide chapters'}">${nav}</nav></details><p class="guide-version">deck ${config.guideVersion} · Stable</p><a class="reference-link" href="${guidePath(locale, 'input-and-settings')}#${zh ? '更新与版本' : 'updates-and-versions'}">${zh ? '更新与版本' : 'Updates and versions'} ↗</a></aside>
-<main id="main" class="guide-article"><p class="eyebrow">${zh ? '使用指南' : 'User guide'} / ${config.guideVersion}</p>${page.html}
-<nav class="chapter-pagination" aria-label="${zh ? '前后章节' : 'Previous and next chapters'}">${previous ? `<a href="${guidePath(locale, previous.slug)}"><span>${zh ? '上一章' : 'Previous'}</span>← ${escapeHtml(previous.title)}</a>` : '<span></span>'}${next ? `<a href="${guidePath(locale, next.slug)}"><span>${zh ? '下一章' : 'Next'}</span>${escapeHtml(next.title)} →</a>` : `<a href="${guidePath(locale, 'index')}">${zh ? '返回指南' : 'Back to the guide'} →</a>`}</nav>
-<p class="guide-source">${zh ? '适用于 deck 0.6.6，操作方式与 deck 0.6.5 相同。更多技术说明：' : 'Based on deck 0.6.5 functionality; also applies to 0.6.6. Technical reference: '}<a href="${config.githubUrl}/blob/${config.guideRef}/README.md">README ↗</a> · <a href="${config.feedbackUrl}">${zh ? '反馈问题' : 'Report an issue'}</a></p></main>
+<aside class="guide-sidebar"><details open><summary>${zh ? '使用指南' : 'User guide'}</summary><nav aria-label="${zh ? '指南章节' : 'Guide chapters'}">${nav}</nav></details>${integrations}${page.slug === 'secure-tunnel' ? '' : `<p class="guide-version">deck ${config.guideVersion} · Stable</p>`}<a class="reference-link" href="${guidePath(locale, 'input-and-settings')}#${zh ? '更新与版本' : 'updates-and-versions'}">${zh ? '更新与版本' : 'Updates and versions'} ↗</a></aside>
+<main id="main" class="guide-article"><p class="eyebrow">${page.slug === 'secure-tunnel' ? 'Integrations / ChatGPT' : `${zh ? '使用指南' : 'User guide'} / ${config.guideVersion}`}</p>${page.html}
+${page.slug === 'secure-tunnel' ? '' : `<nav class="chapter-pagination" aria-label="${zh ? '前后章节' : 'Previous and next chapters'}">${previous ? `<a href="${guidePath(locale, previous.slug)}"><span>${zh ? '上一章' : 'Previous'}</span>← ${escapeHtml(previous.title)}</a>` : '<span></span>'}${next ? `<a href="${guidePath(locale, next.slug)}"><span>${zh ? '下一章' : 'Next'}</span>${escapeHtml(next.title)} →</a>` : `<a href="${guidePath(locale, 'index')}">${zh ? '返回指南' : 'Back to the guide'} →</a>`}</nav>`}
+<p class="guide-source">${page.slug === 'secure-tunnel' ? `Canonical source: <a href="${config.githubUrl}/blob/main/docs/secure-tunnel.md">docs/secure-tunnel.md ↗</a>` : `${zh ? '适用于 deck 0.6.6，操作方式与 deck 0.6.5 相同。更多技术说明：' : 'Based on deck 0.6.5 functionality; also applies to 0.6.6. Technical reference: '}<a href="${config.githubUrl}/blob/${config.guideRef}/README.md">README ↗</a>`} · <a href="${config.feedbackUrl}">${zh ? '反馈问题' : 'Report an issue'}</a></p></main>
 <aside class="guide-toc"><nav aria-label="${zh ? '本页目录' : 'On this page'}"><p>${zh ? '本页内容' : 'On this page'}</p>${toc}</nav></aside>
 </div><footer class="site-footer"><div class="shell footer"><a class="brand" href="${home}">▦ deck</a><span>${zh ? '本地终端与 session 管理。' : 'Local terminals and session management.'}</span><div class="footer-links"><a href="${home}privacy/">${zh ? '隐私' : 'Privacy'}</a><a href="${config.githubUrl}">GitHub</a></div></div></footer>
 </body></html>`;
@@ -79,7 +86,7 @@ export async function buildGuides(root, output, config) {
   }
   const sitemapPath = path.join(output, 'sitemap.xml');
   const sitemap = await readFile(sitemapPath, 'utf8');
-  await writeFile(sitemapPath, sitemap.replace('</urlset>', routes.map(({ route, en, cn }) => `  <url><loc>${config.siteUrl}${route}</loc><xhtml:link rel="alternate" hreflang="en" href="${config.siteUrl}${en}"/><xhtml:link rel="alternate" hreflang="zh-Hans" href="${config.siteUrl}${cn}"/></url>`).join('\n') + '\n</urlset>'));
+  await writeFile(sitemapPath, sitemap.replace('</urlset>', routes.map(({ route, en, cn }) => `  <url><loc>${config.siteUrl}${route}</loc><xhtml:link rel="alternate" hreflang="en" href="${config.siteUrl}${en}"/>${cn ? `<xhtml:link rel="alternate" hreflang="zh-Hans" href="${config.siteUrl}${cn}"/>` : ''}</url>`).join('\n') + '\n</urlset>'));
   const redirectsPath = path.join(output, '_redirects');
   await writeFile(redirectsPath, await readFile(redirectsPath, 'utf8') + routes.map(({ route }) => `${route.slice(0, -1)} ${route} 301`).join('\n') + '\n');
 }
