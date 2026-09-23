@@ -154,19 +154,35 @@ test('Markdown supports stable Unicode anchors, duplicate headings and rejects m
   assert.throws(() => renderMarkdown('# Only a title'), /introductory paragraph/);
 });
 
-test('ChatGPT Secure Tunnel page renders the canonical repo guide with navigation and metadata', async () => {
+test('ChatGPT Secure Tunnel pages render both canonical repo guides with paired navigation', async () => {
   const source = await readFile(path.join(root, '..', 'docs', 'secure-tunnel.md'), 'utf8');
+  const chineseSource = await readFile(path.join(root, '..', 'docs', 'secure-tunnel.zh.md'), 'utf8');
   const page = await readFile(path.join(dist, 'docs/integrations/chatgpt-secure-tunnel/index.html'), 'utf8');
+  const chinesePage = await readFile(path.join(dist, 'zh/docs/integrations/chatgpt-secure-tunnel/index.html'), 'utf8');
   const overview = await readFile(path.join(dist, 'guide/index.html'), 'utf8');
+  const chineseOverview = await readFile(path.join(dist, 'zh/guide/index.html'), 'utf8');
   const sitemap = await readFile(path.join(dist, 'sitemap.xml'), 'utf8');
   assert.match(source, /^# Connect ChatGPT to Deck with Secure Tunnel$/m);
+  assert.match(chineseSource, /^# 使用 Secure Tunnel 将 ChatGPT 连接到 Deck$/m);
   assert.match(page, /<html lang="en">/);
+  assert.match(chinesePage, /<html lang="zh-Hans">/);
   assert.match(page, /<title>Connect ChatGPT to Deck with Secure Tunnel/);
+  assert.match(chinesePage, /<title>使用 Secure Tunnel 将 ChatGPT 连接到 Deck/);
   assert.match(page, /<meta name="description" content="Use ChatGPT to access a Deck project/);
+  assert.match(chinesePage, /<meta name="description" content="让 ChatGPT 访问你明确授权的 Deck 项目/);
   assert.match(page, /aria-current="page">ChatGPT Secure Tunnel/);
+  assert.match(chinesePage, /aria-current="page">ChatGPT 安全隧道/);
   assert.match(page, /<h2 id="2-create-a-runtime-api-key">/);
+  assert.match(chinesePage, /<h2 id="2-创建-runtime-api-key">/);
   assert.match(page, /Restricted/);
+  assert.match(chinesePage, /Restricted/);
   assert.match(page, /docs\/secure-tunnel\.md/);
+  assert.match(chinesePage, /docs\/secure-tunnel\.zh\.md/);
+  assert.match(page, /class="language-link" href="\/zh\/docs\/integrations\/chatgpt-secure-tunnel\/"/);
+  assert.match(chinesePage, /class="language-link" href="\/docs\/integrations\/chatgpt-secure-tunnel\/"/);
+  assert.match(page, /hreflang="zh-Hans" href="https:\/\/deck\.c9r\.io\/zh\/docs\/integrations\/chatgpt-secure-tunnel\/"/);
   assert.match(overview, /href="\/docs\/integrations\/chatgpt-secure-tunnel\/"/);
+  assert.match(chineseOverview, /href="\/zh\/docs\/integrations\/chatgpt-secure-tunnel\/"/);
   assert.match(sitemap, /\/docs\/integrations\/chatgpt-secure-tunnel\//);
+  assert.match(sitemap, /\/zh\/docs\/integrations\/chatgpt-secure-tunnel\//);
 });

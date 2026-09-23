@@ -23,7 +23,7 @@ deck 不提供云服务或云账号，也没有在远端运行任务的服务器
 | 如何每天或收到 Slack 标记时开始一项工作？ | [模板与自动化](/zh/guide/automations/) |
 | 语音输入怎么用？设置在哪里改？ | [输入、设置与排障](/zh/guide/input-and-settings/) |
 | Slack 频道、手机和本地 MCP 怎么接入？ | [可选集成](/zh/guide/integrations/) |
-| 如何让 ChatGPT 连接 Deck 项目？ | [ChatGPT Secure Tunnel（英文）](/docs/integrations/chatgpt-secure-tunnel/) |
+| 如何让 ChatGPT 连接 Deck 项目？ | [使用 Secure Tunnel 将 ChatGPT 连接到 Deck](/zh/docs/integrations/chatgpt-secure-tunnel/) |
 
 <span id="记住这三个区别" aria-hidden="true"></span>
 
