@@ -44,7 +44,7 @@ jobs:
       # single-threaded: tmux contract tests + storage/scheduler recovery
       # tests share process-wide state (throwaway tmux servers, env)
       - name: cargo test + coverage (unit, storage/scheduler recovery, log privacy, tmux contract, status helper)
-        run: cargo llvm-cov --workspace --all-targets --all-features --locked --fail-under-lines 70 --fail-under-functions 70 --manifest-path app/src-tauri/Cargo.toml -- --test-threads=1
+        run: cargo llvm-cov --workspace --all-targets --all-features --locked --fail-under-lines 75 --fail-under-functions 75 --manifest-path app/src-tauri/Cargo.toml -- --test-threads=1
 
       # no-build frontend, three gates:
       # 1. real syntax check of every module (node --check)

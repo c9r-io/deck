@@ -140,7 +140,7 @@ jobs:
           set -euo pipefail
           cargo fmt --all --check --manifest-path app/src-tauri/Cargo.toml
           cargo clippy --workspace --all-targets --all-features --locked --manifest-path app/src-tauri/Cargo.toml -- -D warnings
-          cargo llvm-cov --workspace --all-targets --all-features --locked --fail-under-lines 70 --fail-under-functions 70 --manifest-path app/src-tauri/Cargo.toml -- --test-threads=1
+          cargo llvm-cov --workspace --all-targets --all-features --locked --fail-under-lines 75 --fail-under-functions 75 --manifest-path app/src-tauri/Cargo.toml -- --test-threads=1
           for file in app/ui/js/*.js app/ui/js/i18n/*.js app/ui/js/*.mjs app/ui/test/*.mjs; do
             node --check "$file"
           done

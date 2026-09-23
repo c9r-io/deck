@@ -13,6 +13,13 @@ fn build_sidecars() {
     // sidecar would silently replace the binary the adapter tests execute.
     let release = std::env::var("PROFILE").as_deref() == Ok("release");
     let profile = if release { "release" } else { "debug" };
+    // A `cargo llvm-cov` run instruments the sidecars too (its RUSTC_WRAPPER
+    // is inherited below) and keeps them in their own target dir. With one
+    // shared dir tauri-build's copy handed the adapter/runner integration tests
+    // whichever sidecar was built last — usually uninstrumented — and their
+    // coverage silently read 0%.
+    println!("cargo:rerun-if-env-changed=CARGO_LLVM_COV");
+    let coverage = std::env::var_os("CARGO_LLVM_COV").is_some();
     for (package, manifest, binary, target_dir) in [
         (
             "status-helper",
@@ -35,6 +42,11 @@ fn build_sidecars() {
     ] {
         println!("cargo:rerun-if-changed={package}/src");
         println!("cargo:rerun-if-changed={manifest}");
+        let target_dir = if coverage {
+            format!("{target_dir}/llvm-cov")
+        } else {
+            target_dir.to_string()
+        };
         let mut command = std::process::Command::new(&cargo);
         command.arg("build");
         if release {
@@ -46,12 +58,13 @@ fn build_sidecars() {
                 "--manifest-path",
                 manifest,
                 "--target-dir",
-                target_dir,
+                &target_dir,
                 "--target",
                 &triple,
             ])
-            // A coverage/lint wrapper around the OUTER build must not leak
-            // into the sidecar build.
+            // Outer RUSTFLAGS and a lint (clippy) workspace wrapper must not
+            // leak into the sidecar build; cargo-llvm-cov's RUSTC_WRAPPER is
+            // kept on purpose (above).
             .env_remove("RUSTFLAGS")
             .env_remove("CARGO_ENCODED_RUSTFLAGS")
             .env_remove("RUSTC_WORKSPACE_WRAPPER")
