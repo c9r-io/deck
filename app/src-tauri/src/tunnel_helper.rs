@@ -96,7 +96,7 @@ fn helper_status(client_id: &str) -> HelperStatus {
     let output = match invoke(
         &helper,
         &["status", "--client-id", client_id, "--json"],
-        Duration::from_secs(5),
+        Duration::from_secs(12),
     ) {
         Ok(output) if output.status.success() => output,
         Ok(_) => return unavailable_with_dev("helper_error", "helper_nonzero", helper.development),
@@ -126,7 +126,7 @@ fn helper_status(client_id: &str) -> HelperStatus {
 
 #[tauri::command]
 pub(crate) async fn tunnel_helper_start(client_id: String) -> Result<HelperStatus, DeckError> {
-    action_worker("start", client_id, Duration::from_secs(45)).await
+    action_worker("start", client_id, Duration::from_secs(135)).await
 }
 
 #[tauri::command]
@@ -227,9 +227,7 @@ fn verify_protocol(helper: &ResolvedHelper) -> Result<(), &'static str> {
 }
 
 fn resolve_helper() -> Result<ResolvedHelper, &'static str> {
-    #[cfg(debug_assertions)]
-    if let Some(path) = std::env::var_os("DECK_TUNNEL_HELPER_PATH") {
-        let path = PathBuf::from(path);
+    if let Some(path) = development_helper_path() {
         validate_file(&path)?;
         return Ok(ResolvedHelper {
             identity: file_identity(&path)?,
@@ -247,6 +245,16 @@ fn resolve_helper() -> Result<ResolvedHelper, &'static str> {
         path,
         development: false,
     })
+}
+
+#[cfg(debug_assertions)]
+fn development_helper_path() -> Option<PathBuf> {
+    std::env::var_os("DECK_TUNNEL_HELPER_PATH").map(PathBuf::from)
+}
+
+#[cfg(not(debug_assertions))]
+fn development_helper_path() -> Option<PathBuf> {
+    None
 }
 
 fn validate_production_helper(
@@ -530,6 +538,7 @@ mod tests {
         assert_eq!(shell_quote("a'b c"), "'a'\\''b c'");
     }
 
+    #[cfg(debug_assertions)]
     #[test]
     fn debug_helper_protocol_is_strict_and_missing_helper_is_optional() {
         let _guard = ENV_LOCK.lock().unwrap();
@@ -563,6 +572,37 @@ mod tests {
         assert_eq!(missing.helper_state, "helper_missing");
         std::env::remove_var("DECK_TUNNEL_HELPER_PATH");
         fs::remove_dir_all(base).unwrap();
+    }
+
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn release_build_ignores_development_helper_override() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::set_var("DECK_TUNNEL_HELPER_PATH", "/tmp/untrusted-helper");
+        assert!(development_helper_path().is_none());
+        std::env::remove_var("DECK_TUNNEL_HELPER_PATH");
+    }
+
+    #[cfg(all(not(debug_assertions), target_os = "macos"))]
+    #[test]
+    #[ignore = "requires an explicitly installed Phase C helper at the fixed production path"]
+    fn release_fixed_path_real_identity_gate() {
+        let expected = std::env::var("DECK_HELPER_PHASE_C_EXPECT")
+            .expect("set DECK_HELPER_PHASE_C_EXPECT to trusted, untrusted, or missing");
+        assert!(development_helper_path().is_none());
+        let client_id = std::env::var("DECK_HELPER_PHASE_C_CLIENT_ID")
+            .unwrap_or_else(|_| "client_phase_c_identity_gate".to_string());
+        let status = helper_status(&client_id);
+        match expected.as_str() {
+            "trusted" => {
+                assert_eq!(status.helper_state, "installed");
+                assert!(!status.development_helper);
+                assert!(status.tunnel_state.is_some());
+            }
+            "untrusted" => assert_eq!(status.helper_state, "helper_untrusted"),
+            "missing" => assert_eq!(status.helper_state, "helper_missing"),
+            _ => panic!("unsupported Phase C identity expectation"),
+        }
     }
 
     #[test]

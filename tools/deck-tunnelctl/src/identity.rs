@@ -19,16 +19,29 @@ const TUNNEL_CLIENT_CANDIDATES: [&str; 4] = [
 const PRODUCTION_ADAPTER: &str = "/Applications/deck.app/Contents/MacOS/deck-mcp";
 
 pub fn tunnel_client() -> Result<PathBuf, &'static str> {
-    #[cfg(debug_assertions)]
-    if let Some(path) = std::env::var_os("DECK_TUNNELCTL_TUNNEL_CLIENT") {
-        return validate_development_executable(Path::new(&path));
+    if let Some(path) = development_tunnel_client_path() {
+        return validate_development_executable(&path);
     }
-    for candidate in TUNNEL_CLIENT_CANDIDATES {
+    tunnel_client_from_candidates(&TUNNEL_CLIENT_CANDIDATES)
+}
+
+fn tunnel_client_from_candidates(candidates: &[&str]) -> Result<PathBuf, &'static str> {
+    for candidate in candidates {
         if Path::new(candidate).exists() {
             return validate_tunnel_client(Path::new(candidate));
         }
     }
     Err("tunnel_client_missing")
+}
+
+#[cfg(debug_assertions)]
+fn development_tunnel_client_path() -> Option<PathBuf> {
+    std::env::var_os("DECK_TUNNELCTL_TUNNEL_CLIENT").map(PathBuf::from)
+}
+
+#[cfg(not(debug_assertions))]
+fn development_tunnel_client_path() -> Option<PathBuf> {
+    None
 }
 
 pub fn adapter() -> Result<PathBuf, &'static str> {
@@ -82,7 +95,6 @@ fn validate_tunnel_client(candidate: &Path) -> Result<PathBuf, &'static str> {
     Ok(canonical)
 }
 
-#[cfg(debug_assertions)]
 fn validate_development_executable(path: &Path) -> Result<PathBuf, &'static str> {
     let canonical = path
         .canonicalize()
@@ -173,5 +185,24 @@ mod tests {
             let path = tunnel_client().unwrap();
             assert!(path.ends_with("libexec/tunnel-client"));
         }
+    }
+
+    #[test]
+    fn absent_candidates_report_missing_without_path_lookup() {
+        assert_eq!(
+            tunnel_client_from_candidates(&["/definitely/not/a/tunnel-client"]),
+            Err("tunnel_client_missing")
+        );
+    }
+
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn release_build_ignores_tunnel_client_override() {
+        std::env::set_var(
+            "DECK_TUNNELCTL_TUNNEL_CLIENT",
+            "/definitely/not/a/tunnel-client",
+        );
+        assert!(development_tunnel_client_path().is_none());
+        std::env::remove_var("DECK_TUNNELCTL_TUNNEL_CLIENT");
     }
 }

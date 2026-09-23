@@ -82,14 +82,27 @@ credential must use a different service and account namespace.
 
 The helper passes the Runtime API key using tunnel-client's `file:` reference
 and never places it in argv. The file is random, create-new/no-follow, mode
-0600 inside a mode-0700 private directory, and contains no other state. Release
-requires a live tunnel-client 0.0.14 lifecycle test proving when the file may
-be deleted. If that cannot be proved, the helper must not retain plaintext,
-fall back to a literal argv key, or silently switch to environment transport.
+0600 inside a mode-0700 private directory, and contains no other state. The
+2026-09-23 live v0.0.14 verification proved that the file can be deleted after
+the first successful control-plane poll: the running runtime remained healthy
+through four later poll windows. The runtime manager did not automatically
+restart an unexpectedly terminated child. An explicit reconnect with the
+missing old file failed closed; a new Keychain read and a new temporary file
+then connected, polled successfully, and remained healthy after deletion.
 
-The checked-in implementation currently keeps this release gate closed:
-`setup` and `start` return `secret_file_lifecycle_not_verified`. Enablement
-requires the live test above; unit tests alone are insufficient.
+Production `setup` and `start` therefore use the verified bounded sequence:
+
+```text
+Keychain read
+  → new private temporary file
+  → runtimes connect
+  → bounded status + successful control-plane poll (120 seconds)
+  → delete temporary file
+```
+
+There is no plaintext retention, literal-argv fallback, or environment
+fallback. A future tunnel-client version requires a new helper compatibility
+and lifecycle decision; Deck itself contains no such policy.
 
 ## Lifecycle and reboot behavior
 
@@ -106,9 +119,12 @@ It does not create a daemon, pid file, LaunchAgent, LaunchDaemon, Login Item,
 cron entry, watchdog, or custom persistence. After reboot, “Tunnel stopped” is
 an expected state; start it explicitly.
 
-Ready means tunnel-client reports a running process that is both healthy and
-ready and is not stale. A running process alone is not Ready, and Ready does
-not claim that ChatGPT is connected.
+Ready means tunnel-client reports a running process that is healthy, ready,
+not stale, and has completed a successful control-plane poll. The v0.0.14
+`runtimes status` poll summary can remain `unknown`, so the helper uses the
+official bounded `health --require-control-plane-poll --json` result rather
+than inferring readiness from the process flag. Ready does not claim that a
+ChatGPT user is currently connected.
 
 ## Revoke, disable, and delete
 

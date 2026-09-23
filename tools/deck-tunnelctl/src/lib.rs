@@ -8,6 +8,9 @@ mod protocol;
 mod secret_file;
 mod tunnel_client;
 
+#[cfg(test)]
+mod real_file_secret_lifecycle;
+
 pub const RUNTIME_KEY_SERVICE: &str = "io.c9r.deck-tunnelctl.runtime";
 
 pub fn valid_client_id(value: &str) -> bool {

@@ -169,10 +169,13 @@ fn setup(tunnel: &Client, alias: &str, client_id: &str) -> Result<serde_json::Va
     action(alias.to_string(), result?)
 }
 
-/// Release gate: change this only after the documented live v0.0.14 test has
-/// proved deletion, polling, crash, reconnect, stop, and remove behavior.
-fn require_verified_secret_lifecycle() -> Result<(), &'static str> {
-    Err("secret_file_lifecycle_not_verified")
+/// The live v0.0.14 gate was completed on 2026-09-23: the Runtime key was read
+/// from a 0600 file at startup, the file was removed after a successful
+/// control-plane poll, multiple later polls succeeded, the manager did not
+/// auto-restart an unexpectedly terminated child, and an explicit reconnect
+/// succeeded with a newly generated file.
+pub(crate) fn require_verified_secret_lifecycle() -> Result<(), &'static str> {
+    Ok(())
 }
 
 fn connect_with_key(
@@ -200,9 +203,9 @@ fn connect_with_secret(
     if status.state != TunnelState::Ready {
         return Err("tunnel_not_ready");
     }
-    // SecretFile is deliberately kept alive through the post-connect status
-    // check. Phase-B live validation must prove whether dropping it here is
-    // safe for v0.0.14 before this build is releasable.
+    // Client::connect waits for a successful control-plane poll. The verified
+    // v0.0.14 lifecycle permits SecretFile to be dropped immediately after
+    // that bounded readiness check; every explicit Start creates a new file.
     Ok(status)
 }
 
@@ -297,10 +300,7 @@ mod tests {
     }
 
     #[test]
-    fn file_secret_lifecycle_release_gate_is_fail_closed() {
-        assert_eq!(
-            require_verified_secret_lifecycle(),
-            Err("secret_file_lifecycle_not_verified")
-        );
+    fn file_secret_lifecycle_release_gate_is_verified() {
+        assert_eq!(require_verified_secret_lifecycle(), Ok(()));
     }
 }

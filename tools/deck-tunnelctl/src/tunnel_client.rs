@@ -2,13 +2,15 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::process;
 use crate::protocol::TunnelState;
 
 const SHORT_TIMEOUT: Duration = Duration::from_secs(5);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
+const READY_TIMEOUT: Duration = Duration::from_secs(120);
+const READY_POLL_INTERVAL: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RuntimeStatus {
@@ -25,6 +27,7 @@ struct StatusProjection {
     ready: bool,
     stale: bool,
     tunnel_id: Option<String>,
+    health_url_file: Option<String>,
 }
 
 pub struct Client {
@@ -48,7 +51,14 @@ impl Client {
             }
             return Err("tunnel_client_status_failed");
         }
-        parse_status(&output.stdout)
+        let (mut status, health_url_file) = parse_status(&output.stdout)?;
+        if status.state == TunnelState::Ready {
+            let health_url_file = health_url_file.ok_or("tunnel_client_invalid_json")?;
+            if !self.control_plane_poll_ok(&health_url_file)? {
+                status.state = TunnelState::Starting;
+            }
+        }
+        Ok(status)
     }
 
     pub fn connect(
@@ -81,7 +91,7 @@ impl Client {
         if !output.status.success() {
             return Err("tunnel_client_connect_failed");
         }
-        self.status(alias)
+        self.wait_ready(alias)
     }
 
     pub fn stop(&self, alias: &str) -> Result<RuntimeStatus, &'static str> {
@@ -124,6 +134,39 @@ impl Client {
             .iter()
             .any(|entry| entry.get("alias").and_then(Value::as_str) == Some(alias)))
     }
+
+    fn control_plane_poll_ok(&self, health_url_file: &str) -> Result<bool, &'static str> {
+        let output = self.run(
+            [
+                "health",
+                "--url-file",
+                health_url_file,
+                "--require-control-plane-poll",
+                "--json",
+            ],
+            SHORT_TIMEOUT,
+        )?;
+        let value: Value =
+            serde_json::from_slice(&output.stdout).map_err(|_| "tunnel_client_invalid_json")?;
+        value
+            .pointer("/control_plane_poll/ok")
+            .and_then(Value::as_bool)
+            .ok_or("tunnel_client_invalid_json")
+    }
+
+    fn wait_ready(&self, alias: &str) -> Result<RuntimeStatus, &'static str> {
+        let deadline = Instant::now() + READY_TIMEOUT;
+        loop {
+            let status = self.status(alias)?;
+            if status.state == TunnelState::Ready {
+                return Ok(status);
+            }
+            if Instant::now() >= deadline {
+                return Err("tunnel_client_readiness_timeout");
+            }
+            std::thread::sleep(READY_POLL_INTERVAL);
+        }
+    }
 }
 
 fn map_io(error: std::io::Error) -> &'static str {
@@ -134,7 +177,7 @@ fn map_io(error: std::io::Error) -> &'static str {
     }
 }
 
-fn parse_status(bytes: &[u8]) -> Result<RuntimeStatus, &'static str> {
+fn parse_status(bytes: &[u8]) -> Result<(RuntimeStatus, Option<String>), &'static str> {
     let value: Value = serde_json::from_slice(bytes).map_err(|_| "tunnel_client_invalid_json")?;
     let projection_value = serde_json::json!({
         "process_running": value.get("process_running").and_then(Value::as_bool).ok_or("tunnel_client_invalid_json")?,
@@ -142,6 +185,7 @@ fn parse_status(bytes: &[u8]) -> Result<RuntimeStatus, &'static str> {
         "ready": value.get("ready").and_then(Value::as_bool).ok_or("tunnel_client_invalid_json")?,
         "stale": value.get("stale").and_then(Value::as_bool).ok_or("tunnel_client_invalid_json")?,
         "tunnel_id": value.get("tunnel_id").and_then(Value::as_str),
+        "health_url_file": value.get("health_url_file").and_then(Value::as_str),
     });
     let status: StatusProjection =
         serde_json::from_value(projection_value).map_err(|_| "tunnel_client_invalid_json")?;
@@ -156,11 +200,14 @@ fn parse_status(bytes: &[u8]) -> Result<RuntimeStatus, &'static str> {
     } else {
         TunnelState::Unhealthy
     };
-    Ok(RuntimeStatus {
-        state,
-        exists: true,
-        tunnel_id: status.tunnel_id,
-    })
+    Ok((
+        RuntimeStatus {
+            state,
+            exists: true,
+            tunnel_id: status.tunnel_id,
+        },
+        status.health_url_file,
+    ))
 }
 
 /// tunnel-client v0.0.14 parses this field with its own argv lexer, not a shell.
@@ -192,6 +239,7 @@ mod tests {
                 .as_bytes(),
             )
             .unwrap()
+            .0
             .state
         };
         assert_eq!(status(false, false, false, false), TunnelState::Stopped);
