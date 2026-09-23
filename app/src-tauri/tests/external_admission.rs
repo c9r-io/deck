@@ -543,7 +543,7 @@ const TERMINAL_INPUT: &[(&str, &str, &str, usize, Input)] = &[
         Input::Queue,
     ),
     (
-        "connector/mod.rs",
+        "connector/native.rs",
         "execute_native",
         "prompt_delivery::deliver_with(",
         1,
@@ -616,7 +616,7 @@ fn every_terminal_input_site_is_reviewed() {
     });
     assert_pinned("terminal input", &found, TERMINAL_INPUT);
     // The phone's direct path uses the same agent predicate as the queue.
-    let native = body("connector/mod.rs", "execute_native");
+    let native = body("connector/native.rs", "execute_native");
     let send = native
         .split("\"send-message\" =>")
         .nth(1)
@@ -633,7 +633,7 @@ fn every_terminal_input_site_is_reviewed() {
         );
     }
     assert!(native.contains("expected_process: Some(agent)"));
-    assert!(body("connector/mod.rs", "queue_target_supported")
+    assert!(body("connector/projection.rs", "queue_target_supported")
         .contains("crate::inbound_channel::channel_agent_command"));
     assert!(body("scheduler/delivery.rs", "fire_item").contains("literal_request(item"));
     // No import may alias the delivery entry points past the census.

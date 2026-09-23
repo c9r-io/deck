@@ -1,5 +1,5 @@
 //! Bounded durable state documents: the mechanism shared by the MCP ledger
-//! (`mcp/state.rs`), the Phone Connector journal (`connector/mod.rs`) and the
+//! (`mcp/state.rs`), the Phone Connector journal (`connector/journal.rs`) and the
 //! channel inbox (`inbound_channel.rs`). Those owners share nothing else — no
 //! record type, token, grant or authority — so this module knows no document
 //! shape; it takes a byte bound and a label. A load reads at most the bound

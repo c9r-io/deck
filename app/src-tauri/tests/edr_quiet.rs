@@ -498,9 +498,10 @@ fn connector_owns_the_only_production_tcp_listener() {
         );
     }
 
-    let connector = std::fs::read_to_string(manifest("src/connector/mod.rs")).unwrap();
-    let production = production_region(&connector);
-    assert!(production.contains("fn validate_connector_listener("));
+    let network = std::fs::read_to_string(manifest("src/connector/network.rs")).unwrap();
+    assert!(production_region(&network).contains("fn validate_connector_listener("));
+    let commands = std::fs::read_to_string(manifest("src/connector/commands.rs")).unwrap();
+    let production = production_region(&commands);
     let enable = production
         .split("pub(crate) async fn connector_enable")
         .nth(1)
