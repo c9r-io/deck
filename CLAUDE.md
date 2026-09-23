@@ -30,51 +30,17 @@ same commit as the behaviour it describes.
   collection card; both use `provider.createStarted`, and neither moves or
   retires a card. Nothing else retires or relocates a card on its own.
 - **deck is EDR-QUIET by rule** (a corporate EDR flagged it and IT demanded the
-  app be stopped; `tests/edr_quiet.rs` enforces each point):
-  Connector is disabled by default; when the user enables it, it opens one
-  inbound HTTPS listener on the selected private IPv4 address (RFC1918,
-  169.254/16 or 100.64/10 — `docs/connector.md`; never public or 0.0.0.0).
-  never touches launchd — no `launchctl` (not even a one-shot `submit`), no
-  LaunchAgents/LaunchDaemons, no login items; post-update relaunch is a
-  `setsid`-detached waiter (`relaunch.rs`) that waits for the old PID and
-  `open -n`s the installed bundle. Never spawns `ps`, `date`, `osascript`
-  or a shell: process facts (pid/ppid/footprint/tty/foreground group/argv[0])
-  come from libproc + `KERN_PROCARGS2` in `procinfo.rs`, local time from
-  `localtime_r`, and a duplicate instance just logs and exits. Default
-  paths, structured reads, metadata and readiness queries never start a
-  shell. For a locally approved, unexpired trusted-host MCP job, the signed
-  `deck-mcp-runner` starts the requested absolute executable path and exact argv
-  at its single fixed entry (`spawn_job`); bare names never resolve through
-  the child PATH. Execution authority permits any program,
-  including interpreters and shells; it is not a sandbox. Human takeover
-  starts no shell.
-  This is not an OS sandbox, carries no promise of EDR invisibility, and
-  `-d -f` does not skip `/etc/zshenv`. deck-app never builds a shell path
-  at runtime, and no dynamic concatenation, alias or variable-level
-  allowlist entry may hide a process spawn (`tests/edr_quiet.rs` binds each
-  computed executable to an exact file and function). Never
-  writes an executable under `~`: hook commands name the helper INSIDE the
-  signed bundle (see agent hooks). Remaining spawns are low-frequency,
-  fixed-argument system tools named by absolute `/usr/bin` path (`open`,
-  `plutil`, `pbcopy`, `sw_vers`, `uname`; never a PATH lookup) plus the
-  bundled tmux — which is the ONLY tmux deck
-  ever executes: `tmux::tmux_program()` resolves the signed sidecar next to
-  deck's own executable and NEVER falls back to Homebrew/MacPorts or a PATH
-  lookup (`/usr/local/bin` is user-writable on many Macs, and every deck
-  session descends from that binary). Isolated debug/smoke servers must be
-  retired after evidence capture: `scripts/edr_runtime.py` inventories only
-  reviewed `deck-dev` / `deck-smoke-*` identities and cleanup is explicit;
-  release workflows run `scripts/check-edr-binary` over the packaged app.
-  The one executable outside the bundle deck may spawn is the optional,
-  separately installed and signed Deck Tunnel Helper, only at
-  `/Applications/Deck Tunnel Helper.app/Contents/MacOS/deck-tunnelctl`
-  after its Team ID/identifier signature and file-identity checks, with
-  closed argv (`tunnel_helper.rs`; protocol once per session, status cached).
-  The helper in turn runs only the hash-pinned external `tunnel-client`
-  (census in `tools/deck-tunnelctl/src/lib.rs`; `tunnel-helper.yml` also runs
-  `check-edr-binary` on it). That `tunnel-client` runtime keeps an outbound
-  HTTPS connection in its own tmux session, outlives deck until explicitly
-  stopped or the Mac restarts (nothing relaunches it), and is OUTSIDE deck's EDR-quiet promise.
+  app be stopped). The whole process-surface contract — every allowed spawn
+  and its exact file, the launchd/login-item ban, the bundled-tmux-only
+  rule, the shell-free restore path, the disabled-by-default Connector
+  listener on a private IPv4 address, the smoke-server cleanup, and the one
+  outside-bundle exception (the signed Deck Tunnel Helper, whose hash-pinned
+  `tunnel-client` is OUTSIDE the EDR-quiet promise) — lives in the header
+  of `tests/edr_quiet.rs`, which enforces each point over production
+  source; `scripts/check-edr-binary` scans the packaged app and the release
+  helper. Read that header before adding any `Command::new`, tmux verb,
+  listener, shell path or file under `~`. This is not an OS sandbox and
+  carries no promise of EDR invisibility.
 - **Never create a public candidate, Stable tag, feed update or promotion
   without the user's explicit authorization.** Release operation is documented
   in `docs/release-channels.md`. `scripts/release-version` synchronizes the five application/Adapter source and lock entries;

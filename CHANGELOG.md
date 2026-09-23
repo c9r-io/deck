@@ -16,6 +16,62 @@
   deliveries whose text landed but whose Enter was refused in the same state.
   A start that fails after creating its pane now removes that session and logs
   a code-only `[start] failed` line.
+- A list row never answers an agent's permission prompt. Chain rows fire on
+  quiet, and a permission prompt counted as quiet, so a Slack channel rule
+  could stage a message that provoked a dangerous tool request and have the
+  next row's paste-and-Enter accept it. The tick now reads the agent hook
+  state: no row is sent automatically while the hook reports needs-input,
+  and a row admitted from outside (Slack channel or badge rules, Connector)
+  waits until the hook positively reports turn-done — without a hook it
+  waits for a manual send. The list panel shows the new "agent" stage.
+  Cards never move.
+- Phone Connector stops listening when the network under its address
+  changes. The private-network check ran only at enable; the listener now
+  records address, interface and netmask, re-checks them every 5 seconds,
+  stops on any change, and drops a connection whose local address is not
+  the configured one. Settings shows the existing "enabled, not listening"
+  state. 100.64/10 is accepted only on VPN (`utun*`) interfaces and
+  169.254/16 only on direct-cable bridges (`bridge*`). Phone input passes
+  the MCP terminal-input guard, and phone output refuses any pane under MCP
+  control.
+- A same-user process can no longer starve the managed MCP runner's control
+  slots or hold a control-socket slot by trickling a request: the runner
+  closes any connection that is not Deck's before it takes a slot, the
+  whole control request must arrive within 500 ms, and a job that hits its
+  execution timeout is stopped with the same SIGINT/SIGTERM/SIGKILL
+  escalation and reports the signal that ended it. Project reads open the
+  root one component at a time without following symlinks and refuse a
+  root or ancestor that was swapped for a symlink.
+- The optional Deck Tunnel Helper is covered by the EDR-quiet gates and is
+  published by the nightly workflow as its own independently notarized
+  artifact. Each helper command has one budget below Deck's kill timeout,
+  the runtime key file is removed on SIGINT/SIGTERM/SIGHUP, stale runtime
+  directories of dead owners are swept at start, and key buffers are
+  zeroed.
+- Internal: `mcp.rs` is a directory module with one file per concern; the
+  bounded state-document mechanism shared by MCP, Connector and the channel
+  inbox is `ledger.rs`; the tmux server restart consults MCP through a
+  guard MCP registers at boot; `tests/session_architecture.rs` pins these
+  layers. The one visible change: the MCP oversized-state message says
+  "bounds" like the other two. The tmux contract suite runs under the
+  production client topology, every path that puts non-owner text into a
+  queue or pane is pinned (`tests/external_admission.rs`), and coverage
+  floors are 75%.
+
+## 0.7.7 — 2026-09-23 (Nightly)
+
+- Optional Secure Tunnel helper. Deck MCP can be reached through ChatGPT's
+  Secure Tunnel via a separately installed, signed Deck Tunnel Helper
+  (`deck-tunnelctl`). Deck MCP works without it, Deck never holds its OpenAI
+  credential, and removing it changes no MCP authorization. Deck runs the
+  helper only at its fixed `/Applications` path after checking its signature
+  and file identity, through a closed status/start/stop/remove protocol;
+  Settings shows "optional helper not installed" when it is absent. See
+  `docs/mcp-tunnel-helper.md`.
+- MCP reports a session's effective output-sharing state.
+
+## 0.7.6 — 2026-09-22 (Nightly)
+
 - Slack badge rules now follow the channel admission: the command must be
   exactly `claude` or `codex` and no template row may start with a message
   placeholder. A badge rule with an empty (plain shell) command could
@@ -30,6 +86,23 @@
   interpreters and shells, with the logged-in user's permissions; it is not a
   sandbox. The misleading shell-denial boundary and `deck_shell_exec` fallback
   were removed. Legacy state-schema-v6 `allowShell` fields are ignored.
+- The MCP control socket is bound only while the feature is enabled and its
+  thread idles while disabled; every runner control request is
+  authenticated, runner sockets are published atomically, control epochs
+  resynchronize after a fence, executables must be absolute paths, and the
+  runner holds no timer while idle.
+- Phone Connector output requires a live agent in the pane's foreground;
+  snapshots and every card route are limited to agent cards; paired device
+  names are sanitized; phone rows are admitted through the same channel
+  path as Slack rules.
+- External messages (Slack rules, phone) that lead with `!` or `/` are
+  refused.
+- Slack channel monitoring stops re-reading the Keychain while a token is
+  missing.
+- Fixed cross-card shell recovery after a tmux server restart.
+
+## 0.7.5 — 2026-09-21 (Nightly)
+
 - MCP and Phone Connector requests can no longer be applied twice after Deck
   drops their history. MCP control and session-create calls now carry a
   sequence value (control protocol 4, state schema 5), renewals are journaled
@@ -49,7 +122,54 @@
   record an operation as expired. Earlier journals open unchanged and are
   upgraded on their next save; an older phone build refuses the new file
   instead of misreading it.
+- Return to MCP no longer requires a live execution grant: it persists a new
+  epoch first, re-fences if the runner refuses, and reports stable codes
+  (busy, runner-stale, client-revoked, feature-disabled). A runner left by
+  an earlier Deck answers runner-stale; close still works. Human takeover
+  starts no shell: keys go to the active job and Ctrl-C stops it. The
+  runner handles INT/HUP/TERM, reaps its own jobs, reports stopped jobs, and
+  a bounded stop (INT, TERM, KILL) runs before a card closes. A remote close
+  commits after admission and never leaves `closing` stuck; a restart turns
+  pending Board operations ambiguous instead of replaying them.
 
+## 0.7.4 — 2026-09-21 (Nightly)
+
+- Fixes for the MCP acceptance blockers found in review.
+
+## 0.7.3 — 2026-09-21 (Nightly)
+
+- Fixes to MCP client authorization management.
+
+## 0.7.2 — 2026-09-21 (Nightly)
+
+- MCP security gates (scheme B) complete.
+
+## 0.7.1 — 2026-09-20 (Nightly)
+
+- Opt-in MCP terminal control (Settings → Integrations). A locally
+  authorized MCP client (for example ChatGPT through the `deck-mcp` STDIO
+  adapter) can read files of the projects it was authorized for, create
+  managed sessions, run one structured executable per job through the
+  signed `deck-mcp-runner` in a visible tmux pane under a short-lived
+  execution grant, send stdin and read output. Structured reads start no
+  shell; execution runs as the logged-in user and is not a sandbox; the
+  human can take the keyboard back at any time. See `docs/mcp.md`.
+- The Board's tmux query channel is persistent instead of being reopened
+  on every poll.
+
+## 0.7.0 — 2026-09-20 (Nightly)
+
+- Card scratchpads: per-card notes and immutable copies of what was
+  delivered.
+- Slack channel monitoring: a saved channel rule collects scoped Slack
+  messages into its collection card, with deterministic grouping and
+  durable deduplication.
+- Phone Connector host (disabled by default): opt-in HTTPS pairing on a
+  private address, device revocation, project task presets and a restricted
+  set of remote commands through the existing Board writer and guarded
+  scheduler, plus an iOS client with durable command recovery. Remote input
+  boundaries are hardened. See `docs/connector.md`.
+- The terminal suggests agent resume IDs from pane history.
 - Failed session polls preserve running cards and queued prompts instead of
   treating an unavailable listing as exited sessions. Invalid working-directory
   metadata no longer hides a live session. Polling and Slack credential
@@ -57,7 +177,6 @@
 - Credential redaction covers complete quoted passwords and Authorization
   headers. Long-line scanning is linear, and shell recovery omits oversized
   logical lines before scanning instead of retaining partial secret values.
-
 - Voice input keeps each pending slice bound to its original recording and
   pane. Switching or cancelling during preparation drops the slice, and late
   replies cannot reset a newer recording. Voice paste now excludes service
@@ -66,6 +185,10 @@
   Terminal links, clipboard handling and byte codecs have dedicated modules;
   the queue panel receives its board dependencies during initialization.
 
+## 0.6.10 — 2026-09-19 (Nightly)
+
+- Agents are asked to exit gracefully before a bounded shell service
+  restart.
 - Terminal path links separate Chinese/Markdown labels from ASCII brackets,
   preserving balanced filename brackets. Rejected candidates and URL closing
   punctuation are scanned without repeatedly traversing the same suffix.
@@ -73,11 +196,9 @@
   Changed targets, viewport/grid changes and drags cancel the click. Link
   diagnostics record numeric attempt IDs, closed outcomes, action durations
   and rate-limited slow scans; paths and terminal text remain private.
-
 - Held double-click word selections and triple-click line selections now extend
   through a drag without losing the original range or selection granularity.
   Reversing the drag keeps the original selected word/line intact.
-
 - Terminal copy reports when no text is selected, including a selection lost
   while copying, and leaves the clipboard untouched for empty snapshots.
   Repeated copy attempts share a short notification cooldown.
@@ -85,6 +206,8 @@
   IDs. Pointer cancellation records focus and highlight hit state; empty ranges
   record cell deltas. Duplicate key-capture and copy-labelled drag errors are
   retired. No selected text or session names enter these events.
+- rustls is patched (RUSTSEC-2026-0285) and the RustSec audit gate runs
+  before signing; the withdrawn 0.6.9 candidate was advanced to 0.6.10.
 
 ## 0.6.8 — 2026-09-16 (Nightly)
 

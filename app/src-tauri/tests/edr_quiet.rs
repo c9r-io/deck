@@ -1,8 +1,58 @@
 //! EDR-quiet tripwires. A corporate EDR once flagged deck and IT demanded the
 //! app be stopped, so the process surface is a closed allowlist enforced here
 //! over PRODUCTION source (only a file's trailing `#[cfg(test)] mod tests`
-//! and dedicated `*/tests.rs` files declared `#[cfg(test)]` are left out):
+//! and dedicated `*/tests.rs` files declared `#[cfg(test)]` are left out).
+//! This header is the contract; CLAUDE.md only points here.
 //!
+//! What deck never does:
+//! - touch launchd — no `launchctl` (not even a one-shot `submit`), no
+//!   LaunchAgents/LaunchDaemons, no login items; the post-update relaunch is
+//!   a `setsid`-detached waiter (`relaunch.rs`) that waits for the old PID
+//!   and `open -n`s the installed bundle;
+//! - spawn `ps`, `date`, `osascript` or a shell: process facts (pid, ppid,
+//!   footprint, tty, foreground group, argv[0]) come from libproc and
+//!   `KERN_PROCARGS2` in `procinfo.rs`, local time from `localtime_r`, and a
+//!   duplicate instance just logs and exits; default paths, structured
+//!   reads, metadata and readiness queries never start a shell; human
+//!   takeover of an MCP session starts no shell;
+//! - build a shell path at runtime, or hide a spawn behind concatenation,
+//!   an alias or a variable-level allowlist entry;
+//! - write an executable under `~`: agent hook commands name the helper
+//!   INSIDE the signed bundle;
+//! - run any tmux but the signed sidecar next to its own executable
+//!   (`tmux::tmux_program()`), never Homebrew/MacPorts or a PATH lookup
+//!   (`/usr/local/bin` is user-writable on many Macs, and every deck session
+//!   descends from that binary);
+//! - open a listener other than the disabled-by-default Connector's one
+//!   inbound HTTPS listener on the selected private IPv4 address (RFC1918,
+//!   169.254/16 on `bridge*` or 100.64/10 on `utun*` — `docs/connector.md`;
+//!   never public or 0.0.0.0).
+//!
+//! What deck may spawn: low-frequency, fixed-argument system tools named by
+//! absolute `/usr/bin` path (`open`, `plutil`, `pbcopy`, `sw_vers`, `uname`;
+//! never a PATH lookup), the bundled tmux, and — for a locally approved,
+//! unexpired trusted-host MCP job — the signed `deck-mcp-runner`, which
+//! starts the requested absolute executable path and exact argv at its
+//! single fixed entry (`spawn_job`); bare names never resolve through the
+//! child PATH. Execution authority permits any program, including
+//! interpreters and shells; it is not a sandbox, `-d -f` does not skip
+//! `/etc/zshenv`, and nothing here promises EDR invisibility. The ONE
+//! executable outside the bundle is the optional, separately installed and
+//! signed Deck Tunnel Helper, only at `/Applications/Deck Tunnel
+//! Helper.app/Contents/MacOS/deck-tunnelctl` after its Team ID/identifier
+//! signature and file-identity checks, with closed argv (`tunnel_helper.rs`;
+//! protocol once per session, status cached). The helper in turn runs only
+//! the hash-pinned external `tunnel-client` (census in
+//! `tools/deck-tunnelctl/src/lib.rs`; `tunnel-helper.yml` runs
+//! `check-edr-binary` on it). That `tunnel-client` keeps an outbound HTTPS
+//! connection in its own tmux session, outlives deck until explicitly
+//! stopped or the Mac restarts (nothing relaunches it), and is OUTSIDE
+//! deck's EDR-quiet promise. Isolated debug/smoke servers must be retired
+//! after evidence capture: `scripts/edr_runtime.py` inventories only
+//! reviewed `deck-dev` / `deck-smoke-*` identities and cleanup is explicit;
+//! release workflows run `scripts/check-edr-binary` over the packaged app.
+//!
+//! What this file enforces:
 //! 1. every `Command::new(...)` (whitespace-tolerant) names a fixed,
 //!    low-frequency system tool at a reviewed file, or a reviewed computed
 //!    executable at an exact file AND enclosing function; every allowlist
