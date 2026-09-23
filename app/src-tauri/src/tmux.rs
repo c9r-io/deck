@@ -1055,6 +1055,15 @@ pub(crate) fn query_list_panes() -> Result<Vec<PaneRow>, DeckError> {
     Ok(rows)
 }
 
+/// Smoke evidence only (`smoke_faults::smoke_query_channel`): whether the
+/// persistent query client is attached right now.
+pub(crate) fn query_channel_connected() -> bool {
+    QUERY_STATE
+        .lock()
+        .map(|state| state.channel.is_some())
+        .unwrap_or(false)
+}
+
 /// Restart and process exit call this after excluding active poll operations.
 pub(crate) fn stop_query_channel() {
     if let Ok(mut state) = QUERY_STATE.lock() {

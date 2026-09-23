@@ -3,7 +3,7 @@
 // The Node gate runs only *.test.mjs and does not count smoke carriers.
 // Production DOM imports below run only inside the real WKWebView.
 let $, ctx, inv, state, store, panes, provider, render, pollNow, boardData;
-let renameCardInline, renderSuggest, resetSuggest;
+let renameCardInline, renderSuggest, resetSuggest, newSession;
 let showLinkCtx, toggleSidebar, addSplit, backToBoard, openSession, strToB64;
 let closePaneBySid, focusPane, cancelTerminalSelection, copyTerminalSelection, terminalSelectionElsewhere;
 let refreshQueue, toggleQueuePanel;
@@ -17,7 +17,7 @@ if (typeof window !== 'undefined') {
   ({ panes, provider, render, pollNow, renderBufferUI } = await import('../js/board.js'));
   ({ boardData } = await import('../js/persistence.js'));
   ({
-    renameCardInline, renderSuggest, resetSuggest,
+    renameCardInline, renderSuggest, resetSuggest, newSession,
     showLinkCtx, toggleSidebar,
   } = await import('../js/terminal.js'));
   ({ addSplit, backToBoard, closePaneBySid, focusPane, openSession } = await import('../js/layout.js'));
@@ -59,6 +59,40 @@ const eventAt = (x = 20, y = 20) => ({
 });
 const overlaps = (a, b) => a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
 
+/* 0.7.1-0.7.6 shipped a card start that never ran its command whenever no
+   terminal was open: the Board's persistent query client is then tmux's only
+   client, so every one-shot command resolves it as the ambient target, and
+   attached read-only it made send-keys refuse. Reproduce that topology
+   exactly (an existing session, a poll that connects the query channel, no
+   pane attached), then take the one new-session path with a command. The
+   marker is printed by the command only, never by its echo. */
+async function commandWithoutPaneSmoke(project, column) {
+  // A live session no pane shows. It stays open so closing the card below
+  // never empties the server (that would reset the query channel mid-run).
+  await provider.createStarted({
+    projectId: project.id, columnId: column.id, title: 'no-pane-anchor', cmd: '', dir: '/tmp',
+  });
+  const noPane = panes.size === 0;
+  const connected = await waitFor(async () => { await pollNow(); return inv('smoke_query_channel'); }, 5000);
+  // the regression surfaced as a refused start: report it, keep the run going
+  const card = await newSession('/tmp', {
+    projectId: project.id, cmd: "printf '%s%s\\n' 'default-' 'no-pane-ok'", rethrow: true,
+  }).catch(() => null);
+  const pane = card && await waitFor(() => panes.get(card.session)?.attached) ? panes.get(card.session) : null;
+  const ran = !!pane && await waitFor(() => {
+    const buffer = pane.term.buffer.active;
+    return Array.from({ length: buffer.length }, (_, i) => buffer.getLine(i).translateToString(true))
+      .some(line => line.includes('default-no-pane-ok'));
+  });
+  const launched = provider.get(card?.id)?.launched === true;
+  const mask = (noPane ? 1 : 0) | (connected ? 2 : 0) | (ran ? 4 : 0) | (launched ? 8 : 0);
+  await report('command-without-pane', mask === 15, mask, 15);
+  if (card) {
+    closePaneBySid(card.id);
+    await provider.close(card.id);
+  }
+}
+
 // Exercise the actual entry points: calling addSplit directly misses errors
 // in the picker, before any backend command is reached.
 async function splitPickerSmoke(card) {
@@ -80,7 +114,10 @@ async function splitPickerSmoke(card) {
       fresh = store.cards.find(c => !priorIds.has(c.id));
       return fresh && panes.get(fresh.session)?.attached && state.sessionId === fresh.id;
     });
-    await report('split-picker-create', attached && fresh.cmd === '' && fresh.dir === card.dir
+    // /tmp is a symlink: once a poll has seen the pane's cwd the split takes
+    // its canonical spelling (/private/tmp)
+    await report('split-picker-create', attached && fresh.cmd === ''
+      && [card.dir, '/private' + card.dir].includes(fresh.dir)
       && panes.get(card.session) === original && original.attached, dir === 'row' ? 1 : 2);
     if (!attached) throw new Error('split shell did not attach');
     const pane = panes.get(fresh.session);
@@ -1972,6 +2009,8 @@ export async function run() {
       projectId: project.id, columnId: column.id, title: 'wk-smoke', cmd: '', dir: '/tmp',
     });
     render();
+    // before any pane is open (main is not started until openSession)
+    await commandWithoutPaneSmoke(project, column);
     await openSession(main.id);
     await splitPickerSmoke(main);
     stage = 3;
@@ -2027,19 +2066,18 @@ export async function run() {
     const mismatchItem = (await inv('queue_list')).items?.find(item => item.card_id === main.id);
     const mismatchProbe = mismatchItem && await inv('queue_probe_context', { id: mismatchItem.id });
     await refreshQueue();
+    // 8a4aa91 removed the foreground-mismatch bypass: manual send-now on a
+    // mismatch offers no confirmation at all and the row stays queued.
     document.querySelector('#queue-list .q-now')?.click();
-    const dangerShown = await waitFor(() => $('cfm').style.display === 'flex', 2000);
-    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
-    await pause(100);
-    const enterRejected = $('cfm').style.display === 'flex';
+    const noBypass = !(await waitFor(() => $('cfm').style.display === 'flex', 1500));
     $('cfm-no')?.click();
     await pause(100);
     const mismatchWaits = mismatchProbe?.status === 'foreground-different'
       && (await inv('queue_list')).items?.some(item => item.id === mismatchItem?.id && item.attempts === 0);
     const mask = (hooklessReady ? 1 : 0) | (compatibilitySent ? 2 : 0)
       | (noPolicy ? 4 : 0) | (mismatchWaits ? 8 : 0)
-      | (dangerShown ? 16 : 0) | (enterRejected ? 32 : 0);
-    await report('scheduler-context', mask === 63, mask, 63);
+      | (noBypass ? 16 : 0);
+    await report('scheduler-context', mask === 31, mask, 31);
     stage = 15;
     await automationSmoke(project, column);
     await inv('smoke_seed_ambiguous');

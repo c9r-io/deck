@@ -119,6 +119,19 @@ pub(crate) fn smoke_clipboard_metrics() -> Result<SmokeClipboardMetrics, DeckErr
     })
 }
 
+/// Whether the Board's persistent query client is attached: the
+/// command-without-pane smoke must prove it ran in that topology.
+#[tauri::command]
+pub(crate) fn smoke_query_channel() -> Result<bool, DeckError> {
+    if !enabled() {
+        return Err(DeckError::new(
+            ErrorKind::Other,
+            "smoke query channel state is unavailable",
+        ));
+    }
+    Ok(crate::tmux::query_channel_connected())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

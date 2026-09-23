@@ -434,6 +434,7 @@ fn main() {
             tunnel_helper::tunnel_helper_setup_command,
             smoke_faults::smoke_fault_set,
             smoke_faults::smoke_clipboard_metrics,
+            smoke_faults::smoke_query_channel,
         ])
         .build(tauri::generate_context!())
         .expect("error while building deck")

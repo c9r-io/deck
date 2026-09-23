@@ -331,6 +331,7 @@ const SMOKE_CHECKS: &[&str] = &[
     "surface-context-menu",
     "font-layout",
     "natural-fault",
+    "command-without-pane",
     "completion-owner",
     "ambiguous-boot",
     "scheduler-context",
