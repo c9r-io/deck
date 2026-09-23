@@ -28,8 +28,8 @@
 //! are OWNER text (the template and command are the rule owner's; a clock
 //! event's `msg.text` is the rule's own name). MCP is out of scope for this
 //! admission: its input reaches only the signed runner's job stdin under the
-//! local user's per-client execution and stdin grants (`mcp.rs`, a separate
-//! authority), and census 1–5 would flag it the moment `mcp.rs`/`mcp.js`
+//! local user's per-client execution and stdin grants (`mcp/`, a separate
+//! authority), and census 1–5 would flag it the moment `mcp/`/`mcp.js`
 //! queued text or wrote to a pane. A card's launch command is configuration
 //! (the owner's rule, preset or card), not message text. The Connector
 //! phone is the owner's paired device; its rows still take the external

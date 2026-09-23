@@ -19,7 +19,7 @@ same commit as the behaviour it describes.
   the user chose it per rule, it never fires while a pane shows the card,
   and it goes through the same close path as a click. Other non-click card
   creation/retirement paths are closed: an explicit MCP request (`mcp.js`,
-  `mcp.rs`) names one target; create needs the locally authorized client's
+  `mcp/`) names one target; create needs the locally authorized client's
   create permission, close needs its current control generation/epoch/holder
   and is refused under human lock or while any pane shows the card; both are
   idempotent by request id and go through `provider.createStarted` /
@@ -127,7 +127,7 @@ loaded by `ui/index.html`; xterm.js vendored in `app/ui/vendor/`. Backend
 | tmux sidecar, socket, server conf; long-lived client argv (query client, pane attach) shared with the contract suite's client-topology matrix | `tmux.rs`, `tmux_clients.rs` |
 | Server lifecycle: protocol metadata, reuse/replace, restart transaction, channel sockets | `tmux_lifecycle.rs`, `restart.rs` (exit/restart policy), `session_runtime.rs` (shared guards and deadlines) (+ `docs/tmux-server-lifecycle.md`) |
 | PTY attach bridge with end-to-end flow control | `pty.rs` |
-| Opt-in MCP terminal control: local grants/ledger/fencing, STDIO adapter, visible pane runner, Board bridge | `mcp.rs`, `mcp-adapter/`, `mcp-runner/`, `ui/js/mcp.js` (+ `docs/mcp.md`, `docs/mcp-architecture.md`) |
+| Opt-in MCP terminal control: local grants/ledger/fencing, STDIO adapter, visible pane runner, Board bridge | `mcp/` (contract in `mcp/mod.rs`), `mcp-adapter/`, `mcp-runner/`, `ui/js/mcp.js` (+ `docs/mcp.md`, `docs/mcp-architecture.md`) |
 | Native on-device voice input typed straight into the pane (one mic, one bound pane, no draft), shared literal paste | `native/SpeechBridge.swift`, `voice.rs`, `prompt_delivery.rs`, `ui/js/voice.js`, `voice-model.js`, `voice-target.js`, `voice-settings.js` (+ `docs/voice-input.md`) |
 | Terminal scroll + token-bound selection lease commands | `terminal.rs`, `terminal_selection.rs`, `terminal_scroll.rs` |
 | Pointer/selection authority, overlay, wheel routing (frontend) | `ui/js/selection.js`, `layout.js` |
@@ -250,7 +250,7 @@ Status semantics (card colour) are documented on `effectiveCardStatus` in
   token or operation kind. Board intents still go through
   `provider.createStarted` / `provider.close`; jobs run in the visible tmux
   pane's signed runner. Structured launch argv is visible in ordinary process
-  metadata and must not contain secrets. See `mcp.rs` and
+  metadata and must not contain secrets. See `mcp/mod.rs` and
   `docs/mcp-architecture.md`.
 - Use harmless card commands (e.g. `while true; do date; sleep 1; done`) when
   testing — a card whose command is `claude` will really launch Claude Code.
