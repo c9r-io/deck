@@ -256,6 +256,20 @@ class ReleaseChannelTests(unittest.TestCase):
                 rc.assert_workflow_gates(path)
         path.write_text("jobs:\n  t:\n    steps:\n      - run: gh release upload x || true\n")
         rc.assert_workflow_gates(path)
+        # a build gated through a reusable workflow counts only when that
+        # file exists beside it and runs the audit itself
+        called = gated.replace(
+            "    runs-on: macos-15\n    steps:\n      - run: cargo audit --file app/src-tauri/Cargo.lock\n",
+            "    uses: ./.github/workflows/gate.yml\n",
+        )
+        path.write_text(called)
+        with self.assertRaises(rc.ReleaseError):
+            rc.assert_workflow_gates(path)
+        (directory / "gate.yml").write_text("jobs:\n  gate:\n    steps:\n      - run: cargo audit --file app/src-tauri/Cargo.lock\n")
+        rc.assert_workflow_gates(path)
+        (directory / "gate.yml").write_text("jobs:\n  gate:\n    steps:\n      - run: cargo test\n")
+        with self.assertRaises(rc.ReleaseError):
+            rc.assert_workflow_gates(path)
 
     def test_repository_workflows_gate_every_app_build_on_the_audit(self) -> None:
         for path in (ROOT / ".github/workflows").glob("*.yml"):

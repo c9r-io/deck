@@ -379,9 +379,21 @@ def assert_workflow_gates(path: Path) -> None:
     for name, body in jobs.items():
         if not APP_BUILD.search(body):
             continue
-        gated = [need for need in job_needs(body) if CARGO_AUDIT in jobs.get(need, "")]
+        gated = [need for need in job_needs(body) if job_runs_audit(jobs.get(need, ""), path.parent)]
         if not gated and CARGO_AUDIT not in body:
             raise ReleaseError(f"{path.name}: app build job {name} does not depend on cargo audit")
+
+
+def job_runs_audit(body: str, workflows: Path) -> bool:
+    """A job runs the audit itself, or calls a reusable workflow in the same
+    directory (`uses: ./.github/workflows/<file>.yml`) whose text does."""
+    if CARGO_AUDIT in body:
+        return True
+    called = re.search(r"^    uses:\s*\./\.github/workflows/([A-Za-z0-9_.-]+\.yml)\s*$", body, re.M)
+    if not called:
+        return False
+    target = workflows / called.group(1)
+    return target.is_file() and CARGO_AUDIT in target.read_text()
 
 
 def cli() -> int:

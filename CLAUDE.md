@@ -45,7 +45,9 @@ same commit as the behaviour it describes.
   without the user's explicit authorization.** Release operation is documented
   in `docs/release-channels.md`. `scripts/release-version` synchronizes the five application/Adapter source and lock entries;
   `scripts/release_channels.py` is the shared manifest/hash/provenance validator;
-  `scripts/check-workflows` runs checksum-pinned actionlint. `nightly.yml`
+  `scripts/check-workflows` runs checksum-pinned actionlint. `gate.yml` is the
+  ONE test gate (`test.yml` runs it; `nightly.yml` and `release.yml` call it on
+  the resolved commit before any build). `nightly.yml`
   builds a signed/notarized immutable candidate and updates `nightly-feed` last.
   `promote.yml` is copy-only: its static gate rejects application build
   commands, and Stable `latest.json` is the last completeness asset.
