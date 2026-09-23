@@ -138,7 +138,8 @@ Stable metadata are production-specific. `latest.json` is uploaded last and
 the draft is published only after that completeness marker passes. Promotion
 evidence records both the candidate key epoch and Stable signature hash.
 
-The direct `vVERSION` source-build workflow remains an emergency path. Its tag
+The direct `vVERSION` source-build workflow (`release.yml`, run by a strict
+Stable tag push or by hand) remains an emergency path. Its tag
 resolver accepts only the strict Stable shape, ignores candidate/feed tags, and
 does not delete or overwrite an incomplete or already complete Release.
 Candidate publication, promotion and direct Stable publication use per-version

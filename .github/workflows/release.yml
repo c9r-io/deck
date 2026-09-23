@@ -2,18 +2,18 @@ name: release
 
 # Build, sign, and notarize the macOS app (Apple Silicon) for a strict Stable tag,
 # then attach the .dmg and in-app-updater artifacts to a GitHub Release.
+# This is the emergency source-build path named in docs/release-channels.md;
+# the ordinary Stable release is a promote.yml copy of a Nightly candidate.
 # Triggers:
-#   1. tag push          — the normal path
-#   2. schedule (hourly) — resilience: builds the newest v* tag that has no
-#                          release yet (covers platform event-delivery outages)
-#   3. workflow_dispatch — manual fallback or surgical DMG repair
+#   1. tag push          — a strict vX.Y.Z tag that no candidate covers
+#   2. workflow_dispatch — with no input: builds the newest v* tag that has no
+#                          release yet (a platform event-delivery outage);
+#                          with repair_dmg_tag: surgical DMG repair
 
 on:
   push:
     tags:
       - 'v[0-9]*.[0-9]*.[0-9]*'
-  schedule:
-    - cron: '7 * * * *'
   workflow_dispatch:
     inputs:
       repair_dmg_tag:

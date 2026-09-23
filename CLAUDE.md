@@ -49,6 +49,8 @@ same commit as the behaviour it describes.
   builds a signed/notarized immutable candidate and updates `nightly-feed` last.
   `promote.yml` is copy-only: its static gate rejects application build
   commands, and Stable `latest.json` is the last completeness asset.
+  `release.yml` is the emergency source build for a strict Stable tag no
+  candidate covers (tag push or manual dispatch, never a schedule).
 - **Privacy by construction.** The whole `~/.deck` tree is 0700/0600; app.log is
   structured and sanitized (`applog.rs`, `redact.rs`, `diagnostics.rs`); never add a
   free-form frontend log channel (`tests/log_privacy.rs` and the formatter
