@@ -10,6 +10,10 @@ cookies, forms, third-party fonts or remote assets. Common external URLs are in
 files; `scripts/guides.mjs` renders shared navigation, page outlines, metadata,
 previous/next links and sitemap/redirect entries. `marked` is build-time only.
 
+The English ChatGPT Secure Tunnel integration page is rendered directly from
+`../docs/secure-tunnel.md` at `/docs/integrations/chatgpt-secure-tunnel/`.
+There is no copied page body under `site/content`.
+
 ## Local review
 
 ```sh

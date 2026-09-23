@@ -260,6 +260,8 @@ section { scroll-margin-top: 90px; }
 .guide-article ul, .guide-article ol { padding-left: 1.5rem; }
 .guide-article a { color: var(--accent); text-underline-offset: .2em; overflow-wrap: anywhere; }
 .guide-article code { padding: .15em .35em; border: 1px solid var(--line); border-radius: .3rem; font: .9em var(--mono); overflow-wrap: anywhere; }
+.guide-article pre { max-width: 100%; overflow-x: auto; padding: 1rem; border: 1px solid var(--line); border-radius: .5rem; background: var(--panel); }
+.guide-article pre code { padding: 0; border: 0; overflow-wrap: normal; }
 .guide-article blockquote { margin: 1.5rem 0; padding: .1rem 1.2rem; border-left: 3px solid var(--amber); background: #efb95f09; }
 .table-scroll { overflow-x: auto; margin: 1.25rem 0; }
 .guide-article table { border-collapse: collapse; width: 100%; font-size: 1rem; }

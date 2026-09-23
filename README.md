@@ -7,6 +7,8 @@ another MCP client. See [docs/mcp.md](docs/mcp.md), the
 [validation record](docs/mcp-validation.md). It is disabled by default and is
 not an operating-system sandbox.
 
+To connect hosted ChatGPT to an authorized Deck project, follow [Connect ChatGPT to Deck with Secure Tunnel](docs/secure-tunnel.md). The optional Helper and official OpenAI tunnel-client keep Deck off the public Internet.
+
 **A native macOS app for managing multiple terminal agent sessions.** Run
 Claude Code, Codex, or other CLIs in persistent terminals, organize them on a
 board, and find the sessions that need your attention.
