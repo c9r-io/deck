@@ -7,10 +7,10 @@ import assert from 'node:assert/strict';
 import {
   sessionName, fmtMem, fmtEvery, minToHM, hmToMin, winHas, hasWindow,
   nextFire, groupQueue, groupSteps, itemDead, blockedBy, listKey, listRepeats, listScheduleArgs, projectRules, ruleByOrigin, badgeTaken,
-  chainQuietHint, contextStatusKey, CHAIN_QUIET_SECS, shQuote, quickBarLayout, rectsOverlap,
+  chainQuietHint, contextStatusKey, CHAIN_QUIET_SECS, shQuote, 
   MIN_QUIET_SECS, MAX_QUIET_SECS, quietSecsOf, localEpoch, isoDate, isoTime,
   scheduleMatchesDay, nextScheduleSlot, createConfirmationCounter, isoWeekday, daysInMonth, runFinishHolds, toggleClockRule,
-  createExitRetirementTracker, createSerialTransactionQueue, deleteSessionsTransaction, sidebarGroups,
+  createExitRetirementTracker, createSerialTransactionQueue, sidebarGroups,
    createTerminalResizeCoordinator, newSessionColumn, createTerminalSelectionModel,
   projectDefaults, newSessionPlan, collapseHome, isNotDirectoryError,
   reorderById,
@@ -25,7 +25,7 @@ import {
 
   createTerminalWheelAccumulator, createTerminalWheelFrameScheduler, terminalWheelLines,
 
-  initialLaunched, inlineRenameValue, startCommand, persistOptimistically,
+  initialLaunched, inlineRenameValue, startCommand,
   effectiveCardStatus,
   TEMPLATES_MAX, TEMPLATE_NAME_MAX, TEMPLATE_STEP_MAX, TEMPLATE_STEPS_MAX,
   inboundRulesUsingTemplate, moveTemplateStep, nextTemplateName, normalizeTemplateStep,
@@ -54,18 +54,6 @@ test('id-addressed reorder supports before/after and ignores stale drag payloads
   assert.deepEqual(reorderById(items, 'c', 'a', false).map(item => item.id), ['c', 'a', 'b']);
   assert.equal(reorderById(items, 'a', 'a'), items);
   assert.equal(reorderById(items, 'missing', 'a'), items);
-});
-
-test('the completion bar reserves a non-overlapping row in only its pane', () => {
-  const shown = quickBarLayout({ width: 800, height: 600, barHeight: 42, visible: true });
-  assert.deepEqual(shown.terminal, { left: 0, top: 0, right: 800, bottom: 558 });
-  assert.deepEqual(shown.bar, { left: 0, top: 558, right: 800, bottom: 600 });
-  assert.equal(rectsOverlap(shown.terminal, shown.bar), false);
-  const hidden = quickBarLayout({ width: 800, height: 600, barHeight: 42, visible: false });
-  assert.equal(hidden.terminal.bottom, 600);
-  assert.equal(rectsOverlap(hidden.terminal, hidden.bar), false);
-  const adjacentPane = { left: 800, top: 0, right: 1200, bottom: 600 };
-  assert.equal(rectsOverlap(shown.bar, adjacentPane), false);
 });
 
 test('shQuote leaves safe paths bare and single-quotes the rest', () => {
@@ -294,40 +282,6 @@ test('sidebar groups follow durable board/card order regardless of runtime statu
   const moved = sidebarGroups(project, cards);
   assert.deepEqual(moved.map(g => [g.column.id, g.count]), [['working', 3], ['attention', 2]]);
   assert.deepEqual(moved[1].sessions.map(c => c.id), ['a', 'b']);
-});
-
-test('delete transaction keeps all cards on partial kill or board-save failure', async () => {
-  const cards = [{ id: 'a' }, { id: 'b' }];
-  let commits = 0;
-  let persisted = 0;
-  const partial = await deleteSessionsTransaction(cards, {
-    cancel: async () => true,
-    kill: async c => { if (c.id === 'b') throw new Error('kill refused'); },
-    persist: async () => { persisted++; },
-    commit: () => { commits++; },
-  });
-  assert.equal(partial.stage, 'kill');
-  assert.deepEqual(partial.failed.map(x => x.card.id), ['b']);
-  assert.equal(persisted, 0);
-  assert.equal(commits, 0);
-
-  const saveFail = await deleteSessionsTransaction(cards, {
-    cancel: async () => true,
-    kill: async () => {}, // already-missing sessions are idempotent success
-    persist: async () => { throw new Error('disk full'); },
-    commit: () => { commits++; },
-  });
-  assert.equal(saveFail.stage, 'persist');
-  assert.equal(commits, 0);
-
-  const retry = await deleteSessionsTransaction(cards, {
-    cancel: async () => true,
-    kill: async () => {},
-    persist: async () => { persisted++; },
-    commit: () => { commits++; },
-  });
-  assert.equal(retry.ok, true);
-  assert.equal(commits, 1, 'only the successful retry commits deletion');
 });
 
 function boardHarness({ failWrites = 0 } = {}) {
@@ -1042,26 +996,12 @@ test('a link token and a link carry exactly their documented keys', () => {
   }, 'and it is carried through verbatim when there is one');
 });
 
-test('rename Enter/Escape/empty semantics and persistence rollback are deterministic', async () => {
+test('rename Enter/Escape/empty semantics are deterministic', () => {
   assert.equal(inlineRenameValue('old', ' new ', true), 'new');
   assert.equal(inlineRenameValue('old', 'old', true), null);
   assert.equal(inlineRenameValue('old', '   ', true), null, 'empty cannot overwrite title');
   assert.equal(inlineRenameValue('old', 'new', false), null, 'Escape cancels');
   assert.equal(inlineRenameValue('old', '   ', true, true), '', 'descriptions may opt into empty');
-
-  let value = 'old';
-  const failed = await persistOptimistically({
-    apply: () => { value = 'new'; },
-    persist: async () => { throw new Error('disk full'); },
-    rollback: () => { value = 'old'; },
-  });
-  assert.equal(failed, false);
-  assert.equal(value, 'old', 'persistence failure restores the visible title');
-  const ok = await persistOptimistically({
-    apply: () => { value = 'new'; }, persist: async () => {}, rollback: () => { value = 'old'; },
-  });
-  assert.equal(ok, true);
-  assert.equal(value, 'new');
 });
 
 test('a template step keeps its lines and its name stays usable by an inbound rule', () => {

@@ -30,24 +30,6 @@ export const fmtEvery = s => s % 3600 === 0 ? (s / 3600) + ' h' : (s / 60) + ' m
 export const minToHM = m => String(Math.floor(m / 60)).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0');
 export const hmToMin = t => { const [h, m] = t.split(':').map(Number); return h * 60 + m; };
 
-/* ---------- completion bar layout ----------
-   The bar owns a real flex row inside the focused pane. This returns the two
-   non-overlapping rectangles used by layout/tests; no shell cell can ever be
-   under the bar because xterm is fitted only into `terminal`. */
-export function quickBarLayout({ width, height, barHeight, visible }) {
-  const w = Math.max(0, Number(width) || 0);
-  const h = Math.max(0, Number(height) || 0);
-  const bh = visible ? Math.min(h, Math.max(0, Number(barHeight) || 0)) : 0;
-  return {
-    terminal: { left: 0, top: 0, right: w, bottom: h - bh },
-    bar: { left: 0, top: h - bh, right: w, bottom: h },
-  };
-}
-
-export function rectsOverlap(a, b) {
-  return a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
-}
-
 /* ---------- daily windows ---------- */
 export const winHas = (m, f, t) => f < t ? (m >= f && m < t) : (m >= f || m < t);
 export const hasWindow = i => i.win_from != null && i.win_to != null && i.win_from !== i.win_to;
@@ -279,26 +261,6 @@ export function ruleByOrigin(rules, origin) {
    badge to ONE rule, so a second rule for it would never fire */
 export const badgeTaken = (rules, badge, exceptId = null) => (Array.isArray(rules) ? rules : [])
   .some(r => r && r.source === 'slack' && r.badge === badge && r.id !== exceptId);
-
-/* ---------- board deletion transaction ---------- */
-/**
- * Run the irreversible parts of deleting cards, but call commit only after
- * every kill and the candidate board save succeeded. Keeping this orchestration
- * DOM-free makes the partial-failure contract executable in Node tests.
- */
-export async function deleteSessionsTransaction(cards, { cancel, kill, persist, commit }) {
-  if (!(await cancel(cards))) return { ok: false, stage: 'cancel', failed: [] };
-  const failed = [];
-  for (const card of cards) {
-    try { await kill(card); }
-    catch (error) { failed.push({ card, error }); }
-  }
-  if (failed.length) return { ok: false, stage: 'kill', failed };
-  try { await persist(); }
-  catch (error) { return { ok: false, stage: 'persist', failed: [], error }; }
-  commit();
-  return { ok: true, stage: 'commit', failed: [] };
-}
 
 /* ---------- serialized board transactions ---------- */
 const cloneJson = value => JSON.parse(JSON.stringify(value));
@@ -837,17 +799,6 @@ export function inlineRenameValue(current, input, commit, allowEmpty = false) {
   const value = String(input).trim();
   if (!value && !allowEmpty) return null;
   return value === current ? null : value;
-}
-
-export async function persistOptimistically({ apply, persist, rollback }) {
-  apply();
-  try {
-    await persist();
-    return true;
-  } catch (error) {
-    rollback(error);
-    return false;
-  }
 }
 
 /* ---------- automations dispatch (inbound): pure decisions, no DOM, no Tauri ---------- */
