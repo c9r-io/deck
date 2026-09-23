@@ -19,9 +19,20 @@
 //! home (resolved with `getpwuid_r`, never `$HOME`) or one of its ancestors,
 //! and no component of the root may be an excluded name. It is enforced when a
 //! root is authorized and again on every open, so a root stored by an older
-//! build is refused rather than silently narrowed. The root's device/inode
-//! are not recorded at authorization (the stored scope is a path string); a
-//! replaced root parent is followed, which is a documented residual.
+//! build is refused rather than silently narrowed. The stored scope is a
+//! canonical path string, so `open_root` walks it from `/` one component at a
+//! time with `O_NOFOLLOW | O_DIRECTORY`: a root or any ancestor replaced by a
+//! symbolic link is refused, never followed. The device/inode are not
+//! recorded (that would need a persisted grant schema change or a per-process
+//! pin that refuses a legitimately recreated checkout); a real directory
+//! renamed into the root's path is read as the root, which is what a
+//! path-scoped grant names.
+//!
+//! Listing (`read_directory`) never opens an entry: metadata comes from
+//! `fstatat(AT_SYMLINK_NOFOLLOW)`, so a FIFO's blocked writer is not released
+//! and a device is not touched; symbolic links are left out. Only the
+//! `limit` smallest allowed names are retained while reading, and a caller
+//! control is consulted during long directory reads.
 //!
 //! Errors carry a closed `FsErrorKind` so callers can tell argument errors,
 //! denials (including absent paths — absence is not distinguished from
@@ -275,26 +286,36 @@ fn cstring(value: &OsStr) -> Result<CString, FsError> {
     CString::new(value.as_bytes()).map_err(|_| invalid("path contains a NUL byte"))
 }
 
+/// Walks the canonical root one component at a time from `/`, each with
+/// `openat(O_NOFOLLOW | O_DIRECTORY)`, so a root or any ancestor that was
+/// replaced by a symbolic link is refused instead of followed.
 fn open_root(root: &Path) -> Result<OwnedFd, FsError> {
     root_policy(root)?;
-    let value = cstring(root.as_os_str())?;
-    // SAFETY: value is NUL terminated and the returned descriptor is owned.
-    let fd = unsafe {
-        libc::open(
-            value.as_ptr(),
-            libc::O_RDONLY
-                | libc::O_DIRECTORY
-                | libc::O_CLOEXEC
-                | libc::O_NOFOLLOW
-                | libc::O_NONBLOCK,
-        )
-    };
+    let replaced = || denied("authorized root is unavailable or was replaced");
+    let flags = libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW;
+    // SAFETY: the literal is NUL terminated and the descriptor is owned below.
+    let fd = unsafe { libc::open(c"/".as_ptr(), flags) };
     if fd < 0 {
-        Err(denied("authorized root is unavailable or was replaced"))
-    } else {
-        // SAFETY: open returned a new descriptor.
-        Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+        return Err(replaced());
     }
+    // SAFETY: open returned a new descriptor.
+    let mut current = unsafe { OwnedFd::from_raw_fd(fd) };
+    for component in root.components() {
+        let name = match component {
+            Component::RootDir => continue,
+            Component::Normal(name) => cstring(name)?,
+            _ => return Err(replaced()),
+        };
+        // SAFETY: current is live and name is NUL terminated.
+        let fd =
+            unsafe { libc::openat(current.as_raw_fd(), name.as_ptr(), flags | libc::O_NONBLOCK) };
+        if fd < 0 {
+            return Err(replaced());
+        }
+        // SAFETY: openat returned a new descriptor.
+        current = unsafe { OwnedFd::from_raw_fd(fd) };
+    }
+    Ok(current)
 }
 
 /// Opens `relative` below `root` without blocking and without following
@@ -441,11 +462,14 @@ pub(crate) fn identity(root: &Path, relative: &str) -> Result<FileVersion, FsErr
 }
 
 /// Reads up to `limit` allowed entries (sorted by name, so truncation is
-/// deterministic) and reports whether more allowed entries existed.
+/// deterministic) and reports whether more allowed entries existed. `stop`
+/// is consulted every 256 directory entries; when it returns true the
+/// listing ends early and is reported as truncated.
 fn read_directory(
     root: &Path,
     relative: &str,
     limit: usize,
+    stop: &mut dyn FnMut() -> bool,
 ) -> Result<(Vec<Entry>, FileVersion, bool), FsError> {
     let fd = open_relative(root, relative)?;
     let metadata = stat(&fd)?;
@@ -467,8 +491,20 @@ fn read_directory(
         unsafe { libc::close(duplicate) };
         return Err(denied("directory could not be read"));
     }
-    let mut names = Vec::new();
+    // Only the `limit` smallest names are kept (a max-heap evicts the largest),
+    // so memory stays bounded however large the directory is while the
+    // result is still the deterministic sorted prefix.
+    let mut names = std::collections::BinaryHeap::with_capacity(limit + 1);
+    let mut truncated = false;
+    let mut seen = 0usize;
     loop {
+        seen += 1;
+        if seen.is_multiple_of(256) && stop() {
+            // Partial: report it as truncated; the caller's own control check
+            // then ends the search with its reason.
+            truncated = true;
+            break;
+        }
         let item = unsafe { libc::readdir(directory) };
         if item.is_null() {
             break;
@@ -478,32 +514,38 @@ fn read_directory(
             continue;
         }
         names.push(name.to_vec());
+        if names.len() > limit {
+            names.pop();
+            truncated = true;
+        }
     }
     unsafe { libc::closedir(directory) };
-    names.sort();
-    let truncated = names.len() > limit;
-    names.truncate(limit);
+    let names = names.into_sorted_vec();
     let mut entries = Vec::with_capacity(names.len());
     for name in names {
         let name_os = OsStr::from_bytes(&name);
         let value = cstring(name_os)?;
-        // SAFETY: fd is live and value is NUL terminated.
-        let child = unsafe {
-            libc::openat(
+        // Metadata comes from `fstatat` without following links: opening an
+        // entry just to stat it would release a writer blocked on a FIFO or
+        // wake a device. Links and entries that vanished are left out.
+        // SAFETY: zero is valid initialization for stat; fd is live and
+        // value is NUL terminated.
+        let mut child_stat: libc::stat = unsafe { std::mem::zeroed() };
+        if unsafe {
+            libc::fstatat(
                 fd.as_raw_fd(),
                 value.as_ptr(),
-                libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK,
+                &mut child_stat,
+                libc::AT_SYMLINK_NOFOLLOW,
             )
-        };
-        if child < 0 {
+        } != 0
+        {
             continue;
         }
-        // SAFETY: openat returned a new descriptor.
-        let child = unsafe { OwnedFd::from_raw_fd(child) };
-        let child_stat = stat(&child)?;
         let kind = match child_stat.st_mode & libc::S_IFMT {
             libc::S_IFREG => "file",
             libc::S_IFDIR => "directory",
+            libc::S_IFLNK => continue,
             _ => "excluded-special",
         };
         entries.push(Entry {
@@ -516,7 +558,8 @@ fn read_directory(
 }
 
 pub(crate) fn list(root: &Path, relative: &str) -> Result<Listing, FsError> {
-    let (entries, version, truncated) = read_directory(root, relative, MAX_LIST_ENTRIES)?;
+    let (entries, version, truncated) =
+        read_directory(root, relative, MAX_LIST_ENTRIES, &mut || false)?;
     Ok(Listing {
         entries,
         version,
@@ -587,7 +630,9 @@ pub(crate) fn search_controlled(
                 }
             }
             let Ok((entries, _, truncated)) =
-                read_directory(root, &directory, MAX_SEARCH_DIRECTORY_ENTRIES)
+                read_directory(root, &directory, MAX_SEARCH_DIRECTORY_ENTRIES, &mut || {
+                    !matches!(control(), SearchControl::Continue)
+                })
             else {
                 skipped += 1;
                 continue;
@@ -658,7 +703,9 @@ mod tests {
 
     #[test]
     fn descriptor_reads_reject_links_special_files_and_sensitive_names() {
-        let root = std::env::temp_dir().join(format!("deck-mcp-fs-{}", std::process::id()));
+        let root = std::fs::canonicalize(std::env::temp_dir())
+            .unwrap()
+            .join(format!("deck-mcp-fs-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("src")).unwrap();
         std::fs::write(root.join("src/lib.rs"), "fn bounded() {}\n").unwrap();
@@ -680,11 +727,13 @@ mod tests {
     }
 
     fn fixture(tag: &str) -> std::path::PathBuf {
-        let root = std::env::temp_dir().join(format!(
-            "deck-mcp-fs-{tag}-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
+        let root = std::fs::canonicalize(std::env::temp_dir())
+            .unwrap()
+            .join(format!(
+                "deck-mcp-fs-{tag}-{}-{:?}",
+                std::process::id(),
+                std::thread::current().id()
+            ));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         root
@@ -717,6 +766,19 @@ mod tests {
         assert_eq!(outcome.matches[0].line, 701);
         assert!(outcome.complete);
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_root_below_a_symlinked_ancestor_is_refused() {
+        let base = fixture("linked-ancestor");
+        std::fs::create_dir_all(base.join("real/project")).unwrap();
+        std::fs::write(base.join("real/project/a.txt"), "a\n").unwrap();
+        std::os::unix::fs::symlink(base.join("real"), base.join("link")).unwrap();
+        assert!(list(&base.join("real/project"), "").is_ok());
+        let error = list(&base.join("link/project"), "").unwrap_err();
+        assert_eq!(error.kind, FsErrorKind::Denied);
+        assert!(read(&base.join("link/project"), "a.txt", 0, 64).is_err());
+        std::fs::remove_dir_all(base).unwrap();
     }
 
     #[test]
@@ -974,8 +1036,9 @@ mod tests {
 
     #[test]
     fn controlled_search_reports_deadline_and_cancellation() {
-        let root =
-            std::env::temp_dir().join(format!("deck-mcp-fs-deadline-{}", std::process::id()));
+        let root = std::fs::canonicalize(std::env::temp_dir())
+            .unwrap()
+            .join(format!("deck-mcp-fs-deadline-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir(&root).unwrap();
         std::fs::write(root.join("one.rs"), "needle\n").unwrap();

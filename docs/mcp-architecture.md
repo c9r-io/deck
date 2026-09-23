@@ -17,8 +17,11 @@ The adapter owns only MCP framing, strict schemas, annotations, and conversion
 to structured results. Deck owns feature enablement, client and project scope,
 Board operations, idempotency, control epochs, generations, and the job
 ledger. `mcp_fs.rs` owns descriptor-relative structured reads without child
-processes: non-blocking `O_NOFOLLOW` opens with a type check on the same
-descriptor, one name policy shared by list/read/identity/search, and a root
+processes: the root is walked from `/` one `O_NOFOLLOW` directory component
+at a time (a root or ancestor replaced by a symlink is refused), entries are
+non-blocking `O_NOFOLLOW` opens with a type check on the same descriptor,
+listings take metadata with `fstatat(AT_SYMLINK_NOFOLLOW)` instead of opening
+entries and keep only the bounded sorted prefix, one name policy shared by list/read/identity/search, and a root
 policy that refuses `/`, the account home and its ancestors, and excluded
 directories. That policy governs structured reads only; it is not file
 isolation for trusted-host jobs. The runner owns one visible session's actual processes, bounded output,
@@ -127,7 +130,11 @@ policy version and expiry; an exec request never creates a grant or advances
 the runner epoch. A missing barrier acknowledgement is reported as uncertain
 even though the in-process admission gate is already closed. Runner
 connections are switched to blocking I/O with 5-second timeouts and capped at
-16; the control socket likewise has timeouts and a cap of 32.
+16; a connection whose kernel-reported peer PID is not the launching Deck is
+closed at accept, before it takes a slot, so a same-uid job cannot starve
+Deck's `control`/`stop` requests. The control socket is capped at 32 and each
+connection's whole request must arrive within 500ms, so idle same-uid peers
+release their slots quickly.
 
 ### Runner control authentication
 

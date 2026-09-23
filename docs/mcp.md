@@ -253,7 +253,10 @@ reasons.
   Each read is at most 16 KiB;
   each job retains 1 MiB. A cursor is bound to the job and generation. Gaps and
   dropped byte counts are explicit. stdout/stderr are `pty_combined`.
-- Execution timeout requests SIGINT. `interrupt_requested` is not an exit.
+- Execution timeout escalates SIGINT → SIGTERM → SIGKILL against the job's
+  process group (about one second each, as a close does); `timeoutRequested`
+  stays set and `terminationSignal` reports the signal that ended it.
+  `interrupt_requested` is not an exit.
 - The job's own process group is the unit of control. Closing the card first
   asks the runner to stop it (SIGINT → SIGTERM → SIGKILL, about one second
   each), and the runner SIGKILLs live job groups if tmux kills the pane.
@@ -321,7 +324,9 @@ readable), `*.pem`/`*.p12`/`*.pfx`/`*.key`, Terraform state, `.config/gh`,
 `.config/gcloud`, `.codex/auth.json` and real `.env` names; `.env.example` and
 `.env.sample` remain readable. Names compare case-insensitively, including the
 non-ASCII spellings APFS folds to ASCII, and dot-file names with other
-non-ASCII characters are refused. An authorized root may not be `/`, the
+non-ASCII characters are refused. The authorized root is reopened one
+no-follow directory component at a time from `/`, so a root or parent swapped
+for a symlink is refused. An authorized root may not be `/`, the
 account home or one of its parents, or lie inside an excluded directory; a
 root stored by an older build that violates this is refused on every read and
 must be re-authorized. This is a defense-in-depth name policy for structured

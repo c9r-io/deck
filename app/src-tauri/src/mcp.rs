@@ -15,7 +15,8 @@
 //! `mcp_enable` wakes it instead of polling the socket path, and while
 //! enabled it blocks in `poll(2)` on the listener (1s lifecycle recheck), never
 //! a short sleep loop. Accepted streams are switched back to blocking I/O
-//! before their timeouts are set. The thin
+//! before their timeouts are set, and the whole request must arrive within
+//! 500ms (`REQUEST_DEADLINE`), so idle peers cannot hold the slots. The thin
 //! `deck-mcp` sidecar maps an absent control socket to `FEATURE_DISABLED`; when connected, the service
 //! also answers `FEATURE_DISABLED` if a disable races the request. The sidecar provides MCP
 //! STDIO and never receives a Phone token or unrestricted backend credential.
@@ -130,6 +131,10 @@ const MAX_JOBS: usize = MAX_SESSIONS * MAX_JOBS_PER_SESSION;
 const MAX_GRANTS: usize = MAX_SESSIONS + MAX_JOBS;
 const MAX_CONNECTIONS: usize = 32;
 const CONNECTION_TIMEOUT: Duration = Duration::from_secs(5);
+/// The whole first request must arrive within this of the connection being
+/// served (the adapter writes it at once), so idle same-uid peers release
+/// their connection slot quickly instead of holding it for the read timeout.
+const REQUEST_DEADLINE: Duration = Duration::from_millis(500);
 const MAX_AUDIT_EVENTS: usize = 2_000;
 const AUDIT_RETENTION_MS: u64 = 30 * 24 * 60 * 60_000;
 const MAX_EXECUTABLE_BYTES: usize = 4 * 1024;
@@ -3654,6 +3659,36 @@ fn wait_for_connection(listener: &UnixListener) {
     unsafe { libc::poll(&mut fd, 1, ENABLED_RECHECK.as_millis() as libc::c_int) };
 }
 
+/// One newline-terminated request of at most `MAX_REQUEST_BYTES`, complete
+/// within `REQUEST_DEADLINE`. Each read waits only for the time that is left,
+/// so a peer trickling bytes cannot extend the deadline.
+fn read_request_line(stream: &mut UnixStream) -> Option<Vec<u8>> {
+    let deadline = Instant::now() + REQUEST_DEADLINE;
+    let mut line = Vec::new();
+    let mut buffer = [0u8; 8192];
+    loop {
+        let remaining = deadline
+            .checked_duration_since(Instant::now())
+            .filter(|left| !left.is_zero())?;
+        stream.set_read_timeout(Some(remaining)).ok()?;
+        let count = match stream.read(&mut buffer) {
+            Ok(0) => return None,
+            Ok(count) => count,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => return None,
+        };
+        let chunk = &buffer[..count];
+        if let Some(end) = chunk.iter().position(|byte| *byte == b'\n') {
+            line.extend_from_slice(&chunk[..=end]);
+            return (line.len() <= MAX_REQUEST_BYTES).then_some(line);
+        }
+        line.extend_from_slice(chunk);
+        if line.len() > MAX_REQUEST_BYTES {
+            return None;
+        }
+    }
+}
+
 fn handle_connection(runtime: Arc<Runtime>, mut stream: UnixStream) {
     if !same_uid(&stream) {
         return;
@@ -3661,43 +3696,28 @@ fn handle_connection(runtime: Arc<Runtime>, mut stream: UnixStream) {
     // macOS hands the listener's O_NONBLOCK to accepted sockets; without
     // switching back, the timeouts below are inert and any request or
     // response larger than one socket buffer fails with WouldBlock.
-    // A same-uid peer that connects and never sends a full request cannot pin
-    // a thread forever; neither can one that never reads its response.
+    // A same-uid peer that connects and never sends a full request holds its
+    // slot for at most `REQUEST_DEADLINE`; one that never reads its response
+    // is bounded by the write timeout.
     if stream.set_nonblocking(false).is_err()
-        || stream.set_read_timeout(Some(CONNECTION_TIMEOUT)).is_err()
         || stream.set_write_timeout(Some(CONNECTION_TIMEOUT)).is_err()
     {
         return;
     }
-    let cloned = stream.try_clone();
-    let response = match cloned {
-        Ok(cloned) => {
-            let mut line = Vec::new();
-            match BufReader::new(cloned.take((MAX_REQUEST_BYTES + 1) as u64))
-                .read_until(b'\n', &mut line)
-            {
-                Ok(size) if size > 0 && size <= MAX_REQUEST_BYTES && line.ends_with(b"\n") => {
-                    serde_json::from_slice::<WireRequest>(&line)
-                        .map(|request| route(&runtime, request))
-                        .unwrap_or_else(|_| {
-                            error_value(
-                                "INVALID_ARGUMENTS",
-                                "invalid local control request",
-                                "Use the bundled deck-mcp adapter.",
-                            )
-                        })
-                }
-                _ => error_value(
+    let response = match read_request_line(&mut stream) {
+        Some(line) => serde_json::from_slice::<WireRequest>(&line)
+            .map(|request| route(&runtime, request))
+            .unwrap_or_else(|_| {
+                error_value(
                     "INVALID_ARGUMENTS",
                     "invalid local control request",
                     "Use the bundled deck-mcp adapter.",
-                ),
-            }
-        }
-        Err(_) => error_value(
-            "INTERNAL_ERROR",
-            "control connection failed",
-            "Reconnect the adapter.",
+                )
+            }),
+        None => error_value(
+            "INVALID_ARGUMENTS",
+            "invalid local control request",
+            "Use the bundled deck-mcp adapter.",
         ),
     };
     if let Ok(mut bytes) = serde_json::to_vec(&response) {
@@ -5792,7 +5812,8 @@ mod tests {
             allow_create: true,
             projects: vec![ProjectScope {
                 project_id: "P1".into(),
-                roots: vec![root.display().to_string()],
+                // Authorized roots are canonical (`/var` is a link on macOS).
+                roots: vec![std::fs::canonicalize(root).unwrap().display().to_string()],
             }],
             create_sequence: 0,
         }
@@ -9294,5 +9315,21 @@ mod tests {
         drop(runner);
         std::fs::remove_dir_all(root_b).unwrap();
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn control_request_must_arrive_complete_within_the_deadline() {
+        let (mut idle, _peer) = UnixStream::pair().unwrap();
+        let started = Instant::now();
+        assert!(read_request_line(&mut idle).is_none());
+        assert!(started.elapsed() < CONNECTION_TIMEOUT);
+
+        let (mut served, mut client) = UnixStream::pair().unwrap();
+        client.write_all(b"{\"a\":1}\n").unwrap();
+        assert_eq!(read_request_line(&mut served).unwrap(), b"{\"a\":1}\n");
+
+        let (mut partial, mut client) = UnixStream::pair().unwrap();
+        client.write_all(b"{\"a\":").unwrap();
+        assert!(read_request_line(&mut partial).is_none());
     }
 }

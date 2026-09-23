@@ -23,12 +23,18 @@
 //! kill-session) and SIGTERM make the runner `killpg(SIGKILL)` every live job
 //! group before exiting. The `stop` request (sent by Deck before a close)
 //! escalates SIGINT → SIGTERM → SIGKILL with bounded waits and reports whether
-//! every job leader was reaped. Jobs start with default dispositions and an
+//! every job leader was reaped; an expired execution timeout applies the same
+//! escalation to its one job group. Jobs start with default dispositions and an
 //! empty signal mask. These guarantees cover only jobs that stay in their
 //! process group: a descendant that calls setsid/setpgid, or a group member
 //! that outlives the leader, is outside the runner's reach (trusted-host is
 //! not an OS sandbox). A job stopped by SIGTTIN/SIGTTOU (it touched the tty
 //! from the background) is reported as `stopped`, never as `running`.
+//!
+//! Connections: the accept loop closes every peer whose kernel-reported PID
+//! is not the launching Deck process before it takes one of the bounded
+//! connection slots, so a same-uid job cannot hold the slots and starve
+//! Deck's `control`/`stop` requests. Deck is the runner's only client.
 //!
 //! Authentication: every runner generates an independent 256-bit random key
 //! in memory. The Deck process whose PID was fixed at launch may retrieve it
@@ -877,16 +883,43 @@ fn spawn_job(
             let Some(job) = inner.jobs.get_mut(&timed_id) else {
                 return;
             };
-            let Some(pid) = job.pid else {
+            if job.pid.is_none() {
                 return;
-            };
+            }
             job.timeout_requested = true;
-            job.interrupt_requested = true;
-            // SAFETY: `pid` is unreaped while the lock is held.
-            unsafe { libc::killpg(pid, libc::SIGINT) };
+            escalate_job(&timed, inner, &timed_id);
         });
     }
     Ok(())
+}
+
+/// The execution timeout: the same SIGINT → SIGTERM → SIGKILL escalation and
+/// `STOP_STEP` waits as `stop`, for one job group. Each step is skipped once
+/// the leader has been reaped, so a job that honours SIGINT sees only that.
+fn escalate_job(shared: &Arc<Shared>, mut inner: MutexGuard<'_, Inner>, job_id: &str) {
+    for signal in [libc::SIGINT, libc::SIGTERM, libc::SIGKILL] {
+        let Some(job) = inner.jobs.get_mut(job_id) else {
+            return;
+        };
+        let Some(pid) = job.pid else {
+            return;
+        };
+        job.interrupt_requested = true;
+        let stopped = job.state == JobState::Stopped;
+        // SAFETY: `pid` is unreaped while the lock is held.
+        unsafe { libc::killpg(pid, signal) };
+        if signal != libc::SIGKILL && stopped {
+            // A stopped group cannot act on INT/TERM until continued.
+            unsafe { libc::killpg(pid, libc::SIGCONT) };
+        }
+        inner = shared
+            .changed
+            .wait_timeout_while(inner, STOP_STEP, |state| {
+                state.jobs.get(job_id).is_some_and(|job| job.pid.is_some())
+            })
+            .unwrap_or_else(|error| error.into_inner())
+            .0;
+    }
 }
 
 /// Follow one job leader until it is reaped. Stop/continue events update the
@@ -2118,6 +2151,14 @@ fn main() {
     loop {
         match listener.accept() {
             Ok((stream, _)) => {
+                // Only the launching Deck process is a control client. Any
+                // other peer (for example a same-uid job of this pane) is
+                // closed before it can occupy a connection slot, so it can
+                // never starve Deck's `control`/`stop` requests.
+                if peer_pid(&stream) != Some(shared.deck_pid) {
+                    drop(stream);
+                    continue;
+                }
                 // Bounded concurrency: excess connections are closed at once.
                 if shared.connections.fetch_add(1, Ordering::SeqCst) >= MAX_CONNECTIONS {
                     shared.connections.fetch_sub(1, Ordering::SeqCst);

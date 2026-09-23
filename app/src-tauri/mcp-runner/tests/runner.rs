@@ -496,3 +496,61 @@ fn a_restarted_deck_is_reported_stale_but_can_still_stop() {
     );
     std::fs::remove_dir_all(&root).unwrap();
 }
+
+#[test]
+fn execution_timeout_escalates_past_an_ignored_interrupt() {
+    let (_runner, socket, root) = start_runner("timeout");
+    let script = format!(
+        "print $$ > {}; trap '' INT TERM; sleep 600",
+        root.join("job.pid").display()
+    );
+    let started = call(
+        &socket,
+        json!({"kind":"exec","job_id":"job_timeout","request_hash":"hash_timeout","executable":"/bin/zsh","args":["-c",script],"cwd":root,"wait_ms":0,"timeout_ms":200,"context":context('e')}),
+    );
+    assert_eq!(started["ok"], true, "{started}");
+    let pid = job_pid(&root);
+    assert!(
+        wait_gone(pid),
+        "timeout did not end a job ignoring INT/TERM"
+    );
+    let limit = Instant::now() + Duration::from_secs(3);
+    let done = loop {
+        let value = call(
+            &socket,
+            json!({"kind":"read","job_id":"job_timeout","cursor":0,"max_bytes":16,"wait_ms":100}),
+        );
+        if value["job"]["state"] == "exited" {
+            break value;
+        }
+        assert!(Instant::now() < limit, "job was not reaped: {value}");
+    };
+    assert_eq!(done["job"]["timeoutRequested"], true);
+    assert_eq!(done["job"]["terminationSignal"], libc::SIGKILL);
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn other_processes_cannot_starve_the_deck_connection_slots() {
+    let (_runner, socket, root) = start_runner("starve");
+    // More idle peers from other processes than the runner has slots.
+    let idle: Vec<_> = (0..20)
+        .map(|_| {
+            Runner(
+                Command::new("/usr/bin/nc")
+                    .args(["-U", socket.to_str().unwrap()])
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .spawn()
+                    .unwrap(),
+            )
+        })
+        .collect();
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(call(&socket, json!({"kind":"ping"}))["ok"], true);
+    let stopped = call(&socket, json!({"kind":"stop","generation":"g_test"}));
+    assert_eq!(stopped["ok"], true, "{stopped}");
+    drop(idle);
+    std::fs::remove_dir_all(&root).unwrap();
+}
