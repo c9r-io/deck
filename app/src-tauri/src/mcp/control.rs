@@ -361,7 +361,7 @@ pub(crate) fn spawn(app: AppHandle) {
         io: Mutex::new(()),
         delivery: Mutex::new(()),
         emergency: Mutex::new(EmergencyFences::default()),
-        service_instance: random_id("svc_").unwrap_or_else(|_| "svc_unavailable".into()),
+        service_instance: random_id("svc_", 16).unwrap_or_else(|_| "svc_unavailable".into()),
         runner_auth: Mutex::new(HashMap::new()),
         started: Instant::now(),
     });

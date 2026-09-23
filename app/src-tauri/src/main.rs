@@ -23,6 +23,7 @@ mod inbound_slack;
 mod instance_lock;
 mod keychain;
 mod launch_args;
+mod ledger;
 mod links;
 mod mcp;
 mod mcp_fs;

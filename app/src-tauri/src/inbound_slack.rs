@@ -20,10 +20,11 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 use tauri::AppHandle;
 
 use crate::applog::applog;
+use crate::datadir::now_epoch as now_secs;
 use crate::inbound::{self, Config, Event, Source, SourceStatus};
 use crate::keychain::{self, Slot};
 use crate::sync::LockRecover;
@@ -141,13 +142,6 @@ pub(crate) fn encode(s: &str) -> String {
         }
     }
     out
-}
-
-fn now_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
 }
 
 /// `YYYY-MM-DD` for Slack's `after:` modifier, `days` back from now (UTC).

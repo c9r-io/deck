@@ -86,10 +86,8 @@
 //! Limits and the small helpers below are shared by all of them.
 
 use base64::Engine;
-use ring::rand::{SecureRandom, SystemRandom};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::fs::PermissionsExt;
@@ -100,6 +98,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter};
 
 use crate::error::{DeckError, ErrorKind};
+use crate::ledger::{random_id, sha};
 use crate::sync::LockRecover;
 
 mod commands;
@@ -197,10 +196,6 @@ fn now_ms() -> u64 {
     wall
 }
 
-fn sha(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
-}
-
 fn secret_hash_matches(expected: &str, actual: &str) -> bool {
     if expected.len() != actual.len() {
         return false;
@@ -210,20 +205,6 @@ fn secret_hash_matches(expected: &str, actual: &str) -> bool {
         .zip(actual.bytes())
         .fold(0u8, |difference, (left, right)| difference | (left ^ right))
         == 0
-}
-
-fn random_id(prefix: &str) -> Result<String, DeckError> {
-    let mut bytes = [0u8; 16];
-    SystemRandom::new()
-        .fill(&mut bytes)
-        .map_err(|_| DeckError::new(ErrorKind::Other, "secure random unavailable"))?;
-    Ok(format!(
-        "{prefix}{}",
-        bytes
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>()
-    ))
 }
 
 fn valid_id(value: &str) -> bool {

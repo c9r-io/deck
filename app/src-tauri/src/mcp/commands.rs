@@ -278,8 +278,8 @@ pub(crate) fn mcp_client_add(
     let scopes = validate_new_client_scopes(projects, enforce_projects, |project_id| {
         crate::documents::board_project_exists(project_id)
     })?;
-    let client_id = random_id("client_")?;
-    let credential = random_id("mcp_")?;
+    let client_id = random_id("client_", 16)?;
+    let credential = random_id("mcp_", 16)?;
     if runtime.app.is_some() {
         crate::keychain::set_mcp_credential(&client_id, &credential)?;
     }
@@ -576,7 +576,7 @@ pub(super) fn execution_grant(
             }
             let granted_session_id = session.session_id.clone();
             let principal_id = session.owner_client_id.clone();
-            let grant_id = random_id("grant_")?;
+            let grant_id = random_id("grant_", 16)?;
             // Bounded by construction: superseded, closed-session and
             // earlier-process grants are retired before a new one is added,
             // so a later write (a takeover) can never fail validation.
@@ -916,7 +916,7 @@ pub(super) fn close_admit(
             return Err(error);
         }
     }
-    let admission = random_id("close_")?;
+    let admission = random_id("close_", 16)?;
     let admission_hash = sha(admission.as_bytes());
     runtime.write(|doc| {
         if !doc.config.enabled {

@@ -216,7 +216,7 @@ pub(super) fn audit(doc: &mut DiskDoc, kind: &str, link: AuditLink<'_>) -> Resul
         doc.audit.remove(0);
     }
     doc.audit.push(AuditEvent {
-        event_id: random_id("audit_")?,
+        event_id: random_id("audit_", 16)?,
         at: now_ms(),
         kind: kind.into(),
         principal_id: link.principal_id.map(str::to_owned),
@@ -304,31 +304,10 @@ pub(super) fn emit_changed(runtime: &Runtime) {
 pub(super) static RUNTIME: OnceLock<Arc<Runtime>> = OnceLock::new();
 
 pub(super) fn load(path: &Path) -> Result<DiskDoc, DeckError> {
-    let mut bytes = Vec::new();
-    match std::fs::File::open(path) {
-        Ok(file) => {
-            file.take((MAX_STATE_BYTES + 1) as u64)
-                .read_to_end(&mut bytes)
-                .map_err(|error| {
-                    DeckError::new(ErrorKind::io(error.kind()), "MCP state could not be read")
-                })?;
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(DiskDoc::default()),
-        Err(error) => {
-            return Err(DeckError::new(
-                ErrorKind::io(error.kind()),
-                "MCP state could not be read",
-            ));
-        }
-    }
-    if bytes.len() > MAX_STATE_BYTES {
-        return Err(DeckError::new(
-            ErrorKind::Recovery,
-            "MCP state exceeds its bound",
-        ));
-    }
-    let mut doc: DiskDoc = serde_json::from_slice(&bytes)
-        .map_err(|_| DeckError::new(ErrorKind::Recovery, "MCP state is unreadable"))?;
+    let Some(mut doc) = crate::ledger::load_bounded::<DiskDoc>(path, MAX_STATE_BYTES, "MCP state")?
+    else {
+        return Ok(DiskDoc::default());
+    };
     if doc.version == 1 {
         // v1 clients combined project access and host execution. Preserve the
         // non-secret display records for local review, but fail closed: no old
@@ -677,15 +656,8 @@ pub(super) fn validate_doc(doc: &DiskDoc) -> Result<(), DeckError> {
 
 pub(super) fn save(path: &Path, doc: &DiskDoc) -> Result<(), DeckError> {
     validate_doc(doc)?;
-    let bytes = serde_json::to_vec(doc)
-        .map_err(|_| DeckError::new(ErrorKind::Other, "MCP state encoding failed"))?;
-    if bytes.len() > MAX_STATE_BYTES {
-        return Err(DeckError::new(
-            ErrorKind::DiskFull,
-            "MCP state capacity reached",
-        ));
-    }
-    crate::datadir::atomic_write(path, &bytes)
+    let bytes = crate::ledger::encode(doc, "MCP state")?;
+    crate::ledger::write_bounded(path, &bytes, MAX_STATE_BYTES, "MCP state")
 }
 
 impl Runtime {

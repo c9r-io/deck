@@ -94,10 +94,11 @@ use serde_json::Value;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::{Condvar, Mutex, OnceLock};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 
 use crate::applog::applog;
+use crate::datadir::now_epoch as now_secs;
 use crate::error::{DeckError, ErrorKind};
 use crate::keychain;
 use crate::storage;
@@ -591,13 +592,6 @@ fn doc_path() -> PathBuf {
         return path;
     }
     crate::datadir::deck_dir().join("inbound.json")
-}
-
-fn now_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
 }
 
 /* ---------- runtime ---------- */

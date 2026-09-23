@@ -1449,7 +1449,7 @@ fn validation_and_error_mapping_cover_rejected_boundaries() {
     assert!(!valid_title("\n"));
     assert!(!valid_title(&"x".repeat(121)));
     assert_eq!(sha(b"same"), sha(b"same"));
-    assert!(random_id("test_").unwrap().starts_with("test_"));
+    assert!(random_id("test_", 16).unwrap().starts_with("test_"));
     assert!(parse::<Empty>(json!({"extra":true})).is_err());
     assert!(runner_error(&json!({"error":"session-busy"})).is_some());
     assert!(runner_error(&json!({"error":"control-revoked"})).is_some());

@@ -45,14 +45,14 @@ use regex::{Regex, RegexBuilder};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashSet;
-use std::io::Read;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 
 use crate::applog::applog;
+use crate::datadir::now_epoch as now_secs;
 use crate::error::{DeckError, ErrorKind};
 use crate::keychain::{self, Slot};
 use crate::sync::LockRecover;
@@ -687,32 +687,8 @@ struct InboxStore {
 
 impl InboxStore {
     fn load(path: PathBuf) -> Result<Self, DeckError> {
-        let doc = match std::fs::File::open(&path) {
-            Ok(file) => {
-                let mut bytes = Vec::new();
-                file.take((MAX_FILE_BYTES + 1) as u64)
-                    .read_to_end(&mut bytes)
-                    .map_err(|e| {
-                        DeckError::new(ErrorKind::io(e.kind()), "channel inbox could not be read")
-                    })?;
-                if bytes.len() > MAX_FILE_BYTES {
-                    return Err(DeckError::new(
-                        ErrorKind::Recovery,
-                        "channel inbox exceeds its bounds",
-                    ));
-                }
-                serde_json::from_slice::<InboxDoc>(&bytes).map_err(|_| {
-                    DeckError::new(ErrorKind::Recovery, "channel inbox is unreadable")
-                })?
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => InboxDoc::default(),
-            Err(e) => {
-                return Err(DeckError::new(
-                    ErrorKind::io(e.kind()),
-                    "channel inbox could not be read",
-                ))
-            }
-        };
+        let doc = crate::ledger::load_bounded::<InboxDoc>(&path, MAX_FILE_BYTES, "channel inbox")?
+            .unwrap_or_default();
         if doc.version != FILE_VERSION {
             return Err(DeckError::new(
                 ErrorKind::NewerSchema,
@@ -950,12 +926,6 @@ fn with_store<T>(f: impl FnOnce(&mut InboxStore) -> Result<T, DeckError>) -> Res
         Ok(store) => f(store),
         Err(e) => Err(e.clone()),
     }
-}
-fn now_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
 }
 
 #[derive(Clone, Debug, Serialize)]

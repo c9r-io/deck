@@ -55,22 +55,21 @@
 mod server;
 
 use base64::Engine;
-use ring::rand::{SecureRandom, SystemRandom};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
-use std::io::Read;
 use std::net::{IpAddr, Ipv4Addr};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{SystemTime, UNIX_EPOCH};
 use subtle::ConstantTimeEq;
 use tauri::{AppHandle, Emitter, Manager};
 
+use crate::datadir::now_epoch as now;
 use crate::error::{DeckError, ErrorKind};
 use crate::keychain::{self, Slot};
+use crate::ledger::{hex, random, random_id, sha};
 use crate::scheduler::Queues;
 use crate::sync::LockRecover;
 
@@ -95,28 +94,6 @@ const PAIR_TTL: u64 = 300;
 const MAX_TEXT: usize = 32 * 1024;
 const MAX_OUTPUT_BYTES: usize = 64 * 1024;
 
-fn now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
-}
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
-}
-fn sha(bytes: &[u8]) -> String {
-    hex(&Sha256::digest(bytes))
-}
-fn random(bytes: usize) -> Result<Vec<u8>, DeckError> {
-    let mut out = vec![0; bytes];
-    SystemRandom::new()
-        .fill(&mut out)
-        .map_err(|_| DeckError::new(ErrorKind::Other, "secure random unavailable"))?;
-    Ok(out)
-}
-fn random_id(prefix: &str, bytes: usize) -> Result<String, DeckError> {
-    Ok(format!("{prefix}{}", hex(&random(bytes)?)))
-}
 fn external_state(state: &str) -> String {
     if state == "executing" {
         "accepted".into()
@@ -370,32 +347,10 @@ struct Runtime {
 static RUNTIME: OnceLock<Arc<Runtime>> = OnceLock::new();
 
 fn load(path: &Path) -> Result<DiskDoc, DeckError> {
-    let bytes = match std::fs::File::open(path) {
-        Ok(file) => {
-            let mut v = Vec::new();
-            file.take(MAX_STATE_BYTES as u64 + 1)
-                .read_to_end(&mut v)
-                .map_err(|e| {
-                    DeckError::new(ErrorKind::io(e.kind()), "connector state could not be read")
-                })?;
-            v
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return DiskDoc::fresh(),
-        Err(e) => {
-            return Err(DeckError::new(
-                ErrorKind::io(e.kind()),
-                "connector state could not be read",
-            ))
-        }
+    let Some(bytes) = crate::ledger::read_bounded(path, MAX_STATE_BYTES, "connector state")? else {
+        return DiskDoc::fresh();
     };
-    if bytes.len() > MAX_STATE_BYTES {
-        return Err(DeckError::new(
-            ErrorKind::Recovery,
-            "connector state exceeds its bounds",
-        ));
-    }
-    let mut doc: DiskDoc = serde_json::from_slice(&bytes)
-        .map_err(|_| DeckError::new(ErrorKind::Recovery, "connector state is unreadable"))?;
+    let mut doc: DiskDoc = crate::ledger::decode(&bytes, "connector state")?;
     if !(1..=VERSION).contains(&doc.version)
         || doc.devices.len() > MAX_DEVICES
         || doc.host_id.is_empty()
@@ -583,8 +538,7 @@ thread_local! {
 fn encode(doc: &DiskDoc) -> Result<Vec<u8>, DeckError> {
     #[cfg(test)]
     ENCODES.with(|count| count.set(count.get() + 1));
-    serde_json::to_vec(doc)
-        .map_err(|_| DeckError::new(ErrorKind::Other, "connector state encoding failed"))
+    crate::ledger::encode(doc, "connector state")
 }
 
 fn save(path: &Path, doc: &DiskDoc) -> Result<(), DeckError> {
@@ -596,13 +550,13 @@ fn save(path: &Path, doc: &DiskDoc) -> Result<(), DeckError> {
 /// unique temp file, file fsync, rename, parent-directory fsync.
 fn persist(path: &Path, doc: &DiskDoc, admission: bool) -> Result<(), DeckError> {
     let bytes = encode(doc)?;
-    if bytes.len() > MAX_STATE_BYTES || (admission && over_admission_budget(bytes.len(), doc)) {
+    if admission && over_admission_budget(bytes.len(), doc) {
         return Err(DeckError::new(
             ErrorKind::DiskFull,
             "connector state capacity reached",
         ));
     }
-    crate::datadir::atomic_write(path, &bytes)
+    crate::ledger::write_bounded(path, &bytes, MAX_STATE_BYTES, "connector state")
 }
 
 fn over_admission_budget(encoded_len: usize, doc: &DiskDoc) -> bool {
