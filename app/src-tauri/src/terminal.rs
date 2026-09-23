@@ -773,8 +773,7 @@ pub(crate) fn terminal_selection_start(
     let _operation = terminal_selection_operation_lock().lock_or_recover();
     validate_session_name(&name)?;
     if terminal_selection_leases()
-        .lock()
-        .unwrap()
+        .lock_or_recover()
         .get(&name)
         .is_some_and(|lease| lease.token() >= token)
     {
@@ -1095,8 +1094,7 @@ pub(crate) fn terminal_selection_copy(
     let _operation = terminal_selection_operation_lock().lock_or_recover();
     validate_session_name(&name)?;
     let lease = terminal_selection_leases()
-        .lock()
-        .unwrap()
+        .lock_or_recover()
         .get(&name)
         .cloned();
     match lease {

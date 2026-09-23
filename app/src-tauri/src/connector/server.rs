@@ -28,6 +28,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::error::{DeckError, ErrorKind};
+use crate::sync::LockRecover;
 
 const MAX_BODY: usize = 256 * 1024;
 const MAX_RESPONSE: usize = 4 * 1024 * 1024;
@@ -56,7 +57,7 @@ struct SourceSlot {
 
 impl SourceSlots {
     fn try_acquire(&self, source: IpAddr) -> Option<SourceSlot> {
-        let mut held = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let mut held = self.0.lock_or_recover();
         let count = held.entry(source).or_insert(0);
         if *count >= MAX_PER_SOURCE {
             return None;
@@ -71,7 +72,7 @@ impl SourceSlots {
 
 impl Drop for SourceSlot {
     fn drop(&mut self) {
-        let mut held = self.slots.0.lock().unwrap_or_else(|e| e.into_inner());
+        let mut held = self.slots.0.lock_or_recover();
         if let Some(count) = held.get_mut(&self.source) {
             *count -= 1;
             if *count == 0 {

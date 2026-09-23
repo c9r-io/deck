@@ -113,8 +113,7 @@ pub(crate) fn queue_probe_context(
 ) -> Result<ContextProbeView, DeckError> {
     let item = state
         .q
-        .lock()
-        .unwrap()
+        .lock_or_recover()
         .items
         .iter()
         .find(|i| i.id == id)
@@ -1047,8 +1046,7 @@ pub(crate) fn queue_send_now(
     let _activity = crate::session_runtime::activity_guard()?;
     let item = state
         .q
-        .lock()
-        .unwrap()
+        .lock_or_recover()
         .items
         .iter()
         .find(|i| i.id == id)

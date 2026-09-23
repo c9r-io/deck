@@ -8,6 +8,7 @@
 // returns or interpolates a token into any error string.
 
 use crate::error::{DeckError, ErrorKind};
+use crate::sync::LockRecover;
 use security_framework::item::{ItemClass, ItemSearchOptions};
 use security_framework::passwords::{
     delete_generic_password, get_generic_password, set_generic_password,
@@ -95,9 +96,7 @@ fn cache_slot(slot: Slot) -> usize {
 }
 
 fn cache_put(slot: Slot, value: Option<String>) {
-    if let Ok(mut c) = CACHE.lock() {
-        c[cache_slot(slot)] = value;
-    }
+    CACHE.lock_or_recover()[cache_slot(slot)] = value;
 }
 
 pub(crate) fn get(slot: Slot) -> Option<String> {
@@ -109,10 +108,8 @@ pub(crate) fn get(slot: Slot) -> Option<String> {
 /// this path so a read failure can never be mistaken for permission to
 /// generate and overwrite a new identity.
 pub(crate) fn get_checked(slot: Slot) -> Result<Option<String>, DeckError> {
-    if let Ok(c) = CACHE.lock() {
-        if let Some(v) = &c[cache_slot(slot)] {
-            return Ok(Some(v.clone()));
-        }
+    if let Some(v) = &CACHE.lock_or_recover()[cache_slot(slot)] {
+        return Ok(Some(v.clone()));
     }
     if crate::smoke_faults::enabled() {
         return Ok(None);
@@ -137,10 +134,8 @@ pub(crate) fn get_checked(slot: Slot) -> Result<Option<String>, DeckError> {
 /// Attribute-only lookup: answers "is there an item?" without reading its
 /// data, so it never triggers the Keychain access prompt.
 pub(crate) fn has(slot: Slot) -> bool {
-    if let Ok(c) = CACHE.lock() {
-        if c[cache_slot(slot)].is_some() {
-            return true;
-        }
+    if CACHE.lock_or_recover()[cache_slot(slot)].is_some() {
+        return true;
     }
     if crate::smoke_faults::enabled() {
         return false;

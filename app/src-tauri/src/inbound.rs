@@ -1049,9 +1049,7 @@ fn set_secret(slot: &str, value: &str) -> Result<(), DeckError> {
 #[tauri::command]
 pub(crate) fn inbound_check_now() {
     let (flag, cv) = wake();
-    if let Ok(mut f) = flag.lock() {
-        *f = true;
-    }
+    *flag.lock_or_recover() = true;
     cv.notify_all();
     // every inbound settings save ends here: the idle Slack channel thread
     // re-reads its settings now instead of polling for them
@@ -1062,10 +1060,7 @@ pub(crate) fn inbound_check_now() {
 
 fn wait_for_tick(d: Duration) {
     let (flag, cv) = wake();
-    let Ok(mut f) = flag.lock() else {
-        std::thread::sleep(d);
-        return;
-    };
+    let mut f = flag.lock_or_recover();
     let deadline = Instant::now() + d;
     while !*f {
         let left = deadline.saturating_duration_since(Instant::now());

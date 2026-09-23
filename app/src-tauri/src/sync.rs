@@ -76,7 +76,10 @@ mod tests {
     }
 
     /// Discipline lint: production code takes locks through this module, so
-    /// no thread can be taken down by another thread's panic.
+    /// no thread can be taken down by another thread's panic. The scan
+    /// strips whitespace first, so a chain rustfmt wrapped across lines
+    /// (`.lock()\n.unwrap()`) cannot slip past it; `applog.rs` keeps its own
+    /// recovery because `recover` logs through it.
     #[test]
     fn production_code_never_unwraps_a_lock() {
         let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
@@ -93,15 +96,30 @@ mod tests {
             .into_iter()
             .filter(|p| p.extension().is_some_and(|x| x == "rs"))
         {
-            if path.ends_with("tests.rs") || path.ends_with("sync.rs") {
+            if path.ends_with("tests.rs")
+                || path.ends_with("sync.rs")
+                || path.ends_with("applog.rs")
+            {
                 continue;
             }
             let text = std::fs::read_to_string(&path).unwrap();
-            let production = text.split("#[cfg(test)]\nmod tests").next().unwrap();
-            for pattern in [".lock().unwrap()", ".lock().expect(", ".wait(g).unwrap()"] {
+            let production: String = text
+                .split("#[cfg(test)]\nmod tests")
+                .next()
+                .unwrap()
+                .split_whitespace()
+                .collect();
+            let raw_locks = production.matches(".lock()").count();
+            assert_eq!(
+                raw_locks,
+                0,
+                "{}: {raw_locks} raw .lock() call(s); use lock_or_recover / wait_or_recover",
+                path.display()
+            );
+            for pattern in [".wait(g).unwrap()", ".wait(guard).unwrap()"] {
                 assert!(
                     !production.contains(pattern),
-                    "{}: use lock_or_recover / wait_or_recover instead of {pattern}",
+                    "{}: use wait_or_recover instead of {pattern}",
                     path.display()
                 );
             }

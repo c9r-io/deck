@@ -33,6 +33,7 @@ use ring::rand::{SecureRandom, SystemRandom};
 
 use crate::applog;
 use crate::error::{DeckError, ErrorKind};
+use crate::sync::LockRecover;
 
 // ---------- tmux helpers ----------------------------------------------------
 
@@ -679,9 +680,8 @@ static OWNED_CONTROL_CLIENT: Mutex<Option<OwnedControlClient>> = Mutex::new(None
 /// a remembered PID alone is never authority after a process exits/reuses it.
 pub(crate) fn owned_control_client() -> Option<(u32, u32, String)> {
     OWNED_CONTROL_CLIENT
-        .lock()
-        .ok()
-        .and_then(|owned| owned.clone())
+        .lock_or_recover()
+        .clone()
         .map(|owned| (owned.client_pid, owned.server_pid, owned.session))
 }
 
@@ -862,9 +862,7 @@ impl TmuxQueryChannel {
             server_pid,
             session: channel.session.clone(),
         };
-        if let Ok(mut slot) = OWNED_CONTROL_CLIENT.lock() {
-            *slot = Some(owned);
-        }
+        *OWNED_CONTROL_CLIENT.lock_or_recover() = Some(owned);
         Ok(channel)
     }
 
@@ -987,7 +985,8 @@ impl TmuxQueryChannel {
 impl Drop for TmuxQueryChannel {
     fn drop(&mut self) {
         self.stop();
-        if let Ok(mut slot) = OWNED_CONTROL_CLIENT.lock() {
+        {
+            let mut slot = OWNED_CONTROL_CLIENT.lock_or_recover();
             if slot
                 .as_ref()
                 .is_some_and(|owned| owned.client_pid == self.child.id())
@@ -1014,9 +1013,7 @@ static QUERY_STATE: Mutex<QueryState> = Mutex::new(QueryState {
 /// on one control client. No user value is ever parsed as a control
 /// command.
 pub(crate) fn query_list_panes() -> Result<Vec<PaneRow>, DeckError> {
-    let mut state = QUERY_STATE
-        .lock()
-        .map_err(|_| DeckError::new(ErrorKind::Tmux, "tmux control unavailable"))?;
+    let mut state = QUERY_STATE.lock_or_recover();
     if let Some(channel) = state.channel.as_mut() {
         match channel.list_panes() {
             Ok(rows) => return Ok(rows),
@@ -1060,10 +1057,7 @@ pub(crate) fn query_list_panes() -> Result<Vec<PaneRow>, DeckError> {
 /// Smoke evidence only (`smoke_faults::smoke_query_channel`): whether the
 /// persistent query client is attached right now.
 pub(crate) fn query_channel_connected() -> bool {
-    QUERY_STATE
-        .lock()
-        .map(|state| state.channel.is_some())
-        .unwrap_or(false)
+    QUERY_STATE.lock_or_recover().channel.is_some()
 }
 
 /// A query client whose Deck died without `stop` (crash, SIGKILL) outlives
@@ -1143,10 +1137,9 @@ pub(crate) fn exit_on_termination_signals(app: tauri::AppHandle) {
 
 /// Restart and process exit call this after excluding active poll operations.
 pub(crate) fn stop_query_channel() {
-    if let Ok(mut state) = QUERY_STATE.lock() {
-        state.channel.take();
-        state.retry_after = None;
-    }
+    let mut state = QUERY_STATE.lock_or_recover();
+    state.channel.take();
+    state.retry_after = None;
 }
 
 /// One pane, by tmux target (`pane_target(session)` for a card's pane).

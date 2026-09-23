@@ -46,6 +46,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::applog::applog;
 use crate::error::{DeckError, ErrorKind};
+use crate::sync::LockRecover;
 use crate::tmux::{self, tmux, tmux_owned};
 
 const METADATA_OPTION: &str = "@deck-server-metadata";
@@ -993,9 +994,7 @@ fn try_operation() -> Result<MutexGuard<'static, ()>, DeckError> {
 /// can create/attach sessions, which prevents an updater-relocated process
 /// from winning the first-server race.
 pub(crate) fn reconcile_on_boot() {
-    let Ok(_guard) = OPERATION.lock() else {
-        return;
-    };
+    let _guard = OPERATION.lock_or_recover();
     let build = current_build();
     if build.source == SourceCategory::Transient {
         applog("[tmux-lifecycle] transient release source; server creation disabled");

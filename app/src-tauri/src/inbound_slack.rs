@@ -71,10 +71,7 @@ fn endpoint(method: &str) -> String {
 static LAST_SLACK_ERROR: Mutex<String> = Mutex::new(String::new());
 
 pub(crate) fn last_slack_error() -> String {
-    LAST_SLACK_ERROR
-        .lock()
-        .map(|e| e.clone())
-        .unwrap_or_default()
+    LAST_SLACK_ERROR.lock_or_recover().clone()
 }
 
 fn note_slack_error(name: &str) {
@@ -83,9 +80,7 @@ fn note_slack_error(name: &str) {
         .filter(|c| c.is_ascii_lowercase() || *c == '_')
         .take(48)
         .collect();
-    if let Ok(mut e) = LAST_SLACK_ERROR.lock() {
-        *e = clean;
-    }
+    *LAST_SLACK_ERROR.lock_or_recover() = clean;
 }
 
 /// One Slack Web API call — always POST with a form body, as every method
@@ -774,11 +769,7 @@ impl Source for Slack {
 
     fn status(&self) -> SourceStatus {
         SourceStatus {
-            live: *self
-                .live
-                .connected
-                .lock()
-                .unwrap_or_else(|p| p.into_inner()),
+            live: *self.live.connected.lock_or_recover(),
             last_poll: self.last_poll,
             last_error: self.last_error,
         }

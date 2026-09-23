@@ -93,10 +93,9 @@ pub(crate) fn exclusive() -> Result<RwLockWriteGuard<'static, ()>, DeckError> {
 /// the real ACTIVITY lock, including the production nonblocking busy behavior.
 #[cfg(test)]
 pub(crate) fn test_activity_scope() -> std::sync::MutexGuard<'static, ()> {
+    use crate::sync::LockRecover;
     static TEST_SCOPE: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    TEST_SCOPE
-        .lock()
-        .unwrap_or_else(|poison| poison.into_inner())
+    TEST_SCOPE.lock_or_recover()
 }
 
 /// Ordinary calls retain their existing behavior. The restart worker installs

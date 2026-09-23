@@ -62,18 +62,13 @@ fn tick_wake() -> &'static (Mutex<bool>, std::sync::Condvar) {
 
 pub(crate) fn wake_scheduler() {
     let (flag, cv) = tick_wake();
-    if let Ok(mut f) = flag.lock() {
-        *f = true;
-    }
+    *flag.lock_or_recover() = true;
     cv.notify_all();
 }
 
 fn sleep_until_tick() {
     let (flag, cv) = tick_wake();
-    let Ok(mut f) = flag.lock() else {
-        std::thread::sleep(Duration::from_secs(TICK_SECS));
-        return;
-    };
+    let mut f = flag.lock_or_recover();
     let deadline = std::time::Instant::now() + Duration::from_secs(TICK_SECS);
     while !*f {
         let left = deadline.saturating_duration_since(std::time::Instant::now());
@@ -102,8 +97,7 @@ pub(crate) fn spawn_scheduler(app: AppHandle) {
         let now = now_epoch();
         if state
             .q
-            .lock()
-            .unwrap()
+            .lock_or_recover()
             .items
             .iter()
             .any(|i| expired(i, now))
