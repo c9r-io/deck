@@ -25,6 +25,7 @@ BUNDLE_ID = "io.c9r.deck"
 ARCHIVE = "deck_aarch64.app.tar.gz"
 SIGNATURE = f"{ARCHIVE}.sig"
 IMMUTABLE_KINDS = ("dmg", "archive", "signature", "manifest")
+HELPER_KIND = "helper_archive"
 UPDATER_KEY_EPOCHS = {"legacy-stable-v1", "nightly-v1"}
 FORBIDDEN_PROMOTION = re.compile(
     r"\b(?:cargo\s+(?:build|run|install)|tauri(?:-action|\s+build)|npm\s+run\s+build|xcodebuild)\b",
@@ -156,7 +157,8 @@ def verify_provenance(
     version, _, tag_sha = parse_candidate_tag(tag)
     if not FULL_SHA_RE.fullmatch(commit) or not commit.startswith(tag_sha):
         raise ReleaseError("candidate tag and full commit disagree")
-    if provenance.get("schema") != 2 or provenance.get("app_version") != version:
+    schema = provenance.get("schema")
+    if schema not in (2, 3) or provenance.get("app_version") != version:
         raise ReleaseError("provenance version/schema mismatch")
     if provenance.get("commit") != commit or provenance.get("candidate_tag") != tag:
         raise ReleaseError("provenance tag/commit mismatch")
@@ -172,11 +174,32 @@ def verify_provenance(
     ):
         raise ReleaseError("candidate Apple verification is incomplete")
     artifacts = provenance.get("artifacts")
-    if not isinstance(artifacts, list) or len(artifacts) != 4:
-        raise ReleaseError("provenance must describe four immutable artifacts")
+    expected_kinds = set(IMMUTABLE_KINDS)
+    if schema == 3:
+        expected_kinds.add(HELPER_KIND)
+    if not isinstance(artifacts, list) or len(artifacts) != len(expected_kinds):
+        raise ReleaseError("provenance immutable artifact count mismatch")
     by_kind = {item.get("kind"): item for item in artifacts if isinstance(item, dict)}
-    if set(by_kind) != set(IMMUTABLE_KINDS):
+    if set(by_kind) != expected_kinds:
         raise ReleaseError("provenance artifact kinds are incomplete")
+    if schema == 3:
+        helper = provenance.get("helper")
+        if not isinstance(helper, dict):
+            raise ReleaseError("helper build identity is missing")
+        if helper.get("archive") != by_kind[HELPER_KIND].get("name") or helper.get("source_commit") != commit:
+            raise ReleaseError("helper archive/source identity mismatch")
+        if helper.get("team_id") != "Y8ZG3D692W" or helper.get("signing_identifier") != "io.c9r.deck-tunnelctl":
+            raise ReleaseError("helper signing identity mismatch")
+        if helper.get("architecture") != "arm64" or helper.get("protocol_version") != 1:
+            raise ReleaseError("helper architecture/protocol mismatch")
+        if not isinstance(helper.get("version"), str) or not VERSION_RE.fullmatch(helper["version"]):
+            raise ReleaseError("helper version is missing or invalid")
+        if not isinstance(helper.get("binary_sha256"), str) or not re.fullmatch(r"[0-9a-f]{64}", helper["binary_sha256"]):
+            raise ReleaseError("helper binary hash is missing or invalid")
+        checks = helper.get("verification")
+        if not isinstance(checks, dict) or any(checks.get(key) != "passed" for key in
+            ("codesign", "notarization", "stapler", "gatekeeper", "extracted_archive")):
+            raise ReleaseError("helper Apple verification is incomplete")
     for item in by_kind.values():
         name = item.get("name")
         if not isinstance(name, str) or Path(name).name != name:
@@ -230,6 +253,7 @@ def create_provenance(
     team_id: str,
     identity: str,
     updater_key_epoch: str,
+    helper_metadata: dict[str, object] | None = None,
 ) -> dict[str, object]:
     expected_version, _, tag_sha = parse_candidate_tag(tag)
     if expected_version != version or not FULL_SHA_RE.fullmatch(commit) or not commit.startswith(tag_sha):
@@ -246,8 +270,13 @@ def create_provenance(
         {"kind": "signature", **asset_record(directory / SIGNATURE)},
         {"kind": "manifest", **asset_record(directory / "candidate.json")},
     ]
+    if helper_metadata is not None:
+        helper_name = helper_metadata.get("archive")
+        if not isinstance(helper_name, str) or Path(helper_name).name != helper_name:
+            raise ReleaseError("unsafe helper archive name")
+        artifacts.append({"kind": HELPER_KIND, **asset_record(directory / helper_name)})
     return {
-        "schema": 2,
+        "schema": 3 if helper_metadata is not None else 2,
         "app_version": version,
         "commit": commit,
         "candidate_tag": tag,
@@ -264,6 +293,7 @@ def create_provenance(
             "gatekeeper": "passed",
         },
         "artifacts": artifacts,
+        **({"helper": helper_metadata} if helper_metadata is not None else {}),
     }
 
 
@@ -398,6 +428,7 @@ def cli() -> int:
     provenance.add_argument("--team-id", required=True)
     provenance.add_argument("--identity", required=True)
     provenance.add_argument("--updater-key-epoch", required=True, choices=sorted(UPDATER_KEY_EPOCHS))
+    provenance.add_argument("--helper-metadata", type=Path)
     provenance.add_argument("--output", type=Path, required=True)
     verify_candidate = sub.add_parser("verify-candidate")
     verify_candidate.add_argument("--dir", type=Path, required=True)
@@ -439,6 +470,7 @@ def cli() -> int:
                 args.dir, args.dmg, args.version, args.tag, args.commit,
                 args.run_id, args.run_attempt, args.built_at, args.team_id, args.identity,
                 args.updater_key_epoch,
+                json.loads(args.helper_metadata.read_text()) if args.helper_metadata else None,
             )
             args.output.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
         elif args.command == "verify-candidate":

@@ -150,6 +150,31 @@ class ReleaseChannelTests(unittest.TestCase):
         with self.assertRaises(rc.ReleaseError):
             rc.verify_provenance(provenance, self.tag, self.sha, directory)
 
+    def test_helper_archive_is_required_for_new_candidate_schema(self) -> None:
+        directory, provenance = self.candidate_fixture()
+        helper_name = f"Deck_Tunnel_Helper_nightly_{self.version}_{self.sha[:7]}_macOS.zip"
+        (directory / helper_name).write_bytes(b"published helper archive")
+        helper = {
+            "archive": helper_name, "source_commit": self.sha,
+            "version": "0.1.0", "binary_sha256": "a" * 64,
+            "architecture": "arm64", "protocol_version": 1,
+            "team_id": "Y8ZG3D692W", "signing_identifier": "io.c9r.deck-tunnelctl",
+            "verification": {name: "passed" for name in
+                             ("codesign", "notarization", "stapler", "gatekeeper", "extracted_archive")},
+        }
+        provenance["schema"] = 3
+        provenance["helper"] = helper
+        provenance["artifacts"].append({"kind": rc.HELPER_KIND, **rc.asset_record(directory / helper_name)})
+        rc.write_sums(directory, [str(item["name"]) for item in provenance["artifacts"]], directory / "SHA256SUMS")
+        self.assertEqual(rc.verify_provenance(provenance, self.tag, self.sha, directory), self.version)
+        (directory / helper_name).unlink()
+        with self.assertRaises(rc.ReleaseError):
+            rc.verify_provenance(provenance, self.tag, self.sha, directory)
+        (directory / helper_name).write_bytes(b"published helper archive")
+        helper["source_commit"] = "b" * 40
+        with self.assertRaises(rc.ReleaseError):
+            rc.verify_provenance(provenance, self.tag, self.sha, directory)
+
     def test_signature_and_manifest_fields_fail_closed(self) -> None:
         directory, _ = self.candidate_fixture()
         signature = rc.read_signature(directory / rc.SIGNATURE)
@@ -257,6 +282,9 @@ class ReleaseChannelTests(unittest.TestCase):
         self.assertNotIn("gh release upload nightly-feed", promote)
         self.assertNotIn("gh release edit nightly-feed", promote)
         self.assertIn("build-sign:", nightly)
+        self.assertIn("scripts/package-tunnel-helper build", nightly)
+        self.assertIn('"candidate/$helper_name"', nightly)
+        self.assertIn('scripts/verify-tunnel-helper \'redownload/helper-extracted/Deck Tunnel Helper.app\' --stapled', nightly)
         self.assertRegex(nightly, r"build-sign:[\s\S]*permissions:\n\s+contents: read")
         self.assertRegex(nightly, r"publish:[\s\S]*permissions:\n\s+contents: write")
         self.assertIn("NIGHTLY_TAURI_SIGNING_PRIVATE_KEY", nightly)

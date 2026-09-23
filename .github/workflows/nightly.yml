@@ -150,6 +150,12 @@ jobs:
           python3 -m unittest scripts/test_release_tools.py scripts/test_edr_runtime.py
           scripts/check-workflows
           cargo audit --file app/src-tauri/Cargo.lock
+      - name: Independent Helper test gate
+        run: |
+          set -euo pipefail
+          cargo fmt --check --manifest-path tools/deck-tunnelctl/Cargo.toml
+          cargo clippy --all-targets --locked --manifest-path tools/deck-tunnelctl/Cargo.toml -- -D warnings
+          cargo test --all-targets --locked --manifest-path tools/deck-tunnelctl/Cargo.toml
 
   build-sign:
     needs: [resolve, test]
@@ -198,6 +204,15 @@ jobs:
         with:
           projectPath: app
           args: --target aarch64-apple-darwin
+      - name: Independently build, sign, notarize, and archive Helper
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: scripts/package-tunnel-helper build "$CANDIDATE_VERSION" "$CANDIDATE_SHA" helper-output
       - name: Verify carrier and assemble immutable candidate
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
@@ -206,6 +221,8 @@ jobs:
         run: |
           set -euo pipefail
           mkdir candidate unpacked
+          helper_name=$(jq -er '.archive' helper-output/helper-build.json)
+          cp "helper-output/$helper_name" "candidate/$helper_name"
           dmg_files=(app/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg)
           archives=(app/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/deck.app.tar.gz)
           signatures=(app/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/deck.app.tar.gz.sig)
@@ -246,7 +263,10 @@ jobs:
           xcrun stapler validate "$dmg"
           spctl -a -vv -t install "$dmg"
 
-          printf '%s\n' "${CANDIDATE_NOTES:-Nightly candidate $CANDIDATE_VERSION}" > candidate/notes.txt
+          {
+            printf '%s\n\n' "${CANDIDATE_NOTES:-Nightly candidate $CANDIDATE_VERSION}"
+            printf 'Secure Tunnel support requires the optional Deck Tunnel Helper. Download `%s`, extract `Deck Tunnel Helper.app`, and move it to `/Applications/Deck Tunnel Helper.app`. Deck Settings detects it automatically. The Helper is not a daemon or Login Item; Deck MCP core works without it.\n' "$helper_name"
+          } > candidate/notes.txt
           built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           scripts/release_channels.py manifest --version "$CANDIDATE_VERSION" \
             --tag "$CANDIDATE_TAG" --signature-file candidate/deck_aarch64.app.tar.gz.sig \
@@ -258,10 +278,11 @@ jobs:
             --tag "$CANDIDATE_TAG" --commit "$CANDIDATE_SHA" --run-id "$GITHUB_RUN_ID" \
             --run-attempt "$GITHUB_RUN_ATTEMPT" --built-at "$built_at" \
             --team-id "$team_id" --identity "$identity" --updater-key-epoch "$SIGNING_EPOCH" \
+            --helper-metadata helper-output/helper-build.json \
             --output candidate/provenance.json
           scripts/release_channels.py write-sums --dir candidate --output candidate/SHA256SUMS \
             "deck_${CANDIDATE_VERSION}_aarch64.dmg" deck_aarch64.app.tar.gz \
-            deck_aarch64.app.tar.gz.sig candidate.json
+            deck_aarch64.app.tar.gz.sig candidate.json "$helper_name"
           scripts/release_channels.py verify-candidate --dir candidate \
             --tag "$CANDIDATE_TAG" --commit "$CANDIDATE_SHA"
       - name: Verify updater minisign signature
@@ -344,11 +365,13 @@ jobs:
           git tag -a "$CANDIDATE_TAG" "$CANDIDATE_SHA" \
             -m "deck Nightly $CANDIDATE_VERSION ($CANDIDATE_SHA)"
           git push origin "refs/tags/$CANDIDATE_TAG"
+          helper_name=$(jq -er '.helper.archive' candidate/provenance.json)
           gh release create "$CANDIDATE_TAG" --verify-tag --target "$CANDIDATE_SHA" --draft --prerelease \
             --title "deck Nightly $CANDIDATE_VERSION (${CANDIDATE_SHA:0:7})" \
             --notes-file candidate/notes.txt \
             "candidate/deck_${CANDIDATE_VERSION}_aarch64.dmg" \
             candidate/deck_aarch64.app.tar.gz candidate/deck_aarch64.app.tar.gz.sig \
+            "candidate/$helper_name" \
             candidate/candidate.json candidate/SHA256SUMS candidate/provenance.json
           mkdir redownload
           gh release download "$CANDIDATE_TAG" --dir redownload
@@ -356,9 +379,13 @@ jobs:
           scripts/release_channels.py verify-candidate --dir redownload \
             --tag "$CANDIDATE_TAG" --commit "$CANDIDATE_SHA"
           for file in "deck_${CANDIDATE_VERSION}_aarch64.dmg" deck_aarch64.app.tar.gz \
-            deck_aarch64.app.tar.gz.sig candidate.json SHA256SUMS provenance.json; do
+            deck_aarch64.app.tar.gz.sig "$helper_name" candidate.json SHA256SUMS provenance.json; do
             cmp "candidate/$file" "redownload/$file"
           done
+          test "$(jq --arg name "$helper_name" '[.assets[] | select(.name == $name and .size > 0)] | length' redownload/release.json)" = 1
+          mkdir redownload/helper-extracted
+          ditto -x -k "redownload/$helper_name" redownload/helper-extracted
+          scripts/verify-tunnel-helper 'redownload/helper-extracted/Deck Tunnel Helper.app' --stapled
           gh release edit "$CANDIDATE_TAG" --draft=false --prerelease
           gh release view "$CANDIDATE_TAG" --json tagName,isDraft,isPrerelease,assets,targetCommitish > redownload/release.json
           scripts/release_channels.py verify-candidate --dir redownload \

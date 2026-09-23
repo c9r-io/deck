@@ -1,0 +1,103 @@
+#!/bin/bash
+# Build and distribute the optional Helper without changing Deck's build graph.
+set -euo pipefail
+
+if [[ "${1:-}" != build || $# != 4 ]]; then
+  echo "usage: package-tunnel-helper build VERSION SOURCE_SHA OUTPUT_DIR" >&2
+  exit 2
+fi
+
+deck_version=$2
+source_sha=$3
+output_dir=$4
+[[ "$deck_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+[[ "$source_sha" =~ ^[0-9a-f]{40}$ ]]
+: "${APPLE_CERTIFICATE:?missing signing certificate}"
+: "${APPLE_CERTIFICATE_PASSWORD:?missing certificate password}"
+: "${APPLE_SIGNING_IDENTITY:?missing signing identity}"
+: "${APPLE_ID:?missing notary Apple ID}"
+: "${APPLE_PASSWORD:?missing notary app password}"
+: "${APPLE_TEAM_ID:?missing notary Team ID}"
+test "$APPLE_TEAM_ID" = Y8ZG3D692W
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+cd "$root"
+test "$(git rev-parse HEAD)" = "$source_sha"
+mkdir -p "$output_dir"
+output_dir=$(cd "$output_dir" && pwd)
+scratch=$(mktemp -d)
+keychain="$scratch/helper-signing.keychain-db"
+keychain_password=$(openssl rand -hex 24)
+cleanup() {
+  security delete-keychain "$keychain" >/dev/null 2>&1 || true
+  rm -rf "$scratch"
+}
+trap cleanup EXIT
+
+python3 - "$scratch/certificate.p12" <<'PY'
+import base64, os, pathlib, sys
+pathlib.Path(sys.argv[1]).write_bytes(base64.b64decode(os.environ['APPLE_CERTIFICATE'], validate=True))
+PY
+security create-keychain -p "$keychain_password" "$keychain"
+security unlock-keychain -p "$keychain_password" "$keychain"
+security set-keychain-settings -lut 21600 "$keychain"
+security import "$scratch/certificate.p12" -k "$keychain" \
+  -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain"
+security find-identity -v -p codesigning "$keychain" | grep -Fq "$APPLE_SIGNING_IDENTITY"
+
+manifest=tools/deck-tunnelctl/Cargo.toml
+cargo build --release --locked --target aarch64-apple-darwin --manifest-path "$manifest"
+binary=tools/deck-tunnelctl/target/aarch64-apple-darwin/release/deck-tunnelctl
+test -f "$binary"
+scripts/check-edr-binary "$binary"
+test "$(lipo -archs "$binary")" = arm64
+binary_sha=$(shasum -a 256 "$binary" | cut -d ' ' -f 1)
+protocol=$("$binary" protocol --json)
+tool_version=$(jq -er '.toolVersion' <<<"$protocol")
+test "$(jq -er '.protocolVersion' <<<"$protocol")" = 1
+manifest_version=$(cargo metadata --no-deps --format-version 1 --manifest-path "$manifest" \
+  | jq -er '.packages[] | select(.name == "deck-tunnelctl") | .version')
+test "$tool_version" = "$manifest_version"
+
+app="$scratch/Deck Tunnel Helper.app"
+mkdir -p "$app/Contents/MacOS"
+cp tools/deck-tunnelctl/packaging/Info.plist "$app/Contents/Info.plist"
+cp "$binary" "$app/Contents/MacOS/deck-tunnelctl"
+chmod 755 "$app/Contents/MacOS/deck-tunnelctl"
+test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Contents/Info.plist")" = io.c9r.deck-tunnelctl
+test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Contents/Info.plist")" = deck-tunnelctl
+test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")" = "$tool_version"
+
+codesign --force --options runtime --timestamp --sign "$APPLE_SIGNING_IDENTITY" \
+  --keychain "$keychain" --identifier io.c9r.deck-tunnelctl "$app"
+scripts/verify-tunnel-helper "$app"
+
+# Apple's notary service accepts a zip carrier. The final carrier is rebuilt
+# after stapling, then extracted and verified again before handoff.
+ditto -c -k --keepParent "$app" "$scratch/notary-submission.zip"
+xcrun notarytool submit "$scratch/notary-submission.zip" --apple-id "$APPLE_ID" \
+  --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait \
+  --output-format json > "$scratch/notary-result.json"
+test "$(jq -er '.status' "$scratch/notary-result.json")" = Accepted
+xcrun stapler staple "$app"
+scripts/verify-tunnel-helper "$app" --stapled
+
+archive="Deck_Tunnel_Helper_nightly_${deck_version}_${source_sha:0:7}_macOS.zip"
+ditto -c -k --keepParent "$app" "$output_dir/$archive"
+mkdir "$scratch/extracted"
+ditto -x -k "$output_dir/$archive" "$scratch/extracted"
+scripts/verify-tunnel-helper "$scratch/extracted/Deck Tunnel Helper.app" --stapled
+test "$(shasum -a 256 "$scratch/extracted/Deck Tunnel Helper.app/Contents/MacOS/deck-tunnelctl" | cut -d ' ' -f 1)" = "$binary_sha"
+python3 - "$output_dir/helper-build.json" "$archive" "$source_sha" "$tool_version" "$binary_sha" <<'PY'
+import json, pathlib, sys
+pathlib.Path(sys.argv[1]).write_text(json.dumps({
+    'archive': sys.argv[2], 'source_commit': sys.argv[3],
+    'version': sys.argv[4], 'binary_sha256': sys.argv[5],
+    'architecture': 'arm64', 'protocol_version': 1,
+    'team_id': 'Y8ZG3D692W', 'signing_identifier': 'io.c9r.deck-tunnelctl',
+    'verification': {'codesign': 'passed', 'notarization': 'passed',
+                     'stapler': 'passed', 'gatekeeper': 'passed',
+                     'extracted_archive': 'passed'},
+}, indent=2) + '\n')
+PY

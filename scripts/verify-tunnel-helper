@@ -1,0 +1,25 @@
+#!/bin/bash
+# Verify the distributed app itself, including after a fresh archive extraction.
+set -euo pipefail
+if [[ $# -lt 1 || $# -gt 2 || ( $# -eq 2 && "$2" != --stapled ) ]]; then
+  echo "usage: verify-tunnel-helper APP_PATH [--stapled]" >&2
+  exit 2
+fi
+app=$1
+test -d "$app"
+test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Contents/Info.plist")" = io.c9r.deck-tunnelctl
+test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Contents/Info.plist")" = deck-tunnelctl
+codesign --verify --deep --strict --verbose=2 "$app"
+details=$(codesign -dv --verbose=4 "$app" 2>&1)
+test "$(sed -n 's/^TeamIdentifier=//p' <<<"$details")" = Y8ZG3D692W
+test "$(sed -n 's/^Identifier=//p' <<<"$details")" = io.c9r.deck-tunnelctl
+grep -Fq 'Authority=Developer ID Application:' <<<"$details"
+protocol=$("$app/Contents/MacOS/deck-tunnelctl" protocol --json)
+test "$(jq -er '.protocolVersion' <<<"$protocol")" = 1
+test "$(jq -er '.toolVersion' <<<"$protocol")" = \
+  "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")"
+test "$(lipo -archs "$app/Contents/MacOS/deck-tunnelctl")" = arm64
+if [[ "${2:-}" == --stapled ]]; then
+  xcrun stapler validate "$app"
+  spctl -a -vv -t exec "$app"
+fi
