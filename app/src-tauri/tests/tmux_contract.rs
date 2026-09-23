@@ -4,12 +4,21 @@
 //! They run the committed static tmux sidecar against a THROWAWAY socket
 //! (`deck-test-*`), never the live `deck` socket. The Drop guard kills its
 //! server and removes that exact socket file, including after a panic.
+//!
+//! A contract whose outcome can depend on which tmux clients are attached
+//! (launch/delivery `send-keys`, guarded `if-shell -F` pastes, shell restore,
+//! preview capture, pane formats, production scroll and selection batches)
+//! is a `fn(Topology)` run by `topology_matrix!` three times: no client, the
+//! Board's query client, and the query client plus a PTY pane client on
+//! another card. Both clients attach with the production argv from
+//! `src/tmux_clients.rs`, and the `Clients` guard reaps them before the
+//! server guard runs. A new client-sensitive contract joins the matrix.
 
 use std::fs::OpenOptions;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::os::unix::fs::FileTypeExt;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::thread::sleep;
 use std::time::Duration;
 
@@ -17,6 +26,8 @@ use std::time::Duration;
 mod terminal_scroll;
 #[path = "../src/terminal_selection.rs"]
 mod terminal_selection;
+#[path = "../src/tmux_clients.rs"]
+mod tmux_clients;
 use terminal_selection::{
     copy_cursor_moves, endpoint_frame, frame_rows, materialize_args, placements_coincide,
     snapshot_selection, EndpointPlacement,
@@ -380,6 +391,240 @@ impl Drop for Server {
     }
 }
 
+// ---------- client topology ----------------------------------------------------
+//
+// tmux runs every one-shot command without `-c` against an ambient target
+// client (the most recently active attached one) and expands formats in its
+// context. Two shipped regressions (a read-only query client refusing launch
+// `send-keys`; an ambient `#{pane_tty}` restoring history into another card)
+// passed contracts that only ever ran with no client attached. Every
+// behaviour contract whose outcome can depend on attached clients therefore
+// runs once per production topology, attaching the production argv from
+// `tmux_clients.rs` so a future flag change is exercised automatically.
+
+/// Which long-lived clients are attached while a contract runs.
+#[derive(Clone, Copy, Debug)]
+enum Topology {
+    /// Nothing attached: the Board is not polling and no pane is open.
+    Bare,
+    /// The Board's query client alone — the ambient client of every command.
+    QueryClient,
+    /// The query client plus a visible pane on another card, attached after
+    /// it (so the pane is the most recently active client).
+    QueryClientPlusPane,
+}
+
+/// The session the visible-pane client shows in `QueryClientPlusPane`.
+const VISIBLE_SESSION: &str = "deck-visible";
+
+impl Topology {
+    /// A socket tag unique per topology, so the three runs of one contract
+    /// never share a server.
+    fn tag(self, base: &str) -> String {
+        let label = match self {
+            Topology::Bare => "bare",
+            Topology::QueryClient => "query",
+            Topology::QueryClientPlusPane => "pane",
+        };
+        format!("{base}-{label}")
+    }
+
+    /// Attach this topology's clients to the running server `s`. The query
+    /// client takes the lexically first session, as `TmuxQueryChannel` does.
+    /// Keep the guard alive for the whole contract; it detaches on drop.
+    fn attach(self, s: &Server) -> Clients {
+        let mut clients = Clients::default();
+        if matches!(self, Topology::Bare) {
+            return clients;
+        }
+        if matches!(self, Topology::QueryClientPlusPane) {
+            // Named window: tmux resolves a bare `-t t` window-name prefix
+            // before a session name, and the default name here starts with
+            // "tmux-" (the helpers' bare `t` targets would land in it).
+            s.run_raw_checked(&[
+                "new-session",
+                "-d",
+                "-s",
+                VISIBLE_SESSION,
+                "-n",
+                "visible",
+                "-x",
+                "80",
+                "-y",
+                "24",
+                "/bin/cat",
+            ]);
+        }
+        let first = s
+            .run(&["list-sessions", "-F", "#{session_name}"])
+            .lines()
+            .min()
+            .expect("a topology attaches to an existing session")
+            .to_string();
+        clients.query = Some(attach_query_client(s, &first, &[]));
+        if matches!(self, Topology::QueryClientPlusPane) {
+            clients.pane = Some(PaneClient::attach(s, VISIBLE_SESSION));
+        }
+        clients
+    }
+}
+
+/// Spawn the production query client (`tmux_clients::query_client_args`),
+/// optionally with `extra` attach flags, and wait until tmux lists it with
+/// the identity `tmux_lifecycle` verifies (control mode, `QUERY_CLIENT_FLAGS`).
+fn attach_query_client(s: &Server, session: &str, extra: &[&str]) -> Child {
+    let target = format!("={session}");
+    let [mode, attach, rest @ ..] = tmux_clients::query_client_args(&target);
+    let mut child = Command::new(tmux_bin())
+        .args(["-f", "/dev/null", "-L", &s.0, mode, attach])
+        .args(extra)
+        .args(rest)
+        .env("LANG", "en_US.UTF-8")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn query control client");
+    let pid = child.id().to_string();
+    let listed = s.wait_for_client(|fields| fields[0] == pid);
+    let flags: Vec<&str> = listed[2].split(',').collect();
+    assert!(
+        listed[1] == "1"
+            && tmux_clients::QUERY_CLIENT_FLAGS
+                .split(',')
+                .all(|flag| flags.contains(&flag))
+            && listed[3] == session,
+        "query client identity drifted from tmux_lifecycle's check: {listed:?}"
+    );
+    assert!(child.try_wait().unwrap().is_none(), "query client attached");
+    child
+}
+
+/// A visible pane: the production `tmux_clients::pane_client_args` attach
+/// inside a real PTY, as `pty::attach_session` runs it, with its output
+/// drained so the client never blocks on a full terminal.
+struct PaneClient {
+    child: Box<dyn portable_pty::Child + Send + Sync>,
+    master: Option<Box<dyn portable_pty::MasterPty + Send>>,
+    drain: Option<std::thread::JoinHandle<()>>,
+}
+
+impl PaneClient {
+    fn attach(s: &Server, session: &str) -> Self {
+        let pair = portable_pty::native_pty_system()
+            .openpty(portable_pty::PtySize {
+                rows: 24,
+                cols: 80,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .expect("open pane pty");
+        let target = format!("={session}");
+        let mut cmd = portable_pty::CommandBuilder::new(tmux_bin());
+        cmd.args(["-f", "/dev/null", "-L", &s.0]);
+        cmd.args(tmux_clients::pane_client_args(&target));
+        cmd.env("TERM", "xterm-256color");
+        cmd.env("LANG", "en_US.UTF-8");
+        let child = pair.slave.spawn_command(cmd).expect("spawn pane client");
+        drop(pair.slave);
+        let mut reader = pair.master.try_clone_reader().expect("pane reader");
+        let drain = std::thread::spawn(move || {
+            let mut bytes = [0u8; 4096];
+            while matches!(reader.read(&mut bytes), Ok(count) if count > 0) {}
+        });
+        s.wait_for_client(|fields| fields[1] == "0" && fields[3] == session);
+        PaneClient {
+            child,
+            master: Some(pair.master),
+            drain: Some(drain),
+        }
+    }
+}
+
+impl Drop for PaneClient {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        drop(self.master.take());
+        if let Some(drain) = self.drain.take() {
+            let _ = drain.join();
+        }
+    }
+}
+
+/// The clients one topology attached; dropping it detaches and reaps them
+/// before the `Server` guard (declared earlier) kills the server.
+#[derive(Default)]
+struct Clients {
+    query: Option<Child>,
+    pane: Option<PaneClient>,
+}
+
+impl Drop for Clients {
+    fn drop(&mut self) {
+        drop(self.pane.take());
+        if let Some(mut query) = self.query.take() {
+            let _ = query.kill();
+            let _ = query.wait();
+        }
+    }
+}
+
+impl Server {
+    /// The first `list-clients` row (pid, control mode, flags, session)
+    /// matching `wanted`, polled until tmux has registered the attach.
+    fn wait_for_client(&self, wanted: impl Fn(&[&str]) -> bool) -> Vec<String> {
+        let format = "#{client_pid}\t#{client_control_mode}\t#{client_flags}\t#{session_name}";
+        for _ in 0..200 {
+            let listing = self.run(&["list-clients", "-F", format]);
+            for line in listing.lines() {
+                let fields: Vec<&str> = line.split('\t').collect();
+                if fields.len() == 4 && wanted(&fields) {
+                    return fields.into_iter().map(str::to_owned).collect();
+                }
+            }
+            sleep(Duration::from_millis(10));
+        }
+        panic!("client never attached");
+    }
+
+    /// Every session name except `keep`.
+    fn other_sessions(&self, keep: &str) -> Vec<String> {
+        self.run(&["list-sessions", "-F", "#{session_name}"])
+            .lines()
+            .filter(|name| *name != keep)
+            .map(str::to_owned)
+            .collect()
+    }
+}
+
+/// Run the behaviour contract `fn $contract(topology: Topology)` as one test
+/// per topology (`$contract::bare`, `$contract::query_client`,
+/// `$contract::query_client_plus_pane`), so the runs stay parallel and a
+/// failure names the topology that broke.
+macro_rules! topology_matrix {
+    ($contract:ident) => {
+        mod $contract {
+            use super::Topology;
+
+            #[test]
+            fn bare() {
+                super::$contract(Topology::Bare)
+            }
+
+            #[test]
+            fn query_client() {
+                super::$contract(Topology::QueryClient)
+            }
+
+            #[test]
+            fn query_client_plus_pane() {
+                super::$contract(Topology::QueryClientPlusPane)
+            }
+        }
+    };
+}
+
 #[test]
 fn drop_removes_its_throwaway_socket_file() {
     let path;
@@ -393,17 +638,21 @@ fn drop_removes_its_throwaway_socket_file() {
 
 /// Restored text is pane OUTPUT, never shell INPUT. `new-session` reports its
 /// own tty and a second fixed tmux batch writes the private buffer to that
-/// exact device. A persistent control client attached to an older card must
-/// not redirect the history through its ambient current-pane context. No
-/// shell script, no deck executable, no argv carrying text; tmux retains the
-/// text in its own scrollback.
-#[test]
-fn shell_restore_bootstrap_becomes_tmux_history_without_executing_text() {
+/// exact device. No attached client (the query client on an older card, a
+/// visible pane on another) may redirect the history through its ambient
+/// current-pane context. No shell script, no deck executable, no argv
+/// carrying text; tmux retains the text in its own scrollback.
+fn shell_restore_bootstrap_becomes_tmux_history_without_executing_text(topology: Topology) {
     let s = Server(format!(
-        "deck-test-restore-bootstrap-{}",
+        "deck-test-{}-{}",
+        topology.tag("restore-bootstrap"),
         std::process::id()
     ));
-    let root = std::env::temp_dir().join(format!("deck-restore-contract-{}", std::process::id()));
+    let root = std::env::temp_dir().join(format!(
+        "deck-{}-{}",
+        topology.tag("restore-contract"),
+        std::process::id()
+    ));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).expect("create restore fixture dir");
     let executed = root.join("must-not-exist");
@@ -446,22 +695,10 @@ fn shell_restore_bootstrap_becomes_tmux_history_without_executing_text() {
     ]);
     s.run_raw_checked(&["send-keys", "-t", "=busy:", "activity", "Enter"]);
 
-    // Production polling keeps this query client attached to the first
-    // available session. It is the condition the old ambient `#{pane_tty}`
-    // restore test omitted and the condition that redirected later cards.
-    let mut control = Command::new(tmux_bin())
-        .args(["-f", "/dev/null", "-L", &s.0, "-C", "attach-session"])
-        .args(["-f", "ignore-size,no-output", "-t", "=older"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn persistent control client");
-    sleep(Duration::from_millis(100));
-    assert!(
-        control.try_wait().unwrap().is_none(),
-        "control client attached"
-    );
+    // Production polling keeps the query client attached to the first
+    // session. It is the condition the old ambient `#{pane_tty}` restore test
+    // omitted and the condition that redirected later cards.
+    let _clients = topology.attach(&s);
 
     let created = s.run_with_stdin_checked(
         &[
@@ -521,7 +758,7 @@ fn shell_restore_bootstrap_becomes_tmux_history_without_executing_text() {
         "#{pane_start_command}",
     ]);
     let start_command = start_command.trim().to_string();
-    for other in ["older", "busy"] {
+    for other in s.other_sessions("t") {
         let elsewhere = s.run(&[
             "capture-pane",
             "-p",
@@ -573,10 +810,9 @@ fn shell_restore_bootstrap_becomes_tmux_history_without_executing_text() {
             > 0,
         "restored output must live in tmux scrollback"
     );
-    let _ = control.kill();
-    let _ = control.wait();
     let _ = std::fs::remove_dir_all(root);
 }
+topology_matrix!(shell_restore_bootstrap_becomes_tmux_history_without_executing_text);
 
 /// v0.4.12: resize reflow pushes blank lines into history, so "empty" shells
 /// scrolled into void. deck clears history once after the first attach; the
@@ -1064,16 +1300,17 @@ fn copy_mode_enters_on_scroll_up_and_auto_exits_at_bottom() {
 /// Production scrolling is a single tmux command list: it enters copy-mode
 /// only when history exists, advances on every call, and reports auto-exit at
 /// the live bottom without separate state-query subprocesses.
-#[test]
-fn production_scroll_batch_enters_advances_and_exits() {
-    let empty = Server::fixture("scroll-batch-empty", 40, 8, "sleep 30");
+fn production_scroll_batch_enters_advances_and_exits(topology: Topology) {
+    let empty = Server::fixture(&topology.tag("scroll-batch-empty"), 40, 8, "sleep 30");
+    let _empty_clients = topology.attach(&empty);
     assert_eq!(empty.fmt("#{history_size}"), "0");
     let no_op = empty
         .run_owned(&terminal_scroll::args("t", -2))
         .expect("empty production scroll");
     assert_eq!(no_op.trim(), "0", "empty history remains a live no-op");
 
-    let s = Server::new("scroll-batch");
+    let s = Server::new(&topology.tag("scroll-batch"));
+    let _clients = topology.attach(&s);
     s.shell("i=0; while [ $i -lt 40 ]; do echo batch$i; i=$((i+1)); done");
 
     let first = s
@@ -1094,15 +1331,16 @@ fn production_scroll_batch_enters_advances_and_exits() {
     assert_eq!(live.trim(), "0");
     assert_eq!(s.fmt("#{pane_in_mode}"), "0");
 }
+topology_matrix!(production_scroll_batch_enters_advances_and_exits);
 
 /// Ordinary scrolling is viewport navigation, not copy-cursor navigation.
 /// tmux normally leaves its copy cursor on a fixed screen row, separating it
 /// from an agent composer as that content moves. The production batch follows
 /// the live cursor's content row in both directions without changing the
 /// requested scroll position.
-#[test]
-fn production_scroll_cursor_stays_with_the_live_input_row() {
-    let s = Server::new("scroll-cursor");
+fn production_scroll_cursor_stays_with_the_live_input_row(topology: Topology) {
+    let s = Server::new(&topology.tag("scroll-cursor"));
+    let _clients = topology.attach(&s);
     s.shell("i=0; while [ $i -lt 40 ]; do echo cursor$i; i=$((i+1)); done");
     s.write_pane("\x1b[?1049h\x1b[2J\x1b[3;1Houtput\x1b[6;1HLONGINPUTTEXT\x1b[6;5H");
     for _ in 0..100 {
@@ -1164,13 +1402,14 @@ fn production_scroll_cursor_stays_with_the_live_input_row() {
         "a later unrelated copy-mode must not inherit a stale cursor anchor"
     );
 }
+topology_matrix!(production_scroll_cursor_stays_with_the_live_input_row);
 
 /// Scheduled prompts and pty_write inject via `send-keys -l`: the text must
 /// arrive byte-for-byte — no tmux format expansion (#{...}), no key-name
 /// parsing ("C-c"), no shell splitting on semicolons.
-#[test]
-fn send_keys_literal_is_byte_for_byte() {
-    let s = Server::new("lit");
+fn send_keys_literal_is_byte_for_byte(topology: Topology) {
+    let s = Server::new(&topology.tag("lit"));
+    let _clients = topology.attach(&s);
     s.shell("echo 'a;b #{x} C-c Enter'");
     let screen = s.run(&["capture-pane", "-p", "-t", "t"]);
     assert!(
@@ -1178,14 +1417,15 @@ fn send_keys_literal_is_byte_for_byte() {
         "literal send-keys was mangled; screen:\n{screen}"
     );
 }
+topology_matrix!(send_keys_literal_is_byte_for_byte);
 
 /// A trailing CR in one literal tmux input operation removes the "text landed
 /// but Enter didn't" partial-send window. The scheduler's guarded buffer paste
 /// uses the same byte contract; this lower-level check proves CR behaves like
 /// pressing Enter.
-#[test]
-fn single_send_keys_with_trailing_cr_executes_the_line() {
-    let s = Server::new("atomic");
+fn single_send_keys_with_trailing_cr_executes_the_line(topology: Topology) {
+    let s = Server::new(&topology.tag("atomic"));
+    let _clients = topology.attach(&s);
     s.run(&["send-keys", "-t", "t", "-l", "echo atomic-$((20+22))\r"]);
     sleep(Duration::from_millis(600));
     let screen = s.run(&["capture-pane", "-p", "-t", "t"]);
@@ -1204,50 +1444,18 @@ fn single_send_keys_with_trailing_cr_executes_the_line() {
         "a bad target must fail the whole atomic injection"
     );
 }
+topology_matrix!(single_send_keys_with_trailing_cr_executes_the_line);
 
-/// While no pane is attached, the Board's persistent query client is the only
-/// tmux client, so it becomes the ambient target client of every one-shot
-/// command. `send-keys` (without `-X`) refuses when that client is read-only,
-/// which silently broke launch commands and delivery Enter (0.7.1-0.7.6).
-/// The production-shaped client must let both land; the `-r` half pins why
-/// the flag must not come back.
-#[test]
-fn send_keys_lands_while_the_query_client_is_the_only_client() {
-    let s = Server::new("ambient");
-    let control = |flags: &[&str]| {
-        let mut child = Command::new(tmux_bin())
-            .args(["-f", "/dev/null", "-L", &s.0, "-C", "attach-session"])
-            .args(flags)
-            .args(["-f", "ignore-size,no-output", "-t", "=t"])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn query control client");
-        sleep(Duration::from_millis(100));
-        assert!(
-            child.try_wait().unwrap().is_none(),
-            "control client attached"
-        );
-        child
-    };
-    let send = |session: &str| {
-        s.run_raw_checked(&["new-session", "-d", "-s", session, "/bin/cat"]);
-        Command::new(tmux_bin())
-            .args(["-f", "/dev/null", "-L", &s.0])
-            .args([
-                "send-keys",
-                "-t",
-                &format!("={session}:"),
-                "launch --flag",
-                "Enter",
-            ])
-            .output()
-            .expect("tmux spawn")
-    };
-
-    let mut query = control(&[]);
-    let out = send("card");
+/// A new card is created while the Board is polling but no pane shows it:
+/// its launch command (`commands::start_session`'s `send-keys ... Enter`) and
+/// prompt_delivery's guarded Enter must both land whichever clients are
+/// attached. With the query client as the only (ambient) client, a read-only
+/// attach refused both (0.7.1-0.7.6).
+fn a_new_card_s_launch_command_and_delivery_land_while_unattached(topology: Topology) {
+    let s = Server::new(&topology.tag("ambient"));
+    let _clients = topology.attach(&s);
+    s.run_raw_checked(&["new-session", "-d", "-s", "card", "/bin/cat"]);
+    let out = s.send_launch("card");
     assert!(
         out.status.success(),
         "launch send-keys refused: {}",
@@ -1276,11 +1484,18 @@ fn send_keys_lands_while_the_query_client_is_the_only_client() {
         screen.matches("launch --flag").count() >= 2 && screen.matches("delivered").count() >= 2,
         "keys did not reach the unattached pane; screen:\n{screen}"
     );
-    let _ = query.kill();
-    let _ = query.wait();
+}
+topology_matrix!(a_new_card_s_launch_command_and_delivery_land_while_unattached);
 
-    let mut read_only = control(&["-r"]);
-    let out = send("refused");
+/// Why the query client must never be read-only: tmux refuses `send-keys`
+/// outright when the ambient client is. If this stops holding, the matrix
+/// above no longer guards the flag and needs a new witness.
+#[test]
+fn a_read_only_ambient_client_refuses_send_keys() {
+    let s = Server::new("read-only");
+    let mut read_only = attach_query_client(&s, "t", &["-r"]);
+    s.run_raw_checked(&["new-session", "-d", "-s", "refused", "/bin/cat"]);
+    let out = s.send_launch("refused");
     assert!(
         !out.status.success(),
         "tmux no longer refuses via a read-only client"
@@ -1294,11 +1509,28 @@ fn send_keys_lands_while_the_query_client_is_the_only_client() {
     let _ = read_only.wait();
 }
 
+impl Server {
+    /// `commands::start_session`'s launch step for `session`, unchecked.
+    fn send_launch(&self, session: &str) -> std::process::Output {
+        Command::new(tmux_bin())
+            .args(["-f", "/dev/null", "-L", &self.0])
+            .args([
+                "send-keys",
+                "-t",
+                &format!("={session}:"),
+                "launch --flag",
+                "Enter",
+            ])
+            .output()
+            .expect("tmux spawn")
+    }
+}
+
 /// The board's tail preview + fg-process gate read these formats every poll;
 /// a tmux upgrade that renames them would blank the whole board.
-#[test]
-fn poll_formats_exist() {
-    let s = Server::new("fmt");
+fn poll_formats_exist(topology: Topology) {
+    let s = Server::new(&topology.tag("fmt"));
+    let _clients = topology.attach(&s);
     assert!(!s.fmt("#{pane_pid}").is_empty(), "pane_pid");
     assert!(!s.fmt("#{window_activity}").is_empty(), "window_activity");
     assert_eq!(
@@ -1331,13 +1563,14 @@ fn poll_formats_exist() {
     assert!(fields[9].starts_with("/dev/"), "pane_tty");
     assert!(!fields[10].is_empty(), "pane_current_path");
 }
+topology_matrix!(poll_formats_exist);
 
 /// Scheduled context protection depends only on stable tmux generation ids
 /// and the optional foreground basename. It must work without pane hooks.
 /// The final command checks foreground and identity in the same server queue.
-#[test]
-fn scheduler_context_identity_process_and_hookless_compatibility_contract() {
-    let s = Server::new("context");
+fn scheduler_context_identity_process_and_hookless_compatibility_contract(topology: Topology) {
+    let s = Server::new(&topology.tag("context"));
+    let _clients = topology.attach(&s);
     let format =
         "#{pid}\t#{session_id}\t#{window_id}\t#{pane_id}\t#{pane_pid}\t#{pane_current_command}";
     let first = s.run(&["display-message", "-p", "-t", "=t:", format]);
@@ -1411,7 +1644,10 @@ fn scheduler_context_identity_process_and_hookless_compatibility_contract() {
         .run(&["capture-pane", "-p", "-t", "=t:"])
         .contains("hookless-compat-landed"));
 
-    s.run(&["kill-session", "-t", "=t"]);
+    // A new server generation (kill-server: an attached topology's other
+    // sessions would keep the old server alive past a kill-session), with the
+    // same topology attached again.
+    s.run(&["kill-server"]);
     s.run(&[
         "new-session",
         "-d",
@@ -1424,6 +1660,7 @@ fn scheduler_context_identity_process_and_hookless_compatibility_contract() {
         "/bin/sh",
     ]);
     sleep(Duration::from_millis(300));
+    let _restarted_clients = topology.attach(&s);
     let second = s.run(&["display-message", "-p", "-t", "=t:", format]);
     let next: Vec<&str> = second.split('\t').collect();
     assert_ne!(fields[0], next[0], "server pid is the outer generation");
@@ -1461,6 +1698,7 @@ fn scheduler_context_identity_process_and_hookless_compatibility_contract() {
     let screen = s.run(&["capture-pane", "-p", "-t", "=t:"]);
     assert!(!screen.contains("must-not-land"));
 }
+topology_matrix!(scheduler_context_identity_process_and_hookless_compatibility_contract);
 
 /// poll_sessions batches every visible card's preview into ONE tmux
 /// invocation: `display-message -p <mark> ; capture-pane -p …` pairs.
@@ -1468,9 +1706,9 @@ fn scheduler_context_identity_process_and_hookless_compatibility_contract() {
 /// 1. command batches run in order, output concatenated on stdout;
 /// 2. a failing command mid-batch aborts the REST of the batch — which is
 ///    why poll_sessions only ever batches targets it just saw alive.
-#[test]
-fn batched_capture_markers_and_dead_target_abort() {
-    let s = Server::new("batch");
+fn batched_capture_markers_and_dead_target_abort(topology: Topology) {
+    let s = Server::new(&topology.tag("batch"));
+    let _clients = topology.attach(&s);
     s.run(&[
         "new-session",
         "-d",
@@ -1560,6 +1798,7 @@ fn batched_capture_markers_and_dead_target_abort() {
          poll_sessions' alive-only filtering is merely redundant, not wrong: {after_dead:?}"
     );
 }
+topology_matrix!(batched_capture_markers_and_dead_target_abort);
 
 /// The v0.4.16 all-gray-board bug: GUI-launched apps have no locale env, and
 /// under the C locale tmux sanitizes control chars in command output — the
@@ -1738,14 +1977,14 @@ fn coinciding_placements_are_an_empty_range_tmux_reports_as_no_selection() {
 /// named buffer, reads its exact bytes, and deletes it in one command batch.
 /// Compare that production batch with a separately-read tmux buffer and fixed
 /// literals so command plumbing cannot add a byte or clear the selection.
-#[test]
-fn production_selection_snapshot_matches_tmux_byte_for_byte() {
+fn production_selection_snapshot_matches_tmux_byte_for_byte(topology: Topology) {
     let s = Server::fixture(
-        "selection-bytes",
+        &topology.tag("selection-bytes"),
         80,
         8,
         "sh -c 'printf \"ABCDEFGHIJKLMNO\\nSECOND-LINE\\n\\nA中BéC👩‍💻D\\nTRAIL   X\\n\"; sleep 30'",
     );
+    let _clients = topology.attach(&s);
     let cases = [
         ("ascii-forward", (0, 3), (0, 7), "DEFG"),
         ("ascii-reverse", (0, 7), (0, 3), "DEFG"),
@@ -1780,6 +2019,7 @@ fn production_selection_snapshot_matches_tmux_byte_for_byte() {
         );
     }
 }
+topology_matrix!(production_selection_snapshot_matches_tmux_byte_for_byte);
 
 #[test]
 fn production_selection_snapshot_rejoins_only_soft_wraps() {
@@ -1846,9 +2086,9 @@ fn selection_snapshot_stays_exact_while_history_grows_between_captures() {
     assert_eq!(production, oracle);
 }
 
-#[test]
-fn vanished_selection_never_copies_or_deletes_an_unrelated_tmux_buffer() {
-    let s = Server::fixture("selection-vanished", 80, 8, "sleep 30");
+fn vanished_selection_never_copies_or_deletes_an_unrelated_tmux_buffer(topology: Topology) {
+    let s = Server::fixture(&topology.tag("selection-vanished"), 80, 8, "sleep 30");
+    let _clients = topology.attach(&s);
     s.run(&["set-buffer", "-b", "unrelated", "DO-NOT-COPY"]);
     s.run(&["copy-mode", "-H", "-t", "t"]);
 
@@ -1861,6 +2101,7 @@ fn vanished_selection_never_copies_or_deletes_an_unrelated_tmux_buffer() {
         b"DO-NOT-COPY"
     );
 }
+topology_matrix!(vanished_selection_never_copies_or_deletes_an_unrelated_tmux_buffer);
 
 /// tmux's copy cursor cannot be both an immutable selection endpoint and a
 /// freely moving viewport cursor. Production therefore snapshots once at

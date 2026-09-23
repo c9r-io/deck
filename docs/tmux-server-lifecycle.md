@@ -108,6 +108,10 @@ an ambient target client (the most recently active one), and while no pane is
 attached that is this client; `send-keys` without `-X` refuses when its
 target client is read-only. A `-r` query client made every launch command and
 delivery Enter fail whenever the Board showed no terminal (0.7.1–0.7.6).
+Its argv, and a visible pane's PTY attach argv, live in `tmux_clients.rs`;
+`tests/tmux_contract.rs` attaches exactly those clients and runs every
+client-sensitive contract with no client, with the query client, and with
+the query client plus a pane client.
 
 Discovery and the first failure of a channel generation use the existing
 one-shot query as an oracle. A ten-second cooldown then fails closed instead

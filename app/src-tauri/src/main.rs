@@ -43,6 +43,7 @@ mod terminal;
 mod terminal_scroll;
 mod terminal_selection;
 mod tmux;
+mod tmux_clients;
 mod tmux_lifecycle;
 mod tunnel_helper;
 mod updater;

@@ -656,14 +656,10 @@ pub(crate) fn list_panes() -> Result<Vec<PaneRow>, DeckError> {
 
 // ---------- persistent query channel ----------------------------------------
 //
-// The client is NOT attached read-only (`-r`). tmux resolves an ambient
-// target client for every one-shot command without `-c` — the most recently
-// active client, which is this one whenever no pane is attached — and
-// `send-keys` without `-X` refuses outright when that client is read-only
-// ("client is read-only"). A read-only query client therefore broke every
-// launch command and delivery Enter while the Board showed no terminal
-// (`tests/tmux_contract.rs` pins both halves). Its stdin carries only the
-// compiled `list-panes` query, so `-r` guarded nothing a user value can reach.
+// The client's argv, and why it is NOT read-only (`-r`), live in
+// `tmux_clients.rs`: while no pane is attached it is tmux's ambient target
+// client for every one-shot command. `tests/tmux_contract.rs` attaches that
+// same argv in its client-topology matrix.
 
 const CONTROL_OUTPUT_LIMIT: usize = 2 * 1024 * 1024;
 const CONTROL_QUERY_BUDGET: Duration = Duration::from_millis(1500);
@@ -822,9 +818,10 @@ impl TmuxQueryChannel {
         }
         let session = first.session_name.clone();
         let mut child = Command::new(program)
-            .args(["-f", conf, "-L", socket_name, "-C", "attach-session"])
-            .args(["-f", "ignore-size,no-output", "-t"])
-            .arg(session_target(&session))
+            .args(["-f", conf, "-L", socket_name])
+            .args(crate::tmux_clients::query_client_args(&session_target(
+                &session,
+            )))
             .env("LANG", "en_US.UTF-8")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -1562,7 +1559,7 @@ mod tests {
     }
 
     #[test]
-    fn persistent_control_matches_one_shot_and_is_read_only_no_output() {
+    fn persistent_control_matches_one_shot_and_is_writable_no_output() {
         let _serial = CONTROL_CLIENT_TESTS
             .lock()
             .unwrap_or_else(|e| e.into_inner());

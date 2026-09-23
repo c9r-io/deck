@@ -485,10 +485,11 @@ fn subtract_owned_control_client(
         };
         let pid = pid.parse::<u32>().map_err(|_| ())?;
         let flags: Vec<_> = flags.split(',').collect();
-        let expected_flags = ["ignore-size", "no-output"];
         if pid == owned_pid
             && control == "1"
-            && expected_flags.iter().all(|flag| flags.contains(flag))
+            && crate::tmux_clients::QUERY_CLIENT_FLAGS
+                .split(',')
+                .all(|flag| flags.contains(&flag))
             && session == owned_session
         {
             if verified {

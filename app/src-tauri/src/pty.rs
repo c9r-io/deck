@@ -221,15 +221,10 @@ pub(crate) fn attach_session(
 
     let conf = tmux_conf();
     let mut cmd = CommandBuilder::new(tmux_program()?);
-    cmd.args([
-        "-f",
-        &conf,
-        "-L",
-        socket(),
-        "attach-session",
-        "-t",
-        &session_target(&name),
-    ]);
+    cmd.args(["-f", &conf, "-L", socket()]);
+    cmd.args(crate::tmux_clients::pane_client_args(&session_target(
+        &name,
+    )));
     cmd.env("TERM", "xterm-256color");
     cmd.env("LANG", "en_US.UTF-8");
     let child = pair.slave.spawn_command(cmd).map_err(|e| {

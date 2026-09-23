@@ -124,7 +124,7 @@ loaded by `ui/index.html`; xterm.js vendored in `app/ui/vendor/`. Backend
 | Log redaction scanner (`sanitize_log`, `redact_credentials`) | `redact.rs` |
 | Single-instance flock, launch flags / debug-only smoke args | `instance_lock.rs`, `launch_args.rs` |
 | Session start/kill, poll (status, memory footprint, preview rows), clipboard write | `commands.rs` |
-| tmux sidecar, socket, server conf | `tmux.rs` |
+| tmux sidecar, socket, server conf; long-lived client argv (query client, pane attach) shared with the contract suite's client-topology matrix | `tmux.rs`, `tmux_clients.rs` |
 | Server lifecycle: protocol metadata, reuse/replace, restart transaction, channel sockets | `tmux_lifecycle.rs`, `restart.rs` (exit/restart policy), `session_runtime.rs` (shared guards and deadlines) (+ `docs/tmux-server-lifecycle.md`) |
 | PTY attach bridge with end-to-end flow control | `pty.rs` |
 | Opt-in MCP terminal control: local grants/ledger/fencing, STDIO adapter, visible pane runner, Board bridge | `mcp.rs`, `mcp-adapter/`, `mcp-runner/`, `ui/js/mcp.js` (+ `docs/mcp.md`, `docs/mcp-architecture.md`) |
