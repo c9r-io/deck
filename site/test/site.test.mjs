@@ -104,8 +104,8 @@ test('every local page link and fragment resolves in the static build', async ()
   }
 });
 
-test('both languages publish all six topics, overview, metadata and version-scoped references', async () => {
-  const topics = ['', 'start/', 'attention/', 'prompts/', 'sessions/', 'automations/', 'input-and-settings/'];
+test('both languages publish all guide topics, overview, metadata and version-scoped references', async () => {
+  const topics = ['', 'start/', 'attention/', 'prompts/', 'sessions/', 'automations/', 'integrations/', 'input-and-settings/'];
   const sitemap = await readFile(path.join(dist, 'sitemap.xml'), 'utf8');
   const redirects = await readFile(path.join(dist, '_redirects'), 'utf8');
   for (const topic of topics) {
@@ -115,7 +115,7 @@ test('both languages publish all six topics, overview, metadata and version-scop
       assert.ok(html.includes(`<html lang="${locale ? 'zh-Hans' : 'en'}">`));
       assert.equal([...html.matchAll(/<h1\b/g)].length, 1);
       assert.match(html, /aria-current="page"/);
-      assert.match(html, /deck 0\.6\.5/);
+      assert.match(html, /deck 0\.7\.8/);
       assert.ok(html.includes(`/blob/${config.guideRef}/README.md`));
       assert.ok(html.includes(`rel="canonical" href="${config.siteUrl}/${route}"`));
       assert.ok(html.includes(`hreflang="${locale ? 'en' : 'zh-Hans'}"`));
@@ -126,6 +126,22 @@ test('both languages publish all six topics, overview, metadata and version-scop
   // The Slack placeholders are user-authored template syntax, not unresolved site config.
   for (const route of ['guide/automations/', 'zh/guide/automations/']) {
     assert.match(await readFile(path.join(dist, route, 'index.html'), 'utf8'), /\{\{msg\.text\}\}/);
+  }
+});
+
+test('both languages describe current voice and integration behavior', async () => {
+  const english = await readFile(path.join(dist, 'guide/input-and-settings/index.html'), 'utf8');
+  const chinese = await readFile(path.join(dist, 'zh/guide/input-and-settings/index.html'), 'utf8');
+  for (const html of [english, chinese]) {
+    assert.doesNotMatch(html, /An empty draft starts recording|仅插入把文字放进终端/);
+    assert.match(html, /0\.7\.8/);
+  }
+  assert.match(english, /never sends Enter for voice input/);
+  assert.match(chinese, /语音输入不会替你按回车/);
+  for (const route of ['guide/integrations/index.html', 'zh/guide/integrations/index.html']) {
+    const html = await readFile(path.join(dist, route), 'utf8');
+    assert.match(html, /Phone Connector|手机 Connector/);
+    assert.match(html, /Secure Tunnel/);
   }
 });
 

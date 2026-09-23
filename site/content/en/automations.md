@@ -10,6 +10,7 @@ Save reusable prompts and create a new session at a scheduled time or from your 
 | Send the same prompts periodically into that session | Repeat on the list |
 | Save prompts for reuse | A project template |
 | Create a fresh card, launch a command and send a template each time | A project automation |
+| Collect messages from selected Slack channels without automatically sending every message | A channel monitor rule and card scratchpad |
 
 Open **Templates…** or **Automations…** from **New session ▾**. Once a project has rules, the **↻ N automation(s)** chip also opens the manager.
 
@@ -47,6 +48,8 @@ Validated tokens are kept in macOS Keychain. The App token is optional. Without 
 Templates can use `{{msg.text}}`, `{{msg.from}}`, `{{msg.where}}` and `{{msg.link}}` for the message text, author, location and link. deck does not automatically reply to Slack.
 
 Only your own reactions trigger work. Reactions already present when the rule is added are not replayed. The same reaction on the same message creates a card only once; an emoji name can belong to only one rule across projects. Slack rules have no pause: delete the rule to stop future triggers. Existing cards remain.
+
+For messages posted in a selected channel by allowed users or bots, use the **separate Slack channel monitor** connection. Its first match can create a card and queue a saved template; later matches add scratchpad notes without sending them to the agent. Channel text remains untrusted even when its sender is allowed. [Compare optional integrations →](/guide/integrations/#slack-reactions-and-channel-monitoring)
 
 ## Finishing and inspection
 

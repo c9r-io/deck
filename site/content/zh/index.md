@@ -22,6 +22,8 @@ deck 不提供云服务或云账号，也没有在远端运行任务的服务器
 | 关掉窗口后会发生什么？ | [离开、关闭与恢复](/zh/guide/sessions/) |
 | 如何每天或收到 Slack 标记时开始一项工作？ | [模板与自动化](/zh/guide/automations/) |
 | 语音输入怎么用？设置在哪里改？ | [输入、设置与排障](/zh/guide/input-and-settings/) |
+| Slack 频道、手机和本地 MCP 怎么接入？ | [可选集成](/zh/guide/integrations/) |
+| 如何让 ChatGPT 连接 Deck 项目？ | [ChatGPT Secure Tunnel（英文）](/docs/integrations/chatgpt-secure-tunnel/) |
 
 <span id="记住这三个区别" aria-hidden="true"></span>
 
@@ -33,6 +35,6 @@ deck 不提供云服务或云账号，也没有在远端运行任务的服务器
 
 ## 版本范围
 
-本指南适用于 **deck 0.6.6 稳定版**，介绍的功能从 0.6.5 起已提供。0.6.6 改进了 prompt 发送过程中的隐私保护，操作方式没有变化。旧版的功能名称和入口可能不同，可以在设置中查看当前版本；更新的 Nightly 功能暂未收录。
+本指南适用于 **deck 0.7.8 稳定版**，涵盖本地 session 与自动化、本机语音直接输入、卡片备忘录、可选 Slack 与手机集成，以及本地授权的 MCP 访问。旧版功能和入口可能不同，请在设置中检查已安装版本。首页的 0.6.6 演示保留作为看板操作示例，并没有展示 0.7.8 的全部功能。
 
 升级、切换通道及旧版数据兼容性，见[更新与版本](/zh/guide/input-and-settings/#更新与版本)。

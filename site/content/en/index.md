@@ -20,6 +20,7 @@ deck has no cloud service, cloud account or remote server hosting your tasks. Sh
 | What happens when I close the window? | [Leave, close and recover](/guide/sessions/) |
 | How do I start work daily or from a Slack reaction? | [Reuse templates and automations](/guide/automations/) |
 | How do I dictate a prompt, change settings or fix a problem? | [Input, settings and troubleshooting](/guide/input-and-settings/) |
+| How do I use Slack channels, my phone, or local MCP? | [Optional integrations](/guide/integrations/) |
 | How do I connect ChatGPT to a Deck project? | [ChatGPT Secure Tunnel](/docs/integrations/chatgpt-secure-tunnel/) |
 
 ## Keep three distinctions in mind
@@ -30,6 +31,6 @@ deck has no cloud service, cloud account or remote server hosting your tasks. Sh
 
 ## Version scope
 
-This guide uses the **deck 0.6.5** feature baseline and also applies to **0.6.6 Stable**, including Needs attention, lists, human inspection, automations and on-device voice drafts. Check your installed version in Settings; earlier versions may have different labels and entry points. Version 0.6.6 hardens prompt-delivery privacy without adding new user flows. Later Nightly changes are outside this guide's baseline.
+This guide covers **deck 0.7.8 Stable**: local sessions and automations, on-device voice typing, scratchpads, optional Slack and Phone integrations, and locally authorized MCP access. Check your installed version in Settings; earlier versions can have different features and controls. The 0.6.6 recording in the homepage demo remains a labeled example of the Board flow, not a tour of every 0.7.8 feature.
 
 See [updates and versions](/guide/input-and-settings/#updates-and-versions) for upgrades, channel switching and older data compatibility.

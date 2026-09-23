@@ -48,9 +48,8 @@ The production helper is an independently signed/notarized optional artifact:
 /Applications/Deck Tunnel Helper.app/Contents/MacOS/deck-tunnelctl
 ```
 
-For Secure Tunnel support, download the separate
-`Deck_Tunnel_Helper_nightly_<Deck version>_<build SHA>_macOS.zip` asset from the
-matching Nightly release. Extract `Deck Tunnel Helper.app` and move the app to
+For Secure Tunnel support, download the separate **Deck Tunnel Helper** asset
+from the same Deck release. Extract `Deck Tunnel Helper.app` and move the app to
 `/Applications/Deck Tunnel Helper.app`. Deck Settings detects the installed
 helper automatically. The helper is not a daemon or Login Item; leaving it
 uninstalled does not affect Deck MCP core. No shell installer, `chmod`, or

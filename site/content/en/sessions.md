@@ -16,7 +16,7 @@ Leaving a terminal view, quitting the app and ending a session are different act
 
 ## End a session deliberately
 
-Closing a card affects its running shell, agent and processes. In 0.6.5, the card corner × and right-click close act immediately; the in-session close action asks for confirmation. Check unsaved work and pending lists first.
+Closing a card affects its running shell, agent and processes. The card corner × and right-click close act immediately; the in-session close action asks for confirmation. Check unsaved work and pending lists first.
 
 Ctrl+D in a terminal is interpreted by the foreground program. It exits the shell only in applicable contexts, such as at a shell prompt. It is not a universal shortcut for closing deck.
 
