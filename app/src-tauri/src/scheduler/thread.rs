@@ -1,7 +1,6 @@
 //! The scheduler thread: boot-time queue recovery, the 20s tick with a
 //! condition-variable wake, and per-session worker threads.
 
-use std::collections::HashMap;
 use std::sync::atomic::Ordering as AtomicOrdering;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -96,13 +95,9 @@ pub(crate) fn spawn_scheduler(app: AppHandle) {
         if state.q.lock_or_recover().items.is_empty() {
             continue;
         }
-        // pane activity for chain-mode quiet checks (one snapshot per tick)
-        let mut activity: HashMap<String, u64> = HashMap::new();
-        for row in crate::tmux::list_panes().unwrap_or_default() {
-            activity
-                .entry(row.session_name)
-                .or_insert(row.window_activity);
-        }
+        // pane activity (chain quiet) and agent hook words (agent hold), one
+        // snapshot per tick
+        let activity = observe(crate::tmux::list_panes().unwrap_or_default());
         // expired rules die quietly, transactionally like every other change
         let now = now_epoch();
         if state

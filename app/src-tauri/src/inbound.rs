@@ -1059,6 +1059,9 @@ pub(crate) fn inbound_check_now() {
         *f = true;
     }
     cv.notify_all();
+    // every inbound settings save ends here: the idle Slack channel thread
+    // re-reads its settings now instead of polling for them
+    crate::inbound_channel::wake_channel();
 }
 
 /* ---------- the poller ---------- */

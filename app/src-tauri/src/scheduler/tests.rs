@@ -45,6 +45,7 @@ fn qi(id: &str, mode: &str) -> QueueItem {
         last_context: None,
         revision: 0,
         review: None,
+        external: false,
     }
 }
 
@@ -69,6 +70,28 @@ fn qs(items: Vec<QueueItem>) -> QueueState {
     };
     migrate_groups(&mut q);
     q
+}
+
+/// Session "s" last produced output at `activity`; no agent hook word.
+fn seen(activity: u64) -> Observations {
+    HashMap::from([(
+        "s".to_string(),
+        Observed {
+            activity,
+            agent: None,
+        },
+    )])
+}
+
+/// Session "s" quiet since `activity`, with the agent hook reporting `agent`.
+fn seen_agent(activity: u64, agent: &'static str) -> Observations {
+    HashMap::from([(
+        "s".to_string(),
+        Observed {
+            activity,
+            agent: Some(agent),
+        },
+    )])
 }
 
 fn ids(v: &[QueueItem]) -> Vec<&str> {
@@ -160,7 +183,7 @@ fn failed_head_blocks_group_until_user_skips_or_retries() {
     c1.attempts = MAX_ATTEMPTS; // dead: attempts exhausted
     let c2 = qi("c2", "chain"); // adjacency → same group as c1
     let mut q = qs(vec![c1, c2]);
-    let quiet: HashMap<String, u64> = [("s".into(), NOW - 400)].into();
+    let quiet = seen(NOW - 400);
     // the dead head blocks its group — nothing fires on its own
     assert!(select_due(&q, NOW, 720, &quiet).is_empty());
     // user skip (= remove the failed step) unblocks the successor
@@ -183,7 +206,7 @@ fn failed_item_backs_off_then_retries_with_priority() {
     a.at = Some(NOW - 1);
     a.added = 10; // separate group (not chained after c1? adjacency: at starts its own group)
     let mut q = qs(vec![c1, a]);
-    let quiet: HashMap<String, u64> = [("s".into(), NOW - 400)].into();
+    let quiet = seen(NOW - 400);
     // 10s after 1st failure: backoff (20s) holds the retry; the due at runs
     assert_eq!(ids(&select_due(&q, NOW, 720, &quiet)), ["a"]);
     // backoff elapsed → the retry outranks even a due at
@@ -211,10 +234,10 @@ fn chain_respects_order_quiet_and_gap() {
     let c2 = qi("c2", "chain");
     let mut q = qs(vec![c1, c2]);
     // quiet session, no prior fire → only the HEAD chain step fires
-    let quiet: HashMap<String, u64> = [("s".into(), NOW - 400)].into();
+    let quiet = seen(NOW - 400);
     assert_eq!(ids(&select_due(&q, NOW, 720, &quiet)), ["c1"]);
     // recent activity → nothing
-    let busy: HashMap<String, u64> = [("s".into(), NOW - 10)].into();
+    let busy = seen(NOW - 10);
     assert!(select_due(&q, NOW, 720, &busy).is_empty());
     // fired 10s ago → min-gap blocks even a quiet session
     q.last_fired.insert("s".into(), NOW - 10);
@@ -246,7 +269,7 @@ fn recurring_iterations_do_not_interleave() {
     assert_eq!(q.items.len(), 2, "rule + spawned step");
     // cadence elapsed again, session quiet — but the previous iteration
     // still has a live step, so the rule must NOT fire
-    let quiet: HashMap<String, u64> = [("s".into(), NOW + 600 - 400)].into();
+    let quiet = seen(NOW + 600 - 400);
     let later = NOW + 600;
     let due = select_due(&q, later, 720, &quiet);
     // the only candidate can be the iteration's chain step, never the rule
@@ -260,7 +283,7 @@ fn recurring_iterations_do_not_interleave() {
         .id
         .clone();
     finalize_delivery(&mut q, &step_id, "d2", later, false);
-    let quiet2: HashMap<String, u64> = [("s".into(), later + 300 - 400)].into();
+    let quiet2 = seen(later + 300 - 400);
     let due = select_due(&q, later + 300, 720, &quiet2);
     assert_eq!(due.len(), 1);
     assert_eq!(due[0].mode, "every");
@@ -570,6 +593,8 @@ fn add_validation_rejects_bad_combinations() {
         tpl_idx: None,
         tpl_total: None,
         group: None,
+        external_text: false,
+        channel_path: false,
     };
     assert!(validate_add(&base()).is_ok());
     let mut a = base();
@@ -636,7 +661,7 @@ fn chain_quiet_time_is_per_item() {
     let mut c = qi("c", "chain");
     c.quiet_secs = Some(30);
     let q = qs(vec![c]);
-    let act = |ago: u64| HashMap::from([("s".to_string(), NOW - ago)]);
+    let act = |ago: u64| seen(NOW - ago);
     assert!(select_due(&q, NOW, 720, &act(29)).is_empty());
     assert_eq!(ids(&select_due(&q, NOW, 720, &act(30))), ["c"]);
     // unset = the default
@@ -672,6 +697,8 @@ fn add_validation_covers_quiet_and_start() {
         tpl_idx: None,
         tpl_total: None,
         group: None,
+        external_text: false,
+        channel_path: false,
     };
     let mut a = base();
     a.quiet_secs = Some(MIN_QUIET_SECS);
@@ -911,7 +938,7 @@ fn scheduling_for_a_session_again_clears_its_tombstone() {
     clear_session_items(&mut q, "s");
     add_item(&mut q, add_args("s", "hello"), "hello".into()).unwrap();
     assert!(!is_cancelled(&q, "s"));
-    let quiet: HashMap<String, u64> = [("s".into(), NOW - 400)].into();
+    let quiet = seen(NOW - 400);
     assert_eq!(select_due(&q, NOW, 720, &quiet).len(), 1);
 }
 
@@ -1076,7 +1103,7 @@ fn send_test(
     dirty: &AtomicBool,
     session: &str,
     now_min: u32,
-    activity: &HashMap<String, u64>,
+    activity: &Observations,
     fire: &(dyn Fn(&QueueItem) -> Result<(), DeckError> + Sync),
     persist: &(dyn Fn(&QueueState) -> Result<(), DeckError> + Sync),
 ) -> SendResult {
@@ -1800,6 +1827,8 @@ fn add_args(session: &str, text: &str) -> QueueAddArgs {
         tpl_idx: None,
         tpl_total: None,
         group: None,
+        external_text: false,
+        channel_path: false,
     }
 }
 
@@ -1959,7 +1988,7 @@ fn a_failed_retry_save_keeps_the_item_out_of_the_candidate_set() {
     assert!(with_queue(&qm, &|q| disk.persist(q), |q| retry_item(q, "f")).is_err());
     let q = qm.lock().unwrap();
     assert!(item_dead(&q.items[0]), "still dead in memory");
-    let quiet: HashMap<String, u64> = [("s".into(), NOW - 400)].into();
+    let quiet = seen(NOW - 400);
     assert!(
         select_due(&q, NOW, 720, &quiet).is_empty(),
         "a retry the user was told failed must not re-enter the schedule"
@@ -2242,9 +2271,7 @@ fn human_inspection_releases_only_its_successor_with_gap_and_quiet_still_require
     confirm_review(&mut q, &d, pane(1), NOW + 2).unwrap();
     assert_eq!(q.reviews.len(), 1);
     assert!(select_for_session(&q, "s", NOW + 30, 0, &HashMap::new()).is_none());
-    assert!(
-        select_for_session(&q, "s", NOW + 61, 0, &HashMap::from([("s".into(), NOW)])).is_none()
-    );
+    assert!(select_for_session(&q, "s", NOW + 61, 0, &seen(NOW)).is_none());
     assert_eq!(
         select_for_session(&q, "s", NOW + 181, 0, &HashMap::new())
             .unwrap()
@@ -2558,4 +2585,202 @@ fn external_rows_are_admitted_only_for_an_exact_agent_command() {
             "{cmd:?}"
         );
     }
+}
+
+// ---------- agent hold (select.rs header) ----------
+
+#[test]
+fn needs_input_holds_every_automatic_mode() {
+    let mut a = qi("a", "at");
+    a.at = Some(NOW - 1);
+    let c = qi("c", "chain");
+    let r = rule(300);
+    for item in [a, c, r] {
+        let id = item.id.clone();
+        let q = qs(vec![item]);
+        let quiet = NOW - 400;
+        assert!(
+            select_due(&q, NOW, 720, &seen_agent(quiet, "needs-input")).is_empty(),
+            "{id}: a permission prompt must not receive a paste and Enter"
+        );
+        for agent in ["working", "turn-done"] {
+            assert_eq!(
+                ids(&select_due(&q, NOW, 720, &seen_agent(quiet, agent))),
+                [id.as_str()],
+                "{id}/{agent}: only needs-input holds an owner row"
+            );
+        }
+        assert_eq!(ids(&select_due(&q, NOW, 720, &seen(quiet))), [id.as_str()]);
+    }
+}
+
+#[test]
+fn external_follow_up_row_needs_a_positive_turn_done() {
+    let mut c = qi("c", "chain");
+    c.external = true;
+    let q = qs(vec![c]);
+    let quiet = NOW - 400;
+    for agent in ["working", "needs-input"] {
+        assert!(
+            select_due(&q, NOW, 720, &seen_agent(quiet, agent)).is_empty(),
+            "{agent}"
+        );
+    }
+    // no hook word: quiet alone cannot tell a finished turn from a prompt
+    assert!(select_due(&q, NOW, 720, &seen(quiet)).is_empty());
+    // a dead session has no hook word either
+    assert!(select_due(&q, NOW, 720, &HashMap::new()).is_empty());
+    assert_eq!(
+        ids(&select_due(&q, NOW, 720, &seen_agent(quiet, "turn-done"))),
+        ["c"]
+    );
+    // turn-done does not skip the quiet time
+    assert!(select_due(&q, NOW, 720, &seen_agent(NOW - 10, "turn-done")).is_empty());
+    // an owner row keeps the quiet-only rule, dead session included
+    let q = qs(vec![qi("o", "chain")]);
+    assert_eq!(ids(&select_due(&q, NOW, 720, &HashMap::new())), ["o"]);
+}
+
+#[test]
+fn external_first_row_is_not_held_without_hooks() {
+    // a fresh channel card's first row: its agent has had no turn yet
+    let mut a = qi("a", "at");
+    a.at = Some(NOW - 1);
+    a.external = true;
+    let q = qs(vec![a]);
+    assert_eq!(ids(&select_due(&q, NOW, 720, &HashMap::new())), ["a"]);
+    assert!(select_due(&q, NOW, 720, &seen_agent(NOW - 400, "needs-input")).is_empty());
+}
+
+#[test]
+fn manual_send_now_is_not_held_by_the_agent() {
+    let mut c = qi("c", "chain");
+    c.external = true;
+    let q = qs(vec![c]);
+    let held = seen_agent(NOW - 400, "needs-input");
+    assert!(select_for_request(&q, "s", NOW, 720, &held, None).is_none());
+    assert_eq!(
+        select_for_request(&q, "s", NOW, 720, &held, Some("c"))
+            .unwrap()
+            .id,
+        "c"
+    );
+}
+
+#[test]
+fn plan_reports_the_agent_hold() {
+    let mut c = qi("c", "chain");
+    c.external = true;
+    let q = qs(vec![c]);
+    let stage = |obs: Option<&Observations>| {
+        serde_json::to_value(plan_item(&q, &q.items[0], NOW, 720, obs)).unwrap()["stage"].clone()
+    };
+    assert_eq!(stage(Some(&seen(NOW - 400))), "agent");
+    assert_eq!(stage(Some(&seen_agent(NOW - 400, "turn-done"))), "context");
+    assert_eq!(stage(None), "unknown");
+}
+
+#[test]
+fn spawned_iteration_rows_inherit_the_external_mark() {
+    let mut r = rule(300);
+    r.steps = vec!["s2".into()];
+    r.external = true;
+    let mut q = qs(vec![r]);
+    finalize_delivery(&mut q, "t", "d1", NOW, false);
+    let step = q.items.iter().find(|i| i.mode == "chain").unwrap();
+    assert!(step.external);
+}
+
+#[test]
+fn external_mark_is_omitted_when_false() {
+    let owner = serde_json::to_value(qi("o", "at")).unwrap();
+    assert!(owner.get("external").is_none());
+    let mut ext = qi("e", "chain");
+    ext.external = true;
+    let raw = serde_json::to_string(&ext).unwrap();
+    let back: QueueItem = serde_json::from_str(&raw).unwrap();
+    assert!(back.external);
+}
+
+#[test]
+fn leading_command_skips_whitespace_and_format_characters() {
+    for text in [
+        "/clear",
+        "!rm -rf ~",
+        "# remember this",
+        "  \n\t/compact",
+        "\u{00A0}!x",
+        "\u{0085}/x",
+        "\u{3000}#x",
+        "\u{200B}/x",
+        "\u{200D}!x",
+        "\u{180E}/x",
+        "\u{2060}#x",
+        "\u{FEFF}/x",
+        "\u{00AD}!x",
+        "\u{202E}/x",
+        "\u{E0041}/x",
+    ] {
+        assert!(ops::leading_command(text), "{text:?}");
+    }
+    for text in [
+        "",
+        "   ",
+        "please run /clear",
+        "<@U123> /clear",
+        "@user hi",
+        "x # y",
+        "\u{200B}hello",
+    ] {
+        assert!(!ops::leading_command(text), "{text:?}");
+    }
+}
+
+#[test]
+fn external_text_rows_are_refused_with_a_leading_command() {
+    let mut args = add_args("s", "\u{200B} /clear");
+    args.mode = "at".into();
+    args.at = Some(NOW);
+    args.cmd = "claude".into();
+    args.external_text = true;
+    assert_eq!(validate_add(&args).unwrap_err().kind(), ErrorKind::Invalid);
+    // the same text from the owner is theirs to queue
+    args.external_text = false;
+    assert!(validate_add(&args).is_ok());
+    // a plain external message passes, but only for an exact agent command
+    args.external_text = true;
+    args.text = "please look at INC-42".into();
+    assert!(validate_add(&args).is_ok());
+    args.cmd = "zsh".into();
+    assert_eq!(validate_add(&args).unwrap_err().kind(), ErrorKind::Invalid);
+}
+
+#[test]
+fn external_rows_carry_the_mark_and_keep_old_fingerprints() {
+    let mut q = qs(Vec::new());
+    let mut args = add_args("s", "hello");
+    args.mode = "at".into();
+    args.at = Some(NOW);
+    args.cmd = "claude".into();
+    let before = serde_json::to_value(&args).unwrap();
+    assert!(before.get("externalText").is_none());
+    assert!(before.get("channelPath").is_none());
+    args.channel_path = true;
+    assert_eq!(serde_json::to_value(&args).unwrap(), before);
+    add_item(&mut q, args.clone(), "hello".into()).unwrap();
+    assert!(q.items[0].external);
+    args.channel_path = false;
+    add_item(&mut q, args.clone(), "hello".into()).unwrap();
+    assert!(!q.items[1].external);
+    args.external_text = true;
+    add_item(&mut q, args, "hello".into()).unwrap();
+    assert!(q.items[2].external);
+    // a caller cannot set the channel path itself
+    let parsed: QueueAddArgs = serde_json::from_value(serde_json::json!({
+        "session": "s", "dir": "", "cmd": "claude", "text": "x", "mode": "at", "at": 1,
+        "every": null, "winFrom": null, "winTo": null, "untilN": null, "untilAt": null,
+        "steps": null, "tpl": null, "tplIdx": null, "tplTotal": null, "channelPath": true
+    }))
+    .unwrap();
+    assert!(!parsed.channel_path);
 }

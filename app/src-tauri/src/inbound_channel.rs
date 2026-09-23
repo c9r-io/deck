@@ -16,8 +16,12 @@
 //! the explicit unresolved gap. Message bodies live only in this private durable
 //! inbox and the eventual card buffer. Tokens live only in closed Keychain
 //! slots, read once per connection attempt; a missing token is re-read only
-//! after a Deck credential change or a 5 min backstop, never per tick. The
-//! adapter never writes to Slack.
+//! after a Deck credential change, a settings save or a 5 min backstop, never
+//! per tick. While idle (disabled, no active rule, or no token) the thread
+//! sleeps on a condition (`wake_channel`, signalled by credential set/clear
+//! and by `inbound_check_now`, which every inbound settings save calls) with
+//! a 60 s backstop when disabled — it does not poll. The adapter never
+//! writes to Slack.
 //!
 //! Channel text is untrusted agent input. Admission (`channel_agent_command`)
 //! is the shared Slack/Connector policy: a remote target command must be
@@ -986,15 +990,38 @@ fn credentials_unchanged(epoch: u64) -> bool {
 }
 
 /// With a token missing, the socket loop does not re-query the Keychain on
-/// every tick: only a Deck credential save/clear (which bumps the epoch) or a
-/// long backstop leads to the next read.
+/// every tick: only a Deck credential save/clear or settings save (both call
+/// `wake_channel`) or a long backstop leads to the next read.
 const MISSING_TOKEN_RECHECK: Duration = Duration::from_secs(300);
+/// Backstop re-check while the connection is disabled or has no active rule;
+/// a settings save wakes the thread at once.
+const DISABLED_RECHECK: Duration = Duration::from_secs(60);
 
-fn wait_for_credential_change(epoch: u64) {
-    let deadline = std::time::Instant::now() + MISSING_TOKEN_RECHECK;
-    while credentials_unchanged(epoch) && std::time::Instant::now() < deadline {
-        std::thread::sleep(Duration::from_secs(2));
+/// Wakes the idle socket thread (disabled, or waiting for a token) instead of
+/// letting it poll. The flag stays set until the thread consumes it, so a
+/// signal between its config read and its wait is never lost.
+static CHANNEL_WAKE: (Mutex<bool>, std::sync::Condvar) =
+    (Mutex::new(false), std::sync::Condvar::new());
+
+/// Settings or credentials changed: re-read them now.
+pub(crate) fn wake_channel() {
+    let (flag, wake) = &CHANNEL_WAKE;
+    *flag.lock_or_recover() = true;
+    wake.notify_all();
+}
+
+fn wait_for_wake(backstop: Duration) {
+    let (flag, wake) = &CHANNEL_WAKE;
+    let deadline = std::time::Instant::now() + backstop;
+    let mut woken = flag.lock_or_recover();
+    while !*woken {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
+            break;
+        }
+        woken = crate::sync::wait_timeout_or_recover(wake, woken, left);
     }
+    *woken = false;
 }
 
 fn note_rejected(code: &'static str) {
@@ -1163,6 +1190,7 @@ pub(crate) async fn channel_token_set(slot: String, value: String) -> Result<(),
         let _control = CHANNEL_CONTROL.lock_or_recover();
         keychain::set(slot, value).map_err(|_| DeckError::new(ErrorKind::Other, "keychain"))?;
         CREDENTIAL_EPOCH.fetch_add(1, Ordering::SeqCst);
+        wake_channel();
         Ok(())
     })
     .await
@@ -1184,6 +1212,7 @@ pub(crate) fn channel_token_clear(slot: String) -> Result<(), DeckError> {
     let _control = CHANNEL_CONTROL.lock_or_recover();
     let result = keychain::clear(slot);
     CREDENTIAL_EPOCH.fetch_add(1, Ordering::SeqCst);
+    wake_channel();
     result.map_err(|_| DeckError::new(ErrorKind::Other, "keychain"))
 }
 
@@ -1296,7 +1325,7 @@ fn socket_loop(app: AppHandle) {
         let cfg = read_config();
         if !cfg.connection.enabled || !any_rule_active(&cfg) {
             set_disabled();
-            std::thread::sleep(Duration::from_secs(10));
+            wait_for_wake(DISABLED_RECHECK);
             continue;
         }
         let credential_epoch = CREDENTIAL_EPOCH.load(Ordering::SeqCst);
@@ -1305,7 +1334,7 @@ fn socket_loop(app: AppHandle) {
             keychain::get(Slot::SlackChannelAppToken),
         ) else {
             set_gap(false, Some("no-token"));
-            wait_for_credential_change(credential_epoch);
+            wait_for_wake(MISSING_TOKEN_RECHECK);
             continue;
         };
         if !credentials_unchanged(credential_epoch) {
@@ -1973,6 +2002,24 @@ mod tests {
         assert!(credentials_unchanged(epoch));
         CREDENTIAL_EPOCH.fetch_add(1, Ordering::SeqCst);
         assert!(!credentials_unchanged(epoch));
+    }
+
+    #[test]
+    fn idle_thread_wakes_on_a_signal_instead_of_polling() {
+        // a signal that landed before the wait is not lost
+        wake_channel();
+        let started = std::time::Instant::now();
+        wait_for_wake(Duration::from_secs(30));
+        assert!(started.elapsed() < Duration::from_secs(5));
+        // a signal during the wait (a settings save, a token stored) ends it
+        let waker = std::thread::spawn(|| {
+            std::thread::sleep(Duration::from_millis(100));
+            crate::inbound::inbound_check_now();
+        });
+        let started = std::time::Instant::now();
+        wait_for_wake(Duration::from_secs(30));
+        assert!(started.elapsed() < Duration::from_secs(5));
+        waker.join().unwrap();
     }
 
     #[test]

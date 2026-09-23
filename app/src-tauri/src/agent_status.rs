@@ -14,8 +14,10 @@
 //! - What decides whether a state is still valid is the pane's observed
 //!   foreground process, captured AT EVENT TIME (`expected_fg`), never a
 //!   hard-coded per-agent executable list.
-//! - No automatic card movement. This is presentation-only input for the
-//!   board's status dot; the poll merge in `commands.rs` is the sole reader.
+//! - No automatic card movement. This is input for the board's status dot
+//!   (the poll merge in `commands.rs`) and for the scheduler's agent hold
+//!   (`scheduler::observe`), which may only DELAY a queued row — never
+//!   release, target or move anything. Those two are the only readers.
 //!
 //! Adding an agent module = one entry in `SOURCES` + an installer that
 //! registers that agent's own hook/notify config to call the same helper

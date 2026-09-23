@@ -23,7 +23,9 @@
 //! required in the foreground, otherwise a live non-shell foreground is
 //! captured at creation, otherwise same-pane compatibility delivery is
 //! allowed. Hooks, agent class, output activity and
-//! quiet time never gate delivery. Legacy policy/AgentClass/hook fields are
+//! quiet time never decide the TARGET. (When a row may fire is separate:
+//! quiet time releases a chain row, and a hook word can only hold one —
+//! see the agent hold below.) Legacy policy/AgentClass/hook fields are
 //! ignored and cleaned on the next save without changing schedule/delivery
 //! state. `context.rs` owns metadata-only probing and sanitization.
 //! Injection loads the literal text into a uniquely named tmux buffer, then
@@ -57,8 +59,14 @@
 //! process mismatch bypass; the process comparison is the only thing it can
 //! bypass. "chain" mode fires after
 //! `window_activity` has been quiet for the item's `quiet_secs` (default
-//! `CHAIN_QUIET_SECS`; a permission prompt also counts as quiet — documented
-//! behavior; quiet NEVER means "the agent finished").
+//! `CHAIN_QUIET_SECS`; quiet NEVER means "the agent finished", and a
+//! permission prompt is quiet too). The agent hold (`select.rs` header,
+//! `agent_holds`) closes the permission-prompt case: no automatic row of
+//! any mode fires while the agent hook reports `needs-input`, and an
+//! `external` row (admitted through `channel_queue_add*`, or carrying a
+//! verbatim external message) that follows a previous row waits for a
+//! positive `turn-done` — without hooks it waits for the user. The hold only
+//! delays; it never moves a card, and the plan reports it as stage `agent`.
 //! Round-2/3 semantics (`scheduler/` is the reference, all unit-tested):
 //! - at most ONE candidate per session per tick, ≥60s between any two
 //!   injections into the same session; each due session gets its own
@@ -257,6 +265,11 @@ pub(crate) struct QueueItem {
     review_each: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     review: Option<ReviewCheckpoint>,
+    /// Admitted on the external-message path (`channel_queue_add*`, or a
+    /// verbatim external message): as a follow-up row it waits for the
+    /// agent's positive `turn-done` (`select::agent_holds`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    external: bool,
 }
 
 pub(crate) fn default_state() -> String {

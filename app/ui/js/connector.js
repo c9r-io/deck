@@ -63,9 +63,11 @@ async function queueBuffer(handle, request) {
     if (revision(next) !== request.expectedRevision) throw new Error('revision changed');
     for (const entryId of ids) {
       const operationId = await connectorBufferOperationId(handle, entryId);
+      const external = next.entries.find(entry => entry.id === entryId)?.kind === 'external';
       const result = addQueueCopy(next, entryId, operationId, Date.now());
       if (result.error) throw new Error(result.error);
-      next = result.buffer; prepared.push({ entryId, operationId, text: result.copy.text, at: Math.floor(result.copy.createdAt / 1000) });
+      next = result.buffer; prepared.push({ entryId, operationId, text: result.copy.text, at: Math.floor(result.copy.createdAt / 1000),
+        external });
     }
     if (bufferLimitError(next)) throw new Error('buffer capacity');
     copiesPrepared = true; card.buffer = next;
@@ -81,10 +83,11 @@ async function queueBuffer(handle, request) {
         const copy = copies.find(value => value.operationId === item.operationId);
         if (!copy || copy.text !== item.text || copy.state !== 'uncertain') throw new Error('immutable copy missing');
         attempted = true;
-        // phone text: the native agent-only gate is the authority, not this check
+        // phone text: the native agent-only gate (and, for a channel entry,
+        // the leading-command refusal) is the authority, not this check
         await inv('channel_queue_add', { args: { session: card.session, cardId: card.id,
           operationId: copy.operationId, dir: card.dir, cmd: card.cmd, text: copy.text,
-          mode: 'at', at: item.at } });
+          mode: 'at', at: item.at, ...(item.external ? { externalText: true } : {}) } });
         copy.state = 'queued';
       }
       card.buffer.revision = (card.buffer.revision || 0) + 1;

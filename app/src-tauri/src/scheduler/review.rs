@@ -30,7 +30,7 @@
 //! - `QueuePlan` / `queue_view` are the read-only projection the panel shows:
 //!   the backend's own selection stage per item (review, review-approved,
 //!   ambiguous, firing, failed, paused, retry, previous, iteration, gap,
-//!   time, quiet, context, unknown) with its observation time, so the
+//!   time, agent, quiet, context, unknown) with its observation time, so the
 //!   webview never derives readiness from hook state.
 
 use super::*;
@@ -414,11 +414,11 @@ pub(crate) fn plan_item(
     i: &QueueItem,
     now: u64,
     minutes: u32,
-    activity: Option<&HashMap<String, u64>>,
+    activity: Option<&Observations>,
 ) -> QueuePlan {
     let quiet_remaining = activity
         .and_then(|a| a.get(&i.session))
-        .map(|a| (a + i.quiet_secs.unwrap_or(CHAIN_QUIET_SECS)).saturating_sub(now));
+        .map(|o| (o.activity + i.quiet_secs.unwrap_or(CHAIN_QUIET_SECS)).saturating_sub(now));
     let gap_until = q
         .last_fired
         .get(&i.session)
@@ -456,6 +456,8 @@ pub(crate) fn plan_item(
         || i.mode == "every" && !every_due(i, now, minutes)
     {
         "time"
+    } else if activity.is_some_and(|a| agent_holds(i, a.get(&i.session))) {
+        "agent"
     } else if i.mode == "chain" && quiet_remaining.is_some_and(|s| s > 0) {
         "quiet"
     } else if activity.is_none() {
@@ -481,11 +483,7 @@ pub(crate) struct QueueView {
 
 pub(crate) fn queue_view(q: QueueState) -> QueueView {
     let now = now_epoch();
-    let activity = crate::tmux::list_panes().ok().map(|rows| {
-        rows.into_iter()
-            .map(|r| (r.session_name, r.window_activity))
-            .collect()
-    });
+    let activity = crate::tmux::list_panes().ok().map(observe);
     let plans = q
         .items
         .iter()

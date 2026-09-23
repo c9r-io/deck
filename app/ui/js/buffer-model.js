@@ -1,8 +1,8 @@
 // buffer-model.js — pure card scratchpad schema, bounds and delivery evidence.
 // A buffer belongs to one persisted card. Queueing stores an immutable copy;
 // later source edits never alter text already handed to the scheduler. An
-// external message whose first character is `!` or `/` never queues as-is
-// (`leadingCommand`), on the desktop or through the Connector.
+// external message whose first visible character is `!`, `/` or `#` never
+// queues as-is (`leadingCommand`), on the desktop or through the Connector.
 
 export const BUFFER_MAX_ENTRIES = 256;
 export const BUFFER_MAX_COPIES = 256;
@@ -78,10 +78,17 @@ export function deleteEntry(buffer, id) {
 }
 
 // An external (Slack) message is untrusted agent input: like a channel
-// template, it may never make `!` (shell mode) or `/` (slash command) the
-// first character the agent reads. The user adopts such text by copying it
-// into a manual note, which is theirs to queue.
-const LEADING_COMMAND = /^\s*[!/]/;
+// template, it may never make `!` (shell mode), `/` (slash command) or `#`
+// (Claude Code memory shortcut) the first character the agent reads, not
+// even behind whitespace or invisible format characters. The native
+// `scheduler::ops::leading_command` is the authority (a row queued with
+// `externalText` is refused there); this is its UI twin over the same set:
+// Unicode whitespace (`\s` plus U+0085) and format characters (`\p{Cf}`).
+// `@` stays allowed: Slack sends a mention as `<@U…>`, and an `@path`
+// reference works anywhere in a prompt, so a leading-only refusal would
+// close nothing. The user adopts such text by copying it into a manual
+// note, which is theirs to queue.
+const LEADING_COMMAND = /^[\s\u0085\p{Cf}]*[!/#]/u;
 export const leadingCommand = entry => entry?.kind === 'external' && LEADING_COMMAND.test(String(entry.text || ''));
 
 export function addQueueCopy(buffer, id, operationId, now) {

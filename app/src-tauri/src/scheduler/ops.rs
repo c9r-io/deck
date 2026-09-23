@@ -34,7 +34,18 @@
 //!   `bracketed-paste` binding inserts them into the line editor rather than
 //!   running them; not yet verified against every shell configuration), and
 //!   the separate Enter is refused because the foreground changed. Saving a
-//!   list as a template is the user adopting that text as their own.
+//!   list as a template is the user adopting that text as their own. Every
+//!   row admitted here is marked `external` (backend-set, `channel_path`),
+//!   and its follow-up rows wait for a positive agent `turn-done`
+//!   (`select.rs`, agent hold).
+//! - `external_text` is the caller's statement that a row's text IS an
+//!   external message verbatim (a Slack buffer entry, on either path).
+//!   `validate_add` then requires the channel agent command and refuses a
+//!   text whose first visible character is `!`, `/` or `#`
+//!   (`leading_command`: Unicode whitespace and format characters skipped).
+//!   This is the authoritative check; `leadingCommand` in buffer-model.js is
+//!   the UI hint over the same character set. Template-filled rows are not
+//!   verbatim — their first line is the rule owner's text.
 //! - The firing contract (`firing_conflict`): while an item is mid-send
 //!   ("firing" persisted, the paste possibly in flight), awaiting an
 //!   ambiguous-delivery decision, or standing as a review checkpoint,
@@ -213,6 +224,42 @@ pub(crate) struct QueueAddArgs {
     /// newest-group fallback below is only for callers that do not say.
     #[serde(default)]
     pub(crate) group: Option<String>,
+    /// The text is an external message copied verbatim (a Slack buffer
+    /// entry): admitted only through the channel agent gate and refused when
+    /// it would open with an agent command character (`leading_command`).
+    /// Omitted when false so older operation fingerprints stay identical.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) external_text: bool,
+    /// Set only by `channel_queue_add*`, never by a caller: the row entered
+    /// on the external-message path (`QueueItem.external`).
+    #[serde(skip)]
+    pub(crate) channel_path: bool,
+}
+
+/// Format (Unicode Cf) characters: invisible, so they must not hide what
+/// the agent reads first. Together with `char::is_whitespace` this is the
+/// set `leading_command` skips; `LEADING_COMMAND` in ui/js/buffer-model.js
+/// is its twin (`[\s\u0085\p{Cf}]`).
+fn format_char(c: char) -> bool {
+    matches!(c,
+        '\u{00AD}' | '\u{0600}'..='\u{0605}' | '\u{061C}' | '\u{06DD}' | '\u{070F}'
+        | '\u{0890}'..='\u{0891}' | '\u{08E2}' | '\u{180E}' | '\u{200B}'..='\u{200F}'
+        | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{206F}'
+        | '\u{FEFF}' | '\u{FFF9}'..='\u{FFFB}' | '\u{110BD}' | '\u{110CD}'
+        | '\u{13430}'..='\u{1343F}' | '\u{1BCA0}'..='\u{1BCA3}'
+        | '\u{1D173}'..='\u{1D17A}' | '\u{E0001}' | '\u{E0020}'..='\u{E007F}')
+}
+
+/// Whether an external message would make an agent command character the
+/// first thing the agent reads: `!` (shell mode), `/` (slash command) or
+/// `#` (Claude Code memory shortcut), after any leading whitespace or
+/// format characters. `@` is deliberately absent: Slack delivers a mention
+/// as `<@U…>`, and Claude Code resolves an `@path` reference anywhere in a
+/// prompt, so refusing only a leading one would close nothing.
+pub(crate) fn leading_command(text: &str) -> bool {
+    text.chars()
+        .find(|c| !c.is_whitespace() && !format_char(*c))
+        .is_some_and(|c| matches!(c, '!' | '/' | '#'))
 }
 
 /// Queue text is what tmux pastes, byte for byte, so it is stored the way it
@@ -246,6 +293,15 @@ pub(crate) const MAX_QUIET_SECS: u64 = 86_400;
 /// Reject invalid schedule combinations up front.
 pub(crate) fn validate_add(a: &QueueAddArgs) -> Result<(), DeckError> {
     crate::tmux::validate_session_name(&a.session)?;
+    if a.external_text {
+        require_channel_agent(a)?;
+        if leading_command(&a.text) {
+            return Err(DeckError::new(
+                ErrorKind::Invalid,
+                "an external message starting with !, / or # cannot be queued as-is",
+            ));
+        }
+    }
     match a.mode.as_str() {
         "at" => {
             if a.at.is_none() {
@@ -533,6 +589,7 @@ fn add_item_bound(
         revision: 0,
         review_each: args.review_each || inherited_review,
         review: None,
+        external: args.channel_path || args.external_text,
     });
     if let (Some(id), Some(fingerprint)) = (operation_id, operation_fingerprint) {
         let item = q.items.last().expect("queue item just appended");
@@ -572,9 +629,10 @@ pub(crate) fn queue_add(
 pub(crate) fn channel_queue_add(
     state: State<'_, Queues>,
     app: AppHandle,
-    args: QueueAddArgs,
+    mut args: QueueAddArgs,
 ) -> Result<(), DeckError> {
     require_channel_agent(&args)?;
+    args.channel_path = true;
     queue_add(state, app, args)
 }
 
@@ -1090,9 +1148,10 @@ pub(crate) fn queue_add_reviewed_list(
 pub(crate) fn channel_queue_add_reviewed_list(
     state: State<'_, Queues>,
     app: AppHandle,
-    args: QueueAddArgs,
+    mut args: QueueAddArgs,
     texts: Vec<String>,
 ) -> Result<(), DeckError> {
     require_channel_agent(&args)?;
+    args.channel_path = true;
     queue_add_reviewed_list(state, app, args, texts)
 }

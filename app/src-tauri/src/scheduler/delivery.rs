@@ -4,7 +4,7 @@
 //! context-safe front half.
 
 use serde::Serialize;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::atomic::AtomicBool;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -372,6 +372,7 @@ pub(crate) fn finalize_delivery(
                     revision: 0,
                     review_each: item.review_each,
                     review: None,
+                    external: item.external,
                 });
             }
         }
@@ -517,7 +518,7 @@ pub(crate) struct ContextHooks<'a> {
 pub(super) struct SendRequest<'a> {
     pub(super) session: &'a str,
     pub(super) now_min: u32,
-    pub(super) activity: &'a HashMap<String, u64>,
+    pub(super) activity: &'a Observations,
     pub(super) requested: Option<&'a str>,
 }
 
@@ -560,7 +561,7 @@ pub(crate) fn send_one(
     dirty: &AtomicBool,
     session: &str,
     now_min: u32,
-    activity: &HashMap<String, u64>,
+    activity: &Observations,
     h: &SendHooks,
 ) -> SendResult {
     send_one_guarded(
@@ -760,7 +761,7 @@ pub(crate) fn send_one_safe(
     dirty: &AtomicBool,
     session: &str,
     now_min: u32,
-    activity: &HashMap<String, u64>,
+    activity: &Observations,
     h: &SendHooks,
     context_hooks: &ContextHooks,
 ) -> SendResult {

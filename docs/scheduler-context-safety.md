@@ -65,8 +65,9 @@ text, quiet time, output activity or hooks.
 
 - Foreground mismatch: keep waiting or cancel/reschedule. Manual immediate
   send applies the same guard and reports the mismatch; there is no bypass.
-  A list can hold external (Slack channel) text, and nothing on a queue row
-  records its origin, so no path may clear a row's expected process.
+  A list can hold external (Slack channel) text, and a row admitted before
+  the `external` mark existed carries no origin, so no path may clear a
+  row's expected process.
 - Identity mismatch: only reachable while deck is waiting for a session it
   just started. The pane is churning, so the item keeps waiting and the next
   pass re-observes it.
@@ -95,10 +96,40 @@ blocked after every update, with chain groups stalled behind their head step.
 | Intent persisted -> accepted send | Existing pending-ledger and ambiguous-on-crash contract applies. |
 | Delete during send | Existing tombstone and session-reaping contract applies. |
 
+## Agent hold
+
+Context protection decides WHERE a row may go; the agent hold only decides
+that a row must not go YET. The agent status hook's closed word can hold a
+row, never release or target one (`scheduler/select.rs`, `agent_holds`):
+
+- No automatic row of any mode is selected while the session's agent reports
+  `needs-input`. A permission prompt is quiet output, and the paste plus its
+  separate Enter would answer it — typically accepting the highlighted
+  "Yes" — instead of reaching the prompt box.
+- A row marked `external` — admitted through `channel_queue_add*` (Slack
+  channel and badge rules, every Connector-originated row) or queued with
+  `externalText` (a verbatim Slack buffer entry) — that follows a previous
+  row (`chain`) additionally needs a positive `turn-done`. With no hook word
+  (hooks not enabled, the agent exited, a dead session) it keeps waiting;
+  the user may send it by hand. The first row of a run is not held without
+  hooks, since the agent has had no turn yet.
+- Owner rows without a hook word keep the quiet-only rule. Manual immediate
+  send is not held. A stale `needs-input` (a question dismissed with Esc
+  fires no Stop hook) holds until the next hook word or until poll
+  reconciliation sees the agent leave the foreground.
+- The hold never moves a card and consumes no attempt. The panel plan
+  reports it as stage `agent`; the hook observation is shown beside it.
+
+A verbatim external message is also refused at admission when its first
+visible character is `!`, `/` or `#` (after Unicode whitespace and format
+characters): `ops::leading_command` is authoritative, and buffer-model.js
+`leadingCommand` is its UI twin.
+
 ## Self-audit
 
 No hook, agent class, readiness label, quiet state or output heuristic is a
-necessary condition for delivery. A resolvable pane owned by the card is
+necessary condition for delivery, except that an `external` follow-up row
+needs a reported `turn-done` (agent hold above). A resolvable pane owned by the card is
 always necessary, and the identity read from it must stay stable from the
 readiness probe through the atomic paste. Foreground equality is necessary
 only when deck captured an expected executable automatically. Compatibility

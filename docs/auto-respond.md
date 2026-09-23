@@ -56,8 +56,14 @@ command), and every template row must start with your own words rather than
 a placeholder. The editor refuses a badge rule that fails this, a stored one
 is listed as blocked, and a badge that reaches it is skipped before any card
 is created. The rows are queued through the native agent-only gate, so they
-are pasted only while that agent is the pane's foreground program. Clock
-rules send only your own text and keep any command.
+are pasted only while that agent is the pane's foreground program. Such a
+run's rows are marked external: after the first, each waits for the agent's
+status hook to report the turn ended (quiet output alone cannot tell a
+finished turn from a permission prompt, and the next row's Enter would
+answer that prompt). Without agent status hooks enabled, those follow-up
+rows wait for you to send them from the ⏱ panel. No automatic row of any
+list is pasted while the hook reports the agent waiting for input or
+permission. Clock rules send only your own text and keep any command.
 
 Badges that already exist when a rule is added are left alone. A message
 with several badges makes one card per rule; the same badge on the same

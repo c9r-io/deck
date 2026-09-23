@@ -1,10 +1,62 @@
 //! Candidate selection: deterministic priority (backoff retry → due `at`
 //! → cadence `every` → chain), one candidate per session per tick, and
 //! expiry.
+//!
+//! # Agent hold
+//! The agent hook's closed state word (`agent_status`) can only HOLD a row,
+//! never release one, and it holds automatic selection only (`agent_holds`):
+//! - no row of any mode is selected while the session's agent reports
+//!   `needs-input` — the pasted text and its Enter would answer the agent's
+//!   question or permission prompt (typically accepting the highlighted
+//!   "Yes") instead of reaching the prompt box;
+//! - an `external` follow-up row (chain) additionally requires a POSITIVE
+//!   `turn-done`: quiet alone cannot tell a finished turn from a permission
+//!   prompt, and text that arrived from outside deck must never be what
+//!   answers one. Without a hook report (hooks not enabled, the agent
+//!   exited, a dead session) such a row keeps waiting; the user can still
+//!   send it by hand.
+//!
+//! Owner rows without a hook report keep the quiet-only rule. Manual
+//! send-now (`select_requested`) is the user acting while looking at the
+//! pane and is not held. A stale `needs-input` (a question dismissed with
+//! Esc fires no Stop hook) holds until the next hook word, or until the
+//! poll reconciliation sees the agent leave the foreground.
 
 use std::collections::HashMap;
 
 use super::*;
+use crate::tmux::PaneRow;
+
+/// One tick's view of a session: its pane's last output instant and the
+/// agent hook's closed state word, if an agent module reported one.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct Observed {
+    pub(crate) activity: u64,
+    pub(crate) agent: Option<&'static str>,
+}
+
+/// Session name → observation, one snapshot per tick (first pane wins).
+pub(crate) type Observations = HashMap<String, Observed>;
+
+pub(crate) fn observe(rows: Vec<PaneRow>) -> Observations {
+    let mut seen = Observations::new();
+    for row in rows {
+        let activity = row.window_activity;
+        seen.entry(row.session_name)
+            .or_insert_with_key(|session| Observed {
+                activity,
+                agent: crate::agent_status::current(session),
+            });
+    }
+    seen
+}
+
+/// The agent hold (module header): true while the hook state forbids an
+/// automatic paste of `i` into its session.
+pub(crate) fn agent_holds(i: &QueueItem, seen: Option<&Observed>) -> bool {
+    let agent = seen.and_then(|o| o.agent);
+    agent == Some("needs-input") || (i.external && i.mode == "chain" && agent != Some("turn-done"))
+}
 
 /// Deterministic candidate order within a session: retries whose backoff
 /// elapsed, then the earliest-due at, then a cadence-due rule, then chains.
@@ -34,7 +86,7 @@ fn eligible(
     i: &QueueItem,
     now: u64,
     now_min: u32,
-    activity: &HashMap<String, u64>,
+    activity: &Observations,
 ) -> bool {
     if is_review(i)
         || !review_allows(q, i)
@@ -67,11 +119,14 @@ fn eligible(
             }
         }
     }
+    if agent_holds(i, activity.get(&i.session)) {
+        return false;
+    }
     match i.mode.as_str() {
         "at" => i.at.map(|t| now >= t).unwrap_or(false),
         "chain" => activity
             .get(&i.session)
-            .map(|a| now >= a + i.quiet_secs.unwrap_or(CHAIN_QUIET_SECS))
+            .map(|o| now >= o.activity + i.quiet_secs.unwrap_or(CHAIN_QUIET_SECS))
             .unwrap_or(true), // dead session = quiet; fire_item restarts it
         "every" => {
             // a rule may not start a new iteration while any item of its
@@ -93,7 +148,7 @@ pub(crate) fn select_for_session(
     session: &str,
     now: u64,
     now_min: u32,
-    activity: &HashMap<String, u64>,
+    activity: &Observations,
 ) -> Option<QueueItem> {
     q.items
         .iter()
@@ -109,7 +164,8 @@ pub(crate) fn select_for_session(
         .cloned()
 }
 
-/// Explicit manual-now selection skips only the schedule now_min/quiet/window.
+/// Explicit manual-now selection skips only the schedule now_min/quiet/window
+/// and the agent hold (the user is acting while looking at the pane).
 /// It retains every ordering and exclusivity invariant: pause/ambiguous/dead,
 /// tombstone, session gap, group head and one-active-rule-iteration.
 pub(super) fn select_requested(
@@ -152,7 +208,7 @@ pub(super) fn select_for_request(
     session: &str,
     now: u64,
     now_min: u32,
-    activity: &HashMap<String, u64>,
+    activity: &Observations,
     requested: Option<&str>,
 ) -> Option<QueueItem> {
     match requested {
@@ -167,7 +223,7 @@ pub(crate) fn select_due(
     q: &QueueState,
     now: u64,
     now_min: u32,
-    activity: &HashMap<String, u64>,
+    activity: &Observations,
 ) -> Vec<QueueItem> {
     let mut sessions: Vec<&str> = q.items.iter().map(|i| i.session.as_str()).collect();
     sessions.sort_unstable();

@@ -13,6 +13,9 @@
 // behind; a launch command sent by that start marks the card `launched`.
 // A project's optional defaults (`dir`, `cmd`; pure.js projectDefaults) feed
 // the Board's own entries only; `openProjectDefaults` edits them.
+// Card scratchpad: a copy of an external entry is queued with `externalText`
+// so the native gate judges it; a source link in an entry opens only through
+// `open_target("url")` (links.rs `validate_open`), never by the webview.
 import { $, columnHint, ctx, dotTitle, emit, genId, inv, listeners, POLL_MS, QUIET_SECS, sessionName, setMemChip, state, store, uev } from './state.js';
 import { mutateBoard, mutateBoardDebounced } from './persistence.js';
 import { collapseHome, createConfirmationCounter, createExitRetirementTracker, effectiveCardStatus, initialLaunched, newSessionColumn, newSessionPlan, projectDefaults, reorderById, runFinishHolds, sidebarGroups } from './pure.js';
@@ -592,6 +595,8 @@ async function persistBuffer(card, expectedRevision, next) {
 }
 
 const bufferEvidence = copy => copyEvidence(copy, ctx.queueCache);
+const openExternalLink = href => inv('open_target', { kind: 'url', value: href, cwd: ctx.HOME })
+  .then(() => toast(t('terminal.openBrowser')), () => toast(t('terminal.openFailed')));
 
 export function renderBufferUI() {
   const panel = $('buffer-panel');
@@ -623,7 +628,12 @@ export function renderBufferUI() {
     };
     const links = document.createElement('div'); links.className = 'buffer-links';
     for (const href of (entry.source?.links || []).filter(value => /^https?:\/\//.test(value))) {
-      const a = document.createElement('a'); a.href = href; a.textContent = href; a.target = '_blank'; a.rel = 'noreferrer'; links.appendChild(a);
+      // the WKWebView never navigates or opens a window itself: every click
+      // goes through the same native validated opener as a terminal link
+      const a = document.createElement('a'); a.href = href; a.textContent = href;
+      a.onclick = event => { event.preventDefault(); openExternalLink(href); };
+      a.onauxclick = event => event.preventDefault();
+      links.appendChild(a);
     }
     const copies = document.createElement('div'); copies.className = 'buffer-copies';
     for (const copy of entry.copies || []) {
@@ -652,7 +662,8 @@ export async function queueBufferEntries(sid, requests) {
     const operationId = request.operationId || genId('B');
     const result = addQueueCopy(next, request.entryId, operationId, Date.now());
     if (result.error) { toast(t(bufferLimitKey(result.error))); return false; }
-    next = result.buffer; prepared.push({ operationId, text: result.copy.text,
+    const external = next.entries.find(entry => entry.id === request.entryId)?.kind === 'external';
+    next = result.buffer; prepared.push({ operationId, text: result.copy.text, external,
       at: Math.floor(result.copy.createdAt / 1000) });
   }
   // Persist every selected immutable snapshot in one Board CAS before the
@@ -668,9 +679,11 @@ export async function queueBufferEntries(sid, requests) {
       if (!prepared.every(item => copies.some(copy => copy.operationId === item.operationId
         && copy.text === item.text && copy.state === 'uncertain'))) return { noop: true };
       for (const copy of prepared) {
+        // `externalText`: the native leading-command refusal and agent-only
+        // gate are the authority for a verbatim channel message
         await inv('queue_add', { args: { session: current.session, cardId: current.id,
           operationId: copy.operationId, dir: current.dir, cmd: current.cmd,
-          text: copy.text, mode: 'at', at: copy.at } });
+          text: copy.text, mode: 'at', at: copy.at, ...(copy.external ? { externalText: true } : {}) } });
       }
       for (const copy of copies) {
         if (prepared.some(item => item.operationId === copy.operationId)) copy.state = 'queued';
