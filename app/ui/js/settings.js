@@ -1,7 +1,9 @@
 // settings.js — the settings modal: sections, search, font scale, shortcuts,
 // theme/locale/update channel/session restore/agent hooks, inbound (Slack
 // badge + channel) settings and secrets, Phone Connector and MCP settings,
-// logs, and the settings writer every choice goes through.
+// logs, the settings writer every choice goes through and the ONE commit
+// shape (`commitSettings`: candidate first, rollback on failure) behind
+// every optimistic choice.
 // Voice preferences commit through the settings writer before notifying the
 // recorder; edits never request microphone access or download language assets.
 // Enabling Phone Connector needs an explicit danger confirmation that states
@@ -193,71 +195,79 @@ function announceShortcutChange() {
   }
 }
 
-let fontGeneration = 0;
+/* The ONE commit shape for a settings choice; every writer above goes through
+   it. `candidate` replaces ctx.settings at once so a concurrent write of
+   another field carries it; `apply` renders a settings object (called with
+   the candidate now and with the previous settings if the write fails);
+   `locked` controls are disabled until the write settles; `onCommit` runs
+   only after the durable write. A newer write of the same `key` supersedes
+   an older one's rollback; `exclusive` refuses re-entry while that key is
+   pending. Resolves true when the write landed. */
+const commitGenerations = new Map();
+const commitPending = new Set();
+async function commitSettings(choice) {
+  const { key, candidate, exclusive } = choice;
+  const apply = choice.apply || (() => {});
+  const onCommit = choice.onCommit || (() => {});
+  const locked = choice.locked || [];
+  const errorKey = choice.errorKey || 'error.settingsSave';
+  if (exclusive && commitPending.has(key)) return false;
+  const generation = (commitGenerations.get(key) || 0) + 1;
+  commitGenerations.set(key, generation);
+  commitPending.add(key);
+  const previous = ctx.settings;
+  const controls = locked.map($);
+  controls.forEach(control => { control.disabled = true; });
+  ctx.settings = candidate;
+  apply(candidate);
+  try {
+    await saveSettingsCandidate(candidate);
+    await onCommit(candidate);
+    return true;
+  } catch (_) {
+    if (generation === commitGenerations.get(key)) {
+      ctx.settings = previous;
+      apply(previous);
+      toast(t(errorKey));
+      uev('settings-save-fail');
+    }
+    return false;
+  } finally {
+    if (generation === commitGenerations.get(key)) {
+      commitPending.delete(key);
+      controls.forEach(control => { control.disabled = false; });
+    }
+  }
+}
+const GENERAL_CONTROLS = ['set-theme', 'set-accent', 'set-channel', 'set-locale', 'set-editor', 'set-session-restore'];
+
 export async function setFontScale(value) {
   if (voiceSettings.isPending()) return;
-  const generation = ++fontGeneration;
-  const previous = ctx.settings;
   const bounded = Math.min(FONT_SCALE_MAX, Math.max(FONT_SCALE_MIN, Number(value)));
   const candidate = normalizeSettings({ ...ctx.settings, fontScale: bounded });
   if (candidate.fontScale === ctx.settings.fontScale) return;
-  ctx.settings = candidate;
-  applyFontScale(candidate.fontScale);
-  renderFontScale();
-  try {
-    await saveSettingsCandidate(candidate);
-  } catch (_) {
-    if (generation !== fontGeneration) return;
-    ctx.settings = previous;
-    applyFontScale(previous.fontScale);
-    renderFontScale();
-    toast(t('error.fontSave'));
-    uev('settings-save-fail');
-  }
+  await commitSettings({
+    key: 'font', candidate, errorKey: 'error.fontSave',
+    apply: settings => { applyFontScale(settings.fontScale); renderFontScale(); },
+  });
 }
 
-let shortcutGeneration = 0;
+const commitShortcuts = candidate => commitSettings({
+  key: 'shortcuts', candidate, errorKey: 'error.shortcutSave',
+  apply: () => { renderShortcutSettings(); announceShortcutChange(); },
+});
+
 export async function setShortcut(actionId, binding) {
-  const generation = ++shortcutGeneration;
-  const previous = ctx.settings;
-  const candidate = normalizeSettings({
+  await commitShortcuts(normalizeSettings({
     ...ctx.settings, shortcuts: { ...ctx.settings.shortcuts, [actionId]: binding },
-  });
-  ctx.settings = candidate;
-  renderShortcutSettings();
-  announceShortcutChange();
-  try {
-    await saveSettingsCandidate(candidate);
-  } catch (_) {
-    if (generation !== shortcutGeneration) return;
-    ctx.settings = previous;
-    renderShortcutSettings();
-    announceShortcutChange();
-    toast(t('error.shortcutSave'));
-    uev('settings-save-fail');
-  }
+  }));
 }
 
 export async function resetShortcuts() {
-  const generation = ++shortcutGeneration;
-  const previous = ctx.settings;
   const known = new Set(SHORTCUT_ACTIONS.map(action => action.id));
   const extensions = Object.fromEntries(Object.entries(ctx.settings.shortcuts)
     .filter(([actionId]) => !known.has(actionId)));
-  const candidate = normalizeSettings({ ...ctx.settings, shortcuts: extensions });
-  ctx.settings = candidate;
-  renderShortcutSettings();
-  announceShortcutChange();
-  try {
-    await saveSettingsCandidate(candidate);
-  } catch (_) {
-    if (generation !== shortcutGeneration) return;
-    ctx.settings = previous;
-    renderShortcutSettings();
-    announceShortcutChange();
-    toast(t('error.shortcutSave'));
-    uev('settings-save-fail');
-  }
+  await commitShortcuts(normalizeSettings({ ...ctx.settings, shortcuts: extensions }));
 }
 
 export async function openSettings() {
@@ -299,37 +309,25 @@ export async function openSettings() {
   }
 }
 
-let themeSavePending = false;
 export async function persistThemeChoice() {
-  if (themeSavePending) return;
-  const previous = { theme: ctx.settings.theme, accent: ctx.settings.accent };
   const candidate = normalizeSettings({
     ...ctx.settings,
     theme: $('set-theme').value,
     accent: $('set-accent').value,
   });
-  themeSavePending = true;
-  const locked = ['set-theme', 'set-accent', 'set-channel', 'set-locale', 'set-editor', 'set-session-restore'].map($);
-  locked.forEach(control => { control.disabled = true; });
-  activateTheme(candidate); // immediate preview; commit only after durable save
-  try {
-    await saveSettingsCandidate(candidate);
-    ctx.settings = candidate;
-  } catch (_) {
-    activateTheme({ ...ctx.settings, ...previous });
-    $('set-theme').value = previous.theme;
-    $('set-accent').value = previous.accent;
-    toast(t('error.themeSave'));
-    uev('settings-save-fail');
-  } finally {
-    themeSavePending = false;
-    locked.forEach(control => { control.disabled = false; });
-  }
+  await commitSettings({
+    key: 'theme', candidate, exclusive: true, locked: GENERAL_CONTROLS, errorKey: 'error.themeSave',
+    // immediate preview; a failed save shows the previous palette again
+    apply: settings => {
+      activateTheme(settings);
+      $('set-theme').value = settings.theme;
+      $('set-accent').value = settings.accent;
+    },
+  });
 }
 
-let channelSavePending = false;
 export async function persistUpdateChannelChoice() {
-  if (channelSavePending) return;
+  if (commitPending.has('channel')) return;
   const previous = ctx.settings.updateChannel || 'stable';
   const desired = $('set-channel').value;
   if (desired === 'nightly' && previous !== 'nightly') {
@@ -339,31 +337,22 @@ export async function persistUpdateChannelChoice() {
       return;
     }
   }
-  const candidate = normalizeSettings({ ...ctx.settings, updateChannel: desired });
-  channelSavePending = true;
-  const locked = ['set-theme', 'set-accent', 'set-channel', 'set-locale', 'set-editor', 'set-session-restore'].map($);
-  locked.forEach(control => { control.disabled = true; });
-  try {
-    await saveSettingsCandidate(candidate);
-    ctx.settings = candidate;
-    toast(t(candidate.updateChannel === 'nightly'
-      ? 'settings.channelNightlyEnabled' : 'settings.channelStableEnabled'));
-    if (typeof window.dispatchEvent === 'function' && typeof Event === 'function') {
-      window.dispatchEvent(new Event('deck-update-channel-changed'));
-    }
-    $('set-ver').textContent = 'deck ' + ($('app-ver').textContent || 'v?');
-  } catch (_) {
-    $('set-channel').value = previous;
-    toast(t('error.settingsSave'));
-    uev('settings-save-fail');
-  } finally {
-    channelSavePending = false;
-    locked.forEach(control => { control.disabled = false; });
-  }
+  await commitSettings({
+    key: 'channel', candidate: normalizeSettings({ ...ctx.settings, updateChannel: desired }),
+    exclusive: true, locked: GENERAL_CONTROLS,
+    apply: settings => { $('set-channel').value = settings.updateChannel || 'stable'; },
+    onCommit: settings => {
+      toast(t(settings.updateChannel === 'nightly'
+        ? 'settings.channelNightlyEnabled' : 'settings.channelStableEnabled'));
+      if (typeof window.dispatchEvent === 'function' && typeof Event === 'function') {
+        window.dispatchEvent(new Event('deck-update-channel-changed'));
+      }
+      $('set-ver').textContent = 'deck ' + ($('app-ver').textContent || 'v?');
+    },
+  });
 }
-let shellRestoreSavePending = false;
 export async function persistSessionRestoreChoice() {
-  if (shellRestoreSavePending) return;
+  if (commitPending.has('restore')) return;
   const previous = !!ctx.settings.sessionRestore;
   const desired = $('set-session-restore').checked;
   if (desired && !previous) {
@@ -373,32 +362,23 @@ export async function persistSessionRestoreChoice() {
       return;
     }
   }
-  const candidate = normalizeSettings({ ...ctx.settings, sessionRestore: desired });
-  shellRestoreSavePending = true;
-  $('set-session-restore').disabled = true;
-  $('set-clear-shell').disabled = true;
-  try {
-    // Persist the privacy preference first. A failed disable keeps the old
+  await commitSettings({
+    key: 'restore', candidate: normalizeSettings({ ...ctx.settings, sessionRestore: desired }),
+    exclusive: true, locked: ['set-session-restore', 'set-clear-shell'], errorKey: 'error.restoreSave',
+    apply: settings => { $('set-session-restore').checked = !!settings.sessionRestore; },
+    // The privacy preference persists first. A failed disable keeps the old
     // behavior visible instead of claiming recovery is off when it is not.
-    await saveSettingsCandidate(candidate);
-    ctx.settings = candidate;
-    if (!desired) {
-      try {
-        await inv('shell_snapshots_clear');
-      } catch (_) {
-        toast(t('settings.shellRecoveryClearFailed'));
+    onCommit: async () => {
+      if (!desired) {
+        try {
+          await inv('shell_snapshots_clear');
+        } catch (_) {
+          toast(t('settings.shellRecoveryClearFailed'));
+        }
       }
-    }
-    toast(t(desired ? 'settings.shellRecoveryEnabled' : 'settings.shellRecoveryDisabled'));
-  } catch (_) {
-    $('set-session-restore').checked = previous;
-    toast(t('error.restoreSave'));
-    uev('settings-save-fail');
-  } finally {
-    shellRestoreSavePending = false;
-    $('set-session-restore').disabled = false;
-    $('set-clear-shell').disabled = false;
-  }
+      toast(t(desired ? 'settings.shellRecoveryEnabled' : 'settings.shellRecoveryDisabled'));
+    },
+  });
 }
 
 /* Agent-status hooks: the checkbox reflects ~/.claude/settings.json itself
@@ -433,7 +413,6 @@ export async function persistAgentHooksChoice(agent, boxId, confirmKey) {
    is only the account-level connection. Tokens live in the Keychain and are
    never read back into the page — the backend only reports whether a slot
    is filled. */
-let inboundSavePending = false;
 
 function inboundSlackStatusText(status) {
   const slack = (status && status.sources || []).find(s => s.id === 'slack');
@@ -682,26 +661,13 @@ async function renderTunnelForClient(client, row, actions) {
 
 /* One durable write for every rule/source change; a failed save leaves the
    previous settings visible instead of a rule the poller never learned. */
-export async function persistInbound(inbound) {
-  if (inboundSavePending) return false;
-  const previous = ctx.settings;
-  const candidate = normalizeSettings({ ...ctx.settings, inbound });
-  inboundSavePending = true;
-  try {
-    await saveSettingsCandidate(candidate);
-    ctx.settings = candidate;
-    inv('inbound_check_now').catch(() => {});
-    renderInboundSettings();
-    return true;
-  } catch (_) {
-    ctx.settings = previous;
-    renderInboundSettings();
-    toast(t('error.inboundSave'));
-    uev('settings-save-fail');
-    return false;
-  } finally {
-    inboundSavePending = false;
-  }
+export function persistInbound(inbound) {
+  return commitSettings({
+    key: 'inbound', candidate: normalizeSettings({ ...ctx.settings, inbound }),
+    exclusive: true, errorKey: 'error.inboundSave',
+    apply: () => renderInboundSettings(),
+    onCommit: () => { inv('inbound_check_now').catch(() => {}); },
+  });
 }
 
 export async function persistInboundSlackChoice() {
