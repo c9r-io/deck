@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Quitting Deck with SIGTERM, SIGINT or SIGHUP now goes through the normal
+  quit path. Before, an abrupt exit could leave the Board's tmux query client
+  running forever, still attached to the shell service. Deck now also removes
+  such a leftover client (left by a crash or force quit) the next time it
+  connects.
 - A new card whose project has a default command (for example `codex`) failed
   with "could not safely create a session" whenever no terminal pane was open,
   and left an invisible tmux session behind each time. Since 0.7.1 the Board's

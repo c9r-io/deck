@@ -163,6 +163,7 @@ fn main() {
             // session. It reuses an exact current server, records an occupied
             // legacy/old server as pending, and replaces only an empty one.
             tmux_lifecycle::reconcile_on_boot();
+            tmux::exit_on_termination_signals(app.handle().clone());
             scheduler::spawn_scheduler(app.handle().clone());
             inbound::spawn_inbound(app.handle().clone());
             inbound_channel::spawn_channel(app.handle().clone());

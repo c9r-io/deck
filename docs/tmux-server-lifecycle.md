@@ -113,6 +113,18 @@ Its argv, and a visible pane's PTY attach argv, live in `tmux_clients.rs`;
 client-sensitive contract with no client, with the query client, and with
 the query client plus a pane client.
 
+A query client never outlives Deck by design, but tmux can strand one: a
+control client exits only after the server has delivered its pending output,
+and once Deck is gone that output (notifications `no-output` does not
+suppress) can never be delivered. The stranded client stays connected to the
+server, drops out of `list-clients`, and waits forever. Two layers prevent
+it. SIGTERM, SIGINT and SIGHUP take the normal quit path, which closes the
+client's stdin and reaps it (`exit_on_termination_signals`). For what cannot
+be caught (SIGKILL, a crash), every new channel first SIGTERMs orphans (ppid
+1, same uid) whose exec path and argv are exactly this bundle's tmux with
+this socket's query-client arguments (`reap_orphaned_query_clients`, via
+libproc and `kill(2)`; nothing is spawned).
+
 Discovery and the first failure of a channel generation use the existing
 one-shot query as an oracle. A ten-second cooldown then fails closed instead
 of creating a new process on every Board poll. No sentinel session is created:

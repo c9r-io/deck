@@ -7,7 +7,8 @@
 //! here is a direct libproc/sysctl query for the same closed facts: pid,
 //! parent, physical footprint, controlling tty, foreground process group and
 //! argv[0]. No command lines, environments or paths beyond argv[0]'s
-//! basename ever leave this module.
+//! basename ever leave this module: `orphans_running` compares a full
+//! command line here and hands back only pids.
 
 use std::collections::HashMap;
 
@@ -140,6 +141,12 @@ pub(crate) fn processes() -> HashMap<u32, ProcessInfo> {
 /// macOS). The layout is `argc`, the exec path, NUL padding, then argv[0].
 #[cfg(target_os = "macos")]
 pub(crate) fn argv0(pid: u32) -> Option<String> {
+    parse_procargs2_argv0(&procargs2(pid)?)
+}
+
+/// The raw `KERN_PROCARGS2` image of `pid`.
+#[cfg(target_os = "macos")]
+fn procargs2(pid: u32) -> Option<Vec<u8>> {
     use std::ffi::c_void;
     use std::ptr::null_mut;
     let mut argmax: libc::c_int = 0;
@@ -177,7 +184,7 @@ pub(crate) fn argv0(pid: u32) -> Option<String> {
         return None;
     }
     buffer.truncate(size);
-    parse_procargs2_argv0(&buffer)
+    Some(buffer)
 }
 
 /// Pure parser for a `KERN_PROCARGS2` image.
@@ -194,6 +201,78 @@ pub(crate) fn parse_procargs2_argv0(image: &[u8]) -> Option<String> {
     let argv0_end = argv.iter().position(|b| *b == 0).unwrap_or(argv.len());
     let argv0 = std::str::from_utf8(&argv[..argv0_end]).ok()?;
     (!argv0.is_empty()).then(|| argv0.to_string())
+}
+
+/// Exec path and the complete argv (exactly `argc` NUL-terminated strings)
+/// of a `KERN_PROCARGS2` image; `None` for a truncated or non-UTF-8 image.
+fn parse_procargs2_command(image: &[u8]) -> Option<(&str, Vec<&str>)> {
+    let (count, rest) = image.split_at_checked(std::mem::size_of::<libc::c_int>())?;
+    let argc = usize::try_from(i32::from_ne_bytes(count.try_into().ok()?)).ok()?;
+    let exec_end = rest.iter().position(|b| *b == 0)?;
+    let exec = std::str::from_utf8(&rest[..exec_end]).ok()?;
+    let after_exec = &rest[exec_end..];
+    let mut tail = &after_exec[after_exec.iter().position(|b| *b != 0)?..];
+    let mut argv = Vec::with_capacity(argc);
+    for _ in 0..argc {
+        let end = tail.iter().position(|b| *b == 0)?;
+        argv.push(std::str::from_utf8(&tail[..end]).ok()?);
+        tail = &tail[end + 1..];
+    }
+    Some((exec, argv))
+}
+
+/// Whether a command line is `exec` run with exactly `prefix` plus one final
+/// argument that starts with `last_prefix`.
+fn command_matches(
+    (path, argv): (&str, Vec<&str>),
+    exec: &str,
+    prefix: &[&str],
+    last_prefix: &str,
+) -> bool {
+    path == exec
+        && argv.len() == prefix.len() + 1
+        && argv[..prefix.len()] == *prefix
+        && argv[prefix.len()].starts_with(last_prefix)
+}
+
+/// Pids of this user's orphaned processes (reparented to launchd) whose exec
+/// path is `exec` and whose argv is `prefix` plus one argument starting with
+/// `last_prefix`. The command lines are compared here and never leave this
+/// module; only the pids do.
+#[cfg(target_os = "macos")]
+pub(crate) fn orphans_running(exec: &str, prefix: &[&str], last_prefix: &str) -> Vec<u32> {
+    use std::ffi::c_void;
+    // SAFETY: getuid(2) cannot fail.
+    let uid = unsafe { libc::getuid() };
+    list_pids()
+        .into_iter()
+        .filter(|&pid| {
+            let mut info = std::mem::MaybeUninit::<libc::proc_bsdinfo>::zeroed();
+            let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+            // SAFETY: the buffer is exactly the struct libproc fills for this flavor.
+            let got = unsafe {
+                libc::proc_pidinfo(
+                    pid,
+                    libc::PROC_PIDTBSDINFO,
+                    0,
+                    info.as_mut_ptr().cast::<c_void>(),
+                    size,
+                )
+            };
+            // SAFETY: only read after libproc reported a full write.
+            got == size && {
+                let info = unsafe { info.assume_init() };
+                info.pbi_ppid == 1 && info.pbi_uid == uid
+            }
+        })
+        .filter(|&pid| {
+            procargs2(pid as u32).is_some_and(|image| {
+                parse_procargs2_command(&image)
+                    .is_some_and(|command| command_matches(command, exec, prefix, last_prefix))
+            })
+        })
+        .map(|pid| pid as u32)
+        .collect()
 }
 
 /// The pid leading the foreground process group of the terminal whose
@@ -386,6 +465,64 @@ mod tests {
         let mut truncated = 1i32.to_ne_bytes().to_vec();
         truncated.extend_from_slice(b"/bin/zsh");
         assert_eq!(parse_procargs2_argv0(&truncated), None);
+    }
+
+    #[test]
+    fn a_command_matches_only_its_exact_exec_argv_and_final_shape() {
+        let mut image = 4i32.to_ne_bytes().to_vec();
+        image.extend_from_slice(b"/Applications/Deck.app/Contents/MacOS/tmux\0\0\0");
+        image.extend_from_slice(
+            b"/Applications/Deck.app/Contents/MacOS/tmux\0-L\0deck\0=main\0HOME=/x\0",
+        );
+        let command = || parse_procargs2_command(&image).expect("parsed");
+        let exec = "/Applications/Deck.app/Contents/MacOS/tmux";
+        let prefix = [exec, "-L", "deck"];
+        assert_eq!(command().1, vec![exec, "-L", "deck", "=main"]);
+        assert!(command_matches(command(), exec, &prefix, "="));
+        assert!(!command_matches(
+            command(),
+            "/opt/homebrew/bin/tmux",
+            &prefix,
+            "="
+        ));
+        assert!(!command_matches(
+            command(),
+            exec,
+            &[exec, "-L", "deck-dev"],
+            "="
+        ));
+        assert!(!command_matches(command(), exec, &prefix, "=other"));
+        assert!(!command_matches(command(), exec, &[exec, "-L"], "="));
+        let mut truncated = 3i32.to_ne_bytes().to_vec();
+        truncated.extend_from_slice(b"/bin/tmux\0tmux\0-L");
+        assert_eq!(parse_procargs2_command(&truncated), None);
+    }
+
+    #[test]
+    fn a_real_orphan_is_found_by_its_exact_command_and_nothing_else() {
+        // A unique duration makes the argv ours alone; the shell exits at
+        // once so the sleep is reparented to launchd like a dead Deck's child.
+        let unique = format!("600.{}", std::process::id());
+        let status = std::process::Command::new("/bin/sh")
+            .args(["-c", &format!("/bin/sleep {unique} >/dev/null 2>&1 &")])
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let mut found = Vec::new();
+        for _ in 0..100 {
+            found = orphans_running("/bin/sleep", &["/bin/sleep"], &unique);
+            if !found.is_empty() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert_eq!(found.len(), 1, "exactly the one orphan");
+        assert!(orphans_running("/bin/sleep", &["/bin/sleep"], "600.x").is_empty());
+        assert!(orphans_running("/bin/cat", &["/bin/sleep"], &unique).is_empty());
+        // SAFETY: kill(2) on the pid matched above.
+        unsafe { libc::kill(found[0] as libc::pid_t, libc::SIGKILL) };
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(orphans_running("/bin/sleep", &["/bin/sleep"], &unique).is_empty());
     }
 
     #[test]

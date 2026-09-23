@@ -799,7 +799,9 @@ fn nonblocking(fd: i32) -> Result<(), DeckError> {
 impl TmuxQueryChannel {
     fn connect(rows: &[PaneRow]) -> Result<Self, DeckError> {
         let conf = tmux_conf();
-        Self::connect_with(tmux_program()?, &conf, socket(), rows)
+        let program = tmux_program()?;
+        reap_orphaned_query_clients(program, &conf, socket());
+        Self::connect_with(program, &conf, socket(), rows)
     }
 
     fn connect_with(
@@ -1062,6 +1064,81 @@ pub(crate) fn query_channel_connected() -> bool {
         .lock()
         .map(|state| state.channel.is_some())
         .unwrap_or(false)
+}
+
+/// A query client whose Deck died without `stop` (crash, SIGKILL) outlives
+/// it: once the server holds notification output it can no longer deliver
+/// (the parent's pipe is gone), the client waits forever for an exit that
+/// never comes, still attached to this server and no longer shown by
+/// `list-clients`. Before connecting a new one, SIGTERM every orphan (ppid 1,
+/// this uid) running exactly this bundle's tmux with this socket's query
+/// argv; `kill(2)` spawns nothing and only such a process can match.
+fn reap_orphaned_query_clients(program: &str, conf: &str, socket_name: &str) {
+    let query = crate::tmux_clients::query_client_args("=");
+    let mut prefix = vec![program, "-f", conf, "-L", socket_name];
+    prefix.extend_from_slice(&query[..query.len() - 1]);
+    let orphans = crate::procinfo::orphans_running(program, &prefix, "=");
+    for pid in &orphans {
+        // SAFETY: kill(2) on a pid just matched above; no memory involved.
+        unsafe { libc::kill(*pid as libc::pid_t, libc::SIGTERM) };
+    }
+    if !orphans.is_empty() {
+        applog(&format!(
+            "[tmux-control] reaped {} orphaned query client(s)",
+            orphans.len()
+        ));
+    }
+}
+
+/// SIGTERM, SIGINT and SIGHUP take the normal quit path (`RunEvent::Exit` →
+/// `stop_query_channel`) instead of the default instant death, which could
+/// orphan the query client (see `reap_orphaned_query_clients`). The handler
+/// only writes one byte to a self-pipe; a thread blocked in read(2) — no
+/// timer — asks the app to exit and, should the event loop not get there,
+/// stops the channel itself and exits after a bounded wait.
+pub(crate) fn exit_on_termination_signals(app: tauri::AppHandle) {
+    use std::sync::atomic::{AtomicI32, Ordering};
+    static WAKE: AtomicI32 = AtomicI32::new(-1);
+    extern "C" fn on_signal(_: libc::c_int) {
+        let fd = WAKE.load(Ordering::Relaxed);
+        if fd >= 0 {
+            // SAFETY: write(2) is async-signal-safe; a lost byte only means
+            // an earlier signal is already pending.
+            unsafe { libc::write(fd, [1u8].as_ptr().cast(), 1) };
+        }
+    }
+    let mut fds = [0 as libc::c_int; 2];
+    // SAFETY: pipe(2) fills the two-element array.
+    if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
+        return;
+    }
+    for fd in fds {
+        // SAFETY: fcntl on a descriptor this function just created.
+        unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
+    }
+    WAKE.store(fds[1], Ordering::Relaxed);
+    let watcher = std::thread::Builder::new()
+        .name("deck-exit-signal".into())
+        .spawn(move || {
+            let mut byte = 0u8;
+            // SAFETY: one-byte read into a local; retried only on EINTR.
+            while unsafe { libc::read(fds[0], (&mut byte as *mut u8).cast(), 1) } < 0
+                && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted
+            {
+            }
+            applog("[exit] termination signal");
+            app.exit(0);
+            std::thread::sleep(Duration::from_secs(3));
+            stop_query_channel();
+            std::process::exit(0);
+        });
+    if watcher.is_err() {
+        return;
+    }
+    for signal in [libc::SIGTERM, libc::SIGINT, libc::SIGHUP] {
+        // SAFETY: the handler only calls write(2) on the pipe above.
+        unsafe { libc::signal(signal, on_signal as *const () as libc::sighandler_t) };
+    }
 }
 
 /// Restart and process exit call this after excluding active poll operations.
