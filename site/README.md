@@ -1,7 +1,7 @@
 # deck website and user guide
 
 Static source for `https://deck.c9r.io`: a product homepage and task-oriented,
-English/Simplified Chinese guide for **0.6.6 Stable**, based on the **0.6.5** feature set.
+English/Simplified Chinese guide for **0.7.8 Stable**.
 
 The site deliberately uses no framework, runtime JavaScript, analytics,
 cookies, forms, third-party fonts or remote assets. Common external URLs are in
@@ -58,7 +58,8 @@ summary of the flow and a direct MP4 link.
   uses fictional tasks and is explicitly labeled as a simplified illustration.
 - Keep agent observations, delivery and human inspection distinct. Include what
   the user must do next for uncertain, failed, stale or stopped states.
-- Keep privacy text aligned with voice, agent hooks, Slack and local storage.
+- Keep privacy text aligned with voice, agent hooks, Slack, Phone Connector,
+  optional MCP/Tunnel access and local storage.
   Existing social-preview art remains unchanged.
 - `npm test` builds and checks all public HTML routes, local links and fragments,
   locale/version metadata, static-site privacy constraints and Markdown headings.
