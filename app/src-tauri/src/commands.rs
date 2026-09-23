@@ -209,6 +209,16 @@ fn start_timing_line(name: &str, marks_ms: [u128; 3], restored: bool) -> String 
     )
 }
 
+/// A failed start's log line: hashed tag, the phase and the closed error
+/// kind. The tmux stderr text stays out (it can echo the name or command).
+fn start_failure_line(name: &str, stage: &str, error: &DeckError) -> String {
+    format!(
+        "[start] failed {} stage={stage} code={}",
+        crate::applog::session_tag(name),
+        error.code()
+    )
+}
+
 #[tauri::command]
 pub(crate) fn start_session(
     name: String,
@@ -299,10 +309,21 @@ pub(crate) fn start_session(
     } else {
         (tmux(&["new-session", "-d", "-s", &name, "-c", &dir]), false)
     };
-    start?;
+    if let Err(error) = start {
+        applog(&start_failure_line(&name, "create", &error));
+        return Err(error);
+    }
     let created_ms = t0.elapsed().as_millis();
     if !cmd.trim().is_empty() {
-        tmux(&["send-keys", "-t", &pane_target(&name), &cmd, "Enter"])?;
+        if let Err(error) = tmux(&["send-keys", "-t", &pane_target(&name), &cmd, "Enter"]) {
+            // The pane exists but never got its launch command. A failed
+            // start persists no card, so a surviving session would be an
+            // orphan the Board can neither show nor close.
+            let _ = tmux(&["kill-session", "-t", &session_target(&name)]);
+            let _ = crate::shell_state::clear_snapshot(&name);
+            applog(&start_failure_line(&name, "command", &error));
+            return Err(error);
+        }
     }
     if recovery.is_some() {
         crate::shell_state::note_recovered(&name);
@@ -641,6 +662,26 @@ mod tests {
         assert!(
             !line.contains("quarterly"),
             "the card title never reaches the log"
+        );
+        assert_eq!(
+            crate::redact::sanitize_log(&line),
+            line,
+            "safe to log verbatim"
+        );
+    }
+
+    #[test]
+    fn start_failure_line_carries_stage_and_kind_but_no_tmux_text() {
+        let error = DeckError::classified("tmux send-keys failed: client is read-only");
+        let line = start_failure_line("deck-quarterly-report-ab12", "command", &error);
+        assert!(line.starts_with("[start] failed sess-"), "{line}");
+        assert!(
+            line.ends_with(&format!(" stage=command code={}", error.code())),
+            "{line}"
+        );
+        assert!(
+            !line.contains("quarterly") && !line.contains("read-only"),
+            "{line}"
         );
         assert_eq!(
             crate::redact::sanitize_log(&line),

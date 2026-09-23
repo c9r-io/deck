@@ -446,12 +446,12 @@ fn shell_restore_bootstrap_becomes_tmux_history_without_executing_text() {
     ]);
     s.run_raw_checked(&["send-keys", "-t", "=busy:", "activity", "Enter"]);
 
-    // Production polling keeps this read-only client attached to the first
+    // Production polling keeps this query client attached to the first
     // available session. It is the condition the old ambient `#{pane_tty}`
     // restore test omitted and the condition that redirected later cards.
     let mut control = Command::new(tmux_bin())
         .args(["-f", "/dev/null", "-L", &s.0, "-C", "attach-session"])
-        .args(["-r", "-f", "ignore-size,no-output", "-t", "=older"])
+        .args(["-f", "ignore-size,no-output", "-t", "=older"])
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -1203,6 +1203,95 @@ fn single_send_keys_with_trailing_cr_executes_the_line() {
         !out.status.success(),
         "a bad target must fail the whole atomic injection"
     );
+}
+
+/// While no pane is attached, the Board's persistent query client is the only
+/// tmux client, so it becomes the ambient target client of every one-shot
+/// command. `send-keys` (without `-X`) refuses when that client is read-only,
+/// which silently broke launch commands and delivery Enter (0.7.1-0.7.6).
+/// The production-shaped client must let both land; the `-r` half pins why
+/// the flag must not come back.
+#[test]
+fn send_keys_lands_while_the_query_client_is_the_only_client() {
+    let s = Server::new("ambient");
+    let control = |flags: &[&str]| {
+        let mut child = Command::new(tmux_bin())
+            .args(["-f", "/dev/null", "-L", &s.0, "-C", "attach-session"])
+            .args(flags)
+            .args(["-f", "ignore-size,no-output", "-t", "=t"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn query control client");
+        sleep(Duration::from_millis(100));
+        assert!(
+            child.try_wait().unwrap().is_none(),
+            "control client attached"
+        );
+        child
+    };
+    let send = |session: &str| {
+        s.run_raw_checked(&["new-session", "-d", "-s", session, "/bin/cat"]);
+        Command::new(tmux_bin())
+            .args(["-f", "/dev/null", "-L", &s.0])
+            .args([
+                "send-keys",
+                "-t",
+                &format!("={session}:"),
+                "launch --flag",
+                "Enter",
+            ])
+            .output()
+            .expect("tmux spawn")
+    };
+
+    let mut query = control(&[]);
+    let out = send("card");
+    assert!(
+        out.status.success(),
+        "launch send-keys refused: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // prompt_delivery's guarded Enter runs the same command inside if-shell
+    let pane = s.run(&["display-message", "-p", "-t", "=card:", "#{pane_id}"]);
+    s.run_raw_checked(&[
+        "if-shell",
+        "-F",
+        "-t",
+        &pane,
+        "1",
+        &format!("send-keys -t {pane} -l delivered ; send-keys -t {pane} Enter"),
+        "display-message -p refused",
+    ]);
+    let mut screen = String::new();
+    for _ in 0..100 {
+        screen = s.run(&["capture-pane", "-p", "-t", "=card:"]);
+        if screen.matches("delivered").count() >= 2 {
+            break;
+        }
+        sleep(Duration::from_millis(10));
+    }
+    assert!(
+        screen.matches("launch --flag").count() >= 2 && screen.matches("delivered").count() >= 2,
+        "keys did not reach the unattached pane; screen:\n{screen}"
+    );
+    let _ = query.kill();
+    let _ = query.wait();
+
+    let mut read_only = control(&["-r"]);
+    let out = send("refused");
+    assert!(
+        !out.status.success(),
+        "tmux no longer refuses via a read-only client"
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("client is read-only"),
+        "unexpected refusal: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let _ = read_only.kill();
+    let _ = read_only.wait();
 }
 
 /// The board's tail preview + fg-process gate read these formats every poll;

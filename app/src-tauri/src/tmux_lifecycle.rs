@@ -485,7 +485,7 @@ fn subtract_owned_control_client(
         };
         let pid = pid.parse::<u32>().map_err(|_| ())?;
         let flags: Vec<_> = flags.split(',').collect();
-        let expected_flags = ["ignore-size", "no-output", "read-only"];
+        let expected_flags = ["ignore-size", "no-output"];
         if pid == owned_pid
             && control == "1"
             && expected_flags.iter().all(|flag| flags.contains(flag))
@@ -1240,7 +1240,7 @@ fn restart_tmux_server_inner(
     let _guard = try_operation()?;
     let _activity = crate::session_runtime::exclusive()?;
     crate::mcp::guard_server_restart()?;
-    // The read-only client is still an attached tmux client. Stop it before
+    // The query client is still an attached tmux client. Stop it before
     // capturing/rechecking restart impact so it cannot keep the old server
     // alive or perturb attached-client counts during replacement.
     tmux::stop_query_channel();
@@ -1527,7 +1527,7 @@ mod tests {
         subtract_owned_control_client(
             77,
             &mut sessions,
-            "100\t1\tignore-size,no-output,read-only\talpha\n101\t1\tcontrol-mode\talpha\n102\t0\t\tbeta\n",
+            "100\t1\tignore-size,no-output\talpha\n101\t1\tcontrol-mode\talpha\n102\t0\t\tbeta\n",
             Some((100, 77, "alpha".into())),
         )
         .unwrap();
@@ -1538,7 +1538,7 @@ mod tests {
         subtract_owned_control_client(
             77,
             &mut wrong_server,
-            "100\t1\tignore-size,no-output,read-only\talpha\n",
+            "100\t1\tignore-size,no-output\talpha\n",
             Some((100, 78, "alpha".into())),
         )
         .unwrap();
@@ -1548,7 +1548,7 @@ mod tests {
         subtract_owned_control_client(
             77,
             &mut not_control,
-            "100\t0\tignore-size,no-output,read-only\talpha\n",
+            "100\t0\tignore-size,no-output\talpha\n",
             Some((100, 77, "alpha".into())),
         )
         .unwrap();
@@ -1558,7 +1558,7 @@ mod tests {
         subtract_owned_control_client(
             77,
             &mut wrong_flags,
-            "100\t1\tignore-size,read-only\talpha\n",
+            "100\t1\tignore-size\talpha\n",
             Some((100, 77, "alpha".into())),
         )
         .unwrap();
@@ -1568,10 +1568,10 @@ mod tests {
     #[test]
     fn owned_control_client_verification_fails_closed() {
         for clients in [
-            "not-a-pid\t1\tignore-size,no-output,read-only\talpha\n",
+            "not-a-pid\t1\tignore-size,no-output\talpha\n",
             "100\t1\talpha\n",
-            "100\t1\tignore-size,no-output,read-only\talpha\textra\n",
-            "100\t1\tignore-size,no-output,read-only\talpha\n100\t1\tignore-size,no-output,read-only\talpha\n",
+            "100\t1\tignore-size,no-output\talpha\textra\n",
+            "100\t1\tignore-size,no-output\talpha\n100\t1\tignore-size,no-output\talpha\n",
         ] {
             let mut sessions = vec![impact("alpha", 1)];
             assert!(subtract_owned_control_client(
@@ -1587,7 +1587,7 @@ mod tests {
         assert!(subtract_owned_control_client(
             77,
             &mut missing_session,
-            "100\t1\tignore-size,no-output,read-only\talpha\n",
+            "100\t1\tignore-size,no-output\talpha\n",
             Some((100, 77, "alpha".into())),
         )
         .is_err());

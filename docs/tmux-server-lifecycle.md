@@ -96,12 +96,18 @@ an existing server but cannot become the creator of a new long-lived one.
 ## Board query channel
 
 The Board's high-frequency pane inventory uses one serialized tmux control
-client after an initial one-shot discovery. The client attaches read-only with
-`ignore-size,no-output` and accepts only Deck's compiled `list-panes -a -F`
+client after an initial one-shot discovery. The client attaches with
+`ignore-size,no-output` and receives only Deck's compiled `list-panes -a -F`
 query; user, project, session and prompt values can never become control
 commands. Replies are correlated by tmux command ID and have a 1.5 second
 deadline plus a 2 MiB output bound. Malformed, nested, mismatched, failed or
 exited frames destroy the channel.
+
+The client is deliberately not read-only. tmux gives every one-shot command
+an ambient target client (the most recently active one), and while no pane is
+attached that is this client; `send-keys` without `-X` refuses when its
+target client is read-only. A `-r` query client made every launch command and
+delivery Enter fail whenever the Board showed no terminal (0.7.1–0.7.6).
 
 Discovery and the first failure of a channel generation use the existing
 one-shot query as an oracle. A ten-second cooldown then fails closed instead
@@ -113,7 +119,7 @@ path.
 A control client increments tmux's attached-client count. Deck therefore
 remembers its child PID, server PID and attached session, then subtracts one
 client from lifecycle impact only after `list-clients` independently confirms
-the exact PID, control mode, read-only/no-output/ignore-size flags and session
+the exact PID, control mode, no-output/ignore-size flags and session
 on the same server generation. Missing, duplicate or malformed evidence fails
 closed. The channel is stopped before a server restart and on app exit.
 

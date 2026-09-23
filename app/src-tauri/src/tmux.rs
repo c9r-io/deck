@@ -654,7 +654,16 @@ pub(crate) fn list_panes() -> Result<Vec<PaneRow>, DeckError> {
     query.rows(&tmux(&["list-panes", "-a", "-F", query.format()])?)
 }
 
-// ---------- persistent read-only query channel -----------------------------
+// ---------- persistent query channel ----------------------------------------
+//
+// The client is NOT attached read-only (`-r`). tmux resolves an ambient
+// target client for every one-shot command without `-c` — the most recently
+// active client, which is this one whenever no pane is attached — and
+// `send-keys` without `-X` refuses outright when that client is read-only
+// ("client is read-only"). A read-only query client therefore broke every
+// launch command and delivery Enter while the Board showed no terminal
+// (`tests/tmux_contract.rs` pins both halves). Its stdin carries only the
+// compiled `list-panes` query, so `-r` guarded nothing a user value can reach.
 
 const CONTROL_OUTPUT_LIMIT: usize = 2 * 1024 * 1024;
 const CONTROL_QUERY_BUDGET: Duration = Duration::from_millis(1500);
@@ -669,7 +678,7 @@ struct OwnedControlClient {
 
 static OWNED_CONTROL_CLIENT: Mutex<Option<OwnedControlClient>> = Mutex::new(None);
 
-/// Identity used only to remove Deck's own read-only control client from the
+/// Identity used only to remove Deck's own query control client from the
 /// lifecycle impact count. Callers must still verify it against list-clients;
 /// a remembered PID alone is never authority after a process exits/reuses it.
 pub(crate) fn owned_control_client() -> Option<(u32, u32, String)> {
@@ -814,7 +823,7 @@ impl TmuxQueryChannel {
         let session = first.session_name.clone();
         let mut child = Command::new(program)
             .args(["-f", conf, "-L", socket_name, "-C", "attach-session"])
-            .args(["-r", "-f", "ignore-size,no-output", "-t"])
+            .args(["-f", "ignore-size,no-output", "-t"])
             .arg(session_target(&session))
             .env("LANG", "en_US.UTF-8")
             .stdin(Stdio::piped())
@@ -1003,7 +1012,7 @@ static QUERY_STATE: Mutex<QueryState> = Mutex::new(QueryState {
 
 /// The Board-only high-frequency read path. Discovery/failure uses the
 /// existing one-shot implementation as an oracle, then stable polling stays
-/// on one read-only control client. No user value is ever parsed as a control
+/// on one control client. No user value is ever parsed as a control
 /// command.
 pub(crate) fn query_list_panes() -> Result<Vec<PaneRow>, DeckError> {
     let mut state = QUERY_STATE
@@ -1601,7 +1610,10 @@ mod tests {
             .find(|line| line.starts_with(&format!("{}\t", channel.child.id())))
             .expect("owned client is listed");
         assert!(owned.contains("\t1\t"), "not a control client: {owned}");
-        assert!(owned.contains("read-only"), "not read-only: {owned}");
+        assert!(
+            !owned.contains("read-only"),
+            "a read-only query client refuses send-keys: {owned}"
+        );
         assert!(
             owned.contains("no-output"),
             "output not suppressed: {owned}"

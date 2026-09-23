@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- A new card whose project has a default command (for example `codex`) failed
+  with "could not safely create a session" whenever no terminal pane was open,
+  and left an invisible tmux session behind each time. Since 0.7.1 the Board's
+  persistent tmux query client attached read-only; while it was the only tmux
+  client, tmux refused Deck's `send-keys` ("client is read-only"). The query
+  client is no longer read-only, which also fixes list and automation
+  deliveries whose text landed but whose Enter was refused in the same state.
+  A start that fails after creating its pane now removes that session and logs
+  a code-only `[start] failed` line.
 - Slack badge rules now follow the channel admission: the command must be
   exactly `claude` or `codex` and no template row may start with a message
   placeholder. A badge rule with an empty (plain shell) command could
