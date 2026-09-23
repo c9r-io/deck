@@ -23,7 +23,7 @@
 //!   rules, and every Connector-originated row). It uses the
 //!   same durable queue transaction but first passes `admit_external`, the
 //!   one chokepoint: the card command must be exactly `claude` or `codex`
-//!   (`inbound_channel::channel_agent_command`),
+//!   (`admission::channel_agent_command`),
 //!   so every channel row is process-bound. A process-bound row is pasted
 //!   only while that program is the pane's foreground command AND has
 //!   bracketed paste enabled, both checked atomically in tmux with the paste
@@ -653,7 +653,7 @@ pub(super) fn admit_external(args: &mut QueueAddArgs) -> Result<(), DeckError> {
 }
 
 pub(super) fn require_channel_agent(args: &QueueAddArgs) -> Result<(), DeckError> {
-    if crate::inbound_channel::channel_agent_command(&args.cmd).is_none() {
+    if crate::admission::channel_agent_command(&args.cmd).is_none() {
         return Err(DeckError::new(
             ErrorKind::Invalid,
             "channel automation requires a supported agent",

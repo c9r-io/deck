@@ -75,6 +75,7 @@ fn documents_delegate_only_settings_validation_and_preset_admission() {
     }
     assert_eq!(documents.matches("crate::inbound::").count(), 1);
     assert!(documents.contains("crate::inbound::validate_settings("));
-    assert_eq!(documents.matches("crate::inbound_channel::").count(), 1);
-    assert!(documents.contains("crate::inbound_channel::channel_agent_command("));
+    assert!(!documents.contains("crate::inbound_channel::"));
+    assert_eq!(documents.matches("crate::admission::").count(), 1);
+    assert!(documents.contains("crate::admission::channel_agent_command("));
 }

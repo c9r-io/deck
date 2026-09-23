@@ -23,8 +23,8 @@
 //! a 60 s backstop when disabled — it does not poll. The adapter never
 //! writes to Slack.
 //!
-//! Channel text is untrusted agent input. Admission (`channel_agent_command`)
-//! is the shared Slack/Connector policy: a remote target command must be
+//! Channel text is untrusted agent input. Admission is the shared policy in
+//! `admission.rs` (`channel_agent_command`): a remote target command must be
 //! exactly `claude` or `codex`. Channel settings and inbox validation stay
 //! structural, so a rule saved
 //! by an older deck with arguments still loads and is shown as blocked; a
@@ -33,8 +33,7 @@
 //! always loadable. Rejections a Slack retry cannot change (oversize
 //! envelope or body, far-future event time) are counted and ACKed without
 //! dropping the socket. Message bodies lose bidi controls, zero-width
-//! characters and tag characters before staging (`strip_invisible`); a lone
-//! ZWJ/ZWNJ between visible characters is kept.
+//! characters and tag characters before staging (`admission::strip_invisible`).
 //!
 //! Limits Deck cannot close: an allowlisted bot id admits whatever that bot
 //! forwards (webhooks, forms, alert text), and the agent's own configuration
@@ -51,6 +50,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 
+use crate::admission::{channel_agent_command, strip_invisible};
 use crate::applog::applog;
 use crate::datadir::now_epoch as now_secs;
 use crate::error::{DeckError, ErrorKind};
@@ -173,20 +173,6 @@ fn valid_target(target: &ChannelTarget) -> bool {
         && target.idle_minutes <= 7 * 24 * 60
 }
 
-/// The ONE remote-agent admission policy shared by channels and Connector: a target launches exactly
-/// `claude` or `codex` - no arguments, environment prefix, path or shell
-/// syntax. Arguments are where approval and sandbox bypasses live
-/// (`--dangerously-skip-permissions`, `--yolo`, `-c approval_policy=...`,
-/// `&& ...`); refusing them all is simpler and stricter than recognizing
-/// each one. Deck still cannot see the agent's own configuration files.
-pub(crate) fn channel_agent_command(cmd: &str) -> Option<&'static str> {
-    match cmd {
-        "claude" => Some("claude"),
-        "codex" => Some("codex"),
-        _ => None,
-    }
-}
-
 /// A saved rule participates in matching only while it is enabled AND its
 /// target passes admission. A blocked rule stays in settings, visible and
 /// editable; it simply never stages new events.
@@ -196,40 +182,6 @@ fn rule_admitted(rule: &ChannelRule) -> bool {
 
 fn any_rule_active(cfg: &ChannelConfig) -> bool {
     cfg.rules.iter().any(rule_admitted)
-}
-
-/// Invisible characters that can hide instructions from the person who
-/// inspects a staged note, or visually reorder it: bidi embeddings,
-/// overrides and isolates, directional marks, zero-width space, word joiner
-/// and invisible operators, BOM, and Unicode tag characters. ZWJ/ZWNJ are
-/// language and emoji structure, so a single joiner between two visible
-/// characters is kept; runs of joiners and joiners next to whitespace or a
-/// text edge are removed. Other format characters (e.g. soft hyphen) stay.
-fn invisible(c: char) -> bool {
-    matches!(c,
-        '\u{200B}' | '\u{200E}' | '\u{200F}'
-        | '\u{202A}'..='\u{202E}'
-        | '\u{2060}'..='\u{2064}'
-        | '\u{2066}'..='\u{2069}'
-        | '\u{FEFF}'
-        | '\u{E0000}'..='\u{E007F}')
-}
-
-fn joiner(c: char) -> bool {
-    matches!(c, '\u{200C}' | '\u{200D}')
-}
-
-pub(crate) fn strip_invisible(text: &str) -> String {
-    let chars: Vec<char> = text.chars().filter(|c| !invisible(*c)).collect();
-    let visible = |c: Option<&char>| c.is_some_and(|c| !joiner(*c) && !c.is_whitespace());
-    chars
-        .iter()
-        .enumerate()
-        .filter(|(i, c)| {
-            !joiner(**c) || (*i > 0 && visible(chars.get(i - 1)) && visible(chars.get(i + 1)))
-        })
-        .map(|(_, c)| *c)
-        .collect()
 }
 
 fn compile_matcher(m: &ChannelMatch) -> Result<Option<Regex>, DeckError> {
@@ -1653,13 +1605,6 @@ mod tests {
         )
         .unwrap();
         assert_eq!(event.body, "INC-42 ok 한국어 👩\u{200D}💻");
-        // A lone joiner between two visible characters is language/emoji
-        // structure and survives; a run of joiners (a hidden bit channel)
-        // or a joiner at an edge does not.
-        assert_eq!(strip_invisible("می\u{200C}خواهم"), "می\u{200C}خواهم");
-        assert_eq!(strip_invisible("a\u{200C}\u{200D}\u{200C}b"), "ab");
-        assert_eq!(strip_invisible("\u{200D}a b\u{200C} c"), "a b c");
-        assert_eq!(strip_invisible("x\u{00AD}y"), "x\u{00AD}y");
     }
 
     #[test]

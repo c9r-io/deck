@@ -335,7 +335,7 @@ impl Runtime {
         code: &str,
         device_name: &str,
     ) -> Result<Value, DeckError> {
-        let device_name = crate::inbound_channel::strip_invisible(device_name)
+        let device_name = crate::admission::strip_invisible(device_name)
             .trim()
             .to_owned();
         if device_name.is_empty()

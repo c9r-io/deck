@@ -48,7 +48,7 @@ pub(super) fn card_in(v: &Value, id: &str) -> Result<InternalCard, DeckError> {
 pub(super) fn queue_target_supported(card: &Value) -> bool {
     card.get("cmd")
         .and_then(Value::as_str)
-        .and_then(crate::inbound_channel::channel_agent_command)
+        .and_then(crate::admission::channel_agent_command)
         .is_some()
 }
 

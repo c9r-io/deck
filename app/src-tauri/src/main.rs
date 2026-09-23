@@ -5,6 +5,7 @@
 //! tmux (server/exec), pty (attach bridge), scheduler (prompts), storage
 //! (atomic persistence + logs), history (completion), commands (the rest).
 
+mod admission;
 mod agent_status;
 mod applog;
 mod commands;

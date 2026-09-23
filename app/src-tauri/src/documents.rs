@@ -478,7 +478,7 @@ fn validate_board(b: &BoardDocRaw) -> Result<(), DeckError> {
         }
         let mut preset_ids = HashSet::new();
         for preset in &p.presets {
-            let supported = crate::inbound_channel::channel_agent_command(&preset.cmd).is_some();
+            let supported = crate::admission::channel_agent_command(&preset.cmd).is_some();
             if !bounded_buffer_id(&preset.id)
                 || !preset_ids.insert(preset.id.as_str())
                 || preset.name.is_empty()

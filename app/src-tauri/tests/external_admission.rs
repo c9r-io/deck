@@ -376,7 +376,7 @@ fn external_text_reaches_the_one_admission() {
     let admit = body("scheduler/ops.rs", "admit_external");
     assert!(admit.contains("require_channel_agent(args)?;"));
     assert!(body("scheduler/ops.rs", "require_channel_agent")
-        .contains("crate::inbound_channel::channel_agent_command(&args.cmd).is_none()"));
+        .contains("crate::admission::channel_agent_command(&args.cmd).is_none()"));
     let validate = body("scheduler/ops.rs", "validate_add");
     let gate = validate
         .split("if a.external_text {")
@@ -634,7 +634,7 @@ fn every_terminal_input_site_is_reviewed() {
     }
     assert!(native.contains("expected_process: Some(agent)"));
     assert!(body("connector/projection.rs", "queue_target_supported")
-        .contains("crate::inbound_channel::channel_agent_command"));
+        .contains("crate::admission::channel_agent_command"));
     assert!(body("scheduler/delivery.rs", "fire_item").contains("literal_request(item"));
     // No import may alias the delivery entry points past the census.
     for (file, source) in production_sources() {

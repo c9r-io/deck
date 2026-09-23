@@ -109,6 +109,7 @@ loaded by `ui/index.html`; xterm.js vendored in `app/ui/vendor/`. Backend
 | Needs-attention view (sidebar entry), runtime read state, tab done-dot | `ui/js/attention.js`, `ui/js/attention-model.js` |
 | Agent status hooks (closed state words, bundled helper) | `agent_status.rs`, `src-tauri/status-helper/` |
 | Automations: inbound sources (Slack badge, clock), dispatcher, Keychain | `inbound.rs`, `inbound_slack.rs`, `inbound_clock.rs`, `keychain.rs`, `ui/js/inbound.js` (+ `docs/auto-respond.md`) |
+| Remote-agent admission policy (exact `claude`/`codex` target, invisible-character stripping) shared by channels, Connector and external queue rows | `admission.rs` (pinned by `tests/external_admission.rs`) |
 | Automations drawer (both triggers), run finish, the Board's `New session ▾` menu and ↻ chip | `ui/js/automation.js` (rules are inbound rules; the Slack connection stays in Settings; finish close lives in the `board.js` poll; the head keeps ONE persistent action — automations and templates open from that menu, a list's 📋 menu, the automation editor or the project tab menu) |
 | Shell restart recovery (bounded transcript projection) | `shell_state.rs` |
 | Updates (closed stable/nightly, one endpoint each) | `updater.rs`, `relaunch.rs` |

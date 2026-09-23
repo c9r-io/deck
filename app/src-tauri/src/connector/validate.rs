@@ -127,7 +127,7 @@ pub(super) fn validate_applicable(request: &CommandRequest) -> Result<(), DeckEr
         {
             return Err(DeckError::new(ErrorKind::Invalid, "task preset is invalid"));
         }
-        let command = bounded("cmd", 200).and_then(crate::inbound_channel::channel_agent_command);
+        let command = bounded("cmd", 200).and_then(crate::admission::channel_agent_command);
         if command.is_none() {
             return Err(DeckError::new(
                 ErrorKind::Invalid,
