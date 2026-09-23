@@ -51,7 +51,8 @@ export async function buildGuides(root, output, config) {
       const en = guidePath('en', page.slug);
       const cn = page.slug === 'secure-tunnel' ? null : guidePath('zh', page.slug);
       const nav = pages.filter(item => item.slug !== 'secure-tunnel').map(item => `<a href="${guidePath(locale, item.slug)}"${item.slug === page.slug ? ' aria-current="page"' : ''}>${escapeHtml(item.title)}</a>`).join('');
-      const integrations = `<details open><summary>Integrations</summary><nav aria-label="Integrations"><a href="${secureTunnelPath}"${page.slug === 'secure-tunnel' ? ' aria-current="page"' : ''}>ChatGPT Secure Tunnel</a></nav></details>`;
+      const integrationsLabel = zh ? '集成' : 'Integrations';
+      const integrations = `<details open><summary>${integrationsLabel}</summary><nav aria-label="${integrationsLabel}"><a href="${secureTunnelPath}"${page.slug === 'secure-tunnel' ? ' aria-current="page"' : ''}>ChatGPT Secure Tunnel</a></nav></details>`;
       const toc = page.headings.map(item => `<a href="#${item.id}">${escapeHtml(item.text)}</a>`).join('');
       const previous = pages[index - 1];
       const next = pages[index + 1];

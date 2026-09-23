@@ -116,6 +116,7 @@ test('both languages publish all guide topics, overview, metadata and version-sc
       assert.equal([...html.matchAll(/<h1\b/g)].length, 1);
       assert.match(html, /aria-current="page"/);
       assert.match(html, /deck 0\.7\.8/);
+      assert.ok(html.includes(`<summary>${locale ? '集成' : 'Integrations'}</summary>`));
       assert.ok(html.includes(`/blob/${config.guideRef}/README.md`));
       assert.ok(html.includes(`rel="canonical" href="${config.siteUrl}/${route}"`));
       assert.ok(html.includes(`hreflang="${locale ? 'en' : 'zh-Hans'}"`));
