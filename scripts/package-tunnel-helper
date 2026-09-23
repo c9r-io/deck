@@ -62,7 +62,6 @@ binary=tools/deck-tunnelctl/target/aarch64-apple-darwin/release/deck-tunnelctl
 test -f "$binary"
 scripts/check-edr-binary "$binary"
 test "$(lipo -archs "$binary")" = arm64
-binary_sha=$(shasum -a 256 "$binary" | cut -d ' ' -f 1)
 protocol=$("$binary" protocol --json)
 tool_version=$(jq -er '.toolVersion' <<<"$protocol")
 test "$(jq -er '.protocolVersion' <<<"$protocol")" = 1
@@ -92,6 +91,7 @@ xcrun notarytool submit "$scratch/notary-submission.zip" --apple-id "$APPLE_ID" 
 test "$(jq -er '.status' "$scratch/notary-result.json")" = Accepted
 xcrun stapler staple "$app"
 scripts/verify-tunnel-helper "$app" --stapled
+binary_sha=$(shasum -a 256 "$app/Contents/MacOS/deck-tunnelctl" | cut -d ' ' -f 1)
 
 archive="Deck_Tunnel_Helper_nightly_${deck_version}_${source_sha:0:7}_macOS.zip"
 ditto -c -k --keepParent "$app" "$output_dir/$archive"
