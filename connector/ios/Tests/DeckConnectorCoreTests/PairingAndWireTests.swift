@@ -16,6 +16,22 @@ import Testing
     #expect(throws: ConnectorError.invalidPairingDescriptor) { try PairingDescriptor.parse("deck-connector://pair?data=\(data.base64URLEncodedString)", now: Date(timeIntervalSince1970: 1)) }
 }
 
+@Test func pairingDescriptorAcceptsOnlyPrivateNetworkIPv4Origins() throws {
+    func descriptor(_ origin: String) throws -> String {
+        let payload = PairingPayload(version: 1, hostId: "h", hostName: "Mac", origin: origin, fingerprint: String(repeating: "a", count: 64), code: "c", expiresAt: 4_000)
+        return "deck-connector://pair?data=\(try JSONEncoder().encode(payload).base64URLEncodedString)"
+    }
+    let now = Date(timeIntervalSince1970: 1)
+    for host in ["10.0.0.1", "172.16.0.1", "172.31.255.254", "192.168.31.101", "169.254.20.4", "100.64.0.1", "100.127.255.254", "127.0.0.1"] {
+        #expect(throws: Never.self) { try PairingDescriptor.parse(try descriptor("https://\(host):47631"), now: now) }
+    }
+    for host in ["8.8.8.8", "172.32.0.1", "100.63.255.255", "100.128.0.1", "127.0.0.2", "0.0.0.0", "192.168.001.4", "deck.local", "[fd00::1]"] {
+        #expect(throws: ConnectorError.invalidPairingDescriptor, "\(host)") {
+            try PairingDescriptor.parse(try descriptor("https://\(host):47631"), now: now)
+        }
+    }
+}
+
 @Test func pairingDescriptorRejectsOversizedInputBeforeDecodeAndNonURLAlphabet() {
     let oversized = "deck-connector://pair?data=" + String(repeating: "A", count: ConnectorLimits.pairingDescriptorBytes)
     #expect(throws: ConnectorError.invalidPairingDescriptor) { try PairingDescriptor.parse(oversized) }

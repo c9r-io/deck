@@ -3,6 +3,13 @@
 //! source address, a 5s TLS handshake, a 10s header read, a 30s connection
 //! and a 4 KiB pairing body. A command body is read only after its Bearer
 //! token authorizes.
+//!
+//! Network: the accept loop wakes at least every 500ms; every
+//! `NETWORK_RECHECK` it re-reads the interfaces (`getifaddrs`, no spawn) and
+//! stops the listener when the saved address is gone or is now carried by a
+//! different interface or netmask than when it started. The UI then shows
+//! "enabled, not listening" (`connector-changed` is emitted). A connection
+//! whose local address is not the configured one is dropped unread.
 
 use super::{
     buffer, output, snapshot, CommandRequest, Config, Identity, Runtime, CLIENT_UPGRADE_REQUIRED,
@@ -34,6 +41,9 @@ const MAX_CONNECTIONS: usize = 16;
 const MAX_PER_SOURCE: usize = 4;
 const MAX_PAIR_BODY: usize = 4 * 1024;
 const MAX_NATIVE_JOBS: usize = 8;
+/// How often the running listener re-checks that its address, interface and
+/// netmask are unchanged.
+const NETWORK_RECHECK: Duration = Duration::from_secs(5);
 
 /// Per-source connection accounting; a slot is released when its guard drops.
 #[derive(Clone, Default)]
@@ -124,6 +134,7 @@ pub(super) fn spawn(
     cfg: Config,
     identity: Identity,
     epoch: u64,
+    network_unchanged: impl Fn() -> bool + Send + 'static,
 ) -> Result<u16, DeckError> {
     let ip: IpAddr = cfg
         .address
@@ -146,6 +157,7 @@ pub(super) fn spawn(
                     tls,
                     epoch,
                     ready_tx,
+                    network_unchanged,
                 ));
             } else {
                 let _ = ready_tx.send(None);
@@ -167,6 +179,7 @@ async fn run(
     tls: Arc<rustls::ServerConfig>,
     epoch: u64,
     ready: std::sync::mpsc::SyncSender<Option<u16>>,
+    network_unchanged: impl Fn() -> bool,
 ) {
     let listener = match tokio::net::TcpListener::bind(addr).await {
         Ok(value) => value,
@@ -186,11 +199,24 @@ async fn run(
     let connections = Arc::new(tokio::sync::Semaphore::new(MAX_CONNECTIONS));
     let sources = SourceSlots::default();
     let jobs = Arc::new(tokio::sync::Semaphore::new(MAX_NATIVE_JOBS));
+    let local = SocketAddr::new(addr.ip(), bound_port);
+    let mut checked = Instant::now();
+    let mut network_changed = false;
     while runtime.server_epoch.load(Ordering::SeqCst) == epoch {
+        if checked.elapsed() >= NETWORK_RECHECK {
+            checked = Instant::now();
+            if !network_unchanged() {
+                network_changed = true;
+                break;
+            }
+        }
         let accepted = tokio::time::timeout(Duration::from_millis(500), listener.accept()).await;
         let Ok(Ok((tcp, peer))) = accepted else {
             continue;
         };
+        if tcp.local_addr().ok() != Some(local) {
+            continue;
+        }
         let Some(source_slot) = sources.try_acquire(peer.ip()) else {
             continue;
         };
@@ -227,6 +253,12 @@ async fn run(
     let _ = runtime
         .running_epoch
         .compare_exchange(epoch, 0, Ordering::SeqCst, Ordering::SeqCst);
+    if network_changed {
+        if let Some(app) = runtime.app.as_ref() {
+            use tauri::Emitter;
+            let _ = app.emit("connector-changed", ());
+        }
+    }
 }
 
 async fn body(request: Request<Incoming>, limit: usize) -> Result<Vec<u8>, Resp> {
@@ -481,6 +513,45 @@ mod tests {
     }
 
     #[test]
+    fn listener_stops_when_its_network_changes() {
+        let path = std::env::temp_dir().join(format!(
+            "deck-connector-network-test-{}-{}",
+            std::process::id(),
+            super::super::now()
+        ));
+        let mut doc = super::super::DiskDoc::fresh().unwrap();
+        doc.config.enabled = true;
+        let runtime = Arc::new(Runtime {
+            app: None,
+            path: path.clone(),
+            doc: Mutex::new(Ok(doc)),
+            pairing: Mutex::new(None),
+            lifecycle: Mutex::new(()),
+            server_epoch: AtomicU64::new(1),
+            running_epoch: AtomicU64::new(0),
+        });
+        let config = Config {
+            enabled: true,
+            address: "127.0.0.1".into(),
+            port: 0,
+            interface: None,
+        };
+        let identity = Identity::generate("127.0.0.1").unwrap();
+        spawn(runtime.clone(), config, identity, 1, || false).unwrap();
+        assert_eq!(runtime.running_epoch.load(Ordering::SeqCst), 1);
+        let deadline = Instant::now() + NETWORK_RECHECK + Duration::from_secs(3);
+        while runtime.running_epoch.load(Ordering::SeqCst) != 0 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        assert_eq!(
+            runtime.running_epoch.load(Ordering::SeqCst),
+            0,
+            "a changed network stops the listener"
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
     fn unauthenticated_resources_are_bounded_per_source_and_in_time() {
         assert_eq!(HANDSHAKE_TIMEOUT, Duration::from_secs(5));
         const { assert!(MAX_PER_SOURCE >= 2 && MAX_PER_SOURCE <= 4) };
@@ -589,6 +660,7 @@ mod tests {
             },
             identity,
             1,
+            || true,
         )
         .unwrap();
         assert_ne!(port, 0);
@@ -705,7 +777,7 @@ mod tests {
             port: 0,
             interface: None,
         };
-        let port = spawn(runtime.clone(), config, identity, 1).unwrap();
+        let port = spawn(runtime.clone(), config, identity, 1, || true).unwrap();
         let mut roots = rustls::RootCertStore::empty();
         roots.add(CertificateDer::from(cert)).unwrap();
         let client = Arc::new(

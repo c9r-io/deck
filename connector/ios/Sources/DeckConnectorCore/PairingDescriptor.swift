@@ -55,9 +55,34 @@ public enum PairingDescriptor {
               payload.fingerprint.range(of: "^[0-9a-f]{64}$", options: .regularExpression) != nil else {
             throw ConnectorError.invalidPairingDescriptor
         }
-        _ = try HTTPSOrigin(payload.origin)
+        // Deck listens only on a private-network IPv4 address; a descriptor
+        // naming a hostname or any other address did not come from Deck.
+        guard privateNetworkIPv4(try HTTPSOrigin(payload.origin).host) else {
+            throw ConnectorError.invalidPairingDescriptor
+        }
         guard payload.expiresAt >= Int64(now.timeIntervalSince1970) else { throw ConnectorError.expiredPairingDescriptor }
         return payload
+    }
+
+    /// The ranges the Mac may listen on (`docs/connector.md`): RFC1918,
+    /// 169.254/16 link-local and RFC6598 100.64/10, plus exactly 127.0.0.1 for
+    /// the isolated loopback smoke host (README) -- loopback never leaves the
+    /// device. Only canonical dotted quads are accepted (no leading zeros,
+    /// which some parsers read as octal).
+    static func privateNetworkIPv4(_ host: String) -> Bool {
+        let parts = host.split(separator: ".", omittingEmptySubsequences: false)
+        let octets = parts.compactMap { part -> Int? in
+            guard (1...3).contains(part.count), part.allSatisfy({ $0.isASCII && $0.isNumber }),
+                  let value = Int(part), value <= 255, String(value) == part else { return nil }
+            return value
+        }
+        guard parts.count == 4, octets.count == 4 else { return false }
+        switch (octets[0], octets[1]) {
+        case (10, _), (192, 168), (169, 254): return true
+        case (127, 0) where octets[2] == 0 && octets[3] == 1: return true
+        case (172, 16...31), (100, 64...127): return true
+        default: return false
+        }
     }
 }
 

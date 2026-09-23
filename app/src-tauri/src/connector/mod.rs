@@ -38,10 +38,16 @@
 //! a plain shell card does not qualify. The snapshot exposes only those saved
 //! agent cards and queue items belonging to them. Phone text is an agent
 //! prompt, not a shell line, but a prompt can still lead the agent to run
-//! commands.
+//! commands. A session under MCP control (`mcp::guard_terminal_input`) is
+//! neither written (checked before delivery and before each tmux write) nor
+//! read (checked before and after capture).
 //!
-//! Network: `connector_enable` records the interface carrying the chosen
-//! address; a restart binds only while the address is on that interface.
+//! Network: RFC1918 addresses are eligible on any interface, 100.64/10 only
+//! on `utun*` and 169.254/16 only on `bridge*` (`connector_network_address`).
+//! `connector_enable` records the interface carrying the chosen address; a
+//! restart binds only while the address is on that interface. The running
+//! listener keeps the (address, interface, netmask) it started with and stops
+//! when a periodic `getifaddrs` recheck finds a different one (`server.rs`).
 //! Pairing strips bidi, zero-width and tag characters from the supplied
 //! device name before validation and persistence, then emits
 //! `connector-changed` so the desktop can show it at once.
@@ -816,7 +822,7 @@ fn start_server(runtime: Arc<Runtime>) -> Result<(), DeckError> {
     if !cfg.enabled {
         return Ok(());
     }
-    listener_network_ok(&cfg, &local_ipv4_interfaces())?;
+    let network = listener_network_ok(&cfg, &local_ipv4_interfaces())?;
     let identity = identity_get()?
         .ok_or_else(|| DeckError::new(ErrorKind::Missing, "connector identity is missing"))?;
     if identity.address != cfg.address {
@@ -826,7 +832,11 @@ fn start_server(runtime: Arc<Runtime>) -> Result<(), DeckError> {
         ));
     }
     let epoch = runtime.server_epoch.fetch_add(1, Ordering::SeqCst) + 1;
-    server::spawn(runtime, cfg, identity, epoch).map(|_| ())
+    let listening = cfg.clone();
+    server::spawn(runtime, cfg, identity, epoch, move || {
+        listener_network_unchanged(&listening, &network)
+    })
+    .map(|_| ())
 }
 
 #[derive(Serialize)]
@@ -1217,6 +1227,8 @@ pub(crate) fn connector_smoke_transport(card_id: String) -> Result<SmokeTranspor
             },
             identity,
             epoch,
+            // Loopback smoke listener: no network to change.
+            || true,
         )?;
         if let Err(error) = runtime.with_doc(|doc| {
             doc.config = Config {
@@ -1536,6 +1548,8 @@ fn execute_native(
                 .agent
                 .as_deref()
                 .ok_or(("rejected", "agent-not-ready"))?;
+            crate::mcp::guard_terminal_input(&card.session)
+                .map_err(|_| ("rejected", "unsupported-target"))?;
             if !crate::scheduler::claim_session(&queues.busy, &card.session) {
                 return Err(("rejected", "session-busy"));
             }
@@ -1679,6 +1693,9 @@ impl ConnectorTransport<'_> {
         if committed_card(self.card_id)?.session != self.session {
             return Err(DeckError::new(ErrorKind::ContextChanged, "target-changed"));
         }
+        // The same MCP control fence as every other terminal-input path
+        // (`prompt_delivery::deliver`), re-run before each tmux write.
+        crate::mcp::guard_terminal_input(self.session)?;
         let device_active = runtime.read(|d| {
             d.devices
                 .iter()
@@ -2404,6 +2421,8 @@ trait OutputIo {
     fn card(&self, id: &str) -> Result<InternalCard, DeckError>;
     fn probe(&self, session: &str) -> Result<crate::context::ConnectorProbe, DeckError>;
     fn tmux(&self, args: &[String]) -> Result<String, DeckError>;
+    /// Refuses while MCP owns the session's terminal control.
+    fn mcp_fence(&self, session: &str) -> Result<(), DeckError>;
 }
 
 struct LiveOutput;
@@ -2418,6 +2437,9 @@ impl OutputIo for LiveOutput {
     fn tmux(&self, args: &[String]) -> Result<String, DeckError> {
         crate::tmux::tmux_owned(args)
     }
+    fn mcp_fence(&self, session: &str) -> Result<(), DeckError> {
+        crate::mcp::guard_terminal_input(session)
+    }
 }
 
 pub(super) fn output(card_id: &str) -> Result<Value, DeckError> {
@@ -2429,10 +2451,14 @@ pub(super) fn output(card_id: &str) -> Result<Value, DeckError> {
 /// capture, so a pane that has fallen back to a shell is never read. The
 /// capture is the pane's last 200 lines while the agent runs; those can still
 /// hold shell output from before the agent started (documented limit,
-/// `docs/connector.md`).
+/// `docs/connector.md`). A session under MCP control is never read: MCP
+/// output sharing is consent for the MCP client, not for a phone. The fence
+/// is checked before any pane access and again after the capture.
 fn output_with(io: &dyn OutputIo, card_id: &str) -> Result<Value, DeckError> {
     let card = io.card(card_id)?;
     require_agent_card(&card)?;
+    let unsupported = |_| DeckError::new(ErrorKind::Invalid, "unsupported-target");
+    io.mcp_fence(&card.session).map_err(unsupported)?;
     let before = io.probe(&card.session)?;
     if before.agent.is_none() {
         return Err(DeckError::new(ErrorKind::Invalid, "unsupported-target"));
@@ -2458,6 +2484,7 @@ fn output_with(io: &dyn OutputIo, card_id: &str) -> Result<Value, DeckError> {
     ])?;
     let after = io.probe(&card.session)?;
     let still = io.card(card_id)?;
+    io.mcp_fence(&card.session).map_err(unsupported)?;
     if after.agent.is_none() || !still.agent_target {
         return Err(DeckError::new(ErrorKind::Invalid, "unsupported-target"));
     }
@@ -2474,15 +2501,24 @@ fn output_with(io: &dyn OutputIo, card_id: &str) -> Result<Value, DeckError> {
 fn local_ipv4_addresses() -> Vec<Ipv4Addr> {
     let mut out = local_ipv4_interfaces()
         .into_iter()
-        .map(|(ip, _)| ip)
+        .map(|x| x.ip)
         .collect::<Vec<_>>();
     out.sort();
     out.dedup();
     out
 }
 
-/// Connector-eligible IPv4 addresses with the interface that carries each.
-fn local_ipv4_interfaces() -> Vec<(Ipv4Addr, String)> {
+/// One Connector-eligible IPv4 address with the interface and netmask that
+/// carry it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct LocalAddress {
+    ip: Ipv4Addr,
+    interface: String,
+    netmask: Ipv4Addr,
+}
+
+/// Connector-eligible IPv4 addresses (`getifaddrs`, no process spawn).
+fn local_ipv4_interfaces() -> Vec<LocalAddress> {
     unsafe {
         let mut head = std::ptr::null_mut();
         if libc::getifaddrs(&mut head) != 0 {
@@ -2498,11 +2534,21 @@ fn local_ipv4_interfaces() -> Vec<(Ipv4Addr, String)> {
             {
                 let sin = &*(a.ifa_addr as *const libc::sockaddr_in);
                 let ip = Ipv4Addr::from(u32::from_be(sin.sin_addr.s_addr));
+                let netmask = if a.ifa_netmask.is_null() {
+                    Ipv4Addr::UNSPECIFIED
+                } else {
+                    let mask = &*(a.ifa_netmask as *const libc::sockaddr_in);
+                    Ipv4Addr::from(u32::from_be(mask.sin_addr.s_addr))
+                };
                 let name = std::ffi::CStr::from_ptr(a.ifa_name)
                     .to_string_lossy()
                     .into_owned();
-                if connector_network_address(ip) && interface_name(&name) {
-                    out.push((ip, name));
+                if interface_name(&name) && connector_network_address(ip, &name) {
+                    out.push(LocalAddress {
+                        ip,
+                        interface: name,
+                        netmask,
+                    });
                 }
             }
             p = a.ifa_next;
@@ -2512,11 +2558,11 @@ fn local_ipv4_interfaces() -> Vec<(Ipv4Addr, String)> {
     }
 }
 
-fn interface_of(ip: Ipv4Addr, interfaces: &[(Ipv4Addr, String)]) -> Option<String> {
+fn interface_of(ip: Ipv4Addr, interfaces: &[LocalAddress]) -> Option<String> {
     interfaces
         .iter()
-        .find(|(candidate, _)| *candidate == ip)
-        .map(|(_, name)| name.clone())
+        .find(|candidate| candidate.ip == ip)
+        .map(|candidate| candidate.interface.clone())
 }
 
 fn validate_connector_listener(
@@ -2530,7 +2576,7 @@ fn validate_connector_listener(
     if port < 1024
         || ip.is_unspecified()
         || ip.is_loopback()
-        || !connector_network_address(ip)
+        || !connector_network_range(ip)
         || !local.contains(&ip)
     {
         return Err(DeckError::new(
@@ -2541,40 +2587,66 @@ fn validate_connector_listener(
     Ok(ip)
 }
 
-/// A restart listens only where the user enabled it: the saved address must
-/// be on an eligible interface and, once recorded, on the same interface. A
+/// A listener runs only where the user enabled it: the saved address must be
+/// on an eligible interface and, once recorded, on the same interface. A
 /// different network that happens to hand out the same private address is a
-/// changed context, not a place to listen.
-fn listener_network_ok(cfg: &Config, interfaces: &[(Ipv4Addr, String)]) -> Result<(), DeckError> {
+/// changed context, not a place to listen. Returns the entry carrying the
+/// address; the running listener keeps it and stops as soon as a later check
+/// (`server.rs`, every `NETWORK_RECHECK`) finds a different one — the address
+/// gone, moved, or its netmask changed.
+fn listener_network_ok(
+    cfg: &Config,
+    interfaces: &[LocalAddress],
+) -> Result<LocalAddress, DeckError> {
     let ip = cfg
         .address
         .parse::<Ipv4Addr>()
         .map_err(|_| DeckError::new(ErrorKind::Invalid, "invalid connector address"))?;
-    if !connector_network_address(ip) || interface_of(ip, interfaces).is_none() {
+    let mut carrying = interfaces.iter().filter(|candidate| candidate.ip == ip);
+    let Some(first) = carrying.clone().next() else {
         return Err(DeckError::new(
             ErrorKind::Invalid,
             "connector address is not an available private-network address",
         ));
+    };
+    match &cfg.interface {
+        None => Ok(first.clone()),
+        Some(recorded) => carrying
+            .find(|candidate| &candidate.interface == recorded)
+            .cloned()
+            .ok_or_else(|| DeckError::new(ErrorKind::ContextChanged, "connector network changed")),
     }
-    if cfg
-        .interface
-        .as_ref()
-        .is_some_and(|recorded| !interfaces.iter().any(|(a, n)| *a == ip && n == recorded))
-    {
-        return Err(DeckError::new(
-            ErrorKind::ContextChanged,
-            "connector network changed",
-        ));
-    }
-    Ok(())
 }
 
-/// Addresses on which Connector may listen. RFC1918 covers ordinary LANs,
-/// link-local covers direct/self-assigned networks, and RFC6598 covers VPNs
-/// such as Tailscale without treating an arbitrary public interface as LAN.
-fn connector_network_address(ip: Ipv4Addr) -> bool {
+/// Whether the running listener's network is still the one it started on.
+fn listener_network_unchanged(cfg: &Config, started: &LocalAddress) -> bool {
+    listener_network_ok(cfg, &local_ipv4_interfaces()).is_ok_and(|now| &now == started)
+}
+
+/// The address ranges Connector may use at all.
+fn connector_network_range(ip: Ipv4Addr) -> bool {
     let octets = ip.octets();
     ip.is_private() || ip.is_link_local() || (octets[0] == 100 && (64..=127).contains(&octets[1]))
+}
+
+/// Addresses on which Connector may listen, each range only on the interface
+/// kind it exists for. RFC1918 covers ordinary LANs on any interface. RFC6598
+/// 100.64/10 is accepted only on a `utun` tunnel (Tailscale and other direct
+/// VPNs); a carrier-grade NAT address on Wi-Fi or Ethernet is shared with
+/// strangers. 169.254/16 link-local is accepted only on a `bridge` (a direct
+/// Thunderbolt/USB cable network); a self-assigned address on Wi-Fi or
+/// Ethernet is what every client of a DHCP-less public network gets too.
+fn connector_network_address(ip: Ipv4Addr, interface: &str) -> bool {
+    if !connector_network_range(ip) {
+        return false;
+    }
+    if ip.is_link_local() {
+        return interface.starts_with("bridge");
+    }
+    if !ip.is_private() {
+        return interface.starts_with("utun");
+    }
+    true
 }
 fn host_name() -> String {
     let mut b = [0i8; 256];
@@ -2897,6 +2969,7 @@ mod tests {
 
     struct FakeOutput {
         agent: bool,
+        mcp_owned: bool,
         pane_calls: std::cell::Cell<usize>,
     }
     impl OutputIo for FakeOutput {
@@ -2914,6 +2987,13 @@ mod tests {
         fn tmux(&self, _: &[String]) -> Result<String, DeckError> {
             self.pane_calls.set(self.pane_calls.get() + 1);
             Err(DeckError::new(ErrorKind::Tmux, "fixture"))
+        }
+        fn mcp_fence(&self, _: &str) -> Result<(), DeckError> {
+            if self.mcp_owned {
+                Err(DeckError::new(ErrorKind::Perm, "MCP owns terminal control"))
+            } else {
+                Ok(())
+            }
         }
     }
 
@@ -2964,12 +3044,16 @@ mod tests {
                 .into(),
             )
         }
+        fn mcp_fence(&self, _: &str) -> Result<(), DeckError> {
+            Ok(())
+        }
     }
 
     #[test]
     fn phone_output_and_send_are_limited_to_saved_agent_cards() {
         let shell = FakeOutput {
             agent: false,
+            mcp_owned: false,
             pane_calls: std::cell::Cell::new(0),
         };
         let refused = output_with(&shell, "C1").unwrap_err();
@@ -2979,10 +3063,24 @@ mod tests {
 
         let agent = FakeOutput {
             agent: true,
+            mcp_owned: false,
             pane_calls: std::cell::Cell::new(0),
         };
         assert!(output_with(&agent, "C1").is_err());
         assert_eq!(agent.pane_calls.get(), 1, "an agent card reaches the probe");
+
+        let mcp = FakeOutput {
+            agent: true,
+            mcp_owned: true,
+            pane_calls: std::cell::Cell::new(0),
+        };
+        let refused = output_with(&mcp, "C1").unwrap_err();
+        assert_eq!(refused.message(), "unsupported-target");
+        assert_eq!(
+            mcp.pane_calls.get(),
+            0,
+            "an MCP-controlled pane is not touched"
+        );
 
         let board = json!({"cards":[
             {"id":"S","session":"deck-s-0001","cmd":""},
@@ -3033,9 +3131,28 @@ mod tests {
             port: 47631,
             interface: interface.map(str::to_owned),
         };
-        let here = vec![(lan, "en0".to_string())];
-        let elsewhere = vec![(lan, "en7".to_string())];
-        assert!(listener_network_ok(&config(Some("en0")), &here).is_ok());
+        let at = |interface: &str, netmask: [u8; 4]| LocalAddress {
+            ip: lan,
+            interface: interface.into(),
+            netmask: netmask.into(),
+        };
+        let here = vec![at("en0", [255, 255, 255, 0])];
+        let elsewhere = vec![at("en7", [255, 255, 255, 0])];
+        let started = listener_network_ok(&config(Some("en0")), &here).unwrap();
+        assert_eq!(started, here[0]);
+        // Same address and interface on a differently sized subnet is a
+        // different network for the running listener's recheck.
+        let resized = vec![at("en0", [255, 255, 0, 0])];
+        assert_ne!(
+            listener_network_ok(&config(Some("en0")), &resized).unwrap(),
+            started
+        );
+        // Both interfaces carry it: the recorded one is chosen.
+        let both = vec![elsewhere[0].clone(), here[0].clone()];
+        assert_eq!(
+            listener_network_ok(&config(Some("en0")), &both).unwrap(),
+            started
+        );
         assert_eq!(
             listener_network_ok(&config(Some("en0")), &elsewhere)
                 .unwrap_err()
@@ -3457,7 +3574,7 @@ mod tests {
         assert!(!connector_addresses().iter().any(|address| {
             address
                 .parse::<Ipv4Addr>()
-                .is_ok_and(|ip| !connector_network_address(ip))
+                .is_ok_and(|ip| !connector_network_range(ip))
         }));
         assert!(!host_name().chars().any(char::is_control));
     }
@@ -3765,7 +3882,7 @@ mod tests {
             "100.127.255.254",
         ] {
             assert!(
-                connector_network_address(address.parse().unwrap()),
+                connector_network_range(address.parse().unwrap()),
                 "{address}"
             );
         }
@@ -3779,8 +3896,26 @@ mod tests {
             "224.0.0.1",
         ] {
             assert!(
-                !connector_network_address(address.parse().unwrap()),
+                !connector_network_range(address.parse().unwrap()),
                 "{address}"
+            );
+        }
+        // Each non-RFC1918 range only on the interface kind it exists for.
+        for (address, interface, eligible) in [
+            ("192.168.31.101", "en0", true),
+            ("10.1.2.3", "utun4", true),
+            ("100.101.102.103", "utun4", true),
+            ("100.101.102.103", "en0", false),
+            ("100.101.102.103", "bridge0", false),
+            ("169.254.20.4", "bridge0", true),
+            ("169.254.20.4", "en0", false),
+            ("169.254.20.4", "utun4", false),
+            ("8.8.8.8", "utun4", false),
+        ] {
+            assert_eq!(
+                connector_network_address(address.parse().unwrap(), interface),
+                eligible,
+                "{address} on {interface}"
             );
         }
         let local = ["192.168.31.101".parse().unwrap()];
