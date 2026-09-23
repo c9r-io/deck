@@ -24,7 +24,7 @@
 
 **MCP 终端控制**默认关闭。你需要明确授权一个 client 的项目和目录。结构化的列举、读取、搜索不会启动 shell；允许创建受管 session 是另一个选项；执行命令还需在 Mac 上对该 session 给出有时限的独立批准。获批执行使用你的 macOS 账号权限，并非文件系统沙箱。可以在 deck 设置里撤销 client。[阅读 MCP 权限说明](https://github.com/c9r-io/deck/blob/692438f9310f079743700a10bda7cf80f77b06c6/docs/mcp.md)。
 
-本机 STDIO 客户端可以直接使用 Deck MCP。托管的 ChatGPT 需要另装可选的 Deck Tunnel Helper 和 OpenAI 官方 `tunnel-client`；OpenAI Runtime API key 不由 Deck 保存。[阅读 ChatGPT Secure Tunnel 完整指南（英文）→](/docs/integrations/chatgpt-secure-tunnel/)
+本机 STDIO 客户端可以直接使用 Deck MCP。托管的 ChatGPT 需要另装可选的 Deck Tunnel Helper 和 OpenAI 官方 `tunnel-client`；OpenAI Runtime API key 不由 Deck 保存。[阅读 Secure Tunnel 完整指南 →](/zh/docs/integrations/chatgpt-secure-tunnel/)
 
 ## 分享问题报告之前
 
