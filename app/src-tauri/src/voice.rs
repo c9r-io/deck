@@ -360,6 +360,9 @@ fn deliver_with(
         }
     }
     let _release = Release(busy, &target.session);
+    // The same MCP takeover fence as every other literal delivery
+    // (`prompt_delivery::deliver`); this path supplies its own transport.
+    crate::mcp::guard_terminal_input(&target.session).map_err(|_| failure("target-unavailable"))?;
     let current = transport
         .probe(&target.session)
         .map_err(|_| failure("target-changed"))?;

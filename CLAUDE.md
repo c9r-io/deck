@@ -164,7 +164,9 @@ Status semantics (card colour) are documented on `effectiveCardStatus` in
   takes what it needs from the core through `init*(deps)`).
   Backend gates: `cargo fmt`, `cargo clippy --workspace -D warnings`,
   `cargo test --workspace` (unit + `tests/tmux_contract.rs` against the
-  bundled tmux + `tests/log_privacy.rs` + `tests/edr_quiet.rs` + the status
+  bundled tmux + `tests/log_privacy.rs` + `tests/edr_quiet.rs` +
+  `tests/external_admission.rs` (every path that puts non-owner text into
+  a queue or pane is pinned and must pass `admit_external`) + the status
   helper). `src-tauri/Cargo.toml` is the one workspace root; the compiler
   is pinned by `rust-toolchain.toml` at the repository root and the same
   version in every workflow (`scripts/test_release_tools.py` checks).

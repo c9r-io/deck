@@ -21,8 +21,9 @@
 //! - `channel_queue_add` (and `channel_queue_add_reviewed_list`) is the
 //!   external-message admission path (Slack channel rules, Slack badge
 //!   rules, and every Connector-originated row). It uses the
-//!   same durable queue transaction but first requires the card command to
-//!   be exactly `claude` or `codex` (`inbound_channel::channel_agent_command`),
+//!   same durable queue transaction but first passes `admit_external`, the
+//!   one chokepoint: the card command must be exactly `claude` or `codex`
+//!   (`inbound_channel::channel_agent_command`),
 //!   so every channel row is process-bound. A process-bound row is pasted
 //!   only while that program is the pane's foreground command AND has
 //!   bracketed paste enabled, both checked atomically in tmux with the paste
@@ -46,6 +47,12 @@
 //!   This is the authoritative check; `leadingCommand` in buffer-model.js is
 //!   the UI hint over the same character set. Template-filled rows are not
 //!   verbatim — their first line is the rule owner's text.
+//! - `tests/external_admission.rs` is the census over these paths: every
+//!   queue-item creation site, every text-carrying Tauri command, every
+//!   backend terminal-input site and every frontend call of those commands
+//!   is pinned to an exact file and function with an owner/external label,
+//!   and an external entry must reach `admit_external` (or, for a verbatim
+//!   entry, `externalText`). A new path fails CI until it is reviewed there.
 //! - The firing contract (`firing_conflict`): while an item is mid-send
 //!   ("firing" persisted, the paste possibly in flight), awaiting an
 //!   ambiguous-delivery decision, or standing as a review checkpoint,
@@ -631,9 +638,19 @@ pub(crate) fn channel_queue_add(
     app: AppHandle,
     mut args: QueueAddArgs,
 ) -> Result<(), DeckError> {
-    require_channel_agent(&args)?;
-    args.channel_path = true;
+    admit_external(&mut args)?;
     queue_add(state, app, args)
+}
+
+/// The ONE admission for external (non-owner) text into the queue: the card
+/// command must be exactly `claude` or `codex`, and the row is then marked
+/// `channel_path` (`QueueItem.external`). Both `channel_queue_add*` commands
+/// call it before the owner core; `tests/external_admission.rs` fails CI on a
+/// new enqueue path, Tauri command or frontend call site that skips it.
+pub(super) fn admit_external(args: &mut QueueAddArgs) -> Result<(), DeckError> {
+    require_channel_agent(args)?;
+    args.channel_path = true;
+    Ok(())
 }
 
 pub(super) fn require_channel_agent(args: &QueueAddArgs) -> Result<(), DeckError> {
@@ -1151,7 +1168,6 @@ pub(crate) fn channel_queue_add_reviewed_list(
     mut args: QueueAddArgs,
     texts: Vec<String>,
 ) -> Result<(), DeckError> {
-    require_channel_agent(&args)?;
-    args.channel_path = true;
+    admit_external(&mut args)?;
     queue_add_reviewed_list(state, app, args, texts)
 }

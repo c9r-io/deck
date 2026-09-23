@@ -2587,6 +2587,30 @@ fn external_rows_are_admitted_only_for_an_exact_agent_command() {
     }
 }
 
+#[test]
+fn external_admission_refuses_a_plain_shell_card_and_marks_what_it_admits() {
+    for cmd in ["zsh", "", "bash -l", "claude --yolo", "codex; sh"] {
+        let mut args = add_args("s", "rm -rf ~");
+        args.cmd = cmd.into();
+        assert_eq!(
+            ops::admit_external(&mut args).unwrap_err().kind(),
+            ErrorKind::Invalid,
+            "{cmd:?}"
+        );
+        assert!(!args.channel_path, "a refused row is never marked admitted");
+    }
+    let mut args = add_args("s", "please look at INC-42");
+    args.mode = "at".into();
+    args.at = Some(NOW);
+    args.cmd = "claude".into();
+    ops::admit_external(&mut args).unwrap();
+    assert!(args.channel_path);
+    let mut q = qs(Vec::new());
+    add_item(&mut q, args, "please look at INC-42".into()).unwrap();
+    assert!(q.items[0].external);
+    assert_eq!(q.items[0].expected_process.as_deref(), Some("claude"));
+}
+
 // ---------- agent hold (select.rs header) ----------
 
 #[test]
