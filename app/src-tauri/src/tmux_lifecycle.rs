@@ -19,7 +19,11 @@
 //! are marked stopped before polling so a
 //! whole-server restart is not mistaken for natural card exits.
 //! A managed MCP runner cannot use ordinary shell restoration, so an explicit
-//! restart is refused until its MCP cards are closed through the Board path.
+//! restart is refused until its MCP cards are closed through the Board path:
+//! MCP registers that check once at boot (`set_restart_guard`, from
+//! `mcp::spawn`) and this module names no feature module itself; the
+//! restart transaction runs the registered guard before any tmux impact,
+//! and an unset guard means no feature objects.
 //!
 //! Production Stable/Nightly intentionally share socket `deck` because
 //! promotion copies identical candidate bytes. Debug development uses
@@ -1222,6 +1226,14 @@ pub(crate) async fn restart_tmux_server(
     .map_err(|_| DeckError::new(ErrorKind::Other, "tmux-restart-worker-failed"))?
 }
 
+/// The one feature check a server restart consults (see the header): set
+/// once at boot by the feature that owns live sessions, never replaced.
+static RESTART_GUARD: OnceLock<fn() -> Result<(), DeckError>> = OnceLock::new();
+
+pub(crate) fn set_restart_guard(guard: fn() -> Result<(), DeckError>) {
+    let _ = RESTART_GUARD.set(guard);
+}
+
 #[allow(clippy::too_many_arguments)]
 fn restart_tmux_server_inner(
     pty_state: &crate::pty::PtyState,
@@ -1240,7 +1252,9 @@ fn restart_tmux_server_inner(
         crate::session_runtime::Deadline::until(started + crate::restart::PREPARE_BUDGET);
     let _guard = try_operation()?;
     let _activity = crate::session_runtime::exclusive()?;
-    crate::mcp::guard_server_restart()?;
+    if let Some(guard) = RESTART_GUARD.get() {
+        guard()?;
+    }
     // The query client is still an attached tmux client. Stop it before
     // capturing/rechecking restart impact so it cannot keep the old server
     // alive or perturb attached-client counts during replacement.

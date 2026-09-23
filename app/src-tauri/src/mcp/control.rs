@@ -350,6 +350,7 @@ pub(super) fn reconcile_control_socket(
 }
 
 pub(crate) fn spawn(app: AppHandle) {
+    crate::tmux_lifecycle::set_restart_guard(guard_server_restart);
     let dir = crate::datadir::deck_dir();
     let path = dir.join("mcp.json");
     let socket = dir.join("mcp-control.sock");

@@ -119,6 +119,7 @@ loaded by `ui/index.html`; xterm.js vendored in `app/ui/vendor/`. Backend
 | Board state, one persist-before-commit transaction queue | `ui/js/persistence.js`, `state.js` (shared slots), `pure.js` (DOM-free logic) |
 | Typed documents, envelope, quarantine-first recovery | `storage.rs`, `documents.rs` |
 | Private data dir (0700/0600 by construction), atomic writes, pruning | `datadir.rs` |
+| Bounded durable state documents (bounded read/decode, capped atomic write, ids, SHA-256 hex) shared by the MCP ledger, the Connector journal and the channel inbox | `ledger.rs` |
 | One error type: closed `ErrorKind` + message, string on the wire | `error.rs` |
 | app.log writer, session tags, log migration | `applog.rs` |
 | Log redaction scanner (`sanitize_log`, `redact_credentials`) | `redact.rs` |

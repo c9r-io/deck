@@ -82,7 +82,9 @@
 //! envelope and argument shapes; `project` list/read/search; `session` the
 //! session-level requests including close; `jobs` exec, job reads and every
 //! job side effect; `control` request routing plus the socket thread; and
-//! `commands` the local Tauri commands and the guards other modules call.
+//! `commands` the local Tauri commands and the guards other modules call
+//! (`spawn` registers `guard_server_restart` with `tmux_lifecycle`, which
+//! never names this module).
 //! Limits and the small helpers below are shared by all of them.
 
 use base64::Engine;

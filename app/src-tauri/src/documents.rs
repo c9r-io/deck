@@ -709,7 +709,6 @@ impl TryFrom<SettingsDocRaw> for SettingsDoc {
         }
         if let Some(inbound) = &raw.inbound {
             crate::inbound::validate_settings(inbound)?;
-            crate::inbound_channel::validate_settings(inbound)?;
         }
         Ok(SettingsDoc(raw))
     }
