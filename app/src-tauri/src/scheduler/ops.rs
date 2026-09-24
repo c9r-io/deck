@@ -150,7 +150,8 @@ pub(crate) fn smoke_seed_ambiguous(state: State<'_, Queues>) -> Result<(), DeckE
         .first_mut()
         .ok_or(DeckError::new(ErrorKind::Other, "smoke queue is empty"))?;
     let delivery = "smoke-delivery".to_string();
-    item.state = "firing".into();
+    // debug-only smoke hook: forces the fixture row mid-send
+    item.state = ItemState::Firing;
     item.delivery = Some(delivery.clone());
     let snapshot = item.clone();
     q.pending.clear();
@@ -606,7 +607,7 @@ fn add_item_bound(
             session: item.session.clone(),
             card_id: item.card_id.clone(),
             fingerprint,
-            state: "queued".into(),
+            state: OperationState::Queued,
         });
     }
     Ok(())
@@ -682,13 +683,13 @@ pub(crate) fn firing_conflict(q: &QueueState, id: &str) -> Result<(), DeckError>
                 "this row is already sent — inspect its checkpoint or cancel the list",
             ));
         }
-        if i.state == "firing" {
+        if i.state == ItemState::Firing {
             return Err(DeckError::new(
                 ErrorKind::Other,
                 "this prompt is being sent right now — try again in a few seconds",
             ));
         }
-        if i.state == "ambiguous" {
+        if i.state == ItemState::Ambiguous {
             return Err(DeckError::new(
                 ErrorKind::Other,
                 "this prompt has an ambiguous delivery — acknowledge or retry it first",
@@ -743,7 +744,7 @@ pub(crate) fn remove_item(q: &mut QueueState, id: &str) -> Result<bool, DeckErro
     q.items.retain(|i| i.id != id);
     if n0 != q.items.len() {
         for operation in q.operations.iter_mut().filter(|op| op.item == id) {
-            operation.state = "canceled".into();
+            operation.state = OperationState::Canceled;
         }
     }
     Ok(q.items.len() != n0)
@@ -792,7 +793,10 @@ pub(crate) fn retry_item(q: &mut QueueState, id: &str) -> Result<(), DeckError> 
         return Err(review_error());
     }
     invalidate_review_successor(q, id);
-    if q.items.iter().any(|i| i.id == id && i.state == "firing") {
+    if q.items
+        .iter()
+        .any(|i| i.id == id && i.state == ItemState::Firing)
+    {
         return Err(DeckError::new(
             ErrorKind::Other,
             "this prompt is being sent right now — try again in a few seconds",
@@ -801,25 +805,18 @@ pub(crate) fn retry_item(q: &mut QueueState, id: &str) -> Result<(), DeckError> 
     let delivery = q
         .items
         .iter()
-        .find(|i| i.id == id && i.state == "ambiguous")
+        .find(|i| i.id == id && i.state == ItemState::Ambiguous)
         .and_then(|i| i.delivery.clone());
     if let Some(item) = q.items.iter_mut().find(|i| i.id == id) {
-        if !matches!(
-            item.state.as_str(),
-            "firing" | "ambiguous" | "failed" | "pending"
-        ) {
-            return Err(DeckError::new(
-                ErrorKind::Other,
-                "prompt has an unknown delivery state",
-            ));
-        }
-        item.state = default_state();
+        // Review rows were refused above and Firing is refused just above;
+        // what remains is Ambiguous, Failed or Pending.
+        item.state.move_to(ItemState::Pending);
         item.attempts = 0;
         item.last_error = None;
         item.last_attempt_at = None;
         item.delivery = None;
         for operation in q.operations.iter_mut().filter(|op| op.item == id) {
-            operation.state = "queued".into();
+            operation.state = OperationState::Queued;
         }
     } else if q.deliveries.iter().any(|d| d.item == id) {
         return Ok(()); // repeated resolution of a consumed once item
@@ -844,7 +841,7 @@ pub(crate) fn acknowledge_ambiguous(q: &mut QueueState, id: &str) -> Result<(), 
             ))
         };
     };
-    if item.state != "ambiguous" {
+    if item.state != ItemState::Ambiguous {
         return if item.delivery.is_none() && q.deliveries.iter().any(|d| d.item == id) {
             Ok(())
         } else {
@@ -1011,8 +1008,8 @@ pub(crate) fn clear_session_items(q: &mut QueueState, session: &str) {
     q.last_fired.remove(session);
     q.review_completed.remove(session);
     for operation in q.operations.iter_mut().filter(|op| op.session == session) {
-        if operation.state != "delivered" {
-            operation.state = "canceled".into();
+        if operation.state != OperationState::Delivered {
+            operation.state = OperationState::Canceled;
         }
     }
 }

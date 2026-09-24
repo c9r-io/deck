@@ -21,7 +21,7 @@ pub(super) fn boot_queues_with(
     persist: &dyn Fn(&QueueState) -> Result<(), DeckError>,
 ) -> Queues {
     let has_interrupted = {
-        loaded.items.iter().any(|i| i.state == "firing")
+        loaded.items.iter().any(|i| i.state == ItemState::Firing)
             || loaded
                 .pending
                 .iter()

@@ -81,7 +81,7 @@ pub(crate) struct ReviewPreview {
 }
 
 pub(crate) fn is_review(i: &QueueItem) -> bool {
-    matches!(i.state.as_str(), "review" | "review-approved")
+    i.state.is_review()
 }
 
 pub(crate) fn review_error() -> DeckError {
@@ -107,7 +107,9 @@ pub(crate) fn review_allows(q: &QueueState, item: &QueueItem) -> bool {
     q.items
         .iter()
         .filter(|i| {
-            i.session == item.session && i.group == item.group && i.state == "review-approved"
+            i.session == item.session
+                && i.group == item.group
+                && i.state == ItemState::ReviewApproved
         })
         .all(|i| {
             i.review
@@ -129,7 +131,7 @@ pub(crate) fn invalidate_review_successor(q: &mut QueueState, id: &str) {
             .and_then(|r| r.permit.as_ref())
             .is_some_and(|p| p.next_id == id)
         {
-            item.state = "review".into();
+            item.state.move_to(ItemState::Review);
             item.revision = item.revision.wrapping_add(1);
             item.review.as_mut().unwrap().permit = None;
         }
@@ -169,7 +171,7 @@ pub(super) fn decision_for(
         return Err(review_error());
     }
     let next = successor(q, item);
-    if next.is_some_and(|i| matches!(i.state.as_str(), "firing" | "ambiguous")) {
+    if next.is_some_and(|i| i.state.blocks_firing()) {
         return Err(review_error());
     }
     Ok(ReviewDecision {
@@ -224,7 +226,7 @@ pub(crate) fn confirm_review(
         next: decision.next.as_ref().map(|p| p.next_id.clone()),
     };
     if let Some(permit) = &decision.next {
-        item.state = "review-approved".into();
+        item.state.move_to(ItemState::ReviewApproved);
         item.review.as_mut().ok_or_else(review_error)?.permit = Some(permit.clone());
     } else {
         q.items.retain(|i| i.id != decision.id);
@@ -429,19 +431,16 @@ pub(crate) fn plan_item(
             && x.group == i.group
             && x.id != i.id
             && x.mode != "every"
-            && x.state != "review-approved"
+            && x.state != ItemState::ReviewApproved
             && (x.seq, x.added) < (i.seq, i.added)
     });
-    let stage = if i.state == "review" {
-        "review"
-    } else if i.state == "review-approved" {
-        "review-approved"
-    } else if i.state == "ambiguous" {
-        "ambiguous"
-    } else if i.state == "firing" {
-        "firing"
+    let stage = if matches!(
+        i.state,
+        ItemState::Review | ItemState::ReviewApproved | ItemState::Ambiguous | ItemState::Firing
+    ) {
+        i.state.as_str()
     } else if item_dead(i) {
-        "failed"
+        ItemState::Failed.as_str()
     } else if i.paused {
         "paused"
     } else if !retry_ok(i, now) {

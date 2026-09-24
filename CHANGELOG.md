@@ -28,6 +28,10 @@
   answer, and `deck_job_read` reports the runner's reason instead of always
   `JOB_STATE_UNKNOWN`. If a started process cannot be handed its pipes, the
   runner now kills it rather than leaving it untracked.
+- Internal: scheduler row and operation states are closed types with one
+  documented transition matrix instead of strings compared in six files;
+  queue.json is byte-for-byte unchanged, and a queue.json carrying a state
+  word no deck ever wrote is now refused on load instead of being read.
 - Internal: the isolated WKWebView smoke now has a machine verdict.
   `scripts/smoke-verdict <data-dir> <mode>` judges a run's `app.log`
   against one manifest of what each mode must emit (held equal to the

@@ -41,7 +41,7 @@ pub(crate) fn snapshot(
             id: i.id.clone(),
             card_id: i.card_id.clone(),
             mode: i.mode.clone(),
-            state: i.state.clone(),
+            state: i.state.as_str().into(),
             paused: i.paused,
             revision: i.revision.to_string(),
         })
@@ -51,7 +51,7 @@ pub(crate) fn snapshot(
         .iter()
         .map(|o| OperationDto {
             id: o.id.clone(),
-            state: o.state.clone(),
+            state: o.state.as_str().into(),
         })
         .collect();
     (revision, items, operations)

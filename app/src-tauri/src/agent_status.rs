@@ -123,7 +123,10 @@ use crate::sync::LockRecover;
 const SOURCES: &[&str] = &["claude-code", "codex"];
 
 /// Closed state vocabulary — the only words that ever reach the frontend.
-pub(crate) const STATES: &[&str] = &["working", "needs-input", "turn-done"];
+pub(crate) const WORKING: &str = "working";
+pub(crate) const NEEDS_INPUT: &str = "needs-input";
+pub(crate) const TURN_DONE: &str = "turn-done";
+pub(crate) const STATES: &[&str] = &[WORKING, NEEDS_INPUT, TURN_DONE];
 
 #[derive(Debug, PartialEq)]
 pub(crate) struct Event {

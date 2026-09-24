@@ -50,12 +50,14 @@ release's GitHub run and in git history, not in the checklist.
 `cargo test` covers the tmux contracts (scroll model, clear-history, literal
 injection, poll formats); `scripts/ui-tests` covers the DOM-free modules.
 
-Current state: as of 2026-09-25 (the FR-6b commit that wrote this line) all
-13 automated modes — run, ambiguous, restart, settings, attention, voice,
+Current state: as of 2026-09-25 (FR-3 A, the scheduler state types) 13 of
+the 14 smoke modes — run, ambiguous, restart, settings, attention, voice,
 buffer, channel, connector, resume, connector-transport, review and
 review-restart — pass `scripts/smoke-verdict` on fresh isolated roots on an
-idle Mac. `channel-fault` needs real Slack sandbox tokens and was not part of
-that run. Run the smoke with no other build in progress: under a concurrent
+idle Mac. The 14th, `channel-fault`, is a manual item: it needs real Slack
+sandbox tokens pasted into the isolated window, so no automated run covers
+it; run and judge it by hand before a release that touches the channel
+transport. Run the smoke with no other build in progress: under a concurrent
 `cargo test` build the timing-bound checks (`link-activate`, `completion*`,
 `selection-native-scroll`, `selection-resize`, `scroll-frame`) fail. The five
 `selection-*-range/expect/copy/scroll` lines are closed diagnostics and

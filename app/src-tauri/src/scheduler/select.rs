@@ -25,6 +25,7 @@
 use std::collections::HashMap;
 
 use super::*;
+use crate::agent_status;
 use crate::tmux::PaneRow;
 
 /// One tick's view of a session: its pane's last output instant and the
@@ -55,13 +56,14 @@ pub(crate) fn observe(rows: Vec<PaneRow>) -> Observations {
 /// automatic paste of `i` into its session.
 pub(crate) fn agent_holds(i: &QueueItem, seen: Option<&Observed>) -> bool {
     let agent = seen.and_then(|o| o.agent);
-    agent == Some("needs-input") || (i.external && i.mode == "chain" && agent != Some("turn-done"))
+    agent == Some(agent_status::NEEDS_INPUT)
+        || (i.external && i.mode == "chain" && agent != Some(agent_status::TURN_DONE))
 }
 
 /// Deterministic candidate order within a session: retries whose backoff
 /// elapsed, then the earliest-due at, then a cadence-due rule, then chains.
 fn priority(i: &QueueItem) -> u8 {
-    if i.state == "failed" {
+    if i.state == ItemState::Failed {
         return 0;
     }
     match i.mode.as_str() {
@@ -77,7 +79,7 @@ fn group_head<'a>(q: &'a QueueState, i: &QueueItem) -> Option<&'a QueueItem> {
     let g = i.group.as_deref()?;
     q.items
         .iter()
-        .filter(|x| x.group.as_deref() == Some(g) && x.state != "review-approved")
+        .filter(|x| x.group.as_deref() == Some(g) && x.state != ItemState::ReviewApproved)
         .min_by_key(|x| (x.seq.unwrap_or(1), x.added))
 }
 
@@ -91,7 +93,7 @@ fn eligible(
     if is_review(i)
         || !review_allows(q, i)
         || i.paused
-        || matches!(i.state.as_str(), "firing" | "ambiguous")
+        || i.state.blocks_firing()
         || item_dead(i)
         || !retry_ok(i, now)
     {
@@ -154,8 +156,8 @@ pub(crate) fn select_for_session(
         .iter()
         .filter(|i| i.session == session && eligible(q, i, now, now_min, activity))
         .min_by_key(|i| {
-            let class_time = match (i.state.as_str(), i.mode.as_str()) {
-                ("failed", _) => i.last_attempt_at.unwrap_or(0),
+            let class_time = match (i.state, i.mode.as_str()) {
+                (ItemState::Failed, _) => i.last_attempt_at.unwrap_or(0),
                 (_, "at") => i.at.unwrap_or(0),
                 _ => i.added,
             };
@@ -181,7 +183,7 @@ pub(super) fn select_requested(
     if is_review(item)
         || !review_allows(q, item)
         || item.paused
-        || matches!(item.state.as_str(), "firing" | "ambiguous")
+        || item.state.blocks_firing()
         || item_dead(item)
         || is_cancelled(q, session)
         || q.last_fired

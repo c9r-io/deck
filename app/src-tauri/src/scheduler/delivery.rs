@@ -223,7 +223,7 @@ pub(crate) fn backoff_secs(attempts: u32) -> u64 {
 /// error) and BLOCKS the later steps of its group until the user explicitly
 /// retries, skips or removes it — a chain never runs past a failed step.
 pub(crate) fn item_dead(i: &QueueItem) -> bool {
-    i.state == "failed" && i.attempts >= MAX_ATTEMPTS
+    i.state == ItemState::Failed && i.attempts >= MAX_ATTEMPTS
 }
 
 pub(crate) fn retry_ok(i: &QueueItem, now: u64) -> bool {
@@ -297,7 +297,7 @@ pub(crate) fn finalize_delivery(
     });
     if let Some(operation_id) = &item.operation_id {
         if let Some(operation) = q.operations.iter_mut().find(|op| &op.id == operation_id) {
-            operation.state = "delivered".into();
+            operation.state = OperationState::Delivered;
         }
     }
     if q.deliveries.len() > MAX_DELIVERIES {
@@ -380,7 +380,7 @@ pub(crate) fn finalize_delivery(
         if let Some(it) = q.items.iter_mut().find(|i| i.id == item_id) {
             it.fired += 1;
             it.last = Some(now);
-            it.state = default_state();
+            it.state.move_to(ItemState::Pending);
             it.attempts = 0;
             it.last_error = None;
             it.delivery = None;
@@ -403,7 +403,8 @@ pub(crate) fn finalize_delivery(
             checkpoint.rule = Some(item.id.clone());
             checkpoint.steps.clear();
         }
-        checkpoint.state = "review".into();
+        // a new row (the clone), not a transition of the delivered one
+        checkpoint.state = ItemState::Review;
         checkpoint.delivery = None;
         checkpoint.attempts = 0;
         checkpoint.last_error = None;
@@ -424,7 +425,7 @@ pub(crate) fn finalize_delivery(
 pub(crate) fn note_failed(q: &mut QueueState, id: &str, delivery: &str, err: &str) {
     if let Some(it) = q.items.iter_mut().find(|i| i.id == id) {
         it.delivery = None;
-        it.state = "failed".into();
+        it.state.move_to(ItemState::Failed);
         it.last_error = Some(format!("send failed ({})", crate::error::err_code(err)));
     }
     q.pending.retain(|p| p.id != delivery);
@@ -436,8 +437,8 @@ pub(crate) fn note_failed(q: &mut QueueState, id: &str, delivery: &str, err: &st
 /// explicitly retry while accepting the duplicate-delivery risk.
 pub(crate) fn recover_interrupted(q: &mut QueueState) -> Vec<String> {
     let mut notes = Vec::new();
-    for item in q.items.iter_mut().filter(|i| i.state == "firing") {
-        item.state = "ambiguous".into();
+    for item in q.items.iter_mut().filter(|i| i.state == ItemState::Firing) {
+        item.state.move_to(ItemState::Ambiguous);
         notes.push(format!(
             "a {} prompt was interrupted during delivery; choose acknowledge or retry in its session queue",
             if item.mode == "every" { "recurring" } else { "scheduled" }
@@ -455,7 +456,8 @@ pub(crate) fn recover_interrupted(q: &mut QueueState) -> Vec<String> {
         .collect();
     for pending in orphans {
         let mut item = pending.snapshot;
-        item.state = "ambiguous".into();
+        // a restored row, whatever state its snapshot carried
+        item.state = ItemState::Ambiguous;
         item.delivery = Some(pending.id);
         notes.push(
             "a scheduled prompt was interrupted during delivery; choose acknowledge or retry in its session queue"
@@ -469,9 +471,9 @@ pub(crate) fn recover_interrupted(q: &mut QueueState) -> Vec<String> {
     for operation in &mut q.operations {
         if q.items
             .iter()
-            .any(|item| item.id == operation.item && item.state == "ambiguous")
+            .any(|item| item.id == operation.item && item.state == ItemState::Ambiguous)
         {
-            operation.state = "uncertain".into();
+            operation.state = OperationState::Uncertain;
         }
     }
     notes
@@ -541,6 +543,10 @@ fn reap_if_cancelled(cancelled: bool, session: &str, h: &SendHooks) {
 ///   firing ──fire Ok──► finalize_delivery (audit, gap, consume/count/spawn)
 ///   firing ──fire Err──► note_failed (retryable, ledger dropped)
 ///   firing ──crash──► ambiguous (user acknowledge or risk-accepting retry)
+///   finalize with review_each ──► pushes a `review` checkpoint clone
+///     (confirm ──► review-approved; its successor changed ──► review)
+///
+/// The complete lifecycle, including retry, is `ItemState` in mod.rs.
 ///
 /// Persistence has two distinct regimes, and the difference is deliberate:
 ///
@@ -611,7 +617,7 @@ fn send_one_guarded(
         let Some(it) = q.items.iter_mut().find(|i| i.id == sel.id) else {
             return Err(DeckError::new(ErrorKind::Other, TX_NOOP));
         };
-        it.state = "firing".into();
+        it.state.move_to(ItemState::Firing);
         it.attempts += 1;
         it.last_attempt_at = Some(now_epoch());
         it.delivery = Some(delivery.clone());
@@ -714,10 +720,7 @@ pub(super) fn persist_context_result(
         let Some(item) = q.items.iter_mut().find(|i| i.id == selected.id) else {
             return Err(DeckError::new(ErrorKind::Other, TX_NOOP));
         };
-        if item.revision != selected.revision
-            || item.paused
-            || matches!(item.state.as_str(), "firing" | "ambiguous")
-        {
+        if item.revision != selected.revision || item.paused || item.state.blocks_firing() {
             return Err(DeckError::new(ErrorKind::Other, TX_NOOP));
         }
         item.last_context = Some(context_check(result));
@@ -807,7 +810,7 @@ pub(super) fn send_one_safe_requested(
                 i.id == selected.id
                     && i.revision == selected.revision
                     && !i.paused
-                    && !matches!(i.state.as_str(), "firing" | "ambiguous")
+                    && !i.state.blocks_firing()
             })
     };
     let prepared = (context_hooks.prepare)(&selected, &cancelled);

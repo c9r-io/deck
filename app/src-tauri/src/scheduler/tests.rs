@@ -2912,8 +2912,7 @@ fn edit_item_takes_exactly_one_of_text_or_steps() {
 
 #[test]
 fn retry_and_acknowledge_resolve_every_delivery_state_exactly_once() {
-    let mut odd = qi("odd", "at");
-    odd.state = "review-pending-typo".into();
+    let odd = qi("odd", "at");
     let mut amb = qi("amb", "at");
     amb.state = "ambiguous".into();
     amb.delivery = Some("d-amb".into());
@@ -2937,12 +2936,10 @@ fn retry_and_acknowledge_resolve_every_delivery_state_exactly_once() {
         state: "uncertain".into(),
     });
 
-    let err = retry_item(&mut q, "odd").unwrap_err();
-    assert_eq!(err.message(), "prompt has an unknown delivery state");
-    assert_eq!(
-        q.items[0].state, "review-pending-typo",
-        "left for inspection"
-    );
+    // An unknown lifecycle word can no longer reach a row: queue.json that
+    // carries one is refused when read (never guessed), so retry has no
+    // "unknown delivery state" case left to reject.
+    assert!(serde_json::from_value::<ItemState>(serde_json::json!("review-pending-typo")).is_err());
 
     retry_item(&mut q, "amb").unwrap();
     let re_armed = q.items.iter().find(|i| i.id == "amb").unwrap();
@@ -3129,4 +3126,33 @@ fn state_only_commands_fail_closed_without_the_smoke_hooks_or_the_item() {
     assert_eq!(q.items[0].state, "pending", "nothing was seeded");
     assert!(q.pending.is_empty());
     assert!(!state.dirty.load(AtomicOrdering::Relaxed));
+}
+
+/// queue.json bytes are unchanged by the typed states: the fixture is what
+/// the string-typed scheduler serialized (all six row states, all four
+/// operation states), and the enum round trip reproduces it byte for byte.
+#[test]
+fn typed_states_keep_queue_json_byte_identical() {
+    let old = include_str!("queue-all-states.json");
+    let q: QueueState = serde_json::from_str(old).unwrap();
+    assert_eq!(serde_json::to_string(&q).unwrap(), old);
+    let rows: Vec<&str> = q.items.iter().map(|i| i.state.as_str()).collect();
+    assert_eq!(
+        rows,
+        [
+            "pending",
+            "firing",
+            "failed",
+            "ambiguous",
+            "review",
+            "review-approved"
+        ]
+    );
+    let operations: Vec<&str> = q.operations.iter().map(|o| o.state.as_str()).collect();
+    assert_eq!(operations, ["queued", "delivered", "canceled", "uncertain"]);
+    // a missing row state still reads as pending (the old default)
+    let mut value: serde_json::Value = serde_json::from_str(old).unwrap();
+    value["items"][1].as_object_mut().unwrap().remove("state");
+    let q: QueueState = serde_json::from_value(value).unwrap();
+    assert_eq!(q.items[1].state, ItemState::Pending);
 }

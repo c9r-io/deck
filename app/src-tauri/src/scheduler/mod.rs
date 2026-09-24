@@ -84,6 +84,11 @@
 //! - the firing contract: while an item is mid-send, queue remove/update/
 //!   pause/retry/skip return a conflict error (UI toasts it) and the item
 //!   survives until finalize;
+//! - row and operation states are the closed enums `ItemState` and
+//!   `OperationState` (same kebab-case words on disk and on the wire); the
+//!   in-place transitions are `ItemState::can_transition`, asserted on every
+//!   move under test, and `blocks_firing`/`is_review` are the only
+//!   state predicates;
 //! - EVERY user-driven mutation goes through `with_queue` (persist-then-
 //!   commit): clone the state, mutate the CANDIDATE, persist, only then swap
 //!   it in — a rejected mutation or a failed save leaves memory byte-identical
@@ -218,12 +223,12 @@ pub(crate) struct QueueItem {
     /// last fire instant (recurring only)
     #[serde(default)]
     last: Option<u64>,
-    /// lifecycle: "pending" (default) | "firing" | "failed" | "ambiguous".
-    /// "firing" is persisted BEFORE injection. If the process disappears
-    /// before the post-send state lands, boot migrates it to "ambiguous" and
+    /// Lifecycle (`ItemState`, transitions in `ItemState::can_transition`).
+    /// `Firing` is persisted BEFORE injection. If the process disappears
+    /// before the post-send state lands, boot migrates it to `Ambiguous` and
     /// requires an explicit acknowledge or risk-accepting retry.
-    #[serde(default = "default_state")]
-    state: String,
+    #[serde(default)]
+    state: ItemState,
     #[serde(default)]
     attempts: u32,
     #[serde(default)]
@@ -280,8 +285,152 @@ pub(crate) struct QueueItem {
     external: bool,
 }
 
-pub(crate) fn default_state() -> String {
-    "pending".into()
+pub(crate) fn default_state() -> ItemState {
+    ItemState::Pending
+}
+
+/// A queue row's lifecycle, persisted in queue.json and sent to the webview
+/// under exactly these kebab-case words (unchanged from the string era).
+///
+/// ```text
+/// in place (ItemState::can_transition):
+///   Pending ──send──────────────────────────▶ Firing
+///   Failed  ──send (backoff elapsed)─────────▶ Firing
+///   Firing  ──recurring row re-armed──────────▶ Pending
+///   Firing  ──injection refused───────────────▶ Failed
+///   Firing  ──found at boot (crash mid-send)──▶ Ambiguous
+///   Ambiguous ──retry, or acknowledge of a recurring row──▶ Pending
+///   Failed | Pending ──retry──────────────────▶ Pending
+///   Review ──confirm (a successor exists)─────▶ ReviewApproved
+///   ReviewApproved ──successor edited/retried─▶ Review
+/// new rows: Pending (queued, chain step), Review (the checkpoint clone
+///   finalize pushes for review_each), Ambiguous (a pre-v0.4.30 orphan
+///   ledger snapshot restored at boot)
+/// ```
+/// A once row leaves the queue when delivered (or acknowledged); a Review
+/// row leaves when confirmed without a successor.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum ItemState {
+    #[default]
+    Pending,
+    Firing,
+    Failed,
+    Ambiguous,
+    Review,
+    ReviewApproved,
+}
+
+impl ItemState {
+    /// Every in-place transition the scheduler performs; anything else is a
+    /// bug. Checked on each move in tests (`move_to`), never at runtime.
+    #[cfg_attr(not(test), allow(dead_code))] // the matrix is asserted only under test
+    pub(crate) fn can_transition(self, to: ItemState) -> bool {
+        use ItemState::*;
+        matches!(
+            (self, to),
+            (Pending, Firing)
+                | (Failed, Firing)
+                | (Firing, Pending)
+                | (Firing, Failed)
+                | (Firing, Ambiguous)
+                | (Ambiguous, Pending)
+                | (Failed, Pending)
+                | (Pending, Pending)
+                | (Review, ReviewApproved)
+                | (ReviewApproved, Review)
+        )
+    }
+
+    /// Mid-send or unresolved: the row may already be in the pane, so it
+    /// must not be selected, mutated or sent again.
+    pub(crate) fn blocks_firing(self) -> bool {
+        matches!(self, ItemState::Firing | ItemState::Ambiguous)
+    }
+
+    /// Already sent and held for inspection (`review_each`).
+    pub(crate) fn is_review(self) -> bool {
+        matches!(self, ItemState::Review | ItemState::ReviewApproved)
+    }
+
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            ItemState::Pending => "pending",
+            ItemState::Firing => "firing",
+            ItemState::Failed => "failed",
+            ItemState::Ambiguous => "ambiguous",
+            ItemState::Review => "review",
+            ItemState::ReviewApproved => "review-approved",
+        }
+    }
+
+    /// Move a row in place. The matrix is asserted under test only, so the
+    /// shipped scheduler behaves exactly as before; the 107 scheduler tests
+    /// and the contract tests are what exercise it.
+    pub(crate) fn move_to(&mut self, to: ItemState) {
+        #[cfg(test)]
+        assert!(
+            self.can_transition(to),
+            "queue row transition {} -> {} is not in the matrix",
+            self.as_str(),
+            to.as_str()
+        );
+        *self = to;
+    }
+}
+
+/// A phone/list operation's outcome (`queue.json` `operations`). Moves:
+/// Queued → Delivered (finalize) | Canceled (cancel/skip, never over
+/// Delivered) | Uncertain (its row turned ambiguous at boot); a retry sets
+/// every operation of the retried row back to Queued.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum OperationState {
+    #[default]
+    Queued,
+    Delivered,
+    Canceled,
+    Uncertain,
+}
+
+impl OperationState {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            OperationState::Queued => "queued",
+            OperationState::Delivered => "delivered",
+            OperationState::Canceled => "canceled",
+            OperationState::Uncertain => "uncertain",
+        }
+    }
+}
+
+// Tests keep writing and comparing the wire words (`"firing".into()`,
+// `assert_eq!(item.state, "ambiguous")`); production code cannot.
+#[cfg(test)]
+impl From<&str> for ItemState {
+    fn from(word: &str) -> Self {
+        serde_json::from_value(serde_json::Value::String(word.into()))
+            .unwrap_or_else(|_| panic!("unknown queue row state {word:?}"))
+    }
+}
+#[cfg(test)]
+impl PartialEq<&str> for ItemState {
+    fn eq(&self, word: &&str) -> bool {
+        self.as_str() == *word
+    }
+}
+#[cfg(test)]
+impl From<&str> for OperationState {
+    fn from(word: &str) -> Self {
+        serde_json::from_value(serde_json::Value::String(word.into()))
+            .unwrap_or_else(|_| panic!("unknown operation state {word:?}"))
+    }
+}
+#[cfg(test)]
+impl PartialEq<&str> for OperationState {
+    fn eq(&self, word: &&str) -> bool {
+        self.as_str() == *word
+    }
 }
 
 /// Audit record of one prompt delivery. `assumed` is retained for schema
@@ -307,8 +456,7 @@ pub(crate) struct QueueOperation {
     session: String,
     card_id: String,
     fingerprint: String,
-    /// queued | delivered | canceled | uncertain
-    state: String,
+    state: OperationState,
 }
 
 /// How many delivery audit records queue.json retains (oldest dropped first).
