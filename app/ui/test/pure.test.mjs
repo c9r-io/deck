@@ -830,6 +830,13 @@ test('terminal link tokenizer covers relative, quoted, Unicode and line suffix p
   assert.equal(links.at(-1).kind, 'url');
   assert.deepEqual(tokenizeTerminalLinks('missing.rs), ordinary_word, foo.').map(x => x.value),
     ['missing.rs'], 'line punctuation is excluded and plain words are ignored');
+  assert.deepEqual(tokenizeTerminalLinks('[src/main.rs:] {./nested/file.ts:} /tmp/code.rs:')
+    .map(x => x.value), ['src/main.rs', './nested/file.ts', '/tmp/code.rs'],
+  'a colon at the end of a wrapped or bare path is punctuation');
+  assert.deepEqual(tokenizeTerminalLinks('[src/main.rs:42] src/name:part.rs').map(x => x.value),
+    ['src/main.rs:42', 'src/name:part.rs'], 'line locations and internal colons remain in paths');
+  assert.equal(tokenizeTerminalLinks('[src/main.rs:]')[0].lookback, 'src/main.rs:',
+    'actions can still resolve a literal filename ending in a colon if the shorter path is absent');
   assert.deepEqual(tokenizeTerminalLinks([
     'connect 192.168.31.120:6443 failed',
     'localhost 127.0.0.1:8080',

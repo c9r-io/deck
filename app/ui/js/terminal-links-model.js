@@ -12,7 +12,9 @@ const URL_SCHEMES = ['https://', 'http://'];
 const PATH_START_DELIMS = '=:()[]{}<,;|';
 const TOKEN_END_DELIMS = '"\'`<>|\\';
 const PATH_HARD_END_DELIMS = '=,;';
-const PATH_TRAILING = '.,;!?';
+// A final colon is label punctuation (`[src/main.rs:]`); internal colons and
+// numeric location suffixes stay in the candidate.
+const PATH_TRAILING = '.,;!?:';
 const LINK_BRACKETS = { '(': ')', '[': ']', '{': '}' };
 
 // One pass supplies matching brackets; a bare `name(1).txt` is a filename,
@@ -215,10 +217,14 @@ function unquotedPathAt(text, index, pairs) {
     if (ch === '/' || ch === '.') structural = true;
     end++;
   }
-  let value = text.slice(index, end);
+  const rawValue = text.slice(index, end);
+  let value = rawValue;
   while (value && PATH_TRAILING.includes(value.at(-1))) value = value.slice(0, -1);
   if (!looksLikeTerminalPathCandidate(value)) return { skipTo: Math.max(index + 1, end) };
   const token = { kind: 'path', value, index, end: index + value.length };
+  // If a real filename ends in ':', the filesystem can still choose the
+  // original spelling after the punctuation-free reading fails.
+  if (rawValue.endsWith(':') && rawValue !== value) token.lookback = rawValue;
   /* The script boundary is a GUESS about where prose ends and a name begins,
      and it is wrong for a name that genuinely runs CJK into letters:
      `报告v2.pdf` is offered as `v2.pdf`, `main日本語.txt` as `日本語.txt`.

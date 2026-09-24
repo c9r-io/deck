@@ -64,6 +64,7 @@ fn unquote_clicked_path(value: &str) -> String {
             if let Some(end) = value[1..].rfind(quote).map(|i| i + 1) {
                 let suffix = &value[end + quote.len_utf8()..];
                 if suffix.is_empty()
+                    || suffix == ":"
                     || suffix.strip_prefix(':').is_some_and(|s| {
                         !s.is_empty() && s.chars().all(|c| c.is_ascii_digit() || c == ':')
                     })
@@ -268,10 +269,13 @@ pub(crate) fn open_target(kind: String, value: String, cwd: String) -> Result<()
 }
 
 pub(crate) fn regex_strip_lineno(path: &str) -> String {
-    // "src/foo.rs:42:7" → "src/foo.rs". Work from the RIGHT so a legal
-    // colon elsewhere in the filename/path is untouched.
+    // "src/foo.rs:42:7" or "src/foo.rs:" → "src/foo.rs". Work from the
+    // RIGHT so a legal colon elsewhere in the filename/path is untouched.
     if path.starts_with("http://") || path.starts_with("https://") {
         return path.to_string();
+    }
+    if let Some(head) = path.strip_suffix(':') {
+        return head.to_string();
     }
     let Some((head, tail)) = path.rsplit_once(':') else {
         return path.to_string();
@@ -332,10 +336,12 @@ mod tests {
     fn strip_lineno_suffixes() {
         assert_eq!(regex_strip_lineno("src/foo.rs:42:7"), "src/foo.rs");
         assert_eq!(regex_strip_lineno("src/foo.rs:42"), "src/foo.rs");
+        assert_eq!(regex_strip_lineno("src/foo.rs:"), "src/foo.rs");
         assert_eq!(regex_strip_lineno("src/foo.rs"), "src/foo.rs");
         // a colon followed by non-digits is part of the path, not a lineno
         assert_eq!(regex_strip_lineno("a:b/c"), "a:b/c");
         assert_eq!(regex_strip_lineno("a:b/c.rs:9"), "a:b/c.rs");
+        assert_eq!(regex_strip_lineno("a:b/c.rs:"), "a:b/c.rs");
         assert_eq!(regex_strip_lineno("http://x/y:8080"), "http://x/y:8080");
     }
 
@@ -352,6 +358,8 @@ mod tests {
         std::fs::write(&file, b"fn main() {}\n").unwrap();
         let colon_file = dir.join("actual:42");
         std::fs::write(&colon_file, b"literal colon\n").unwrap();
+        let trailing_colon_file = dir.join("actual:");
+        std::fs::write(&trailing_colon_file, b"literal trailing colon\n").unwrap();
 
         let relative =
             resolve_clicked_parent("\"空 格😀/code.rs\":12:3", &root.to_string_lossy()).unwrap();
@@ -376,6 +384,24 @@ mod tests {
         assert!(
             !literal.target_is_directory,
             "an existing :42 filename wins over suffix parsing"
+        );
+        let literal =
+            resolve_clicked_parent(&trailing_colon_file.to_string_lossy(), "/tmp").unwrap();
+        assert!(
+            !literal.target_is_directory,
+            "an existing trailing colon wins over punctuation fallback"
+        );
+        let punctuated =
+            resolve_clicked_parent("空 格😀/code.rs:", &root.to_string_lossy()).unwrap();
+        assert_eq!(
+            PathBuf::from(punctuated.directory),
+            std::fs::canonicalize(&dir).unwrap()
+        );
+        let quoted =
+            resolve_clicked_parent("\"空 格😀/code.rs\":", &root.to_string_lossy()).unwrap();
+        assert_eq!(
+            PathBuf::from(quoted.directory),
+            std::fs::canonicalize(&dir).unwrap()
         );
 
         let root_target = resolve_clicked_parent("/", "/tmp").unwrap();
