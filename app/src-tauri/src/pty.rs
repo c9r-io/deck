@@ -706,7 +706,7 @@ pub(crate) fn pty_write(
     let bytes = B64
         .decode(data_b64)
         .map_err(|e| DeckError::classified(e.to_string()))?;
-    let mut map = state.map.lock().unwrap();
+    let mut map = state.map.lock_or_recover();
     let entry = map
         .get_mut(&name)
         .ok_or(DeckError::new(ErrorKind::Other, "not attached"))?;
@@ -730,10 +730,9 @@ pub(crate) fn pty_resize(
     // tmux reflows the pane synchronously when the PTY changes size. Keep
     // that reflow out of the status -> capture row -> cursor movement window
     // used by terminal selection commands.
-    let _selection_operation = crate::terminal::terminal_selection_operation_lock()
-        .lock()
-        .unwrap();
-    let map = state.map.lock().unwrap();
+    let _selection_operation =
+        crate::terminal::terminal_selection_operation_lock().lock_or_recover();
+    let map = state.map.lock_or_recover();
     let entry = map
         .get(&name)
         .ok_or(DeckError::new(ErrorKind::Other, "not attached"))?;
@@ -755,7 +754,7 @@ pub(crate) fn pty_resize(
 #[tauri::command]
 pub(crate) fn pty_ack(state: State<'_, PtyState>, name: String, gen: u64, seq: u64) {
     let gate = {
-        let map = state.map.lock().unwrap();
+        let map = state.map.lock_or_recover();
         match map.get(&name) {
             Some(e) if e.generation == gen => Some(e.gate.clone()),
             _ => None, // stale generation / already detached: its gate was closed
@@ -768,7 +767,7 @@ pub(crate) fn pty_ack(state: State<'_, PtyState>, name: String, gen: u64, seq: u
 
 #[tauri::command]
 pub(crate) fn detach_session(state: State<'_, PtyState>, name: String) {
-    if let Some(mut entry) = state.map.lock().unwrap().remove(&name) {
+    if let Some(mut entry) = state.map.lock_or_recover().remove(&name) {
         entry.gate.close(); // release an emitter waiting on ACKs
         let _ = entry.child.kill();
     }

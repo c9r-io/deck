@@ -157,6 +157,7 @@ use crate::applog::applog;
 use crate::context::{self, ContextCheck, ContextCode, ContextStatus, PaneIdentity};
 use crate::error::{DeckError, ErrorKind};
 use crate::storage;
+use crate::sync::LockRecover;
 
 // ---------- scheduled prompts ----------------------------------------------------
 // Queue prompts to be typed into a session later — the rate-limit workflow:
@@ -401,7 +402,7 @@ pub(crate) fn with_queue<T>(
     persist: &dyn Fn(&QueueState) -> Result<(), DeckError>,
     f: impl FnOnce(&mut QueueState) -> Result<T, DeckError>,
 ) -> Result<T, DeckError> {
-    let mut guard = qm.lock().unwrap();
+    let mut guard = qm.lock_or_recover();
     let mut candidate = guard.clone();
     let out = f(&mut candidate)?; // rejected: shared state never touched
     persist(&candidate)?; // disk first…
@@ -421,7 +422,7 @@ pub(crate) fn flush_dirty(
     if !dirty.load(AtomicOrdering::Relaxed) {
         return false;
     }
-    let q = qm.lock().unwrap();
+    let q = qm.lock_or_recover();
     match persist(&q) {
         Ok(()) => {
             dirty.store(false, AtomicOrdering::Relaxed);
@@ -453,11 +454,11 @@ fn note_persist_lag(dirty: &AtomicBool, stage: &str, e: &str) {
 
 /// Claim a session for a send worker; false = a worker is already on it.
 pub(crate) fn claim_session(busy: &Mutex<HashSet<String>>, session: &str) -> bool {
-    busy.lock().unwrap().insert(session.to_string())
+    busy.lock_or_recover().insert(session.to_string())
 }
 
 pub(crate) fn release_session(busy: &Mutex<HashSet<String>>, session: &str) {
-    busy.lock().unwrap().remove(session);
+    busy.lock_or_recover().remove(session);
 }
 
 /// true when `now_min` (minutes since local midnight) falls inside the daily
