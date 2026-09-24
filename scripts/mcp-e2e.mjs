@@ -25,6 +25,8 @@ function options(argv) {
 const config = options(process.argv.slice(2));
 const prefix = `e2e_${Date.now()}_${process.pid}`;
 const holderId = `${prefix}_holder`;
+// The maximum lease, renewed while waiting for the local approval.
+const LEASE_MS = 5 * 60_000;
 const child = spawn(config.adapter, ['--client-id', config['client-id'], '--socket', config.socket, '--credential-fd', '3'], {
   stdio: ['pipe', 'pipe', 'pipe', 'pipe'],
 });
@@ -156,7 +158,7 @@ try {
   const controlled = await call('deck_session_control', {
     request_id: `${prefix}_control`, session_id: session.sessionId,
     expected_generation: session.sessionGeneration, action: 'request', holder_id: holderId,
-    control_sequence: session.controlSequence,
+    control_sequence: session.controlSequence, lease_ms: LEASE_MS,
   });
   session = { ...session, ...controlled.result };
   assert.equal(session.controlOwner, config['client-id']);
@@ -177,6 +179,17 @@ try {
     if (inspected.mayStartNextJob) {
       approved = true;
       break;
+    }
+    // A human approval can take longer than one lease; renewing keeps the
+    // epoch (and so every later exec's claim) unchanged.
+    if (count % 60 === 59) {
+      const renewed = await call('deck_session_control', {
+        request_id: `${prefix}_renew_${count}`, session_id: session.sessionId,
+        expected_generation: session.sessionGeneration, action: 'renew', holder_id: holderId,
+        control_epoch: session.controlEpoch, control_sequence: session.controlSequence,
+        lease_ms: LEASE_MS,
+      });
+      session = { ...session, ...renewed.result };
     }
     await new Promise(resolve => setTimeout(resolve, 500));
   }

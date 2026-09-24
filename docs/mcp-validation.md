@@ -225,6 +225,34 @@ covers takeover → return → reapprove → fresh job → expiry; and
 `session_pause_is_distinct_from_an_open_job_binding` binds the two denial
 classes.
 
+## 2026-09-25 isolated E2E after FR-4 (286a9c6)
+
+A debug `deck-smoke.app` on a private data directory and the
+`deck-smoke-mcp-e2e` tmux socket, a disposable Git repository, and a client
+and project authorized in that instance's UI; the credential was read from
+the login Keychain into a 0600 file and passed through `--credential-fd`.
+A person approved the execution window in the UI.
+
+- **PASS** — `scripts/mcp-e2e.mjs`: 14 tools, failing exit 1 then fixed
+  exit 0, same-id replay returned the same job, incremental read first saw
+  `running`, interactive stdin exit 0, interrupt exit 130, close
+  `committed`, zero adapter stderr bytes.
+- The script now requests the maximum 5-minute lease and renews it while
+  waiting for the approval. The first attempt waited past the default
+  60-second lease, and `mayStartNextJob` stayed false on
+  `CONTROL_LEASE_EXPIRED`, as it did before FR-4.
+- The data directory's path must keep `mcp-control.sock` within the macOS
+  104-byte Unix socket limit; a longer one never binds the control socket.
+- **Found, not fixed:** once the last session on the Deck tmux server closes,
+  every new session in that Deck process (MCP and ordinary cards, one
+  `session_creation_guard`) fails with `tmux-server-unreachable` until
+  restart. The query channel's control client has exited but
+  `OWNED_CONTROL_CLIENT` still names it, so `probe_server` runs
+  `list-clients`, which on an empty tmux 3.7c server exits 1 with
+  `no current target`; that is not classified as absent. The front end
+  reports it as `create-failed` / `rejected` because `createStarted` tags
+  only object errors, not the string an `invoke` rejects with.
+
 ## Ordinary ChatGPT manual acceptance
 
 Status: **MANUAL_PENDING**. Protocol and local execution can be automated;
