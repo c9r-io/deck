@@ -28,6 +28,13 @@
   answer, and `deck_job_read` reports the runner's reason instead of always
   `JOB_STATE_UNKNOWN`. If a started process cannot be handed its pipes, the
   runner now kills it rather than leaving it untracked.
+- MCP: during a local takeover `deck_job_interrupt` is now refused with
+  `HUMAN_CONTROL` as soon as it arrives, like the other fenced tools, instead
+  of first taking an interrupt-reserve journal slot and being refused later
+  with the same code. `deck_session_inspect`'s `mayStartNextJobReason` now
+  comes from the same check `deck_exec` runs, so when several reasons hold at
+  once it names the one exec would refuse with first (for example a missing
+  execution grant before a close in progress).
 - Internal: scheduler row and operation states are closed types with one
   documented transition matrix instead of strings compared in six files;
   queue.json is byte-for-byte unchanged, and a queue.json carrying a state

@@ -272,8 +272,24 @@ pub(super) fn inspect(
         stdin_approved,
         job_bindings_open,
         job_bindings_closed,
+        admission,
     ) = runtime
         .read(|doc| {
+            // The next exec's refusal, in exec's own order: its emergency
+            // fences (`emergency_denial`: human, then execution revocation)
+            // come first, then the one admission `exec` runs.
+            let claim = ControlClaim {
+                generation: &session.generation,
+                epoch: None,
+                holder_id: args.holder_id.as_deref(),
+            };
+            let admission = if emergency_human {
+                Some(AdmissionReason::HumanControl)
+            } else if execution_fenced {
+                Some(AdmissionReason::GrantRequired)
+            } else {
+                admit_exec(runtime, doc, client_id, &session, &claim, ExecStage::Accept).err()
+            };
             let authorization = match execution_authorization(runtime, doc, client_id, &session) {
                 ExecutionAuthorization::None => ("none", None, false),
                 ExecutionAuthorization::Active(grant) if execution_fenced => {
@@ -307,6 +323,7 @@ pub(super) fn inspect(
                 authorization.2,
                 open,
                 closed,
+                admission,
             ))
         })
         .map_err(map_error)?
@@ -315,27 +332,17 @@ pub(super) fn inspect(
         .as_ref()
         .map(|probe| probe.job.clone())
         .unwrap_or(Value::Null);
+    // Runner facts no client action can fix come first; then the reason the
+    // shared exec admission gives (`grants::admit_exec`); a live job last,
+    // as exec learns it from the runner only after admission.
     let denial = if runner.is_none() {
         Some("RUNNER_UNAVAILABLE")
     } else if runner.as_ref().is_some_and(|probe| !probe.current) {
         Some("RUNNER_STALE")
-    } else if session.closing {
-        Some("TARGET_CLOSING")
-    } else if session.human_lock || emergency_human {
-        Some("HUMAN_CONTROL")
-    } else if session.control_owner.as_deref() != Some(client_id) {
-        Some("CONTROL_REVOKED")
-    } else if args.holder_id.as_deref() != session.control_holder.as_deref() {
-        Some("HOLDER_MISMATCH")
-    } else if session
-        .lease_expires_at
-        .is_none_or(|deadline| deadline <= now_ms())
-    {
-        Some("CONTROL_LEASE_EXPIRED")
+    } else if let Some(reason) = admission {
+        Some(reason.inspect_code())
     } else if !job.is_null() {
         Some("SESSION_BUSY")
-    } else if authorization_status != "active" {
-        Some("EXECUTION_GRANT_REQUIRED")
     } else {
         None
     };

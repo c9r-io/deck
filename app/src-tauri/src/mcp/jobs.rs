@@ -80,11 +80,8 @@ pub(super) fn exec(runtime: &Runtime, client_id: &str, arguments: Value) -> Resu
             if doc.jobs.len() >= MAX_JOBS {
                 return Err(DeckError::new(ErrorKind::DiskFull, "MCP operation capacity reached"));
             }
-            check_control(&session, client_id, &args.expected_generation, args.control_epoch, &args.holder_id)?;
-            let grant = active_execution_grant(runtime, doc, client_id, &session, false)?.clone();
-            if session.closing {
-                return Err(DeckError::new(ErrorKind::Locked, "session is closing"));
-            }
+            let claim = ControlClaim { generation: &args.expected_generation, epoch: Some(args.control_epoch), holder_id: Some(&args.holder_id) };
+            let grant = admit_exec(runtime, doc, client_id, &session, &claim, ExecStage::Accept).map_err(AdmissionReason::error)?.clone();
             let project = scoped_project(&client, &session.project_id)?;
             let cwd = canonical_scope(args.cwd.as_deref().unwrap_or(&session.cwd), &project.roots)?;
             let operation_id = random_id("op_", 16)?;
@@ -127,14 +124,13 @@ pub(super) fn exec(runtime: &Runtime, client_id: &str, arguments: Value) -> Resu
     let admitted = runtime
         .read(|doc| {
             let current = authorized_session(doc, client_id, &session.session_id)?;
-            check_control(
-                current,
-                client_id,
-                &args.expected_generation,
-                args.control_epoch,
-                &args.holder_id,
-            )?;
-            let grant = active_execution_grant(runtime, doc, client_id, current, false)?;
+            let claim = ControlClaim {
+                generation: &args.expected_generation,
+                epoch: Some(args.control_epoch),
+                holder_id: Some(&args.holder_id),
+            };
+            let grant = admit_exec(runtime, doc, client_id, current, &claim, ExecStage::Final)
+                .map_err(AdmissionReason::error)?;
             if grant.grant_id != binding.grant_id || grant.grant_version != binding.grant_version {
                 return Err(DeckError::new(
                     ErrorKind::Perm,

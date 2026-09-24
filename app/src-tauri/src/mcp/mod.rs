@@ -54,6 +54,13 @@
 //! Inspect reports the session gate and open/closed binding counts separately;
 //! a read distinguishes a recoverable session pause from a binding that local
 //! takeover closed permanently.
+//! Which tools a takeover fences is one list, `HUMAN_FENCED_TOOLS` (held equal
+//! to `mcp-fixtures/tools.json` `human_fenced`), shared by `route` — which
+//! refuses them before any journal slot is reserved — and `emergency_denial`;
+//! `deck_job_interrupt` is on it. Whether exec may start is one derivation,
+//! `grants::admit_exec` (generation, control, grant, closing, in that
+//! order): exec's accept and final admissions call it, and inspect's
+//! `mayStartNextJobReason` reports its first failure after the runner facts.
 //! Takeover closes existing job output to MCP for good and gives the pane
 //! keyboard (and the ^C stop key) to the human; it starts no shell. Return to
 //! MCP needs no execution grant and restores no holder, lease or sharing: it
@@ -116,6 +123,8 @@ use crate::error::{DeckError, ErrorKind};
 use crate::ledger::{random_id, sha};
 use crate::sync::LockRecover;
 
+#[cfg(test)]
+mod admission_tests;
 mod commands;
 mod control;
 mod grants;

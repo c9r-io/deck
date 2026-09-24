@@ -22,5 +22,13 @@
     "deck_session_close",
     "deck_session_control",
     "deck_session_create"
+  ],
+  "human_fenced": [
+    "deck_exec",
+    "deck_job_input",
+    "deck_job_interrupt",
+    "deck_job_read",
+    "deck_session_close",
+    "deck_session_control"
   ]
 }

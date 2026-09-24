@@ -84,26 +84,137 @@ pub(super) fn check_control(
     epoch: u64,
     holder_id: &str,
 ) -> Result<(), DeckError> {
-    if session.generation != generation {
-        return Err(DeckError::new(
-            ErrorKind::ContextChanged,
-            "session generation changed",
-        ));
+    let claim = ControlClaim {
+        generation,
+        epoch: Some(epoch),
+        holder_id: Some(holder_id),
+    };
+    control_reason(session, client_id, &claim).map_or(Ok(()), |reason| Err(reason.error()))
+}
+
+/// What a caller claims to hold. `exec`, stdin/interrupt, renew and release
+/// claim an exact generation, epoch and holder; `inspect` claims the
+/// session's own generation, no epoch, and the holder it was given (if any).
+pub(super) struct ControlClaim<'a> {
+    pub(super) generation: &'a str,
+    pub(super) epoch: Option<u64>,
+    pub(super) holder_id: Option<&'a str>,
+}
+
+/// Why `exec` would refuse to start a job, in the order it checks: the
+/// session generation, then control (human lock, owner, holder, epoch,
+/// lease — `exec` reports all five as one `ControlRevoked`), then the
+/// execution grant, then a close in progress. `inspect`'s
+/// `mayStartNextJobReason` reports the same first failure, so the advisory
+/// cannot drift from the real admission.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum AdmissionReason {
+    GenerationChanged,
+    HumanControl,
+    ControlRevoked,
+    HolderMismatch,
+    EpochMismatch,
+    LeaseExpired,
+    GrantRequired,
+    Closing,
+}
+
+impl AdmissionReason {
+    /// The error `exec` (and `check_control`) returns — unchanged from
+    /// before this was one function; `map_error` turns it into the client's
+    /// machine code.
+    pub(super) fn error(self) -> DeckError {
+        match self {
+            AdmissionReason::GenerationChanged => {
+                DeckError::new(ErrorKind::ContextChanged, "session generation changed")
+            }
+            AdmissionReason::HumanControl
+            | AdmissionReason::ControlRevoked
+            | AdmissionReason::HolderMismatch
+            | AdmissionReason::EpochMismatch
+            | AdmissionReason::LeaseExpired => {
+                DeckError::new(ErrorKind::ControlRevoked, "session control was revoked")
+            }
+            AdmissionReason::GrantRequired => {
+                DeckError::new(ErrorKind::Perm, "a local execution grant is required")
+            }
+            AdmissionReason::Closing => DeckError::new(ErrorKind::Locked, "session is closing"),
+        }
     }
-    if session.human_lock
-        || session.control_owner.as_deref() != Some(client_id)
-        || session.control_holder.as_deref() != Some(holder_id)
-        || session.control_epoch != epoch
-        || session
-            .lease_expires_at
-            .is_none_or(|lease| lease <= now_ms())
+
+    /// `inspect`'s finer `mayStartNextJobReason` word.
+    pub(super) fn inspect_code(self) -> &'static str {
+        match self {
+            AdmissionReason::GenerationChanged => "CONTEXT_CHANGED",
+            AdmissionReason::HumanControl => "HUMAN_CONTROL",
+            AdmissionReason::ControlRevoked | AdmissionReason::EpochMismatch => "CONTROL_REVOKED",
+            AdmissionReason::HolderMismatch => "HOLDER_MISMATCH",
+            AdmissionReason::LeaseExpired => "CONTROL_LEASE_EXPIRED",
+            AdmissionReason::GrantRequired => "EXECUTION_GRANT_REQUIRED",
+            AdmissionReason::Closing => "TARGET_CLOSING",
+        }
+    }
+}
+
+fn control_reason(
+    session: &ManagedSession,
+    client_id: &str,
+    claim: &ControlClaim<'_>,
+) -> Option<AdmissionReason> {
+    if session.generation != claim.generation {
+        Some(AdmissionReason::GenerationChanged)
+    } else if session.human_lock {
+        Some(AdmissionReason::HumanControl)
+    } else if session.control_owner.as_deref() != Some(client_id) {
+        Some(AdmissionReason::ControlRevoked)
+    } else if session.control_holder.as_deref() != claim.holder_id {
+        Some(AdmissionReason::HolderMismatch)
+    } else if claim
+        .epoch
+        .is_some_and(|epoch| epoch != session.control_epoch)
     {
-        return Err(DeckError::new(
-            ErrorKind::ControlRevoked,
-            "session control was revoked",
-        ));
+        Some(AdmissionReason::EpochMismatch)
+    } else if session
+        .lease_expires_at
+        .is_none_or(|lease| lease <= now_ms())
+    {
+        Some(AdmissionReason::LeaseExpired)
+    } else {
+        None
     }
-    Ok(())
+}
+
+/// Where in `exec` the admission runs. `Final` (the last step before the
+/// runner, under the delivery lock) re-checks control and the grant but not
+/// `closing` — unchanged from before this extraction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ExecStage {
+    Accept,
+    Final,
+}
+
+/// The ONE exec admission: `exec` accept, `exec` final admission and
+/// `inspect`'s advisory all ask this. Emergency fences stay with
+/// `emergency_denial` (checked by the callers around it, unchanged).
+pub(super) fn admit_exec<'a>(
+    runtime: &Runtime,
+    doc: &'a DiskDoc,
+    client_id: &str,
+    session: &ManagedSession,
+    claim: &ControlClaim<'_>,
+    stage: ExecStage,
+) -> Result<&'a ExecutionGrant, AdmissionReason> {
+    if let Some(reason) = control_reason(session, client_id, claim) {
+        return Err(reason);
+    }
+    let grant = match execution_authorization(runtime, doc, client_id, session) {
+        ExecutionAuthorization::Active(grant) => grant,
+        _ => return Err(AdmissionReason::GrantRequired),
+    };
+    if stage == ExecStage::Accept && session.closing {
+        return Err(AdmissionReason::Closing);
+    }
+    Ok(grant)
 }
 
 #[derive(Clone, Copy)]
@@ -194,6 +305,9 @@ pub(super) fn standing_at(
     GrantStanding::Active
 }
 
+// Production admission is `admit_exec`; this older form stays for the
+// linearization tests in `tests.rs`, which must not change.
+#[cfg(test)]
 pub(super) fn active_execution_grant<'a>(
     runtime: &Runtime,
     doc: &'a DiskDoc,

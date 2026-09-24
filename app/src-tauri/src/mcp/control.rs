@@ -26,17 +26,6 @@ pub(super) const CONTROL_TOOLS: [&str; 14] = [
     "deck_job_interrupt",
     "deck_session_close",
 ];
-/// Tools a local takeover fences for its session (interrupt stays open so
-/// work can always be stopped; reads of unrelated state stay open).
-pub(super) const HUMAN_FENCED_TOOLS: [&str; 5] = [
-    "deck_session_control",
-    "deck_exec",
-    "deck_job_read",
-    "deck_job_input",
-    "deck_session_close",
-];
-/// Tools a local execution revocation fences for its session.
-pub(super) const EXECUTION_FENCED_TOOLS: [&str; 2] = ["deck_exec", "deck_job_input"];
 
 pub(super) fn route(runtime: &Runtime, request: WireRequest) -> Value {
     if request.version != CONTROL_PROTOCOL {

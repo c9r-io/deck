@@ -191,6 +191,23 @@ pub(super) fn reserve_operation(
     ))
 }
 
+/// The tools whose admissions reach `emergency_denial` with a session a
+/// local takeover fences: every one of them is refused while the human holds
+/// the pane, and `route` refuses them up front (before a journal slot is
+/// reserved). `deck_job_interrupt` is among them: after a takeover the pane's
+/// ^C is the human's stop key.
+pub(super) const HUMAN_FENCED_TOOLS: [&str; 6] = [
+    "deck_session_control",
+    "deck_exec",
+    "deck_job_read",
+    "deck_job_input",
+    "deck_job_interrupt",
+    "deck_session_close",
+];
+/// The tools whose admission is `Admission::Execution`: a local execution
+/// revocation fences these (never reads, interrupts or closes).
+pub(super) const EXECUTION_FENCED_TOOLS: [&str; 2] = ["deck_exec", "deck_job_input"];
+
 /// Emergency fences are in-memory and set BEFORE the local command waits for
 /// the delivery lock. Every side-effect path re-checks them while holding
 /// that lock, as its last step before the side effect (runner I/O or Board
