@@ -1177,7 +1177,8 @@ mod tests {
         use std::process::Command;
         let _guard = STORE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         reset_for_tests();
-        struct Server(String, PathBuf);
+        /// (socket name, tmux binary, socket path captured while alive)
+        struct Server(String, PathBuf, Option<PathBuf>);
         impl Server {
             fn run(&self, args: &[&str]) -> String {
                 let out = Command::new(&self.1)
@@ -1191,18 +1192,19 @@ mod tests {
         impl Drop for Server {
             fn drop(&mut self) {
                 // like the contract suite's guard: kill the server and
-                // remove exactly its socket file, which tmux leaves behind
-                let socket = self
-                    .run(&["display-message", "-p", "#{socket_path}"])
-                    .trim()
-                    .to_string();
+                // remove exactly its socket file, which tmux leaves behind.
+                // The path was captured while the server was alive: once
+                // nc exits the empty server exits by itself and can no
+                // longer be asked.
                 let _ = self.run(&["kill-server"]);
-                let path = std::path::Path::new(&socket);
-                if path.file_name().and_then(|n| n.to_str()) == Some(&self.0)
-                    && std::fs::symlink_metadata(path)
-                        .is_ok_and(|m| std::os::unix::fs::FileTypeExt::is_socket(&m.file_type()))
-                {
-                    let _ = std::fs::remove_file(path);
+                if let Some(path) = self.2.take() {
+                    if path.file_name().and_then(|n| n.to_str()) == Some(&self.0)
+                        && std::fs::symlink_metadata(&path).is_ok_and(|m| {
+                            std::os::unix::fs::FileTypeExt::is_socket(&m.file_type())
+                        })
+                    {
+                        let _ = std::fs::remove_file(path);
+                    }
                 }
             }
         }
@@ -1212,7 +1214,11 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("status.sock");
         let listener = listen_at(&path).unwrap();
-        let server = Server(format!("deck-test-status-{}", std::process::id()), bin);
+        let mut server = Server(
+            format!("deck-test-status-{}", std::process::id()),
+            bin,
+            None,
+        );
         // The pane program IS the client: `exec` makes nc the pane's own
         // process (same pid tmux recorded as #{pane_pid}) and its
         // foreground, so a shell never owns the pane while it reports —
@@ -1232,6 +1238,8 @@ mod tests {
             "12",
             &client,
         ]);
+        let socket = server.run(&["display-message", "-p", "#{socket_path}"]);
+        server.2 = Some(PathBuf::from(socket.trim()));
         let mut rows: Vec<PaneRow> = Vec::new();
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         while std::time::Instant::now() < deadline {
