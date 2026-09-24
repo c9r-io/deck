@@ -323,6 +323,7 @@ const dictionary = {
   'update.installing': '正在安装…',
   'update.restarting': '正在重启…',
   'update.failedRetry': '更新失败 — 重试',
+  'update.bundleNotWritable': 'deck 无法替换自身：当前用户没有应用或其所在文件夹的写权限。请下载 DMG 重新安装。',
   'tmux.pendingShort': '需要重启后台 Shell 服务',
   'tmux.pendingTitle': '{count} 个 session 正在使用旧版 Shell 服务',
   'tmux.title': '完成 deck 更新',

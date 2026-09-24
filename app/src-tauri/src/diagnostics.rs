@@ -486,7 +486,10 @@ const UI_EVENT_SPECS: &[(&str, DetailPolicy)] = &[
     ("ping-fail", DetailPolicy::None),
     ("update-avail", DetailPolicy::Version),
     ("update-check-fail", DetailPolicy::Closed(&["manual"])),
-    ("update-install-fail", DetailPolicy::None),
+    (
+        "update-install-fail",
+        DetailPolicy::Closed(&["not-writable"]),
+    ),
     ("board-load-fail", DetailPolicy::None),
     ("settings-load-fail", DetailPolicy::None),
     ("settings-save-fail", DetailPolicy::None),

@@ -7,14 +7,37 @@
 //! values normalize to Stable. The webview owns no updater capability or URL.
 //! `updater.rs` maps the enum to exactly one compiled HTTPS endpoint and uses
 //! `UpdaterExt::updater_builder().endpoints(vec![endpoint])`; a Nightly failure
-//! never falls back. Tauri 2.10.1 still owns semver comparison, archive download,
-//! minisign verification and install. Build identity is only numeric version +
-//! a bounded hex commit from `build.rs`.
+//! never falls back. tauri-plugin-updater 2.10.1 owns semver comparison,
+//! archive download and minisign verification (`Update::download`). Build
+//! identity is only numeric version + a bounded hex commit from `build.rs`.
+//!
+//! deck installs the verified archive ITSELF (`install_bundle`) and never
+//! calls the plugin's `install`/`download_and_install`: the plugin's macOS
+//! installer (`updater.rs:1274-1305` in 2.10.1) runs `do shell script …
+//! with administrator privileges` through OSAKit when renaming the bundle
+//! is refused, and spawns a PATH-resolved `touch` after every successful
+//! install — an admin password prompt and a shell child from deck, in
+//! exactly the corporate standard-user layout whose EDR flagged deck
+//! (`tests/edr_quiet.rs`). Before anything is downloaded or the lifecycle
+//! flag is set, `writable_bundle` requires the installed `.app` and its
+//! parent directory to be writable by this user (`access(W_OK)`, no spawn)
+//! and otherwise returns `Perm` with a fixed message the sidebar shows;
+//! the DMG is the way to update such an install. Staging and backup
+//! directories are created NEXT TO the bundle so every rename stays on one
+//! volume and the guard covers exactly what is touched; a failed swap puts
+//! the previous bundle back. The plugin version is pinned by
+//! `tests/edr_quiet.rs` so a bump re-reads its installer.
 
 use crate::error::{DeckError, ErrorKind};
 use serde::Serialize;
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter};
 use tauri_plugin_updater::UpdaterExt;
+
+/// Shown in the sidebar when an install is refused; `app.js` matches it.
+const NOT_WRITABLE: &str =
+    "the app bundle is not writable by this user; reinstall the DMG manually";
 
 const STABLE_UPDATE_ENDPOINT: &str =
     "https://github.com/c9r-io/deck/releases/latest/download/latest.json";
@@ -129,11 +152,14 @@ pub(crate) async fn install_update(
             "the selected update changed; check again",
         ));
     }
+    // Refuse, rather than let a permission error reach any privileged path,
+    // before a byte is downloaded or the lifecycle flag is raised.
+    let bundle = writable_bundle()?;
     let progress_app = app.clone();
     let finish_app = app.clone();
     crate::tmux_lifecycle::begin_app_update_install()?;
     let result = update
-        .download_and_install(
+        .download(
             move |chunk_length, content_length| {
                 let _ = progress_app.emit(
                     "update-download-progress",
@@ -155,16 +181,122 @@ pub(crate) async fn install_update(
                 );
             },
         )
-        .await;
+        .await
+        .map_err(|_| {
+            DeckError::new(
+                ErrorKind::Other,
+                "update download or signature verification failed",
+            )
+        })
+        .and_then(|archive| install_bundle(&bundle, &archive));
     if result.is_err() {
         crate::tmux_lifecycle::cancel_app_update_install();
     }
-    result.map_err(|_| {
+    result
+}
+
+/// The installed bundle this process runs from; `None` for a bare binary
+/// outside a `*.app/Contents/MacOS/` layout, where there is nothing to
+/// replace and an install is refused rather than guessed.
+fn installed_bundle() -> Option<PathBuf> {
+    let executable = std::env::current_exe().ok()?;
+    crate::relaunch::app_bundle_for_executable(&executable)
+}
+
+/// `access(2)` with `W_OK`: the kernel's answer for THIS user, including
+/// ACLs, without creating anything and without a process.
+#[cfg(target_os = "macos")]
+fn user_writable(path: &Path) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    let Ok(path) = std::ffi::CString::new(path.as_os_str().as_bytes()) else {
+        return false;
+    };
+    // SAFETY: `path` is a valid NUL-terminated string for the whole call.
+    unsafe { libc::access(path.as_ptr(), libc::W_OK) == 0 }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn user_writable(_path: &Path) -> bool {
+    false
+}
+
+/// The bundle an update may replace: installed, and writable — together
+/// with its parent directory, which the swap renames into — by this user.
+fn writable_bundle() -> Result<PathBuf, DeckError> {
+    let bundle = installed_bundle().ok_or_else(|| {
         DeckError::new(
             ErrorKind::Other,
-            "update download, signature verification, or installation failed",
+            "updates install only into an installed app bundle",
         )
-    })
+    })?;
+    let parent = bundle
+        .parent()
+        .ok_or_else(|| DeckError::new(ErrorKind::Other, "app bundle has no parent directory"))?;
+    if !user_writable(&bundle) || !user_writable(parent) {
+        return Err(DeckError::new(ErrorKind::Perm, NOT_WRITABLE));
+    }
+    Ok(bundle)
+}
+
+/// Replace `bundle` with the `.app` of the same name inside `archive` (a
+/// `.app.tar.gz` from the release feed whose signature the download already
+/// verified). Staging and backup live next to the bundle; both are removed
+/// afterwards, the backup only once the new bundle is in place. No process
+/// is spawned.
+pub(crate) fn install_bundle(bundle: &Path, archive: &[u8]) -> Result<(), DeckError> {
+    let parent = bundle
+        .parent()
+        .ok_or_else(|| DeckError::new(ErrorKind::Other, "app bundle has no parent directory"))?;
+    let name = bundle
+        .file_name()
+        .ok_or_else(|| DeckError::new(ErrorKind::Other, "app bundle has no name"))?;
+    let stamp = format!(
+        "{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    );
+    let staging = parent.join(format!(".deck-update-{stamp}"));
+    let backup = parent.join(format!(".deck-previous-{stamp}"));
+    std::fs::create_dir(&staging)?;
+    let result = stage_and_swap(bundle, &staging.join(name), &staging, &backup, archive);
+    let _ = std::fs::remove_dir_all(&staging);
+    if result.is_ok() {
+        let _ = std::fs::remove_dir_all(&backup);
+    }
+    result
+}
+
+fn stage_and_swap(
+    bundle: &Path,
+    fresh: &Path,
+    staging: &Path,
+    backup: &Path,
+    archive: &[u8],
+) -> Result<(), DeckError> {
+    let mut tar = tar::Archive::new(flate2::read::GzDecoder::new(archive));
+    // `unpack` refuses entries that would escape `staging`
+    tar.unpack(staging)?;
+    if !fresh.join("Contents").is_dir() {
+        return Err(DeckError::new(
+            ErrorKind::InvalidDoc,
+            "update archive does not contain the app bundle",
+        ));
+    }
+    std::fs::rename(bundle, backup)?;
+    if let Err(error) = std::fs::rename(fresh, bundle) {
+        // put the previous bundle back before reporting
+        let _ = std::fs::rename(backup, bundle);
+        return Err(error.into());
+    }
+    // what the plugin's `touch` did: a fresh modification time so
+    // LaunchServices notices the replaced bundle
+    if let Ok(dir) = std::fs::File::open(bundle) {
+        let _ = dir.set_modified(SystemTime::now());
+    }
+    Ok(())
 }
 
 #[derive(Serialize)]
@@ -232,6 +364,91 @@ mod tests {
             identity.commit == "dev"
                 || ((7..=12).contains(&identity.commit.len())
                     && identity.commit.bytes().all(|b| b.is_ascii_hexdigit()))
+        );
+    }
+    fn archive_with(top: &str, files: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut out = Vec::new();
+        {
+            let gz = flate2::write::GzEncoder::new(&mut out, flate2::Compression::fast());
+            let mut tar = tar::Builder::new(gz);
+            for (path, bytes) in files {
+                let mut header = tar::Header::new_gnu();
+                header.set_size(bytes.len() as u64);
+                header.set_mode(0o755);
+                header.set_cksum();
+                tar.append_data(&mut header, format!("{top}/{path}"), *bytes)
+                    .unwrap();
+            }
+            tar.into_inner().unwrap().finish().unwrap();
+        }
+        out
+    }
+
+    fn leftovers(parent: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(parent)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with(".deck-"))
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn install_swaps_the_bundle_next_to_itself_and_cleans_up() {
+        let parent = std::env::temp_dir().join(format!("deck-updater-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&parent);
+        std::fs::create_dir_all(parent.join("deck.app/Contents/MacOS")).unwrap();
+        std::fs::write(parent.join("deck.app/Contents/MacOS/deck-app"), b"old").unwrap();
+        let bundle = parent.join("deck.app");
+        let archive = archive_with(
+            "deck.app",
+            &[
+                ("Contents/Info.plist", b"plist"),
+                ("Contents/MacOS/deck-app", b"new"),
+            ],
+        );
+        install_bundle(&bundle, &archive).unwrap();
+        assert_eq!(
+            std::fs::read(bundle.join("Contents/MacOS/deck-app")).unwrap(),
+            b"new"
+        );
+        assert!(bundle.join("Contents/Info.plist").is_file());
+        assert!(leftovers(&parent).is_empty(), "{:?}", leftovers(&parent));
+        let _ = std::fs::remove_dir_all(&parent);
+    }
+
+    #[test]
+    fn a_foreign_or_broken_archive_leaves_the_installed_bundle_untouched() {
+        let parent = std::env::temp_dir().join(format!("deck-updater-bad-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&parent);
+        std::fs::create_dir_all(parent.join("deck.app/Contents/MacOS")).unwrap();
+        std::fs::write(parent.join("deck.app/Contents/MacOS/deck-app"), b"old").unwrap();
+        let bundle = parent.join("deck.app");
+        let other = archive_with("other.app", &[("Contents/MacOS/x", b"x")]);
+        assert!(install_bundle(&bundle, &other).is_err());
+        assert!(install_bundle(&bundle, b"not a gzip stream").is_err());
+        assert_eq!(
+            std::fs::read(bundle.join("Contents/MacOS/deck-app")).unwrap(),
+            b"old"
+        );
+        assert!(leftovers(&parent).is_empty(), "{:?}", leftovers(&parent));
+        let _ = std::fs::remove_dir_all(&parent);
+    }
+
+    #[test]
+    fn the_writability_guard_asks_the_kernel_for_this_user() {
+        assert!(user_writable(&std::env::temp_dir()));
+        assert!(!user_writable(Path::new("/System")));
+        assert!(!user_writable(Path::new("/nonexistent/deck.app")));
+        assert!(
+            installed_bundle().is_none(),
+            "a test binary is not an installed .app"
+        );
+        assert_eq!(
+            writable_bundle().unwrap_err().kind(),
+            ErrorKind::Other,
+            "no bundle: refused before any writability question"
         );
     }
 }

@@ -467,8 +467,11 @@ function wireChrome() {
     } catch (e) {
       btn.disabled = false;
       label.textContent = t('update.failedRetry');
-      toast(t('error.operation', { operation: t('settings.updates') }));
-      uev('update-install-fail');
+      // the backend's fixed refusal for an admin-installed bundle (updater.rs)
+      const notWritable = String(e).includes('not writable');
+      toast(notWritable ? t('update.bundleNotWritable')
+                        : t('error.operation', { operation: t('settings.updates') }));
+      uev('update-install-fail', notWritable ? 'not-writable' : null);
     }
   };
 

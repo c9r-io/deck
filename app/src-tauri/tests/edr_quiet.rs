@@ -28,6 +28,15 @@
 //!   169.254/16 on `bridge*` or 100.64/10 on `utun*` — `docs/connector.md`;
 //!   never public or 0.0.0.0).
 //!
+//! - let a dependency spawn on its behalf: the updater plugin's macOS
+//!   installer runs an admin AppleScript (OSAKit) when the bundle is not
+//!   writable and a PATH `touch` after every install, so deck calls only
+//!   its download/verify half, installs the verified archive itself
+//!   (`updater::install_bundle`) after a no-spawn writability check, and
+//!   pins the plugin version here so a bump re-reads that path. The
+//!   strings stay linked in the binary; `scripts/check-edr-binary` names
+//!   them as gated rather than forbidden.
+//!
 //! What deck may spawn: low-frequency, fixed-argument system tools named by
 //! absolute `/usr/bin` path (`open`, `plutil`, `pbcopy`, `sw_vers`, `uname`;
 //! never a PATH lookup), the bundled tmux, and — for a locally approved,
@@ -68,7 +77,10 @@
 //! 5. the shell-restore path carries no script, shell argv or deck-as-pane
 //!    bootstrap (`commands::restore_start_args` pins the positive shape).
 //! 6. the disabled-by-default Connector owns the only production TCP bind,
-//!    and its enable path must call the private/local IPv4 validator first.
+//!    and its enable path must call the private/local IPv4 validator first;
+//! 7. updates are installed by deck, never by the plugin (no
+//!    `download_and_install` / `install(`), behind the writability guard,
+//!    and the reviewed plugin version is pinned in `Cargo.lock`.
 //!
 //! The scanner is a pure function over `(relative path, source)`, so the
 //! negative tests below feed it in-memory samples. It is a review tripwire,
@@ -491,6 +503,54 @@ fn the_tmux_server_never_enables_the_terminal_clipboard() {
         }
     }
     assert_eq!(sites, 2, "tmux.rs sets the option in its conf and on reuse");
+}
+
+/// tauri-plugin-updater 2.10.1 `src/updater.rs:1274-1305`: on a
+/// permission error the installer runs `do shell script … with
+/// administrator privileges` through OSAKit, and after every successful
+/// install spawns a PATH-resolved `touch`. deck never reaches that code:
+/// it downloads and verifies through the plugin, checks writability first
+/// (no spawn) and swaps the bundle itself. A plugin bump must re-read that
+/// installer before the pin below moves.
+#[test]
+fn updates_are_installed_by_deck_not_by_the_plugin() {
+    let updater = std::fs::read_to_string(manifest("src/updater.rs")).unwrap();
+    // code only: the module header names the plugin calls it avoids
+    let updater: String = production_region(&updater)
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    for forbidden in ["download_and_install", ".install("] {
+        assert!(
+            !updater.contains(forbidden),
+            "updater.rs reaches the plugin installer via {forbidden}"
+        );
+    }
+    let guard = updater
+        .find("writable_bundle()?")
+        .expect("the writability guard is called");
+    let flag = updater
+        .find("begin_app_update_install()?")
+        .expect("the lifecycle flag is raised");
+    let download = updater
+        .find(".download(")
+        .expect("the plugin download is used");
+    assert!(
+        guard < flag && flag < download,
+        "guard, then lifecycle flag, then download"
+    );
+    assert!(
+        updater.contains("libc::access("),
+        "writability is asked with access(2)"
+    );
+
+    let lock = std::fs::read_to_string(manifest("Cargo.lock")).unwrap();
+    assert!(
+        lock.contains("name = \"tauri-plugin-updater\"\nversion = \"2.10.1\""),
+        "tauri-plugin-updater moved off 2.10.1: re-read its macOS installer \
+         (admin AppleScript, PATH touch) and update updater.rs and this pin"
+    );
 }
 
 #[test]

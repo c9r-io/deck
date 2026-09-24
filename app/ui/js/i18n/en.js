@@ -324,6 +324,7 @@ const dictionary = {
   'update.installing': 'Installing…',
   'update.restarting': 'Restarting…',
   'update.failedRetry': 'Update failed — retry',
+  'update.bundleNotWritable': 'deck cannot replace itself: this user cannot write to the app or its folder. Download the DMG and reinstall.',
   'tmux.pendingShort': 'Shell service restart required',
   'tmux.pendingTitle': '{count} session(s) are using an older shell service',
   'tmux.title': 'Finish the deck update',

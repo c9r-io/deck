@@ -49,7 +49,7 @@ struct HelperRequest {
 
 static TARGET: OnceLock<Option<RelaunchTarget>> = OnceLock::new();
 
-fn app_bundle_for_executable(executable: &Path) -> Option<PathBuf> {
+pub(crate) fn app_bundle_for_executable(executable: &Path) -> Option<PathBuf> {
     let macos = executable.parent()?;
     if macos.file_name()? != "MacOS" {
         return None;

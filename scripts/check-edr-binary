@@ -33,5 +33,16 @@ for target in "${targets[@]}"; do
       exit 1
     fi
   done
+  # Linked by tauri-plugin-updater's macOS installer (an admin AppleScript
+  # through OSAKit, and a PATH `touch`). deck never calls that installer:
+  # updater.rs downloads/verifies through the plugin and swaps the bundle
+  # itself behind a writability guard; tests/edr_quiet.rs pins both the
+  # guard and the reviewed plugin version. Their presence is reported, not
+  # failed, so a build that drops them is noticed too.
+  for gated in "administrator privileges" OSAKit; do
+    if strings -a "$target" | grep -F -- "$gated" >/dev/null; then
+      echo "$target links gated token (unreachable, see tests/edr_quiet.rs): $gated"
+    fi
+  done
 done
 echo "EDR binary vocabulary clean: ${targets[*]}"

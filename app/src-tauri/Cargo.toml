@@ -19,6 +19,12 @@ core-foundation = "0.10"
 libc = "0.2"
 tauri = { version = "2", features = [] }
 tauri-plugin-updater = "2"
+# The updater plugin's own installer runs an admin AppleScript when the
+# bundle is not writable and a PATH `touch` on success; deck uses only its
+# check/download/verify half and unpacks the verified archive itself with
+# the same two crates the plugin already brought in (tests/edr_quiet.rs).
+flate2 = "1"
+tar = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 dirs = "5"

@@ -62,8 +62,13 @@ test('the updater, relaunch and server restart stay backend-owned', () => {
     'updater installation serializes with restart and session creation');
   assert.match(lifecycle, /fn restart_tmux_server\([\s\S]*?APP_UPDATE_INSTALLING\.load\(Ordering::Acquire\)/,
     'manual replacement cannot start from an updater-relocated process');
-  assert.ok(updater.indexOf('begin_app_update_install') < updater.indexOf('.download_and_install('),
-    'old updater process is embargoed before Tauri relocates the app');
+  const install = updater.indexOf('fn install_update(');
+  assert.ok(install > 0);
+  assert.ok(updater.indexOf('writable_bundle()?', install) < updater.indexOf('begin_app_update_install()?', install)
+    && updater.indexOf('begin_app_update_install()?', install) < updater.indexOf('.download(', install),
+    'writability is refused first, then the old process is embargoed, then the archive is fetched and deck relocates itself');
+  assert.doesNotMatch(updater.replace(/^\s*\/\/.*$/gm, ''), /download_and_install|\.install\(/,
+    'the plugin installer (admin AppleScript, PATH touch) is never called');
   // The restart confirmation defaults to "later" and Enter cannot accept it.
   assert.match(html, /id="tmux-later"[\s\S]*id="tmux-restart"/);
   assert.match(app, /\$\('tmux-later'\)\.focus\(\)/);

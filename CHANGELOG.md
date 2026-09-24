@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Installing an update can no longer ask for an administrator password or
+  start a shell. The updater plugin's own installer runs an AppleScript
+  "with administrator privileges" when deck was installed by an
+  administrator and the current user cannot write to it, and spawns `touch`
+  after every install — the process behaviour deck promises never to show.
+  deck now checks, without starting any process, that the app and its
+  folder are writable by the current user, refuses with a sidebar message
+  otherwise (reinstall the DMG), and after the plugin has downloaded and
+  verified the archive swaps the bundle itself. Nothing changes for the
+  ordinary single-user install.
 - An agent status event is now accepted only from inside the pane it names.
   The status socket took any line that named a public source, the tmux
   server pid (readable from `$TMUX` in every pane) and a pane id, so a
