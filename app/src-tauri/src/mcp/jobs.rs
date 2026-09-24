@@ -502,14 +502,8 @@ pub(super) fn job_side_effect(
                 .cloned()
                 .ok_or_else(|| DeckError::new(ErrorKind::ContextChanged, "job grant changed"))?;
             if input.is_some()
-                && (grant.revoked_at.is_some()
-                    || grant.grant_version <= grant.revocation_version
-                    || !grant.allow_stdin
-                    || now_ms() >= grant.expires_at
-                    || runtime
-                        .monotonic_ms()
-                        .saturating_sub(grant.issued_monotonic_ms)
-                        >= grant.duration_ms)
+                && (grant_standing(runtime, doc, &grant) != GrantStanding::Active
+                    || !grant.allow_stdin)
             {
                 return Err(DeckError::new(
                     ErrorKind::Perm,

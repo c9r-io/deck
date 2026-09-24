@@ -1506,14 +1506,11 @@ pub(crate) fn mcp_session_ui(card_id: String) -> Result<SessionUiView, DeckError
             .iter()
             .rev()
             .find(|grant| {
+                // any client's grant for this session generation (the UI is
+                // per session), judged by the one derivation
                 grant.session_id == session.session_id
-                    && grant.service_instance == runtime.service_instance
-                    && grant.revoked_at.is_none()
-                    && now_ms() < grant.expires_at
-                    && runtime
-                        .monotonic_ms()
-                        .saturating_sub(grant.issued_monotonic_ms)
-                        < grant.duration_ms
+                    && grant.session_generation == session.generation
+                    && grant_standing(runtime, doc, grant) == GrantStanding::Active
             })
             .cloned();
         (name, error, grant)

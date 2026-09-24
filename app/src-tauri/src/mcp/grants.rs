@@ -120,7 +120,6 @@ pub(super) fn execution_authorization<'a>(
     client_id: &str,
     session: &ManagedSession,
 ) -> ExecutionAuthorization<'a> {
-    let elapsed = runtime.monotonic_ms();
     let Some(grant) = doc.execution_grants.iter().rev().find(|grant| {
         grant.client_id == client_id
             && grant.project_id == session.project_id
@@ -129,25 +128,70 @@ pub(super) fn execution_authorization<'a>(
     }) else {
         return ExecutionAuthorization::None;
     };
-    if grant.revoked_at.is_some() || grant.grant_version <= grant.revocation_version {
-        return ExecutionAuthorization::Revoked(grant);
+    match grant_standing(runtime, doc, grant) {
+        GrantStanding::Revoked => ExecutionAuthorization::Revoked(grant),
+        GrantStanding::Expired => ExecutionAuthorization::Expired(grant),
+        GrantStanding::Active => ExecutionAuthorization::Active(grant),
     }
-    let credential_current = doc
+}
+
+/// Whether one execution grant is usable right now, however the caller
+/// selected it. The ONE derivation: `execution_authorization`, the stdin
+/// check in `job_side_effect`, the Session UI and `record_expired_grants` all
+/// ask this and add only their own extra condition (e.g. `allow_stdin`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum GrantStanding {
+    Active,
+    Expired,
+    Revoked,
+}
+
+pub(super) fn grant_standing(
+    runtime: &Runtime,
+    doc: &DiskDoc,
+    grant: &ExecutionGrant,
+) -> GrantStanding {
+    let credential = doc
         .config
         .clients
         .iter()
-        .find(|client| client.id == client_id)
-        .is_some_and(|client| client.credential_version == grant.credential_version);
-    if !credential_current || grant.service_instance != runtime.service_instance {
-        return ExecutionAuthorization::Revoked(grant);
-    }
-    if elapsed < grant.issued_monotonic_ms
-        || elapsed.saturating_sub(grant.issued_monotonic_ms) >= grant.duration_ms
-        || now_ms() >= grant.expires_at
+        .find(|client| client.id == grant.client_id)
+        .map(|client| client.credential_version);
+    standing_at(
+        grant,
+        credential,
+        &runtime.service_instance,
+        runtime.monotonic_ms(),
+        now_ms(),
+    )
+}
+
+/// Pure core of `grant_standing`: revocation (a revoked_at stamp, a
+/// revocation version at or above the grant's, a client credential that
+/// moved on or vanished, another Deck service instance) outranks expiry
+/// (the monotonic window elapsed, the clock went backwards, or the wall
+/// deadline passed).
+pub(super) fn standing_at(
+    grant: &ExecutionGrant,
+    client_credential_version: Option<u64>,
+    service_instance: &str,
+    elapsed_ms: u64,
+    now: u64,
+) -> GrantStanding {
+    if grant.revoked_at.is_some()
+        || grant.grant_version <= grant.revocation_version
+        || client_credential_version != Some(grant.credential_version)
+        || grant.service_instance != service_instance
     {
-        return ExecutionAuthorization::Expired(grant);
+        return GrantStanding::Revoked;
     }
-    ExecutionAuthorization::Active(grant)
+    if elapsed_ms < grant.issued_monotonic_ms
+        || elapsed_ms.saturating_sub(grant.issued_monotonic_ms) >= grant.duration_ms
+        || now >= grant.expires_at
+    {
+        return GrantStanding::Expired;
+    }
+    GrantStanding::Active
 }
 
 pub(super) fn active_execution_grant<'a>(
@@ -171,16 +215,11 @@ pub(super) fn active_execution_grant<'a>(
 }
 
 pub(super) fn record_expired_grants(runtime: &Runtime) -> Result<(), DeckError> {
-    let wall = now_ms();
-    let elapsed = runtime.monotonic_ms();
     let expired = runtime.read(|doc| {
         doc.execution_grants
             .iter()
             .filter(|grant| {
-                grant.service_instance == runtime.service_instance
-                    && grant.revoked_at.is_none()
-                    && (wall >= grant.expires_at
-                        || elapsed.saturating_sub(grant.issued_monotonic_ms) >= grant.duration_ms)
+                grant_standing(runtime, doc, grant) == GrantStanding::Expired
                     && !doc.audit.iter().any(|event| {
                         event.kind == "grant-expired"
                             && event.grant_id.as_deref() == Some(&grant.grant_id)
@@ -220,4 +259,112 @@ pub(super) fn record_expired_grants(runtime: &Runtime) -> Result<(), DeckError> 
         }
         Ok(())
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn grant() -> ExecutionGrant {
+        ExecutionGrant {
+            grant_id: "grant_a".into(),
+            client_id: "client_a".into(),
+            credential_version: 1,
+            project_id: "P1".into(),
+            session_id: "mcp_a".into(),
+            session_generation: "g_a".into(),
+            profile: "trusted-host-v1".into(),
+            environment_profile: ENVIRONMENT_PROFILE.into(),
+            environment_profile_version: 1,
+            issued_at: 1_000,
+            expires_at: 61_000,
+            issued_monotonic_ms: 100,
+            duration_ms: 60_000,
+            allow_stdin: true,
+            allow_output: true,
+            _legacy_allow_shell: None,
+            grant_version: 2,
+            revocation_version: 1,
+            service_instance: "svc".into(),
+            revoked_at: None,
+        }
+    }
+
+    /// The four axes of the one derivation: revocation stamp/version,
+    /// client credential, Deck service instance, and time (monotonic window,
+    /// clock going backwards, wall deadline). Revocation outranks expiry.
+    #[test]
+    fn standing_covers_every_axis_and_revocation_outranks_expiry() {
+        let at =
+            |grant: &ExecutionGrant,
+             credential: Option<u64>,
+             service: &str,
+             elapsed: u64,
+             now: u64| { standing_at(grant, credential, service, elapsed, now) };
+        let live = grant();
+        assert_eq!(at(&live, Some(1), "svc", 200, 2_000), GrantStanding::Active);
+
+        // revocation axis
+        let mut stamped = grant();
+        stamped.revoked_at = Some(1_500);
+        assert_eq!(
+            at(&stamped, Some(1), "svc", 200, 2_000),
+            GrantStanding::Revoked
+        );
+        let mut versioned = grant();
+        versioned.revocation_version = 2;
+        assert_eq!(
+            at(&versioned, Some(1), "svc", 200, 2_000),
+            GrantStanding::Revoked
+        );
+        // credential axis
+        assert_eq!(
+            at(&live, Some(2), "svc", 200, 2_000),
+            GrantStanding::Revoked
+        );
+        assert_eq!(
+            at(&live, None, "svc", 200, 2_000),
+            GrantStanding::Revoked,
+            "client gone"
+        );
+        // service-instance axis
+        assert_eq!(
+            at(&live, Some(1), "svc_old", 200, 2_000),
+            GrantStanding::Revoked
+        );
+        // time axis
+        assert_eq!(
+            at(&live, Some(1), "svc", 60_100, 2_000),
+            GrantStanding::Expired,
+            "window elapsed"
+        );
+        assert_eq!(
+            at(&live, Some(1), "svc", 99, 2_000),
+            GrantStanding::Expired,
+            "clock went backwards"
+        );
+        assert_eq!(
+            at(&live, Some(1), "svc", 200, 61_000),
+            GrantStanding::Expired,
+            "wall deadline"
+        );
+        assert_eq!(
+            at(&live, Some(1), "svc", 60_099, 60_999),
+            GrantStanding::Active,
+            "last usable instant"
+        );
+        // revocation outranks expiry on every revocation axis
+        assert_eq!(
+            at(&stamped, Some(1), "svc", 60_100, 61_000),
+            GrantStanding::Revoked
+        );
+        assert_eq!(
+            at(&live, Some(2), "svc", 60_100, 61_000),
+            GrantStanding::Revoked
+        );
+        assert_eq!(
+            at(&live, Some(1), "svc_old", 60_100, 61_000),
+            GrantStanding::Revoked
+        );
+    }
 }

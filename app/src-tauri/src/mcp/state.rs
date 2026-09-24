@@ -2,6 +2,15 @@
 //!
 //! Split out of the one-file `mcp.rs` on 2026-09-23; the contract stays in
 //! `mcp/mod.rs`.
+//!
+//! Grant versions (persisted mcp.json v6 fields, kept): `revocation_version`
+//! is always written together with `revoked_at` (every revocation sets
+//! `revocation_version = grant_version`; a new grant starts one below its
+//! version), and `credential_version` is 1 for every client created today
+//! (0 only for a v1/v2 client migrated as a revoked display record). Both
+//! are reserved for a future re-authorization flow; `grants::standing_at` is
+//! the one place that reads them, so they cannot drift from `revoked_at`
+//! unnoticed. A path that wrote only one of the pair would be a bug.
 
 use super::*;
 
