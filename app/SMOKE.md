@@ -225,7 +225,7 @@ a fixture.
       interruption: a matching
       persisted intent resumes to one current server; an unexpected different
       PID is never killed under the prior confirmation and requires review.
-      `tmux-lifecycle.json` contains phase/PID/start/socket device+inode/count/
+      `tmux-lifecycle.json` contains PID/start/socket device+inode/count/
       build fields only—no socket path, session names, commands, prompts,
       terminal text, or project paths.
 

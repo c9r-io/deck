@@ -147,7 +147,8 @@ The backend owns one serialized restart operation:
    foreground-process presence;
 2. after UI confirmation, lock session creation/updater installation and
    re-check PID, server start time, session and pane counts;
-3. persist a content-free restart intent and phase;
+3. persist a content-free restart intent (written once, before the stop;
+   no progress phase is recorded — recovery never needs one);
 4. request `kill-server`, wait for exit, and remove only a validated stale
    socket belonging to this deck socket name;
 5. start the server with the current bundled helper and write metadata;
@@ -158,8 +159,11 @@ The persisted intent contains counts, identity, PID/start time and the old
 socket device/inode only—never a socket/project path, session name, command,
 terminal output or prompt. Device/inode is used only to prove that a residual
 socket is the one captured before `kill-server`; it is not a build identity or
-compatibility input. If deck stops between phases, the next boot resumes only
-when the observed old PID and start time still match the confirmed transaction.
+compatibility input. If deck stops at any point after the intent was written,
+the next boot resumes only when the observed old PID and start time still
+match the confirmed transaction (and probes what is actually running); it does
+not need to know which step was reached. Files written by earlier builds also
+carry a `phase` key, which is ignored.
 A different unexpected server or socket is preserved and returned to the
 pending/diagnostic path.
 

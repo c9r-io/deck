@@ -172,14 +172,6 @@ enum MetadataRead {
     Corrupt,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "kebab-case")]
-enum RestartPhase {
-    Stopping,
-    Starting,
-    Verifying,
-}
-
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct RestartIntent {
     build_key: String,
@@ -190,7 +182,8 @@ struct RestartIntent {
     session_count: u32,
     pane_count: u32,
     impact_token: String,
-    phase: RestartPhase,
+    // Files written before 2026-09-25 also carry a `phase` key; it was never
+    // read and is ignored (this struct accepts unknown keys).
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -876,7 +869,6 @@ fn complete_restart_on(
         session_count: old.sessions.len() as u32,
         pane_count: old.pane_count(),
         impact_token: old.impact_token.clone(),
-        phase: RestartPhase::Stopping,
     });
     write_disk_at(&server.lifecycle_file, &disk)?;
 
@@ -903,9 +895,7 @@ fn complete_restart_on(
         ));
     }
 
-    disk.operation.as_mut().unwrap().phase = RestartPhase::Starting;
     crate::session_runtime::check_deadline()?;
-    write_disk_at(&server.lifecycle_file, &disk)?;
     if crate::smoke_faults::take("tmux-before-start") {
         return Err(DeckError::new(
             ErrorKind::Tmux,
@@ -920,8 +910,6 @@ fn complete_restart_on(
         start_started.elapsed().as_millis()
     ));
 
-    disk.operation.as_mut().unwrap().phase = RestartPhase::Verifying;
-    write_disk_at(&server.lifecycle_file, &disk)?;
     if crate::smoke_faults::take("tmux-after-metadata") {
         return Err(DeckError::new(
             ErrorKind::Tmux,
@@ -1966,12 +1954,8 @@ mod tests {
     }
 
     #[test]
-    fn restart_intent_is_content_free_and_all_phases_round_trip() {
-        for phase in [
-            RestartPhase::Stopping,
-            RestartPhase::Starting,
-            RestartPhase::Verifying,
-        ] {
+    fn restart_intent_is_content_free_and_round_trips() {
+        {
             let disk = LifecycleDisk {
                 schema_version: 1,
                 deferred_build: Some("io.c9r.deck:0.4.41:bbbbbbb:1".into()),
@@ -1984,7 +1968,6 @@ mod tests {
                     session_count: 3,
                     pane_count: 4,
                     impact_token: "impact-v1-deadbeef".into(),
-                    phase,
                 }),
                 notice: None,
             };
@@ -1994,7 +1977,23 @@ mod tests {
             assert!(!raw.contains("command"));
             assert!(!raw.contains("socket_path"));
             let decoded: LifecycleDisk = serde_json::from_str(&raw).unwrap();
-            assert_eq!(decoded.operation.unwrap().phase, phase);
+            assert_eq!(serde_json::to_string(&decoded).unwrap(), raw);
+            assert!(!raw.contains("phase"));
+        }
+    }
+
+    /// A tmux-lifecycle.json written before the unread `phase` key was
+    /// dropped still loads, and its interrupted restart is still recognized.
+    #[test]
+    fn a_lifecycle_file_with_the_old_phase_key_still_loads() {
+        for phase in ["stopping", "starting", "verifying"] {
+            let raw = format!(
+                r#"{{"schema_version":1,"deferred_build":null,"operation":{{"build_key":"current","old_pid":42,"old_started_at":10,"old_socket_device":1,"old_socket_inode":2,"session_count":1,"pane_count":2,"impact_token":"impact-v1-deadbeef","phase":"{phase}"}},"notice":null}}"#
+            );
+            let disk: LifecycleDisk = serde_json::from_str(&raw).unwrap();
+            let intent = disk.operation.expect("interrupted restart kept");
+            assert_eq!((intent.old_pid, intent.old_started_at), (42, 10));
+            assert_eq!(intent.impact_token, "impact-v1-deadbeef");
         }
     }
 
@@ -2026,7 +2025,6 @@ mod tests {
             session_count: 1,
             pane_count: 2,
             impact_token: "impact-v1-deadbeef".into(),
-            phase: RestartPhase::Stopping,
         };
         assert!(restart_intent_still_matches(&intent, &snapshot));
         intent.session_count = 2;
@@ -2140,7 +2138,6 @@ mod tests {
             session_count: old.sessions.len() as u32,
             pane_count: old.pane_count(),
             impact_token: old.impact_token.clone(),
-            phase: RestartPhase::Stopping,
         }
     }
 
@@ -2938,11 +2935,12 @@ mod tests {
         assert_eq!(notice.build_key, build_key(&current));
     }
 
-    /// A restart that fails leaves the content-free intent in the phase it
-    /// reached, so the next boot resumes only against the same identity;
-    /// a replaced server is never killed under an old confirmation.
+    /// A restart that fails, before or after the old server stopped, leaves
+    /// its content-free intent persisted, so the next boot resumes only
+    /// against the same identity; a replaced server is never killed under an
+    /// old confirmation.
     #[test]
-    fn real_tmux_restart_transaction_persists_the_phase_it_failed_in() {
+    fn real_tmux_restart_transaction_keeps_its_intent_when_it_fails() {
         let old_build = build(SourceCategory::Installed, "0.4.40", "aaaaaaa", 1);
         let current = build(SourceCategory::Development, "0.4.41", "bbbbbbb", 1);
         let server = IsolatedServer::new("phases");
@@ -2988,7 +2986,6 @@ mod tests {
         assert_eq!(server.pid(), old.pid, "the old server is untouched");
         let disk = read_disk_at(&dir.file());
         let intent = disk.operation.expect("intent persisted before stopping");
-        assert_eq!(intent.phase, RestartPhase::Stopping);
         assert_eq!(intent.build_key, build_key(&current));
         assert_eq!(
             (intent.old_pid, intent.old_started_at),
@@ -3035,10 +3032,7 @@ mod tests {
         assert!(!server.is_running(), "the old server was stopped");
         assert!(!old.socket_path.exists(), "no stale socket is left behind");
         let disk = read_disk_at(&dir.file());
-        assert_eq!(
-            disk.operation.expect("intent kept for recovery").phase,
-            RestartPhase::Starting
-        );
+        assert!(disk.operation.is_some(), "intent kept for recovery");
         assert!(disk.notice.is_none());
         // The boot recovery for exactly that state: nothing stale remains.
         clean_confirmed_intent_socket_on(&handle, &intent).expect("nothing to clean");

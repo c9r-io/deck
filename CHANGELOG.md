@@ -32,6 +32,8 @@
   documented transition matrix instead of strings compared in six files;
   queue.json is byte-for-byte unchanged, and a queue.json carrying a state
   word no deck ever wrote is now refused on load instead of being read.
+  The tmux restart intent no longer records a progress phase nothing ever
+  read (older files with it still load).
 - Internal: the isolated WKWebView smoke now has a machine verdict.
   `scripts/smoke-verdict <data-dir> <mode>` judges a run's `app.log`
   against one manifest of what each mode must emit (held equal to the
