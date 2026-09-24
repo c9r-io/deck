@@ -493,7 +493,6 @@ const UI_EVENT_SPECS: &[(&str, DetailPolicy)] = &[
     ("inbound", DetailPolicy::Closed(INBOUND_OUTCOMES)),
     ("poll-fail", DetailPolicy::None),
     ("poll-recovered", DetailPolicy::None),
-    ("clipboard-addon-fail", DetailPolicy::None),
     ("separator", DetailPolicy::Closed(&["no-marker", "fail"])),
     ("mirror-desync", DetailPolicy::Closed(&["esc", "plain"])),
     ("ondata", DetailPolicy::Closed(&["desync", "ok"])),

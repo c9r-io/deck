@@ -50,6 +50,11 @@ impl Server {
             "history-limit",
             "50000",
             ";",
+            "set-option",
+            "-g",
+            "set-clipboard",
+            "off",
+            ";",
             "new-session",
             "-d",
             "-s",
@@ -179,6 +184,11 @@ impl Server {
             "-g",
             "history-limit",
             "50000",
+            ";",
+            "set-option",
+            "-g",
+            "set-clipboard",
+            "off",
             ";",
             "new-session",
             "-d",
@@ -623,6 +633,32 @@ macro_rules! topology_matrix {
             }
         }
     };
+}
+
+/// Production servers run `set-clipboard off` (`tmux::tmux_conf_text`).
+/// An application's OSC 52 write must never become a tmux paste buffer —
+/// under `on` the same bytes become one AND are announced to the attached
+/// client as a clipboard write. The positive control proves the assertion
+/// discriminates.
+#[test]
+fn application_osc52_never_becomes_a_buffer() {
+    let s = Server::new("osc52");
+    let write = "printf '\\033]52;c;aGVsbG8=\\a'";
+    let type_line = |line: &str| {
+        s.run(&["send-keys", "-t", "t", "-l", line]);
+        s.run(&["send-keys", "-t", "t", "Enter"]);
+        sleep(Duration::from_millis(400));
+    };
+    type_line(write);
+    assert_eq!(s.run(&["list-buffers"]), "", "off: no buffer from OSC 52");
+
+    // positive control: the same bytes under `on` do create a buffer
+    s.run(&["set-option", "-g", "set-clipboard", "on"]);
+    type_line(write);
+    assert!(
+        s.run(&["list-buffers"]).contains("hello"),
+        "on: OSC 52 becomes a buffer, so the assertion above is meaningful"
+    );
 }
 
 #[test]

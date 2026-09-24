@@ -175,10 +175,6 @@ export function createPane(card) {
   });
   const fit = new FitAddon.FitAddon();
   term.loadAddon(fit);
-  try {
-    /* OSC52: tmux mouse selections land in the system clipboard */
-    term.loadAddon(new ClipboardAddon.ClipboardAddon());
-  } catch (e) { uev('clipboard-addon-fail'); }
   term.open(body);
 
   if (!ctx.ghostEl) {

@@ -33,7 +33,7 @@ const BROWSER = new Set([
   'innerWidth', 'innerHeight', 'devicePixelRatio', 'performance', 'crypto', 'history',
   'FileReader', 'Element', 'HTMLSelectElement',
   // vendored xterm.js globals (classic scripts)
-  'Terminal', 'FitAddon', 'WebLinksAddon', 'ClipboardAddon',
+  'Terminal', 'FitAddon', 'WebLinksAddon',
 ]);
 const KEYWORDS = new Set(('break case catch class const continue debugger default delete do else export extends '
   + 'finally for function if import in instanceof let new of return static super switch this throw try typeof '

@@ -24,7 +24,6 @@ upstream releases:
 |---|---|---|
 | xterm.js (`xterm.js`, `xterm.css`) | MIT | https://github.com/xtermjs/xterm.js |
 | @xterm/addon-fit | MIT | https://github.com/xtermjs/xterm.js |
-| @xterm/addon-clipboard | MIT | https://github.com/xtermjs/xterm.js |
 
 ## Rust dependencies
 

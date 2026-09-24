@@ -125,6 +125,8 @@ behavior; unknown launchers are not sent guessed exit keys.
 
 **A real terminal.** Full xterm with truecolor, ⌘C/⌘V, clickable existing
 local file paths, and complete HTTP(S) URLs even across terminal soft wraps.
+Only ⌘C writes the macOS clipboard: a program running in a pane cannot set
+or read it through the terminal (OSC 52 is off at deck's tmux server).
 Drag directly over terminal cells; holding at either vertical
 edge continuously extends the same selection through tmux history, including
 reverse shrinking across screens. A path can open in the editor, reveal in

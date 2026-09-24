@@ -466,6 +466,33 @@ fn every_production_spawn_is_on_the_allowlist() {
     );
 }
 
+/// A pane program must not be able to write the macOS clipboard through
+/// tmux: every `set-clipboard` the backend sends turns it OFF (the contract
+/// suite proves what `on` would let through). `external` is not enough —
+/// tmux would still push each of deck's own selection snapshots through the
+/// PTY as OSC 52.
+#[test]
+fn the_tmux_server_never_enables_the_terminal_clipboard() {
+    let mut sites = 0;
+    for (name, src) in production_sources() {
+        for (at, _) in src.match_indices("set-clipboard") {
+            let line_start = src[..at].rfind('\n').map_or(0, |i| i + 1);
+            if src[line_start..at].trim_start().starts_with("//") {
+                continue; // prose in a module header, not a tmux option
+            }
+            let rest = src[at + "set-clipboard".len()..]
+                .trim_start_matches(|c: char| c == '"' || c == ',' || c.is_whitespace());
+            assert!(
+                rest.starts_with("off"),
+                "{name}: set-clipboard must be off, found {:?}",
+                rest.chars().take(12).collect::<String>()
+            );
+            sites += 1;
+        }
+    }
+    assert_eq!(sites, 2, "tmux.rs sets the option in its conf and on reuse");
+}
+
 #[test]
 fn deck_app_never_constructs_a_shell_path() {
     let violations: Vec<_> = production_sources()

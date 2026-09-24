@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- A program running in a pane can no longer write or read the macOS
+  clipboard through the terminal. deck's tmux server ran with
+  `set-clipboard on`, so any output containing an OSC 52 sequence (a file
+  shown with `cat`, a commit message, an agent tool's output) silently
+  replaced the clipboard, and could read the buffer another card's program
+  had pushed. The server now runs `set-clipboard off`; ⌘C is unchanged (it
+  never used OSC 52) and the unused xterm clipboard addon is gone.
 - Quitting Deck with SIGTERM, SIGINT or SIGHUP now goes through the normal
   quit path. Before, an abrupt exit could leave the Board's tmux query client
   running forever, still attached to the shell service. Deck now also removes
