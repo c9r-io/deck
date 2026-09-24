@@ -16,6 +16,7 @@ const PATH_HARD_END_DELIMS = '=,;';
 // numeric location suffixes stay in the candidate.
 const PATH_TRAILING = '.,;!?:';
 const LINK_BRACKETS = { '(': ')', '[': ']', '{': '}' };
+const PATH_CONTINUATION_MIN_HEAD = 24;
 
 // One pass supplies matching brackets; a bare `name(1).txt` is a filename,
 // while `说明(/tmp/a.txt)` hands ownership to the path inside the wrapper.
@@ -198,9 +199,12 @@ function unquotedPathAt(text, index, pairs) {
     const ch = text[end];
     if (LINK_BRACKETS[ch]) {
       const close = pairs.get(end);
-      const filenameSuffix = close !== undefined && (text[close + 1] === '/'
+      // An unmatched opener after a path is prose, not a filename bracket.
+      // Keeping it swallowed annotations such as `/tmp/work[中文)]`.
+      if (close === undefined) break;
+      const filenameSuffix = text[close + 1] === '/'
         || text[close + 1] === '.' && !isTokenEnd(text[close + 2])
-          && !PATH_START_DELIMS.includes(text[close + 2]));
+          && !PATH_START_DELIMS.includes(text[close + 2]);
       if (!structural && !brackets.length && !filenameSuffix) break;
       brackets.push(LINK_BRACKETS[ch]);
     } else if (')]}'.includes(ch)) {
@@ -304,7 +308,7 @@ function terminalLineFillsWidth(line, cols) {
   if (!line || cols < 1) return false;
   const tail = line.getCell(cols - 1);
   if (!tail) return false;
-  if (tail.getChars()) return true;
+  if (tail.getChars()?.trim()) return true;
   // The final cell of a width-2 glyph is a zero-width continuation cell.
   if (tail.getWidth() === 0 && cols > 1) {
     const lead = line.getCell(cols - 2);
@@ -313,34 +317,70 @@ function terminalLineFillsWidth(line, cols) {
   return false;
 }
 
+function terminalRowText(line, cols) {
+  let text = '';
+  for (let x = 0; x < cols; x++) {
+    const cell = line?.getCell(x);
+    if (cell && cell.getWidth() !== 0) text += cell.getChars() || ' ';
+  }
+  return text;
+}
+
+/* Agents sometimes insert a real newline and indentation in a long path.
+   Join only a path at the end of the previous row with a plausible indented
+   continuation. The original grid positions are retained below. */
+function pathContinuationIndent(previous, next, cols) {
+  if (!previous || !next || next.isWrapped) return 0;
+  const before = terminalRowText(previous, cols).trimEnd();
+  const after = terminalRowText(next, cols);
+  const indent = /^ {2,}/.exec(after)?.[0].length || 0;
+  if (!indent) return 0;
+  const path = /(?:^|\s)(\S+)$/.exec(before)?.[1];
+  if (!path || !looksLikeTerminalPathCandidate(path)) return 0;
+  const rest = after.slice(indent);
+  const fragment = /^\S+/.exec(rest)?.[0];
+  if (!fragment || /^[\[\](){}<>|=,;]/.test(fragment) || /^[-*]\s/.test(rest)) return 0;
+  const basename = path.slice(path.lastIndexOf('/') + 1);
+  const completeFile = /\.[A-Za-z0-9]{1,12}(?::\d+(?::\d+)?)?$/.test(basename);
+  return path.endsWith('/') || /^[.:/-]/.test(fragment)
+    || (path.length >= PATH_CONTINUATION_MIN_HEAD && !completeFile
+      && (fragment.includes('/') || fragment.includes('.')))
+    ? indent : 0;
+}
+
 /* Build one visual logical line with UTF-16-offset → terminal-cell mapping,
    using only xterm's public BufferLine/BufferCell APIs. Live output carries
    xterm's isWrapped bit. A tmux attach/history redraw can lose that bit and
-   repaint the same wrap as ordinary rows; a content cell in the final column
-   is then the only public continuation signal. Bound the fallback so a dense
-   full-screen TUI can never turn one hover into an unbounded buffer scan. */
+   repaint the same wrap as ordinary rows; a nonblank final cell is then a
+   continuation signal. Real newline plus indented path continuation is also
+   joined. Bound scans so dense TUI output cannot cause unbounded work. */
 export function terminalLogicalLine(term, requestedLine) {
   const buffer = term.buffer.active;
   let first = requestedLine - 1;
   while (first > 0 && requestedLine - first < MAX_LINK_LOGICAL_ROWS) {
     const current = buffer.getLine(first);
     const previous = buffer.getLine(first - 1);
-    if (!current?.isWrapped && !terminalLineFillsWidth(previous, term.cols)) break;
+    if (!current?.isWrapped && !terminalLineFillsWidth(previous, term.cols)
+        && !pathContinuationIndent(previous, current, term.cols)) break;
     first--;
   }
   let last = requestedLine - 1;
   while (last + 1 < buffer.length && last - first + 1 < MAX_LINK_LOGICAL_ROWS) {
     const current = buffer.getLine(last);
     const next = buffer.getLine(last + 1);
-    if (!next?.isWrapped && !terminalLineFillsWidth(current, term.cols)) break;
+    if (!next?.isWrapped && !terminalLineFillsWidth(current, term.cols)
+        && !pathContinuationIndent(current, next, term.cols)) break;
     last++;
   }
   let text = '';
   const positions = [];
+  let previous = null;
   for (let y = first; y <= last; y++) {
     const line = buffer.getLine(y);
     if (!line) continue;
-    for (let x = 0; x < term.cols; x++) {
+    const indent = pathContinuationIndent(previous, line, term.cols);
+    if (indent) { text = text.trimEnd(); positions.length = text.length; }
+    for (let x = indent; x < term.cols; x++) {
       const cell = line.getCell(x);
       if (!cell || cell.getWidth() === 0) continue;
       const chars = cell.getChars() || ' ';
@@ -348,6 +388,7 @@ export function terminalLogicalLine(term, requestedLine) {
       text += chars;
       for (let i = 0; i < chars.length; i++) positions.push(pos);
     }
+    previous = line;
   }
   const trimmed = text.trimEnd();
   positions.length = trimmed.length;

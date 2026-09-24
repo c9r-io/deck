@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { wireTerminalLinks } from '../js/terminal-links.js';
-import { terminalLogicalLine } from '../js/terminal-links-model.js';
+import { terminalLogicalLine, terminalLinkRanges, tokenizeTerminalLinks } from '../js/terminal-links-model.js';
 
 class Surface {
   listeners = new Map();
@@ -118,4 +118,39 @@ test('logical lines join wraps, map UTF-16 and wide glyph cells, and bound dense
   term.buffer.active = { length: 1000, getLine: () => { calls++; return row('abc', true); } };
   assert.equal(terminalLogicalLine(term, 500).text.length, 32 * 3);
   assert.ok(calls < 100, 'one hover reads only the bounded logical line');
+});
+
+test('an agent hard newline with padding and indentation keeps one path and its grid positions', () => {
+  const head = '/tmp/very/long/path/with';
+  const tail = '    suffix/file.rs:12';
+  const cols = 36;
+  const lines = [row(head.padEnd(cols, ' ')), row(tail)];
+  const term = { cols, buffer: { active: { length: lines.length, getLine: i => lines[i] } } };
+  for (const requested of [1, 2]) {
+    const logical = terminalLogicalLine(term, requested);
+    assert.equal(logical.text, '/tmp/very/long/path/withsuffix/file.rs:12');
+    const matches = tokenizeTerminalLinks(logical.text);
+    assert.deepEqual(matches.map(link => link.value), [logical.text]);
+    assert.deepEqual(logical.positions[head.length], { x: 5, endX: 5, y: 2 });
+    const ranges = terminalLinkRanges({ matches, positions: logical.positions, lineNo: requested });
+    assert.equal(ranges.length, 1, 'both rows expose the same path link');
+    assert.deepEqual(ranges[0].range, {
+      start: { x: 1, y: 1 }, end: { x: 21, y: 2 },
+    });
+  }
+  lines[0] = row('src/main.rs'.padEnd(cols, ' '));
+  lines[1] = row('    another/file.rs');
+  assert.equal(terminalLogicalLine(term, 1).text, 'src/main.rs',
+    'two complete file paths on separate lines are not joined');
+  lines[0] = row('/tmp/work'.padEnd(cols, ' '));
+  lines[1] = row('    [中文)] description');
+  assert.equal(terminalLogicalLine(term, 1).text, '/tmp/work',
+    'an indented annotation is not a path continuation');
+  lines[1] = row('    details.rs');
+  assert.equal(terminalLogicalLine(term, 1).text, '/tmp/work',
+    'a short directory followed by an indented file is not automatically one path');
+  lines[0] = row('/tmp/very/long/path/with'.padEnd(cols, ' '));
+  lines[1] = row('    Details follow below');
+  assert.equal(terminalLogicalLine(term, 1).text, '/tmp/very/long/path/with',
+    'indented prose does not become a path suffix');
 });

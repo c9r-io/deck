@@ -962,6 +962,9 @@ test('balanced filename brackets and URL punctuation retain their own ranges', (
     ['https://example.com/a(b)']);
   assert.deepEqual(tokenizeTerminalLinks('说明(https://example.com/a)').map(x => x.value),
     ['https://example.com/a']);
+  assert.deepEqual(tokenizeTerminalLinks('/tmp/work[中文)]').map(x => x.value), ['/tmp/work'],
+    'an unmatched annotation opener does not become part of the folder path');
+  assert.deepEqual(tokenizeTerminalLinks('/tmp/work/[中文)]').map(x => x.value), ['/tmp/work/']);
 });
 
 test('long rejected candidates advance without quadratic suffix rescans', () => {
