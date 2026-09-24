@@ -147,9 +147,9 @@ Status semantics (card colour) are documented on `effectiveCardStatus` in
   is pinned by `rust-toolchain.toml` at the repository root and the same
   version in every workflow (`scripts/test_release_tools.py` checks).
 - PTY smoke test (headless): `cargo run --example pty_smoke`
-- The unchanged vendored terminal is `@xterm/xterm` 5.5.0 (the local
-  `xterm.js` is byte-identical to the published 5.5.0 artifact, SHA-256
-  `1f991ac3b4b283ebf96e60ae23a00a52765dd3a2e46fa6fdda9f1aab032f7495`).
+- The unchanged vendored terminal is `@xterm/xterm` 5.5.0; its SHA-256 and
+  the `ui/vendor/` file list are pinned by the "vendored xterm" test in
+  `ui/test/static.test.mjs`.
 - WKWebView release regression (debug bundles only): launch with a fresh
   absolute `DECK_SMOKE_DATA_DIR`, unique `DECK_SMOKE_TMUX_SOCKET`, and
   `DECK_SMOKE_WKWEBVIEW=1 app/run.sh`. The production modules run inside the

@@ -4,6 +4,7 @@
 // Rust unit and contract tests, and the real-WKWebView smoke.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
@@ -13,6 +14,15 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 const read = path => readFileSync(resolve(root, path), 'utf8');
 const production = readdirSync(resolve(root, 'app/ui/js')).filter(name => name.endsWith('.js'))
   .map(name => read(`app/ui/js/${name}`)).join('\n');
+
+// The terminal is the unchanged published @xterm/xterm 5.5.0 artifact; any
+// edit, upgrade or extra vendored file must show up here first.
+test('vendored xterm is byte-identical to the published 5.5.0 build', () => {
+  assert.deepEqual(readdirSync(resolve(root, 'app/ui/vendor')).sort(),
+    ['addon-fit.js', 'xterm.css', 'xterm.js']);
+  const digest = createHash('sha256').update(readFileSync(resolve(root, 'app/ui/vendor/xterm.js'))).digest('hex');
+  assert.equal(digest, '1f991ac3b4b283ebf96e60ae23a00a52765dd3a2e46fa6fdda9f1aab032f7495');
+});
 
 test('extracted terminal adapters and queue view cannot import the view core', () => {
   for (const name of ['terminal-links', 'terminal-links-model', 'terminal-clipboard', 'terminal-bytes', 'voice-target', 'scheduler']) {

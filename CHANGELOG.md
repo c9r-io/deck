@@ -16,7 +16,8 @@
   Nightly and promotion workflows is a fixed official release checked
   against a committed SHA-256 (`scripts/install-minisign`), no longer
   whatever Homebrew served that day. The test gate checks the bundled tmux
-  against its committed SHA-256 (shell and Rust).
+  against its committed SHA-256 (shell and Rust), and the UI tests pin the
+  vendored xterm.js hash and the vendor file list.
 
 ## 0.7.9 — 2026-09-24 (Nightly)
 
