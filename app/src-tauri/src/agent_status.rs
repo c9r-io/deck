@@ -1190,7 +1190,20 @@ mod tests {
         }
         impl Drop for Server {
             fn drop(&mut self) {
+                // like the contract suite's guard: kill the server and
+                // remove exactly its socket file, which tmux leaves behind
+                let socket = self
+                    .run(&["display-message", "-p", "#{socket_path}"])
+                    .trim()
+                    .to_string();
                 let _ = self.run(&["kill-server"]);
+                let path = std::path::Path::new(&socket);
+                if path.file_name().and_then(|n| n.to_str()) == Some(&self.0)
+                    && std::fs::symlink_metadata(path)
+                        .is_ok_and(|m| std::os::unix::fs::FileTypeExt::is_socket(&m.file_type()))
+                {
+                    let _ = std::fs::remove_file(path);
+                }
             }
         }
         let bin =
@@ -1200,13 +1213,12 @@ mod tests {
         let path = dir.join("status.sock");
         let listener = listen_at(&path).unwrap();
         let server = Server(format!("deck-test-status-{}", std::process::id()), bin);
-        // the pane builds the event from its own $TMUX/$TMUX_PANE, exactly
-        // as the helper does, then holds the connection like the helper does
-        let script = format!(
-            "pid=${{TMUX#*,}}; pid=${{pid%,*}}; printf '{{\"v\":1,\"source\":\"claude-code\",\"state\":\"working\",\"socket\":\"{}\",\"server_pid\":%s,\"pane\":\"%s\"}}\n' \"$pid\" \"$TMUX_PANE\" | /usr/bin/nc -U '{}'; sleep 30",
-            crate::tmux::socket(),
-            path.display()
-        );
+        // The pane program IS the client: `exec` makes nc the pane's own
+        // process (same pid tmux recorded as #{pane_pid}) and its
+        // foreground, so a shell never owns the pane while it reports —
+        // exactly the shape of an agent hook. The event line is typed into
+        // nc's stdin (the pane tty) once the pane's identity is known.
+        let client = format!("exec /usr/bin/nc -U '{}'", path.display());
         server.run(&[
             "start-server",
             ";",
@@ -1218,8 +1230,31 @@ mod tests {
             "80",
             "-y",
             "12",
-            &script,
+            &client,
         ]);
+        let mut rows: Vec<PaneRow> = Vec::new();
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while std::time::Instant::now() < deadline {
+            rows = server
+                .run(&["list-panes", "-a", "-F", crate::tmux::PANE_FORMAT])
+                .lines()
+                .filter_map(crate::tmux::parse_pane_row)
+                .collect();
+            if rows.len() == 1 && rows[0].command == "nc" {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(rows.len(), 1, "one pane whose foreground is nc: {rows:?}");
+        assert_eq!(rows[0].command, "nc");
+        let line = format!(
+            "{{\"v\":1,\"source\":\"claude-code\",\"state\":\"working\",\"socket\":\"{}\",\"server_pid\":{},\"pane\":\"{}\"}}",
+            crate::tmux::socket(),
+            rows[0].server_pid,
+            rows[0].pane_id
+        );
+        server.run(&["send-keys", "-t", "t", "-l", &line]);
+        server.run(&["send-keys", "-t", "t", "Enter"]);
         listener.set_nonblocking(true).unwrap();
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         let mut stream = loop {
@@ -1232,25 +1267,18 @@ mod tests {
             }
         };
         stream.set_nonblocking(false).unwrap();
-        let line = read_first_line(&mut stream).unwrap();
+        let read = read_first_line(&mut stream).unwrap();
+        assert_eq!(read, line);
         let origin = crate::procinfo::peer_pid(&stream)
             .map(|pid| crate::procinfo::ancestry(pid, ORIGIN_HOPS))
             .unwrap_or_default();
         drop(stream);
-        let rows: Vec<PaneRow> = server
-            .run(&["list-panes", "-a", "-F", crate::tmux::PANE_FORMAT])
-            .lines()
-            .filter_map(crate::tmux::parse_pane_row)
-            .collect();
-        assert_eq!(rows.len(), 1, "one pane: {rows:?}");
         let resolve = |pane: &str, server_pid: u32| resolve_in(&rows, pane, server_pid);
-        assert!(
-            origin.contains(&rows[0].pane_pid),
-            "nc descends from the pane process: {origin:?} vs {}",
-            rows[0].pane_pid
+        assert_eq!(
+            origin.first(),
+            Some(&rows[0].pane_pid),
+            "nc is the pane process itself: {origin:?}"
         );
-        // the pane's session name is tmux's default `t`, outside deck's
-        // alphabet check? `resolve_in` validates it — `t` is valid.
         assert_eq!(ingest(&line, &origin, resolve), Ok(()));
         assert_eq!(current("t"), Some("working"));
         reset_for_tests();
