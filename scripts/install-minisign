@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Install the pinned minisign used to verify and sign updater archives in
+# nightly.yml and promote.yml, and print the absolute path of the binary.
+#
+# Same pattern as the actionlint download in scripts/check-workflows: one
+# fixed official release asset, one expected SHA-256, fail closed on any
+# mismatch. This is the ONLY place the version and hash live; to upgrade,
+# download the new jedisct1/minisign macOS release zip, verify its
+# .minisig with the author key
+#   RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3
+# and change `version` and `expected` below together.
+#
+# The asset is a self-contained arm64 executable (libSystem only); every
+# workflow that calls this runs on an Apple Silicon macOS runner.
+set -euo pipefail
+
+version=0.12
+archive=minisign-${version}-macos.zip
+expected=89000b19535765f9cffc65a65d64a820f433ef6db8020667f7570e06bf6aac63
+
+temp_root=${RUNNER_TEMP:-${TMPDIR:-/tmp}}
+tool_dir=$(mktemp -d "${temp_root%/}/deck-minisign.XXXXXX")
+curl --fail --silent --show-error --location \
+  "https://github.com/jedisct1/minisign/releases/download/${version}/${archive}" \
+  --output "$tool_dir/$archive"
+printf '%s  %s\n' "$expected" "$tool_dir/$archive" | shasum -a 256 -c - >&2
+unzip -q "$tool_dir/$archive" minisign -d "$tool_dir"
+test "$("$tool_dir/minisign" -v)" = "minisign $version"
+printf '%s\n' "$tool_dir/minisign"

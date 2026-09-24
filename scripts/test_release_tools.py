@@ -227,6 +227,23 @@ class ReleaseChannelTests(unittest.TestCase):
         path.write_text("run: cargo build --release\n")
         with self.assertRaises(rc.ReleaseError):
             rc.assert_promotion_has_no_build_commands(path)
+        path.write_text("run: brew install minisign\n")
+        with self.assertRaises(rc.ReleaseError):
+            rc.assert_promotion_has_no_build_commands(path)
+
+    def test_updater_signing_tool_is_pinned_in_one_place(self) -> None:
+        installer = (ROOT / "scripts/install-minisign").read_text()
+        self.assertRegex(installer, r"(?m)^version=[0-9]+\.[0-9]+$")
+        self.assertRegex(installer, r"(?m)^expected=[0-9a-f]{64}$")
+        self.assertIn("shasum -a 256 -c", installer)
+        for name in ("nightly.yml", "promote.yml"):
+            workflow = (ROOT / ".github/workflows" / name).read_text()
+            self.assertNotIn("brew install", workflow, name)
+            self.assertIn("$(scripts/install-minisign)", workflow, name)
+            # every minisign invocation goes through the installed path
+            bare = re.search(r"(?m)^\s+(?:spawn\s+)?minisign\s.*$", workflow)
+            self.assertIsNone(bare, f"{name}: {bare and bare.group(0).strip()}")
+            self.assertNotIn("jedisct1/minisign", workflow, name)
 
     def test_workflow_gates_fail_closed(self) -> None:
         directory = Path(tempfile.mkdtemp(prefix="deck-gates-test-"))

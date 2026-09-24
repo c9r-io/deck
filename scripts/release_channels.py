@@ -27,8 +27,11 @@ SIGNATURE = f"{ARCHIVE}.sig"
 IMMUTABLE_KINDS = ("dmg", "archive", "signature", "manifest")
 HELPER_KIND = "helper_archive"
 UPDATER_KEY_EPOCHS = {"legacy-stable-v1", "nightly-v1"}
+# Promotion copies tested bytes: no build, and no unpinned tool install
+# (the signing tool comes only from scripts/install-minisign).
 FORBIDDEN_PROMOTION = re.compile(
-    r"\b(?:cargo\s+(?:build|run|install)|tauri(?:-action|\s+build)|npm\s+run\s+build|xcodebuild)\b",
+    r"\b(?:cargo\s+(?:build|run|install)|tauri(?:-action|\s+build)|npm\s+run\s+build|xcodebuild"
+    r"|brew\s+install)\b",
     re.IGNORECASE,
 )
 

@@ -115,7 +115,7 @@ jobs:
           scripts/release_channels.py verify-candidate --dir candidate \
             --tag "$CANDIDATE_TAG" --commit "$CANDIDATE_SHA" \
             --release-json candidate/release.json
-          brew install minisign
+          minisign=$(scripts/install-minisign)
           python3 - <<'PY'
           import base64, json, pathlib
           root = pathlib.Path('candidate')
@@ -129,7 +129,7 @@ jobs:
               raise SystemExit('candidate uses an unknown updater key')
           root.joinpath('updater.pub').write_bytes(base64.b64decode(encoded, validate=True))
           PY
-          minisign -Vm candidate/deck_aarch64.app.tar.gz \
+          "$minisign" -Vm candidate/deck_aarch64.app.tar.gz \
             -x candidate/signature.minisig -p candidate/updater.pub
           tar -xzf candidate/deck_aarch64.app.tar.gz -C unpacked
           app_path=unpacked/deck.app
@@ -161,6 +161,8 @@ jobs:
           STABLE_TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           set -euo pipefail
+          MINISIGN=$(scripts/install-minisign)
+          export MINISIGN
           mkdir stable-signature
           python3 - <<'PY'
           import base64, os, pathlib
@@ -170,7 +172,7 @@ jobs:
           PY
           /usr/bin/expect <<'EXPECT'
           set timeout 120
-          spawn minisign -S -s stable-signature/stable.minisign.key \
+          spawn $env(MINISIGN) -S -s stable-signature/stable.minisign.key \
             -m candidate/deck_aarch64.app.tar.gz \
             -x stable-signature/deck_aarch64.app.tar.gz.minisig \
             -c "signature from tauri secret key"
@@ -189,7 +191,7 @@ jobs:
           config = json.loads(pathlib.Path('app/src-tauri/tauri.conf.json').read_text())
           root.joinpath('stable.pub').write_bytes(base64.b64decode(config['plugins']['updater']['pubkey'], validate=True))
           PY
-          minisign -Vm candidate/deck_aarch64.app.tar.gz \
+          "$MINISIGN" -Vm candidate/deck_aarch64.app.tar.gz \
             -x stable-signature/deck_aarch64.app.tar.gz.minisig \
             -p stable-signature/stable.pub
           scripts/release_channels.py verify-manifest \

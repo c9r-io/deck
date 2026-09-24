@@ -188,6 +188,19 @@ public keys verify updater archives. Their private keys live in separate,
 protected GitHub Environments. Promotion verifies the tested carrier/archive
 bytes and creates a new detached signature using the Stable-only key.
 
+The `minisign` that verifies every updater signature in `nightly.yml` and
+`promote.yml`, and that produces the Stable signature, is never taken from a
+package manager. `scripts/install-minisign` downloads one fixed official
+`jedisct1/minisign` release zip and refuses it unless its SHA-256 equals the
+committed value; the workflows call the printed path, and the promotion static
+gate rejects `brew install`. The version and hash live only in the `version=`
+and `expected=` lines of that script. To upgrade, download the new macOS
+release zip, verify its `.minisig` with the author key
+`RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3`, and change both
+lines in one commit; `scripts/test_release_tools.py` fails if a workflow
+installs or invokes minisign any other way. actionlint is pinned the same way
+in `scripts/check-workflows`, and every action by commit SHA.
+
 Authoritative constraints used by this design:
 
 - [Tauri v2 updater documentation](https://v2.tauri.app/plugin/updater/)

@@ -12,6 +12,10 @@
   arrives, so App Nap freezing the webview does not delay it. Permission
   is asked once when the switch is turned on; a blocked state is shown,
   never worked around. See `docs/notifications.md`.
+- Internal: the `minisign` that verifies and signs updater archives in the
+  Nightly and promotion workflows is a fixed official release checked
+  against a committed SHA-256 (`scripts/install-minisign`), no longer
+  whatever Homebrew served that day.
 
 ## 0.7.9 — 2026-09-24 (Nightly)
 
