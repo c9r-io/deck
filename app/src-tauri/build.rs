@@ -215,13 +215,12 @@ fn main() {
         .unwrap_or_else(|| "dev".into());
     println!("cargo:rustc-env=DECK_BUILD_COMMIT={commit}");
     // The frontend is staged into ui-dist/ and embedded into the binary at
-    // compile time; without these, cargo doesn't know about it and UI-only
-    // edits silently ship stale.
-    println!("cargo:rerun-if-changed=../ui/index.html");
-    println!("cargo:rerun-if-changed=../ui/style.css");
-    println!("cargo:rerun-if-changed=../ui/vendor");
-    println!("cargo:rerun-if-changed=../ui/js");
-    println!("cargo:rerun-if-changed=../ui/test");
+    // compile time; without this, cargo doesn't know about it and UI-only
+    // edits silently ship stale. stage_frontend copies ALL of ../ui, so the
+    // guard is the whole directory (cargo scans a directory recursively),
+    // never a list of its entries: a new top-level file would be bundled
+    // without triggering a rebuild.
+    println!("cargo:rerun-if-changed=../ui");
     println!("cargo:rerun-if-changed=icons");
     tauri_build::build()
 }

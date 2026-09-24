@@ -185,9 +185,10 @@ Status semantics (card colour) are documented on `effectiveCardStatus` in
   existing colon-number filename wins. New-session-in-parent starts tmux before
   the Board transaction and kills only that new session on save failure.
 - The frontend is embedded at COMPILE time and cargo does not track it: without
-  the `cargo:rerun-if-changed=../ui/...` lines in build.rs, UI-only edits build
-  in 1s as a no-op and the app silently runs the previous UI. (Bit us: command
-  capture appeared broken because the binary shipped a stale frontend.)
+  the whole-directory `cargo:rerun-if-changed=../ui` line in build.rs (never a
+  list of its entries), UI-only edits build in 1s as a no-op and the app
+  silently runs the previous UI. (Bit us: command capture appeared broken
+  because the binary shipped a stale frontend.)
   build.rs stages `ui/` into the gitignored `src-tauri/ui-dist/` that
   `frontendDist` points at; release profiles leave `ui/test` out of the
   bundle, debug profiles keep it for the WKWebView smoke. Never edit `ui-dist`.
