@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Internal: the Rust tests are safe to run in parallel — the test that
+  changes `TZ` restores it and shares a lock with the local-clock test,
+  storage notices are per test thread, every test tmux server and runner
+  directory has a unique name, and the tmux contract tests wait for what
+  they need instead of fixed sleeps (77 contracts in about 1.5 s instead
+  of about 60 s). Two timing assertions no longer depend on machine load.
 - Fixed: after the last terminal session on Deck's tmux server was closed,
   starting any new session (a card, or one an MCP client asked for) failed
   with "tmux server unreachable" until Deck was restarted. (MCP clients saw

@@ -40,7 +40,6 @@ use std::path::PathBuf;
 
 use crate::error::{DeckError, ErrorKind};
 use crate::storage;
-use crate::sync::LockRecover;
 
 // ---------- board persistence ------------------------------------------------
 
@@ -868,10 +867,7 @@ pub(crate) fn save_board(data: String) -> Result<(), DeckError> {
 /// frontend to surface as toasts.
 #[tauri::command]
 pub(crate) fn storage_warnings() -> Vec<UiNotice> {
-    std::mem::take(&mut *storage::WARNINGS.lock_or_recover())
-        .into_iter()
-        .map(notice)
-        .collect()
+    storage::take_notices().into_iter().map(notice).collect()
 }
 
 // ---------- settings ------------------------------------------------------------
@@ -1570,7 +1566,7 @@ mod tests {
 
         // Every notice drains as exactly the code its emitter named, in order,
         // and the wording of the note never matters.
-        storage::WARNINGS.lock().unwrap().clear();
+        storage::take_notices();
         for kind in storage::StorageNotice::ALL {
             storage::warn(
                 kind,

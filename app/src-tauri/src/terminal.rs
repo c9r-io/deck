@@ -1854,6 +1854,10 @@ mod tests {
         );
         // Draining twice, or a selection that never updated, says nothing.
         report_selection_probe(&name, "finish");
-        assert!(elapsed_ms(Instant::now()) < 1000);
+        let started = Instant::now() - std::time::Duration::from_millis(50);
+        assert!(
+            elapsed_ms(started) >= 50,
+            "elapsed_ms measures from its start"
+        );
     }
 }

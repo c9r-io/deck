@@ -389,10 +389,14 @@ mod tests {
             .into_iter()
             .map(|r| (r, Agent::Codex))
             .collect();
+        // One budget for all three: a per-agent budget would take at least
+        // three of them, so the bound below discriminates while leaving room
+        // for coverage instrumentation and a loaded machine.
+        let budget = Duration::from_millis(400);
         let start = Instant::now();
         let err = exit_agents(
             targets,
-            Duration::from_millis(150),
+            budget,
             &|| server.rows(),
             &|args| server.run(&args.iter().map(String::as_str).collect::<Vec<_>>()),
             &|_, _, _| {},
@@ -400,7 +404,7 @@ mod tests {
         .unwrap_err();
         assert_eq!(err.message(), "tmux-restart-agent-timeout");
         assert!(
-            start.elapsed() < Duration::from_millis(400),
+            start.elapsed() < budget * 5 / 2,
             "budget is shared, not per agent"
         );
         assert_eq!(server.rows().unwrap().len(), 3);

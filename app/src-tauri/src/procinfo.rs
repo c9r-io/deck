@@ -492,6 +492,8 @@ pub(crate) fn local_minutes() -> u32 {
 
 #[cfg(test)]
 mod tests {
+    use crate::sync::LockRecover;
+
     #[test]
     fn ancestry_walks_parents_nearest_first_and_respects_its_cap() {
         let me = std::process::id();
@@ -631,8 +633,42 @@ mod tests {
         assert_eq!(argv0(u32::MAX), None);
     }
 
+    /// `TZ` is process-wide: the one test that changes it and every test
+    /// that reads the real local clock hold this lock.
+    static TZ_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    extern "C" {
+        fn tzset();
+    }
+
+    /// Sets `TZ` for one test and restores the previous value (and the libc
+    /// zone) when dropped, a failed assertion included.
+    struct TzOverride(Option<std::ffi::OsString>);
+
+    impl TzOverride {
+        fn set(zone: &str) -> Self {
+            let before = std::env::var_os("TZ");
+            std::env::set_var("TZ", zone);
+            // SAFETY: tzset only re-reads the environment.
+            unsafe { tzset() };
+            TzOverride(before)
+        }
+    }
+
+    impl Drop for TzOverride {
+        fn drop(&mut self) {
+            match self.0.take() {
+                Some(value) => std::env::set_var("TZ", value),
+                None => std::env::remove_var("TZ"),
+            }
+            // SAFETY: as above.
+            unsafe { tzset() };
+        }
+    }
+
     #[test]
     fn local_clock_is_a_consistent_local_day() {
+        let _tz = TZ_TESTS.lock_or_recover();
         let c = local_clock();
         assert!(c.min < 1440);
         assert!((1..=7).contains(&c.wday));
@@ -655,13 +691,8 @@ mod tests {
     /// 00:30 slot firing twice on the switch day.
     #[test]
     fn day_start_is_stable_across_a_dst_switch() {
-        extern "C" {
-            fn tzset();
-        }
-        let tz_before = std::env::var_os("TZ");
-        std::env::set_var("TZ", "America/New_York");
-        // SAFETY: tzset only re-reads the environment.
-        unsafe { tzset() };
+        let _tz = TZ_TESTS.lock_or_recover();
+        let _zone = TzOverride::set("America/New_York");
         // 2026-03-08: clocks jump 02:00 → 03:00; 2026-11-01: 02:00 → 01:00
         let spring_midnight = 1_772_946_000;
         let spring = [
@@ -681,10 +712,5 @@ mod tests {
                 assert_eq!(c.wday, 7, "both switch days are Sundays");
             }
         }
-        match tz_before {
-            Some(v) => std::env::set_var("TZ", v),
-            None => std::env::remove_var("TZ"),
-        }
-        unsafe { tzset() };
     }
 }

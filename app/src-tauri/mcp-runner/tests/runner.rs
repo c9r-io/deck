@@ -16,9 +16,17 @@ fn create_private_dir(path: &Path) {
     builder.mode(0o700).create(path).unwrap();
 }
 
+/// A root no other test in this or a concurrent run uses: the process id
+/// separates runs, the sequence separates tests inside one.
+fn unique_name(prefix: &str) -> String {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    format!("{prefix}-{}-{seq}", std::process::id())
+}
+
 /// Start a runner in a private directory under MCP control (epoch 1).
 fn start_runner(tag: &str) -> (Runner, std::path::PathBuf, std::path::PathBuf) {
-    let root = std::env::temp_dir().join(format!("deck-mcp-runner-{tag}-{}", std::process::id()));
+    let root = std::env::temp_dir().join(unique_name(&format!("deck-mcp-runner-{tag}")));
     let _ = std::fs::remove_dir_all(&root);
     create_private_dir(&root);
     let socket = root.join("runner.sock");
@@ -231,7 +239,7 @@ fn authentication_epoch_and_grant_fences_survive_attacker_requests() {
 
 #[test]
 fn reports_exit_input_and_interrupt_without_terminal_markers() {
-    let root = std::env::temp_dir().join(format!("deck-mcp-runner-test-{}", std::process::id()));
+    let root = std::env::temp_dir().join(unique_name("deck-mcp-runner-test"));
     let _ = std::fs::remove_dir_all(&root);
     create_private_dir(&root);
     let socket = root.join("runner.sock");

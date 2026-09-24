@@ -170,7 +170,16 @@ impl StorageNotice {
 /// Warnings produced before the webview exists (e.g. corrupt files found at
 /// boot); the frontend fetches and toasts them via the `storage_warnings`
 /// command. Request-path loads return their warning in-band instead.
-pub(crate) static WARNINGS: Mutex<Vec<StorageNotice>> = Mutex::new(Vec::new());
+#[cfg(not(test))]
+static WARNINGS: Mutex<Vec<StorageNotice>> = Mutex::new(Vec::new());
+// Unit tests run in parallel threads and several of them (scheduler boot and
+// persist-failure paths) raise notices; each test thread keeps its own, so a
+// test that drains notices sees exactly the ones it raised.
+#[cfg(test)]
+thread_local! {
+    static WARNINGS: std::cell::RefCell<Vec<StorageNotice>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
 
 /// The webview gets only the notice's closed code; the log gets only a
 /// stable category code of the note — notes can embed serde detail and
@@ -178,7 +187,18 @@ pub(crate) static WARNINGS: Mutex<Vec<StorageNotice>> = Mutex::new(Vec::new());
 /// kept.
 pub(crate) fn warn(notice: StorageNotice, note: String) {
     applog(&format!("[storage] warning ({})", err_code(&note)));
+    #[cfg(not(test))]
     WARNINGS.lock_or_recover().push(notice);
+    #[cfg(test)]
+    WARNINGS.with(|notices| notices.borrow_mut().push(notice));
+}
+
+/// Every notice raised since the last call, oldest first.
+pub(crate) fn take_notices() -> Vec<StorageNotice> {
+    #[cfg(not(test))]
+    return std::mem::take(&mut *WARNINGS.lock_or_recover());
+    #[cfg(test)]
+    return WARNINGS.with(|notices| notices.take());
 }
 
 /// A successful load: the payload plus where it came from and, when it came

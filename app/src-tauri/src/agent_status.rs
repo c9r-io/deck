@@ -1224,12 +1224,17 @@ mod tests {
         }
         let bin =
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("binaries/tmux-aarch64-apple-darwin");
-        let dir = std::env::temp_dir().join(format!("deck-status-e2e-{}", std::process::id()));
+        // one per run and per call: the sequence keeps a second use of this
+        // fixture in the same process off the first one's socket and server
+        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir =
+            std::env::temp_dir().join(format!("deck-status-e2e-{}-{seq}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("status.sock");
         let listener = listen_at(&path).unwrap();
         let mut server = Server(
-            format!("deck-test-status-{}", std::process::id()),
+            format!("deck-test-status-{}-{seq}", std::process::id()),
             bin,
             None,
         );

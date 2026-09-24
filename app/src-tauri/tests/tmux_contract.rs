@@ -2,8 +2,11 @@
 //! a bug that shipped (v0.4.9–0.4.12) so it can never silently regress.
 //!
 //! They run the committed static tmux sidecar against a THROWAWAY socket
-//! (`deck-test-*`), never the live `deck` socket. The Drop guard kills its
-//! server and removes that exact socket file, including after a panic.
+//! (`deck-test-*`, unique per test through `unique_name`), never the live
+//! `deck` socket. The Drop guard kills its server and removes that exact
+//! socket file, including after a panic. Tests run in parallel: a contract
+//! waits for what it needs (`wait_until`: a prompt, a finished line, a
+//! parked fixture, a marker on screen) instead of sleeping a fixed time.
 //!
 //! The sidecar they drive is the pinned one: `committed_sidecar_matches_its_pin`
 //! hashes it against `binaries/tmux-aarch64-apple-darwin.sha256` (gate.yml
@@ -59,11 +62,41 @@ fn committed_sidecar_matches_its_pin() {
     );
 }
 
+/// A name no other server or directory in this or any concurrent test run
+/// uses: the process id separates runs, the sequence separates tests (and a
+/// tag reused by two of them) inside one run.
+fn unique_name(prefix: &str) -> String {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    format!("{prefix}-{}-{seq}", std::process::id())
+}
+
+/// Poll `ready` every 10 ms for up to 5 s instead of sleeping a fixed time
+/// that is too long on an idle machine and too short on a loaded one.
+fn wait_until(what: &str, mut ready: impl FnMut() -> bool) {
+    for _ in 0..500 {
+        if ready() {
+            return;
+        }
+        sleep(Duration::from_millis(10));
+    }
+    panic!("timed out waiting for {what}");
+}
+
+fn last_line(screen: &str) -> &str {
+    screen
+        .lines()
+        .rev()
+        .map(str::trim_end)
+        .find(|line| !line.is_empty())
+        .unwrap_or("")
+}
+
 struct Server(String);
 
 impl Server {
     fn new(tag: &str) -> Self {
-        let s = Server(format!("deck-test-{tag}-{}", std::process::id()));
+        let s = Server(unique_name(&format!("deck-test-{tag}")));
         s.run(&[
             "start-server",
             ";",
@@ -87,8 +120,31 @@ impl Server {
             "12",
             "/bin/sh",
         ]);
-        sleep(Duration::from_millis(400)); // let the shell print its prompt
+        s.wait_for_prompt("t");
         s
+    }
+
+    /// The shell in `target` has printed its prompt.
+    fn wait_for_prompt(&self, target: &str) {
+        wait_until("the shell prompt", || {
+            !self
+                .run(&["capture-pane", "-p", "-t", target])
+                .trim()
+                .is_empty()
+        });
+    }
+
+    /// Type one line into an idle shell in `target` and return once it ran:
+    /// the screen changed and ends with the prompt the shell was idle at.
+    fn run_line(&self, target: &str, line: &str) {
+        let before = self.run(&["capture-pane", "-p", "-t", target]);
+        let prompt = last_line(&before).to_owned();
+        self.run(&["send-keys", "-t", target, "-l", line]);
+        self.run(&["send-keys", "-t", target, "Enter"]);
+        wait_until(&format!("`{line}` to finish"), || {
+            let screen = self.run(&["capture-pane", "-p", "-t", target]);
+            screen != before && last_line(&screen) == prompt
+        });
     }
     fn run(&self, args: &[&str]) -> String {
         String::from_utf8(self.run_raw(args))
@@ -169,9 +225,7 @@ impl Server {
             .then(|| PathBuf::from(String::from_utf8_lossy(&output.stdout).trim().to_owned()))
     }
     fn shell(&self, cmd: &str) {
-        self.run(&["send-keys", "-t", "t", "-l", cmd]);
-        self.run(&["send-keys", "-t", "t", "Enter"]);
-        sleep(Duration::from_millis(600));
+        self.run_line("t", cmd);
     }
 
     fn write_pane_lines(&self, prefix: &str, start: usize, end: usize) {
@@ -198,7 +252,7 @@ impl Server {
     }
 
     fn fixture(tag: &str, width: u32, height: u32, command: &str) -> Self {
-        let s = Server(format!("deck-test-{tag}-{}", std::process::id()));
+        let s = Server(unique_name(&format!("deck-test-{tag}")));
         s.run(&[
             "start-server",
             ";",
@@ -222,7 +276,21 @@ impl Server {
             &height.to_string(),
             command,
         ]);
-        sleep(Duration::from_millis(300));
+        // every fixture prints its rows and then parks in `sleep 30`: bare
+        // commands show `sleep` in the foreground, `sh -c '…'` ones keep `sh`
+        // there, so for them the rows on screen (unchanged across two polls)
+        // are the signal
+        assert!(command.ends_with("sleep 30") || command.ends_with("sleep 30'"));
+        let mut last = None;
+        wait_until("the fixture to print and park", || {
+            if s.fmt("#{pane_current_command}") == "sleep" {
+                return true;
+            }
+            let screen = s.run(&["capture-pane", "-p", "-t", "t"]);
+            let settled = !screen.trim().is_empty() && last.as_deref() == Some(screen.as_str());
+            last = Some(screen);
+            settled
+        });
         s
     }
 
@@ -666,11 +734,7 @@ macro_rules! topology_matrix {
 fn application_osc52_never_becomes_a_buffer() {
     let s = Server::new("osc52");
     let write = "printf '\\033]52;c;aGVsbG8=\\a'";
-    let type_line = |line: &str| {
-        s.run(&["send-keys", "-t", "t", "-l", line]);
-        s.run(&["send-keys", "-t", "t", "Enter"]);
-        sleep(Duration::from_millis(400));
-    };
+    let type_line = |line: &str| s.run_line("t", line);
     type_line(write);
     assert_eq!(s.run(&["list-buffers"]), "", "off: no buffer from OSC 52");
 
@@ -701,16 +765,14 @@ fn drop_removes_its_throwaway_socket_file() {
 /// current-pane context. No shell script, no deck executable, no argv
 /// carrying text; tmux retains the text in its own scrollback.
 fn shell_restore_bootstrap_becomes_tmux_history_without_executing_text(topology: Topology) {
-    let s = Server(format!(
-        "deck-test-{}-{}",
-        topology.tag("restore-bootstrap"),
-        std::process::id()
-    ));
-    let root = std::env::temp_dir().join(format!(
-        "deck-{}-{}",
-        topology.tag("restore-contract"),
-        std::process::id()
-    ));
+    let s = Server(unique_name(&format!(
+        "deck-test-{}",
+        topology.tag("restore-bootstrap")
+    )));
+    let root = std::env::temp_dir().join(unique_name(&format!(
+        "deck-{}",
+        topology.tag("restore-contract")
+    )));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).expect("create restore fixture dir");
     let executed = root.join("must-not-exist");
@@ -880,6 +942,8 @@ fn resize_junk_history_is_clearable_and_stays_zero() {
     let s = Server::new("hist");
     s.run(&["resize-window", "-t", "t", "-x", "120", "-y", "30"]);
     s.run(&["resize-window", "-t", "t", "-x", "60", "-y", "8"]);
+    // Kept as a fixed pause: the shell's redraw after SIGWINCH has no
+    // observable end, and clearing before it lands would hide the junk.
     sleep(Duration::from_millis(200));
     s.run(&["clear-history", "-t", "t"]);
     assert_eq!(
@@ -1485,7 +1549,10 @@ fn single_send_keys_with_trailing_cr_executes_the_line(topology: Topology) {
     let s = Server::new(&topology.tag("atomic"));
     let _clients = topology.attach(&s);
     s.run(&["send-keys", "-t", "t", "-l", "echo atomic-$((20+22))\r"]);
-    sleep(Duration::from_millis(600));
+    wait_until("the line to run", || {
+        s.run(&["capture-pane", "-p", "-t", "t"])
+            .contains("atomic-42")
+    });
     let screen = s.run(&["capture-pane", "-p", "-t", "t"]);
     assert!(
         screen.contains("atomic-42"),
@@ -1722,10 +1789,10 @@ fn scheduler_context_identity_process_and_hookless_compatibility_contract(topolo
         !out.contains("deck-context-refused"),
         "guard result: {out:?}"
     );
-    sleep(Duration::from_millis(200));
-    assert!(s
-        .run(&["capture-pane", "-p", "-t", "=t:"])
-        .contains("hookless-compat-landed"));
+    wait_until("the compatibility paste to land", || {
+        s.run(&["capture-pane", "-p", "-t", "=t:"])
+            .contains("hookless-compat-landed")
+    });
 
     // A new server generation (kill-server: an attached topology's other
     // sessions would keep the old server alive past a kill-session), with the
@@ -1742,7 +1809,7 @@ fn scheduler_context_identity_process_and_hookless_compatibility_contract(topolo
         "12",
         "/bin/sh",
     ]);
-    sleep(Duration::from_millis(300));
+    s.wait_for_prompt("=t:");
     let _restarted_clients = topology.attach(&s);
     let second = s.run(&["display-message", "-p", "-t", "=t:", format]);
     let next: Vec<&str> = second.split('\t').collect();
@@ -1803,16 +1870,13 @@ fn batched_capture_markers_and_dead_target_abort(topology: Topology) {
         "12",
         "/bin/sh",
     ]);
-    sleep(Duration::from_millis(400));
+    s.wait_for_prompt("=u:");
     // exact `=name:` targets, always: with >1 session a BARE name target can
     // resolve to a different session entirely (observed with this very
     // sidecar: bare `-t t` delivered keys to session u) — the reason deck's
     // pane_target()/session_target() prefix every target with `=`.
-    s.run(&["send-keys", "-t", "=t:", "-l", "echo tee-one"]);
-    s.run(&["send-keys", "-t", "=t:", "Enter"]);
-    s.run(&["send-keys", "-t", "=u:", "-l", "echo tee-two"]);
-    s.run(&["send-keys", "-t", "=u:", "Enter"]);
-    sleep(Duration::from_millis(600));
+    s.run_line("=t:", "echo tee-one");
+    s.run_line("=u:", "echo tee-two");
 
     const MARK: &str = "\u{1}deck-tail\u{1}";
     let both = s.run(&[
