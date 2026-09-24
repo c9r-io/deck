@@ -727,6 +727,43 @@ mod tests {
     );
     }
 
+    /// The launcher side of the smoke manifest: main.rs dispatches exactly
+    /// the manifest's modes, each to an entry wk-smoke.mjs exports, and any
+    /// other value runs `run`.
+    #[test]
+    fn smoke_launcher_dispatches_exactly_the_manifest_modes() {
+        let manifest: serde_json::Value =
+            serde_json::from_str(include_str!("../../ui/test/fixtures/smoke-manifest.json"))
+                .unwrap();
+        let modes: std::collections::BTreeSet<&str> = manifest["modes"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        let launched: std::collections::BTreeSet<&str> =
+            crate::SMOKE_ENTRIES.iter().map(|(mode, _)| *mode).collect();
+        assert_eq!(
+            launched.len(),
+            crate::SMOKE_ENTRIES.len(),
+            "a mode listed twice"
+        );
+        assert_eq!(launched, modes);
+        let carrier = include_str!("../../ui/test/wk-smoke.mjs");
+        for (mode, entry) in crate::SMOKE_ENTRIES {
+            let function = entry
+                .strip_prefix("m.")
+                .and_then(|call| call.split('(').next())
+                .unwrap_or_else(|| panic!("{mode}: entry is not m.<fn>(…)"));
+            assert!(
+                carrier.contains(&format!("export async function {function}(")),
+                "{mode}: wk-smoke.mjs exports no {function}"
+            );
+        }
+        assert_eq!(crate::smoke_entry("1"), "m.run()");
+        assert_eq!(crate::smoke_entry("review-restart"), "m.verifyReview(true)");
+    }
+
     #[test]
     fn ui_events_admit_no_free_form_content() {
         // unknown codes never reach the log line

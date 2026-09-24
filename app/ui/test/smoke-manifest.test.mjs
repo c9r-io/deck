@@ -1,8 +1,9 @@
 // The WKWebView smoke carriers against test/fixtures/smoke-manifest.json:
 // every checkpoint name a carrier file can emit, read as single-line
 // literals, equals the names the manifest expects from the modes that file
-// carries. (diagnostics.rs holds SMOKE_CHECKS to the same manifest, and
-// scripts/smoke-verdict judges a run's app.log against it.)
+// carries, and app/run.sh accepts exactly the manifest's modes.
+// (diagnostics.rs holds SMOKE_CHECKS and main.rs SMOKE_ENTRIES to the same
+// manifest, and scripts/smoke-verdict judges a run's app.log against it.)
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -58,6 +59,15 @@ test('every smoke mode is carried by exactly one file', () => {
   const carried = Object.values(CARRIERS).flat();
   assert.deepEqual([...carried].sort(), Object.keys(manifest.modes).sort());
   assert.equal(new Set(carried).size, carried.length);
+});
+
+test('app/run.sh launches exactly the manifest modes', () => {
+  // The one `case` pattern line that lists the accepted modes (anything
+  // else falls back to run there, as in main.rs SMOKE_ENTRIES).
+  const run = readFileSync(new URL('../../run.sh', import.meta.url), 'utf8');
+  const lines = run.split('\n').map(line => line.trim()).filter(line => /^[a-z-]+(?:\|[a-z-]+)+\) ;;$/.test(line));
+  assert.equal(lines.length, 1, 'one mode list in run.sh');
+  assert.deepEqual(lines[0].slice(0, -') ;;'.length).split('|').sort(), Object.keys(manifest.modes).sort());
 });
 
 test('each carrier emits exactly the checkpoints the manifest expects from its modes', () => {

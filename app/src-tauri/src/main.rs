@@ -120,6 +120,35 @@ fn set_native_locale(locale: String, menu: tauri::State<'_, NativeMenu>) -> Resu
 
 // ---------- main ---------------------------------------------------------------
 
+/// Debug-only WKWebView smoke modes (`--smoke-wkwebview <mode>`) and the
+/// `ui/test/wk-smoke.mjs` entry each one calls. This table, the smoke
+/// manifest (`ui/test/fixtures/smoke-manifest.json`) and `app/run.sh`'s mode
+/// list name the same modes (diagnostics.rs and smoke-manifest.test.mjs
+/// check it); any other value, such as `DECK_SMOKE_WKWEBVIEW=1`, runs `run`.
+pub(crate) const SMOKE_ENTRIES: &[(&str, &str)] = &[
+    ("run", "m.run()"),
+    ("restart", "m.verifyRestart()"),
+    ("ambiguous", "m.verifyAmbiguousBoot()"),
+    ("review", "m.verifyReview()"),
+    ("review-restart", "m.verifyReview(true)"),
+    ("attention", "m.verifyAttention()"),
+    ("settings", "m.verifySettings()"),
+    ("voice", "m.verifyVoice()"),
+    ("resume", "m.verifyResume()"),
+    ("buffer", "m.verifyBuffer()"),
+    ("channel", "m.verifyChannel()"),
+    ("channel-fault", "m.verifyChannelFault()"),
+    ("connector", "m.verifyConnector()"),
+    ("connector-transport", "m.verifyConnectorTransport()"),
+];
+
+fn smoke_entry(mode: &str) -> &'static str {
+    SMOKE_ENTRIES
+        .iter()
+        .find(|(name, _)| *name == mode)
+        .map_or("m.run()", |(_, entry)| entry)
+}
+
 fn main() {
     if let Some(code) = relaunch::run_helper_from_args() {
         std::process::exit(code);
@@ -258,35 +287,7 @@ fn main() {
             // palette flash without duplicating settings into another store.
             if payload.event() == tauri::webview::PageLoadEvent::Finished {
                 if let Some(mode) = crate::launch_args::debug_arg("--smoke-wkwebview") {
-                    let entry = if mode == "restart" {
-                        "m.verifyRestart()"
-                    } else if mode == "ambiguous" {
-                        "m.verifyAmbiguousBoot()"
-                    } else if mode == "review" {
-                        "m.verifyReview()"
-                    } else if mode == "review-restart" {
-                        "m.verifyReview(true)"
-                    } else if mode == "attention" {
-                        "m.verifyAttention()"
-                    } else if mode == "settings" {
-                        "m.verifySettings()"
-                    } else if mode == "voice" {
-                        "m.verifyVoice()"
-                    } else if mode == "resume" {
-                        "m.verifyResume()"
-                    } else if mode == "buffer" {
-                        "m.verifyBuffer()"
-                    } else if mode == "channel" {
-                        "m.verifyChannel()"
-                    } else if mode == "channel-fault" {
-                        "m.verifyChannelFault()"
-                    } else if mode == "connector" {
-                        "m.verifyConnector()"
-                    } else if mode == "connector-transport" {
-                        "m.verifyConnectorTransport()"
-                    } else {
-                        "m.run()"
-                    };
+                    let entry = smoke_entry(&mode);
                     let script = format!(
                         "setTimeout(() => import('./test/wk-smoke.mjs').then(m => {entry}).catch(e => {{ window.__TAURI__.core.invoke('ui_event', {{code:'js-reject',detail:(e&&e.name)||'error',a:0,b:0}}); window.__TAURI__.core.invoke('ui_event', {{code:'smoke-check',detail:'done',a:0,b:-1}}); }}), 1800)"
                     );
