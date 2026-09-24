@@ -8,6 +8,12 @@
 //! drained and DISCARDED without being read into the message. Every field
 //! that leaves this process is charset-validated below, so the emitted JSON
 //! needs no escaping and cannot carry content.
+//!
+//! Identity: the pane id in the message is a claim; deck proves it by asking
+//! the kernel which process connected and walking that process's parents to
+//! the pane's own process. The helper therefore keeps the connection open
+//! until deck closes it (bounded by a 2 s read timeout) instead of exiting
+//! right after the write.
 
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
@@ -108,6 +114,19 @@ fn main() {
     };
     let _ = stream.set_write_timeout(Some(Duration::from_secs(1)));
     let _ = stream.write_all(message.as_bytes());
+    // Stay alive until deck closes the connection: deck binds the event to
+    // this pane by walking this process's parent chain through the kernel,
+    // which needs this process to still exist. deck closes as soon as it has
+    // read the line and the chain (well under a millisecond); the timeout
+    // only bounds a deck that stalls.
+    let _ = stream.shutdown(std::net::Shutdown::Write);
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+    let mut ack = [0u8; 64];
+    while let Ok(n) = stream.read(&mut ack) {
+        if n == 0 {
+            break;
+        }
+    }
 }
 
 #[cfg(test)]

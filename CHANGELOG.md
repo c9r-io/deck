@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- An agent status event is now accepted only from inside the pane it names.
+  The status socket took any line that named a public source, the tmux
+  server pid (readable from `$TMUX` in every pane) and a pane id, so a
+  program in one pane could report `turn-done` for a sibling card and have a
+  "close the card" automation retire it, or paint another card's attention
+  state. deck now reads the connecting process from the kernel and walks
+  its parents; the pane's own process must be in that chain (the bundled
+  status helper stays connected until deck has read it). A program can still
+  misreport its own pane, which is no more than exiting would do.
 - A program running in a pane can no longer write or read the macOS
   clipboard through the terminal. deck's tmux server ran with
   `set-clipboard on`, so any output containing an OSC 52 sequence (a file

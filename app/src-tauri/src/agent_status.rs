@@ -54,7 +54,20 @@
 //! registry, requires the event's socket name AND tmux server pid (generation
 //! stamp — restarted servers reuse pane ids) before resolving pane→session,
 //! refuses shell-foreground panes, and records the observed foreground
-//! executable; `poll_sessions` reconciles so the state dies with the process
+//! executable. An event is bound to the pane it names: the listener takes
+//! the connecting process from the kernel (`procinfo::peer_pid`), walks its
+//! parent chain (`procinfo::ancestry`, while the helper is still connected —
+//! the helper waits for deck to close the stream before exiting) and refuses
+//! the event unless the pane's own process (`#{pane_pid}`) is in that chain
+//! (`foreign-pane`; `no-peer` without a kernel pid). Every pane has
+//! `DECK_STATUS_SOCK`, so without this any program in any pane could report
+//! `turn-done` for a sibling card and have a "close the card" automation
+//! retire it, or paint another card's attention state. Accepted residual: a
+//! program in a pane can still misreport its OWN pane, which is no more than
+//! it could do by exiting; the finish rule was chosen to trust that pane's
+//! agent. Codex `async` hooks are spawned by the agent and stay in its tree;
+//! an agent that detached its hooks into another session would have its
+//! events refused, and that would show as the toggle reporting nothing; `poll_sessions` reconciles so the state dies with the process
 //! that reported it — no TTLs and no per-agent executable lists. Frontend:
 //! `effectiveCardStatus` (pure.js) — agent state OUTRANKS the 15s heuristic
 //! (card statuses `attention`/`done`; a working agent never shows amber). The
@@ -184,35 +197,52 @@ pub(crate) fn parse_event(line: &str) -> Result<Event, &'static str> {
 
 // ---------- pane → session resolution --------------------------------------
 
-/// The (session, foreground) of `pane` in a pane listing — but only if the
-/// listing's server pid matches the event's generation stamp (a restarted
-/// server reuses numeric pane ids; pid is what tells generations apart).
+/// The (session, foreground, pane pid) of `pane` in a pane listing — but
+/// only if the listing's server pid matches the event's generation stamp (a
+/// restarted server reuses numeric pane ids; pid is what tells generations
+/// apart).
 pub(crate) fn resolve_in(
     rows: &[PaneRow],
     pane: &str,
     server_pid: u32,
-) -> Option<(String, String)> {
+) -> Option<(String, String, u32)> {
     let row = rows.iter().find(|row| row.pane_id == pane)?;
     if row.server_pid != server_pid
         || crate::tmux::validate_session_name(&row.session_name).is_err()
     {
         return None;
     }
-    Some((row.session_name.clone(), row.command.clone()))
+    Some((row.session_name.clone(), row.command.clone(), row.pane_pid))
 }
 
-fn tmux_resolve(pane: &str, server_pid: u32) -> Option<(String, String)> {
+fn tmux_resolve(pane: &str, server_pid: u32) -> Option<(String, String, u32)> {
     resolve_in(&crate::tmux::list_panes().ok()?, pane, server_pid)
 }
 
-/// Validate one wire line and commit it to the store. `resolve` is injected
-/// so tests exercise the full path without a live tmux server.
+/// How far up from the reporting process the pane's process may be. A hook
+/// is the agent's child (or a `sh -c` wrapper's grandchild) under the
+/// pane's shell; 32 hops is far beyond any real layering.
+const ORIGIN_HOPS: usize = 32;
+
+/// Validate one wire line and commit it to the store. `origin` is the
+/// reporting process and its ancestors (`procinfo::ancestry` of the
+/// socket's kernel-reported peer); the event is refused unless the pane it
+/// names is in that chain, so a process in one pane cannot report for
+/// another. `resolve` is injected so tests exercise the full path without a
+/// live tmux server.
 pub(crate) fn ingest(
     line: &str,
-    resolve: impl Fn(&str, u32) -> Option<(String, String)>,
+    origin: &[u32],
+    resolve: impl Fn(&str, u32) -> Option<(String, String, u32)>,
 ) -> Result<(), &'static str> {
     let event = parse_event(line)?;
-    let (session, fg) = resolve(&event.pane, event.server_pid).ok_or("no-such-pane")?;
+    if origin.is_empty() {
+        return Err("no-peer");
+    }
+    let (session, fg, pane_pid) = resolve(&event.pane, event.server_pid).ok_or("no-such-pane")?;
+    if !origin.contains(&pane_pid) {
+        return Err("foreign-pane");
+    }
     // An agent hook while a plain shell owns the pane foreground has no
     // process to bind the state's lifetime to — refuse rather than flicker.
     if crate::context::shell_process(Some(&fg)) {
@@ -297,7 +327,14 @@ fn handle_stream(mut stream: UnixStream, drops: &mut u32) {
     if line.is_empty() {
         return;
     }
-    if let Err(reason) = ingest(&line, tmux_resolve) {
+    // The helper stays connected until deck closes the stream, so its parent
+    // chain is read while it is alive; the (slow) pane lookup runs after the
+    // helper has been released.
+    let origin = crate::procinfo::peer_pid(&stream)
+        .map(|pid| crate::procinfo::ancestry(pid, ORIGIN_HOPS))
+        .unwrap_or_default();
+    drop(stream);
+    if let Err(reason) = ingest(&line, &origin, tmux_resolve) {
         // categorized, content-free, and bounded — a hostile local writer
         // must not be able to grow app.log without limit
         *drops += 1;
@@ -911,7 +948,7 @@ mod tests {
         ];
         assert_eq!(
             resolve_in(&listing, "%3", 42),
-            Some(("deck-card-ab12".into(), "claude".into()))
+            Some(("deck-card-ab12".into(), "claude".into(), 0))
         );
         // same pane id, different server pid → a restarted server reused it
         assert_eq!(resolve_in(&listing, "%3", 43), None);
@@ -1009,13 +1046,15 @@ mod tests {
         let _guard = STORE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         reset_for_tests();
         let resolve = |pane: &str, _pid: u32| {
-            (pane == "%3").then(|| ("deck-card-ab12".to_string(), "claude".to_string()))
+            (pane == "%3").then(|| ("deck-card-ab12".to_string(), "claude".to_string(), 300))
         };
-        assert!(ingest(&event_line("needs-input", "%3"), resolve).is_ok());
+        // the reporting process descends from the pane's process (300)
+        let origin = [100, 200, 300, 400];
+        assert!(ingest(&event_line("needs-input", "%3"), &origin, resolve).is_ok());
         assert_eq!(current("deck-card-ab12"), Some("needs-input"));
         assert_eq!(current("deck-card-other"), None);
         assert_eq!(
-            ingest(&event_line("working", "%9"), resolve),
+            ingest(&event_line("working", "%9"), &origin, resolve),
             Err("no-such-pane")
         );
 
@@ -1034,24 +1073,194 @@ mod tests {
         assert_eq!(current("deck-card-ab12"), None);
 
         // a replaced foreground (different program) also clears
-        assert!(ingest(&event_line("working", "%3"), resolve).is_ok());
+        assert!(ingest(&event_line("working", "%3"), &origin, resolve).is_ok());
         panes.insert("deck-card-ab12".to_string(), pane("vim"));
         reconcile(&panes);
         assert_eq!(current("deck-card-ab12"), None);
 
         // a vanished session clears
-        assert!(ingest(&event_line("working", "%3"), resolve).is_ok());
+        assert!(ingest(&event_line("working", "%3"), &origin, resolve).is_ok());
         reconcile(&HashMap::new());
         assert_eq!(current("deck-card-ab12"), None);
 
         // a shell foreground at event time is refused outright
         let shell_resolve =
-            |_: &str, _: u32| Some(("deck-card-ab12".to_string(), "zsh".to_string()));
+            |_: &str, _: u32| Some(("deck-card-ab12".to_string(), "zsh".to_string(), 300));
         assert_eq!(
-            ingest(&event_line("working", "%3"), shell_resolve),
+            ingest(&event_line("working", "%3"), &origin, shell_resolve),
             Err("shell-foreground")
         );
         assert_eq!(current("deck-card-ab12"), None);
+        reset_for_tests();
+    }
+
+    #[test]
+    fn events_are_bound_to_the_pane_they_name() {
+        let _guard = STORE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_for_tests();
+        let resolve =
+            |_: &str, _: u32| Some(("deck-card-ab12".to_string(), "claude".to_string(), 300));
+        // a reporter whose chain never reaches the pane's process
+        assert_eq!(
+            ingest(&event_line("turn-done", "%3"), &[100, 200, 250], resolve),
+            Err("foreign-pane")
+        );
+        // no kernel peer pid at all
+        assert_eq!(
+            ingest(&event_line("turn-done", "%3"), &[], resolve),
+            Err("no-peer")
+        );
+        assert_eq!(current("deck-card-ab12"), None);
+        // the pane process itself, or any descendant, is accepted
+        assert!(ingest(&event_line("turn-done", "%3"), &[300], resolve).is_ok());
+        assert_eq!(current("deck-card-ab12"), Some("turn-done"));
+        reset_for_tests();
+    }
+
+    /// The real socket path through the kernel: the peer's parent chain
+    /// decides. A client that is this test process is "the pane" only when
+    /// the resolver names this process (or an ancestor) as the pane's pid.
+    #[test]
+    fn the_listener_binds_a_real_peer_to_its_pane() {
+        use std::io::Write;
+        let _guard = STORE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_for_tests();
+        let dir = std::env::temp_dir().join(format!("deck-status-peer-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("status.sock");
+        let listener = listen_at(&path).unwrap();
+        let line = event_line("needs-input", "%3");
+        let mut connect = || {
+            let mut client = UnixStream::connect(&path).unwrap();
+            writeln!(client, "{line}").unwrap();
+            let (mut stream, _) = listener.accept().unwrap();
+            let read = read_first_line(&mut stream).unwrap();
+            assert_eq!(read, line);
+            let origin = crate::procinfo::peer_pid(&stream)
+                .map(|pid| crate::procinfo::ancestry(pid, ORIGIN_HOPS))
+                .unwrap_or_default();
+            drop(client);
+            (read, origin)
+        };
+        let me = std::process::id();
+        let (read, origin) = connect();
+        assert_eq!(origin.first(), Some(&me), "the kernel names this process");
+        assert!(origin.len() >= 2, "and its parent: {origin:?}");
+        let pane_is_me =
+            |_: &str, _: u32| Some(("deck-card-ab12".to_string(), "claude".to_string(), me));
+        assert!(ingest(&read, &origin, pane_is_me).is_ok());
+        assert_eq!(current("deck-card-ab12"), Some("needs-input"));
+        reset_for_tests();
+        let (read, origin) = connect();
+        let pane_is_elsewhere = |_: &str, _: u32| {
+            Some((
+                "deck-card-ab12".to_string(),
+                "claude".to_string(),
+                u32::MAX - 1,
+            ))
+        };
+        assert_eq!(
+            ingest(&read, &origin, pane_is_elsewhere),
+            Err("foreign-pane")
+        );
+        assert_eq!(current("deck-card-ab12"), None);
+        drop(listener);
+        let _ = std::fs::remove_dir_all(&dir);
+        reset_for_tests();
+    }
+
+    /// End to end against a throwaway tmux server: a client started INSIDE
+    /// the pane (a descendant of `#{pane_pid}`) is accepted, the same line
+    /// from this test process (outside the pane) is refused.
+    #[test]
+    fn a_pane_s_own_descendant_reports_and_an_outsider_is_refused() {
+        use std::process::Command;
+        let _guard = STORE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_for_tests();
+        struct Server(String, PathBuf);
+        impl Server {
+            fn run(&self, args: &[&str]) -> String {
+                let out = Command::new(&self.1)
+                    .args(["-f", "/dev/null", "-L", &self.0])
+                    .args(args)
+                    .output()
+                    .expect("tmux spawn");
+                String::from_utf8_lossy(&out.stdout).into_owned()
+            }
+        }
+        impl Drop for Server {
+            fn drop(&mut self) {
+                let _ = self.run(&["kill-server"]);
+            }
+        }
+        let bin =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("binaries/tmux-aarch64-apple-darwin");
+        let dir = std::env::temp_dir().join(format!("deck-status-e2e-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("status.sock");
+        let listener = listen_at(&path).unwrap();
+        let server = Server(format!("deck-test-status-{}", std::process::id()), bin);
+        // the pane builds the event from its own $TMUX/$TMUX_PANE, exactly
+        // as the helper does, then holds the connection like the helper does
+        let script = format!(
+            "pid=${{TMUX#*,}}; pid=${{pid%,*}}; printf '{{\"v\":1,\"source\":\"claude-code\",\"state\":\"working\",\"socket\":\"{}\",\"server_pid\":%s,\"pane\":\"%s\"}}\n' \"$pid\" \"$TMUX_PANE\" | /usr/bin/nc -U '{}'; sleep 30",
+            crate::tmux::socket(),
+            path.display()
+        );
+        server.run(&[
+            "start-server",
+            ";",
+            "new-session",
+            "-d",
+            "-s",
+            "t",
+            "-x",
+            "80",
+            "-y",
+            "12",
+            &script,
+        ]);
+        listener.set_nonblocking(true).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let mut stream = loop {
+            match listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(_) if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(20))
+                }
+                Err(e) => panic!("no connection from the pane: {e}"),
+            }
+        };
+        stream.set_nonblocking(false).unwrap();
+        let line = read_first_line(&mut stream).unwrap();
+        let origin = crate::procinfo::peer_pid(&stream)
+            .map(|pid| crate::procinfo::ancestry(pid, ORIGIN_HOPS))
+            .unwrap_or_default();
+        drop(stream);
+        let rows: Vec<PaneRow> = server
+            .run(&["list-panes", "-a", "-F", crate::tmux::PANE_FORMAT])
+            .lines()
+            .filter_map(crate::tmux::parse_pane_row)
+            .collect();
+        assert_eq!(rows.len(), 1, "one pane: {rows:?}");
+        let resolve = |pane: &str, server_pid: u32| resolve_in(&rows, pane, server_pid);
+        assert!(
+            origin.contains(&rows[0].pane_pid),
+            "nc descends from the pane process: {origin:?} vs {}",
+            rows[0].pane_pid
+        );
+        // the pane's session name is tmux's default `t`, outside deck's
+        // alphabet check? `resolve_in` validates it — `t` is valid.
+        assert_eq!(ingest(&line, &origin, resolve), Ok(()));
+        assert_eq!(current("t"), Some("working"));
+        reset_for_tests();
+        // the same bytes from outside the pane
+        let outsider = crate::procinfo::ancestry(std::process::id(), ORIGIN_HOPS);
+        assert_eq!(ingest(&line, &outsider, resolve), Err("foreign-pane"));
+        assert_eq!(current("t"), None);
+        drop(server);
+        drop(listener);
+        let _ = std::fs::remove_dir_all(&dir);
         reset_for_tests();
     }
 
@@ -1067,15 +1276,22 @@ mod tests {
         let line = event_line("turn-done", "%3");
         let mut client = UnixStream::connect(&path).unwrap();
         writeln!(client, "{line}").unwrap();
-        drop(client);
+        // like the helper, the client stays connected until deck has read
+        // its identity: the kernel reports no peer for a closed one
+        client.shutdown(std::net::Shutdown::Write).unwrap();
         let (stream, _) = listener.accept().unwrap();
         // the real read path; a fake resolver stands in for the tmux server
         let mut stream = stream;
         let read = read_first_line(&mut stream).unwrap();
         assert_eq!(read, line);
-        assert!(ingest(&read, |_, _| Some((
+        let origin = crate::procinfo::peer_pid(&stream)
+            .map(|pid| crate::procinfo::ancestry(pid, ORIGIN_HOPS))
+            .unwrap_or_default();
+        drop(client);
+        assert!(ingest(&read, &origin, |_, _| Some((
             "deck-card-ab12".into(),
-            "claude".into()
+            "claude".into(),
+            std::process::id()
         )))
         .is_ok());
         assert_eq!(current("deck-card-ab12"), Some("turn-done"));

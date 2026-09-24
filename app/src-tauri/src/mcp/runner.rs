@@ -123,26 +123,9 @@ pub(super) fn runner_pane_pid(_tmux_session: &str) -> Result<libc::pid_t, DeckEr
     Ok(std::process::id() as libc::pid_t)
 }
 
-#[cfg(target_os = "macos")]
+/// `procinfo::peer_pid`, in this module's pid type.
 pub(super) fn peer_pid(stream: &UnixStream) -> Option<libc::pid_t> {
-    let mut pid: libc::pid_t = 0;
-    let mut len = std::mem::size_of::<libc::pid_t>() as libc::socklen_t;
-    // SAFETY: `pid` and `len` point to valid storage for LOCAL_PEERPID.
-    let result = unsafe {
-        libc::getsockopt(
-            std::os::fd::AsRawFd::as_raw_fd(stream),
-            libc::SOL_LOCAL,
-            libc::LOCAL_PEERPID,
-            (&mut pid as *mut libc::pid_t).cast(),
-            &mut len,
-        )
-    };
-    (result == 0 && len as usize == std::mem::size_of::<libc::pid_t>()).then_some(pid)
-}
-
-#[cfg(not(target_os = "macos"))]
-pub(super) fn peer_pid(_stream: &UnixStream) -> Option<libc::pid_t> {
-    None
+    crate::procinfo::peer_pid(stream).map(|pid| pid as libc::pid_t)
 }
 
 pub(super) fn send_runner(

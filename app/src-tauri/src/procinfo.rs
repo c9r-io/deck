@@ -137,6 +137,61 @@ pub(crate) fn processes() -> HashMap<u32, ProcessInfo> {
         .collect()
 }
 
+/// The pid on the other end of a connected unix socket, from the kernel
+/// (`LOCAL_PEERPID`) — never from anything the peer wrote. It stays valid
+/// for the life of the socket even after the peer exits.
+#[cfg(target_os = "macos")]
+pub(crate) fn peer_pid(stream: &std::os::unix::net::UnixStream) -> Option<u32> {
+    let mut pid: libc::pid_t = 0;
+    let mut len = std::mem::size_of::<libc::pid_t>() as libc::socklen_t;
+    // SAFETY: `pid` and `len` point to valid storage for LOCAL_PEERPID.
+    let result = unsafe {
+        libc::getsockopt(
+            std::os::fd::AsRawFd::as_raw_fd(stream),
+            libc::SOL_LOCAL,
+            libc::LOCAL_PEERPID,
+            (&mut pid as *mut libc::pid_t).cast(),
+            &mut len,
+        )
+    };
+    (result == 0 && len as usize == std::mem::size_of::<libc::pid_t>() && pid > 0)
+        .then_some(pid as u32)
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn peer_pid(_stream: &std::os::unix::net::UnixStream) -> Option<u32> {
+    None
+}
+
+/// Parent pid of one live process; `None` once it is gone.
+#[cfg(target_os = "macos")]
+pub(crate) fn parent_pid(pid: u32) -> Option<u32> {
+    bsd_info(pid as libc::pid_t).map(|info| info.ppid)
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn parent_pid(_pid: u32) -> Option<u32> {
+    None
+}
+
+/// `pid` and its ancestors, nearest first: at most `cap` entries, stopping
+/// at launchd (pid 1) or at a process that no longer exists. One libproc
+/// query per hop; nothing but the parent link is read. A chain that ends
+/// early (the starting process already exited) is simply short — callers
+/// treat "the pane is not in the chain" as a refusal.
+pub(crate) fn ancestry(pid: u32, cap: usize) -> Vec<u32> {
+    let mut chain = Vec::new();
+    let mut current = pid;
+    while current > 1 && chain.len() < cap {
+        chain.push(current);
+        match parent_pid(current) {
+            Some(parent) if parent != current => current = parent,
+            _ => break,
+        }
+    }
+    chain
+}
+
 /// argv[0] of a process from `KERN_PROCARGS2` (what `ps -o comm` shows on
 /// macOS). The layout is `argc`, the exec path, NUL padding, then argv[0].
 #[cfg(target_os = "macos")]
@@ -437,6 +492,20 @@ pub(crate) fn local_minutes() -> u32 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn ancestry_walks_parents_nearest_first_and_respects_its_cap() {
+        let me = std::process::id();
+        let chain = super::ancestry(me, 32);
+        assert_eq!(chain.first(), Some(&me));
+        assert_eq!(chain.get(1), super::parent_pid(me).as_ref());
+        assert!(chain.len() >= 2, "a test process has a parent: {chain:?}");
+        assert!(!chain.contains(&1), "launchd is never listed");
+        assert_eq!(super::ancestry(me, 1), vec![me]);
+        assert!(super::ancestry(0, 32).is_empty());
+        // a pid that cannot exist ends the chain at itself
+        assert_eq!(super::ancestry(u32::MAX - 1, 32).len(), 1);
+    }
+
     use super::*;
 
     fn info(pid: u32, ppid: u32, pgid: u32, tty: u32, tty_pgid: u32) -> ProcessInfo {

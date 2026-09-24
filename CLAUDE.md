@@ -17,7 +17,9 @@ same commit as the behaviour it describes.
   automatic retirement is an automation run whose rule says "close the
   card" (`runFinishHolds` in `pure.js`, driven by the `board.js` poll):
   the user chose it per rule, it never fires while a pane shows the card,
-  and it goes through the same close path as a click. Other non-click card
+  it goes through the same close path as a click, and the `turn-done` it
+  reads is accepted only from the card's own pane (`agent_status.rs` binds
+  every hook event to the pane's process tree through the kernel peer pid). Other non-click card
   creation/retirement paths are closed: an explicit MCP request (`mcp.js`,
   `mcp/`) names one target; create needs the locally authorized client's
   create permission, close needs its current control generation/epoch/holder

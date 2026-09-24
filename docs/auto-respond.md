@@ -97,8 +97,11 @@ existing session. The command may independently resume its own prior context.
   empty queue plus a reported turn end, or a shell in the foreground when
   there is no hook state. This must hold for three consecutive polls, and
   never while a pane shows the card. Three polls cannot establish business
-  success or associate an old turn report with the final row. **keep it**
-  leaves the card for you.
+  success or associate an old turn report with the final row. A turn end is
+  only accepted from a process inside the card's own pane (deck checks the
+  reporting process's parent chain through the kernel), so a program in
+  another pane cannot end this card's run. **keep it** leaves the card for
+  you.
 - **Inspect every row before continuing** is off by default and affects new
   runs when enabled on a rule. All template rows enter the reviewed list in
   one queue transaction. Each delivered row leaves a durable human checkpoint,
