@@ -50,9 +50,11 @@ span many lines and is sent exactly as written; the message pasted into it
 is flattened, so its newlines become spaces and cannot reshape your prompt.
 
 A badge puts someone else's message into your session, so a badge rule
-follows the same admission as a channel rule: its command must be exactly
-`claude` or `codex` (never a bare shell, where the message would run as a
-command), and every template row must start with your own words rather than
+follows the same admission as a channel rule: its command must start with
+`claude` or `codex` and may use simple, unquoted arguments such as `--yolo`
+or `--dangerously-skip-permissions` (never a bare shell, where the message
+would run as a command). Environment prefixes, executable paths and shell
+syntax are refused. Every template row must start with your own words rather than
 a placeholder. The editor refuses a badge rule that fails this, a stored one
 is listed as blocked, and a badge that reaches it is skipped before any card
 is created. The rows are queued through the native agent-only gate, so they

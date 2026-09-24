@@ -22,7 +22,7 @@
 //!   external-message admission path (Slack channel rules, Slack badge
 //!   rules, and every Connector-originated row). It uses the
 //!   same durable queue transaction but first passes `admit_external`, the
-//!   one chokepoint: the card command must be exactly `claude` or `codex`
+//!   one chokepoint: the card command must launch `claude` or `codex` with at most simple arguments
 //!   (`admission::channel_agent_command`),
 //!   so every channel row is process-bound. A process-bound row is pasted
 //!   only while that program is the pane's foreground command AND has
@@ -642,7 +642,7 @@ pub(crate) fn channel_queue_add(
 }
 
 /// The ONE admission for external (non-owner) text into the queue: the card
-/// command must be exactly `claude` or `codex`, and the row is then marked
+/// command must launch `claude` or `codex` with at most simple arguments, and the row is then marked
 /// `channel_path` (`QueueItem.external`). Both `channel_queue_add*` commands
 /// call it before the owner core; `tests/external_admission.rs` fails CI on a
 /// new enqueue path, Tauri command or frontend call site that skips it.

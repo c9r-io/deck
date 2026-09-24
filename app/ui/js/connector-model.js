@@ -1,6 +1,7 @@
-// Pure Connector desktop shapes: task presets use the same bare codex/claude
+// Pure Connector desktop shapes: task presets use the same codex/claude
 // rule as Slack channels; this module also owns deterministic journal IDs and
 // pairing detection.
+import { channelAgentCommand } from './channel-model.js';
 const LOCAL_ID = /^[A-Za-z0-9_-]{1,128}$/;
 export const PRESET_MAX = 50;
 
@@ -15,7 +16,7 @@ export function normalizeTaskPreset(raw, columns = []) {
   };
   if (!LOCAL_ID.test(preset.id) || !preset.name || [...preset.name].length > 120
     || !preset.title || [...preset.title].length > 120 || !preset.dir || utf8(preset.dir) > 1024
-    || /[\r\n\0]/.test(preset.dir) || !['codex', 'claude'].includes(preset.cmd)
+    || /[\r\n\0]/.test(preset.dir) || !channelAgentCommand(preset.cmd)
     || utf8(preset.cmd) > 200 || /[\r\n\0]/.test(preset.cmd)
     || !columns.some(column => column.id === preset.columnId) || preset.steps.length > 20
     || preset.steps.some(step => utf8(step) > 2000)) return null;

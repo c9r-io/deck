@@ -1142,12 +1142,16 @@ fn admission_proves_handle_derived_durable_copies_without_original_revision() {
 fn every_card_route_requires_a_saved_trusted_agent_command() {
     assert!(queue_target_supported(&json!({"cmd":"codex"})));
     assert!(queue_target_supported(&json!({"cmd":"claude"})));
+    assert!(queue_target_supported(&json!({"cmd":"codex --full-auto"})));
+    assert!(queue_target_supported(
+        &json!({"cmd":"claude --dangerously-skip-permissions"})
+    ));
     for card in [
         json!({"cmd":""}),
         json!({"cmd":"/bin/zsh"}),
         json!({"cmd":"/bin/zsh -lc codex"}),
-        json!({"cmd":"codex --full-auto"}),
-        json!({"cmd":"claude --dangerously-skip-permissions"}),
+        json!({"cmd":"codex;zsh"}),
+        json!({"cmd":"claude && sh"}),
         json!({"cmd":"env FOO=1 /opt/bin/claude --x"}),
     ] {
         let error = require_queue_target(&card).unwrap_err();

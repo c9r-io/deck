@@ -2209,18 +2209,18 @@ export async function verifyChannel() {
     $('auto-sender-users').value = 'U0123';
     $('auto-match-kind').value = 'regex'; $('auto-match-kind').dispatchEvent(new Event('change'));
     $('auto-match-value').value = 'INC-(?<incident>[0-9]+)'; $('auto-match-capture').value = 'incident';
-    // Admission: a command with arguments is refused at save; a bare agent
-    // command saves. Saving never launches anything (no Slack connection).
-    $('auto-cmd').value = 'claude --version';
+    // Admission: shell syntax is refused; an agent with simple arguments
+    // saves. Saving never launches anything (no Slack connection).
+    $('auto-cmd').value = 'claude;zsh';
     $('auto-idle').value = '30'; $('auto-template').value = 'channel smoke';
     $('auto-save').click(); // readEditor refuses synchronously, before any await
     const refused = !(ctx.settings.inbound.channelRules?.length) && !$('auto-editor').hidden;
-    $('auto-cmd').value = 'claude';
+    $('auto-cmd').value = 'claude --dangerously-skip-permissions';
     $('auto-save').click();
     const saved = await waitFor(() => ctx.settings.inbound.channelRules?.length === 1);
     const rule = ctx.settings.inbound.channelRules?.[0];
     await report('channel-ui', settingsVisible && refused && saved && rule?.match?.groupCapture === 'incident'
-      && rule?.idleMinutes === 30 && rule?.cmd === 'claude', settingsVisible ? 1 : 0, refused && saved ? 1 : 0);
+      && rule?.idleMinutes === 30 && rule?.cmd === 'claude --dangerously-skip-permissions', settingsVisible ? 1 : 0, refused && saved ? 1 : 0);
     // The debug seed stages events whose target command is runtime-blocked,
     // so this smoke never starts an agent: they must stay pending and no
     // card, session or queue row may appear.

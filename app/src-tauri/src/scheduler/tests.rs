@@ -2564,8 +2564,13 @@ fn process_bound_delivery_requires_paste_mode_and_compatibility_does_not() {
 }
 
 #[test]
-fn external_rows_are_admitted_only_for_an_exact_agent_command() {
-    for cmd in ["claude", "codex"] {
+fn external_rows_are_admitted_only_for_agent_commands_with_simple_arguments() {
+    for cmd in [
+        "claude",
+        "codex",
+        "codex --yolo",
+        "claude --dangerously-skip-permissions",
+    ] {
         let mut args = add_args("s", "external");
         args.cmd = cmd.into();
         assert!(ops::require_channel_agent(&args).is_ok(), "{cmd}");
@@ -2573,7 +2578,7 @@ fn external_rows_are_admitted_only_for_an_exact_agent_command() {
     for cmd in [
         "",
         "zsh",
-        "claude --yolo",
+        "claude;zsh",
         "/usr/local/bin/claude",
         "FOO=1 codex",
     ] {
@@ -2589,7 +2594,7 @@ fn external_rows_are_admitted_only_for_an_exact_agent_command() {
 
 #[test]
 fn external_admission_refuses_a_plain_shell_card_and_marks_what_it_admits() {
-    for cmd in ["zsh", "", "bash -l", "claude --yolo", "codex; sh"] {
+    for cmd in ["zsh", "", "bash -l", "claude;zsh", "codex; sh"] {
         let mut args = add_args("s", "rm -rf ~");
         args.cmd = cmd.into();
         assert_eq!(
@@ -2602,7 +2607,7 @@ fn external_admission_refuses_a_plain_shell_card_and_marks_what_it_admits() {
     let mut args = add_args("s", "please look at INC-42");
     args.mode = "at".into();
     args.at = Some(NOW);
-    args.cmd = "claude".into();
+    args.cmd = "claude --dangerously-skip-permissions".into();
     ops::admit_external(&mut args).unwrap();
     assert!(args.channel_path);
     let mut q = qs(Vec::new());

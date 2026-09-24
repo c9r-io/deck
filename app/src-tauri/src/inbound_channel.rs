@@ -25,9 +25,9 @@
 //!
 //! Channel text is untrusted agent input. Admission is the shared policy in
 //! `admission.rs` (`channel_agent_command`): a remote target command must be
-//! exactly `claude` or `codex`. Channel settings and inbox validation stay
-//! structural, so a rule saved
-//! by an older deck with arguments still loads and is shown as blocked; a
+//! `claude` or `codex` with simple, shell-safe arguments. Channel settings and
+//! inbox validation stay structural, so a rule saved
+//! by an older deck with shell syntax still loads and is shown as blocked; a
 //! blocked rule never stages events and never counts as an active rule.
 //! `stage` enforces the same shape `load` checks, so a successful write is
 //! always loadable. Rejections a Slack retry cannot change (oversize
@@ -988,10 +988,10 @@ pub(crate) fn channel_smoke_seed(
         project_id,
         column_id,
         dir: String::new(),
-        // Structurally valid but runtime-blocked (arguments are refused): the
+        // Structurally valid but runtime-blocked (shell syntax is refused): the
         // debug smoke proves blocked events stay pending and never starts an
         // agent in the isolated window.
-        cmd: "claude --version".into(),
+        cmd: "claude;zsh".into(),
         template: "{text}".into(),
         idle_minutes: match scenario {
             "backlog" => 10,
@@ -1452,7 +1452,7 @@ mod tests {
             );
         }
         // Admission policy is NOT document validation: a rule saved by an
-        // older deck with arguments must keep loading so it can be shown as
+        // older deck with shell syntax must keep loading so it can be shown as
         // blocked and edited, never quarantined with the whole settings file.
         for command in [
             "codex --full-auto",
@@ -1467,14 +1467,10 @@ mod tests {
     }
 
     #[test]
-    fn bare_agent_commands_are_the_only_admitted_channel_targets() {
+    fn agent_commands_with_simple_arguments_are_admitted_channel_targets() {
         assert_eq!(channel_agent_command("claude"), Some("claude"));
         assert_eq!(channel_agent_command("codex"), Some("codex"));
         for command in [
-            "",
-            " claude",
-            "claude ",
-            "Claude",
             "claude --dangerously-skip-permissions",
             "claude --permission-mode bypassPermissions",
             "claude --settings x.json",
@@ -1482,6 +1478,18 @@ mod tests {
             "codex --yolo",
             "codex --dangerously-bypass-approvals-and-sandbox",
             "codex -c approval_policy=never",
+        ] {
+            assert!(channel_agent_command(command).is_some(), "{command:?}");
+            let mut admitted = rule();
+            admitted.target.cmd = command.into();
+            assert!(rule_admitted(&admitted), "{command:?}");
+        }
+        for command in [
+            "",
+            " claude",
+            "claude ",
+            "Claude",
+            "claude  --version",
             "IS_SANDBOX=1 claude",
             "env FOO=1 claude",
             "env claude",
@@ -1506,7 +1514,7 @@ mod tests {
     #[test]
     fn blocked_rules_are_excluded_from_matching_but_kept_in_config() {
         let mut cfg = config();
-        cfg.rules[0].target.cmd = "codex --full-auto".into();
+        cfg.rules[0].target.cmd = "codex;zsh".into();
         let event = parse_message(
             &serde_json::from_str(&envelope(json!({}))).unwrap(),
             &identity(),

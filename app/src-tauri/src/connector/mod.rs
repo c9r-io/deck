@@ -31,8 +31,8 @@
 //! slot. Each write encodes once and is atomic (temp file, file fsync,
 //! rename, directory fsync).
 //!
-//! Phone reach: every card-scoped route requires a bare `codex`/`claude` SAVED
-//! command under the shared channel policy. Send-message and output also
+//! Phone reach: every card-scoped route requires a saved `codex`/`claude`
+//! command with at most simple shell-safe arguments under the shared channel policy. Send-message and output also
 //! require a live agent foreground process; output rechecks that identity
 //! after capture alongside the generation/card checks. A foreground agent in
 //! a plain shell card does not qualify. The snapshot exposes only those saved

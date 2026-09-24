@@ -44,12 +44,20 @@ test('a clock run queues its own template through the ordinary queue', async () 
 });
 
 test('a badge rule that fails the channel admission is skipped before any card exists', async () => {
-  for (const [cmd, steps] of [['', ['first']], ['claude --yolo', ['first']], ['claude', ['{{msg.text}}']]]) {
+  for (const [cmd, steps] of [['', ['first']], ['claude;zsh', ['first']], ['claude', ['{{msg.text}}']]]) {
     const f = setup([{ ...item, rule: { ...item.rule, cmd } }], '', steps);
     await drainInbound();
     assert.equal(f.calls.find(([name]) => name === 'inbound_ack')[1].outcome, 'skipped');
     assert.equal(f.calls.filter(([name]) => name === 'create' || name.includes('queue_add')).length, 0);
   }
+});
+
+test('a badge rule with agent flags creates a card and queues through the external gate', async () => {
+  const f = setup([{ ...item, rule: { ...item.rule, cmd: 'claude --dangerously-skip-permissions' } }]);
+  await drainInbound();
+  assert.equal(f.calls.find(([name]) => name === 'create')[1].cmd, 'claude --dangerously-skip-permissions');
+  assert.equal(f.calls.filter(([name]) => name === 'channel_queue_add').length, 2);
+  assert.equal(f.calls.at(-1)[0], 'inbound_ack');
 });
 
 test('dispatcher refuses dangling targets, skips duplicates and leaves failed creation pending', async () => {

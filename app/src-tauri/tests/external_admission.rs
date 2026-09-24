@@ -3,7 +3,7 @@
 //! queue, so it could be pasted into zsh and run. Text that did not come from
 //! the local user's own keyboard, voice or saved configuration reaches a
 //! terminal only through ONE admission (`scheduler::ops::admit_external`: the
-//! card command is exactly `claude`/`codex`, the row is marked `external`),
+//! card command launches `claude`/`codex` with simple arguments, the row is marked `external`),
 //! a verbatim external entry through `validate_add`'s `external_text` gate
 //! (same agent check plus the leading `!`/`/`/`#` refusal), and the phone's
 //! direct send-message through the same agent predicate

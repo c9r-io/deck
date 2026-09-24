@@ -1220,6 +1220,10 @@ mod tests {
         assert!(serde_json::from_str::<BoardDoc>(
             &with_preset.replace("\"codex\"", "\"codex --full-auto\"")
         )
+        .is_ok());
+        assert!(serde_json::from_str::<BoardDoc>(
+            &with_preset.replace("\"codex\"", "\"codex;zsh\"")
+        )
         .is_err());
         assert!(serde_json::from_str::<BoardDoc>(
             &with_preset.replace("\"columnId\":\"C1\"", "\"columnId\":\"missing\"")

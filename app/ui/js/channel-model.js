@@ -2,7 +2,7 @@
 // validation before connecting; this side preserves only shapes it can edit.
 //
 // Admission is a separate, runtime policy (`channelBlockReason`): a rule's
-// command must be exactly `claude` or `codex`, and every line of its
+// command must launch `claude` or `codex` with shell-safe arguments, and every line of its
 // template must begin with user-written text rather than a `{{msg.*}}`
 // placeholder (a message starting with `!` or `/` must never become the
 // first character the agent reads). Normalizing keeps a structurally valid
@@ -17,10 +17,12 @@ const BOT_ID = /^B[A-Z0-9_-]{0,63}$/;
 export const CHANNEL_IDLE_DEFAULT = 30;
 export const CHANNEL_IDLE_MAX = 7 * 24 * 60;
 
-// Twin of inbound_channel::channel_agent_command: exactly `claude` or
-// `codex`, no arguments, environment prefix, path or shell syntax.
-export const channelAgentCommand = command =>
-  command === 'claude' || command === 'codex' ? command : null;
+// Twin of admission::channel_agent_command: a bare agent or simple arguments,
+// without environment prefixes, paths, quoting or shell syntax.
+export const channelAgentCommand = command => {
+  const match = /^(claude|codex)(?: [-A-Za-z0-9_./:=+,@]+)*$/.exec(command || '');
+  return match && match[0] === command ? match[1] : null;
+};
 
 const LEADING_MESSAGE = /^\s*\{\{\s*msg\.[a-z]+\s*\}\}/;
 

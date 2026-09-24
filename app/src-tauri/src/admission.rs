@@ -5,18 +5,25 @@
 //! decision back. `tests/external_admission.rs` pins every path that puts
 //! non-owner text into a queue or pane to these two functions.
 
-/// The ONE remote-agent admission policy shared by channels and Connector: a target launches exactly
-/// `claude` or `codex` - no arguments, environment prefix, path or shell
-/// syntax. Arguments are where approval and sandbox bypasses live
-/// (`--dangerously-skip-permissions`, `--yolo`, `-c approval_policy=...`,
-/// `&& ...`); refusing them all is simpler and stricter than recognizing
-/// each one. Deck still cannot see the agent's own configuration files.
+/// The ONE remote-agent admission policy shared by Slack and Connector.
+/// Accept a bare agent or simple, unquoted arguments. The restricted alphabet
+/// cannot introduce shell expansion, redirection, pipelines or a second
+/// command when the saved command is sent to the pane's shell.
 pub(crate) fn channel_agent_command(cmd: &str) -> Option<&'static str> {
-    match cmd {
+    let mut words = cmd.split(' ');
+    let agent = match words.next()? {
         "claude" => Some("claude"),
         "codex" => Some("codex"),
         _ => None,
-    }
+    }?;
+    words
+        .all(|word| {
+            !word.is_empty()
+                && word
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b"-_./:=+,@".contains(&byte))
+        })
+        .then_some(agent)
 }
 
 /// Invisible characters that can hide instructions from the person who
@@ -58,10 +65,38 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_a_bare_agent_name_is_admitted() {
+    fn agent_commands_admit_simple_arguments_without_shell_syntax() {
         assert_eq!(channel_agent_command("claude"), Some("claude"));
         assert_eq!(channel_agent_command("codex"), Some("codex"));
-        for command in ["", "claude ", "codex --yolo", "env claude", "/tmp/x/claude"] {
+        for command in [
+            "codex --yolo",
+            "codex -c approval_policy=never",
+            "claude --dangerously-skip-permissions",
+            "claude --permission-mode bypassPermissions",
+        ] {
+            assert_eq!(
+                channel_agent_command(command),
+                Some(if command.starts_with("codex") {
+                    "codex"
+                } else {
+                    "claude"
+                })
+            );
+        }
+        for command in [
+            "",
+            " claude",
+            "claude ",
+            "claude  --version",
+            "Claude",
+            "env claude",
+            "/tmp/x/claude",
+            "claude;zsh",
+            "codex $(true)",
+            "claude && sh",
+            "claude --model='x'",
+            "codex\t--yolo",
+        ] {
             assert_eq!(channel_agent_command(command), None, "{command:?}");
         }
     }
