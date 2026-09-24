@@ -68,15 +68,17 @@ jobs:
       - name: cargo clippy -D warnings
         run: cargo clippy --workspace --all-targets --all-features --locked --manifest-path app/src-tauri/Cargo.toml -- -D warnings
 
-      # --test-threads=1 is kept by measurement, not need: since FR-5 the
-      # suite is parallel-safe (TZ guard + lock, per-thread storage notices,
-      # unique tmux/runner names, polled waits; 20/20 clean parallel runs).
-      # This exact command on an M-series Mac, 3 runs each (2026-09-25):
-      # serial 197/200/199 s, parallel 118/119/119 s — about 80 s saved,
-      # under the 2-minute bar for dropping the flag. Re-measure before
-      # changing it.
+      # Parallel test threads, adopted on CI measurement (2026-09-25,
+      # macos-15 runner, this exact step). Parallel: 20 runs, 20 green,
+      # min/median/max 169/204/285 s. Serial controls: main before FR-5,
+      # median 375 s (5 runs); the same code with --test-threads=1, median
+      # 359 s (5 runs). Saving ~156-172 s, 43-46 %. The suite is
+      # parallel-safe since FR-5 (TZ guard + lock, per-thread storage
+      # notices, unique tmux/runner names, polled waits).
+      # Rollback rule: any parallel-related red on the production gate
+      # restores --test-threads=1 at once; no second attempt.
       - name: cargo test + coverage (unit, storage/scheduler recovery, log privacy, tmux contract, status helper)
-        run: cargo llvm-cov --workspace --all-targets --all-features --locked --fail-under-lines 75 --fail-under-functions 75 --manifest-path app/src-tauri/Cargo.toml -- --test-threads=1
+        run: cargo llvm-cov --workspace --all-targets --all-features --locked --fail-under-lines 75 --fail-under-functions 75 --manifest-path app/src-tauri/Cargo.toml
 
       # no-build frontend, three gates:
       # 1. real syntax check of every module (node --check)

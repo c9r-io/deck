@@ -17,8 +17,9 @@
   directory has a unique name, and the tmux contract tests wait for what
   they need instead of fixed sleeps (77 contracts in about 1.5 s instead
   of about 60 s). Two timing assertions no longer depend on machine load.
-  The CI gate keeps `--test-threads=1`: measured, dropping it saves about
-  80 s of about 200 s, under the 2-minute bar set for the change.
+  The CI gate now runs Rust tests in parallel: measured on the CI runner
+  over 20 runs (all green), the test step's median fell from about 6 min
+  to about 3.4 min. Any parallel-related red restores the serial flag.
 - Fixed: after the last terminal session on Deck's tmux server was closed,
   starting any new session (a card, or one an MCP client asked for) failed
   with "tmux server unreachable" until Deck was restarted. (MCP clients saw
