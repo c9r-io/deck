@@ -139,6 +139,11 @@ fn settings_limits_match_the_fixture() {
 fn closed_status_vocabularies_match_the_fixture() {
     let l = limits();
     assert_eq!(words(&l["agent_states"]), crate::agent_status::STATES);
+    let notices: Vec<&str> = crate::storage::StorageNotice::ALL
+        .iter()
+        .map(|notice| notice.code())
+        .collect();
+    assert_eq!(words(&l["storage_notices"]), notices);
     assert_eq!(
         words(&l["notify_status_words"]),
         crate::notify::STATUS_WORDS

@@ -19,10 +19,12 @@
 //!   validated, not read; `launched` defaults to true so a board written
 //!   before the field never re-runs a command.
 //! - `LoadedDoc` carries the text, its source and at most one `UiNotice`: a
-//!   closed code (`storage.privacy`, `queue.persist`, `queue.load`,
-//!   `history.load`, `queue.interrupted`, `storage.recovered`) the webview
-//!   translates; a recovery note never carries a path. `storage_warnings`
-//!   drains the boot-time notes once, for the first Board render.
+//!   closed code the webview translates, always `storage.recovered` for an
+//!   in-band load warning. `storage_warnings` drains the boot-time notices
+//!   once, for the first Board render; each is the `storage::StorageNotice`
+//!   its emitter named (`storage.privacy`, `queue.persist`, `queue.load`,
+//!   `history.load`, `queue.interrupted`, `storage.recovered`), never a code
+//!   inferred from the note's wording.
 //! - The settings readers (`editor_app`, `locale_setting`,
 //!   `update_channel_setting`) load the file through the same typed door on
 //!   every call, never a cache, and fall back (None / "system" / "stable")
@@ -787,21 +789,8 @@ pub(crate) struct UiNotice {
     code: &'static str,
 }
 
-fn notice_from(note: &str) -> UiNotice {
-    let code = if note.contains("privacy hardening") {
-        "storage.privacy"
-    } else if note.contains("scheduled prompts could not be saved") {
-        "queue.persist"
-    } else if note.contains("scheduled prompts could not be loaded") {
-        "queue.load"
-    } else if note.contains("command history could not be loaded") {
-        "history.load"
-    } else if note.contains("interrupted deliveries") || note.contains("delivery") {
-        "queue.interrupted"
-    } else {
-        "storage.recovered"
-    };
-    UiNotice { code }
+fn notice(kind: storage::StorageNotice) -> UiNotice {
+    UiNotice { code: kind.code() }
 }
 
 fn to_loaded(o: Option<storage::LoadOutcome>) -> LoadedDoc {
@@ -809,7 +798,8 @@ fn to_loaded(o: Option<storage::LoadOutcome>) -> LoadedDoc {
         Some(o) => LoadedDoc {
             data: o.payload,
             source: o.source.into(),
-            warning: o.warning.as_deref().map(notice_from),
+            // a LoadOutcome warning is always a .bak recovery, whatever it says
+            warning: o.warning.map(|_| notice(storage::StorageNotice::Recovered)),
         },
         None => LoadedDoc {
             data: String::new(),
@@ -879,8 +869,8 @@ pub(crate) fn save_board(data: String) -> Result<(), DeckError> {
 #[tauri::command]
 pub(crate) fn storage_warnings() -> Vec<UiNotice> {
     std::mem::take(&mut *storage::WARNINGS.lock_or_recover())
-        .iter()
-        .map(|note| notice_from(note))
+        .into_iter()
+        .map(notice)
         .collect()
 }
 
@@ -1568,30 +1558,39 @@ mod tests {
         assert_eq!(none.source, "none");
         assert!(none.warning.is_none());
 
+        // A load warning is a .bak recovery whatever its text says: the
+        // quoted serde detail used to steer the code ("…delivery…").
         let recovered = to_loaded(Some(storage::LoadOutcome {
             payload: "{\"ok\":true}".into(),
             source: "backup",
-            warning: Some("interrupted deliveries were recovered".into()),
+            warning: Some("queue.json was unreadable (missing field `delivery`); recovered".into()),
         }));
         assert_eq!(recovered.source, "backup");
-        assert_eq!(recovered.warning.unwrap().code, "queue.interrupted");
+        assert_eq!(recovered.warning.unwrap().code, "storage.recovered");
 
-        let notices = [
-            ("privacy hardening failed", "storage.privacy"),
-            ("scheduled prompts could not be saved", "queue.persist"),
-            ("scheduled prompts could not be loaded", "queue.load"),
-            ("command history could not be loaded", "history.load"),
-            ("ordinary recovery", "storage.recovered"),
-        ];
-        for (note, code) in notices {
-            assert_eq!(notice_from(note).code, code);
-        }
-
+        // Every notice drains as exactly the code its emitter named, in order,
+        // and the wording of the note never matters.
         storage::WARNINGS.lock().unwrap().clear();
-        storage::warn("privacy hardening failed".into());
-        let drained = storage_warnings();
-        assert_eq!(drained.len(), 1);
-        assert_eq!(drained[0].code, "storage.privacy");
+        for kind in storage::StorageNotice::ALL {
+            storage::warn(
+                kind,
+                "privacy hardening … interrupted deliveries … delivery".into(),
+            );
+        }
+        let codes: Vec<&str> = storage_warnings().iter().map(|n| n.code).collect();
+        let expected: Vec<&str> = storage::StorageNotice::ALL
+            .iter()
+            .map(|k| k.code())
+            .collect();
+        assert_eq!(codes, expected);
+        assert_eq!(
+            expected
+                .iter()
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            expected.len(),
+            "one code per notice"
+        );
         assert!(storage_warnings().is_empty());
     }
 

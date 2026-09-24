@@ -124,17 +124,61 @@ fn uses_buffer(v: &serde_json::Value) -> bool {
 }
 static SAVE_LOCK: Mutex<()> = Mutex::new(());
 
+/// What a boot/storage notice is about: the closed codes the webview
+/// translates (`translateNotice`). These are notice categories, not errors —
+/// the emitter names one; nothing infers it from the note's wording.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum StorageNotice {
+    /// ~/.deck permission hardening or log redaction did not complete.
+    Privacy,
+    /// queue.json could not be saved after an irreversible send.
+    QueuePersist,
+    /// queue.json could not be read at all.
+    QueueLoad,
+    /// the command history could not be read at all.
+    HistoryLoad,
+    /// deliveries interrupted by a crash await acknowledge or retry.
+    QueueInterrupted,
+    /// a document was restored from its .bak backup.
+    Recovered,
+}
+
+impl StorageNotice {
+    #[cfg(test)]
+    pub(crate) const ALL: [StorageNotice; 6] = [
+        StorageNotice::Privacy,
+        StorageNotice::QueuePersist,
+        StorageNotice::QueueLoad,
+        StorageNotice::HistoryLoad,
+        StorageNotice::QueueInterrupted,
+        StorageNotice::Recovered,
+    ];
+
+    /// The webview's notice code (i18n `notice.*`).
+    pub(crate) fn code(self) -> &'static str {
+        match self {
+            StorageNotice::Privacy => "storage.privacy",
+            StorageNotice::QueuePersist => "queue.persist",
+            StorageNotice::QueueLoad => "queue.load",
+            StorageNotice::HistoryLoad => "history.load",
+            StorageNotice::QueueInterrupted => "queue.interrupted",
+            StorageNotice::Recovered => "storage.recovered",
+        }
+    }
+}
+
 /// Warnings produced before the webview exists (e.g. corrupt files found at
 /// boot); the frontend fetches and toasts them via the `storage_warnings`
 /// command. Request-path loads return their warning in-band instead.
-pub static WARNINGS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+pub(crate) static WARNINGS: Mutex<Vec<StorageNotice>> = Mutex::new(Vec::new());
 
-/// The full note goes to the USER (toast via storage_warnings / in-band
-/// warning); the log gets only a stable category code — notes can embed
-/// serde detail and quarantine file names, which stay out of app.log.
-pub fn warn(note: String) {
+/// The webview gets only the notice's closed code; the log gets only a
+/// stable category code of the note — notes can embed serde detail and
+/// quarantine file names, which stay out of app.log. The note itself is not
+/// kept.
+pub(crate) fn warn(notice: StorageNotice, note: String) {
     applog(&format!("[storage] warning ({})", err_code(&note)));
-    WARNINGS.lock_or_recover().push(note);
+    WARNINGS.lock_or_recover().push(notice);
 }
 
 /// A successful load: the payload plus where it came from and, when it came

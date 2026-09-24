@@ -159,7 +159,10 @@ fn main() {
     // ~/.deck → 0700, every file an older deck may have left 0644 → 0600.
     // A failure is surfaced (log + boot toast), never silently ignored.
     if let Err(e) = crate::datadir::harden_data_dir(&deck_dir) {
-        storage::warn(format!("data privacy hardening incomplete: {e}"));
+        storage::warn(
+            storage::StorageNotice::Privacy,
+            format!("data privacy hardening incomplete: {e}"),
+        );
     }
     // one-time redaction of logs/exports an OLDER deck wrote (absolute
     // paths, URLs, token shapes, raw session names). Runs before anything

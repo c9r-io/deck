@@ -29,15 +29,20 @@ pub(super) fn boot_queues_with(
     };
     if has_interrupted {
         let notes = recover_interrupted(&mut loaded);
-        notes.into_iter().for_each(storage::warn);
+        for note in notes {
+            storage::warn(storage::StorageNotice::QueueInterrupted, note);
+        }
         let queues = Queues::new(loaded);
         let q = queues.q.lock_or_recover();
         if let Err(e) = persist(&q) {
             queues.dirty.store(true, AtomicOrdering::Relaxed);
-            storage::warn(format!(
-                "interrupted deliveries are available to acknowledge or retry now; their recovered state could not be saved yet ({}), so deck will keep retrying",
-                e.code()
-            ));
+            storage::warn(
+                storage::StorageNotice::QueueInterrupted,
+                format!(
+                    "interrupted deliveries are available to acknowledge or retry now; their recovered state could not be saved yet ({}), so deck will keep retrying",
+                    e.code()
+                ),
+            );
         }
         drop(q);
         return queues;

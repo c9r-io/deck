@@ -46,13 +46,16 @@ fn read_history_from(path: &Path) -> Vec<HistEntry> {
     let raw = match storage::load_typed::<HistDoc>(path) {
         Ok(Some(o)) => {
             if let Some(w) = o.warning {
-                storage::warn(w);
+                storage::warn(storage::StorageNotice::Recovered, w);
             }
             o.payload
         }
         Ok(None) => return Vec::new(),
         Err(e) => {
-            storage::warn(format!("command history could not be loaded: {e}"));
+            storage::warn(
+                storage::StorageNotice::HistoryLoad,
+                format!("command history could not be loaded: {e}"),
+            );
             return Vec::new();
         }
     };

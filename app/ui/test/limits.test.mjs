@@ -22,7 +22,7 @@ import {
   BUFFER_MAX_BYTES, BUFFER_MAX_COPIES, BUFFER_MAX_ENTRIES, BUFFER_MAX_ENTRY_BYTES, BUFFER_MAX_SERIALIZED_BYTES,
 } from '../js/buffer-model.js';
 import { PRESET_MAX } from '../js/connector-model.js';
-import { LOCALE_CHOICES } from '../js/i18n.js';
+import { dictionaries, LOCALE_CHOICES } from '../js/i18n.js';
 import { ACCENT_IDS, THEME_IDS } from '../js/theme.js';
 import { NOTIFY_STATUS_WORDS } from '../js/notify-model.js';
 
@@ -80,4 +80,10 @@ test('closed status vocabularies', () => {
   assert.deepEqual([...NOTIFY_STATUS_WORDS], limits.notify_status_words);
   assert.deepEqual(Object.keys(CONTEXT_STATUS_KEYS), limits.context_statuses);
   assert.deepEqual(Object.keys(MCP_ERROR_KEYS), limits.mcp_local_errors);
+  // storage.rs StorageNotice codes: each one has a sentence in both languages
+  for (const code of limits.storage_notices) {
+    for (const [locale, dictionary] of Object.entries(dictionaries)) {
+      assert.equal(typeof dictionary[`notice.${code}`], 'string', `${locale} notice.${code}`);
+    }
+  }
 });

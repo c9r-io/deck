@@ -232,7 +232,10 @@ fn load_snapshot_from(path: &Path) -> Result<Option<ShellSnapshot>, DeckError> {
         return Ok(None);
     };
     if let Some(warning) = outcome.warning {
-        storage::warn(format!("shell recovery snapshot recovered: {warning}"));
+        storage::warn(
+            storage::StorageNotice::Recovered,
+            format!("shell recovery snapshot recovered: {warning}"),
+        );
     }
     let snapshot: ShellSnapshot =
         serde_json::from_str(&outcome.payload).map_err(DeckError::from)?;

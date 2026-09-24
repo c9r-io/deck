@@ -618,9 +618,12 @@ fn note_persist_lag(dirty: &AtomicBool, stage: &str, e: &str) {
         "[queue] persist ({stage}) FAILED ({}) — memory is ahead of disk, retrying",
         crate::error::err_code(e)
     ));
-    storage::warn(format!(
-        "scheduled prompts could not be saved after a send ({stage}); deck keeps retrying — if this persists, free disk space or check permissions on ~/.deck"
-    ));
+    storage::warn(
+        storage::StorageNotice::QueuePersist,
+        format!(
+            "scheduled prompts could not be saved after a send ({stage}); deck keeps retrying — if this persists, free disk space or check permissions on ~/.deck"
+        ),
+    );
 }
 
 /// Claim a session for a send worker; false = a worker is already on it.
@@ -679,13 +682,17 @@ pub(crate) fn load_queue() -> QueueState {
     let mut q = match storage::load_typed::<QueueState>(&queue_path()) {
         Ok(Some(o)) => {
             if let Some(w) = o.warning {
-                storage::warn(w); // boot-time: surfaced via storage_warnings
+                // boot-time: surfaced via storage_warnings
+                storage::warn(storage::StorageNotice::Recovered, w);
             }
             serde_json::from_str(&o.payload).unwrap_or_default()
         }
         Ok(None) => QueueState::default(),
         Err(e) => {
-            storage::warn(format!("scheduled prompts could not be loaded: {e}"));
+            storage::warn(
+                storage::StorageNotice::QueueLoad,
+                format!("scheduled prompts could not be loaded: {e}"),
+            );
             QueueState::default()
         }
     };
