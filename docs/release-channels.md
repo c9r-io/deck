@@ -75,6 +75,14 @@ user data.
 
 ## Publishing a candidate
 
+Before dispatching, on an idle Mac (no other build running — the timing-bound
+checks fail under load), run the automated WKWebView smoke modes listed in
+`app/SMOKE.md` on isolated roots and require `scripts/smoke-verdict <root>
+<mode>` to exit 0 for each. This stays a manual step and is not part of the
+nightly workflow: the smoke launches the real app bundle, which needs a
+logged-in GUI session and macOS text-input services (see CLAUDE.md, "NEVER
+run the bare binary from a background shell"); a CI runner has neither.
+
 Run the **nightly** workflow manually with `ref`, `version`, optional public
 notes and `publish_feed`. The workflow:
 

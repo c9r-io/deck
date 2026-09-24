@@ -158,8 +158,11 @@ Status semantics (card colour) are documented on `effectiveCardStatus` in
   absolute `DECK_SMOKE_DATA_DIR`, unique `DECK_SMOKE_TMUX_SOCKET`, and
   `DECK_SMOKE_WKWEBVIEW=1 app/run.sh`. The production modules run inside the
   real bundled WKWebView; results are closed numeric `smoke-check` events in
-  that isolated directory's `app.log`. Release builds ignore these debug-only
-  arguments, and the harness must never point at `~/.deck`.
+  that isolated directory's `app.log`, judged by
+  `scripts/smoke-verdict <data-dir> <mode>` against
+  `ui/test/fixtures/smoke-manifest.json` (exit 0 = green). Release builds
+  ignore these debug-only arguments, and the harness must never point at
+  `~/.deck`.
 
 ### WKWebView / Tauri gotchas (each cost a real bug)
 

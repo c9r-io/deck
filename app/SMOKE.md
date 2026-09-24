@@ -20,6 +20,20 @@ Enter, separators kept, any foreground program, dead targets), themes and
 saved language preferences without opening the microphone. See
 [voice input](../docs/voice-input.md) for native audio and permission checks.
 
+**Judging an automated mode.** When a mode has finished, run
+`scripts/smoke-verdict <DECK_SMOKE_DATA_DIR> <mode>` from the repository
+root; it must exit 0. It compares that root's `app.log` with the mode's
+entry in `app/ui/test/fixtures/smoke-manifest.json` and lists every
+missing, negative or unexpected checkpoint. The modes are `run` (the
+default; `DECK_SMOKE_WKWEBVIEW=1`), `settings`, `attention`, `resume`,
+`review` → `review-restart`, `voice`, `buffer`, `channel`, `connector`,
+`channel-fault` (real Slack sandbox tokens), `connector-transport` (stays
+open for the Swift transport test; see `connector/ios/README.md`), and two
+that relaunch a finished `run` root: `ambiguous` (relaunch with
+`app/run.sh --smoke-fault queue-save` so the boot repair write fails) and
+`restart`. A relaunch appends to the same `app.log`; judge each mode before
+relaunching the next.
+
 
 Everything below is a **live** checklist of WKWebView/xterm integration
 behaviours that cannot be tested headless: Chromium-based harnesses pass while
@@ -45,7 +59,8 @@ under a concurrent `cargo test` build failed six timing-bound checks
 (`link-activate`, `completion*`, `selection-native-scroll`,
 `selection-resize`, `scroll-frame`), so run the release smoke with no other
 build in progress. The five `selection-*-range/expect/copy/scroll`
-lines are 07's closed diagnostics and always report positive.
+lines are 07's closed diagnostics and always report positive. Red or green
+is now decided by `scripts/smoke-verdict`, not by reading the log.
 
 ## Human inspection checkpoints (05 C v01)
 
@@ -57,11 +72,12 @@ default opt-out, atomic enqueue, no manual-send bypass, failed-save rollback,
 replayed confirmations, edit revocation, synthetic hook/quiet/permission states,
 confirmation cancellation, locale/theme/font layout, second delivery and the
 last row still held. The debug strip labels synthetic observations explicitly;
-no hook or agent is installed. Expect all `review-*` and final `done` positive.
+no hook or agent is installed. Run `scripts/smoke-verdict <root> review`;
+exit 0.
 
 Quit only this smoke instance, then relaunch with the **same isolated root and
-socket** and `DECK_SMOKE_WKWEBVIEW=review-restart`. Expect `review-restart=1`
-and `done=1`: the last checkpoint and separate delivery/inspection ledgers
+socket** and `DECK_SMOKE_WKWEBVIEW=review-restart`, then run
+`scripts/smoke-verdict <root> review-restart`; exit 0: the last checkpoint and separate delivery/inspection ledgers
 survive. Inspect and capture the plan, independent observations, records and
 last-row confirmation. Do not confirm it until persistence evidence is captured.
 The full release checklist and its known selection baseline remain separate.
@@ -97,7 +113,7 @@ a click on a pane whose shell exited only focuses it (no re-attach, no
 restart), an exit that lands before its attach reply leaves the pane detached
 and unseen, and a poll requested mid-flight runs again afterwards and hands
 every waiter the follow-up. Twelve locale/theme/font combinations run in the actual WKWebView.
-Expect all `attention-*` checks positive and final `done=1`. The same run
+Run `scripts/smoke-verdict <root> attention`; exit 0. The same run
 carries the 06 B v01 entry-point gate (`entry-*`, nine checks): one
 persistent New session ▾ split button and no standing Automations/Templates
 buttons; the empty-project start block (and no per-column attention text)
@@ -138,8 +154,7 @@ and 通知 showing only the notification group), Enter locating the first match,
 empty results, Escape/focus restoration, cancellation and acceptance of log
 reset, and 32 layout combinations (English/Chinese, 100%/160% font, eight
 categories) in a 680 × 400 settings frame. It leaves Data & privacy open for
-visual inspection. Expect `settings-logs=1/1`, `settings-navigation=8/8`,
-`settings-viewport=32/32`, and final `done=1` in that isolated `app.log`.
+visual inspection. Run `scripts/smoke-verdict <root> settings`; exit 0.
 Reset runs before smoke results are written, so it cannot erase test evidence.
 
 ## Upgrade-aware tmux lifecycle
@@ -445,7 +460,8 @@ a fixture.
       The isolated WKWebView run covers these entry points with the six
       `split-picker-*` checks, once per direction (a=1/right, a=2/down).
       They verify creation, attachment, geometry, PTY row sizing and a real
-      shell input/output round trip; all values must be positive.
+      shell input/output round trip; `scripts/smoke-verdict <root> run`
+      exits 0.
 
 ## PTY flow control
 - [ ] `seq 1 500000` (or `yes | head -2000000`) → output streams smoothly to
@@ -477,7 +493,8 @@ a fixture.
 
 ## Dropdowns
 - [ ] Every select in the list form, the automation editor and Settings opens
-      deck's own listbox (`dropdown` smoke check 255/255): the button label
+      deck's own listbox (the `run` mode's `dropdown` check, judged by
+      `scripts/smoke-verdict`): the button label
       follows a programmatic value, a choice fires `change`, Escape closes and
       returns focus WITHOUT leaving the session view, and a hidden select hides
       its wrapper. The 31-day day-of-month list scrolls inside the menu.

@@ -100,6 +100,7 @@ if [ -n "${DECK_SMOKE_DATA_DIR:-}" ]; then
       --smoke-tmux-socket "$DECK_SMOKE_TMUX_SOCKET" \
       --smoke-wkwebview "$SMOKE_MODE" \
       "$@"
+    echo "when the run has finished, judge it: $REPO_ROOT/scripts/smoke-verdict $DECK_SMOKE_DATA_DIR $SMOKE_MODE"
   else
     open -n "$APP" --args \
       --smoke-data-dir "$DECK_SMOKE_DATA_DIR" \

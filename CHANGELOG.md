@@ -28,6 +28,12 @@
   answer, and `deck_job_read` reports the runner's reason instead of always
   `JOB_STATE_UNKNOWN`. If a started process cannot be handed its pipes, the
   runner now kills it rather than leaving it untracked.
+- Internal: the isolated WKWebView smoke now has a machine verdict.
+  `scripts/smoke-verdict <data-dir> <mode>` judges a run's `app.log`
+  against one manifest of what each mode must emit (held equal to the
+  logger's closed vocabulary and to the carriers by tests), so a red smoke
+  no longer depends on someone reading the log. It remains a manual,
+  idle-machine step before a candidate, not part of the nightly workflow.
 - Internal: the `minisign` that verifies and signs updater archives in the
   Nightly and promotion workflows is a fixed official release checked
   against a committed SHA-256 (`scripts/install-minisign`), no longer
