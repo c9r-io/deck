@@ -437,6 +437,67 @@ mod tests {
     }
 
     #[test]
+    fn install_refuses_shapeless_paths_and_a_missing_bundle_without_leftovers() {
+        assert_eq!(
+            install_bundle(Path::new("/"), b"").unwrap_err().message(),
+            "app bundle has no parent directory"
+        );
+        let parent =
+            std::env::temp_dir().join(format!("deck-updater-shape-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&parent);
+        std::fs::create_dir_all(&parent).unwrap();
+        assert_eq!(
+            install_bundle(&parent.join(".."), b"")
+                .unwrap_err()
+                .message(),
+            "app bundle has no name"
+        );
+        assert!(
+            install_bundle(Path::new("/System/deck.app"), b"").is_err(),
+            "staging next to an unwritable bundle fails before any unpack"
+        );
+        assert!(leftovers(Path::new("/System")).is_empty());
+        // A valid archive for a bundle that is not there: nothing to swap.
+        let archive = archive_with("deck.app", &[("Contents/MacOS/deck-app", b"new")]);
+        let error = install_bundle(&parent.join("deck.app"), &archive).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Missing, "{error}");
+        assert!(!parent.join("deck.app").exists());
+        assert!(leftovers(&parent).is_empty(), "{:?}", leftovers(&parent));
+        let _ = std::fs::remove_dir_all(&parent);
+    }
+
+    #[test]
+    fn progress_and_update_wire_shapes_are_camel_case() {
+        let progress = serde_json::to_value(UpdateProgress {
+            event: "progress",
+            chunk_length: 512,
+            content_length: Some(4096),
+        })
+        .unwrap();
+        assert_eq!(
+            progress,
+            serde_json::json!({"event":"progress","chunkLength":512,"contentLength":4096})
+        );
+        let info = serde_json::to_value(UpdateInfo {
+            version: "0.7.9".into(),
+            current_version: "0.7.8".into(),
+            channel: "nightly".into(),
+        })
+        .unwrap();
+        assert_eq!(
+            info,
+            serde_json::json!({"version":"0.7.9","currentVersion":"0.7.8","channel":"nightly"})
+        );
+        let identity = serde_json::to_value(build_identity()).unwrap();
+        assert_eq!(identity["version"], env!("CARGO_PKG_VERSION"));
+        assert!(identity["commit"].is_string());
+        assert_eq!(
+            NOT_WRITABLE,
+            "the app bundle is not writable by this user; reinstall the DMG manually"
+        );
+    }
+
+    #[test]
     fn the_writability_guard_asks_the_kernel_for_this_user() {
         assert!(user_writable(&std::env::temp_dir()));
         assert!(!user_writable(Path::new("/System")));

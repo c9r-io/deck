@@ -739,6 +739,111 @@ mod tests {
         assert_eq!(panes["beta"].pane_pid, 200);
     }
 
+    /// One listing feeds every card: a present pane is alive with its
+    /// recency, footprint, foreground and (only when usable) cwd; an absent
+    /// name is dead with nothing else claimed about it. Previews are capped
+    /// per poll, and a listing that recovers after a failure is logged once.
+    #[test]
+    fn poll_projects_liveness_footprint_and_cwd_from_one_listing() {
+        let now = now_epoch();
+        let rows = vec![
+            row(
+                "alpha",
+                std::process::id(),
+                now.saturating_sub(5),
+                true,
+                "zsh",
+                "/tmp/a",
+            ),
+            row("beta", u32::MAX, now, false, "claude", "/tmp/x\u{7}"),
+        ];
+        assert!(poll_from_listing(
+            vec!["alpha".into()],
+            vec![],
+            false,
+            Err(DeckError::new(ErrorKind::Tmux, "listing unavailable")),
+        )
+        .is_err());
+        let mut previews: Vec<String> = (0..MAX_TAIL_SESSIONS)
+            .map(|i| format!("preview-{i}"))
+            .collect();
+        previews.insert(0, "alpha".into());
+        let info = poll_from_listing(
+            vec!["alpha".into(), "beta".into(), "gone".into()],
+            previews,
+            false,
+            Ok(rows),
+        )
+        .unwrap();
+        assert_eq!(info.len(), 3);
+        let alpha = &info[0];
+        assert_eq!(alpha.name, "alpha");
+        assert!(alpha.alive);
+        assert!(
+            alpha.idle_secs.is_some_and(|secs| (5..60).contains(&secs)),
+            "{:?}",
+            alpha.idle_secs
+        );
+        assert!(
+            alpha.mem_mb.is_some_and(|mb| mb > 0.0),
+            "{:?}",
+            alpha.mem_mb
+        );
+        assert_eq!(alpha.fg.as_deref(), Some("zsh"));
+        assert_eq!(alpha.cwd.as_deref(), Some("/tmp/a"));
+        assert_eq!(alpha.scrolled, Some(true));
+        assert_eq!(alpha.agent, None);
+        assert!(
+            alpha.tail.is_empty(),
+            "no sidecar means no preview, not a failure"
+        );
+        let beta = &info[1];
+        assert!(beta.alive);
+        assert_eq!(
+            beta.cwd, None,
+            "an unusable cwd is omitted independently of liveness"
+        );
+        assert_eq!(beta.mem_mb, Some(0.0));
+        assert_eq!(beta.scrolled, Some(false));
+        let gone = &info[2];
+        assert!(!gone.alive);
+        assert_eq!(
+            (
+                gone.idle_secs,
+                gone.mem_mb,
+                gone.fg.as_deref(),
+                gone.scrolled
+            ),
+            (None, None, None, None)
+        );
+        assert!(gone.tail.is_empty() && gone.cwd.is_none());
+    }
+
+    /// The palette command validates before it talks to tmux, and every tmux
+    /// probe in this module fails closed when the build has no sidecar:
+    /// availability is false, styling is `TmuxMissing`, previews are empty.
+    #[test]
+    fn mode_style_and_availability_fail_closed_without_a_bundled_tmux() {
+        assert_eq!(
+            set_terminal_mode_style("red".into(), "#000000".into())
+                .unwrap_err()
+                .kind(),
+            ErrorKind::Other
+        );
+        assert!(capture_tails(&[], 2).is_empty());
+        if crate::tmux::tmux_bin().is_empty() {
+            assert!(!tmux_available());
+            assert_eq!(
+                set_terminal_mode_style("#000000".into(), "#ffffff".into())
+                    .unwrap_err()
+                    .kind(),
+                ErrorKind::TmuxMissing
+            );
+            let name = "deck-preview-unit".to_string();
+            assert!(capture_tails(&[&name], 2).is_empty());
+        }
+    }
+
     #[test]
     fn failed_listing_rejects_poll_instead_of_reporting_dead_sessions() {
         for kind in [

@@ -36,8 +36,12 @@ const SEARCH_MAX_PAGES: u32 = 3;
 const SOCKET_READ_TIMEOUT: Duration = Duration::from_secs(90);
 const MAX_TEXT: usize = 16 * 1024;
 
+/// Test seam: the Web API base every `call` posts to. Set only while holding
+/// `TEST_API_LOCK`, which the channel monitor's tests share.
 #[cfg(test)]
-static TEST_API: Mutex<Option<String>> = Mutex::new(None);
+pub(crate) static TEST_API: Mutex<Option<String>> = Mutex::new(None);
+#[cfg(test)]
+pub(crate) static TEST_API_LOCK: Mutex<()> = Mutex::new(());
 
 /* ---------- HTTP ---------- */
 
@@ -784,7 +788,22 @@ mod tests {
     use std::net::TcpListener;
     use std::thread;
 
+    /// Point `call` at a port nothing listens on for the duration of `f`.
+    fn with_offline<T>(f: impl FnOnce() -> T) -> T {
+        let _serial = TEST_API_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let unused = listener.local_addr().unwrap();
+        drop(listener);
+        *TEST_API.lock().unwrap() = Some(format!("http://{unused}/"));
+        let value = f();
+        *TEST_API.lock().unwrap() = None;
+        value
+    }
+
+    /// Answer exactly `responses.len()` requests from a local fake Web API
+    /// while `f` runs; returns `f`'s value and the raw requests received.
     fn with_responses<T>(responses: Vec<(u16, &str)>, f: impl FnOnce() -> T) -> (T, Vec<String>) {
+        let _serial = TEST_API_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let base = format!("http://{}/", listener.local_addr().unwrap());
         let responses: Vec<(u16, String)> = responses
@@ -1067,12 +1086,7 @@ mod tests {
         );
         assert_eq!(last_slack_error(), "strangeerror");
 
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let unused = listener.local_addr().unwrap();
-        drop(listener);
-        *TEST_API.lock().unwrap() = Some(format!("http://{unused}/"));
-        assert_eq!(call("offline", "t", &[]), Err("network"));
-        *TEST_API.lock().unwrap() = None;
+        assert_eq!(with_offline(|| call("offline", "t", &[])), Err("network"));
 
         let (verified, _) = with_responses(
             vec![(200, r#"{"ok":true}"#), (200, r#"{"ok":true}"#)],
@@ -1156,5 +1170,130 @@ mod tests {
         assert!(status.last_error.is_none());
         assert!(now_secs() > 0);
         let _ = client();
+    }
+
+    #[test]
+    fn verify_probes_each_slot_with_the_call_it_can_make() {
+        let (verified, requests) = with_responses(
+            vec![(200, r#"{"ok":true}"#), (200, r#"{"ok":true}"#)],
+            || {
+                (
+                    verify(Slot::SlackChannelBotToken, "xoxb-test"),
+                    verify(Slot::SlackChannelAppToken, "xapp-test"),
+                )
+            },
+        );
+        assert_eq!(verified, (Ok(()), Ok(())));
+        assert!(requests[0].starts_with("POST /auth.test HTTP/1.1\r\n"));
+        assert!(requests[0].contains("authorization: Bearer xoxb-test\r\n"));
+        assert!(requests[1].starts_with("POST /apps.connections.open HTTP/1.1\r\n"));
+        // the Connector identity is not a Slack token: no request is made
+        assert_eq!(
+            with_offline(|| verify(Slot::ConnectorIdentity, "v1_identity")),
+            Err("slot")
+        );
+    }
+
+    #[test]
+    fn live_helpers_fall_back_to_identifiers_and_bound_thread_paging() {
+        // a reply that is in none of the first three thread pages is given up
+        // on, with the cursor threaded through every follow-up request
+        let page = |cursor: &str| {
+            format!(
+                r#"{{"ok":true,"messages":[{{"ts":"9.9","text":"other"}}],"response_metadata":{{"next_cursor":"{cursor}"}}}}"#
+            )
+        };
+        let (pages, requests) = with_responses(
+            vec![
+                (200, r#"{"ok":true,"messages":[]}"#),
+                (200, &page("c1")),
+                (200, &page("c2")),
+                (200, &page("c3")),
+            ],
+            || message_text("xoxp-test", "C1", "5.0"),
+        );
+        assert_eq!(pages, Err("slack"));
+        assert_eq!(requests.len(), 4);
+        assert!(requests[0].starts_with("POST /conversations.history "));
+        assert!(requests[1].starts_with("POST /conversations.replies "));
+        assert!(
+            !requests[1].contains("cursor="),
+            "the first page has no cursor"
+        );
+        assert!(requests[2].ends_with("cursor=c1"));
+        assert!(requests[3].ends_with("cursor=c2"));
+        // an empty cursor ends the walk early, and a Slack error propagates
+        let (short, requests) = with_responses(
+            vec![
+                (200, r#"{"ok":true,"messages":[]}"#),
+                (200, r#"{"ok":true,"messages":[]}"#),
+            ],
+            || message_text("xoxp-test", "C1", "5.0"),
+        );
+        assert_eq!(short, Err("slack"));
+        assert_eq!(requests.len(), 2);
+        let (denied, _) = with_responses(
+            vec![(200, r#"{"ok":false,"error":"missing_scope"}"#)],
+            || message_text("xoxp-test", "C1", "5.0"),
+        );
+        assert_eq!(denied, Err("scope"));
+
+        // name lookups degrade to the raw identifier, and are cached as such
+        let (fallbacks, requests) = with_responses(
+            vec![
+                (500, "{}"),
+                (200, r#"{"ok":true,"user":{"profile":{"display_name":""}}}"#),
+                (200, r#"{"ok":false,"error":"channel_not_found"}"#),
+                (200, r#"{"ok":false,"error":"invalid_auth"}"#),
+            ],
+            || {
+                let mut names = Names::default();
+                (
+                    user_name("xoxp-test", &mut names, "U404"),
+                    user_name("xoxp-test", &mut names, "U_NAMELESS"),
+                    channel_label("xoxp-test", &mut names, "C404"),
+                    permalink("xoxp-test", "C404", "1.0"),
+                    user_name("xoxp-test", &mut names, "U404"),
+                    channel_label("xoxp-test", &mut names, "C404"),
+                )
+            },
+        );
+        assert_eq!(fallbacks.0, "U404");
+        assert_eq!(fallbacks.1, "U_NAMELESS", "no usable name field");
+        assert_eq!(fallbacks.2, "C404");
+        assert_eq!(
+            fallbacks.3, "",
+            "no permalink is an empty link, never an error"
+        );
+        assert_eq!(
+            (fallbacks.4.as_str(), fallbacks.5.as_str()),
+            ("U404", "C404")
+        );
+        assert_eq!(requests.len(), 4, "the fallback is cached like a hit");
+
+        assert!(events_from_search(&json!({"ok": true}), "deck").is_empty());
+        assert!(
+            events_from_search(&json!({"ok": true, "messages": {"matches": []}}), "deck")
+                .is_empty()
+        );
+        let no_item = json!({"envelope_id": "E9", "type": "events_api", "payload": {"event": {
+            "type": "reaction_added", "user": "U_ME", "reaction": "deck",
+            "item": {"type": "message", "ts": "1.2"}}}})
+        .to_string();
+        assert_eq!(
+            parse_envelope(&no_item, "U_ME", &["deck".to_string()]),
+            (Some("E9".into()), None),
+            "a hit without a channel is acknowledged and dropped"
+        );
+        let no_event =
+            json!({"envelope_id": "E8", "type": "events_api", "payload": {}}).to_string();
+        assert_eq!(
+            parse_envelope(&no_event, "U_ME", &["deck".to_string()]),
+            (Some("E8".into()), None)
+        );
+        assert!(
+            !Slack::default().polled_events_are_live(),
+            "polled badges go through the first-poll baseline"
+        );
     }
 }

@@ -723,6 +723,227 @@ mod tests {
     }
 
     #[test]
+    fn wire_value_filters_and_unavailable_shapes_are_closed() {
+        assert!(valid_tunnel_id("tunnel_abc-123_X"));
+        for id in [
+            "tunnel_a b",
+            "tun_x",
+            &format!("tunnel_{}", "x".repeat(122)),
+        ] {
+            assert!(!valid_tunnel_id(id), "{id:?}");
+        }
+        assert!(!valid_client_id("client_"));
+        assert!(!valid_client_id(&format!("client_{}", "a".repeat(122))));
+        assert!(!valid_alias("deck-0123456789ABCDEF0123456789abcdef"));
+
+        let incompatible = protocol_unavailable("helper_malformed", true);
+        assert_eq!(incompatible.helper_state, "helper_incompatible");
+        assert!(incompatible.development_helper);
+        assert_eq!(incompatible.error_code, Some("helper_malformed"));
+        let errored = protocol_unavailable("helper_timeout", false);
+        assert_eq!(errored.helper_state, "helper_error");
+        assert_eq!(errored.error_code, Some("helper_timeout"));
+        let wire = serde_json::to_value(unavailable("helper_missing", "helper_missing")).unwrap();
+        assert_eq!(
+            wire,
+            serde_json::json!({
+                "helperState":"helper_missing","developmentHelper":false,"tunnelState":null,
+                "runtimeExists":false,"runtimeAlias":null,"tunnelId":null,
+                "errorCode":"helper_missing"
+            })
+        );
+        assert_eq!(error("helper_schema").message(), "helper_schema");
+        assert_eq!(error("helper_schema").kind(), ErrorKind::Other);
+        assert_eq!(remaining(Instant::now()), Err("helper_timeout"));
+        assert!(remaining(Instant::now() + Duration::from_secs(60)).is_ok());
+    }
+
+    #[test]
+    fn commands_refuse_an_invalid_client_id_before_looking_for_the_helper() {
+        let status = tauri::async_runtime::block_on(tunnel_helper_status("client;x".into()));
+        assert_eq!(status.helper_state, "helper_error");
+        assert_eq!(status.error_code, Some("invalid_client_id"));
+        assert!(status.tunnel_state.is_none());
+        for result in [
+            tauri::async_runtime::block_on(tunnel_helper_start("nope".into())),
+            tauri::async_runtime::block_on(tunnel_helper_stop("nope".into())),
+            tauri::async_runtime::block_on(tunnel_helper_remove("nope".into())),
+        ] {
+            assert_eq!(result.err().unwrap().message(), "invalid_client_id");
+        }
+        assert_eq!(
+            tauri::async_runtime::block_on(tunnel_helper_setup_command("nope".into()))
+                .unwrap_err()
+                .message(),
+            "invalid_client_id"
+        );
+    }
+
+    #[test]
+    fn helper_identity_and_path_are_rechecked_before_every_spawn() {
+        let base =
+            std::env::temp_dir().join(format!("deck-helper-identity-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(base.join("real")).unwrap();
+        // The temp dir itself sits behind a symlink on macOS (/var).
+        let base = fs::canonicalize(&base).unwrap();
+        let helper = base.join("real/helper");
+        fs::write(&helper, b"#!/bin/sh\necho '{}'\n").unwrap();
+        fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(validate_no_symlink_components(&helper).is_ok());
+        symlink(base.join("real"), base.join("alias")).unwrap();
+        assert_eq!(
+            validate_no_symlink_components(&base.join("alias/helper")),
+            Err("helper_untrusted"),
+            "a symlinked directory on the way is untrusted"
+        );
+        assert_eq!(
+            validate_no_symlink_components(&base.join("absent/helper")),
+            Err("helper_untrusted")
+        );
+
+        let resolved = ResolvedHelper {
+            identity: file_identity(&helper).unwrap(),
+            path: helper.clone(),
+            development: true,
+        };
+        let output = invoke(&resolved, &["protocol"], Duration::from_secs(3)).unwrap();
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"{}\n");
+        std::thread::sleep(Duration::from_millis(5));
+        fs::write(&helper, b"#!/bin/sh\necho '{\"replaced\":true}'\n").unwrap();
+        fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(
+            invoke(&resolved, &["protocol"], Duration::from_secs(3)).unwrap_err(),
+            "helper_replaced",
+            "a rewritten helper is not run under the verified identity"
+        );
+        fs::set_permissions(&helper, fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(
+            invoke(&resolved, &["protocol"], Duration::from_secs(3)).unwrap_err(),
+            "helper_untrusted"
+        );
+        fs::remove_file(&helper).unwrap();
+        assert_eq!(
+            invoke(&resolved, &["protocol"], Duration::from_secs(3)).unwrap_err(),
+            "helper_missing"
+        );
+        assert_eq!(file_identity(&helper), Err("helper_untrusted"));
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    /// A debug helper whose `protocol` answer is fixed and whose other
+    /// answers come from `reply` / `code` files, so the helper file (and
+    /// its verified identity) never changes between scenarios.
+    #[cfg(debug_assertions)]
+    fn scripted_helper(tag: &str) -> (PathBuf, PathBuf, PathBuf, PathBuf) {
+        let base = std::env::temp_dir().join(format!("deck-helper-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir(&base).unwrap();
+        let helper = base.join("helper");
+        let reply = base.join("reply");
+        let code = base.join("code");
+        fs::write(&helper, format!("#!/bin/sh\nif [ \"$1\" = protocol ]; then echo '{{\"protocolVersion\":1,\"toolVersion\":\"test\",\"capabilities\":[\"status\",\"start\",\"stop\",\"setup\",\"remove\"]}}'; exit 0; fi\ncat '{}'\nexit $(cat '{}')\n", reply.display(), code.display())).unwrap();
+        fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::write(&code, b"0").unwrap();
+        (base, helper, reply, code)
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn debug_helper_actions_report_closed_state_and_invalidate_cached_status() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let (base, helper, reply, code) = scripted_helper("actions");
+        std::env::set_var("DECK_TUNNEL_HELPER_PATH", &helper);
+        let alias = "deck-0123456789abcdef0123456789abcdef";
+
+        fs::write(&reply, format!("{{\"protocolVersion\":1,\"ok\":true,\"state\":\"ready\",\"runtimeAlias\":\"{alias}\",\"errorCode\":null}}")).unwrap();
+        let before = STATUS_GENERATION.load(Ordering::SeqCst);
+        let started = action("start", "client_act", Duration::from_secs(5)).unwrap();
+        assert_eq!(started.helper_state, "installed");
+        assert!(started.development_helper);
+        assert_eq!(started.tunnel_state.as_deref(), Some("ready"));
+        assert!(started.runtime_exists);
+        assert_eq!(started.runtime_alias.as_deref(), Some(alias));
+        assert!(started.tunnel_id.is_none());
+        assert_eq!(
+            STATUS_GENERATION.load(Ordering::SeqCst),
+            before + 1,
+            "an action invalidates every cached status"
+        );
+        fs::write(&reply, format!("{{\"protocolVersion\":1,\"ok\":true,\"state\":\"not_configured\",\"runtimeAlias\":\"{alias}\",\"errorCode\":null}}")).unwrap();
+        let removed = action("remove", "client_act", Duration::from_secs(5)).unwrap();
+        assert!(!removed.runtime_exists);
+        assert_eq!(removed.tunnel_state.as_deref(), Some("not_configured"));
+        assert_eq!(
+            setup_command("client_act").unwrap(),
+            format!("'{}' setup --client-id 'client_act'", helper.display())
+        );
+
+        fs::write(&reply, format!("{{\"protocolVersion\":1,\"ok\":false,\"state\":\"error\",\"runtimeAlias\":\"{alias}\",\"errorCode\":null}}")).unwrap();
+        assert_eq!(
+            action("stop", "client_act", Duration::from_secs(5))
+                .unwrap_err()
+                .message(),
+            "helper_schema"
+        );
+        fs::write(&reply, b"not json").unwrap();
+        assert_eq!(
+            action("stop", "client_act", Duration::from_secs(5))
+                .unwrap_err()
+                .message(),
+            "helper_malformed"
+        );
+        fs::write(&code, b"3").unwrap();
+        assert_eq!(
+            action("stop", "client_act", Duration::from_secs(5))
+                .unwrap_err()
+                .message(),
+            "helper_action_failed"
+        );
+
+        // Status: a non-zero helper is an error (not incompatible), a schema
+        // violation is incompatible, and a foreign tunnel id is dropped.
+        let nonzero = helper_status("client_nonzero");
+        assert_eq!(nonzero.helper_state, "helper_error");
+        assert_eq!(nonzero.error_code, Some("helper_nonzero"));
+        fs::write(&code, b"0").unwrap();
+        fs::write(&reply, format!("{{\"protocolVersion\":1,\"state\":\"ready\",\"runtimeAlias\":\"{alias}\",\"runtimeExists\":true,\"tunnelId\":\"bogus id\",\"errorCode\":\"boom\"}}")).unwrap();
+        let schema = helper_status("client_schema");
+        assert_eq!(schema.helper_state, "helper_incompatible");
+        assert_eq!(schema.error_code, Some("helper_schema"));
+        fs::write(&reply, format!("{{\"protocolVersion\":1,\"state\":\"ready\",\"runtimeAlias\":\"{alias}\",\"runtimeExists\":false,\"tunnelId\":\"bogus id\",\"errorCode\":null}}")).unwrap();
+        let foreign = helper_status("client_foreign");
+        assert_eq!(foreign.helper_state, "installed");
+        assert!(!foreign.runtime_exists);
+        assert!(
+            foreign.tunnel_id.is_none(),
+            "an invalid tunnel id is dropped"
+        );
+
+        // Missing and non-executable helpers are reported without a spawn.
+        std::env::set_var("DECK_TUNNEL_HELPER_PATH", base.join("absent"));
+        assert_eq!(
+            action("start", "client_act", Duration::from_secs(5))
+                .unwrap_err()
+                .message(),
+            "helper_missing"
+        );
+        assert_eq!(
+            setup_command("client_act").unwrap_err().message(),
+            "helper_missing"
+        );
+        fs::set_permissions(&helper, fs::Permissions::from_mode(0o600)).unwrap();
+        std::env::set_var("DECK_TUNNEL_HELPER_PATH", &helper);
+        assert_eq!(
+            helper_status("client_plain").helper_state,
+            "helper_untrusted"
+        );
+        std::env::remove_var("DECK_TUNNEL_HELPER_PATH");
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
     fn helper_timeout_and_large_output_are_bounded_and_killed() {
         let started = Instant::now();
         assert_eq!(

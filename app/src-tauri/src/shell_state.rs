@@ -963,8 +963,13 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    /// Tests that touch the process-wide TRACKER run one at a time: CI uses
+    /// `--test-threads=1`, a local run does not.
+    static TRACKER_TEST_LOCK: Mutex<()> = Mutex::new(());
+
     #[test]
     fn recovered_sessions_are_removed_from_checkpoint_deduplication() {
+        let _guard = TRACKER_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let name = format!("deck-shell-recovered-{}", std::process::id());
         TRACKER.lock().unwrap().saved.insert(
             name.clone(),
@@ -999,5 +1004,107 @@ mod tests {
             std::env::temp_dir().join(format!("deck-shell-no-prune-dir-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&missing);
         prune_snapshot_count(&missing, &missing.join("keep.json"));
+    }
+
+    /// The restart boundary always starts on its own line, so a transcript
+    /// whose last line was still open is terminated before the marker.
+    #[test]
+    fn bootstrap_terminates_an_open_last_line_before_the_restart_boundary() {
+        let snapshot = ShellSnapshot {
+            session: "deck-shell-open-line".into(),
+            cwd: "/tmp".into(),
+            transcript: "$ ls\nfile".into(),
+            updated: now_epoch(),
+        };
+        let bootstrap = prepare_bootstrap(&snapshot).unwrap();
+        assert_eq!(
+            bootstrap.output,
+            [b"$ ls\nfile\n".as_slice(), RESTORE_BOUNDARY].concat()
+        );
+        assert!(bootstrap.buffer.starts_with("deck-restore-"));
+    }
+
+    /// A snapshot whose main file was damaged is served from its backup;
+    /// a snapshot file that cannot be deleted is reported, never ignored.
+    #[test]
+    fn snapshot_recovery_serves_the_backup_and_removal_reports_undeletable_files() {
+        let dir = temp_dir("backup-recovery");
+        let path = snapshot_path_in(&dir, "deck-shell-recover").unwrap();
+        let snapshot = ShellSnapshot {
+            session: "deck-shell-recover".into(),
+            cwd: "/tmp".into(),
+            transcript: "kept output".into(),
+            updated: now_epoch(),
+        };
+        let raw = serde_json::to_string(&snapshot).unwrap();
+        storage::save_typed::<ShellSnapshot>(&path, &raw).unwrap();
+        storage::save_typed::<ShellSnapshot>(&path, &raw).unwrap();
+        assert!(backup_path(&path).exists());
+        std::fs::write(&path, "{\"session\":").unwrap();
+        let recovered = load_snapshot_from(&path).unwrap().expect("backup restores");
+        assert_eq!(recovered.transcript, "kept output");
+        assert_eq!(recovered.session, "deck-shell-recover");
+
+        let blocked = snapshot_path_in(&dir, "deck-shell-blocked").unwrap();
+        std::fs::create_dir(&blocked).unwrap();
+        std::fs::write(blocked.join("child"), "x").unwrap();
+        let error = remove_snapshot_files_in(&dir, "deck-shell-blocked").unwrap_err();
+        assert!(
+            error
+                .message()
+                .starts_with("could not remove shell snapshot"),
+            "{}",
+            error.message()
+        );
+        assert!(blocked.exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Without a tmux capture an eligible shell is scheduled, fails its
+    /// checkpoint, records nothing and releases the scheduler; a restart
+    /// checkpoint with no listing fails closed instead of pretending.
+    #[test]
+    fn checkpoint_scheduling_releases_the_tracker_when_capture_is_unavailable() {
+        if !crate::tmux::tmux_bin().is_empty() {
+            return; // a real sidecar would be asked to capture a pane
+        }
+        let _guard = TRACKER_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let session = format!("deck-shell-sched-{}", std::process::id());
+        let observation = ShellObservation {
+            session: session.clone(),
+            activity: 7,
+            cwd: "/tmp".into(),
+            foreground: "zsh".into(),
+        };
+        assert!(checkpoint_eligible(&observation));
+        {
+            // an earlier test in this process may have scheduled within the
+            // 15 s interval or left the worker flag set
+            let mut tracker = TRACKER.lock().unwrap();
+            tracker.busy = false;
+            tracker.last_schedule = 0;
+        }
+        schedule_checkpoints(vec![observation], true);
+        let started = std::time::Instant::now();
+        while TRACKER.lock().unwrap().busy {
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(3),
+                "the checkpoint worker never released the tracker"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let tracker = TRACKER.lock().unwrap();
+        assert!(
+            !tracker.saved.contains_key(&session),
+            "nothing was captured"
+        );
+        assert!(tracker.last_schedule >= now_epoch().saturating_sub(5));
+        drop(tracker);
+        assert_eq!(
+            checkpoint_before_restart(&[], &|_, _, _| {})
+                .unwrap_err()
+                .kind(),
+            ErrorKind::TmuxMissing
+        );
     }
 }

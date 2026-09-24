@@ -742,6 +742,253 @@ mod tests {
     }
 
     #[test]
+    fn failure_mapping_and_path_decoding_are_closed() {
+        for (kind, message, status, code) in [
+            (ErrorKind::Missing, "card not found", 404, "not-found"),
+            (ErrorKind::Perm, "unauthorized", 401, "unauthorized"),
+            (
+                ErrorKind::ContextChanged,
+                "target-changed",
+                409,
+                "context-changed",
+            ),
+            (
+                ErrorKind::DiskFull,
+                "device capacity reached",
+                507,
+                "capacity",
+            ),
+            (
+                ErrorKind::Invalid,
+                "command payload is invalid",
+                400,
+                "invalid",
+            ),
+            (
+                ErrorKind::InvalidDoc,
+                "card session missing",
+                400,
+                "invalid",
+            ),
+            (
+                ErrorKind::Tmux,
+                "output-history-unavailable",
+                503,
+                "unavailable",
+            ),
+            (
+                ErrorKind::Invalid,
+                "unsupported-target",
+                400,
+                "unsupported-target",
+            ),
+            (
+                ErrorKind::Invalid,
+                CLIENT_UPGRADE_REQUIRED,
+                426,
+                "upgrade-required",
+            ),
+            (
+                ErrorKind::Perm,
+                "connector unavailable",
+                503,
+                "connector-disabled",
+            ),
+        ] {
+            let response = mapped(&DeckError::new(kind, message));
+            assert_eq!(response.status().as_u16(), status, "{message}");
+            let body = serde_json::to_string(&json!({"error":{"code":code}})).unwrap();
+            assert_eq!(
+                String::from_utf8(
+                    tokio::runtime::Builder::new_current_thread()
+                        .build()
+                        .unwrap()
+                        .block_on(response.into_body().collect())
+                        .unwrap()
+                        .to_bytes()
+                        .to_vec()
+                )
+                .unwrap(),
+                body,
+                "{message}"
+            );
+        }
+        let ok = response(StatusCode::OK, json!({"ok":true}));
+        assert_eq!(ok.headers()["content-type"], "application/json");
+        assert_eq!(ok.headers()["cache-control"], "no-store");
+
+        assert_eq!(decode_segment("a%20b").as_deref(), Some("a b"));
+        assert_eq!(decode_segment("%E4%B8%AD").as_deref(), Some("中"));
+        for segment in ["", "%zz", "abc%2", "%00", "a/b", "%2f", "%FF"] {
+            assert!(decode_segment(segment).is_none(), "{segment:?}");
+        }
+        assert!(decode_segment(&"x".repeat(129)).is_none());
+
+        let mut doc = super::super::DiskDoc::fresh().unwrap();
+        doc.config.enabled = true;
+        let runtime = Arc::new(Runtime {
+            app: None,
+            path: std::env::temp_dir().join("deck-connector-never-written"),
+            doc: Mutex::new(Ok(doc)),
+            pairing: Mutex::new(None),
+            lifecycle: Mutex::new(()),
+            server_epoch: AtomicU64::new(1),
+            running_epoch: AtomicU64::new(0),
+        });
+        let unbound = spawn(
+            runtime.clone(),
+            Config {
+                enabled: true,
+                address: "not-an-address".into(),
+                port: 0,
+                interface: None,
+            },
+            Identity::generate("127.0.0.1").unwrap(),
+            1,
+            || true,
+        )
+        .unwrap_err();
+        assert_eq!(unbound.kind(), ErrorKind::Invalid);
+        assert_eq!(runtime.running_epoch.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn get_routes_answer_from_the_journal_and_refuse_everything_else_closed() {
+        let path = std::env::temp_dir().join(format!(
+            "deck-connector-routes-{}-{}",
+            std::process::id(),
+            super::super::now()
+        ));
+        let mut doc = super::super::DiskDoc::fresh().unwrap();
+        doc.config = Config {
+            enabled: true,
+            address: "127.0.0.1".into(),
+            port: 0,
+            interface: None,
+        };
+        super::super::save(&path, &doc).unwrap();
+        let runtime = Arc::new(Runtime {
+            app: None,
+            path: path.clone(),
+            doc: Mutex::new(Ok(doc)),
+            pairing: Mutex::new(Some(super::super::Pairing {
+                code: "route-code".into(),
+                expires_at: super::super::now() + 30,
+            })),
+            lifecycle: Mutex::new(()),
+            server_epoch: AtomicU64::new(1),
+            running_epoch: AtomicU64::new(0),
+        });
+        let identity = Identity::generate("127.0.0.1").unwrap();
+        let cert = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(&identity.cert_der)
+            .unwrap();
+        let config = Config {
+            enabled: true,
+            address: "127.0.0.1".into(),
+            port: 0,
+            interface: None,
+        };
+        let port = spawn(runtime.clone(), config, identity, 1, || true).unwrap();
+        let mut roots = rustls::RootCertStore::empty();
+        roots.add(CertificateDer::from(cert)).unwrap();
+        let client = Arc::new(
+            rustls::ClientConfig::builder()
+                .with_root_certificates(roots)
+                .with_no_client_auth(),
+        );
+
+        // A pairing body must be JSON of the closed shape and within 4 KiB.
+        let (status, body) = exchange(&client, port, "POST /v1/pair HTTP/1.1\r\n", b"nope");
+        assert_eq!(status, 400, "{body}");
+        assert!(body.contains("\"invalid\""));
+        let (status, body) = exchange(
+            &client,
+            port,
+            "POST /v1/pair HTTP/1.1\r\n",
+            &vec![b' '; MAX_PAIR_BODY + 1],
+        );
+        assert_eq!(status, 413, "{body}");
+        assert!(body.contains("body-too-large"));
+        let (status, paired) = exchange(
+            &client,
+            port,
+            "POST /v1/pair HTTP/1.1\r\n",
+            br#"{"code":"route-code","deviceName":"fixture"}"#,
+        );
+        assert_eq!(status, 200, "{paired}");
+        let paired: Value = serde_json::from_str(&paired).unwrap();
+        let token = paired["token"].as_str().unwrap().to_owned();
+        let get = |path: &str, bearer: &str| {
+            exchange(
+                &client,
+                port,
+                &format!("GET {path} HTTP/1.1\r\nAuthorization: Bearer {bearer}\r\n"),
+                b"",
+            )
+        };
+
+        // Queries are refused before authentication; bad or oversized bearer
+        // tokens and unknown tokens are unauthorized.
+        assert_eq!(get("/v1/snapshot?x=1", &token).0, 400);
+        assert_eq!(get("/v1/snapshot", "").0, 401);
+        assert_eq!(get("/v1/snapshot", &"t".repeat(257)).0, 401);
+        assert_eq!(get("/v1/snapshot", "wrong-token").0, 401);
+        let (status, body) = exchange(
+            &client,
+            port,
+            &format!("DELETE /v1/snapshot HTTP/1.1\r\nAuthorization: Bearer {token}\r\n"),
+            b"",
+        );
+        assert_eq!(status, 404, "{body}");
+
+        // Malformed command JSON from an authorized device is a plain 400.
+        let (status, body) = exchange(
+            &client,
+            port,
+            &format!("POST /v1/commands HTTP/1.1\r\nAuthorization: Bearer {token}\r\n"),
+            b"{not json",
+        );
+        assert_eq!(status, 400, "{body}");
+        let (status, body) = exchange(
+            &client,
+            port,
+            &format!("POST /v1/commands HTTP/1.1\r\nAuthorization: Bearer {token}\r\n"),
+            &serde_json::to_vec(&json!({"id":"one","kind":"buffer-add","cardId":"C1",
+                "expectedRevision":"1","payload":{"text":"note"},"seq":1}))
+            .unwrap(),
+        );
+        assert_eq!(status, 202, "{body}");
+
+        // The journal answers a command query; an unknown id is not found and
+        // an undecodable id never matches a route.
+        let (status, body) = get("/v1/commands/one", &token);
+        assert_eq!(status, 200, "{body}");
+        let answer: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(answer["id"], "one");
+        assert_eq!(answer["state"], "accepted");
+        let (status, body) = get("/v1/commands/never", &token);
+        assert_eq!(status, 404, "{body}");
+        assert!(body.contains("not-found"));
+        assert_eq!(get("/v1/commands/%2F", &token).0, 404);
+
+        // Routes that need the desktop app are closed without one, and every
+        // other card leaf or path is not found.
+        let (status, body) = get("/v1/snapshot", &token);
+        assert_eq!(status, 503, "{body}");
+        assert!(body.contains("connector-disabled"));
+        let (status, body) = get("/v1/cards/C1/buffer", &token);
+        assert_eq!(status, 503, "{body}");
+        assert_eq!(get("/v1/cards/C1/history", &token).0, 404);
+        assert_eq!(get("/v1/cards/C1", &token).0, 404);
+        assert_eq!(get("/v1/cards/%2F/buffer", &token).0, 404);
+        assert_eq!(get("/v2/snapshot", &token).0, 404);
+
+        runtime.server_epoch.store(2, Ordering::SeqCst);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
     fn f4_http_post_admission_refuses_a_retired_command_without_a_prior_get() {
         let path = std::env::temp_dir().join(format!(
             "deck-connector-f4-http-{}-{}",

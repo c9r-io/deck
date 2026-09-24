@@ -1,7 +1,10 @@
 //! Local Tauri commands: status, enable/disable, pairing, revocation, pending intents, claim/complete/validate, native execution.
 //!
 //! Split out of the one-file `connector/mod.rs` on 2026-09-23; the contract
-//! stays in `connector/mod.rs`.
+//! stays in `connector/mod.rs`. `connector_validate` and
+//! `connector_validate_admission` are thin over `validate_claimed` and
+//! `validate_claimed_admission`, which take the board-side check (or the
+//! board loader) as an argument so tests never read the committed board.
 
 use super::*;
 
@@ -333,6 +336,15 @@ pub(crate) fn connector_complete(
 
 #[tauri::command]
 pub(crate) fn connector_validate(handle: String) -> Result<bool, DeckError> {
+    validate_claimed(&handle, validate_applicable)
+}
+
+/// The claimed (executing, still authorized) request behind `handle`, run
+/// through `applicable` (the committed-board check in production).
+pub(super) fn validate_claimed(
+    handle: &str,
+    applicable: impl FnOnce(&CommandRequest) -> Result<(), DeckError>,
+) -> Result<bool, DeckError> {
     let r = rt()?;
     let _lifecycle = r.lifecycle.lock_or_recover();
     if !r.feature_active() {
@@ -357,12 +369,21 @@ pub(crate) fn connector_validate(handle: String) -> Result<bool, DeckError> {
         }
         c.body().cloned()
     })??;
-    validate_applicable(&request)?;
+    applicable(&request)?;
     Ok(true)
 }
 
 #[tauri::command]
 pub(crate) fn connector_validate_admission(handle: String) -> Result<bool, DeckError> {
+    validate_claimed_admission(&handle, board_value)
+}
+
+/// Admission proof for the claimed buffer-queue command behind `handle`
+/// against the board `board` loads (the committed board in production).
+pub(super) fn validate_claimed_admission(
+    handle: &str,
+    board: impl FnOnce() -> Result<(String, Value), DeckError>,
+) -> Result<bool, DeckError> {
     if handle.len() != 64 || !handle.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err(DeckError::new(ErrorKind::Invalid, "invalid command handle"));
     }
@@ -390,8 +411,8 @@ pub(crate) fn connector_validate_admission(handle: String) -> Result<bool, DeckE
         }
         command.body().cloned()
     })??;
-    let (_, board) = board_value()?;
-    validate_admission_board(&handle, &request, &board)?;
+    let (_, board) = board()?;
+    validate_admission_board(handle, &request, &board)?;
     Ok(true)
 }
 

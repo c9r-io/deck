@@ -1921,6 +1921,7 @@ mod tests {
                 .is_empty()
         );
 
+        let _serial = EPOCH_TESTS.lock().unwrap_or_else(|e| e.into_inner());
         let epoch = CREDENTIAL_EPOCH.load(Ordering::SeqCst);
         assert!(credentials_unchanged(epoch));
         CREDENTIAL_EPOCH.fetch_add(1, Ordering::SeqCst);
@@ -2027,6 +2028,662 @@ mod tests {
         assert_eq!(
             recovered.doc.pending[0].sender_user_id.as_deref(),
             Some("W123")
+        );
+    }
+
+    /// A one-shot fake Slack Web API: answers exactly `responses.len()`
+    /// requests while `f` runs and returns the raw requests it received.
+    fn fake_api<T>(responses: Vec<(u16, &str)>, f: impl FnOnce() -> T) -> (T, Vec<String>) {
+        use crate::inbound_slack::{TEST_API, TEST_API_LOCK};
+        use std::io::{Read, Write};
+        let _serial = TEST_API_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}/", listener.local_addr().unwrap());
+        let responses: Vec<(u16, String)> = responses
+            .into_iter()
+            .map(|(status, body)| (status, body.to_string()))
+            .collect();
+        let worker = std::thread::spawn(move || {
+            let mut lines = Vec::new();
+            for (status, body) in responses {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                let mut raw = Vec::new();
+                let mut chunk = [0u8; 4096];
+                loop {
+                    let n = stream.read(&mut chunk).unwrap();
+                    if n == 0 {
+                        break;
+                    }
+                    raw.extend_from_slice(&chunk[..n]);
+                    let Some(end) = raw.windows(4).position(|w| w == b"\r\n\r\n") else {
+                        continue;
+                    };
+                    let head = String::from_utf8_lossy(&raw[..end]).to_ascii_lowercase();
+                    let length = head
+                        .lines()
+                        .find_map(|l| l.strip_prefix("content-length:"))
+                        .and_then(|v| v.trim().parse::<usize>().ok())
+                        .unwrap_or(0);
+                    if raw.len() >= end + 4 + length {
+                        break;
+                    }
+                }
+                lines.push(String::from_utf8_lossy(&raw).into_owned());
+                write!(
+                    stream,
+                    "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .unwrap();
+            }
+            lines
+        });
+        *TEST_API.lock().unwrap() = Some(base);
+        let value = f();
+        *TEST_API.lock().unwrap() = None;
+        (value, worker.join().unwrap())
+    }
+
+    /// Point the Web API at a port nothing listens on while `f` runs.
+    fn offline<T>(f: impl FnOnce() -> T) -> T {
+        use crate::inbound_slack::{TEST_API, TEST_API_LOCK};
+        let _serial = TEST_API_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let unused = listener.local_addr().unwrap();
+        drop(listener);
+        *TEST_API.lock().unwrap() = Some(format!("http://{unused}/"));
+        let value = f();
+        *TEST_API.lock().unwrap() = None;
+        value
+    }
+
+    /// Serializes the tests that read or bump `CREDENTIAL_EPOCH`.
+    static EPOCH_TESTS: Mutex<()> = Mutex::new(());
+
+    fn refused(value: Value, expect: &str) {
+        let err = validate_settings(&value).unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::InvalidDoc, "{expect}");
+        assert_eq!(err.message(), expect);
+    }
+
+    #[test]
+    fn settings_name_the_field_that_breaks_the_document_shape() {
+        let good = || json!({"channelConnection":{"enabled":true,"connectionId":"default"},"channelRules":[serde_json::to_value(rule()).unwrap()]});
+        refused(json!([]), "inbound must be an object");
+        refused(
+            json!({"channelConnection":"on"}),
+            "channel connection has the wrong shape",
+        );
+        refused(
+            json!({"channelConnection":{"enabled":true,"connectionId":"work"}}),
+            "channel connection id must be default",
+        );
+        refused(
+            json!({"channelRules":{}}),
+            "channel rules have the wrong shape",
+        );
+        let many: Vec<Value> = (0..=MAX_RULES)
+            .map(|i| {
+                let mut r = serde_json::to_value(rule()).unwrap();
+                r["id"] = json!(format!("r{i}"));
+                r
+            })
+            .collect();
+        refused(json!({"channelRules": many}), "too many channel rules");
+        let with = |f: &dyn Fn(&mut Value)| {
+            let mut v = good();
+            f(&mut v["channelRules"][0]);
+            v
+        };
+        refused(
+            with(&|r| r["id"] = json!("bad id")),
+            "channel rule ids must be unique bounded identifiers",
+        );
+        let mut dup = good();
+        let twin = dup["channelRules"][0].clone();
+        dup["channelRules"].as_array_mut().unwrap().push(twin);
+        refused(dup, "channel rule ids must be unique bounded identifiers");
+        refused(
+            with(&|r| r["connectionId"] = json!("other")),
+            "channel rule connection id must be default",
+        );
+        refused(
+            with(&|r| r["channelIds"] = json!(["D123"])),
+            "channel rule needs valid channel ids",
+        );
+        refused(
+            with(&|r| r["channelIds"] = json!(["c123"])),
+            "channel rule needs valid channel ids",
+        );
+        for lists in [
+            json!({"senderUserIds": [], "senderBotIds": []}),
+            json!({"senderUserIds": ["X123"], "senderBotIds": []}),
+            json!({"senderUserIds": [], "senderBotIds": ["U123"]}),
+            json!({"senderUserIds": (0..=MAX_SENDERS).map(|i| format!("U{i}")).collect::<Vec<_>>()}),
+        ] {
+            refused(
+                with(&|r| {
+                    for (k, v) in lists.as_object().unwrap() {
+                        r[k] = v.clone();
+                    }
+                }),
+                "channel rule needs valid sender allowlists",
+            );
+        }
+        refused(
+            with(&|r| r["match"] = json!({"kind":"glob","value":"*"})),
+            "channel rule match kind is unknown",
+        );
+        for (field, value) in [
+            ("projectId", json!("")),
+            ("columnId", json!("col umn")),
+            ("dir", json!("two\nlines")),
+            ("cmd", json!("c".repeat(201))),
+            ("template", json!("")),
+            ("template", json!("t".repeat(121))),
+            ("idleMinutes", json!(7 * 24 * 60 + 1)),
+        ] {
+            refused(
+                with(&|r| r[field] = value.clone()),
+                "channel rule target is invalid",
+            );
+        }
+        assert!(validate_settings(&with(&|r| r["idleMinutes"] = json!(7 * 24 * 60))).is_ok());
+
+        // the poller's lenient read: nothing, or anything invalid, is the
+        // empty config; a valid document yields its connection and rules
+        assert_eq!(config_from_value(None), ChannelConfig::default());
+        assert_eq!(
+            config_from_value(Some(&with(&|r| r["id"] = json!("")))),
+            ChannelConfig::default()
+        );
+        let cfg = config_from_value(Some(&good()));
+        assert!(cfg.connection.enabled);
+        assert_eq!(cfg.connection.connection_id, CONNECTION_ID);
+        assert_eq!(cfg.rules, vec![rule()]);
+        assert_eq!(
+            config_from_value(Some(&json!({}))),
+            ChannelConfig::default(),
+            "no channel section reads as disabled with no rules"
+        );
+    }
+
+    #[test]
+    fn matchers_are_compiled_structurally_with_closed_messages() {
+        let m = |kind: &str, value: &str, keywords: &[&str], capture: &str| ChannelMatch {
+            kind: kind.into(),
+            value: value.into(),
+            keywords: keywords.iter().map(|k| k.to_string()).collect(),
+            case_sensitive: false,
+            group_capture: capture.into(),
+        };
+        let long_capture = "c".repeat(65);
+        let long_keyword = "k".repeat(65);
+        let many_keywords: Vec<String> = (0..33).map(|i| format!("k{i}")).collect();
+        let many: Vec<&str> = many_keywords.iter().map(String::as_str).collect();
+        let long_regex = "a".repeat(1025);
+        for (matcher, expect) in [
+            (
+                m("contains", "x", &[], "bad name"),
+                "channel rule capture name is invalid",
+            ),
+            (
+                m("contains", "x", &[], &long_capture),
+                "channel rule capture name is invalid",
+            ),
+            (
+                m("contains", "", &[], ""),
+                "channel contains match is invalid",
+            ),
+            (
+                m("contains", &"v".repeat(257), &[], ""),
+                "channel contains match is invalid",
+            ),
+            (
+                m("contains", "x", &["k"], ""),
+                "channel contains match is invalid",
+            ),
+            (
+                m("contains", "x", &[], "inc"),
+                "channel contains match is invalid",
+            ),
+            (
+                m("keywords", "x", &["k"], ""),
+                "channel keyword match is invalid",
+            ),
+            (
+                m("keywords", "", &[], ""),
+                "channel keyword match is invalid",
+            ),
+            (
+                m("keywords", "", &many, ""),
+                "channel keyword match is invalid",
+            ),
+            (
+                m("keywords", "", &["", "k"], ""),
+                "channel keyword match is invalid",
+            ),
+            (
+                m("keywords", "", &[&long_keyword], ""),
+                "channel keyword match is invalid",
+            ),
+            (
+                m("keywords", "", &["k"], "inc"),
+                "channel keyword match is invalid",
+            ),
+            (m("regex", "", &[], ""), "channel regex match is invalid"),
+            (
+                m("regex", &long_regex, &[], ""),
+                "channel regex match is invalid",
+            ),
+            (
+                m("regex", "x", &["k"], ""),
+                "channel regex match is invalid",
+            ),
+            (
+                m("regex", "(", &[], ""),
+                "channel regex could not be compiled",
+            ),
+            (
+                m("regex", "INC-(?<n>[0-9]+)", &[], "inc"),
+                "channel regex capture is missing",
+            ),
+            (
+                m("glob", "*", &[], ""),
+                "channel rule match kind is unknown",
+            ),
+        ] {
+            let err = compile_matcher(&matcher).unwrap_err();
+            assert_eq!(err.kind(), ErrorKind::InvalidDoc, "{expect}");
+            assert_eq!(err.message(), expect, "{matcher:?}");
+        }
+        assert!(compile_matcher(&m("contains", "latency", &[], ""))
+            .unwrap()
+            .is_none());
+        assert!(compile_matcher(&m("keywords", "", &["a", "b"], ""))
+            .unwrap()
+            .is_none());
+        let re = compile_matcher(&m("regex", "INC-(?<n>[0-9]+)", &[], "n"))
+            .unwrap()
+            .unwrap();
+        assert!(re.is_match("inc-7"), "case-insensitive unless asked");
+        let mut strict = m("regex", "INC-[0-9]+", &[], "");
+        strict.case_sensitive = true;
+        assert!(!compile_matcher(&strict).unwrap().unwrap().is_match("inc-7"));
+    }
+
+    #[test]
+    fn regex_captures_are_bounded_and_broken_rules_never_match() {
+        let event = |text: &str| {
+            parse_message(
+                &serde_json::from_str(&envelope(json!({"text": text}))).unwrap(),
+                &identity(),
+                2_000_000_001,
+            )
+            .unwrap()
+        };
+        let mut r = rule();
+        r.matcher.value = "INC-(?<incident>[0-9a-z]*)".into();
+        assert_eq!(match_rule(&r, &event("INC-42")), Some(Some("42".into())));
+        assert_eq!(
+            match_rule(&r, &event("INC-")),
+            None,
+            "an empty capture is no incident"
+        );
+        assert_eq!(
+            match_rule(&r, &event(&format!("INC-{}", "a".repeat(257)))),
+            None,
+            "an oversize capture is refused"
+        );
+        assert_eq!(match_rule(&r, &event("nothing here")), None);
+        r.matcher.case_sensitive = true;
+        assert_eq!(match_rule(&r, &event("inc-42")), None);
+        let mut broken = rule();
+        broken.matcher.value = "(".into();
+        assert_eq!(
+            match_rule(&broken, &event("INC-42")),
+            None,
+            "a regex that no longer compiles stages nothing"
+        );
+        let mut unknown = rule();
+        unknown.matcher.kind = "glob".into();
+        assert_eq!(match_rule(&unknown, &event("INC-42")), None);
+        // scope: channel and sender allowlists
+        let mut elsewhere = rule();
+        elsewhere.channel_ids = vec!["C999".into()];
+        assert!(!rule_scope_matches(&elsewhere, &event("INC-42")));
+        let mut strangers = rule();
+        strangers.sender_user_ids = vec!["U999".into()];
+        assert!(!rule_scope_matches(&strangers, &event("INC-42")));
+        let mut keywords = rule();
+        keywords.matcher = ChannelMatch {
+            kind: "keywords".into(),
+            value: String::new(),
+            keywords: vec!["Outage".into()],
+            case_sensitive: true,
+            group_capture: String::new(),
+        };
+        assert_eq!(match_rule(&keywords, &event("outage now")), None);
+        assert_eq!(match_rule(&keywords, &event("Outage now")), Some(None));
+    }
+
+    #[test]
+    fn message_parsing_drops_every_malformed_or_unattributable_envelope() {
+        let now = 2_000_000_001;
+        let parse =
+            |text: &str| parse_message(&serde_json::from_str(text).unwrap(), &identity(), now);
+        let base: Value = serde_json::from_str(&envelope(json!({}))).unwrap();
+        let edited = |f: &dyn Fn(&mut Value)| {
+            let mut v = base.clone();
+            f(&mut v);
+            parse_message(&v, &identity(), now)
+        };
+        assert!(edited(&|v| v["type"] = json!("slash_commands")).is_none());
+        assert!(edited(&|v| v["payload"] = json!({"team_id":"T1"})).is_none());
+        assert!(edited(&|v| v["payload"]["event"]["type"] = json!("reaction_added")).is_none());
+        assert!(edited(&|v| v["payload"]["event"]["subtype"] = json!("channel_join")).is_none());
+        assert!(edited(&|v| v["payload"]["event_id"] = json!("bad id")).is_none());
+        assert!(edited(&|v| v["payload"]["event_time"] = json!("soon")).is_none());
+        assert!(
+            edited(&|v| v["payload"]["event"]["channel"] = json!("D123")).is_none(),
+            "DMs are out of scope"
+        );
+        assert!(edited(&|v| v["payload"]["event"]["ts"] = json!(1.2)).is_none());
+        assert!(
+            edited(&|v| {
+                v["payload"]["event"]["subtype"] = json!("bot_message");
+                v["payload"]["event"]["user"] = json!("U123");
+            })
+            .is_none(),
+            "a bot message names its bot"
+        );
+        assert!(
+            edited(&|v| v["payload"]["event"]["user"] = Value::Null).is_none(),
+            "no sender at all"
+        );
+        assert!(
+            edited(&|v| v["payload"]["event"]["text"] = json!("")).is_none(),
+            "nothing to stage"
+        );
+        assert!(
+            edited(&|v| v["payload"]["event"]["text"] = json!("\u{7}\u{1b}\u{0}\r")).is_none(),
+            "control bytes alone are no body"
+        );
+        assert!(edited(&|v| v["payload"]["event"]["text"] = json!("\u{200B}\u{202E}")).is_none());
+        let full = parse(&envelope(json!({"thread_ts":"1.0","text":"a\u{7}b\tc\nd"}))).unwrap();
+        assert_eq!(full.thread_ts.as_deref(), Some("1.0"));
+        assert_eq!(full.event_time, 2_000_000_000);
+        assert_eq!(full.body, "ab\tc\nd", "controls go, tabs and newlines stay");
+        assert_eq!(
+            (
+                full.team_id.as_str(),
+                full.event_id.as_str(),
+                full.channel_id.as_str(),
+                full.message_ts.as_str()
+            ),
+            ("T1", "Ev1", "C123", "1.2")
+        );
+        // a whitespace-only text falls back to the blocks
+        let blocks = parse(&envelope(
+            json!({"text":"   ","blocks":[{"text":"from"},{"elements":[{"text":"blocks"}]}]}),
+        ))
+        .unwrap();
+        assert_eq!(blocks.body, "from blocks");
+        let group = parse(&envelope(json!({"channel":"G123"}))).unwrap();
+        assert_eq!(group.channel_id, "G123");
+    }
+
+    #[test]
+    fn inbox_load_refuses_newer_versions_duplicates_and_bad_ledgers() {
+        let store = temp_store("load-shape");
+        let path = store.path.clone();
+        let err = |doc: Value| {
+            std::fs::write(&path, doc.to_string()).unwrap();
+            InboxStore::load(path.clone()).err().unwrap().kind()
+        };
+        assert_eq!(err(json!({"version": 2})), ErrorKind::NewerSchema);
+        let event = parse_message(
+            &serde_json::from_str(&envelope(json!({}))).unwrap(),
+            &identity(),
+            2_000_000_001,
+        )
+        .unwrap();
+        let pending = serde_json::to_value(event_entries(&config(), &event)).unwrap();
+        let handled = |id: &str, at: u64| json!({"id": id, "at": at});
+        assert_eq!(
+            err(
+                json!({"version": 1, "pending": pending, "handled": [handled("default/T1/Ev1/alerts", 5)]})
+            ),
+            ErrorKind::Recovery,
+            "one identity cannot be both pending and handled"
+        );
+        for bad in [
+            handled("default/T1/Ev1", 5),
+            handled("default/T1/Ev1/alerts/extra", 5),
+            handled("other/T1/Ev1/alerts", 5),
+            handled("default/t1/Ev1/alerts", 5),
+            handled("default/T1/Ev1/alerts", 0),
+        ] {
+            assert_eq!(
+                err(json!({"version": 1, "handled": [bad]})),
+                ErrorKind::Recovery,
+                "{bad}"
+            );
+        }
+        assert_eq!(
+            err(
+                json!({"version": 1, "handled": [handled("default/T1/Ev1/alerts", 5), handled("default/T1/Ev1/alerts", 6)]})
+            ),
+            ErrorKind::Recovery,
+            "duplicate handled identities"
+        );
+        assert_eq!(
+            err(json!({"version": 1, "pending": [{"id": "x"}]})),
+            ErrorKind::Recovery
+        );
+        std::fs::write(&path, json!({"version": 1, "handled": [handled("default/T1/Ev1/alerts", 5)], "lastConnected": 7, "gapSince": 9}).to_string()).unwrap();
+        let loaded = InboxStore::load(path.clone()).unwrap();
+        assert_eq!(loaded.doc.handled.len(), 1);
+        assert_eq!(
+            (loaded.doc.last_connected, loaded.doc.gap_since),
+            (Some(7), Some(9))
+        );
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(
+            InboxStore::load(path).unwrap().doc,
+            InboxDoc::default(),
+            "no file is a fresh inbox"
+        );
+    }
+
+    #[test]
+    fn ack_refuses_unknown_events_before_writing() {
+        let mut store = temp_store("ack-unknown");
+        let event = parse_message(
+            &serde_json::from_str(&envelope(json!({}))).unwrap(),
+            &identity(),
+            2_000_000_001,
+        )
+        .unwrap();
+        store
+            .stage(event_entries(&config(), &event), 2_000_000_001)
+            .unwrap();
+        let before = std::fs::read(&store.path).unwrap();
+        let err = store
+            .ack("default/T1/EvNope/alerts", 2_000_000_002)
+            .unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::Missing);
+        assert_eq!(
+            std::fs::read(&store.path).unwrap(),
+            before,
+            "nothing written"
+        );
+        assert_eq!(store.doc.pending.len(), 1);
+        // the command refuses an out-of-shape id without opening the inbox
+        for id in [
+            "",
+            "other/T1/Ev1/alerts",
+            &format!("default/{}", "x".repeat(512)),
+        ] {
+            assert_eq!(
+                channel_ack(id.into()).unwrap_err().kind(),
+                ErrorKind::Invalid,
+                "{id:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn manifest_link_prefills_a_bot_scoped_to_channel_history_only() {
+        let url = channel_manifest_url();
+        assert!(url.starts_with("https://api.slack.com/apps?new_app=1&manifest_json=%7B"));
+        let encoded = url.split("manifest_json=").nth(1).unwrap();
+        let bytes = encoded.as_bytes();
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i] == b'%' {
+                out.push(
+                    u8::from_str_radix(std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap(), 16)
+                        .unwrap(),
+                );
+                i += 3;
+            } else {
+                out.push(bytes[i]);
+                i += 1;
+            }
+        }
+        let m: Value = serde_json::from_str(&String::from_utf8(out).unwrap()).unwrap();
+        assert_eq!(m, manifest());
+        assert_eq!(
+            m.pointer("/oauth_config/scopes/bot"),
+            Some(&json!(["channels:history", "groups:history"]))
+        );
+        assert!(
+            m.pointer("/oauth_config/scopes/user").is_none(),
+            "no user scopes"
+        );
+        assert_eq!(
+            m.pointer("/settings/event_subscriptions/bot_events"),
+            Some(&json!(["message.channels", "message.groups"]))
+        );
+        assert_eq!(
+            m.pointer("/settings/socket_mode_enabled"),
+            Some(&Value::Bool(true))
+        );
+        assert!(m.pointer("/oauth_config/redirect_urls").is_none());
+        assert!(m.pointer("/features/bot_user").is_some());
+    }
+
+    #[test]
+    fn credential_commands_fail_closed_before_the_keychain() {
+        let _serial = EPOCH_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let epoch = CREDENTIAL_EPOCH.load(Ordering::SeqCst);
+        let set = |slot: &str, value: &str| {
+            tauri::async_runtime::block_on(channel_token_set(slot.into(), value.into()))
+                .unwrap_err()
+        };
+        assert_eq!(
+            channel_token_clear("user".into()).unwrap_err().kind(),
+            ErrorKind::Invalid
+        );
+        let err = set("user", "xoxp-test");
+        assert_eq!(err.kind(), ErrorKind::Invalid);
+        assert_eq!(err.message(), "unknown channel credential slot");
+        for (slot, value) in [
+            ("bot", "xoxp-wrong-kind"),
+            ("app", " xoxb-wrong "),
+            ("bot", "xoxb-has space"),
+        ] {
+            let err = set(slot, value);
+            assert_eq!(err.kind(), ErrorKind::Invalid, "{slot} {value:?}");
+            assert_eq!(err.message(), "shape");
+        }
+        // a token of the right shape is proven with Slack first; every
+        // failure maps to a closed word and nothing is stored
+        let (auth, requests) = fake_api(
+            vec![(200, r#"{"ok":false,"error":"invalid_auth"}"#)],
+            || set("bot", " xoxb-test "),
+        );
+        assert_eq!((auth.kind(), auth.message()), (ErrorKind::Other, "auth"));
+        assert!(requests[0].starts_with("POST /auth.test "));
+        assert!(
+            requests[0].contains("authorization: Bearer xoxb-test\r\n"),
+            "trimmed"
+        );
+        let (scope, requests) = fake_api(
+            vec![(200, r#"{"ok":false,"error":"missing_scope"}"#)],
+            || set("app", "xapp-test"),
+        );
+        assert_eq!(scope.message(), "slack");
+        assert!(requests[0].starts_with("POST /apps.connections.open "));
+        let (http, _) = fake_api(vec![(500, "{}")], || set("bot", "xoxb-test"));
+        assert_eq!(http.message(), "network");
+        assert_eq!(offline(|| set("bot", "xoxb-test")).message(), "network");
+        assert_eq!(
+            CREDENTIAL_EPOCH.load(Ordering::SeqCst),
+            epoch,
+            "no credential changed, so the socket thread was not told to re-read"
+        );
+    }
+
+    #[test]
+    fn connection_identity_comes_from_auth_test_or_fails_closed() {
+        let (identity, requests) = fake_api(
+            vec![(
+                200,
+                r#"{"ok":true,"team_id":"T7","user_id":"U7","bot_id":"B7","team":"secret"}"#,
+            )],
+            || connection_identity("xoxb-test").unwrap(),
+        );
+        assert_eq!(
+            (
+                identity.team_id.as_str(),
+                identity.own_user_id.as_str(),
+                identity.own_bot_id.as_str()
+            ),
+            ("T7", "U7", "B7")
+        );
+        assert!(requests[0].starts_with("POST /auth.test "));
+        let (partial, _) = fake_api(
+            vec![(200, r#"{"ok":true,"team_id":"T7","user_id":"U7"}"#)],
+            || connection_identity("xoxb-test"),
+        );
+        assert_eq!(partial.err(), Some("parse"), "a user token has no bot id");
+        let (denied, _) = fake_api(
+            vec![(200, r#"{"ok":false,"error":"token_revoked"}"#)],
+            || connection_identity("xoxb-test"),
+        );
+        assert_eq!(denied.err(), Some("auth"));
+    }
+
+    #[test]
+    fn live_status_words_are_closed_and_smoke_faults_stay_unarmed() {
+        let _control = CHANNEL_CONTROL.lock().unwrap_or_else(|e| e.into_inner());
+        let rejected = REJECTED_COUNT.load(Ordering::Relaxed);
+        note_rejected("oversize");
+        note_rejected("future-event");
+        assert_eq!(REJECTED_COUNT.load(Ordering::Relaxed), rejected + 2);
+        {
+            let live = LIVE.lock().unwrap_or_else(|e| e.into_inner());
+            assert_eq!(
+                live.last_error,
+                Some("future-event"),
+                "the latest code wins"
+            );
+        }
+        set_disabled();
+        let live = LIVE.lock().unwrap_or_else(|e| e.into_inner());
+        assert!(!live.connected);
+        assert!(live.last_error.is_none(), "disabled is not an error");
+        drop(live);
+        assert_eq!(
+            injected_connection_fault(),
+            None,
+            "no smoke hooks outside the isolated smoke"
         );
     }
 }

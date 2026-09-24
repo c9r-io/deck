@@ -1140,6 +1140,9 @@ mod tests {
     use serde_json::json;
     use std::fs;
 
+    /// Serializes the tests that redirect `TEST_DOC_PATH` or replace `RT`.
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
+
     fn rule(badge: &str) -> Value {
         json!({"id": format!("R-{badge}"), "source": "slack", "badge": badge,
                "projectId": "P1", "columnId": "C1", "cmd": "claude", "template": "triage"})
@@ -1428,6 +1431,7 @@ mod tests {
 
     #[test]
     fn runtime_baselines_dedupes_emits_lists_and_acknowledges() {
+        let _serial = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = std::env::temp_dir().join(format!(
             "deck-inbound-runtime-{}-{:?}",
             std::process::id(),
@@ -1613,5 +1617,168 @@ mod tests {
         *RT.lock().unwrap() = None;
         *TEST_DOC_PATH.lock().unwrap() = None;
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn schedules_match_the_local_calendar_day() {
+        let clock = |wday: u32, mday: u32, mdays: u32| {
+            let mut c = crate::procinfo::LocalClock::synthetic(1_000_000, 540);
+            c.wday = wday;
+            c.mday = mday;
+            c.mdays = mdays;
+            c
+        };
+        let schedule = |unit: &str, days: &[u32]| Schedule {
+            unit: unit.into(),
+            days: days.to_vec(),
+            minute: 540,
+        };
+        assert!(schedule("day", &[]).matches_day(&clock(7, 31, 31)));
+        let weekly = schedule("week", &[1, 3]);
+        assert!(weekly.matches_day(&clock(1, 5, 30)));
+        assert!(weekly.matches_day(&clock(3, 5, 30)));
+        assert!(!weekly.matches_day(&clock(2, 5, 30)));
+        let monthly = schedule("month", &[15, 31]);
+        assert!(monthly.matches_day(&clock(1, 15, 30)));
+        assert!(monthly.matches_day(&clock(1, 31, 31)));
+        assert!(
+            monthly.matches_day(&clock(1, 30, 30)),
+            "a day the month lacks means its last day"
+        );
+        assert!(!monthly.matches_day(&clock(1, 29, 30)));
+        assert!(
+            monthly.matches_day(&clock(1, 28, 28)),
+            "February's last day stands in for the 31st"
+        );
+        assert!(!schedule("year", &[1]).matches_day(&clock(1, 1, 31)));
+    }
+
+    #[test]
+    fn settings_bound_every_rule_field_with_a_document_error() {
+        let refused = |v: Value, expect: &str| {
+            let err = validate_settings(&v).unwrap_err();
+            assert_eq!(err.kind(), ErrorKind::InvalidDoc, "{expect}");
+            assert_eq!(err.message(), expect);
+        };
+        refused(json!({"sources": []}), "inbound.sources must be an object");
+        refused(
+            json!({"sources": {"slack": true}}),
+            "inbound source config must be an object",
+        );
+        let with = |field: &str, value: Value| {
+            let mut r = rule("deck");
+            r[field] = value;
+            json!({"rules": [r]})
+        };
+        refused(
+            with("id", json!("R deck")),
+            "inbound rule id must be a bounded identifier",
+        );
+        refused(
+            with("cmd", json!("c".repeat(201))),
+            "inbound rule command must be one bounded line",
+        );
+        refused(
+            with("template", json!("")),
+            "inbound rule template name must be a bounded string",
+        );
+        refused(
+            with("template", json!("t".repeat(121))),
+            "inbound rule template name must be a bounded string",
+        );
+        refused(
+            with("dir", json!("d".repeat(1025))),
+            "inbound rule directory must be one bounded line",
+        );
+        refused(
+            with("columnId", json!("c".repeat(129))),
+            "inbound rule must reference bounded project and column ids",
+        );
+        refused(
+            with("badge", json!("")),
+            "inbound rule badge must be an emoji name",
+        );
+        for finish in ["", "keep", "close"] {
+            let mut r = clock_rule("a1", json!({"unit": "day", "minute": 0}));
+            r["finish"] = json!(finish);
+            assert!(
+                validate_settings(&json!({"rules": [r]})).is_ok(),
+                "{finish:?}"
+            );
+        }
+        let cfg = config_from_value(Some(&with("enabled", json!(false))));
+        assert!(!cfg.rules[0].enabled, "a paused rule is read as such");
+        assert_eq!(cfg.rules[0].dir, "", "no directory means the home");
+        assert!(
+            !cfg.slack_enabled,
+            "no source section means nothing is enabled"
+        );
+    }
+
+    #[test]
+    fn ledger_reads_degrade_to_a_rebaseline_and_a_failed_save_stays_dirty() {
+        let _serial = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!(
+            "deck-inbound-ledger-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("inbound.json");
+        *TEST_DOC_PATH.lock().unwrap() = Some(path.clone());
+        assert_eq!(load_doc(), InboundDoc::default(), "no file is a first run");
+        fs::write(&path, "this is not a document").unwrap();
+        assert_eq!(
+            load_doc(),
+            InboundDoc::default(),
+            "an unreadable ledger re-baselines instead of failing the poller"
+        );
+        let _ = fs::remove_file(&path);
+
+        let mut rt = Runtime {
+            doc: InboundDoc::default(),
+            dirty: false,
+            pending: Vec::new(),
+            next_id: 1,
+            poll_wanted: false,
+            statuses: Vec::new(),
+        };
+        rt.doc.mark("slack", "C/1", "deck", 5);
+        rt.doc.baseline("slack", "deck");
+        // a parent that is a plain file cannot hold the document
+        fs::write(dir.join("blocker"), "x").unwrap();
+        *TEST_DOC_PATH.lock().unwrap() = Some(dir.join("blocker").join("inbound.json"));
+        persist(&mut rt);
+        assert!(rt.dirty, "a failed save is remembered for the next tick");
+        *TEST_DOC_PATH.lock().unwrap() = Some(path.clone());
+        persist(&mut rt);
+        assert!(!rt.dirty, "the retry clears the flag");
+        assert!(path.exists());
+        let loaded = load_doc();
+        assert_eq!(loaded, rt.doc, "the ledger round-trips");
+        assert!(loaded.is_baselined("slack", "deck"));
+
+        *TEST_DOC_PATH.lock().unwrap() = None;
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn setup_and_secret_commands_refuse_unknown_or_malformed_input_first() {
+        let err = inbound_setup("notion".into()).unwrap_err();
+        assert_eq!(
+            (err.kind(), err.message()),
+            (ErrorKind::Invalid, "unknown source")
+        );
+        let err = set_secret("slack-user-token", "not-a-token").unwrap_err();
+        assert_eq!((err.kind(), err.message()), (ErrorKind::Invalid, "shape"));
+        let err = set_secret("slack-app-token", "xoxp-wrong-kind").unwrap_err();
+        assert_eq!(
+            err.message(),
+            "shape",
+            "an app-level token starts with xapp-"
+        );
+        let err = set_secret("nope", "x").unwrap_err();
+        assert_eq!(err.message(), "unknown credential slot");
     }
 }

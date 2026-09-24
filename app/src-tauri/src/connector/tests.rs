@@ -52,6 +52,44 @@ fn next_seq() -> u64 {
     })
 }
 
+/// Serialises the tests that reach the process-wide runtime through `rt()`.
+static GLOBAL: Mutex<()> = Mutex::new(());
+
+/// The one runtime the Tauri commands see, reset to a fresh enabled document
+/// (127.0.0.1:8443, epoch 1 listening); hold the guard for the whole test.
+fn global_runtime() -> (std::sync::MutexGuard<'static, ()>, Arc<Runtime>) {
+    let guard = GLOBAL.lock_or_recover();
+    let runtime = RUNTIME
+        .get_or_init(|| {
+            let path =
+                std::env::temp_dir().join(format!("deck-connector-global-{}", std::process::id()));
+            let _ = std::fs::remove_file(&path);
+            Arc::new(Runtime {
+                app: None,
+                path,
+                doc: Mutex::new(DiskDoc::fresh()),
+                pairing: Mutex::new(None),
+                lifecycle: Mutex::new(()),
+                server_epoch: AtomicU64::new(1),
+                running_epoch: AtomicU64::new(1),
+            })
+        })
+        .clone();
+    let mut doc = DiskDoc::fresh().unwrap();
+    doc.config = Config {
+        enabled: true,
+        address: "127.0.0.1".into(),
+        port: 8443,
+        interface: None,
+    };
+    save(&runtime.path, &doc).unwrap();
+    *runtime.doc.lock_or_recover() = Ok(doc);
+    *runtime.pairing.lock_or_recover() = None;
+    runtime.server_epoch.store(1, Ordering::SeqCst);
+    runtime.running_epoch.store(1, Ordering::SeqCst);
+    (guard, runtime)
+}
+
 fn device(id: &str) -> Device {
     Device {
         id: id.into(),
@@ -656,8 +694,7 @@ fn every_wire_command_has_a_closed_valid_and_invalid_payload_contract() {
 fn command_surface_preserves_the_durable_lifecycle_and_closes_on_disable() {
     use crate::prompt_delivery::Transport;
 
-    let (runtime, _app) = test_runtime("command-surface");
-    assert!(RUNTIME.set(runtime.clone()).is_ok());
+    let (_global, runtime) = global_runtime();
     runtime
         .with_doc(|doc| {
             for id in ["D1", "D2"] {
@@ -1773,4 +1810,715 @@ fn f4_crash_boundaries_never_admit_twice_or_guess_success() {
     assert_eq!(r.accept(1, "D", finished).unwrap().state, "applied");
     assert_eq!(r.read(|d| d.commands.len()).unwrap(), 3);
     assert_eq!(accepted_count(&r), 1, "only the first is still pending");
+}
+
+// ---- projection, validation and command seams ----
+
+/// An output read whose card session, probe generation and history size are
+/// scripted per call, so every recheck branch is reachable.
+struct ScriptedOutput {
+    history: &'static str,
+    generations: Vec<&'static str>,
+    sessions: Vec<&'static str>,
+    probe_calls: std::cell::Cell<usize>,
+    card_calls: std::cell::Cell<usize>,
+    tmux_calls: std::cell::RefCell<Vec<String>>,
+}
+impl ScriptedOutput {
+    fn new(history: &'static str, generations: &[&'static str], sessions: &[&'static str]) -> Self {
+        Self {
+            history,
+            generations: generations.to_vec(),
+            sessions: sessions.to_vec(),
+            probe_calls: std::cell::Cell::new(0),
+            card_calls: std::cell::Cell::new(0),
+            tmux_calls: std::cell::RefCell::new(vec![]),
+        }
+    }
+}
+impl OutputIo for ScriptedOutput {
+    fn card(&self, id: &str) -> Result<InternalCard, DeckError> {
+        let index = self.card_calls.get();
+        self.card_calls.set(index + 1);
+        Ok(InternalCard {
+            id: id.into(),
+            session: self.sessions[index.min(self.sessions.len() - 1)].into(),
+            agent_target: true,
+        })
+    }
+    fn probe(&self, _: &str) -> Result<crate::context::ConnectorProbe, DeckError> {
+        let index = self.probe_calls.get();
+        self.probe_calls.set(index + 1);
+        Ok(crate::context::ConnectorProbe {
+            identity: crate::context::PaneIdentity {
+                server_pid: 1,
+                session_id: "$1".into(),
+                window_id: "@1".into(),
+                pane_id: "%7".into(),
+                pane_pid: 2,
+            },
+            agent: Some("claude".into()),
+            foreground_pid: 3,
+            start_seconds: 4,
+            start_micros: 5,
+            generation: self.generations[index.min(self.generations.len() - 1)].into(),
+        })
+    }
+    fn tmux(&self, args: &[String]) -> Result<String, DeckError> {
+        self.tmux_calls.borrow_mut().push(args[0].clone());
+        assert_eq!(args[3], "%7", "the probed pane is the one read");
+        Ok(if args[0] == "display-message" {
+            self.history.into()
+        } else {
+            "line one\nsecret line".into()
+        })
+    }
+    fn mcp_fence(&self, _: &str) -> Result<(), DeckError> {
+        Ok(())
+    }
+}
+
+#[test]
+fn phone_output_succeeds_only_when_target_and_generation_survive_the_capture() {
+    let steady = ScriptedOutput::new("12", &["gen-1"], &["deck-card-0001"]);
+    let value = output_with(&steady, "C1").unwrap();
+    assert_eq!(value["cardId"], "C1");
+    assert_eq!(value["generation"], "gen-1");
+    assert_eq!(value["text"], "line one\nsecret line");
+    assert_eq!(value["truncated"], false);
+    assert_eq!(
+        value["revision"],
+        sha(b"gen-1\0line one\nsecret line"),
+        "the revision binds the text to the generation it was read under"
+    );
+    assert!(value["capturedAt"].as_u64().unwrap() > 0);
+    assert_eq!(
+        *steady.tmux_calls.borrow(),
+        ["display-message", "capture-pane"]
+    );
+    assert_eq!(steady.probe_calls.get(), 2, "probed before and after");
+    assert_eq!(steady.card_calls.get(), 2, "card re-read after");
+
+    let deep = ScriptedOutput::new("201", &["gen-1"], &["deck-card-0001"]);
+    assert_eq!(
+        output_with(&deep, "C1").unwrap()["truncated"],
+        true,
+        "history past the 200-line capture marks the read truncated"
+    );
+
+    let unreadable = ScriptedOutput::new("many", &["gen-1"], &["deck-card-0001"]);
+    let failed = output_with(&unreadable, "C1").unwrap_err();
+    assert_eq!(failed.kind(), ErrorKind::Tmux);
+    assert_eq!(failed.message(), "output-history-unavailable");
+    assert_eq!(
+        *unreadable.tmux_calls.borrow(),
+        ["display-message"],
+        "nothing is captured without a history size"
+    );
+
+    let regenerated = ScriptedOutput::new("1", &["gen-1", "gen-2"], &["deck-card-0001"]);
+    let changed = output_with(&regenerated, "C1").unwrap_err();
+    assert_eq!(changed.kind(), ErrorKind::ContextChanged);
+    assert_eq!(changed.message(), "target-changed");
+
+    let relocated = ScriptedOutput::new("1", &["gen-1"], &["deck-card-0001", "deck-card-0002"]);
+    let moved = output_with(&relocated, "C1").unwrap_err();
+    assert_eq!(moved.kind(), ErrorKind::ContextChanged);
+    assert_eq!(moved.message(), "target-changed");
+
+    assert!(
+        LiveOutput.mcp_fence("deck-nobody-0001").is_ok(),
+        "a session no MCP client controls is not fenced"
+    );
+}
+
+fn task_board() -> Value {
+    json!({
+        "projects":[{
+            "id":"P1","name":"One",
+            "columns":[{"id":"COL1","name":"Todo"}],
+            "presets":[{
+                "id":"preset-1","name":"Fix","title":"Fix bug","dir":"/tmp/work",
+                "columnId":"COL1","cmd":"claude","steps":["look","fix"]
+            }]
+        }],
+        "cards":[{"id":"C1","session":"deck-c1-0001","cmd":"codex","buffer":{"revision":4}}]
+    })
+}
+
+fn task_request(payload: Value, expected_revision: &str) -> CommandRequest {
+    CommandRequest {
+        id: "task-1".into(),
+        kind: "task-create".into(),
+        card_id: None,
+        expected_generation: ExpectedGeneration::Missing,
+        expected_revision: Some(expected_revision.into()),
+        payload,
+        seq: Some(1),
+    }
+}
+
+#[test]
+fn task_create_applies_only_to_a_complete_trusted_preset_at_the_seen_revision() {
+    let board = task_board();
+    let payload = json!({"projectId":"P1","presetId":"preset-1"});
+    assert!(validate_applicable_in(&task_request(payload.clone(), "rev"), "rev", &board).is_ok());
+
+    let stale =
+        validate_applicable_in(&task_request(payload.clone(), "old"), "rev", &board).unwrap_err();
+    assert_eq!(stale.kind(), ErrorKind::ContextChanged);
+    assert_eq!(stale.message(), "revision-changed");
+
+    let malformed = validate_applicable_in(
+        &task_request(json!({"projectId":"P1"}), "rev"),
+        "rev",
+        &board,
+    )
+    .unwrap_err();
+    assert_eq!(malformed.message(), "invalid task preset");
+
+    let no_project = validate_applicable_in(
+        &task_request(json!({"projectId":"P9","presetId":"preset-1"}), "rev"),
+        "rev",
+        &board,
+    )
+    .unwrap_err();
+    assert_eq!(no_project.kind(), ErrorKind::Missing);
+    assert_eq!(no_project.message(), "task project not found");
+
+    let no_preset = validate_applicable_in(
+        &task_request(json!({"projectId":"P1","presetId":"preset-9"}), "rev"),
+        "rev",
+        &board,
+    )
+    .unwrap_err();
+    assert_eq!(no_preset.message(), "task preset not found");
+
+    let check = |mutate: &dyn Fn(&mut Value)| {
+        let mut board = task_board();
+        mutate(&mut board);
+        validate_applicable_in(&task_request(payload.clone(), "rev"), "rev", &board)
+            .unwrap_err()
+            .message()
+            .to_owned()
+    };
+    fn preset(board: &mut Value) -> &mut Value {
+        &mut board["projects"][0]["presets"][0]
+    }
+    assert_eq!(
+        check(&|b| preset(b)["cmd"] = json!("/bin/zsh")),
+        "task preset command is not supported"
+    );
+    assert_eq!(
+        check(&|b| preset(b)["columnId"] = json!("COL9")),
+        "task preset is invalid"
+    );
+    assert_eq!(
+        check(&|b| preset(b)["title"] = json!("t".repeat(121))),
+        "task preset is invalid"
+    );
+    assert_eq!(
+        check(&|b| preset(b)["dir"] = json!("bad\u{0}dir")),
+        "task preset is invalid"
+    );
+    assert_eq!(
+        check(&|b| b["projects"][0]["columns"] = json!(null)),
+        "task preset is invalid"
+    );
+    assert_eq!(
+        check(&|b| {
+            preset(b).as_object_mut().unwrap().remove("steps");
+        }),
+        "task preset steps are invalid"
+    );
+    assert_eq!(
+        check(&|b| preset(b)["steps"] = json!(vec!["s"; 21])),
+        "task preset steps are invalid"
+    );
+    assert_eq!(
+        check(&|b| preset(b)["steps"] = json!(["", "x"])),
+        "task preset steps are invalid"
+    );
+    assert_eq!(
+        check(&|b| {
+            let presets = b["projects"][0]["presets"].as_array_mut().unwrap();
+            let template = presets[0].clone();
+            presets.extend(std::iter::repeat_n(template, 50));
+        }),
+        "task presets are invalid"
+    );
+
+    // Buffer kinds need the card at the revision the phone saw; other kinds
+    // have no board precondition at all.
+    let buffer = |card: Option<&str>, revision: &str| CommandRequest {
+        id: "b".into(),
+        kind: "buffer-add".into(),
+        card_id: card.map(str::to_owned),
+        expected_generation: ExpectedGeneration::Missing,
+        expected_revision: Some(revision.into()),
+        payload: json!({"text":"note"}),
+        seq: Some(2),
+    };
+    assert!(validate_applicable_in(&buffer(Some("C1"), "4"), "rev", &board).is_ok());
+    assert_eq!(
+        validate_applicable_in(&buffer(Some("C1"), "3"), "rev", &board)
+            .unwrap_err()
+            .message(),
+        "revision-changed"
+    );
+    assert_eq!(
+        validate_applicable_in(&buffer(Some("C9"), "4"), "rev", &board)
+            .unwrap_err()
+            .kind(),
+        ErrorKind::Missing
+    );
+    assert_eq!(
+        validate_applicable_in(&buffer(None, "4"), "rev", &board)
+            .unwrap_err()
+            .message(),
+        "card is required"
+    );
+    let mut message = buffer(Some("C9"), "0");
+    message.kind = "send-message".into();
+    assert!(validate_applicable_in(&message, "rev", &board).is_ok());
+}
+
+#[test]
+fn admission_board_refuses_other_kinds_malformed_payloads_and_duplicate_copies() {
+    let handle = "c".repeat(64);
+    let make = |kind: &str, card: Option<&str>, payload: Value| CommandRequest {
+        id: "adm".into(),
+        kind: kind.into(),
+        card_id: card.map(str::to_owned),
+        expected_generation: ExpectedGeneration::Missing,
+        expected_revision: Some("1".into()),
+        payload,
+        seq: Some(3),
+    };
+    let copy = buffer_operation_id(&handle, "E1");
+    let board = json!({"cards":[{"id":"C1","cmd":"claude","buffer":{"entries":[
+        {"id":"E1","copies":[{"operationId":copy},{"operationId":copy}]}
+    ]}},{"id":"C2","cmd":"claude"}]});
+    let queue = json!({"entryIds":["E1"]});
+    assert_eq!(
+        validate_admission_board(
+            &handle,
+            &make("buffer-add", Some("C1"), queue.clone()),
+            &board
+        )
+        .unwrap_err()
+        .message(),
+        "command is not a buffer admission"
+    );
+    assert_eq!(
+        validate_admission_board(
+            &handle,
+            &make("buffer-queue", Some("C1"), json!({})),
+            &board
+        )
+        .unwrap_err()
+        .message(),
+        "command payload is invalid"
+    );
+    assert_eq!(
+        validate_admission_board(&handle, &make("buffer-queue", None, queue.clone()), &board)
+            .unwrap_err()
+            .message(),
+        "card is required"
+    );
+    for card in ["C2", "C9"] {
+        let error = validate_admission_board(
+            &handle,
+            &make("buffer-queue", Some(card), queue.clone()),
+            &board,
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::ContextChanged, "{card}");
+        assert_eq!(error.message(), "buffer-copies-missing", "{card}");
+    }
+    let doubled =
+        validate_admission_board(&handle, &make("buffer-queue", Some("C1"), queue), &board)
+            .unwrap_err();
+    assert_eq!(
+        doubled.message(),
+        "buffer-copies-missing",
+        "exactly one durable copy proves the admission"
+    );
+
+    let mut zero = request("zero-seq", "note");
+    zero.seq = Some(0);
+    assert_eq!(
+        validate_command(&zero).unwrap_err().message(),
+        "invalid command sequence"
+    );
+}
+
+fn queue_fixture(items: Value) -> Queues {
+    Queues::new(
+        serde_json::from_value(json!({
+            "items": items,
+            "last_fired": {},
+            "operations": [{
+                "id":"OPX","item":"Q1","session":"deck-a-0001","card_id":"A",
+                "fingerprint":"f","state":"delivered"
+            }]
+        }))
+        .unwrap(),
+    )
+}
+
+fn projection_board() -> Value {
+    json!({
+        "projects":[
+            {"id":"P1","name":"One",
+             "columns":[{"id":"COL1","name":"Todo"},{"id":"broken"}],
+             "presets":[{"id":"X","name":"x"},{"name":"nameless"}]},
+            {"id":"P2"}
+        ],
+        "cards":[
+            {"id":"A","session":"deck-a-0001","cmd":"claude","projectId":"P1","columnId":"COL1",
+             "title":"Agent","buffer":{"revision":3,"collecting":true,"entries":[
+                {"id":"E1","text":"one","copies":[{"operationId":"OPX"},{"operationId":"OPY"}]},
+                {"id":"E2","text":"two","copies":[]}
+             ]}},
+            {"id":"B","session":"deck-b-0001","cmd":"/bin/zsh","projectId":"P1","columnId":"COL1",
+             "title":"Shell"},
+            {"id":"C","session":"deck-c-0001","cmd":"codex","projectId":"P1","columnId":"COL1",
+             "title":"Stopped"}
+        ]
+    })
+}
+
+#[test]
+fn snapshot_projects_saved_agent_cards_their_queue_items_and_well_formed_projects() {
+    let queues = queue_fixture(json!([
+        {"id":"Q1","session":"deck-a-0001","card_id":"A","dir":"/tmp","cmd":"claude","text":"hi",
+         "mode":"at","added":1,"revision":5},
+        {"id":"Q2","session":"deck-b-0001","card_id":"B","dir":"/tmp","cmd":"zsh","text":"no",
+         "mode":"at","added":1}
+    ]));
+    let probed = std::cell::RefCell::new(vec![]);
+    let value = snapshot_in("host_x", "rev-1", &projection_board(), &queues, |session| {
+        probed.borrow_mut().push(session.to_owned());
+        if session == "deck-a-0001" {
+            Ok(crate::context::ConnectorProbe {
+                identity: crate::context::PaneIdentity {
+                    server_pid: 1,
+                    session_id: "$1".into(),
+                    window_id: "@1".into(),
+                    pane_id: "%1".into(),
+                    pane_pid: 2,
+                },
+                agent: Some("claude".into()),
+                foreground_pid: 3,
+                start_seconds: 4,
+                start_micros: 5,
+                generation: "gen-a".into(),
+            })
+        } else {
+            Err(DeckError::new(ErrorKind::NoSession, "gone"))
+        }
+    });
+    assert_eq!(value["version"], 1);
+    assert_eq!(value["hostId"], "host_x");
+    assert_eq!(value["revision"], "rev-1");
+    assert_eq!(
+        *probed.borrow(),
+        ["deck-a-0001", "deck-c-0001"],
+        "a shell card's pane is never probed"
+    );
+    let cards = value["cards"].as_array().unwrap();
+    assert_eq!(cards.len(), 2);
+    assert_eq!(cards[0]["id"], "A");
+    assert_eq!(cards[0]["status"], "running");
+    assert_eq!(cards[0]["generation"], "gen-a");
+    assert_eq!(cards[0]["canSend"], true);
+    assert_eq!(cards[0]["canQueue"], true);
+    assert_eq!(
+        cards[0]["buffer"],
+        json!({"revision":3,"collecting":true,"entryCount":2})
+    );
+    assert_eq!(cards[1]["id"], "C");
+    assert_eq!(cards[1]["status"], "stopped");
+    assert_eq!(cards[1]["generation"], Value::Null);
+    assert_eq!(cards[1]["canSend"], false);
+    assert_eq!(
+        cards[1]["buffer"],
+        json!({"revision":0,"collecting":false,"entryCount":0})
+    );
+    assert_eq!(
+        value["projects"],
+        json!([{"id":"P1","name":"One","columns":[{"id":"COL1","name":"Todo"}],
+                "presets":[{"id":"X","name":"x"}]}]),
+        "half-formed columns, presets and projects are dropped"
+    );
+    let queue = value["queue"].as_array().unwrap();
+    assert_eq!(queue.len(), 1, "the shell card's item is invisible");
+    assert_eq!(queue[0]["id"], "Q1");
+    assert_eq!(queue[0]["cardId"], "A");
+    assert_eq!(queue[0]["revision"], "5");
+}
+
+#[test]
+fn buffer_projection_stamps_copies_with_queue_state_and_hides_shell_cards() {
+    let ops = [crate::scheduler::connector::OperationDto {
+        id: "OPX".into(),
+        state: "delivered".into(),
+    }];
+    let board = projection_board();
+    let agent = buffer_in(&board, "A", &ops).unwrap();
+    assert_eq!(agent["revision"], 3);
+    assert_eq!(agent["collecting"], true);
+    let entries = agent["entries"].as_array().unwrap();
+    assert_eq!(entries[0]["copies"][0]["state"], "delivered");
+    assert_eq!(
+        entries[0]["copies"][1]["state"], "uncertain",
+        "a copy the queue no longer knows is reported uncertain"
+    );
+    assert_eq!(entries[1]["copies"], json!([]));
+
+    assert_eq!(
+        buffer_in(&board, "C", &ops).unwrap(),
+        json!({"revision":0,"collecting":false,"entries":[]}),
+        "a card without a buffer projects an empty one"
+    );
+    let shell = buffer_in(&board, "B", &ops).unwrap_err();
+    assert_eq!(shell.kind(), ErrorKind::Invalid);
+    assert_eq!(shell.message(), "unsupported-target");
+    let missing = buffer_in(&board, "Z", &ops).unwrap_err();
+    assert_eq!(missing.kind(), ErrorKind::Missing);
+    assert_eq!(missing.message(), "card not found");
+
+    // The live buffer route also stamps through the real queue projection.
+    let queues = queue_fixture(json!([]));
+    let (_, _, live) = crate::scheduler::connector::snapshot(&queues, |_| true);
+    assert_eq!(
+        buffer_in(&board, "A", &live).unwrap()["entries"][0]["copies"][0]["state"],
+        "delivered"
+    );
+}
+
+#[test]
+fn identity_material_that_is_damaged_or_foreign_is_refused_as_recovery() {
+    assert_eq!(
+        Identity::generate("not-an-ip").err().unwrap().kind(),
+        ErrorKind::Invalid
+    );
+    let encode = |bytes: &[u8]| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes);
+    for raw in [
+        "v2_anything",
+        "v1_!!!not-base64!!!",
+        &format!("v1_{}", encode(b"{}")),
+        &format!("v1_{}", encode(b"[1,2]")),
+    ] {
+        let error = Identity::decode(raw).err().unwrap();
+        assert_eq!(error.kind(), ErrorKind::Recovery, "{raw}");
+        assert_eq!(error.message(), "connector identity is invalid", "{raw}");
+    }
+    let good = Identity::generate("127.0.0.1").unwrap();
+    let damaged = |cert: &str, key: &str| Identity {
+        address: good.address.clone(),
+        cert_der: cert.into(),
+        key_der: key.into(),
+        fingerprint: good.fingerprint.clone(),
+    };
+    for identity in [
+        damaged("!!!", &good.key_der),
+        damaged(&good.cert_der, "!!!"),
+        damaged(&good.cert_der, &encode(b"not a pkcs8 key")),
+    ] {
+        let error = identity.tls().unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Recovery);
+        assert_eq!(error.message(), "connector identity is invalid");
+    }
+    assert!(good.tls().is_ok());
+}
+
+#[test]
+fn native_execution_refuses_bad_text_and_missing_cards_before_any_board_lookup() {
+    let queues = Queues::new(crate::scheduler::QueueState::default());
+    let send = |card: Option<&str>, text: &str| CommandRequest {
+        id: "native".into(),
+        kind: "send-message".into(),
+        card_id: card.map(str::to_owned),
+        expected_generation: ExpectedGeneration::Live("a".repeat(64)),
+        expected_revision: None,
+        payload: json!({"text":text}),
+        seq: Some(1),
+    };
+    for text in ["", "bad\u{0}byte", &"x".repeat(MAX_TEXT + 1)] {
+        assert_eq!(
+            execute_native(&send(Some("C1"), text), &"a".repeat(64), "D1", &queues),
+            Err(("rejected", "invalid-text"))
+        );
+    }
+    assert_eq!(
+        execute_native(&send(None, "fine"), &"a".repeat(64), "D1", &queues),
+        Err(("rejected", "missing-card"))
+    );
+    let pause = CommandRequest {
+        id: "pause".into(),
+        kind: "queue-pause".into(),
+        card_id: None,
+        expected_generation: ExpectedGeneration::Stopped,
+        expected_revision: None,
+        payload: json!({"itemId":"Q1","paused":true,"revision":"1"}),
+        seq: Some(2),
+    };
+    assert_eq!(
+        execute_native(&pause, &"a".repeat(64), "D1", &queues),
+        Err(("rejected", "missing-card"))
+    );
+    assert!(queues.busy.lock_or_recover().is_empty());
+}
+
+#[test]
+fn claimed_commands_are_validated_only_while_executing_and_authorized() {
+    let (_global, runtime) = global_runtime();
+    runtime
+        .with_doc(|doc| {
+            doc.devices.push(device("D1"));
+            Ok(())
+        })
+        .unwrap();
+    let mut queue = request("queued", "unused");
+    queue.kind = "buffer-queue".into();
+    queue.payload = json!({"entryIds":["E1"]});
+    runtime.accept(1, "D1", request("added", "note")).unwrap();
+    runtime.accept(1, "D1", queue).unwrap();
+    let added = sha(b"D1\0added");
+    let queued = sha(b"D1\0queued");
+    let board = |revision: u64, handle: &str| {
+        json!({"cards":[{"id":"C1","session":"deck-c1-0001","cmd":"claude","buffer":{
+            "revision":revision,
+            "entries":[{"id":"E1","copies":[{"operationId":buffer_operation_id(handle, "E1")}]}]
+        }}]})
+    };
+
+    // Accepted but unclaimed: not ours to validate yet.
+    let early = validate_claimed(&added, |_| panic!("never checked")).unwrap_err();
+    assert_eq!(early.kind(), ErrorKind::ContextChanged);
+    assert_eq!(early.message(), "command authorization changed");
+    assert_eq!(
+        validate_claimed_admission(&queued, || panic!("never loaded"))
+            .unwrap_err()
+            .message(),
+        "command authorization changed"
+    );
+    assert_eq!(
+        validate_claimed("missing", |_| Ok(())).unwrap_err().kind(),
+        ErrorKind::Missing
+    );
+    assert_eq!(
+        validate_claimed_admission(&"e".repeat(64), || panic!("never loaded"))
+            .unwrap_err()
+            .kind(),
+        ErrorKind::Missing
+    );
+
+    connector_claim(added.clone()).unwrap();
+    connector_claim(queued.clone()).unwrap();
+    let seen = std::cell::Cell::new(None);
+    assert!(validate_claimed(&added, |request| {
+        seen.set(Some(request.id.clone()));
+        validate_applicable_in(request, "rev", &board(1, ""))
+    })
+    .unwrap());
+    assert_eq!(seen.take().as_deref(), Some("added"));
+    assert_eq!(
+        validate_claimed(&added, |request| validate_applicable_in(
+            request,
+            "rev",
+            &board(2, "")
+        ))
+        .unwrap_err()
+        .message(),
+        "revision-changed"
+    );
+    assert!(validate_claimed_admission(&queued, || Ok(("rev".into(), board(1, &queued)))).unwrap());
+    assert_eq!(
+        validate_claimed_admission(&queued, || Ok(("rev".into(), board(1, &added))))
+            .unwrap_err()
+            .message(),
+        "buffer-copies-missing"
+    );
+    assert_eq!(
+        validate_claimed_admission(&queued, || Err(DeckError::new(
+            ErrorKind::Recovery,
+            "board projection failed"
+        )))
+        .unwrap_err()
+        .kind(),
+        ErrorKind::Recovery
+    );
+
+    // A wrong-shaped terminal result never lands in the journal.
+    let invalid = connector_complete(added.clone(), "applied".into(), None, None).unwrap_err();
+    assert_eq!(invalid.kind(), ErrorKind::Invalid);
+    assert_eq!(invalid.message(), "command result is invalid");
+    assert_eq!(
+        runtime.read(|doc| doc.commands[0].state.clone()).unwrap(),
+        "executing"
+    );
+
+    // Revocation flips the executing entries to ambiguous and closes claim
+    // and validation for the device.
+    connector_revoke("D1".into()).unwrap();
+    assert_eq!(
+        connector_claim(added.clone()).err().unwrap().message(),
+        "device revoked"
+    );
+    assert_eq!(
+        validate_claimed(&added, |_| Ok(())).unwrap_err().kind(),
+        ErrorKind::ContextChanged
+    );
+    assert_eq!(
+        validate_claimed_admission(&queued, || panic!("never loaded"))
+            .unwrap_err()
+            .kind(),
+        ErrorKind::ContextChanged
+    );
+
+    // A listener epoch that moved on makes both refuse before any read.
+    runtime.server_epoch.store(2, Ordering::SeqCst);
+    assert_eq!(
+        validate_claimed(&added, |_| Ok(())).unwrap_err().kind(),
+        ErrorKind::Perm
+    );
+    assert_eq!(
+        validate_claimed_admission(&queued, || panic!("never loaded"))
+            .unwrap_err()
+            .kind(),
+        ErrorKind::Perm
+    );
+}
+
+#[test]
+fn pairing_and_identity_reset_refuse_while_the_listener_state_forbids_them() {
+    let (_global, runtime) = global_runtime();
+    runtime.running_epoch.store(0, Ordering::SeqCst);
+    let not_listening = connector_pairing().err().unwrap();
+    assert_eq!(not_listening.kind(), ErrorKind::Other);
+    assert_eq!(not_listening.message(), "connector is not listening");
+    assert!(runtime.pairing.lock_or_recover().is_none());
+    assert!(!connector_status().unwrap().running);
+
+    let enabled = connector_reset_identity().unwrap_err();
+    assert_eq!(enabled.kind(), ErrorKind::Other);
+    assert_eq!(enabled.message(), "disable connector before reset");
+
+    runtime
+        .with_doc(|doc| {
+            doc.identity_address = Some("10.0.0.7".into());
+            doc.identity_fingerprint = Some("f".repeat(64));
+            Ok(())
+        })
+        .unwrap();
+    let status = connector_status().unwrap();
+    assert!(
+        status.reset_required,
+        "an identity minted for another address needs a reset"
+    );
+    assert_eq!(status.fingerprint.as_deref(), Some("f".repeat(64).as_str()));
+    assert_eq!(status.origin.as_deref(), Some("https://127.0.0.1:8443"));
 }

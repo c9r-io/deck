@@ -1,7 +1,10 @@
 //! Terminal commands over the attached tmux pane: wheel scrolling, history
 //! clearing, the token-bound selection lease state machine (start/update/
 //! finish/copy/scroll/cancel) and pane metrics. Pure helpers live in
-//! `terminal_selection.rs` / `terminal_scroll.rs`.
+//! `terminal_selection.rs` / `terminal_scroll.rs`; the two tmux status reads
+//! here (`terminal_selection_status_for`, `copy_mode_snapshot`) parse their
+//! `display-message` line in a pure core (`parse_terminal_selection_status`,
+//! `parse_copy_mode_snapshot`) that the unit tests pin.
 //!
 //! A drag keeps tmux selection-FREE: tmux repaints the whole selected region
 //! after every motion repetition, so re-placing the copy cursor from
@@ -346,6 +349,14 @@ fn terminal_selection_status_for(target: &str) -> Result<TerminalSelectionStatus
         target,
         "#{pane_in_mode}\t#{selection_present}\t#{history_size}\t#{history_limit}\t#{pane_height}\t#{pane_width}\t#{scroll_position}\t#{copy_cursor_y}\t#{copy_cursor_x}\t#{selection_start_y}\t#{selection_start_x}\t#{selection_end_y}\t#{selection_end_x}",
     ])?;
+    parse_terminal_selection_status(&raw)
+}
+
+/// The pure core of `terminal_selection_status_for`: one tab-separated
+/// `display-message` line (the thirteen formats above, in that order) into
+/// the status the frontend paints from. Missing or non-numeric fields read
+/// as zero; a pane without dimensions is a tmux failure.
+fn parse_terminal_selection_status(raw: &str) -> Result<TerminalSelectionStatus, DeckError> {
     let mut f = raw.trim_end().split('\t');
     let active = f.next() == Some("1");
     let selection_present = f.next() == Some("1");
@@ -746,18 +757,25 @@ fn copy_mode_snapshot(target: &str, enter: bool) -> Result<CopyModeSnapshot, Dec
         ],
     );
     let raw = tmux_owned(&batch)?;
+    Ok(parse_copy_mode_snapshot(&raw))
+}
+
+/// The pure core of `copy_mode_snapshot`: the `selection_start_y`,
+/// `copy_cursor_y`, `scroll_position`, `history_size` line into the snapshot
+/// history the drag counts from (see `CopyModeSnapshot`).
+fn parse_copy_mode_snapshot(raw: &str) -> CopyModeSnapshot {
     let mut f = raw.trim_end().split('\t');
     let anchor_row = parse_u32_or_zero(f.next());
     let cursor_row = parse_u32_or_zero(f.next());
     let scroll_position = parse_u32_or_zero(f.next());
     let live_history = parse_u32_or_zero(f.next());
-    Ok(CopyModeSnapshot {
+    CopyModeSnapshot {
         history: anchor_row
             .saturating_add(scroll_position)
             .saturating_sub(cursor_row),
         scroll_position,
         live_history,
-    })
+    }
 }
 
 #[tauri::command]
@@ -1335,6 +1353,224 @@ mod tests {
         assert!(terminal_selection_copy(bad.clone(), 1).is_err());
         assert!(terminal_selection_scroll(bad.clone(), 1, 1).is_err());
         assert!(terminal_selection_cancel(bad, 1).is_err());
+    }
+
+    /// The status line tmux reports is turned into absolute rows and frame
+    /// edges here; a pane without dimensions is a tmux failure, and a short
+    /// snapshot line reads as zeros rather than a panic.
+    #[test]
+    fn status_and_snapshot_parsers_derive_frame_edges_from_the_display_line() {
+        // in_mode, selection, history, limit, rows, cols, scroll, cursor
+        // y/x, selection start y/x, selection end y/x
+        let status =
+            parse_terminal_selection_status("1\t1\t100\t50000\t24\t80\t10\t3\t7\t91\t2\t93\t5\n")
+                .unwrap();
+        assert!(status.active && status.selection_present);
+        assert_eq!(
+            (
+                status.history_rows,
+                status.history_limit,
+                status.pane_rows,
+                status.pane_cols,
+                status.scroll_position
+            ),
+            (100, 50000, 24, 80, 10)
+        );
+        assert_eq!((status.cursor_row, status.cursor_col), (3, 7));
+        assert_eq!(status.frame_top, 90);
+        assert_eq!(
+            status.absolute_row, 93,
+            "visible row 3 of a frame topped at 90"
+        );
+        assert!(!status.at_top && !status.at_bottom && !status.history_at_limit);
+        assert_eq!(
+            (
+                status.selection_start_row,
+                status.selection_start_col,
+                status.selection_end_row,
+                status.selection_end_col
+            ),
+            (91, 2, 93, 5)
+        );
+        let live =
+            parse_terminal_selection_status("0\t0\t50000\t50000\t24\t80\t0\t23\t0\t0\t0\t0\t0")
+                .unwrap();
+        assert!(!live.active && !live.selection_present);
+        assert!(live.at_bottom && live.history_at_limit && !live.at_top);
+        assert_eq!(live.absolute_row, 50023);
+        let top = parse_terminal_selection_status("1\t0\t0\t50000\t24\t80\t0\t0\t0").unwrap();
+        assert!(top.at_top && !top.at_bottom);
+        assert_eq!((top.selection_end_row, top.selection_end_col), (0, 0));
+        assert_eq!(
+            parse_terminal_selection_status("1\t0\t0\t0\t0\t0\t")
+                .unwrap_err()
+                .kind(),
+            ErrorKind::Tmux
+        );
+
+        let snapshot = parse_copy_mode_snapshot("5\t3\t2\t100\n");
+        assert_eq!(
+            (
+                snapshot.history,
+                snapshot.scroll_position,
+                snapshot.live_history
+            ),
+            (4, 2, 100),
+            "snapshot = selection_start_y + scroll_position - copy_cursor_y"
+        );
+        let empty = parse_copy_mode_snapshot("");
+        assert_eq!(
+            (empty.history, empty.scroll_position, empty.live_history),
+            (0, 0, 0)
+        );
+    }
+
+    /// The lease state machine without a pane: every command needs a live
+    /// lease under its own token, a cancelled token fences every older or
+    /// equal start, and a start that passes the fence still writes no lease
+    /// until the pane answered.
+    #[test]
+    fn a_cancelled_token_fences_older_starts_and_commands_need_a_live_lease() {
+        let name = format!("deck-lease-unit-{}", std::process::id());
+        let grid = TerminalSelectionGrid { cols: 80, rows: 24 };
+        let anchor = SelectionPoint {
+            absolute_row: 1,
+            col: 0,
+        };
+        let dragging = |token| TerminalSelectionLease::Dragging {
+            token,
+            anchor,
+            active: anchor,
+            snapshot_history: 10,
+        };
+        let lease_token = || {
+            terminal_selection_leases()
+                .lock_or_recover()
+                .get(&name)
+                .map(TerminalSelectionLease::token)
+        };
+        let is_cancelled = || {
+            matches!(
+                terminal_selection_leases().lock_or_recover().get(&name),
+                Some(TerminalSelectionLease::Cancelled { token: 9 })
+            )
+        };
+        for message in [
+            terminal_selection_update(name.clone(), 5, 0, 0, 0, grid)
+                .err()
+                .unwrap()
+                .message()
+                .to_owned(),
+            terminal_selection_finish(name.clone(), 5, grid)
+                .err()
+                .unwrap()
+                .message()
+                .to_owned(),
+            terminal_selection_copy(name.clone(), 5)
+                .err()
+                .unwrap()
+                .message()
+                .to_owned(),
+            terminal_selection_scroll(name.clone(), 5, 1)
+                .err()
+                .unwrap()
+                .message()
+                .to_owned(),
+        ] {
+            assert_eq!(message, "selection-missing");
+        }
+        terminal_selection_cancel(name.clone(), 5).unwrap();
+        assert_eq!(lease_token(), None, "cancelling nothing records nothing");
+
+        terminal_selection_leases()
+            .lock_or_recover()
+            .insert(name.clone(), dragging(9));
+        terminal_selection_cancel(name.clone(), 8).unwrap();
+        assert_eq!(lease_token(), Some(9), "a foreign token cancels nothing");
+        terminal_selection_cancel(name.clone(), 9).unwrap();
+        assert!(is_cancelled());
+        for token in [8, 9] {
+            assert_eq!(
+                terminal_selection_start(name.clone(), token, 0, 0, 0, 0, grid)
+                    .err()
+                    .unwrap()
+                    .message(),
+                "selection-missing",
+                "token {token} is fenced by the cancelled 9"
+            );
+        }
+        terminal_selection_cancel(name.clone(), 9).unwrap();
+        assert!(is_cancelled(), "cancelled stays cancelled");
+
+        if crate::tmux::tmux_bin().is_empty() {
+            // Past the fence every command reaches the pane read and fails
+            // closed there, leaving the lease exactly as it was.
+            assert_eq!(
+                terminal_selection_start(name.clone(), 10, 0, 0, 0, 0, grid)
+                    .err()
+                    .unwrap()
+                    .kind(),
+                ErrorKind::TmuxMissing
+            );
+            assert!(is_cancelled(), "a start that never began writes no lease");
+            terminal_selection_leases()
+                .lock_or_recover()
+                .insert(name.clone(), dragging(11));
+            assert_eq!(
+                terminal_selection_update(name.clone(), 11, 1, 1, 0, grid)
+                    .err()
+                    .unwrap()
+                    .kind(),
+                ErrorKind::TmuxMissing
+            );
+            assert_eq!(
+                terminal_selection_finish(name.clone(), 11, grid)
+                    .err()
+                    .unwrap()
+                    .kind(),
+                ErrorKind::TmuxMissing
+            );
+            assert_eq!(
+                terminal_selection_copy(name.clone(), 11)
+                    .err()
+                    .unwrap()
+                    .kind(),
+                ErrorKind::TmuxMissing
+            );
+            assert_eq!(lease_token(), Some(11));
+            terminal_selection_leases().lock_or_recover().insert(
+                name.clone(),
+                TerminalSelectionLease::Frozen {
+                    token: 12,
+                    text: "t".into(),
+                    bytes: 1,
+                    history_limit: 50000,
+                    snapshot_history: 10,
+                    selection_start_row: 1,
+                    selection_start_col: 0,
+                    selection_end_row: 1,
+                    selection_end_col: 1,
+                },
+            );
+            assert_eq!(
+                terminal_selection_scroll(name.clone(), 12, 1)
+                    .err()
+                    .unwrap()
+                    .kind(),
+                ErrorKind::TmuxMissing
+            );
+            assert_eq!(
+                terminal_metrics(name.clone()).err().unwrap().kind(),
+                ErrorKind::TmuxMissing
+            );
+            assert_eq!(
+                scroll_session(name.clone(), 3).err().unwrap().kind(),
+                ErrorKind::TmuxMissing
+            );
+            scroll_bottom(name.clone()).unwrap();
+            clear_history(name.clone());
+        }
+        terminal_selection_leases().lock_or_recover().remove(&name);
     }
 
     #[test]

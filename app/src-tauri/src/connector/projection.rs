@@ -1,7 +1,9 @@
 //! Board projection for the phone: saved agent cards, snapshot, buffer and bounded output.
 //!
 //! Split out of the one-file `connector/mod.rs` on 2026-09-23; the contract
-//! stays in `connector/mod.rs`.
+//! stays in `connector/mod.rs`. `snapshot` and `buffer` read the committed
+//! board and the managed queues, then delegate to the pure `snapshot_in`
+//! (with the pane probe injected) and `buffer_in`, which tests feed directly.
 
 use super::*;
 
@@ -90,6 +92,26 @@ pub(super) fn validate_buffer_target(
 
 pub(super) fn snapshot(app: &AppHandle) -> Result<Value, DeckError> {
     let (revision, b) = board_value()?;
+    let host_id = rt()?.read(|d| d.host_id.clone())?;
+    let queue = app.state::<Queues>();
+    Ok(snapshot_in(
+        &host_id,
+        &revision,
+        &b,
+        &queue,
+        crate::context::connector_probe,
+    ))
+}
+
+/// The phone snapshot of one committed board (`revision` is its hash) and
+/// the live queues; `probe` answers each saved agent card's session.
+pub(super) fn snapshot_in(
+    host_id: &str,
+    revision: &str,
+    b: &Value,
+    queue: &Queues,
+    probe: impl Fn(&str) -> Result<crate::context::ConnectorProbe, DeckError>,
+) -> Value {
     let eligible_card_ids = b
         .get("cards")
         .and_then(Value::as_array)
@@ -98,10 +120,8 @@ pub(super) fn snapshot(app: &AppHandle) -> Result<Value, DeckError> {
         .filter(|card| queue_target_supported(card))
         .filter_map(|card| card.get("id").and_then(Value::as_str))
         .collect::<HashSet<_>>();
-    let queue = app.state::<Queues>();
-    let (_, items, _) = crate::scheduler::connector::snapshot(&queue, |card_id| {
-        eligible_card_ids.contains(card_id)
-    });
+    let (_, items, _) =
+        crate::scheduler::connector::snapshot(queue, |card_id| eligible_card_ids.contains(card_id));
     let projects = b.get("projects").and_then(Value::as_array).into_iter().flatten().filter_map(|p| {
         let columns = p.get("columns").and_then(Value::as_array).into_iter().flatten().filter_map(|c| Some(json!({"id":c.get("id")?.as_str()?,"name":c.get("name")?.as_str()?}))).collect::<Vec<_>>();
         let presets = p.get("presets").and_then(Value::as_array).into_iter().flatten().filter_map(|x| Some(json!({"id":x.get("id")?.as_str()?,"name":x.get("name")?.as_str()?}))).collect::<Vec<_>>();
@@ -116,7 +136,7 @@ pub(super) fn snapshot(app: &AppHandle) -> Result<Value, DeckError> {
         .filter_map(|c| {
             let id = c.get("id")?.as_str()?;
             let session = c.get("session")?.as_str()?;
-            let (status, probe) = probe_status(crate::context::connector_probe(session));
+            let (status, probe) = probe_status(probe(session));
             let buffer = c.get("buffer");
             Some(json!({
                 "id":id,
@@ -135,9 +155,7 @@ pub(super) fn snapshot(app: &AppHandle) -> Result<Value, DeckError> {
             }))
         })
         .collect::<Vec<_>>();
-    Ok(
-        json!({"version":1,"hostId":rt()?.read(|d|d.host_id.clone())?,"revision":revision,"capturedAt":now(),"projects":projects,"cards":cards,"queue":items}),
-    )
+    json!({"version":1,"hostId":host_id,"revision":revision,"capturedAt":now(),"projects":projects,"cards":cards,"queue":items})
 }
 
 pub(super) fn probe_status<T>(probe: Result<T, DeckError>) -> (&'static str, Option<T>) {
@@ -150,6 +168,18 @@ pub(super) fn probe_status<T>(probe: Result<T, DeckError>) -> (&'static str, Opt
 
 pub(super) fn buffer(app: &AppHandle, card_id: &str) -> Result<Value, DeckError> {
     let (_, b) = board_value()?;
+    let queues = app.state::<Queues>();
+    let (_, _, ops) = crate::scheduler::connector::snapshot(&queues, |_| true);
+    buffer_in(&b, card_id, &ops)
+}
+
+/// One saved agent card's buffer from a committed board, each copy stamped
+/// with its queue operation's state (`uncertain` when the queue lost it).
+pub(super) fn buffer_in(
+    b: &Value,
+    card_id: &str,
+    ops: &[crate::scheduler::connector::OperationDto],
+) -> Result<Value, DeckError> {
     let c = b
         .get("cards")
         .and_then(Value::as_array)
@@ -163,8 +193,6 @@ pub(super) fn buffer(app: &AppHandle, card_id: &str) -> Result<Value, DeckError>
         .get("buffer")
         .cloned()
         .unwrap_or_else(|| json!({"revision":0,"collecting":false,"entries":[]}));
-    let queues = app.state::<Queues>();
-    let (_, _, ops) = crate::scheduler::connector::snapshot(&queues, |_| true);
     if let Some(entries) = out.get_mut("entries").and_then(Value::as_array_mut) {
         for e in entries {
             if let Some(copies) = e.get_mut("copies").and_then(Value::as_array_mut) {

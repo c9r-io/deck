@@ -933,6 +933,12 @@ fn command_surface_exercises_local_authorization_and_board_reconciliation() {
         runner_auth: Mutex::new(HashMap::new()),
         started: Instant::now(),
     });
+    // Before the service exists nothing is managed: ordinary input, a close
+    // and a server restart all pass through.
+    assert!(guard_terminal_input("deck-mcp-test").is_ok());
+    stop_managed_jobs("deck-mcp-test");
+    assert!(guard_server_restart().is_ok());
+    assert_eq!(runner.count("stop"), 0);
     assert!(RUNTIME.set(runtime.clone()).is_ok());
 
     let status = mcp_status().unwrap();
@@ -973,12 +979,62 @@ fn command_surface_exercises_local_authorization_and_board_reconciliation() {
 
     let unmanaged = mcp_session_ui("missing".into()).unwrap();
     assert!(!unmanaged.managed);
+    runtime
+        .write(|doc| {
+            let mut failed = operation("exec", "rejected");
+            failed.operation_id = "op_failed".into();
+            failed.request_id = "req_failed".into();
+            failed.code = Some("control-revoked".into());
+            failed.result = Some(json!({"sessionId":"mcp_a"}));
+            doc.operations.push(failed);
+            Ok(())
+        })
+        .unwrap();
     let managed = mcp_session_ui("M1".into()).unwrap();
     assert!(managed.managed);
     assert!(!managed.human_control);
     assert_eq!(managed.client_name.as_deref(), Some("Client A"));
+    assert_eq!(
+        managed.recent_error.as_deref(),
+        Some("control-revoked"),
+        "the newest coded operation of this session is surfaced"
+    );
+    assert!(managed.execution_grant_active);
     assert!(guard_terminal_input("deck-mcp-test").is_err());
     assert!(guard_server_restart().is_err());
+
+    // Retention is a closed range, applied to every live runner.
+    assert_eq!(
+        mcp_output_retention(59_999).unwrap_err().kind(),
+        ErrorKind::Invalid
+    );
+    mcp_output_retention(120_000).unwrap();
+    assert_eq!(
+        runtime.read(|doc| doc.config.output_retention_ms).unwrap(),
+        120_000
+    );
+    assert_eq!(
+        runner.last("retention").unwrap()["output_retention_ms"],
+        120_000
+    );
+    // The close path asks the managed runner to stop its job groups first.
+    stop_managed_jobs("deck-mcp-test");
+    assert_eq!(runner.last("stop").unwrap()["generation"], "g_a");
+    stop_managed_jobs("deck-unmanaged");
+    assert_eq!(runner.count("stop"), 1);
+    // The local grant commands reach the same core as the tests above.
+    mcp_execution_grant("M1".into(), Some(90_000), true, false).unwrap();
+    assert!(!mcp_session_ui("M1".into()).unwrap().output_shared);
+    mcp_execution_revoke("M1".into()).unwrap();
+    assert!(!mcp_session_ui("M1".into()).unwrap().execution_grant_active);
+    assert_eq!(
+        mcp_client_delete("bad id".into()).unwrap_err().kind(),
+        ErrorKind::Invalid
+    );
+    assert_eq!(
+        mcp_close_admit("missing".into()).err().unwrap().kind(),
+        ErrorKind::ContextChanged
+    );
     assert!(runner_socket_matches(
         &runtime,
         "deck-mcp-test",
@@ -3807,4 +3863,546 @@ fn control_request_must_arrive_complete_within_the_deadline() {
     let (mut partial, mut client) = UnixStream::pair().unwrap();
     client.write_all(b"{\"a\":").unwrap();
     assert!(read_request_line(&mut partial).is_none());
+}
+
+/// Runtime with one client scoped to `root` and no managed session: the
+/// structured project reads need no runner.
+fn project_runtime(tag: &str) -> (Arc<Runtime>, PathBuf) {
+    let root = test_root(tag);
+    let mut doc = DiskDoc::default();
+    doc.config.enabled = true;
+    doc.config.clients.push(client_record(&root));
+    let path = root.join("mcp.json");
+    save(&path, &doc).unwrap();
+    let runtime = Arc::new(Runtime {
+        app: None,
+        path,
+        socket: root.join("control.sock"),
+        doc: Mutex::new(Ok(doc)),
+        io: Mutex::new(()),
+        delivery: Mutex::new(()),
+        emergency: Mutex::new(EmergencyFences::default()),
+        service_instance: "svc_test".into(),
+        runner_auth: Mutex::new(HashMap::new()),
+        started: Instant::now(),
+    });
+    (runtime, root)
+}
+
+/// A read cursor is bound to this Deck run, the client, the project, the
+/// root, the target and the content it was issued for: an altered, foreign or
+/// malformed cursor restarts the read instead of slicing another file.
+#[test]
+fn project_read_pages_under_a_bound_cursor_and_lists_the_authorized_root() {
+    let (runtime, root) = project_runtime("project-read");
+    std::fs::write(root.join("a.txt"), "hello world\nsecond line\n").unwrap();
+    std::fs::create_dir(root.join("sub")).unwrap();
+    std::fs::write(root.join("sub").join("b.txt"), "needle one\n").unwrap();
+    std::fs::write(root.join("c.txt"), "needle two\nneedle three\n").unwrap();
+
+    let listing = project_list(&runtime, "client_a", json!({"project_id":"P1"})).unwrap();
+    assert_eq!(listing["ok"], true);
+    assert_eq!(listing["rootIndex"], 0);
+    let names: Vec<&str> = listing["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|entry| entry["name"].as_str())
+        .collect();
+    assert!(
+        names.contains(&"a.txt") && names.contains(&"sub"),
+        "{names:?}"
+    );
+    assert_eq!(
+        project_list(
+            &runtime,
+            "client_a",
+            json!({"project_id":"P1","path":"missing"})
+        )
+        .unwrap_err()["error"]["code"],
+        "READ_DENIED"
+    );
+    assert_eq!(
+        project_list(
+            &runtime,
+            "client_a",
+            json!({"project_id":"P1","path":"../outside"})
+        )
+        .unwrap_err()["error"]["code"],
+        "INVALID_ARGUMENTS"
+    );
+    assert_eq!(
+        project_list(
+            &runtime,
+            "client_a",
+            json!({"project_id":"P1","root_index":5})
+        )
+        .unwrap_err()["error"]["code"],
+        "PERMISSION_DENIED",
+        "an unauthorized root index never names a path"
+    );
+
+    let first = project_read(
+        &runtime,
+        "client_a",
+        json!({"project_id":"P1","path":"a.txt","max_bytes":16}),
+    )
+    .unwrap();
+    assert_eq!(first["content"], "hello world\nseco");
+    assert_eq!(first["truncated"], true);
+    let cursor = first["nextCursor"].as_str().unwrap().to_owned();
+    assert!(cursor.starts_with("16."), "{cursor}");
+    let rest = project_read(
+        &runtime,
+        "client_a",
+        json!({"project_id":"P1","path":"a.txt","max_bytes":16,"cursor":cursor}),
+    )
+    .unwrap();
+    assert_eq!(rest["content"], "nd line\n");
+    assert_eq!(rest["truncated"], false);
+    assert!(rest["nextCursor"].is_null());
+
+    let read_error = |cursor: &str, path: &str| {
+        project_read(
+            &runtime,
+            "client_a",
+            json!({"project_id":"P1","path":path,"max_bytes":16,"cursor":cursor}),
+        )
+        .unwrap_err()["error"]["code"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    assert_eq!(read_error("nodot", "a.txt"), "OUTPUT_CURSOR_INVALID");
+    assert_eq!(read_error("x.abc", "a.txt"), "OUTPUT_CURSOR_INVALID");
+    assert_eq!(read_error("16.deadbeef", "a.txt"), "CONTENT_CHANGED");
+    assert_eq!(
+        read_error(&cursor, "c.txt"),
+        "CONTENT_CHANGED",
+        "a cursor issued for one file never slices another"
+    );
+    assert_eq!(
+        cursor_offset(&runtime, None, "client_a", "P1", 0, "a.txt", "snap").unwrap(),
+        0
+    );
+
+    // Search pages the same way; every page is a slice of one result set.
+    for limit in [0, 101] {
+        assert_eq!(
+            project_search(
+                &runtime,
+                "client_a",
+                json!({"project_id":"P1","query":"needle","max_results":limit}),
+            )
+            .unwrap_err()["error"]["code"],
+            "INVALID_ARGUMENTS"
+        );
+    }
+    let mut cursor: Option<String> = None;
+    let mut pages = 0;
+    let mut found = Vec::new();
+    loop {
+        let page = project_search(
+            &runtime,
+            "client_a",
+            json!({"project_id":"P1","query":"needle","max_results":1,"cursor":cursor}),
+        )
+        .unwrap();
+        pages += 1;
+        let matches = page["matches"].as_array().unwrap();
+        assert_eq!(matches.len(), 1, "{page}");
+        found.push((
+            matches[0]["path"].as_str().unwrap().to_owned(),
+            matches[0]["line"].as_u64().unwrap(),
+        ));
+        match page["nextCursor"].as_str() {
+            Some(next) => {
+                assert_eq!(page["complete"], false);
+                assert_eq!(page["truncated"], true);
+                cursor = Some(next.to_owned());
+            }
+            None => {
+                assert_eq!(page["complete"], true);
+                assert_eq!(page["truncated"], false);
+                break;
+            }
+        }
+        assert!(pages < 10, "search paging never terminated");
+    }
+    assert_eq!(pages, 3);
+    found.sort();
+    assert_eq!(
+        found,
+        [
+            ("c.txt".to_owned(), 1),
+            ("c.txt".to_owned(), 2),
+            ("sub/b.txt".to_owned(), 1)
+        ]
+    );
+    assert_eq!(
+        project_search(
+            &runtime,
+            "client_a",
+            json!({"project_id":"P1","query":"other","max_results":1,"cursor":"0.deadbeef"}),
+        )
+        .unwrap_err()["error"]["code"],
+        "CONTENT_CHANGED"
+    );
+
+    // A scope change between the read and its final check fails the read.
+    let changed = recheck_read(&runtime, "client_a", "P1", &["/elsewhere".into()]).unwrap_err();
+    assert_eq!(changed["error"]["code"], "CONTEXT_CHANGED");
+    assert!(recheck_read(
+        &runtime,
+        "client_a",
+        "P1",
+        &[std::fs::canonicalize(&root).unwrap().display().to_string()]
+    )
+    .is_ok());
+    use crate::mcp_fs::{FsError, FsErrorKind};
+    for (kind, code) in [
+        (FsErrorKind::Invalid, "INVALID_ARGUMENTS"),
+        (FsErrorKind::Denied, "READ_DENIED"),
+        (FsErrorKind::Limit, "READ_LIMIT"),
+        (FsErrorKind::Changed, "CONTENT_CHANGED"),
+        (FsErrorKind::Cancelled, "CONTEXT_CHANGED"),
+    ] {
+        let mapped = fs_error(
+            FsError {
+                kind,
+                message: "why",
+            },
+            "denied next action",
+        );
+        assert_eq!(mapped["error"]["code"], code);
+        assert_eq!(mapped["error"]["message"], "why");
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// Pending Board intents, job output bindings, grants and a close in flight
+/// all lose their authority when the feature is disabled or the client is
+/// revoked, and `closing` never sticks on the session.
+fn seed_pending_authority(runtime: &Runtime) {
+    runtime
+        .write(|doc| {
+            let mut close = operation("session-close", "accepted");
+            close.operation_id = "op_close".into();
+            close.request_id = "req_close".into();
+            close.result = Some(json!({"sessionId":"mcp_a"}));
+            doc.operations.push(close);
+            let mut exec = operation("exec", "accepted");
+            exec.operation_id = "op_exec".into();
+            exec.request_id = "req_exec".into();
+            doc.operations.push(exec);
+            doc.sessions[0].closing = true;
+            doc.jobs.push(JobBinding {
+                job_id: "job_a".into(),
+                client_id: "client_a".into(),
+                session_id: "mcp_a".into(),
+                session_generation: "g_a".into(),
+                request_hash: "a".repeat(64),
+                operation_id: "op_exec".into(),
+                grant_id: "grant_test".into(),
+                grant_version: 1,
+                allow_output: true,
+            });
+            let session = doc.sessions[0].clone();
+            doc.execution_grants.push(execution_grant(&session));
+            Ok(())
+        })
+        .unwrap();
+}
+
+fn assert_authority_fenced(runtime: &Runtime, code: &str) {
+    runtime
+        .read(|doc| {
+            for operation in &doc.operations {
+                assert_eq!(operation.state, "rejected", "{}", operation.operation_id);
+                assert_eq!(operation.code.as_deref(), Some(code));
+            }
+            assert!(
+                !doc.jobs[0].allow_output,
+                "no binding reads the human's pane"
+            );
+            assert!(doc.execution_grants[0].revoked_at.is_some());
+            let session = &doc.sessions[0];
+            assert!(session.human_lock);
+            assert!(!session.closing, "closing never sticks");
+            assert_eq!(session.control_holder, None);
+            assert_eq!(session.lease_expires_at, None);
+            assert_eq!(session.control_epoch, 2);
+        })
+        .unwrap();
+}
+
+#[test]
+fn disable_and_client_revocation_reject_pending_intents_and_close_output() {
+    let (runtime, runner, root) = fixture("disable-pending", "svc_test");
+    seed_pending_authority(&runtime);
+    disable(&runtime).unwrap();
+    assert_authority_fenced(&runtime, "feature-disabled");
+    assert_eq!(runner.last("control").unwrap()["mode"], "human");
+    assert!(!runtime.read(|doc| doc.config.enabled).unwrap());
+    assert_eq!(
+        claim(&runtime, "op_close").err().unwrap().kind(),
+        ErrorKind::Perm,
+        "nothing is claimable while disabled"
+    );
+    drop(runner);
+    std::fs::remove_dir_all(root).unwrap();
+
+    let (runtime, runner, root) = fixture("revoke-pending", "svc_test");
+    seed_pending_authority(&runtime);
+    assert_eq!(
+        client_revoke(&runtime, "client_missing".into())
+            .unwrap_err()
+            .kind(),
+        ErrorKind::Missing
+    );
+    client_revoke(&runtime, "client_a".into()).unwrap();
+    assert_authority_fenced(&runtime, "client-revoked");
+    assert!(runtime
+        .read(|doc| {
+            doc.config.clients[0].revoked_at.is_some()
+                && doc.audit.iter().any(|event| {
+                    event.kind == "client-revoked"
+                        && event.principal_id.as_deref() == Some("client_a")
+                })
+        })
+        .unwrap());
+    assert!(runtime
+        .emergency
+        .lock_or_recover()
+        .clients
+        .contains("client_a"));
+    assert_eq!(runner.last("control").unwrap()["mode"], "human");
+    drop(runner);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// A close plan is validated against the live session at every Board
+/// boundary: a session that stopped closing, a fenced client, a disabled
+/// feature, a foreign admission or another tmux target refuses it.
+#[test]
+fn close_plan_validation_and_admission_track_the_live_session() {
+    let (runtime, runner, root) = fixture("close-validate", "svc_test");
+    let operation_id = close_plan(&runtime);
+    claim(&runtime, &operation_id).unwrap();
+    validate(&runtime, &operation_id).unwrap();
+
+    let set_closing = |closing: bool| {
+        runtime
+            .write(|doc| {
+                doc.sessions[0].closing = closing;
+                Ok(())
+            })
+            .unwrap();
+    };
+    set_closing(false);
+    assert_eq!(
+        validate(&runtime, &operation_id).unwrap_err().kind(),
+        ErrorKind::ContextChanged
+    );
+    assert_eq!(
+        close_admit(&runtime, &operation_id).err().unwrap().kind(),
+        ErrorKind::ContextChanged
+    );
+    set_closing(true);
+
+    runtime
+        .emergency
+        .lock_or_recover()
+        .human_sessions
+        .insert("mcp_a".into());
+    assert_eq!(
+        validate(&runtime, &operation_id).unwrap_err().kind(),
+        ErrorKind::ControlRevoked
+    );
+    assert_eq!(
+        close_admit(&runtime, &operation_id).err().unwrap().kind(),
+        ErrorKind::ControlRevoked
+    );
+    runtime
+        .emergency
+        .lock_or_recover()
+        .human_sessions
+        .remove("mcp_a");
+
+    runtime
+        .write(|doc| {
+            doc.config.enabled = false;
+            Ok(())
+        })
+        .unwrap();
+    for error in [
+        validate(&runtime, &operation_id).unwrap_err(),
+        close_admit(&runtime, &operation_id).err().unwrap(),
+    ] {
+        assert_eq!(error.kind(), ErrorKind::Perm);
+    }
+    runtime
+        .write(|doc| {
+            doc.config.enabled = true;
+            Ok(())
+        })
+        .unwrap();
+
+    assert_eq!(
+        validate_close_admission_with(&runtime, Some("close_forged"), &["deck-mcp-test".into()])
+            .unwrap_err()
+            .kind(),
+        ErrorKind::ContextChanged
+    );
+    let admission = close_admit(&runtime, &operation_id).unwrap().admission;
+    assert_eq!(
+        close_admit(&runtime, &operation_id).err().unwrap().kind(),
+        ErrorKind::ContextChanged,
+        "an admitted close is not admitted twice"
+    );
+    assert_eq!(
+        validate_close_admission_with(&runtime, Some(&admission), &["deck-other".into()])
+            .unwrap_err()
+            .kind(),
+        ErrorKind::ContextChanged
+    );
+    assert_eq!(
+        validate_close_admission_with(
+            &runtime,
+            Some(&admission),
+            &["deck-mcp-test".into(), "deck-other".into()]
+        )
+        .unwrap_err()
+        .kind(),
+        ErrorKind::ContextChanged
+    );
+    validate_close_admission_with(&runtime, None, &[]).unwrap();
+    validate(&runtime, &operation_id).unwrap();
+    drop(runner);
+    std::fs::remove_dir_all(root).unwrap();
+
+    // A close rejected before admission releases the session's closing flag.
+    let (runtime, runner, root) = fixture("close-rejected", "svc_test");
+    let operation_id = close_plan(&runtime);
+    claim(&runtime, &operation_id).unwrap();
+    complete(
+        &runtime,
+        operation_id.clone(),
+        "rejected".into(),
+        Some("board-refused".into()),
+        None,
+    )
+    .unwrap();
+    let session = session_state(&runtime);
+    assert!(!session.closing);
+    assert_eq!(
+        session.session_id, "mcp_a",
+        "a rejected close keeps the session"
+    );
+    drop(runner);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// Return of control is refused by the in-memory fences, and a runner that
+/// declines the new epoch re-fences the session under yet another epoch.
+#[test]
+fn return_control_honours_memory_fences_and_refences_when_the_runner_declines() {
+    let (runtime, runner, root) = fixture("return-fences", "svc_test");
+    takeover(&runtime, "mcp_a").unwrap();
+    let fenced = session_state(&runtime);
+
+    runtime.emergency.lock_or_recover().disabled = true;
+    assert_eq!(
+        return_control(&runtime, "M1").unwrap_err().message(),
+        FEATURE_DISABLED
+    );
+    runtime.emergency.lock_or_recover().disabled = false;
+    runtime
+        .emergency
+        .lock_or_recover()
+        .clients
+        .insert("client_a".into());
+    assert_eq!(
+        return_control(&runtime, "M1").unwrap_err().message(),
+        CLIENT_REVOKED
+    );
+    runtime
+        .emergency
+        .lock_or_recover()
+        .clients
+        .remove("client_a");
+    assert_eq!(session_state(&runtime).control_epoch, fenced.control_epoch);
+
+    runner.fail_next_control();
+    let declined = return_control(&runtime, "M1").unwrap_err();
+    assert_eq!(declined.message(), RUNNER_UNCONFIRMED);
+    let refenced = session_state(&runtime);
+    assert!(
+        refenced.human_lock,
+        "the persisted state never claims MCP control"
+    );
+    assert_eq!(refenced.control_epoch, fenced.control_epoch + 2);
+    let last = runner.last("control").unwrap();
+    assert_eq!(last["mode"], "human");
+    assert_eq!(last["control_epoch"], fenced.control_epoch + 2);
+    assert!(runtime
+        .emergency
+        .lock_or_recover()
+        .human_sessions
+        .contains("mcp_a"));
+
+    drop(runner);
+    assert_eq!(
+        return_control(&runtime, "M1").unwrap_err().message(),
+        RUNNER_UNCONFIRMED,
+        "an unreachable runner cannot confirm the return"
+    );
+    assert!(session_state(&runtime).human_lock);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// A takeover whose state write fails still hands the keyboard over under a
+/// higher epoch and reports the unpersisted fence.
+#[test]
+fn takeover_hands_the_pane_over_even_when_its_fence_cannot_be_persisted() {
+    let root = test_root("takeover-unpersisted");
+    let runner = FakeRunner::start(&root, "g_a");
+    runner.set_control(1, "mcp", Some("holder_a"));
+    let mut doc = DiskDoc::default();
+    doc.config.enabled = true;
+    doc.config.clients.push(client_record(&root));
+    doc.sessions.push(session_record(&root, &runner));
+    let runtime = Runtime {
+        app: None,
+        path: root.join("missing-parent/state.json"),
+        socket: root.join("control.sock"),
+        doc: Mutex::new(Ok(doc)),
+        io: Mutex::new(()),
+        delivery: Mutex::new(()),
+        emergency: Mutex::new(EmergencyFences::default()),
+        service_instance: "svc_test".into(),
+        runner_auth: Mutex::new(HashMap::new()),
+        started: Instant::now(),
+    };
+    let error = takeover(&runtime, "M1").unwrap_err();
+    assert_eq!(error.message(), FENCE_UNPERSISTED);
+    assert_eq!(
+        runner.control_epoch(),
+        2,
+        "the runner moved to a newer epoch"
+    );
+    let last = runner.last("control").unwrap();
+    assert_eq!(last["mode"], "human");
+    assert!(last["holder_id"].is_null());
+    assert!(runtime
+        .emergency
+        .lock_or_recover()
+        .human_sessions
+        .contains("mcp_a"));
+    assert_eq!(
+        takeover(&runtime, "M9").unwrap_err().kind(),
+        ErrorKind::Missing
+    );
+    drop(runner);
+    std::fs::remove_dir_all(root).unwrap();
 }

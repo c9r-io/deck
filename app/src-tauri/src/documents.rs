@@ -1495,4 +1495,144 @@ mod tests {
         assert_eq!(drained[0].code, "storage.privacy");
         assert!(storage_warnings().is_empty());
     }
+
+    /// Every malformed buffer shape is refused with its own reason: a
+    /// recovery warning names what broke without ever quoting card text.
+    #[test]
+    fn buffer_validation_names_each_broken_entry_shape() {
+        let reason = |value: serde_json::Value| -> String {
+            let buffer: CardBuffer = serde_json::from_value(value).unwrap();
+            validate_buffer("s1", &buffer)
+                .unwrap_err()
+                .message()
+                .to_owned()
+        };
+        let entry = |id: &str| {
+            serde_json::json!({
+                "id":id,"kind":"manual","text":"t","revision":1,
+                "createdAt":1,"updatedAt":1,"copies":[]
+            })
+        };
+        let too_many: Vec<_> = (0..=BUFFER_MAX_ENTRIES)
+            .map(|i| entry(&format!("N{i}")))
+            .collect();
+        assert_eq!(
+            reason(serde_json::json!({"revision":1,"entries":too_many})),
+            "card s1: too many buffer entries"
+        );
+        assert_eq!(
+            reason(serde_json::json!({"revision":1,"entries":[entry("N1"),entry("N1")]})),
+            "card s1: invalid or duplicate buffer entry id"
+        );
+        assert_eq!(
+            reason(serde_json::json!({"revision":1,"entries":[entry("bad id")]})),
+            "card s1: invalid or duplicate buffer entry id"
+        );
+
+        let mut external = entry("E1");
+        external["kind"] = serde_json::json!("external");
+        assert_eq!(
+            reason(serde_json::json!({"revision":1,"entries":[external.clone()]})),
+            "card s1: invalid buffer source",
+            "an external entry needs its provenance"
+        );
+        external["source"] = serde_json::json!({
+            "type":"slack","eventId":"ev1","workspaceId":"W123","links":[]
+        });
+        assert_eq!(
+            reason(serde_json::json!({"revision":1,"entries":[external.clone()]})),
+            "card s1: invalid buffer source",
+            "a Slack workspace id starts with T"
+        );
+        external["source"]["workspaceId"] = serde_json::json!("T123");
+        external["source"]["links"] = serde_json::json!(["ftp://example.invalid"]);
+        assert_eq!(
+            reason(serde_json::json!({"revision":1,"entries":[external.clone()]})),
+            "card s1: invalid buffer source",
+            "only web links are retained"
+        );
+        external["source"]["links"] = serde_json::json!(["https://example.invalid/t"]);
+        external["source"]["messageTs"] = serde_json::json!("1700000000.000100");
+        let sound: CardBuffer =
+            serde_json::from_value(serde_json::json!({"revision":1,"entries":[external]})).unwrap();
+        validate_buffer("s1", &sound).unwrap();
+
+        let mut copied = entry("N1");
+        copied["copies"] = serde_json::json!([{
+            "operationId":"B1","entryRevision":1,"text":"t","createdAt":1,"state":"lost"
+        }]);
+        assert_eq!(
+            reason(serde_json::json!({"revision":1,"entries":[copied]})),
+            "card s1: invalid buffer queue copy"
+        );
+    }
+
+    /// Board ids are structural: blank project, column and card ids and an
+    /// unbounded preset list are refused before any referential check.
+    #[test]
+    fn board_and_settings_validation_refuse_blank_ids_and_unbounded_lists() {
+        let fail = |doc: &str, needle: &str| {
+            let error = match serde_json::from_str::<BoardDoc>(doc) {
+                Err(error) => error.to_string(),
+                Ok(_) => panic!("{needle}: invalid document was accepted"),
+            };
+            assert!(error.contains(needle), "wrong error {error}");
+        };
+        fail(
+            r#"{"projects":[{"id":" ","name":"a","columns":[{"id":"C1","name":"x"}]}],"cards":[]}"#,
+            "a project has an empty id",
+        );
+        fail(
+            r#"{"projects":[{"id":"P1","name":"a","columns":[{"id":"","name":"x"}]}],"cards":[]}"#,
+            "project P1 has a column with an empty id",
+        );
+        let presets: Vec<String> = (0..51)
+            .map(|i| {
+                format!(
+                    r#"{{"id":"R{i}","name":"Fix","columnId":"C1","title":"Task","dir":"~/w","cmd":"codex","steps":[]}}"#
+                )
+            })
+            .collect();
+        fail(
+            &format!(
+                r#"{{"projects":[{{"id":"P1","name":"a","columns":[{{"id":"C1","name":"x"}}],"presets":[{}]}}],"cards":[]}}"#,
+                presets.join(",")
+            ),
+            "project P1 has too many task presets",
+        );
+        fail(
+            &board(&card(" ", "P1", "C1", "deck-t-ab12")),
+            "a card has an empty id",
+        );
+
+        let settings = |doc: &str| serde_json::from_str::<SettingsDoc>(doc).map(|_| ());
+        let long_editor = format!(r#"{{"editor":"{}"}}"#, "e".repeat(201));
+        assert!(settings(&long_editor)
+            .unwrap_err()
+            .to_string()
+            .contains("editor name is unreasonably long"));
+        let many: Vec<String> = (0..65).map(|i| format!(r#""k{i}":"Meta+KeyA""#)).collect();
+        assert!(
+            settings(&format!(r#"{{"shortcuts":{{{}}}}}"#, many.join(",")))
+                .unwrap_err()
+                .to_string()
+                .contains("too many shortcut entries")
+        );
+        let long_binding = format!(r#"{{"shortcuts":{{"newSession":"{}"}}}}"#, "K".repeat(65));
+        assert!(settings(&long_binding)
+            .unwrap_err()
+            .to_string()
+            .contains("bounded strings"));
+        assert!(settings(r#"{"inbound":[]}"#)
+            .unwrap_err()
+            .to_string()
+            .contains("inbound must be an object"));
+        settings(r#"{"inbound":{}}"#).unwrap();
+
+        // The two documents have fixed names inside the private data
+        // directory; nothing else is ever loaded as a Board or Settings.
+        let dir = crate::datadir::deck_dir();
+        assert_eq!(board_path(), dir.join("deck.json"));
+        assert_eq!(settings_path(), dir.join("settings.json"));
+    }
 }

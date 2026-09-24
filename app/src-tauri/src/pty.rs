@@ -30,6 +30,10 @@
 //! beat the attach invoke's resolution). A stale generation's gate is closed
 //! by the detach/re-attach that replaced it, which is also what releases a
 //! waiting emitter.
+//!
+//! The resize/ACK/detach commands are thin: each delegates to the `PtyState`
+//! method of the same name, which the unit test drives over an unspawned pty
+//! pair; `pty_write` keeps its write inline as the reviewed input site.
 
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
@@ -411,8 +415,9 @@ pub(crate) fn pump_gated<F: FnMut(u64, Vec<u8>) -> Result<(), DeckError>>(
 
 #[cfg(test)]
 mod tests {
-    use super::{pump_gated, AckGate, MAX_INFLIGHT_BATCHES};
+    use super::{pump_gated, AckGate, PtyEntry, PtyState, MAX_INFLIGHT_BATCHES};
     use crate::error::DeckError;
+    use crate::sync::LockRecover;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::mpsc::sync_channel;
     use std::sync::Arc;
@@ -693,6 +698,139 @@ mod tests {
             max_batch / 1024
         );
     }
+
+    /// A pane client that records whether it was killed; nothing is spawned.
+    #[derive(Debug)]
+    struct RecordingChild(Arc<std::sync::atomic::AtomicBool>);
+
+    impl portable_pty::ChildKiller for RecordingChild {
+        fn kill(&mut self) -> std::io::Result<()> {
+            self.0.store(true, Ordering::SeqCst);
+            Ok(())
+        }
+        fn clone_killer(&self) -> Box<dyn portable_pty::ChildKiller + Send + Sync> {
+            Box::new(RecordingChild(self.0.clone()))
+        }
+    }
+
+    impl portable_pty::Child for RecordingChild {
+        fn try_wait(&mut self) -> std::io::Result<Option<portable_pty::ExitStatus>> {
+            Ok(None)
+        }
+        fn wait(&mut self) -> std::io::Result<portable_pty::ExitStatus> {
+            Ok(portable_pty::ExitStatus::with_exit_code(0))
+        }
+        fn process_id(&self) -> Option<u32> {
+            None
+        }
+    }
+
+    /// The webview's input bytes land in a shared sink instead of a tty.
+    struct SharedSink(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for SharedSink {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock_or_recover().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// One attachment over an unspawned pty pair: `attached` is the flag the
+    /// entry's client sets when killed.
+    type Attachment = (
+        Arc<std::sync::Mutex<Vec<u8>>>,
+        Arc<std::sync::atomic::AtomicBool>,
+        Arc<AckGate>,
+        Box<dyn portable_pty::SlavePty + Send>,
+    );
+
+    fn attach(state: &PtyState, name: &str, generation: u64) -> Attachment {
+        let pair = portable_pty::native_pty_system()
+            .openpty(portable_pty::PtySize {
+                rows: 24,
+                cols: 80,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .expect("pty pair");
+        let sink = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let killed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let gate = AckGate::new(name.into());
+        state.map.lock_or_recover().insert(
+            name.into(),
+            PtyEntry {
+                writer: Box::new(SharedSink(sink.clone())),
+                master: pair.master,
+                child: Box::new(RecordingChild(killed.clone())),
+                generation,
+                gate: gate.clone(),
+            },
+        );
+        (sink, killed, gate, pair.slave)
+    }
+
+    /// Resize, ACK and detach each reach exactly the named attachment
+    /// under its own generation; detaching kills only that pane client and
+    /// releases its gate, and the restart path drains every attachment.
+    #[test]
+    fn attachment_commands_reach_only_the_named_entry_and_detach_releases_it() {
+        let state = PtyState::default();
+        let (sink, killed, gate, _slave) = attach(&state, "deck-pty-unit-a", 3);
+        state
+            .map
+            .lock_or_recover()
+            .get_mut("deck-pty-unit-a")
+            .expect("attached")
+            .writer
+            .write(b"ls\r")
+            .map(|written| assert_eq!(written, 3))
+            .unwrap();
+        assert_eq!(
+            *sink.lock_or_recover(),
+            b"ls\r",
+            "the entry owns its writer"
+        );
+        state.resize("deck-pty-unit-a", 100, 30).unwrap();
+        let size = state.map.lock_or_recover()["deck-pty-unit-a"]
+            .master
+            .get_size()
+            .expect("kernel winsize");
+        assert_eq!((size.cols, size.rows), (100, 30));
+        assert_eq!(
+            state
+                .resize("deck-pty-unit-none", 1, 1)
+                .unwrap_err()
+                .message(),
+            "not attached"
+        );
+
+        gate.mark_emitted(2);
+        state.ack("deck-pty-unit-a", 2, 2);
+        assert_eq!(gate.state().0, 0, "a stale generation's ACK is dropped");
+        state.ack("deck-pty-unit-a", 3, 2);
+        assert_eq!(gate.state().0, 2);
+
+        state.detach("deck-pty-unit-none");
+        assert!(!killed.load(Ordering::SeqCst));
+        state.detach("deck-pty-unit-a");
+        assert!(
+            killed.load(Ordering::SeqCst),
+            "detach kills the pane client"
+        );
+        assert!(gate.state().2, "detach releases a waiting emitter");
+        assert!(state.map.lock_or_recover().is_empty());
+        state.ack("deck-pty-unit-a", 3, 2);
+
+        let (_, killed_b, gate_b, _slave_b) = attach(&state, "deck-pty-unit-b", 4);
+        let (_, killed_c, gate_c, _slave_c) = attach(&state, "deck-pty-unit-c", 5);
+        state.detach_all();
+        assert!(killed_b.load(Ordering::SeqCst) && killed_c.load(Ordering::SeqCst));
+        assert!(gate_b.state().2 && gate_c.state().2);
+        assert!(state.map.lock_or_recover().is_empty());
+    }
 }
 
 #[tauri::command]
@@ -732,19 +870,7 @@ pub(crate) fn pty_resize(
     // used by terminal selection commands.
     let _selection_operation =
         crate::terminal::terminal_selection_operation_lock().lock_or_recover();
-    let map = state.map.lock_or_recover();
-    let entry = map
-        .get(&name)
-        .ok_or(DeckError::new(ErrorKind::Other, "not attached"))?;
-    entry
-        .master
-        .resize(PtySize {
-            rows,
-            cols,
-            pixel_width: 0,
-            pixel_height: 0,
-        })
-        .map_err(|e| DeckError::classified(e.to_string()))
+    state.resize(&name, cols, rows)
 }
 
 /// Webview confirmation that everything up to `seq` of attachment `gen`
@@ -753,22 +879,52 @@ pub(crate) fn pty_resize(
 /// pty_write / pty_resize / detach.
 #[tauri::command]
 pub(crate) fn pty_ack(state: State<'_, PtyState>, name: String, gen: u64, seq: u64) {
-    let gate = {
-        let map = state.map.lock_or_recover();
-        match map.get(&name) {
-            Some(e) if e.generation == gen => Some(e.gate.clone()),
-            _ => None, // stale generation / already detached: its gate was closed
-        }
-    };
-    if let Some(g) = gate {
-        g.ack(seq);
-    }
+    state.ack(&name, gen, seq);
 }
 
 #[tauri::command]
 pub(crate) fn detach_session(state: State<'_, PtyState>, name: String) {
-    if let Some(mut entry) = state.map.lock_or_recover().remove(&name) {
-        entry.gate.close(); // release an emitter waiting on ACKs
-        let _ = entry.child.kill();
+    state.detach(&name);
+}
+
+/// The attachment table behind the resize, ACK and detach commands above,
+/// keyed by session name (`pty_write` keeps its own write, the reviewed
+/// terminal-input site). Each method touches exactly one entry (or none)
+/// and is what the unit test drives with an unspawned pty pair.
+impl PtyState {
+    fn resize(&self, name: &str, cols: u16, rows: u16) -> Result<(), DeckError> {
+        let map = self.map.lock_or_recover();
+        let entry = map
+            .get(name)
+            .ok_or(DeckError::new(ErrorKind::Other, "not attached"))?;
+        entry
+            .master
+            .resize(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .map_err(|e| DeckError::classified(e.to_string()))
+    }
+
+    fn ack(&self, name: &str, gen: u64, seq: u64) {
+        let gate = {
+            let map = self.map.lock_or_recover();
+            match map.get(name) {
+                Some(e) if e.generation == gen => Some(e.gate.clone()),
+                _ => None, // stale generation / already detached: its gate was closed
+            }
+        };
+        if let Some(g) = gate {
+            g.ack(seq);
+        }
+    }
+
+    fn detach(&self, name: &str) {
+        if let Some(mut entry) = self.map.lock_or_recover().remove(name) {
+            entry.gate.close(); // release an emitter waiting on ACKs
+            let _ = entry.child.kill();
+        }
     }
 }

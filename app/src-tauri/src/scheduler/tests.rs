@@ -2813,3 +2813,271 @@ fn external_rows_carry_the_mark_and_keep_old_fingerprints() {
     .unwrap();
     assert!(!parsed.channel_path);
 }
+
+// ---------- ops.rs cores: edit, reviewed list, delivery-state edges ----------
+
+#[test]
+fn edit_item_takes_exactly_one_of_text_or_steps() {
+    let mut a = qi("a", "at");
+    a.text = "original".into();
+    let mut r = rule(300);
+    r.steps = vec!["old".into()];
+    let mut q = qs(vec![a, r]);
+    for (text, steps) in [(None, None), (Some("x".to_string()), Some(vec![]))] {
+        let err = edit_item(&mut q, "a", text, steps).unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::Invalid);
+        assert_eq!(err.message(), "queue_update takes a text or a step list");
+    }
+    let err = edit_item(&mut q, "a", Some(" \r\n\t ".into()), None).unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::Invalid);
+    assert_eq!(err.message(), "empty prompt");
+    assert_eq!(
+        q.items[0].text, "original",
+        "a refused edit changes nothing"
+    );
+    assert_eq!(q.items[0].revision, 0);
+
+    edit_item(&mut q, "a", Some("one\r\ntwo  \n".into()), None).unwrap();
+    assert_eq!(q.items[0].text, "one\ntwo");
+    assert_eq!(
+        q.items[0].revision, 1,
+        "an edit invalidates a readiness wait"
+    );
+
+    edit_item(
+        &mut q,
+        "t",
+        None,
+        Some(vec!["  ".into(), "step\ttwo\r".into(), "".into()]),
+    )
+    .unwrap();
+    assert_eq!(q.items[1].steps, vec!["step two".to_string()]);
+    assert_eq!(q.items[1].revision, 1);
+    let err = edit_item(&mut q, "a", None, Some(vec!["y".into()])).unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::Invalid, "only a rule holds steps");
+    // the firing contract applies to both shapes
+    q.items[0].state = "firing".into();
+    assert!(edit_item(&mut q, "a", Some("late".into()), None).is_err());
+    assert_eq!(q.items[0].text, "one\ntwo");
+}
+
+#[test]
+fn retry_and_acknowledge_resolve_every_delivery_state_exactly_once() {
+    let mut odd = qi("odd", "at");
+    odd.state = "review-pending-typo".into();
+    let mut amb = qi("amb", "at");
+    amb.state = "ambiguous".into();
+    amb.delivery = Some("d-amb".into());
+    amb.attempts = 3;
+    amb.last_error = Some("refused".into());
+    amb.last_attempt_at = Some(NOW);
+    amb.operation_id = Some("Bamb".into());
+    let mut plain = qi("plain", "at");
+    plain.at = Some(NOW);
+    let mut q = qs(vec![odd, amb.clone(), plain]);
+    q.pending.push(PendingDelivery {
+        id: "d-amb".into(),
+        snapshot: amb,
+    });
+    q.operations.push(QueueOperation {
+        id: "Bamb".into(),
+        item: "amb".into(),
+        session: "s".into(),
+        card_id: "card-s".into(),
+        fingerprint: "f".into(),
+        state: "uncertain".into(),
+    });
+
+    let err = retry_item(&mut q, "odd").unwrap_err();
+    assert_eq!(err.message(), "prompt has an unknown delivery state");
+    assert_eq!(
+        q.items[0].state, "review-pending-typo",
+        "left for inspection"
+    );
+
+    retry_item(&mut q, "amb").unwrap();
+    let re_armed = q.items.iter().find(|i| i.id == "amb").unwrap();
+    assert_eq!(re_armed.state, "pending");
+    assert_eq!(re_armed.attempts, 0);
+    assert!(re_armed.last_error.is_none() && re_armed.last_attempt_at.is_none());
+    assert!(re_armed.delivery.is_none());
+    assert!(
+        q.pending.is_empty(),
+        "the ledger entry of the retried send is gone"
+    );
+    assert_eq!(q.operations[0].state, "queued");
+
+    // acknowledge: only an ambiguous item is a decision
+    let err = acknowledge_ambiguous(&mut q, "plain").unwrap_err();
+    assert_eq!(
+        err.message(),
+        "this prompt is not awaiting an ambiguous-delivery decision"
+    );
+    let err = acknowledge_ambiguous(&mut q, "ghost").unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::Missing);
+    assert!(
+        retry_item(&mut q, "ghost").is_ok(),
+        "an unknown retry is a no-op"
+    );
+    assert_eq!(q.items.len(), 3);
+
+    // a consumed once item: its receipt is the proof, replays are no-ops
+    q.deliveries.push(DeliveryRecord {
+        id: "d-gone".into(),
+        item: "gone".into(),
+        session: "s".into(),
+        mode: "at".into(),
+        at: NOW,
+        assumed: false,
+        operation_id: None,
+    });
+    assert!(acknowledge_ambiguous(&mut q, "gone").is_ok());
+    assert!(retry_item(&mut q, "gone").is_ok());
+    assert_eq!(q.deliveries.len(), 1, "no second receipt");
+    // a delivered item that was re-added under the same id, delivery cleared
+    q.deliveries.push(DeliveryRecord {
+        id: "d-plain".into(),
+        item: "plain".into(),
+        session: "s".into(),
+        mode: "at".into(),
+        at: NOW,
+        assumed: false,
+        operation_id: None,
+    });
+    assert!(acknowledge_ambiguous(&mut q, "plain").is_ok());
+    assert!(
+        q.items.iter().any(|i| i.id == "plain"),
+        "nothing consumed twice"
+    );
+}
+
+#[test]
+fn clearing_a_session_tombstones_it_and_cancels_only_its_open_operations() {
+    let mut delivered = qi("done", "at");
+    delivered.session = "gone".into();
+    let mut other = qi("keep", "at");
+    other.session = "other".into();
+    let mut q = qs(vec![delivered, other]);
+    q.last_fired.insert("gone".into(), NOW);
+    q.review_completed.insert("gone".into());
+    let op = |id: &str, session: &str, state: &str| QueueOperation {
+        id: id.into(),
+        item: format!("i-{id}"),
+        session: session.into(),
+        card_id: "c".into(),
+        fingerprint: "f".into(),
+        state: state.into(),
+    };
+    q.operations = vec![
+        op("B1", "gone", "queued"),
+        op("B2", "gone", "delivered"),
+        op("B3", "gone", "uncertain"),
+        op("B4", "other", "queued"),
+    ];
+    assert!(!is_cancelled(&q, "gone"));
+    clear_session_items(&mut q, "gone");
+    assert!(is_cancelled(&q, "gone"));
+    assert!(!is_cancelled(&q, "other"));
+    assert_eq!(ids(&q.items), ["keep"]);
+    assert!(!q.last_fired.contains_key("gone"));
+    assert!(!q.review_completed.contains("gone"));
+    let states: Vec<&str> = q.operations.iter().map(|o| o.state.as_str()).collect();
+    assert_eq!(states, ["canceled", "delivered", "canceled", "queued"]);
+    // clearing again refreshes the tombstone instead of adding one
+    q.cancelled[0].at = 0;
+    clear_session_items(&mut q, "gone");
+    assert_eq!(q.cancelled.len(), 1);
+    assert!(q.cancelled[0].at > 0);
+}
+
+#[test]
+fn add_validation_bounds_identities_counts_and_list_membership() {
+    let base = || {
+        let mut a = add_args("s", "x");
+        a.mode = "at".into();
+        a.at = Some(NOW);
+        a
+    };
+    let refused = |a: QueueAddArgs, expect: &str| {
+        let err = validate_add(&a).unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::Invalid, "{expect}");
+        assert_eq!(err.message(), expect);
+    };
+    let mut a = base();
+    a.session = "bad name".into();
+    refused(a, "session name may only contain letters, digits, _ - @");
+    let mut a = base();
+    a.session = String::new();
+    refused(a, "session name must be 1–64 characters");
+    for card in ["", "bad card!", &"c".repeat(129)] {
+        let mut a = base();
+        a.card_id = card.into();
+        refused(a, "scheduled prompt needs a valid card identity");
+    }
+    for op in ["", "op id", &"o".repeat(129)] {
+        let mut a = base();
+        a.operation_id = Some(op.into());
+        refused(a, "invalid queue operation identity");
+    }
+    let mut a = base();
+    a.operation_id = Some("Bcopy-1_2".into());
+    assert!(validate_add(&a).is_ok());
+    let mut a = base();
+    a.mode = "every".into();
+    refused(a, "a recurring rule needs an interval");
+    let mut a = base();
+    a.mode = "every".into();
+    a.every = Some(59);
+    refused(a, "recurring interval must be at least 1 minute");
+    let mut a = base();
+    a.group = Some("list".into());
+    refused(a, "only a follow-up row joins a list");
+    let mut a = base();
+    a.mode = "chain".into();
+    a.at = None;
+    a.group = Some("list".into());
+    assert!(validate_add(&a).is_ok(), "a chain row names its list");
+    let mut a = base();
+    a.until_n = Some(0);
+    refused(a, "stop-after count must be at least 1");
+    let mut a = base();
+    a.until_n = Some(1);
+    a.win_from = Some(0);
+    a.win_to = Some(1439);
+    assert!(validate_add(&a).is_ok(), "a full-day window and one fire");
+    let mut a = base();
+    a.win_from = Some(1440);
+    a.win_to = Some(10);
+    refused(a, "time-window minutes must be below 24h");
+    let mut a = base();
+    a.win_to = Some(10);
+    refused(a, "a time window needs both ends");
+}
+
+#[test]
+fn state_only_commands_fail_closed_without_the_smoke_hooks_or_the_item() {
+    use tauri::Manager;
+    let app = tauri::test::mock_app();
+    let mut a = qi("a", "at");
+    a.at = Some(NOW);
+    app.manage(Queues::new(qs(vec![a])));
+    let state = app.state::<Queues>();
+    let err = queue_probe_context(state.clone(), "missing".into())
+        .err()
+        .expect("no probe without the item");
+    assert_eq!(err.kind(), ErrorKind::Missing);
+    assert_eq!(err.message(), "scheduled prompt not found");
+    let seed = smoke_seed_ambiguous(state.clone()).unwrap_err();
+    let disk = smoke_queue_state(state.clone())
+        .err()
+        .expect("smoke state is unavailable");
+    let flush = smoke_flush_queue(state.clone()).unwrap_err();
+    for err in [seed, disk, flush] {
+        assert_eq!(err.kind(), ErrorKind::Other);
+        assert_eq!(err.message(), "smoke queue hooks are unavailable");
+    }
+    let q = state.q.lock().unwrap();
+    assert_eq!(q.items[0].state, "pending", "nothing was seeded");
+    assert!(q.pending.is_empty());
+    assert!(!state.dirty.load(AtomicOrdering::Relaxed));
+}

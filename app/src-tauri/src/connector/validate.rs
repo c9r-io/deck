@@ -1,7 +1,9 @@
 //! Request validation: applicability, payload shapes, admission board checks.
 //!
 //! Split out of the one-file `connector/mod.rs` on 2026-09-23; the contract
-//! stays in `connector/mod.rs`.
+//! stays in `connector/mod.rs`. `validate_applicable` reads the committed
+//! board and delegates to the pure `validate_applicable_in`, which tests feed
+//! directly.
 
 use super::*;
 
@@ -72,6 +74,16 @@ pub(super) fn validate_admission_board(
 
 pub(super) fn validate_applicable(request: &CommandRequest) -> Result<(), DeckError> {
     let (revision, board) = board_value()?;
+    validate_applicable_in(request, &revision, &board)
+}
+
+/// Applicability of a claimed request against one committed board
+/// (`revision` is that board's hash); pure, so a test supplies the board.
+pub(super) fn validate_applicable_in(
+    request: &CommandRequest,
+    revision: &str,
+    board: &Value,
+) -> Result<(), DeckError> {
     if request.kind == "task-create" {
         #[derive(Deserialize)]
         #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -81,7 +93,7 @@ pub(super) fn validate_applicable(request: &CommandRequest) -> Result<(), DeckEr
         }
         let p: P = serde_json::from_value(request.payload.clone())
             .map_err(|_| DeckError::new(ErrorKind::Invalid, "invalid task preset"))?;
-        if request.expected_revision.as_deref() != Some(&revision) {
+        if request.expected_revision.as_deref() != Some(revision) {
             return Err(DeckError::new(
                 ErrorKind::ContextChanged,
                 "revision-changed",

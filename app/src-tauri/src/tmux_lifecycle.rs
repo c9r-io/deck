@@ -25,6 +25,14 @@
 //! restart transaction runs the registered guard before any tmux impact,
 //! and an unset guard means no feature objects.
 //!
+//! Every tmux-facing step (`probe_server_on`, `start_current_server_on`,
+//! `wait_for_old_server_exit_on`, `clean_confirmed_intent_socket_on`,
+//! `complete_restart_on`) and the lifecycle file (`read_disk_at`,
+//! `write_disk_at`, `status_from_probe_with`) take a `ServerHandle`;
+//! production builds exactly one, `deck_server()`, and the parameterless
+//! wrappers used by the boot gate and commands pass it. Tests run the same
+//! code against a throwaway bundled-tmux socket and a temporary file.
+//!
 //! Production Stable/Nightly intentionally share socket `deck` because
 //! promotion copies identical candidate bytes. Debug development uses
 //! `deck-dev` and bundle ID `io.c9r.deck.dev`; smoke requires `deck-smoke*` and
@@ -216,6 +224,31 @@ enum Probe {
     Unreachable,
 }
 
+/// The one server this module inspects and replaces. Production has exactly
+/// one, `deck_server()`: deck's own server through `tmux::tmux` /
+/// `tmux::tmux_owned` on `tmux::socket()`, the query client identity from
+/// `tmux::owned_control_client`, and the lifecycle file under the data dir.
+/// The probe, start, stop-wait, stale-socket cleanup and restart transaction
+/// take the handle as an argument so tests run the same code against a
+/// throwaway bundled-tmux socket and a temporary lifecycle file.
+struct ServerHandle<'a> {
+    run: &'a dyn Fn(&[&str]) -> Result<String, DeckError>,
+    run_owned: &'a dyn Fn(&[String]) -> Result<String, DeckError>,
+    owned_client: &'a dyn Fn() -> Option<(u32, u32, String)>,
+    socket_name: &'a str,
+    lifecycle_file: PathBuf,
+}
+
+fn deck_server() -> ServerHandle<'static> {
+    ServerHandle {
+        run: &tmux,
+        run_owned: &tmux_owned,
+        owned_client: &tmux::owned_control_client,
+        socket_name: tmux::socket(),
+        lifecycle_file: lifecycle_path(),
+    }
+}
+
 fn now_epoch() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -228,7 +261,11 @@ fn lifecycle_path() -> PathBuf {
 }
 
 fn read_disk() -> LifecycleDisk {
-    let Ok(raw) = std::fs::read_to_string(lifecycle_path()) else {
+    read_disk_at(&lifecycle_path())
+}
+
+fn read_disk_at(path: &Path) -> LifecycleDisk {
+    let Ok(raw) = std::fs::read_to_string(path) else {
         return LifecycleDisk::default();
     };
     serde_json::from_str::<LifecycleDisk>(&raw)
@@ -238,11 +275,17 @@ fn read_disk() -> LifecycleDisk {
 }
 
 fn write_disk(disk: &LifecycleDisk) -> Result<(), DeckError> {
+    write_disk_at(&lifecycle_path(), disk)
+}
+
+fn write_disk_at(path: &Path, disk: &LifecycleDisk) -> Result<(), DeckError> {
     crate::session_runtime::check_deadline()?;
-    crate::datadir::create_private_dir(&crate::datadir::deck_dir())?;
+    if let Some(dir) = path.parent() {
+        crate::datadir::create_private_dir(dir)?;
+    }
     let bytes = serde_json::to_vec(disk)
         .map_err(|_| DeckError::new(ErrorKind::Other, "lifecycle-state-encode"))?;
-    crate::datadir::atomic_write(&lifecycle_path(), &bytes)
+    crate::datadir::atomic_write(path, &bytes)
 }
 
 pub(crate) fn app_bundle_root(executable: &Path) -> Option<&Path> {
@@ -514,7 +557,11 @@ fn subtract_owned_control_client(
 }
 
 fn probe_server() -> Probe {
-    let head = match tmux(&[
+    probe_server_on(&deck_server())
+}
+
+fn probe_server_on(server: &ServerHandle<'_>) -> Probe {
+    let head = match (server.run)(&[
         "display-message",
         "-p",
         "#{pid}\t#{start_time}\t#{socket_path}",
@@ -540,7 +587,7 @@ fn probe_server() -> Probe {
         return Probe::Unreachable;
     }
 
-    let metadata = match tmux(&["show-options", "-gqv", METADATA_OPTION]) {
+    let metadata = match (server.run)(&["show-options", "-gqv", METADATA_OPTION]) {
         Ok(value) if value.trim().is_empty() => MetadataRead::Missing,
         Ok(value) => serde_json::from_str::<ServerMetadata>(value.trim())
             .map(MetadataRead::Present)
@@ -548,7 +595,7 @@ fn probe_server() -> Probe {
         Err(_) => MetadataRead::Corrupt,
     };
 
-    let session_listing = match tmux(&[
+    let session_listing = match (server.run)(&[
         "list-sessions",
         "-F",
         "#{session_name}\t#{session_attached}\t#{session_activity}",
@@ -582,8 +629,8 @@ fn probe_server() -> Probe {
         });
     }
 
-    if let Some(owned) = tmux::owned_control_client() {
-        let clients = match tmux(&[
+    if let Some(owned) = (server.owned_client)() {
+        let clients = match (server.run)(&[
             "list-clients",
             "-F",
             "#{client_pid}\t#{client_control_mode}\t#{client_flags}\t#{session_name}",
@@ -600,7 +647,7 @@ fn probe_server() -> Probe {
     let mut pane_identities = Vec::new();
     let mut pane_rows = Vec::new();
     if !sessions.is_empty() {
-        let Ok(rows) = tmux::list_panes() else {
+        let Ok(rows) = tmux::list_panes_with(server.run) else {
             return Probe::Unreachable;
         };
         pane_rows = rows;
@@ -667,6 +714,13 @@ fn source_can_create(build: &CurrentBuildIdentity) -> bool {
 }
 
 fn start_current_server(build: &CurrentBuildIdentity) -> Result<ServerSnapshot, DeckError> {
+    start_current_server_on(&deck_server(), build)
+}
+
+fn start_current_server_on(
+    server: &ServerHandle<'_>,
+    build: &CurrentBuildIdentity,
+) -> Result<ServerSnapshot, DeckError> {
     if !source_can_create(build) {
         return Err(DeckError::new(
             ErrorKind::Tmux,
@@ -688,8 +742,8 @@ fn start_current_server(build: &CurrentBuildIdentity) -> Result<ServerSnapshot, 
         METADATA_OPTION.into(),
         metadata,
     ];
-    tmux_owned(&args)?;
-    match probe_server() {
+    (server.run_owned)(&args)?;
+    match probe_server_on(server) {
         Probe::Reachable(snapshot)
             if compatible_state(build, &snapshot.metadata)
                 == CompatibilityState::CompatibleCurrentBuild =>
@@ -726,15 +780,22 @@ fn safe_stale_socket(
 }
 
 fn clean_confirmed_intent_socket(intent: &RestartIntent) -> Result<(), DeckError> {
+    clean_confirmed_intent_socket_on(&deck_server(), intent)
+}
+
+fn clean_confirmed_intent_socket_on(
+    server: &ServerHandle<'_>,
+    intent: &RestartIntent,
+) -> Result<(), DeckError> {
     let path = Path::new("/tmp")
         .join(format!("tmux-{}", unsafe { libc::getuid() }))
-        .join(tmux::socket());
+        .join(server.socket_name);
     if !path.exists() {
         return Ok(());
     }
     if !safe_stale_socket(
         &path,
-        tmux::socket(),
+        server.socket_name,
         intent.old_socket_device,
         intent.old_socket_inode,
     ) {
@@ -747,10 +808,13 @@ fn clean_confirmed_intent_socket(intent: &RestartIntent) -> Result<(), DeckError
         .map_err(|_| DeckError::new(ErrorKind::Tmux, "tmux-server-stale-socket"))
 }
 
-fn wait_for_old_server_exit(old: &ServerSnapshot) -> Result<(), DeckError> {
+fn wait_for_old_server_exit_on(
+    server: &ServerHandle<'_>,
+    old: &ServerSnapshot,
+) -> Result<(), DeckError> {
     for _ in 0..50 {
         crate::session_runtime::check_deadline()?;
-        match probe_server() {
+        match probe_server_on(server) {
             Probe::Absent => break,
             Probe::Reachable(snapshot)
                 if snapshot.pid != old.pid || snapshot.started_at != old.started_at =>
@@ -765,14 +829,14 @@ fn wait_for_old_server_exit(old: &ServerSnapshot) -> Result<(), DeckError> {
         }
         std::thread::sleep(Duration::from_millis(100));
     }
-    if matches!(probe_server(), Probe::Reachable(snapshot) if snapshot.pid == old.pid && snapshot.started_at == old.started_at)
+    if matches!(probe_server_on(server), Probe::Reachable(snapshot) if snapshot.pid == old.pid && snapshot.started_at == old.started_at)
     {
         return Err(DeckError::new(ErrorKind::Tmux, "tmux-server-stop-timeout"));
     }
     if old.socket_path.exists() {
         if !safe_stale_socket(
             &old.socket_path,
-            tmux::socket(),
+            server.socket_name,
             old.socket_device,
             old.socket_inode,
         ) {
@@ -792,8 +856,17 @@ fn complete_restart(
     old: &ServerSnapshot,
     notice_code: &str,
 ) -> Result<ServerSnapshot, DeckError> {
+    complete_restart_on(&deck_server(), build, old, notice_code)
+}
+
+fn complete_restart_on(
+    server: &ServerHandle<'_>,
+    build: &CurrentBuildIdentity,
+    old: &ServerSnapshot,
+    notice_code: &str,
+) -> Result<ServerSnapshot, DeckError> {
     let key = build_key(build);
-    let mut disk = read_disk();
+    let mut disk = read_disk_at(&server.lifecycle_file);
     disk.operation = Some(RestartIntent {
         build_key: key.clone(),
         old_pid: old.pid,
@@ -805,12 +878,12 @@ fn complete_restart(
         impact_token: old.impact_token.clone(),
         phase: RestartPhase::Stopping,
     });
-    write_disk(&disk)?;
+    write_disk_at(&server.lifecycle_file, &disk)?;
 
     crate::session_runtime::check_deadline()?;
     let stop_started = std::time::Instant::now();
     applog("[tmux-restart] stopping");
-    match tmux(&["kill-server"]) {
+    match (server.run)(&["kill-server"]) {
         Ok(_) => {}
         Err(error) if absent_error(error.message()) => {}
         Err(_) => return Err(DeckError::new(ErrorKind::Tmux, "tmux-server-stop-failed")),
@@ -818,7 +891,7 @@ fn complete_restart(
     if crate::smoke_faults::take("tmux-after-stop") {
         return Err(DeckError::new(ErrorKind::Tmux, "injected-tmux-after-stop"));
     }
-    wait_for_old_server_exit(old)?;
+    wait_for_old_server_exit_on(server, old)?;
     applog(&format!(
         "[tmux-restart] stopped elapsed_ms={}",
         stop_started.elapsed().as_millis()
@@ -832,7 +905,7 @@ fn complete_restart(
 
     disk.operation.as_mut().unwrap().phase = RestartPhase::Starting;
     crate::session_runtime::check_deadline()?;
-    write_disk(&disk)?;
+    write_disk_at(&server.lifecycle_file, &disk)?;
     if crate::smoke_faults::take("tmux-before-start") {
         return Err(DeckError::new(
             ErrorKind::Tmux,
@@ -841,14 +914,14 @@ fn complete_restart(
     }
     let start_started = std::time::Instant::now();
     applog("[tmux-restart] starting");
-    let fresh = start_current_server(build)?;
+    let fresh = start_current_server_on(server, build)?;
     applog(&format!(
         "[tmux-restart] verified elapsed_ms={}",
         start_started.elapsed().as_millis()
     ));
 
     disk.operation.as_mut().unwrap().phase = RestartPhase::Verifying;
-    write_disk(&disk)?;
+    write_disk_at(&server.lifecycle_file, &disk)?;
     if crate::smoke_faults::take("tmux-after-metadata") {
         return Err(DeckError::new(
             ErrorKind::Tmux,
@@ -870,7 +943,7 @@ fn complete_restart(
         code: notice_code.into(),
         build_key: key,
     });
-    write_disk(&disk)?;
+    write_disk_at(&server.lifecycle_file, &disk)?;
     applog(&format!(
         "[tmux-lifecycle] restart complete old_pid={} new_pid={} sessions={} panes={}",
         old.pid,
@@ -882,8 +955,15 @@ fn complete_restart(
 }
 
 fn status_from_probe(build: CurrentBuildIdentity, probe: Probe) -> ServerStatus {
+    status_from_probe_with(build, probe, read_disk())
+}
+
+fn status_from_probe_with(
+    build: CurrentBuildIdentity,
+    probe: Probe,
+    disk: LifecycleDisk,
+) -> ServerStatus {
     let key = build_key(&build);
-    let disk = read_disk();
     match probe {
         Probe::Absent => ServerStatus {
             status: if build.source == SourceCategory::Transient {
@@ -1360,6 +1440,7 @@ mod tests {
     use std::os::unix::net::UnixListener;
     use std::process::Command;
     use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+    use std::time::Instant;
 
     /// Release creation is allowed only from an installed `deck.app`; the
     /// shape check must reject every other layout (a bare binary in
@@ -1471,6 +1552,27 @@ mod tests {
 
         fn new_session(&self, name: &str) {
             self.run(&["new-session", "-d", "-s", name, "/bin/sleep 30"]);
+        }
+
+        /// Exactly what `tmux::tmux` does after its spawn, on this socket.
+        fn tmux(&self, args: &[&str]) -> Result<String, DeckError> {
+            crate::tmux::captured_output(
+                Command::new(&self.binary).args(["-f", "/dev/null", "-L", &self.socket]),
+                args,
+            )
+        }
+
+        fn tmux_owned(&self, args: &[String]) -> Result<String, DeckError> {
+            crate::tmux::captured_output(
+                Command::new(&self.binary).args(["-f", "/dev/null", "-L", &self.socket]),
+                args,
+            )
+        }
+
+        fn is_running(&self) -> bool {
+            self.output(&["display-message", "-p", "#{pid}"])
+                .status
+                .success()
         }
 
         fn stop(&self) {
@@ -1982,6 +2084,1064 @@ mod tests {
                 &sessions,
                 &[("reviewed".into(), "%1".into(), 100, "codex".into(),)]
             )
+        );
+    }
+
+    /// Tests that take or set the process-wide statics (`OPERATION`,
+    /// `APP_UPDATE_INSTALLING`) serialize here; CI runs one thread, local
+    /// runs may not.
+    static LIFECYCLE_STATICS: Mutex<()> = Mutex::new(());
+
+    /// A private temporary directory holding one test's lifecycle file.
+    struct TestDir(PathBuf);
+
+    impl TestDir {
+        fn new(tag: &str) -> Self {
+            let seq = TEST_SOCKET_SEQ.fetch_add(1, AtomicOrdering::Relaxed);
+            let dir = std::env::temp_dir()
+                .join(format!("deck-lifecycle-{tag}-{}-{seq}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            Self(dir)
+        }
+
+        fn file(&self) -> PathBuf {
+            self.0.join(LIFECYCLE_FILE)
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn snapshot(metadata: MetadataRead, sessions: Vec<SessionImpact>) -> ServerSnapshot {
+        ServerSnapshot {
+            pid: 42,
+            started_at: 10,
+            socket_path: PathBuf::from("/private/tmp/tmux-501/test"),
+            socket_device: 1,
+            socket_inode: 2,
+            metadata,
+            sessions,
+            impact_token: "impact-v1-deadbeef".into(),
+            panes: Vec::new(),
+        }
+    }
+
+    fn intent_for(old: &ServerSnapshot, build_key: &str) -> RestartIntent {
+        RestartIntent {
+            build_key: build_key.into(),
+            old_pid: old.pid,
+            old_started_at: old.started_at,
+            old_socket_device: old.socket_device,
+            old_socket_inode: old.socket_inode,
+            session_count: old.sessions.len() as u32,
+            pane_count: old.pane_count(),
+            impact_token: old.impact_token.clone(),
+            phase: RestartPhase::Stopping,
+        }
+    }
+
+    fn no_owned_client() -> Option<(u32, u32, String)> {
+        None
+    }
+
+    fn never_owned(_: &[String]) -> Result<String, DeckError> {
+        panic!("start-server is not part of this scenario")
+    }
+
+    /// Only a missing server or session reads as "absent" (a fresh start is
+    /// allowed); any other tmux failure is "unreachable" and fails closed.
+    #[test]
+    fn only_a_missing_server_or_session_reads_as_absent() {
+        for absent in [
+            "tmux display-message failed: no server running on /private/tmp/tmux-501/deck",
+            "tmux list-sessions failed: no sessions",
+            "tmux has-session failed: can't find session: deck-card",
+            "error connecting to socket (No such file or directory)",
+        ] {
+            assert!(absent_error(absent), "{absent}");
+        }
+        for other in [
+            "tmux control timeout",
+            "tmux display-message failed: permission denied",
+            "tmux-restart-timeout",
+            "",
+        ] {
+            assert!(!absent_error(other), "{other}");
+        }
+    }
+
+    /// The identity this debug test binary presents: a development source
+    /// on the dev bundle ID whose build key names bundle, version, commit
+    /// and protocol, and whose own metadata reads back as the current build.
+    #[test]
+    fn this_debug_binary_is_a_development_source_with_a_stable_build_key() {
+        assert_eq!(source_category(), SourceCategory::Development);
+        assert_eq!(
+            bundle_identifier(SourceCategory::Installed),
+            RELEASE_BUNDLE_ID
+        );
+        assert_eq!(
+            bundle_identifier(SourceCategory::Transient),
+            RELEASE_BUNDLE_ID
+        );
+        assert_eq!(
+            bundle_identifier(SourceCategory::Development),
+            DEVELOPMENT_BUNDLE_ID
+        );
+        assert_eq!(bundle_identifier(SourceCategory::Smoke), SMOKE_BUNDLE_ID);
+
+        let current = current_build();
+        assert_eq!(current.source, SourceCategory::Development);
+        assert_eq!(current.channel, "development");
+        assert_eq!(current.bundle_identifier, DEVELOPMENT_BUNDLE_ID);
+        assert_eq!(current.app_version, env!("CARGO_PKG_VERSION"));
+        assert_eq!(current.build_identifier, env!("DECK_BUILD_COMMIT"));
+        assert_eq!(current.protocol_version, SERVER_PROTOCOL);
+        // The helper version is read once from the sidecar beside the
+        // executable; a test binary has none and says so instead of guessing.
+        if tmux::tmux_program().is_err() {
+            assert_eq!(current.helper_version, "unknown");
+        }
+        assert!(!current.helper_version.is_empty() && current.helper_version.len() <= 64);
+        assert_eq!(helper_version(), current.helper_version);
+        assert_eq!(
+            build_key(&current),
+            format!(
+                "{DEVELOPMENT_BUNDLE_ID}:{}:{}:{SERVER_PROTOCOL}",
+                current.app_version, current.build_identifier
+            )
+        );
+
+        let before = now_epoch();
+        let metadata = metadata_for_current(&current);
+        assert_eq!(metadata.schema_version, METADATA_SCHEMA);
+        assert_eq!(metadata.protocol_version, SERVER_PROTOCOL);
+        assert_eq!(metadata.source, SourceCategory::Development);
+        assert!(metadata.created_at >= before && metadata.created_at <= now_epoch());
+        assert_eq!(
+            compatible_state(&current, &MetadataRead::Present(metadata)),
+            CompatibilityState::CompatibleCurrentBuild
+        );
+
+        assert!(!source_can_create(&build(
+            SourceCategory::Transient,
+            "0.4.41",
+            "bbbbbbb",
+            1
+        )));
+        assert!(source_can_create(&build(
+            SourceCategory::Development,
+            "0.4.41",
+            "bbbbbbb",
+            1
+        )));
+        assert!(source_can_create(&build(
+            SourceCategory::Smoke,
+            "0.4.41",
+            "bbbbbbb",
+            1
+        )));
+        // An installed release creates only with its own adjacent sidecar,
+        // which is exactly when this executable resolves one.
+        assert_eq!(
+            source_can_create(&build(SourceCategory::Installed, "0.4.41", "bbbbbbb", 1)),
+            tmux::tmux_program().is_ok()
+        );
+    }
+
+    /// The lifecycle file round-trips through the private data path, an
+    /// unreadable or future file reads as empty (never as an error that
+    /// would block boot), and an expired restart deadline refuses to write.
+    #[test]
+    fn lifecycle_state_round_trips_and_unreadable_files_read_as_empty() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TestDir::new("disk");
+        let path = dir.0.join("nested").join(LIFECYCLE_FILE);
+        let empty = read_disk_at(&path);
+        assert_eq!(empty.schema_version, 1);
+        assert!(empty.deferred_build.is_none() && empty.operation.is_none());
+        assert!(empty.notice.is_none());
+
+        let disk = LifecycleDisk {
+            schema_version: 1,
+            deferred_build: Some("io.c9r.deck.dev:0.4.41:bbbbbbb:1".into()),
+            operation: None,
+            notice: Some(LifecycleNotice {
+                code: "restartCompleted".into(),
+                build_key: "io.c9r.deck.dev:0.4.41:bbbbbbb:1".into(),
+            }),
+        };
+        write_disk_at(&path, &disk).expect("write creates the private directory");
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&path), 0o600);
+        assert_eq!(mode(path.parent().unwrap()), 0o700);
+        let back = read_disk_at(&path);
+        assert_eq!(
+            back.deferred_build.as_deref(),
+            Some("io.c9r.deck.dev:0.4.41:bbbbbbb:1")
+        );
+        let notice = back.notice.expect("notice kept");
+        assert_eq!(notice.code, "restartCompleted");
+        assert_eq!(notice.build_key, "io.c9r.deck.dev:0.4.41:bbbbbbb:1");
+
+        std::fs::write(&path, "{not json").unwrap();
+        assert!(read_disk_at(&path).deferred_build.is_none());
+        let future =
+            r#"{"schema_version":2,"deferred_build":"future","operation":null,"notice":null}"#;
+        std::fs::write(&path, future).unwrap();
+        assert!(
+            read_disk_at(&path).deferred_build.is_none(),
+            "a future schema is not interpreted"
+        );
+
+        let _deadline =
+            crate::session_runtime::Deadline::until(Instant::now() - Duration::from_millis(1));
+        let refused = write_disk_at(&path, &disk).expect_err("expired deadline");
+        assert_eq!(refused.message(), "tmux-restart-timeout");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), future);
+    }
+
+    /// One lifecycle operation at a time, and none while the updater has
+    /// renamed the running bundle: every gate answers with its own code
+    /// before touching the server or the data directory.
+    #[test]
+    fn the_operation_gate_and_the_update_embargo_refuse_concurrent_server_work() {
+        let _serial = LIFECYCLE_STATICS.lock_or_recover();
+        struct ClearEmbargo;
+        impl Drop for ClearEmbargo {
+            fn drop(&mut self) {
+                cancel_app_update_install();
+            }
+        }
+        let _clear = ClearEmbargo;
+        assert!(!app_update_installing());
+        {
+            let _held = try_operation().expect("free gate");
+            let refused = [
+                ("try_operation", try_operation().map(drop).unwrap_err()),
+                (
+                    "begin_app_update_install",
+                    begin_app_update_install().unwrap_err(),
+                ),
+                (
+                    "defer_tmux_restart",
+                    defer_tmux_restart().map(drop).unwrap_err(),
+                ),
+                (
+                    "acknowledge_tmux_lifecycle_notice",
+                    acknowledge_tmux_lifecycle_notice().unwrap_err(),
+                ),
+            ];
+            for (name, error) in refused {
+                assert_eq!(error.message(), "tmux-server-restart-in-progress", "{name}");
+                assert_eq!(error.kind(), ErrorKind::Tmux, "{name}");
+            }
+            assert!(!app_update_installing(), "a refused begin sets no embargo");
+        }
+        begin_app_update_install().expect("the gate is free again");
+        assert!(app_update_installing());
+        let refused = session_creation_guard().map(drop).unwrap_err();
+        assert_eq!(refused.message(), "app-update-installing");
+        assert_eq!(refused.kind(), ErrorKind::Other);
+        assert_eq!(
+            defer_tmux_restart().map(drop).unwrap_err().message(),
+            "app-update-installing"
+        );
+        cancel_app_update_install();
+        assert!(!app_update_installing());
+    }
+
+    #[test]
+    fn the_restart_guard_is_registered_once_and_never_replaced() {
+        fn first() -> Result<(), DeckError> {
+            Err(DeckError::new(ErrorKind::Other, "first-guard"))
+        }
+        fn second() -> Result<(), DeckError> {
+            Ok(())
+        }
+        set_restart_guard(first);
+        set_restart_guard(second);
+        let guard = RESTART_GUARD.get().expect("registered");
+        assert_eq!(guard().unwrap_err().message(), "first-guard");
+    }
+
+    /// The status the Board reads: probe outcome, compatibility, counts,
+    /// the deferral that silences the prompt for one build, and a notice
+    /// that belongs to the build that wrote it.
+    #[test]
+    fn server_status_projects_the_probe_the_deferral_and_the_notice() {
+        let current = build(SourceCategory::Development, "0.4.41", "bbbbbbb", 1);
+        let key = build_key(&current);
+        let disk = |deferred: Option<&str>, notice: Option<&str>| LifecycleDisk {
+            schema_version: 1,
+            deferred_build: deferred.map(Into::into),
+            operation: None,
+            notice: notice.map(|build_key| LifecycleNotice {
+                code: "restartCompleted".into(),
+                build_key: build_key.into(),
+            }),
+        };
+
+        let absent = status_from_probe_with(current.clone(), Probe::Absent, disk(None, Some(&key)));
+        assert_eq!(absent.status, CompatibilityState::CorruptOrUnreachable);
+        assert!(!absent.pending_restart && !absent.should_prompt);
+        assert!(absent.can_restart);
+        assert!(absent.server_pid.is_none() && absent.server_build.is_none());
+        assert_eq!(absent.session_count, 0);
+        assert_eq!(absent.notice.as_deref(), Some("restartCompleted"));
+        let other = status_from_probe_with(
+            current.clone(),
+            Probe::Absent,
+            disk(None, Some("io.c9r.deck:0.4.40:aaaaaaa:1")),
+        );
+        assert_eq!(
+            other.notice, None,
+            "a notice belongs to the build that wrote it"
+        );
+        let transient = build(SourceCategory::Transient, "0.4.41", "bbbbbbb", 1);
+        let unstable = status_from_probe_with(transient, Probe::Absent, disk(None, None));
+        assert_eq!(unstable.status, CompatibilityState::SourceUnstable);
+        assert!(!unstable.can_restart);
+
+        let unreachable =
+            status_from_probe_with(current.clone(), Probe::Unreachable, disk(None, Some(&key)));
+        assert_eq!(unreachable.status, CompatibilityState::CorruptOrUnreachable);
+        assert!(unreachable.pending_restart && !unreachable.should_prompt);
+        assert!(!unreachable.can_restart);
+        assert!(unreachable.impact_token.is_none());
+        assert_eq!(unreachable.notice, None);
+
+        let old = build(SourceCategory::Development, "0.4.40", "aaaaaaa", 2);
+        let mut sessions = vec![impact("alpha", 1), impact("beta", 0)];
+        sessions[1].has_foreground_process = true;
+        sessions[1].pane_count = 2;
+        let reachable = status_from_probe_with(
+            current.clone(),
+            Probe::Reachable(Box::new(snapshot(metadata(&old), sessions.clone()))),
+            disk(None, Some(&key)),
+        );
+        assert_eq!(reachable.status, CompatibilityState::RestartRequired);
+        assert!(reachable.pending_restart && reachable.should_prompt);
+        assert!(reachable.can_restart);
+        assert_eq!(reachable.server_pid, Some(42));
+        assert_eq!(reachable.server_started_at, Some(10));
+        assert_eq!(
+            reachable.impact_token.as_deref(),
+            Some("impact-v1-deadbeef")
+        );
+        assert_eq!(reachable.session_count, 2);
+        assert_eq!(reachable.pane_count, 3);
+        assert_eq!(reachable.attached_session_count, 1);
+        assert_eq!(reachable.foreground_session_count, 1);
+        assert_eq!(reachable.sessions, sessions);
+        assert_eq!(
+            reachable.server_build.map(|server| server.app_version),
+            Some("0.4.40".into())
+        );
+        assert_eq!(reachable.notice.as_deref(), Some("restartCompleted"));
+
+        let deferred = status_from_probe_with(
+            current.clone(),
+            Probe::Reachable(Box::new(snapshot(metadata(&old), sessions.clone()))),
+            disk(Some(&key), None),
+        );
+        assert!(deferred.pending_restart && !deferred.should_prompt);
+
+        let same = status_from_probe_with(
+            current.clone(),
+            Probe::Reachable(Box::new(snapshot(metadata(&current), Vec::new()))),
+            disk(None, None),
+        );
+        assert_eq!(same.status, CompatibilityState::CompatibleCurrentBuild);
+        assert!(!same.pending_restart && !same.should_prompt);
+        assert_eq!(same.pane_count, 0);
+
+        let legacy = status_from_probe_with(
+            current,
+            Probe::Reachable(Box::new(snapshot(MetadataRead::Missing, sessions))),
+            disk(None, None),
+        );
+        assert_eq!(legacy.status, CompatibilityState::LegacyUnknown);
+        assert!(legacy.server_build.is_none());
+        assert!(legacy.pending_restart && legacy.should_prompt);
+    }
+
+    #[test]
+    fn real_tmux_probe_reads_identity_metadata_sessions_and_pane_impact() {
+        let current = build(SourceCategory::Development, "0.4.41", "bbbbbbb", 1);
+        let server = IsolatedServer::new("probe");
+        let dir = TestDir::new("probe");
+        let run = |args: &[&str]| server.tmux(args);
+        let run_owned = |args: &[String]| server.tmux_owned(args);
+        let handle = ServerHandle {
+            run: &run,
+            run_owned: &run_owned,
+            owned_client: &no_owned_client,
+            socket_name: &server.socket,
+            lifecycle_file: dir.file(),
+        };
+        assert!(
+            matches!(probe_server_on(&handle), Probe::Absent),
+            "no server yet"
+        );
+
+        server.start(Some(&metadata_for_current(&current)));
+        let Probe::Reachable(empty) = probe_server_on(&handle) else {
+            panic!("a started server is reachable");
+        };
+        assert_eq!(empty.pid, server.pid());
+        assert!(empty.started_at > 0);
+        assert_eq!(
+            compatible_state(&current, &empty.metadata),
+            CompatibilityState::CompatibleCurrentBuild
+        );
+        assert!(empty.sessions.is_empty() && empty.panes.is_empty());
+        assert_eq!(empty.pane_count(), 0);
+        let socket = std::fs::symlink_metadata(&empty.socket_path).unwrap();
+        assert!(socket.file_type().is_socket());
+        assert_eq!(
+            (empty.socket_device, empty.socket_inode),
+            (socket.dev(), socket.ino())
+        );
+        assert_eq!(
+            empty.socket_path.file_name().and_then(|name| name.to_str()),
+            Some(server.socket.as_str())
+        );
+        assert!(empty.impact_token.starts_with("impact-v1-"));
+
+        server.new_session("alpha");
+        server.run(&["new-session", "-d", "-s", "beta", "/bin/sh"]);
+        let Probe::Reachable(busy) = probe_server_on(&handle) else {
+            panic!("reachable with sessions");
+        };
+        assert_eq!((busy.pid, busy.started_at), (empty.pid, empty.started_at));
+        let mut sessions = busy.sessions.clone();
+        sessions.sort_by(|a, b| a.name.cmp(&b.name));
+        assert_eq!(
+            sessions,
+            vec![
+                SessionImpact {
+                    name: "alpha".into(),
+                    pane_count: 1,
+                    attached_clients: 0,
+                    has_foreground_process: true,
+                    recently_active: true,
+                },
+                SessionImpact {
+                    name: "beta".into(),
+                    pane_count: 1,
+                    attached_clients: 0,
+                    has_foreground_process: false,
+                    recently_active: true,
+                },
+            ]
+        );
+        assert_eq!(busy.pane_count(), 2);
+        assert_eq!(busy.panes.len(), 2);
+        assert!(busy.panes.iter().all(|row| row.server_pid == busy.pid));
+        assert_ne!(busy.impact_token, empty.impact_token);
+        let Probe::Reachable(again) = probe_server_on(&handle) else {
+            panic!("still reachable");
+        };
+        assert_eq!(
+            again.impact_token, busy.impact_token,
+            "same identity, same token"
+        );
+
+        server.run(&["set-option", "-g", METADATA_OPTION, "{not-json"]);
+        let Probe::Reachable(corrupt) = probe_server_on(&handle) else {
+            panic!("reachable with corrupt metadata");
+        };
+        assert!(matches!(corrupt.metadata, MetadataRead::Corrupt));
+        server.run(&["set-option", "-g", METADATA_OPTION, ""]);
+        let Probe::Reachable(legacy) = probe_server_on(&handle) else {
+            panic!("reachable without metadata");
+        };
+        assert!(matches!(legacy.metadata, MetadataRead::Missing));
+        assert_eq!(
+            compatible_state(&current, &legacy.metadata),
+            CompatibilityState::LegacyUnknown
+        );
+
+        server.stop();
+        assert!(matches!(probe_server_on(&handle), Probe::Absent));
+    }
+
+    /// A probe never half-trusts a server: any answer that does not parse,
+    /// name a real socket, or account for every session and pane is
+    /// "unreachable", which blocks creation and restart instead of guessing.
+    #[test]
+    fn real_tmux_probe_fails_closed_on_any_inconsistent_answer() {
+        let current = build(SourceCategory::Development, "0.4.41", "bbbbbbb", 1);
+        let server = IsolatedServer::new("inconsistent");
+        let dir = TestDir::new("inconsistent");
+        server.start(Some(&metadata_for_current(&current)));
+        server.new_session("alpha");
+        let server_pid = server.pid();
+        let plain = std::fs::write(dir.0.join("plain"), b"not a socket");
+        assert!(plain.is_ok());
+        let run_owned = |args: &[String]| server.tmux_owned(args);
+        let owned_client = |pid: u32| move || Some((pid, server_pid, "alpha".to_string()));
+        let probe = |run: &dyn Fn(&[&str]) -> Result<String, DeckError>,
+                     owned: &dyn Fn() -> Option<(u32, u32, String)>| {
+            probe_server_on(&ServerHandle {
+                run,
+                run_owned: &run_owned,
+                owned_client: owned,
+                socket_name: &server.socket,
+                lifecycle_file: dir.file(),
+            })
+        };
+        let shared: &IsolatedServer = &server;
+        let answering = |verb: &'static str, answer: String| {
+            move |args: &[&str]| {
+                if args[0] == verb {
+                    Ok(answer.clone())
+                } else {
+                    shared.tmux(args)
+                }
+            }
+        };
+        let failing = |verb: &'static str| {
+            move |args: &[&str]| {
+                if args[0] == verb {
+                    Err(DeckError::new(ErrorKind::Tmux, "tmux control timeout"))
+                } else {
+                    shared.tmux(args)
+                }
+            }
+        };
+        let real = |args: &[&str]| server.tmux(args);
+        let sessions_of = |probe: Probe| match probe {
+            Probe::Reachable(snapshot) => Some(snapshot.sessions),
+            Probe::Absent => panic!("the server is running"),
+            Probe::Unreachable => None,
+        };
+        assert_eq!(
+            sessions_of(probe(&real, &no_owned_client)).map(|s| s.len()),
+            Some(1)
+        );
+
+        // The identity line.
+        assert!(sessions_of(probe(&failing("display-message"), &no_owned_client)).is_none());
+        for head in [
+            "garbage".to_string(),
+            format!("{server_pid}\t1"),
+            format!("x\t1\t{}", dir.0.join("plain").display()),
+            format!("{server_pid}\tx\t{}", dir.0.join("plain").display()),
+            format!("{server_pid}\t1\t{}", dir.0.join("plain").display()),
+            format!("{server_pid}\t1\t{}", dir.0.join("missing").display()),
+        ] {
+            assert!(
+                sessions_of(probe(
+                    &answering("display-message", head.clone()),
+                    &no_owned_client
+                ))
+                .is_none(),
+                "{head:?}"
+            );
+        }
+        // Metadata that cannot be read is corrupt, not legacy.
+        match probe(&failing("show-options"), &no_owned_client) {
+            Probe::Reachable(snapshot) => {
+                assert!(matches!(snapshot.metadata, MetadataRead::Corrupt))
+            }
+            _ => panic!("metadata failure keeps the server reachable"),
+        }
+        // The session listing.
+        assert!(sessions_of(probe(&failing("list-sessions"), &no_owned_client)).is_none());
+        for listing in ["alpha\t0", "alpha\tx\t0", "alpha\t0\tx", "bad name\t0\t0"] {
+            assert!(
+                sessions_of(probe(
+                    &answering("list-sessions", listing.into()),
+                    &no_owned_client
+                ))
+                .is_none(),
+                "{listing:?}"
+            );
+        }
+        let no_sessions = |args: &[&str]| {
+            if args[0] == "list-sessions" {
+                Err(DeckError::classified(
+                    "tmux list-sessions failed: no sessions",
+                ))
+            } else {
+                server.tmux(args)
+            }
+        };
+        assert_eq!(
+            sessions_of(probe(&no_sessions, &no_owned_client)),
+            Some(Vec::new()),
+            "an empty listing is an empty server"
+        );
+        // The pane listing must account for every session, and vice versa.
+        assert!(sessions_of(probe(
+            &answering("list-panes", String::new()),
+            &no_owned_client
+        ))
+        .is_none());
+        assert!(sessions_of(probe(&failing("list-panes"), &no_owned_client)).is_none());
+        let renamed = |args: &[&str]| {
+            let out = server.tmux(args)?;
+            Ok(if args[0] == "list-panes" {
+                out.replace("alpha", "gamma")
+            } else {
+                out
+            })
+        };
+        assert!(sessions_of(probe(&renamed, &no_owned_client)).is_none());
+        // The client listing is consulted only for an owned client, and then
+        // it must parse.
+        assert!(sessions_of(probe(&failing("list-clients"), &no_owned_client)).is_some());
+        assert!(sessions_of(probe(&failing("list-clients"), &owned_client(1))).is_none());
+        assert!(sessions_of(probe(
+            &answering("list-clients", "x\n".into()),
+            &owned_client(1)
+        ))
+        .is_none());
+        let no_clients = |args: &[&str]| {
+            if args[0] == "list-clients" {
+                Err(DeckError::classified(
+                    "tmux list-clients failed: no server running",
+                ))
+            } else {
+                server.tmux(args)
+            }
+        };
+        assert!(sessions_of(probe(&no_clients, &owned_client(1))).is_some());
+    }
+
+    #[test]
+    fn real_tmux_probe_subtracts_only_the_verified_owned_query_client() {
+        let current = build(SourceCategory::Development, "0.4.41", "bbbbbbb", 1);
+        let server = IsolatedServer::new("owned");
+        let dir = TestDir::new("owned");
+        server.start(Some(&metadata_for_current(&current)));
+        server.new_session("alpha");
+        let server_pid = server.pid();
+        struct KillOnDrop(std::process::Child);
+        impl Drop for KillOnDrop {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let mut client = KillOnDrop(
+            Command::new(&server.binary)
+                .args(["-f", "/dev/null", "-L", &server.socket])
+                .args(crate::tmux_clients::query_client_args("=alpha"))
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .expect("spawn a query client"),
+        );
+        let pid = client.0.id();
+        let listed = || {
+            server
+                .run(&["list-clients", "-F", "#{client_pid}"])
+                .lines()
+                .any(|line| line == pid.to_string())
+        };
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !listed() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(listed(), "the query client attached");
+
+        let run = |args: &[&str]| server.tmux(args);
+        let run_owned = |args: &[String]| server.tmux_owned(args);
+        let attached =
+            |owned: &dyn Fn() -> Option<(u32, u32, String)>| match probe_server_on(&ServerHandle {
+                run: &run,
+                run_owned: &run_owned,
+                owned_client: owned,
+                socket_name: &server.socket,
+                lifecycle_file: dir.file(),
+            }) {
+                Probe::Reachable(snapshot) => snapshot
+                    .sessions
+                    .iter()
+                    .find(|session| session.name == "alpha")
+                    .map(|session| session.attached_clients),
+                _ => None,
+            };
+        assert_eq!(attached(&no_owned_client), Some(1));
+        let ours = move || Some((pid, server_pid, "alpha".to_string()));
+        assert_eq!(attached(&ours), Some(0), "deck's own client is not impact");
+        let other_server = move || Some((pid, server_pid.wrapping_add(1), "alpha".to_string()));
+        assert_eq!(attached(&other_server), Some(1));
+        let other_session = move || Some((pid, server_pid, "beta".to_string()));
+        assert_eq!(attached(&other_session), Some(1));
+        let other_pid = move || Some((pid.wrapping_add(1), server_pid, "alpha".to_string()));
+        assert_eq!(attached(&other_pid), Some(1));
+
+        let _ = client.0.kill();
+        let _ = client.0.wait();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while listed() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!listed(), "the killed client detached");
+        assert_eq!(
+            attached(&ours),
+            Some(0),
+            "a remembered pid alone is never authority"
+        );
+    }
+
+    #[test]
+    fn real_tmux_start_writes_metadata_keeps_the_server_alive_and_verifies_it() {
+        let current = build(SourceCategory::Development, "0.4.41", "bbbbbbb", 1);
+        let server = IsolatedServer::new("start");
+        let dir = TestDir::new("start");
+        let starts = std::cell::Cell::new(0u32);
+        let run = |args: &[&str]| server.tmux(args);
+        let run_owned = |args: &[String]| {
+            starts.set(starts.get() + 1);
+            server.tmux_owned(args)
+        };
+        let handle = ServerHandle {
+            run: &run,
+            run_owned: &run_owned,
+            owned_client: &no_owned_client,
+            socket_name: &server.socket,
+            lifecycle_file: dir.file(),
+        };
+
+        let transient = build(SourceCategory::Transient, "0.4.41", "bbbbbbb", 1);
+        assert_eq!(
+            start_current_server_on(&handle, &transient)
+                .unwrap_err()
+                .message(),
+            "tmux-server-source-unstable"
+        );
+        assert_eq!(starts.get(), 0, "a transient source never starts a server");
+        assert!(!server.is_running());
+
+        let fresh = start_current_server_on(&handle, &current).expect("server started");
+        assert_eq!(starts.get(), 1);
+        assert_eq!(fresh.pid, server.pid());
+        assert!(fresh.sessions.is_empty());
+        assert_eq!(
+            server.run(&["show-options", "-gv", "exit-empty"]),
+            "off",
+            "an empty server stays alive"
+        );
+        let MetadataRead::Present(written) = server.metadata() else {
+            panic!("metadata written");
+        };
+        assert_eq!(written.app_version, current.app_version);
+        assert_eq!(written.build_identifier, current.build_identifier);
+        assert_eq!(written.bundle_identifier, DEVELOPMENT_BUNDLE_ID);
+        assert_eq!(written.channel, current.channel);
+        assert_eq!(written.source, SourceCategory::Development);
+        assert_eq!(
+            compatible_state(&current, &fresh.metadata),
+            CompatibilityState::CompatibleCurrentBuild
+        );
+        let again = start_current_server_on(&handle, &current).expect("idempotent start");
+        assert_eq!(again.pid, fresh.pid);
+
+        let blind = |args: &[&str]| {
+            if args[0] == "show-options" {
+                Ok(String::new())
+            } else {
+                server.tmux(args)
+            }
+        };
+        let unverifiable = ServerHandle {
+            run: &blind,
+            run_owned: &run_owned,
+            owned_client: &no_owned_client,
+            socket_name: &server.socket,
+            lifecycle_file: dir.file(),
+        };
+        assert_eq!(
+            start_current_server_on(&unverifiable, &current)
+                .unwrap_err()
+                .message(),
+            "tmux-server-verification-failed"
+        );
+        let refusing = |_: &[String]| {
+            Err(DeckError::new(
+                ErrorKind::Tmux,
+                "tmux start-server failed: refused",
+            ))
+        };
+        let refused = ServerHandle {
+            run: &run,
+            run_owned: &refusing,
+            owned_client: &no_owned_client,
+            socket_name: &server.socket,
+            lifecycle_file: dir.file(),
+        };
+        assert_eq!(
+            start_current_server_on(&refused, &current)
+                .unwrap_err()
+                .message(),
+            "tmux start-server failed: refused"
+        );
+    }
+
+    #[test]
+    fn real_tmux_restart_transaction_replaces_the_server_and_records_the_notice() {
+        let old_build = build(SourceCategory::Installed, "0.4.40", "aaaaaaa", 1);
+        let current = build(SourceCategory::Development, "0.4.41", "bbbbbbb", 1);
+        let server = IsolatedServer::new("transaction");
+        let dir = TestDir::new("transaction");
+        server.start(Some(&metadata_for_current(&old_build)));
+        server.new_session("alpha");
+        let run = |args: &[&str]| server.tmux(args);
+        let run_owned = |args: &[String]| server.tmux_owned(args);
+        let handle = ServerHandle {
+            run: &run,
+            run_owned: &run_owned,
+            owned_client: &no_owned_client,
+            socket_name: &server.socket,
+            lifecycle_file: dir.file(),
+        };
+        let Probe::Reachable(old) = probe_server_on(&handle) else {
+            panic!("old server reachable");
+        };
+        assert_eq!(old.sessions.len(), 1);
+        assert_eq!(
+            compatible_state(&current, &old.metadata),
+            CompatibilityState::RestartRequired
+        );
+
+        let began = Instant::now();
+        let fresh =
+            complete_restart_on(&handle, &current, &old, "restartCompleted").expect("restart");
+        assert!(began.elapsed() < Duration::from_secs(3));
+        assert_ne!(fresh.pid, old.pid);
+        assert_eq!(fresh.pid, server.pid());
+        assert!(fresh.sessions.is_empty());
+        assert_eq!(
+            compatible_state(&current, &fresh.metadata),
+            CompatibilityState::CompatibleCurrentBuild
+        );
+        assert!(!server
+            .output(&["has-session", "-t", "=alpha"])
+            .status
+            .success());
+        assert_eq!(server.run(&["show-options", "-gv", "exit-empty"]), "off");
+        let disk = read_disk_at(&dir.file());
+        assert!(disk.operation.is_none(), "the transaction is closed");
+        assert!(disk.deferred_build.is_none(), "a deferral is consumed");
+        let notice = disk.notice.expect("notice for the next boot");
+        assert_eq!(notice.code, "restartCompleted");
+        assert_eq!(notice.build_key, build_key(&current));
+    }
+
+    /// A restart that fails leaves the content-free intent in the phase it
+    /// reached, so the next boot resumes only against the same identity;
+    /// a replaced server is never killed under an old confirmation.
+    #[test]
+    fn real_tmux_restart_transaction_persists_the_phase_it_failed_in() {
+        let old_build = build(SourceCategory::Installed, "0.4.40", "aaaaaaa", 1);
+        let current = build(SourceCategory::Development, "0.4.41", "bbbbbbb", 1);
+        let server = IsolatedServer::new("phases");
+        let dir = TestDir::new("phases");
+        server.start(Some(&metadata_for_current(&old_build)));
+        server.new_session("alpha");
+        let run = |args: &[&str]| server.tmux(args);
+        let run_owned = |args: &[String]| server.tmux_owned(args);
+        let handle = ServerHandle {
+            run: &run,
+            run_owned: &run_owned,
+            owned_client: &no_owned_client,
+            socket_name: &server.socket,
+            lifecycle_file: dir.file(),
+        };
+        let Probe::Reachable(old) = probe_server_on(&handle) else {
+            panic!("old server reachable");
+        };
+
+        let refusing_stop = |args: &[&str]| {
+            if args[0] == "kill-server" {
+                Err(DeckError::new(
+                    ErrorKind::Tmux,
+                    "tmux kill-server failed: refused",
+                ))
+            } else {
+                server.tmux(args)
+            }
+        };
+        let stop_refused = ServerHandle {
+            run: &refusing_stop,
+            run_owned: &run_owned,
+            owned_client: &no_owned_client,
+            socket_name: &server.socket,
+            lifecycle_file: dir.file(),
+        };
+        assert_eq!(
+            complete_restart_on(&stop_refused, &current, &old, "restartCompleted")
+                .unwrap_err()
+                .message(),
+            "tmux-server-stop-failed"
+        );
+        assert_eq!(server.pid(), old.pid, "the old server is untouched");
+        let disk = read_disk_at(&dir.file());
+        let intent = disk.operation.expect("intent persisted before stopping");
+        assert_eq!(intent.phase, RestartPhase::Stopping);
+        assert_eq!(intent.build_key, build_key(&current));
+        assert_eq!(
+            (intent.old_pid, intent.old_started_at),
+            (old.pid, old.started_at)
+        );
+        assert_eq!(
+            (intent.old_socket_device, intent.old_socket_inode),
+            (old.socket_device, old.socket_inode)
+        );
+        assert_eq!((intent.session_count, intent.pane_count), (1, 1));
+        assert_eq!(intent.impact_token, old.impact_token);
+        assert!(disk.notice.is_none());
+        assert!(restart_intent_still_matches(&intent, &old));
+
+        let mut replaced = (*old).clone();
+        replaced.pid = old.pid.wrapping_add(1);
+        assert_eq!(
+            wait_for_old_server_exit_on(&handle, &replaced)
+                .unwrap_err()
+                .message(),
+            "tmux-server-replaced-concurrently"
+        );
+        assert_eq!(server.pid(), old.pid);
+
+        let refusing_start = |_: &[String]| {
+            Err(DeckError::new(
+                ErrorKind::Tmux,
+                "tmux start-server failed: refused",
+            ))
+        };
+        let start_refused = ServerHandle {
+            run: &run,
+            run_owned: &refusing_start,
+            owned_client: &no_owned_client,
+            socket_name: &server.socket,
+            lifecycle_file: dir.file(),
+        };
+        assert_eq!(
+            complete_restart_on(&start_refused, &current, &old, "restartCompleted")
+                .unwrap_err()
+                .message(),
+            "tmux start-server failed: refused"
+        );
+        assert!(!server.is_running(), "the old server was stopped");
+        assert!(!old.socket_path.exists(), "no stale socket is left behind");
+        let disk = read_disk_at(&dir.file());
+        assert_eq!(
+            disk.operation.expect("intent kept for recovery").phase,
+            RestartPhase::Starting
+        );
+        assert!(disk.notice.is_none());
+        // The boot recovery for exactly that state: nothing stale remains.
+        clean_confirmed_intent_socket_on(&handle, &intent).expect("nothing to clean");
+    }
+
+    /// Stopping the old server and recovering a confirmed restart remove a
+    /// leftover socket only when it is the confirmed one (name, tmux
+    /// directory, device and inode); anything else is refused and kept.
+    #[test]
+    fn stale_socket_cleanup_removes_only_the_confirmed_socket() {
+        let seq = TEST_SOCKET_SEQ.fetch_add(1, AtomicOrdering::Relaxed);
+        let name = format!("deck-test-stale-{}-{seq}", std::process::id());
+        let tmux_dir = Path::new("/tmp").join(format!("tmux-{}", unsafe { libc::getuid() }));
+        std::fs::create_dir_all(&tmux_dir).unwrap();
+        let path = tmux_dir.join(&name);
+        let _ = std::fs::remove_file(&path);
+        struct RemoveOnDrop(PathBuf);
+        impl Drop for RemoveOnDrop {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_file(&self.0);
+            }
+        }
+        let _cleanup = RemoveOnDrop(path.clone());
+        let listener = UnixListener::bind(&path).unwrap();
+        let socket = std::fs::symlink_metadata(&path).unwrap();
+        let absent = |_: &[&str]| {
+            Err(DeckError::classified(
+                "tmux display-message failed: no server running on /tmp/x",
+            ))
+        };
+        let handle = ServerHandle {
+            run: &absent,
+            run_owned: &never_owned,
+            owned_client: &no_owned_client,
+            socket_name: &name,
+            lifecycle_file: PathBuf::from("/dev/null"),
+        };
+        let mut old = snapshot(MetadataRead::Missing, Vec::new());
+        old.socket_path = path.clone();
+        old.socket_device = socket.dev();
+        old.socket_inode = socket.ino();
+
+        let mut foreign = old.clone();
+        foreign.socket_inode = socket.ino().wrapping_add(1);
+        assert_eq!(
+            wait_for_old_server_exit_on(&handle, &foreign)
+                .unwrap_err()
+                .message(),
+            "tmux-server-socket-not-safe"
+        );
+        assert!(path.exists(), "a foreign socket is kept");
+        let mut intent = intent_for(&foreign, "current");
+        assert_eq!(
+            clean_confirmed_intent_socket_on(&handle, &intent)
+                .unwrap_err()
+                .message(),
+            "tmux-server-socket-not-safe"
+        );
+        assert!(path.exists());
+
+        intent.old_socket_inode = socket.ino();
+        clean_confirmed_intent_socket_on(&handle, &intent).expect("confirmed socket removed");
+        assert!(!path.exists());
+        clean_confirmed_intent_socket_on(&handle, &intent).expect("nothing left to clean");
+        drop(listener);
+
+        let listener = UnixListener::bind(&path).unwrap();
+        let socket = std::fs::symlink_metadata(&path).unwrap();
+        old.socket_device = socket.dev();
+        old.socket_inode = socket.ino();
+        wait_for_old_server_exit_on(&handle, &old).expect("absent server, stale socket removed");
+        assert!(!path.exists());
+        wait_for_old_server_exit_on(&handle, &old).expect("nothing left to remove");
+        drop(listener);
+
+        // An unreadable answer is retried until the server is absent.
+        let calls = std::cell::Cell::new(0u32);
+        let flaky = |args: &[&str]| {
+            if calls.get() == 0 {
+                calls.set(1);
+                return Err(DeckError::new(ErrorKind::Tmux, "tmux control timeout"));
+            }
+            absent(args)
+        };
+        let flaky_handle = ServerHandle {
+            run: &flaky,
+            run_owned: &never_owned,
+            owned_client: &no_owned_client,
+            socket_name: &name,
+            lifecycle_file: PathBuf::from("/dev/null"),
+        };
+        let began = Instant::now();
+        wait_for_old_server_exit_on(&flaky_handle, &old).expect("absent after a retry");
+        assert_eq!(calls.get(), 1);
+        assert!(began.elapsed() >= Duration::from_millis(100));
+
+        let _deadline =
+            crate::session_runtime::Deadline::until(Instant::now() - Duration::from_millis(1));
+        assert_eq!(
+            wait_for_old_server_exit_on(&handle, &old)
+                .unwrap_err()
+                .message(),
+            "tmux-restart-timeout"
         );
     }
 }

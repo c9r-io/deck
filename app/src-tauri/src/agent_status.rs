@@ -1130,7 +1130,7 @@ mod tests {
         let path = dir.join("status.sock");
         let listener = listen_at(&path).unwrap();
         let line = event_line("needs-input", "%3");
-        let mut connect = || {
+        let connect = || {
             let mut client = UnixStream::connect(&path).unwrap();
             writeln!(client, "{line}").unwrap();
             let (mut stream, _) = listener.accept().unwrap();

@@ -3,7 +3,12 @@
 //! `list_panes`, `pane_row`) every probe in deck reads panes through. Every
 //! production listing is framed by a per-query random nonce (`PaneQuery`)
 //! and fails whole when an untrusted pane path splits or forges a row.
-//! Everything deck knows about tmux lives here.
+//! Everything deck knows about tmux lives here. The spawn sites stay in
+//! `tmux`, `tmux_owned`, `tmux_with_stdin`, `tmux_batch` and `connect_with`;
+//! the processing behind them (`captured_output`, `command_with_stdin`,
+//! `list_panes_with`, `pane_row_with`, `init_deck_server_with`) takes the
+//! command or runner as an argument so an isolated bundled tmux exercises
+//! the production logic without touching the deck/deck-dev sockets.
 //!
 //! # Contract
 //! tmux ships INSIDE the app: a statically linked binary (see
@@ -178,23 +183,35 @@ pub(crate) fn tmux_conf_text(deck_dir: &std::path::Path) -> String {
 /// sets the same for the attach client.
 pub(crate) fn tmux(args: &[&str]) -> Result<String, DeckError> {
     let conf = tmux_conf();
-    let out = crate::session_runtime::command_output(
-        Command::new(tmux_program()?)
-            .args(["-f", &conf, "-L", socket()])
-            .args(args)
-            .env("LANG", "en_US.UTF-8"),
+    captured_output(
+        Command::new(tmux_program()?).args(["-f", &conf, "-L", socket()]),
+        args,
     )
-    .map_err(|e| {
-        if e.kind() == std::io::ErrorKind::TimedOut {
-            DeckError::new(ErrorKind::Tmux, "tmux-restart-timeout")
-        } else {
-            DeckError::new(ErrorKind::TmuxMissing, format!("tmux not runnable: {e}"))
-        }
-    })?;
+}
+
+/// The capture shared by `tmux` and `tmux_owned`: one bounded run under the
+/// caller's deadline, a timeout or not-runnable spawn classified, a failed
+/// status turned into the classified `tmux <verb> failed: <stderr>` error,
+/// and stdout returned as text. The caller owns the spawn site; isolated
+/// tests supply their own tmux socket through `command`.
+pub(super) fn captured_output<S: AsRef<std::ffi::OsStr>>(
+    command: &mut Command,
+    args: &[S],
+) -> Result<String, DeckError> {
+    let out = crate::session_runtime::command_output(command.args(args).env("LANG", "en_US.UTF-8"))
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::TimedOut {
+                DeckError::new(ErrorKind::Tmux, "tmux-restart-timeout")
+            } else {
+                DeckError::new(ErrorKind::TmuxMissing, format!("tmux not runnable: {e}"))
+            }
+        })?;
     if !out.status.success() {
         return Err(DeckError::classified(format!(
             "tmux {} failed: {}",
-            args.first().unwrap_or(&""),
+            args.first()
+                .map(|arg| arg.as_ref().to_string_lossy())
+                .unwrap_or_default(),
             String::from_utf8_lossy(&out.stderr).trim()
         )));
     }
@@ -361,27 +378,10 @@ fn bounded_stdin_output(
 /// shell; `;` is an explicit tmux command separator, never shell syntax.
 pub(crate) fn tmux_owned(args: &[String]) -> Result<String, DeckError> {
     let conf = tmux_conf();
-    let out = crate::session_runtime::command_output(
-        Command::new(tmux_program()?)
-            .args(["-f", &conf, "-L", socket()])
-            .args(args)
-            .env("LANG", "en_US.UTF-8"),
+    captured_output(
+        Command::new(tmux_program()?).args(["-f", &conf, "-L", socket()]),
+        args,
     )
-    .map_err(|e| {
-        if e.kind() == std::io::ErrorKind::TimedOut {
-            DeckError::new(ErrorKind::Tmux, "tmux-restart-timeout")
-        } else {
-            DeckError::new(ErrorKind::TmuxMissing, format!("tmux not runnable: {e}"))
-        }
-    })?;
-    if !out.status.success() {
-        return Err(DeckError::classified(format!(
-            "tmux {} failed: {}",
-            args.first().map(String::as_str).unwrap_or(""),
-            String::from_utf8_lossy(&out.stderr).trim()
-        )));
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 /// Run a `;`-separated tmux command batch, returning stdout even when one
@@ -474,29 +474,38 @@ pub(crate) fn expand_tilde(path: &str) -> String {
 /// when it reuses a compatible server — never per session: each `set` is
 /// one tmux exec, and an endpoint-security agent taxes every exec.
 pub(crate) fn init_deck_server() {
-    let _ = tmux(&["set-environment", "-g", "COLORTERM", "truecolor"]);
+    init_deck_server_with(&tmux, &crate::datadir::deck_dir());
+}
+
+/// The reuse defaults themselves, against the server `run` reaches (an
+/// isolated test server, or deck's own through `tmux`).
+pub(crate) fn init_deck_server_with(
+    run: &dyn Fn(&[&str]) -> Result<String, DeckError>,
+    deck_dir: &std::path::Path,
+) {
+    let _ = run(&["set-environment", "-g", "COLORTERM", "truecolor"]);
     // Panes tell the status helper (agent_status.rs) which instance's socket
     // to write to, so an isolated/smoke instance receives its own events.
-    let sock = crate::datadir::deck_dir().join("status.sock");
-    let _ = tmux(&[
+    let sock = deck_dir.join("status.sock");
+    let _ = run(&[
         "set-environment",
         "-g",
         "DECK_STATUS_SOCK",
         &sock.display().to_string(),
     ]);
-    let _ = tmux(&["set", "-g", "status", "off"]);
-    let _ = tmux(&["set", "-g", "mouse", "off"]);
-    let _ = tmux(&["set", "-g", "set-clipboard", "off"]);
-    let _ = tmux(&["set", "-g", "history-limit", "50000"]);
+    let _ = run(&["set", "-g", "status", "off"]);
+    let _ = run(&["set", "-g", "mouse", "off"]);
+    let _ = run(&["set", "-g", "set-clipboard", "off"]);
+    let _ = run(&["set", "-g", "history-limit", "50000"]);
     // Deck paints selection geometry in one DOM layer after each settled
     // backend update. Hiding tmux's transient selection prevents its
     // top-line/cursor motion steps from flashing large history regions.
     // Keep mode-style empty as the compatibility fallback while the bundled
     // tmux exposes separate selection and position styles.
-    let _ = tmux(&["set", "-g", "mode-style", "none"]);
-    let _ = tmux(&["set", "-g", "copy-mode-selection-style", "none"]);
-    let _ = tmux(&["set", "-g", "copy-mode-position-style", "reverse"]);
-    let _ = tmux(&["set", "-g", "copy-mode-position-format", ""]);
+    let _ = run(&["set", "-g", "mode-style", "none"]);
+    let _ = run(&["set", "-g", "copy-mode-selection-style", "none"]);
+    let _ = run(&["set", "-g", "copy-mode-position-style", "reverse"]);
+    let _ = run(&["set", "-g", "copy-mode-position-format", ""]);
 }
 
 // ---------- pane rows -------------------------------------------------------
@@ -664,8 +673,16 @@ impl PaneQuery {
 /// Every pane on deck's server, in tmux's listing order (a session's first
 /// pane comes first). One malformed or unframed line fails the whole read.
 pub(crate) fn list_panes() -> Result<Vec<PaneRow>, DeckError> {
+    list_panes_with(&tmux)
+}
+
+/// The same read against whichever server `run` reaches (the lifecycle
+/// probe and isolated tests pass their own runner).
+pub(crate) fn list_panes_with(
+    run: &dyn Fn(&[&str]) -> Result<String, DeckError>,
+) -> Result<Vec<PaneRow>, DeckError> {
     let query = PaneQuery::new()?;
-    query.rows(&tmux(&["list-panes", "-a", "-F", query.format()])?)
+    query.rows(&run(&["list-panes", "-a", "-F", query.format()])?)
 }
 
 // ---------- persistent query channel ----------------------------------------
@@ -1157,8 +1174,16 @@ pub(crate) fn stop_query_channel() {
 
 /// One pane, by tmux target (`pane_target(session)` for a card's pane).
 pub(crate) fn pane_row(target: &str) -> Result<PaneRow, DeckError> {
+    pane_row_with(&tmux, target)
+}
+
+/// One pane through `run` (see `list_panes_with`).
+pub(crate) fn pane_row_with(
+    run: &dyn Fn(&[&str]) -> Result<String, DeckError>,
+    target: &str,
+) -> Result<PaneRow, DeckError> {
     let query = PaneQuery::new()?;
-    let raw = tmux(&["display-message", "-p", "-t", target, query.format()])?;
+    let raw = run(&["display-message", "-p", "-t", target, query.format()])?;
     let mut rows = query.rows(&raw)?;
     match (rows.pop(), rows.is_empty()) {
         (Some(row), true) => Ok(row),
@@ -1635,6 +1660,18 @@ mod tests {
                 .success()
                 .then(|| std::path::PathBuf::from(String::from_utf8_lossy(&output.stdout).trim()))
         }
+
+        /// Exactly what `tmux()` does after its spawn, on this socket.
+        fn tmux(&self, args: &[&str]) -> Result<String, DeckError> {
+            captured_output(
+                Command::new(&self.binary).args(["-f", "/dev/null", "-L", &self.socket]),
+                args,
+            )
+        }
+
+        fn new_session(&self, name: &str, program: &str) {
+            self.run(&["new-session", "-d", "-s", name, program, "30"]);
+        }
     }
 
     impl Drop for IsolatedControlServer {
@@ -1780,6 +1817,253 @@ mod tests {
         );
         assert_eq!(query.rows(&raw).unwrap_err().kind(), ErrorKind::Tmux);
         assert_eq!(channel.list_panes().unwrap_err().kind(), ErrorKind::Tmux);
+        drop(channel);
+    }
+
+    /// The capture behind `tmux` / `tmux_owned`: stdout on success, tmux's
+    /// stderr classified on a failed status, the caller's deadline turned
+    /// into the restart timeout, and a program that cannot start reported
+    /// as missing tmux — for borrowed and owned argument lists alike.
+    #[test]
+    fn captured_output_classifies_success_failure_timeout_and_a_missing_program() {
+        let server = IsolatedControlServer::new();
+        server.new_session("alpha", "/bin/sleep");
+        let pid = server
+            .tmux(&["display-message", "-p", "#{pid}"])
+            .expect("server pid");
+        assert!(pid.trim().parse::<u32>().is_ok(), "{pid:?}");
+        let owned: Vec<String> = ["display-message", "-p", "#{session_name}"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(
+            captured_output(
+                Command::new(&server.binary).args(["-f", "/dev/null", "-L", &server.socket]),
+                &owned,
+            )
+            .unwrap(),
+            "alpha\n"
+        );
+
+        let missing = server
+            .tmux(&["has-session", "-t", "=nope"])
+            .expect_err("unknown session fails");
+        assert_eq!(missing.kind(), ErrorKind::NoSession);
+        assert!(
+            missing.message().starts_with("tmux has-session failed: "),
+            "{}",
+            missing.message()
+        );
+
+        let begin = Instant::now();
+        let _deadline = crate::session_runtime::Deadline::until(begin + Duration::from_millis(60));
+        let stalled = captured_output(&mut Command::new("/bin/sh"), &["-c", "sleep 2"])
+            .expect_err("the deadline bounds the capture");
+        assert_eq!(stalled.message(), "tmux-restart-timeout");
+        assert_eq!(stalled.kind(), ErrorKind::Tmux);
+        assert!(begin.elapsed() < Duration::from_secs(1));
+        drop(_deadline);
+
+        let unrunnable = captured_output(&mut Command::new("/nonexistent/deck-test/tmux"), &["-V"])
+            .expect_err("a program that cannot start");
+        assert_eq!(unrunnable.kind(), ErrorKind::TmuxMissing);
+        assert!(unrunnable.message().starts_with("tmux not runnable: "));
+    }
+
+    /// `list_panes_with` / `pane_row_with` are the production reads on an
+    /// injected runner: real rows from the bundled tmux, a missing target
+    /// reported by tmux, and a listing that is not exactly one framed row
+    /// rejected as malformed.
+    #[test]
+    fn list_panes_and_pane_row_read_real_rows_through_the_runner() {
+        let server = IsolatedControlServer::new();
+        server.new_session("alpha", "/bin/sleep");
+        server.new_session("beta", "/bin/sleep");
+        let run = |args: &[&str]| server.tmux(args);
+        let rows = list_panes_with(&run).expect("list panes");
+        let mut names: Vec<_> = rows.iter().map(|row| row.session_name.as_str()).collect();
+        names.sort_unstable();
+        assert_eq!(names, ["alpha", "beta"]);
+        assert!(rows.iter().all(|row| row.command == "sleep"), "{rows:?}");
+        assert!(rows.iter().all(|row| row.server_pid == rows[0].server_pid));
+
+        let alpha = pane_row_with(&run, "=alpha:").expect("one pane");
+        assert_eq!(
+            rows.iter().find(|row| row.session_name == "alpha"),
+            Some(&alpha)
+        );
+        // tmux answers a missing `display-message -p` target with empty
+        // fields (exit 0); the read rejects them rather than half-trusting.
+        let missing = pane_row_with(&run, "=missing:").unwrap_err();
+        assert_eq!(missing.kind(), ErrorKind::Tmux);
+        assert_eq!(missing.message(), "tmux returned a malformed pane row");
+
+        // A runner that answers with every pane is not one pane.
+        let listing = |args: &[&str]| {
+            let mut args = args.to_vec();
+            if args[0] == "display-message" {
+                let format = args[4];
+                args = vec!["list-panes", "-a", "-F", format];
+            }
+            server.tmux(&args)
+        };
+        let two = pane_row_with(&listing, "=alpha:").unwrap_err();
+        assert_eq!(two.kind(), ErrorKind::Tmux);
+        assert_eq!(two.message(), "tmux returned a malformed pane row");
+        // An unframed listing fails the whole read.
+        let unframed = |_: &[&str]| Ok(String::from("junk\n"));
+        assert_eq!(
+            list_panes_with(&unframed).unwrap_err().kind(),
+            ErrorKind::Tmux
+        );
+        // The runner's own error propagates untouched.
+        let broken = |_: &[&str]| Err(DeckError::new(ErrorKind::Tmux, "tmux control recovering"));
+        assert_eq!(
+            list_panes_with(&broken).unwrap_err().message(),
+            "tmux control recovering"
+        );
+    }
+
+    /// Reusing a compatible server applies the same defaults `tmux.conf`
+    /// gives a freshly spawned one (a `-f /dev/null` server starts with
+    /// tmux's stock values).
+    #[test]
+    fn init_deck_server_applies_the_reuse_defaults_to_a_running_server() {
+        let server = IsolatedControlServer::new();
+        server.new_session("alpha", "/bin/sleep");
+        assert_eq!(server.run(&["show-options", "-gv", "status"]), "on");
+        let run = |args: &[&str]| server.tmux(args);
+        init_deck_server_with(&run, std::path::Path::new("/tmp/deck-test-init"));
+        for (option, value) in [
+            ("status", "off"),
+            ("mouse", "off"),
+            ("history-limit", "50000"),
+            ("mode-style", "none"),
+            ("copy-mode-selection-style", "none"),
+            ("copy-mode-position-style", "reverse"),
+            ("copy-mode-position-format", ""),
+        ] {
+            assert_eq!(
+                server.run(&["show-options", "-gv", option]),
+                value,
+                "{option}"
+            );
+        }
+        let env = server.run(&["show-environment", "-g"]);
+        assert!(
+            env.lines().any(|line| line == "COLORTERM=truecolor"),
+            "{env}"
+        );
+        assert!(
+            env.lines()
+                .any(|line| line == "DECK_STATUS_SOCK=/tmp/deck-test-init/status.sock"),
+            "{env}"
+        );
+    }
+
+    #[test]
+    fn nonblocking_sets_the_flag_and_rejects_a_closed_descriptor() {
+        let mut fds = [0 as libc::c_int; 2];
+        // SAFETY: pipe(2) fills the two-element array.
+        assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+        // SAFETY: descriptors this test just created.
+        let before = unsafe { libc::fcntl(fds[0], libc::F_GETFL) };
+        assert_eq!(before & libc::O_NONBLOCK, 0);
+        nonblocking(fds[0]).expect("pipe end becomes nonblocking");
+        // SAFETY: as above.
+        let after = unsafe { libc::fcntl(fds[0], libc::F_GETFL) };
+        assert_ne!(after & libc::O_NONBLOCK, 0);
+        for fd in fds {
+            // SAFETY: closing descriptors this test owns.
+            unsafe { libc::close(fd) };
+        }
+        let closed = nonblocking(fds[0]).expect_err("a closed descriptor");
+        assert_eq!(closed.message(), "tmux control pipe unavailable");
+        assert_eq!(nonblocking(-1).unwrap_err().kind(), ErrorKind::Tmux);
+    }
+
+    /// The Board read path serves rows from an installed channel, refuses
+    /// to exec during the recovery cooldown, and `stop_query_channel`
+    /// releases the client and its owned identity.
+    #[test]
+    fn query_state_serves_an_installed_channel_and_stops_it() {
+        let _serial = CONTROL_CLIENT_TESTS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let server = IsolatedControlServer::new();
+        server.new_session("alpha", "/bin/sleep");
+        let run = |args: &[&str]| server.tmux(args);
+        let expected = list_panes_with(&run).unwrap();
+        let mut channel = TmuxQueryChannel::connect_with(
+            server.binary.to_str().unwrap(),
+            "/dev/null",
+            &server.socket,
+            &expected,
+        )
+        .expect("connect persistent control client");
+        assert_eq!(channel.list_panes().unwrap(), expected);
+        let client_pid = channel.child.id();
+
+        stop_query_channel();
+        assert!(!query_channel_connected());
+        QUERY_STATE.lock_or_recover().channel = Some(channel);
+        assert!(query_channel_connected());
+        assert_eq!(query_list_panes().expect("rows from the channel"), expected);
+        let clients = server.run(&["list-clients", "-F", "#{client_pid}"]);
+        assert!(clients.lines().any(|line| line == client_pid.to_string()));
+
+        stop_query_channel();
+        assert!(!query_channel_connected());
+        assert_eq!(owned_control_client(), None);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline
+            && server
+                .run(&["list-clients", "-F", "#{client_pid}"])
+                .lines()
+                .any(|line| line == client_pid.to_string())
+        {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            !server
+                .run(&["list-clients", "-F", "#{client_pid}"])
+                .lines()
+                .any(|line| line == client_pid.to_string()),
+            "the stopped client detached"
+        );
+
+        QUERY_STATE.lock_or_recover().retry_after = Some(Instant::now() + CONTROL_RETRY_DELAY);
+        let cooling = query_list_panes().expect_err("cooldown fails closed");
+        assert_eq!(cooling.message(), "tmux control recovering");
+        assert_eq!(cooling.kind(), ErrorKind::Tmux);
+        stop_query_channel();
+        assert!(QUERY_STATE.lock_or_recover().retry_after.is_none());
+    }
+
+    /// Reaping targets only parentless query clients of this socket: a live
+    /// channel whose Deck is still running keeps serving afterwards.
+    #[test]
+    fn reaping_orphans_leaves_a_live_query_client_attached() {
+        let _serial = CONTROL_CLIENT_TESTS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let server = IsolatedControlServer::new();
+        server.new_session("alpha", "/bin/sleep");
+        let run = |args: &[&str]| server.tmux(args);
+        let rows = list_panes_with(&run).unwrap();
+        let program = server.binary.to_str().unwrap();
+        let mut channel =
+            TmuxQueryChannel::connect_with(program, "/dev/null", &server.socket, &rows)
+                .expect("connect persistent control client");
+        reap_orphaned_query_clients(program, "/dev/null", &server.socket);
+        assert_eq!(channel.list_panes().unwrap(), rows);
+        let clients = server.run(&["list-clients", "-F", "#{client_pid}"]);
+        assert!(
+            clients
+                .lines()
+                .any(|line| line == channel.child.id().to_string()),
+            "{clients}"
+        );
         drop(channel);
     }
 }

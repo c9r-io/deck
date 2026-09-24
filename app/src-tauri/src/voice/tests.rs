@@ -327,3 +327,68 @@ fn delivery_outcomes_preserve_ambiguity_and_multiline_requires_paste_mode() {
         }
     }
 }
+
+/// Serialises the tests that touch the process-wide recorder state.
+static GLOBAL: Mutex<()> = Mutex::new(());
+
+#[test]
+fn failure_codes_map_to_closed_error_kinds() {
+    for (code, kind) in [
+        ("language-invalid", ErrorKind::Invalid),
+        ("text-invalid", ErrorKind::Invalid),
+        ("multiline-unsupported", ErrorKind::Invalid),
+        ("target-changed", ErrorKind::ContextChanged),
+        ("target-expired", ErrorKind::ContextChanged),
+        ("target-unavailable", ErrorKind::Missing),
+        ("recording-expired", ErrorKind::Missing),
+        ("voice-busy", ErrorKind::Locked),
+        ("delivery-busy", ErrorKind::Locked),
+        ("delivery-unknown", ErrorKind::Other),
+    ] {
+        let error = failure(code);
+        assert_eq!(error.kind(), kind, "{code}");
+        assert_eq!(error.message(), code);
+    }
+}
+
+#[test]
+fn commands_validate_before_reaching_the_native_recorder() {
+    let _global = GLOBAL.lock_or_recover();
+    // A malformed session name is refused before any pane is probed.
+    let bound = tauri::async_runtime::block_on(voice_bind("not a session".into()));
+    assert!(bound.err().unwrap().message().contains("session"));
+    assert_eq!(
+        voice_start(0, "xx-XX".into()).err().unwrap().message(),
+        "language-invalid"
+    );
+    assert_eq!(
+        voice_start(u64::MAX, "en-US".into())
+            .err()
+            .unwrap()
+            .message(),
+        "target-unavailable",
+        "an unbound target never opens the microphone"
+    );
+    assert_eq!(
+        voice_snapshot(u64::MAX).err().unwrap().message(),
+        "recording-expired"
+    );
+    let current = voice().lock_or_recover().snapshot.clone();
+    let text = CString::new("late words").unwrap();
+    let empty = CString::new("").unwrap();
+    let status = CString::new("recording").unwrap();
+    snapshot_callback(
+        current.id,
+        status.as_ptr(),
+        text.as_ptr(),
+        empty.as_ptr(),
+        empty.as_ptr(),
+    );
+    voice_stop(u64::MAX);
+    let after = voice_snapshot(current.id).unwrap();
+    assert_eq!(after.status, current.status);
+    assert_eq!(
+        after.text, current.text,
+        "a callback for an idle recorder and a stop for another id change nothing"
+    );
+}

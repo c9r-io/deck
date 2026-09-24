@@ -66,7 +66,8 @@
 //!   exactly the same identity and foreground-process guards as a scheduled
 //!   send. There is no mismatch bypass.
 //! - `queue_update` takes a text OR a step list, never both: the row editor
-//!   edits one prompt, the list footer edits a repeating rule's steps.
+//!   edits one prompt, the list footer edits a repeating rule's steps
+//!   (`edit_item` is its pure core, run inside the transaction).
 //! - `next_queue_id` is collision-proof against the live queue (ms clock +
 //!   counter); `clear_session_items` / `clear_sessions` tombstone a deleted
 //!   card's items so nothing fires into a session that no longer exists.
@@ -864,16 +865,30 @@ pub(crate) fn queue_update(
     text: Option<String>,
     steps: Option<Vec<String>>,
 ) -> Result<(), DeckError> {
+    // a failed save must not leave the new text in memory: the scheduler
+    // would then send a prompt the user was told was not saved
+    with_queue(&state.q, &save_queue, |q| edit_item(q, &id, text, steps))?;
+    let _ = app.emit("queue-changed", ());
+    Ok(())
+}
+
+/// Pure core of `queue_update`: exactly one of `text` / `steps` is given. A
+/// text is normalized and refused when empty; a step list is normalized with
+/// blank steps dropped. Either then applies through the firing contract
+/// (`update_text` / `update_steps`).
+pub(crate) fn edit_item(
+    q: &mut QueueState,
+    id: &str,
+    text: Option<String>,
+    steps: Option<Vec<String>>,
+) -> Result<(), DeckError> {
     match (text, steps) {
         (Some(text), None) => {
             let text = normalize_prompt(&text);
             if text.is_empty() {
                 return Err(DeckError::new(ErrorKind::Invalid, "empty prompt"));
             }
-            // a failed save must not leave the new text in memory: the
-            // scheduler would then send a prompt the user was told was not
-            // saved
-            with_queue(&state.q, &save_queue, |q| update_text(q, &id, text))?;
+            update_text(q, id, text)
         }
         (None, Some(steps)) => {
             let steps: Vec<String> = steps
@@ -881,17 +896,13 @@ pub(crate) fn queue_update(
                 .map(|s| normalize_prompt(s))
                 .filter(|s| !s.is_empty())
                 .collect();
-            with_queue(&state.q, &save_queue, |q| update_steps(q, &id, steps))?;
+            update_steps(q, id, steps)
         }
-        _ => {
-            return Err(DeckError::new(
-                ErrorKind::Invalid,
-                "queue_update takes a text or a step list",
-            ))
-        }
+        _ => Err(DeckError::new(
+            ErrorKind::Invalid,
+            "queue_update takes a text or a step list",
+        )),
     }
-    let _ = app.emit("queue-changed", ());
-    Ok(())
 }
 
 #[tauri::command]

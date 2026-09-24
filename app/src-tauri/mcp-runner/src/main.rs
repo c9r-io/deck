@@ -2089,6 +2089,499 @@ mod tests {
         assert_eq!(response.deletion_reason, Some("retention-expired"));
         assert!(response.job.is_some());
     }
+
+    fn finished_job(id: &str, state: JobState, output: &[u8]) -> Job {
+        Job {
+            id: id.into(),
+            request_hash: "request".into(),
+            holder_id: "holder_a".into(),
+            control_epoch: 1,
+            intent_hash: "a".repeat(64),
+            grant_id: "grant_test".into(),
+            grant_version: 1,
+            state,
+            exit_code: None,
+            signal: None,
+            started_at: now_ms(),
+            ended_at: None,
+            interrupt_requested: false,
+            timeout_requested: false,
+            output: VecDeque::from(output.to_vec()),
+            base_cursor: 0,
+            pid: None,
+            stdin: None,
+            stdout_eof: true,
+            stderr_eof: true,
+        }
+    }
+
+    /// A cursor read hands out whole UTF-8 units only: an incomplete final
+    /// unit waits for the next page, a genuinely invalid byte is consumed so
+    /// the stream still advances.
+    #[test]
+    fn utf8_prefix_defers_an_incomplete_unit_and_advances_past_invalid_bytes() {
+        assert_eq!(complete_utf8_prefix(b"abc"), 3);
+        assert_eq!(complete_utf8_prefix(b""), 0);
+        assert_eq!(complete_utf8_prefix(b"ab\xe2\x82"), 2);
+        assert_eq!(complete_utf8_prefix(b"a\xffb"), 3);
+        assert_eq!(complete_utf8_prefix(b"\xff\xfe\xe2\x82"), 2);
+        assert_eq!(default_read(), MAX_READ);
+    }
+
+    /// The per-runner key is compared in constant time and only as a whole,
+    /// and the signals a pane can raise never stop or kill the runner.
+    #[test]
+    fn runner_auth_accepts_only_the_exact_key_and_the_signal_set_covers_terminal_stops() {
+        let key = [7u8; 32];
+        let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(key);
+        assert!(auth_matches(&key, &encoded));
+        assert!(!auth_matches(&[8u8; 32], &encoded));
+        assert!(!auth_matches(&key, "not base64!"));
+        assert!(!auth_matches(
+            &key,
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([7u8; 16])
+        ));
+        let set = runner_signal_set();
+        for signal in [
+            libc::SIGINT,
+            libc::SIGQUIT,
+            libc::SIGTSTP,
+            libc::SIGHUP,
+            libc::SIGTERM,
+        ] {
+            // SAFETY: `set` was initialized by `runner_signal_set`.
+            assert_eq!(unsafe { libc::sigismember(&set, signal) }, 1, "{signal}");
+        }
+        // SAFETY: as above.
+        assert_eq!(unsafe { libc::sigismember(&set, libc::SIGUSR1) }, 0);
+    }
+
+    /// The runner socket is bound under a private temporary name, made 0600
+    /// and renamed into place, so no peer ever sees a permissive socket.
+    #[test]
+    fn private_socket_is_published_0600_under_its_final_name_only() {
+        // Short names: the published path must stay below macOS SUN_LEN
+        // under a long TMPDIR, as production runner names do.
+        let root = std::env::temp_dir().join(format!("deck-mcpr-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        ensure_private_dir(&root).unwrap();
+        let socket = root.join("gen-abcdefghijklmnop.sock");
+        let listener = bind_private_socket(&socket).unwrap();
+        assert_eq!(
+            std::fs::metadata(&socket).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        let names: Vec<String> = std::fs::read_dir(&root)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            names,
+            ["gen-abcdefghijklmnop.sock"],
+            "no temporary name survives"
+        );
+        assert!(UnixStream::connect(&socket).is_ok());
+        drop(listener);
+        assert_eq!(
+            bind_private_socket(Path::new("/")).unwrap_err().kind(),
+            std::io::ErrorKind::InvalidInput
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// Every request is fenced by service instance, control epoch and job
+    /// state before it has any effect, and the runner reports exactly what it
+    /// applied.
+    #[test]
+    fn requests_are_fenced_by_service_epoch_and_job_state_before_any_side_effect() {
+        let shared = shared();
+        let ping = handle(
+            &shared,
+            Request::Ping {
+                service_instance: Some("svc_current".into()),
+            },
+        );
+        assert!(ping.ok);
+        assert_eq!(ping.service_current, Some(true));
+        assert_eq!(ping.control, Some("fenced"));
+        assert_eq!(ping.runner_version, Some(VERSION));
+        assert!(ping.job.is_none());
+        assert_eq!(
+            handle(
+                &shared,
+                Request::Ping {
+                    service_instance: Some("svc_old".into()),
+                },
+            )
+            .service_current,
+            Some(false)
+        );
+        assert_eq!(
+            handle(
+                &shared,
+                Request::Ping {
+                    service_instance: None,
+                },
+            )
+            .service_current,
+            None
+        );
+
+        let retention = |service: &str, ms: u64| {
+            handle(
+                &shared,
+                Request::Retention {
+                    service_instance: service.into(),
+                    output_retention_ms: ms,
+                },
+            )
+        };
+        assert_eq!(retention("svc_old", 60_000).error, Some("runner-stale"));
+        assert_eq!(
+            retention("svc_current", 59_999).error,
+            Some("dispatch-context-invalid")
+        );
+        assert!(retention("svc_current", 120_000).ok);
+        assert_eq!(shared.output_retention_ms.load(Ordering::SeqCst), 120_000);
+
+        let revoke = |service: &str, grant: &str, version: u64| {
+            handle(
+                &shared,
+                Request::RevokeGrant {
+                    service_instance: service.into(),
+                    grant_id: grant.into(),
+                    grant_version: version,
+                },
+            )
+        };
+        assert_eq!(
+            revoke("svc_old", "grant_old", 1).error,
+            Some("runner-stale")
+        );
+        assert_eq!(
+            revoke("svc_current", "bad id", 1).error,
+            Some("dispatch-context-invalid")
+        );
+        assert!(revoke("svc_current", "grant_old", 3).ok);
+        assert!(revoke("svc_current", "grant_old", 2).ok);
+        assert_eq!(
+            shared.inner.lock().recover().revoked_grants["grant_old"],
+            3,
+            "a revocation never lowers the fenced version"
+        );
+        let authorize = |service: &str, grant: &str, version: u64, policy: u64| {
+            handle(
+                &shared,
+                Request::AuthorizeGrant {
+                    service_instance: service.into(),
+                    grant_id: grant.into(),
+                    grant_version: version,
+                    policy_version: policy,
+                    expires_at: u64::MAX,
+                },
+            )
+        };
+        assert_eq!(
+            authorize("svc_old", "grant_test", 4, 2).error,
+            Some("runner-stale")
+        );
+        assert_eq!(
+            authorize("svc_current", "grant_old", 3, 2).error,
+            Some("dispatch-context-invalid"),
+            "a revoked version is never re-authorized"
+        );
+        assert_eq!(
+            authorize("svc_current", "grant_new", 1, 0).error,
+            Some("dispatch-context-invalid")
+        );
+        assert!(authorize("svc_current", "grant_test", 4, 2).ok);
+        assert_eq!(
+            shared.inner.lock().recover().authorized_grants["grant_test"].version,
+            4
+        );
+
+        let read = |job: &str, cursor: Option<u64>, max_bytes: usize, wait_ms: u64| {
+            handle(
+                &shared,
+                Request::Read {
+                    job_id: job.into(),
+                    cursor,
+                    max_bytes,
+                    wait_ms,
+                },
+            )
+        };
+        assert_eq!(read("bad id", None, 10, 0).error, Some("invalid-request"));
+        assert_eq!(read("job_x", None, 0, 0).error, Some("invalid-request"));
+        assert_eq!(read("job_x", None, 10, 0).error, Some("job-not-found"));
+        assert_eq!(
+            read("job_x", None, 10, 50).error,
+            Some("job-not-found"),
+            "a wait on an unknown job returns at once"
+        );
+        shared.inner.lock().recover().jobs.insert(
+            "job_done".into(),
+            finished_job("job_done", JobState::Exited, b"done\n"),
+        );
+        assert_eq!(
+            read("job_done", Some(99), 10, 0).error,
+            Some("output-cursor-invalid")
+        );
+        let first = read("job_done", None, 2, 0);
+        assert!(first.ok);
+        assert_eq!(first.output.as_deref(), Some("do"));
+        assert_eq!(first.next_cursor, Some(2));
+        assert_eq!(first.gap, Some(false));
+        let rest = read("job_done", Some(2), 10, 20);
+        assert_eq!(rest.output.as_deref(), Some("ne\n"));
+        assert_eq!(rest.next_cursor, Some(5));
+        assert_eq!(rest.job.as_ref().map(|job| job.state), Some("exited"));
+        assert!(rest.job.as_ref().is_some_and(|job| job.output_complete));
+
+        let input = |job: &str, data: &str, service: &str| {
+            handle(
+                &shared,
+                Request::Input {
+                    job_id: job.into(),
+                    data_b64: data.into(),
+                    context: context(service, 1, "holder_a"),
+                },
+            )
+        };
+        let encoded = base64::engine::general_purpose::STANDARD.encode(b"x");
+        assert_eq!(
+            input("job_done", "***", "svc_current").error,
+            Some("invalid-request")
+        );
+        assert_eq!(
+            input("job_done", &encoded, "svc_old").error,
+            Some("runner-stale")
+        );
+        assert_eq!(
+            input("job_done", &encoded, "svc_current").error,
+            Some("job-not-running"),
+            "fenced control accepts no stdin"
+        );
+        let interrupt = |job: &str, service: &str| {
+            handle(
+                &shared,
+                Request::Interrupt {
+                    job_id: job.into(),
+                    context: context(service, 1, "holder_a"),
+                },
+            )
+        };
+        assert_eq!(interrupt("job_done", "svc_old").error, Some("runner-stale"));
+        assert_eq!(
+            interrupt("job_done", "svc_current").error,
+            Some("job-not-running")
+        );
+
+        let control = |mode: ControlMode, service: &str, epoch: u64| {
+            handle(
+                &shared,
+                Request::Control {
+                    mode,
+                    service_instance: service.into(),
+                    control_epoch: epoch,
+                    holder_id: Some("holder_a".into()),
+                },
+            )
+        };
+        assert_eq!(
+            control(ControlMode::Mcp, "svc_old", 1).error,
+            Some("runner-stale")
+        );
+        let human = control(ControlMode::Human, "svc_current", 1);
+        assert!(human.ok);
+        assert_eq!(human.control, Some("human"));
+        assert_eq!(
+            control(ControlMode::Mcp, "svc_current", 1).error,
+            Some("dispatch-context-invalid"),
+            "an equal epoch never re-enters"
+        );
+        {
+            let mut inner = shared.inner.lock().recover();
+            inner.control = ControlMode::Mcp;
+            inner.active = Some("job_done".into());
+        }
+        assert_eq!(
+            control(ControlMode::Mcp, "svc_current", 2).error,
+            Some("session-busy")
+        );
+        assert_eq!(
+            handle(&shared, Request::Shutdown).error,
+            Some("session-busy")
+        );
+        assert_eq!(
+            input("job_done", &encoded, "svc_current").error,
+            Some("job-not-running"),
+            "an exited job takes no stdin even while it is the active reservation"
+        );
+        assert_eq!(
+            interrupt("job_done", "svc_current").error,
+            Some("job-not-running")
+        );
+        assert_eq!(
+            interrupt("job_other", "svc_current").error,
+            Some("job-not-running"),
+            "only the active job can be interrupted"
+        );
+        {
+            let mut inner = shared.inner.lock().recover();
+            inner.jobs.insert(
+                "job_live".into(),
+                finished_job("job_live", JobState::Running, b""),
+            );
+            inner.active = Some("job_live".into());
+        }
+        assert_eq!(
+            interrupt("job_live", "svc_current").error,
+            Some("job-state-unknown"),
+            "a running job without a group cannot be signalled"
+        );
+        assert_eq!(
+            input("job_live", &encoded, "svc_current").error,
+            Some("job-not-running"),
+            "a running job whose stdin is closed takes no more input"
+        );
+        assert_eq!(
+            handle(
+                &shared,
+                Request::Interrupt {
+                    job_id: "job_live".into(),
+                    context: context("svc_current", 1, "holder_b"),
+                },
+            )
+            .error,
+            Some("control-revoked")
+        );
+        shared.inner.lock().recover().active = None;
+
+        assert_eq!(
+            handle(
+                &shared,
+                Request::Stop {
+                    generation: "g_other".into(),
+                },
+            )
+            .error,
+            Some("invalid-request")
+        );
+        let stop = handle(
+            &shared,
+            Request::Stop {
+                generation: "g_test".into(),
+            },
+        );
+        assert!(stop.ok);
+        assert_eq!(stop.control, Some("fenced"));
+        {
+            let inner = shared.inner.lock().recover();
+            assert!(inner.control == ControlMode::Fenced);
+            assert_eq!(inner.holder_id, None);
+            assert!(!inner.stopping);
+        }
+        assert!(handle(&shared, Request::Shutdown).ok);
+        assert!(shared.inner.lock().recover().stopping);
+    }
+
+    /// A job's dispatch context must match the job and the session on every
+    /// axis; only reads and interrupts tolerate an expired or revoked grant.
+    #[test]
+    fn job_context_checks_every_binding_axis_and_views_report_each_state() {
+        let shared = shared();
+        {
+            let mut inner = shared.inner.lock().recover();
+            inner.control = ControlMode::Mcp;
+            inner.control_epoch = 1;
+            inner.holder_id = Some("holder_a".into());
+            inner.revoked_grants.insert("grant_test".into(), 1);
+        }
+        let inner = shared.inner.lock().recover();
+        let job = finished_job("job_ctx", JobState::Running, b"");
+        let current = context("svc_current", 1, "holder_a");
+        assert_eq!(
+            check_job_context(&shared, &inner, &job, &current, false),
+            Err("control-revoked"),
+            "a revoked grant blocks stdin"
+        );
+        assert_eq!(
+            check_job_context(&shared, &inner, &job, &current, true),
+            Ok(()),
+            "reads and interrupts still reach a job whose grant was revoked"
+        );
+        let mut expired = current.clone();
+        expired.expires_at = 1;
+        assert_eq!(
+            check_job_context(&shared, &inner, &job, &expired, true),
+            Ok(())
+        );
+        assert_eq!(
+            check_job_context(&shared, &inner, &job, &expired, false),
+            Err("control-revoked")
+        );
+        assert_eq!(
+            check_job_context(
+                &shared,
+                &inner,
+                &job,
+                &context("svc_stale", 1, "holder_a"),
+                true
+            ),
+            Err("runner-stale")
+        );
+        for foreign in [
+            context("svc_current", 2, "holder_a"),
+            context("svc_current", 1, "holder_b"),
+            DispatchContext {
+                intent_hash: "b".repeat(64),
+                ..current.clone()
+            },
+            DispatchContext {
+                grant_version: 2,
+                ..current.clone()
+            },
+        ] {
+            assert_eq!(
+                check_job_context(&shared, &inner, &job, &foreign, true),
+                Err("control-revoked")
+            );
+        }
+        assert_eq!(signal_live_groups(&inner, libc::SIGINT), 0);
+        drop(inner);
+
+        for (state, word, live) in [
+            (JobState::Starting, "starting", true),
+            (JobState::Running, "running", true),
+            (JobState::Stopped, "stopped", true),
+            (JobState::Exited, "exited", false),
+            (JobState::Lost, "lost", false),
+        ] {
+            let job = finished_job("job_view", state, b"abc");
+            let view = job.view();
+            assert_eq!(view.state, word);
+            assert_eq!(job.live(), live);
+            assert_eq!((view.base_cursor, view.end_cursor), (0, 3));
+        }
+
+        // Retained output is bounded per job: the oldest bytes fall off the
+        // front and the base cursor records how many did.
+        shared.inner.lock().recover().jobs.insert(
+            "job_big".into(),
+            finished_job("job_big", JobState::Running, b""),
+        );
+        append_output(&shared, "job_big", &vec![b'x'; RETAINED_OUTPUT]);
+        append_output(&shared, "job_big", b"yz");
+        append_output(&shared, "job_missing", b"ignored");
+        let inner = shared.inner.lock().recover();
+        let job = &inner.jobs["job_big"];
+        assert_eq!(job.output.len(), RETAINED_OUTPUT);
+        assert_eq!(job.base_cursor, 2);
+        assert_eq!(job.output.back(), Some(&b'z'));
+        assert_eq!(inner.retained_output, RETAINED_OUTPUT);
+    }
 }
 
 fn main() {
