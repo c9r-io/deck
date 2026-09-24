@@ -47,7 +47,8 @@
 //! re-checks it under that lock as its last step (`emergency_denial`,
 //! `emergency_fence_error`), by operation class: an execution revocation
 //! refuses exec and stdin, never reads, interrupts or closes, and inspect
-//! reports its session's grant `revoked` from the fence on (read before the
+//! (and the local session view's approve/revoke button) reports its
+//! session's grant `revoked` from the fence on (read before the
 //! grants, so the view never returns to `active` while it persists). It does
 //! not itself change the session's output-sharing switch either way; reads
 //! stay gated by sharing, client authorization, generation and job binding.

@@ -354,3 +354,32 @@ fn human_fenced_tools_are_the_fixture() {
         );
     }
 }
+
+/// The local session view reports effective execution authority: a
+/// revocation whose persistence failed leaves the stored grant `Active`
+/// but its fence refuses exec and stdin, so the view says not active (the
+/// button offers approval, which is the way out) and no stdin, with no
+/// expiry shown.
+#[test]
+fn session_view_reports_the_execution_fence_over_a_stored_grant() {
+    let runtime = runtime(doc_with(Some(grant())));
+    let view = session_ui(&runtime, "M1".into()).unwrap();
+    assert!(view.execution_grant_active && view.stdin_allowed);
+    assert!(view.execution_expires_at.is_some());
+
+    runtime
+        .emergency
+        .lock_or_recover()
+        .execution_unpersisted
+        .insert("mcp_a".into());
+    let fenced = session_ui(&runtime, "M1".into()).unwrap();
+    assert!(!fenced.execution_grant_active && !fenced.stdin_allowed);
+    assert!(fenced.execution_expires_at.is_none());
+    assert!(
+        runtime
+            .read(|doc| grant_standing(&runtime, doc, &doc.execution_grants[0]))
+            .unwrap()
+            == GrantStanding::Active,
+        "the stored grant itself is unchanged"
+    );
+}

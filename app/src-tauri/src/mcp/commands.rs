@@ -1376,6 +1376,10 @@ pub(crate) struct SessionUiView {
     pub(super) client_name: Option<String>,
     pub(super) job_state: Option<String>,
     pub(super) recent_error: Option<String>,
+    /// Effective authority, not the stored grant: false while an execution
+    /// revocation's in-memory fence stands (still pending, or failed to
+    /// persist), exactly when exec and stdin are refused and inspect reports
+    /// `revoked`. Approving again is the way out of that state.
     pub(super) execution_grant_active: bool,
     pub(super) execution_expires_at: Option<u64>,
     pub(super) stdin_allowed: bool,
@@ -1384,7 +1388,10 @@ pub(crate) struct SessionUiView {
 
 #[tauri::command(async)]
 pub(crate) fn mcp_session_ui(card_id: String) -> Result<SessionUiView, DeckError> {
-    let runtime = runtime()?;
+    session_ui(runtime()?, card_id)
+}
+
+pub(super) fn session_ui(runtime: &Runtime, card_id: String) -> Result<SessionUiView, DeckError> {
     record_expired_grants(runtime)?;
     let session = runtime.read(|doc| {
         doc.sessions
@@ -1447,11 +1454,14 @@ pub(crate) fn mcp_session_ui(card_id: String) -> Result<SessionUiView, DeckError
         (name, error, grant)
     })?;
     let runner = probe_runner(runtime, &session);
-    let emergency_human = runtime
-        .emergency
-        .lock_or_recover()
-        .human_sessions
-        .contains(&session.session_id);
+    let (emergency_human, execution_fenced) = {
+        let emergency = runtime.emergency.lock_or_recover();
+        (
+            emergency.human_sessions.contains(&session.session_id),
+            emergency.execution_fenced(&session.session_id),
+        )
+    };
+    let grant = grant.filter(|_| !execution_fenced);
     let job_state = runner
         .as_ref()
         .and_then(|probe| probe.job.get("state"))
