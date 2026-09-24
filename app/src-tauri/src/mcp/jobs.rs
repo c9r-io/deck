@@ -12,7 +12,7 @@ pub(super) fn exec(runtime: &Runtime, client_id: &str, arguments: Value) -> Resu
     let argv = direct.args;
     if !valid_id(&args.request_id)
         || !valid_direct_launch(&executable, &argv)
-        || args.wait_ms.unwrap_or(1_000) > 5_000
+        || args.wait_ms.unwrap_or(DEFAULT_WAIT_MS) > MAX_WAIT_MS
         || args
             .execution_timeout_ms
             .is_some_and(|value| !(100..=24 * 60 * 60 * 1000).contains(&value))
@@ -179,13 +179,17 @@ pub(super) fn exec(runtime: &Runtime, client_id: &str, arguments: Value) -> Resu
         if authorized.get("ok").and_then(Value::as_bool) != Some(true) {
             return Ok(authorized);
         }
-        let request = json!({"kind":"exec","job_id":binding.job_id,"request_hash":hash,"executable":executable,"args":argv,"cwd":cwd,"wait_ms":args.wait_ms.unwrap_or(1_000),"timeout_ms":args.execution_timeout_ms,"context":context});
+        let request = json!({"kind":"exec","job_id":binding.job_id,"request_hash":hash,"executable":executable,"args":argv,"cwd":cwd,"wait_ms":args.wait_ms.unwrap_or(DEFAULT_WAIT_MS),"timeout_ms":args.execution_timeout_ms,"context":context});
         send_runner(runtime, &session, &request)
     });
     let reply = runner.as_ref().and_then(|runner| runner.as_ref().ok());
     let committed =
         reply.is_some_and(|value| value.get("ok").and_then(Value::as_bool) == Some(true));
-    let rejected = reply.and_then(runner_error);
+    // A runner error given before the process could start is a rejection;
+    // one given after it may have started keeps the record ambiguous under
+    // the error's own code; anything unrecognised is ambiguous too.
+    let runner_failure = reply.and_then(runner_error);
+    let rejected = runner_failure.filter(|(class, ..)| *class == RunnerErrorClass::Rejection);
     let refused = admitted.as_ref().err().map(|denied| {
         denied["error"]["code"]
             .as_str()
@@ -218,8 +222,8 @@ pub(super) fn exec(runtime: &Runtime, client_id: &str, arguments: Value) -> Resu
                 Some(code.clone())
             } else {
                 Some(
-                    rejected
-                        .map(|(code, _)| code)
+                    runner_failure
+                        .map(|(_, code, _)| code)
                         .unwrap_or("dispatch-unknown")
                         .into(),
                 )
@@ -271,9 +275,17 @@ pub(super) fn exec(runtime: &Runtime, client_id: &str, arguments: Value) -> Resu
         Ok(value) if committed => Ok(
             json!({"ok":true,"operationId":operation.operation_id,"jobId":binding.job_id,"sessionId":session.session_id,"sessionGeneration":session.generation,"state":value.get("job").and_then(|job| job.get("state")).cloned().unwrap_or(json!("unknown")),"initialOutput":"","outputCursor":format!("{}:{}:0",session.generation,binding.job_id)}),
         ),
-        Ok(value) if rejected.is_some() => {
-            let (code, next) = runner_error(&value).unwrap();
+        Ok(_) if rejected.is_some() => {
+            let (_, code, next) = rejected.unwrap();
             Err(error_value(code, "managed runner rejected the job", next))
+        }
+        Ok(_) if runner_failure.is_some() => {
+            let (_, code, next) = runner_failure.unwrap();
+            Err(error_value(
+                code,
+                "Deck cannot prove whether the job started",
+                next,
+            ))
         }
         _ => Err(error_value(
             "OPERATION_AMBIGUOUS",
@@ -373,7 +385,7 @@ pub(super) fn job_read(
     let (binding, session) = gate()?;
     let cursor = decode_cursor(args.cursor, &binding)?;
     let max_bytes = args.max_bytes.unwrap_or(MAX_READ_BYTES);
-    if !(4..=MAX_READ_BYTES).contains(&max_bytes) || args.wait_ms.unwrap_or(0) > 5_000 {
+    if !(4..=MAX_READ_BYTES).contains(&max_bytes) || args.wait_ms.unwrap_or(0) > MAX_WAIT_MS {
         return Err(error_value(
             "INVALID_ARGUMENTS",
             "read limits are invalid",
@@ -384,6 +396,9 @@ pub(super) fn job_read(
     // Linearization: authority is judged at return time. Output already
     // delivered by an earlier call cannot be recalled.
     gate()?;
+    if let Some((_, code, next)) = runner_error(&value) {
+        return Err(error_value(code, "managed runner refused the read", next));
+    }
     if value.get("ok").and_then(Value::as_bool) != Some(true) {
         return Err(error_value(
             "JOB_STATE_UNKNOWN",
@@ -578,7 +593,8 @@ pub(super) fn job_side_effect(
         .as_ref()
         .ok()
         .is_some_and(|value| value.get("ok").and_then(Value::as_bool) == Some(true));
-    let rejected = result.as_ref().ok().and_then(runner_error);
+    let runner_failure = result.as_ref().ok().and_then(runner_error);
+    let rejected = runner_failure.filter(|(class, ..)| *class == RunnerErrorClass::Rejection);
     let saved = runtime
         .write(|doc| {
             let saved = doc
@@ -598,8 +614,8 @@ pub(super) fn job_side_effect(
                 None
             } else {
                 Some(
-                    rejected
-                        .map(|(code, _)| code)
+                    runner_failure
+                        .map(|(_, code, _)| code)
                         .unwrap_or("delivery-unknown")
                         .into(),
                 )
@@ -610,18 +626,15 @@ pub(super) fn job_side_effect(
         .map_err(map_error)?;
     if committed {
         Ok(operation_view(&saved))
-    } else if let Ok(value) = result {
-        if let Some((code, next)) = runner_error(&value) {
-            return Err(error_value(
-                code,
-                "managed runner rejected the job side effect",
-                next,
-            ));
-        }
+    } else if let Some((class, code, next)) = runner_failure {
         Err(error_value(
-            "OPERATION_AMBIGUOUS",
-            "Deck cannot confirm the job side effect",
-            "Read the job and operation before deciding what to do next.",
+            code,
+            if class == RunnerErrorClass::Rejection {
+                "managed runner rejected the job side effect"
+            } else {
+                "Deck cannot confirm the job side effect"
+            },
+            next,
         ))
     } else {
         Err(error_value(

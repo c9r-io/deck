@@ -26,6 +26,8 @@ struct FakeControl {
     epoch: u64,
     mode: String,
     holder: Option<String>,
+    /// The next `exec` is answered with this runner error instead.
+    exec_error: Option<String>,
 }
 
 struct HeldKind {
@@ -47,6 +49,7 @@ impl FakeRunner {
             epoch: 0,
             mode: "fenced".into(),
             holder: None,
+            exec_error: None,
         }));
         let fail_next_control = Arc::new(AtomicBool::new(false));
         let thread_stop = stop.clone();
@@ -186,6 +189,10 @@ impl FakeRunner {
                     "timeoutRequested":false,"startedAt":1,"endedAt":2},
                 "output":"done\n","nextCursor":5,"gap":false,"droppedBytes":0
             }),
+            "exec" if control.lock().unwrap().exec_error.is_some() => {
+                let error = control.lock().unwrap().exec_error.take();
+                json!({"ok":false,"generation":generation,"error":error})
+            }
             "exec" if dispatch_matches() => json!({
                 "ok":true,
                 "generation":generation,
@@ -228,11 +235,16 @@ impl FakeRunner {
             epoch,
             mode: mode.into(),
             holder: holder.map(str::to_owned),
+            exec_error: None,
         };
     }
 
     fn control_epoch(&self) -> u64 {
         self.control.lock().unwrap().epoch
+    }
+
+    fn fail_next_exec(&self, error: &str) {
+        self.control.lock().unwrap().exec_error = Some(error.into());
     }
 
     fn fail_next_control(&self) {
@@ -4389,6 +4401,174 @@ fn takeover_hands_the_pane_over_even_when_its_fence_cannot_be_persisted() {
         takeover(&runtime, "M9").unwrap_err().kind(),
         ErrorKind::Missing
     );
+    drop(runner);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+macro_rules! mcp_fixture {
+    ($name:literal) => {
+        serde_json::from_str::<Value>(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/mcp-fixtures/",
+            $name
+        )))
+        .unwrap()
+    };
+}
+
+/// `mcp-fixtures/` is shared with the adapter and the runner: each crate
+/// compares the fixture with its own constants.
+#[test]
+fn control_protocol_and_limits_match_the_shared_fixture() {
+    assert_eq!(
+        mcp_fixture!("control-protocol.json")["version"],
+        CONTROL_PROTOCOL
+    );
+    let limits = mcp_fixture!("limits.json");
+    let expected: [(&str, u64); 13] = [
+        ("max_request_bytes", MAX_REQUEST_BYTES as u64),
+        ("max_response_bytes", MAX_RESPONSE_BYTES as u64),
+        ("max_executable", MAX_EXECUTABLE_BYTES as u64),
+        ("max_arguments", MAX_ARGUMENTS as u64),
+        ("max_argument_bytes", MAX_ARGUMENT_BYTES as u64),
+        ("max_read_bytes", MAX_READ_BYTES as u64),
+        ("max_input_bytes", MAX_INPUT_BYTES as u64),
+        ("wait_ms_default", DEFAULT_WAIT_MS),
+        ("wait_ms_max", MAX_WAIT_MS),
+        ("lease_ms_min", MIN_LEASE_MS),
+        ("lease_ms_max", MAX_LEASE_MS),
+        ("output_retention_ms_min", MIN_OUTPUT_RETENTION_MS),
+        ("output_retention_ms_max", MAX_OUTPUT_RETENTION_MS),
+    ];
+    for (key, value) in expected {
+        assert_eq!(limits[key].as_u64(), Some(value), "limits.json {key}");
+    }
+    assert_eq!(limits["max_response_bytes_includes_newline"], true);
+    assert_eq!(
+        limits.as_object().unwrap().len(),
+        14,
+        "every fixture limit is asserted here"
+    );
+}
+
+#[test]
+fn runner_error_table_matches_the_shared_fixture() {
+    let fixture = mcp_fixture!("runner-errors.json");
+    let listed: std::collections::BTreeMap<String, String> = fixture["errors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| {
+            (
+                entry["error"].as_str().unwrap().to_owned(),
+                entry["class"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect();
+    let table: std::collections::BTreeMap<String, String> = RUNNER_ERRORS
+        .iter()
+        .map(|(error, class, ..)| {
+            let class = match class {
+                RunnerErrorClass::Rejection => "rejection",
+                RunnerErrorClass::Ambiguous => "ambiguous",
+            };
+            ((*error).to_owned(), class.to_owned())
+        })
+        .collect();
+    assert_eq!(
+        table.len(),
+        RUNNER_ERRORS.len(),
+        "a runner error mapped twice"
+    );
+    assert_eq!(table, listed);
+}
+
+#[test]
+fn runner_launch_args_use_exactly_the_fixture_flags() {
+    let argv = runner_launch_args("/tmp/runner.sock", "g_a", "svc_a", 42, 60_000);
+    let flags: std::collections::BTreeSet<&str> = argv
+        .iter()
+        .map(String::as_str)
+        .filter(|arg| arg.starts_with("--"))
+        .collect();
+    let fixture = mcp_fixture!("runner-argv.json");
+    let expected: std::collections::BTreeSet<&str> = fixture["flags"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|flag| flag.as_str().unwrap())
+        .collect();
+    assert_eq!(flags, expected);
+    assert_eq!(argv.len(), 2 * expected.len(), "one value per flag");
+}
+
+#[test]
+fn every_fixture_tool_routes_and_fence_lists_name_real_tools() {
+    let (runtime, runner, root) = fixture("fixture-tools", "svc_test");
+    let tools = mcp_fixture!("tools.json");
+    let names: Vec<&str> = tools["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|tool| tool.as_str().unwrap())
+        .collect();
+    for name in &names {
+        let value = route(&runtime, request(name, json!({})));
+        assert_ne!(
+            value["error"]["code"], "UNSUPPORTED",
+            "{name} is not routed"
+        );
+    }
+    let unknown = route(&runtime, request("deck_not_a_tool", json!({})));
+    assert_eq!(unknown["error"]["code"], "UNSUPPORTED");
+    for tool in HUMAN_FENCED_TOOLS.iter().chain(&EXECUTION_FENCED_TOOLS) {
+        assert!(names.contains(tool), "fence names unknown tool {tool}");
+    }
+    drop(runner);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// A runner error given before the process could start is an ordinary
+/// rejection with an actionable code; one given after it may have started
+/// stays ambiguous, under its own code.
+#[test]
+fn runner_errors_are_journaled_by_class() {
+    let (runtime, runner, root) = fixture("runner-error-class", "svc_test");
+    unowned(&runtime);
+    grant_window(&runtime);
+    let epoch = control_request(&runtime, "req_class");
+
+    runner.fail_next_exec("spawn-failed");
+    let refused = route(&runtime, exec_request("exec_spawn", epoch));
+    assert_eq!(refused["error"]["code"], "SPAWN_FAILED", "{refused}");
+    let record = operation_by_request(&runtime, "exec_spawn").unwrap();
+    assert_eq!(record.state, "rejected");
+    assert_eq!(record.code.as_deref(), Some("SPAWN_FAILED"));
+    assert!(
+        runtime.read(|doc| doc.jobs.is_empty()).unwrap(),
+        "a rejected exec keeps no job binding"
+    );
+
+    runner.fail_next_exec("job-state-unknown");
+    let unknown = route(&runtime, exec_request("exec_unknown", epoch));
+    assert_eq!(unknown["error"]["code"], "JOB_STATE_UNKNOWN", "{unknown}");
+    let record = operation_by_request(&runtime, "exec_unknown").unwrap();
+    assert_eq!(record.state, "ambiguous");
+    assert_eq!(record.code.as_deref(), Some("JOB_STATE_UNKNOWN"));
+
+    // Retired like any finished record once its epoch moves on.
+    release(&runtime, "rel_class", epoch);
+    control_request(&runtime, "req_class_next");
+    runtime
+        .write(|doc| {
+            compact(doc, Some("svc_test"));
+            assert!(doc
+                .operations
+                .iter()
+                .all(|operation| operation.request_id != "exec_spawn"));
+            Ok(())
+        })
+        .unwrap();
     drop(runner);
     std::fs::remove_dir_all(root).unwrap();
 }

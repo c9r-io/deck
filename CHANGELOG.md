@@ -12,6 +12,15 @@
   arrives, so App Nap freezing the webview does not delay it. Permission
   is asked once when the switch is turned on; a blocked state is shown,
   never worked around. See `docs/notifications.md`.
+- MCP: a job the managed runner could not start (for example a missing
+  executable) is now reported as `SPAWN_FAILED` and recorded as rejected —
+  nothing ran, so a new request is safe. It used to come back as
+  `OPERATION_AMBIGUOUS` with "do not resubmit". Other runner errors now carry
+  their own codes too (`JOB_STATE_UNKNOWN`, `RUNNER_AUTHENTICATION_FAILED`,
+  `OUTPUT_CURSOR_INVALID`, …) instead of falling into the generic ambiguous
+  answer, and `deck_job_read` reports the runner's reason instead of always
+  `JOB_STATE_UNKNOWN`. If a started process cannot be handed its pipes, the
+  runner now kills it rather than leaving it untracked.
 - Internal: the `minisign` that verifies and signs updater archives in the
   Nightly and promotion workflows is a fixed official release checked
   against a committed SHA-256 (`scripts/install-minisign`), no longer

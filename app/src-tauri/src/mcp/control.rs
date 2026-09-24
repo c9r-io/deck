@@ -5,6 +5,18 @@
 
 use super::*;
 
+/// Tools a local takeover fences for its session (interrupt stays open so
+/// work can always be stopped; reads of unrelated state stay open).
+pub(super) const HUMAN_FENCED_TOOLS: [&str; 5] = [
+    "deck_session_control",
+    "deck_exec",
+    "deck_job_read",
+    "deck_job_input",
+    "deck_session_close",
+];
+/// Tools a local execution revocation fences for its session.
+pub(super) const EXECUTION_FENCED_TOOLS: [&str; 2] = ["deck_exec", "deck_job_input"];
+
 pub(super) fn route(runtime: &Runtime, request: WireRequest) -> Value {
     if request.version != CONTROL_PROTOCOL {
         return error_value(
@@ -79,14 +91,7 @@ pub(super) fn route(runtime: &Runtime, request: WireRequest) -> Value {
     if let Some(session_id) = request_session.as_deref() {
         let emergency = runtime.emergency.lock_or_recover();
         if emergency.human_sessions.contains(session_id)
-            && matches!(
-                request.tool.as_str(),
-                "deck_session_control"
-                    | "deck_exec"
-                    | "deck_job_read"
-                    | "deck_job_input"
-                    | "deck_session_close"
-            )
+            && HUMAN_FENCED_TOOLS.contains(&request.tool.as_str())
         {
             return error_value(
                 "HUMAN_CONTROL",
@@ -95,7 +100,7 @@ pub(super) fn route(runtime: &Runtime, request: WireRequest) -> Value {
             );
         }
         if emergency.execution_fenced(session_id)
-            && matches!(request.tool.as_str(), "deck_exec" | "deck_job_input")
+            && EXECUTION_FENCED_TOOLS.contains(&request.tool.as_str())
         {
             return error_value(
                 "EXECUTION_GRANT_REQUIRED",
@@ -288,7 +293,9 @@ pub(super) fn handle_connection(runtime: Arc<Runtime>, mut stream: UnixStream) {
         ),
     };
     if let Ok(mut bytes) = serde_json::to_vec(&response) {
-        if bytes.len() > MAX_RESPONSE_BYTES {
+        // The bound covers the whole line: the adapter rejects a line whose
+        // bytes plus `\n` exceed it.
+        if bytes.len() + 1 > MAX_RESPONSE_BYTES {
             bytes = serde_json::to_vec(&error_value(
                 "INTERNAL_ERROR",
                 "response exceeded its bound",

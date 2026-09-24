@@ -70,6 +70,19 @@
 //! moves the socket aside and listens in its place never receives the key. Closing its tmux pane invokes the runner's SIGHUP cleanup.
 //! Local-command failures are stable machine codes (`mcp-*`) the webview maps
 //! to one sentence each.
+//!
+//! Runner errors (`runner::RUNNER_ERRORS`, held to
+//! `mcp-fixtures/runner-errors.json`): an error the runner gives before any
+//! job process could start or any input byte could be written is a
+//! REJECTION — the operation is `rejected` with a deterministic code and a
+//! rejected exec keeps no job binding. Only an error given when a process may
+//! already have started (or bytes been written) is AMBIGUOUS, and it keeps
+//! its own code (`JOB_STATE_UNKNOWN`, `STOP_UNCONFIRMED`,
+//! `RESPONSE_TOO_LARGE`); an unrecognised reply is ambiguous too
+//! (`dispatch-unknown` / `delivery-unknown`, `OPERATION_AMBIGUOUS`). Limits,
+//! the control protocol, runner argv and the tool list are likewise held to
+//! the shared `mcp-fixtures/` by each crate's own tests; no crate parses
+//! another's source.
 //! The control socket is bound under a private temporary name, made 0600, and
 //! atomically renamed into place; Deck never changes its process-wide umask.
 //!
@@ -136,6 +149,8 @@ const DECK_BUILD: Option<&str> = match option_env!("DECK_BUILD_SHA") {
 };
 const MAX_STATE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_REQUEST_BYTES: usize = 256 * 1024;
+/// One response line INCLUDING its trailing newline (adapter and runner
+/// compare the same way; `mcp-fixtures/limits.json`).
 const MAX_RESPONSE_BYTES: usize = 128 * 1024;
 const MAX_CLIENTS: usize = 32;
 const MAX_PROJECTS_PER_CLIENT: usize = 64;
@@ -162,7 +177,9 @@ const MAX_OPERATIONS_PER_CLIENT: usize = 500;
 /// stay queryable. Replay safety does not depend on this window: creates are
 /// bound to the client's create sequence, closes to their session's epoch.
 const CREATE_REPLAY_WINDOW: usize = 32;
-/// Job bindings kept per session; the runner retires jobs the same way.
+/// Job bindings kept per session (Deck's own bound). The runner keeps its
+/// own, independent per-process cap (256 jobs) and retires its oldest
+/// finished jobs against that; the two numbers are not the same limit.
 const MAX_JOBS_PER_SESSION: usize = 64;
 const MAX_JOBS: usize = MAX_SESSIONS * MAX_JOBS_PER_SESSION;
 const MAX_GRANTS: usize = MAX_SESSIONS + MAX_JOBS;
@@ -179,10 +196,14 @@ const MAX_ARGUMENTS: usize = 256;
 const MAX_ARGUMENT_BYTES: usize = 64 * 1024;
 const MAX_READ_BYTES: usize = 16 * 1024;
 const MAX_INPUT_BYTES: usize = 32 * 1024;
+const DEFAULT_WAIT_MS: u64 = 1_000;
+const MAX_WAIT_MS: u64 = 5_000;
+const MIN_LEASE_MS: u64 = 1_000;
 const DEFAULT_LEASE_MS: u64 = 60_000;
 const MAX_LEASE_MS: u64 = 5 * 60_000;
 const DEFAULT_EXECUTION_GRANT_MS: u64 = 15 * 60_000;
 const MAX_EXECUTION_GRANT_MS: u64 = 8 * 60 * 60_000;
+const MIN_OUTPUT_RETENTION_MS: u64 = 60_000;
 const DEFAULT_OUTPUT_RETENTION_MS: u64 = 24 * 60 * 60_000;
 const MAX_OUTPUT_RETENTION_MS: u64 = 7 * 24 * 60 * 60_000;
 const POLICY_VERSION: u32 = 2;

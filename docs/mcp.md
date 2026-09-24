@@ -175,6 +175,18 @@ If the Adapter loses Deck's answer after sending a side effect it returns
 `OPERATION_AMBIGUOUS`: inspect, or repeat with the SAME `request_id` — never a
 new one.
 
+When the managed runner itself refuses a job request, the operation is
+`rejected` with a specific code and nothing ran: besides the argument and
+control codes above, `SPAWN_FAILED` (the executable could not be started —
+check the path and permissions, then send a new request),
+`RUNNER_AUTHENTICATION_FAILED` (close the session and create a new one),
+`OUTPUT_CURSOR_INVALID` and `RUNNER_INTERNAL_ERROR` (the runner did not read
+the request). When the runner cannot prove a process did not start or input
+was not written, the operation stays `ambiguous` under its own code —
+`JOB_STATE_UNKNOWN`, `STOP_UNCONFIRMED` or `RESPONSE_TOO_LARGE` — and you
+read the job instead of re-executing. `OPERATION_AMBIGUOUS` is left for a
+reply Deck does not recognise or never received.
+
 For `deck_session_control`, the caller creates a fresh stable opaque
 `holder_id` (1–128 ASCII letters, digits, `_`, or `-`) before the first
 `request`. This is a candidate control-flow identity, not proof that control

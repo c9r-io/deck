@@ -1,0 +1,24 @@
+{
+  "rule": "rejection: the runner answered before any job process could start or any input byte could be written, so the request had no effect. ambiguous: a process may already have started, or bytes may already have been written, and the runner cannot prove otherwise.",
+  "errors": [
+    { "error": "authentication-failed", "class": "rejection" },
+    { "error": "capacity-exceeded", "class": "rejection" },
+    { "error": "control-revoked", "class": "rejection" },
+    { "error": "dispatch-context-invalid", "class": "rejection" },
+    { "error": "holder-conflict", "class": "rejection" },
+    { "error": "internal-error", "class": "rejection" },
+    { "error": "invalid-cwd", "class": "rejection" },
+    { "error": "invalid-executable", "class": "rejection" },
+    { "error": "invalid-request", "class": "rejection" },
+    { "error": "job-not-found", "class": "rejection" },
+    { "error": "job-not-running", "class": "rejection" },
+    { "error": "job-state-unknown", "class": "ambiguous" },
+    { "error": "output-cursor-invalid", "class": "rejection" },
+    { "error": "request-id-conflict", "class": "rejection" },
+    { "error": "response-too-large", "class": "ambiguous" },
+    { "error": "runner-stale", "class": "rejection" },
+    { "error": "session-busy", "class": "rejection" },
+    { "error": "spawn-failed", "class": "rejection" },
+    { "error": "stop-unconfirmed", "class": "ambiguous" }
+  ]
+}

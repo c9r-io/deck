@@ -386,7 +386,7 @@ pub(super) fn session_control(
         ));
     }
     if let Some(lease_ms) = args.lease_ms {
-        if !(1_000..=MAX_LEASE_MS).contains(&lease_ms) {
+        if !(MIN_LEASE_MS..=MAX_LEASE_MS).contains(&lease_ms) {
             return Err(error_value(
                 "INVALID_ARGUMENTS",
                 "lease_ms is outside the allowed range",

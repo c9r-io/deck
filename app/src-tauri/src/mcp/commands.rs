@@ -49,7 +49,7 @@ pub(crate) fn mcp_status() -> Result<StatusView, DeckError> {
 
 #[tauri::command]
 pub(crate) fn mcp_output_retention(duration_ms: u64) -> Result<(), DeckError> {
-    if !(60_000..=MAX_OUTPUT_RETENTION_MS).contains(&duration_ms) {
+    if !(MIN_OUTPUT_RETENTION_MS..=MAX_OUTPUT_RETENTION_MS).contains(&duration_ms) {
         return Err(DeckError::new(
             ErrorKind::Invalid,
             "MCP output retention must be between one minute and seven days",
@@ -1015,7 +1015,7 @@ pub(crate) fn mcp_start_session(
     let _activity = crate::session_runtime::activity_guard()?;
     let _creation = crate::tmux_lifecycle::session_creation_guard()?;
     let runner = runner_program()?;
-    let args = vec![
+    let mut args: Vec<String> = vec![
         "new-session".into(),
         "-d".into(),
         "-s".into(),
@@ -1023,17 +1023,14 @@ pub(crate) fn mcp_start_session(
         "-c".into(),
         dir,
         runner.display().to_string(),
-        "--socket".into(),
-        socket.into(),
-        "--generation".into(),
-        generation.into(),
-        "--service-instance".into(),
-        runtime.service_instance.clone(),
-        "--deck-pid".into(),
-        std::process::id().to_string(),
-        "--output-retention-ms".into(),
-        output_retention_ms.to_string(),
     ];
+    args.extend(runner_launch_args(
+        socket,
+        generation,
+        &runtime.service_instance,
+        std::process::id(),
+        output_retention_ms,
+    ));
     crate::tmux::tmux_owned(&args)?;
     let ready = (0..40).any(|_| {
         if UnixStream::connect(socket).is_ok() {
@@ -1051,6 +1048,30 @@ pub(crate) fn mcp_start_session(
         ));
     }
     Ok(StartResult { created: true })
+}
+
+/// The runner's own argv after its path: exactly the flags
+/// `mcp-fixtures/runner-argv.json` lists, which the runner's `parse_args`
+/// accepts (and nothing else).
+pub(super) fn runner_launch_args(
+    socket: &str,
+    generation: &str,
+    service_instance: &str,
+    deck_pid: u32,
+    output_retention_ms: u64,
+) -> Vec<String> {
+    vec![
+        "--socket".into(),
+        socket.into(),
+        "--generation".into(),
+        generation.into(),
+        "--service-instance".into(),
+        service_instance.into(),
+        "--deck-pid".into(),
+        deck_pid.to_string(),
+        "--output-retention-ms".into(),
+        output_retention_ms.to_string(),
+    ]
 }
 
 #[tauri::command]

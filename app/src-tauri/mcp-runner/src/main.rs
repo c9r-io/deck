@@ -74,7 +74,6 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use subtle::ConstantTimeEq;
 
-const PROTOCOL: u32 = 4;
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const BUILD: Option<&str> = match option_env!("DECK_BUILD_SHA") {
     Some(value) => Some(value),
@@ -89,12 +88,95 @@ const MAX_EXECUTABLE: usize = 4 * 1024;
 const MAX_ARGUMENTS: usize = 256;
 const MAX_ARGUMENT_BYTES: usize = 64 * 1024;
 const MAX_READ: usize = 16 * 1024;
+/// One response line including its trailing newline.
 const MAX_RESPONSE: usize = 128 * 1024;
 const MAX_INPUT: usize = 32 * 1024;
 const RETAINED_OUTPUT: usize = 1024 * 1024;
 const RETAINED_OUTPUT_PER_SESSION: usize = 16 * 1024 * 1024;
+/// This runner's own job cap, independent of Deck's per-session binding
+/// bound (64): each side retires its oldest finished entries against its own.
 const MAX_JOBS: usize = 256;
+const MAX_WAIT_MS: u64 = 5_000;
+const MIN_OUTPUT_RETENTION_MS: u64 = 60_000;
+const MAX_OUTPUT_RETENTION_MS: u64 = 7 * 24 * 60 * 60_000;
 const INPUT_WRITE_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// Every error string this runner puts on the wire. `ALL` is held to
+/// `mcp-fixtures/runner-errors.json`, where Deck's class for each one is
+/// recorded (rejection: no process started and no byte was written;
+/// ambiguous: a process may have started). Deck's `RUNNER_ERRORS` table is
+/// held to the same file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RunnerError {
+    AuthenticationFailed,
+    CapacityExceeded,
+    ControlRevoked,
+    DispatchContextInvalid,
+    HolderConflict,
+    InternalError,
+    InvalidCwd,
+    InvalidExecutable,
+    InvalidRequest,
+    JobNotFound,
+    JobNotRunning,
+    JobStateUnknown,
+    OutputCursorInvalid,
+    RequestIdConflict,
+    ResponseTooLarge,
+    RunnerStale,
+    SessionBusy,
+    SpawnFailed,
+    StopUnconfirmed,
+}
+
+impl RunnerError {
+    #[cfg(test)]
+    const ALL: [Self; 19] = [
+        Self::AuthenticationFailed,
+        Self::CapacityExceeded,
+        Self::ControlRevoked,
+        Self::DispatchContextInvalid,
+        Self::HolderConflict,
+        Self::InternalError,
+        Self::InvalidCwd,
+        Self::InvalidExecutable,
+        Self::InvalidRequest,
+        Self::JobNotFound,
+        Self::JobNotRunning,
+        Self::JobStateUnknown,
+        Self::OutputCursorInvalid,
+        Self::RequestIdConflict,
+        Self::ResponseTooLarge,
+        Self::RunnerStale,
+        Self::SessionBusy,
+        Self::SpawnFailed,
+        Self::StopUnconfirmed,
+    ];
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::AuthenticationFailed => "authentication-failed",
+            Self::CapacityExceeded => "capacity-exceeded",
+            Self::ControlRevoked => "control-revoked",
+            Self::DispatchContextInvalid => "dispatch-context-invalid",
+            Self::HolderConflict => "holder-conflict",
+            Self::InternalError => "internal-error",
+            Self::InvalidCwd => "invalid-cwd",
+            Self::InvalidExecutable => "invalid-executable",
+            Self::InvalidRequest => "invalid-request",
+            Self::JobNotFound => "job-not-found",
+            Self::JobNotRunning => "job-not-running",
+            Self::JobStateUnknown => "job-state-unknown",
+            Self::OutputCursorInvalid => "output-cursor-invalid",
+            Self::RequestIdConflict => "request-id-conflict",
+            Self::ResponseTooLarge => "response-too-large",
+            Self::RunnerStale => "runner-stale",
+            Self::SessionBusy => "session-busy",
+            Self::SpawnFailed => "spawn-failed",
+            Self::StopUnconfirmed => "stop-unconfirmed",
+        }
+    }
+}
 
 fn now_ms() -> u64 {
     SystemTime::now()
@@ -241,7 +323,6 @@ enum ControlMode {
 #[serde(rename_all = "camelCase")]
 struct Response {
     ok: bool,
-    protocol: u32,
     generation: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<&'static str>,
@@ -270,17 +351,16 @@ struct Response {
 }
 
 impl Response {
-    fn error(generation: &str, error: &'static str) -> Self {
+    fn error(generation: &str, error: RunnerError) -> Self {
         Self {
             ok: false,
-            error: Some(error),
+            error: Some(error.as_str()),
             ..Self::empty(generation)
         }
     }
     fn empty(generation: &str) -> Self {
         Self {
             ok: true,
-            protocol: PROTOCOL,
             generation: generation.into(),
             error: None,
             job: None,
@@ -542,9 +622,9 @@ fn admit_exec_context(
     shared: &Shared,
     inner: &mut Inner,
     context: &DispatchContext,
-) -> Result<(), &'static str> {
+) -> Result<(), RunnerError> {
     if context.service_instance != shared.service_instance {
-        return Err("runner-stale");
+        return Err(RunnerError::RunnerStale);
     }
     if !valid_id(&context.holder_id)
         || !valid_id(&context.grant_id)
@@ -557,22 +637,22 @@ fn admit_exec_context(
             .get(&context.grant_id)
             .is_some_and(|version| *version >= context.grant_version)
     {
-        return Err("dispatch-context-invalid");
+        return Err(RunnerError::DispatchContextInvalid);
     }
     let Some(grant) = inner.authorized_grants.get(&context.grant_id) else {
-        return Err("dispatch-context-invalid");
+        return Err(RunnerError::DispatchContextInvalid);
     };
     if grant.version != context.grant_version
         || grant.policy_version != context.policy_version
         || grant.expires_at != context.expires_at
     {
-        return Err("dispatch-context-invalid");
+        return Err(RunnerError::DispatchContextInvalid);
     }
     if inner.control != ControlMode::Mcp || context.control_epoch != inner.control_epoch {
-        return Err("control-revoked");
+        return Err(RunnerError::ControlRevoked);
     }
     if inner.holder_id.as_deref() != Some(&context.holder_id) {
-        return Err("holder-conflict");
+        return Err(RunnerError::HolderConflict);
     }
     Ok(())
 }
@@ -583,9 +663,9 @@ fn check_job_context(
     job: &Job,
     context: &DispatchContext,
     allow_expired_or_revoked: bool,
-) -> Result<(), &'static str> {
+) -> Result<(), RunnerError> {
     if context.service_instance != shared.service_instance {
-        return Err("runner-stale");
+        return Err(RunnerError::RunnerStale);
     }
     if (!allow_expired_or_revoked && context.expires_at <= now_ms())
         || context.control_epoch != inner.control_epoch
@@ -601,7 +681,7 @@ fn check_job_context(
                 .get(&context.grant_id)
                 .is_some_and(|version| *version >= context.grant_version))
     {
-        return Err("control-revoked");
+        return Err(RunnerError::ControlRevoked);
     }
     Ok(())
 }
@@ -772,9 +852,9 @@ fn spawn_job(
     launch: Launch<'_>,
     cwd: &str,
     timeout_ms: Option<u64>,
-) -> Result<(), &'static str> {
+) -> Result<(), RunnerError> {
     if !Path::new(cwd).is_absolute() || !Path::new(cwd).is_dir() {
-        return Err("invalid-cwd");
+        return Err(RunnerError::InvalidCwd);
     }
     let mut command = match launch {
         Launch::Direct { executable, args } => {
@@ -786,7 +866,7 @@ fn spawn_job(
                 || args.iter().any(|value| value.as_bytes().contains(&0))
                 || args.iter().map(String::len).sum::<usize>() > MAX_ARGUMENT_BYTES
             {
-                return Err("invalid-executable");
+                return Err(RunnerError::InvalidExecutable);
             }
             let mut command = Command::new(executable);
             command.args(args);
@@ -838,10 +918,22 @@ fn spawn_job(
             Ok(())
         });
     }
-    let mut child = command.spawn().map_err(|_| "spawn-failed")?;
-    let stdout = child.stdout.take().ok_or("spawn-failed")?;
-    let stderr = child.stderr.take().ok_or("spawn-failed")?;
-    let stdin = child.stdin.take().ok_or("spawn-failed")?;
+    // `spawn-failed` means exactly this: the process never started.
+    let mut child = command.spawn().map_err(|_| RunnerError::SpawnFailed)?;
+    let pid = child.id() as i32;
+    // From here on the process exists. A failure below cannot prove it did
+    // nothing, so it is `job-state-unknown` (Deck journals it ambiguous), and
+    // its group is killed and reaped first so no untracked job survives.
+    let pipes = (child.stdout.take(), child.stderr.take(), child.stdin.take());
+    let mut abandon = move || {
+        // SAFETY: `pid` is this runner's unreaped child and its own group.
+        unsafe { libc::killpg(pid, libc::SIGKILL) };
+        let _ = child.wait();
+        RunnerError::JobStateUnknown
+    };
+    let (Some(stdout), Some(stderr), Some(stdin)) = pipes else {
+        return Err(abandon());
+    };
     let stdin_flags = unsafe { libc::fcntl(stdin.as_raw_fd(), libc::F_GETFL) };
     if stdin_flags < 0
         || unsafe {
@@ -852,22 +944,22 @@ fn spawn_job(
             )
         } != 0
     {
-        return Err("spawn-failed");
+        return Err(abandon());
     }
-    let pid = child.id() as i32;
-    // The std Child handle is dropped without waiting: the waiter below owns
-    // reaping through waitpid so PID clearing and reaping share one lock.
-    drop(child);
     {
         let mut inner = shared.inner.lock().recover();
         let Some(job) = inner.jobs.get_mut(job_id) else {
-            return Err("job-not-found");
+            drop(inner);
+            return Err(abandon());
         };
         job.state = JobState::Running;
         job.pid = Some(pid);
         job.stdin = Some(stdin);
         shared.changed.notify_all();
     }
+    // The std Child handle is dropped without waiting: the waiter below owns
+    // reaping through waitpid so PID clearing and reaping share one lock.
+    drop(abandon);
     mirror(shared.clone(), job_id.into(), stdout, false);
     mirror(shared.clone(), job_id.into(), stderr, true);
     let waiter = shared.clone();
@@ -1066,7 +1158,7 @@ fn stop_all_jobs(shared: &Arc<Shared>) -> bool {
 }
 
 fn wait_for_job(shared: &Arc<Shared>, job_id: &str, wait_ms: u64) {
-    let limit = wait_ms.min(5_000);
+    let limit = wait_ms.min(MAX_WAIT_MS);
     if limit == 0 {
         return;
     }
@@ -1122,7 +1214,7 @@ fn handle(shared: &Arc<Shared>, request: Request) -> Response {
                 _ => unreachable!(),
             };
             if !valid_id(&job_id) || !valid_id(&request_hash) {
-                return Response::error(&shared.generation, "invalid-request");
+                return Response::error(&shared.generation, RunnerError::InvalidRequest);
             }
             {
                 let mut inner = shared.inner.lock().recover();
@@ -1135,7 +1227,7 @@ fn handle(shared: &Arc<Shared>, request: Request) -> Response {
                         || existing.control_epoch != context.control_epoch
                         || existing.holder_id != context.holder_id
                     {
-                        return Response::error(&shared.generation, "request-id-conflict");
+                        return Response::error(&shared.generation, RunnerError::RequestIdConflict);
                     }
                     drop(inner);
                     wait_for_job(shared, &job_id, wait_ms);
@@ -1145,10 +1237,10 @@ fn handle(shared: &Arc<Shared>, request: Request) -> Response {
                     return response;
                 }
                 if inner.active.is_some() {
-                    return Response::error(&shared.generation, "session-busy");
+                    return Response::error(&shared.generation, RunnerError::SessionBusy);
                 }
                 if !evict_finished_jobs(&mut inner) {
-                    return Response::error(&shared.generation, "capacity-exceeded");
+                    return Response::error(&shared.generation, RunnerError::CapacityExceeded);
                 }
                 inner.order.push_back(job_id.clone());
                 inner.jobs.insert(
@@ -1162,15 +1254,15 @@ fn handle(shared: &Arc<Shared>, request: Request) -> Response {
                 OwnedLaunch::Direct { executable, args } => Launch::Direct { executable, args },
             };
             if let Err(error) = spawn_job(shared, &job_id, borrowed, &cwd, timeout_ms) {
-                if error != "dispatch-unknown" {
-                    let mut inner = shared.inner.lock().recover();
-                    if let Some(job) = inner.jobs.get_mut(&job_id) {
-                        job.state = JobState::Lost;
-                        job.ended_at = Some(now_ms());
-                    }
-                    if inner.active.as_deref() == Some(&job_id) {
-                        inner.active = None;
-                    }
+                // No live process remains either way (never started, or
+                // killed and reaped by `spawn_job`).
+                let mut inner = shared.inner.lock().recover();
+                if let Some(job) = inner.jobs.get_mut(&job_id) {
+                    job.state = JobState::Lost;
+                    job.ended_at = Some(now_ms());
+                }
+                if inner.active.as_deref() == Some(&job_id) {
+                    inner.active = None;
                 }
                 return Response::error(&shared.generation, error);
             }
@@ -1187,14 +1279,14 @@ fn handle(shared: &Arc<Shared>, request: Request) -> Response {
             wait_ms,
         } => {
             if !valid_id(&job_id) || !(1..=MAX_READ).contains(&max_bytes) {
-                return Response::error(&shared.generation, "invalid-request");
+                return Response::error(&shared.generation, RunnerError::InvalidRequest);
             }
             if wait_ms > 0 {
-                let limit = wait_ms.min(5_000);
+                let limit = wait_ms.min(MAX_WAIT_MS);
                 let initial_end = {
                     let inner = shared.inner.lock().recover();
                     let Some(job) = inner.jobs.get(&job_id) else {
-                        return Response::error(&shared.generation, "job-not-found");
+                        return Response::error(&shared.generation, RunnerError::JobNotFound);
                     };
                     job.base_cursor + job.output.len() as u64
                 };
@@ -1211,7 +1303,7 @@ fn handle(shared: &Arc<Shared>, request: Request) -> Response {
             }
             let mut inner = shared.inner.lock().recover();
             let Some(job) = inner.jobs.get_mut(&job_id) else {
-                return Response::error(&shared.generation, "job-not-found");
+                return Response::error(&shared.generation, RunnerError::JobNotFound);
             };
             let expired = job.ended_at.is_some_and(|ended| {
                 now_ms().saturating_sub(ended) >= shared.output_retention_ms.load(Ordering::SeqCst)
@@ -1226,7 +1318,7 @@ fn handle(shared: &Arc<Shared>, request: Request) -> Response {
             let requested = cursor.unwrap_or(job.base_cursor);
             let gap = requested < job.base_cursor;
             if requested > job.base_cursor + job.output.len() as u64 {
-                return Response::error(&shared.generation, "output-cursor-invalid");
+                return Response::error(&shared.generation, RunnerError::OutputCursorInvalid);
             }
             let start = requested.max(job.base_cursor);
             let offset = (start - job.base_cursor) as usize;
@@ -1260,21 +1352,21 @@ fn handle(shared: &Arc<Shared>, request: Request) -> Response {
             context,
         } => {
             if !valid_id(&job_id) || data_b64.len() > MAX_INPUT.saturating_mul(2) {
-                return Response::error(&shared.generation, "invalid-request");
+                return Response::error(&shared.generation, RunnerError::InvalidRequest);
             }
             let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(data_b64) else {
-                return Response::error(&shared.generation, "invalid-request");
+                return Response::error(&shared.generation, RunnerError::InvalidRequest);
             };
             if bytes.len() > MAX_INPUT {
-                return Response::error(&shared.generation, "invalid-request");
+                return Response::error(&shared.generation, RunnerError::InvalidRequest);
             }
             if context.service_instance != shared.service_instance {
-                return Response::error(&shared.generation, "runner-stale");
+                return Response::error(&shared.generation, RunnerError::RunnerStale);
             }
             let mut stdin = {
                 let mut inner = shared.inner.lock().recover();
                 if inner.control != ControlMode::Mcp || inner.active.as_deref() != Some(&job_id) {
-                    return Response::error(&shared.generation, "job-not-running");
+                    return Response::error(&shared.generation, RunnerError::JobNotRunning);
                 }
                 if let Some(job) = inner.jobs.get(&job_id) {
                     if let Err(error) = check_job_context(shared, &inner, job, &context, false) {
@@ -1282,13 +1374,13 @@ fn handle(shared: &Arc<Shared>, request: Request) -> Response {
                     }
                 }
                 let Some(job) = inner.jobs.get_mut(&job_id) else {
-                    return Response::error(&shared.generation, "job-not-found");
+                    return Response::error(&shared.generation, RunnerError::JobNotFound);
                 };
                 if job.state != JobState::Running {
-                    return Response::error(&shared.generation, "job-not-running");
+                    return Response::error(&shared.generation, RunnerError::JobNotRunning);
                 }
                 let Some(stdin) = job.stdin.take() else {
-                    return Response::error(&shared.generation, "job-not-running");
+                    return Response::error(&shared.generation, RunnerError::JobNotRunning);
                 };
                 stdin
             };
@@ -1303,7 +1395,7 @@ fn handle(shared: &Arc<Shared>, request: Request) -> Response {
                     .get(&job_id)
                     .is_some_and(|job| job.state == JobState::Running);
             if !wrote || !still_bound {
-                return Response::error(&shared.generation, "job-state-unknown");
+                return Response::error(&shared.generation, RunnerError::JobStateUnknown);
             }
             if let Some(job) = inner.jobs.get_mut(&job_id) {
                 job.stdin = Some(stdin);
@@ -1313,10 +1405,10 @@ fn handle(shared: &Arc<Shared>, request: Request) -> Response {
         Request::Interrupt { job_id, context } => {
             let mut inner = shared.inner.lock().recover();
             if context.service_instance != shared.service_instance {
-                return Response::error(&shared.generation, "runner-stale");
+                return Response::error(&shared.generation, RunnerError::RunnerStale);
             }
             if inner.control != ControlMode::Mcp || inner.active.as_deref() != Some(&job_id) {
-                return Response::error(&shared.generation, "job-not-running");
+                return Response::error(&shared.generation, RunnerError::JobNotRunning);
             }
             if let Some(job) = inner.jobs.get(&job_id) {
                 if let Err(error) = check_job_context(shared, &inner, job, &context, true) {
@@ -1324,13 +1416,13 @@ fn handle(shared: &Arc<Shared>, request: Request) -> Response {
                 }
             }
             let Some(job) = inner.jobs.get_mut(&job_id) else {
-                return Response::error(&shared.generation, "job-not-found");
+                return Response::error(&shared.generation, RunnerError::JobNotFound);
             };
             if !matches!(job.state, JobState::Running | JobState::Stopped) {
-                return Response::error(&shared.generation, "job-not-running");
+                return Response::error(&shared.generation, RunnerError::JobNotRunning);
             }
             let Some(pid) = job.pid else {
-                return Response::error(&shared.generation, "job-state-unknown");
+                return Response::error(&shared.generation, RunnerError::JobStateUnknown);
             };
             job.interrupt_requested = true;
             let stopped = job.state == JobState::Stopped;
@@ -1342,7 +1434,7 @@ fn handle(shared: &Arc<Shared>, request: Request) -> Response {
             if sent {
                 Response::empty(&shared.generation)
             } else {
-                Response::error(&shared.generation, "job-state-unknown")
+                Response::error(&shared.generation, RunnerError::JobStateUnknown)
             }
         }
         Request::Control {
@@ -1356,13 +1448,16 @@ fn handle(shared: &Arc<Shared>, request: Request) -> Response {
             {
                 let mut inner = shared.inner.lock().recover();
                 if service_instance != shared.service_instance {
-                    return Response::error(&shared.generation, "runner-stale");
+                    return Response::error(&shared.generation, RunnerError::RunnerStale);
                 }
                 if control_epoch <= inner.control_epoch {
-                    return Response::error(&shared.generation, "dispatch-context-invalid");
+                    return Response::error(
+                        &shared.generation,
+                        RunnerError::DispatchContextInvalid,
+                    );
                 }
                 if mode == ControlMode::Mcp && inner.active.is_some() {
-                    return Response::error(&shared.generation, "session-busy");
+                    return Response::error(&shared.generation, RunnerError::SessionBusy);
                 }
                 inner.control = mode;
                 inner.control_epoch = control_epoch;
@@ -1383,10 +1478,10 @@ fn handle(shared: &Arc<Shared>, request: Request) -> Response {
             output_retention_ms,
         } => {
             if service_instance != shared.service_instance {
-                return Response::error(&shared.generation, "runner-stale");
+                return Response::error(&shared.generation, RunnerError::RunnerStale);
             }
-            if !(60_000..=7 * 24 * 60 * 60_000).contains(&output_retention_ms) {
-                return Response::error(&shared.generation, "dispatch-context-invalid");
+            if !(MIN_OUTPUT_RETENTION_MS..=MAX_OUTPUT_RETENTION_MS).contains(&output_retention_ms) {
+                return Response::error(&shared.generation, RunnerError::DispatchContextInvalid);
             }
             shared
                 .output_retention_ms
@@ -1399,10 +1494,10 @@ fn handle(shared: &Arc<Shared>, request: Request) -> Response {
             grant_version,
         } => {
             if service_instance != shared.service_instance {
-                return Response::error(&shared.generation, "runner-stale");
+                return Response::error(&shared.generation, RunnerError::RunnerStale);
             }
             if !valid_id(&grant_id) {
-                return Response::error(&shared.generation, "dispatch-context-invalid");
+                return Response::error(&shared.generation, RunnerError::DispatchContextInvalid);
             }
             let mut inner = shared.inner.lock().recover();
             inner
@@ -1420,14 +1515,14 @@ fn handle(shared: &Arc<Shared>, request: Request) -> Response {
             expires_at,
         } => {
             if service_instance != shared.service_instance {
-                return Response::error(&shared.generation, "runner-stale");
+                return Response::error(&shared.generation, RunnerError::RunnerStale);
             }
             if !valid_id(&grant_id)
                 || grant_version == 0
                 || policy_version == 0
                 || expires_at <= now_ms()
             {
-                return Response::error(&shared.generation, "dispatch-context-invalid");
+                return Response::error(&shared.generation, RunnerError::DispatchContextInvalid);
             }
             let mut inner = shared.inner.lock().recover();
             if inner
@@ -1435,12 +1530,12 @@ fn handle(shared: &Arc<Shared>, request: Request) -> Response {
                 .get(&grant_id)
                 .is_some_and(|version| *version >= grant_version)
             {
-                return Response::error(&shared.generation, "dispatch-context-invalid");
+                return Response::error(&shared.generation, RunnerError::DispatchContextInvalid);
             }
             if inner.authorized_grants.len() >= MAX_JOBS
                 && !inner.authorized_grants.contains_key(&grant_id)
             {
-                return Response::error(&shared.generation, "capacity-exceeded");
+                return Response::error(&shared.generation, RunnerError::CapacityExceeded);
             }
             inner.authorized_grants.insert(
                 grant_id,
@@ -1454,13 +1549,13 @@ fn handle(shared: &Arc<Shared>, request: Request) -> Response {
         }
         Request::Stop { generation } => {
             if generation != shared.generation {
-                return Response::error(&shared.generation, "invalid-request");
+                return Response::error(&shared.generation, RunnerError::InvalidRequest);
             }
             let stopped = stop_all_jobs(shared);
             let mut response = if stopped {
                 Response::empty(&shared.generation)
             } else {
-                Response::error(&shared.generation, "stop-unconfirmed")
+                Response::error(&shared.generation, RunnerError::StopUnconfirmed)
             };
             response.control = Some("fenced");
             response
@@ -1468,7 +1563,7 @@ fn handle(shared: &Arc<Shared>, request: Request) -> Response {
         Request::Shutdown => {
             let mut inner = shared.inner.lock().recover();
             if inner.active.is_some() {
-                return Response::error(&shared.generation, "session-busy");
+                return Response::error(&shared.generation, RunnerError::SessionBusy);
             }
             inner.stopping = true;
             Response::empty(&shared.generation)
@@ -1498,15 +1593,18 @@ fn serve_connection(shared: Arc<Shared>, mut stream: UnixStream) {
                 Ok(size) if size > 0 && size <= MAX_REQUEST && line.ends_with(b"\n") => {
                     authenticate_request(&shared, &stream, &line)
                 }
-                _ => Response::error(&shared.generation, "invalid-request"),
+                _ => Response::error(&shared.generation, RunnerError::InvalidRequest),
             }
         }
-        Err(_) => Response::error(&shared.generation, "internal-error"),
+        Err(_) => Response::error(&shared.generation, RunnerError::InternalError),
     };
     if let Ok(mut bytes) = serde_json::to_vec(&response) {
         if bytes.len() + 1 > MAX_RESPONSE {
-            bytes = serde_json::to_vec(&Response::error(&shared.generation, "response-too-large"))
-                .unwrap_or_default();
+            bytes = serde_json::to_vec(&Response::error(
+                &shared.generation,
+                RunnerError::ResponseTooLarge,
+            ))
+            .unwrap_or_default();
         }
         let _ = stream.write_all(&bytes);
         let _ = stream.write_all(b"\n");
@@ -1577,23 +1675,23 @@ fn authenticate_request(shared: &Arc<Shared>, stream: &UnixStream, line: &[u8]) 
         }
     }
     let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(line) else {
-        return Response::error(&shared.generation, "authentication-failed");
+        return Response::error(&shared.generation, RunnerError::AuthenticationFailed);
     };
     let Some(fields) = value.as_object_mut() else {
-        return Response::error(&shared.generation, "authentication-failed");
+        return Response::error(&shared.generation, RunnerError::AuthenticationFailed);
     };
     let Some(auth) = fields
         .remove("auth")
         .and_then(|value| value.as_str().map(str::to_owned))
     else {
-        return Response::error(&shared.generation, "authentication-failed");
+        return Response::error(&shared.generation, RunnerError::AuthenticationFailed);
     };
     if !auth_matches(&shared.auth_key, &auth) {
-        return Response::error(&shared.generation, "authentication-failed");
+        return Response::error(&shared.generation, RunnerError::AuthenticationFailed);
     }
     match serde_json::from_value::<Request>(value) {
         Ok(request) => handle(shared, request),
-        Err(_) => Response::error(&shared.generation, "invalid-request"),
+        Err(_) => Response::error(&shared.generation, RunnerError::InvalidRequest),
     }
 }
 
@@ -1640,8 +1738,16 @@ fn stdin_forwarder(shared: Arc<Shared>) {
     });
 }
 
-fn parse_args() -> Option<(PathBuf, String, String, u64, libc::pid_t)> {
-    let mut args = std::env::args_os().skip(1);
+type RunnerArgs = (PathBuf, String, String, u64, libc::pid_t);
+
+fn parse_args() -> Option<RunnerArgs> {
+    parse_args_from(std::env::args_os().skip(1))
+}
+
+/// Exactly the flags in `mcp-fixtures/runner-argv.json`, each once with a
+/// value; anything else refuses to start.
+fn parse_args_from(args: impl IntoIterator<Item = std::ffi::OsString>) -> Option<RunnerArgs> {
+    let mut args = args.into_iter();
     let mut socket = None;
     let mut generation = None;
     let mut service_instance = None;
@@ -1667,7 +1773,7 @@ fn parse_args() -> Option<(PathBuf, String, String, u64, libc::pid_t)> {
     if !socket.is_absolute() || !valid_id(&generation) || !valid_id(&service_instance) {
         return None;
     }
-    if !(60_000..=7 * 24 * 60 * 60_000).contains(&output_retention_ms) {
+    if !(MIN_OUTPUT_RETENTION_MS..=MAX_OUTPUT_RETENTION_MS).contains(&output_retention_ms) {
         return None;
     }
     Some((
@@ -2037,7 +2143,27 @@ mod tests {
                 "/tmp",
                 None,
             ),
-            Err("invalid-executable")
+            Err(RunnerError::InvalidExecutable)
+        );
+    }
+
+    /// `spawn-failed` is reported only when the process never started, which
+    /// is what lets Deck journal it as a plain rejection.
+    #[test]
+    fn a_missing_executable_is_spawn_failed_before_any_process() {
+        let shared = shared();
+        assert_eq!(
+            spawn_job(
+                &shared,
+                "job_missing",
+                Launch::Direct {
+                    executable: "/nonexistent/deck-runner-test",
+                    args: &[],
+                },
+                "/tmp",
+                None,
+            ),
+            Err(RunnerError::SpawnFailed)
         );
     }
 
@@ -2504,7 +2630,7 @@ mod tests {
         let current = context("svc_current", 1, "holder_a");
         assert_eq!(
             check_job_context(&shared, &inner, &job, &current, false),
-            Err("control-revoked"),
+            Err(RunnerError::ControlRevoked),
             "a revoked grant blocks stdin"
         );
         assert_eq!(
@@ -2520,7 +2646,7 @@ mod tests {
         );
         assert_eq!(
             check_job_context(&shared, &inner, &job, &expired, false),
-            Err("control-revoked")
+            Err(RunnerError::ControlRevoked)
         );
         assert_eq!(
             check_job_context(
@@ -2530,7 +2656,7 @@ mod tests {
                 &context("svc_stale", 1, "holder_a"),
                 true
             ),
-            Err("runner-stale")
+            Err(RunnerError::RunnerStale)
         );
         for foreign in [
             context("svc_current", 2, "holder_a"),
@@ -2546,7 +2672,7 @@ mod tests {
         ] {
             assert_eq!(
                 check_job_context(&shared, &inner, &job, &foreign, true),
-                Err("control-revoked")
+                Err(RunnerError::ControlRevoked)
             );
         }
         assert_eq!(signal_live_groups(&inner, libc::SIGINT), 0);
@@ -2581,6 +2707,90 @@ mod tests {
         assert_eq!(job.base_cursor, 2);
         assert_eq!(job.output.back(), Some(&b'z'));
         assert_eq!(inner.retained_output, RETAINED_OUTPUT);
+    }
+
+    macro_rules! mcp_fixture {
+        ($name:literal) => {
+            serde_json::from_str::<serde_json::Value>(include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../mcp-fixtures/",
+                $name
+            )))
+            .unwrap()
+        };
+    }
+
+    /// `mcp-fixtures/` is shared with Deck and the adapter; this runner
+    /// compares it with its own constants only.
+    #[test]
+    fn limits_match_the_shared_fixture() {
+        let limits = mcp_fixture!("limits.json");
+        for (key, value) in [
+            ("max_request_bytes", MAX_REQUEST as u64),
+            ("max_response_bytes", MAX_RESPONSE as u64),
+            ("max_executable", MAX_EXECUTABLE as u64),
+            ("max_arguments", MAX_ARGUMENTS as u64),
+            ("max_argument_bytes", MAX_ARGUMENT_BYTES as u64),
+            ("max_read_bytes", MAX_READ as u64),
+            ("max_input_bytes", MAX_INPUT as u64),
+            ("wait_ms_max", MAX_WAIT_MS),
+            ("output_retention_ms_min", MIN_OUTPUT_RETENTION_MS),
+            ("output_retention_ms_max", MAX_OUTPUT_RETENTION_MS),
+        ] {
+            assert_eq!(limits[key].as_u64(), Some(value), "limits.json {key}");
+        }
+        assert_eq!(limits["max_response_bytes_includes_newline"], true);
+    }
+
+    #[test]
+    fn every_emitted_error_is_listed_in_the_shared_fixture() {
+        let fixture = mcp_fixture!("runner-errors.json");
+        let mut listed: Vec<&str> = fixture["errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["error"].as_str().unwrap())
+            .collect();
+        let mut emitted: Vec<&str> = RunnerError::ALL.iter().map(|e| e.as_str()).collect();
+        listed.sort_unstable();
+        emitted.sort_unstable();
+        assert_eq!(emitted, listed);
+    }
+
+    #[test]
+    fn parse_args_accepts_exactly_the_fixture_flags() {
+        let fixture = mcp_fixture!("runner-argv.json");
+        let flags: Vec<&str> = fixture["flags"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|flag| flag.as_str().unwrap())
+            .collect();
+        let value = |flag: &str| match flag {
+            "--socket" => "/tmp/deck-runner.sock",
+            "--deck-pid" => "42",
+            "--output-retention-ms" => "60000",
+            _ => "valid_id",
+        };
+        let argv = |extra: &[&str]| -> Vec<std::ffi::OsString> {
+            flags
+                .iter()
+                .flat_map(|flag| [*flag, value(flag)])
+                .chain(extra.iter().copied())
+                .map(Into::into)
+                .collect()
+        };
+        assert!(parse_args_from(argv(&[])).is_some());
+        assert!(parse_args_from(argv(&["--extra", "x"])).is_none());
+        for missing in &flags {
+            let partial: Vec<std::ffi::OsString> = flags
+                .iter()
+                .filter(|flag| flag != &missing)
+                .flat_map(|flag| [*flag, value(flag)])
+                .map(Into::into)
+                .collect();
+            assert!(parse_args_from(partial).is_none(), "{missing} is required");
+        }
     }
 }
 

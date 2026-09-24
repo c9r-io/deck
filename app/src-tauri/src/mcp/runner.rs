@@ -241,45 +241,149 @@ pub(super) fn runner_socket_matches(
         .is_some_and(|value| value.get("ok").and_then(Value::as_bool) == Some(true))
 }
 
-pub(super) fn runner_error(value: &Value) -> Option<(&'static str, &'static str)> {
-    match value.get("error").and_then(Value::as_str)? {
-        "session-busy" => Some((
+/// How Deck journals a runner error. `Rejection`: the runner answered before
+/// any job process could start or any input byte could be written, so the
+/// request had no effect and its record is `rejected`. `Ambiguous`: a process
+/// may already have started (or bytes been written) and the runner cannot
+/// prove otherwise, so the record is `ambiguous` — with the error's own code.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum RunnerErrorClass {
+    Rejection,
+    Ambiguous,
+}
+
+/// Every error string the runner can emit: (runner error, class, client
+/// code, next action). `mcp-fixtures/runner-errors.json` lists the same set
+/// with the same classes, and the runner's `RunnerError::ALL` is held to it.
+pub(super) const RUNNER_ERRORS: &[(&str, RunnerErrorClass, &str, &str)] = {
+    use RunnerErrorClass::{Ambiguous, Rejection};
+    &[
+        (
+            "session-busy",
+            Rejection,
             "SESSION_BUSY",
             "Read or interrupt the active job before retrying.",
-        )),
-        "runner-stale" => Some((
+        ),
+        (
+            "runner-stale",
+            Rejection,
             "RUNNER_STALE",
             "Deck restarted after this session was created; ask the local user to close it and create a new session.",
-        )),
-        "control-revoked" => Some((
+        ),
+        (
+            "authentication-failed",
+            Rejection,
+            "RUNNER_AUTHENTICATION_FAILED",
+            "Ask the local user to close this session and create a new one.",
+        ),
+        (
+            "control-revoked",
+            Rejection,
             "CONTROL_REVOKED",
             "Inspect control state and wait for the local user to return control.",
-        )),
-        "dispatch-context-invalid" | "holder-conflict" => Some((
+        ),
+        (
+            "dispatch-context-invalid",
+            Rejection,
             "CONTROL_REVOKED",
             "Acquire current control and submit a new request under the active service context.",
-        )),
-        "job-not-found" => Some(("JOB_NOT_FOUND", "Refresh the authorized job state.")),
-        "job-not-running" => Some((
+        ),
+        (
+            "holder-conflict",
+            Rejection,
+            "CONTROL_REVOKED",
+            "Acquire current control and submit a new request under the active service context.",
+        ),
+        (
+            "job-not-found",
+            Rejection,
+            "JOB_NOT_FOUND",
+            "Refresh the authorized job state.",
+        ),
+        (
+            "job-not-running",
+            Rejection,
             "JOB_NOT_RUNNING",
             "Read the job; input and interrupt are accepted only while it is running.",
-        )),
-        "request-id-conflict" => Some((
+        ),
+        (
+            "request-id-conflict",
+            Rejection,
             "REQUEST_ID_CONFLICT",
             "Do not reuse the identifier with different arguments.",
-        )),
-        "capacity-exceeded" => Some((
+        ),
+        (
+            "capacity-exceeded",
+            Rejection,
             "CAPACITY_EXCEEDED",
             "Close old managed sessions before retrying.",
-        )),
-        "invalid-cwd" | "invalid-script" | "invalid-executable" | "invalid-request" => Some((
+        ),
+        (
+            "invalid-cwd",
+            Rejection,
             "INVALID_ARGUMENTS",
             "Correct the rejected arguments before retrying.",
-        )),
-        "response-too-large" => Some((
+        ),
+        (
+            "invalid-executable",
+            Rejection,
+            "INVALID_ARGUMENTS",
+            "Correct the rejected arguments before retrying.",
+        ),
+        (
+            "invalid-request",
+            Rejection,
+            "INVALID_ARGUMENTS",
+            "Correct the rejected arguments before retrying.",
+        ),
+        (
+            "spawn-failed",
+            Rejection,
+            "SPAWN_FAILED",
+            "Nothing ran. Check that the executable exists and the logged-in user may run it, then submit a new request.",
+        ),
+        (
+            "output-cursor-invalid",
+            Rejection,
+            "OUTPUT_CURSOR_INVALID",
+            "Restart reading with no cursor; a gap may be reported.",
+        ),
+        (
+            "internal-error",
+            Rejection,
+            "RUNNER_INTERNAL_ERROR",
+            "The runner did not read the request and nothing ran; submit it again with a new request_id.",
+        ),
+        (
+            "job-state-unknown",
+            Ambiguous,
+            "JOB_STATE_UNKNOWN",
+            "Read the job and operation before deciding what to do next; do not re-execute it.",
+        ),
+        (
+            "stop-unconfirmed",
+            Ambiguous,
+            "STOP_UNCONFIRMED",
+            "Read the job; its process may still be running.",
+        ),
+        (
+            "response-too-large",
+            Ambiguous,
             "RESPONSE_TOO_LARGE",
             "Read the existing job again with a smaller max_bytes value; do not re-execute it.",
-        )),
-        _ => None,
-    }
+        ),
+    ]
+};
+
+/// The client code and next action for a runner error reply, with its
+/// class; `None` for a success, a non-runner reply or an unknown string
+/// (callers treat that as ambiguous).
+pub(super) fn runner_error(
+    value: &Value,
+) -> Option<(RunnerErrorClass, &'static str, &'static str)> {
+    let error = value.get("error").and_then(Value::as_str)?;
+    RUNNER_ERRORS
+        .iter()
+        .find(|(name, ..)| *name == error)
+        .map(|(_, class, code, next)| (*class, *code, *next))
 }

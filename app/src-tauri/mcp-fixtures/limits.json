@@ -1,0 +1,16 @@
+{
+  "max_request_bytes": 262144,
+  "max_response_bytes": 131072,
+  "max_response_bytes_includes_newline": true,
+  "max_executable": 4096,
+  "max_arguments": 256,
+  "max_argument_bytes": 65536,
+  "max_read_bytes": 16384,
+  "max_input_bytes": 32768,
+  "wait_ms_default": 1000,
+  "wait_ms_max": 5000,
+  "lease_ms_min": 1000,
+  "lease_ms_max": 300000,
+  "output_retention_ms_min": 60000,
+  "output_retention_ms_max": 604800000
+}

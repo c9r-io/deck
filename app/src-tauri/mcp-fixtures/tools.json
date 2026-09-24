@@ -1,0 +1,26 @@
+{
+  "tools": [
+    "deck_capabilities",
+    "deck_exec",
+    "deck_job_input",
+    "deck_job_interrupt",
+    "deck_job_read",
+    "deck_operation_get",
+    "deck_project_list",
+    "deck_project_read",
+    "deck_project_search",
+    "deck_session_close",
+    "deck_session_control",
+    "deck_session_create",
+    "deck_session_inspect",
+    "deck_sessions_list"
+  ],
+  "mutating": [
+    "deck_exec",
+    "deck_job_input",
+    "deck_job_interrupt",
+    "deck_session_close",
+    "deck_session_control",
+    "deck_session_create"
+  ]
+}

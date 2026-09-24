@@ -53,7 +53,10 @@ const MUTATING: [&str; 6] = [
     "deck_job_interrupt",
     "deck_session_close",
 ];
+/// Deck's own Adapter↔app control protocol (not the MCP standard version).
+const CONTROL_PROTOCOL: u32 = 5;
 const MAX_REQUEST: usize = 256 * 1024;
+/// One response line including its trailing newline.
 const MAX_RESPONSE: u64 = 128 * 1024;
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -396,7 +399,7 @@ impl DeckServer {
                 .set_write_timeout(Some(std::time::Duration::from_secs(10)))
                 .map_err(|_| "DECK_UNAVAILABLE")?;
             let request = DeckRequest {
-                version: 5,
+                version: CONTROL_PROTOCOL,
                 client_id: &client_id,
                 credential: &credential,
                 tool: tool_name,
@@ -858,5 +861,65 @@ async fn main() {
             eprintln!("deck-mcp could not initialize the STDIO transport");
             std::process::exit(1);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    macro_rules! mcp_fixture {
+        ($name:literal) => {
+            serde_json::from_str::<Value>(include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../mcp-fixtures/",
+                $name
+            )))
+            .unwrap()
+        };
+    }
+
+    fn names(value: &Value) -> Vec<String> {
+        let mut out: Vec<String> = value
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|name| name.as_str().unwrap().to_owned())
+            .collect();
+        out.sort();
+        out
+    }
+
+    /// `mcp-fixtures/` is shared with Deck and the runner; the adapter
+    /// compares it with its own constants only.
+    #[test]
+    fn protocol_and_limits_match_the_shared_fixture() {
+        assert_eq!(
+            mcp_fixture!("control-protocol.json")["version"],
+            CONTROL_PROTOCOL
+        );
+        let limits = mcp_fixture!("limits.json");
+        assert_eq!(
+            limits["max_request_bytes"].as_u64(),
+            Some(MAX_REQUEST as u64)
+        );
+        assert_eq!(limits["max_response_bytes"].as_u64(), Some(MAX_RESPONSE));
+        assert_eq!(limits["max_response_bytes_includes_newline"], true);
+    }
+
+    #[test]
+    fn registered_and_mutating_tools_match_the_shared_fixture() {
+        let tools = mcp_fixture!("tools.json");
+        let server = DeckServer::new("client".into(), "credential".into(), "/tmp/x".into());
+        let mut registered: Vec<String> = server
+            .tools
+            .iter()
+            .map(|tool| tool.name.to_string())
+            .collect();
+        registered.sort();
+        assert_eq!(registered, names(&tools["tools"]));
+        let mut mutating: Vec<String> = MUTATING.iter().map(|name| name.to_string()).collect();
+        mutating.sort();
+        assert_eq!(mutating, names(&tools["mutating"]));
     }
 }

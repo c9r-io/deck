@@ -549,7 +549,8 @@ pub(super) fn compact(doc: &mut DiskDoc, current_service: Option<&str>) -> bool 
 pub(super) fn validate_doc(doc: &DiskDoc) -> Result<(), DeckError> {
     let mut client_ids = HashSet::new();
     let clients_valid = doc.version == STATE_VERSION
-        && (60_000..=MAX_OUTPUT_RETENTION_MS).contains(&doc.config.output_retention_ms)
+        && (MIN_OUTPUT_RETENTION_MS..=MAX_OUTPUT_RETENTION_MS)
+            .contains(&doc.config.output_retention_ms)
         && doc.config.clients.len() <= MAX_CLIENTS
         && doc.config.clients.iter().all(|client| {
             valid_id(&client.id)

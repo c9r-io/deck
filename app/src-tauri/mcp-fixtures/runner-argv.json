@@ -1,0 +1,9 @@
+{
+  "flags": [
+    "--deck-pid",
+    "--generation",
+    "--output-retention-ms",
+    "--service-instance",
+    "--socket"
+  ]
+}

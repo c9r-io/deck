@@ -1,11 +1,14 @@
 # Deck MCP terminal control architecture
 
-Status: control-protocol-v5 / state-schema-v6 / runner-protocol-4 scheme-B
+Status: control-protocol-v5 / state-schema-v6 scheme-B
 ADR, 2026-09-21. The control protocol is Deck's own Adapter↔app protocol, not
 the MCP standard version (negotiated separately by the SDK); an Adapter built
 for protocol 4 gets `PROTOCOL_MISMATCH` and fails closed. The current protocol
 exposes one structured execution tool; legacy state-schema-v6 `allowShell`
-fields are ignored, and runner protocol 4 accepts only direct launch requests.
+fields are ignored, and the runner accepts only direct launch requests. The
+runner carries no protocol number of its own: it ships inside the same signed
+bundle as the app, and the shared `mcp-fixtures/` hold the two to one
+contract (see "Contract fixtures" below).
 
 ## Decision
 
@@ -144,7 +147,7 @@ is therefore not inherited by that pane. Passing a key in the pane command,
 environment, tmux options, or a file would expose it to other same-user
 processes and was rejected.
 
-Runner protocol 4 instead makes each runner generate an independent 256-bit
+The runner instead generates an independent 256-bit
 CSPRNG key after binding its private socket. The pane argv contains only the
 launching Deck PID. Deck makes a one-time claim over the socket; the runner
 accepts it only when the kernel-reported peer PID (`LOCAL_PEERPID` on macOS,
@@ -205,8 +208,9 @@ the client's create sequence the same way; creates/closes stay queryable in a
 named. Control records (one per session) never draw from the ordinary pool,
 so release/request always fit; each client may hold 500 ordinary records;
 64 slots beyond the ordinary pool are reserved for interrupts (16 per
-client). Under pressure, epochs whose lease lapsed are closed first. Job bindings are capped at 64 per session (the runner retires its
-oldest finished jobs the same way), and execution grants at the newest per
+client). Under pressure, epochs whose lease lapsed are closed first. Job bindings are capped at 64 per session (Deck's own bound); the runner
+keeps an independent per-process cap of 256 jobs and retires its oldest
+finished jobs against that, so the two numbers are separate limits. And execution grants at the newest per
 session plus those still referenced by a binding. Nonterminal and ambiguous
 records of a live session are never retired. Argv and input bytes are not
 persisted; only their digests are.
@@ -246,3 +250,32 @@ LLM API, coding-agent process, or background model loop is introduced. The
 runner and adapter are signed bundle sidecars. Deck must be running for new
 control requests; closing the GUI removes the control service, while tmux and
 already-started processes may continue.
+
+## Contract fixtures
+
+The app, the adapter and the runner are three crates with no shared code.
+What they must agree on lives in `app/src-tauri/mcp-fixtures/`: the control
+protocol version, the byte/count/time limits (the response bound includes
+the trailing newline on every side), every runner error string with Deck's
+class for it, the runner's launch flags, and the tool names with their
+mutating subset. Each crate's own unit tests read those JSON files with
+`include_str!` and compare them with its own constants; no crate parses
+another's source, and nothing in the directory is bundled.
+
+Runner errors are classified by one rule: an error the runner gives before
+any job process could start or any input byte could be written is a
+rejection (the record is `rejected` with a specific code); one it gives when
+a process may already have started is ambiguous and keeps its own code
+(`JOB_STATE_UNKNOWN`, `STOP_UNCONFIRMED`, `RESPONSE_TOO_LARGE`). Only an
+unrecognised reply falls back to `OPERATION_AMBIGUOUS`.
+
+Request shapes (`json!` sent by the app vs the runner's
+`deny_unknown_fields` `Request`) are not covered yet. If they are, the form
+is `mcp-fixtures/requests/<kind>.json`: the app asserts each request it
+builds serializes to the fixture and the runner asserts each fixture
+deserializes; never by parsing `json!` macros.
+
+Stop rule: if the next two MCP protocol changes land without a false alarm
+from these fixtures, this is the final form. No shared protocol crate and no
+code generation: the fixtures already turn drift into a failing test, and a
+shared crate would couple three release artifacts that ship together anyway.
