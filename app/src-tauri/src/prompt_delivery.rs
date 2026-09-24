@@ -131,7 +131,7 @@ pub(crate) fn deliver_with(
         None => identity_condition,
     };
     let condition = if require_paste_mode || (require_bracketed && text.contains('\n')) {
-        format!("#{{&&:{condition},#{{==:#{{bracketed_paste_flag}},1}}}}")
+        format!("#{{&&:{condition},#{{==:#{{bracket_paste_flag}},1}}}}")
     } else {
         condition
     };

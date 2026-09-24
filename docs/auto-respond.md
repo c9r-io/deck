@@ -108,7 +108,9 @@ existing session. The command may independently resume its own prior context.
   including the last; automatic closing additionally requires final inspection.
   A queue write failure does not create a partially queued reviewed list or
   count as inspection. Card creation and inbound acknowledgement are still
-  separate lifecycle transactions. Existing runs and rules without opt-in
+  separate lifecycle transactions; the acknowledgement follows complete
+  queue admission, and a failed admission is retried from the card's frozen
+  plan. Existing runs and rules without opt-in
   keep their timing. See [inspection and compatibility](scheduler-context-safety.md#human-inspection-checkpoints-c-v01).
 - Deleting a rule leaves its existing cards. A rule whose project no longer
   exists cannot dispatch a new card; project deletion currently does not
@@ -122,6 +124,9 @@ existing session. The command may independently resume its own prior context.
   id (a badge name for a Slack trigger), slot or message key, card id,
   start/end instants and a closed outcome word (running / closed / skipped
   with its reason). Capped at 200 runs.
-- The message text exists once, inside the queued prompt of the card it
-  created, exactly like a prompt you typed.
+- The expanded template prompts are frozen in the private card document until
+  every row is queued. This lets deck retry a partial queue write after a
+  restart without creating a second card or sending a row twice. The queue
+  also retains each row until delivery or cancellation; deck does not keep a
+  separate Slack message archive.
 - Tokens: macOS Keychain, service `io.c9r.deck`.

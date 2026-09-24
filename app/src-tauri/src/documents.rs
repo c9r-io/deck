@@ -135,6 +135,8 @@ pub(crate) struct BoardCard {
     channel_run: Option<ChannelRun>,
     #[serde(default, rename = "connectorRun")]
     connector_run: Option<ConnectorRun>,
+    #[serde(default, rename = "inboundPlan")]
+    inbound_plan: Option<InboundPlan>,
 }
 
 const BUFFER_MAX_ENTRIES: usize = 256;
@@ -255,6 +257,42 @@ struct ConnectorRun {
     initial_steps: Vec<ChannelStep>,
     #[serde(default)]
     initial_queued: bool,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct InboundPlan {
+    operation_id: String,
+    review_each: bool,
+    initial_steps: Vec<ChannelStep>,
+    initial_queued: bool,
+}
+
+fn validate_inbound_plan(card_id: &str, plan: &InboundPlan) -> Result<(), DeckError> {
+    let valid = bounded_buffer_id(&plan.operation_id)
+        && plan.operation_id.len() <= 120
+        && (plan.initial_queued || !plan.initial_steps.is_empty())
+        && plan.initial_steps.len() <= 20
+        && plan.initial_steps.iter().enumerate().all(|(index, step)| {
+            bounded_buffer_id(&step.operation_id)
+                && !step.text.is_empty()
+                && step.text.len() <= BUFFER_MAX_ENTRY_BYTES
+                && matches!(step.mode.as_str(), "at" | "chain")
+                && (step.mode == "at") == step.at.is_some()
+                && !step.tpl.is_empty()
+                && step.tpl.len() <= 120
+                && step.tpl_idx == index + 1
+                && step.tpl_total == plan.initial_steps.len()
+        });
+    let _ = (plan.review_each, plan.initial_queued);
+    if valid {
+        Ok(())
+    } else {
+        Err(DeckError::new(
+            ErrorKind::InvalidDoc,
+            format!("card {card_id}: invalid inbound plan"),
+        ))
+    }
 }
 
 fn validate_connector_run(card_id: &str, run: &ConnectorRun) -> Result<(), DeckError> {
@@ -537,6 +575,9 @@ fn validate_board(b: &BoardDocRaw) -> Result<(), DeckError> {
         }
         if let Some(run) = &c.connector_run {
             validate_connector_run(&c.id, run)?;
+        }
+        if let Some(plan) = &c.inbound_plan {
+            validate_inbound_plan(&c.id, plan)?;
         }
         let Some(project) = b.projects.iter().find(|p| p.id == c.project_id) else {
             return Err(DeckError::new(
@@ -1183,6 +1224,21 @@ mod tests {
         assert!(serde_json::from_value::<BoardDoc>(value.clone()).is_ok());
         value["cards"][0]["connectorRun"]["initialSteps"][0]["text"] =
             serde_json::json!("x".repeat(2001));
+        assert!(serde_json::from_value::<BoardDoc>(value).is_err());
+    }
+
+    #[test]
+    fn board_inbound_plan_keeps_a_bounded_frozen_template() {
+        let mut value: serde_json::Value =
+            serde_json::from_str(&board(&card("s1", "P1", "C1", "deck-t-ab12"))).unwrap();
+        value["cards"][0]["inboundPlan"] = serde_json::json!({
+            "operationId":"B1","reviewEach":false,"initialQueued":false,
+            "initialSteps":[{"operationId":"B2","text":"frozen","mode":"at","at":10,
+                "tpl":"triage","tplIdx":1,"tplTotal":1}]
+        });
+        assert!(serde_json::from_value::<BoardDoc>(value.clone()).is_ok());
+        value["cards"][0]["inboundPlan"]["initialSteps"][0]["text"] =
+            serde_json::json!("x".repeat(BUFFER_MAX_ENTRY_BYTES + 1));
         assert!(serde_json::from_value::<BoardDoc>(value).is_err());
     }
 

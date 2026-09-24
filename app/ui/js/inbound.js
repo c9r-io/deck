@@ -6,10 +6,10 @@
 // The backend (inbound.rs) only says "something is pending" (content-free
 // event). This module pulls the items, decides with the pure planner, creates
 // the card through the ordinary Board transaction, enqueues the rule's
-// template through the ordinary queue, and acks. Acks are what retire an
-// item; an item whose card could not be created is left pending and the
-// backend re-announces it, while a duplicate (card already exists) is acked
-// without a second card — so a retry can never double-create. A clock item
+// template through the ordinary queue, and acks only after every row is
+// queued. The frozen plan lives on the card until then: a queue failure or
+// restart replays stable operation IDs on the same card, never a second card.
+// A clock item
 // (automation.js owns the rules) is the same path with two differences: a
 // slot whose rule still has a card on the Board is acked `busy`, and a
 // created run's ack carries the card id so the backend's run ledger can be
@@ -19,7 +19,7 @@
 // channel admission (`channelBlockReason`, acked `blocked` before any card
 // exists) and is queued through the native agent-only gate
 // (`channel_queue_add*`); a clock item's text is the user's own template.
-import { ctx, inv, listen, store, uev } from './state.js';
+import { ctx, genId, inv, listen, store, uev } from './state.js';
 import { provider } from './board.js';
 import { toast } from './dialogs.js';
 import { planInbound } from './pure.js';
@@ -32,6 +32,15 @@ let draining = false;
 let again = false;
 let channelDraining = false;
 let channelAgain = false;
+
+async function reconcileInboundCard(card) {
+  const plan = card.inboundPlan;
+  if (!plan || plan.initialQueued) return true;
+  try { return await provider.queueInboundPlan(card.id, card.origin.key); }
+  catch (_) {
+    toast(t('inbound.planPending')); uev('inbound', 'queue-fail'); return false;
+  }
+}
 
 async function reconcileChannelCard(card) {
   const run = card.channelRun;
@@ -128,6 +137,9 @@ export async function drainInbound() {
   try {
     do {
       again = false;
+      for (const card of store.cards.filter(value => value.inboundPlan && !value.inboundPlan.initialQueued)) {
+        await reconcileInboundCard(card);
+      }
       let items = [];
       try { items = await inv('inbound_pending'); } catch (e) { return; }
       for (const item of items || []) await handleInbound(item);
@@ -150,7 +162,10 @@ async function handleInbound(item) {
   const badge = item.event.badge;
   const clock = item.event.source === 'clock';
   const skip = reason => ack(item.id, 'skipped', reason, clock ? { reason } : {});
-  if (plan.outcome === 'duplicate') return ack(item.id, 'done', 'duplicate');
+  if (plan.outcome === 'duplicate') {
+    if (!(await reconcileInboundCard(plan.card))) return;
+    return ack(item.id, 'done', 'duplicate', { card: plan.card.id });
+  }
   if (plan.outcome === 'busy') {
     toast(t('automation.busy', { name: ruleLabel(item) }));
     return skip('busy');
@@ -164,41 +179,32 @@ async function handleInbound(item) {
     return skip('no-template');
   }
   /* a badge carries someone else's Slack message: the channel admission
-     applies (an exact agent command, no line led by a placeholder) */
+     applies (an agent command, no line led by a placeholder) */
   const blocked = !clock && channelBlockReason(item.rule, store.projects.find(p => p.id === item.rule.projectId));
   if (blocked) {
     toast(t(blocked === 'command' ? 'inbound.blockedCommand' : 'inbound.blockedTemplate', { badge }));
     return skip('blocked');
   }
+  const now = Math.floor(Date.now() / 1000);
+  const cardId = genId('S');
+  const operationId = await channelDigestId('B', `${cardId}/list`);
+  const initialSteps = await Promise.all(plan.steps.map(async (text, index) => ({
+    operationId: await channelDigestId('B', `${cardId}/step/${index}`),
+    text, mode: index ? 'chain' : 'at', at: index ? null : now,
+    tpl: plan.template, tplIdx: index + 1, tplTotal: plan.steps.length,
+  })));
   let card;
   try {
-    card = await provider.create(plan.card);
+    card = await provider.create({ ...plan.card, id: cardId, inboundPlan: {
+      operationId, reviewEach: item.rule.reviewEach === true, initialSteps, initialQueued: false,
+    } });
   } catch (e) {
     toast(t('inbound.createFailed', { badge }));
     uev('inbound', 'create-fail');
     return;   // stays pending; the backend announces it again
   }
-  const base = { session: card.session, cardId: card.id, dir: card.dir, cmd: card.cmd, reviewEach: item.rule.reviewEach === true };
-  const now = Math.floor(Date.now() / 1000);
-  let queued = 0;
-  try {
-    if (base.reviewEach) {
-      await inv(clock ? 'queue_add_reviewed_list' : 'channel_queue_add_reviewed_list', { args: { ...base, text: plan.steps[0], mode: 'at', at: now,
-        tpl: plan.template, tplIdx: 1, tplTotal: plan.steps.length }, texts: plan.steps });
-      queued = plan.steps.length;
-    } else for (let k = 0; k < plan.steps.length; k++) {
-      await inv(clock ? 'queue_add' : 'channel_queue_add', { args: { ...base, text: plan.steps[k],
-        mode: k === 0 ? 'at' : 'chain', at: k === 0 ? now : null,
-        tpl: plan.template, tplIdx: k + 1, tplTotal: plan.steps.length } });
-      queued++;
-    }
-  } catch (e) {
-    toast(t('inbound.queueFailed', { badge, queued, total: plan.steps.length }));
-    uev('inbound', 'queue-fail');
-  }
-  if (queued === plan.steps.length) {
-    toast(clock ? t('automation.created', { name: card.title }) : t('inbound.created', { badge, where: item.event.where }));
-  }
+  if (!(await reconcileInboundCard(card))) return;
+  toast(clock ? t('automation.created', { name: card.title }) : t('inbound.created', { badge, where: item.event.where }));
   return ack(item.id, 'done', 'created', { card: card.id });
 }
 
@@ -207,6 +213,6 @@ async function handleInbound(item) {
 export function initInbound() {
   listen('channel-changed', drainChannel).catch(() => uev('listen-fail', 'channel-changed'));
   listen('inbound-changed', drainInbound).catch(() => uev('listen-fail', 'inbound-changed'));
-  const timer = setInterval(() => drainChannel(), 60_000);
+  const timer = setInterval(() => { drainChannel(); drainInbound(); }, 60_000);
   timer.unref?.();
 }

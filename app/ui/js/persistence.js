@@ -4,7 +4,7 @@ import { ctx, inv, store } from './state.js';
 import { createSerialTransactionQueue } from './pure.js';
 
 const PERSISTED_CARD_KEYS = new Set([
-  'id', 'projectId', 'columnId', 'title', 'desc', 'cmd', 'dir', 'session', 'pinned', 'origin', 'launched', 'buffer', 'channelRun', 'connectorRun',
+  'id', 'projectId', 'columnId', 'title', 'desc', 'cmd', 'dir', 'session', 'pinned', 'origin', 'launched', 'buffer', 'channelRun', 'connectorRun', 'inboundPlan',
 ]);
 
 /* A card created by an automation remembers which trigger item it came from, so
@@ -30,6 +30,7 @@ export function boardData(projects = store.projects, cards = store.cards) {
       ...(c.buffer ? { buffer: c.buffer } : {}),
       ...(c.channelRun ? { channelRun: c.channelRun } : {}),
       ...(c.connectorRun ? { connectorRun: c.connectorRun } : {}),
+      ...(c.inboundPlan ? { inboundPlan: c.inboundPlan } : {}),
     })),
   };
 }

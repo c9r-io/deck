@@ -107,7 +107,7 @@ fn submit_waits_then_reuses_the_full_atomic_guard_for_enter() {
     for atom in [
         "123:$1:@2:%3:456",
         "#{pane_current_command},zsh",
-        "#{bracketed_paste_flag},1",
+        "#{bracket_paste_flag},1",
         "#{pane_in_mode},0",
     ] {
         assert!(calls[0][9].contains(atom), "missing {atom}");
@@ -131,7 +131,7 @@ fn scheduler_compatibility_omits_interactive_guards_and_supports_argv_alias() {
     let guard = io.calls.borrow()[0][9].clone();
     assert!(guard.contains("#{pane_current_command},2.1.259"));
     assert!(!guard.contains("pane_in_mode"));
-    assert!(!guard.contains("bracketed_paste_flag"));
+    assert!(!guard.contains("bracket_paste_flag"));
     let mut req = request(&pane);
     req.expected_process = None;
     deliver_with(req, &io).unwrap();
@@ -471,7 +471,7 @@ fn paste_mode_gate_applies_to_single_line_text_and_guards_enter() {
     req.text = "one line";
     assert_eq!(deliver_with(req, &io).unwrap(), LiteralOutcome::Submitted);
     let calls = io.calls.borrow();
-    assert!(calls[0][9].contains("#{bracketed_paste_flag},1"));
+    assert!(calls[0][9].contains("#{bracket_paste_flag},1"));
     assert!(!calls[0][9].contains("pane_in_mode"));
     assert_eq!(calls[0][9], calls[1][4], "Enter re-checks the same guard");
 }

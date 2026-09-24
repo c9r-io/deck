@@ -1,5 +1,5 @@
 //! Review-aware opt-in uses envelope v2 (sticky) for queue.json and
-//! settings.json. Card buffers and idempotent buffer queue operations use
+//! settings.json. Card buffers, frozen inbound plans and idempotent queue operations use
 //! sticky v3 envelopes for deck.json and queue.json respectively.
 //! A settings v2 barrier precedes the first reviewed queue save, preventing old
 //! automation finish rules from treating a refused queue as empty. deck.json
@@ -102,6 +102,7 @@ fn uses_buffer(v: &serde_json::Value) -> bool {
                         .is_some_and(|entries| !entries.is_empty())
             }) || o.get("channelRun").is_some_and(|run| run.is_object())
                 || o.get("connectorRun").is_some_and(|run| run.is_object())
+                || o.get("inboundPlan").is_some_and(|plan| plan.is_object())
                 || o.get("presets")
                     .and_then(|v| v.as_array())
                     .is_some_and(|presets| !presets.is_empty())
@@ -1025,6 +1026,20 @@ mod tests {
         assert_eq!(buffered["schema_version"], 3);
         assert!(matches!(
             envelope_payload_for(&buffered, 2),
+            Err(DocErr::Newer(3))
+        ));
+        let inbound_dir = tdir("inbound-plan-version");
+        let inbound_board = inbound_dir.join("deck.json");
+        save_typed::<serde_json::Value>(
+            &inbound_board,
+            r#"{"cards":[{"inboundPlan":{"operationId":"B1","initialQueued":false}}]}"#,
+        )
+        .unwrap();
+        let inbound: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&inbound_board).unwrap()).unwrap();
+        assert_eq!(inbound["schema_version"], 3);
+        assert!(matches!(
+            envelope_payload_for(&inbound, 2),
             Err(DocErr::Newer(3))
         ));
         let preset_dir = tdir("preset-version");

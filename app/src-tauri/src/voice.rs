@@ -378,7 +378,7 @@ fn deliver_with(
             "-p".into(),
             "-t".into(),
             target.probe.identity.pane_id.clone(),
-            "#{bracketed_paste_flag}".into(),
+            "#{bracket_paste_flag}".into(),
         ])?;
         if paste.trim() != "1" {
             return Err(failure("multiline-unsupported"));

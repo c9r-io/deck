@@ -308,7 +308,7 @@ const ADMISSION_SITES: &[(&str, &str, &str, usize, Entry)] = &[
     ),
     (
         "scheduler/ops.rs",
-        "queue_add_reviewed_list",
+        "add_reviewed_rows",
         "add_item_bound(",
         1,
         Entry::Owner,
@@ -367,7 +367,7 @@ fn external_text_reaches_the_one_admission() {
         ops.contains("#[cfg(test)]\npub(crate) fn add_item("),
         "add_item stays test-only"
     );
-    for owner in ["queue_add", "queue_add_reviewed_list"] {
+    for owner in ["queue_add", "add_reviewed_rows"] {
         assert!(
             body("scheduler/ops.rs", owner).contains("validate_add("),
             "{owner} must run validate_add (the externalText gate) before the core"
@@ -494,6 +494,10 @@ fn every_text_carrying_tauri_command_is_reviewed() {
                 text.contains("admit_external(&mut args)?;"),
                 "{name} must pass admit_external first"
             ),
+            Command::OwnerQueue if *name == "queue_add_reviewed_list" => {
+                assert!(text.contains("add_reviewed_rows("));
+                assert!(body(file, "add_reviewed_rows").contains("validate_add("));
+            }
             Command::OwnerQueue => assert!(text.contains("validate_add(")),
             _ => assert!(
                 !text.contains("admit_external(") && !text.contains("channel_path"),
@@ -698,32 +702,32 @@ const FRONTEND_SITES: &[FrontendSite] = &[
     ),
     // Badge rules are external; only a clock rule takes the owner command.
     (
-        "inbound.js",
-        "handleInbound",
+        "board.js",
+        "queueInboundPlan",
         "queue_add_reviewed_list",
         1,
-        "clock ? 'queue_add_reviewed_list' : 'channel_queue_add_reviewed_list'",
+        "external ? 'channel_queue_add_reviewed_list' : 'queue_add_reviewed_list'",
     ),
     (
-        "inbound.js",
-        "handleInbound",
+        "board.js",
+        "queueInboundPlan",
         "channel_queue_add_reviewed_list",
         1,
-        "clock ? 'queue_add_reviewed_list' : 'channel_queue_add_reviewed_list'",
+        "external ? 'channel_queue_add_reviewed_list' : 'queue_add_reviewed_list'",
     ),
     (
-        "inbound.js",
-        "handleInbound",
+        "board.js",
+        "queueInboundPlan",
         "queue_add",
         1,
-        "clock ? 'queue_add' : 'channel_queue_add'",
+        "external ? 'channel_queue_add' : 'queue_add'",
     ),
     (
-        "inbound.js",
-        "handleInbound",
+        "board.js",
+        "queueInboundPlan",
         "channel_queue_add",
         1,
-        "clock ? 'queue_add' : 'channel_queue_add'",
+        "external ? 'channel_queue_add' : 'queue_add'",
     ),
     // The ⏱ panel and saved templates: the user's own rows.
     ("scheduler.js", "appendRows", "queue_add", 1, ""),
@@ -751,6 +755,11 @@ const FRONTEND_SITES: &[FrontendSite] = &[
 const FRONTEND_ADMISSION: &[(&str, &str, &str)] = &[
     ("inbound.js", "handleInbound", "channelBlockReason("),
     ("board.js", "queueChannelPlan", "channelAgentCommand("),
+    (
+        "board.js",
+        "queueInboundPlan",
+        "const external = card.origin.source === 'slack'",
+    ),
 ];
 
 fn js_sources() -> Vec<(String, String)> {

@@ -2817,6 +2817,55 @@ fn external_rows_carry_the_mark_and_keep_old_fingerprints() {
 // ---------- ops.rs cores: edit, reviewed list, delivery-state edges ----------
 
 #[test]
+fn reviewed_external_list_replays_each_row_under_the_original_group() {
+    let mut q = qs(Vec::new());
+    let mut args = add_args("s", "first");
+    args.mode = "at".into();
+    args.at = Some(NOW);
+    args.cmd = "codex --yolo".into();
+    args.review_each = true;
+    args.channel_path = true;
+    args.operation_id = Some("Blist".into());
+    let texts = vec!["first".into(), "second".into()];
+    let creation = context::CreationContext {
+        binding: None,
+        expected_process: Some("codex".into()),
+    };
+    ops::add_reviewed_rows(&mut q, &args, &texts, &creation).unwrap();
+    let first = q.items[0].id.clone();
+    assert_eq!(
+        q.items
+            .iter()
+            .map(|i| i.operation_id.as_deref())
+            .collect::<Vec<_>>(),
+        vec![Some("Blist-0"), Some("Blist-1")]
+    );
+    assert!(q
+        .items
+        .iter()
+        .all(|i| i.external && i.group.as_deref() == Some(first.as_str())));
+
+    q.items.pop();
+    q.operations.pop();
+    ops::add_reviewed_rows(&mut q, &args, &texts, &creation).unwrap();
+    assert_eq!(
+        q.items.len(),
+        2,
+        "a partial commit gets only its missing row"
+    );
+    assert_eq!(q.items[1].group.as_deref(), Some(first.as_str()));
+
+    q.items.remove(0);
+    ops::add_reviewed_rows(&mut q, &args, &texts, &creation).unwrap();
+    assert_eq!(
+        q.items.len(),
+        1,
+        "a delivered first row is never queued again"
+    );
+    assert_eq!(q.items[0].group.as_deref(), Some(first.as_str()));
+}
+
+#[test]
 fn edit_item_takes_exactly_one_of_text_or_steps() {
     let mut a = qi("a", "at");
     a.text = "original".into();

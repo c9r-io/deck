@@ -65,7 +65,7 @@ same commit as the behaviour it describes.
   Board mutation goes through the one transaction queue (`persistence.js`);
   future schema versions are refused untouched (`storage.rs`). Inspection opt-in uses
   sticky v2 envelopes on queue.json and settings.json plus a settings barrier.
-  A retained card buffer, channel/Connector run journal, or project task preset upgrades deck.json to sticky v3, idempotent buffer
+  A retained card buffer, channel/Connector run journal, frozen inbound plan, or project task preset upgrades deck.json to sticky v3, idempotent buffer
   queue operations upgrade queue.json to sticky v3, and enabled channel
   connections/rules upgrade settings.json to sticky v3; ordinary data stays v1.
 - **The signed `deck-app` binary is never a pane executable**, and no

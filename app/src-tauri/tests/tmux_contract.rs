@@ -1482,6 +1482,31 @@ fn single_send_keys_with_trailing_cr_executes_the_line(topology: Topology) {
 }
 topology_matrix!(single_send_keys_with_trailing_cr_executes_the_line);
 
+/// The bundled tmux exposes `bracket_paste_flag` (not the similarly named
+/// nonexistent `bracketed_paste_flag`). A misspelled format silently expands
+/// to empty and makes every process-bound queue delivery fail its guard.
+fn bracketed_paste_guard_uses_the_bundled_tmux_format(topology: Topology) {
+    let s = Server::new(&topology.tag("paste-format"));
+    let _clients = topology.attach(&s);
+    assert_eq!(s.fmt("#{bracket_paste_flag}"), "0");
+    s.shell("printf '\\033[?2004h'");
+    assert_eq!(s.fmt("#{bracket_paste_flag}"), "1");
+    assert_eq!(s.fmt("#{bracketed_paste_flag}"), "");
+    assert_eq!(
+        s.run(&[
+            "if-shell",
+            "-F",
+            "-t",
+            "t",
+            "#{==:#{bracket_paste_flag},1}",
+            "display-message -p ready",
+            "display-message -p blocked",
+        ]),
+        "ready"
+    );
+}
+topology_matrix!(bracketed_paste_guard_uses_the_bundled_tmux_format);
+
 /// A new card is created while the Board is polling but no pane shows it:
 /// its launch command (`commands::start_session`'s `send-keys ... Enter`) and
 /// prompt_delivery's guarded Enter must both land whichever clients are

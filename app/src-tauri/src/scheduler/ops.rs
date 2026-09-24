@@ -638,8 +638,14 @@ pub(crate) fn channel_queue_add(
     app: AppHandle,
     mut args: QueueAddArgs,
 ) -> Result<(), DeckError> {
-    admit_external(&mut args)?;
-    queue_add(state, app, args)
+    let result = (|| {
+        admit_external(&mut args)?;
+        queue_add(state, app, args)
+    })();
+    if let Err(error) = &result {
+        applog(&format!("[queue] external add failed ({})", error.code()));
+    }
+    result
 }
 
 /// The ONE admission for external (non-owner) text into the queue: the card
@@ -1135,36 +1141,51 @@ pub(crate) fn queue_add_reviewed_list(
     }
     let creation = context::creation_context(&args.session, &args.cmd);
     with_queue(&state.q, &save_queue, |q| {
-        let mut group = None;
-        for (k, text) in texts.iter().enumerate() {
-            let mut row = args.clone();
-            row.text = text.clone();
-            row.tpl_idx = row.tpl.as_ref().map(|_| k as u32 + 1);
-            row.tpl_total = row.tpl.as_ref().map(|_| texts.len() as u32);
-            if k > 0 {
-                row.mode = "chain".into();
-                row.at = None;
-                row.group = group.clone();
-            }
-            validate_add(&row)?;
-            let normalized = normalize_prompt(text);
-            if normalized.is_empty() {
-                return Err(review_error());
-            }
-            add_item_bound(
-                q,
-                row,
-                normalized,
-                creation.binding.clone(),
-                creation.expected_process.clone(),
-            )?;
-            if k == 0 {
-                group = q.items.last().and_then(|i| i.group.clone());
-            }
-        }
-        Ok(())
+        add_reviewed_rows(q, &args, &texts, &creation)
     })?;
     let _ = app.emit("queue-changed", ());
+    Ok(())
+}
+
+pub(super) fn add_reviewed_rows(
+    q: &mut QueueState,
+    args: &QueueAddArgs,
+    texts: &[String],
+    creation: &context::CreationContext,
+) -> Result<(), DeckError> {
+    let mut group = None;
+    for (k, text) in texts.iter().enumerate() {
+        let mut row = args.clone();
+        row.text = text.clone();
+        row.operation_id = args.operation_id.as_ref().map(|id| format!("{id}-{k}"));
+        row.tpl_idx = row.tpl.as_ref().map(|_| k as u32 + 1);
+        row.tpl_total = row.tpl.as_ref().map(|_| texts.len() as u32);
+        if k > 0 {
+            row.mode = "chain".into();
+            row.at = None;
+            row.group = group.clone();
+        }
+        validate_add(&row)?;
+        let normalized = normalize_prompt(text);
+        if normalized.is_empty() {
+            return Err(review_error());
+        }
+        let first_operation = row.operation_id.clone();
+        add_item_bound(
+            q,
+            row,
+            normalized,
+            creation.binding.clone(),
+            creation.expected_process.clone(),
+        )?;
+        if k == 0 {
+            group = first_operation
+                .as_deref()
+                .and_then(|id| q.operations.iter().find(|op| op.id == id))
+                .map(|op| op.item.clone())
+                .or_else(|| q.items.last().and_then(|i| i.group.clone()));
+        }
+    }
     Ok(())
 }
 
@@ -1177,6 +1198,15 @@ pub(crate) fn channel_queue_add_reviewed_list(
     mut args: QueueAddArgs,
     texts: Vec<String>,
 ) -> Result<(), DeckError> {
-    admit_external(&mut args)?;
-    queue_add_reviewed_list(state, app, args, texts)
+    let result = (|| {
+        admit_external(&mut args)?;
+        queue_add_reviewed_list(state, app, args, texts)
+    })();
+    if let Err(error) = &result {
+        applog(&format!(
+            "[queue] external reviewed add failed ({})",
+            error.code()
+        ));
+    }
+    result
 }

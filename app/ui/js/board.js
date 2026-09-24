@@ -16,6 +16,8 @@
 // Card scratchpad: a copy of an external entry is queued with `externalText`
 // so the native gate judges it; a source link in an entry opens only through
 // `open_target("url")` (links.rs `validate_open`), never by the webview.
+// An inbound automation card retains its frozen template plan until every
+// row is durably queued; queueInboundPlan replays stable operation IDs.
 import { $, columnHint, ctx, dotTitle, emit, genId, inv, listeners, POLL_MS, QUIET_SECS, sessionName, setMemChip, state, store, uev } from './state.js';
 import { mutateBoard, mutateBoardDebounced } from './persistence.js';
 import { collapseHome, createConfirmationCounter, createExitRetirementTracker, effectiveCardStatus, initialLaunched, newSessionColumn, newSessionPlan, projectDefaults, reorderById, runFinishHolds, sidebarGroups } from './pure.js';
@@ -196,7 +198,7 @@ export const provider = {
     return result;
   },
 
-  async create({ id = null, projectId, columnId, title, cmd, dir, desc = '', origin, buffer, channelRun, connectorRun }, opts = {}) {
+  async create({ id = null, projectId, columnId, title, cmd, dir, desc = '', origin, buffer, channelRun, connectorRun, inboundPlan }, opts = {}) {
     id ||= genId('S');
     const card = {
       id, projectId, columnId, title, cmd, dir, desc,
@@ -204,7 +206,7 @@ export const provider = {
       pinned: false,
       launched: initialLaunched(cmd),   // a command is sent once, on the first start
       ...(origin ? { origin } : {}), ...(buffer ? { buffer } : {}), ...(channelRun ? { channelRun } : {}),
-      ...(connectorRun ? { connectorRun } : {}),
+      ...(connectorRun ? { connectorRun } : {}), ...(inboundPlan ? { inboundPlan } : {}),
       status: 'stopped', mem: null, tail: [],
     };
     let sideEffect;
@@ -481,6 +483,33 @@ export const provider = {
           mode: step.mode, at: step.at, tpl: step.tpl, tplIdx: step.tplIdx, tplTotal: step.tplTotal } });
       }
       run.initialQueued = true; admitted = true;
+    });
+    const card = this.get(sid); if (card) emit('list', card);
+    return admitted;
+  },
+  async queueInboundPlan(sid, expectedKey) {
+    let admitted = false;
+    await mutateBoard(async draft => {
+      const card = draft.cards.find(value => value.id === sid);
+      const plan = card?.inboundPlan;
+      if (!card || card.origin?.key !== expectedKey || !plan) return { noop: true };
+      if (plan.initialQueued) { admitted = true; return { noop: true }; }
+      const external = card.origin.source === 'slack';
+      const command = external ? 'channel_queue_add' : 'queue_add';
+      const base = { session: card.session, cardId: card.id, dir: card.dir, cmd: card.cmd,
+        reviewEach: plan.reviewEach === true };
+      if (plan.reviewEach) {
+        const first = plan.initialSteps[0];
+        await inv(external ? 'channel_queue_add_reviewed_list' : 'queue_add_reviewed_list', {
+          args: { ...base, ...first, operationId: plan.operationId },
+          texts: plan.initialSteps.map(step => step.text),
+        });
+      } else {
+        for (const step of plan.initialSteps) await inv(command, { args: { ...base, ...step } });
+      }
+      plan.initialQueued = true;
+      plan.initialSteps = [];
+      admitted = true;
     });
     const card = this.get(sid); if (card) emit('list', card);
     return admitted;
@@ -770,10 +799,11 @@ const runConfirm = createConfirmationCounter(3);
 const runRetirement = createExitRetirementTracker();
 function observeRunFinish(c, info) {
   if (retainedBuffer(c)) { runConfirm.forget(c.id); return; }
+  if (c.inboundPlan && !c.inboundPlan.initialQueued) { runConfirm.forget(c.id); return; }
   if (!info.alive || !c.origin) { runConfirm.forget(c.id); return; }
   const holds = runFinishHolds({
     rule: ruleOf(c.origin),
-    reviewRequired: c.origin.reviewEach === true,
+    reviewRequired: c.inboundPlan?.reviewEach === true || c.origin.reviewEach === true,
     finalReviewed: (ctx.queueCache.review_completed || []).includes(c.session),
     queued: (ctx.queueCache.items || []).some(i => i.session === c.session),
     agent: info.agent, fg: info.fg, alive: true,

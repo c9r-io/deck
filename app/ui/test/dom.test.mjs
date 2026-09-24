@@ -350,6 +350,15 @@ test('Board serialization retains the channel collection and frozen initial queu
   assert.deepEqual(card.channelRun, channelRun);
 });
 
+test('Board serialization retains a failed inbound template for restart retry', () => {
+  const inboundPlan = { operationId: 'B0', reviewEach: false, initialQueued: false,
+    initialSteps: [{ operationId: 'B1', text: 'frozen', mode: 'at', at: 10,
+      tpl: 'triage', tplIdx: 1, tplTotal: 1 }] };
+  const [card] = boardData([], [{ id: 'a', projectId: 'p', columnId: 'c', title: 'A', desc: '',
+    cmd: 'codex --yolo', dir: '/tmp', session: 'deck-a-0001', inboundPlan }]).cards;
+  assert.deepEqual(card.inboundPlan, inboundPlan);
+});
+
 test('Board serialization retains Connector frozen task plans and project presets', () => {
   const connectorRun = { handle: 'a'.repeat(64), presetId: 'R1', initialQueued: false,
     initialSteps: [{ operationId: 'B1', text: 'frozen', mode: 'at', at: 10, tpl: 'R1', tplIdx: 1, tplTotal: 1 }] };
