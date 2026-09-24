@@ -90,7 +90,9 @@
 //!   move under test, and `blocks_firing`/`is_review` are the only
 //!   state predicates;
 //! - EVERY user-driven mutation goes through `with_queue` (persist-then-
-//!   commit): clone the state, mutate the CANDIDATE, persist, only then swap
+//!   commit; `with_queue_opt` when the transaction may find nothing to do,
+//!   and its `Ok(None)` persists nothing): clone the state, mutate the
+//!   CANDIDATE, persist, only then swap
 //!   it in — a rejected mutation or a failed save leaves memory byte-identical
 //!   to disk, so the scheduler never acts on a change the user was told
 //!   failed. The two POST-send transitions are deliberately the opposite: the
@@ -537,11 +539,6 @@ impl Queues {
     }
 }
 
-/// Sentinel error meaning "this transaction found nothing to do": `with_queue`
-/// returns it without persisting or committing, and callers translate it into
-/// their own no-op result. It is never shown to the user.
-pub(crate) const TX_NOOP: &str = "\u{0}tx-noop";
-
 /// Persist-then-commit: EVERY user-driven queue mutation runs inside this.
 ///
 /// The shared state is cloned, the mutation runs on the CANDIDATE only, the
@@ -563,6 +560,25 @@ pub(crate) fn with_queue<T>(
     persist(&candidate)?; // disk first…
     *guard = candidate; // …memory only after it landed
     Ok(out)
+}
+
+/// `with_queue` for a transaction that may find nothing to do: `Ok(None)`
+/// from `f` means no change, so nothing is persisted and memory is left
+/// untouched (the candidate is dropped); `Ok(Some(_))` persists-then-commits
+/// exactly like `with_queue`. A no-op is a value, never an error.
+pub(crate) fn with_queue_opt<T>(
+    qm: &Mutex<QueueState>,
+    persist: &dyn Fn(&QueueState) -> Result<(), DeckError>,
+    f: impl FnOnce(&mut QueueState) -> Result<Option<T>, DeckError>,
+) -> Result<Option<T>, DeckError> {
+    let mut guard = qm.lock_or_recover();
+    let mut candidate = guard.clone();
+    let Some(out) = f(&mut candidate)? else {
+        return Ok(None);
+    };
+    persist(&candidate)?;
+    *guard = candidate;
+    Ok(Some(out))
 }
 
 /// Retry a persist that failed AFTER an irreversible side effect (a prompt

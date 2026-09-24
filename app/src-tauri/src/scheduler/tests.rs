@@ -3156,3 +3156,31 @@ fn typed_states_keep_queue_json_byte_identical() {
     let q: QueueState = serde_json::from_value(value).unwrap();
     assert_eq!(q.items[1].state, ItemState::Pending);
 }
+
+/// A transaction that finds nothing to do is a value, not an error: nothing
+/// is persisted and memory is untouched; a real change persists then commits.
+#[test]
+fn with_queue_opt_never_persists_a_noop() {
+    let qm = Mutex::new(qs(vec![qi("a", "at")]));
+    let writes = std::cell::Cell::new(0);
+    let persist = |_: &QueueState| -> Result<(), DeckError> {
+        writes.set(writes.get() + 1);
+        Ok(())
+    };
+    let none: Option<()> = with_queue_opt(&qm, &persist, |q| {
+        q.items.clear(); // a candidate edit that must be dropped
+        Ok(None)
+    })
+    .unwrap();
+    assert!(none.is_none());
+    assert_eq!(writes.get(), 0);
+    assert_eq!(qm.lock().unwrap().items.len(), 1);
+    let some = with_queue_opt(&qm, &persist, |q| {
+        q.items.clear();
+        Ok(Some(7))
+    })
+    .unwrap();
+    assert_eq!(some, Some(7));
+    assert_eq!(writes.get(), 1);
+    assert!(qm.lock().unwrap().items.is_empty());
+}

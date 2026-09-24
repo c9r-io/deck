@@ -34,6 +34,8 @@
   word no deck ever wrote is now refused on load instead of being read.
   The tmux restart intent no longer records a progress phase nothing ever
   read (older files with it still load).
+  A scheduler no-op and the tmux restart failure reason are typed values
+  instead of message text compared by string.
 - Internal: the isolated WKWebView smoke now has a machine verdict.
   `scripts/smoke-verdict <data-dir> <mode>` judges a run's `app.log`
   against one manifest of what each mode must emit (held equal to the

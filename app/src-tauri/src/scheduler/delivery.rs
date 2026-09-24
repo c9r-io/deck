@@ -595,9 +595,9 @@ fn send_one_guarded(
     // Persist the firing intent (delivery id + ledger snapshot) BEFORE
     // injecting — this ordering preserves an honest ambiguity record across
     // crashes, and the snapshot makes resolution independent of item survival.
-    let pre = with_queue(qm, persist, |q| {
+    let pre = with_queue_opt(qm, persist, |q| {
         // fresh re-selection under the lock: a pause, edit or removal since
-        // the tick began is honored here
+        // the tick began is honored here; nothing to send is a no-op
         let Some(sel) = select_for_request(
             q,
             request.session,
@@ -606,16 +606,16 @@ fn send_one_guarded(
             request.activity,
             request.requested,
         ) else {
-            return Err(DeckError::new(ErrorKind::Other, TX_NOOP));
+            return Ok(None);
         };
         if expected.is_some_and(|(id, revision, binding)| {
             sel.id != id || sel.revision != revision || sel.binding.as_ref() != Some(binding)
         }) {
-            return Err(DeckError::new(ErrorKind::Other, TX_NOOP));
+            return Ok(None);
         }
         let delivery = next_delivery_id();
         let Some(it) = q.items.iter_mut().find(|i| i.id == sel.id) else {
-            return Err(DeckError::new(ErrorKind::Other, TX_NOOP));
+            return Ok(None);
         };
         it.state.move_to(ItemState::Firing);
         it.attempts += 1;
@@ -626,11 +626,11 @@ fn send_one_guarded(
             id: delivery.clone(),
             snapshot: snapshot.clone(),
         });
-        Ok((snapshot, delivery))
+        Ok(Some((snapshot, delivery)))
     });
     let (item, delivery) = match pre {
-        Ok(v) => v,
-        Err(e) if e.message() == TX_NOOP => return SendResult::Nothing,
+        Ok(Some(v)) => v,
+        Ok(None) => return SendResult::Nothing,
         Err(e) => {
             applog(&format!(
                 "[queue] persist (pre-fire) FAILED ({}) — not sending this tick",
@@ -710,18 +710,20 @@ pub(super) fn persist_context_result(
     selected: &QueueItem,
     result: &ProbeResult,
 ) -> Result<Option<QueueItem>, DeckError> {
-    with_queue(qm, persist, |q| {
+    // Outer None: a stale worker, nothing persisted. Some(None): a review
+    // permit was revoked and persisted. Some(Some(item)): observation saved.
+    with_queue_opt(qm, persist, |q| {
         if is_cancelled(q, &selected.session) {
-            return Err(DeckError::new(ErrorKind::Other, TX_NOOP));
-        }
-        if invalidate_review_target(q, &selected.id, result.identity.as_ref()) {
             return Ok(None);
         }
+        if invalidate_review_target(q, &selected.id, result.identity.as_ref()) {
+            return Ok(Some(None));
+        }
         let Some(item) = q.items.iter_mut().find(|i| i.id == selected.id) else {
-            return Err(DeckError::new(ErrorKind::Other, TX_NOOP));
+            return Ok(None);
         };
         if item.revision != selected.revision || item.paused || item.state.blocks_firing() {
-            return Err(DeckError::new(ErrorKind::Other, TX_NOOP));
+            return Ok(None);
         }
         item.last_context = Some(context_check(result));
         if item.binding.is_none() && result.status != ContextStatus::SessionReplaced {
@@ -736,15 +738,9 @@ pub(super) fn persist_context_result(
             };
             item.binding = Some(identity);
         }
-        Ok(Some(item.clone()))
+        Ok(Some(Some(item.clone())))
     })
-    .or_else(|e| {
-        if e.message() == TX_NOOP {
-            Ok(None)
-        } else {
-            Err(e)
-        }
-    })
+    .map(Option::flatten)
 }
 
 /// A delete can land after a dead-session readiness worker's first

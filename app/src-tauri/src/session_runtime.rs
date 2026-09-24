@@ -6,7 +6,7 @@
 //! This module knows no panes, agents, snapshots, scheduler or restart policy.
 //! Existing IPC error codes remain stable for callers.
 use crate::applog::applog;
-use crate::error::{DeckError, ErrorKind};
+use crate::error::{DeckError, ErrorKind, RestartFailure};
 use std::cell::Cell;
 use std::io::Read;
 use std::marker::PhantomData;
@@ -39,7 +39,7 @@ impl Drop for Deadline {
 }
 pub(crate) fn check_deadline() -> Result<(), DeckError> {
     if DEADLINE.with(|d| d.get().is_some_and(|end| Instant::now() >= end)) {
-        Err(error("tmux-restart-timeout"))
+        Err(DeckError::restart(RestartFailure::Deadline))
     } else {
         Ok(())
     }
@@ -72,7 +72,7 @@ pub(crate) fn run_bounded<T: Send + 'static>(
         Ok(result) => result,
         Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
             applog("[tmux-restart] watchdog-timeout worker-retains-guards");
-            Err(error("tmux-restart-timeout"))
+            Err(DeckError::restart(RestartFailure::Deadline))
         }
         Err(_) => Err(error("tmux-restart-worker-failed")),
     }
@@ -81,10 +81,14 @@ pub(crate) fn run_bounded<T: Send + 'static>(
 /// Shared by a complete scheduled delivery (including finalization), immediate
 /// prompt transport, and the exclusive restart. Never wait on the UI thread.
 pub(crate) fn activity_guard() -> Result<RwLockReadGuard<'static, ()>, DeckError> {
-    ACTIVITY.try_read().map_err(|_| error("tmux-restart-busy"))
+    ACTIVITY
+        .try_read()
+        .map_err(|_| DeckError::restart(RestartFailure::DeliveryBusy))
 }
 pub(crate) fn exclusive() -> Result<RwLockWriteGuard<'static, ()>, DeckError> {
-    ACTIVITY.try_write().map_err(|_| error("tmux-restart-busy"))
+    ACTIVITY
+        .try_write()
+        .map_err(|_| DeckError::restart(RestartFailure::DeliveryBusy))
 }
 
 /// Tests exercising the process-wide activity gate must own this scope before

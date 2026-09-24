@@ -53,7 +53,7 @@ use std::sync::{Mutex, MutexGuard, OnceLock, TryLockError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::applog::applog;
-use crate::error::{DeckError, ErrorKind};
+use crate::error::{DeckError, ErrorKind, RestartFailure};
 use crate::sync::LockRecover;
 use crate::tmux::{self, tmux, tmux_owned};
 
@@ -1362,10 +1362,7 @@ fn restart_tmux_server_inner(
         || snapshot.pane_count() != expected_pane_count
         || snapshot.impact_token != expected_impact_token
     {
-        return Err(DeckError::new(
-            ErrorKind::Tmux,
-            "tmux-server-impact-changed",
-        ));
+        return Err(DeckError::restart(RestartFailure::ImpactChanged));
     }
     applog(&format!(
         "[tmux-restart] validated sessions={} panes={} elapsed_ms={}",
@@ -1383,19 +1380,11 @@ fn restart_tmux_server_inner(
         {
             current
         }
-        _ => {
-            return Err(DeckError::new(
-                ErrorKind::Tmux,
-                "tmux-server-impact-changed",
-            ))
-        }
+        _ => return Err(DeckError::restart(RestartFailure::ImpactChanged)),
     };
     let checked_rows = tmux::list_panes()?;
     if !crate::tmux::unchanged_rows(&prepared_rows, &checked_rows) {
-        return Err(DeckError::new(
-            ErrorKind::Tmux,
-            "tmux-server-impact-changed",
-        ));
+        return Err(DeckError::restart(RestartFailure::ImpactChanged));
     }
     let paused = crate::scheduler::pause_for_server_restart(
         queues,

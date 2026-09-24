@@ -201,7 +201,7 @@ pub(super) fn captured_output<S: AsRef<std::ffi::OsStr>>(
     let out = crate::session_runtime::command_output(command.args(args).env("LANG", "en_US.UTF-8"))
         .map_err(|e| {
             if e.kind() == std::io::ErrorKind::TimedOut {
-                DeckError::new(ErrorKind::Tmux, "tmux-restart-timeout")
+                DeckError::restart(crate::error::RestartFailure::Deadline)
             } else {
                 DeckError::new(ErrorKind::TmuxMissing, format!("tmux not runnable: {e}"))
             }

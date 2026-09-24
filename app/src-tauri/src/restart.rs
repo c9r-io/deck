@@ -4,7 +4,7 @@
 use std::time::{Duration, Instant};
 
 use crate::applog::{applog, session_tag};
-use crate::error::{DeckError, ErrorKind};
+use crate::error::{DeckError, ErrorKind, RestartFailure};
 use crate::session_runtime::{check_deadline, Deadline};
 use crate::tmux::{self, same_pane, unchanged_rows, PaneRow};
 
@@ -19,15 +19,9 @@ fn error(code: &str) -> DeckError {
 /// Only these closed reasons may enter logs; all other IO failures keep their
 /// existing redacted error category. Never log terminal text or raw messages.
 pub(crate) fn failure_reason(error: &DeckError) -> &'static str {
-    match error.message() {
-        "tmux-restart-agent-timeout" => "agent-timeout",
-        "tmux-restart-snapshot-failed" => "snapshot-failed",
-        "tmux-restart-timeout" => "deadline",
-        "tmux-restart-busy" => "delivery-busy",
-        "tmux-restart-pane-lost" => "pane-lost",
-        "tmux-server-impact-changed" => "impact-changed",
-        _ => error.code(),
-    }
+    error
+        .restart_failure()
+        .map_or_else(|| error.code(), RestartFailure::log_reason)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -70,7 +64,7 @@ fn exit_agents(
     for (row, _) in &targets {
         let out = send(&exit_keys(row))?;
         if out.contains("deck-restart-target-changed") {
-            return Err(error("tmux-server-impact-changed"));
+            return Err(DeckError::restart(RestartFailure::ImpactChanged));
         }
         applog(&format!(
             "[tmux-restart] exit-request {} elapsed_ms={}",
@@ -86,13 +80,13 @@ fn exit_agents(
                 targets.len(),
                 started.elapsed().as_millis()
             ));
-            return Err(error("tmux-restart-agent-timeout"));
+            return Err(DeckError::restart(RestartFailure::AgentTimeout));
         }
         check_deadline()?;
         let current = list()?;
         for (row, _) in &targets {
             if !current.iter().any(|now| same_pane(row, now)) {
-                return Err(error("tmux-restart-pane-lost"));
+                return Err(DeckError::restart(RestartFailure::PaneLost));
             }
         }
         targets.retain(|(row, _)| {
@@ -110,7 +104,7 @@ fn exit_agents(
                 targets.len(),
                 started.elapsed().as_millis()
             ));
-            return Err(error("tmux-restart-agent-timeout"));
+            return Err(DeckError::restart(RestartFailure::AgentTimeout));
         }
         if !second_sent && started.elapsed() >= Duration::from_millis(100) {
             for (row, kind) in &targets {
@@ -140,7 +134,7 @@ pub(crate) fn prepare(
     let started = Instant::now();
     let rows = tmux::list_panes()?;
     if !unchanged_rows(reviewed, &rows) {
-        return Err(error("tmux-server-impact-changed"));
+        return Err(DeckError::restart(RestartFailure::ImpactChanged));
     }
     let processes = crate::procinfo::processes();
     let mut targets = Vec::new();
@@ -184,7 +178,7 @@ pub(crate) fn prepare(
             .iter()
             .any(|row| !final_rows.iter().any(|now| same_pane(row, now)))
     {
-        return Err(error("tmux-server-impact-changed"));
+        return Err(DeckError::restart(RestartFailure::ImpactChanged));
     }
     progress("saving", 0, final_rows.len());
     if save_shells {
@@ -194,7 +188,7 @@ pub(crate) fn prepare(
                 e.code(),
                 started.elapsed().as_millis()
             ));
-            error("tmux-restart-snapshot-failed")
+            DeckError::restart(RestartFailure::SnapshotFailed)
         })?;
     }
     applog(&format!(
@@ -208,6 +202,44 @@ pub(crate) fn prepare(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The logged reason comes from the closed RestartFailure, never from the
+    /// message text; the text itself is unchanged for the user.
+    #[test]
+    fn failure_reason_reads_the_closed_restart_failure() {
+        use crate::error::RestartFailure::*;
+        for (failure, message, reason) in [
+            (AgentTimeout, "tmux-restart-agent-timeout", "agent-timeout"),
+            (
+                SnapshotFailed,
+                "tmux-restart-snapshot-failed",
+                "snapshot-failed",
+            ),
+            (Deadline, "tmux-restart-timeout", "deadline"),
+            (DeliveryBusy, "tmux-restart-busy", "delivery-busy"),
+            (PaneLost, "tmux-restart-pane-lost", "pane-lost"),
+            (
+                ImpactChanged,
+                "tmux-server-impact-changed",
+                "impact-changed",
+            ),
+        ] {
+            let error = DeckError::restart(failure);
+            assert_eq!(error.message(), message);
+            assert_eq!(error.kind(), ErrorKind::Tmux);
+            assert_eq!(failure_reason(&error), reason);
+        }
+        let text_only = DeckError::new(ErrorKind::Tmux, "tmux-restart-timeout");
+        assert_eq!(
+            failure_reason(&text_only),
+            "tmux",
+            "text is not a reason code"
+        );
+        assert_eq!(
+            failure_reason(&DeckError::new(ErrorKind::Perm, "x")),
+            "perm"
+        );
+    }
     use crate::session_runtime::bounded_output;
     use std::os::unix::fs::FileTypeExt;
     use std::process::Command;

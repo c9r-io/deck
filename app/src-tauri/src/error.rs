@@ -22,6 +22,10 @@
 //! one place text is classified, for text deck did not write: a foreign
 //! library error, tmux's stderr — the same closed rules `err_code` applies
 //! to free text in logs.
+//!
+//! A server-restart failure also carries a closed `RestartFailure`
+//! (`DeckError::restart`): its message stays the old stable text for the
+//! user, and `restart::failure_reason` reads the enum, never the text.
 
 use serde::Serialize;
 use std::fmt;
@@ -130,10 +134,49 @@ impl ErrorKind {
     }
 }
 
+/// Why a tmux server restart (or the activity/deadline guards it shares
+/// with delivery) was refused; each has one stable message and one log reason.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RestartFailure {
+    AgentTimeout,
+    SnapshotFailed,
+    Deadline,
+    DeliveryBusy,
+    PaneLost,
+    ImpactChanged,
+}
+
+impl RestartFailure {
+    /// The message the caller (toast) and tests see, unchanged from before.
+    pub(crate) fn message(self) -> &'static str {
+        match self {
+            RestartFailure::AgentTimeout => "tmux-restart-agent-timeout",
+            RestartFailure::SnapshotFailed => "tmux-restart-snapshot-failed",
+            RestartFailure::Deadline => "tmux-restart-timeout",
+            RestartFailure::DeliveryBusy => "tmux-restart-busy",
+            RestartFailure::PaneLost => "tmux-restart-pane-lost",
+            RestartFailure::ImpactChanged => "tmux-server-impact-changed",
+        }
+    }
+
+    /// The closed reason `[tmux-restart] finish result=` logs.
+    pub(crate) fn log_reason(self) -> &'static str {
+        match self {
+            RestartFailure::AgentTimeout => "agent-timeout",
+            RestartFailure::SnapshotFailed => "snapshot-failed",
+            RestartFailure::Deadline => "deadline",
+            RestartFailure::DeliveryBusy => "delivery-busy",
+            RestartFailure::PaneLost => "pane-lost",
+            RestartFailure::ImpactChanged => "impact-changed",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct DeckError {
     kind: ErrorKind,
     message: String,
+    restart: Option<RestartFailure>,
 }
 
 impl DeckError {
@@ -141,7 +184,22 @@ impl DeckError {
         DeckError {
             kind,
             message: message.into(),
+            restart: None,
         }
+    }
+
+    /// A refused/failed server restart: kind `Tmux`, the failure's stable
+    /// message, and the closed reason itself.
+    pub(crate) fn restart(failure: RestartFailure) -> Self {
+        DeckError {
+            kind: ErrorKind::Tmux,
+            message: failure.message().into(),
+            restart: Some(failure),
+        }
+    }
+
+    pub(crate) fn restart_failure(&self) -> Option<RestartFailure> {
+        self.restart
     }
 
     /// For text whose kind is only knowable at runtime: a foreign library
@@ -151,6 +209,7 @@ impl DeckError {
         DeckError {
             kind: ErrorKind::classify(&message),
             message,
+            restart: None,
         }
     }
 
@@ -207,6 +266,7 @@ impl From<std::io::Error> for DeckError {
         DeckError {
             kind: ErrorKind::from_io(e.kind()).unwrap_or_else(|| ErrorKind::classify(&message)),
             message,
+            restart: None,
         }
     }
 }
