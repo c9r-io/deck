@@ -243,7 +243,8 @@ A person approved the execution window in the UI.
   `CONTROL_LEASE_EXPIRED`, as it did before FR-4.
 - The data directory's path must keep `mcp-control.sock` within the macOS
   104-byte Unix socket limit; a longer one never binds the control socket.
-- **Found, not fixed:** once the last session on the Deck tmux server closes,
+- **Found, fixed in the next commit (`fix(tmux)`, test
+  `real_tmux_probe_of_an_emptied_server_ignores_a_stale_query_client`):** once the last session on the Deck tmux server closes,
   every new session in that Deck process (MCP and ordinary cards, one
   `session_creation_guard`) fails with `tmux-server-unreachable` until
   restart. The query channel's control client has exited but

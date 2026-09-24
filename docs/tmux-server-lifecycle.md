@@ -137,7 +137,12 @@ remembers its child PID, server PID and attached session, then subtracts one
 client from lifecycle impact only after `list-clients` independently confirms
 the exact PID, control mode, no-output/ignore-size flags and session
 on the same server generation. Missing, duplicate or malformed evidence fails
-closed. The channel is stopped before a server restart and on app exit.
+closed. A server with no sessions has nothing to subtract from, so the probe
+does not ask: the remembered client exits with the last session but its
+record lasts until the channel is next polled, and tmux answers
+`list-clients` on an empty server with an error ("no current target") that
+would otherwise read as an unreachable server and refuse every new session.
+The channel is stopped before a server restart and on app exit.
 
 ## Restart transaction and recovery
 

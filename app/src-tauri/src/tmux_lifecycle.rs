@@ -622,7 +622,11 @@ fn probe_server_on(server: &ServerHandle<'_>) -> Probe {
         });
     }
 
-    if let Some(owned) = (server.owned_client)() {
+    // The owned query client only ever reduces an existing session's attach
+    // count. An empty server has none to reduce, and its record may outlive
+    // the client (it exits with the last session); tmux then refuses
+    // `list-clients` with "no current target", which is not unreachability.
+    if let Some(owned) = (server.owned_client)().filter(|_| !sessions.is_empty()) {
         let clients = match (server.run)(&[
             "list-clients",
             "-F",
@@ -2555,6 +2559,43 @@ mod tests {
 
         server.stop();
         assert!(matches!(probe_server_on(&handle), Probe::Absent));
+    }
+
+    /// The Deck query client exits with the server's last session, but its
+    /// record outlives it until the channel is next polled. An empty server
+    /// with such a stale record is still reachable and empty: there is no
+    /// session to subtract the client from (tmux 3.7c answers `list-clients`
+    /// on an empty server with "no current target").
+    #[test]
+    fn real_tmux_probe_of_an_emptied_server_ignores_a_stale_query_client() {
+        let current = build(SourceCategory::Development, "0.4.41", "bbbbbbb", 1);
+        let server = IsolatedServer::new("emptied");
+        let dir = TestDir::new("emptied");
+        server.start(Some(&metadata_for_current(&current)));
+        server.new_session("alpha");
+        let server_pid = server.pid();
+        let stale = move || Some((u32::MAX, server_pid, "alpha".to_owned()));
+        let run = |args: &[&str]| server.tmux(args);
+        let run_owned = |args: &[String]| server.tmux_owned(args);
+        let handle = ServerHandle {
+            run: &run,
+            run_owned: &run_owned,
+            owned_client: &stale,
+            socket_name: &server.socket,
+            lifecycle_file: dir.file(),
+        };
+        let Probe::Reachable(busy) = probe_server_on(&handle) else {
+            panic!("reachable with a session");
+        };
+        assert_eq!(busy.sessions.len(), 1);
+
+        server.run(&["kill-session", "-t", "alpha"]);
+        let Probe::Reachable(emptied) = probe_server_on(&handle) else {
+            panic!("an emptied server is reachable, not unreachable");
+        };
+        assert_eq!(emptied.pid, server_pid);
+        assert!(emptied.sessions.is_empty() && emptied.panes.is_empty());
+        server.stop();
     }
 
     /// A probe never half-trusts a server: any answer that does not parse,

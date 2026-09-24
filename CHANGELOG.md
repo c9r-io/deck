@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Fixed: after the last terminal session on Deck's tmux server was closed,
+  starting any new session (a card, or one an MCP client asked for) failed
+  with "tmux server unreachable" until Deck was restarted. (MCP clients saw
+  a rejected create with `create-failed`.)
 - Away notifications and a Dock badge, off by default. With **Notify me
   when away** on (Settings → Integrations & automation), macOS shows a
   notification when an agent reports needs-input or an unread turn ending
