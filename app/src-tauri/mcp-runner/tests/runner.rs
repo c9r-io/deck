@@ -109,14 +109,7 @@ impl Drop for Runner {
 
 fn call(socket: &Path, request: Value) -> Value {
     let mut request = request;
-    request["auth"] = Value::String(
-        auth_keys()
-            .lock()
-            .unwrap()
-            .get(socket)
-            .expect("runner was claimed")
-            .clone(),
-    );
+    request["auth"] = Value::String(auth_keys().get(socket).expect("runner was claimed").clone());
     raw_call(socket, request)
 }
 
@@ -128,10 +121,16 @@ fn raw_call(socket: &Path, request: Value) -> Value {
     serde_json::from_str(&response).unwrap()
 }
 
-fn auth_keys() -> &'static Mutex<std::collections::HashMap<std::path::PathBuf, String>> {
+/// The claimed runner keys, locked with recovery (one test panicking while
+/// holding them must not fail every other test).
+#[allow(clippy::disallowed_methods)] // this file's one lock, recovering
+fn auth_keys(
+) -> std::sync::MutexGuard<'static, std::collections::HashMap<std::path::PathBuf, String>> {
     static KEYS: OnceLock<Mutex<std::collections::HashMap<std::path::PathBuf, String>>> =
         OnceLock::new();
     KEYS.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn claim(socket: &Path) -> String {
@@ -143,10 +142,7 @@ fn claim(socket: &Path) -> String {
         .as_str()
         .unwrap_or_else(|| panic!("claim returned a key: {response}"))
         .to_owned();
-    auth_keys()
-        .lock()
-        .unwrap()
-        .insert(socket.to_owned(), key.clone());
+    auth_keys().insert(socket.to_owned(), key.clone());
     key
 }
 

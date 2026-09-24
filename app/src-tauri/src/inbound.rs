@@ -1444,7 +1444,7 @@ mod tests {
 
     #[test]
     fn runtime_baselines_dedupes_emits_lists_and_acknowledges() {
-        let _serial = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _serial = TEST_LOCK.lock_or_recover();
         let dir = std::env::temp_dir().join(format!(
             "deck-inbound-runtime-{}-{:?}",
             std::process::id(),
@@ -1453,8 +1453,8 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("inbound.json");
-        *TEST_DOC_PATH.lock().unwrap() = Some(path.clone());
-        *RT.lock().unwrap() = Some(Runtime {
+        *TEST_DOC_PATH.lock_or_recover() = Some(path.clone());
+        *RT.lock_or_recover() = Some(Runtime {
             doc: InboundDoc::default(),
             dirty: false,
             pending: Vec::new(),
@@ -1627,8 +1627,8 @@ mod tests {
         wait_for_tick(Duration::from_secs(1));
         wait_for_tick(Duration::from_millis(1));
 
-        *RT.lock().unwrap() = None;
-        *TEST_DOC_PATH.lock().unwrap() = None;
+        *RT.lock_or_recover() = None;
+        *TEST_DOC_PATH.lock_or_recover() = None;
         let _ = fs::remove_dir_all(dir);
     }
 
@@ -1730,7 +1730,7 @@ mod tests {
 
     #[test]
     fn ledger_reads_degrade_to_a_rebaseline_and_a_failed_save_stays_dirty() {
-        let _serial = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _serial = TEST_LOCK.lock_or_recover();
         let dir = std::env::temp_dir().join(format!(
             "deck-inbound-ledger-{}-{:?}",
             std::process::id(),
@@ -1739,7 +1739,7 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("inbound.json");
-        *TEST_DOC_PATH.lock().unwrap() = Some(path.clone());
+        *TEST_DOC_PATH.lock_or_recover() = Some(path.clone());
         assert_eq!(load_doc(), InboundDoc::default(), "no file is a first run");
         fs::write(&path, "this is not a document").unwrap();
         assert_eq!(
@@ -1761,10 +1761,10 @@ mod tests {
         rt.doc.baseline("slack", "deck");
         // a parent that is a plain file cannot hold the document
         fs::write(dir.join("blocker"), "x").unwrap();
-        *TEST_DOC_PATH.lock().unwrap() = Some(dir.join("blocker").join("inbound.json"));
+        *TEST_DOC_PATH.lock_or_recover() = Some(dir.join("blocker").join("inbound.json"));
         persist(&mut rt);
         assert!(rt.dirty, "a failed save is remembered for the next tick");
-        *TEST_DOC_PATH.lock().unwrap() = Some(path.clone());
+        *TEST_DOC_PATH.lock_or_recover() = Some(path.clone());
         persist(&mut rt);
         assert!(!rt.dirty, "the retry clears the flag");
         assert!(path.exists());
@@ -1772,7 +1772,7 @@ mod tests {
         assert_eq!(loaded, rt.doc, "the ledger round-trips");
         assert!(loaded.is_baselined("slack", "deck"));
 
-        *TEST_DOC_PATH.lock().unwrap() = None;
+        *TEST_DOC_PATH.lock_or_recover() = None;
         let _ = fs::remove_dir_all(dir);
     }
 

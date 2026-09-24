@@ -1,0 +1,9 @@
+# Same rule as app/src-tauri/clippy.toml: a panic while a thread holds a
+# Mutex poisons it, and unwrapping a later lock takes down every thread
+# that touches it. Recover the guard explicitly behind one allowed helper
+# (see app/src-tauri/src/sync.rs for the policy).
+disallowed-methods = [
+  { path = "std::sync::Mutex::lock", reason = "recover poison behind one allowed helper (app/src-tauri/src/sync.rs)" },
+  { path = "std::sync::Condvar::wait", reason = "recover poison behind one allowed helper (app/src-tauri/src/sync.rs)" },
+  { path = "std::sync::Condvar::wait_timeout", reason = "recover poison behind one allowed helper (app/src-tauri/src/sync.rs)" },
+]

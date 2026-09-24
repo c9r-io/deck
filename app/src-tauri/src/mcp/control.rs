@@ -229,10 +229,7 @@ pub(super) fn wait_for_enable() {
     let (flag, wake) = &CONTROL_WAKE;
     let mut woken = flag.lock_or_recover();
     if !*woken {
-        woken = match wake.wait_timeout(woken, DISABLED_IDLE) {
-            Ok((guard, _)) => guard,
-            Err(poisoned) => poisoned.into_inner().0,
-        };
+        woken = crate::sync::wait_timeout_or_recover(wake, woken, DISABLED_IDLE);
     }
     *woken = false;
 }

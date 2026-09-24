@@ -18,6 +18,13 @@ use std::sync::Mutex;
 
 static LOG_LOCK: Mutex<()> = Mutex::new(());
 
+/// The log's own lock, outside `sync::LockRecover`: that recovery logs
+/// through here, so each caller handles poison itself instead of recursing.
+#[allow(clippy::disallowed_methods)] // the one raw lock of LOG_LOCK
+fn log_lock() -> std::sync::LockResult<std::sync::MutexGuard<'static, ()>> {
+    LOG_LOCK.lock()
+}
+
 /// Non-reversible, per-RUN short tag for a session name. Log lines need to
 /// correlate events of one session; the NAME itself is user-derived (it is
 /// built from a card title) and must not be persisted, so it is hashed with
@@ -39,9 +46,8 @@ pub(crate) fn log_path(dir: &Path) -> PathBuf {
 /// Reset only the active diagnostic log, without creating a backup. The same
 /// lock guards append and rotation so no pre-reset file can be written back.
 pub(crate) fn reset_logs_at(dir: &Path) -> Result<(), DeckError> {
-    let _guard = LOG_LOCK
-        .lock()
-        .map_err(|_| DeckError::new(ErrorKind::Other, "log lock unavailable"))?;
+    let _guard =
+        log_lock().map_err(|_| DeckError::new(ErrorKind::Other, "log lock unavailable"))?;
     create_private_dir(dir)?;
     atomic_write(&log_path(dir), b"")
 }
@@ -62,7 +68,7 @@ pub(crate) fn log_size_at(dir: &Path) -> Result<u64, DeckError> {
 /// `applog` so the real writing path — including redaction and permissions —
 /// is exercised by tests against a temp directory instead of being stubbed.
 pub(crate) fn applog_to(path: &Path, msg: &str) {
-    let _guard = LOG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = log_lock().unwrap_or_else(|e| e.into_inner());
     use std::os::unix::fs::OpenOptionsExt;
     if let Some(dir) = path.parent() {
         let _ = create_private_dir(dir);
@@ -95,7 +101,7 @@ pub(crate) fn applog(msg: &str) {
 /// behind (a `.bak` would defeat the whole point). Files that need no change
 /// are not touched at all.
 pub(crate) fn sanitize_existing_logs(dir: &Path) -> u32 {
-    let _guard = LOG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = log_lock().unwrap_or_else(|e| e.into_inner());
     let mut cleaned = 0;
     let mut targets = vec![log_path(dir)];
     if let Ok(rd) = std::fs::read_dir(dir.join("exports")) {
@@ -123,7 +129,7 @@ pub(crate) fn sanitize_existing_logs(dir: &Path) -> u32 {
 }
 
 pub(crate) fn rotate_log() {
-    let _guard = LOG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = log_lock().unwrap_or_else(|e| e.into_inner());
     let path = log_path(&deck_dir());
     if let Ok(meta) = std::fs::metadata(&path) {
         if meta.len() > 2 * 1024 * 1024 {

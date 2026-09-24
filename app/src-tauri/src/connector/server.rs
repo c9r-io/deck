@@ -574,7 +574,7 @@ mod tests {
             "dropped slots are released"
         );
         drop(other);
-        assert!(slots.0.lock().unwrap().get(&two).is_none());
+        assert!(slots.0.lock_or_recover().get(&two).is_none());
     }
 
     #[test]

@@ -974,9 +974,9 @@ mod tests {
 
     #[test]
     fn recovered_sessions_are_removed_from_checkpoint_deduplication() {
-        let _guard = TRACKER_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = TRACKER_TEST_LOCK.lock_or_recover();
         let name = format!("deck-shell-recovered-{}", std::process::id());
-        TRACKER.lock().unwrap().saved.insert(
+        TRACKER.lock_or_recover().saved.insert(
             name.clone(),
             SavedObservation {
                 activity: 1,
@@ -985,7 +985,7 @@ mod tests {
             },
         );
         note_recovered(&name);
-        assert!(!TRACKER.lock().unwrap().saved.contains_key(&name));
+        assert!(!TRACKER.lock_or_recover().saved.contains_key(&name));
     }
 
     #[test]
@@ -1073,7 +1073,7 @@ mod tests {
         if !crate::tmux::tmux_bin().is_empty() {
             return; // a real sidecar would be asked to capture a pane
         }
-        let _guard = TRACKER_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = TRACKER_TEST_LOCK.lock_or_recover();
         let session = format!("deck-shell-sched-{}", std::process::id());
         let observation = ShellObservation {
             session: session.clone(),
@@ -1090,12 +1090,12 @@ mod tests {
         let started = std::time::Instant::now();
         loop {
             {
-                let mut tracker = TRACKER.lock().unwrap();
+                let mut tracker = TRACKER.lock_or_recover();
                 tracker.busy = false;
                 tracker.last_schedule = 0;
             }
             schedule_checkpoints(vec![observation.clone()], true);
-            if TRACKER.lock().unwrap().last_schedule != 0 {
+            if TRACKER.lock_or_recover().last_schedule != 0 {
                 break;
             }
             assert!(
@@ -1105,14 +1105,14 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
         let started = std::time::Instant::now();
-        while TRACKER.lock().unwrap().busy {
+        while TRACKER.lock_or_recover().busy {
             assert!(
                 started.elapsed() < std::time::Duration::from_secs(3),
                 "the checkpoint worker never released the tracker"
             );
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        let tracker = TRACKER.lock().unwrap();
+        let tracker = TRACKER.lock_or_recover();
         assert!(
             !tracker.saved.contains_key(&session),
             "nothing was captured"

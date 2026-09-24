@@ -9,6 +9,13 @@
 //! statements and continuing with the last written value is the correct
 //! recovery. The poison is logged once, content-free, so a cascade that
 //! *would* have happened is still visible in app.log.
+//!
+//! The compiler holds the rule: `clippy.toml` disallows `Mutex::lock`,
+//! `Condvar::wait` and `Condvar::wait_timeout` across the workspace (tests
+//! included), so the helpers below — plus `applog`'s own `log_lock` and the
+//! runner's copy of `lock_or_recover` — are the only allowed callers. After
+//! editing `clippy.toml`, `touch` a crate's sources before a local clippy
+//! run: cached results do not see configuration changes.
 
 use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
 
@@ -19,12 +26,14 @@ pub(crate) trait LockRecover<T> {
 }
 
 impl<T> LockRecover<T> for Mutex<T> {
+    #[allow(clippy::disallowed_methods)] // the recovering lock itself
     fn lock_or_recover(&self) -> MutexGuard<'_, T> {
         self.lock().unwrap_or_else(recover)
     }
 }
 
 /// `Condvar::wait` with the same recovery: the guard comes back either way.
+#[allow(clippy::disallowed_methods)] // the recovering wait itself
 pub(crate) fn wait_or_recover<'a, T>(
     cvar: &Condvar,
     guard: MutexGuard<'a, T>,
@@ -33,6 +42,7 @@ pub(crate) fn wait_or_recover<'a, T>(
 }
 
 /// `Condvar::wait_timeout` with the same recovery.
+#[allow(clippy::disallowed_methods)] // the recovering wait itself
 pub(crate) fn wait_timeout_or_recover<'a, T>(
     cvar: &Condvar,
     guard: MutexGuard<'a, T>,
@@ -56,6 +66,7 @@ mod tests {
     use std::sync::Arc;
 
     #[test]
+    #[allow(clippy::disallowed_methods)] // shows the cascade plain lock() would cause
     fn a_panic_under_a_lock_does_not_poison_the_next_holder() {
         let shared = Arc::new(Mutex::new(vec![1]));
         let worker = Arc::clone(&shared);
@@ -73,90 +84,6 @@ mod tests {
             std::panic::catch_unwind(|| shared.lock().unwrap()).is_err(),
             "plain lock() would still cascade"
         );
-    }
-
-    /// The production part of one file: only a TRAILING `#[cfg(test)] mod
-    /// tests` block is removed. Mirrors `tests/source_scan::production_region`
-    /// (a `#[path]` include cannot reach it through the non-existent
-    /// `src/sync/` directory); `pty.rs` and `scheduler/mod.rs` declare their
-    /// test module early, and the code after it must stay in the scan.
-    fn production_region(source: &str) -> &str {
-        const TEST_MODULE: &str = "#[cfg(test)]\nmod tests";
-        let Some(at) = source.rfind(TEST_MODULE) else {
-            return source;
-        };
-        let mut closed = false;
-        for line in source[at..].lines().skip(2).filter(|line| !line.is_empty()) {
-            if closed {
-                return source;
-            }
-            if line == "}" {
-                closed = true;
-            } else if !line.starts_with(char::is_whitespace) {
-                return source;
-            }
-        }
-        if closed {
-            &source[..at]
-        } else {
-            source
-        }
-    }
-
-    #[test]
-    fn an_early_test_module_never_hides_the_code_after_it() {
-        let trailing = "fn a() {}\n#[cfg(test)]\nmod tests {\n    fn t() {}\n}\n";
-        assert_eq!(production_region(trailing), "fn a() {}\n");
-        let early = "#[cfg(test)]\nmod tests;\nfn b() { x.lock().unwrap(); }\n";
-        assert_eq!(production_region(early), early);
-    }
-
-    /// Discipline lint: production code takes locks through this module, so
-    /// no thread can be taken down by another thread's panic. The scan
-    /// strips whitespace first, so a chain rustfmt wrapped across lines
-    /// (`.lock()\n.unwrap()`) cannot slip past it; `applog.rs` keeps its own
-    /// recovery because `recover` logs through it.
-    #[test]
-    fn production_code_never_unwraps_a_lock() {
-        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
-        let mut files = Vec::new();
-        for entry in std::fs::read_dir(&root).unwrap() {
-            let path = entry.unwrap().path();
-            if path.is_dir() {
-                files.extend(std::fs::read_dir(&path).unwrap().map(|e| e.unwrap().path()));
-            } else {
-                files.push(path);
-            }
-        }
-        for path in files
-            .into_iter()
-            .filter(|p| p.extension().is_some_and(|x| x == "rs"))
-        {
-            if path.ends_with("tests.rs")
-                || path.ends_with("sync.rs")
-                || path.ends_with("applog.rs")
-            {
-                continue;
-            }
-            let text = std::fs::read_to_string(&path).unwrap();
-            // only a TRAILING test module is left out; an early `mod tests`
-            // (pty.rs, scheduler/mod.rs) must not hide the code after it
-            let production: String = production_region(&text).split_whitespace().collect();
-            let raw_locks = production.matches(".lock()").count();
-            assert_eq!(
-                raw_locks,
-                0,
-                "{}: {raw_locks} raw .lock() call(s); use lock_or_recover / wait_or_recover",
-                path.display()
-            );
-            for pattern in [".wait(g).unwrap()", ".wait(guard).unwrap()"] {
-                assert!(
-                    !production.contains(pattern),
-                    "{}: use wait_or_recover instead of {pattern}",
-                    path.display()
-                );
-            }
-        }
     }
 
     #[test]

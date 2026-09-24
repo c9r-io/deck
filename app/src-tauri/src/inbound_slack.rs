@@ -790,20 +790,20 @@ mod tests {
 
     /// Point `call` at a port nothing listens on for the duration of `f`.
     fn with_offline<T>(f: impl FnOnce() -> T) -> T {
-        let _serial = TEST_API_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _serial = TEST_API_LOCK.lock_or_recover();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let unused = listener.local_addr().unwrap();
         drop(listener);
-        *TEST_API.lock().unwrap() = Some(format!("http://{unused}/"));
+        *TEST_API.lock_or_recover() = Some(format!("http://{unused}/"));
         let value = f();
-        *TEST_API.lock().unwrap() = None;
+        *TEST_API.lock_or_recover() = None;
         value
     }
 
     /// Answer exactly `responses.len()` requests from a local fake Web API
     /// while `f` runs; returns `f`'s value and the raw requests received.
     fn with_responses<T>(responses: Vec<(u16, &str)>, f: impl FnOnce() -> T) -> (T, Vec<String>) {
-        let _serial = TEST_API_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _serial = TEST_API_LOCK.lock_or_recover();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let base = format!("http://{}/", listener.local_addr().unwrap());
         let responses: Vec<(u16, String)> = responses
@@ -857,9 +857,9 @@ mod tests {
             }
             requests
         });
-        *TEST_API.lock().unwrap() = Some(base);
+        *TEST_API.lock_or_recover() = Some(base);
         let value = f();
-        *TEST_API.lock().unwrap() = None;
+        *TEST_API.lock_or_recover() = None;
         (value, worker.join().unwrap())
     }
 

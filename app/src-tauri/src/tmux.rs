@@ -1630,7 +1630,7 @@ mod tests {
                 "tmux {args:?} failed: {}",
                 String::from_utf8_lossy(&output.stderr)
             );
-            let mut saved = self.socket_path.lock().unwrap_or_else(|e| e.into_inner());
+            let mut saved = self.socket_path.lock_or_recover();
             if saved.is_none() {
                 let location = self.output(&["display-message", "-p", "#{socket_path}"]);
                 if location.status.success() {
@@ -1646,12 +1646,7 @@ mod tests {
         }
 
         fn socket_path(&self) -> Option<std::path::PathBuf> {
-            if let Some(path) = self
-                .socket_path
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .clone()
-            {
+            if let Some(path) = self.socket_path.lock_or_recover().clone() {
                 return Some(path);
             }
             let output = self.output(&["display-message", "-p", "#{socket_path}"]);
@@ -1690,9 +1685,7 @@ mod tests {
 
     #[test]
     fn persistent_control_matches_one_shot_and_is_writable_no_output() {
-        let _serial = CONTROL_CLIENT_TESTS
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let _serial = CONTROL_CLIENT_TESTS.lock_or_recover();
         let server = IsolatedControlServer::new();
         assert!(server.binary.is_file(), "bundled tmux test binary missing");
         server.run(&[
@@ -1765,9 +1758,7 @@ mod tests {
 
     #[test]
     fn a_newline_path_fails_one_shot_and_control_reads_identically() {
-        let _serial = CONTROL_CLIENT_TESTS
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let _serial = CONTROL_CLIENT_TESTS.lock_or_recover();
         let server = IsolatedControlServer::new();
         assert!(server.binary.is_file(), "bundled tmux test binary missing");
         let root = std::env::temp_dir().join(format!(
@@ -1987,9 +1978,7 @@ mod tests {
     /// releases the client and its owned identity.
     #[test]
     fn query_state_serves_an_installed_channel_and_stops_it() {
-        let _serial = CONTROL_CLIENT_TESTS
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let _serial = CONTROL_CLIENT_TESTS.lock_or_recover();
         let server = IsolatedControlServer::new();
         server.new_session("alpha", "/bin/sleep");
         let run = |args: &[&str]| server.tmux(args);
@@ -2044,9 +2033,7 @@ mod tests {
     /// channel whose Deck is still running keeps serving afterwards.
     #[test]
     fn reaping_orphans_leaves_a_live_query_client_attached() {
-        let _serial = CONTROL_CLIENT_TESTS
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let _serial = CONTROL_CLIENT_TESTS.lock_or_recover();
         let server = IsolatedControlServer::new();
         server.new_session("alpha", "/bin/sleep");
         let run = |args: &[&str]| server.tmux(args);

@@ -185,12 +185,17 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-trait Recover<T> {
-    fn recover(self) -> T;
+/// `lock()` that recovers a poisoned mutex instead of taking down every
+/// thread that touches it after one panicked while holding it — the same
+/// policy as deck-app's `src/sync.rs`. `clippy.toml` refuses a raw
+/// `Mutex::lock` anywhere else in the workspace.
+trait LockRecover<T> {
+    fn lock_or_recover(&self) -> MutexGuard<'_, T>;
 }
-impl<'a, T> Recover<MutexGuard<'a, T>> for std::sync::LockResult<MutexGuard<'a, T>> {
-    fn recover(self) -> MutexGuard<'a, T> {
-        self.unwrap_or_else(|error| error.into_inner())
+impl<T> LockRecover<T> for Mutex<T> {
+    #[allow(clippy::disallowed_methods)] // the recovering lock itself
+    fn lock_or_recover(&self) -> MutexGuard<'_, T> {
+        self.lock().unwrap_or_else(|error| error.into_inner())
     }
 }
 
@@ -575,7 +580,7 @@ fn signal_thread(shared: Arc<Shared>, socket: PathBuf) {
                 libc::SIGINT => {
                     // The local stop key: only the human may use it, and only
                     // against the one active job group.
-                    let mut inner = shared.inner.lock().recover();
+                    let mut inner = shared.inner.lock_or_recover();
                     if inner.control != ControlMode::Human {
                         continue;
                     }
@@ -594,7 +599,7 @@ fn signal_thread(shared: Arc<Shared>, socket: PathBuf) {
                     }
                 }
                 libc::SIGHUP | libc::SIGTERM => {
-                    let inner = shared.inner.lock().recover();
+                    let inner = shared.inner.lock_or_recover();
                     signal_live_groups(&inner, libc::SIGKILL);
                     let _ = std::fs::remove_file(&socket);
                     std::process::exit(0);
@@ -687,7 +692,7 @@ fn check_job_context(
 }
 
 fn append_output(shared: &Arc<Shared>, job_id: &str, bytes: &[u8]) {
-    let mut inner = shared.inner.lock().recover();
+    let mut inner = shared.inner.lock_or_recover();
     {
         let Some(job) = inner.jobs.get_mut(job_id) else {
             return;
@@ -748,7 +753,7 @@ fn mirror(
                 Err(_) => break,
             }
         }
-        let mut inner = shared.inner.lock().recover();
+        let mut inner = shared.inner.lock_or_recover();
         if let Some(job) = inner.jobs.get_mut(&job_id) {
             if stderr {
                 job.stderr_eof = true;
@@ -796,7 +801,7 @@ fn bounded_job_input(
     let mut offset = 0;
     while offset < bytes.len() {
         {
-            let inner = shared.inner.lock().recover();
+            let inner = shared.inner.lock_or_recover();
             let current = inner
                 .jobs
                 .get(job_id)
@@ -947,7 +952,7 @@ fn spawn_job(
         return Err(abandon());
     }
     {
-        let mut inner = shared.inner.lock().recover();
+        let mut inner = shared.inner.lock_or_recover();
         let Some(job) = inner.jobs.get_mut(job_id) else {
             drop(inner);
             return Err(abandon());
@@ -971,7 +976,7 @@ fn spawn_job(
         let timed_id = job_id.to_string();
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(timeout));
-            let mut inner = timed.inner.lock().recover();
+            let mut inner = timed.inner.lock_or_recover();
             let Some(job) = inner.jobs.get_mut(&timed_id) else {
                 return;
             };
@@ -1029,7 +1034,7 @@ fn reap_job(shared: &Arc<Shared>, job_id: &str, pid: i32) {
         }
         wait_for_child_event(pid);
         {
-            let mut inner = shared.inner.lock().recover();
+            let mut inner = shared.inner.lock_or_recover();
             let mut status = 0;
             // SAFETY: `pid` is this runner's unreaped child; WNOHANG keeps the
             // critical section short.
@@ -1133,7 +1138,7 @@ fn evict_finished_jobs(inner: &mut Inner) -> bool {
 /// job group, waiting a bounded time after each step. Returns true only when
 /// every job leader has been reaped.
 fn stop_all_jobs(shared: &Arc<Shared>) -> bool {
-    let mut inner = shared.inner.lock().recover();
+    let mut inner = shared.inner.lock_or_recover();
     inner.control = ControlMode::Fenced;
     inner.holder_id = None;
     for signal in [libc::SIGINT, libc::SIGTERM, libc::SIGKILL] {
@@ -1162,7 +1167,7 @@ fn wait_for_job(shared: &Arc<Shared>, job_id: &str, wait_ms: u64) {
     if limit == 0 {
         return;
     }
-    let inner = shared.inner.lock().recover();
+    let inner = shared.inner.lock_or_recover();
     let _ = shared
         .changed
         .wait_timeout_while(inner, Duration::from_millis(limit), |state| {
@@ -1173,7 +1178,7 @@ fn wait_for_job(shared: &Arc<Shared>, job_id: &str, wait_ms: u64) {
 fn handle(shared: &Arc<Shared>, request: Request) -> Response {
     match request {
         Request::Ping { service_instance } => {
-            let inner = shared.inner.lock().recover();
+            let inner = shared.inner.lock_or_recover();
             let mut response = Response::empty(&shared.generation);
             response.service_current =
                 service_instance.map(|value| value == shared.service_instance);
@@ -1217,7 +1222,7 @@ fn handle(shared: &Arc<Shared>, request: Request) -> Response {
                 return Response::error(&shared.generation, RunnerError::InvalidRequest);
             }
             {
-                let mut inner = shared.inner.lock().recover();
+                let mut inner = shared.inner.lock_or_recover();
                 if let Err(error) = admit_exec_context(shared, &mut inner, &context) {
                     return Response::error(&shared.generation, error);
                 }
@@ -1231,7 +1236,7 @@ fn handle(shared: &Arc<Shared>, request: Request) -> Response {
                     }
                     drop(inner);
                     wait_for_job(shared, &job_id, wait_ms);
-                    let inner = shared.inner.lock().recover();
+                    let inner = shared.inner.lock_or_recover();
                     let mut response = Response::empty(&shared.generation);
                     response.job = inner.jobs.get(&job_id).map(Job::view);
                     return response;
@@ -1256,7 +1261,7 @@ fn handle(shared: &Arc<Shared>, request: Request) -> Response {
             if let Err(error) = spawn_job(shared, &job_id, borrowed, &cwd, timeout_ms) {
                 // No live process remains either way (never started, or
                 // killed and reaped by `spawn_job`).
-                let mut inner = shared.inner.lock().recover();
+                let mut inner = shared.inner.lock_or_recover();
                 if let Some(job) = inner.jobs.get_mut(&job_id) {
                     job.state = JobState::Lost;
                     job.ended_at = Some(now_ms());
@@ -1267,7 +1272,7 @@ fn handle(shared: &Arc<Shared>, request: Request) -> Response {
                 return Response::error(&shared.generation, error);
             }
             wait_for_job(shared, &job_id, wait_ms);
-            let inner = shared.inner.lock().recover();
+            let inner = shared.inner.lock_or_recover();
             let mut response = Response::empty(&shared.generation);
             response.job = inner.jobs.get(&job_id).map(Job::view);
             response
@@ -1284,13 +1289,13 @@ fn handle(shared: &Arc<Shared>, request: Request) -> Response {
             if wait_ms > 0 {
                 let limit = wait_ms.min(MAX_WAIT_MS);
                 let initial_end = {
-                    let inner = shared.inner.lock().recover();
+                    let inner = shared.inner.lock_or_recover();
                     let Some(job) = inner.jobs.get(&job_id) else {
                         return Response::error(&shared.generation, RunnerError::JobNotFound);
                     };
                     job.base_cursor + job.output.len() as u64
                 };
-                let inner = shared.inner.lock().recover();
+                let inner = shared.inner.lock_or_recover();
                 let _ = shared.changed.wait_timeout_while(
                     inner,
                     Duration::from_millis(limit),
@@ -1301,7 +1306,7 @@ fn handle(shared: &Arc<Shared>, request: Request) -> Response {
                     },
                 );
             }
-            let mut inner = shared.inner.lock().recover();
+            let mut inner = shared.inner.lock_or_recover();
             let Some(job) = inner.jobs.get_mut(&job_id) else {
                 return Response::error(&shared.generation, RunnerError::JobNotFound);
             };
@@ -1364,7 +1369,7 @@ fn handle(shared: &Arc<Shared>, request: Request) -> Response {
                 return Response::error(&shared.generation, RunnerError::RunnerStale);
             }
             let mut stdin = {
-                let mut inner = shared.inner.lock().recover();
+                let mut inner = shared.inner.lock_or_recover();
                 if inner.control != ControlMode::Mcp || inner.active.as_deref() != Some(&job_id) {
                     return Response::error(&shared.generation, RunnerError::JobNotRunning);
                 }
@@ -1385,7 +1390,7 @@ fn handle(shared: &Arc<Shared>, request: Request) -> Response {
                 stdin
             };
             let wrote = bounded_job_input(shared, &job_id, &context, &mut stdin, &bytes).is_ok();
-            let mut inner = shared.inner.lock().recover();
+            let mut inner = shared.inner.lock_or_recover();
             let still_bound = inner.control == ControlMode::Mcp
                 && inner.active.as_deref() == Some(&job_id)
                 && inner.control_epoch == context.control_epoch
@@ -1403,7 +1408,7 @@ fn handle(shared: &Arc<Shared>, request: Request) -> Response {
             Response::empty(&shared.generation)
         }
         Request::Interrupt { job_id, context } => {
-            let mut inner = shared.inner.lock().recover();
+            let mut inner = shared.inner.lock_or_recover();
             if context.service_instance != shared.service_instance {
                 return Response::error(&shared.generation, RunnerError::RunnerStale);
             }
@@ -1446,7 +1451,7 @@ fn handle(shared: &Arc<Shared>, request: Request) -> Response {
             // Human mode only re-routes the pane keyboard to the active job's
             // stdin and enables the ^C stop key. It never starts a shell.
             {
-                let mut inner = shared.inner.lock().recover();
+                let mut inner = shared.inner.lock_or_recover();
                 if service_instance != shared.service_instance {
                     return Response::error(&shared.generation, RunnerError::RunnerStale);
                 }
@@ -1499,7 +1504,7 @@ fn handle(shared: &Arc<Shared>, request: Request) -> Response {
             if !valid_id(&grant_id) {
                 return Response::error(&shared.generation, RunnerError::DispatchContextInvalid);
             }
-            let mut inner = shared.inner.lock().recover();
+            let mut inner = shared.inner.lock_or_recover();
             inner
                 .revoked_grants
                 .entry(grant_id)
@@ -1524,7 +1529,7 @@ fn handle(shared: &Arc<Shared>, request: Request) -> Response {
             {
                 return Response::error(&shared.generation, RunnerError::DispatchContextInvalid);
             }
-            let mut inner = shared.inner.lock().recover();
+            let mut inner = shared.inner.lock_or_recover();
             if inner
                 .revoked_grants
                 .get(&grant_id)
@@ -1561,7 +1566,7 @@ fn handle(shared: &Arc<Shared>, request: Request) -> Response {
             response
         }
         Request::Shutdown => {
-            let mut inner = shared.inner.lock().recover();
+            let mut inner = shared.inner.lock_or_recover();
             if inner.active.is_some() {
                 return Response::error(&shared.generation, RunnerError::SessionBusy);
             }
@@ -1710,7 +1715,7 @@ fn stdin_forwarder(shared: Arc<Shared>) {
             };
             if count == 0 {
                 {
-                    let mut inner = shared.inner.lock().recover();
+                    let mut inner = shared.inner.lock_or_recover();
                     if inner.control == ControlMode::Human {
                         if let Some(id) = inner.active.clone() {
                             if let Some(job) = inner.jobs.get_mut(&id) {
@@ -1723,7 +1728,7 @@ fn stdin_forwarder(shared: Arc<Shared>) {
                 std::thread::sleep(Duration::from_millis(50));
                 continue;
             }
-            let mut inner = shared.inner.lock().recover();
+            let mut inner = shared.inner.lock_or_recover();
             if inner.control != ControlMode::Human {
                 continue;
             }
@@ -1976,7 +1981,7 @@ mod tests {
             },
         );
         assert_eq!(revoked.error, Some("dispatch-context-invalid"));
-        assert!(shared.inner.lock().recover().jobs.is_empty());
+        assert!(shared.inner.lock_or_recover().jobs.is_empty());
     }
 
     #[test]
@@ -1992,7 +1997,7 @@ mod tests {
             },
         );
         assert!(human.ok);
-        let inner = shared.inner.lock().recover();
+        let inner = shared.inner.lock_or_recover();
         assert!(inner.jobs.is_empty(), "takeover must not create a job");
         assert!(inner.active.is_none());
         assert!(inner.control == ControlMode::Human);
@@ -2001,7 +2006,7 @@ mod tests {
     #[test]
     fn control_epoch_starts_at_zero_and_only_moves_forward() {
         let shared = shared();
-        assert_eq!(shared.inner.lock().recover().control_epoch, 0);
+        assert_eq!(shared.inner.lock_or_recover().control_epoch, 0);
         let forward = handle(
             &shared,
             Request::Control {
@@ -2024,7 +2029,7 @@ mod tests {
             );
             assert_eq!(rejected.error, Some("dispatch-context-invalid"));
         }
-        let inner = shared.inner.lock().recover();
+        let inner = shared.inner.lock_or_recover();
         assert_eq!(inner.control_epoch, 4);
         assert!(inner.control == ControlMode::Mcp);
         assert_eq!(inner.holder_id.as_deref(), Some("holder_new"));
@@ -2051,13 +2056,13 @@ mod tests {
             },
         );
         assert_eq!(retention.error, Some("runner-stale"));
-        assert!(shared.inner.lock().recover().control == ControlMode::Fenced);
+        assert!(shared.inner.lock_or_recover().control == ControlMode::Fenced);
     }
 
     #[test]
     fn finished_jobs_are_evicted_but_live_jobs_are_not() {
         let shared = shared();
-        let mut inner = shared.inner.lock().recover();
+        let mut inner = shared.inner.lock_or_recover();
         for index in 0..MAX_JOBS {
             let id = format!("job_{index}");
             let mut job = Job::new(id.clone(), "hash".into(), &context("svc_current", 1, "h"));
@@ -2126,7 +2131,7 @@ mod tests {
         assert!(first.ok, "{:?}", first.error);
         let second = handle(&shared, request());
         assert!(second.ok, "{:?}", second.error);
-        assert_eq!(shared.inner.lock().recover().jobs.len(), 1);
+        assert_eq!(shared.inner.lock_or_recover().jobs.len(), 1);
     }
 
     #[test]
@@ -2172,7 +2177,7 @@ mod tests {
         let shared = shared();
         shared.output_retention_ms.store(1, Ordering::SeqCst);
         {
-            let mut inner = shared.inner.lock().recover();
+            let mut inner = shared.inner.lock_or_recover();
             inner.jobs.insert(
                 "job_expired".into(),
                 Job {
@@ -2392,7 +2397,7 @@ mod tests {
         assert!(revoke("svc_current", "grant_old", 3).ok);
         assert!(revoke("svc_current", "grant_old", 2).ok);
         assert_eq!(
-            shared.inner.lock().recover().revoked_grants["grant_old"],
+            shared.inner.lock_or_recover().revoked_grants["grant_old"],
             3,
             "a revocation never lowers the fenced version"
         );
@@ -2423,7 +2428,7 @@ mod tests {
         );
         assert!(authorize("svc_current", "grant_test", 4, 2).ok);
         assert_eq!(
-            shared.inner.lock().recover().authorized_grants["grant_test"].version,
+            shared.inner.lock_or_recover().authorized_grants["grant_test"].version,
             4
         );
 
@@ -2446,7 +2451,7 @@ mod tests {
             Some("job-not-found"),
             "a wait on an unknown job returns at once"
         );
-        shared.inner.lock().recover().jobs.insert(
+        shared.inner.lock_or_recover().jobs.insert(
             "job_done".into(),
             finished_job("job_done", JobState::Exited, b"done\n"),
         );
@@ -2528,7 +2533,7 @@ mod tests {
             "an equal epoch never re-enters"
         );
         {
-            let mut inner = shared.inner.lock().recover();
+            let mut inner = shared.inner.lock_or_recover();
             inner.control = ControlMode::Mcp;
             inner.active = Some("job_done".into());
         }
@@ -2555,7 +2560,7 @@ mod tests {
             "only the active job can be interrupted"
         );
         {
-            let mut inner = shared.inner.lock().recover();
+            let mut inner = shared.inner.lock_or_recover();
             inner.jobs.insert(
                 "job_live".into(),
                 finished_job("job_live", JobState::Running, b""),
@@ -2583,7 +2588,7 @@ mod tests {
             .error,
             Some("control-revoked")
         );
-        shared.inner.lock().recover().active = None;
+        shared.inner.lock_or_recover().active = None;
 
         assert_eq!(
             handle(
@@ -2604,13 +2609,13 @@ mod tests {
         assert!(stop.ok);
         assert_eq!(stop.control, Some("fenced"));
         {
-            let inner = shared.inner.lock().recover();
+            let inner = shared.inner.lock_or_recover();
             assert!(inner.control == ControlMode::Fenced);
             assert_eq!(inner.holder_id, None);
             assert!(!inner.stopping);
         }
         assert!(handle(&shared, Request::Shutdown).ok);
-        assert!(shared.inner.lock().recover().stopping);
+        assert!(shared.inner.lock_or_recover().stopping);
     }
 
     /// A job's dispatch context must match the job and the session on every
@@ -2619,13 +2624,13 @@ mod tests {
     fn job_context_checks_every_binding_axis_and_views_report_each_state() {
         let shared = shared();
         {
-            let mut inner = shared.inner.lock().recover();
+            let mut inner = shared.inner.lock_or_recover();
             inner.control = ControlMode::Mcp;
             inner.control_epoch = 1;
             inner.holder_id = Some("holder_a".into());
             inner.revoked_grants.insert("grant_test".into(), 1);
         }
-        let inner = shared.inner.lock().recover();
+        let inner = shared.inner.lock_or_recover();
         let job = finished_job("job_ctx", JobState::Running, b"");
         let current = context("svc_current", 1, "holder_a");
         assert_eq!(
@@ -2694,14 +2699,14 @@ mod tests {
 
         // Retained output is bounded per job: the oldest bytes fall off the
         // front and the base cursor records how many did.
-        shared.inner.lock().recover().jobs.insert(
+        shared.inner.lock_or_recover().jobs.insert(
             "job_big".into(),
             finished_job("job_big", JobState::Running, b""),
         );
         append_output(&shared, "job_big", &vec![b'x'; RETAINED_OUTPUT]);
         append_output(&shared, "job_big", b"yz");
         append_output(&shared, "job_missing", b"ignored");
-        let inner = shared.inner.lock().recover();
+        let inner = shared.inner.lock_or_recover();
         let job = &inner.jobs["job_big"];
         assert_eq!(job.output.len(), RETAINED_OUTPUT);
         assert_eq!(job.base_cursor, 2);
@@ -2873,7 +2878,7 @@ fn main() {
                 std::thread::spawn(move || {
                     serve_connection(state.clone(), stream);
                     state.connections.fetch_sub(1, Ordering::SeqCst);
-                    if state.inner.lock().recover().stopping {
+                    if state.inner.lock_or_recover().stopping {
                         let _ = std::fs::remove_file(&socket);
                         std::process::exit(0);
                     }

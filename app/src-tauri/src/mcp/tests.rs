@@ -118,10 +118,10 @@ impl FakeRunner {
             return;
         }
         let request: Value = serde_json::from_str(&line).unwrap_or(Value::Null);
-        seen.lock().unwrap().push(request.clone());
+        seen.lock_or_recover().push(request.clone());
         let kind = request.get("kind").and_then(Value::as_str).unwrap_or("");
         let held = {
-            let mut slot = hold.lock().unwrap();
+            let mut slot = hold.lock_or_recover();
             if slot.as_ref().is_some_and(|held| held.kind == kind) {
                 slot.take()
             } else {
@@ -150,7 +150,7 @@ impl FakeRunner {
         let stale = service == "svc_stale";
         let live = busy.load(Ordering::SeqCst);
         let dispatch_matches = || {
-            let current = control.lock().unwrap();
+            let current = control.lock_or_recover();
             let context = request.get("context").unwrap_or(&Value::Null);
             current.mode == "mcp"
                 && context.get("control_epoch").and_then(Value::as_u64) == Some(current.epoch)
@@ -171,7 +171,7 @@ impl FakeRunner {
             }
             "control" => {
                 let epoch = request["control_epoch"].as_u64().unwrap_or(0);
-                let mut current = control.lock().unwrap();
+                let mut current = control.lock_or_recover();
                 if epoch <= current.epoch {
                     json!({"ok":false,"generation":generation,"error":"dispatch-context-invalid"})
                 } else {
@@ -189,8 +189,8 @@ impl FakeRunner {
                     "timeoutRequested":false,"startedAt":1,"endedAt":2},
                 "output":"done\n","nextCursor":5,"gap":false,"droppedBytes":0
             }),
-            "exec" if control.lock().unwrap().exec_error.is_some() => {
-                let error = control.lock().unwrap().exec_error.take();
+            "exec" if control.lock_or_recover().exec_error.is_some() => {
+                let error = control.lock_or_recover().exec_error.take();
                 json!({"ok":false,"generation":generation,"error":error})
             }
             "exec" if dispatch_matches() => json!({
@@ -213,8 +213,7 @@ impl FakeRunner {
 
     fn count(&self, kind: &str) -> usize {
         self.seen
-            .lock()
-            .unwrap()
+            .lock_or_recover()
             .iter()
             .filter(|request| request["kind"] == kind)
             .count()
@@ -222,8 +221,7 @@ impl FakeRunner {
 
     fn last(&self, kind: &str) -> Option<Value> {
         self.seen
-            .lock()
-            .unwrap()
+            .lock_or_recover()
             .iter()
             .rev()
             .find(|request| request["kind"] == kind)
@@ -231,7 +229,7 @@ impl FakeRunner {
     }
 
     fn set_control(&self, epoch: u64, mode: &str, holder: Option<&str>) {
-        *self.control.lock().unwrap() = FakeControl {
+        *self.control.lock_or_recover() = FakeControl {
             epoch,
             mode: mode.into(),
             holder: holder.map(str::to_owned),
@@ -240,11 +238,11 @@ impl FakeRunner {
     }
 
     fn control_epoch(&self) -> u64 {
-        self.control.lock().unwrap().epoch
+        self.control.lock_or_recover().epoch
     }
 
     fn fail_next_exec(&self, error: &str) {
-        self.control.lock().unwrap().exec_error = Some(error.into());
+        self.control.lock_or_recover().exec_error = Some(error.into());
     }
 
     fn fail_next_control(&self) {
@@ -255,7 +253,7 @@ impl FakeRunner {
     fn hold(&self, kind: &str) -> (std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>) {
         let (entered_tx, entered_rx) = std::sync::mpsc::channel();
         let (release_tx, release_rx) = std::sync::mpsc::channel();
-        *self.hold.lock().unwrap() = Some(HeldKind {
+        *self.hold.lock_or_recover() = Some(HeldKind {
             kind: kind.into(),
             entered: entered_tx,
             release: release_rx,

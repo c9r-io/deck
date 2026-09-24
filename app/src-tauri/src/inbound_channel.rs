@@ -1925,7 +1925,7 @@ mod tests {
                 .is_empty()
         );
 
-        let _serial = EPOCH_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let _serial = EPOCH_TESTS.lock_or_recover();
         let epoch = CREDENTIAL_EPOCH.load(Ordering::SeqCst);
         assert!(credentials_unchanged(epoch));
         CREDENTIAL_EPOCH.fetch_add(1, Ordering::SeqCst);
@@ -2040,7 +2040,7 @@ mod tests {
     fn fake_api<T>(responses: Vec<(u16, &str)>, f: impl FnOnce() -> T) -> (T, Vec<String>) {
         use crate::inbound_slack::{TEST_API, TEST_API_LOCK};
         use std::io::{Read, Write};
-        let _serial = TEST_API_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _serial = TEST_API_LOCK.lock_or_recover();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let base = format!("http://{}/", listener.local_addr().unwrap());
         let responses: Vec<(u16, String)> = responses
@@ -2085,22 +2085,22 @@ mod tests {
             }
             lines
         });
-        *TEST_API.lock().unwrap() = Some(base);
+        *TEST_API.lock_or_recover() = Some(base);
         let value = f();
-        *TEST_API.lock().unwrap() = None;
+        *TEST_API.lock_or_recover() = None;
         (value, worker.join().unwrap())
     }
 
     /// Point the Web API at a port nothing listens on while `f` runs.
     fn offline<T>(f: impl FnOnce() -> T) -> T {
         use crate::inbound_slack::{TEST_API, TEST_API_LOCK};
-        let _serial = TEST_API_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _serial = TEST_API_LOCK.lock_or_recover();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let unused = listener.local_addr().unwrap();
         drop(listener);
-        *TEST_API.lock().unwrap() = Some(format!("http://{unused}/"));
+        *TEST_API.lock_or_recover() = Some(format!("http://{unused}/"));
         let value = f();
-        *TEST_API.lock().unwrap() = None;
+        *TEST_API.lock_or_recover() = None;
         value
     }
 
@@ -2584,7 +2584,7 @@ mod tests {
 
     #[test]
     fn credential_commands_fail_closed_before_the_keychain() {
-        let _serial = EPOCH_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let _serial = EPOCH_TESTS.lock_or_recover();
         let epoch = CREDENTIAL_EPOCH.load(Ordering::SeqCst);
         let set = |slot: &str, value: &str| {
             tauri::async_runtime::block_on(channel_token_set(slot.into(), value.into()))
@@ -2666,13 +2666,13 @@ mod tests {
 
     #[test]
     fn live_status_words_are_closed_and_smoke_faults_stay_unarmed() {
-        let _control = CHANNEL_CONTROL.lock().unwrap_or_else(|e| e.into_inner());
+        let _control = CHANNEL_CONTROL.lock_or_recover();
         let rejected = REJECTED_COUNT.load(Ordering::Relaxed);
         note_rejected("oversize");
         note_rejected("future-event");
         assert_eq!(REJECTED_COUNT.load(Ordering::Relaxed), rejected + 2);
         {
-            let live = LIVE.lock().unwrap_or_else(|e| e.into_inner());
+            let live = LIVE.lock_or_recover();
             assert_eq!(
                 live.last_error,
                 Some("future-event"),
@@ -2680,7 +2680,7 @@ mod tests {
             );
         }
         set_disabled();
-        let live = LIVE.lock().unwrap_or_else(|e| e.into_inner());
+        let live = LIVE.lock_or_recover();
         assert!(!live.connected);
         assert!(live.last_error.is_none(), "disabled is not an error");
         drop(live);

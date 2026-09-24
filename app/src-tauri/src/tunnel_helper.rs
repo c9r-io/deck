@@ -647,7 +647,7 @@ mod tests {
     #[cfg(debug_assertions)]
     #[test]
     fn debug_helper_protocol_is_strict_and_missing_helper_is_optional() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK.lock_or_recover();
         let base =
             std::env::temp_dir().join(format!("deck-helper-protocol-{}", std::process::id()));
         let _ = fs::remove_dir_all(&base);
@@ -694,7 +694,7 @@ mod tests {
     #[cfg(not(debug_assertions))]
     #[test]
     fn release_build_ignores_development_helper_override() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK.lock_or_recover();
         std::env::set_var("DECK_TUNNEL_HELPER_PATH", "/tmp/untrusted-helper");
         assert!(development_helper_path().is_none());
         std::env::remove_var("DECK_TUNNEL_HELPER_PATH");
@@ -852,7 +852,7 @@ mod tests {
     #[cfg(debug_assertions)]
     #[test]
     fn debug_helper_actions_report_closed_state_and_invalidate_cached_status() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK.lock_or_recover();
         let (base, helper, reply, code) = scripted_helper("actions");
         std::env::set_var("DECK_TUNNEL_HELPER_PATH", &helper);
         let alias = "deck-0123456789abcdef0123456789abcdef";

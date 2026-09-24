@@ -1,0 +1,10 @@
+# A panic while a thread holds a Mutex poisons it; unwrapping a later lock
+# then takes down every unrelated thread that touches it. deck recovers
+# instead: see src/sync.rs (`LockRecover::lock_or_recover`,
+# `wait_or_recover`, `wait_timeout_or_recover`). Those helpers are the only
+# allowed callers.
+disallowed-methods = [
+  { path = "std::sync::Mutex::lock", reason = "use crate::sync::LockRecover::lock_or_recover (see src/sync.rs)" },
+  { path = "std::sync::Condvar::wait", reason = "use crate::sync::wait_or_recover (see src/sync.rs)" },
+  { path = "std::sync::Condvar::wait_timeout", reason = "use crate::sync::wait_timeout_or_recover (see src/sync.rs)" },
+]

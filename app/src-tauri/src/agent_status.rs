@@ -1057,7 +1057,7 @@ mod tests {
 
     #[test]
     fn ingest_reconcile_and_current_follow_the_pane_foreground() {
-        let _guard = STORE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = STORE_TEST_LOCK.lock_or_recover();
         reset_for_tests();
         let resolve = |pane: &str, _pid: u32| {
             (pane == "%3").then(|| ("deck-card-ab12".to_string(), "claude".to_string(), 300))
@@ -1110,7 +1110,7 @@ mod tests {
 
     #[test]
     fn events_are_bound_to_the_pane_they_name() {
-        let _guard = STORE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = STORE_TEST_LOCK.lock_or_recover();
         reset_for_tests();
         let resolve =
             |_: &str, _: u32| Some(("deck-card-ab12".to_string(), "claude".to_string(), 300));
@@ -1137,7 +1137,7 @@ mod tests {
     #[test]
     fn the_listener_binds_a_real_peer_to_its_pane() {
         use std::io::Write;
-        let _guard = STORE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = STORE_TEST_LOCK.lock_or_recover();
         reset_for_tests();
         let dir = std::env::temp_dir().join(format!("deck-status-peer-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -1189,7 +1189,7 @@ mod tests {
     #[test]
     fn a_pane_s_own_descendant_reports_and_an_outsider_is_refused() {
         use std::process::Command;
-        let _guard = STORE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = STORE_TEST_LOCK.lock_or_recover();
         reset_for_tests();
         /// (socket name, tmux binary, socket path captured while alive)
         struct Server(String, PathBuf, Option<PathBuf>);
@@ -1322,7 +1322,7 @@ mod tests {
     #[test]
     fn listener_accepts_a_real_socket_line() {
         use std::io::Write;
-        let _guard = STORE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = STORE_TEST_LOCK.lock_or_recover();
         reset_for_tests();
         let dir = std::env::temp_dir().join(format!("deck-status-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();

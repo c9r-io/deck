@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Internal: raw `Mutex::lock` / `Condvar::wait` are now refused by clippy
+  (`clippy.toml`) everywhere in the Rust workspace, tests included, instead
+  of by a text scan that ran only in the full test suite; it found one raw
+  `wait_timeout` the scan missed. The layering tests now also catch a
+  module reached through `use crate::m;` or a grouped import.
 - Internal: the Rust tests are safe to run in parallel — the test that
   changes `TZ` restores it and shares a lock with the local-clock test,
   storage notices are per test thread, every test tmux server and runner

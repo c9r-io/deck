@@ -911,7 +911,7 @@ fn a_card_deleted_mid_send_leaves_no_session_behind() {
         .unwrap();
         Ok(())
     };
-    let kill = |s: &str| killed.lock().unwrap().push(s.to_string());
+    let kill = |s: &str| killed.lock_or_recover().push(s.to_string());
     let res = send_one(
         &qm,
         &AtomicBool::new(false),
@@ -925,8 +925,8 @@ fn a_card_deleted_mid_send_leaves_no_session_behind() {
         },
     );
     assert!(matches!(res, SendResult::Sent { .. }));
-    assert_eq!(killed.lock().unwrap().as_slice(), ["s"], "session reaped");
-    let q = qm.lock().unwrap();
+    assert_eq!(killed.lock_or_recover().as_slice(), ["s"], "session reaped");
+    let q = qm.lock_or_recover();
     assert_eq!(q.deliveries.len(), 1, "the delivery is still audited");
     assert!(q.items.is_empty() && q.pending.is_empty());
 }
@@ -1045,13 +1045,13 @@ fn boot_persist_failure_keeps_ambiguous_memory_dirty_until_flush() {
         if fail.load(AtomicOrdering::Relaxed) {
             Err(DeckError::classified("disk unavailable"))
         } else {
-            *disk.lock().unwrap() = serde_json::to_string(q).unwrap();
+            *disk.lock_or_recover() = serde_json::to_string(q).unwrap();
             Ok(())
         }
     };
     let queues = boot_queues_with(loaded, &persist);
     {
-        let q = queues.q.lock().unwrap();
+        let q = queues.q.lock_or_recover();
         assert_eq!(q.items[0].state, "ambiguous");
         assert!(select_due(&q, NOW + 100_000, 720, &HashMap::new()).is_empty());
     }
@@ -1061,7 +1061,7 @@ fn boot_persist_failure_keeps_ambiguous_memory_dirty_until_flush() {
     fail.store(false, AtomicOrdering::Relaxed);
     assert!(flush_dirty(&queues.q, &queues.dirty, &persist));
     assert!(!queues.dirty.load(AtomicOrdering::Relaxed));
-    let saved: QueueState = serde_json::from_str(&disk.lock().unwrap()).unwrap();
+    let saved: QueueState = serde_json::from_str(&disk.lock_or_recover()).unwrap();
     assert_eq!(saved.items[0].state, "ambiguous");
 }
 
@@ -1076,7 +1076,7 @@ fn orphan_ledger_boot_failure_is_immediately_decidable_and_ack_is_transactional(
         snapshot,
     });
     let queues = boot_queues_with(loaded, &|_| Err(DeckError::classified("read only")));
-    let before = serde_json::to_string(&*queues.q.lock().unwrap()).unwrap();
+    let before = serde_json::to_string(&*queues.q.lock_or_recover()).unwrap();
     assert!(before.contains("ambiguous"));
     assert!(with_queue(
         &queues.q,
@@ -1085,7 +1085,7 @@ fn orphan_ledger_boot_failure_is_immediately_decidable_and_ack_is_transactional(
     )
     .is_err());
     assert_eq!(
-        serde_json::to_string(&*queues.q.lock().unwrap()).unwrap(),
+        serde_json::to_string(&*queues.q.lock_or_recover()).unwrap(),
         before
     );
 }
@@ -1154,7 +1154,7 @@ fn send_one_success_runs_the_full_cycle() {
         }
     );
     assert_eq!(fired.load(Ordering::SeqCst), 1);
-    let q = qm.lock().unwrap();
+    let q = qm.lock_or_recover();
     assert!(q.items.is_empty(), "once-item consumed");
     assert_eq!(q.deliveries.len(), 1);
     assert!(!q.deliveries[0].assumed);
@@ -1181,7 +1181,7 @@ fn send_one_failure_is_retryable_and_never_audited() {
             gave_up: false
         }
     );
-    let q = qm.lock().unwrap();
+    let q = qm.lock_or_recover();
     assert_eq!(q.items[0].state, "failed");
     assert_eq!(q.items[0].attempts, 1);
     assert!(q.items[0].delivery.is_none());
@@ -1203,7 +1203,7 @@ fn retry_after_failure_sends_the_full_text_exactly_once() {
         &|_: &QueueItem| Err(DeckError::classified("refused")),
         &ok_persist,
     );
-    qm.lock().unwrap().items[0].last_attempt_at = Some(0); // backoff elapsed
+    qm.lock_or_recover().items[0].last_attempt_at = Some(0); // backoff elapsed
     let sent = AtomicU32::new(0);
     let res = send_test(
         &qm,
@@ -1220,7 +1220,7 @@ fn retry_after_failure_sends_the_full_text_exactly_once() {
     );
     assert!(matches!(res, SendResult::Sent { .. }));
     assert_eq!(sent.load(Ordering::SeqCst), 1);
-    assert_eq!(qm.lock().unwrap().deliveries.len(), 1, "one audit total");
+    assert_eq!(qm.lock_or_recover().deliveries.len(), 1, "one audit total");
 }
 
 #[test]
@@ -1236,7 +1236,7 @@ fn send_one_persist_failure_rolls_back_the_intent() {
         &|_: &QueueState| Err(DeckError::classified("disk full")),
     );
     assert_eq!(res, SendResult::NotPersisted);
-    let q = qm.lock().unwrap();
+    let q = qm.lock_or_recover();
     assert_eq!(q.items[0].state, "pending");
     assert_eq!(q.items[0].attempts, 0);
     assert!(q.items[0].delivery.is_none());
@@ -1328,7 +1328,7 @@ fn safe_ready_context_sends_exactly_once() {
     );
     assert!(matches!(result, SendResult::Sent { .. }));
     assert_eq!(sends.load(Ordering::SeqCst), 1);
-    assert_eq!(qm.lock().unwrap().deliveries.len(), 1);
+    assert_eq!(qm.lock_or_recover().deliveries.len(), 1);
 }
 
 #[test]
@@ -1349,7 +1349,7 @@ fn unsafe_contexts_block_without_attempt_or_ledger() {
             &|_: &QueueItem| panic!("blocked context has no final probe"),
         );
         assert!(matches!(result, SendResult::Blocked { status: s, .. } if s == status));
-        let q = qm.lock().unwrap();
+        let q = qm.lock_or_recover();
         assert_eq!(q.items[0].attempts, 0);
         assert_eq!(q.items[0].state, "pending");
         assert!(q.pending.is_empty() && q.deliveries.is_empty());
@@ -1385,7 +1385,7 @@ fn a_new_tmux_generation_under_the_same_name_is_adopted_not_blocked() {
     );
     assert!(matches!(result, SendResult::Sent { .. }));
     assert_eq!(sends.load(Ordering::SeqCst), 1);
-    let q = qm.lock().unwrap();
+    let q = qm.lock_or_recover();
     assert_eq!(q.items.len(), 0);
     assert_eq!(q.deliveries.len(), 1);
 }
@@ -1414,7 +1414,7 @@ fn replacement_between_probe_and_send_is_rejected_without_attempt() {
             ..
         }
     ));
-    let q = qm.lock().unwrap();
+    let q = qm.lock_or_recover();
     assert_eq!(q.items[0].attempts, 0);
     assert!(q.pending.is_empty());
 }
@@ -1443,7 +1443,7 @@ fn foreground_change_between_probe_and_send_is_rejected_without_attempt() {
             ..
         }
     ));
-    let q = qm.lock().unwrap();
+    let q = qm.lock_or_recover();
     assert_eq!(q.items[0].attempts, 0);
     assert!(q.pending.is_empty());
 }
@@ -1453,7 +1453,7 @@ fn pause_edit_and_delete_during_probe_cancel_the_worker() {
     for action in ["pause", "edit", "delete"] {
         let qm = Mutex::new(qs(vec![due_at("a", "s")]));
         let prepare = |_: &QueueItem, _: &dyn Fn() -> bool| {
-            let mut q = qm.lock().unwrap();
+            let mut q = qm.lock_or_recover();
             match action {
                 "pause" => q.items[0].paused = true,
                 "edit" => {
@@ -1473,8 +1473,7 @@ fn pause_edit_and_delete_during_probe_cancel_the_worker() {
         );
         assert_eq!(result, SendResult::Nothing, "{action}");
         assert!(qm
-            .lock()
-            .unwrap()
+            .lock_or_recover()
             .items
             .first()
             .is_none_or(|i| i.attempts == 0));
@@ -1504,7 +1503,7 @@ fn delete_during_probe_reaps_a_session_the_worker_may_have_started() {
         },
         &ContextHooks {
             prepare: &|_: &QueueItem, _: &dyn Fn() -> bool| {
-                clear_session_items(&mut qm.lock().unwrap(), "s");
+                clear_session_items(&mut qm.lock_or_recover(), "s");
                 probe_result(
                     ContextStatus::Unavailable,
                     ContextCode::CancelledOrRevised,
@@ -1640,10 +1639,14 @@ fn one_sessions_context_wait_does_not_block_another_session() {
             },
         );
         assert!(matches!(fast, SendResult::Sent { .. }));
-        assert!(!qm.lock().unwrap().items.iter().any(|i| i.session == "fast"));
+        assert!(!qm
+            .lock_or_recover()
+            .items
+            .iter()
+            .any(|i| i.session == "fast"));
         release.wait();
     });
-    assert_eq!(qm.lock().unwrap().deliveries.len(), 2);
+    assert_eq!(qm.lock_or_recover().deliveries.len(), 2);
 }
 
 #[test]
@@ -1754,7 +1757,7 @@ fn sessions_progress_independently_during_a_slow_send() {
         );
         assert!(matches!(res, SendResult::Sent { .. }));
         {
-            let q = qm.lock().unwrap();
+            let q = qm.lock_or_recover();
             assert!(
                 !q.items.iter().any(|i| i.session == "fast"),
                 "fast session progressed while slow was mid-send"
@@ -1766,7 +1769,7 @@ fn sessions_progress_independently_during_a_slow_send() {
         }
         release.wait();
     });
-    let q = qm.lock().unwrap();
+    let q = qm.lock_or_recover();
     assert_eq!(q.deliveries.len(), 2, "both sessions delivered");
     assert!(q.pending.is_empty());
 }
@@ -1793,14 +1796,13 @@ impl FakeDisk {
             ));
         }
         self.writes
-            .lock()
-            .unwrap()
+            .lock_or_recover()
             .push(serde_json::to_string(q).unwrap());
         Ok(())
     }
     /// what a fresh deck would load right now
     fn on_disk(&self) -> String {
-        self.writes.lock().unwrap().last().unwrap().clone()
+        self.writes.lock_or_recover().last().unwrap().clone()
     }
 }
 
@@ -1936,9 +1938,9 @@ fn every_queue_mutation_is_all_or_nothing() {
         // healthy disk: the change lands in memory and on disk together
         let qm = Mutex::new(base());
         let disk = FakeDisk::new(&base());
-        let before = serde_json::to_string(&*qm.lock().unwrap()).unwrap();
+        let before = serde_json::to_string(&*qm.lock_or_recover()).unwrap();
         with_queue(&qm, &|q| disk.persist(q), mutate).unwrap_or_else(|e| panic!("{name}: {e}"));
-        let after = serde_json::to_string(&*qm.lock().unwrap()).unwrap();
+        let after = serde_json::to_string(&*qm.lock_or_recover()).unwrap();
         assert_ne!(before, after, "{name}: mutation had no effect");
         assert_eq!(after, disk.on_disk(), "{name}: memory and disk agree");
 
@@ -1951,7 +1953,7 @@ fn every_queue_mutation_is_all_or_nothing() {
             .expect_err(&format!("{name}: failed save must be an error"));
         assert_eq!(err.code(), "disk-full", "{name}: {err}");
         assert_eq!(
-            serde_json::to_string(&*qm.lock().unwrap()).unwrap(),
+            serde_json::to_string(&*qm.lock_or_recover()).unwrap(),
             before,
             "{name}: shared memory must be byte-identical after a failed save"
         );
@@ -1965,16 +1967,20 @@ fn a_rejected_mutation_never_reaches_the_disk() {
     let mut a = qi("a", "at");
     a.state = "firing".into();
     let qm = Mutex::new(qs(vec![a]));
-    let disk = FakeDisk::new(&qm.lock().unwrap().clone());
-    let writes0 = disk.writes.lock().unwrap().len();
+    let disk = FakeDisk::new(&qm.lock_or_recover().clone());
+    let writes0 = disk.writes.lock_or_recover().len();
     assert!(with_queue(&qm, &|q| disk.persist(q), |q| update_text(
         q,
         "a",
         "edited".into()
     ))
     .is_err());
-    assert_eq!(disk.writes.lock().unwrap().len(), writes0, "no save tried");
-    assert_eq!(qm.lock().unwrap().items[0].text, "x");
+    assert_eq!(
+        disk.writes.lock_or_recover().len(),
+        writes0,
+        "no save tried"
+    );
+    assert_eq!(qm.lock_or_recover().items[0].text, "x");
 }
 
 #[test]
@@ -1983,10 +1989,10 @@ fn a_failed_retry_save_keeps_the_item_out_of_the_candidate_set() {
     f.state = "failed".into();
     f.attempts = MAX_ATTEMPTS;
     let qm = Mutex::new(qs(vec![f]));
-    let disk = FakeDisk::new(&qm.lock().unwrap().clone());
+    let disk = FakeDisk::new(&qm.lock_or_recover().clone());
     disk.fail.store(true, AtomicOrdering::Relaxed);
     assert!(with_queue(&qm, &|q| disk.persist(q), |q| retry_item(q, "f")).is_err());
-    let q = qm.lock().unwrap();
+    let q = qm.lock_or_recover();
     assert!(item_dead(&q.items[0]), "still dead in memory");
     let quiet = seen(NOW - 400);
     assert!(
@@ -1998,7 +2004,7 @@ fn a_failed_retry_save_keeps_the_item_out_of_the_candidate_set() {
 #[test]
 fn a_failed_pre_fire_save_sends_nothing_and_changes_nothing() {
     let qm = Mutex::new(qs(vec![due_at("a", "s")]));
-    let before = serde_json::to_string(&*qm.lock().unwrap()).unwrap();
+    let before = serde_json::to_string(&*qm.lock_or_recover()).unwrap();
     let dirty = AtomicBool::new(false);
     let res = send_test(
         &qm,
@@ -2011,7 +2017,7 @@ fn a_failed_pre_fire_save_sends_nothing_and_changes_nothing() {
     );
     assert_eq!(res, SendResult::NotPersisted);
     assert_eq!(
-        serde_json::to_string(&*qm.lock().unwrap()).unwrap(),
+        serde_json::to_string(&*qm.lock_or_recover()).unwrap(),
         before,
         "intent rolled back completely"
     );
@@ -2023,7 +2029,7 @@ fn a_failed_post_send_save_keeps_memory_authoritative_and_retries() {
     // the prompt really went out: memory MUST take the finalized state
     // (automatic re-sending could duplicate it), and the write is retried
     let qm = Mutex::new(qs(vec![due_at("a", "s")]));
-    let disk = FakeDisk::new(&qm.lock().unwrap().clone());
+    let disk = FakeDisk::new(&qm.lock_or_recover().clone());
     let dirty = AtomicBool::new(false);
     let persist = |q: &QueueState| disk.persist(q);
     let res = send_test(
@@ -2041,7 +2047,7 @@ fn a_failed_post_send_save_keeps_memory_authoritative_and_retries() {
     assert!(matches!(res, SendResult::Sent { .. }));
     assert!(dirty.load(AtomicOrdering::Relaxed), "write still owed");
     {
-        let q = qm.lock().unwrap();
+        let q = qm.lock_or_recover();
         assert!(q.items.is_empty(), "delivery finalized in memory");
         assert_eq!(q.deliveries.len(), 1);
         assert!(q.pending.is_empty());
@@ -2055,7 +2061,7 @@ fn a_failed_post_send_save_keeps_memory_authoritative_and_retries() {
     assert!(!dirty.load(AtomicOrdering::Relaxed));
     assert_eq!(
         disk.on_disk(),
-        serde_json::to_string(&*qm.lock().unwrap()).unwrap()
+        serde_json::to_string(&*qm.lock_or_recover()).unwrap()
     );
     assert!(!flush_dirty(&qm, &dirty, &persist), "nothing owed anymore");
 }
@@ -2063,7 +2069,7 @@ fn a_failed_post_send_save_keeps_memory_authoritative_and_retries() {
 #[test]
 fn a_definitively_refused_send_that_cannot_be_saved_is_retried_not_forgotten() {
     let qm = Mutex::new(qs(vec![due_at("a", "s")]));
-    let disk = FakeDisk::new(&qm.lock().unwrap().clone());
+    let disk = FakeDisk::new(&qm.lock_or_recover().clone());
     let dirty = AtomicBool::new(false);
     let persist = |q: &QueueState| disk.persist(q);
     let res = send_test(
@@ -2082,7 +2088,7 @@ fn a_definitively_refused_send_that_cannot_be_saved_is_retried_not_forgotten() {
     );
     assert!(matches!(res, SendResult::Failed { .. }));
     {
-        let q = qm.lock().unwrap();
+        let q = qm.lock_or_recover();
         assert_eq!(q.items[0].state, "failed", "not sent — retryable");
         assert!(q.pending.is_empty(), "no delivery to recover");
         assert!(q.deliveries.is_empty(), "a refused send is never audited");
@@ -2299,7 +2305,10 @@ fn inspection_save_failure_leaves_memory_and_disk_decision_unreleased() {
     let qm = Mutex::new(q);
     let failed = |_: &QueueState| Err(DeckError::new(ErrorKind::Other, "test save rejected"));
     assert!(with_queue(&qm, &failed, |q| confirm_review(q, &d, pane(1), NOW)).is_err());
-    assert_eq!(serde_json::to_string(&*qm.lock().unwrap()).unwrap(), before);
+    assert_eq!(
+        serde_json::to_string(&*qm.lock_or_recover()).unwrap(),
+        before
+    );
 }
 
 #[test]
@@ -2442,7 +2451,7 @@ fn observed_replacement_revokes_inspection_before_any_injection() {
     let q = reviewed_pair();
     let qm = Mutex::new(q);
     {
-        let mut q = qm.lock().unwrap();
+        let mut q = qm.lock_or_recover();
         let d = review::decision_for(&q, "inspect-a", pane(1)).unwrap();
         confirm_review(&mut q, &d, pane(1), NOW).unwrap();
         q.last_fired.clear();
@@ -2467,7 +2476,7 @@ fn observed_replacement_revokes_inspection_before_any_injection() {
         },
     );
     assert!(matches!(result, SendResult::Nothing));
-    let q = qm.lock().unwrap();
+    let q = qm.lock_or_recover();
     assert!(q.pending.is_empty());
     assert_eq!(
         q.items.iter().find(|i| i.id == "inspect-a").unwrap().state,
@@ -2512,7 +2521,7 @@ fn restart_pause_survives_reload_and_save_failure_preserves_the_queue() {
     };
     assert!(with_queue(&qm, &fail, |q| pause_restart_sessions(q, &["s".into()])).is_err());
     assert_eq!(
-        serde_json::to_value(&*qm.lock().unwrap()).unwrap(),
+        serde_json::to_value(&*qm.lock_or_recover()).unwrap(),
         serde_json::to_value(&original).unwrap()
     );
     let disk = std::cell::RefCell::new(String::new());
@@ -3122,7 +3131,7 @@ fn state_only_commands_fail_closed_without_the_smoke_hooks_or_the_item() {
         assert_eq!(err.kind(), ErrorKind::Other);
         assert_eq!(err.message(), "smoke queue hooks are unavailable");
     }
-    let q = state.q.lock().unwrap();
+    let q = state.q.lock_or_recover();
     assert_eq!(q.items[0].state, "pending", "nothing was seeded");
     assert!(q.pending.is_empty());
     assert!(!state.dirty.load(AtomicOrdering::Relaxed));
@@ -3174,7 +3183,7 @@ fn with_queue_opt_never_persists_a_noop() {
     .unwrap();
     assert!(none.is_none());
     assert_eq!(writes.get(), 0);
-    assert_eq!(qm.lock().unwrap().items.len(), 1);
+    assert_eq!(qm.lock_or_recover().items.len(), 1);
     let some = with_queue_opt(&qm, &persist, |q| {
         q.items.clear();
         Ok(Some(7))
@@ -3182,5 +3191,5 @@ fn with_queue_opt_never_persists_a_noop() {
     .unwrap();
     assert_eq!(some, Some(7));
     assert_eq!(writes.get(), 1);
-    assert!(qm.lock().unwrap().items.is_empty());
+    assert!(qm.lock_or_recover().items.is_empty());
 }

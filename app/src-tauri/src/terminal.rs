@@ -1588,8 +1588,7 @@ mod tests {
             selection_end_col: 7,
         };
         terminal_selection_leases()
-            .lock()
-            .unwrap()
+            .lock_or_recover()
             .insert(name.clone(), lease);
         assert!(selection_token_matches(&name, 77, true));
         assert!(!selection_token_matches(&name, 76, true));
@@ -1639,7 +1638,7 @@ mod tests {
             frozen_selection_status(&name, 76, TerminalSelectionStatus { ..frozen.clone() })
                 .is_err()
         );
-        terminal_selection_leases().lock().unwrap().remove(&name);
+        terminal_selection_leases().lock_or_recover().remove(&name);
         assert!(terminal_selection_cancel(name, 77).is_ok());
     }
 
