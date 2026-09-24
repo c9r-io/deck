@@ -38,10 +38,16 @@ jobs:
           # keep in step with rust-toolchain.toml at the repository root
           toolchain: 1.97.1
           components: clippy, rustfmt
+      # prebuilt binaries at exact versions, each checked against the SHA-256
+      # in the action's manifest at this commit; `fallback: none` refuses to
+      # compile from source or use an unchecked installer instead. (A cold
+      # source build of both took ~5 min of every gate run.)
       - name: Install pinned coverage and audit runners
-        run: |
-          cargo install cargo-llvm-cov --version 0.8.5 --locked
-          cargo install cargo-audit --version 0.22.2 --locked
+        uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172 # v2.87.20
+        with:
+          tool: cargo-llvm-cov@0.8.5,cargo-audit@0.22.2
+          checksum: true
+          fallback: none
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: |

@@ -294,6 +294,13 @@ class ReleaseChannelTests(unittest.TestCase):
         stable = (ROOT / ".github/workflows/release.yml").read_text()
         self.assertIn("needs: [resolve, gate]", stable)
 
+    def test_gate_installs_prebuilt_checked_runners(self) -> None:
+        gate = (ROOT / ".github/workflows/gate.yml").read_text()
+        self.assertNotIn("cargo install", gate)
+        self.assertIn("tool: cargo-llvm-cov@0.8.5,cargo-audit@0.22.2", gate)
+        self.assertIn("checksum: true", gate)
+        self.assertIn("fallback: none", gate)
+
     def test_nightly_tags_are_ignored_by_stable_resolver(self) -> None:
         with self.assertRaises(rc.ReleaseError):
             rc.require_stable_tag(self.tag)

@@ -17,7 +17,9 @@
   against a committed SHA-256 (`scripts/install-minisign`), no longer
   whatever Homebrew served that day. The test gate checks the bundled tmux
   against its committed SHA-256 (shell and Rust), and the UI tests pin the
-  vendored xterm.js hash and the vendor file list.
+  vendored xterm.js hash and the vendor file list. The gate installs its
+  pinned coverage and audit runners as checksum-verified prebuilt binaries
+  instead of compiling them on every run.
 
 ## 0.7.9 — 2026-09-24 (Nightly)
 
