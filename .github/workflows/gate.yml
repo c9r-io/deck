@@ -68,8 +68,13 @@ jobs:
       - name: cargo clippy -D warnings
         run: cargo clippy --workspace --all-targets --all-features --locked --manifest-path app/src-tauri/Cargo.toml -- -D warnings
 
-      # single-threaded: tmux contract tests + storage/scheduler recovery
-      # tests share process-wide state (throwaway tmux servers, env)
+      # --test-threads=1 is kept by measurement, not need: since FR-5 the
+      # suite is parallel-safe (TZ guard + lock, per-thread storage notices,
+      # unique tmux/runner names, polled waits; 20/20 clean parallel runs).
+      # This exact command on an M-series Mac, 3 runs each (2026-09-25):
+      # serial 197/200/199 s, parallel 118/119/119 s — about 80 s saved,
+      # under the 2-minute bar for dropping the flag. Re-measure before
+      # changing it.
       - name: cargo test + coverage (unit, storage/scheduler recovery, log privacy, tmux contract, status helper)
         run: cargo llvm-cov --workspace --all-targets --all-features --locked --fail-under-lines 75 --fail-under-functions 75 --manifest-path app/src-tauri/Cargo.toml -- --test-threads=1
 
