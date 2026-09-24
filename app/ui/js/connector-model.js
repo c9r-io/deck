@@ -2,7 +2,7 @@
 // rule as Slack channels; this module also owns deterministic journal IDs and
 // pairing detection.
 import { channelAgentCommand } from './channel-model.js';
-const LOCAL_ID = /^[A-Za-z0-9_-]{1,128}$/;
+import { LOCAL_ID_RE } from './pure.js';
 export const PRESET_MAX = 50;
 
 const utf8 = value => new TextEncoder().encode(String(value || '')).byteLength;
@@ -14,7 +14,7 @@ export function normalizeTaskPreset(raw, columns = []) {
     dir: String(raw.dir || '').trim(), cmd: String(raw.cmd || '').trim(),
     steps: (Array.isArray(raw.steps) ? raw.steps : []).map(String).map(value => value.trim()).filter(Boolean),
   };
-  if (!LOCAL_ID.test(preset.id) || !preset.name || [...preset.name].length > 120
+  if (!LOCAL_ID_RE.test(preset.id) || !preset.name || [...preset.name].length > 120
     || !preset.title || [...preset.title].length > 120 || !preset.dir || utf8(preset.dir) > 1024
     || /[\r\n\0]/.test(preset.dir) || !channelAgentCommand(preset.cmd)
     || utf8(preset.cmd) > 200 || /[\r\n\0]/.test(preset.cmd)

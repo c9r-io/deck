@@ -21,7 +21,7 @@ use crate::error::{DeckError, ErrorKind};
 
 /// Max bytes accepted from one dropped/pasted file — screenshots are
 /// hundreds of KB; the cap only guards against absurd payloads.
-const MAX_DROP_BYTES: usize = 32 * 1024 * 1024;
+pub(crate) const MAX_DROP_BYTES: usize = 32 * 1024 * 1024;
 
 /// Keep the original extension and a recognizable stem, but only characters
 /// that are safe inside a quoted shell path; leading dots are stripped so a

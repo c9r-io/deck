@@ -138,6 +138,9 @@ Status semantics (card colour) are documented on `effectiveCardStatus` in
   `node ui/js/check.mjs` (unresolved identifiers; forbids xterm `._core`;
   import cycles only inside board/layout/terminal — a leaf module
   takes what it needs from the core through `init*(deps)`).
+  Mirrored frontend/backend constants (limits, closed vocabularies, id
+  and badge spellings) are one list, `ui/test/fixtures/limits.json`,
+  checked by `ui/test/limits.test.mjs` and `src/limits_mirror.rs`.
   Backend gates: `cargo fmt`, `cargo clippy --workspace -D warnings`,
   `cargo test --workspace` (unit + `tests/tmux_contract.rs` against the
   bundled tmux + `tests/log_privacy.rs` + `tests/edr_quiet.rs` +

@@ -1,0 +1,60 @@
+{
+  "scheduler": {
+    "chain_quiet_secs_default": 180,
+    "quiet_secs_min": 10,
+    "quiet_secs_max": 86400,
+    "item_max_attempts": 8
+  },
+  "inbound": {
+    "sources": ["slack", "clock"],
+    "schedule_units": ["day", "week", "month"],
+    "finish_modes": ["keep", "close"],
+    "grace_min_default": 15,
+    "grace_min_max": 1440,
+    "rules_max": 32,
+    "rule_id_max": 64,
+    "rule_name_max_chars": 120,
+    "rule_cmd_max_chars": 200,
+    "template_name_max_chars": 120
+  },
+  "local_id": {
+    "pattern": "^[A-Za-z0-9_-]{1,128}$",
+    "max": 128,
+    "valid": ["a", "Ab_9-z", "PPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPP"],
+    "invalid": ["", "a b", "a.b", "é", "PPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPP"]
+  },
+  "badge": {
+    "pattern": "^[a-z0-9_+-]{1,64}$",
+    "valid": ["deck", "white_check_mark", "+1", "-1"],
+    "invalid": ["", "Deck", "a b", "a:b", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"]
+  },
+  "channel": {
+    "rules_max": 64,
+    "channel_ids_max": 64,
+    "keywords_max": 32,
+    "keyword_max_chars": 64,
+    "idle_minutes_max": 10080
+  },
+  "buffer": {
+    "max_entries": 256,
+    "max_copies": 256,
+    "max_entry_bytes": 32768,
+    "max_bytes": 1048576,
+    "max_serialized_bytes": 2097152
+  },
+  "presets_max": 50,
+  "drop_max_bytes": 33554432,
+  "settings": {
+    "font_scale_min": 0.5,
+    "font_scale_max": 1.6,
+    "themes": ["deck-dark", "light", "system", "high-contrast"],
+    "accents": ["teal", "blue", "purple", "orange"],
+    "locales": ["system", "en", "zh-Hans"],
+    "update_channels": ["stable", "nightly"],
+    "shortcut_max_len": 64
+  },
+  "agent_states": ["working", "needs-input", "turn-done"],
+  "notify_status_words": ["unsupported", "not-determined", "denied", "authorized", "provisional"],
+  "context_statuses": ["ready", "foreground-different", "session-replaced", "unavailable", "starting", "unknown"],
+  "mcp_local_errors": ["mcp-session-busy", "mcp-runner-stale", "mcp-client-revoked", "mcp-feature-disabled", "mcp-runner-unconfirmed", "mcp-fence-unpersisted"]
+}

@@ -114,7 +114,15 @@ const SKIP_REASONS: &[&str] = &["busy", "no-rule-target", "no-template", "missed
 /// Default grace of a clock rule, in minutes; 1440 means the whole day.
 pub(crate) const DEFAULT_GRACE_MIN: u32 = 15;
 pub(crate) const MAX_GRACE_MIN: u32 = 1440;
-const MAX_RULES: usize = 32;
+pub(crate) const MAX_RULES: usize = 32;
+pub(crate) const SCHEDULE_UNITS: &[&str] = &["day", "week", "month"];
+/// `""` on disk reads as "keep".
+pub(crate) const FINISH_MODES: &[&str] = &["keep", "close"];
+pub(crate) const RULE_ID_MAX: usize = 64;
+pub(crate) const REF_ID_MAX: usize = 128;
+pub(crate) const RULE_NAME_MAX_CHARS: usize = 120;
+pub(crate) const RULE_CMD_MAX_CHARS: usize = 200;
+pub(crate) const TEMPLATE_NAME_MAX_CHARS: usize = 120;
 const MAX_SEEN: usize = 5000;
 const SEEN_TTL_SECS: u64 = 45 * 24 * 3600;
 /// Search covers this many days back; older badges are invisible to the
@@ -190,11 +198,13 @@ impl Schedule {
         if self.minute >= 1440 {
             return bad("schedule time must be a minute of the day");
         }
+        if !SCHEDULE_UNITS.contains(&self.unit.as_str()) {
+            return bad("schedule unit must be day, week or month");
+        }
         let limit = match self.unit.as_str() {
             "day" => return Ok(()),
             "week" => 7,
-            "month" => 31,
-            _ => return bad("schedule unit must be day, week or month"),
+            _ => 31,
         };
         if self.days.is_empty() || self.days.len() > limit as usize {
             return bad("a weekly or monthly schedule needs its days");
@@ -244,7 +254,7 @@ impl Config {
     }
 }
 
-fn bounded_id(s: &str, max: usize) -> bool {
+pub(crate) fn bounded_id(s: &str, max: usize) -> bool {
     !s.is_empty()
         && s.len() <= max
         && s.bytes()
@@ -313,7 +323,7 @@ pub(crate) fn validate_settings(v: &Value) -> Result<(), DeckError> {
             let rule: Rule = serde_json::from_value(r.clone()).map_err(|_| {
                 DeckError::new(ErrorKind::InvalidDoc, "inbound rule has the wrong shape")
             })?;
-            if !bounded_id(&rule.id, 64) {
+            if !bounded_id(&rule.id, RULE_ID_MAX) {
                 return Err(DeckError::new(
                     ErrorKind::InvalidDoc,
                     "inbound rule id must be a bounded identifier",
@@ -343,7 +353,7 @@ pub(crate) fn validate_settings(v: &Value) -> Result<(), DeckError> {
                         "a clock rule's badge is its id",
                     ));
                 }
-                if !matches!(rule.finish.as_str(), "" | "keep" | "close") {
+                if !rule.finish.is_empty() && !FINISH_MODES.contains(&rule.finish.as_str()) {
                     return Err(DeckError::new(
                         ErrorKind::InvalidDoc,
                         "a clock rule finishes by keep or close",
@@ -361,25 +371,26 @@ pub(crate) fn validate_settings(v: &Value) -> Result<(), DeckError> {
                     "only a clock rule carries a schedule",
                 ));
             }
-            if rule.name.chars().count() > 120 || rule.name.contains(['\n', '\r']) {
+            if rule.name.chars().count() > RULE_NAME_MAX_CHARS || rule.name.contains(['\n', '\r']) {
                 return Err(DeckError::new(
                     ErrorKind::InvalidDoc,
                     "inbound rule name must be one bounded line",
                 ));
             }
-            if !bounded_id(&rule.project_id, 128) || !bounded_id(&rule.column_id, 128) {
+            if !bounded_id(&rule.project_id, REF_ID_MAX) || !bounded_id(&rule.column_id, REF_ID_MAX)
+            {
                 return Err(DeckError::new(
                     ErrorKind::InvalidDoc,
                     "inbound rule must reference bounded project and column ids",
                 ));
             }
-            if rule.cmd.chars().count() > 200 || rule.cmd.contains(['\n', '\r']) {
+            if rule.cmd.chars().count() > RULE_CMD_MAX_CHARS || rule.cmd.contains(['\n', '\r']) {
                 return Err(DeckError::new(
                     ErrorKind::InvalidDoc,
                     "inbound rule command must be one bounded line",
                 ));
             }
-            if rule.template.is_empty() || rule.template.chars().count() > 120 {
+            if rule.template.is_empty() || rule.template.chars().count() > TEMPLATE_NAME_MAX_CHARS {
                 return Err(DeckError::new(
                     ErrorKind::InvalidDoc,
                     "inbound rule template name must be a bounded string",

@@ -25,6 +25,8 @@ mod instance_lock;
 mod keychain;
 mod launch_args;
 mod ledger;
+#[cfg(test)]
+mod limits_mirror;
 mod links;
 mod mcp;
 mod mcp_fs;

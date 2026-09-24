@@ -59,8 +59,13 @@ use crate::sync::LockRecover;
 
 const CONNECTION_ID: &str = "default";
 const FILE_VERSION: u32 = 1;
-const MAX_RULES: usize = 64;
-const MAX_CHANNELS: usize = 64;
+pub(crate) const MAX_RULES: usize = 64;
+pub(crate) const MAX_CHANNELS: usize = 64;
+pub(crate) const MAX_KEYWORDS: usize = 32;
+pub(crate) const MAX_KEYWORD_CHARS: usize = 64;
+/// A collection run waits at most a week of idleness (the frozen run in
+/// deck.json is bounded by the same constant).
+pub(crate) const MAX_IDLE_MINUTES: u32 = crate::documents::CHANNEL_MAX_IDLE_MINUTES;
 const MAX_SENDERS: usize = 128;
 const MAX_PENDING: usize = 1000;
 const MAX_FILE_BYTES: usize = 4 * 1024 * 1024;
@@ -170,7 +175,7 @@ fn valid_target(target: &ChannelTarget) -> bool {
         && one_line(&target.cmd, 200)
         && !target.template.is_empty()
         && one_line(&target.template, 120)
-        && target.idle_minutes <= 7 * 24 * 60
+        && target.idle_minutes <= MAX_IDLE_MINUTES
 }
 
 /// A saved rule participates in matching only while it is enabled AND its
@@ -205,10 +210,10 @@ fn compile_matcher(m: &ChannelMatch) -> Result<Option<Regex>, DeckError> {
         "keywords" => {
             if !m.value.is_empty()
                 || m.keywords.is_empty()
-                || m.keywords.len() > 32
+                || m.keywords.len() > MAX_KEYWORDS
                 || m.keywords
                     .iter()
-                    .any(|k| k.is_empty() || k.chars().count() > 64)
+                    .any(|k| k.is_empty() || k.chars().count() > MAX_KEYWORD_CHARS)
                 || !m.group_capture.is_empty()
             {
                 return Err(invalid("channel keyword match is invalid"));

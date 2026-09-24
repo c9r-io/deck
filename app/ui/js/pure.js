@@ -69,6 +69,8 @@ export const CARD_QUIET_SECS = 15;
    a hook said what the agent is actually doing, so a long silent tool run
    stays "running" instead of drifting to the ambiguous amber "waiting".
    Without agent state the classic heuristic applies unchanged. */
+/* the closed agent state words agent_status.rs accepts */
+export const AGENT_STATES = Object.freeze(['working', 'needs-input', 'turn-done']);
 export function effectiveCardStatus(alive, agent, quiet) {
   if (!alive) return 'stopped';
   if (agent === 'needs-input') return 'attention';
@@ -80,8 +82,9 @@ export function effectiveCardStatus(alive, agent, quiet) {
 // Runtime snapshots and per-observed-status viewing now live in attention-model.js.
 
 /* how long a session must stay quiet before a chain prompt fires when the
-   item sets no `quiet_secs` — keep in sync with CHAIN_QUIET_SECS in
-   scheduler/mod.rs; the accepted range mirrors MIN/MAX_QUIET_SECS there */
+   item sets no `quiet_secs`, and the accepted range — the backend's
+   CHAIN_QUIET_SECS / MIN_QUIET_SECS / MAX_QUIET_SECS; both sides are held to
+   test/fixtures/limits.json (limits.test.mjs, limits_mirror.rs) */
 export const CHAIN_QUIET_SECS = 180;
 export const MIN_QUIET_SECS = 10;
 export const MAX_QUIET_SECS = 86400;
@@ -97,14 +100,18 @@ export function chainQuietHint(idleSecs, alive, total = CHAIN_QUIET_SECS) {
   return q >= total ? ' · quiet ✓' : ` · quiet ${q}s/${total}s`;
 }
 
-export const contextStatusKey = status => ({
+/* one key per context.rs `ContextStatus` word (limits.test.mjs holds the
+   words to the Rust enum through test/fixtures/limits.json) */
+export const CONTEXT_STATUS_KEYS = Object.freeze({
   ready: 'queue.context.ready',
   'foreground-different': 'queue.context.differentProcess',
   'session-replaced': 'queue.context.replaced',
   unavailable: 'queue.context.unavailable',
   starting: 'queue.context.starting',
   unknown: 'queue.context.unknown',
-}[status] || 'queue.context.unknown');
+});
+export const contextStatusKey = status =>
+  (Object.hasOwn(CONTEXT_STATUS_KEYS, status) && CONTEXT_STATUS_KEYS[status]) || 'queue.context.unknown';
 
 /* Where a new session's card lands: the user's selected group, else the
    semantic working group, else the second group (the first is attention by
@@ -162,14 +169,14 @@ export const isNotDirectoryError = error =>
 /* Local MCP control commands fail with one stable machine code as the whole
    wire string (mcp.rs). Each maps to one localized sentence; anything else
    gets the generic sentence — free text is never shown or logged. */
-const MCP_ERROR_KEYS = {
+export const MCP_ERROR_KEYS = Object.freeze({
   'mcp-session-busy': 'mcp.errorBusy',
   'mcp-runner-stale': 'mcp.errorStale',
   'mcp-client-revoked': 'mcp.errorRevoked',
   'mcp-feature-disabled': 'mcp.errorDisabled',
   'mcp-runner-unconfirmed': 'mcp.errorUnconfirmed',
   'mcp-fence-unpersisted': 'mcp.errorUnpersisted',
-};
+});
 export const mcpErrorKey = error =>
   MCP_ERROR_KEYS[String((error && error.message) || error || '')] || 'mcp.actionFailed';
 
@@ -195,7 +202,8 @@ export function groupQueue(items) {
 
 /* mirror of the backend's blocking rule: a step whose group head is dead
    (failed, attempts exhausted) waits for the user to retry/skip/remove it */
-export const itemDead = i => i.state === 'failed' && i.attempts >= 8;
+export const ITEM_MAX_ATTEMPTS = 8; // delivery.rs MAX_ATTEMPTS
+export const itemDead = i => i.state === 'failed' && i.attempts >= ITEM_MAX_ATTEMPTS;
 export function blockedBy(i, rows) {
   if (!i.group) return null;
   const sibs = rows.filter(x => x.group === i.group);
@@ -828,7 +836,10 @@ export function inboundTitle(text, max = 40) {
   return chars.length > max ? chars.slice(0, max - 1).join('') + '…' : line;
 }
 
+/* The two identifier spellings the backend validates (inbound.rs
+   `valid_badge` / `bounded_id`); every frontend normalizer uses these. */
 export const INBOUND_BADGE_RE = /^[a-z0-9_+-]{1,64}$/;
+export const LOCAL_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
 
 /* Decide what to do with one pending item against the current Board.
    Returns { outcome, ...details }. `outcome` is one of the closed codes the
@@ -1053,3 +1064,6 @@ export function startCommand(card) {
   return cmd.trim() && card?.launched === false ? cmd : '';
 }
 export const initialLaunched = cmd => !String(cmd || '').trim();
+
+/* Max bytes of one dropped/pasted file (drops.rs MAX_DROP_BYTES). */
+export const MAX_DROP_BYTES = 32 * 1024 * 1024;

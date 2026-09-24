@@ -28,7 +28,7 @@ import { choiceDialog, confirmDialog, inlineRename, toast } from './dialogs.js';
 import { t } from './i18n.js';
 import { markSessionSeen, panes, pollNow, provider, render, renderSidebar, updateSidebarSelection, activeProject } from './board.js';
 import { SHELL_FG, acceptGhost, feedMirror, maybeRecordCommand, mountQuickBar, nextShellTitle, renderSuggest, resetSuggest, showLinkCtx, updateGhost } from './terminal.js';
-import { AGENT_HISTORY_VERTICAL_UP, collapseHome, isNotDirectoryError, mcpErrorKey, newSessionColumn, startCommand, createTerminalResizeCoordinator, createTerminalWheelAccumulator, createTerminalWheelFrameScheduler, isComposingKeyEvent, isPlainShiftKeydown, isTerminalAutoReply, scrollResultView, shouldRouteImeKeydownThroughInput, shQuote, terminalAgentComposerGeometry, terminalAgentHistoryUpRoute, terminalSelectionWheelRoute, terminalWheelLines } from './pure.js';
+import { AGENT_HISTORY_VERTICAL_UP, collapseHome, isNotDirectoryError, MAX_DROP_BYTES, mcpErrorKey, newSessionColumn, startCommand, createTerminalResizeCoordinator, createTerminalWheelAccumulator, createTerminalWheelFrameScheduler, isComposingKeyEvent, isPlainShiftKeydown, isTerminalAutoReply, scrollResultView, shouldRouteImeKeydownThroughInput, shQuote, terminalAgentComposerGeometry, terminalAgentHistoryUpRoute, terminalSelectionWheelRoute, terminalWheelLines } from './pure.js';
 import { toggleQueuePanel } from './scheduler.js';
 import { cancelAllTerminalSelections, cancelTerminalSelection, copyTerminalSelection, hasTerminalSelection, terminalSelectionElsewhere, wireTerminalSelection } from './selection.js';
 import { getTerminalTheme, onThemeChange, syncThemeIntegrations } from './theme.js';
@@ -81,7 +81,6 @@ export function isFileDrag(dt) {
   return !!dt && Array.from(dt.types || []).includes('Files');
 }
 
-const MAX_DROP_BYTES = 32 * 1024 * 1024;
 
 /* WKWebView surfaces dropped/pasted files as CONTENT (no usable path), so:
    read the bytes → backend saves them 0600 under ~/.deck/drops → the saved

@@ -4572,3 +4572,28 @@ fn runner_errors_are_journaled_by_class() {
     drop(runner);
     std::fs::remove_dir_all(root).unwrap();
 }
+
+/// The webview maps each local-command failure code to one sentence
+/// (`pure.js` MCP_ERROR_KEYS); both are held to `ui/test/fixtures/limits.json`.
+#[test]
+fn local_command_error_codes_match_the_frontend_fixture() {
+    let limits: Value =
+        serde_json::from_str(include_str!("../../../ui/test/fixtures/limits.json")).unwrap();
+    let listed: Vec<&str> = limits["mcp_local_errors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|code| code.as_str().unwrap())
+        .collect();
+    assert_eq!(
+        listed,
+        [
+            SESSION_BUSY,
+            RUNNER_STALE,
+            CLIENT_REVOKED,
+            FEATURE_DISABLED,
+            RUNNER_UNCONFIRMED,
+            FENCE_UNPERSISTED,
+        ]
+    );
+}

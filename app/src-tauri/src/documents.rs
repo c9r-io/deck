@@ -139,11 +139,21 @@ pub(crate) struct BoardCard {
     inbound_plan: Option<InboundPlan>,
 }
 
-const BUFFER_MAX_ENTRIES: usize = 256;
-const BUFFER_MAX_COPIES: usize = 256;
-const BUFFER_MAX_ENTRY_BYTES: usize = 32 * 1024;
-const BUFFER_MAX_BYTES: usize = 1024 * 1024;
-const BUFFER_MAX_SERIALIZED_BYTES: usize = 2 * 1024 * 1024;
+pub(crate) const BUFFER_MAX_ENTRIES: usize = 256;
+pub(crate) const BUFFER_MAX_COPIES: usize = 256;
+pub(crate) const BUFFER_MAX_ENTRY_BYTES: usize = 32 * 1024;
+pub(crate) const BUFFER_MAX_BYTES: usize = 1024 * 1024;
+pub(crate) const BUFFER_MAX_SERIALIZED_BYTES: usize = 2 * 1024 * 1024;
+pub(crate) const PRESETS_MAX: usize = 50;
+/// A channel collection run waits at most a week of idleness.
+pub(crate) const CHANNEL_MAX_IDLE_MINUTES: u32 = 7 * 24 * 60;
+pub(crate) const FONT_SCALE_MIN: f64 = 0.5;
+pub(crate) const FONT_SCALE_MAX: f64 = 1.6;
+pub(crate) const THEMES: &[&str] = &["deck-dark", "light", "system", "high-contrast"];
+pub(crate) const ACCENTS: &[&str] = &["teal", "blue", "purple", "orange"];
+pub(crate) const LOCALES: &[&str] = &["system", "en", "zh-Hans"];
+pub(crate) const SHORTCUTS_MAX: usize = 64;
+pub(crate) const SHORTCUT_MAX_LEN: usize = 64;
 
 #[derive(serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -335,7 +345,7 @@ fn validate_channel_run(
         && (run.channel_id.starts_with('C') || run.channel_id.starts_with('G'))
         && bounded_buffer_id(&run.rule_id)
         && run.last_collected_at > 0
-        && run.idle_minutes <= 7 * 24 * 60
+        && run.idle_minutes <= CHANNEL_MAX_IDLE_MINUTES
         && run.initial_steps.len() <= BUFFER_MAX_COPIES
         && buffer.is_some_and(|value| value.collecting == run.collecting)
         && run.initial_steps.iter().enumerate().all(|(index, step)| {
@@ -508,7 +518,7 @@ fn validate_board(b: &BoardDocRaw) -> Result<(), DeckError> {
                 ));
             }
         }
-        if p.presets.len() > 50 {
+        if p.presets.len() > PRESETS_MAX {
             return Err(DeckError::new(
                 ErrorKind::InvalidDoc,
                 format!("project {} has too many task presets", p.id),
@@ -689,7 +699,7 @@ impl TryFrom<SettingsDocRaw> for SettingsDoc {
             }
         }
         if let Some(locale) = &raw.locale {
-            if !matches!(locale.as_str(), "system" | "en" | "zh-Hans") {
+            if !LOCALES.contains(&locale.as_str()) {
                 return Err(DeckError::new(
                     ErrorKind::InvalidDoc,
                     "locale must be system, en, or zh-Hans",
@@ -697,10 +707,7 @@ impl TryFrom<SettingsDocRaw> for SettingsDoc {
             }
         }
         if let Some(theme) = &raw.theme {
-            if !matches!(
-                theme.as_str(),
-                "deck-dark" | "light" | "system" | "high-contrast"
-            ) {
+            if !THEMES.contains(&theme.as_str()) {
                 return Err(DeckError::new(
                     ErrorKind::InvalidDoc,
                     "theme must be deck-dark, light, system, or high-contrast",
@@ -708,7 +715,7 @@ impl TryFrom<SettingsDocRaw> for SettingsDoc {
             }
         }
         if let Some(accent) = &raw.accent {
-            if !matches!(accent.as_str(), "teal" | "blue" | "purple" | "orange") {
+            if !ACCENTS.contains(&accent.as_str()) {
                 return Err(DeckError::new(
                     ErrorKind::InvalidDoc,
                     "accent must be teal, blue, purple, or orange",
@@ -716,7 +723,7 @@ impl TryFrom<SettingsDocRaw> for SettingsDoc {
             }
         }
         if let Some(scale) = raw.font_scale {
-            if !scale.is_finite() || !(0.5..=1.6).contains(&scale) {
+            if !scale.is_finite() || !(FONT_SCALE_MIN..=FONT_SCALE_MAX).contains(&scale) {
                 return Err(DeckError::new(
                     ErrorKind::InvalidDoc,
                     "fontScale must be between 0.5 and 1.6",
@@ -724,16 +731,15 @@ impl TryFrom<SettingsDocRaw> for SettingsDoc {
             }
         }
         if let Some(shortcuts) = &raw.shortcuts {
-            if shortcuts.len() > 64 {
+            if shortcuts.len() > SHORTCUTS_MAX {
                 return Err(DeckError::new(
                     ErrorKind::InvalidDoc,
                     "too many shortcut entries",
                 ));
             }
-            if shortcuts
-                .iter()
-                .any(|(key, value)| key.is_empty() || key.len() > 64 || value.len() > 64)
-            {
+            if shortcuts.iter().any(|(key, value)| {
+                key.is_empty() || key.len() > SHORTCUT_MAX_LEN || value.len() > SHORTCUT_MAX_LEN
+            }) {
                 return Err(DeckError::new(
                     ErrorKind::InvalidDoc,
                     "shortcut names and bindings must be bounded strings",

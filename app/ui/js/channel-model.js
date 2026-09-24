@@ -8,14 +8,18 @@
 // first character the agent reads). Normalizing keeps a structurally valid
 // rule that fails admission, so a rule saved by an older deck is shown as
 // blocked and can be edited, never silently dropped on the next save.
-import { fillInboundTemplate, inboundTitle } from './pure.js';
+import { fillInboundTemplate, inboundTitle, LOCAL_ID_RE } from './pure.js';
 
-const LOCAL_ID = /^[A-Za-z0-9_-]{1,128}$/;
 const CHANNEL_ID = /^[CG][A-Z0-9_-]{0,63}$/;
 const USER_ID = /^[UW][A-Z0-9_-]{0,63}$/;
 const BOT_ID = /^B[A-Z0-9_-]{0,63}$/;
 export const CHANNEL_IDLE_DEFAULT = 30;
 export const CHANNEL_IDLE_MAX = 7 * 24 * 60;
+/* inbound_channel.rs bounds, mirrored through test/fixtures/limits.json */
+export const CHANNEL_RULES_MAX = 64;
+export const CHANNEL_IDS_MAX = 64;
+export const CHANNEL_KEYWORDS_MAX = 32;
+export const CHANNEL_KEYWORD_MAX_CHARS = 64;
 
 // Twin of admission::channel_agent_command: a bare agent or simple arguments,
 // without environment prefixes, paths, quoting or shell syntax.
@@ -48,14 +52,14 @@ export function normalizeChannelRule(raw) {
   if (!raw || typeof raw !== 'object') return null;
   const kind = String(raw.match?.kind || 'contains');
   const matcher = { kind, caseSensitive: raw.match?.caseSensitive === true };
-  if (kind === 'keywords') matcher.keywords = unique(raw.match?.keywords, /^.{1,64}$/u, 32);
+  if (kind === 'keywords') matcher.keywords = unique(raw.match?.keywords, new RegExp(`^.{1,${CHANNEL_KEYWORD_MAX_CHARS}}$`, 'u'), CHANNEL_KEYWORDS_MAX);
   else matcher.value = String(raw.match?.value || '').slice(0, 1024);
-  if (kind === 'regex' && LOCAL_ID.test(String(raw.match?.groupCapture || ''))) {
+  if (kind === 'regex' && LOCAL_ID_RE.test(String(raw.match?.groupCapture || ''))) {
     matcher.groupCapture = String(raw.match.groupCapture);
   }
   const rule = {
     id: String(raw.id || ''), enabled: raw.enabled !== false, connectionId: 'default',
-    channelIds: unique(raw.channelIds, CHANNEL_ID, 64),
+    channelIds: unique(raw.channelIds, CHANNEL_ID, CHANNEL_IDS_MAX),
     senderUserIds: unique(raw.senderUserIds, USER_ID, 128),
     senderBotIds: unique(raw.senderBotIds, BOT_ID, 128), match: matcher,
     includeThreads: raw.includeThreads !== false,
@@ -69,9 +73,9 @@ export function normalizeChannelRule(raw) {
   const validMatch = kind === 'contains' ? !!matcher.value && matcher.value.length <= 256
     : kind === 'keywords' ? matcher.keywords.length > 0
       : kind === 'regex' ? !!matcher.value : false;
-  if (!LOCAL_ID.test(rule.id) || rule.id.length > 64 || !rule.channelIds.length
+  if (!LOCAL_ID_RE.test(rule.id) || rule.id.length > 64 || !rule.channelIds.length
     || (!rule.senderUserIds.length && !rule.senderBotIds.length) || !validMatch
-    || !LOCAL_ID.test(rule.projectId) || !LOCAL_ID.test(rule.columnId)
+    || !LOCAL_ID_RE.test(rule.projectId) || !LOCAL_ID_RE.test(rule.columnId)
     || rule.dir.length > 1024 || /[\r\n\0]/.test(rule.dir)
     || !rule.cmd || rule.cmd.length > 200 || /[\r\n\0]/.test(rule.cmd)
     || !rule.template || rule.template.length > 120) return null;
@@ -86,7 +90,7 @@ export function normalizeChannelConfig(raw) {
     const rule = normalizeChannelRule(value);
     if (!rule || seen.has(rule.id)) continue;
     seen.add(rule.id); channelRules.push(rule);
-    if (channelRules.length === 64) break;
+    if (channelRules.length === CHANNEL_RULES_MAX) break;
   }
   return {
     channelConnection: { enabled: source.channelConnection?.enabled === true, connectionId: 'default' },

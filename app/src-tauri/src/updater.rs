@@ -45,7 +45,9 @@ const NIGHTLY_UPDATE_ENDPOINT: &str =
     "https://github.com/c9r-io/deck/releases/download/nightly-feed/latest.json";
 const NIGHTLY_UPDATE_PUBKEY: &str = include_str!("../updater/nightly.pub.b64");
 
-fn update_source(channel: &str) -> Result<(&'static str, Option<&'static str>), DeckError> {
+pub(crate) fn update_source(
+    channel: &str,
+) -> Result<(&'static str, Option<&'static str>), DeckError> {
     match channel {
         // Stable keeps using the key from tauri.conf.json. Nightly overrides
         // it with a separately generated key so compromise of the candidate

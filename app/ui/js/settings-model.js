@@ -1,9 +1,11 @@
 import { DEFAULT_VOICE_PREFERENCES, normalizeVoicePreferences } from './voice-preferences-model.js';
 import { normalizeChannelConfig } from './channel-model.js';
+import { INBOUND_BADGE_RE, LOCAL_ID_RE } from './pure.js';
 
-const THEMES = new Set(['deck-dark', 'light', 'system', 'high-contrast']);
-const ACCENTS = new Set(['teal', 'blue', 'purple', 'orange']);
-const UPDATE_CHANNELS = new Set(['stable', 'nightly']);
+export const THEMES = Object.freeze(['deck-dark', 'light', 'system', 'high-contrast']);
+export const ACCENTS = Object.freeze(['teal', 'blue', 'purple', 'orange']);
+export const UPDATE_CHANNELS = Object.freeze(['stable', 'nightly']);
+export const SHORTCUT_MAX_LEN = 64;
 
 export const FONT_SCALE_MIN = 0.5;
 export const FONT_SCALE_MAX = 1.6;
@@ -32,7 +34,7 @@ const KEY_CODE = /^(?:Key[A-Z]|Digit[0-9]|F(?:[1-9]|1[0-2])|Equal|Minus|Bracket(
 
 export function normalizeShortcutBinding(value, fallback = '') {
   if (value === '') return '';
-  if (typeof value !== 'string' || value.length > 64) return fallback;
+  if (typeof value !== 'string' || value.length > SHORTCUT_MAX_LEN) return fallback;
   const parts = value.split('+');
   const code = parts.pop();
   if (!KEY_CODE.test(code || '')) return fallback;
@@ -67,9 +69,11 @@ export const DEFAULT_GRACE_MIN = 15;
 export const MAX_GRACE_MIN = 1440;
 export const GRACE_CHOICES = Object.freeze([DEFAULT_GRACE_MIN, MAX_GRACE_MIN]);
 export const normalizeGrace = raw => (Number.isInteger(raw) && raw >= 0 && raw <= MAX_GRACE_MIN ? raw : DEFAULT_GRACE_MIN);
-const INBOUND_BADGE = /^[a-z0-9_+-]{1,64}$/;
-const INBOUND_ID = /^[A-Za-z0-9_-]{1,128}$/;
-const MAX_INBOUND_RULES = 32;
+export const MAX_INBOUND_RULES = 32;
+export const INBOUND_RULE_ID_MAX = 64;
+export const INBOUND_NAME_MAX = 120;
+export const INBOUND_CMD_MAX = 200;
+export const TEMPLATE_NAME_MAX = 120;
 
 export const DEFAULT_INBOUND = Object.freeze({
   sources: Object.freeze({ slack: Object.freeze({ enabled: false }) }),
@@ -118,18 +122,18 @@ export function normalizeInbound(value) {
       ...(r.reviewEach === true ? { reviewEach: true } : {}),
       since: Number.isInteger(r.since) && r.since >= 0 ? r.since : 0,
     };
-    if (!INBOUND_ID.test(rule.id) || rule.id.length > 64) continue;
+    if (!LOCAL_ID_RE.test(rule.id) || rule.id.length > INBOUND_RULE_ID_MAX) continue;
     if (rule.source === 'clock') {
       rule.badge = rule.id;
       rule.schedule = normalizeSchedule(r.schedule);
       if (!rule.schedule) continue;
       rule.graceMin = normalizeGrace(r.graceMin);
     }
-    if (rule.name.length > 120 || /[\r\n]/.test(rule.name)) continue;
-    if (!INBOUND_SOURCES.includes(rule.source) || !INBOUND_BADGE.test(rule.badge)) continue;
-    if (!INBOUND_ID.test(rule.projectId) || !INBOUND_ID.test(rule.columnId)) continue;
-    if (rule.cmd.length > 200 || /[\r\n]/.test(rule.cmd)) continue;
-    if (!rule.template || rule.template.length > 120) continue;
+    if (rule.name.length > INBOUND_NAME_MAX || /[\r\n]/.test(rule.name)) continue;
+    if (!INBOUND_SOURCES.includes(rule.source) || !INBOUND_BADGE_RE.test(rule.badge)) continue;
+    if (!LOCAL_ID_RE.test(rule.projectId) || !LOCAL_ID_RE.test(rule.columnId)) continue;
+    if (rule.cmd.length > INBOUND_CMD_MAX || /[\r\n]/.test(rule.cmd)) continue;
+    if (!rule.template || rule.template.length > TEMPLATE_NAME_MAX) continue;
     if (rule.dir.length > 1024 || /[\r\n\0]/.test(rule.dir)) continue;
     const pair = rule.source + '/' + rule.badge;
     if (seenPair.has(pair) || seenId.has(rule.id)) continue;
@@ -154,9 +158,9 @@ export function normalizeSettings(value) {
      --debug-logging launch flag. Retire this known field while continuing to
      round-trip genuinely unknown extension fields. */
   delete merged.debug;
-  if (!THEMES.has(merged.theme)) merged.theme = DEFAULT_SETTINGS.theme;
-  if (!ACCENTS.has(merged.accent)) merged.accent = DEFAULT_SETTINGS.accent;
-  if (!UPDATE_CHANNELS.has(merged.updateChannel)) merged.updateChannel = DEFAULT_SETTINGS.updateChannel;
+  if (!THEMES.includes(merged.theme)) merged.theme = DEFAULT_SETTINGS.theme;
+  if (!ACCENTS.includes(merged.accent)) merged.accent = DEFAULT_SETTINGS.accent;
+  if (!UPDATE_CHANNELS.includes(merged.updateChannel)) merged.updateChannel = DEFAULT_SETTINGS.updateChannel;
   if (typeof merged.sessionRestore !== 'boolean') merged.sessionRestore = DEFAULT_SETTINGS.sessionRestore;
   /* away notifications: two plain booleans, off unless saved true */
   if (merged.notifyAway !== true) merged.notifyAway = false;
