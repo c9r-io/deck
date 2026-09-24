@@ -691,6 +691,12 @@ pub(crate) fn shell_snapshots_clear() -> Result<(), DeckError> {
     clear_all()
 }
 
+/// Tests that touch the process-wide TRACKER run one at a time (CI uses
+/// `--test-threads=1`, a local run does not), here and in any module whose
+/// code reaches `schedule_checkpoints`.
+#[cfg(test)]
+pub(crate) static TRACKER_TEST_LOCK: Mutex<()> = Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -963,10 +969,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    /// Tests that touch the process-wide TRACKER run one at a time: CI uses
-    /// `--test-threads=1`, a local run does not.
-    static TRACKER_TEST_LOCK: Mutex<()> = Mutex::new(());
-
     #[test]
     fn recovered_sessions_are_removed_from_checkpoint_deduplication() {
         let _guard = TRACKER_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -1077,14 +1079,28 @@ mod tests {
             foreground: "zsh".into(),
         };
         assert!(checkpoint_eligible(&observation));
-        {
-            // an earlier test in this process may have scheduled within the
-            // 15 s interval or left the worker flag set
-            let mut tracker = TRACKER.lock().unwrap();
-            tracker.busy = false;
-            tracker.last_schedule = 0;
+        // An earlier test in this process may have scheduled within the
+        // 15 s interval or left the worker flag set, and a lifecycle test
+        // may briefly hold the session-runtime operation gate that
+        // `schedule_checkpoints` yields to: reset and retry until the
+        // schedule was actually taken (its `last_schedule` moves).
+        let started = std::time::Instant::now();
+        loop {
+            {
+                let mut tracker = TRACKER.lock().unwrap();
+                tracker.busy = false;
+                tracker.last_schedule = 0;
+            }
+            schedule_checkpoints(vec![observation.clone()], true);
+            if TRACKER.lock().unwrap().last_schedule != 0 {
+                break;
+            }
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(5),
+                "the operation gate never became available"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
         }
-        schedule_checkpoints(vec![observation], true);
         let started = std::time::Instant::now();
         while TRACKER.lock().unwrap().busy {
             assert!(

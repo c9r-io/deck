@@ -20,6 +20,8 @@ board, and find the sessions that need your attention.
 - **Find where to look next.** Enable Claude Code or Codex status integration
   to see input requests and unread turn endings across projects. Without it,
   deck shows output activity; silence alone does not mean a task is finished.
+  Turn on **Notify me when away** and macOS tells you when an agent needs you
+  while deck is not in front; the Dock icon counts the cards waiting.
 - **Leave the app, keep sessions running.** Sessions survive quitting deck.
   Restarting your Mac or its background shell service ends running processes.
 
@@ -91,6 +93,11 @@ promised to survive restarts. Manual follow-up stars do survive restarts and
 remain until explicitly removed, regardless of viewing, status or group changes.
 The Followed filter includes every starred card; the main list deduplicates
 overlapping reasons and puts manual-only follow-up after input and unread groups.
+With **Notify me when away** on (off by default), a macOS notification is
+posted when a card enters needs-input or an unread turn ending while the deck
+window is not focused, carrying only the card title, the project name and one
+fixed phrase; clicking it opens the card. The Dock badge counts needs-input
+plus unread endings. See [away notifications](docs/notifications.md).
 
 **Sessions outlive the app.** deck runs its own private tmux server, so
 quitting deck (or it crashing) never kills your agents. Reopen and everything

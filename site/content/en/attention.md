@@ -18,6 +18,10 @@ Hooks report only fixed status words and pane identifiers, not prompts or output
 
 After enabling, use the matching CLI in a deck session. If an existing run has not reported a state, check whether its configuration has taken effect. Missing reports do not mean that no attention is needed.
 
+## Be told while you are away
+
+In **Settings → Integrations & automation**, turn on **Notify me when away**. When the deck window is not in front, macOS shows a notification the moment an agent asks for input or finishes a turn, and the Dock icon counts the cards waiting (input requests plus unread endings). The notification carries the card title, the project name and one fixed phrase, never prompts or output; click it to open the card. It needs the status integration above; macOS asks for permission once when you turn the switch on. **Play a sound** is a separate switch, off by default.
+
 ## Read each signal
 
 | Signal | What it tells you | What to do |

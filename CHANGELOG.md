@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- Away notifications and a Dock badge, off by default. With **Notify me
+  when away** on (Settings → Integrations & automation), macOS shows a
+  notification when an agent reports needs-input or an unread turn ending
+  while the deck window is not in front; the Dock icon counts needs-input
+  plus unread endings. The notification carries the card title, the
+  project name and one of two fixed phrases, nothing else, and clicking it
+  opens the card. The decision is made in the backend as each hook event
+  arrives, so App Nap freezing the webview does not delay it. Permission
+  is asked once when the switch is turned on; a blocked state is shown,
+  never worked around. See `docs/notifications.md`.
+
 ## 0.7.9 — 2026-09-24 (Nightly)
 
 - Installing an update can no longer ask for an administrator password or

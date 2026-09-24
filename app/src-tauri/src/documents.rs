@@ -598,6 +598,15 @@ pub(crate) struct SettingsDocRaw {
     #[serde(rename = "sessionRestore")]
     #[allow(dead_code)]
     session_restore: Option<bool>,
+    // Away notifications (notify.rs): read at boot by `notify_settings`.
+    #[serde(default)]
+    #[serde(rename = "notifyAway")]
+    #[allow(dead_code)]
+    notify_away: Option<bool>,
+    #[serde(default)]
+    #[serde(rename = "notifySound")]
+    #[allow(dead_code)]
+    notify_sound: Option<bool>,
     #[serde(default, deserialize_with = "deserialize_present_string")]
     locale: Option<String>,
     #[serde(default, deserialize_with = "deserialize_present_string")]
@@ -909,6 +918,21 @@ pub(crate) fn editor_app() -> Option<String> {
 
 pub(crate) fn locale_setting() -> String {
     locale_from(settings_value().as_ref())
+}
+
+/// The away-notification switch and its sound, both off unless saved true.
+pub(crate) fn notify_settings() -> (bool, bool) {
+    notify_from(settings_value().as_ref())
+}
+
+fn notify_from(settings: Option<&serde_json::Value>) -> (bool, bool) {
+    let flag = |key: &str| {
+        settings
+            .and_then(|s| s.get(key))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+    };
+    (flag("notifyAway"), flag("notifySound"))
 }
 
 pub(crate) fn update_channel_setting() -> String {
@@ -1336,6 +1360,19 @@ mod tests {
         assert!(serde_json::from_str::<SettingsDoc>(r#"{"sessionRestore":true}"#).is_ok());
         assert!(serde_json::from_str::<SettingsDoc>(r#"{"sessionRestore":false}"#).is_ok());
         assert!(serde_json::from_str::<SettingsDoc>(r#"{"sessionRestore":"yes"}"#).is_err());
+        assert!(
+            serde_json::from_str::<SettingsDoc>(r#"{"notifyAway":true,"notifySound":false}"#)
+                .is_ok()
+        );
+        assert!(serde_json::from_str::<SettingsDoc>(r#"{"notifyAway":"on"}"#).is_err());
+        assert_eq!(
+            notify_from(Some(
+                &serde_json::json!({"notifyAway":true,"notifySound":"yes"})
+            )),
+            (true, false),
+            "only a real true turns a flag on"
+        );
+        assert_eq!(notify_from(None), (false, false));
         for locale in ["system", "en", "zh-Hans"] {
             assert!(
                 serde_json::from_str::<SettingsDoc>(&format!(r#"{{"locale":"{locale}"}}"#)).is_ok()

@@ -37,6 +37,10 @@
 //!   strings stay linked in the binary; `scripts/check-edr-binary` names
 //!   them as gated rather than forbidden.
 //!
+//! - post anything but a card title and one of two fixed phrases as a
+//!   macOS notification (`notify.rs` + `native/NotificationBridge.swift`,
+//!   in-process, UNUserNotificationCenter only, no-op outside a bundle).
+//!
 //! What deck may spawn: low-frequency, fixed-argument system tools named by
 //! absolute `/usr/bin` path (`open`, `plutil`, `pbcopy`, `sw_vers`, `uname`;
 //! never a PATH lookup), the bundled tmux, and — for a locally approved,
@@ -437,6 +441,73 @@ fn native_speech_is_in_process_local_and_content_free() {
     ] {
         assert!(!entitlement.contains(forbidden));
     }
+}
+
+/// The notification bridge talks to UNUserNotificationCenter and nothing
+/// else: no process, no network, no file, no log line, and every entry is
+/// a no-op outside a bundle. notify.rs hands the system only a card title
+/// and one of two fixed phrases, from exactly one call site.
+#[test]
+fn native_notifications_are_in_process_and_content_closed() {
+    let swift = std::fs::read_to_string(manifest("native/NotificationBridge.swift")).unwrap();
+    for forbidden in [
+        "Process(",
+        "NSTask",
+        "URLSession",
+        "FileManager",
+        "print(",
+        "NSLog(",
+        "launchctl",
+        "osascript",
+        "userInfo",
+        "attachments",
+    ] {
+        assert!(
+            !swift.contains(forbidden),
+            "native notifications must not introduce {forbidden}"
+        );
+    }
+    assert!(swift.contains("guard deckNotifyBundled() else"));
+    assert_eq!(
+        swift.matches("guard deckNotifyBundled() else").count(),
+        5,
+        "every C entry is guarded"
+    );
+    let notify = std::fs::read_to_string(manifest("src/notify.rs")).unwrap();
+    let notify = production_region(&notify);
+    assert_eq!(
+        notify.matches("deck_notify_post(").count(),
+        2,
+        "one declaration, one call"
+    );
+    let declared = "fn deck_notify_post(";
+    let declaration = notify.find(declared).expect("declared");
+    let after = declaration + declared.len();
+    let call = notify[after..]
+        .find("deck_notify_post(")
+        .map(|at| at + after)
+        .expect("the one post call");
+    assert!(
+        notify[..call].contains("impl Native for SystemNative"),
+        "the call is inside SystemNative::post"
+    );
+    // the body comes from body_text and nowhere else
+    assert_eq!(notify.matches("&body_text(").count(), 1);
+    for phrase in [
+        "needs your input",
+        "a turn has ended",
+        "需要你的输入",
+        "一轮已结束",
+    ] {
+        assert_eq!(
+            notify.matches(phrase).count(),
+            1,
+            "{phrase} is defined once"
+        );
+    }
+    let build = std::fs::read_to_string(manifest("build.rs")).unwrap();
+    assert!(build.contains("native/NotificationBridge.swift"));
+    assert!(build.contains("\"UserNotifications\","));
 }
 
 #[test]

@@ -15,9 +15,12 @@
 //!   foreground process, captured AT EVENT TIME (`expected_fg`), never a
 //!   hard-coded per-agent executable list.
 //! - No automatic card movement. This is input for the board's status dot
-//!   (the poll merge in `commands.rs`) and for the scheduler's agent hold
+//!   (the poll merge in `commands.rs`), for the scheduler's agent hold
 //!   (`scheduler::observe`), which may only DELAY a queued row — never
-//!   release, target or move anything. Those two are the only readers.
+//!   release, target or move anything — and for `notify.rs` (a macOS
+//!   notification while the window is not in front, and the Dock badge;
+//!   `ingest` calls `notify::observe`, `reconcile` calls `notify::retain`).
+//!   Those three are the only readers.
 //!
 //! Adding an agent module = one entry in `SOURCES` + an installer that
 //! registers that agent's own hook/notify config to call the same helper
@@ -256,13 +259,15 @@ pub(crate) fn ingest(
     ));
     with_agents(|agents| {
         agents.insert(
-            session,
+            session.clone(),
             Entry {
                 state: event.state,
                 expected_fg: fg,
             },
         );
     });
+    // the desktop attention loop: notification while away, Dock badge
+    crate::notify::observe(&session, event.state);
     Ok(())
 }
 
@@ -273,14 +278,19 @@ pub(crate) fn ingest(
 /// longer matches the process observed when the state was reported — the
 /// agent exited or was replaced.
 pub(crate) fn reconcile(panes: &HashMap<String, PaneRow>) {
-    with_agents(|agents| {
+    let alive = with_agents(|agents| {
         agents.retain(|session, entry| {
             let Some(pane) = panes.get(session) else {
                 return false;
             };
             !crate::context::shell_process(Some(&pane.command)) && pane.command == entry.expected_fg
         });
+        agents
+            .keys()
+            .cloned()
+            .collect::<std::collections::HashSet<String>>()
     });
+    crate::notify::retain(&alive);
 }
 
 /// The state word for one session, if an agent module reported one.
@@ -890,13 +900,14 @@ pub(crate) fn agent_hooks_set(agent: String, enable: bool) -> Result<(), DeckErr
 
 // ---------- tests -------------------------------------------------------------
 
+/// Tests that touch the process-wide agent store run one at a time, in this
+/// module and in any other whose code reaches `reconcile`/`ingest`.
+#[cfg(test)]
+pub(crate) static STORE_TEST_LOCK: Mutex<()> = Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// The two tests below mutate the process-global AGENTS store; hold this
-    /// across each so the default parallel test runner cannot interleave them.
-    static STORE_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     const HELPER: &str = "/Applications/deck.app/Contents/MacOS/deck-status-helper";
 

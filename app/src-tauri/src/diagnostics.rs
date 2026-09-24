@@ -156,6 +156,7 @@ const INBOUND_OUTCOMES: &[&str] = &[
 ];
 
 const LISTEN_TARGETS: &[&str] = &[
+    "notify-open",
     "voice-window-hidden",
     "update-check",
     "update-check-manual",
@@ -490,6 +491,19 @@ const UI_EVENT_SPECS: &[(&str, DetailPolicy)] = &[
         "update-install-fail",
         DetailPolicy::Closed(&["not-writable"]),
     ),
+    // away notifications (notify.rs): the authorization word after a
+    // settings change, and a click that opened a card
+    (
+        "notify-status",
+        DetailPolicy::Closed(&[
+            "unsupported",
+            "not-determined",
+            "denied",
+            "authorized",
+            "provisional",
+        ]),
+    ),
+    ("notify-open", DetailPolicy::None),
     ("board-load-fail", DetailPolicy::None),
     ("settings-load-fail", DetailPolicy::None),
     ("settings-save-fail", DetailPolicy::None),

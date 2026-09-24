@@ -23,6 +23,7 @@ import { createVoiceSettings } from './voice-settings.js';
 import { activateTheme } from './theme.js';
 import { applyFontScale } from './font-scale.js';
 import { newlyPairedDevice } from './connector-model.js';
+import { NOTIFY_STATUS_WORDS, notifyStatusKey } from './notify-model.js';
 import {
   formatShortcut, isSafeShortcut, registerShortcutAction, shortcutConflict, shortcutFromEvent,
 } from './shortcuts.js';
@@ -284,6 +285,8 @@ export async function openSettings() {
   $('set-accent').value = ctx.settings.accent || 'teal';
   $('set-channel').value = ctx.settings.updateChannel || 'stable';
   $('set-session-restore').checked = !!ctx.settings.sessionRestore;
+  renderNotifySettings();
+  if (ctx.settings.notifyAway) inv('notify_status').then(renderNotifyStatus).catch(() => {});
   $('set-agent-hooks').checked = false;
   $('set-codex-hooks').checked = false;
   inv('agent_hooks_status')
@@ -377,6 +380,39 @@ export async function persistSessionRestoreChoice() {
         }
       }
       toast(t(desired ? 'settings.shellRecoveryEnabled' : 'settings.shellRecoveryDisabled'));
+    },
+  });
+}
+
+/* Away notifications (notify.rs): two booleans through the one settings
+   writer; the backend is told after the durable write and answers with the
+   closed authorization word shown under the switch. Turning the switch on
+   is the one moment macOS may be asked. */
+function renderNotifySettings(settings = ctx.settings) {
+  $('set-notify-away').checked = !!settings.notifyAway;
+  $('set-notify-sound').checked = !!settings.notifySound;
+  $('set-notify-sound').disabled = !settings.notifyAway;
+  if (!settings.notifyAway) $('set-notify-status').textContent = '';
+}
+function renderNotifyStatus(status) {
+  const word = NOTIFY_STATUS_WORDS.includes(status) ? status : 'unsupported';
+  $('set-notify-status').textContent = ctx.settings.notifyAway ? t(notifyStatusKey(word)) : '';
+  uev('notify-status', word);
+}
+async function persistNotifyChoice() {
+  const candidate = normalizeSettings({
+    ...ctx.settings,
+    notifyAway: $('set-notify-away').checked,
+    notifySound: $('set-notify-away').checked && $('set-notify-sound').checked,
+  });
+  await commitSettings({
+    key: 'notify', candidate, locked: ['set-notify-away', 'set-notify-sound'],
+    apply: settings => renderNotifySettings(settings),
+    onCommit: async settings => {
+      const status = await inv('notify_configure', {
+        enabled: settings.notifyAway, sound: settings.notifySound, request: true,
+      });
+      renderNotifyStatus(status);
     },
   });
 }
@@ -1004,6 +1040,9 @@ export function initSettings() {
 
   $('set-codex-hooks').onchange = () =>
     persistAgentHooksChoice('codex', 'set-codex-hooks', 'settings.codexHooksEnableConfirm');
+
+  $('set-notify-away').onchange = persistNotifyChoice;
+  $('set-notify-sound').onchange = persistNotifyChoice;
 
   $('set-inbound-slack').onchange = persistInboundSlackChoice;
   $('set-channel-enabled').onchange = async () => {

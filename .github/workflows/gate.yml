@@ -75,6 +75,8 @@ jobs:
         run: scripts/ui-tests
       - name: Native speech error regression (no microphone)
         run: scripts/test-speech-bridge
+      - name: Notification bridge helpers and no-bundle guard
+        run: scripts/test-notification-bridge
       # 3. unresolved-identifier scan (forgotten imports; also forbids
       #    xterm private ._core API in deck code) — an approximation, not a
       #    syntax check; that's what gate 1 is for

@@ -745,6 +745,14 @@ mod tests {
     /// per poll, and a listing that recovers after a failure is logged once.
     #[test]
     fn poll_projects_liveness_footprint_and_cwd_from_one_listing() {
+        // the listing drives agent_status::reconcile and the shell
+        // checkpoint tracker: both are process-wide
+        let _store = crate::agent_status::STORE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let _tracker = crate::shell_state::TRACKER_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let now = now_epoch();
         let rows = vec![
             row(

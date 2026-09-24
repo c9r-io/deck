@@ -66,6 +66,21 @@ survive. Inspect and capture the plan, independent observations, records and
 last-row confirmation. Do not confirm it until persistence evidence is captured.
 The full release checklist and its known selection baseline remain separate.
 
+## Away notifications (manual)
+
+Release-location or `app/run.sh` bundle, an Agent status integration on,
+**Settings → Integrations & automation → Notify me when away** on (accept
+the macOS permission dialog; the status row must read "Notifications
+allowed"). Start a `claude` card, ask it a question that needs a tool
+approval, hide deck with ⌘W: a macOS notification titled with the card
+title and "<project> · needs your input" appears; the Dock badge shows 1.
+Click the notification: deck comes to the front on that session. Answer,
+let the turn end while deck is hidden: a "· a turn has ended" notification
+appears; open the card: it is withdrawn and the badge drops. Leave deck in
+the background for ten minutes before one of these transitions to confirm
+App Nap does not delay it (the trigger is the Rust listener, not the poll).
+Turn the switch off: badge cleared, no further notifications.
+
 ## Cross-project attention (B v01)
 
 Run `DECK_SMOKE_DATA_DIR="$(mktemp -d /tmp/deck-attention.XXXXXX)" DECK_SMOKE_TMUX_SOCKET=deck-smoke-attention-UNIQUE DECK_SMOKE_WKWEBVIEW=attention app/run.sh`.

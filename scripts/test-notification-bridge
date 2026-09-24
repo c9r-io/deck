@@ -1,0 +1,14 @@
+#!/bin/sh
+# Compile the production notification bridge and run its headless tests:
+# pure helpers plus the guard that keeps every entry a no-op outside a
+# .app bundle (a test binary must never reach UNUserNotificationCenter).
+set -eu
+cd "$(dirname "$0")/.."
+notify_test_dir=$(mktemp -d "${TMPDIR:-/tmp}/deck-notify-tests.XXXXXX")
+trap 'rm -rf "$notify_test_dir"' EXIT HUP INT TERM
+xcrun swiftc -parse-as-library -swift-version 5 \
+  app/src-tauri/native/NotificationBridge.swift \
+  app/src-tauri/native/tests/NotificationTests.swift \
+  -o "$notify_test_dir/notify-tests"
+"$notify_test_dir/notify-tests"
+echo "notification bridge: helpers and no-bundle guard ok"

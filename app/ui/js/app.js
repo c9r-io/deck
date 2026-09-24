@@ -18,7 +18,7 @@ import { drainConnector, initConnector } from './connector.js';
 import { initMcp } from './mcp.js';
 import { initAutomation } from './automation.js';
 import { initDropdowns } from './dropdown.js';
-import { initAttention } from './attention.js';
+import { initAttention, openFromNotification } from './attention.js';
 import { onLocaleChange, setLocale, t, translateNotice } from './i18n.js';
 import { activateTheme, revealThemedWindow } from './theme.js';
 import { initVoice } from './voice.js';
@@ -302,6 +302,15 @@ export async function boot() {
   initModules();
   window.__DECK_DEBUG = await inv('debug_logging_enabled').catch(() => false);
   await loadSettings();
+  /* away notifications: apply the saved switch without asking macOS
+     (that is the user's click in Settings); the badge follows from here */
+  inv('notify_configure', {
+    enabled: !!ctx.settings.notifyAway, sound: !!ctx.settings.notifySound, request: false,
+  }).catch(() => {});
+  listen('notify-open', event => {
+    uev('notify-open');
+    openFromNotification(String(event.payload?.session || ''));
+  }).catch(() => uev('listen-fail', 'notify-open'));
   await revealThemedWindow();
   try {
     ctx.buildIdentity = await inv('build_identity');

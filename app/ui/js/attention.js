@@ -275,6 +275,16 @@ export async function openAttentionCard(id) {
   await openSession(id, { allowStart: false, attentionReturn: returnTo });
 }
 
+/* A click on a macOS notification (notify.rs → `notify-open`): open that
+   session; a stale or stopped card is located instead of attached. */
+export async function openFromNotification(session) {
+  const card = store.cards.find(c => c.session === session);
+  if (!card) return;
+  const snapshot = ctx.attention.get(card);
+  if (!snapshot || snapshot.stale || !snapshot.alive) { locateAttentionCard(card.id); return; }
+  await openSession(card.id, { allowStart: false });
+}
+
 export function initAttention(deps) {
   ({ pollNow, provider, render, switchProject, leaveSessionView, openSession } = deps);
   $('attention-btn').onclick = () => showAttention();

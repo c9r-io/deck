@@ -143,6 +143,7 @@ export function normalizeInbound(value) {
 export const DEFAULT_SETTINGS = Object.freeze({
   editor: '', locale: 'system', theme: 'deck-dark', accent: 'teal',
   updateChannel: 'stable', sessionRestore: false, fontScale: 1,
+  notifyAway: false, notifySound: false,
   shortcuts: DEFAULT_SHORTCUTS, inbound: DEFAULT_INBOUND, voice: DEFAULT_VOICE_PREFERENCES,
 });
 
@@ -157,6 +158,9 @@ export function normalizeSettings(value) {
   if (!ACCENTS.has(merged.accent)) merged.accent = DEFAULT_SETTINGS.accent;
   if (!UPDATE_CHANNELS.has(merged.updateChannel)) merged.updateChannel = DEFAULT_SETTINGS.updateChannel;
   if (typeof merged.sessionRestore !== 'boolean') merged.sessionRestore = DEFAULT_SETTINGS.sessionRestore;
+  /* away notifications: two plain booleans, off unless saved true */
+  if (merged.notifyAway !== true) merged.notifyAway = false;
+  if (merged.notifySound !== true) merged.notifySound = false;
   merged.fontScale = normalizeFontScale(merged.fontScale);
   const rawShortcuts = raw.shortcuts && typeof raw.shortcuts === 'object' && !Array.isArray(raw.shortcuts)
     ? raw.shortcuts : {};

@@ -28,6 +28,7 @@ mod ledger;
 mod links;
 mod mcp;
 mod mcp_fs;
+mod notify;
 mod procinfo;
 mod prompt_delivery;
 mod pty;
@@ -176,6 +177,12 @@ fn main() {
             // entries at this install's bundled helper and retires the
             // legacy ~/.deck/bin copy; never installs hooks by itself.
             agent_status::migrate_hooks_on_boot();
+            // Away notifications + Dock badge (notify.rs): the click
+            // delegate and the saved switch, before the first hook event.
+            {
+                let (enabled, sound) = documents::notify_settings();
+                notify::init(app.handle().clone(), enabled, sound);
+            }
             agent_status::spawn_listener();
             // Update-check heartbeat from a Rust thread: webview timers are
             // frozen by App Nap when the app is backgrounded, so a JS
@@ -286,6 +293,10 @@ fn main() {
             }
         })
         .on_window_event(|window, event| {
+            // Away = the main window is not in front (notify.rs).
+            if let tauri::WindowEvent::Focused(focused) = event {
+                notify::set_focused(*focused);
+            }
             // ⌘W / red button hides instead of destroying the only window;
             // the Dock icon (Reopen) brings it back.
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
@@ -296,6 +307,10 @@ fn main() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            notify::notify_configure,
+            notify::notify_status,
+            notify::notify_cards,
+            notify::notify_dismiss,
             voice::voice_bind,
             voice::voice_start,
             voice::voice_snapshot,

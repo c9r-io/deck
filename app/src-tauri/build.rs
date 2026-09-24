@@ -119,8 +119,11 @@ fn stage_frontend() {
 
 // Swift is compiled and statically linked at build time, never spawned by Deck.
 // New Speech APIs remain availability-guarded; older macOS uses local-only SF.
-fn build_speech_bridge() {
+// The notification bridge (UNUserNotificationCenter) is compiled into the same
+// library: one object, one archive, two closed C surfaces (voice.rs, notify.rs).
+fn build_native_bridges() {
     println!("cargo:rerun-if-changed=native/SpeechBridge.swift");
+    println!("cargo:rerun-if-changed=native/NotificationBridge.swift");
     println!("cargo:rerun-if-env-changed=DEVELOPER_DIR");
     println!("cargo:rerun-if-env-changed=DECK_REQUIRE_MODERN_SPEECH");
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("macos") {
@@ -132,7 +135,7 @@ fn build_speech_bridge() {
     } else {
         "x86_64"
     };
-    let object = out.join("SpeechBridge.o");
+    let object = out.join("NativeBridges.o");
     let mut compiler = std::process::Command::new("xcrun");
     compiler.arg("swiftc");
     // A release must include the same modern path exercised by local device
@@ -149,21 +152,22 @@ fn build_speech_bridge() {
             "-emit-object",
             "-whole-module-optimization",
             "native/SpeechBridge.swift",
+            "native/NotificationBridge.swift",
             "-o",
         ])
         .arg(&object)
         .status()
         .expect("Swift compiler is required (use the macOS 26 SDK for SpeechAnalyzer)");
-    assert!(status.success(), "failed to compile native Speech bridge");
+    assert!(status.success(), "failed to compile the native bridges");
     let status = std::process::Command::new("xcrun")
         .args(["libtool", "-static", "-o"])
-        .arg(out.join("libdeck_speech.a"))
+        .arg(out.join("libdeck_native.a"))
         .arg(object)
         .status()
-        .expect("failed to archive Speech bridge");
-    assert!(status.success(), "failed to archive Speech bridge");
+        .expect("failed to archive the native bridges");
+    assert!(status.success(), "failed to archive the native bridges");
     println!("cargo:rustc-link-search=native={}", out.display());
-    println!("cargo:rustc-link-lib=static=deck_speech");
+    println!("cargo:rustc-link-lib=static=deck_native");
     let compiler = std::process::Command::new("xcrun")
         .args(["--find", "swiftc"])
         .output()
@@ -184,13 +188,14 @@ fn build_speech_bridge() {
         "Speech",
         "CoreMedia",
         "AudioToolbox",
+        "UserNotifications",
     ] {
         println!("cargo:rustc-link-lib=framework={framework}");
     }
 }
 
 fn main() {
-    build_speech_bridge();
+    build_native_bridges();
     build_sidecars();
     stage_frontend();
     println!("cargo:rerun-if-env-changed=DECK_BUILD_COMMIT");

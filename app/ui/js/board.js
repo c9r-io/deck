@@ -29,6 +29,7 @@ import { formatShortcut } from './shortcuts.js';
 import { renderAutomations, ruleOf } from './automation.js';
 import { createDefaultColumns, migrateColumnSemantics } from './board-defaults.js';
 import { attentionStatusText, refreshAttention } from './attention.js';
+import { cardLabels, labelsKey, seenDismissals } from './notify-model.js';
 import { addManual, addQueueCopy, bufferLimitError, copyEvidence, deleteEntry, editEntry, emptyBuffer, retainedBuffer } from './buffer-model.js';
 import { nextCollectedAt } from './channel-model.js';
 import { normalizeTaskPresets } from './connector-model.js';
@@ -916,7 +917,25 @@ async function pollSessionsNow() {
   });
   if (tabsKey() !== previousTabs) renderTabs();
   refreshAttention();
+  syncNotify();
   return true;
+}
+/* Away notifications (notify.rs): the backend learns card titles and
+   project names only from here (memory, never logged), and is told once
+   per turn that an unread ending was viewed. Nothing here posts anything. */
+let notifyLabelsKey = '';
+const notifyDismissed = new Set();
+function syncNotify() {
+  const cards = provider.list();
+  const labels = cardLabels(cards, provider.projects());
+  const key = labelsKey(labels);
+  if (key !== notifyLabelsKey) {
+    notifyLabelsKey = key;
+    inv('notify_cards', { cards: labels }).catch(() => { notifyLabelsKey = ''; });
+  }
+  for (const session of seenDismissals(cards, ctx.attention, notifyDismissed)) {
+    inv('notify_dismiss', { session }).catch(() => {});
+  }
 }
 const tabsKey = () => provider.projects().map(p => {
   const cards = provider.list(p.id);
@@ -1114,6 +1133,10 @@ export function markSessionSeen(sid) {
   if (ctx.attention.get(card)?.seen || !ctx.attention.saw(card)) return;
   renderTabs();
   refreshAttention();
+  if (ctx.attention.get(card)?.agent === 'turn-done' && !notifyDismissed.has(card.session)) {
+    notifyDismissed.add(card.session);
+    inv('notify_dismiss', { session: card.session }).catch(() => {});
+  }
 }
 
 export function renameTab(el, p) {
