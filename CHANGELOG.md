@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.7.9 — 2026-09-24 (Nightly)
 
 - Installing an update can no longer ask for an administrator password or
   start a shell. The updater plugin's own installer runs an AppleScript
@@ -74,7 +74,11 @@
   the runtime key file is removed on SIGINT/SIGTERM/SIGHUP, stale runtime
   directories of dead owners are swept at start, and key buffers are
   zeroed.
-- Internal: `mcp.rs` is a directory module with one file per concern; the
+- Internal: the release gate's coverage number no longer counts inline
+  test modules as covered production code (the module splits below moved
+  them into `tests.rs`); the honest figure was 73.66% lines / 72.64%
+  functions and is 82.22% / 80.60% after a round of behaviour tests over
+  the least-covered paths. `mcp.rs` is a directory module with one file per concern; the
   bounded state-document mechanism shared by MCP, Connector and the channel
   inbox is `ledger.rs`; the tmux server restart consults MCP through a
   guard MCP registers at boot; `tests/session_architecture.rs` pins these
