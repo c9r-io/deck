@@ -23,7 +23,6 @@ test('the fixture log holds only timestamped closed smoke-check lines', () => {
 test('the recorded settings run passes with nothing unexpected', () => {
   const result = judge(settingsLog, manifest, 'settings');
   assert.deepEqual(result.failures, []);
-  assert.deepEqual(result.warnings, []);
   assert.equal(result.ok, true);
   assert.equal(result.total, 7);
 });
@@ -43,11 +42,13 @@ test('a broken copy fails for each kind of problem', () => {
   }
 });
 
-test('names outside the manifest warn without failing', () => {
-  const log = settingsLog.replace(line('done', 1), `${line('dropdown', 255)}\n${line('done', 1)}`);
-  const result = judge(log, manifest, 'settings');
-  assert.equal(result.ok, true);
-  assert.deepEqual(result.warnings, ['dropdown: not in the manifest for settings']);
+test('a name outside the mode\'s manifest entry fails the run', () => {
+  for (const name of ['dropdown', '<redacted>']) {
+    const log = settingsLog.replace(line('done', 1), `${line(name, 1)}\n${line('done', 1)}`);
+    const result = judge(log, manifest, 'settings');
+    assert.equal(result.ok, false, name);
+    assert.deepEqual(result.failures, [`${name}: not in the manifest for settings`]);
+  }
 });
 
 test('exact lists, metrics, failure-only names and open modes', () => {

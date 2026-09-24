@@ -12,8 +12,9 @@
 //   their presence is a failure;
 // - the last checkpoint must be the mode's terminal check with a=1 (a mode
 //   with `terminal: null` stays open for an external step and has none);
-// - names outside the manifest are printed as warnings (the manifest or a
-//   carrier drifted) but do not fail the run.
+// - a name outside the mode's manifest entry fails the run (including a
+//   `<redacted>` name, which the logger writes for one SMOKE_CHECKS lacks):
+//   a legitimate new checkpoint is added to the manifest, never tolerated.
 // A relaunched mode (restart, ambiguous, review-restart) appends to the
 // app.log of the run before it. Every completed run ends with exactly one
 // terminal checkpoint, so only the checkpoints after the previous run's
@@ -49,7 +50,6 @@ export function judge(logText, manifest, mode) {
   if (!spec) throw new Error(`unknown smoke mode: ${mode}`);
   const checks = currentRun(parseChecks(logText), manifest);
   const failures = [];
-  const warnings = [];
   const expected = spec.checks || {};
   for (const [name, rule] of Object.entries(expected)) {
     const seen = checks.filter(check => check.name === name);
@@ -79,10 +79,10 @@ export function judge(logText, manifest, mode) {
   }
   const known = new Set([...Object.keys(expected), spec.terminal].filter(Boolean));
   for (const name of new Set(checks.map(check => check.name))) {
-    if (!known.has(name)) warnings.push(`${name}: not in the manifest for ${mode}`);
+    if (!known.has(name)) failures.push(`${name}: not in the manifest for ${mode}`);
   }
   const total = Object.values(expected).filter(rule => !rule.failureOnly).length + (spec.terminal ? 1 : 0);
-  return { ok: failures.length === 0, failures, warnings, total, lines: checks.length };
+  return { ok: failures.length === 0, failures, total, lines: checks.length };
 }
 
 export function loadManifest(root = resolve(import.meta.dirname, '..')) {
@@ -106,6 +106,5 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   const passed = result.total - result.failures.length;
   console.log(`smoke-verdict ${mode}: ${result.ok ? 'PASS' : 'FAIL'} (${Math.max(0, passed)}/${result.total} expected checkpoints, ${result.lines} lines)`);
   for (const failure of result.failures) console.log(`  FAIL ${failure}`);
-  for (const warning of result.warnings) console.log(`  warn ${warning}`);
   process.exit(result.ok ? 0 : 1);
 }
