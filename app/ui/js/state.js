@@ -4,7 +4,9 @@ import { createAttentionTracker } from './attention-model.js';
 
 /* Shared mutable runtime slots. One explicit object, imported as `ctx` by
    the modules that read or assign a slot, so every cross-module dependency
-   is visible at the import site and check.mjs can flag a bare name. */
+   is visible at the import site and check.mjs can flag a bare name.
+   Every slot is declared here: check.mjs does not check member access, so
+   a write to an undeclared `ctx.x` (or `state.x`) is invisible to it. */
 export const ctx = {
   // Derived attention and navigation are never serialized into Board data.
   attention: createAttentionTracker(),
@@ -29,6 +31,7 @@ export const ctx = {
   tmuxRestarting: false,
   updateDownloadBytes: 0,
   lastPollError: null,
+  destructiveCards: new Set(),
   pollTimer: null,
   ptyGens: new Map(),
   queueCache: { items: [], last_fired: {} },

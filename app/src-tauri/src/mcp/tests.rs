@@ -1068,7 +1068,6 @@ fn command_surface_exercises_local_authorization_and_board_reconciliation() {
     assert_eq!(mcp_pending().unwrap().len(), 1);
     let claimed = mcp_claim(create_id.clone()).unwrap();
     assert_eq!(claimed.kind, "session-create");
-    mcp_validate(create_id.clone()).unwrap();
     assert!(mcp_complete(create_id.clone(), "invalid".into(), None, None).is_err());
     mcp_complete(
         create_id,
@@ -1103,7 +1102,6 @@ fn command_surface_exercises_local_authorization_and_board_reconciliation() {
     mcp_card_closed(created_session.card_id).unwrap();
 
     assert!(mcp_claim("missing".into()).is_err());
-    assert!(mcp_validate("missing".into()).is_err());
     assert!(mcp_start_session(
         "missing".into(),
         "deck-valid".into(),
@@ -4181,7 +4179,7 @@ fn disable_and_client_revocation_reject_pending_intents_and_close_output() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
-/// A close plan is validated against the live session at every Board
+/// A close plan is admitted against the live session at the Board
 /// boundary: a session that stopped closing, a fenced client, a disabled
 /// feature, a foreign admission or another tmux target refuses it.
 #[test]
@@ -4189,7 +4187,6 @@ fn close_plan_validation_and_admission_track_the_live_session() {
     let (runtime, runner, root) = fixture("close-validate", "svc_test");
     let operation_id = close_plan(&runtime);
     claim(&runtime, &operation_id).unwrap();
-    validate(&runtime, &operation_id).unwrap();
 
     let set_closing = |closing: bool| {
         runtime
@@ -4201,10 +4198,6 @@ fn close_plan_validation_and_admission_track_the_live_session() {
     };
     set_closing(false);
     assert_eq!(
-        validate(&runtime, &operation_id).unwrap_err().kind(),
-        ErrorKind::ContextChanged
-    );
-    assert_eq!(
         close_admit(&runtime, &operation_id).err().unwrap().kind(),
         ErrorKind::ContextChanged
     );
@@ -4215,10 +4208,6 @@ fn close_plan_validation_and_admission_track_the_live_session() {
         .lock_or_recover()
         .human_sessions
         .insert("mcp_a".into());
-    assert_eq!(
-        validate(&runtime, &operation_id).unwrap_err().kind(),
-        ErrorKind::ControlRevoked
-    );
     assert_eq!(
         close_admit(&runtime, &operation_id).err().unwrap().kind(),
         ErrorKind::ControlRevoked
@@ -4235,12 +4224,10 @@ fn close_plan_validation_and_admission_track_the_live_session() {
             Ok(())
         })
         .unwrap();
-    for error in [
-        validate(&runtime, &operation_id).unwrap_err(),
-        close_admit(&runtime, &operation_id).err().unwrap(),
-    ] {
-        assert_eq!(error.kind(), ErrorKind::Perm);
-    }
+    assert_eq!(
+        close_admit(&runtime, &operation_id).err().unwrap().kind(),
+        ErrorKind::Perm
+    );
     runtime
         .write(|doc| {
             doc.config.enabled = true;
@@ -4277,7 +4264,6 @@ fn close_plan_validation_and_admission_track_the_live_session() {
         ErrorKind::ContextChanged
     );
     validate_close_admission_with(&runtime, None, &[]).unwrap();
-    validate(&runtime, &operation_id).unwrap();
     drop(runner);
     std::fs::remove_dir_all(root).unwrap();
 

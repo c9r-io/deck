@@ -142,8 +142,9 @@ Status semantics (card colour) are documented on `effectiveCardStatus` in
   `cargo test --workspace` (unit + `tests/tmux_contract.rs` against the
   bundled tmux + `tests/log_privacy.rs` + `tests/edr_quiet.rs` +
   `tests/external_admission.rs` (every path that puts non-owner text into
-  a queue or pane is pinned and must pass `admit_external`) + the status
-  helper). `src-tauri/Cargo.toml` is the one workspace root; the compiler
+  a queue or pane is pinned and must pass `admit_external`) +
+  `tests/ipc_contract.rs` (JS `inv` names ↔ registered commands) + the
+  status helper). `src-tauri/Cargo.toml` is the one workspace root; the compiler
   is pinned by `rust-toolchain.toml` at the repository root and the same
   version in every workflow (`scripts/test_release_tools.py` checks).
 - PTY smoke test (headless): `cargo run --example pty_smoke`

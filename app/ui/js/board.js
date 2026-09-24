@@ -864,8 +864,8 @@ async function pollSessionsNow() {
     if (epoch !== pollEpoch || ctx.tmuxRestarting) return false;
     /* a silently dead poll leaves every card gray — log once per distinct
        error so app.log shows WHY the board went stale */
-    if (String(e) !== state.lastPollError) {
-      state.lastPollError = String(e);
+    if (String(e) !== ctx.lastPollError) {
+      ctx.lastPollError = String(e);
       uev('poll-fail');
     }
     ctx.attention.fail();
@@ -874,7 +874,7 @@ async function pollSessionsNow() {
     return false;
   }
   if (epoch !== pollEpoch || ctx.tmuxRestarting) return false;
-  if (state.lastPollError) { state.lastPollError = null; uev('poll-recovered'); }
+  if (ctx.lastPollError) { ctx.lastPollError = null; uev('poll-recovered'); }
   const visible = new Set([...panes.values()].filter(p => state.view === 'session' && p.attached && p.renderedGen === p.attachedGen).map(p => p.sid));
   ctx.attention.record(store.cards, infos, visible);
   const byName = new Map(infos.map(i => [i.name, i]));
@@ -1406,8 +1406,7 @@ export function cardEl(s) {
 }
 
 export async function closeSession(sid, needConfirm = false) {
-  if (!state.destructiveCards) state.destructiveCards = new Set();
-  if (state.destructiveCards.has(sid)) return;
+  if (ctx.destructiveCards.has(sid)) return;
   const s = provider.get(sid);
   if (!s) return;
   const live = s.status !== 'stopped';
@@ -1417,7 +1416,7 @@ export async function closeSession(sid, needConfirm = false) {
         name: s.title, live: live ? t('session.closeLive') : '',
         count: formatNumber(s.buffer?.entries?.length || 0),
       })))) return;
-  state.destructiveCards.add(sid);
+  ctx.destructiveCards.add(sid);
   try {
     const result = await provider.close(sid, { detail: true });
     if (!result.ok || !result.applied) return;
@@ -1425,7 +1424,7 @@ export async function closeSession(sid, needConfirm = false) {
     toast(t('session.closed', { name: s.title }));
     render();
   } finally {
-    state.destructiveCards.delete(sid);
+    ctx.destructiveCards.delete(sid);
   }
 }
 

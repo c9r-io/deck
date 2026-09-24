@@ -1,6 +1,7 @@
 //! Production-source scanning shared by the census tests (`edr_quiet.rs`,
-//! `external_admission.rs`): which files count as production, which part of
-//! a file is its trailing test module, and which `fn` encloses a site.
+//! `external_admission.rs`, `ipc_contract.rs`): which files count as
+//! production, which part of a file is its trailing test module, and which
+//! `fn` (Rust) or JS function encloses a site.
 // Each test crate uses a subset of these helpers.
 #![allow(dead_code)]
 
@@ -106,4 +107,82 @@ pub fn enclosing_function(source: &str, at: usize) -> String {
         }
     }
     found
+}
+
+/// (file name, contents) of every frontend module in `ui/js`.
+pub fn js_sources() -> Vec<(String, String)> {
+    let root = manifest("../ui/js");
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(&root).expect("ui/js") {
+        let path = entry.unwrap().path();
+        if path.extension().is_some_and(|x| x == "js") {
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            out.push((name, std::fs::read_to_string(&path).unwrap()));
+        }
+    }
+    assert!(out.len() >= 20, "frontend modules found: {}", out.len());
+    out.sort();
+    out
+}
+
+pub fn js_ident(c: char) -> bool {
+    c.is_alphanumeric() || c == '_' || c == '$'
+}
+
+/// The function a JS line declares: `function name(`, an object method
+/// `async name(a, b) {` (a plain parameter list, so `listen('x', () => {` is
+/// a call, not a method), or a top-level `const name = (...) =>` /
+/// `= async` / `= function`. Anything nested deeper than one closure level
+/// belongs to the function around it.
+pub fn js_declaration(line: &str) -> Option<String> {
+    let indent = line.len() - line.trim_start().len();
+    if indent > 4 {
+        return None;
+    }
+    let t = line.trim_start();
+    let t = t.strip_prefix("export ").unwrap_or(t);
+    let t = t.strip_prefix("default ").unwrap_or(t);
+    let t = t.strip_prefix("async ").unwrap_or(t);
+    let head = |s: &str| -> String { s.chars().take_while(|c| js_ident(*c)).collect() };
+    if let Some(rest) = t.strip_prefix("function") {
+        let name = head(rest.trim_start_matches(['*', ' ']));
+        return (!name.is_empty()).then_some(name);
+    }
+    if let Some(rest) = t
+        .strip_prefix("const ")
+        .or_else(|| t.strip_prefix("let "))
+        .filter(|_| indent == 0)
+    {
+        let name = head(rest);
+        let rhs = rest[name.len()..]
+            .trim_start()
+            .strip_prefix('=')?
+            .trim_start();
+        let callee = head(rhs);
+        let arrow = rhs.starts_with("async")
+            || rhs.starts_with("function")
+            || (rhs.starts_with('(') && line.contains("=>"))
+            || (!callee.is_empty() && rhs[callee.len()..].trim_start().starts_with("=>"));
+        return (arrow && !name.is_empty()).then_some(name);
+    }
+    let name = head(t);
+    let keyword = [
+        "if", "for", "while", "switch", "catch", "return", "else", "do", "try",
+    ];
+    let params = t[name.len()..]
+        .strip_prefix('(')
+        .and_then(|rest| rest.trim_end().strip_suffix('{'))
+        .and_then(|rest| rest.trim_end().strip_suffix(')'))?;
+    (!name.is_empty()
+        && !keyword.contains(&name.as_str())
+        && !params.contains(['\'', '"', '`', '(', ')', '>']))
+    .then_some(name)
+}
+
+pub fn js_enclosing(source: &str, at: usize) -> String {
+    source[..at]
+        .lines()
+        .rev()
+        .find_map(js_declaration)
+        .unwrap_or_default()
 }

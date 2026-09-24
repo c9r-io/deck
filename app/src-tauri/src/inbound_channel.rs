@@ -1147,8 +1147,7 @@ pub(crate) fn manifest() -> Value {
     })
 }
 
-#[tauri::command]
-pub(crate) fn channel_manifest_url() -> String {
+fn channel_manifest_url() -> String {
     format!(
         "https://api.slack.com/apps?new_app=1&manifest_json={}",
         crate::inbound_slack::encode(&manifest().to_string())

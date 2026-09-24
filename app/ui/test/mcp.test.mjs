@@ -28,7 +28,6 @@ test('create starts the managed runner before persisting and commits the real ca
     calls.push([cmd, args]);
     if (cmd === 'mcp_pending') { const value = items; items = []; return value; }
     if (cmd === 'mcp_claim') return pending;
-    if (cmd === 'mcp_validate') return;
     if (cmd === 'mcp_start_session') return { created: true };
     if (cmd === 'save_board' || cmd === 'mcp_complete') return;
     throw new Error(`unexpected ${cmd}`);

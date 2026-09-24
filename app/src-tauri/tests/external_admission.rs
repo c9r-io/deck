@@ -37,7 +37,9 @@
 //! desktop user queues it.
 
 mod source_scan;
-use source_scan::{enclosing_function, is_ident, manifest, production_sources};
+use source_scan::{
+    enclosing_function, is_ident, js_declaration, js_enclosing, js_sources, production_sources,
+};
 
 // ---------------------------------------------------------------- scanning
 
@@ -761,83 +763,6 @@ const FRONTEND_ADMISSION: &[(&str, &str, &str)] = &[
         "const external = card.origin.source === 'slack'",
     ),
 ];
-
-fn js_sources() -> Vec<(String, String)> {
-    let root = manifest("../ui/js");
-    let mut out = Vec::new();
-    for entry in std::fs::read_dir(&root).expect("ui/js") {
-        let path = entry.unwrap().path();
-        if path.extension().is_some_and(|x| x == "js") {
-            let name = path.file_name().unwrap().to_string_lossy().into_owned();
-            out.push((name, std::fs::read_to_string(&path).unwrap()));
-        }
-    }
-    assert!(out.len() >= 20, "frontend modules found: {}", out.len());
-    out.sort();
-    out
-}
-
-fn js_ident(c: char) -> bool {
-    c.is_alphanumeric() || c == '_' || c == '$'
-}
-
-/// The function a JS line declares: `function name(`, an object method
-/// `async name(a, b) {` (a plain parameter list, so `listen('x', () => {` is
-/// a call, not a method), or a top-level `const name = (...) =>` /
-/// `= async` / `= function`. Anything nested deeper than one closure level
-/// belongs to the function around it.
-fn js_declaration(line: &str) -> Option<String> {
-    let indent = line.len() - line.trim_start().len();
-    if indent > 4 {
-        return None;
-    }
-    let t = line.trim_start();
-    let t = t.strip_prefix("export ").unwrap_or(t);
-    let t = t.strip_prefix("default ").unwrap_or(t);
-    let t = t.strip_prefix("async ").unwrap_or(t);
-    let head = |s: &str| -> String { s.chars().take_while(|c| js_ident(*c)).collect() };
-    if let Some(rest) = t.strip_prefix("function") {
-        let name = head(rest.trim_start_matches(['*', ' ']));
-        return (!name.is_empty()).then_some(name);
-    }
-    if let Some(rest) = t
-        .strip_prefix("const ")
-        .or_else(|| t.strip_prefix("let "))
-        .filter(|_| indent == 0)
-    {
-        let name = head(rest);
-        let rhs = rest[name.len()..]
-            .trim_start()
-            .strip_prefix('=')?
-            .trim_start();
-        let callee = head(rhs);
-        let arrow = rhs.starts_with("async")
-            || rhs.starts_with("function")
-            || (rhs.starts_with('(') && line.contains("=>"))
-            || (!callee.is_empty() && rhs[callee.len()..].trim_start().starts_with("=>"));
-        return (arrow && !name.is_empty()).then_some(name);
-    }
-    let name = head(t);
-    let keyword = [
-        "if", "for", "while", "switch", "catch", "return", "else", "do", "try",
-    ];
-    let params = t[name.len()..]
-        .strip_prefix('(')
-        .and_then(|rest| rest.trim_end().strip_suffix('{'))
-        .and_then(|rest| rest.trim_end().strip_suffix(')'))?;
-    (!name.is_empty()
-        && !keyword.contains(&name.as_str())
-        && !params.contains(['\'', '"', '`', '(', ')', '>']))
-    .then_some(name)
-}
-
-fn js_enclosing(source: &str, at: usize) -> String {
-    source[..at]
-        .lines()
-        .rev()
-        .find_map(js_declaration)
-        .unwrap_or_default()
-}
 
 /// Text of the function `name` declares: its line up to the next declaration.
 fn js_function<'a>(source: &'a str, name: &str) -> &'a str {
