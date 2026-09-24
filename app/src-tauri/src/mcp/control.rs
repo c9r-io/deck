@@ -5,6 +5,27 @@
 
 use super::*;
 
+/// Every tool `route` dispatches: the closed control surface. A name outside
+/// it is `UNSUPPORTED` before the dispatch `match` is reached, so an arm
+/// added there without listing the tool here (and in
+/// `mcp-fixtures/tools.json`) is unreachable; the tests hold this list equal
+/// to the fixture and check that every member routes.
+pub(super) const CONTROL_TOOLS: [&str; 14] = [
+    "deck_capabilities",
+    "deck_project_list",
+    "deck_project_read",
+    "deck_project_search",
+    "deck_sessions_list",
+    "deck_session_create",
+    "deck_operation_get",
+    "deck_session_inspect",
+    "deck_session_control",
+    "deck_exec",
+    "deck_job_read",
+    "deck_job_input",
+    "deck_job_interrupt",
+    "deck_session_close",
+];
 /// Tools a local takeover fences for its session (interrupt stays open so
 /// work can always be stopped; reads of unrelated state stay open).
 pub(super) const HUMAN_FENCED_TOOLS: [&str; 5] = [
@@ -111,30 +132,39 @@ pub(super) fn route(runtime: &Runtime, request: WireRequest) -> Value {
     }
     let audit_tool = request.tool.clone();
     let audit_principal = request.client_id.clone();
-    let result = match request.tool.as_str() {
-        "deck_capabilities" => capabilities(runtime, &request.client_id, request.arguments),
-        "deck_project_list" => project_list(runtime, &request.client_id, request.arguments),
-        "deck_project_read" => project_read(runtime, &request.client_id, request.arguments),
-        "deck_project_search" => project_search(runtime, &request.client_id, request.arguments),
-        "deck_sessions_list" => sessions_list(runtime, &request.client_id, request.arguments),
-        "deck_session_create" => session_create(runtime, &request.client_id, request.arguments),
-        "deck_operation_get" => operation_get(runtime, &request.client_id, request.arguments),
-        "deck_session_inspect" => inspect(runtime, &request.client_id, request.arguments),
-        "deck_session_control" => session_control(runtime, &request.client_id, request.arguments),
-        "deck_exec" => exec(runtime, &request.client_id, request.arguments),
-        "deck_job_read" => job_read(runtime, &request.client_id, request.arguments),
-        "deck_job_input" | "deck_job_interrupt" => job_side_effect(
-            runtime,
-            &request.client_id,
-            &request.tool,
-            request.arguments,
-        ),
-        "deck_session_close" => session_close(runtime, &request.client_id, request.arguments),
-        _ => Err(error_value(
+    let unsupported = || {
+        Err(error_value(
             "UNSUPPORTED",
             "unknown Deck MCP tool",
             "Refresh tools/list and use an advertised tool.",
-        )),
+        ))
+    };
+    let result = if !CONTROL_TOOLS.contains(&request.tool.as_str()) {
+        unsupported()
+    } else {
+        match request.tool.as_str() {
+            "deck_capabilities" => capabilities(runtime, &request.client_id, request.arguments),
+            "deck_project_list" => project_list(runtime, &request.client_id, request.arguments),
+            "deck_project_read" => project_read(runtime, &request.client_id, request.arguments),
+            "deck_project_search" => project_search(runtime, &request.client_id, request.arguments),
+            "deck_sessions_list" => sessions_list(runtime, &request.client_id, request.arguments),
+            "deck_session_create" => session_create(runtime, &request.client_id, request.arguments),
+            "deck_operation_get" => operation_get(runtime, &request.client_id, request.arguments),
+            "deck_session_inspect" => inspect(runtime, &request.client_id, request.arguments),
+            "deck_session_control" => {
+                session_control(runtime, &request.client_id, request.arguments)
+            }
+            "deck_exec" => exec(runtime, &request.client_id, request.arguments),
+            "deck_job_read" => job_read(runtime, &request.client_id, request.arguments),
+            "deck_job_input" | "deck_job_interrupt" => job_side_effect(
+                runtime,
+                &request.client_id,
+                &request.tool,
+                request.arguments,
+            ),
+            "deck_session_close" => session_close(runtime, &request.client_id, request.arguments),
+            _ => unsupported(),
+        }
     };
     if let Err(error) = &result {
         let kind = if audit_tool.starts_with("deck_project_") {

@@ -4502,27 +4502,42 @@ fn runner_launch_args_use_exactly_the_fixture_flags() {
     assert_eq!(argv.len(), 2 * expected.len(), "one value per flag");
 }
 
+/// The control surface is closed both ways: CONTROL_TOOLS equals the shared
+/// fixture (an arm added to `route` without registering it is unreachable by
+/// construction), every member routes, and a name outside it is UNSUPPORTED.
 #[test]
-fn every_fixture_tool_routes_and_fence_lists_name_real_tools() {
+fn control_tools_are_exactly_the_fixture_and_every_one_routes() {
     let (runtime, runner, root) = fixture("fixture-tools", "svc_test");
     let tools = mcp_fixture!("tools.json");
-    let names: Vec<&str> = tools["tools"]
+    let listed: std::collections::BTreeSet<&str> = tools["tools"]
         .as_array()
         .unwrap()
         .iter()
         .map(|tool| tool.as_str().unwrap())
         .collect();
-    for name in &names {
+    let surface: std::collections::BTreeSet<&str> = CONTROL_TOOLS.into_iter().collect();
+    assert_eq!(
+        surface.len(),
+        CONTROL_TOOLS.len(),
+        "a control tool listed twice"
+    );
+    assert_eq!(surface, listed);
+    for name in CONTROL_TOOLS {
         let value = route(&runtime, request(name, json!({})));
         assert_ne!(
             value["error"]["code"], "UNSUPPORTED",
             "{name} is not routed"
         );
     }
-    let unknown = route(&runtime, request("deck_not_a_tool", json!({})));
-    assert_eq!(unknown["error"]["code"], "UNSUPPORTED");
+    for outside in ["deck_not_a_tool", "deck_project_delete", ""] {
+        let value = route(&runtime, request(outside, json!({})));
+        assert_eq!(value["error"]["code"], "UNSUPPORTED", "{outside:?}");
+    }
     for tool in HUMAN_FENCED_TOOLS.iter().chain(&EXECUTION_FENCED_TOOLS) {
-        assert!(names.contains(tool), "fence names unknown tool {tool}");
+        assert!(
+            CONTROL_TOOLS.contains(tool),
+            "fence names unknown tool {tool}"
+        );
     }
     drop(runner);
     std::fs::remove_dir_all(root).unwrap();

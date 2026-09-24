@@ -260,7 +260,10 @@ the trailing newline on every side), every runner error string with Deck's
 class for it, the runner's launch flags, and the tool names with their
 mutating subset. Each crate's own unit tests read those JSON files with
 `include_str!` and compare them with its own constants; no crate parses
-another's source, and nothing in the directory is bundled.
+another's source, and nothing in the directory is bundled. The app's
+control surface is closed both ways: `route` refuses any tool outside
+`control::CONTROL_TOOLS` before dispatch, that list must equal the
+fixture's tools, and every listed tool must route.
 
 Runner errors are classified by one rule: an error the runner gives before
 any job process could start or any input byte could be written is a
