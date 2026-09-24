@@ -283,9 +283,20 @@ export async function runAttentionSmoke() {
       && [...document.querySelectorAll('.attention-column-empty')].every(el => el.hidden);
     switchProject(atlas.id); await pollNow();
     await report('entry-empty', emptyShown && $('board-empty').hidden && starts === 0);
+    // The New session ▾ menu, by label (automation.js showNewSessionMenu). A new
+    // entry changes this list, never a count or an index below.
+    const menuLabel = button => button.firstChild?.textContent || '';
+    const newSessionMenu = withDefaults => [
+      t('menu.newSessionNow'),
+      ...(withDefaults ? [t('menu.newShellOnly')] : []),
+      '◷ ' + t('menu.autoClock'), '◇ ' + t('menu.autoSlack'), '▤ ' + t('menu.autoChannel'),
+      '⚑ ' + t('menu.projectDefaults'), '↻ ' + t('menu.automations'), '◈ ' + t('menu.templates'),
+    ];
+    const sameLabels = (buttons, labels) => JSON.stringify(buttons.map(menuLabel)) === JSON.stringify(labels);
+    const byLabel = (buttons, label) => buttons.find(button => menuLabel(button) === label);
     more.click(); await pause(20);
     const items = [...$('ctx').querySelectorAll('button')];
-    const opened = $('ctx').style.display === 'block' && items.length === 6 && document.activeElement === items[0] && more.getAttribute('aria-expanded') === 'true';
+    const opened = $('ctx').style.display === 'block' && sameLabels(items, newSessionMenu(false)) && document.activeElement === items[0] && more.getAttribute('aria-expanded') === 'true';
     $('ctx').dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
     const moved = document.activeElement === items[1];
     $('ctx').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
@@ -368,18 +379,19 @@ export async function runAttentionSmoke() {
     const menuButtons = () => [...$('ctx').querySelectorAll('button')];
     more.click(); await pause(20);
     const plain = menuButtons();
-    const plainMenu = plain.length === 6 && !plain.some(b => b.textContent.includes(t('menu.newShellOnly')))
+    const defaultsLabel = '⚑ ' + t('menu.projectDefaults');
+    const plainMenu = sameLabels(plain, newSessionMenu(false))
       && plain[0].querySelector('.ctx-hint')?.textContent.includes(atlas.columns[1].name)
-      && plain[3].textContent.includes(t('menu.projectDefaults')) && plain[3].querySelector('.ctx-hint')?.textContent === t('projectDefaults.none');
+      && byLabel(plain, defaultsLabel)?.querySelector('.ctx-hint')?.textContent === t('projectDefaults.none');
     document.body.click(); await pause(20);
     const smokeCmd = 'echo deck-04-smoke';
     await provider.setProjectDefaults(atlas.id, { dir: '/tmp', cmd: smokeCmd }); await pause(20);
     more.click(); await pause(20);
     const withDefaults = menuButtons();
     const hint0 = withDefaults[0].querySelector('.ctx-hint')?.textContent || '';
-    const defaultsMenu = withDefaults.length === 7 && withDefaults[1].textContent.includes(t('menu.newShellOnly'))
+    const defaultsMenu = sameLabels(withDefaults, newSessionMenu(true))
       && hint0.includes('/tmp') && hint0.includes(smokeCmd) && hint0.includes(atlas.columns[1].name)
-      && withDefaults[4].querySelector('.ctx-hint')?.textContent.includes(smokeCmd)
+      && byLabel(withDefaults, defaultsLabel)?.querySelector('.ctx-hint')?.textContent.includes(smokeCmd)
       && $('board-new').title.includes('/tmp') && $('board-new').title.includes(smokeCmd);
     document.body.click(); await pause(20);
     await report('defaults-menu', plainMenu && defaultsMenu);
