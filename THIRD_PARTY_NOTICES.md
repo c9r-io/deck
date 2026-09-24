@@ -7,9 +7,14 @@ the upstream links.
 ## Bundled tmux sidecar
 
 The app ships a statically linked `tmux` binary
-(`app/src-tauri/binaries/tmux-aarch64-apple-darwin`, checksum alongside it),
-built reproducibly by `app/src-tauri/binaries/build-tmux.sh` from pinned
-upstream releases:
+(`app/src-tauri/binaries/tmux-aarch64-apple-darwin`), built by
+`app/src-tauri/binaries/build-tmux.sh` from the pinned upstream releases
+below; the script refuses any source tarball whose SHA-256 differs from the
+one it records. The committed binary's own SHA-256 is pinned in
+`tmux-aarch64-apple-darwin.sha256` beside it and checked on every test run.
+The build is not bit-for-bit reproducible across Xcode/macOS SDK versions:
+the same inputs on a newer toolchain give a different hash, so a rebuilt
+binary is committed together with its new pin.
 
 | Component | Version | License | Source |
 |---|---|---|---|

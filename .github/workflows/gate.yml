@@ -48,6 +48,12 @@ jobs:
             app/src-tauri
             tools/deck-tunnelctl
 
+      # the bundled tmux every deck session descends from must be the pinned
+      # build; shell check first so it reports even when compilation fails
+      # (tests/tmux_contract.rs asserts the same pin from Rust)
+      - name: Bundled tmux matches its committed SHA-256
+        run: shasum -a 256 -c app/src-tauri/binaries/tmux-aarch64-apple-darwin.sha256
+
       # one workspace (app/src-tauri + its status-helper member): fmt --check,
       # clippy -D warnings, tests with coverage — each once
       - name: cargo fmt

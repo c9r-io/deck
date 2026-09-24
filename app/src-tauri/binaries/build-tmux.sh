@@ -1,7 +1,15 @@
 #!/bin/sh
-# Reproducible static tmux for the deck sidecar (macOS arm64).
+# Static tmux for the deck sidecar (macOS arm64), from pinned sources.
 # Statically links libevent, ncurses and utf8proc; the result depends only
-# on /usr/lib system libraries. Run on the target architecture.
+# on /usr/lib system libraries. Run on the target architecture. The output
+# is not bit-identical across Xcode/SDK versions (the embedded SDK version
+# and libSystem link version differ), so only the inputs are reproducible.
+#
+# The committed binary is pinned by tmux-aarch64-apple-darwin.sha256 beside
+# it, a repository-relative `shasum -a 256` line. Changing the binary means
+# changing that file in the same commit, or gate.yml's `shasum -c` step and
+# tests/tmux_contract.rs fail. This script writes the matching line to
+# "$WORK/tmux-aarch64-apple-darwin.sha256" for the build it produces.
 set -e
 WORK=${1:-$(mktemp -d)}
 PREFIX="$WORK/prefix"
@@ -56,3 +64,6 @@ cp tmux "$WORK/tmux-static"
 echo "=== otool -L:"
 otool -L "$WORK/tmux-static"
 echo "built: $WORK/tmux-static ($($WORK/tmux-static -V))"
+printf '%s  app/src-tauri/binaries/tmux-aarch64-apple-darwin\n' \
+  "$(shasum -a 256 "$WORK/tmux-static" | awk '{print $1}')" > "$WORK/tmux-aarch64-apple-darwin.sha256"
+echo "sidecar pin: $(cat "$WORK/tmux-aarch64-apple-darwin.sha256")"

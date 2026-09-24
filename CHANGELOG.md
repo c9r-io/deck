@@ -15,7 +15,8 @@
 - Internal: the `minisign` that verifies and signs updater archives in the
   Nightly and promotion workflows is a fixed official release checked
   against a committed SHA-256 (`scripts/install-minisign`), no longer
-  whatever Homebrew served that day.
+  whatever Homebrew served that day. The test gate checks the bundled tmux
+  against its committed SHA-256 (shell and Rust).
 
 ## 0.7.9 — 2026-09-24 (Nightly)
 

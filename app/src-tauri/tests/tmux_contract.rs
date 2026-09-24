@@ -5,6 +5,11 @@
 //! (`deck-test-*`), never the live `deck` socket. The Drop guard kills its
 //! server and removes that exact socket file, including after a panic.
 //!
+//! The sidecar they drive is the pinned one: `committed_sidecar_matches_its_pin`
+//! hashes it against `binaries/tmux-aarch64-apple-darwin.sha256` (gate.yml
+//! also runs `shasum -c` on that file before compiling). Replacing the
+//! binary without the sidecar line fails both.
+//!
 //! A contract whose outcome can depend on which tmux clients are attached
 //! (launch/delivery `send-keys`, guarded `if-shell -F` pastes, shell restore,
 //! preview capture, pane formats, production scroll and selection batches)
@@ -35,6 +40,23 @@ use terminal_selection::{
 
 fn tmux_bin() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("binaries/tmux-aarch64-apple-darwin")
+}
+
+#[test]
+fn committed_sidecar_matches_its_pin() {
+    use sha2::{Digest, Sha256};
+    let pin_path = tmux_bin().with_extension("sha256");
+    let pin = std::fs::read_to_string(&pin_path).unwrap();
+    // `shasum -a 256` format, repository-relative so gate.yml can `-c` it
+    let (expected, path) = pin.trim_end().split_once("  ").unwrap();
+    assert_eq!(path, "app/src-tauri/binaries/tmux-aarch64-apple-darwin");
+    assert_eq!(expected.len(), 64);
+    let actual = Sha256::digest(std::fs::read(tmux_bin()).unwrap());
+    let actual: String = actual.iter().map(|b| format!("{b:02x}")).collect();
+    assert_eq!(
+        actual, expected,
+        "bundled tmux differs from its committed pin"
+    );
 }
 
 struct Server(String);
