@@ -88,7 +88,8 @@
 //!   `OperationState` (same kebab-case words on disk and on the wire); the
 //!   in-place transitions are `ItemState::can_transition`, asserted on every
 //!   move under test, and `blocks_firing`/`is_review` are the only
-//!   state predicates;
+//!   state predicates; a new state word needs a queue.json sticky version
+//!   bump (see `ItemState`), or older decks quarantine the whole queue;
 //! - EVERY user-driven mutation goes through `with_queue` (persist-then-
 //!   commit; `with_queue_opt` when the transaction may find nothing to do,
 //!   and its `Ok(None)` persists nothing): clone the state, mutate the
@@ -311,6 +312,19 @@ pub(crate) fn default_state() -> ItemState {
 /// ```
 /// A once row leaves the queue when delivered (or acknowledged); a Review
 /// row leaves when confirmed without a successor.
+///
+/// Adding a state word is a queue.json SCHEMA change, not an enum edit. This
+/// is a closed type with no catch-all variant (never add `#[serde(other)]`:
+/// it would put unknown states back into memory), so a build that does not
+/// know a word fails to parse the file as a wrong structure — and
+/// `storage::load_typed` then QUARANTINES queue.json as `.corrupt-<ts>`,
+/// tries `.bak` (usually holding the same word), and starts with an empty
+/// queue. A newer version, by contrast, is refused as `NewerSchema` with the
+/// file left untouched. So a new word must ship with: `storage::
+/// SCHEMA_VERSION` raised, and a sticky feature detector in
+/// `save_typed_version` (like `uses_review` → v2 for the review states)
+/// that writes the new version whenever a row carries the word — so every
+/// older deck refuses the file instead of quarantining it.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum ItemState {
