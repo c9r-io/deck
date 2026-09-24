@@ -133,10 +133,7 @@ pub(super) fn close_lapsed_leases(doc: &mut DiskDoc) {
             && !session.closing
             && session.lease_expires_at.is_none_or(|lease| lease <= now)
         {
-            session.control_owner = None;
-            session.control_holder = None;
-            session.lease_expires_at = None;
-            session.control_epoch = session.control_epoch.saturating_add(1);
+            session.fence(FenceMode::Release);
         }
     }
 }

@@ -481,10 +481,7 @@ pub(super) fn session_control(
                 }
                 ControlAction::Release => {
                     check_control(session, client_id, &args.expected_generation, args.control_epoch.unwrap_or(0), &args.holder_id)?;
-                    session.control_owner = None;
-                    session.control_holder = None;
-                    session.lease_expires_at = None;
-                    session.control_epoch = session.control_epoch.saturating_add(1);
+                    session.fence(FenceMode::Release);
                 }
             }
             session.control_sequence = session.control_sequence.saturating_add(1);

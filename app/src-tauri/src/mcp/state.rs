@@ -208,6 +208,84 @@ impl Default for DiskDoc {
     }
 }
 
+/// How a session loses its current MCP control (`ManagedSession::fence`).
+/// Every mode clears the owner, the holder and the lease and moves the
+/// control epoch forward, so no request under the old epoch can act again.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum FenceMode {
+    /// Control is simply given up (release, a lapsed lease, boot recovery).
+    Release,
+    /// The local user holds the pane (disable, client revocation, a
+    /// return that the runner did not confirm).
+    Human,
+    /// A local takeover: `Human`, and the session's output sharing closes.
+    Takeover,
+    /// A local return to MCP: the human lock lifts under a new epoch; no
+    /// holder, lease or sharing is restored.
+    ReturnToMcp,
+}
+
+impl ManagedSession {
+    /// The one control-fence write. Only these fields change; no I/O, no
+    /// jobs, no ordering: callers keep their fence → delivery lock → persist
+    /// → runner sequence exactly as before.
+    pub(super) fn fence(&mut self, mode: FenceMode) {
+        self.control_owner = None;
+        self.control_holder = None;
+        self.control_epoch = self.control_epoch.saturating_add(1);
+        self.lease_expires_at = None;
+        match mode {
+            FenceMode::Release => {}
+            FenceMode::Human => self.human_lock = true,
+            FenceMode::Takeover => {
+                self.human_lock = true;
+                self.output_shared = false;
+            }
+            FenceMode::ReturnToMcp => self.human_lock = false,
+        }
+    }
+}
+
+impl DiskDoc {
+    /// Close every matching job binding's output for good (the human now
+    /// owns the pane, or its client/feature is gone).
+    pub(super) fn close_output(&mut self, which: impl Fn(&JobBinding) -> bool) {
+        for job in self.jobs.iter_mut().filter(|job| which(job)) {
+            job.allow_output = false;
+        }
+    }
+
+    /// Reject every matching `accepted` operation with `code`, and release
+    /// the `closing` flag of the sessions whose accepted close was among them.
+    pub(super) fn reject_pending(&mut self, which: impl Fn(&Operation) -> bool, code: &str) {
+        let closing = self
+            .operations
+            .iter()
+            .filter(|operation| {
+                which(operation)
+                    && operation.state == "accepted"
+                    && operation.kind == "session-close"
+            })
+            .filter_map(|operation| operation.result.as_ref()?.get("sessionId")?.as_str())
+            .map(str::to_owned)
+            .collect::<HashSet<_>>();
+        for operation in self
+            .operations
+            .iter_mut()
+            .filter(|operation| which(operation) && operation.state == "accepted")
+        {
+            operation.state = "rejected".into();
+            operation.code = Some(code.into());
+            operation.updated_at = now_ms();
+        }
+        for session in &mut self.sessions {
+            if closing.contains(&session.session_id) {
+                session.closing = false;
+            }
+        }
+    }
+}
+
 #[derive(Default)]
 pub(super) struct AuditLink<'a> {
     pub(super) principal_id: Option<&'a str>,
@@ -423,10 +501,7 @@ pub(super) fn load(path: &Path) -> Result<DiskDoc, DeckError> {
     }
     for session in &mut doc.sessions {
         if session.control_owner.is_some() {
-            session.control_owner = None;
-            session.control_holder = None;
-            session.control_epoch = session.control_epoch.saturating_add(1);
-            session.lease_expires_at = None;
+            session.fence(FenceMode::Release);
             changed = true;
         }
     }
@@ -738,5 +813,140 @@ pub(super) mod pause {
                 .recv_timeout(Duration::from_secs(10))
                 .expect("paused point was never released");
         }
+    }
+}
+
+#[cfg(test)]
+mod fence_tests {
+    use super::*;
+
+    fn held() -> ManagedSession {
+        ManagedSession {
+            session_id: "mcp_a".into(),
+            card_id: "M1".into(),
+            tmux_session: "deck-mcp-test".into(),
+            project_id: "P1".into(),
+            title: "MCP shell".into(),
+            cwd: "/tmp".into(),
+            generation: "g_a".into(),
+            runner_socket: "/tmp/runner.sock".into(),
+            owner_client_id: "client_a".into(),
+            control_owner: Some("client_a".into()),
+            control_holder: Some("holder_a".into()),
+            control_epoch: 4,
+            lease_expires_at: Some(10),
+            human_lock: false,
+            output_shared: true,
+            closing: true,
+            created_at: 1,
+            control_sequence: 2,
+        }
+    }
+
+    /// Every mode clears owner/holder/lease and advances the epoch; only the
+    /// human lock and output sharing differ, and nothing else is touched.
+    #[test]
+    fn fence_modes_differ_only_in_lock_and_sharing() {
+        for (mode, human_lock, output_shared) in [
+            (FenceMode::Release, false, true),
+            (FenceMode::Human, true, true),
+            (FenceMode::Takeover, true, false),
+            (FenceMode::ReturnToMcp, false, true),
+        ] {
+            let mut session = held();
+            if mode == FenceMode::ReturnToMcp {
+                session.human_lock = true;
+            }
+            session.fence(mode);
+            assert_eq!(session.control_owner, None, "{mode:?}");
+            assert_eq!(session.control_holder, None);
+            assert_eq!(session.lease_expires_at, None);
+            assert_eq!(session.control_epoch, 5);
+            assert_eq!(
+                (session.human_lock, session.output_shared),
+                (human_lock, output_shared),
+                "{mode:?}"
+            );
+            assert!(session.closing, "closing is not a fence field");
+            assert_eq!(session.control_sequence, 2);
+        }
+    }
+
+    #[test]
+    fn close_output_and_reject_pending_touch_only_what_matches() {
+        let op = |id: &str, client: &str, kind: &str, state: &str, session: &str| Operation {
+            operation_id: id.into(),
+            client_id: client.into(),
+            request_id: id.into(),
+            request_hash: "a".repeat(64),
+            kind: kind.into(),
+            state: state.into(),
+            code: None,
+            result: Some(serde_json::json!({"sessionId": session})),
+            accepted_at: 1,
+            updated_at: 1,
+            admission_hash: None,
+            session_id: None,
+            control_epoch: None,
+            control_sequence: None,
+        };
+        let job = |id: &str, client: &str| JobBinding {
+            job_id: id.into(),
+            client_id: client.into(),
+            session_id: "mcp_a".into(),
+            session_generation: "g_a".into(),
+            request_hash: "a".repeat(64),
+            operation_id: "op".into(),
+            grant_id: String::new(),
+            grant_version: 0,
+            allow_output: true,
+        };
+        let mut other = held();
+        other.session_id = "mcp_b".into();
+        let mut doc = DiskDoc {
+            sessions: vec![held(), other],
+            operations: vec![
+                op("close_a", "client_a", "session-close", "accepted", "mcp_a"),
+                op("exec_a", "client_a", "exec", "accepted", "mcp_a"),
+                op("close_b", "client_b", "session-close", "accepted", "mcp_b"),
+                op("done_a", "client_a", "exec", "committed", "mcp_a"),
+            ],
+            jobs: vec![job("job_a", "client_a"), job("job_b", "client_b")],
+            ..DiskDoc::default()
+        };
+        doc.close_output(|job| job.client_id == "client_a");
+        assert_eq!(
+            doc.jobs
+                .iter()
+                .map(|job| job.allow_output)
+                .collect::<Vec<_>>(),
+            [false, true]
+        );
+        doc.reject_pending(
+            |operation| operation.client_id == "client_a",
+            "client-revoked",
+        );
+        let states: Vec<(&str, Option<&str>)> = doc
+            .operations
+            .iter()
+            .map(|operation| (operation.state.as_str(), operation.code.as_deref()))
+            .collect();
+        assert_eq!(
+            states,
+            [
+                ("rejected", Some("client-revoked")),
+                ("rejected", Some("client-revoked")),
+                ("accepted", None),
+                ("committed", None),
+            ]
+        );
+        assert_eq!(
+            doc.sessions
+                .iter()
+                .map(|session| session.closing)
+                .collect::<Vec<_>>(),
+            [false, true],
+            "only the session whose accepted close was rejected stops closing"
+        );
     }
 }

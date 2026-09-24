@@ -215,36 +215,12 @@ pub(super) fn disable(runtime: &Runtime) -> Result<(), DeckError> {
                 grant.revocation_version = grant.grant_version;
             }
         }
-        let closing = doc
-            .operations
-            .iter()
-            .filter(|operation| operation.state == "accepted" && operation.kind == "session-close")
-            .filter_map(|operation| operation.result.as_ref()?.get("sessionId")?.as_str())
-            .map(str::to_owned)
-            .collect::<HashSet<_>>();
         for session in &mut doc.sessions {
-            session.control_owner = None;
-            session.control_holder = None;
-            session.control_epoch = session.control_epoch.saturating_add(1);
-            session.lease_expires_at = None;
-            session.human_lock = true;
+            session.fence(FenceMode::Human);
         }
         // The human now owns every pane; no earlier binding reads what follows.
-        for job in &mut doc.jobs {
-            job.allow_output = false;
-        }
-        for operation in &mut doc.operations {
-            if operation.state == "accepted" {
-                operation.state = "rejected".into();
-                operation.code = Some("feature-disabled".into());
-                operation.updated_at = now_ms();
-            }
-        }
-        for session in &mut doc.sessions {
-            if closing.contains(&session.session_id) {
-                session.closing = false;
-            }
-        }
+        doc.close_output(|_| true);
+        doc.reject_pending(|_| true, "feature-disabled");
         Ok(doc.sessions.clone())
     })?;
     let mut uncertain = false;
@@ -380,75 +356,49 @@ pub(super) fn client_revoke(runtime: &Runtime, client_id: String) -> Result<(), 
         Ok(())
     };
     let _delivery = runtime.delivery.lock_or_recover();
-    let sessions =
-        runtime.write(|doc| {
-            let client = doc
-                .config
-                .clients
-                .iter_mut()
-                .find(|client| client.id == client_id)
-                .ok_or_else(|| DeckError::new(ErrorKind::Missing, "MCP client not found"))?;
-            client.revoked_at = Some(now_ms());
-            let closing = doc
-                .operations
-                .iter()
-                .filter(|operation| {
-                    operation.client_id == client_id
-                        && operation.state == "accepted"
-                        && operation.kind == "session-close"
-                })
-                .filter_map(|operation| operation.result.as_ref()?.get("sessionId")?.as_str())
-                .map(str::to_owned)
-                .collect::<HashSet<_>>();
-            for grant in doc
-                .execution_grants
-                .iter_mut()
-                .filter(|grant| grant.client_id == client_id && grant.revoked_at.is_none())
-            {
-                grant.revoked_at = Some(now_ms());
-                grant.revocation_version = grant.grant_version;
-            }
-            for session in doc
-                .sessions
-                .iter_mut()
-                .filter(|session| session.owner_client_id == client_id)
-            {
-                session.control_owner = None;
-                session.control_holder = None;
-                session.control_epoch = session.control_epoch.saturating_add(1);
-                session.lease_expires_at = None;
-                session.human_lock = true;
-            }
-            for job in doc.jobs.iter_mut().filter(|job| job.client_id == client_id) {
-                job.allow_output = false;
-            }
-            for operation in doc.operations.iter_mut().filter(|operation| {
-                operation.client_id == client_id && operation.state == "accepted"
-            }) {
-                operation.state = "rejected".into();
-                operation.code = Some("client-revoked".into());
-                operation.updated_at = now_ms();
-            }
-            for session in &mut doc.sessions {
-                if closing.contains(&session.session_id) {
-                    session.closing = false;
-                }
-            }
-            audit(
-                doc,
-                "client-revoked",
-                AuditLink {
-                    principal_id: Some(&client_id),
-                    ..Default::default()
-                },
-            )?;
-            Ok(doc
-                .sessions
-                .iter()
-                .filter(|session| session.owner_client_id == client_id)
-                .cloned()
-                .collect::<Vec<_>>())
-        })?;
+    let sessions = runtime.write(|doc| {
+        let client = doc
+            .config
+            .clients
+            .iter_mut()
+            .find(|client| client.id == client_id)
+            .ok_or_else(|| DeckError::new(ErrorKind::Missing, "MCP client not found"))?;
+        client.revoked_at = Some(now_ms());
+        for grant in doc
+            .execution_grants
+            .iter_mut()
+            .filter(|grant| grant.client_id == client_id && grant.revoked_at.is_none())
+        {
+            grant.revoked_at = Some(now_ms());
+            grant.revocation_version = grant.grant_version;
+        }
+        for session in doc
+            .sessions
+            .iter_mut()
+            .filter(|session| session.owner_client_id == client_id)
+        {
+            session.fence(FenceMode::Human);
+        }
+        doc.close_output(|job| job.client_id == client_id);
+        doc.reject_pending(
+            |operation| operation.client_id == client_id,
+            "client-revoked",
+        );
+        audit(
+            doc,
+            "client-revoked",
+            AuditLink {
+                principal_id: Some(&client_id),
+                ..Default::default()
+            },
+        )?;
+        Ok(doc
+            .sessions
+            .iter()
+            .filter(|session| session.owner_client_id == client_id)
+            .cloned()
+            .collect::<Vec<_>>())
+    })?;
     let mut uncertain = false;
     for session in sessions {
         uncertain |=
@@ -1267,22 +1217,11 @@ pub(super) fn takeover(runtime: &Runtime, session_id: &str) -> Result<(), DeckEr
             .iter_mut()
             .find(|session| session.session_id == fenced_session_id)
             .ok_or_else(|| DeckError::new(ErrorKind::Missing, "MCP session not found"))?;
-        session.control_owner = None;
-        session.control_holder = None;
-        session.control_epoch = session.control_epoch.saturating_add(1);
-        session.lease_expires_at = None;
-        session.human_lock = true;
-        session.output_shared = false;
+        session.fence(FenceMode::Takeover);
         let session = session.clone();
         // Output produced from here on may include the human's own typing
         // into the job: no pre-takeover binding may ever read it.
-        for job in doc
-            .jobs
-            .iter_mut()
-            .filter(|job| job.session_id == session.session_id)
-        {
-            job.allow_output = false;
-        }
+        doc.close_output(|job| job.session_id == session.session_id);
         audit(
             doc,
             "human-takeover",
@@ -1383,11 +1322,7 @@ pub(super) fn return_control(runtime: &Runtime, session_id: &str) -> Result<(), 
             .ok_or_else(|| {
                 DeckError::new(ErrorKind::ContextChanged, "MCP session generation changed")
             })?;
-        current.human_lock = false;
-        current.control_epoch = current.control_epoch.saturating_add(1);
-        current.control_owner = None;
-        current.control_holder = None;
-        current.lease_expires_at = None;
+        current.fence(FenceMode::ReturnToMcp);
         let current = current.clone();
         audit(
             doc,
@@ -1409,11 +1344,7 @@ pub(super) fn return_control(runtime: &Runtime, session_id: &str) -> Result<(), 
                 .iter_mut()
                 .find(|item| item.session_id == returned.session_id)
                 .map(|current| {
-                    current.human_lock = true;
-                    current.control_epoch = current.control_epoch.saturating_add(1);
-                    current.control_owner = None;
-                    current.control_holder = None;
-                    current.lease_expires_at = None;
+                    current.fence(FenceMode::Human);
                     current.clone()
                 }))
         });
