@@ -693,6 +693,39 @@ pub(crate) fn export_logs() -> Result<PathBuf, DeckError> {
 mod tests {
     use super::*;
 
+    /// `ui/test/fixtures/smoke-manifest.json` lists what every smoke mode must
+    /// emit (judged by `scripts/smoke-verdict`); its names are exactly the
+    /// closed smoke-check vocabulary. A manifest-only name would log as
+    /// `<redacted>`; a SMOKE_CHECKS-only name is dead.
+    #[test]
+    fn smoke_checks_are_exactly_the_smoke_manifest() {
+        let manifest: serde_json::Value =
+            serde_json::from_str(include_str!("../../ui/test/fixtures/smoke-manifest.json"))
+                .unwrap();
+        let mut listed = std::collections::BTreeSet::new();
+        for mode in manifest["modes"].as_object().unwrap().values() {
+            if let Some(terminal) = mode["terminal"].as_str() {
+                listed.insert(terminal.to_owned());
+            }
+            for name in mode["checks"].as_object().unwrap().keys() {
+                listed.insert(name.clone());
+            }
+        }
+        let closed: std::collections::BTreeSet<String> =
+            SMOKE_CHECKS.iter().map(|name| (*name).to_owned()).collect();
+        assert_eq!(
+            closed.len(),
+            SMOKE_CHECKS.len(),
+            "a smoke check listed twice"
+        );
+        let dead: Vec<_> = closed.difference(&listed).collect();
+        let unknown: Vec<_> = listed.difference(&closed).collect();
+        assert!(
+        dead.is_empty() && unknown.is_empty(),
+        "SMOKE_CHECKS without a smoke mode: {dead:?}; manifest names SMOKE_CHECKS would redact: {unknown:?}"
+    );
+    }
+
     #[test]
     fn ui_events_admit_no_free_form_content() {
         // unknown codes never reach the log line

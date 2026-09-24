@@ -1,0 +1,264 @@
+{
+  "note": "Expected smoke-check lines per WKWebView smoke mode (app/src-tauri/src/main.rs dispatch; DECK_SMOKE_WKWEBVIEW=<mode>, run is the default). A rule {} means every occurrence has a positive a; \"a\": N means exactly N; \"a\": [..] means exactly those values once each; \"metric\" only requires presence; \"failureOnly\" names are emitted only on an exception path. \"terminal\" is the checkpoint that must come last with a=1 (null: the mode stays open for an external step). Judged by scripts/smoke-verdict; the name set equals diagnostics.rs SMOKE_CHECKS and each carrier's report literals.",
+  "modes": {
+    "run": {
+      "terminal": "done",
+      "checks": {
+        "automation": {},
+        "board-concurrency": {},
+        "board-fault": {},
+        "buffer-board-stopped": {},
+        "buffer-cas": {},
+        "buffer-natural-exit-retained": {},
+        "buffer-queue-copy": {},
+        "button-context-menu": {},
+        "button-force-touch": {},
+        "command-without-pane": {},
+        "completion": {},
+        "completion-bottom": { "metric": true },
+        "completion-gap": { "metric": true },
+        "completion-hidden": { "metric": true },
+        "completion-long": { "metric": true },
+        "completion-owner": {},
+        "completion-pixels": { "metric": true },
+        "completion-resize": { "metric": true },
+        "completion-scroll": { "metric": true },
+        "dropdown": { "a": 255 },
+        "font-layout": {},
+        "ime-routing": {},
+        "link-activate": {},
+        "link-classify": {},
+        "link-repaint": {},
+        "link-scan-bounded": {},
+        "multiline-prompt": {},
+        "natural-fault": {},
+        "path-editor": {},
+        "path-menu": {},
+        "path-session-absolute": {},
+        "path-session-relative": {},
+        "rename": {},
+        "scheduler-context": {},
+        "scroll-frame": {},
+        "selection-blur": {},
+        "selection-cancel": {},
+        "selection-clipboard": {},
+        "selection-clipboard-copy": {},
+        "selection-clipboard-expect": {},
+        "selection-clipboard-range": {},
+        "selection-copy-unavailable": {},
+        "selection-detach": {},
+        "selection-down": {},
+        "selection-down-scroll": {},
+        "selection-drag-overlay": {},
+        "selection-empty-click": {},
+        "selection-gestures": {},
+        "selection-live": {},
+        "selection-markers": {},
+        "selection-multiclick-drag": {},
+        "selection-native-scroll": {},
+        "selection-overlay": {},
+        "selection-owner": {},
+        "selection-repeat": {},
+        "selection-resize": {},
+        "selection-reverse": {},
+        "selection-scroll-cursor": {},
+        "selection-scroll-stable": {},
+        "selection-split": {},
+        "selection-up": {},
+        "selection-up-range": {},
+        "settings-logs": {},
+        "settings-navigation": {},
+        "settings-viewport": {},
+        "split-picker-button": { "a": [1, 2] },
+        "split-picker-create": { "a": [1, 2] },
+        "split-picker-existing": { "a": [1, 2] },
+        "split-picker-layout": { "a": [1, 2] },
+        "split-picker-pty": { "a": [1, 2] },
+        "split-picker-shortcut": { "a": [1, 2] },
+        "surface-context-menu": {},
+        "theme-rollback": {},
+        "theme-switch": {}
+      }
+    },
+    "settings": {
+      "terminal": "done",
+      "checks": {
+        "button-context-menu": {},
+        "button-force-touch": {},
+        "settings-logs": { "a": 1 },
+        "settings-navigation": { "a": 8 },
+        "settings-viewport": { "a": 32 },
+        "surface-context-menu": {}
+      }
+    },
+    "ambiguous": {
+      "terminal": "done",
+      "checks": {
+        "ambiguous-boot": {}
+      }
+    },
+    "restart": {
+      "terminal": "done",
+      "checks": {
+        "rename-restart": {}
+      }
+    },
+    "buffer": {
+      "terminal": "done",
+      "checks": {
+        "buffer-board-stopped": {},
+        "buffer-cas": {},
+        "buffer-natural-exit-retained": {},
+        "buffer-queue-copy": {},
+        "buffer-visual-fixture": {}
+      }
+    },
+    "channel": {
+      "terminal": "done",
+      "checks": {
+        "channel-route": {},
+        "channel-ui": {}
+      }
+    },
+    "channel-fault": {
+      "terminal": "done",
+      "checks": {
+        "channel-fault-recovery": {},
+        "channel-network": {},
+        "channel-scope": {}
+      }
+    },
+    "connector": {
+      "terminal": "done",
+      "checks": {
+        "connector-apply": {},
+        "connector-route": {},
+        "connector-settings": {}
+      }
+    },
+    "connector-transport": {
+      "terminal": null,
+      "checks": {
+        "connector-transport-ready": {}
+      }
+    },
+    "attention": {
+      "terminal": "done",
+      "checks": {
+        "attention-attach-fail": {},
+        "attention-attach-pending": {},
+        "attention-board": {},
+        "attention-exit-before-reply": {},
+        "attention-exit-generation": {},
+        "attention-fixture": {},
+        "attention-followed-save": {},
+        "attention-followed-toggle": {},
+        "attention-followed-unknown": {},
+        "attention-followed-viewed": {},
+        "attention-input-seen": {},
+        "attention-keyed-focus": {},
+        "attention-layout": {},
+        "attention-locate-only": {},
+        "attention-origin": {},
+        "attention-partial": {},
+        "attention-persistence": {},
+        "attention-pointer": {},
+        "attention-poll-followup": {},
+        "attention-reopen-detached": {},
+        "attention-reorder-focus": {},
+        "attention-return": {},
+        "attention-seen": {},
+        "attention-split-fail": {},
+        "attention-stage": { "failureOnly": true },
+        "attention-stale": {},
+        "defaults-create": {},
+        "defaults-dialog": {},
+        "defaults-editor": {},
+        "defaults-empty": {},
+        "defaults-exit": {},
+        "defaults-here": {},
+        "defaults-menu": {},
+        "defaults-not-dir": {},
+        "defaults-persistence": {},
+        "defaults-shell-only": {},
+        "entry-automations": {},
+        "entry-chip": {},
+        "entry-empty": {},
+        "entry-head": {},
+        "entry-menu": {},
+        "entry-menu-dismiss": {},
+        "entry-project-menu": {},
+        "entry-templates": {},
+        "entry-vocabulary": {}
+      }
+    },
+    "resume": {
+      "terminal": "resume-done",
+      "checks": {
+        "resume-agent-hidden": {},
+        "resume-capture-0": {},
+        "resume-capture-1": {},
+        "resume-chip": {},
+        "resume-cleared": {},
+        "resume-exception": { "failureOnly": true },
+        "resume-ghost": {},
+        "resume-no-execution": {},
+        "resume-pane-isolation": {},
+        "resume-priority": {},
+        "resume-restored": {}
+      }
+    },
+    "review": {
+      "terminal": "done",
+      "checks": {
+        "review-atomic-list": {},
+        "review-cancel-dialog": {},
+        "review-default": {},
+        "review-dialog": {},
+        "review-edit-revokes": {},
+        "review-final-hold": {},
+        "review-idempotent": {},
+        "review-last": {},
+        "review-layout": {},
+        "review-no-bypass": {},
+        "review-save-failure": {},
+        "review-second": {},
+        "review-signals": {},
+        "review-stage": { "failureOnly": true }
+      }
+    },
+    "review-restart": {
+      "terminal": "done",
+      "checks": {
+        "review-restart": { "a": 1 }
+      }
+    },
+    "voice": {
+      "terminal": "done",
+      "checks": {
+        "voice-button-idle": {},
+        "voice-exception-0": { "failureOnly": true },
+        "voice-exception-1": { "failureOnly": true },
+        "voice-exception-2": { "failureOnly": true },
+        "voice-exception-3": { "failureOnly": true },
+        "voice-exception-4": { "failureOnly": true },
+        "voice-foreground-program": {},
+        "voice-leave": {},
+        "voice-preferences-defaults": {},
+        "voice-preferences-last": {},
+        "voice-preferences-layout": {},
+        "voice-preferences-restore": {},
+        "voice-preferences-saved": {},
+        "voice-preferences-single": {},
+        "voice-target-ended": {},
+        "voice-theme-deck-dark": {},
+        "voice-theme-high-contrast": {},
+        "voice-theme-light": {},
+        "voice-type-no-enter": {},
+        "voice-type-separator": {},
+        "voice-type-visible": {},
+        "voice-workspace": {}
+      }
+    }
+  }
+}
