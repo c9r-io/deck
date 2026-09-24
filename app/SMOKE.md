@@ -50,22 +50,17 @@ release's GitHub run and in git history, not in the checklist.
 `cargo test` covers the tmux contracts (scroll model, clear-history, literal
 injection, poll formats); `scripts/ui-tests` covers the DOM-free modules.
 
-Baseline history: from `7364362` (2026-09-07) through 0.6.3 an untouched
-fresh-root run failed `selection-up`, `selection-clipboard` and
-`selection-down` (first seen 2026-09-09 on `bad89b8`; governance 07). Root
-cause: a cross-screen drag's off-screen anchor was clamped to the visible
-frame at pointerup, so every cross-screen selection collapsed to one screen;
-underneath, endpoints mixed the live `#{history_size}` with copy-mode's
-snapshot coordinates. Fixed 2026-09-10 (07 A v01): endpoints count from the
-copy-mode snapshot, an off-screen endpoint is reached with `goto-line`
-inside the one materialize list, and a placement tmux reports on other rows
-is refused. The full run is green again on an idle machine; the same run
-under a concurrent `cargo test` build failed six timing-bound checks
-(`link-activate`, `completion*`, `selection-native-scroll`,
-`selection-resize`, `scroll-frame`), so run the release smoke with no other
-build in progress. The five `selection-*-range/expect/copy/scroll`
-lines are 07's closed diagnostics and always report positive. Red or green
-is now decided by `scripts/smoke-verdict`, not by reading the log.
+Current state: as of 2026-09-25 (the FR-6b commit that wrote this line) all
+13 automated modes — run, ambiguous, restart, settings, attention, voice,
+buffer, channel, connector, resume, connector-transport, review and
+review-restart — pass `scripts/smoke-verdict` on fresh isolated roots on an
+idle Mac. `channel-fault` needs real Slack sandbox tokens and was not part of
+that run. Run the smoke with no other build in progress: under a concurrent
+`cargo test` build the timing-bound checks (`link-activate`, `completion*`,
+`selection-native-scroll`, `selection-resize`, `scroll-frame`) fail. The five
+`selection-*-range/expect/copy/scroll` lines are closed diagnostics and
+always report positive. Red or green is decided by `scripts/smoke-verdict`,
+not by reading the log.
 
 ## Human inspection checkpoints (05 C v01)
 

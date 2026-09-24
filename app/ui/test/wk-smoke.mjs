@@ -2311,8 +2311,29 @@ export async function verifyConnector() {
     const settingsOk = !$('set-panel-remote').hidden && $('set-connector-toggle').dataset.enabled === 'false'
       && $('set-connector-pair').disabled === true;
     $('set-close').click();
+    // Phone buffer commands accept only an agent card (a saved codex/claude
+    // command, df0f2aa). The card saves `claude` but is marked launched
+    // through the production Board transaction and never started, so no
+    // agent can run (startCommand sends a command only while launched is
+    // false). The tripwire below proves it before the seed and after.
     const card = await provider.create({ projectId: project.id, columnId: column.id,
-      title: 'connector smoke', cmd: '', dir: '/tmp' });
+      title: 'connector smoke', cmd: 'claude', dir: '/tmp' });
+    await provider.markLaunched(card.id);
+    const shells = ['zsh', 'bash', 'fish', 'sh', 'dash', 'ksh', 'tcsh', 'csh', 'nu'];
+    const noAgent = async () => {
+      if (provider.get(card.id)?.launched !== true) return false;
+      const live = await inv('poll_sessions', { names: [card.session], tailFor: [], checkpointShells: false })
+        .catch(() => null);
+      if (live) return live.every(s => s.name !== card.session || !s.alive || shells.includes(s.fg));
+      // A fresh root has no tmux server until a session starts; a poll that
+      // cannot reach one must be explained by a server with no session.
+      const server = await inv('tmux_server_status').catch(() => null);
+      return !server || server.sessionCount === 0;
+    };
+    if (!await noAgent()) {
+      await report('connector-no-agent', false, 0, 1);
+      throw new Error('connector smoke card could run an agent');
+    }
     await inv('connector_smoke_window', { visible: false });
     await inv('connector_smoke_seed', { cardId: card.id, expectedRevision: '0' });
     await drainConnector();
@@ -2320,12 +2341,14 @@ export async function verifyConnector() {
     await inv('connector_smoke_window', { visible: true });
     await drainConnector();
     const current = provider.get(card.id); const pending = await inv('connector_pending');
-    const applyOk = applied && current.buffer.entries.filter(entry => entry.text === 'smoke connector note').length === 1
+    const entries = current?.buffer?.entries || [];
+    const applyOk = applied && entries.filter(entry => entry.text === 'smoke connector note').length === 1
       && pending.length === 0;
+    await report('connector-no-agent', await noAgent(), 1, 0);
     await report('connector-settings', settingsOk, $('set-connector-toggle').dataset.enabled === 'false' ? 1 : 0,
       $('set-connector-pair').disabled ? 1 : 0);
-    await report('connector-apply', applyOk, current.buffer?.entries?.length || 0, pending.length);
-    await report('connector-route', settingsOk && applyOk, current.buffer.entries.length, pending.length);
+    await report('connector-apply', applyOk, entries.length, pending.length);
+    await report('connector-route', settingsOk && applyOk, entries.length, pending.length);
     await report('done', !smokeFailed, 1, 0);
   } catch (_) { await inv('connector_smoke_window', { visible: true }).catch(() => {}); await report('done', false, 0, 18); }
 }

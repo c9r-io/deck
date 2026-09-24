@@ -348,6 +348,7 @@ const SMOKE_CHECKS: &[&str] = &[
     "channel-scope",
     "channel-fault-recovery",
     "connector-route",
+    "connector-no-agent",
     "connector-settings",
     "connector-apply",
     "connector-transport-ready",
