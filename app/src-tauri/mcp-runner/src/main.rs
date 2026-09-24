@@ -57,6 +57,25 @@
 //! An idle runner holds no timer: the accept loop blocks, `Shutdown` exits
 //! from the connection that answered it, and each job's reaper blocks in
 //! `waitid(WNOWAIT)` until the leader has an event.
+//!
+//! Panics end the process, never the thread. `Inner` holds state that is
+//! updated in pairs (`jobs` with `order`, `active` with that job's state,
+//! control mode with epoch and holder, the grant maps), so a runner that
+//! kept serving after a panic between two of those writes would accept
+//! requests against half-updated authority. The runner is the execution
+//! boundary and its death is its safe state: Deck already treats a runner
+//! that stops answering as stale/lost. `main` therefore installs, before any
+//! thread exists, a panic hook that writes one fixed line to the pane with
+//! a raw `write(2)` (no lock, no panic payload — it may quote job data) and
+//! `_exit(70)` (EX_SOFTWARE): no unwinding, no poisoned lock is ever
+//! observed, and unlike `abort()` no SIGABRT crash report is produced for a
+//! signed helper. `panic = "abort"` cannot be set for one package (profiles
+//! are workspace-wide and would reach the app). Live job groups are left as
+//! on any other abnormal runner death (SIGKILL included): their pipes to the
+//! runner close and Deck reports the runner lost. `lock_or_recover` stays
+//! only because `clippy.toml` refuses a raw `Mutex::lock`; under the hook
+//! its recovery branch is unreachable. This is the runner's policy; the
+//! app's recovery rationale in `src/sync.rs` does not apply here.
 
 use base64::Engine;
 use ring::rand::{SecureRandom, SystemRandom};
@@ -185,10 +204,11 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-/// `lock()` that recovers a poisoned mutex instead of taking down every
-/// thread that touches it after one panicked while holding it — the same
-/// policy as deck-app's `src/sync.rs`. `clippy.toml` refuses a raw
-/// `Mutex::lock` anywhere else in the workspace.
+/// The one allowed `Mutex::lock` (`clippy.toml` refuses it elsewhere). A
+/// poisoned lock cannot be observed: `exit_on_panic` ends the process before
+/// any other thread runs again, so the recovery branch is unreachable in the
+/// runner binary (see the header); it only keeps unit tests, which run
+/// without the hook, from cascading.
 trait LockRecover<T> {
     fn lock_or_recover(&self) -> MutexGuard<'_, T>;
 }
@@ -2799,7 +2819,21 @@ mod tests {
     }
 }
 
+/// Install before any thread exists: a panic anywhere ends the runner (see
+/// the header). Only async-signal-safe calls, no allocation, no lock.
+fn exit_on_panic() {
+    std::panic::set_hook(Box::new(|_| {
+        const LINE: &[u8] = b"Deck MCP managed shell stopped: internal error\n";
+        // SAFETY: write(2) and _exit(2) on a static buffer; nothing else runs.
+        unsafe {
+            libc::write(2, LINE.as_ptr().cast(), LINE.len());
+            libc::_exit(70);
+        }
+    }));
+}
+
 fn main() {
+    exit_on_panic();
     let Some((socket, generation, service_instance, output_retention_ms, deck_pid)) = parse_args()
     else {
         std::process::exit(64);

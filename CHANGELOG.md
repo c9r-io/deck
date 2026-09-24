@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- MCP: if the managed-shell runner ever hits an internal error it now
+  stops (the pane shows "Deck MCP managed shell stopped: internal error"
+  and Deck reports the session's runner as lost) instead of continuing
+  with possibly half-updated control and grant state.
 - Internal: raw `Mutex::lock` / `Condvar::wait` are now refused by clippy
   (`clippy.toml`) everywhere in the Rust workspace, tests included, instead
   of by a text scan that ran only in the full test suite; it found one raw

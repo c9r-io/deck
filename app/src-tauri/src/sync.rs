@@ -16,6 +16,10 @@
 //! runner's copy of `lock_or_recover` — are the only allowed callers. After
 //! editing `clippy.toml`, `touch` a crate's sources before a local clippy
 //! run: cached results do not see configuration changes.
+//!
+//! This recovery policy is the app's only. The sidecars choose their own:
+//! the MCP runner ends the process on any panic instead of recovering (its
+//! authority state is updated in pairs; see `mcp-runner/src/main.rs`).
 
 use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
 
