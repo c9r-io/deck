@@ -1,0 +1,4 @@
+#!/bin/sh
+# Judge an isolated WKWebView smoke run: scripts/smoke-verdict <data-dir> <mode>
+# (logic and rules in scripts/smoke-verdict.mjs; exit 0 pass, 1 fail, 2 usage)
+exec node "$(dirname "$0")/smoke-verdict.mjs" "$@"

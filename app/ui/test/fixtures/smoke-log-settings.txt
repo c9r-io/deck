@@ -1,0 +1,7 @@
+1790265994 [ui] smoke-check settings-logs a=1 b=1
+1790265995 [ui] smoke-check settings-navigation a=8 b=8
+1790265995 [ui] smoke-check button-force-touch a=128 b=0
+1790265995 [ui] smoke-check button-context-menu a=128 b=8
+1790265995 [ui] smoke-check surface-context-menu a=4 b=0
+1790265995 [ui] smoke-check settings-viewport a=32 b=32
+1790265995 [ui] smoke-check done a=1 b=0
