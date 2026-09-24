@@ -12,7 +12,7 @@ words the Board already uses; nothing is inferred from output.
 - an agent reports **turn done** and that ending has not been viewed yet.
 
 Both require the matching Agent status integration (Claude Code or Codex)
-in **Settings → Integrations & automation**. Sessions without a hook state
+in **Settings → Agents & notifications**. Sessions without a hook state
 never notify: the 15 s output heuristic is activity, not readiness, and
 quiet never means ready. Nothing is posted for *working*, for a manual
 follow-up star, or for a session that stopped.

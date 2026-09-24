@@ -17,7 +17,7 @@ build packages and signs `deck-mcp` and `deck-mcp-runner` through Tauri's
 `externalBin` mechanism. No executable is installed in `PATH` and no login
 item or background service is created.
 
-1. Build/run Deck normally and open **Settings → Integrations**.
+1. Build/run Deck normally and open **Settings → Remote access**.
 2. Enable **MCP terminal control** and accept the code-execution warning.
 3. Choose **Authorize MCP client**, name the client, and explicitly select one
    of Deck's projects in the authorization dialog. The dialog starts without a

@@ -1,6 +1,6 @@
 # Phone Connector
 
-Phone Connector is disabled by default. Enabling it in **Settings → Integrations & automation** asks for confirmation, because a paired phone can:
+Phone Connector is disabled by default. Enabling it in **Settings → Remote access** asks for confirmation, because a paired phone can:
 
 - read the recent output of Codex and Claude cards;
 - submit prompts to Codex and Claude sessions — a prompt can lead the agent to run commands, so this is equivalent to running code under your macOS account, with whatever permissions the saved card command and the agent's own configuration grant;

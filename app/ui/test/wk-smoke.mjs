@@ -1881,23 +1881,37 @@ async function settingsNavigationSmoke() {
     && $('toasts').lastElementChild?.textContent === t('settings.logsReset');
   await report('settings-logs', safeFocus && resetReady, safeFocus ? 1 : 0, resetReady ? 1 : 0);
   let visible = 0;
-  for (const id of ['general', 'shortcuts', 'terminal', 'integrations', 'data', 'about']) {
+  const sections = ['general', 'shortcuts', 'terminal', 'agents', 'integrations', 'remote', 'data', 'about'];
+  for (const id of sections) {
     $('set-nav-' + id).click();
     const panels = [...document.querySelectorAll('.set-panel')].filter(panel => !panel.hidden);
     if (panels.length === 1 && panels[0].id === 'set-panel-' + id) visible++;
   }
   $('set-search').value = 'SLACK';
   $('set-search').dispatchEvent(new Event('input', { bubbles: true }));
-  const found = !$('set-panel-integrations').hidden && $('set-panel-data').hidden;
+  const slackFound = !$('set-panel-integrations').hidden && $('set-panel-data').hidden;
+  $('set-search').value = '通知';
+  $('set-search').dispatchEvent(new Event('input', { bubbles: true }));
+  const shownPanels = [...document.querySelectorAll('.set-panel')].filter(panel => !panel.hidden);
+  const notifyFound = shownPanels.length === 1 && shownPanels[0].id === 'set-panel-agents'
+    && !$('set-item-away-notifications').hidden && $('set-item-agent-status').hidden;
+  const found = slackFound && notifyFound;
   $('set-search').value = 'no-matching-setting-xyz';
   $('set-search').dispatchEvent(new Event('input', { bubbles: true }));
   const empty = !$('set-no-results').hidden;
   $('set-search').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
   const restored = $('set-search').value === '' && !$('set-panel-about').hidden;
+  $('set-search').value = '通知';
+  $('set-search').dispatchEvent(new Event('input', { bubbles: true }));
+  $('set-search').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+  await pause(20);
+  const located = $('set-search').value === '' && !$('set-panel-agents').hidden
+    && document.activeElement === $('set-item-away-notifications')
+    && $('set-item-away-notifications').getBoundingClientRect().top >= $('set-content').getBoundingClientRect().top - 1;
   selectSettingsSection('general');
   $('set-close').click();
   const focusReturned = document.activeElement === $('settings-btn');
-  await report('settings-navigation', visible === 6 && found && empty && restored && focusReturned, visible, 6);
+  await report('settings-navigation', visible === sections.length && found && empty && restored && located && focusReturned, visible, sections.length);
 }
 
 export async function verifySettings() {
@@ -1915,7 +1929,7 @@ export async function verifySettings() {
       setLocale(locale);
       for (const scale of [1, 1.6]) {
         applyFontScale(scale);
-        for (const id of ['general', 'shortcuts', 'terminal', 'integrations', 'data', 'about']) {
+        for (const id of ['general', 'shortcuts', 'terminal', 'agents', 'integrations', 'remote', 'data', 'about']) {
           selectSettingsSection(id);
           await pause(20);
           const content = $('set-content');
@@ -1927,7 +1941,7 @@ export async function verifySettings() {
         }
       }
     }
-    await report('settings-viewport', passed === 24, passed, 24);
+    await report('settings-viewport', passed === 32, passed, 32);
     box.style.width = ''; box.style.height = '';
     applyFontScale(ctx.settings.fontScale);
     setLocale(ctx.settings.locale);
@@ -2293,8 +2307,8 @@ export async function verifyConnector() {
     await waitFor(() => provider.projects().length > 0);
     const project = provider.projects()[0]; const column = project.columns[0];
     const { openSettings, renderConnectorSettings, selectSettingsSection } = await import('../js/settings.js');
-    await openSettings(); selectSettingsSection('integrations'); await renderConnectorSettings();
-    const settingsOk = $('set-connector-toggle').dataset.enabled === 'false'
+    await openSettings(); selectSettingsSection('remote'); await renderConnectorSettings();
+    const settingsOk = !$('set-panel-remote').hidden && $('set-connector-toggle').dataset.enabled === 'false'
       && $('set-connector-pair').disabled === true;
     $('set-close').click();
     const card = await provider.create({ projectId: project.id, columnId: column.id,

@@ -33,7 +33,7 @@ The Helper handles setup and lifecycle commands. **The official `tunnel-client` 
 | --- | --- | --- |
 | **Tunnel ID** (`tunnel_…`) | [OpenAI Platform → Tunnels](https://platform.openai.com/settings/organization/tunnels) | Identifies the remote Secure MCP Tunnel shared with ChatGPT. |
 | **Runtime API key** | [OpenAI Platform → Organization → Runtime API keys](https://platform.openai.com/settings/organization/api-keys) | Lets the official `tunnel-client` use that Tunnel. The Helper receives it interactively; Deck never receives it. |
-| **Deck MCP client** | Deck Settings → Integrations & automation → MCP terminal control | Defines the project, directory, and actions ChatGPT may access. |
+| **Deck MCP client** | Deck Settings → Remote access → MCP terminal control | Defines the project, directory, and actions ChatGPT may access. |
 
 **You normally do not need an Admin API key** when you create the Tunnel in the Platform UI. An Admin key is for Tunnel management through the admin CLI. It is different from a Runtime key and must not be used for the long-running Tunnel connection.
 
@@ -58,13 +58,13 @@ The key's restrictions and its **principal's organization/tunnel authorization a
 ## 3. Install Deck Tunnel Helper
 
 1. From the **same [Deck release](https://github.com/c9r-io/deck/releases)** as your installed Deck, download the **Deck Tunnel Helper** asset. Extract **Deck Tunnel Helper.app** and move it to `/Applications/Deck Tunnel Helper.app`.
-2. Open Deck → **Settings → Integrations & automation → MCP terminal control**. Once you have an MCP client (step 4), its row will show **Secure Tunnel helper installed** if Deck accepts the Helper. If it says the optional Helper is missing or unavailable, see [Troubleshooting](#troubleshooting).
+2. Open Deck → **Settings → Remote access → MCP terminal control**. Once you have an MCP client (step 4), its row will show **Secure Tunnel helper installed** if Deck accepts the Helper. If it says the optional Helper is missing or unavailable, see [Troubleshooting](#troubleshooting).
 
 The release app is signed and notarized. There is no `sudo` installer, `chmod`, `xattr` removal, or Gatekeeper override step. Installing the Helper does not enable Deck MCP or grant project access.
 
 ## 4. Authorize a Deck MCP client
 
-1. In Deck, open **Settings → Integrations & automation → MCP terminal control**. Choose **Enable** and read the local code-execution warning.
+1. In Deck, open **Settings → Remote access → MCP terminal control**. Choose **Enable** and read the local code-execution warning.
 2. Choose **Authorize MCP client…**. Name the client **ChatGPT**. Explicitly choose a Deck **Project** and an **Authorized directory** inside that project. Deck fills in the project's configured directory when available; review it before confirming. Choose the smallest directory that contains the files you want ChatGPT to use. The whole home directory is too broad and Deck rejects it.
 3. Confirm the canonical directory Deck shows. When asked whether this integration may create visible managed sessions, choose **Cancel** for structured reading only, or allow creation if you need it. Session creation is a separate permission and **does not authorize command execution**.
 

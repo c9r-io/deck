@@ -2,7 +2,7 @@
 
 The channel monitor is a separate, read-only Slack connection for explicitly scoped project automations. It does not reuse the personal reaction connection or its credentials, and it never writes to Slack.
 
-Create the Slack app from **Settings → Integrations & automation → Slack channel monitor**, install it in the chosen workspace, then store its bot token and Socket Mode app token. The credentials stay in the macOS Keychain. Enabling the connection without both credentials leaves it visibly disconnected.
+Create the Slack app from **Settings → Integrations → Slack channel monitor**, install it in the chosen workspace, then store its bot token and Socket Mode app token. The credentials stay in the macOS Keychain. Enabling the connection without both credentials leaves it visibly disconnected.
 
 Create rules from a project's **Automations** drawer. Every rule requires explicit channel IDs and at least one allowed user or bot ID. Matching is deterministic: a substring, a keyword list, or a regular expression. A named regular-expression capture can provide an incident key. Cards are grouped only by connection, workspace, channel, rule, and that optional captured value; deck does not infer incidents with AI. Thread replies can be included or excluded.
 

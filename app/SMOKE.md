@@ -69,7 +69,7 @@ The full release checklist and its known selection baseline remain separate.
 ## Away notifications (manual)
 
 Release-location or `app/run.sh` bundle, an Agent status integration on,
-**Settings → Integrations & automation → Notify me when away** on (accept
+**Settings → Agents & notifications → Notify me when away** on (accept
 the macOS permission dialog; the status row must read "Notifications
 allowed"). Start a `claude` card, ask it a question that needs a tool
 approval, hide deck with ⌘W: a macOS notification titled with the card
@@ -133,12 +133,13 @@ minimum window: controls must remain reachable and long names must wrap.
 ## Settings navigation and diagnostic log reset
 
 Run `DECK_SMOKE_DATA_DIR="$(mktemp -d /tmp/deck-settings.XXXXXX)" DECK_SMOKE_TMUX_SOCKET=deck-smoke-settings-UNIQUE DECK_SMOKE_WKWEBVIEW=settings app/run.sh`.
-This isolated mode checks all six categories, localized search, empty results,
-Escape/focus restoration, cancellation and acceptance of log reset, and 24
-layout combinations (English/Chinese, 100%/160% font, six categories) in a
-680 × 400 settings frame. It leaves Data & logs open for visual inspection.
-Expect `settings-logs=1/1`, `settings-navigation=6/6`,
-`settings-viewport=24/24`, and final `done=1` in that isolated `app.log`.
+This isolated mode checks all eight categories, setting-level search (Slack,
+and 通知 showing only the notification group), Enter locating the first match,
+empty results, Escape/focus restoration, cancellation and acceptance of log
+reset, and 32 layout combinations (English/Chinese, 100%/160% font, eight
+categories) in a 680 × 400 settings frame. It leaves Data & privacy open for
+visual inspection. Expect `settings-logs=1/1`, `settings-navigation=8/8`,
+`settings-viewport=32/32`, and final `done=1` in that isolated `app.log`.
 Reset runs before smoke results are written, so it cannot erase test evidence.
 
 ## Upgrade-aware tmux lifecycle

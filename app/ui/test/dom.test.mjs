@@ -14,7 +14,9 @@ const {
 const {
   connectorPairingChanged, initSettings, renderConnectorSettings, mcpAuthorizationDialog, persistSessionRestoreChoice, persistUpdateChannelChoice,
   persistThemeChoice, filterSettings, renderMcpSettings, selectSettingsSection, resetApplicationLogs, refreshLogSize,
+  locateSetting, openSettings, refreshEditors, persistAgentHooksChoice,
 } = await import('../js/settings.js');
+const { normalizeSettings: normalizeSettingsDoc } = await import('../js/settings-model.js');
 const { ctx, store } = await import('../js/state.js');
 const { boardData, flushBoardMutations, mutateBoard, mutateBoardDebounced } = await import('../js/persistence.js');
 initDialogs();
@@ -529,28 +531,219 @@ test('enabling shell recovery is opt-in and saves only after disclosure', async 
 });
 
 
-test('settings navigation and search expose matching localized sections without losing controls', () => {
-  const names = ['general', 'shortcuts', 'terminal', 'integrations', 'data', 'about'];
-  names.forEach(name => { fakeDocument.getElementById('set-panel-' + name).textContent = name; });
-  fakeDocument.getElementById('set-panel-integrations').textContent = '集成 Slack 自动响应';
+const SECTIONS = ['general', 'shortcuts', 'terminal', 'agents', 'integrations', 'remote', 'data', 'about'];
+const panel = id => fakeDocument.getElementById('set-panel-' + id);
+const navItem = id => fakeDocument.getElementById('set-nav-' + id);
+const group = id => fakeDocument.getElementById('set-item-' + id);
+const visiblePanels = () => SECTIONS.filter(id => !panel(id).hidden);
+
+test('settings navigation and search show matching setting groups under their sections and restore the active one', () => {
   selectSettingsSection('terminal');
-  assert.equal(fakeDocument.getElementById('set-panel-terminal').hidden, false);
-  assert.equal(fakeDocument.getElementById('set-panel-general').hidden, true);
-  assert.equal(fakeDocument.getElementById('set-nav-terminal')['aria-current'], 'page');
+  assert.deepEqual(visiblePanels(), ['terminal']);
+  assert.deepEqual(SECTIONS.filter(id => navItem(id)['aria-current'] === 'page'), ['terminal']);
   const search = fakeDocument.getElementById('set-search');
-  search.value = ' SLACK ';
+
+  search.value = ' 通知 ';
   filterSettings();
-  assert.equal(fakeDocument.getElementById('set-panel-integrations').hidden, false);
-  assert.equal(fakeDocument.getElementById('set-panel-terminal').hidden, true);
-  search.value = '自动响应';
-  filterSettings();
+  assert.deepEqual(visiblePanels(), ['agents'], 'only the section holding the match');
+  assert.equal(group('away-notifications').hidden, false);
+  assert.equal(group('agent-status').hidden, true, 'the neighbouring group of the same section stays hidden');
+  assert.deepEqual(SECTIONS.filter(id => !navItem(id).hidden), ['agents']);
+  assert.deepEqual(SECTIONS.filter(id => navItem(id)['aria-current'] !== 'false'), [], 'no section is current during a search');
+  assert.match(fakeDocument.getElementById('set-search-status').textContent, /1/);
   assert.equal(fakeDocument.getElementById('set-no-results').hidden, true);
+
+  search.value = 'Notify me when away';
+  filterSettings();
+  assert.deepEqual(visiblePanels(), ['agents']);
+  search.value = 'MCP';
+  filterSettings();
+  assert.deepEqual(visiblePanels(), ['remote']);
+  assert.equal(group('mcp').hidden, false);
+  assert.equal(group('connector').hidden, true);
+  search.value = 'SLACK';
+  filterSettings();
+  assert.deepEqual(visiblePanels(), ['integrations']);
+  assert.equal(group('slack-reactions').hidden, false);
+  assert.equal(group('slack-channel').hidden, false);
+  search.value = '数据与隐私';
+  filterSettings();
+  assert.deepEqual(visiblePanels(), ['data'], 'a section title shows that section');
+  search.value = 'Socket Mode';
+  filterSettings();
+  assert.deepEqual(visiblePanels(), [], 'Learn more text is not searched');
+
   search.value = 'no such setting';
   filterSettings();
   assert.equal(fakeDocument.getElementById('set-no-results').hidden, false);
+  assert.equal(fakeDocument.getElementById('set-search-status').textContent, '');
+  assert.deepEqual(SECTIONS.filter(id => !navItem(id).hidden), []);
+
   search.value = '';
   filterSettings();
-  assert.equal(fakeDocument.getElementById('set-panel-terminal').hidden, false);
+  assert.deepEqual(visiblePanels(), ['terminal'], 'clearing restores the section that was active');
+  assert.equal(navItem('terminal')['aria-current'], 'page');
+  assert.deepEqual(SECTIONS.filter(id => navItem(id).hidden), []);
+  for (const id of ['agent-status', 'connector', 'mcp', 'slack-channel']) assert.equal(group(id).hidden, false, id);
+  assert.equal(fakeDocument.getElementById('set-no-results').hidden, true);
+  assert.equal(fakeDocument.getElementById('set-search-status').textContent, '');
+});
+
+test('locating a setting selects its section, scrolls, highlights and focuses its group; unknown ids change nothing', () => {
+  const mcp = group('mcp');
+  const classes = new Set();
+  mcp.classList = { add: c => classes.add(c), remove: c => classes.delete(c), toggle() {}, contains: c => classes.has(c) };
+  let scrolled = null;
+  mcp.scrollIntoView = options => { scrolled = options; };
+  selectSettingsSection('general');
+  const search = fakeDocument.getElementById('set-search');
+  search.value = 'slack';
+  filterSettings();
+  assert.equal(locateSetting('mcp'), true);
+  assert.equal(search.value, '', 'locating leaves search mode');
+  assert.deepEqual(visiblePanels(), ['remote']);
+  assert.equal(navItem('remote')['aria-current'], 'page');
+  assert.equal(mcp.hidden, false);
+  assert.deepEqual(scrolled, { block: 'start' });
+  assert.equal(classes.has('set-located'), true);
+  assert.equal(fakeDocument.activeElement, mcp);
+  for (const bad of ['no-such-setting', '', undefined, null, 'remote']) {
+    assert.equal(locateSetting(bad), false, String(bad));
+    assert.deepEqual(visiblePanels(), ['remote']);
+    assert.equal(fakeDocument.activeElement, mcp);
+  }
+  selectSettingsSection('general');
+});
+
+test('Enter in the search field locates the first result; IME Enter and empty results do nothing', () => {
+  selectSettingsSection('general');
+  const search = fakeDocument.getElementById('set-search');
+  search.value = '通知';
+  search.fire('input');
+  const composing = search.fire('keydown', { key: 'Enter', isComposing: true, keyCode: 229 });
+  assert.equal(composing.prevented, 0);
+  assert.equal(search.value, '通知');
+  const enter = search.fire('keydown', { key: 'Enter' });
+  assert.equal(enter.prevented, 1);
+  assert.equal(search.value, '');
+  assert.deepEqual(visiblePanels(), ['agents']);
+  assert.equal(fakeDocument.activeElement, group('away-notifications'));
+  search.value = 'no such setting';
+  search.fire('input');
+  assert.equal(search.fire('keydown', { key: 'Enter' }).prevented, 0);
+  assert.equal(search.value, 'no such setting');
+  search.value = '';
+  search.fire('input');
+  selectSettingsSection('general');
+});
+
+function settingsBackend(overrides = {}) {
+  const calls = [];
+  window.__TAURI__ = { core: { invoke: async (cmd, args) => {
+    calls.push(cmd);
+    if (cmd in overrides) return overrides[cmd](args);
+    if (cmd === 'detect_editors') return [];
+    if (cmd === 'log_size') return 0;
+    return null;
+  } } };
+  return calls;
+}
+
+test('opening settings does not wait for editor detection and keeps a choice made meanwhile', async () => {
+  ctx.settings = normalizeSettingsDoc({ editor: 'Cursor' });
+  let detected;
+  const calls = settingsBackend({ detect_editors: () => new Promise(resolve => { detected = resolve; }) });
+  await openSettings();
+  assert.equal(fakeDocument.getElementById('settings-modal').style.display, 'flex', 'shown before detection answers');
+  assert.ok(calls.includes('detect_editors'));
+  const editor = fakeDocument.getElementById('set-editor');
+  assert.deepEqual(editor.children.map(o => [o.value, o.textContent]), [['', 'System default (TextEdit)'], ['Cursor', 'Cursor']],
+    'the saved editor is listed plainly until detection answers');
+  assert.equal(editor.value, 'Cursor');
+  editor.value = 'Zed';
+  editor.fire('change');
+  assert.equal(ctx.settings.editor, 'Zed');
+  detected(['Cursor', 'Zed']);
+  await tick(); await tick();
+  assert.deepEqual(editor.children.map(o => o.value), ['', 'Cursor', 'Zed']);
+  assert.equal(editor.value, 'Zed', 'the choice made during detection survives the refresh');
+
+  let first; let second;
+  settingsBackend({ detect_editors: () => new Promise(resolve => { if (!first) first = resolve; else second = resolve; }) });
+  const older = refreshEditors(); const newer = refreshEditors();
+  second(['Nova']); await newer;
+  first(['Xcode']); await older;
+  assert.deepEqual(editor.children.map(o => [o.value, o.textContent]), [['', 'System default (TextEdit)'], ['Nova', 'Nova'], ['Zed', 'Zed (not found)']],
+    'only the newest answer renders; a missing saved editor is labelled after detection');
+  settingsBackend({ detect_editors: () => { throw new Error('io'); } });
+  await refreshEditors();
+  assert.deepEqual(editor.children.map(o => o.value), ['', 'Nova', 'Zed'], 'a failed detection keeps the last list');
+  fakeDocument.getElementById('settings-box').fire('keydown', { key: 'Escape' });
+});
+
+test('openSettings can open at a section or a setting, and ignores anything else', async () => {
+  ctx.settings = normalizeSettingsDoc({});
+  settingsBackend();
+  const box = fakeDocument.getElementById('settings-box');
+  selectSettingsSection('about');
+  await openSettings({ type: 'click' });
+  assert.deepEqual(visiblePanels(), ['about'], 'a click event opens the last active section');
+  assert.equal(fakeDocument.activeElement, fakeDocument.getElementById('set-search'));
+  box.fire('keydown', { key: 'Escape' });
+  await openSettings({ section: 'data' });
+  assert.deepEqual(visiblePanels(), ['data']);
+  box.fire('keydown', { key: 'Escape' });
+  await openSettings({ section: 'general', setting: 'away-notifications' });
+  assert.deepEqual(visiblePanels(), ['agents'], 'the setting decides the section');
+  assert.equal(fakeDocument.activeElement, group('away-notifications'));
+  box.fire('keydown', { key: 'Escape' });
+  await openSettings({ section: 'remote', setting: 'bogus' });
+  assert.deepEqual(visiblePanels(), ['remote'], 'an unknown setting falls back to the named section');
+  assert.equal(fakeDocument.activeElement, fakeDocument.getElementById('set-search'));
+  box.fire('keydown', { key: 'Escape' });
+  await openSettings({ section: 'nope' });
+  assert.deepEqual(visiblePanels(), ['remote'], 'an unknown section keeps the active one');
+  box.fire('keydown', { key: 'Escape' });
+  selectSettingsSection('general');
+});
+
+test('away notifications name the agent-status dependency only when both hooks are known to be off', async () => {
+  ctx.settings = normalizeSettingsDoc({ notifyAway: true });
+  const dependency = fakeDocument.getElementById('set-notify-dependency');
+  const box = fakeDocument.getElementById('settings-box');
+  const open = async status => {
+    let answer;
+    settingsBackend({ agent_hooks_status: () => new Promise(resolve => { answer = resolve; }), notify_status: () => 'authorized' });
+    await openSettings();
+    assert.equal(dependency.hidden, true, 'no claim while the hook state is unknown');
+    answer(status);
+    await tick(); await tick();
+  };
+
+  await open({ claude: false, codex: false });
+  assert.equal(dependency.hidden, false, 'both off');
+  assert.equal(fakeDocument.getElementById('set-notify-away').checked, true, 'the notification switch is untouched');
+  assert.equal(fakeDocument.getElementById('set-notify-away').disabled, false);
+  const calls = settingsBackend();
+  const codex = fakeDocument.getElementById('set-codex-hooks');
+  codex.checked = true;
+  const enabling = persistAgentHooksChoice('codex', 'set-codex-hooks', 'settings.codexHooksEnableConfirm');
+  cfmDone(true);
+  await enabling;
+  assert.deepEqual(calls, ['agent_hooks_set']);
+  assert.equal(dependency.hidden, true, 'one enabled');
+  assert.equal(ctx.settings.notifyAway, true, 'no other setting changes');
+  box.fire('keydown', { key: 'Escape' });
+
+  await open({ claude: true, codex: false });
+  assert.equal(dependency.hidden, true, 'Claude Code enabled');
+  box.fire('keydown', { key: 'Escape' });
+  await open({ claude: true, codex: true });
+  assert.equal(dependency.hidden, true, 'both enabled');
+  box.fire('keydown', { key: 'Escape' });
+  await open(null);
+  assert.equal(dependency.hidden, true, 'an unreadable state makes no claim');
+  box.fire('keydown', { key: 'Escape' });
 });
 
 test('log reset requires confirmation, suppresses double clicks, and refreshes size after success', async () => {
@@ -588,6 +781,12 @@ test('settings keyboard navigation and Escape keep focus inside the workflow', (
   fakeDocument.getElementById('set-nav-general').fire('keydown', { key: 'ArrowDown' });
   assert.equal(fakeDocument.activeElement, fakeDocument.getElementById('set-nav-shortcuts'));
   assert.equal(fakeDocument.getElementById('set-panel-shortcuts').hidden, false);
+  fakeDocument.getElementById('set-nav-general').fire('keydown', { key: 'ArrowUp' });
+  assert.equal(fakeDocument.activeElement, fakeDocument.getElementById('set-nav-about'), 'ArrowUp wraps to the last section');
+  selectSettingsSection('terminal');
+  fakeDocument.getElementById('set-nav-terminal').fire('keydown', { key: 'ArrowDown' });
+  assert.equal(fakeDocument.activeElement, fakeDocument.getElementById('set-nav-agents'));
+  assert.deepEqual(visiblePanels(), ['agents']);
   fakeDocument.getElementById('set-nav-shortcuts').fire('keydown', { key: 'End' });
   assert.equal(fakeDocument.activeElement, fakeDocument.getElementById('set-nav-about'));
   fakeDocument.getElementById('set-nav-about').fire('keydown', { key: 'Home' });

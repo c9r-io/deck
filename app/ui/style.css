@@ -825,6 +825,15 @@ body.side-collapsed .side-new .label { display: none; }
 .set-group .set-hint:last-child { margin-bottom: 0; }
 .set-group .shortcut-list { margin-left: 0; }
 .set-group .set-sep { margin-top: 18px; }
+.set-group { scroll-margin-top: 12px; transition: border-color 0.3s, box-shadow 0.3s; }
+.set-group:focus { outline: none; }
+.set-group.set-located { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-dim); }
+.set-group-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px 10px; margin-bottom: 12px; }
+.set-group-head .btn { margin-left: auto; }
+.set-group-title { font-size: 1rem; font-weight: 600; color: var(--text); margin: 0 0 12px; }
+.set-group-head .set-group-title { margin: 0; }
+.set-group-status { color: var(--muted); font-size: 0.884615rem; }
+.set-group .set-hint.set-dependency { color: var(--wait); }
 .set-details { margin: 8px 0 16px; color: var(--muted); font-size: 0.884615rem; line-height: 1.5; }
 .set-details summary { cursor: pointer; width: fit-content; }
 .set-details summary:hover { color: var(--text); }

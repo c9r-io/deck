@@ -4,6 +4,19 @@
 // logs, the settings writer every choice goes through and the ONE commit
 // shape (`commitSettings`: candidate first, rollback on failure) behind
 // every optimistic choice.
+// Navigation and search: the sections and the searchable settings (stable
+// ids, markup `set-item-<id>`) come from settings-search-model.js, which owns
+// the matching rules. A search shows the matching setting groups under their
+// section headings and hides everything else; no section is `aria-current`
+// while a query is active, and clearing it restores the section that was
+// active. `locateSetting(id)` / `openSettings({ section, setting })` select
+// a section, scroll a group into view, highlight it briefly and focus it;
+// an unknown id changes nothing. Enter in the search field locates the
+// first result. The modal opens without waiting for editor detection: the
+// editor list renders from the last detection and refreshes when the
+// background `detect_editors` answers, keeping the saved choice selected.
+// Away notifications name their dependency on agent-status hooks inline
+// when both are known to be off; nothing is switched on for the user.
 // Voice preferences commit through the settings writer before notifying the
 // recorder; edits never request microphone access or download language assets.
 // Enabling Phone Connector needs an explicit danger confirmation that states
@@ -13,7 +26,7 @@
 // update checks) so this module never imports app.js back.
 // Part of deck's no-build frontend: native ES modules, no bundler.
 import { $, ctx, inv, listen, store, uev } from './state.js';
-import { applyTranslations, formatDateTime, formatNumber, getLocale, onLocaleChange, setLocale, t, translateNotice } from './i18n.js';
+import { applyTranslations, dictionaries, formatDateTime, formatNumber, getLocale, onLocaleChange, setLocale, t, translateNotice } from './i18n.js';
 import {
   CUSTOMIZABLE_SHORTCUT_ACTIONS, FONT_SCALE_MAX, FONT_SCALE_MIN, FONT_SCALE_STEP, SHORTCUT_ACTIONS,
   normalizeSettings, parseSettings, serializeSettings,
@@ -23,38 +36,67 @@ import { createVoiceSettings } from './voice-settings.js';
 import { activateTheme } from './theme.js';
 import { applyFontScale } from './font-scale.js';
 import { newlyPairedDevice } from './connector-model.js';
-import { NOTIFY_STATUS_WORDS, notifyStatusKey } from './notify-model.js';
+import { NOTIFY_STATUS_WORDS, notifyNeedsAgentStatus, notifyStatusKey } from './notify-model.js';
+import { SETTINGS_SECTIONS, isSettingsSection, searchSettings, sectionItems, settingItem } from './settings-search-model.js';
 import {
   formatShortcut, isSafeShortcut, registerShortcutAction, shortcutConflict, shortcutFromEvent,
 } from './shortcuts.js';
 import { choiceDialog, confirmDangerDialog, confirmDialog, toast } from './dialogs.js';
 
 /* ---------- settings ---------- */
-const SETTINGS_SECTIONS = ['general', 'shortcuts', 'terminal', 'integrations', 'data', 'about'];
+const SECTION_IDS = SETTINGS_SECTIONS.map(section => section.id);
 let activeSettingsSection = 'general';
 
 export function filterSettings() {
-  const query = $('set-search').value.trim().toLocaleLowerCase();
-  let matches = 0;
-  for (const id of SETTINGS_SECTIONS) {
-    const panel = $('set-panel-' + id);
+  const results = searchSettings($('set-search').value, dictionaries);
+  const shown = new Map((results || []).map(result => [result.section, new Set(result.items)]));
+  let count = 0;
+  for (const id of SECTION_IDS) {
+    const items = shown.get(id);
     const nav = $('set-nav-' + id);
-    const match = !query || panel.textContent.toLocaleLowerCase().includes(query);
-    nav.hidden = !match;
-    panel.hidden = query ? !match : id !== activeSettingsSection;
-    nav.setAttribute('aria-current', !query && id === activeSettingsSection ? 'page' : 'false');
-    if (match) matches++;
+    nav.hidden = !!results && !items;
+    $('set-panel-' + id).hidden = results ? !items : id !== activeSettingsSection;
+    nav.setAttribute('aria-current', !results && id === activeSettingsSection ? 'page' : 'false');
+    for (const entry of sectionItems(id)) $('set-item-' + entry.id).hidden = !!results && !items?.has(entry.id);
+    count += items ? items.size : 0;
   }
-  $('set-no-results').hidden = matches > 0;
+  $('set-no-results').hidden = !results || count > 0;
+  $('set-search-status').textContent = results && count ? t('settings.searchResults', { count: formatNumber(count) }) : '';
 }
 
 export function selectSettingsSection(id) {
-  if (!SETTINGS_SECTIONS.includes(id)) return;
+  if (!isSettingsSection(id)) return;
   activeSettingsSection = id;
   $('set-search').value = '';
   filterSettings();
   $('set-content').scrollTop = 0;
   if (id === 'data') refreshLogSize();
+}
+
+let locatedGroup = null;
+let locatedTimer = null;
+function highlightSetting(id) {
+  const group = $('set-item-' + id);
+  if (locatedGroup && locatedGroup !== group) locatedGroup.classList.remove('set-located');
+  clearTimeout(locatedTimer);
+  locatedGroup = group;
+  group.classList.add('set-located');
+  locatedTimer = setTimeout(() => {
+    group.classList.remove('set-located');
+    if (locatedGroup === group) locatedGroup = null;
+  }, 1600);
+  if (typeof group.scrollIntoView === 'function') group.scrollIntoView({ block: 'start' });
+  group.focus({ preventScroll: true });
+}
+
+/* Select a setting's section, bring its group into view and focus it.
+   Returns false (and changes nothing) for an id that is not a setting. */
+export function locateSetting(id) {
+  const entry = settingItem(id);
+  if (!entry) return false;
+  selectSettingsSection(entry.section);
+  highlightSetting(entry.id);
+  return true;
 }
 
 function closeSettings() {
@@ -271,15 +313,41 @@ export async function resetShortcuts() {
   await commitShortcuts(normalizeSettings({ ...ctx.settings, shortcuts: extensions }));
 }
 
-export async function openSettings() {
+// Editor names from the last detection; null until one has answered, so a
+// saved editor is never called "not found" before anything was looked for.
+let detectedEditors = null;
+let editorGeneration = 0;
+function renderEditorOptions() {
   const sel = $('set-editor');
-  sel.innerHTML = '';
-  const mk = (v, t) => { const o = document.createElement('option'); o.value = v; o.textContent = t; sel.appendChild(o); };
+  sel.replaceChildren();
+  const mk = (v, text) => { const o = document.createElement('option'); o.value = v; o.textContent = text; sel.appendChild(o); };
   mk('', t('settings.systemEditor'));
-  const eds = await inv('detect_editors').catch(() => []);
-  eds.forEach(name => mk(name, name));
-  if (ctx.settings.editor && !eds.includes(ctx.settings.editor)) mk(ctx.settings.editor, t('common.notFound', { name: ctx.settings.editor }));
-  sel.value = ctx.settings.editor || '';
+  const names = detectedEditors || [];
+  names.forEach(name => mk(name, name));
+  const saved = ctx.settings.editor;
+  if (saved && !names.includes(saved)) mk(saved, detectedEditors ? t('common.notFound', { name: saved }) : saved);
+  sel.value = saved || '';
+}
+
+/* Background editor detection; only the newest answer renders, and it
+   re-selects ctx.settings.editor, so a choice made meanwhile is kept. */
+export async function refreshEditors() {
+  const generation = ++editorGeneration;
+  let names;
+  try { names = await inv('detect_editors'); } catch (_) { return; }
+  if (generation !== editorGeneration) return;
+  detectedEditors = Array.isArray(names) ? names.filter(name => typeof name === 'string') : [];
+  renderEditorOptions();
+}
+
+/* `target` optionally names { section, setting } to open at; anything else
+   (including a click event) opens the section that was last active. */
+export async function openSettings(target) {
+  const setting = settingItem(target?.setting);
+  const section = setting ? setting.section
+    : isSettingsSection(target?.section) ? target.section : activeSettingsSection;
+  renderEditorOptions();
+  refreshEditors();
   $('set-locale').value = ctx.settings.locale || 'system';
   $('set-theme').value = ctx.settings.theme || 'deck-dark';
   $('set-accent').value = ctx.settings.accent || 'teal';
@@ -289,10 +357,16 @@ export async function openSettings() {
   if (ctx.settings.notifyAway) inv('notify_status').then(renderNotifyStatus).catch(() => {});
   $('set-agent-hooks').checked = false;
   $('set-codex-hooks').checked = false;
+  agentHooksKnown = null;
+  renderNotifyDependency();
+  const hooksGeneration = ++agentHooksGeneration;
   inv('agent_hooks_status')
     .then(status => {
       $('set-agent-hooks').checked = !!(status && status.claude);
       $('set-codex-hooks').checked = !!(status && status.codex);
+      if (hooksGeneration !== agentHooksGeneration || !status || typeof status !== 'object') return;
+      agentHooksKnown = { claude: status.claude === true, codex: status.codex === true };
+      renderNotifyDependency();
     })
     .catch(() => {});
   renderFontScale();
@@ -304,9 +378,10 @@ export async function openSettings() {
   $('set-ver').textContent = 'deck ' + ($('app-ver').textContent || 'v?');
   $('set-upd-status').textContent = '';
   $('settings-modal').style.display = 'flex';
-  selectSettingsSection(activeSettingsSection);
-  if (activeSettingsSection !== 'data') refreshLogSize();
-  $('set-search').focus();
+  selectSettingsSection(section);
+  if (section !== 'data') refreshLogSize();
+  if (setting) highlightSetting(setting.id);
+  else $('set-search').focus();
   if (typeof window.dispatchEvent === 'function' && typeof Event === 'function') {
     window.dispatchEvent(new Event('deck-settings-opened'));
   }
@@ -421,6 +496,12 @@ async function persistNotifyChoice() {
    (the backend derives it), so there is no second copy of the state to keep
    in sync and a manual edit of that file shows up here truthfully. */
 let agentHooksPending = false;
+// { claude, codex } as last read or written; null while unknown.
+let agentHooksKnown = null;
+let agentHooksGeneration = 0;
+function renderNotifyDependency() {
+  $('set-notify-dependency').hidden = !notifyNeedsAgentStatus(agentHooksKnown);
+}
 export async function persistAgentHooksChoice(agent, boxId, confirmKey) {
   if (agentHooksPending) return;
   const box = $(boxId);
@@ -433,6 +514,10 @@ export async function persistAgentHooksChoice(agent, boxId, confirmKey) {
   box.disabled = true;
   try {
     await inv('agent_hooks_set', { agent, enable: desired });
+    if (agentHooksKnown) {
+      agentHooksKnown = { ...agentHooksKnown, [agent === 'codex' ? 'codex' : 'claude']: desired };
+      renderNotifyDependency();
+    }
     toast(t(desired ? 'settings.agentHooksEnabled' : 'settings.agentHooksDisabled'));
   } catch (_) {
     box.checked = !desired;
@@ -913,13 +998,13 @@ export function initSettings() {
     await renderConnectorSettings();
   };
 
-  for (const id of SETTINGS_SECTIONS) {
+  for (const id of SECTION_IDS) {
     $('set-nav-' + id).onclick = () => selectSettingsSection(id);
     $('set-nav-' + id).addEventListener('keydown', event => {
       const keys = ['ArrowDown', 'ArrowUp', 'Home', 'End'];
       if (!keys.includes(event.key)) return;
       event.preventDefault();
-      const visible = SETTINGS_SECTIONS.filter(section => !$('set-nav-' + section).hidden);
+      const visible = SECTION_IDS.filter(section => !$('set-nav-' + section).hidden);
       const index = visible.indexOf(id);
       const next = event.key === 'Home' ? 0 : event.key === 'End' ? visible.length - 1
         : (index + (event.key === 'ArrowDown' ? 1 : -1) + visible.length) % visible.length;
@@ -931,6 +1016,13 @@ export function initSettings() {
   $('set-search').addEventListener('input', () => {
     filterSettings();
     $('set-content').scrollTop = 0;
+  });
+  $('set-search').addEventListener('keydown', event => {
+    if (event.key !== 'Enter' || event.isComposing || event.keyCode === 229) return;
+    const first = searchSettings($('set-search').value, dictionaries)?.[0]?.items[0];
+    if (!first) return;
+    event.preventDefault();
+    locateSetting(first);
   });
 
   $('settings-box').addEventListener('keydown', event => {
@@ -987,7 +1079,7 @@ export function initSettings() {
     }
   });
 
-  $('settings-btn').onclick = openSettings;
+  $('settings-btn').onclick = () => openSettings();
 
   $('set-close').onclick = closeSettings;
 

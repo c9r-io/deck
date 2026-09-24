@@ -33,7 +33,7 @@ Helper 负责设置和生命周期操作。**长期连接由 OpenAI 官方 `tunn
 | --- | --- | --- |
 | **Tunnel ID**（`tunnel_…`） | [OpenAI Platform → Tunnels](https://platform.openai.com/settings/organization/tunnels) | 标识与 ChatGPT 共用的远端 Secure MCP Tunnel。 |
 | **Runtime API key** | [OpenAI Platform → Organization → Runtime API keys](https://platform.openai.com/settings/organization/api-keys) | 让官方 `tunnel-client` 使用该 Tunnel。Helper 在交互式设置中接收密钥；Deck 不接收。 |
-| **Deck MCP client** | Deck 设置 → Integrations & automation → MCP terminal control | 限定 ChatGPT 可以访问的项目、目录和操作。 |
+| **Deck MCP client** | Deck 设置 → 远程访问 → MCP 终端控制 | 限定 ChatGPT 可以访问的项目、目录和操作。 |
 
 通过 Platform 网页创建 Tunnel 时，**通常不需要 Admin API key**。Admin key 用于通过管理 CLI 管理 Tunnel；它与 Runtime key 不同，不能用于长期运行的 Tunnel 连接。
 
@@ -58,13 +58,13 @@ Helper 负责设置和生命周期操作。**长期连接由 OpenAI 官方 `tunn
 ## 3. 安装 Deck Tunnel Helper
 
 1. 从与你安装的 Deck **相同的 [Deck Release](https://github.com/c9r-io/deck/releases)** 下载 **Deck Tunnel Helper** 资产。解压 **Deck Tunnel Helper.app**，并将它移动到 `/Applications/Deck Tunnel Helper.app`。
-2. 打开 Deck → **Settings → Integrations & automation → MCP terminal control**。创建 MCP client 后（第 4 步），其条目会在 Deck 接受 Helper 时显示 **Secure Tunnel helper installed**。如果显示可选 Helper 缺失或不可用，请查看[排障](#排障)。
+2. 打开 Deck → **Settings → Remote access → MCP terminal control**。创建 MCP client 后（第 4 步），其条目会在 Deck 接受 Helper 时显示 **Secure Tunnel helper installed**。如果显示可选 Helper 缺失或不可用，请查看[排障](#排障)。
 
 Release 中的 App 已签名并公证。无需 `sudo` 安装程序、`chmod`、删除 `xattr` 或绕过 Gatekeeper。安装 Helper 本身不会启用 Deck MCP，也不会授予项目访问权。
 
 ## 4. 授权 Deck MCP client
 
-1. 在 Deck 中打开 **Settings → Integrations & automation → MCP terminal control**。选择 **Enable**，阅读本机命令执行提示。
+1. 在 Deck 中打开 **Settings → Remote access → MCP terminal control**。选择 **Enable**，阅读本机命令执行提示。
 2. 选择 **Authorize MCP client…**，将 client 命名为 **ChatGPT**。明确选择 Deck **Project** 和项目内的 **Authorized directory**。如果项目已经配置目录，Deck 会预填；确认前仍要检查。请选择包含目标文件的最小目录。整个主目录范围过大，Deck 也会拒绝它。
 3. 确认 Deck 显示的规范化目录。当 Deck 询问此集成能否创建可见的受管 session 时，如果只需结构化读取，选择 **Cancel**；确实需要创建 session 才允许。创建 session 是单独的权限，**并不授权执行命令**。
 

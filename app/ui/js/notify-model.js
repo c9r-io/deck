@@ -7,6 +7,14 @@ import { ATTENTION_FILTERS } from './attention-model.js';
 
 export const NOTIFY_STATUS_WORDS = Object.freeze(['unsupported', 'not-determined', 'denied', 'authorized', 'provisional']);
 
+/** Away notifications fire only on agent-status hook events, so Settings
+ * names the dependency when BOTH integrations are known to be off. `hooks`
+ * is null while their state is unknown (not read yet, or the read failed):
+ * no claim is made then. Nothing is switched on or off here. */
+export function notifyNeedsAgentStatus(hooks) {
+  return !!hooks && hooks.claude !== true && hooks.codex !== true;
+}
+
 /** session → {title, project} for every card, sorted so the key is stable. */
 export function cardLabels(cards, projects) {
   const names = new Map((projects || []).map(p => [p.id, String(p.name || '')]));

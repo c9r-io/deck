@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createAttentionTracker } from '../js/attention-model.js';
-import { NOTIFY_COUNTED_FILTERS, NOTIFY_STATUS_WORDS, cardLabels, labelsKey, notifyStatusKey, seenDismissals } from '../js/notify-model.js';
+import { NOTIFY_COUNTED_FILTERS, NOTIFY_STATUS_WORDS, cardLabels, labelsKey, notifyNeedsAgentStatus, notifyStatusKey, seenDismissals } from '../js/notify-model.js';
 
 const projects = [{ id: 'P1', name: 'deck' }, { id: 'P2', name: 'site' }];
 const card = (id, session, title, projectId) => ({ id, session, title, projectId });
@@ -62,4 +62,13 @@ test('status words are closed and unknown words read as unsupported', () => {
   assert.equal(notifyStatusKey('anything'), 'settings.notifyStatus.unsupported');
   assert.equal(notifyStatusKey(undefined), 'settings.notifyStatus.unsupported');
   assert.deepEqual([...NOTIFY_COUNTED_FILTERS], ['input', 'done']);
+});
+
+test('the agent-status dependency is named only when both hooks are known to be off', () => {
+  assert.equal(notifyNeedsAgentStatus({ claude: false, codex: false }), true, 'both off');
+  assert.equal(notifyNeedsAgentStatus({ claude: true, codex: false }), false, 'Claude Code on');
+  assert.equal(notifyNeedsAgentStatus({ claude: false, codex: true }), false, 'Codex on');
+  assert.equal(notifyNeedsAgentStatus({ claude: true, codex: true }), false, 'both on');
+  assert.equal(notifyNeedsAgentStatus(null), false, 'unknown state makes no claim');
+  assert.equal(notifyNeedsAgentStatus(undefined), false);
 });

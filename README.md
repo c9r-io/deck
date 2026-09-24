@@ -50,7 +50,7 @@ configuration; see [voice input](docs/voice-input.md).
    ordinary shell command.
 4. Return to the Board while it runs; click the card to reopen its terminal.
    To see agent input requests and turn endings, enable the matching Agent
-   status option in **Settings → Integrations & automation**.
+   status option in **Settings → Agents & notifications**.
 
 [First-task walkthrough](https://deck.c9r.io/guide/start/) · [Status integration and signals](https://deck.c9r.io/guide/attention/)
 
@@ -315,8 +315,10 @@ waiting for you. Memory chips show the *whole process tree* of a session
 
 ## Data
 
-Settings is organized into six searchable categories, with navigation and the
-Done button kept visible while the content scrolls. **Data & logs** shows the
+Settings is organized into eight categories, with navigation and the Done
+button kept visible while the content scrolls. Search finds individual settings
+by name or common keyword in English or Chinese and shows each match under its
+category; Enter jumps to the first match. **Data & privacy** shows the
 current diagnostic log size and offers **Export logs…** and **Reset logs…**.
 Reset requires confirmation and clears only `app.log`, without a backup; new
 events continue to be recorded. Exported logs, command history, shell recovery
