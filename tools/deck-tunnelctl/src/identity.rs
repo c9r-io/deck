@@ -8,14 +8,24 @@
 //! identity, and the one run that receives the Runtime-key reference re-hashes
 //! the file. This narrows, but cannot eliminate, path-based validate-to-exec
 //! replacement by the same macOS user (see docs/mcp-tunnel-helper.md).
+//!
+//! The pin is checked against a real binary only on a machine where
+//! tunnel-client is installed at a candidate path: the "when present" test
+//! passes vacuously everywhere else, including every CI runner. CI never
+//! downloads tunnel-client (it is outside the EDR-quiet promise and the
+//! repository takes no network dependency on it). What CI does hold is that
+//! the version the docs and README name is the one pinned here.
 
 use sha2::{Digest, Sha256};
 use std::fs::{self, Metadata, OpenOptions};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
-/// Official macOS arm64 tunnel-client 0.0.14.
-const TUNNEL_CLIENT_SHA256: &str =
+/// Official macOS arm64 tunnel-client release the pin below identifies
+/// (the pin alone decides; the version exists for tests and docs).
+#[cfg(test)]
+pub(crate) const TUNNEL_CLIENT_VERSION: &str = "0.0.14";
+pub(crate) const TUNNEL_CLIENT_SHA256: &str =
     "309fd85da5a8c2ca8dae920deea8ac10a4d7934ed18ac46e7df0c200139cc9c5";
 const TUNNEL_CLIENT_CANDIDATES: [&str; 4] = [
     "/opt/homebrew/opt/tunnel-client/libexec/tunnel-client",
@@ -267,6 +277,18 @@ mod tests {
             assert!(executable.path().ends_with("libexec/tunnel-client"));
             assert_eq!(executable.recheck_contents(), Ok(()));
         }
+    }
+
+    #[test]
+    fn docs_name_the_pinned_tunnel_client_version() {
+        let flat = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
+        let docs = flat(include_str!("../../../docs/mcp-tunnel-helper.md"));
+        let readme = flat(include_str!("../README.md"));
+        let version = TUNNEL_CLIENT_VERSION;
+        assert!(docs.contains(&format!(
+            "`tunnel-client` {version} binary by its SHA-256 pin"
+        )));
+        assert!(readme.contains(&format!("`tunnel-client` {version} binary whose hash")));
     }
 
     #[test]

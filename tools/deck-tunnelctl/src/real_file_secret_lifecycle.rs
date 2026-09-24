@@ -114,10 +114,8 @@ fn real_file_secret_lifecycle() {
         "helper Keychain credential is absent"
     );
 
-    println!("tunnel_client_version=0.0.14");
-    println!(
-        "tunnel_client_sha256=309fd85da5a8c2ca8dae920deea8ac10a4d7934ed18ac46e7df0c200139cc9c5"
-    );
+    println!("tunnel_client_version={}", identity::TUNNEL_CLIENT_VERSION);
+    println!("tunnel_client_sha256={}", identity::TUNNEL_CLIENT_SHA256);
     println!("test_alias={alias}");
     println!("tunnel_id={tunnel_id}");
     println!("runtime_initially_present=false");
