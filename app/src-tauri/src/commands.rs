@@ -12,6 +12,19 @@
 //! Poll IO runs on the blocking pool with a tmux deadline. A failed listing
 //! rejects the poll, never reports dead sessions; unusable cwd metadata is
 //! omitted independently of liveness.
+//!
+//! # Wire naming (all commands, not only this file's)
+//! A NEW struct returned to JS is `#[serde(rename_all = "camelCase")]`
+//! (`QueueAddArgs`, `ContextProbeView`, every `mcp/` and `connector/` view).
+//! Older returned structs stay snake_case on the wire (`SessInfo`'s
+//! `idle_secs`/`mem_mb`, `QueueItem`, `TerminalScrollResult`, `PtyData`,
+//! `PtyExit`, …): the frontend already reads those keys, and `QueueItem` is
+//! also the on-disk `queue.json` format, so renaming it is a schema change,
+//! not a style fix. Command ARGUMENTS are converted by Tauri 2's default
+//! camelCase mapping: JS passes camelCase keys (`{ sessionId }`), including
+//! inside an argument struct that is itself camelCase. One round trip can
+//! therefore spell a field both ways (JS sends `quietSecs` in `QueueAddArgs`
+//! and reads `quiet_secs` back from `QueueItem`); that is expected.
 
 use serde::Serialize;
 use std::collections::HashMap;

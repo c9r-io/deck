@@ -131,6 +131,13 @@
 //!   fails, the ambiguous actions remain available and unschedulable while
 //!   `dirty` retries the exact snapshot. `flush_dirty` runs before the
 //!   empty-queue fast path.
+//!
+//! Wire and disk naming: `QueueItem` and `QueueState` are both the
+//! `queue.json` document and what `queue_list` returns (flattened into
+//! `QueueView`), so their fields stay snake_case —
+//! renaming them would change the persisted schema. New views returned only
+//! to JS use camelCase, like `QueueAddArgs`; the full rule is in the
+//! `commands.rs` header.
 
 pub(crate) mod connector;
 mod delivery;
