@@ -387,7 +387,7 @@ impl Runtime {
         if let Some(app) = &self.app {
             let _ = app.emit("connector-changed", ());
         }
-        Ok(json!({"version":1,"hostId":host_id,"deviceId":device_id,"token":token}))
+        Ok(pair_response(&host_id, &device_id, &token))
     }
     pub(super) fn accept(
         &self,
@@ -540,4 +540,9 @@ pub(super) fn prune_revoked_devices(doc: &mut DiskDoc) {
         .collect::<HashSet<_>>();
     doc.devices.retain(|d| !removed.contains(&d.id));
     doc.commands.retain(|c| !removed.contains(&c.device_id));
+}
+
+/// The body of a successful `/v1/pair` (`PairResponse` on the phone).
+pub(super) fn pair_response(host_id: &str, device_id: &str, token: &str) -> Value {
+    json!({"version":1,"hostId":host_id,"deviceId":device_id,"token":token})
 }

@@ -185,17 +185,20 @@ pub(crate) fn connector_pairing() -> Result<PairingView, DeckError> {
         expires_at,
     });
     let origin = format!("https://{}:{}", cfg.address, cfg.port);
-    let data = json!({"version":1,"hostId":host_id,"hostName":host_name(),"origin":origin,"fingerprint":identity.fingerprint,"code":code,"expiresAt":expires_at});
-    let encoded =
-        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(serde_json::to_vec(&data).unwrap());
-    if encoded.len() > 8 * 1024 {
+    let Some(uri) = pairing_descriptor(
+        &host_id,
+        &host_name(),
+        &origin,
+        &identity.fingerprint,
+        &code,
+        expires_at,
+    ) else {
         *r.pairing.lock_or_recover() = None;
         return Err(DeckError::new(
             ErrorKind::Other,
             "pairing descriptor is too large",
         ));
-    }
-    let uri = format!("deck-connector://pair?data={encoded}");
+    };
     let svg = qrcode::QrCode::new(uri.as_bytes())
         .map_err(|_| DeckError::new(ErrorKind::Other, "pairing QR failed"))?
         .render::<qrcode::render::svg::Color>()
@@ -444,4 +447,22 @@ pub(crate) async fn connector_execute_native(
     })
     .await
     .map_err(|_| DeckError::new(ErrorKind::Other, "connector worker failed"))?
+}
+
+/// The QR payload the phone parses (`PairingDescriptor.swift`); `None` when
+/// it would exceed the phone's 8 KiB descriptor bound. Golden:
+/// `connector/ios/Tests/DeckConnectorCoreTests/Fixtures/pairing-descriptor.txt`.
+pub(super) fn pairing_descriptor(
+    host_id: &str,
+    host_name: &str,
+    origin: &str,
+    fingerprint: &str,
+    code: &str,
+    expires_at: u64,
+) -> Option<String> {
+    let data = json!({"version":1,"hostId":host_id,"hostName":host_name,"origin":origin,"fingerprint":fingerprint,"code":code,"expiresAt":expires_at});
+    let encoded =
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(serde_json::to_vec(&data).ok()?);
+    (encoded.len() <= MAX_PAIRING_DESCRIPTOR_BYTES)
+        .then(|| format!("deck-connector://pair?data={encoded}"))
 }

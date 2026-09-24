@@ -1,0 +1,91 @@
+{
+  "requests": [
+    {
+      "id": "send-message-1",
+      "kind": "send-message",
+      "cardId": "C1",
+      "expectedGeneration": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "payload": {
+        "text": "hello\nworld"
+      },
+      "seq": 1
+    },
+    {
+      "id": "buffer-add-1",
+      "kind": "buffer-add",
+      "cardId": "C1",
+      "expectedRevision": "7",
+      "payload": {
+        "text": "note\twith tab"
+      },
+      "seq": 1
+    },
+    {
+      "id": "buffer-edit-1",
+      "kind": "buffer-edit",
+      "cardId": "C1",
+      "expectedRevision": "7",
+      "payload": {
+        "entryId": "E1",
+        "text": "replacement"
+      },
+      "seq": 1
+    },
+    {
+      "id": "buffer-delete-1",
+      "kind": "buffer-delete",
+      "cardId": "C1",
+      "expectedRevision": "7",
+      "payload": {
+        "entryId": "E1"
+      },
+      "seq": 1
+    },
+    {
+      "id": "buffer-queue-1",
+      "kind": "buffer-queue",
+      "cardId": "C1",
+      "expectedRevision": "7",
+      "payload": {
+        "entryIds": [
+          "E1",
+          "E2"
+        ]
+      },
+      "seq": 1
+    },
+    {
+      "id": "task-create-1",
+      "kind": "task-create",
+      "expectedRevision": "7",
+      "payload": {
+        "projectId": "P1",
+        "presetId": "preset-1"
+      },
+      "seq": 1
+    },
+    {
+      "id": "queue-pause-1",
+      "kind": "queue-pause",
+      "cardId": "C1",
+      "expectedGeneration": null,
+      "payload": {
+        "itemId": "Q1",
+        "paused": true,
+        "revision": "12"
+      },
+      "seq": 1
+    },
+    {
+      "id": "queue-cancel-1",
+      "kind": "queue-cancel",
+      "cardId": "C1",
+      "expectedGeneration": null,
+      "payload": {
+        "itemId": "Q1",
+        "revision": "12"
+      },
+      "seq": 1
+    }
+  ]
+}

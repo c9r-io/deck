@@ -176,6 +176,9 @@ public actor CommandJournal {
     }
 
     public func submit(_ request: CommandRequest, draftCardID: String?, using transport: any CommandTransport) async throws -> CommandResult {
+        // Text the host would refuse never enters the journal or takes a
+        // sequence: the user fixes it and sends again.
+        try WireValidator.validate(request)
         let prepared = try await prepare(request)
         if let existing = prepared.existing {
             return existing

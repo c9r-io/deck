@@ -1,0 +1,48 @@
+{
+  "collecting": true,
+  "entries": [
+    {
+      "copies": [
+        {
+          "createdAt": 1789776001,
+          "entryRevision": 1,
+          "operationId": "OPX",
+          "state": "delivered",
+          "text": "one"
+        },
+        {
+          "createdAt": 1789776002,
+          "entryRevision": 1,
+          "operationId": "OPY",
+          "state": "uncertain",
+          "text": "one"
+        }
+      ],
+      "createdAt": 1789776000,
+      "id": "E1",
+      "kind": "manual",
+      "revision": 1,
+      "text": "one",
+      "updatedAt": 1789776000
+    },
+    {
+      "copies": [],
+      "createdAt": 1789776003,
+      "id": "E2",
+      "kind": "channel",
+      "revision": 2,
+      "source": {
+        "at": 1789776003,
+        "channel": "C1",
+        "connection": "default",
+        "eventId": "Ev1",
+        "links": [],
+        "rule": "r1",
+        "type": "slack"
+      },
+      "text": "two",
+      "updatedAt": 1789776004
+    }
+  ],
+  "revision": 3
+}

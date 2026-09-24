@@ -6,7 +6,7 @@ public enum ConnectorLimits {
     public static let pairingDescriptorBytes = 8 * 1024
     public static let serializedBufferBytes = 2 * 1024 * 1024
     public static let journalBytes = 2 * 1024 * 1024
-    public static let terminalTextUTF8Bytes = 256 * 1024
+    public static let terminalTextUTF8Bytes = 64 * 1024
     public static let bufferEntries = 256
     public static let bufferCopies = 256
     public static let bufferEntryUTF8Bytes = 32 * 1024
@@ -24,6 +24,9 @@ public enum ConnectorError: Error, Equatable, LocalizedError, Sendable {
     case invalidOrigin
     case responseTooLarge
     case requestTooLarge
+    /// Command text the host would refuse (empty, or a control character
+    /// other than newline and tab); caught before anything is sent.
+    case invalidCommandText
     case invalidResponse
     case certificateMismatch
     case untrustedServer
@@ -46,6 +49,7 @@ public enum ConnectorError: Error, Equatable, LocalizedError, Sendable {
         case .invalidOrigin: "The Deck host address is invalid."
         case .responseTooLarge: "The host response exceeded the client limit."
         case .requestTooLarge: "The request exceeded the client limit."
+        case .invalidCommandText: "The text is empty or contains a control character (such as a carriage return). Remove it and send again."
         case .invalidResponse: "The host returned an invalid response."
         case .certificateMismatch: "The Deck host certificate changed. Pair again from the desktop."
         case .untrustedServer: "The Deck host certificate failed hostname or validity checks."
@@ -157,6 +161,11 @@ public struct CardSummary: Codable, Identifiable, Equatable, Sendable {
         self.generation = generation; self.canSend = canSend; self.canQueue = canQueue; self.buffer = buffer
     }
 
+    /// The host's card status words are `running`, `stopped` and `unknown`
+    /// (projection.rs `probe_status`); only `stopped` means no session.
+    public static let stoppedStatuses: Set<String> = ["stopped"]
+    public var isStopped: Bool { Self.stoppedStatuses.contains(status) }
+
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         id = try values.decode(String.self, forKey: .id)
@@ -247,10 +256,16 @@ public enum WireValidator {
         guard bytes <= ConnectorLimits.bufferTotalUTF8Bytes else { throw ConnectorError.responseTooLarge }
     }
 
+    /// Text the host would refuse is caught here, before anything is sent:
+    /// the host's `command_text` rule (validate.rs) is non-empty, at most
+    /// `commandTextUTF8Bytes`, and no control character except `\n` and `\t`.
     public static func validate(_ command: CommandRequest) throws {
         guard ["send-message", "buffer-add", "buffer-edit"].contains(command.kind) else { return }
-        guard case let .string(text)? = command.payload["text"],
-              text.utf8.count <= ConnectorLimits.commandTextUTF8Bytes else { throw ConnectorError.requestTooLarge }
+        guard case let .string(text)? = command.payload["text"] else { throw ConnectorError.invalidCommandText }
+        guard text.utf8.count <= ConnectorLimits.commandTextUTF8Bytes else { throw ConnectorError.requestTooLarge }
+        guard !text.isEmpty, !text.unicodeScalars.contains(where: { scalar in
+            scalar.properties.generalCategory == .control && scalar != "\n" && scalar != "\t"
+        }) else { throw ConnectorError.invalidCommandText }
     }
 }
 
@@ -375,8 +390,8 @@ public extension WireValidator {
     static func validate(_ result: CommandResult, for request: CommandRequest) throws {
         guard result.id == request.id else { throw ConnectorError.invalidResponse }
         if let code = result.code {
-            guard code.utf8.count <= 64,
-                  code.range(of: "^[a-z][a-z0-9-]{0,63}$", options: .regularExpression) != nil else { throw ConnectorError.invalidResponse }
+            // The host's rule (journal.rs `validate_terminal`): 1-64 of a-z, 0-9, '-'.
+            guard code.range(of: "^[a-z0-9-]{1,64}$", options: .regularExpression) != nil else { throw ConnectorError.invalidResponse }
         }
         guard let object = result.result else { return }
         guard let encoded = try? JSONEncoder().encode(object), encoded.count <= ConnectorLimits.commandResultBytes else { throw ConnectorError.invalidResponse }

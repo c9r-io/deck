@@ -30,8 +30,8 @@ use std::time::{Duration, Instant};
 use crate::error::{DeckError, ErrorKind};
 use crate::sync::LockRecover;
 
-const MAX_BODY: usize = 256 * 1024;
-const MAX_RESPONSE: usize = 4 * 1024 * 1024;
+pub(super) const MAX_BODY: usize = 256 * 1024;
+pub(super) const MAX_RESPONSE: usize = 4 * 1024 * 1024;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 const CONNECTION_TIMEOUT: Duration = Duration::from_secs(30);
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -739,6 +739,66 @@ mod tests {
         let status = response[9..12].parse().unwrap();
         let body = response.split("\r\n\r\n").nth(1).unwrap_or("").to_owned();
         (status, body)
+    }
+
+    /// `Fixtures/http-status-map.json` (read by the phone's HTTPClientTests
+    /// too): exactly the (status, code) pairs `mapped` answers with, and the
+    /// error envelope shape.
+    #[test]
+    fn failure_mapping_matches_the_phone_fixture() {
+        let map: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../connector/ios/Tests/DeckConnectorCoreTests/Fixtures/http-status-map.json"
+        )))
+        .unwrap();
+        let listed: std::collections::BTreeSet<(u16, String)> = map["responses"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| {
+                (
+                    entry["status"].as_u64().unwrap() as u16,
+                    entry["code"].as_str().unwrap().to_owned(),
+                )
+            })
+            .collect();
+        let body = |response: Resp| {
+            let bytes = tokio::runtime::Builder::new_current_thread()
+                .build()
+                .unwrap()
+                .block_on(response.into_body().collect())
+                .unwrap()
+                .to_bytes();
+            serde_json::from_slice::<Value>(&bytes).unwrap()
+        };
+        let mut produced = std::collections::BTreeSet::new();
+        for (kind, message) in [
+            (ErrorKind::Missing, "card not found"),
+            (ErrorKind::Perm, "unauthorized"),
+            (ErrorKind::ContextChanged, "target-changed"),
+            (ErrorKind::DiskFull, "device capacity reached"),
+            (ErrorKind::Invalid, "command payload is invalid"),
+            (ErrorKind::Tmux, "output-history-unavailable"),
+            (ErrorKind::Invalid, "unsupported-target"),
+            (ErrorKind::Invalid, CLIENT_UPGRADE_REQUIRED),
+            (ErrorKind::Missing, COMMAND_EXPIRED),
+            (ErrorKind::Perm, "connector unavailable"),
+        ] {
+            let response = mapped(&DeckError::new(kind, message));
+            let status = response.status().as_u16();
+            let value = body(response);
+            produced.insert((status, value["error"]["code"].as_str().unwrap().to_owned()));
+        }
+        assert_eq!(produced, listed);
+        let envelope: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../connector/ios/Tests/DeckConnectorCoreTests/Fixtures/error-envelope.json"
+        )))
+        .unwrap();
+        assert_eq!(
+            body(error(StatusCode::CONFLICT, "context-changed")),
+            envelope
+        );
     }
 
     #[test]

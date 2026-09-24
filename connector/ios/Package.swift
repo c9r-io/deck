@@ -9,6 +9,10 @@ let package = Package(
     ],
     targets: [
         .target(name: "DeckConnectorCore"),
-        .testTarget(name: "DeckConnectorCoreTests", dependencies: ["DeckConnectorCore"]),
+        .testTarget(
+            name: "DeckConnectorCoreTests",
+            dependencies: ["DeckConnectorCore"],
+            resources: [.copy("Fixtures")]
+        ),
     ]
 )

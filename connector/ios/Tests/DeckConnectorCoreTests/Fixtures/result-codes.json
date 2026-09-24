@@ -1,0 +1,18 @@
+{
+  "note": "Result codes the host may put in a command result (journal.rs validate_terminal): 1-64 of a-z, 0-9, '-'.",
+  "valid": [
+    "delivered",
+    "revision-changed",
+    "0",
+    "404-not-ours",
+    "-",
+    "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+  ],
+  "invalid": [
+    "",
+    "Upper",
+    "has space",
+    "under_score",
+    "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+  ]
+}

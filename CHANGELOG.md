@@ -12,6 +12,13 @@
   arrives, so App Nap freezing the webview does not delay it. Permission
   is asked once when the switch is turned on; a blocked state is shown,
   never worked around. See `docs/notifications.md`.
+- Phone Connector: a message or note containing a control character (for
+  example a pasted carriage return) is now refused on the phone with a
+  message saying what to fix, instead of failing on the Mac as "Deck host
+  error: invalid" and again on every retry; such text no longer enters the
+  phone's command journal. The phone now accepts every result code the Mac
+  can send, recognizes the Mac's `stopped` card status (the old `dead`
+  spelling was never sent), and uses the Mac's 64 KiB terminal output bound.
 - MCP: a job the managed runner could not start (for example a missing
   executable) is now reported as `SPAWN_FAILED` and recorded as rejected —
   nothing ran, so a new request is safe. It used to come back as

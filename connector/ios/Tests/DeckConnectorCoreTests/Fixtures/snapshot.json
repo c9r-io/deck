@@ -1,0 +1,81 @@
+{
+  "capturedAt": 1789776000,
+  "cards": [
+    {
+      "buffer": {
+        "collecting": true,
+        "entryCount": 2,
+        "revision": 3
+      },
+      "canQueue": true,
+      "canSend": true,
+      "columnId": "COL1",
+      "generation": "gen-a",
+      "id": "A",
+      "projectId": "P1",
+      "status": "running",
+      "title": "Agent"
+    },
+    {
+      "buffer": {
+        "collecting": false,
+        "entryCount": 0,
+        "revision": 0
+      },
+      "canQueue": true,
+      "canSend": false,
+      "columnId": "COL1",
+      "generation": null,
+      "id": "C",
+      "projectId": "P1",
+      "status": "stopped",
+      "title": "Stopped"
+    },
+    {
+      "buffer": {
+        "collecting": false,
+        "entryCount": 0,
+        "revision": 0
+      },
+      "canQueue": true,
+      "canSend": false,
+      "columnId": "COL1",
+      "generation": null,
+      "id": "D",
+      "projectId": "P1",
+      "status": "unknown",
+      "title": "Unknown"
+    }
+  ],
+  "hostId": "host_x",
+  "projects": [
+    {
+      "columns": [
+        {
+          "id": "COL1",
+          "name": "Todo"
+        }
+      ],
+      "id": "P1",
+      "name": "One",
+      "presets": [
+        {
+          "id": "X",
+          "name": "Codex task"
+        }
+      ]
+    }
+  ],
+  "queue": [
+    {
+      "cardId": "A",
+      "id": "Q1",
+      "mode": "at",
+      "paused": false,
+      "revision": "5",
+      "state": "pending"
+    }
+  ],
+  "revision": "rev-1",
+  "version": 1
+}

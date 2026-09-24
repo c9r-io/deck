@@ -1,0 +1,13 @@
+{
+  "request_bytes": 262144,
+  "response_bytes": 4194304,
+  "command_text_utf8_bytes": 32768,
+  "output_text_utf8_bytes": 65536,
+  "command_result_bytes": 1024,
+  "pairing_descriptor_bytes": 8192,
+  "buffer_entries": 256,
+  "buffer_copies": 256,
+  "buffer_entry_utf8_bytes": 32768,
+  "buffer_total_utf8_bytes": 1048576,
+  "serialized_buffer_bytes": 2097152
+}

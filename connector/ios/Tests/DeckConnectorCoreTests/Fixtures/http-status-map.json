@@ -1,0 +1,55 @@
+{
+  "note": "How the host answers a failed command query (GET /v1/commands/<id>) and which ConnectorError case the phone raises. 404 and 410 are command-specific only on /v1/commands paths.",
+  "responses": [
+    {
+      "status": 401,
+      "code": "unauthorized",
+      "phone": "revoked"
+    },
+    {
+      "status": 404,
+      "code": "not-found",
+      "phone": "commandNotFound"
+    },
+    {
+      "status": 409,
+      "code": "context-changed",
+      "phone": "conflict"
+    },
+    {
+      "status": 410,
+      "code": "expired",
+      "phone": "commandExpired"
+    },
+    {
+      "status": 426,
+      "code": "upgrade-required",
+      "phone": "upgradeRequired"
+    },
+    {
+      "status": 400,
+      "code": "unsupported-target",
+      "phone": "unsupportedTarget"
+    },
+    {
+      "status": 400,
+      "code": "invalid",
+      "phone": "transport"
+    },
+    {
+      "status": 507,
+      "code": "capacity",
+      "phone": "transport"
+    },
+    {
+      "status": 503,
+      "code": "unavailable",
+      "phone": "transport"
+    },
+    {
+      "status": 503,
+      "code": "connector-disabled",
+      "phone": "transport"
+    }
+  ]
+}

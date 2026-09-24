@@ -1,0 +1,296 @@
+{
+  "requests": [
+    {
+      "reason": "empty text",
+      "code": "invalid",
+      "phoneRejects": true,
+      "request": {
+        "id": "send-message-1",
+        "kind": "send-message",
+        "cardId": "C1",
+        "expectedGeneration": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "payload": {
+          "text": ""
+        },
+        "seq": 1
+      }
+    },
+    {
+      "reason": "NUL in text",
+      "code": "invalid",
+      "phoneRejects": true,
+      "request": {
+        "id": "send-message-1",
+        "kind": "send-message",
+        "cardId": "C1",
+        "expectedGeneration": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "payload": {
+          "text": "bad\u0000text"
+        },
+        "seq": 1
+      }
+    },
+    {
+      "reason": "carriage return in text",
+      "code": "invalid",
+      "phoneRejects": true,
+      "request": {
+        "id": "send-message-1",
+        "kind": "send-message",
+        "cardId": "C1",
+        "expectedGeneration": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "payload": {
+          "text": "line\r\nbreak"
+        },
+        "seq": 1
+      }
+    },
+    {
+      "reason": "control character in buffer text",
+      "code": "invalid",
+      "phoneRejects": true,
+      "request": {
+        "id": "buffer-add-1",
+        "kind": "buffer-add",
+        "cardId": "C1",
+        "expectedRevision": "7",
+        "payload": {
+          "text": "bell\u0007"
+        },
+        "seq": 1
+      }
+    },
+    {
+      "reason": "unknown payload field",
+      "code": "invalid",
+      "phoneRejects": false,
+      "request": {
+        "id": "buffer-add-1",
+        "kind": "buffer-add",
+        "cardId": "C1",
+        "expectedRevision": "7",
+        "payload": {
+          "text": "ok",
+          "extra": true
+        },
+        "seq": 1
+      }
+    },
+    {
+      "reason": "empty entry id",
+      "code": "invalid",
+      "phoneRejects": false,
+      "request": {
+        "id": "buffer-edit-1",
+        "kind": "buffer-edit",
+        "cardId": "C1",
+        "expectedRevision": "7",
+        "payload": {
+          "entryId": "",
+          "text": "ok"
+        },
+        "seq": 1
+      }
+    },
+    {
+      "reason": "entry id with newline",
+      "code": "invalid",
+      "phoneRejects": false,
+      "request": {
+        "id": "buffer-delete-1",
+        "kind": "buffer-delete",
+        "cardId": "C1",
+        "expectedRevision": "7",
+        "payload": {
+          "entryId": "bad\nidentity"
+        },
+        "seq": 1
+      }
+    },
+    {
+      "reason": "no entries to queue",
+      "code": "invalid",
+      "phoneRejects": false,
+      "request": {
+        "id": "buffer-queue-1",
+        "kind": "buffer-queue",
+        "cardId": "C1",
+        "expectedRevision": "7",
+        "payload": {
+          "entryIds": []
+        },
+        "seq": 1
+      }
+    },
+    {
+      "reason": "duplicate entries",
+      "code": "invalid",
+      "phoneRejects": false,
+      "request": {
+        "id": "buffer-queue-1",
+        "kind": "buffer-queue",
+        "cardId": "C1",
+        "expectedRevision": "7",
+        "payload": {
+          "entryIds": [
+            "E1",
+            "E1"
+          ]
+        },
+        "seq": 1
+      }
+    },
+    {
+      "reason": "empty preset id",
+      "code": "invalid",
+      "phoneRejects": false,
+      "request": {
+        "id": "task-create-1",
+        "kind": "task-create",
+        "expectedRevision": "7",
+        "payload": {
+          "projectId": "P1",
+          "presetId": ""
+        },
+        "seq": 1
+      }
+    },
+    {
+      "reason": "pause without paused",
+      "code": "invalid",
+      "phoneRejects": false,
+      "request": {
+        "id": "queue-pause-1",
+        "kind": "queue-pause",
+        "cardId": "C1",
+        "expectedGeneration": null,
+        "payload": {
+          "itemId": "Q1",
+          "revision": "12"
+        },
+        "seq": 1
+      }
+    },
+    {
+      "reason": "cancel with paused",
+      "code": "invalid",
+      "phoneRejects": false,
+      "request": {
+        "id": "queue-cancel-1",
+        "kind": "queue-cancel",
+        "cardId": "C1",
+        "expectedGeneration": null,
+        "payload": {
+          "itemId": "Q1",
+          "paused": false,
+          "revision": "12"
+        },
+        "seq": 1
+      }
+    },
+    {
+      "reason": "non-numeric queue revision",
+      "code": "invalid",
+      "phoneRejects": false,
+      "request": {
+        "id": "queue-cancel-1",
+        "kind": "queue-cancel",
+        "cardId": "C1",
+        "expectedGeneration": null,
+        "payload": {
+          "itemId": "Q1",
+          "revision": "v12"
+        },
+        "seq": 1
+      }
+    },
+    {
+      "reason": "id with newline",
+      "code": "invalid",
+      "phoneRejects": false,
+      "request": {
+        "id": "bad\nidentity",
+        "kind": "send-message",
+        "cardId": "C1",
+        "expectedGeneration": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "payload": {
+          "text": "hi"
+        },
+        "seq": 1
+      }
+    },
+    {
+      "reason": "unknown kind",
+      "code": "invalid",
+      "phoneRejects": false,
+      "request": {
+        "id": "send-message-1",
+        "kind": "shell-command",
+        "cardId": "C1",
+        "expectedGeneration": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "payload": {
+          "text": "hi"
+        },
+        "seq": 1
+      }
+    },
+    {
+      "reason": "missing card",
+      "code": "invalid",
+      "phoneRejects": false,
+      "request": {
+        "id": "send-message-1",
+        "kind": "send-message",
+        "expectedGeneration": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "payload": {
+          "text": "hi"
+        },
+        "seq": 1
+      }
+    },
+    {
+      "reason": "send to a stopped generation",
+      "code": "invalid",
+      "phoneRejects": false,
+      "request": {
+        "id": "send-message-1",
+        "kind": "send-message",
+        "cardId": "C1",
+        "expectedGeneration": null,
+        "payload": {
+          "text": "hi"
+        },
+        "seq": 1
+      }
+    },
+    {
+      "reason": "buffer write without revision",
+      "code": "invalid",
+      "phoneRejects": false,
+      "request": {
+        "id": "buffer-add-1",
+        "kind": "buffer-add",
+        "cardId": "C1",
+        "payload": {
+          "text": "hi"
+        },
+        "seq": 1
+      }
+    },
+    {
+      "reason": "sequence zero",
+      "code": "invalid",
+      "phoneRejects": false,
+      "request": {
+        "id": "send-message-1",
+        "kind": "send-message",
+        "cardId": "C1",
+        "expectedGeneration": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "payload": {
+          "text": "hi"
+        },
+        "seq": 0
+      }
+    }
+  ]
+}

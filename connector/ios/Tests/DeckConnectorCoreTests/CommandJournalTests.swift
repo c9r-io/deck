@@ -102,6 +102,16 @@ private func request(_ id: String = "op-1", text: String = "hello") -> CommandRe
     #expect(await journal.draft(for: "card") == nil)
 }
 
+@Test func textTheHostWouldRefuseIsRejectedBeforeJournalingOrSending() async throws {
+    let delivered = CommandResult(id: "op-1", state: .delivered, code: nil, result: nil)
+    let transport = MockTransport(post: .success(delivered), query: .success(delivered))
+    let journal = try await CommandJournal.open(storage: ControlledStorage(), binding: binding)
+    let pasted = CommandRequest(id: "op-1", kind: "send-message", cardId: "card", expectedGeneration: "g", payload: ["text": .string("pasted\r\nline")])
+    await #expect(throws: ConnectorError.invalidCommandText) { try await journal.submit(pasted, draftCardID: "card", using: transport) }
+    #expect(await transport.posted.isEmpty)
+    #expect(await journal.allRecords().isEmpty)
+}
+
 @Test func failedResultPersistenceLeavesPreparedIDForQueryRecovery() async throws {
     let storage = ControlledStorage()
     await storage.arrangeFailure(call: 2)

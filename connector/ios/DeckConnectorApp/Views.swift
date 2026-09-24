@@ -312,7 +312,7 @@ struct TaskDetailView: View {
     }
 
     private func sendUnavailableReason(_ card: CardSummary) -> String {
-        if card.status == "dead" || card.status == "stopped" {
+        if card.isStopped {
             return String(localized: "taskDetail.message.unavailable.stopped")
         }
         if card.status == "unknown" {

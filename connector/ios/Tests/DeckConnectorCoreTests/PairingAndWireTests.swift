@@ -55,7 +55,7 @@ import Testing
 }
 
 @Test func rustQueueAndExecutingFixturesRemainWireCompatible() throws {
-    let snapshotJSON = #"{"version":1,"hostId":"h","revision":"8","capturedAt":1789776000,"projects":[],"cards":[{"id":"C1","projectId":"P1","columnId":"K1","title":"Stopped","status":"dead","generation":null,"canSend":false,"buffer":{"revision":1,"collecting":false,"entryCount":0}}],"queue":[{"cardId":"C1","id":"Q1","mode":"once","paused":false,"revision":"7","state":"pending"}]}"#
+    let snapshotJSON = #"{"version":1,"hostId":"h","revision":"8","capturedAt":1789776000,"projects":[],"cards":[{"id":"C1","projectId":"P1","columnId":"K1","title":"Stopped","status":"stopped","generation":null,"canSend":false,"buffer":{"revision":1,"collecting":false,"entryCount":0}}],"queue":[{"cardId":"C1","id":"Q1","mode":"once","paused":false,"revision":"7","state":"pending"}]}"#
     let snapshot = try JSONDecoder().decode(Snapshot.self, from: Data(snapshotJSON.utf8))
     #expect(snapshot.cards[0].generation == nil)
     #expect(snapshot.queue == [QueueItem(id: "Q1", cardId: "C1", mode: "once", state: "pending", paused: false, revision: WireRevision("7"))])
@@ -102,7 +102,7 @@ import Testing
 }
 
 @Test func wireSchemaParsesSummaryWithoutBufferContents() throws {
-    let json = #"{"version":1,"hostId":"h","revision":"8","capturedAt":1789776000,"projects":[{"id":"p","name":"Project","columns":[{"id":"c","name":"Doing"}],"presets":[{"id":"x","name":"Codex"}]}],"cards":[{"id":"card","projectId":"p","columnId":"c","title":"Fix","status":"live","generation":"g1","canSend":true,"buffer":{"revision":2,"collecting":false,"entryCount":3}}],"queue":[]}"#
+    let json = #"{"version":1,"hostId":"h","revision":"8","capturedAt":1789776000,"projects":[{"id":"p","name":"Project","columns":[{"id":"c","name":"Doing"}],"presets":[{"id":"x","name":"Codex"}]}],"cards":[{"id":"card","projectId":"p","columnId":"c","title":"Fix","status":"running","generation":"g1","canSend":true,"buffer":{"revision":2,"collecting":false,"entryCount":3}}],"queue":[]}"#
     let snapshot = try JSONDecoder().decode(Snapshot.self, from: Data(json.utf8))
     #expect(snapshot.revision.value == "8")
     #expect(snapshot.cards.first?.buffer.entryCount == 3)
@@ -111,7 +111,7 @@ import Testing
 }
 
 @Test func cardQueueCapabilityUsesExactFieldAndFailsClosedWhenMissing() throws {
-    let card = #"{"id":"card","projectId":"p","columnId":"c","title":"Fix","status":"dead","generation":null,"canSend":false,"canQueue":true,"buffer":{"revision":2,"collecting":false,"entryCount":1}}"#
+    let card = #"{"id":"card","projectId":"p","columnId":"c","title":"Fix","status":"stopped","generation":null,"canSend":false,"canQueue":true,"buffer":{"revision":2,"collecting":false,"entryCount":1}}"#
     #expect(try JSONDecoder().decode(CardSummary.self, from: Data(card.utf8)).canQueue)
     let missing = card.replacingOccurrences(of: ",\"canQueue\":true", with: "")
     #expect(try JSONDecoder().decode(CardSummary.self, from: Data(missing.utf8)).canQueue == false)

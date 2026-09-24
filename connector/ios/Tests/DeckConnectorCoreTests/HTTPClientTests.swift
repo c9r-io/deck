@@ -67,6 +67,40 @@ struct HTTPClientTests {
     await #expect(throws: ConnectorError.commandNotFound) { try await client.query(id: "op-1") }
 }
 
+/// `Fixtures/http-status-map.json` is also read by the host's server tests:
+/// every (status, code) the host answers a failed command query with, and
+/// the ConnectorError the phone raises for it.
+@Test func hostStatusMapMatchesThePhoneErrors() async throws {
+    let url = try #require(Bundle.module.url(forResource: "http-status-map", withExtension: "json", subdirectory: "Fixtures"))
+    let map = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+    let responses = try #require(map["responses"] as? [[String: Any]])
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.protocolClasses = [StatusURLProtocol.self]
+    let credential = DeviceCredential(origin: "https://deck.test", fingerprint: String(repeating: "0", count: 64), hostId: "host", deviceId: "device", token: "token")
+    let client = try DeckHTTPClient(credential: credential, configuration: configuration)
+    defer { client.invalidate() }
+    for response in responses {
+        let status = try #require(response["status"] as? Int)
+        let code = try #require(response["code"] as? String)
+        StatusURLProtocol.status = status
+        StatusURLProtocol.code = code
+        let raised: ConnectorError
+        do { _ = try await client.query(id: "op-1"); Issue.record("\(status) \(code) succeeded"); continue }
+        catch let error as ConnectorError { raised = error }
+        let name: String = switch raised {
+        case .revoked: "revoked"
+        case .commandNotFound: "commandNotFound"
+        case .commandExpired: "commandExpired"
+        case .upgradeRequired: "upgradeRequired"
+        case .conflict: "conflict"
+        case .unsupportedTarget: "unsupportedTarget"
+        case .transport: "transport"
+        default: "\(raised)"
+        }
+        #expect(name == response["phone"] as? String, "\(status) \(code)")
+    }
+}
+
 @Test func unsupportedTargetHasAnActionableClientError() async throws {
     let configuration = URLSessionConfiguration.ephemeral
     configuration.protocolClasses = [StatusURLProtocol.self]

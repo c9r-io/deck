@@ -40,8 +40,36 @@ The host holds at most 2,000 unresolved (accepted or executing) commands in a 16
 
 Every command also carries `seq`, a per-device number the phone assigns once, stores with the command before its first POST and reuses on every retry (it is at least the phone's clock in milliseconds, so it stays ahead even if the app's local journal is lost). Dropping a tombstone raises the device's floor to that command's `seq`. `POST /v1/commands` itself enforces this: an unknown id whose `seq` is at or below the floor is `410 expired` and is never admitted — whether or not the phone asked `GET` first — and a `seq` already held by another retained id is `409`. Any higher `seq` is admitted as usual, so new work never stops. A command without `seq` (a phone build that predates it) is `426 upgrade-required`; update the app.
 
-Buffer limits are 256 entries, 256 copies, 32 KiB per text, 1 MiB aggregate text, and 2 MiB serialized JSON. Command requests are limited to 256 KiB and are read only after the request's device token is authorized; pairing requests are limited to 4 KiB. The listener accepts at most 16 connections, at most 4 from one source address, with a 5-second TLS handshake, a 10-second header read and a 30-second connection limit. Encoded responses are limited to 4 MiB. A result marked ambiguous is not retried automatically.
+Buffer limits are 256 entries, 256 copies, 32 KiB per text, 1 MiB aggregate text, and 2 MiB serialized JSON. Command requests are limited to 256 KiB and are read only after the request's device token is authorized; pairing requests are limited to 4 KiB. The listener accepts at most 16 connections, at most 4 from one source address, with a 5-second TLS handshake, a 10-second header read and a 30-second connection limit. Encoded responses are limited to 4 MiB. Message and note text is at most 32 KiB, is not empty, and contains no control character except newline and tab — a pasted carriage return is refused on the phone before anything is sent, with a message saying so. Terminal output is at most 64 KiB of text per read. Result codes are 1–64 of `a-z`, `0-9` and `-`. A result marked ambiguous is not retried automatically.
 
 The journal file is format version 3 (v3 adds each device's admission floor and each entry's `seq`). Version 1 and 2 files are upgraded when loaded (v1 resolved entries become tombstones) and written as version 3 on the next change; an older deck refuses a version 3 file instead of reading it. Paired devices, tokens and pending commands are kept.
 
 The phone's own local command journal has a separate schema, unrelated to the host journal format or the wire protocol; it is now version 3 (v2 added the sequence counter, v3 the `expired` state). Version 1 and 2 files open with every command, id, body, `seq` and state unchanged — nothing becomes `expired` by migration — and are written as version 3 by the next save, which replaces the file atomically. A file of any other version is refused before its commands are read and left untouched; so is a v1/v2 file that claims `expired`. An older phone build refuses a version 3 file instead of reading it. A version-1 command still pending recovery has no `seq`, so the host would refuse it with `426`; it gets one only when the host answers its id with `404` (proof it was never admitted) — stored with the record before any retry, with the same id and body. A timeout, network error, `410`, `426` or any other answer never assigns one.
+
+## Protocol fixtures and tests
+
+The wire contract between the host (`app/src-tauri/src/connector/`) and the
+phone (`connector/ios/Sources/DeckConnectorCore/`) is pinned by golden files
+in `connector/ios/Tests/DeckConnectorCoreTests/Fixtures/`: valid and invalid
+requests for every command kind, a snapshot, a buffer, terminal output, the
+pairing descriptor, the pair response, the error envelope, the HTTP status →
+phone error map, the result-code rule and the limits. The host's tests
+produce the snapshot, buffer, output, descriptor and pair response from the
+production functions and compare them with these files; the phone's tests
+decode and validate the same bytes. **Changing the protocol means changing
+the fixture in the same commit**, and both suites then fail until both sides
+follow.
+
+The Rust side runs in the ordinary `cargo test --workspace` gate. The Swift
+side is not in CI (it needs the macOS Swift toolchain); run it locally before
+committing any Connector protocol change:
+
+```sh
+cd connector/ios && swift test
+```
+
+Stop rule: if the next two Connector protocol changes land without a false
+alarm from these fixtures, this is the final form — no JSON Schema, no
+generated Swift models, no shared definitions crate. `WireRevision`
+(integer-or-string) and `ExpectedGeneration` (null vs absent) carry meaning
+and stay hand-written.

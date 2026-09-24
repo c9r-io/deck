@@ -583,104 +583,11 @@ fn generation_null_asserts_stopped_and_missing_is_rejected_for_queue_commands() 
     );
 }
 
+/// The valid and invalid request vectors live in the phone fixtures
+/// (`phone_request_fixtures_are_accepted_and_refused_like_the_host`); these
+/// are the host-only helpers behind them.
 #[test]
-fn every_wire_command_has_a_closed_valid_and_invalid_payload_contract() {
-    let make = |kind: &str, payload: Value| CommandRequest {
-        id: format!("{kind}-1"),
-        kind: kind.into(),
-        card_id: (kind != "task-create").then(|| "C1".into()),
-        expected_generation: if kind == "send-message" {
-            ExpectedGeneration::Live("a".repeat(64))
-        } else if matches!(kind, "queue-pause" | "queue-cancel") {
-            ExpectedGeneration::Stopped
-        } else {
-            ExpectedGeneration::Missing
-        },
-        expected_revision: matches!(
-            kind,
-            "buffer-add" | "buffer-edit" | "buffer-delete" | "buffer-queue" | "task-create"
-        )
-        .then(|| "7".into()),
-        payload,
-        seq: Some(1),
-    };
-
-    let valid = [
-        make("send-message", json!({"text":"hello\nworld"})),
-        make("buffer-add", json!({"text":"note"})),
-        make("buffer-edit", json!({"entryId":"E1","text":"replacement"})),
-        make("buffer-delete", json!({"entryId":"E1"})),
-        make("buffer-queue", json!({"entryIds":["E1","E2"]})),
-        make(
-            "task-create",
-            json!({"projectId":"P1","presetId":"preset-1"}),
-        ),
-        make(
-            "queue-pause",
-            json!({"itemId":"Q1","paused":true,"revision":"12"}),
-        ),
-        make("queue-cancel", json!({"itemId":"Q1","revision":"12"})),
-    ];
-    for request in &valid {
-        assert!(validate_command(request).is_ok(), "{}", request.kind);
-    }
-
-    let invalid = [
-        make("send-message", json!({"text":""})),
-        make("send-message", json!({"text":"bad\u{0}text"})),
-        make("buffer-add", json!({"text":"ok","extra":true})),
-        make("buffer-edit", json!({"entryId":"","text":"ok"})),
-        make("buffer-delete", json!({"entryId":"bad\nidentity"})),
-        make("buffer-queue", json!({"entryIds":[]})),
-        make("buffer-queue", json!({"entryIds":["E1","E1"]})),
-        make("task-create", json!({"projectId":"P1","presetId":""})),
-        make("queue-pause", json!({"itemId":"Q1","revision":"12"})),
-        make(
-            "queue-cancel",
-            json!({"itemId":"Q1","paused":false,"revision":"12"}),
-        ),
-        make("queue-cancel", json!({"itemId":"Q1","revision":"v12"})),
-    ];
-    for request in &invalid {
-        assert_eq!(
-            validate_command(request).unwrap_err().kind(),
-            ErrorKind::Invalid,
-            "{}",
-            request.kind
-        );
-    }
-
-    let mut malformed = valid[0].clone();
-    malformed.id = "bad\nidentity".into();
-    assert_eq!(
-        validate_command(&malformed).unwrap_err().kind(),
-        ErrorKind::Invalid
-    );
-    malformed = valid[0].clone();
-    malformed.kind = "shell-command".into();
-    assert_eq!(
-        validate_command(&malformed).unwrap_err().kind(),
-        ErrorKind::Invalid
-    );
-    malformed = valid[0].clone();
-    malformed.card_id = None;
-    assert_eq!(
-        validate_command(&malformed).unwrap_err().kind(),
-        ErrorKind::Invalid
-    );
-    malformed = valid[0].clone();
-    malformed.expected_generation = ExpectedGeneration::Stopped;
-    assert_eq!(
-        validate_command(&malformed).unwrap_err().kind(),
-        ErrorKind::Invalid
-    );
-    malformed = valid[1].clone();
-    malformed.expected_revision = None;
-    assert_eq!(
-        validate_command(&malformed).unwrap_err().kind(),
-        ErrorKind::Invalid
-    );
-
+fn command_id_and_text_rules() {
     assert!(command_id("literal-id"));
     assert!(!command_id(""));
     assert!(!command_id("bad\tid"));
@@ -2521,4 +2428,204 @@ fn pairing_and_identity_reset_refuse_while_the_listener_state_forbids_them() {
     );
     assert_eq!(status.fingerprint.as_deref(), Some("f".repeat(64).as_str()));
     assert_eq!(status.origin.as_deref(), Some("https://127.0.0.1:8443"));
+}
+
+// ---------- golden wire fixtures shared with the phone ----------
+// connector/ios/Tests/DeckConnectorCoreTests/Fixtures/ is read by the Swift
+// tests too: Rust produces (or accepts) each file, Swift decodes/validates
+// the same bytes. Change the protocol → change the fixture → both sides.
+
+macro_rules! phone_fixture {
+    ($name:literal) => {
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../connector/ios/Tests/DeckConnectorCoreTests/Fixtures/",
+            $name
+        ))
+    };
+}
+
+fn phone_json(text: &str) -> Value {
+    serde_json::from_str(text).unwrap()
+}
+
+fn golden_board() -> Value {
+    json!({
+        "projects":[{"id":"P1","name":"One","columns":[{"id":"COL1","name":"Todo"}],
+                     "presets":[{"id":"X","name":"Codex task"}]}],
+        "cards":[
+            {"id":"A","session":"deck-a-0001","cmd":"claude","projectId":"P1","columnId":"COL1",
+             "title":"Agent","buffer":{"revision":3,"collecting":true,"entries":[
+                {"id":"E1","kind":"manual","text":"one","revision":1,"createdAt":1789776000,
+                 "updatedAt":1789776000,"copies":[
+                    {"operationId":"OPX","entryRevision":1,"text":"one","createdAt":1789776001,"state":"queued"},
+                    {"operationId":"OPY","entryRevision":1,"text":"one","createdAt":1789776002,"state":"queued"}]},
+                {"id":"E2","kind":"channel","text":"two","revision":2,"createdAt":1789776003,
+                 "updatedAt":1789776004,"source":{"type":"slack","eventId":"Ev1","connection":"default",
+                 "channel":"C1","rule":"r1","at":1789776003,"links":[]},"copies":[]}
+             ]}},
+            {"id":"C","session":"deck-c-0001","cmd":"codex","projectId":"P1","columnId":"COL1",
+             "title":"Stopped"},
+            {"id":"D","session":"deck-d-0001","cmd":"codex","projectId":"P1","columnId":"COL1",
+             "title":"Unknown"}
+        ]
+    })
+}
+
+fn golden_probe(session: &str) -> Result<crate::context::ConnectorProbe, DeckError> {
+    match session {
+        "deck-a-0001" => Ok(crate::context::ConnectorProbe {
+            identity: crate::context::PaneIdentity {
+                server_pid: 1,
+                session_id: "$1".into(),
+                window_id: "@1".into(),
+                pane_id: "%1".into(),
+                pane_pid: 2,
+            },
+            agent: Some("claude".into()),
+            foreground_pid: 3,
+            start_seconds: 4,
+            start_micros: 5,
+            generation: "gen-a".into(),
+        }),
+        "deck-c-0001" => Err(DeckError::new(ErrorKind::NoSession, "gone")),
+        _ => Err(DeckError::new(ErrorKind::Tmux, "probe failed")),
+    }
+}
+
+/// Snapshot, buffer and output are produced by the production projection
+/// functions; only the wall-clock `capturedAt` is pinned.
+#[test]
+fn phone_golden_projections_are_what_the_host_produces() {
+    let queues = queue_fixture(json!([
+        {"id":"Q1","session":"deck-a-0001","card_id":"A","dir":"/tmp","cmd":"claude","text":"hi",
+         "mode":"at","added":1,"revision":5}
+    ]));
+    let mut snapshot = snapshot_in("host_x", "rev-1", &golden_board(), &queues, golden_probe);
+    snapshot["capturedAt"] = json!(1789776000);
+    let (_, _, ops) = crate::scheduler::connector::snapshot(&queues, |_| true);
+    let buffer = buffer_in(&golden_board(), "A", &ops).unwrap();
+    let io = SavedAgentWithForeground {
+        foreground_agents: vec![Some("codex".into())],
+        probe_calls: std::cell::Cell::new(0),
+        pane_calls: std::cell::Cell::new(0),
+    };
+    let mut output = output_with(&io, "C1").unwrap();
+    output["capturedAt"] = json!(1789776000);
+    for (name, produced, golden) in [
+        ("snapshot.json", &snapshot, phone_fixture!("snapshot.json")),
+        ("buffer.json", &buffer, phone_fixture!("buffer.json")),
+        ("output.json", &output, phone_fixture!("output.json")),
+    ] {
+        assert_eq!(
+            produced,
+            &phone_json(golden),
+            "{name}; produced:\n{}",
+            serde_json::to_string_pretty(produced).unwrap()
+        );
+    }
+    let statuses: Vec<&str> = snapshot["cards"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|card| card["status"].as_str().unwrap())
+        .collect();
+    assert_eq!(statuses, ["running", "stopped", "unknown"]);
+}
+
+#[test]
+fn phone_request_fixtures_are_accepted_and_refused_like_the_host() {
+    let valid = phone_json(phone_fixture!("requests-valid.json"));
+    for raw in valid["requests"].as_array().unwrap() {
+        let request: CommandRequest = serde_json::from_value(raw.clone()).unwrap();
+        assert!(validate_command(&request).is_ok(), "{raw}");
+    }
+    let invalid = phone_json(phone_fixture!("requests-invalid.json"));
+    for entry in invalid["requests"].as_array().unwrap() {
+        // The server answers a body it cannot parse and a request
+        // validate_command refuses the same way: 400 `invalid`.
+        assert_eq!(entry["code"], "invalid");
+        let refused = serde_json::from_value::<CommandRequest>(entry["request"].clone()).map_or(
+            true,
+            |request| {
+                validate_command(&request).is_err_and(|error| error.kind() == ErrorKind::Invalid)
+            },
+        );
+        assert!(refused, "{}", entry["reason"]);
+        if entry["phoneRejects"] == true {
+            let text = entry["request"]["payload"]["text"].as_str().unwrap();
+            assert!(!command_text(text), "{} is a text rule", entry["reason"]);
+        }
+    }
+}
+
+#[test]
+fn phone_limits_and_result_codes_match_the_host() {
+    let limits = phone_json(phone_fixture!("limits.json"));
+    for (key, value) in [
+        ("request_bytes", server::MAX_BODY),
+        ("response_bytes", server::MAX_RESPONSE),
+        ("command_text_utf8_bytes", MAX_TEXT),
+        ("output_text_utf8_bytes", MAX_OUTPUT_BYTES),
+        ("command_result_bytes", MAX_RESULT_BYTES),
+        ("pairing_descriptor_bytes", MAX_PAIRING_DESCRIPTOR_BYTES),
+        ("buffer_entries", crate::documents::BUFFER_MAX_ENTRIES),
+        ("buffer_copies", crate::documents::BUFFER_MAX_COPIES),
+        (
+            "buffer_entry_utf8_bytes",
+            crate::documents::BUFFER_MAX_ENTRY_BYTES,
+        ),
+        (
+            "buffer_total_utf8_bytes",
+            crate::documents::BUFFER_MAX_BYTES,
+        ),
+        (
+            "serialized_buffer_bytes",
+            crate::documents::BUFFER_MAX_SERIALIZED_BYTES,
+        ),
+    ] {
+        assert_eq!(
+            limits[key].as_u64(),
+            Some(value as u64),
+            "limits.json {key}"
+        );
+    }
+    assert_eq!(
+        limits.as_object().unwrap().len(),
+        11,
+        "every limit is checked"
+    );
+    let codes = phone_json(phone_fixture!("result-codes.json"));
+    for code in codes["valid"].as_array().unwrap() {
+        assert!(
+            validate_terminal("send-message", "rejected", code.as_str(), None),
+            "{code}"
+        );
+    }
+    for code in codes["invalid"].as_array().unwrap() {
+        assert!(
+            !validate_terminal("send-message", "rejected", code.as_str(), None),
+            "{code}"
+        );
+    }
+}
+
+#[test]
+fn phone_pairing_fixtures_are_what_the_host_produces() {
+    assert_eq!(
+        pairing_descriptor(
+            "host-1",
+            "Studio Mac",
+            "https://192.168.1.4:47631",
+            &"a".repeat(64),
+            "one-time-code",
+            2000,
+        )
+        .unwrap(),
+        phone_fixture!("pairing-descriptor.txt").trim_end()
+    );
+    assert_eq!(
+        pair_response("host-1", "device-1", "token-1"),
+        phone_json(phone_fixture!("pair-response.json"))
+    );
 }

@@ -125,6 +125,7 @@ const MAX_RESULT_BYTES: usize = 1024;
 const PAIR_TTL: u64 = 300;
 const MAX_TEXT: usize = 32 * 1024;
 const MAX_OUTPUT_BYTES: usize = 64 * 1024;
+const MAX_PAIRING_DESCRIPTOR_BYTES: usize = 8 * 1024;
 
 #[derive(Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
