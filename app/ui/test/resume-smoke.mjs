@@ -27,6 +27,13 @@ export async function runResumeSmoke() {
       cards.push(card); render(); await openSession(card.id); stopPolling();
       await pause(1100);
       stage = 1;
+      // A short prompt first: the user's own prompt may be wider than the
+      // 32-column pane below, and zsh redrawing a wrapped prompt when the
+      // pane is widened again (openSession) erases the last output line —
+      // here the claude hint. The shell and its rc files stay the user's;
+      // only this pane's prompt variables change (zsh and bash).
+      await write(card, "PS1='$ '; PROMPT='$ '; RPROMPT=''\r");
+      await pause(400);
       // A narrow real PTY soft-wraps both exit commands. -J must recover IDs.
       await inv('pty_resize', { name: card.session, cols: 32, rows: 20 });
       await write(card, "printf '\\nTo continue this session, run:\\n\\n  codex resume " + ids[i]

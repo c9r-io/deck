@@ -2,6 +2,13 @@
 //! joined tail, return only tool/UUID pairs, and never persist or log content.
 //! Exit headings establish provenance; arbitrary UUIDs and shell input do not.
 //! Restored shell transcripts use the same path as live output.
+//!
+//! Known limitation (not remedied): the hints are read from whatever tmux
+//! still holds. If a pane is widened after an agent exits while the user's
+//! prompt is wider than the old width, zsh redraws the wrapped prompt one
+//! line too high and erases the last output line — often the second resume
+//! command. Deck does not control the user's shell, so that hint is simply
+//! gone; the WKWebView resume smoke sets a short prompt for this reason.
 
 use serde::Serialize;
 
