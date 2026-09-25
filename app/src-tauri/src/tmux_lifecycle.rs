@@ -15,6 +15,8 @@
 //! PID/start-time/session/pane counts under the same gate, detaches PTYs, kills
 //! and waits, validates a stale socket against its captured device/inode, starts
 //! from the current sidecar, then requires a new PID and read-back identity.
+//! A still-reachable server with no sessions has zero pane rows; restart
+//! accepts tmux's empty-target response only after revalidating that identity.
 //! The updater takes the same gate before setting its creation embargo. Cards
 //! are marked stopped after replacement is confirmed or observed and before
 //! polling, so a refused restart never presents live cards as stopped.
@@ -709,6 +711,72 @@ fn probe_server_on(server: &ServerHandle<'_>) -> Probe {
         impact_token,
         panes: pane_rows,
     }))
+}
+
+/// `list-panes -a` needs a pane target even though a reachable Deck server
+/// may legitimately have no sessions. Only the exact empty-target response
+/// may stand for empty rows, and only after a fresh probe proves the same
+/// server is still reachable and empty. Other query failures stay errors.
+fn restart_panes_on(
+    server: &ServerHandle<'_>,
+    expected: &ServerSnapshot,
+) -> Result<Vec<tmux::PaneRow>, DeckError> {
+    match tmux::list_panes_with(server.run) {
+        Ok(rows) => Ok(rows),
+        Err(error)
+            if expected.sessions.is_empty()
+                && expected.panes.is_empty()
+                && error.message() == "tmux list-panes failed: no current target" =>
+        {
+            match probe_server_on(server) {
+                Probe::Reachable(current)
+                    if current.pid == expected.pid
+                        && current.started_at == expected.started_at
+                        && current.socket_device == expected.socket_device
+                        && current.socket_inode == expected.socket_inode
+                        && current.sessions.is_empty()
+                        && current.panes.is_empty() =>
+                {
+                    Ok(Vec::new())
+                }
+                _ => Err(DeckError::restart(RestartFailure::ImpactChanged)),
+            }
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// Preserve both pane checks around agent preparation. The second server
+/// probe fences identity changes; the final pane read catches a new pane
+/// before the replacement intent is written.
+fn prepare_restart_on(
+    server: &ServerHandle<'_>,
+    snapshot: &ServerSnapshot,
+    restore_shells: bool,
+    progress: &dyn Fn(&str, usize, usize),
+) -> Result<ServerSnapshot, DeckError> {
+    let prepared_rows = crate::restart::prepare(
+        &snapshot.panes,
+        restore_shells,
+        &|| restart_panes_on(server, snapshot),
+        progress,
+    )?;
+    let post_exit = match probe_server_on(server) {
+        Probe::Reachable(current)
+            if current.pid == snapshot.pid
+                && current.started_at == snapshot.started_at
+                && current.socket_device == snapshot.socket_device
+                && current.socket_inode == snapshot.socket_inode =>
+        {
+            current
+        }
+        _ => return Err(DeckError::restart(RestartFailure::ImpactChanged)),
+    };
+    let checked_rows = restart_panes_on(server, &post_exit)?;
+    if !crate::tmux::unchanged_rows(&prepared_rows, &checked_rows) {
+        return Err(DeckError::restart(RestartFailure::ImpactChanged));
+    }
+    Ok(*post_exit)
 }
 
 fn source_can_create(build: &CurrentBuildIdentity) -> bool {
@@ -1411,21 +1479,9 @@ fn restart_tmux_server_inner(
         started.elapsed().as_millis()
     ));
     pty_state.detach_all();
-    let prepared_rows = crate::restart::prepare(&snapshot.panes, restore_shells, progress)?;
     // Foreground changes caused by graceful exit are expected. Refresh the
     // content-free intent so crash recovery compares the post-exit identity.
-    let post_exit = match probe_server() {
-        Probe::Reachable(current)
-            if current.pid == snapshot.pid && current.started_at == snapshot.started_at =>
-        {
-            current
-        }
-        _ => return Err(DeckError::restart(RestartFailure::ImpactChanged)),
-    };
-    let checked_rows = tmux::list_panes()?;
-    if !crate::tmux::unchanged_rows(&prepared_rows, &checked_rows) {
-        return Err(DeckError::restart(RestartFailure::ImpactChanged));
-    }
+    let post_exit = prepare_restart_on(&deck_server(), &snapshot, restore_shells, progress)?;
     let paused = crate::scheduler::pause_for_server_restart(
         queues,
         &snapshot
@@ -3020,8 +3076,10 @@ mod tests {
         );
 
         let began = Instant::now();
+        let prepared = prepare_restart_on(&handle, &old, false, &|_, _, _| {})
+            .expect("prepare occupied server");
         let fresh =
-            complete_restart_on(&handle, &current, &old, "restartCompleted").expect("restart");
+            complete_restart_on(&handle, &current, &prepared, "restartCompleted").expect("restart");
         assert!(began.elapsed() < Duration::from_secs(3));
         assert_ne!(fresh.pid, old.pid);
         assert_eq!(fresh.pid, server.pid());
@@ -3041,6 +3099,148 @@ mod tests {
         let notice = disk.notice.expect("notice for the next boot");
         assert_eq!(notice.code, "restartCompleted");
         assert_eq!(notice.build_key, build_key(&current));
+    }
+
+    #[test]
+    fn real_tmux_restart_after_last_session_closes_replaces_reachable_empty_server() {
+        let old_build = build(SourceCategory::Installed, "0.4.40", "aaaaaaa", 1);
+        let current = build(SourceCategory::Development, "0.4.41", "bbbbbbb", 1);
+        let server = IsolatedServer::new("closed-last-managed");
+        let dir = TestDir::new("closed-last-managed");
+        server.start(Some(&metadata_for_current(&old_build)));
+        server.new_session("managed");
+        server.run(&["kill-session", "-t", "=managed"]);
+        let run = |args: &[&str]| server.tmux(args);
+        let run_owned = |args: &[String]| server.tmux_owned(args);
+        let handle = ServerHandle {
+            run: &run,
+            run_owned: &run_owned,
+            owned_client: &no_owned_client,
+            socket_name: &server.socket,
+            lifecycle_file: dir.file(),
+        };
+        let Probe::Reachable(old) = probe_server_on(&handle) else {
+            panic!("empty server remains reachable after managed close");
+        };
+        assert!(old.sessions.is_empty() && old.panes.is_empty());
+        assert_eq!(old.pid, server.pid());
+        assert_eq!(
+            String::from_utf8_lossy(&server.output(&["list-panes", "-a"]).stderr).trim(),
+            "no current target"
+        );
+
+        let prepared = prepare_restart_on(&handle, &old, false, &|_, _, _| {}).expect("prepare");
+        assert!(prepared.sessions.is_empty() && prepared.panes.is_empty());
+        let fresh = complete_restart_on(&handle, &current, &prepared, "restartCompleted")
+            .expect("replace empty server");
+        assert_ne!(fresh.pid, old.pid);
+        assert_eq!(fresh.pid, server.pid());
+        assert!(fresh.sessions.is_empty() && fresh.panes.is_empty());
+        assert_eq!(
+            compatible_state(&current, &fresh.metadata),
+            CompatibilityState::CompatibleCurrentBuild
+        );
+        let disk = read_disk_at(&dir.file());
+        assert!(disk.operation.is_none());
+        assert_eq!(
+            disk.notice.expect("completion notice").code,
+            "restartCompleted"
+        );
+    }
+
+    #[test]
+    fn empty_restart_revalidation_rejects_a_new_session_and_real_query_failure() {
+        let old_build = build(SourceCategory::Installed, "0.4.40", "aaaaaaa", 1);
+        let server = IsolatedServer::new("empty-revalidation");
+        let dir = TestDir::new("empty-revalidation");
+        server.start(Some(&metadata_for_current(&old_build)));
+        let normal = |args: &[&str]| server.tmux(args);
+        let run_owned = |args: &[String]| server.tmux_owned(args);
+        let baseline = ServerHandle {
+            run: &normal,
+            run_owned: &run_owned,
+            owned_client: &no_owned_client,
+            socket_name: &server.socket,
+            lifecycle_file: dir.file(),
+        };
+        let Probe::Reachable(old) = probe_server_on(&baseline) else {
+            panic!("empty server reachable");
+        };
+        let old_pid = old.pid;
+
+        let injected = std::cell::Cell::new(false);
+        let new_session = |args: &[&str]| {
+            if args.first() == Some(&"list-panes") && !injected.replace(true) {
+                server.new_session("appeared");
+            }
+            server.tmux(args)
+        };
+        let changed = ServerHandle {
+            run: &new_session,
+            run_owned: &run_owned,
+            owned_client: &no_owned_client,
+            socket_name: &server.socket,
+            lifecycle_file: dir.file(),
+        };
+        assert_eq!(
+            prepare_restart_on(&changed, &old, false, &|_, _, _| {})
+                .unwrap_err()
+                .message(),
+            RestartFailure::ImpactChanged.message()
+        );
+        assert!(injected.get());
+        assert_eq!(server.pid(), old_pid);
+        assert!(read_disk_at(&dir.file()).operation.is_none());
+        server.run(&["kill-session", "-t", "=appeared"]);
+
+        let reads = std::cell::Cell::new(0);
+        let late_session = |args: &[&str]| {
+            if args.first() == Some(&"list-panes") {
+                reads.set(reads.get() + 1);
+                if reads.get() == 3 {
+                    server.new_session("late");
+                }
+            }
+            server.tmux(args)
+        };
+        let late = ServerHandle {
+            run: &late_session,
+            run_owned: &run_owned,
+            owned_client: &no_owned_client,
+            socket_name: &server.socket,
+            lifecycle_file: dir.file(),
+        };
+        assert_eq!(
+            prepare_restart_on(&late, &old, false, &|_, _, _| {})
+                .unwrap_err()
+                .message(),
+            RestartFailure::ImpactChanged.message()
+        );
+        assert_eq!(reads.get(), 3, "final pane check caught the new session");
+        assert_eq!(server.pid(), old_pid);
+        server.run(&["kill-session", "-t", "=late"]);
+
+        let query_failure = |args: &[&str]| {
+            if args.first() == Some(&"list-panes") {
+                Err(DeckError::new(
+                    ErrorKind::Tmux,
+                    "tmux list-panes failed: permission denied",
+                ))
+            } else {
+                server.tmux(args)
+            }
+        };
+        let failing = ServerHandle {
+            run: &query_failure,
+            run_owned: &run_owned,
+            owned_client: &no_owned_client,
+            socket_name: &server.socket,
+            lifecycle_file: dir.file(),
+        };
+        let error = prepare_restart_on(&failing, &old, false, &|_, _, _| {}).unwrap_err();
+        assert_eq!(error.message(), "tmux list-panes failed: permission denied");
+        assert_eq!(server.pid(), old_pid);
+        assert!(read_disk_at(&dir.file()).operation.is_none());
     }
 
     /// A restart that fails, before or after the old server stopped, leaves

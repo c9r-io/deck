@@ -1,6 +1,8 @@
 //! Bounded, content-free coordination for an intentional shell-service restart.
 //! Exit keys are guarded by the observed tmux generation and foreground name.
 //! A timeout before kill-server aborts: elapsed time never proves a saved resume.
+//! The lifecycle supplies the pane reader so a verified, reachable empty
+//! server can be checked without treating tmux's missing pane target as loss.
 use std::time::{Duration, Instant};
 
 use crate::applog::{applog, session_tag};
@@ -128,11 +130,12 @@ fn exit_agents(
 pub(crate) fn prepare(
     reviewed: &[PaneRow],
     save_shells: bool,
+    list: &dyn Fn() -> Result<Vec<PaneRow>, DeckError>,
     progress: &dyn Fn(&str, usize, usize),
 ) -> Result<Vec<PaneRow>, DeckError> {
     check_deadline()?;
     let started = Instant::now();
-    let rows = tmux::list_panes()?;
+    let rows = list()?;
     if !unchanged_rows(reviewed, &rows) {
         return Err(DeckError::restart(RestartFailure::ImpactChanged));
     }
@@ -161,18 +164,12 @@ pub(crate) fn prepare(
             .count()
             .saturating_sub(total)
     ));
-    exit_agents(
-        targets,
-        EXIT_BUDGET,
-        &tmux::list_panes,
-        &tmux::tmux_owned,
-        progress,
-    )?;
+    exit_agents(targets, EXIT_BUDGET, list, &tmux::tmux_owned, progress)?;
     if total > 0 && !save_shells {
         std::thread::sleep(Duration::from_millis(100));
     }
     check_deadline()?;
-    let final_rows = tmux::list_panes()?;
+    let final_rows = list()?;
     if rows.len() != final_rows.len()
         || rows
             .iter()

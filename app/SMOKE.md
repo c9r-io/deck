@@ -640,6 +640,11 @@ a fixture.
       the warning explains termination and the job stops before restart.
       Inject a rejected or uncertain close: service PID remains unchanged and
       unrelated ordinary cards never show a false stopped state.
+- [ ] Repeat with only one managed card and no ordinary tmux session. Quit and
+      relaunch Deck without replacing its shell service, so the managed runner
+      is stale. Close that card from restart review: the still-running empty
+      server must be replaced (new PID and current build metadata), with no
+      dummy or restored MCP session.
 
 ## Security baseline
 - [ ] `app.log` contains no `CSP` violation lines after a full session of use

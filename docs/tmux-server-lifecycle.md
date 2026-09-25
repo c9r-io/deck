@@ -151,7 +151,10 @@ The backend owns one serialized restart operation:
 1. snapshot server PID, sessions, panes, attached clients, activity and
    foreground-process presence;
 2. after UI confirmation, lock session creation/updater installation and
-   re-check PID, server start time, session and pane counts;
+   re-check PID, server start time, session and pane counts; a reachable server
+   with zero sessions has an empty pane set even though tmux's `list-panes -a`
+   reports `no current target`. Deck accepts that response only after another
+   probe confirms the same server is still reachable and empty;
 3. persist a content-free restart intent (written once, before the stop;
    no progress phase is recorded — recovery never needs one);
 4. request `kill-server`, wait for exit, and remove only a validated stale
