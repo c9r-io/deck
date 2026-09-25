@@ -28,7 +28,7 @@ static CACHE: Mutex<[Option<String>; 6]> = Mutex::new([None, None, None, None, N
 
 /// Closed set of credential slots. Adding a source means adding its slots
 /// here — never accept an account name from the webview.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[allow(clippy::enum_variant_names)] // the service-qualified names keep closed slots unmistakable
 pub(crate) enum Slot {
     SlackUserToken,

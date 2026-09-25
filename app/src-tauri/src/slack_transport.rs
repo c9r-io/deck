@@ -1,7 +1,10 @@
 //! The sole Slack Socket Mode owner. Consumers never access the WebSocket.
+//! Status reads never request a Socket ticket; only explicit App-token saves
+//! and actual transport connections call apps.connections.open.
 //! A Reaction envelope is ACKed before its recoverable Web API fetch; a
 //! matching channel message is ACKed only after durable inbox staging.
 use crate::applog::applog;
+use crate::error::{DeckError, ErrorKind};
 use crate::inbound;
 use crate::inbound_channel;
 use crate::inbound_slack;
@@ -49,7 +52,14 @@ pub(crate) async fn slack_connection_status() -> Result<SlackConnectionStatus, &
             .map(|t| slack_api::verify(Slot::SlackUserToken, &t));
         let bot =
             keychain::get(Slot::SlackBotToken).map(|t| slack_api::verify(Slot::SlackBotToken, &t));
-        let app = keychain::get(Slot::SlackAppToken).map(|t| open_url(&t));
+        // Presence, a successful save/open in this process, and an active
+        // socket are separate facts. A restart cannot assert App validity
+        // until the transport connects or the user saves the token again.
+        let app_valid = app_valid_fact(
+            app_present,
+            APP_VERIFIED.load(Ordering::SeqCst),
+            connected(),
+        );
         let (user_valid, user_error) = match &user {
             Some(Ok(_)) => (true, None),
             Some(Err(e)) => (false, Some(*e)),
@@ -60,11 +70,7 @@ pub(crate) async fn slack_connection_status() -> Result<SlackConnectionStatus, &
             Some(Err(e)) => (false, Some(*e)),
             None => (false, None),
         };
-        let (app_valid, app_error) = match &app {
-            Some(Ok(_)) => (true, None),
-            Some(Err(e)) => (false, Some(*e)),
-            None => (false, None),
-        };
+        let app_error = None;
         let workspace_match = match (&user, &bot) {
             (Some(Ok(u)), Some(Ok(b))) => workspace_match(u, b),
             (Some(_), Some(_)) => false,
@@ -103,13 +109,53 @@ pub(crate) async fn slack_connection_status() -> Result<SlackConnectionStatus, &
     .map_err(|_| "worker")
 }
 
+// Closed, argument-free operation: neither the webview nor a caller may name
+// another Keychain slot. Attempt both deletions even if the first fails.
+#[tauri::command]
+pub(crate) async fn slack_legacy_credentials_clear() -> Result<(), DeckError> {
+    tauri::async_runtime::spawn_blocking(|| {
+        clear_legacy_with(keychain::has, keychain::clear)
+            .map_err(|_| DeckError::new(ErrorKind::Other, "keychain"))
+    })
+    .await
+    .map_err(|_| DeckError::new(ErrorKind::Other, "credential worker failed"))?
+}
+
+fn clear_legacy_with(
+    has: impl Fn(Slot) -> bool,
+    clear: impl Fn(Slot) -> Result<(), DeckError>,
+) -> Result<(), &'static str> {
+    let slots = [Slot::SlackChannelBotToken, Slot::SlackChannelAppToken];
+    let mut failed = false;
+    for slot in slots {
+        if has(slot) && clear(slot).is_err() {
+            failed = true;
+        }
+    }
+    // Re-read the actual remaining presence. A partial deletion stays visible
+    // and the same command can be safely retried.
+    if slots.into_iter().any(has) || failed {
+        Err("keychain")
+    } else {
+        Ok(())
+    }
+}
+
 static CONNECTED: AtomicBool = AtomicBool::new(false);
+static APP_VERIFIED: AtomicBool = AtomicBool::new(false);
 static EPOCH: AtomicU64 = AtomicU64::new(1);
 static WAKE: (Mutex<bool>, Condvar) = (Mutex::new(false), Condvar::new());
 const MAX_SOCKET_TEXT: usize = 1024 * 1024;
 
+fn app_valid_fact(present: bool, verified_this_process: bool, connected: bool) -> bool {
+    present && (verified_this_process || connected)
+}
+
 pub(crate) fn connected() -> bool {
     CONNECTED.load(Ordering::SeqCst)
+}
+pub(crate) fn app_credential_saved(present: bool) {
+    APP_VERIFIED.store(present, Ordering::SeqCst);
 }
 fn startup_plan(
     reaction_enabled: bool,
@@ -153,7 +199,18 @@ pub(crate) fn confined_socket_url(raw: &str) -> bool {
         && url.port().is_none()
 }
 pub(crate) fn open_url(token: &str) -> Result<String, &'static str> {
-    let response = slack_api::call("apps.connections.open", token, &[])?;
+    open_url_with(token, |candidate| {
+        slack_api::call("apps.connections.open", candidate, &[])
+    })
+}
+fn open_url_with(
+    token: &str,
+    call: impl FnOnce(&str) -> Result<Value, &'static str>,
+) -> Result<String, &'static str> {
+    let response = call(token)?;
+    socket_url(&response)
+}
+fn socket_url(response: &Value) -> Result<String, &'static str> {
     let url = response.get("url").and_then(Value::as_str).ok_or("parse")?;
     if !confined_socket_url(url) {
         return Err("url");
@@ -338,6 +395,7 @@ fn socket_loop(app: AppHandle) {
         }
         let attempt = (|| -> Result<(), &'static str> {
             let url = open_url(&app_token)?;
+            APP_VERIFIED.store(true, Ordering::SeqCst);
             if rustls::crypto::CryptoProvider::get_default().is_none() {
                 let _ = rustls::crypto::ring::default_provider().install_default();
             }
@@ -451,6 +509,119 @@ fn socket_loop(app: AppHandle) {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::collections::HashSet;
+
+    #[test]
+    fn status_does_not_open_socket_tickets_even_on_repeated_reads() {
+        let source = include_str!("slack_transport.rs");
+        let body = source
+            .split("pub(crate) async fn slack_connection_status")
+            .nth(1)
+            .unwrap()
+            .split("// Closed, argument-free operation")
+            .next()
+            .unwrap();
+        assert!(!body.contains("open_url("));
+        assert!(!body.contains("apps.connections.open"));
+        for _ in 0..5 {
+            assert!(!app_valid_fact(true, false, false));
+            assert!(app_valid_fact(true, true, false));
+            assert!(app_valid_fact(true, false, true));
+            assert!(!app_valid_fact(false, true, true));
+        }
+    }
+
+    #[test]
+    fn app_ticket_verification_calls_once_and_confines_url() {
+        let mut calls = 0;
+        let url = open_url_with("xapp-candidate", |token| {
+            calls += 1;
+            assert_eq!(token, "xapp-candidate");
+            Ok(json!({"url":"wss://wss-primary.slack.com/link/?ticket=one"}))
+        })
+        .unwrap();
+        assert_eq!(calls, 1);
+        assert!(confined_socket_url(&url));
+        for result in [
+            Err("auth"),
+            Err("scope"),
+            Err("network"),
+            Err("slack"),
+            Ok(json!({"url":"https://wss-primary.slack.com/link/"})),
+        ] {
+            let mut calls = 0;
+            assert!(open_url_with("xapp-candidate", |_| {
+                calls += 1;
+                result
+            })
+            .is_err());
+            assert_eq!(calls, 1);
+        }
+    }
+
+    #[test]
+    fn legacy_clear_is_idempotent_partial_and_canonical_safe() {
+        for initial in [
+            vec![],
+            vec![Slot::SlackChannelBotToken],
+            vec![Slot::SlackChannelAppToken],
+            vec![Slot::SlackChannelBotToken, Slot::SlackChannelAppToken],
+        ] {
+            let state = Mutex::new(initial.into_iter().collect::<HashSet<_>>());
+            let has = |slot| state.lock_or_recover().contains(&slot);
+            let clear = |slot| {
+                state.lock_or_recover().remove(&slot);
+                Ok(())
+            };
+            assert_eq!(clear_legacy_with(has, clear), Ok(()));
+            assert_eq!(clear_legacy_with(has, clear), Ok(()));
+            assert!(state.lock_or_recover().is_empty());
+        }
+        let state = Mutex::new(
+            [
+                Slot::SlackChannelBotToken,
+                Slot::SlackChannelAppToken,
+                Slot::SlackUserToken,
+                Slot::SlackBotToken,
+                Slot::SlackAppToken,
+            ]
+            .into_iter()
+            .collect::<HashSet<_>>(),
+        );
+        let has = |slot| state.lock_or_recover().contains(&slot);
+        let clear = |slot| {
+            if slot == Slot::SlackChannelAppToken {
+                Err(DeckError::new(ErrorKind::Other, "keychain"))
+            } else {
+                state.lock_or_recover().remove(&slot);
+                Ok(())
+            }
+        };
+        assert_eq!(clear_legacy_with(has, clear), Err("keychain"));
+        assert!(!has(Slot::SlackChannelBotToken));
+        assert!(has(Slot::SlackChannelAppToken));
+        for slot in [
+            Slot::SlackUserToken,
+            Slot::SlackBotToken,
+            Slot::SlackAppToken,
+        ] {
+            assert!(has(slot));
+        }
+        assert_eq!(
+            clear_legacy_with(has, |slot| {
+                state.lock_or_recover().remove(&slot);
+                Ok(())
+            }),
+            Ok(())
+        );
+        for slot in [
+            Slot::SlackUserToken,
+            Slot::SlackBotToken,
+            Slot::SlackAppToken,
+        ] {
+            assert!(has(slot));
+        }
+    }
     #[test]
     fn startup_supports_reaction_only_channel_only_and_disabled_rules() {
         assert_eq!(
@@ -690,6 +861,11 @@ mod tests {
             1
         );
         assert_eq!(transport.matches("ws.send(Message::Text(").count(), 1);
+        let runtime = transport.split("fn socket_loop(app:").nth(1).unwrap();
+        assert!(
+            runtime.find("open_url(&app_token)?").unwrap()
+                < runtime.find("tungstenite::connect(url)").unwrap()
+        );
         assert!(
             !reaction.contains("apps.connections.open")
                 && !reaction.contains("tungstenite::connect")

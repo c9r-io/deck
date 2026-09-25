@@ -429,6 +429,7 @@ fn main() {
             inbound_channel::channel_ack,
             inbound_channel::channel_status,
             slack_transport::slack_connection_status,
+            slack_transport::slack_legacy_credentials_clear,
             slack_api::slack_manifest,
             inbound_channel::channel_smoke_seed,
             connector::connector_status,

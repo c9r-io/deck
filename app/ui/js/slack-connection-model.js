@@ -8,7 +8,7 @@ export function slackConnectionView(status, settings) {
   const channel = !s.botPresent && (s.legacyPresent || Number(s.channelRules) > 0) ? 'upgrade-required'
     : !channelEnabled && !s.botPresent ? 'not-enabled'
       : !s.appPresent ? 'needs-app'
-      : !s.appValid ? 'invalid'
+      : !s.appValid ? (s.appError ? 'invalid' : 'unverified')
       : !s.botPresent ? 'upgrade-required'
         : !s.botValid ? (s.botError === 'scope' ? 'needs-scopes' : 'invalid')
           : !s.workspaceMatch ? 'workspace-mismatch'

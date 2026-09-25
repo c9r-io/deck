@@ -1099,6 +1099,9 @@ fn set_secret(slot: &str, value: &str) -> Result<(), DeckError> {
             },
         )
     })?;
+    if slot == keychain::Slot::SlackAppToken {
+        crate::slack_transport::app_credential_saved(!clearing);
+    }
     applog(&format!(
         "[inbound] credential {}",
         if clearing { "cleared" } else { "stored" }
@@ -1200,6 +1203,25 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::fs;
+
+    #[test]
+    fn app_candidate_is_verified_before_canonical_keychain_write() {
+        let source = include_str!("inbound.rs");
+        let body = source
+            .split("fn set_secret(slot:")
+            .nth(1)
+            .unwrap()
+            .split("#[tauri::command]\npub(crate) fn inbound_check_now")
+            .next()
+            .unwrap();
+        let verify = body.find("slack_transport::open_url(trimmed)").unwrap();
+        let write = body.find("keychain::set(slot, value)").unwrap();
+        assert!(verify < write);
+        assert!(
+            body[verify..write].contains("})?;"),
+            "verification errors return before write"
+        );
+    }
 
     /// Serializes the tests that redirect `TEST_DOC_PATH` or replace `RT`.
     static TEST_LOCK: Mutex<()> = Mutex::new(());

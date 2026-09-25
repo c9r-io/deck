@@ -32,7 +32,23 @@ test('unified and channel-only status reconstruct from credentials and switches'
   assert.equal(slackConnectionView(unified, settings(false,true)).reaction, 'off');
   assert.equal(slackConnectionView({ ...unified, userPresent:false, userValid:false }, settings(false,true)).channel, 'ready');
   assert.equal(slackConnectionView({ ...unified, appPresent:false }, settings(true,true)).channel, 'needs-app');
-  assert.equal(slackConnectionView({ ...unified, appValid:false }, settings(true,true)).channel, 'invalid');
+  assert.equal(slackConnectionView({ ...unified, appValid:false }, settings(true,true)).channel, 'unverified');
+  assert.equal(slackConnectionView({ ...unified, appValid:false, appError:'auth' }, settings(true,true)).channel, 'invalid');
   assert.equal(slackConnectionView({ ...unified, legacyPresent:true }, settings(true,true)).legacyNotice, 'retained');
   assert.equal(slackConnectionView({ ...unified, legacyPresent:true }, settings(true,false)).legacyNotice, 'retained');
+});
+
+test('legacy cleanup visibility and capability state remain independent', () => {
+  const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+  assert.match(html, /id="set-slack-legacy-clear"[^>]*hidden/);
+  const unified = { ...base, botPresent: true, botValid: true, channelRules: 2 };
+  const ready = slackConnectionView({ ...unified, legacyPresent: true }, settings(true, true));
+  const cleared = slackConnectionView(unified, settings(true, true));
+  assert.equal(ready.legacy, true);
+  assert.equal(cleared.legacy, false);
+  assert.equal(cleared.legacyNotice, null);
+  assert.equal(cleared.reaction, 'ready');
+  assert.equal(cleared.channel, 'ready');
+  assert.equal(cleared.socket, 'connected');
+  assert.equal(slackConnectionView({ ...base, appPresent: false, botPresent: false, channelRules: 2 }, settings(true, true)).channel, 'upgrade-required');
 });

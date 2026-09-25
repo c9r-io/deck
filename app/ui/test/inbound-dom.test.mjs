@@ -151,6 +151,7 @@ test('the Board queue transaction preserves a frozen plan after a partial backen
 
 test('a legacy staged Channel inbox item drains without any Slack credentials', async () => {
   const { drainChannel } = await import('../js/inbound.js');
+  const { removeLegacySlackCredentials } = await import('../js/slack-legacy-cleanup.js');
   const staged = { id: 'default/T1/E1/rule', operationKey: 'channel:default/T1/E1/rule', groupKey: 'default/T1/C1/rule',
     connectionId: 'default', workspaceId: 'T1', eventId: 'E1', ruleId: 'rule', channelId: 'C1',
     messageTs: '1.0', occurredAt: Math.floor(Date.now() / 1000), senderUserId: 'U1', body: 'incident',
@@ -158,6 +159,18 @@ test('a legacy staged Channel inbox item drains without any Slack credentials', 
   store.cards = [];
   store.projects = [{ id: 'P1', columns: [{ id: 'C1' }], templates: [{ name: 'triage', steps: ['Inspect {{msg.text}}'] }] }];
   const calls = [];
+  const credentials = { legacyBot: true, legacyApp: true, canonicalUser: false, canonicalBot: false, canonicalApp: false };
+  await removeLegacySlackCredentials({
+    confirm: async () => true,
+    invoke: async command => {
+      calls.push(command);
+      credentials.legacyBot = false;
+      credentials.legacyApp = false;
+    },
+    refresh: async () => calls.push('refresh'),
+    notice: () => {},
+  });
+  assert.deepEqual(credentials, { legacyBot: false, legacyApp: false, canonicalUser: false, canonicalBot: false, canonicalApp: false });
   provider.createStarted = async card => {
     calls.push('board-persist');
     const saved = { ...card, session: 'deck-test' };
@@ -177,6 +190,7 @@ test('a legacy staged Channel inbox item drains without any Slack credentials', 
     if (cmd === 'channel_pending') { if (read) return []; read = true; return [staged]; }
   };
   await drainChannel();
+  assert.ok(calls.indexOf('channel_pending') > calls.indexOf('slack_legacy_credentials_clear'), calls.join(','));
   assert.ok(calls.indexOf('board-persist') >= 0, calls.join(','));
   assert.ok(calls.indexOf('channel_ack') > calls.indexOf('board-persist'), calls.join(','));
   assert.equal(store.cards[0].origin.source, 'channel');

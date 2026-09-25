@@ -6,6 +6,8 @@ For an existing Reaction setup, use **Settings → Slack → Enable Channel Moni
 
 For a new Channel-only setup, create one Deck Slack app from the unified manifest, install it, store `xoxb` and `xapp`, and add its bot to each monitored channel. `xoxp` is needed only for badge automations. Older standalone Channel Monitor credentials remain in Keychain but are not used for new events. Already staged inbox entries still drain through the normal Board transaction and `channel_ack`; no credential migration silently merges Apps.
 
+After completing the Unified Slack upgrade, older standalone Channel Monitor users can explicitly choose **Remove legacy Slack credentials** in Settings. Removing legacy credentials does not remove Channel rules, staged messages, cards, or history.
+
 Create rules from a project's **Automations** drawer. Every rule requires explicit channel IDs and at least one allowed user or bot ID. Matching is deterministic: a substring, a keyword list, or a regular expression. A named regular-expression capture can provide an incident key. Cards are grouped only by connection, workspace, channel, rule, and that optional captured value; deck does not infer incidents with AI. Thread replies can be included or excluded.
 
 The first matching event creates a card and stores the original message in its scratchpad before the event is acknowledged. The configured template is expanded and frozen into a durable initial queue plan. Restarts retry the same operation IDs, so an accepted step is not enqueued twice. Later matching events add immutable scratchpad entries and are never sent automatically. The directory and command always come from the saved rule, never from message text.

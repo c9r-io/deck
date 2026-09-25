@@ -37,6 +37,7 @@ import { activateTheme } from './theme.js';
 import { applyFontScale } from './font-scale.js';
 import { newlyPairedDevice } from './connector-model.js';
 import { slackConnectionView } from './slack-connection-model.js';
+import { removeLegacySlackCredentials } from './slack-legacy-cleanup.js';
 import { NOTIFY_STATUS_WORDS, notifyNeedsAgentStatus, notifyStatusKey } from './notify-model.js';
 import { SETTINGS_SECTIONS, isSettingsSection, searchSettings, sectionItems, settingItem } from './settings-search-model.js';
 import {
@@ -537,6 +538,7 @@ const SLACK_STATE_KEYS = Object.freeze({
   'upgrade-required': 'settings.slackState.upgrade-required',
   'needs-app': 'settings.slackState.needs-app', 'needs-user': 'settings.slackState.needs-user',
   'needs-scopes': 'settings.slackState.needs-scopes', invalid: 'settings.slackState.invalid',
+  unverified: 'settings.slackState.unverified',
   'workspace-mismatch': 'settings.slackState.workspace-mismatch',
 });
 
@@ -599,6 +601,7 @@ export async function renderInboundSettings() {
   $('set-slack-legacy').hidden = !view.legacyNotice;
   $('set-slack-legacy').textContent = view.legacyNotice
     ? t(view.legacyNotice === 'retained' ? 'settings.channelLegacyRetained' : 'settings.channelLegacy') : '';
+  $('set-slack-legacy-clear').hidden = !view.legacy;
   $('set-channel-bot').value = '';
   $('set-channel-bot').placeholder = connection?.botPresent ? t('settings.inboundTokenSaved') : 'xoxb-…';
   $('set-channel-bot-clear').hidden = !connection?.botPresent;
@@ -859,6 +862,15 @@ async function clearInboundSecret(slot) {
 
 async function storeChannelSecret() { await storeInboundSecret('slack-bot-token', 'set-channel-bot'); }
 async function clearChannelSecret() { await clearInboundSecret('slack-bot-token'); }
+
+async function clearLegacySlackCredentials() {
+  await removeLegacySlackCredentials({
+    confirm: () => confirmDangerDialog(t('settings.channelLegacyClearConfirm'), t('settings.channelLegacyClear')),
+    invoke: inv,
+    refresh: renderInboundSettings,
+    notice: outcome => toast(t(outcome === 'cleared' ? 'settings.channelLegacyCleared' : 'error.channelLegacyClear')),
+  });
+}
 
 /* MCP authorization must never inherit an invisible global project choice.
    This dialog starts with no selection and requires an explicit directory.
@@ -1154,7 +1166,7 @@ export function initSettings() {
     const enabled = $('set-channel-enabled').checked;
     if (enabled) {
       const status = await inv('slack_connection_status').catch(() => null);
-      if (!status?.botValid || !status?.appValid || !status?.workspaceMatch) {
+      if (!status?.botValid || !status?.appPresent || !status?.workspaceMatch) {
         $('set-channel-enabled').checked = false;
         channelUpgradeOpen = true;
         $('set-channel-upgrade-steps').hidden = false;
@@ -1169,6 +1181,7 @@ export function initSettings() {
   $('set-channel-manifest').onclick = async () => { try { $('set-channel-manifest-text').value = await inv('slack_manifest'); $('set-channel-manifest-text').hidden = false; $('set-channel-manifest-text').select(); } catch (_) { toast(t('error.inboundSetup')); } };
   $('set-channel-bot').addEventListener('change', () => storeChannelSecret());
   $('set-channel-bot-clear').onclick = () => clearChannelSecret();
+  $('set-slack-legacy-clear').onclick = clearLegacySlackCredentials;
 
   $('set-inbound-setup').onclick = async () => {
     try { await inv('inbound_setup', { source: 'slack' }); }
