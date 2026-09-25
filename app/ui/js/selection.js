@@ -106,6 +106,10 @@
 // Lifecycle and copy events share numeric run/pane/selection IDs, retained
 // after cancellation. Pointer revokes add focus/hit flags; empty ranges add
 // cell deltas. Finish errors belong to selection events, never copy attempts.
+// A separate bounded forensic summary retains the last gesture, Deck lease
+// outcome and native range outcome. On copy without a source it emits only
+// closed reasons, numeric IDs and relative cell deltas; it never influences
+// ownership, snapshot bytes or clipboard routing.
 import { duev, inv, uev } from './state.js';
 import { toast } from './dialogs.js';
 import {
@@ -124,11 +128,13 @@ import {
   terminalSelectionOverlayBands,
 } from './pure.js';
 import { formatNumber, t } from './i18n.js';
+import { createSelectionForensics } from './selection-forensics.js';
 
 // Numeric IDs are local to this webview lifetime; no session/content identity.
 const traceRun = Date.now();
 let nextPaneTrace = 1;
 let nextSelectionToken = 1;
+let nextGestureTrace = 1;
 const controllers = new Set();
 let physicalPointerOwner = null;
 
@@ -145,9 +151,13 @@ function terminalSelectionController(pane, onModeChange) {
   const tracePane = nextPaneTrace++;
   let lastSelectionToken = 0;
   let lastGesture = null;
+  const forensics = createSelectionForensics();
+  let pendingRevokerGestureId = 0;
   let lastPointerUpAt = 0; // release on this pane, not an unrelated split
   let lastWindowFocusAt = 0;
-  const traceContext = () => ({ run: traceRun, pane: tracePane, selection: token || lastSelectionToken });
+  const traceContext = () => ({ run: traceRun, pane: tracePane,
+    selection: token || lastSelectionToken,
+    gesture: forensics.snapshot().gesture?.id || 0 });
   let gesture = null;
   let selected = false;
   let frozen = false;
@@ -207,13 +217,16 @@ function terminalSelectionController(pane, onModeChange) {
   const dsevPair = (detail, a, b) => duev('terminal-selection', detail, clampCount(a), clampCount(b), traceContext());
 
   const logNativeEnd = (ended, label) => {
+    forensics.nativeOutcome(label || 'adopted', ended.token, ended.gestureId);
     if (label) uev('terminal-selection', label, ended.rows, Math.min(Date.now() - ended.at, 3600000),
-      { ...traceContext(), selection: ended.token });
+      { ...traceContext(), selection: ended.token, gesture: ended.gestureId });
   };
   const endNative = label => {
     const ended = native;
     native = null;
-    if (ended) logNativeEnd(ended, label);
+    if (ended) {
+      logNativeEnd(ended, label);
+    }
   };
   /* Every clear Deck issues goes through here so the selection-change handler
      can tell it apart from one xterm made on its own. */
@@ -421,15 +434,19 @@ function terminalSelectionController(pane, onModeChange) {
     run();
   };
 
-  const promote = () => {
+  const promote = (source = 'pointer') => {
     if (!gesture || gesture.promoted || gesture.native || disposed) return;
     const anchor = terminalCell(pane, gesture.startX, gesture.startY);
     const active = terminalCell(pane, gesture.x, gesture.y);
     if (!anchor || !active) return;
     if (anchor.row === active.row && anchor.col === active.col) return;
     gesture.promoted = true;
+    forensics.promote(source);
+    const promotionEvent = 'event-promote-' + source;
+    duev('terminal-selection', promotionEvent, null, null, traceContext());
     ownerTrace.promoted = 1;
     token = nextSelectionToken++;
+    forensics.selectionOutcome('promoted-pending', token, gesture.traceId);
     lastSelectionToken = token;
     frozen = false;
     promotedAt = Date.now();
@@ -438,6 +455,7 @@ function terminalSelectionController(pane, onModeChange) {
     lastSentCell = null;
     sev('promote', Math.abs(active.row - anchor.row) + 1);
     const currentToken = token;
+    const gestureTraceId = gesture.traceId;
     const generation = model.begin({ row: anchor.row, col: anchor.col });
     model.move({ row: active.row, col: active.col });
     setMode(true);
@@ -458,6 +476,8 @@ function terminalSelectionController(pane, onModeChange) {
     }).catch(() => {
       if (currentToken === token && model.snapshot().generation === generation) {
         sev('start-failed');
+        forensics.gestureOutcome(gestureTraceId, 'promoted-start-failed');
+        forensics.selectionOutcome('promoted-start-failed', currentToken, gestureTraceId);
         cancel(false, null);
         toast(t('error.selectionStart'));
       }
@@ -467,6 +487,9 @@ function terminalSelectionController(pane, onModeChange) {
   const pointerDown = event => {
     if (disposed || event.button !== 0) return;
     if (!terminalCell(pane, event.clientX, event.clientY)) return;
+    const traceId = nextGestureTrace;
+    nextGestureTrace = nextGestureTrace === 0xffffffff ? 1 : nextGestureTrace + 1;
+    pendingRevokerGestureId = traceId;
     pressAt = Date.now();
     pressDetail = Math.max(0, Math.min(9, event.detail || 0));
     /* This pointerdown is about to revoke a live selection (the paired
@@ -498,16 +521,22 @@ function terminalSelectionController(pane, onModeChange) {
     // Keep the physical compatibility sequence trusted for click/link. A
     // later terminal-cell transition explicitly transfers ownership to tmux.
     cancel(false, 'pointer');
+    pendingRevokerGestureId = 0;
     ownerTrace = {
       pointerDown: 1, promoted: 0, trustedClick: 0,
       compatibilityBlocked: 0, ended: 0,
     };
     gesture = {
       pointerId: event.pointerId,
+      traceId,
       startX: event.clientX, startY: event.clientY,
       x: event.clientX, y: event.clientY,
       promoted: false, native: event.detail === 2 || event.detail === 3, nativeDragged: false,
     };
+    forensics.begin({ id: traceId, cell: terminalCell(pane, event.clientX, event.clientY),
+      detail: event.detail, native: gesture.native });
+    duev('terminal-selection', 'event-down', Math.max(0, Math.min(9, event.detail || 0)),
+      gesture.native ? 1 : 0, traceContext());
     physicalPointerOwner = api;
   };
 
@@ -517,6 +546,9 @@ function terminalSelectionController(pane, onModeChange) {
     if (!gesture || gesture.promoted || event.button !== 0) return;
     pressDetail = Math.max(0, Math.min(9, event.detail || 0));
     gesture.native = event.detail === 2 || event.detail === 3;
+    forensics.nativeDetail(event.detail, gesture.native);
+    duev('terminal-selection', 'event-mousedown', Math.max(0, Math.min(9, event.detail || 0)),
+      gesture.native ? 1 : 0, traceContext());
   };
 
   const noteNativeDrag = () => {
@@ -532,11 +564,15 @@ function terminalSelectionController(pane, onModeChange) {
     if (!gesture || event.pointerId !== gesture.pointerId) return;
     gesture.x = event.clientX;
     gesture.y = event.clientY;
+    forensics.observe('pointer', terminalCell(pane, event.clientX, event.clientY));
+    const pointerDelta = forensics.snapshot().gesture?.pointer;
+    if (pointerDelta) duev('terminal-selection', 'event-pointer',
+      pointerDelta.row, pointerDelta.col, traceContext());
     noteNativeDrag();
     // xterm selects terminal cells, not CSS-pixel distances. Promote as soon
     // as the pointer enters a different cell so a short horizontal drag near
     // a glyph boundary follows the exact same tmux path as a multi-row drag.
-    if (!gesture.promoted) promote();
+    if (!gesture.promoted) promote('pointer');
     if (gesture.promoted) {
       event.preventDefault();
       event.stopImmediatePropagation();
@@ -550,17 +586,24 @@ function terminalSelectionController(pane, onModeChange) {
     const ended = gesture;
     ended.x = event.clientX ?? ended.x;
     ended.y = event.clientY ?? ended.y;
+    forensics.upCoordinates(Number.isFinite(event.clientX) && Number.isFinite(event.clientY));
+    forensics.observe('up', terminalCell(pane, ended.x, ended.y));
+    const upDelta = forensics.snapshot().gesture?.up;
+    if (upDelta) duev('terminal-selection', 'event-up', upDelta.row, upDelta.col, traceContext());
     // WebKit can coalesce the final pointermove of a quick drag. Re-evaluate
     // the pointerup cell before deciding this was a click; promote() already
     // leaves same-cell clicks and native double/triple-click selection alone.
     noteNativeDrag();
-    if (!ended.promoted) promote();
+    if (!ended.promoted) promote('up');
     clearEdgeTimer();
     releaseCapture(ended);
     gesture = null;
     if (physicalPointerOwner === api) physicalPointerOwner = null;
     ownerTrace.ended = 1;
     lastGesture = { at: Date.now(), promoted: ended.promoted };
+    forensics.end(ended.nativeDragged);
+    duev('terminal-selection', 'event-end', ended.promoted ? 1 : 0,
+      ended.nativeDragged ? 1 : 0, traceContext());
     if (!ended.promoted) {
       if (ended.nativeDragged) suppressLinkUntil = Date.now() + 250;
       ownerTrace.trustedClick = ended.nativeDragged ? 0 : 1;
@@ -595,6 +638,8 @@ function terminalSelectionController(pane, onModeChange) {
       if (currentToken !== token || disposed || model.snapshot().generation !== generation) return;
       lastStatus = status;
       frozen = true;
+      forensics.gestureOutcome(ended.traceId, 'finished-and-live');
+      forensics.selectionOutcome('finished-and-live', currentToken, ended.traceId);
       sev('finish-ok', selectionStatusRows(status));
       /* The one number that names the reported "the highlight is not what I
          dragged over" symptom: how many rows the pointer crossed versus how
@@ -615,9 +660,13 @@ function terminalSelectionController(pane, onModeChange) {
       if (currentToken === token && !disposed && selectionFinishIsEmpty(error)) {
         if (dragAnchor && finalCell) sevPair('empty-range',
           Math.abs(finalCell.row - dragAnchor.row), Math.abs(finalCell.col - dragAnchor.col));
+        forensics.gestureOutcome(ended.traceId, 'promoted-empty');
+        forensics.selectionOutcome('promoted-empty', currentToken, ended.traceId);
         cancel(false, 'empty');
       } else if (currentToken === token && !disposed) {
         sev('finish-failed', selectionFinishFailureReason(error));
+        forensics.gestureOutcome(ended.traceId, 'promoted-finish-failed');
+        forensics.selectionOutcome('promoted-finish-failed', currentToken, ended.traceId);
         cancel(false, null);
         toast(t('error.selectionChanged'));
       }
@@ -636,15 +685,24 @@ function terminalSelectionController(pane, onModeChange) {
   };
 
   const compatibilityMove = event => {
-    if (!gesture || physicalPointerOwner !== api) return;
+    if (!gesture || physicalPointerOwner !== api) {
+      const late = forensics.postUpMousemove(terminalCell(pane, event.clientX, event.clientY));
+      if (late) duev('terminal-selection', 'event-post-up-mousemove', late.row, late.col,
+        traceContext());
+      return;
+    }
     // macOS WKWebView can emit horizontal drag motion only as compatibility
     // mousemove events even though pointerdown/pointerup were delivered. Use
     // the same public cell transition as pointerMove before xterm's bubbling
     // listener sees the event, so one-row and multi-row drags share ownership.
     gesture.x = event.clientX;
     gesture.y = event.clientY;
+    forensics.observe('compat', terminalCell(pane, event.clientX, event.clientY));
+    const compatDelta = forensics.snapshot().gesture?.compat;
+    if (compatDelta) duev('terminal-selection', 'event-compat',
+      compatDelta.row, compatDelta.col, traceContext());
     noteNativeDrag();
-    if (!gesture.promoted) promote();
+    if (!gesture.promoted) promote('compat');
     if (!gesture.promoted) return;
     ownerTrace.compatibilityBlocked++;
     event.preventDefault();
@@ -660,6 +718,14 @@ function terminalSelectionController(pane, onModeChange) {
     const oldToken = token;
     const hadSelection = selected || !!gesture?.promoted;
     if (hadSelection && reason) sev(`cancel-${reason}`, frozen ? 1 : 0);
+    if (gesture) forensics.abort();
+    if (hadSelection && reason && reason !== 'empty') {
+      const kind = ['pointer', 'pointer-cancel', 'input', 'focus', 'live', 'exit',
+        'dispose', 'leave', 'blur', 'hidden', 'escape'].includes(reason)
+        ? `revoked-${reason}` : 'revoked-other';
+      forensics.selectionOutcome(kind, oldToken,
+        forensics.snapshot().gesture?.id || 0, pendingRevokerGestureId);
+    }
     const currentGesture = gesture;
     clearEdgeTimer();
     releaseCapture(currentGesture);
@@ -712,6 +778,8 @@ function terminalSelectionController(pane, onModeChange) {
     const { anchor, active } = cells;
 
     token = nextSelectionToken++;
+    forensics.selectionOutcome('promoted-pending', token,
+      forensics.snapshot().gesture?.id || 0);
     lastSelectionToken = token;
     frozen = false;
     promotedAt = Date.now();
@@ -734,6 +802,8 @@ function terminalSelectionController(pane, onModeChange) {
           || model.snapshot().generation !== generation) return false;
       lastStatus = status;
       frozen = true;
+      forensics.selectionOutcome('finished-and-live', currentToken,
+        forensics.snapshot().gesture?.id || 0);
       sev('freeze-ok', selectionStatusRows(status));
       clearXtermSelection('adopted');
       renderOverlay();
@@ -741,6 +811,8 @@ function terminalSelectionController(pane, onModeChange) {
     } catch (error) {
       if (currentToken === token && !disposed) {
         sev('freeze-failed', selectionFinishFailureReason(error));
+        forensics.selectionOutcome('promoted-finish-failed', currentToken,
+          forensics.snapshot().gesture?.id || 0);
         await cancel(true, null);
       }
       return false;
@@ -841,10 +913,52 @@ function terminalSelectionController(pane, onModeChange) {
     copy, cancel, dispose, freezeNative, prepareInput, resize, scroll, traceContext,
     // Only on an unsuccessful copy: no per-click log volume. Distinguishes
     // a never-promoted click from a promoted drag that was later revoked.
-    traceUnavailable: context => uev('terminal-selection', 'copy-empty-gesture',
-      gesture ? 3 : lastGesture ? (lastGesture.promoted ? 2 : 1) : 0,
-      gesture ? Math.min(Date.now() - pressAt, 3600000)
-        : lastGesture ? Math.min(Date.now() - lastGesture.at, 3600000) : -1, context),
+    traceUnavailable: context => {
+      const snapshot = forensics.snapshot();
+      const g = snapshot.gesture, s = snapshot.selection, n = snapshot.native;
+      const reason = forensics.reason();
+      const copyReasonEvent = 'copy-no-selection-' + reason;
+      uev('terminal-selection', 'copy-empty-gesture',
+        gesture ? 3 : lastGesture ? (lastGesture.promoted ? 2 : 1) : 0,
+        gesture ? Math.min(Date.now() - pressAt, 3600000)
+          : lastGesture ? Math.min(Date.now() - lastGesture.at, 3600000) : -1, context);
+      uev('terminal-selection', copyReasonEvent,
+        g ? Math.min(Date.now() - g.at, 3600000) : -1,
+        s ? Math.min(Date.now() - s.at, 3600000) : -1,
+        { ...context, gesture: g?.id || 0 });
+      if (g) {
+        const flags = (g.sawPointerMove ? 1 : 0) | (g.sawCompatibilityMove ? 2 : 0)
+          | (g.pointerCrossed ? 4 : 0) | (g.compatCrossed ? 8 : 0)
+          | (g.upCrossed ? 16 : 0) | (g.native ? 32 : 0)
+          | (g.nativeDragged ? 64 : 0) | (g.promoted ? 128 : 0)
+          | (g.upCoordinatesPresent ? 256 : 0);
+        uev('terminal-selection', 'copy-gesture-flags', flags, g.detail,
+          { ...context, gesture: g.id });
+        for (const source of ['pointer', 'compat', 'up']) {
+          const d = g[source];
+          if (d) {
+            const movementEvent = 'copy-gesture-' + source;
+            uev('terminal-selection', movementEvent, d.row, d.col, { ...context, gesture: g.id });
+          }
+        }
+        if (g.postUpMousemove) uev('terminal-selection', 'copy-gesture-post-up-mousemove',
+          g.postUpMousemove.row, g.postUpMousemove.col, { ...context, gesture: g.id });
+        if (g.promotionSource) {
+          const promotionEvent = 'copy-promotion-' + g.promotionSource;
+          uev('terminal-selection', promotionEvent, null, null, { ...context, gesture: g.id });
+        }
+      }
+      if (s) {
+        const selectionEvent = 'copy-selection-' + s.kind;
+        uev('terminal-selection', selectionEvent, s.revokerGestureId, s.gestureId,
+          { ...context, selection: s.token, gesture: s.revokerGestureId || s.gestureId });
+      }
+      if (n) {
+        const nativeEvent = 'copy-native-' + n.kind;
+        uev('terminal-selection', nativeEvent, Math.min(Date.now() - n.at, 3600000), null,
+          { ...context, selection: n.token, gesture: n.gestureId });
+      }
+    },
     render: renderOverlay, writeParsed,
     hasSelection: () => selected,
     hasNativeSelection: () => !!pane.term.hasSelection(),
@@ -862,6 +976,8 @@ function terminalSelectionController(pane, onModeChange) {
       frozen,
     }),
     idle: () => opChain.catch(() => {}),
+    forensicSnapshot: () => forensics.snapshot(),
+    forensicReason: () => forensics.reason(),
   };
   // A physical drag begins on xterm so clicks and double/triple-clicks stay
   // native. Once Deck promotes that gesture, any late compatibility mouse
@@ -884,7 +1000,10 @@ function terminalSelectionController(pane, onModeChange) {
           at: Date.now(),
           rows: nativeSelectionRows(pane.term.getSelectionPosition?.()),
           buffer: pane.term.buffer.active.type,
+          gestureId: forensics.snapshot().active || Date.now() - lastPointerUpAt < 150
+            ? forensics.snapshot().gesture?.id || 0 : 0,
         };
+        forensics.nativeOutcome('native-live', native.token, native.gestureId);
         uev('terminal-selection', 'native-select', native.rows,
           Date.now() - pressAt < 1000 ? pressDetail : 0, traceContext());
       }

@@ -196,6 +196,7 @@ const KEY_CLASSES: &[&str] = &[
 /// recorded). Process names themselves stay out of the log.
 const FG_CLASSES: &[&str] = &["no-card", "no-fg", "agent", "editor", "repl", "other"];
 const SMOKE_CHECKS: &[&str] = &[
+    "selection-events-ready",
     "resume-capture-0",
     "resume-capture-1",
     "resume-priority",
@@ -224,6 +225,10 @@ const SMOKE_CHECKS: &[&str] = &[
     "selection-repeat",
     "selection-blur",
     "selection-empty-click",
+    "selection-forensic-compat",
+    "selection-forensic-up",
+    "selection-forensic-revoke",
+    "selection-forensic-empty",
     "selection-copy-unavailable",
     "selection-scroll-stable",
     "selection-scroll-cursor",
@@ -405,6 +410,64 @@ const SELECTION_EVENTS: &[&str] = &[
     "pointer-context",
     "empty-range",
     "copy-empty-gesture",
+    "copy-no-selection-no-gesture",
+    "copy-no-selection-gesture-active",
+    "copy-no-selection-gesture-cancelled",
+    "copy-no-selection-same-cell",
+    "copy-no-selection-native-gesture-no-range",
+    "copy-no-selection-native-range-ended",
+    "copy-no-selection-promoted-empty",
+    "copy-no-selection-promoted-start-failed",
+    "copy-no-selection-promoted-finish-failed",
+    "copy-no-selection-selection-revoked-pointer",
+    "copy-no-selection-selection-revoked-input",
+    "copy-no-selection-selection-revoked-focus",
+    "copy-no-selection-selection-revoked-lifecycle",
+    "copy-no-selection-selection-revoked-other",
+    "copy-gesture-flags",
+    "copy-gesture-pointer",
+    "copy-gesture-compat",
+    "copy-gesture-up",
+    "copy-gesture-post-up-mousemove",
+    "copy-promotion-pointer",
+    "copy-promotion-compat",
+    "copy-promotion-up",
+    "copy-selection-promoted-pending",
+    "copy-selection-finished-and-live",
+    "copy-selection-promoted-empty",
+    "copy-selection-promoted-start-failed",
+    "copy-selection-promoted-finish-failed",
+    "copy-selection-revoked-pointer",
+    "copy-selection-revoked-input",
+    "copy-selection-revoked-focus",
+    "copy-selection-revoked-live",
+    "copy-selection-revoked-exit",
+    "copy-selection-revoked-dispose",
+    "copy-selection-revoked-leave",
+    "copy-selection-revoked-blur",
+    "copy-selection-revoked-hidden",
+    "copy-selection-revoked-escape",
+    "copy-selection-revoked-pointer-cancel",
+    "copy-selection-revoked-other",
+    "copy-native-live",
+    "copy-native-adopted",
+    "copy-native-native-end-pointer",
+    "copy-native-native-end-input",
+    "copy-native-native-end-output",
+    "copy-native-native-end-buffer",
+    "copy-native-native-end-deck",
+    "copy-native-native-end-dispose",
+    "copy-native-native-end-other",
+    "event-down",
+    "event-mousedown",
+    "event-pointer",
+    "event-compat",
+    "event-up",
+    "event-promote-pointer",
+    "event-promote-compat",
+    "event-promote-up",
+    "event-end",
+    "event-post-up-mousemove",
     "promote",
     "span-mismatch",
     "update-rtt",
@@ -587,6 +650,8 @@ pub(crate) struct TerminalEventContext {
     pane: u32,
     selection: u32,
     #[serde(default)]
+    gesture: u32,
+    #[serde(default)]
     attempt: u32,
 }
 
@@ -604,8 +669,8 @@ fn format_scoped_ui_event(
     ) {
         if let Some(c) = context {
             line.push_str(&format!(
-                " run={} pane={} selection={} attempt={}",
-                c.run, c.pane, c.selection, c.attempt
+                " run={} pane={} selection={} gesture={} attempt={}",
+                c.run, c.pane, c.selection, c.gesture, c.attempt
             ));
         }
     }
@@ -938,12 +1003,14 @@ mod tests {
                     }
                 }
             }
-            for (at, _) in text.match_indices("'native-") {
-                let word: String = text[at + 1..]
-                    .chars()
-                    .take_while(|c| c.is_ascii_lowercase() || *c == '-')
-                    .collect();
-                pairs.push((file.clone(), "terminal-selection".into(), word));
+            for prefix in ["'native-end-", "'native-select'", "'native-cleared'"] {
+                for (at, _) in text.match_indices(prefix) {
+                    let word: String = text[at + 1..]
+                        .chars()
+                        .take_while(|c| c.is_ascii_lowercase() || *c == '-')
+                        .collect();
+                    pairs.push((file.clone(), "terminal-selection".into(), word));
+                }
             }
             for (at, _) in text.match_indices("'revoker-") {
                 let word: String = text[at + 1..]
@@ -1027,6 +1094,7 @@ mod tests {
             run: 123,
             pane: 2,
             selection: 0,
+            gesture: 7,
             attempt: 4,
         };
         for detail in LINK_EVENTS {
@@ -1036,7 +1104,7 @@ mod tests {
             assert_eq!(
                 line,
                 format!(
-                    "[ui] terminal-link {detail} a=18 b=5 run=123 pane=2 selection=0 attempt=4"
+                    "[ui] terminal-link {detail} a=18 b=5 run=123 pane=2 selection=0 gesture=7 attempt=4"
                 )
             );
             assert_eq!(crate::redact::sanitize_log(&line), line);
@@ -1046,7 +1114,7 @@ mod tests {
     #[test]
     fn terminal_context_is_numeric_scoped_and_preserves_redaction() {
         let c: TerminalEventContext = serde_json::from_value(serde_json::json!({
-            "run": 123456, "pane": 2, "selection": 19, "attempt": 3
+            "run": 123456, "pane": 2, "selection": 19, "gesture": 42, "attempt": 3
         }))
         .unwrap();
         let line =
@@ -1054,7 +1122,7 @@ mod tests {
                 .unwrap();
         assert_eq!(
             line,
-            "[ui] terminal-copy keydown-none run=123456 pane=2 selection=19 attempt=3"
+            "[ui] terminal-copy keydown-none run=123456 pane=2 selection=19 gesture=42 attempt=3"
         );
         // The disk/export sanitizer must preserve correlation IDs, unlike
         // credential-shaped keys such as `token`, which it intentionally hides.

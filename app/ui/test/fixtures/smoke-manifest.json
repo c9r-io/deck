@@ -1,6 +1,10 @@
 {
   "note": "Expected smoke-check lines per WKWebView smoke mode (app/src-tauri/src/main.rs dispatch; DECK_SMOKE_WKWEBVIEW=<mode>, run is the default). A rule {} means every occurrence has a positive a; \"a\": N means exactly N; \"a\": [..] means exactly those values once each; \"metric\" only requires presence; \"failureOnly\" names are emitted only on an exception path. \"terminal\" is the checkpoint that must come last with a=1 (null: the mode stays open for an external step). Judged by scripts/smoke-verdict; the name set equals diagnostics.rs SMOKE_CHECKS and each carrier's report literals.",
   "modes": {
+    "selection-events": {
+      "terminal": null,
+      "checks": { "selection-events-ready": {} }
+    },
     "run": {
       "terminal": "done",
       "checks": {
@@ -51,6 +55,10 @@
         "selection-down-scroll": {},
         "selection-drag-overlay": {},
         "selection-empty-click": {},
+        "selection-forensic-compat": {},
+        "selection-forensic-up": {},
+        "selection-forensic-revoke": {},
+        "selection-forensic-empty": {},
         "selection-gestures": {},
         "selection-live": {},
         "selection-markers": {},

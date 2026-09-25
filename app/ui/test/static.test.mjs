@@ -9,6 +9,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { en } from '../js/i18n/en.js';
+import { COPY_NO_SELECTION_REASONS, PROMOTION_SOURCES } from '../js/selection-forensics.js';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 const read = path => readFileSync(resolve(root, path), 'utf8');
@@ -235,4 +236,17 @@ test('clipboard and selection diagnostics are wired at every handoff', () => {
   for (const r of ['pointer', 'pointer-cancel', 'blur', 'hidden', 'input', 'escape',
     'focus', 'live', 'exit', 'leave', 'dispose'])
     assert.ok(reasons.has(r), `revoke reason never wired: ${r}`);
+});
+
+test('forensic reasons and movement sources are closed at the Rust log boundary', () => {
+  const rust = read('app/src-tauri/src/diagnostics.rs');
+  const selection = read('app/ui/js/selection.js');
+  for (const reason of COPY_NO_SELECTION_REASONS)
+    assert.ok(rust.includes(`"copy-no-selection-${reason}"`), reason);
+  for (const source of PROMOTION_SOURCES) {
+    assert.ok(rust.includes(`"copy-promotion-${source}"`), source);
+    assert.ok(rust.includes(`"copy-gesture-${source}"`) || source === 'up', source);
+  }
+  assert.match(selection, /forensics\.reason\(\)/);
+  assert.doesNotMatch(read('app/ui/js/selection-forensics.js'), /getSelection\(|terminal_selection_copy|clipboard|session/);
 });

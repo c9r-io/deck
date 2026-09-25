@@ -50,6 +50,26 @@ const report = (name, ok, a = 0, b = 0) => {
     a: ok ? Math.trunc(a || 1) : -Math.abs(Math.trunc(a || 1)), b: Math.trunc(b || 0),
   });
 };
+// Manual physical-input carrier: the selection coordinator's debug-only
+// event-* lines are the oracle. No synthetic PointerEvent is dispatched here.
+export async function verifySelectionEvents() {
+  let stage = 0;
+  try {
+    stage = 1;
+    await waitFor(() => provider.projects().length > 0);
+    const project = provider.projects()[0];
+    stage = 2;
+    const card = await provider.create({ projectId: project.id,
+      columnId: project.columns[0].id, title: 'selection events smoke', cmd: '', dir: '/tmp' });
+    render();
+    stage = 3;
+    await openSession(card.id);
+    stage = 4;
+    await report('selection-events-ready', !!panes.get(card.session)?.selection
+      && !!window.__DECK_DEBUG, 1,
+    (!!panes.get(card.session)?.selection ? 1 : 0) | (window.__DECK_DEBUG ? 2 : 0));
+  } catch (_) { await report('selection-events-ready', false, 1, stage); }
+}
 const metric = (name, a = 0, b = 0) => inv('ui_event', {
   code: 'smoke-check', detail: name, a: Math.trunc(a), b: Math.trunc(b),
 });
@@ -712,6 +732,9 @@ async function selectionSmoke(card) {
     && pane.selection.ownership().promoted === 1
     && !pane.selection.ownership().xtermSelection
     && singleText === singleExpected && !singleText.includes('\n');
+  await report('selection-forensic-compat',
+    pane.selection.forensicSnapshot().gesture?.promotionSource === 'compat'
+      && pane.selection.forensicSnapshot().gesture?.compatCrossed === true);
   const gestureMask = (tapPlain ? 1 : 0) | (doubleWord ? 2 : 0)
     | (tripleLine ? 4 : 0) | (rightUntouched && singleOwned ? 8 : 0)
     | (nativeCopiedByKey ? 16 : 0) | (singleCopiedByKey ? 32 : 0);
@@ -811,6 +834,41 @@ async function selectionSmoke(card) {
     && !pane.selection.hasSelection(), (blurKept ? 1 : 0) | (blurDragging ? 2 : 0)
     | (blurEndedDrag ? 4 : 0), repeatedText?.length || 0);
 
+  // The final pointerup alone can transfer ownership when WK coalesces moves.
+  screen.dispatchEvent(pointer('pointerdown', 79, cellCenter(2), rowY(singleAnchorRow)));
+  document.dispatchEvent(pointer('pointerup', 79, cellCenter(6), rowY(singleAnchorRow)));
+  await pane.selection.idle();
+  const upOnly = pane.selection.forensicSnapshot().gesture;
+  await report('selection-forensic-up', pane.selection.isFrozen()
+    && upOnly?.promotionSource === 'up' && upOnly.upCrossed === true
+    && upOnly.sawPointerMove === false && upOnly.sawCompatibilityMove === false);
+  await cancelTerminalSelection(pane);
+
+  // A later ordinary click revokes a real frozen lease; the failed copy must
+  // name the old token and the new gesture, never reuse the old bytes.
+  screen.dispatchEvent(pointer('pointerdown', 80, cellCenter(2), rowY(singleAnchorRow)));
+  document.dispatchEvent(pointer('pointermove', 80, cellCenter(6), rowY(singleAnchorRow)));
+  document.dispatchEvent(pointer('pointerup', 80, cellCenter(6), rowY(singleAnchorRow)));
+  await pane.selection.idle();
+  const beforeRevocation = pane.selection.forensicSnapshot().selection?.token;
+  const hadBand = pane.body.querySelectorAll('.deck-selection-band').length > 0;
+  screen.dispatchEvent(pointer('pointerdown', 81, cellCenter(2), rowY(singleAnchorRow)));
+  document.dispatchEvent(pointer('pointerup', 81, cellCenter(2), rowY(singleAnchorRow)));
+  const revoked = pane.selection.forensicSnapshot();
+  const beforeRevokedCopy = await inv('smoke_clipboard_metrics');
+  pane.term.textarea.dispatchEvent(new KeyboardEvent('keydown', {
+    key: 'c', metaKey: true, bubbles: true, cancelable: true,
+  }));
+  await pause(100);
+  const afterRevokedCopy = await inv('smoke_clipboard_metrics');
+  await report('selection-forensic-revoke', hadBand && !pane.selection.hasSelection()
+    && pane.body.querySelectorAll('.deck-selection-band').length === 0
+    && pane.selection.forensicReason() === 'selection-revoked-pointer'
+    && revoked.selection?.token === beforeRevocation
+    && revoked.selection?.revokerGestureId === revoked.gesture?.id
+    && beforeRevokedCopy.hash === afterRevokedCopy.hash);
+  await pause(1600); // the next unavailable-copy check expects its own notice
+
   /* A press that crosses into the next cell and is released back in its own
      is an empty range, i.e. a click: no selection and no failure toast. */
   const toastsBefore = document.querySelectorAll('#toasts .toast').length;
@@ -823,6 +881,10 @@ async function selectionSmoke(card) {
   const emptyToasts = document.querySelectorAll('#toasts .toast').length - toastsBefore;
   await report('selection-empty-click', emptyEnded && emptyToasts === 0
     && !pane.term.hasSelection(), emptyEnded ? 1 : 0, emptyToasts);
+  await report('selection-forensic-empty',
+    pane.selection.forensicReason() === 'promoted-empty'
+      && pane.selection.forensicSnapshot().gesture?.promotionSource === 'pointer'
+      && pane.selection.forensicSnapshot().gesture?.upCrossed === false);
 
   // Empty copies are consumed, give one notice even during key repeat, and
   // leave the actual system clipboard untouched (independent native oracle).

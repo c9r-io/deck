@@ -14,7 +14,7 @@ const manifest = JSON.parse(readFileSync(new URL('./fixtures/smoke-manifest.json
    --smoke-wkwebview mode into wk-smoke.mjs, whose verify* entries hand
    five of them to their own files. */
 const CARRIERS = {
-  'wk-smoke.mjs': ['run', 'settings', 'ambiguous', 'restart', 'buffer', 'channel', 'channel-fault', 'connector', 'connector-transport'],
+  'wk-smoke.mjs': ['run', 'settings', 'ambiguous', 'restart', 'buffer', 'channel', 'channel-fault', 'connector', 'connector-transport', 'selection-events'],
   'attention-smoke.mjs': ['attention'],
   'resume-smoke.mjs': ['resume'],
   'review-smoke.mjs': ['review', 'review-restart'],

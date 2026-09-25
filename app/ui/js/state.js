@@ -83,7 +83,7 @@ export const listen = (ev, cb) => window.__TAURI__
    the backend — never free-form strings, so no typed characters, IME text,
    command lines, prompt contents, paths or URLs can end up in a log. The
    backend whitelists the code and sanitizes the slug again. Terminal events
-   may also carry numeric run/pane/selection/attempt IDs, never session names. */
+   may also carry numeric run/pane/selection/gesture/attempt IDs, never session names. */
 export const uev = (code, detail, a, b, context) => inv('ui_event', {
   code,
   context: context ?? null,
