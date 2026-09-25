@@ -13,6 +13,8 @@
 // behind; a launch command sent by that start marks the card `launched`.
 // A project's optional defaults (`dir`, `cmd`; pure.js projectDefaults) feed
 // the Board's own entries only; `openProjectDefaults` edits them.
+// The session header scratchpad count follows the focused card, independently
+// of the drawer target; durable card updates refresh it even with the drawer shut.
 // Card scratchpad: a copy of an external entry is queued with `externalText`
 // so the native gate judges it; a source link in an entry opens only through
 // `open_target("url")` (links.rs `validate_open`), never by the webview.
@@ -616,6 +618,12 @@ const activeBufferCard = () => bufferTargetId ? provider.get(bufferTargetId) : n
 const bufferStillShows = (cardId, epoch) => bufferTargetId === cardId
   && epoch === bufferUiEpoch && !$('buffer-panel').hidden;
 
+function syncBufferCount() {
+  const card = state.view === 'session' ? provider.get(state.sessionId) : null;
+  const count = card?.buffer?.entries?.length || 0;
+  $('buffer-count').textContent = count ? String(count) : '';
+}
+
 export function closeBuffer() {
   bufferUiEpoch++;
   $('buffer-panel').hidden = true;
@@ -711,7 +719,6 @@ export function renderBufferUI() {
     body.append(meta, field, links, copies); row.append(check, body, del); list.appendChild(row);
   }
   $('buffer-empty').hidden = buffer.entries.length > 0;
-  $('buffer-count').textContent = buffer.entries.length ? String(buffer.entries.length) : '';
   $('buffer-note-count').textContent = t('buffer.noteCount', { count: formatNumber(buffer.entries.length) });
   syncBufferQueueButton();
 }
@@ -825,11 +832,13 @@ export function initBuffer() {
     event.preventDefault(); event.stopPropagation(); closeBuffer();
   });
   provider.subscribe((event, card) => {
+    if (event === 'list' && state.view === 'session' && card?.id === state.sessionId) syncBufferCount();
     if (event !== 'list' || card?.id !== bufferTargetId || $('buffer-panel').hidden) return;
     if (document.activeElement?.closest?.('#buffer-panel')) return;
     renderBufferUI();
   });
   window.addEventListener('deck-voice-session-changed', () => {
+    syncBufferCount();
     if (state.view === 'session' && bufferTargetId !== state.sessionId) closeBuffer();
     else renderBufferUI();
   });
@@ -1503,6 +1512,7 @@ export function render() {
   renderSidebar();
   if (state.view === 'board') renderBoard();
   else if (state.view === 'session') renderSessionView();
+  syncBufferCount();
   refreshAttention();
   panes.forEach(p => updatePaneChrome(provider.get(p.sid)));
   renderQueueUI();

@@ -236,6 +236,7 @@ body.side-collapsed .side-new .label { display: none; }
 .sess-head .btn, .sess-head .col-select { min-height: 2.15385rem; box-sizing: border-box; }
 .sess-head .btn { padding: 0 12px; }
 .sess-head .btn.icon-btn { width: 2.46154rem; padding: 0; justify-content: center; flex: none; font-size: 1rem; }
+.sess-head .icon-btn .cnt:empty { display: none; }
 .sess-head .mem-chip { min-height: 2.15385rem; display: inline-flex; align-items: center; box-sizing: border-box; padding: 0 9px; }
 
 #columns { flex: 1; display: flex; gap: 12px; padding: 4px 20px 20px; overflow-x: auto; min-height: 0; }

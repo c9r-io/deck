@@ -1942,6 +1942,78 @@ async function bufferSmoke(main, project, column) {
   await refreshQueue();
   $('buffer-close').click();
 
+  // The header describes the focused card even when the drawer has never
+  // opened for that card. Use the persisted mutation path, then real panes.
+  const blank = await provider.create({ projectId: project.id, columnId: column.id,
+    title: 'buffer-counter-empty', cmd: '', dir: '/tmp' });
+  const count = () => $('buffer-count').textContent;
+  await openSession(main.id);
+  const first = count() === '2' && $('buffer-panel').hidden;
+  await openSession(blank.id);
+  const empty = count() === '' && $('buffer-panel').hidden;
+  await openSession(main.id);
+  await report('buffer-counter-focus', first && empty && count() === '2'
+    && $('buffer-panel').hidden);
+
+  await openSession(blank.id);
+  const { addManual, deleteEntry } = await import('../js/buffer-model.js');
+  const mutationCounts = [];
+  for (let i = 0; i < 2; i++) {
+    const current = provider.get(blank.id);
+    const next = addManual(current.buffer, { id: `Ncounter${i}`, text: `Counter note ${i}`, now: Date.now() });
+    if (next.error) throw new Error('buffer counter fixture limit');
+    await provider.setBuffer(blank.id, current.buffer?.revision || 0, next.buffer);
+    mutationCounts.push(count());
+  }
+  for (let i = 0; i < 2; i++) {
+    const current = provider.get(blank.id);
+    await provider.setBuffer(blank.id, current.buffer.revision, deleteEntry(current.buffer, `Ncounter${i}`));
+    mutationCounts.push(count());
+  }
+  await report('buffer-counter-mutation', $('buffer-panel').hidden
+    && mutationCounts.join(',') === '1,2,1,');
+
+  await openSession(main.id);
+  const beforeDrawer = count() === '2' && $('buffer-panel').hidden;
+  $('buffer-btn').click();
+  const duringDrawer = count() === '2' && !$('buffer-panel').hidden;
+  $('buffer-close').click();
+  await report('buffer-counter-drawer', beforeDrawer && duringDrawer
+    && count() === '2' && $('buffer-panel').hidden);
+
+  await addSplit(main.id, 'row', false, blank.id);
+  const splitEmpty = state.sessionId === blank.id && count() === '';
+  focusPane(main.session);
+  const splitFull = state.sessionId === main.id && count() === '2';
+  focusPane(blank.session);
+  await report('buffer-counter-split', splitEmpty && splitFull
+    && state.sessionId === blank.id && count() === '');
+
+  const centered = (button, icon) => {
+    const buttonRect = button.getBoundingClientRect();
+    const iconRect = icon.getBoundingClientRect();
+    return Math.abs((iconRect.left + iconRect.right - buttonRect.left - buttonRect.right) / 2) < 1;
+  };
+  const glyph = document.createRange(); glyph.selectNodeContents($('buffer-btn').firstChild);
+  const queueCount = $('queue-cnt');
+  const queueBefore = queueCount.textContent;
+  queueCount.textContent = '';
+  const emptyGeometry = getComputedStyle($('buffer-count')).display === 'none'
+    && getComputedStyle(queueCount).display === 'none'
+    && centered($('buffer-btn'), glyph)
+    && centered($('queue-btn'), $('queue-btn').querySelector('svg'));
+  focusPane(main.session);
+  queueCount.textContent = '3';
+  const populatedGeometry = count() === '2'
+    && getComputedStyle($('buffer-count')).display !== 'none'
+    && getComputedStyle(queueCount).display !== 'none'
+    && $('buffer-count').getBoundingClientRect().width > 0
+    && queueCount.getBoundingClientRect().width > 0;
+  queueCount.textContent = queueBefore;
+  await report('buffer-counter-geometry', emptyGeometry && populatedGeometry);
+  await refreshQueue();
+  closePaneBySid(blank.id);
+
   const protectedCard = await provider.create({
     projectId: project.id, columnId: column.id, title: 'buffer-exit-smoke', cmd: '', dir: '/tmp',
   });
