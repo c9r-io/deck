@@ -42,6 +42,8 @@ mod resume;
 mod scheduler;
 mod session_runtime;
 mod shell_state;
+#[cfg(test)]
+mod signal_trace;
 mod slack_api;
 mod slack_transport;
 mod smoke_faults;
@@ -145,6 +147,7 @@ pub(crate) const SMOKE_ENTRIES: &[(&str, &str)] = &[
     ("connector", "m.verifyConnector()"),
     ("connector-transport", "m.verifyConnectorTransport()"),
     ("selection-events", "m.verifySelectionEvents()"),
+    ("signal-finish", "m.verifySignalFinish()"),
 ];
 
 fn smoke_entry(mode: &str) -> &'static str {
@@ -476,6 +479,7 @@ fn main() {
             smoke_faults::smoke_fault_set,
             smoke_faults::smoke_clipboard_metrics,
             smoke_faults::smoke_query_channel,
+            smoke_faults::smoke_signal_fixture,
         ])
         .build(tauri::generate_context!())
         .expect("error while building deck")

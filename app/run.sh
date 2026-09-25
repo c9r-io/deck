@@ -92,9 +92,13 @@ if [ -n "${DECK_SMOKE_DATA_DIR:-}" ]; then
   if [ -n "${DECK_SMOKE_WKWEBVIEW:-}" ]; then
     SMOKE_MODE=$DECK_SMOKE_WKWEBVIEW
     case "$SMOKE_MODE" in
-      run|restart|ambiguous|settings|attention|review|review-restart|voice|resume|buffer|buffer-narrow|channel|channel-fault|connector|connector-transport|selection-events) ;;
+      run|restart|ambiguous|settings|attention|review|review-restart|voice|resume|buffer|buffer-narrow|channel|channel-fault|connector|connector-transport|selection-events|signal-finish) ;;
       *) SMOKE_MODE=run ;;
     esac
+    # the signal-finish smoke's fake agent: a debug example, never bundled
+    if [ "$SMOKE_MODE" = signal-finish ]; then
+      cargo build --example signal_fixture
+    fi
     open -n "$APP" --args \
       --smoke-data-dir "$DECK_SMOKE_DATA_DIR" \
       --smoke-tmux-socket "$DECK_SMOKE_TMUX_SOCKET" \

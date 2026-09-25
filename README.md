@@ -277,10 +277,12 @@ chosen weekdays or days of the month, at a local time) or a **Slack badge**
 connection in Settings). When it fires, deck creates a fresh card in a
 column, launches the command and queues a template in a new session. A launch
 command may restore its own prior context; a clock runs one card at a time.
-With "close the card", the existing finish check requires an empty queue and
-a reported turn end (or, without a hook state, a shell in the foreground) for
-three consecutive polls, and no open pane showing the card. These observations
-do not prove business success or correlate a report to the final delivery.
+With "close the card", the finish check requires an empty queue and the
+agent program gone from the foreground (no hook state, a shell in front) for
+three consecutive polls, and no open pane showing the card. A reported turn
+end never closes a run — the agent may still be working in the background —
+so a live interactive agent keeps its card until it exits or you close it.
+These observations do not prove business success.
 Opted-in runs additionally require final human inspection. A clock slot that comes due while deck is not running still
 starts within 15 minutes (or, if you choose, the same day) and is otherwise
 recorded as missed; a rule you resume or reschedule starts from that

@@ -1284,21 +1284,27 @@ test('nextScheduleSlot is the first future slot, honouring since', () => {
   assert.equal(nextScheduleSlot({ unit: 'year', days: [], minute: 0 }, nineToday), null);
 });
 
-test('a close finish rule holds only for an unwatched, settled, drained run', () => {
+test('a close finish rule holds only for an unwatched, drained run whose program left the foreground', () => {
   const shell = /^-?(zsh|bash|fish|sh|dash)$/;
-  const base = { rule: { finish: 'close' }, queued: false, agent: 'turn-done', fg: 'claude', alive: true, stopped: false, viewing: false };
-  assert.ok(runFinishHolds(base, shell));
+  const base = { rule: { finish: 'close' }, queued: false, agent: undefined, fg: 'zsh', alive: true, stopped: false, viewing: false };
+  assert.ok(runFinishHolds(base, shell), 'no agent state and a shell in front: the program exited');
   assert.ok(!runFinishHolds({ ...base, viewing: true }, shell), 'an open pane is the user reading or talking to the run');
   assert.ok(!runFinishHolds({ ...base, queued: true }, shell), 'prompts still to deliver');
-  assert.ok(!runFinishHolds({ ...base, agent: 'working' }, shell));
-  assert.ok(!runFinishHolds({ ...base, agent: 'waiting' }, shell), 'a permission prompt is not done');
   assert.ok(!runFinishHolds({ ...base, alive: false }, shell));
   assert.ok(!runFinishHolds({ ...base, stopped: true }, shell));
   assert.ok(!runFinishHolds({ ...base, rule: { finish: 'keep' } }, shell));
   assert.ok(!runFinishHolds({ ...base, rule: null }, shell), 'a deleted rule closes nothing');
-  assert.ok(runFinishHolds({ ...base, agent: undefined, fg: 'zsh' }, shell), 'no agent reporting: the program left the foreground');
-  assert.ok(!runFinishHolds({ ...base, agent: undefined, fg: 'claude' }, shell), 'no agent reporting and the program still up');
-  assert.ok(!runFinishHolds({ ...base, agent: undefined, fg: undefined }, shell));
+  assert.ok(!runFinishHolds({ ...base, fg: 'claude' }, shell), 'no agent reporting and the program still up');
+  assert.ok(!runFinishHolds({ ...base, fg: undefined }, shell));
+  /* P0 regression (Signal Integrity FR-SI-01): an interaction boundary is
+     never lifecycle authority. A live agent that reported `turn-done` may
+     still own background work and resume on its own; closing the card
+     would kill it. No agent word retires a run, whatever the foreground. */
+  for (const agent of ['turn-done', 'working', 'needs-input']) {
+    for (const fg of ['claude', 'codex', 'node', 'zsh']) {
+      assert.ok(!runFinishHolds({ ...base, agent, fg }, shell), `${agent} with ${fg} in front`);
+    }
+  }
 });
 
 test('resuming a paused clock rule starts it fresh from now', () => {

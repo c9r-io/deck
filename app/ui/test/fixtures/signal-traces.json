@@ -1,0 +1,1857 @@
+{
+ "note": "Signal Trace harness (FR-SI-05): one trace set replayed by the Rust backend runner (src/signal_trace.rs) and the JS frontend runner (ui/test/signal-trace.test.mjs); ids are labels, never real content.",
+ "traces": [
+  {
+   "name": "working-then-turn-ended-v2",
+   "sessions": [
+    "s1"
+   ],
+   "panes": {
+    "s1a": {
+     "session": "s1"
+    }
+   },
+   "steps": [
+    {
+     "event": "working",
+     "pane": "s1a",
+     "id": "A"
+    },
+    {
+     "poll": true
+    },
+    {
+     "expect": {
+      "sessions": {
+       "s1": {
+        "agent": "working",
+        "unread": false,
+        "hold": false,
+        "finish": false,
+        "announced": 0,
+        "category": "other",
+        "badge": null
+       }
+      },
+      "dock": 0,
+      "pending": []
+     }
+    },
+    {
+     "event": "turn-done",
+     "pane": "s1a",
+     "id": "A"
+    },
+    {
+     "poll": true
+    },
+    {
+     "expect": {
+      "sessions": {
+       "s1": {
+        "agent": "turn-done",
+        "unread": true,
+        "hold": false,
+        "finish": false,
+        "announced": 1,
+        "category": "done",
+        "badge": "done"
+       }
+      },
+      "dock": 1,
+      "pending": [
+       "s1"
+      ]
+     }
+    },
+    {
+     "view": "s1",
+     "dismiss": [
+      [
+       "s1",
+       "e2"
+      ]
+     ]
+    },
+    {
+     "expect": {
+      "sessions": {
+       "s1": {
+        "unread": false,
+        "category": "other",
+        "badge": null
+       }
+      },
+      "dock": 0,
+      "pending": []
+     }
+    },
+    {
+     "poll": true
+    },
+    {
+     "expect": {
+      "sessions": {
+       "s1": {
+        "agent": "turn-done",
+        "unread": false,
+        "category": "other",
+        "announced": 1
+       }
+      },
+      "dock": 0,
+      "pending": []
+     }
+    }
+   ]
+  },
+  {
+   "name": "input-request-is-not-answered-by-viewing",
+   "sessions": [
+    "s1"
+   ],
+   "panes": {
+    "s1a": {
+     "session": "s1"
+    }
+   },
+   "steps": [
+    {
+     "event": "working",
+     "pane": "s1a",
+     "id": "A"
+    },
+    {
+     "event": "needs-input",
+     "pane": "s1a",
+     "id": "A"
+    },
+    {
+     "poll": true
+    },
+    {
+     "expect": {
+      "sessions": {
+       "s1": {
+        "agent": "needs-input",
+        "hold": true,
+        "unread": false,
+        "category": "input",
+        "badge": "input",
+        "announced": 1
+       }
+      },
+      "dock": 1,
+      "pending": [
+       "s1"
+      ]
+     }
+    },
+    {
+     "view": "s1",
+     "dismiss": []
+    },
+    {
+     "expect": {
+      "sessions": {
+       "s1": {
+        "category": "input",
+        "hold": true
+       }
+      },
+      "dock": 1,
+      "pending": [
+       "s1"
+      ]
+     }
+    },
+    {
+     "event": "turn-done",
+     "pane": "s1a",
+     "id": "A"
+    },
+    {
+     "poll": true
+    },
+    {
+     "expect": {
+      "sessions": {
+       "s1": {
+        "agent": "turn-done",
+        "hold": false,
+        "unread": true,
+        "category": "done",
+        "announced": 2
+       }
+      },
+      "dock": 1,
+      "pending": [
+       "s1"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "name": "a-late-ending-cannot-release-the-current-input-request",
+   "sessions": [
+    "s1"
+   ],
+   "panes": {
+    "s1a": {
+     "session": "s1"
+    }
+   },
+   "steps": [
+    {
+     "event": "working",
+     "pane": "s1a",
+     "id": "A"
+    },
+    {
+     "event": "working",
+     "pane": "s1a",
+     "id": "B"
+    },
+    {
+     "event": "needs-input",
+     "pane": "s1a",
+     "id": "B"
+    },
+    {
+     "event": "turn-done",
+     "pane": "s1a",
+     "id": "A",
+     "result": "interaction-mismatch"
+    },
+    {
+     "poll": true
+    },
+    {
+     "expect": {
+      "sessions": {
+       "s1": {
+        "agent": "needs-input",
+        "hold": true,
+        "unread": false,
+        "category": "input",
+        "announced": 1
+       }
+      },
+      "dock": 1,
+      "pending": [
+       "s1"
+      ]
+     }
+    },
+    {
+     "event": "working",
+     "pane": "s1a",
+     "id": "A",
+     "result": "stale-interaction"
+    },
+    {
+     "event": "needs-input",
+     "pane": "s1a",
+     "id": "A",
+     "result": "stale-interaction"
+    },
+    {
+     "event": "turn-done",
+     "pane": "s1a",
+     "id": "B"
+    },
+    {
+     "poll": true
+    },
+    {
+     "expect": {
+      "sessions": {
+       "s1": {
+        "agent": "turn-done",
+        "unread": true,
+        "hold": false,
+        "announced": 2
+       }
+      },
+      "dock": 1,
+      "pending": [
+       "s1"
+      ]
+     }
+    },
+    {
+     "event": "needs-input",
+     "pane": "s1a",
+     "id": "B",
+     "result": "stale-interaction"
+    },
+    {
+     "poll": true
+    },
+    {
+     "expect": {
+      "sessions": {
+       "s1": {
+        "agent": "turn-done",
+        "unread": true,
+        "hold": false,
+        "category": "done",
+        "announced": 2
+       }
+      },
+      "dock": 1,
+      "pending": [
+       "s1"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "name": "a-viewed-ending-survives-a-pane-switch",
+   "sessions": [
+    "s1"
+   ],
+   "panes": {
+    "s1a": {
+     "session": "s1"
+    },
+    "s1b": {
+     "session": "s1"
+    }
+   },
+   "steps": [
+    {
+     "focus": "s1b"
+    },
+    {
+     "event": "working",
+     "pane": "s1b",
+     "id": "X"
+    },
+    {
+     "event": "turn-done",
+     "pane": "s1b",
+     "id": "X"
+    },
+    {
+     "poll": true
+    },
+    {
+     "expect": {
+      "sessions": {
+       "s1": {
+        "agent": "turn-done",
+        "unread": true,
+        "category": "done",
+        "announced": 1
+       }
+      },
+      "dock": 1,
+      "pending": [
+       "s1"
+      ]
+     }
+    },
+    {
+     "view": "s1",
+     "dismiss": [
+      [
+       "s1",
+       "e1"
+      ]
+     ]
+    },
+    {
+     "poll": true
+    },
+    {
+     "expect": {
+      "sessions": {
+       "s1": {
+        "unread": false,
+        "category": "other"
+       }
+      },
+      "dock": 0,
+      "pending": []
+     }
+    },
+    {
+     "event": "working",
+     "pane": "s1a",
+     "id": "Y"
+    },
+    {
+     "expect": {
+      "sessions": {
+       "s1": {
+        "announced": 1
+       }
+      },
+      "dock": 0,
+      "pending": []
+     }
+    },
+    {
+     "focus": "s1a"
+    },
+    {
+     "poll": true
+    },
+    {
+     "expect": {
+      "sessions": {
+       "s1": {
+        "agent": "working",
+        "unread": false,
+        "category": "other",
+        "announced": 1
+       }
+      },
+      "dock": 0,
+      "pending": []
+     }
+    },
+    {
+     "focus": "s1b"
+    },
+    {
+     "poll": true
+    },
+    {
+     "expect": {
+      "sessions": {
+       "s1": {
+        "agent": "turn-done",
+        "unread": false,
+        "category": "other",
+        "badge": null,
+        "announced": 1
+       }
+      },
+      "dock": 0,
+      "pending": []
+     }
+    }
+   ]
+  },
+  {
+   "name": "endings-between-two-polls-agree-v2",
+   "sessions": [
+    "s1"
+   ],
+   "panes": {
+    "s1a": {
+     "session": "s1"
+    }
+   },
+   "steps": [
+    {
+     "event": "working",
+     "pane": "s1a",
+     "id": "A"
+    },
+    {
+     "event": "turn-done",
+     "pane": "s1a",
+     "id": "A"
+    },
+    {
+     "poll": true
+    },
+    {
+     "view": "s1",
+     "dismiss": [
+      [
+       "s1",
+       "e1"
+      ]
+     ]
+    },
+    {
+     "poll": true
+    },
+    {
+     "expect": {
+      "sessions": {
+       "s1": {
+        "unread": false,
+        "category": "other"
+       }
+      },
+      "dock": 0,
+      "pending": []
+     }
+    },
+    {
+     "event": "working",
+     "pane": "s1a",
+     "id": "B"
+    },
+    {
+     "event": "turn-done",
+     "pane": "s1a",
+     "id": "B"
+    },
+    {
+     "event": "working",
+     "pane": "s1a",
+     "id": "C"
+    },
+    {
+     "event": "turn-done",
+     "pane": "s1a",
+     "id": "C"
+    },
+    {
+     "poll": true
+    },
+    {
+     "expect": {
+      "sessions": {
+       "s1": {
+        "agent": "turn-done",
+        "unread": true,
+        "category": "done",
+        "badge": "done",
+        "announced": 3
+       }
+      },
+      "dock": 1,
+      "pending": [
+       "s1"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "name": "endings-between-two-polls-agree-v1",
+   "sessions": [
+    "s1"
+   ],
+   "panes": {
+    "s1a": {
+     "session": "s1"
+    }
+   },
+   "steps": [
+    {
+     "event": "working",
+     "pane": "s1a"
+    },
+    {
+     "event": "turn-done",
+     "pane": "s1a"
+    },
+    {
+     "poll": true
+    },
+    {
+     "view": "s1",
+     "dismiss": [
+      [
+       "s1",
+       "e1"
+      ]
+     ]
+    },
+    {
+     "poll": true
+    },
+    {
+     "expect": {
+      "sessions": {
+       "s1": {
+        "unread": false,
+        "category": "other"
+       }
+      },
+      "dock": 0,
+      "pending": []
+     }
+    },
+    {
+     "event": "working",
+     "pane": "s1a"
+    },
+    {
+     "event": "turn-done",
+     "pane": "s1a"
+    },
+    {
+     "poll": true
+    },
+    {
+     "expect": {
+      "sessions": {
+       "s1": {
+        "agent": "turn-done",
+        "unread": true,
+        "category": "done",
+        "announced": 2
+       }
+      },
+      "dock": 1,
+      "pending": [
+       "s1"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "name": "a-stale-dismiss-leaves-the-newer-ending-unread",
+   "sessions": [
+    "s1"
+   ],
+   "panes": {
+    "s1a": {
+     "session": "s1"
+    }
+   },
+   "steps": [
+    {
+     "event": "working",
+     "pane": "s1a",
+     "id": "A"
+    },
+    {
+     "event": "turn-done",
+     "pane": "s1a",
+     "id": "A"
+    },
+    {
+     "poll": true
+    },
+    {
+     "event": "working",
+     "pane": "s1a",
+     "id": "B"
+    },
+    {
+     "view": "s1",
+     "dismiss": [
+      [
+       "s1",
+       "e1"
+      ]
+     ]
+    },
+    {
+     "event": "turn-done",
+     "pane": "s1a",
+     "id": "B"
+    },
+    {
+     "poll": true
+    },
+    {
+     "expect": {
+      "sessions": {
+       "s1": {
+        "agent": "turn-done",
+        "unread": true,
+        "category": "done",
+        "badge": "done",
+        "announced": 2
+       }
+      },
+      "dock": 1,
+      "pending": [
+       "s1"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "name": "a-failed-dismiss-is-retried-and-converges",
+   "sessions": [
+    "s1"
+   ],
+   "panes": {
+    "s1a": {
+     "session": "s1"
+    }
+   },
+   "steps": [
+    {
+     "event": "working",
+     "pane": "s1a",
+     "id": "A"
+    },
+    {
+     "event": "turn-done",
+     "pane": "s1a",
+     "id": "A"
+    },
+    {
+     "poll": true
+    },
+    {
+     "view": "s1",
+     "dismiss": [
+      [
+       "s1",
+       "e1"
+      ]
+     ],
+     "transport": "fail"
+    },
+    {
+     "expect": {
+      "sessions": {
+       "s1": {
+        "category": "other",
+        "unread": true,
+        "local": true
+       }
+      }
+     }
+    },
+    {
+     "poll": true
+    },
+    {
+     "expect": {
+      "sessions": {
+       "s1": {
+        "category": "other",
+        "unread": true,
+        "local": true
+       }
+      }
+     }
+    },
+    {
+     "sync": true,
+     "dismiss": [
+      [
+       "s1",
+       "e1"
+      ]
+     ]
+    },
+    {
+     "poll": true
+    },
+    {
+     "expect": {
+      "sessions": {
+       "s1": {
+        "agent": "turn-done",
+        "unread": false,
+        "category": "other"
+       }
+      },
+      "dock": 0,
+      "pending": []
+     }
+    }
+   ]
+  },
+  {
+   "name": "a-recreated-webview-keeps-the-viewed-ending",
+   "sessions": [
+    "s1"
+   ],
+   "panes": {
+    "s1a": {
+     "session": "s1"
+    }
+   },
+   "steps": [
+    {
+     "event": "working",
+     "pane": "s1a",
+     "id": "A"
+    },
+    {
+     "event": "turn-done",
+     "pane": "s1a",
+     "id": "A"
+    },
+    {
+     "poll": true
+    },
+    {
+     "view": "s1",
+     "dismiss": [
+      [
+       "s1",
+       "e1"
+      ]
+     ]
+    },
+    {
+     "poll": true
+    },
+    {
+     "recreate": true
+    },
+    {
+     "poll": true
+    },
+    {
+     "expect": {
+      "sessions": {
+       "s1": {
+        "agent": "turn-done",
+        "unread": false,
+        "category": "other"
+       }
+      },
+      "dock": 0,
+      "pending": []
+     }
+    }
+   ]
+  },
+  {
+   "name": "a-replaced-generation-cannot-report-or-survive",
+   "sessions": [
+    "s1"
+   ],
+   "panes": {
+    "s1a": {
+     "session": "s1"
+    }
+   },
+   "steps": [
+    {
+     "event": "working",
+     "pane": "s1a",
+     "id": "A"
+    },
+    {
+     "poll": true
+    },
+    {
+     "replace": "s1a"
+    },
+    {
+     "event": "turn-done",
+     "pane": "s1a",
+     "id": "A",
+     "result": "generation-mismatch",
+     "from": "old"
+    },
+    {
+     "poll": true
+    },
+    {
+     "expect": {
+      "sessions": {
+       "s1": {
+        "agent": null,
+        "unread": false,
+        "hold": false,
+        "finish": false,
+        "announced": 0,
+        "category": "unavailable"
+       }
+      },
+      "dock": 0,
+      "pending": []
+     }
+    },
+    {
+     "event": "working",
+     "pane": "s1a",
+     "id": "B"
+    },
+    {
+     "poll": true
+    },
+    {
+     "expect": {
+      "sessions": {
+       "s1": {
+        "agent": "working"
+       }
+      },
+      "dock": 0,
+      "pending": []
+     }
+    }
+   ]
+  },
+  {
+   "name": "freshness-is-per-session",
+   "sessions": [
+    "s1",
+    "s2"
+   ],
+   "panes": {
+    "s1a": {
+     "session": "s1"
+    },
+    "s2a": {
+     "session": "s2"
+    }
+   },
+   "steps": [
+    {
+     "event": "turn-done",
+     "pane": "s1a"
+    },
+    {
+     "event": "working",
+     "pane": "s2a"
+    },
+    {
+     "poll": true
+    },
+    {
+     "expect": {
+      "sessions": {
+       "s1": {
+        "agent": "turn-done",
+        "category": "done",
+        "stale": false
+       },
+       "s2": {
+        "agent": "working",
+        "stale": false
+       }
+      },
+      "dock": 1,
+      "pending": [
+       "s1"
+      ]
+     }
+    },
+    {
+     "poll": "fail"
+    },
+    {
+     "expect": {
+      "sessions": {
+       "s1": {
+        "stale": true,
+        "category": "done"
+       },
+       "s2": {
+        "stale": true
+       }
+      }
+     }
+    },
+    {
+     "poll": {
+      "omit": [
+       "s2"
+      ]
+     }
+    },
+    {
+     "expect": {
+      "sessions": {
+       "s1": {
+        "stale": false
+       },
+       "s2": {
+        "stale": true
+       }
+      }
+     }
+    },
+    {
+     "poll": true
+    },
+    {
+     "expect": {
+      "sessions": {
+       "s1": {
+        "stale": false
+       },
+       "s2": {
+        "stale": false
+       }
+      }
+     }
+    }
+   ]
+  },
+  {
+   "name": "no-silent-downgrade-within-a-generation",
+   "sessions": [
+    "s1"
+   ],
+   "panes": {
+    "s1a": {
+     "session": "s1"
+    }
+   },
+   "steps": [
+    {
+     "event": "working",
+     "pane": "s1a",
+     "id": "A"
+    },
+    {
+     "event": "turn-done",
+     "pane": "s1a",
+     "result": "identity-downgrade"
+    },
+    {
+     "poll": true
+    },
+    {
+     "expect": {
+      "sessions": {
+       "s1": {
+        "agent": "working",
+        "unread": false,
+        "announced": 0
+       }
+      },
+      "dock": 0,
+      "pending": []
+     }
+    },
+    {
+     "replace": "s1a"
+    },
+    {
+     "event": "turn-done",
+     "pane": "s1a"
+    },
+    {
+     "poll": true
+    },
+    {
+     "expect": {
+      "sessions": {
+       "s1": {
+        "agent": "turn-done",
+        "unread": true,
+        "announced": 1
+       }
+      },
+      "dock": 1,
+      "pending": [
+       "s1"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "name": "retirement-evidence-is-single-pane-only",
+   "sessions": [
+    "s1",
+    "s2",
+    "s3"
+   ],
+   "panes": {
+    "s1a": {
+     "session": "s1",
+     "shell": true
+    },
+    "s1b": {
+     "session": "s1"
+    },
+    "s2a": {
+     "session": "s2",
+     "shell": true
+    },
+    "s3a": {
+     "session": "s3"
+    },
+    "s3b": {
+     "session": "s3"
+    }
+   },
+   "steps": [
+    {
+     "event": "working",
+     "pane": "s1b",
+     "id": "A"
+    },
+    {
+     "poll": true
+    },
+    {
+     "expect": {
+      "sessions": {
+       "s1": {
+        "agent": null,
+        "finish": false,
+        "hold": false,
+        "unread": false
+       },
+       "s2": {
+        "agent": null,
+        "finish": true
+       }
+      }
+     }
+    },
+    {
+     "unfocus": "s3"
+    },
+    {
+     "event": "working",
+     "pane": "s3a",
+     "id": "C"
+    },
+    {
+     "poll": true
+    },
+    {
+     "expect": {
+      "sessions": {
+       "s3": {
+        "agent": null,
+        "finish": false,
+        "announced": 0,
+        "category": "unavailable"
+       }
+      }
+     }
+    }
+   ]
+  },
+  {
+   "name": "the-ended-ring-is-bounded-and-presentation-only",
+   "sessions": [
+    "s1"
+   ],
+   "panes": {
+    "s1a": {
+     "session": "s1"
+    }
+   },
+   "steps": [
+    {
+     "event": "working",
+     "pane": "s1a",
+     "id": "I1"
+    },
+    {
+     "event": "turn-done",
+     "pane": "s1a",
+     "id": "I1"
+    },
+    {
+     "event": "working",
+     "pane": "s1a",
+     "id": "I2"
+    },
+    {
+     "event": "turn-done",
+     "pane": "s1a",
+     "id": "I2"
+    },
+    {
+     "event": "working",
+     "pane": "s1a",
+     "id": "I3"
+    },
+    {
+     "event": "turn-done",
+     "pane": "s1a",
+     "id": "I3"
+    },
+    {
+     "event": "working",
+     "pane": "s1a",
+     "id": "I4"
+    },
+    {
+     "event": "turn-done",
+     "pane": "s1a",
+     "id": "I4"
+    },
+    {
+     "event": "working",
+     "pane": "s1a",
+     "id": "I5"
+    },
+    {
+     "event": "turn-done",
+     "pane": "s1a",
+     "id": "I5"
+    },
+    {
+     "event": "working",
+     "pane": "s1a",
+     "id": "I6"
+    },
+    {
+     "event": "turn-done",
+     "pane": "s1a",
+     "id": "I6"
+    },
+    {
+     "event": "working",
+     "pane": "s1a",
+     "id": "I7"
+    },
+    {
+     "event": "turn-done",
+     "pane": "s1a",
+     "id": "I7"
+    },
+    {
+     "event": "working",
+     "pane": "s1a",
+     "id": "I8"
+    },
+    {
+     "event": "turn-done",
+     "pane": "s1a",
+     "id": "I8"
+    },
+    {
+     "event": "working",
+     "pane": "s1a",
+     "id": "I9"
+    },
+    {
+     "event": "turn-done",
+     "pane": "s1a",
+     "id": "I9"
+    },
+    {
+     "poll": true
+    },
+    {
+     "view": "s1",
+     "dismiss": [
+      [
+       "s1",
+       "e1"
+      ]
+     ]
+    },
+    {
+     "poll": true
+    },
+    {
+     "expect": {
+      "sessions": {
+       "s1": {
+        "unread": false,
+        "announced": 9
+       }
+      },
+      "dock": 0,
+      "pending": []
+     }
+    },
+    {
+     "event": "turn-done",
+     "pane": "s1a",
+     "id": "I9",
+     "result": "duplicate-interaction"
+    },
+    {
+     "event": "turn-done",
+     "pane": "s1a",
+     "id": "I1"
+    },
+    {
+     "poll": true
+    },
+    {
+     "expect": {
+      "sessions": {
+       "s1": {
+        "agent": "turn-done",
+        "unread": true,
+        "hold": false,
+        "finish": false,
+        "announced": 10
+       }
+      },
+      "dock": 1,
+      "pending": [
+       "s1"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "name": "a-stopped-session-leaves-every-surface",
+   "sessions": [
+    "s1"
+   ],
+   "panes": {
+    "s1a": {
+     "session": "s1"
+    }
+   },
+   "steps": [
+    {
+     "event": "working",
+     "pane": "s1a",
+     "id": "A"
+    },
+    {
+     "event": "turn-done",
+     "pane": "s1a",
+     "id": "A"
+    },
+    {
+     "poll": true
+    },
+    {
+     "stop": "s1"
+    },
+    {
+     "poll": true
+    },
+    {
+     "expect": {
+      "sessions": {
+       "s1": {
+        "agent": null,
+        "unread": false,
+        "category": "stopped",
+        "badge": null
+       }
+      },
+      "dock": 0,
+      "pending": []
+     }
+    }
+   ]
+  },
+  {
+   "name": "an-exited-agent-in-a-single-pane-is-retirement-evidence",
+   "sessions": [
+    "s1"
+   ],
+   "panes": {
+    "s1a": {
+     "session": "s1"
+    }
+   },
+   "steps": [
+    {
+     "event": "working",
+     "pane": "s1a",
+     "id": "A"
+    },
+    {
+     "poll": true
+    },
+    {
+     "expect": {
+      "sessions": {
+       "s1": {
+        "finish": false
+       }
+      }
+     }
+    },
+    {
+     "exit": "s1a"
+    },
+    {
+     "poll": true
+    },
+    {
+     "expect": {
+      "sessions": {
+       "s1": {
+        "agent": null,
+        "finish": true
+       }
+      }
+     }
+    }
+   ]
+  },
+  {
+   "name": "twenty-primary-sessions",
+   "sessions": [
+    "s01",
+    "s02",
+    "s03",
+    "s04",
+    "s05",
+    "s06",
+    "s07",
+    "s08",
+    "s09",
+    "s10",
+    "s11",
+    "s12",
+    "s13",
+    "s14",
+    "s15",
+    "s16",
+    "s17",
+    "s18",
+    "s19",
+    "s20"
+   ],
+   "panes": {
+    "s01a": {
+     "session": "s01"
+    },
+    "s02a": {
+     "session": "s02"
+    },
+    "s03a": {
+     "session": "s03"
+    },
+    "s04a": {
+     "session": "s04"
+    },
+    "s05a": {
+     "session": "s05"
+    },
+    "s06a": {
+     "session": "s06"
+    },
+    "s07a": {
+     "session": "s07"
+    },
+    "s08a": {
+     "session": "s08"
+    },
+    "s09a": {
+     "session": "s09"
+    },
+    "s10a": {
+     "session": "s10"
+    },
+    "s11a": {
+     "session": "s11"
+    },
+    "s12a": {
+     "session": "s12"
+    },
+    "s13a": {
+     "session": "s13"
+    },
+    "s14a": {
+     "session": "s14"
+    },
+    "s15a": {
+     "session": "s15"
+    },
+    "s16a": {
+     "session": "s16",
+     "shell": true
+    },
+    "s17a": {
+     "session": "s17"
+    },
+    "s18a": {
+     "session": "s18"
+    },
+    "s19a": {
+     "session": "s19"
+    },
+    "s20a": {
+     "session": "s20"
+    },
+    "s15b": {
+     "session": "s15"
+    },
+    "s16b": {
+     "session": "s16"
+    },
+    "s17b": {
+     "session": "s17"
+    }
+   },
+   "steps": [
+    {
+     "event": "working",
+     "pane": "s01a",
+     "id": "I01"
+    },
+    {
+     "event": "working",
+     "pane": "s02a",
+     "id": "I02"
+    },
+    {
+     "event": "working",
+     "pane": "s03a"
+    },
+    {
+     "event": "working",
+     "pane": "s04a",
+     "id": "I04"
+    },
+    {
+     "event": "needs-input",
+     "pane": "s04a",
+     "id": "I04"
+    },
+    {
+     "event": "needs-input",
+     "pane": "s05a"
+    },
+    {
+     "event": "working",
+     "pane": "s06a",
+     "id": "I06"
+    },
+    {
+     "event": "turn-done",
+     "pane": "s06a",
+     "id": "I06"
+    },
+    {
+     "event": "working",
+     "pane": "s07a"
+    },
+    {
+     "event": "turn-done",
+     "pane": "s07a"
+    },
+    {
+     "event": "working",
+     "pane": "s08a",
+     "id": "I08"
+    },
+    {
+     "event": "turn-done",
+     "pane": "s08a",
+     "id": "I08"
+    },
+    {
+     "event": "turn-done",
+     "pane": "s09a"
+    },
+    {
+     "event": "working",
+     "pane": "s10a",
+     "id": "I10"
+    },
+    {
+     "event": "working",
+     "pane": "s11a",
+     "id": "I11"
+    },
+    {
+     "event": "working",
+     "pane": "s12a",
+     "id": "I12"
+    },
+    {
+     "event": "working",
+     "pane": "s13a",
+     "id": "A13"
+    },
+    {
+     "event": "working",
+     "pane": "s13a",
+     "id": "B13"
+    },
+    {
+     "event": "turn-done",
+     "pane": "s13a",
+     "id": "A13",
+     "result": "interaction-mismatch"
+    },
+    {
+     "event": "working",
+     "pane": "s14a",
+     "id": "I14"
+    },
+    {
+     "event": "turn-done",
+     "pane": "s14a",
+     "id": "I14"
+    },
+    {
+     "event": "needs-input",
+     "pane": "s14a",
+     "id": "I14",
+     "result": "stale-interaction"
+    },
+    {
+     "focus": "s15b"
+    },
+    {
+     "event": "working",
+     "pane": "s15b",
+     "id": "X15"
+    },
+    {
+     "event": "turn-done",
+     "pane": "s15b",
+     "id": "X15"
+    },
+    {
+     "event": "working",
+     "pane": "s16b",
+     "id": "I16"
+    },
+    {
+     "unfocus": "s17"
+    },
+    {
+     "event": "working",
+     "pane": "s17a",
+     "id": "I17"
+    },
+    {
+     "event": "working",
+     "pane": "s18a",
+     "id": "I18"
+    },
+    {
+     "event": "turn-done",
+     "pane": "s18a",
+     "result": "identity-downgrade"
+    },
+    {
+     "event": "working",
+     "pane": "s19a",
+     "id": "I19"
+    },
+    {
+     "event": "working",
+     "pane": "s20a",
+     "id": "I20"
+    },
+    {
+     "event": "needs-input",
+     "pane": "s20a",
+     "id": "I20"
+    },
+    {
+     "poll": true
+    },
+    {
+     "expect": {
+      "dock": 9,
+      "pending": [
+       "s04",
+       "s05",
+       "s06",
+       "s07",
+       "s08",
+       "s09",
+       "s14",
+       "s15",
+       "s20"
+      ]
+     }
+    },
+    {
+     "view": "s08",
+     "dismiss": [
+      [
+       "s08"
+      ]
+     ]
+    },
+    {
+     "view": "s09",
+     "dismiss": [
+      [
+       "s09"
+      ]
+     ]
+    },
+    {
+     "view": "s15",
+     "dismiss": [
+      [
+       "s15"
+      ]
+     ]
+    },
+    {
+     "view": "s20",
+     "dismiss": []
+    },
+    {
+     "poll": true
+    },
+    {
+     "stop": "s11"
+    },
+    {
+     "replace": "s12a"
+    },
+    {
+     "event": "turn-done",
+     "pane": "s12a",
+     "id": "I12",
+     "result": "generation-mismatch",
+     "from": "old"
+    },
+    {
+     "exit": "s19a"
+    },
+    {
+     "event": "working",
+     "pane": "s15a",
+     "id": "Y15"
+    },
+    {
+     "focus": "s15a"
+    },
+    {
+     "poll": true
+    },
+    {
+     "focus": "s15b"
+    },
+    {
+     "poll": {
+      "omit": [
+       "s10"
+      ]
+     }
+    },
+    {
+     "expect": {
+      "sessions": {
+       "s01": {
+        "agent": "working",
+        "unread": false,
+        "hold": false,
+        "finish": false,
+        "category": "other",
+        "badge": null,
+        "announced": 0
+       },
+       "s02": {
+        "agent": "working",
+        "unread": false,
+        "category": "other"
+       },
+       "s03": {
+        "agent": "working",
+        "unread": false,
+        "category": "other",
+        "announced": 0
+       },
+       "s04": {
+        "agent": "needs-input",
+        "hold": true,
+        "unread": false,
+        "category": "input",
+        "badge": "input",
+        "announced": 1
+       },
+       "s05": {
+        "agent": "needs-input",
+        "hold": true,
+        "category": "input",
+        "badge": "input",
+        "announced": 1
+       },
+       "s06": {
+        "agent": "turn-done",
+        "unread": true,
+        "category": "done",
+        "badge": "done",
+        "announced": 1
+       },
+       "s07": {
+        "agent": "turn-done",
+        "unread": true,
+        "category": "done",
+        "announced": 1
+       },
+       "s08": {
+        "agent": "turn-done",
+        "unread": false,
+        "category": "other",
+        "badge": null,
+        "announced": 1
+       },
+       "s09": {
+        "agent": "turn-done",
+        "unread": false,
+        "category": "other",
+        "announced": 1
+       },
+       "s10": {
+        "stale": true,
+        "unread": false,
+        "category": "other"
+       },
+       "s11": {
+        "agent": null,
+        "unread": false,
+        "category": "stopped",
+        "announced": 0
+       },
+       "s12": {
+        "agent": null,
+        "unread": false,
+        "finish": false,
+        "category": "unavailable",
+        "announced": 0
+       },
+       "s13": {
+        "agent": "working",
+        "unread": false,
+        "hold": false,
+        "announced": 0
+       },
+       "s14": {
+        "agent": "turn-done",
+        "unread": true,
+        "category": "done",
+        "announced": 1
+       },
+       "s15": {
+        "agent": "turn-done",
+        "unread": false,
+        "category": "other",
+        "announced": 1
+       },
+       "s16": {
+        "agent": null,
+        "finish": false,
+        "hold": false,
+        "category": "unavailable"
+       },
+       "s17": {
+        "agent": null,
+        "finish": false,
+        "category": "unavailable",
+        "announced": 0
+       },
+       "s18": {
+        "agent": "working",
+        "unread": false,
+        "announced": 0
+       },
+       "s19": {
+        "agent": null,
+        "finish": true,
+        "category": "unavailable"
+       },
+       "s20": {
+        "agent": "needs-input",
+        "hold": true,
+        "category": "input",
+        "announced": 1
+       }
+      },
+      "dock": 6,
+      "pending": [
+       "s04",
+       "s05",
+       "s06",
+       "s07",
+       "s14",
+       "s20"
+      ]
+     }
+    }
+   ]
+  }
+ ]
+}

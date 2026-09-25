@@ -63,18 +63,113 @@ pub fn production_region(source: &str) -> &str {
     }
 }
 
-/// A dedicated `dir/tests.rs` is test-only when its parent module declares
-/// it under `#[cfg(test)]`.
+/// Top-level modules (`src/<name>.rs`) that may be test-only. Pinned by
+/// name: a new one is an explicit, reviewed edit here, never inferred.
+pub const TEST_ONLY_TOP_LEVEL: &[&str] = &["signal_trace"];
+
+/// `source` with every comment and every string/char literal's CONTENT
+/// removed (each becomes one space), then whitespace collapsed — so a
+/// declaration can only be found in real code, never in `// …`, `/* … */`
+/// (nested), `"…"`, `r#"…"#` or `'…'`. A lexer for literals and comments
+/// only, not a Rust parser.
+pub fn code_only(source: &str) -> String {
+    let b = source.as_bytes();
+    let mut out = String::with_capacity(b.len());
+    let mut i = 0;
+    let ident = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
+    while i < b.len() {
+        let rest = &b[i..];
+        if rest.starts_with(b"//") {
+            while i < b.len() && b[i] != b'\n' {
+                i += 1;
+            }
+            out.push(' ');
+        } else if rest.starts_with(b"/*") {
+            let mut depth = 0usize;
+            while i < b.len() {
+                if b[i..].starts_with(b"/*") {
+                    depth += 1;
+                    i += 2;
+                } else if b[i..].starts_with(b"*/") {
+                    depth -= 1;
+                    i += 2;
+                    if depth == 0 {
+                        break;
+                    }
+                } else {
+                    i += 1;
+                }
+            }
+            out.push(' ');
+        } else if b[i] == b'r'
+            && (i == 0 || !ident(b[i - 1]))
+            && rest[1..].iter().take_while(|c| **c == b'#').count() + 1 < rest.len()
+            && rest[1 + rest[1..].iter().take_while(|c| **c == b'#').count()] == b'"'
+        {
+            let hashes = rest[1..].iter().take_while(|c| **c == b'#').count();
+            let close: Vec<u8> = std::iter::once(b'"')
+                .chain(std::iter::repeat_n(b'#', hashes))
+                .collect();
+            i += 2 + hashes;
+            while i < b.len() && !b[i..].starts_with(&close) {
+                i += 1;
+            }
+            i += close.len();
+            out.push(' ');
+        } else if b[i] == b'"' {
+            i += 1;
+            while i < b.len() && b[i] != b'"' {
+                i += if b[i] == b'\\' { 2 } else { 1 };
+            }
+            i += 1;
+            out.push(' ');
+        } else if b[i] == b'\'' && b.get(i + 1) == Some(&b'\\') {
+            i += 2;
+            while i < b.len() && b[i] != b'\'' {
+                i += 1;
+            }
+            i += 1;
+            out.push(' ');
+        } else if b[i] == b'\'' && b.get(i + 2) == Some(&b'\'') {
+            i += 3;
+            out.push(' ');
+        } else {
+            let len = source[i..].chars().next().map_or(1, char::len_utf8);
+            out.push_str(&source[i..i + len]);
+            i += len;
+        }
+    }
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// `parent` declares `mod <stem>;` in code, and EVERY such declaration is
+/// gated by `#[cfg(test)]` (an ungated one makes the module production).
+pub fn declares_test_module(parent: &str, stem: &str) -> bool {
+    let code = code_only(parent);
+    let declared = [format!("mod {stem};"), format!("pub(crate) mod {stem};")];
+    let gated = declared
+        .iter()
+        .map(|d| code.matches(&format!("#[cfg(test)] {d}")).count())
+        .sum::<usize>();
+    let all = code.matches(&format!("mod {stem};")).count();
+    gated > 0 && gated == all
+}
+
+/// A module file is test-only when its parent declares it under
+/// `#[cfg(test)]` (`declares_test_module`): a dedicated `dir/tests.rs` from
+/// `dir.rs` / `dir/mod.rs`, or a pinned `TEST_ONLY_TOP_LEVEL` module from
+/// `main.rs`. Nothing else is ever excluded from the production censuses.
 pub fn is_declared_test_file(name: &str, sources: &[(String, String)]) -> bool {
-    let Some(dir) = name.strip_suffix("/tests.rs") else {
-        return false;
+    let (parents, stem) = match (name.strip_suffix("/tests.rs"), name.strip_suffix(".rs")) {
+        (Some(dir), _) => (vec![format!("{dir}.rs"), format!("{dir}/mod.rs")], "tests"),
+        (None, Some(stem)) if TEST_ONLY_TOP_LEVEL.contains(&stem) => {
+            (vec!["main.rs".to_string()], stem)
+        }
+        _ => return false,
     };
-    let parents = [format!("{dir}.rs"), format!("{dir}/mod.rs")];
-    sources.iter().any(|(parent, text)| {
-        parents.contains(parent)
-            && (text.contains("#[cfg(test)]\nmod tests;")
-                || text.contains("#[cfg(test)]\npub(crate) mod tests;"))
-    })
+    sources
+        .iter()
+        .any(|(parent, text)| parents.contains(parent) && declares_test_module(text, stem))
 }
 
 pub fn production_sources() -> Vec<(String, String)> {

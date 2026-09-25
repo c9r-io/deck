@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createAttentionTracker } from '../js/attention-model.js';
-import { NOTIFY_COUNTED_FILTERS, NOTIFY_STATUS_WORDS, cardLabels, labelsKey, notifyNeedsAgentStatus, notifyStatusKey, seenDismissals } from '../js/notify-model.js';
+import { NOTIFY_COUNTED_FILTERS, NOTIFY_STATUS_WORDS, cardLabels, dismissKey, labelsKey, notifyNeedsAgentStatus, notifyStatusKey, seenDismissals } from '../js/notify-model.js';
 
 const projects = [{ id: 'P1', name: 'deck' }, { id: 'P2', name: 'site' }];
 const card = (id, session, title, projectId) => ({ id, session, title, projectId });
@@ -31,28 +31,45 @@ test('the labels key changes exactly when a label changes', () => {
   assert.equal(labelsKey([]), '');
 });
 
-test('a viewed turn ending is reported once per turn', () => {
+test('a viewed ending is dismissed by its exact episode until the backend knows, retrying after a failure', () => {
   const tracker = createAttentionTracker();
   const cards = [card('C1', 'deck-card-aa', 'A', 'P1'), card('C2', 'deck-card-bb', 'B', 'P1')];
-  const info = (name, agent) => ({ name, alive: true, agent, idle_secs: 0 });
-  const sent = new Set();
-  tracker.record(cards, [info('deck-card-aa', 'turn-done'), info('deck-card-bb', 'needs-input')], new Set(), 1000);
-  assert.deepEqual(seenDismissals(cards, tracker, sent), [], 'unread: nothing to dismiss');
-  // the pane showed card A
-  tracker.record(cards, [info('deck-card-aa', 'turn-done'), info('deck-card-bb', 'needs-input')], new Set(['C1']), 2000);
-  assert.deepEqual(seenDismissals(cards, tracker, sent), ['deck-card-aa']);
-  assert.deepEqual(seenDismissals(cards, tracker, sent), [], 'reported once');
-  // the next turn: working clears the memory, its ending is reported again once viewed
-  tracker.record(cards, [info('deck-card-aa', 'working'), info('deck-card-bb', 'needs-input')], new Set(), 3000);
-  assert.deepEqual(seenDismissals(cards, tracker, sent), []);
-  assert.ok(!sent.has('deck-card-aa'));
-  tracker.record(cards, [info('deck-card-aa', 'turn-done'), info('deck-card-bb', 'needs-input')], new Set(['C1']), 4000);
-  assert.deepEqual(seenDismissals(cards, tracker, sent), ['deck-card-aa']);
+  const info = (name, agent, episode, viewed = false) => ({ name, alive: true, agent, idle_secs: 0, episode, episode_viewed: viewed });
+  const inflight = new Set();
+  const out = () => seenDismissals(cards, tracker, inflight).map(({ session, episode }) => `${session}:${episode}`);
+  tracker.record(cards, [info('deck-card-aa', 'turn-done', 3), info('deck-card-bb', 'needs-input', 4)], new Set(), 1000);
+  assert.deepEqual(out(), [], 'unread: nothing to dismiss');
+  // the pane showed card A: its exact episode is due
+  tracker.record(cards, [info('deck-card-aa', 'turn-done', 3), info('deck-card-bb', 'needs-input', 4)], new Set(['C1']), 2000);
+  assert.deepEqual(out(), ['deck-card-aa:3']);
+  // in flight: not sent twice
+  inflight.add(dismissKey('deck-card-aa', 3));
+  assert.deepEqual(out(), []);
+  // the call FAILED: in-flight cleared, the next sync retries the same episode
+  inflight.delete(dismissKey('deck-card-aa', 3));
+  assert.deepEqual(out(), ['deck-card-aa:3'], 'a failed dismissal is retried');
+  // acknowledged: known viewed, nothing more to send
+  tracker.confirmViewed(cards[0], 3);
+  assert.deepEqual(out(), []);
+  // the backend's own truth after the next poll keeps it read
+  tracker.record(cards, [info('deck-card-aa', 'turn-done', 3, true), info('deck-card-bb', 'needs-input', 4)], new Set(), 3000);
+  assert.equal(tracker.category(cards[0]), 'other');
+  assert.deepEqual(out(), []);
+  // a NEW episode re-arms and, once viewed, is due by its own id
+  tracker.record(cards, [info('deck-card-aa', 'turn-done', 7), info('deck-card-bb', 'needs-input', 4)], new Set(), 4000);
+  assert.equal(tracker.category(cards[0]), 'done');
+  tracker.record(cards, [info('deck-card-aa', 'turn-done', 7), info('deck-card-bb', 'needs-input', 4)], new Set(['C1']), 5000);
+  assert.deepEqual(out(), ['deck-card-aa:7']);
+  // confirming a stale episode changes nothing
+  tracker.confirmViewed(cards[0], 3);
+  assert.deepEqual(out(), ['deck-card-aa:7']);
   // viewing a needs-input never dismisses: the question is still open
-  tracker.record(cards, [info('deck-card-aa', 'turn-done'), info('deck-card-bb', 'needs-input')], new Set(['C1', 'C2']), 5000);
-  assert.deepEqual(seenDismissals(cards, tracker, sent), []);
-  // a card without a snapshot is ignored
-  assert.deepEqual(seenDismissals([card('C9', 'deck-card-zz', 'Z', 'P1')], tracker, sent), []);
+  tracker.record(cards, [info('deck-card-aa', 'turn-done', 7, true), info('deck-card-bb', 'needs-input', 4)], new Set(['C1', 'C2']), 6000);
+  assert.deepEqual(out(), []);
+  // a card without a snapshot, or an episode-less snapshot, is ignored
+  assert.deepEqual(seenDismissals([card('C9', 'deck-card-zz', 'Z', 'P1')], tracker, inflight), []);
+  tracker.record(cards, [{ name: 'deck-card-aa', alive: true, agent: 'turn-done', idle_secs: 0 }, info('deck-card-bb', 'needs-input', 4)], new Set(['C1']), 7000);
+  assert.deepEqual(out(), [], 'no episode, nothing exact to dismiss');
 });
 
 test('status words are closed and unknown words read as unsupported', () => {

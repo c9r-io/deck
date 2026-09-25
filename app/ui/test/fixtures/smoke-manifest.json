@@ -306,6 +306,19 @@
         "voice-type-visible": {},
         "voice-workspace": {}
       }
+    },
+    "signal-finish": {
+      "terminal": "done",
+      "checks": {
+        "signal-cleanup": {},
+        "signal-closed": {},
+        "signal-completed": {},
+        "signal-exception": { "failureOnly": true },
+        "signal-fixture": {},
+        "signal-held": {},
+        "signal-run-created": {},
+        "signal-turn-done": {}
+      }
     }
   }
 }

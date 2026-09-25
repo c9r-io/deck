@@ -170,9 +170,11 @@ test('review is opt-in per new run and incomplete reviewed runs never auto-finis
   assert.equal(cfg.rules[0].reviewEach, true);
   const ordinary = normalizeInbound({ rules: [{ ...candidate, reviewEach: false }] });
   assert.equal(ordinary.rules[0].reviewEach, undefined);
-  const args = { rule: { finish: 'close' }, queued: false, agent: 'turn-done', alive: true, stopped: false, viewing: false, reviewRequired: true };
+  const args = { rule: { finish: 'close' }, queued: false, agent: undefined, fg: 'zsh', alive: true, stopped: false, viewing: false, reviewRequired: true };
   assert.equal(runFinishHolds(args, /^zsh$/), false);
   assert.equal(runFinishHolds({ ...args, finalReviewed: true }, /^zsh$/), true);
+  assert.equal(runFinishHolds({ ...args, finalReviewed: true, agent: 'turn-done', fg: 'claude' }, /^zsh$/), false,
+    'a reviewed run whose agent only ended a turn is still live');
   assert.equal(runFinishHolds({ ...args, finalReviewed: true, queued: true }, /^zsh$/), false);
   assert.equal(runFinishHolds({ ...args, finalReviewed: true, viewing: true }, /^zsh$/), false);
 });

@@ -218,3 +218,30 @@ test('the card badge follows one attention episode through viewing and back', ()
   assert.equal(attentionBadge(tracker, { ...card, session: 'other-session' }), null,
     'a snapshot of a previous session never labels the card');
 });
+
+/* Signal Integrity FR-SI-02: observation, attention and freshness are three
+   separate layers. Viewing (attention) and a failed poll (freshness) never
+   rewrite what the agent reported; unknown words never become state. */
+test('viewed and stale never change the observation; only closed words are state', () => {
+  const tracker = trackerOf();
+  const observed = card => { const { agent, status, alive, idle, observedAt } = tracker.get(card); return { agent, status, alive, idle, observedAt }; };
+  const ending = cards.find(c => infos.find(i => i.name === c.session).agent === 'turn-done' && !c.read);
+  const input = cards.find(c => infos.find(i => i.name === c.session).agent === 'needs-input');
+  const before = [observed(ending), observed(input)];
+  tracker.saw(ending);
+  tracker.saw(input);
+  assert.deepEqual([observed(ending), observed(input)], before, 'viewing is attention metadata only');
+  assert.equal(tracker.get(ending).agent, 'turn-done', 'a viewed ending is still an ended turn');
+  assert.equal(tracker.category(input), 'input', 'viewing an input request is not answering it');
+  tracker.fail();
+  assert.deepEqual([observed(ending), observed(input)], before, 'stale is freshness, not agent state');
+  assert.equal(tracker.get(input).stale, true);
+  assert.deepEqual(attentionBadge(tracker, input), { kind: 'input', stale: true }, 'the badge carries the staleness honestly');
+  const probe = { id: 'probe', session: 'probe', projectId: 'Atlas', columnId: 'Working' };
+  for (const word of ['stale', 'viewed', 'unread', 'done', 'idle', 'complete', 'settled']) {
+    tracker.record([probe], [{ name: 'probe', alive: true, agent: word, idle_secs: 3 }], new Set(), 900);
+    assert.equal(tracker.get(probe).agent, null, `${word} is not an agent state`);
+  }
+  tracker.record([probe], [{ name: 'probe', alive: false, agent: 'turn-done' }], new Set(), 901);
+  assert.equal(tracker.get(probe).agent, null, 'a dead session reports no interaction state');
+});

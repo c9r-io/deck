@@ -109,10 +109,10 @@ row, never release or target one (`scheduler/select.rs`, `agent_holds`):
 - A row marked `external` — admitted through `channel_queue_add*` (Slack
   channel and badge rules, every Connector-originated row) or queued with
   `externalText` (a verbatim Slack buffer entry) — that follows a previous
-  row (`chain`) additionally needs a positive `turn-done`. With no hook word
-  (hooks not enabled, the agent exited, a dead session) it keeps waiting;
-  the user may send it by hand. The first row of a run is not held without
-  hooks, since the agent has had no turn yet.
+  row (`chain`) is never selected automatically; the user sends it by hand.
+  No hook word releases it: `turn-done` ends an interaction but the agent
+  may still own background work and resume on its own. The first row of a
+  run is not held without hooks, since the agent has had no turn yet.
 - Owner rows without a hook word keep the quiet-only rule. Manual immediate
   send is not held. A stale `needs-input` (a question dismissed with Esc
   fires no Stop hook) holds until the next hook word or until poll
@@ -128,8 +128,8 @@ characters): `ops::leading_command` is authoritative, and buffer-model.js
 ## Self-audit
 
 No hook, agent class, readiness label, quiet state or output heuristic is a
-necessary condition for delivery, except that an `external` follow-up row
-needs a reported `turn-done` (agent hold above). A resolvable pane owned by the card is
+necessary condition for delivery; an `external` follow-up row is delivered
+only by the user's send-now (agent hold above). A resolvable pane owned by the card is
 always necessary, and the identity read from it must stay stable from the
 readiness probe through the atomic paste. Foreground equality is necessary
 only when deck captured an expected executable automatically. Compatibility

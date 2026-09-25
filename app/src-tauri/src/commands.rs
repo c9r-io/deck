@@ -458,12 +458,33 @@ pub(crate) struct SessInfo {
     /// reads as a hung session)
     scrolled: Option<bool>,
     /// closed agent-hook state word ("working" | "needs-input" |
-    /// "turn-done"), if an agent module reported one (agent_status.rs)
+    /// "turn-done") projected from the session's Signal target pane (the
+    /// active pane of its current window, `agent_status::signal_targets`),
+    /// if that pane's current foreground generation reported one
     agent: Option<&'static str>,
+    /// the Deck-local attention episode of that same observation
+    /// (`agent_status::Observation`): opaque, never a source id, never
+    /// authority. None without an observation.
+    episode: Option<crate::agent_status::EpisodeId>,
+    /// the backend's authoritative "this turn-done episode was viewed" —
+    /// every attention surface converges to it (FR-SI-05)
+    episode_viewed: bool,
+    /// retirement evidence for the automation finish rule, paired with
+    /// `agent` ("no agent state and a shell in front"): the foreground of
+    /// that SAME Signal target pane, and ONLY for a single-pane session
+    /// (`agent_status::finish_foregrounds`). None for a multi-pane session
+    /// whichever pane is active, and without a unique target — so no
+    /// pane-local shell can retire a session another pane's agent lives in.
+    /// `fg` above stays the representative pane's, for the Board's other
+    /// uses; the two must not be mixed in an authority decision.
+    finish_fg: Option<String>,
 }
 
-pub(crate) fn tree_mem(roots: &HashMap<String, u32>) -> HashMap<String, f64> {
-    crate::procinfo::tree_memory(roots)
+pub(crate) fn tree_mem(
+    table: &crate::agent_status::ProcessTable,
+    roots: &HashMap<String, u32>,
+) -> HashMap<String, f64> {
+    crate::procinfo::tree_memory(table, roots)
 }
 
 /// Per-poll ceiling on `capture-pane` targets. Every capture is pane-content
@@ -568,17 +589,19 @@ pub(crate) async fn poll_sessions(
             tail_for,
             checkpoint_shells,
             crate::tmux::query_list_panes(),
+            crate::procinfo::processes,
         )
     })
     .await
     .map_err(|_| DeckError::new(ErrorKind::Other, "session poll worker failed"))?
 }
 
-fn poll_from_listing(
+pub(crate) fn poll_from_listing(
     names: Vec<String>,
     tail_for: Vec<String>,
     checkpoint_shells: bool,
     listing: Result<Vec<PaneRow>, DeckError>,
+    processes: impl FnOnce() -> crate::agent_status::ProcessTable,
 ) -> Result<Vec<SessInfo>, DeckError> {
     // one listing supplies liveness + activity + pid + fg for every session
     // Log transitions, then propagate failures before reconciling agents,
@@ -598,16 +621,22 @@ fn poll_from_listing(
             _ => {}
         }
     }
-    let panes = representative_panes(listing?);
-    // agent-hook state lives exactly as long as the foreground process that
-    // reported it — clear entries whose pane moved on before they render
-    crate::agent_status::reconcile(&panes);
+    let rows = listing?;
+    // ONE process-table snapshot per poll, shared by agent-status
+    // reconciliation and the memory footprint
+    let table = processes();
+    // agent-hook state lives exactly as long as the pane generation and
+    // foreground process generation that reported it
+    crate::agent_status::reconcile(&rows, &table);
+    let agents = crate::agent_status::projections(&rows);
+    let mut finish = crate::agent_status::finish_foregrounds(&rows);
+    let panes = representative_panes(rows);
 
     let roots: HashMap<String, u32> = names
         .iter()
         .filter_map(|n| panes.get(n).map(|pane| (n.clone(), pane.pane_pid)))
         .collect();
-    let mem = tree_mem(&roots);
+    let mem = tree_mem(&table, &roots);
 
     // captures only for sessions that are both requested AND alive — a dead
     // target inside the batch would abort the remaining commands
@@ -652,7 +681,10 @@ fn poll_from_listing(
                 fg: pane.map(|pane| pane.command.clone()),
                 cwd: pane.and_then(|pane| usable_cwd(&pane.path).map(str::to_owned)),
                 scrolled: pane.map(|pane| pane.in_mode),
-                agent: pane.and_then(|_| crate::agent_status::current(&name)),
+                agent: pane.and(agents.get(&name)).map(|o| o.state),
+                episode: pane.and(agents.get(&name)).map(|o| o.episode),
+                episode_viewed: pane.and(agents.get(&name)).is_some_and(|o| o.viewed),
+                finish_fg: pane.and_then(|_| finish.remove(&name)),
                 name,
             }
         })
@@ -797,6 +829,7 @@ mod tests {
             vec![],
             false,
             Err(DeckError::new(ErrorKind::Tmux, "listing unavailable")),
+            crate::procinfo::processes,
         )
         .is_err());
         let mut previews: Vec<String> = (0..MAX_TAIL_SESSIONS)
@@ -808,6 +841,7 @@ mod tests {
             previews,
             false,
             Ok(rows),
+            crate::procinfo::processes,
         )
         .unwrap();
         assert_eq!(info.len(), 3);
@@ -879,6 +913,249 @@ mod tests {
         }
     }
 
+    /// FR-SI-03/03.1: `agent` and the finish rule's `finish_fg` come from
+    /// the SAME pane — the session's Signal target (its active pane) — and
+    /// `finish_fg` exists only for a single-pane session. `fg` keeps the
+    /// representative (first) pane for the Board's other uses. Neither
+    /// split topology may read as "no agent state, shell in front":
+    /// - first-listed shell + active agent pane;
+    /// - active shell pane + inactive live agent pane (the whole session,
+    ///   agent included, would be killed by a retirement).
+    #[test]
+    fn retirement_evidence_is_same_pane_and_single_pane_only() {
+        use crate::procinfo::ProcessInfo;
+        let _store = crate::agent_status::STORE_TEST_LOCK.lock_or_recover();
+        let _tracker = crate::shell_state::TRACKER_TEST_LOCK.lock_or_recover();
+        crate::agent_status::reset_for_tests();
+        let process = |pid, ppid, tty, fg, start| ProcessInfo {
+            pid,
+            ppid,
+            pgid: pid,
+            tty,
+            tty_pgid: fg,
+            start_seconds: start,
+            start_micros: 0,
+        };
+        // pane %3: a shell alone; pane %4: shell → agent (leader) → helper
+        let table: crate::agent_status::ProcessTable = [
+            process(300, 42, 7, 300, 1000),
+            process(400, 42, 8, 410, 1000),
+            process(410, 400, 8, 410, 2000),
+            process(420, 410, 8, 410, 5000),
+        ]
+        .into_iter()
+        .map(|info| (info.pid, info))
+        .collect();
+        let pane = |pane: &str, pid: u32, active: bool, fg: &str| PaneRow {
+            server_pid: 42,
+            session_id: "$1".into(),
+            session_name: "deck-card-mixed".into(),
+            window_id: "@1".into(),
+            pane_id: pane.into(),
+            pane_pid: pid,
+            window_active: true,
+            pane_active: active,
+            command: fg.into(),
+            ..PaneRow::default()
+        };
+        let line = format!(
+            "{{\"v\":1,\"source\":\"claude-code\",\"state\":\"working\",\"socket\":\"{}\",\"server_pid\":42,\"pane\":\"%4\"}}",
+            crate::tmux::socket()
+        );
+        let poll = |rows: Vec<PaneRow>| {
+            let table = table.clone();
+            poll_from_listing(
+                vec!["deck-card-mixed".into()],
+                vec![],
+                false,
+                Ok(rows),
+                move || table,
+            )
+            .unwrap()
+            .remove(0)
+        };
+        let finish = |info: &SessInfo| {
+            // what `runFinishHolds` reads: no agent word AND a shell in front
+            info.agent.is_none()
+                && info
+                    .finish_fg
+                    .as_deref()
+                    .is_some_and(|fg| crate::context::shell_process(Some(fg)))
+        };
+
+        // first-listed shell + ACTIVE agent pane (reporting)
+        let agent_active = vec![
+            pane("%3", 300, false, "zsh"),
+            pane("%4", 400, true, "claude"),
+        ];
+        let origin = crate::agent_status::Origin {
+            peer: Some(420),
+            table: table.clone(),
+        };
+        assert_eq!(
+            crate::agent_status::ingest(&line, &origin, || Some(agent_active.clone())),
+            Ok(())
+        );
+        let info = poll(agent_active.clone());
+        assert_eq!(info.agent, Some("working"), "the active pane's observation");
+        assert_eq!(
+            info.fg.as_deref(),
+            Some("zsh"),
+            "fg keeps the first pane for the Board"
+        );
+        assert_eq!(info.finish_fg, None, "two panes: no retirement evidence");
+        assert!(!finish(&info));
+        crate::agent_status::reset_for_tests();
+        assert!(!finish(&poll(agent_active)), "nor without an observation");
+
+        // the inverse: ACTIVE shell pane + inactive live agent pane
+        let shell_active = vec![
+            pane("%3", 300, true, "zsh"),
+            pane("%4", 400, false, "claude"),
+        ];
+        assert_eq!(
+            crate::agent_status::ingest(&line, &origin, || Some(shell_active.clone())),
+            Ok(())
+        );
+        let info = poll(shell_active);
+        assert_eq!(info.agent, None, "the active shell pane reports nothing");
+        assert_eq!(
+            info.finish_fg, None,
+            "yet its shell is no retirement evidence"
+        );
+        assert!(
+            !finish(&info),
+            "the live agent in the other pane keeps the session"
+        );
+
+        // no unique target: no agent word and no evidence
+        let unmarked = vec![
+            pane("%3", 300, false, "zsh"),
+            pane("%4", 400, false, "claude"),
+        ];
+        let info = poll(unmarked);
+        assert_eq!((info.agent, info.finish_fg), (None, None));
+
+        // a single-pane session keeps the existing fallback: the agent
+        // program exited, a shell is in front → evidence present
+        crate::agent_status::reset_for_tests();
+        let single = vec![pane("%3", 300, true, "zsh")];
+        let info = poll(single);
+        assert_eq!(info.finish_fg.as_deref(), Some("zsh"));
+        assert!(finish(&info), "single-pane shell: finish=close may retire");
+        // and a single pane still running its agent is no evidence
+        let running = vec![pane("%4", 400, true, "claude")];
+        assert!(!finish(&poll(running)));
+        crate::agent_status::reset_for_tests();
+        crate::notify::retain(&std::collections::HashSet::new());
+    }
+
+    /// FR-SI-03 poll cost with tracked foreground generations, on a
+    /// THROWAWAY tmux server (`deck-bench-signal-<pid>`): 5 / 20 / 50
+    /// sessions whose pane program (`sleep`) reported one observation each,
+    /// so every poll reconciles N generations. Opt-in timing, not a gate:
+    /// `cargo test --bin deck-app poll_cost_with_tracked_generations -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn poll_cost_with_tracked_generations() {
+        use std::process::Command;
+        use std::time::Instant;
+        let _store = crate::agent_status::STORE_TEST_LOCK.lock_or_recover();
+        let _tracker = crate::shell_state::TRACKER_TEST_LOCK.lock_or_recover();
+        let socket = format!("deck-bench-signal-{}", std::process::id());
+        let bin = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("binaries/tmux-aarch64-apple-darwin");
+        let run = |args: &[&str]| {
+            let out = Command::new(&bin)
+                .args(["-f", "/dev/null", "-L", &socket])
+                .args(args)
+                .output()
+                .expect("tmux");
+            String::from_utf8_lossy(&out.stdout).into_owned()
+        };
+        const ROUNDS: u32 = 20;
+        let mut created = 0;
+        eprintln!("sessions  scans/poll  processes() ms  reconcile ms  poll_from_listing ms  (avg of {ROUNDS})");
+        for n in [5usize, 20, 50] {
+            while created < n {
+                run(&[
+                    "new-session",
+                    "-d",
+                    "-s",
+                    &format!("b{created}"),
+                    "sleep",
+                    "600",
+                ]);
+                created += 1;
+            }
+            let rows: Vec<PaneRow> = run(&["list-panes", "-a", "-F", crate::tmux::PANE_FORMAT])
+                .lines()
+                .filter_map(crate::tmux::parse_pane_row)
+                .collect();
+            assert_eq!(rows.len(), n);
+            crate::agent_status::reset_for_tests();
+            let table = crate::procinfo::processes();
+            for row in &rows {
+                // the pane program reports for itself: peer == pane process
+                let line = format!(
+                    "{{\"v\":1,\"source\":\"codex\",\"state\":\"working\",\"socket\":\"{}\",\"server_pid\":{},\"pane\":\"{}\"}}",
+                    crate::tmux::socket(),
+                    row.server_pid,
+                    row.pane_id
+                );
+                let origin = crate::agent_status::Origin {
+                    peer: Some(row.pane_pid),
+                    table: table.clone(),
+                };
+                assert_eq!(
+                    crate::agent_status::ingest(&line, &origin, || Some(rows.clone())),
+                    Ok(())
+                );
+            }
+            let names: Vec<String> = (0..n).map(|i| format!("b{i}")).collect();
+            let t = Instant::now();
+            for _ in 0..ROUNDS {
+                std::hint::black_box(crate::procinfo::processes());
+            }
+            let scan = t.elapsed().as_secs_f64() * 1000.0 / f64::from(ROUNDS);
+            let t = Instant::now();
+            for _ in 0..ROUNDS {
+                crate::agent_status::reconcile(&rows, &table);
+            }
+            let reconcile = t.elapsed().as_secs_f64() * 1000.0 / f64::from(ROUNDS);
+            let t = Instant::now();
+            let mut last = Vec::new();
+            for _ in 0..ROUNDS {
+                last = poll_from_listing(
+                    names.clone(),
+                    vec![],
+                    false,
+                    Ok(rows.clone()),
+                    crate::procinfo::processes,
+                )
+                .unwrap();
+            }
+            let poll = t.elapsed().as_secs_f64() * 1000.0 / f64::from(ROUNDS);
+            assert!(
+                last.iter().all(|info| info.agent == Some("working")),
+                "every generation survived"
+            );
+            eprintln!(
+                "{n:>8}  {:>10}  {scan:>14.2}  {reconcile:>12.3}  {poll:>20.2}",
+                1
+            );
+        }
+        // tmux leaves its socket file behind: remove exactly this one
+        let path = run(&["display-message", "-p", "#{socket_path}"]);
+        run(&["kill-server"]);
+        let path = std::path::Path::new(path.trim());
+        if path.file_name().and_then(|n| n.to_str()) == Some(socket.as_str()) {
+            let _ = std::fs::remove_file(path);
+        }
+        crate::agent_status::reset_for_tests();
+        crate::notify::retain(&std::collections::HashSet::new());
+    }
+
     #[test]
     fn failed_listing_rejects_poll_instead_of_reporting_dead_sessions() {
         for kind in [
@@ -892,6 +1169,7 @@ mod tests {
                 vec![],
                 false,
                 Err(DeckError::new(kind, "listing unavailable")),
+                crate::procinfo::processes,
             );
             assert_eq!(result.unwrap_err().kind(), kind);
         }
@@ -1041,7 +1319,7 @@ mod tests {
         let mut roots = HashMap::new();
         roots.insert("self".to_string(), std::process::id());
         roots.insert("missing".to_string(), u32::MAX);
-        let memory = tree_mem(&roots);
+        let memory = tree_mem(&crate::procinfo::processes(), &roots);
         assert_eq!(memory.len(), 2);
         assert!(memory["self"] > 0.0);
         assert_eq!(memory["missing"], 0.0);

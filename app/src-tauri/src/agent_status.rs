@@ -5,22 +5,77 @@
 //! `deck-status-helper`, which forwards ONE closed status word plus the pane
 //! identity it inherited from `$TMUX`/`$TMUX_PANE` to a local unix socket in
 //! the deck data dir. This module owns that socket, the closed vocabulary,
-//! the pane→session resolution, and the reconciliation that clears state
-//! when the agent process leaves the pane's foreground.
+//! the pane-generation store, the ONE selector of a session's Signal pane,
+//! and the reconciliation that clears state when its generation ends.
 //!
 //! Design rules (mirror the scheduler's context philosophy):
 //! - The state is a CLOSED enum. Prompt text, notification messages and hook
 //!   payloads never enter this module — the helper already discarded them.
-//! - What decides whether a state is still valid is the pane's observed
-//!   foreground process, captured AT EVENT TIME (`expected_fg`), never a
-//!   hard-coded per-agent executable list.
-//! - No automatic card movement. This is input for the board's status dot
-//!   (the poll merge in `commands.rs`), for the scheduler's agent hold
-//!   (`scheduler::observe`), which may only DELAY a queued row — never
-//!   release, target or move anything — and for `notify.rs` (a macOS
-//!   notification while the window is not in front, and the Dock badge;
-//!   `ingest` calls `notify::observe`, `reconcile` calls `notify::retain`).
-//!   Those three are the only readers.
+//! - Identity (FR-SI-03). An observation is stored per pane generation
+//!   (`PaneKey`: tmux server pid + pane id) and bound to the pane's session
+//!   id, pane process and FOREGROUND GENERATION — the tty foreground
+//!   process-group leader's pid and birth instant (`ForegroundGeneration`).
+//!   It lives exactly as long as all of those are unchanged; executable
+//!   names play no part, and there is never a per-agent executable list.
+//!   Admission requires the leader in the reporting helper's ancestry,
+//!   read from the same process-table snapshot (`ingest`).
+//! - Projection. A card's Signal is the observation of ONE pane: the active
+//!   pane of its session's current window (`signal_targets`) — where deck
+//!   delivers input. No first-pane fallback: without a unique target there
+//!   is no Signal. An event from any other pane is stored under that pane
+//!   and reaches no card-level surface (status, attention, notification,
+//!   Dock, scheduler hold) until its pane becomes the target.
+//! - Interaction identity (FR-SI-04). Wire v1 `{v:1, source, state,
+//!   socket, server_pid, pane}`; v2 adds `interaction`, the SOURCE's own id
+//!   (Codex `turn_id`, Claude Code `prompt_id`; runtime-proven, see
+//!   `deck-status-helper`) as a validated lowercase UUID — never
+//!   synthesized. Both are accepted; an older, v1-only backend refuses v2
+//!   as `bad-version` (fail closed: no Signal), which can happen briefly in
+//!   an in-place update's replacement → relaunch window. Inside one pane
+//!   generation an
+//!   `Interactions` tracker keeps the current id and the recently ended ones:
+//!   `working` may start a new interaction (not a recently ended one),
+//!   `needs-input` belongs to the current interaction (or bootstraps one
+//!   when there is none), `turn-done` ends the current one, and anything of
+//!   another or an ended interaction is refused without touching the
+//!   observation — so a late Stop(A) can never release B's input request.
+//!   Once a generation has shown a v2 id, a v1 word is refused
+//!   (`identity-downgrade`). No ordering is inferred (UUIDv7 time, lexical
+//!   order and arrival order are unused), so a late `working(A)` arriving
+//!   after `working(B)` but before A's Stop still becomes current — the one
+//!   documented unsolved class. A paired ending is still only an interaction
+//!   ending: no side-effect authority follows from identity.
+//! - Attention episodes (FR-SI-05). Each accepted observation carries a
+//!   Deck-local opaque `EpisodeId` (never a source id, never Agent truth,
+//!   never authority): the same (interaction, word) — or, for v1, the same
+//!   word — keeps it; any other accepted change or a new generation gets a
+//!   new one; a refused event allocates none. `viewed` on the live entry is
+//!   the ONE authoritative "this turn ending was viewed" truth, set only by
+//!   `mark_viewed` for that exact episode (`notify_dismiss`), projected to
+//!   every surface through `poll_sessions` (`episode`, `episode_viewed`)
+//!   and the notification layer, and gone with the observation — no
+//!   history, no cap, nothing persisted. Drop diagnostics: the first 20
+//!   refusals one by one, then a closed-reason summary at most every ten
+//!   minutes; `identity-absent` once per source when a new generation of a
+//!   source that sent v2 sends v1 only (legacy advisory mode, no allowlist).
+//!   The cross-layer contract is replayed by the Signal Trace harness
+//!   (`signal_trace.rs` + `ui/test/signal-trace.test.mjs`).
+//! - No automatic card movement. Backend readers: the poll merge in
+//!   `commands.rs` (the webview's status dot, attention and run-finish
+//!   reading), the scheduler's agent hold (`scheduler::observe`), which may
+//!   only DELAY a queued row — never release, target or move anything — and
+//!   `notify.rs` (a macOS notification while the window is not in front, and
+//!   the Dock badge; `ingest` calls `notify::observe`, `reconcile` calls
+//!   `notify::retain`). Every consumer, backend and webview, is pinned and
+//!   classified by `tests/signal_census.rs`.
+//! - The words are INTERACTION observations: `working` = an interaction is
+//!   active, `needs-input` = the agent requested input, `turn-done` = the
+//!   adapter observed an interaction boundary. `turn-done` does not mean the
+//!   agent is idle, its process finished, no background work remains or the
+//!   task succeeded (Claude Code resumes by itself when a background command
+//!   finishes; a Codex interrupt leaves background terminals running). No
+//!   word authorizes a side effect: not closing a card, not releasing
+//!   external text into the pane.
 //!
 //! Adding an agent module = one entry in `SOURCES` + an installer that
 //! registers that agent's own hook/notify config to call the same helper
@@ -47,7 +102,9 @@
 //! cannot see that. It also deletes the legacy copy once nothing references
 //! it. Install strips deck's entries document-wide before writing the specs,
 //! but an EMPTY array the user wrote is left exactly as written. Hooks inherit `$TMUX`/`$TMUX_PANE`; the helper
-//! drains and DISCARDS the hook stdin payload, charset-validates every field,
+//! drains the hook stdin payload and discards it after reading at most ONE
+//! allowlisted top-level field (the source's interaction id, below),
+//! charset-validates every field,
 //! and writes one JSON line to the instance's `status.sock` (0600) — routed
 //! per pane by `DECK_STATUS_SOCK`, which each deck exports into its own tmux
 //! server env (tmux.rs), falling back to `~/.deck/status.sock`; so an
@@ -55,23 +112,26 @@
 //! The helper can never carry content, exits 0 always, and silently does
 //! nothing outside a deck tmux pane. The backend listener validates source/state against the module
 //! registry, requires the event's socket name AND tmux server pid (generation
-//! stamp — restarted servers reuse pane ids) before resolving pane→session,
-//! refuses shell-foreground panes, and records the observed foreground
-//! executable. An event is bound to the pane it names: the listener takes
+//! stamp — restarted servers reuse pane ids) before resolving the pane,
+//! refuses shell-foreground panes, and records the pane's foreground
+//! generation. An event is bound to the pane it names: the listener takes
 //! the connecting process from the kernel (`procinfo::peer_pid`), walks its
-//! parent chain (`procinfo::ancestry`, while the helper is still connected —
+//! parent chain (`procinfo::ancestry_in`, while the helper is still connected —
 //! the helper waits for deck to close the stream before exiting) and refuses
 //! the event unless the pane's own process (`#{pane_pid}`) is in that chain
 //! (`foreign-pane`; `no-peer` without a kernel pid). Every pane has
-//! `DECK_STATUS_SOCK`, so without this any program in any pane could report
-//! `turn-done` for a sibling card and have a "close the card" automation
-//! retire it, or paint another card's attention state. Accepted residual: a
-//! program in a pane can still misreport its OWN pane, which is no more than
-//! it could do by exiting; the finish rule was chosen to trust that pane's
-//! agent. Codex `async` hooks are spawned by the agent and stay in its tree;
+//! `DECK_STATUS_SOCK`, so without this any program in any pane could paint
+//! another card's status and attention state. Accepted residual: a program
+//! in a pane can still misreport its OWN pane; since no word carries
+//! side-effect authority, that is a presentation error only. Codex `async` hooks are spawned by the agent and stay in its tree;
 //! an agent that detached its hooks into another session would have its
-//! events refused, and that would show as the toggle reporting nothing; `poll_sessions` reconciles so the state dies with the process
-//! that reported it — no TTLs and no per-agent executable lists. Frontend:
+//! events refused, and that would show as the toggle reporting nothing. The
+//! reporter must also descend from the pane's CURRENT foreground leader
+//! (`generation-mismatch` otherwise; `no-generation` when it cannot be
+//! read): proven at runtime for Claude Code 2.1.282 and Codex 0.156.1, whose
+//! helper's parent is that leader for every hook word. `poll_sessions`
+//! reconciles with one process-table snapshot so the state dies with the
+//! pane or process generation that reported it — no TTLs. Frontend:
 //! `effectiveCardStatus` (pure.js) — agent state OUTRANKS the 15s heuristic
 //! (card statuses `attention`/`done`; a working agent never shows amber). The
 //! Settings toggle is the user-driven writer of `~/.claude/settings.json`
@@ -135,22 +195,219 @@ pub(crate) struct Event {
     socket: String,
     server_pid: u32,
     pane: String,
+    /// v2 only: the source's own interaction id (Codex `turn_id`, Claude
+    /// Code `prompt_id`), a lowercase UUID the helper validated.
+    interaction: Option<String>,
 }
 
+/// `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`, lowercase hex — the one shape an
+/// interaction id may take on the wire (mirrors the helper's `uuid_ok`).
+fn interaction_ok(s: &str) -> bool {
+    s.len() == 36
+        && s.bytes().enumerate().all(|(i, b)| match i {
+            8 | 13 | 18 | 23 => b == b'-',
+            _ => b.is_ascii_digit() || (b'a'..=b'f').contains(&b),
+        })
+}
+
+/// A pane of one tmux server generation. tmux never reuses a pane id within
+/// a server's life; a restarted server has a new pid, so an old key can
+/// never name a new pane.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct PaneKey {
+    server_pid: u32,
+    pane_id: String,
+}
+
+impl PaneKey {
+    fn of(row: &PaneRow) -> Self {
+        Self {
+            server_pid: row.server_pid,
+            pane_id: row.pane_id.clone(),
+        }
+    }
+}
+
+/// The tty foreground process group that owned the reporting helper: its
+/// leader's pid and birth instant. A wrapper (`caffeinate claude`) may be
+/// the leader; that is still one execution generation. pid + start tells a
+/// relaunched agent (same executable name, new process) and a reused pid
+/// apart.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ForegroundGeneration {
+    pid: u32,
+    start_seconds: u64,
+    start_micros: u32,
+}
+
+/// One accepted observation, bound to the pane generation that reported it.
 struct Entry {
     state: &'static str,
-    /// Foreground executable observed when the event arrived. The agent
-    /// process name varies by install (claude/node/bun), so the entry
-    /// self-calibrates instead of trusting a per-agent list.
-    expected_fg: String,
+    /// The session name the pane belonged to when it reported (the key of
+    /// every card-level surface; `notify_dismiss` names it).
+    session: String,
+    session_id: String,
+    pane_pid: u32,
+    generation: ForegroundGeneration,
+    /// Interaction tracking inside this generation (FR-SI-04); a new
+    /// generation starts a fresh tracker.
+    interactions: Interactions,
+    /// The attention episode of the current observation (FR-SI-05), its
+    /// private sameness key, and whether the user has viewed it.
+    episode: EpisodeId,
+    last: Option<(Option<String>, &'static str)>,
+    viewed: bool,
 }
 
-static AGENTS: Mutex<Option<HashMap<String, Entry>>> = Mutex::new(None);
+/// Deck-local, process-local attention episode (FR-SI-05): "is this the
+/// same accepted observation that was already surfaced or viewed?". An
+/// opaque counter — never a source id, never Agent truth, never side-effect
+/// authority. Only an ACCEPTED observation allocates one: the same (source
+/// interaction, word) — or, for v1, the same word — keeps its episode; any
+/// other accepted change, or a new foreground generation, gets a new one.
+pub(crate) type EpisodeId = u64;
 
-fn with_agents<R>(f: impl FnOnce(&mut HashMap<String, Entry>) -> R) -> R {
+static NEXT_EPISODE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// What a card-level surface may read about one pane's observation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Observation {
+    pub(crate) state: &'static str,
+    pub(crate) episode: EpisodeId,
+    /// The user has viewed this exact `turn-done` episode
+    /// (`mark_viewed`). The ONE authoritative viewed truth: it lives with
+    /// the live observation and dies with it — no history, no cap.
+    pub(crate) viewed: bool,
+}
+
+/// CLI drift (FR-SI-05): true exactly once per source, the first time a NEW
+/// foreground generation of a source that has sent v2 in this Deck process
+/// reports v1 only. Deck then runs that generation in legacy advisory mode
+/// (it cannot know better); the line makes the drift visible. No version
+/// list, no network check.
+fn identity_absent(source: &str, v2: bool, fresh_generation: bool) -> bool {
+    static SOURCES_SEEN: Mutex<(Vec<String>, Vec<String>)> = Mutex::new((Vec::new(), Vec::new()));
+    let mut guard = SOURCES_SEEN.lock_or_recover();
+    let (with_identity, warned) = &mut *guard;
+    if v2 {
+        if !with_identity.iter().any(|s| s == source) {
+            with_identity.push(source.to_string());
+        }
+        return false;
+    }
+    if !fresh_generation {
+        return false;
+    }
+    if with_identity.iter().any(|s| s == source) && !warned.iter().any(|s| s == source) {
+        warned.push(source.to_string());
+        return true;
+    }
+    false
+}
+
+/// How many ended interaction ids a pane generation remembers.
+const ENDED_CAP: usize = 8;
+
+/// Whether this generation has shown a source interaction id yet.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Mode {
+    /// Only v1 events so far: generation-bound words, today's semantics.
+    #[default]
+    Legacy,
+    /// A v2 event was seen: every later event must carry its id. A v1 event
+    /// can no longer change anything (no silent downgrade on a source that
+    /// lost its id field for one event).
+    IdentityBound,
+}
+
+/// Per pane generation: which interaction is current and which recently
+/// ended, by the SOURCE's own id. There is no ordering metadata in either
+/// source's hooks, so this only separates interactions; it never orders
+/// them (UUIDv7 time, lexical order and arrival order are deliberately
+/// unused). Known unsolved class: `working(B)` then a late `working(A)`
+/// that arrives before `Stop(A)` has marked A ended makes A current.
+#[derive(Default)]
+struct Interactions {
+    mode: Mode,
+    current: Option<String>,
+    ended: std::collections::VecDeque<String>,
+}
+
+impl Interactions {
+    fn has_ended(&self, id: &str) -> bool {
+        self.ended.iter().any(|ended| ended == id)
+    }
+
+    fn end(&mut self, id: &str) {
+        if !self.has_ended(id) {
+            self.ended.push_back(id.to_string());
+            if self.ended.len() > ENDED_CAP {
+                self.ended.pop_front();
+            }
+        }
+    }
+
+    /// Admit one word. `Ok` = the pane's observation becomes `state`; `Err`
+    /// = a categorized refusal that changes no observation (the tracker may
+    /// still learn that an id ended). None of this is side-effect
+    /// authority: a paired turn ending is still only an interaction ending.
+    fn admit(
+        &mut self,
+        state: &'static str,
+        interaction: Option<&str>,
+    ) -> Result<(), &'static str> {
+        let Some(id) = interaction else {
+            return match self.mode {
+                Mode::Legacy => Ok(()),
+                Mode::IdentityBound => Err("identity-downgrade"),
+            };
+        };
+        self.mode = Mode::IdentityBound;
+        let current = self.current.as_deref() == Some(id);
+        match state {
+            WORKING if self.has_ended(id) => Err("stale-interaction"),
+            // a new interaction may begin before a late Stop of the old one
+            WORKING => {
+                self.current = Some(id.to_string());
+                Ok(())
+            }
+            NEEDS_INPUT if self.has_ended(id) => Err("stale-interaction"),
+            NEEDS_INPUT if current => Ok(()),
+            // missing start (or a Deck restart mid-interaction): bootstrap
+            NEEDS_INPUT if self.current.is_none() => {
+                self.current = Some(id.to_string());
+                Ok(())
+            }
+            NEEDS_INPUT => Err("interaction-mismatch"),
+            _ if self.has_ended(id) => Err("duplicate-interaction"),
+            _ if current => {
+                self.end(id);
+                self.current = None;
+                Ok(())
+            }
+            // an unpaired boundary (its start was missed): advisory only
+            _ if self.current.is_none() => {
+                self.end(id);
+                Ok(())
+            }
+            // a late ending of another interaction: remembered, not applied
+            _ => {
+                self.end(id);
+                Err("interaction-mismatch")
+            }
+        }
+    }
+}
+
+static AGENTS: Mutex<Option<HashMap<PaneKey, Entry>>> = Mutex::new(None);
+
+fn with_agents<R>(f: impl FnOnce(&mut HashMap<PaneKey, Entry>) -> R) -> R {
     let mut guard = AGENTS.lock_or_recover();
     f(guard.get_or_insert_with(HashMap::new))
 }
+
+/// One process-table snapshot (`procinfo::processes`).
+pub(crate) type ProcessTable = HashMap<u32, crate::procinfo::ProcessInfo>;
 
 // ---------- event parsing (closed validation at the trust boundary) ---------
 
@@ -160,9 +417,21 @@ fn with_agents<R>(f: impl FnOnce(&mut HashMap<String, Entry>) -> R) -> R {
 pub(crate) fn parse_event(line: &str) -> Result<Event, &'static str> {
     let value: serde_json::Value = serde_json::from_str(line).map_err(|_| "bad-json")?;
     let obj = value.as_object().ok_or("bad-json")?;
-    if obj.get("v").and_then(|v| v.as_u64()) != Some(1) {
+    let version = obj.get("v").and_then(|v| v.as_u64());
+    if !matches!(version, Some(1 | 2)) {
         return Err("bad-version");
     }
+    // v1 carries no interaction; v2 carries exactly one valid id
+    let interaction = match (version, obj.get("interaction")) {
+        (Some(1), None) => None,
+        (Some(2), Some(id)) => Some(
+            id.as_str()
+                .filter(|id| interaction_ok(id))
+                .ok_or("bad-interaction")?
+                .to_string(),
+        ),
+        _ => return Err("bad-interaction"),
+    };
     let source = obj
         .get("source")
         .and_then(|v| v.as_str())
@@ -198,31 +467,118 @@ pub(crate) fn parse_event(line: &str) -> Result<Event, &'static str> {
         socket: socket.to_string(),
         server_pid,
         pane: pane.to_string(),
+        interaction,
     })
 }
 
-// ---------- pane → session resolution --------------------------------------
+// ---------- identity: foreground generation and the card's pane ---------------
 
-/// The (session, foreground, pane pid) of `pane` in a pane listing — but
-/// only if the listing's server pid matches the event's generation stamp (a
-/// restarted server reuses numeric pane ids; pid is what tells generations
-/// apart).
-pub(crate) fn resolve_in(
-    rows: &[PaneRow],
-    pane: &str,
-    server_pid: u32,
-) -> Option<(String, String, u32)> {
-    let row = rows.iter().find(|row| row.pane_id == pane)?;
-    if row.server_pid != server_pid
-        || crate::tmux::validate_session_name(&row.session_name).is_err()
-    {
-        return None;
-    }
-    Some((row.session_name.clone(), row.command.clone(), row.pane_pid))
+/// The foreground generation of the tty `pane_pid` controls, read from ONE
+/// process-table snapshot: the tty's foreground process group, its leader
+/// (pid == pgid, same tty) and the leader's birth instant. `None` when any
+/// of it cannot be established — callers fail closed.
+pub(crate) fn foreground_generation(
+    table: &ProcessTable,
+    pane_pid: u32,
+) -> Option<ForegroundGeneration> {
+    let tty = table.get(&pane_pid)?.tty;
+    let leader = crate::procinfo::foreground_leader(table, tty)?;
+    let info = table.get(&leader)?;
+    (info.start_seconds != 0).then_some(ForegroundGeneration {
+        pid: leader,
+        start_seconds: info.start_seconds,
+        start_micros: info.start_micros,
+    })
 }
 
-fn tmux_resolve(pane: &str, server_pid: u32) -> Option<(String, String, u32)> {
-    resolve_in(&crate::tmux::list_panes().ok()?, pane, server_pid)
+/// The ONE selector of the pane whose observation is a session's Signal:
+/// the active pane of the session's current window (`window_active &&
+/// pane_active`) — the pane `pane_target(session)` reaches, i.e. where deck
+/// delivers input. Exactly one per session or none: a session whose active
+/// target cannot be established uniquely has no Signal. Never the first
+/// listed pane. The poll (status, attention, run finish), the scheduler's
+/// agent hold and notifications all read through this.
+pub(crate) fn signal_targets(rows: &[PaneRow]) -> HashMap<String, &PaneRow> {
+    let mut targets: HashMap<String, Option<&PaneRow>> = HashMap::new();
+    for row in rows
+        .iter()
+        .filter(|row| row.window_active && row.pane_active)
+    {
+        targets
+            .entry(row.session_name.clone())
+            .and_modify(|seen| *seen = None) // a second marked pane: ambiguous
+            .or_insert(Some(row));
+    }
+    targets
+        .into_iter()
+        .filter_map(|(session, row)| Some((session, row?)))
+        .collect()
+}
+
+/// Retirement evidence (FR-SI-03.1): the foreground an automation's
+/// "close the card" finish rule may pair with an absent agent word ("the
+/// agent program exited, a shell is in front"). It exists ONLY for a
+/// session with exactly one pane — the one Deck created — and is that
+/// pane's foreground. A pane-local fact must never become session-lifecycle
+/// authority: in a manually split session an active shell pane says nothing
+/// about a live agent in another pane, and retiring the card would kill the
+/// whole tmux session. Multi-pane sessions therefore have no automatic
+/// retirement at all, whichever pane is active; the Signal projection
+/// (`signal_targets`) is unaffected.
+pub(crate) fn finish_foregrounds(rows: &[PaneRow]) -> HashMap<String, String> {
+    let mut panes: HashMap<&str, usize> = HashMap::new();
+    for row in rows {
+        *panes.entry(row.session_name.as_str()).or_default() += 1;
+    }
+    signal_targets(rows)
+        .into_iter()
+        .filter(|(session, _)| panes.get(session.as_str()) == Some(&1))
+        .map(|(session, target)| (session, target.command.clone()))
+        .collect()
+}
+
+/// The observation stored for `target` (a pane from `signal_targets`), if
+/// it still belongs to that pane's session and process. The foreground
+/// generation is checked by `reconcile` against a process table; readers
+/// without one (the scheduler tick) only ever get a word that can hold.
+pub(crate) fn projected(target: &PaneRow) -> Option<Observation> {
+    with_agents(|agents| {
+        agents
+            .get(&PaneKey::of(target))
+            .filter(|entry| {
+                entry.session_id == target.session_id && entry.pane_pid == target.pane_pid
+            })
+            .map(|entry| Observation {
+                state: entry.state,
+                episode: entry.episode,
+                viewed: entry.viewed,
+            })
+    })
+}
+
+/// The user viewed `episode` of `session` (`notify_dismiss`). Marks exactly
+/// that live `turn-done` episode — also on an inactive pane of the session,
+/// whose episode may be projected again — and nothing else: a stale episode
+/// that no longer exists is a no-op, never "whatever is current". Returns
+/// whether an episode was (or already had been) marked.
+pub(crate) fn mark_viewed(session: &str, episode: EpisodeId) -> bool {
+    with_agents(|agents| {
+        agents
+            .values_mut()
+            .find(|entry| {
+                entry.session == session && entry.episode == episode && entry.state == TURN_DONE
+            })
+            .map(|entry| entry.viewed = true)
+            .is_some()
+    })
+}
+
+/// session → projected observation, for every session with a Signal target.
+pub(crate) fn projections(rows: &[PaneRow]) -> HashMap<String, Observation> {
+    signal_targets(rows)
+        .into_iter()
+        .filter_map(|(session, target)| Some((session, projected(target)?)))
+        .collect()
 }
 
 /// How far up from the reporting process the pane's process may be. A hook
@@ -230,75 +586,157 @@ fn tmux_resolve(pane: &str, server_pid: u32) -> Option<(String, String, u32)> {
 /// pane's shell; 32 hops is far beyond any real layering.
 const ORIGIN_HOPS: usize = 32;
 
-/// Validate one wire line and commit it to the store. `origin` is the
-/// reporting process and its ancestors (`procinfo::ancestry` of the
-/// socket's kernel-reported peer); the event is refused unless the pane it
-/// names is in that chain, so a process in one pane cannot report for
-/// another. `resolve` is injected so tests exercise the full path without a
-/// live tmux server.
+/// What the listener read while the helper was still connected: the
+/// kernel's peer pid and one process-table snapshot. The peer's ancestry,
+/// the pane's foreground leader and its birth instant all come from this one
+/// snapshot, so the compared facts describe the same instant.
+pub(crate) struct Origin {
+    pub(crate) peer: Option<u32>,
+    pub(crate) table: ProcessTable,
+}
+
+/// Validate one wire line and commit it to the store. Admission, in order:
+/// a kernel peer (`no-peer`), a pane of this server generation
+/// (`no-such-pane`), the pane's own process in the peer's ancestry
+/// (`foreign-pane`), no shell in the foreground (`shell-foreground`), an
+/// establishable foreground generation (`no-generation`) whose leader is
+/// also in the peer's ancestry (`generation-mismatch`: the reporter is not
+/// the pane's current foreground program — a late event of an exited or
+/// replaced agent). Runtime proof (Claude Code 2.1.282, Codex 0.156.1): the
+/// helper's parent IS the foreground leader; no fixed depth is required, so
+/// a wrapper leader is accepted.
+///
+/// The observation is stored under its pane. Only an event from the pane
+/// that is its session's Signal target reaches the notification layer;
+/// any other pane's event waits in the store until that pane becomes the
+/// target (`reconcile` projects it then). `listing` is injected so tests
+/// run the full path without a live tmux server.
 pub(crate) fn ingest(
     line: &str,
-    origin: &[u32],
-    resolve: impl Fn(&str, u32) -> Option<(String, String, u32)>,
+    origin: &Origin,
+    listing: impl FnOnce() -> Option<Vec<PaneRow>>,
 ) -> Result<(), &'static str> {
     let event = parse_event(line)?;
-    if origin.is_empty() {
+    let chain = origin
+        .peer
+        .map(|peer| crate::procinfo::ancestry_in(&origin.table, peer, ORIGIN_HOPS))
+        .unwrap_or_default();
+    if chain.is_empty() {
         return Err("no-peer");
     }
-    let (session, fg, pane_pid) = resolve(&event.pane, event.server_pid).ok_or("no-such-pane")?;
-    if !origin.contains(&pane_pid) {
+    let rows = listing().ok_or("no-such-pane")?;
+    let row = rows
+        .iter()
+        .find(|row| row.pane_id == event.pane && row.server_pid == event.server_pid)
+        .filter(|row| crate::tmux::validate_session_name(&row.session_name).is_ok())
+        .ok_or("no-such-pane")?;
+    if !chain.contains(&row.pane_pid) {
         return Err("foreign-pane");
     }
     // An agent hook while a plain shell owns the pane foreground has no
     // process to bind the state's lifetime to — refuse rather than flicker.
-    if crate::context::shell_process(Some(&fg)) {
+    if crate::context::shell_process(Some(&row.command)) {
         return Err("shell-foreground");
     }
+    let generation = foreground_generation(&origin.table, row.pane_pid).ok_or("no-generation")?;
+    if !chain.contains(&generation.pid) {
+        return Err("generation-mismatch");
+    }
+    let key = PaneKey::of(row);
+    let observation = with_agents(|agents| -> Result<Observation, &'static str> {
+        // the same pane generation keeps its interaction tracker; anything
+        // else (a new foreground generation, a replaced session or pane
+        // process) starts fresh
+        let same_generation = agents.get(&key).is_some_and(|entry| {
+            entry.session_id == row.session_id
+                && entry.pane_pid == row.pane_pid
+                && entry.generation == generation
+        });
+        if identity_absent(&event.source, event.interaction.is_some(), !same_generation) {
+            applog(&format!("[agent-status] {} identity-absent", event.source));
+        }
+        if !same_generation {
+            agents.insert(
+                key.clone(),
+                Entry {
+                    state: event.state,
+                    session: row.session_name.clone(),
+                    session_id: row.session_id.clone(),
+                    pane_pid: row.pane_pid,
+                    generation,
+                    interactions: Interactions::default(),
+                    episode: 0,
+                    last: None,
+                    viewed: false,
+                },
+            );
+        }
+        let entry = agents.get_mut(&key).ok_or("no-such-pane")?;
+        entry
+            .interactions
+            .admit(event.state, event.interaction.as_deref())?;
+        entry.state = event.state;
+        // only an accepted observation allocates or changes an episode
+        let sameness = (event.interaction.clone(), event.state);
+        if entry.last.as_ref() != Some(&sameness) {
+            entry.last = Some(sameness);
+            entry.episode = NEXT_EPISODE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            entry.viewed = false;
+        }
+        Ok(Observation {
+            state: entry.state,
+            episode: entry.episode,
+            viewed: entry.viewed,
+        })
+    })?;
+    let targeted = signal_targets(&rows)
+        .get(&row.session_name)
+        .is_some_and(|target| target.pane_id == row.pane_id);
     applog(&format!(
-        "[agent-status] {} {} s={}",
+        "[agent-status] {} {} s={} target={} v={} e={}",
         event.source,
         event.state,
-        crate::applog::session_tag(&session)
+        crate::applog::session_tag(&row.session_name),
+        u8::from(targeted),
+        if event.interaction.is_some() { 2 } else { 1 },
+        observation.episode
     ));
-    with_agents(|agents| {
-        agents.insert(
-            session.clone(),
-            Entry {
-                state: event.state,
-                expected_fg: fg,
-            },
-        );
-    });
-    // the desktop attention loop: notification while away, Dock badge
-    crate::notify::observe(&session, event.state);
+    // the desktop attention loop (notification while away, Dock badge)
+    // hears only the session's Signal target
+    if targeted {
+        crate::notify::observe(&row.session_name, observation);
+    }
     Ok(())
 }
 
 // ---------- poll integration ------------------------------------------------
 
-/// Called from every `poll_sessions` with the fresh representative pane per
-/// session. Clears state whose session is gone or whose pane foreground no
-/// longer matches the process observed when the state was reported — the
-/// agent exited or was replaced.
-pub(crate) fn reconcile(panes: &HashMap<String, PaneRow>) {
-    let alive = with_agents(|agents| {
-        agents.retain(|session, entry| {
-            let Some(pane) = panes.get(session) else {
-                return false;
-            };
-            !crate::context::shell_process(Some(&pane.command)) && pane.command == entry.expected_fg
+/// Called from every `poll_sessions` with the whole pane listing and the
+/// poll's one process-table snapshot. An observation survives only while
+/// its exact pane (`server_pid`, `pane_id`) still exists with the same
+/// session id and pane process, AND the pane's foreground generation (leader
+/// pid + birth instant) is the one that reported it; anything that cannot
+/// be re-established is removed. Executable names play no part. Then the
+/// notification layer is brought to the projected Signal of every session:
+/// a session whose target changed hears its new target's word, a session
+/// without one is forgotten.
+pub(crate) fn reconcile(rows: &[PaneRow], table: &ProcessTable) {
+    with_agents(|agents| {
+        agents.retain(|key, entry| {
+            rows.iter()
+                .find(|row| PaneKey::of(row) == *key)
+                .is_some_and(|row| {
+                    row.session_id == entry.session_id
+                        && row.pane_pid == entry.pane_pid
+                        && foreground_generation(table, row.pane_pid) == Some(entry.generation)
+                })
         });
-        agents
-            .keys()
-            .cloned()
-            .collect::<std::collections::HashSet<String>>()
     });
-    crate::notify::retain(&alive);
-}
-
-/// The state word for one session, if an agent module reported one.
-pub(crate) fn current(session: &str) -> Option<&'static str> {
-    with_agents(|agents| agents.get(session).map(|e| e.state))
+    let projected = projections(rows);
+    for (session, observation) in &projected {
+        crate::notify::observe(session, *observation);
+    }
+    crate::notify::retain(&projected.into_keys().collect());
 }
 
 #[cfg(test)]
@@ -333,29 +771,104 @@ fn read_first_line(stream: &mut UnixStream) -> Option<String> {
     String::from_utf8(line.to_vec()).ok()
 }
 
-fn handle_stream(mut stream: UnixStream, drops: &mut u32) {
+/// Every reason `ingest` can refuse an event with — the closed vocabulary
+/// of the drop diagnostics (anything else is counted as `other`).
+const DROP_REASONS: &[&str] = &[
+    "bad-json",
+    "bad-version",
+    "bad-interaction",
+    "unknown-source",
+    "unknown-state",
+    "other-server",
+    "bad-pid",
+    "bad-pane",
+    "no-peer",
+    "no-such-pane",
+    "foreign-pane",
+    "shell-foreground",
+    "no-generation",
+    "generation-mismatch",
+    "stale-interaction",
+    "interaction-mismatch",
+    "duplicate-interaction",
+    "identity-downgrade",
+];
+
+/// How often the drop summary may be written.
+const DROP_SUMMARY_EVERY: Duration = Duration::from_secs(600);
+
+/// Drop diagnostics (FR-SI-05): the first 20 refusals are logged one by
+/// one; every refusal is also counted by its closed reason, and the counts
+/// are written as ONE summary line at most every ten minutes, then reset —
+/// so "why was this Signal rejected?" stays answerable in a long session
+/// without letting a hostile local writer grow app.log.
+struct Drops {
+    detailed: u32,
+    counts: std::collections::BTreeMap<&'static str, u32>,
+    since: std::time::Instant,
+}
+
+impl Drops {
+    fn new(now: std::time::Instant) -> Self {
+        Self {
+            detailed: 0,
+            counts: std::collections::BTreeMap::new(),
+            since: now,
+        }
+    }
+
+    /// The lines to log for one refusal (`Some`) or one accepted event.
+    fn observe(&mut self, reason: Option<&'static str>, now: std::time::Instant) -> Vec<String> {
+        let mut lines = Vec::new();
+        if let Some(reason) = reason {
+            let reason = DROP_REASONS
+                .iter()
+                .find(|known| **known == reason)
+                .copied()
+                .unwrap_or("other");
+            *self.counts.entry(reason).or_default() += 1;
+            self.detailed += 1;
+            if self.detailed <= 20 {
+                lines.push(format!("[agent-status] dropped ({reason})"));
+            } else if self.detailed == 21 {
+                lines.push("[agent-status] further drops summarized every 10 min".into());
+            }
+        }
+        if !self.counts.is_empty() && now.duration_since(self.since) >= DROP_SUMMARY_EVERY {
+            let summary: Vec<String> = self
+                .counts
+                .iter()
+                .map(|(r, n)| format!("{r}={n}"))
+                .collect();
+            lines.push(format!("[agent-status] drops {}", summary.join(" ")));
+            self.counts.clear();
+            self.since = now;
+        }
+        lines
+    }
+}
+
+fn handle_stream(mut stream: UnixStream, drops: &mut Drops) {
     let Some(line) = read_first_line(&mut stream) else {
         return;
     };
     if line.is_empty() {
         return;
     }
-    // The helper stays connected until deck closes the stream, so its parent
-    // chain is read while it is alive; the (slow) pane lookup runs after the
+    // The helper stays connected until deck closes the stream, so its
+    // ancestry and the pane's foreground generation are read from one
+    // snapshot while it is alive; the (slow) pane listing runs after the
     // helper has been released.
-    let origin = crate::procinfo::peer_pid(&stream)
-        .map(|pid| crate::procinfo::ancestry(pid, ORIGIN_HOPS))
-        .unwrap_or_default();
+    let origin = Origin {
+        peer: crate::procinfo::peer_pid(&stream),
+        table: crate::procinfo::processes(),
+    };
     drop(stream);
-    if let Err(reason) = ingest(&line, &origin, tmux_resolve) {
-        // categorized, content-free, and bounded — a hostile local writer
-        // must not be able to grow app.log without limit
-        *drops += 1;
-        if *drops <= 20 {
-            applog(&format!("[agent-status] dropped ({reason})"));
-        } else if *drops == 21 {
-            applog("[agent-status] further drops suppressed");
-        }
+    // categorized, content-free, and bounded — a hostile local writer
+    // must not be able to grow app.log without limit
+    let result = ingest(&line, &origin, || crate::tmux::list_panes().ok());
+    for line in drops.observe(result.err(), std::time::Instant::now()) {
+        applog(&line);
     }
 }
 
@@ -381,7 +894,7 @@ pub(crate) fn spawn_listener() {
                 return;
             }
         };
-        let mut drops = 0u32;
+        let mut drops = Drops::new(std::time::Instant::now());
         for stream in listener.incoming() {
             match stream {
                 Ok(stream) => handle_stream(stream, &mut drops),
@@ -927,7 +1440,7 @@ mod tests {
         assert_eq!(parse_event("not json"), Err("bad-json"));
         assert_eq!(parse_event("[1,2]"), Err("bad-json"));
         assert_eq!(
-            parse_event(&event_line("working", "%3").replace("\"v\":1", "\"v\":2")),
+            parse_event(&event_line("working", "%3").replace("\"v\":1", "\"v\":3")),
             Err("bad-version")
         );
         assert_eq!(
@@ -947,31 +1460,786 @@ mod tests {
         assert_eq!(parse_event(&event_line("working", "3")), Err("bad-pane"));
     }
 
-    #[test]
-    fn pane_resolution_requires_the_server_generation() {
-        let row = |pane: &str, session: &str, fg: &str| PaneRow {
+    // ---------- synthetic worlds: tmux server 42, one process table ------
+
+    use crate::procinfo::ProcessInfo;
+
+    fn process(pid: u32, ppid: u32, tty: u32, tty_pgid: u32, start: u64) -> ProcessInfo {
+        ProcessInfo {
+            pid,
+            ppid,
+            pgid: pid, // every process here leads its own group
+            tty,
+            tty_pgid,
+            start_seconds: start,
+            start_micros: 7,
+        }
+    }
+
+    /// A pane: its shell `pane_pid` on `tty` (a child of the tmux server
+    /// 42), the tty foreground group led by `leader` (born at `start`, a
+    /// child of the shell) unless the leader is the shell itself, and a hook
+    /// helper `helper` whose parent is `parent`.
+    fn pane(pane_pid: u32, tty: u32, leader: u32, start: u64) -> Vec<ProcessInfo> {
+        let mut out = vec![process(pane_pid, 42, tty, leader, 1000)];
+        if leader != pane_pid {
+            out.push(process(leader, pane_pid, tty, leader, start));
+        }
+        out
+    }
+
+    fn world(parts: &[Vec<ProcessInfo>]) -> ProcessTable {
+        let mut table: ProcessTable = parts
+            .iter()
+            .flatten()
+            .map(|info| (info.pid, *info))
+            .collect();
+        table.insert(42, process(42, 1, 0, 0, 1));
+        table
+    }
+
+    fn with_helper(mut table: ProcessTable, helper: u32, parent: u32) -> ProcessTable {
+        let tty = table.get(&parent).map_or(0, |p| p.tty);
+        let fg = table.get(&parent).map_or(0, |p| p.tty_pgid);
+        table.insert(helper, process(helper, parent, tty, fg, 5000));
+        table
+    }
+
+    fn row(
+        session: &str,
+        session_id: &str,
+        pane: &str,
+        pane_pid: u32,
+        active: bool,
+        fg: &str,
+    ) -> PaneRow {
+        PaneRow {
             server_pid: 42,
-            pane_id: pane.into(),
+            session_id: session_id.into(),
             session_name: session.into(),
+            window_id: "@1".into(),
+            pane_id: pane.into(),
+            pane_pid,
+            window_active: true,
+            pane_active: active,
             command: fg.into(),
             ..PaneRow::default()
+        }
+    }
+
+    fn report(
+        state: &str,
+        pane: &str,
+        peer: Option<u32>,
+        table: &ProcessTable,
+        rows: &[PaneRow],
+    ) -> Result<(), &'static str> {
+        let origin = Origin {
+            peer,
+            table: table.clone(),
         };
-        let listing = [
-            row("%3", "deck-card-ab12", "claude"),
-            row("%5", "deck-card-cd34", "zsh"),
+        ingest(&event_line(state, pane), &origin, || Some(rows.to_vec()))
+    }
+
+    fn projection(rows: &[PaneRow], session: &str) -> Option<&'static str> {
+        projections(rows).get(session).map(|o| o.state)
+    }
+
+    fn notified(session: &str) -> Option<&'static str> {
+        crate::notify::snapshot_for_tests().0.get(session).copied()
+    }
+
+    #[test]
+    fn the_signal_target_is_the_unique_active_pane_never_the_first() {
+        let a = row("s", "$1", "%1", 100, false, "zsh");
+        let b = row("s", "$1", "%2", 200, true, "claude");
+        let listing = [a.clone(), b.clone()];
+        let targets = signal_targets(&listing);
+        assert_eq!(targets.get("s").map(|t| t.pane_id.as_str()), Some("%2"));
+        // no marked pane → no target, NOT the first listed pane
+        let unmarked = PaneRow {
+            pane_active: false,
+            ..b.clone()
+        };
+        assert!(signal_targets(&[a.clone(), unmarked]).is_empty());
+        // an active pane of an inactive window is not the target
+        let other_window = PaneRow {
+            window_active: false,
+            ..b.clone()
+        };
+        assert!(signal_targets(&[a.clone(), other_window]).is_empty());
+        // two marked panes in one session → ambiguous → none
+        let both = [
+            PaneRow {
+                pane_active: true,
+                ..a.clone()
+            },
+            b.clone(),
         ];
+        assert!(signal_targets(&both).is_empty());
+        // sessions are independent
+        let c = row("t", "$2", "%3", 300, true, "codex");
+        let listing = [a, b, c];
+        let targets = signal_targets(&listing);
+        assert_eq!(targets.len(), 2);
+        assert_eq!(targets.get("t").map(|t| t.pane_id.as_str()), Some("%3"));
+    }
+
+    #[test]
+    fn admission_binds_the_reporter_to_the_pane_s_foreground_generation() {
+        let _guard = STORE_TEST_LOCK.lock_or_recover();
+        reset_for_tests();
+        let rows = [row("deck-card-ab12", "$1", "%3", 300, true, "claude")];
+        let table = with_helper(world(&[pane(300, 7, 310, 2000)]), 320, 310);
+        // the helper's parent is the foreground leader (runtime-proven shape)
         assert_eq!(
-            resolve_in(&listing, "%3", 42),
-            Some(("deck-card-ab12".into(), "claude".into(), 0))
+            report("needs-input", "%3", Some(320), &table, &rows),
+            Ok(())
         );
-        // same pane id, different server pid → a restarted server reused it
-        assert_eq!(resolve_in(&listing, "%3", 43), None);
-        assert_eq!(resolve_in(&listing, "%9", 42), None);
-        // a session name outside the tmux alphabet never enters the store
+        assert_eq!(projection(&rows, "deck-card-ab12"), Some("needs-input"));
+        // a wrapper leader (`caffeinate claude`): the leader is higher up
+        reset_for_tests();
+        let mut wrapped = world(&[pane(300, 7, 310, 2000)]);
+        wrapped.insert(311, process(311, 310, 7, 310, 2001)); // agent under the wrapper
+        let wrapped = with_helper(wrapped, 320, 311);
+        assert_eq!(report("working", "%3", Some(320), &wrapped, &rows), Ok(()));
+        assert_eq!(projection(&rows, "deck-card-ab12"), Some("working"));
+        reset_for_tests();
+    }
+
+    #[test]
+    fn admission_refusals_are_categorized_and_store_nothing() {
+        let _guard = STORE_TEST_LOCK.lock_or_recover();
+        reset_for_tests();
+        let rows = [row("deck-card-ab12", "$1", "%3", 300, true, "claude")];
+        let base = world(&[pane(300, 7, 310, 2000)]);
+        let good = with_helper(base.clone(), 320, 310);
+        // no kernel peer, or a peer the snapshot does not know
         assert_eq!(
-            resolve_in(&[row("%3", "bad name", "claude")], "%3", 42),
+            report("turn-done", "%3", None, &good, &rows),
+            Err("no-peer")
+        );
+        assert_eq!(
+            report("turn-done", "%3", Some(999), &good, &rows),
+            Err("no-peer")
+        );
+        // a pane this server generation does not have
+        assert_eq!(
+            report("turn-done", "%9", Some(320), &good, &rows),
+            Err("no-such-pane")
+        );
+        let restarted = [PaneRow {
+            server_pid: 43,
+            ..rows[0].clone()
+        }];
+        assert_eq!(
+            report("turn-done", "%3", Some(320), &good, &restarted),
+            Err("no-such-pane"),
+            "a restarted server reused the pane id"
+        );
+        let bad_name = [row("bad name", "$1", "%3", 300, true, "claude")];
+        assert_eq!(
+            report("turn-done", "%3", Some(320), &good, &bad_name),
+            Err("no-such-pane")
+        );
+        // a reporter outside the pane (another pane's process tree)
+        let foreign = with_helper(
+            world(&[pane(300, 7, 310, 2000), pane(400, 8, 410, 2000)]),
+            420,
+            410,
+        );
+        assert_eq!(
+            report("turn-done", "%3", Some(420), &foreign, &rows),
+            Err("foreign-pane")
+        );
+        // a shell owns the pane foreground
+        let shell_rows = [row("deck-card-ab12", "$1", "%3", 300, true, "zsh")];
+        assert_eq!(
+            report("turn-done", "%3", Some(320), &good, &shell_rows),
+            Err("shell-foreground")
+        );
+        // the foreground generation cannot be established
+        let mut no_tty = good.clone();
+        no_tty.get_mut(&300).unwrap().tty = 0;
+        assert_eq!(
+            report("turn-done", "%3", Some(320), &no_tty, &rows),
+            Err("no-generation")
+        );
+        let mut no_leader = good.clone();
+        no_leader.remove(&310);
+        no_leader.insert(320, process(320, 300, 7, 310, 5000)); // helper reparented to the shell
+        assert_eq!(
+            report("turn-done", "%3", Some(320), &no_leader, &rows),
+            Err("no-generation")
+        );
+        let mut unborn = good.clone();
+        unborn.get_mut(&310).unwrap().start_seconds = 0;
+        assert_eq!(
+            report("turn-done", "%3", Some(320), &unborn, &rows),
+            Err("no-generation")
+        );
+        assert_eq!(projection(&rows, "deck-card-ab12"), None);
+        reset_for_tests();
+    }
+
+    /// Agent generation A reported; A exited and B (same executable name)
+    /// took the foreground. A late event from A's tree is refused, and A's
+    /// stored observation dies at the next reconciliation.
+    #[test]
+    fn an_old_foreground_generation_can_neither_report_nor_survive() {
+        let _guard = STORE_TEST_LOCK.lock_or_recover();
+        reset_for_tests();
+        let rows = [row("deck-card-ab12", "$1", "%3", 300, true, "claude")];
+        let gen_a = with_helper(world(&[pane(300, 7, 310, 2000)]), 320, 310);
+        assert_eq!(report("working", "%3", Some(320), &gen_a, &rows), Ok(()));
+        // B leads the foreground now; A lingers outside it (still a child
+        // of the shell) and its late turn-done arrives
+        let mut gen_b = world(&[pane(300, 7, 311, 3000)]);
+        gen_b.insert(310, process(310, 300, 7, 311, 2000));
+        let late = with_helper(gen_b.clone(), 330, 310);
+        assert_eq!(
+            report("turn-done", "%3", Some(330), &late, &rows),
+            Err("generation-mismatch")
+        );
+        assert_eq!(
+            projection(&rows, "deck-card-ab12"),
+            Some("working"),
+            "B's view untouched"
+        );
+        // same executable name, new foreground pid → A's observation ends
+        reconcile(&rows, &gen_b);
+        assert_eq!(projection(&rows, "deck-card-ab12"), None);
+        // pid reuse: the same pid with another birth instant is another process
+        assert_eq!(report("working", "%3", Some(320), &gen_a, &rows), Ok(()));
+        let mut reused = gen_a.clone();
+        reused.get_mut(&310).unwrap().start_seconds = 2999;
+        reconcile(&rows, &reused);
+        assert_eq!(projection(&rows, "deck-card-ab12"), None);
+        // the unchanged generation survives any number of polls
+        assert_eq!(report("working", "%3", Some(320), &gen_a, &rows), Ok(()));
+        for _ in 0..3 {
+            reconcile(&rows, &gen_a);
+        }
+        assert_eq!(projection(&rows, "deck-card-ab12"), Some("working"));
+        // a foreground that fell back to the shell ends it too
+        reconcile(&rows, &world(&[pane(300, 7, 300, 1000)]));
+        assert_eq!(projection(&rows, "deck-card-ab12"), None);
+        reset_for_tests();
+    }
+
+    #[test]
+    fn server_session_or_pane_replacement_invalidates_the_observation() {
+        let _guard = STORE_TEST_LOCK.lock_or_recover();
+        reset_for_tests();
+        let rows = [row("deck-card-ab12", "$1", "%3", 300, true, "claude")];
+        let table = with_helper(world(&[pane(300, 7, 310, 2000)]), 320, 310);
+        let replaced = |rows: &[PaneRow]| {
+            reset_for_tests();
+            assert_eq!(
+                report(
+                    "working",
+                    "%3",
+                    Some(320),
+                    &table,
+                    &[row("deck-card-ab12", "$1", "%3", 300, true, "claude")]
+                ),
+                Ok(())
+            );
+            reconcile(rows, &table);
+            projection(rows, "deck-card-ab12")
+        };
+        // tmux server restarted and reused the pane id
+        assert_eq!(
+            replaced(&[PaneRow {
+                server_pid: 43,
+                ..rows[0].clone()
+            }]),
             None
         );
+        // the session was replaced under the same name (new session id)
+        assert_eq!(
+            replaced(&[PaneRow {
+                session_id: "$9".into(),
+                ..rows[0].clone()
+            }]),
+            None
+        );
+        // the pane's process was replaced
+        assert_eq!(
+            replaced(&[PaneRow {
+                pane_pid: 301,
+                ..rows[0].clone()
+            }]),
+            None
+        );
+        // the pane is gone
+        assert_eq!(replaced(&[]), None);
+        // nothing can be re-established without a process table
+        assert_eq!(replaced(&rows), Some("working"));
+        reconcile(&rows, &ProcessTable::new());
+        assert_eq!(projection(&rows, "deck-card-ab12"), None);
+        reset_for_tests();
+    }
+
+    /// The Stage A defect: pane A working, pane B (same session) reports
+    /// turn-done. B's event is stored under B and reaches no card-level
+    /// surface while A is the session's Signal target — not the Board
+    /// projection, not the notification state, not the unread set, not the
+    /// Dock count.
+    #[test]
+    fn an_inactive_pane_cannot_contaminate_the_session_signal() {
+        let _guard = STORE_TEST_LOCK.lock_or_recover();
+        reset_for_tests();
+        let session = "deck-card-split";
+        let table = with_helper(
+            with_helper(
+                world(&[pane(300, 7, 310, 2000), pane(400, 8, 410, 2000)]),
+                320,
+                310,
+            ),
+            420,
+            410,
+        );
+        let a_active = [
+            row(session, "$1", "%3", 300, true, "claude"),
+            row(session, "$1", "%4", 400, false, "claude"),
+        ];
+        crate::notify::retain(&std::collections::HashSet::new());
+        let (_, _, dock_before) = crate::notify::snapshot_for_tests();
+        assert_eq!(
+            report("working", "%3", Some(320), &table, &a_active),
+            Ok(())
+        );
+        assert_eq!(notified(session), Some("working"));
+        assert_eq!(
+            report("turn-done", "%4", Some(420), &table, &a_active),
+            Ok(())
+        );
+        assert_eq!(projection(&a_active, session), Some("working"), "A stays A");
+        let (states, unread, dock) = crate::notify::snapshot_for_tests();
+        assert_eq!(
+            states.get(session),
+            Some(&"working"),
+            "no notification from B"
+        );
+        assert!(!unread.contains(session), "no unread ending from B");
+        assert_eq!(dock, dock_before, "the Dock count is untouched");
+        reconcile(&a_active, &table);
+        assert_eq!(projection(&a_active, session), Some("working"));
+        assert_eq!(notified(session), Some("working"));
+
+        // B becomes the active pane: the card now projects B's valid
+        // observation (a turn ended; still no side-effect authority — SI-01)
+        let b_active = [
+            row(session, "$1", "%3", 300, false, "claude"),
+            row(session, "$1", "%4", 400, true, "claude"),
+        ];
+        reconcile(&b_active, &table);
+        assert_eq!(projection(&b_active, session), Some("turn-done"));
+        assert_eq!(notified(session), Some("turn-done"));
+        assert!(crate::notify::snapshot_for_tests().1.contains(session));
+        // a target pane without an observation projects nothing, and the
+        // session leaves the notification layer
+        let c_active = [
+            row(session, "$1", "%3", 300, false, "claude"),
+            row(session, "$1", "%4", 400, false, "claude"),
+            row(session, "$1", "%5", 500, true, "zsh"),
+        ];
+        reconcile(&c_active, &table);
+        assert_eq!(projection(&c_active, session), None);
+        assert_eq!(notified(session), None);
+        // back to A: A's generation is still valid
+        reconcile(&a_active, &table);
+        assert_eq!(projection(&a_active, session), Some("working"));
+        reset_for_tests();
+        crate::notify::retain(&std::collections::HashSet::new());
+    }
+
+    /// An agent only in a non-first pane: its observation is validated
+    /// against ITS pane, never cleared or kept because of the first one.
+    #[test]
+    fn an_agent_in_a_non_first_pane_is_judged_by_its_own_pane() {
+        let _guard = STORE_TEST_LOCK.lock_or_recover();
+        reset_for_tests();
+        let session = "deck-card-second";
+        let table = with_helper(
+            world(&[pane(300, 7, 300, 1000), pane(400, 8, 410, 2000)]),
+            420,
+            410,
+        );
+        let rows = [
+            row(session, "$1", "%3", 300, false, "zsh"),
+            row(session, "$1", "%4", 400, true, "claude"),
+        ];
+        assert_eq!(
+            report("needs-input", "%4", Some(420), &table, &rows),
+            Ok(())
+        );
+        assert_eq!(notified(session), Some("needs-input"));
+        reconcile(&rows, &table);
+        assert_eq!(projection(&rows, session), Some("needs-input"));
+        // the markers vanish (ambiguous listing): no Signal, never pane %3's
+        let unmarked = [
+            row(session, "$1", "%3", 300, false, "zsh"),
+            row(session, "$1", "%4", 400, false, "claude"),
+        ];
+        reconcile(&unmarked, &table);
+        assert_eq!(projection(&unmarked, session), None);
+        assert_eq!(notified(session), None);
+        reset_for_tests();
+        crate::notify::retain(&std::collections::HashSet::new());
+    }
+
+    #[test]
+    fn the_scheduler_hold_reads_the_same_projection() {
+        let _guard = STORE_TEST_LOCK.lock_or_recover();
+        reset_for_tests();
+        let session = "deck-card-hold";
+        let table = with_helper(
+            with_helper(
+                world(&[pane(300, 7, 310, 2000), pane(400, 8, 410, 2000)]),
+                320,
+                310,
+            ),
+            420,
+            410,
+        );
+        let mut rows = vec![
+            row(session, "$1", "%3", 300, false, "claude"),
+            row(session, "$1", "%4", 400, true, "claude"),
+        ];
+        rows[0].window_activity = 11;
+        assert_eq!(
+            report("needs-input", "%3", Some(320), &table, &rows),
+            Ok(())
+        );
+        let seen = crate::scheduler::observe(rows.clone());
+        assert_eq!(
+            seen[session].agent, None,
+            "the inactive pane's input request is not the target's"
+        );
+        assert_eq!(
+            seen[session].activity, 11,
+            "activity keeps its first-pane semantics"
+        );
+        assert_eq!(report("working", "%4", Some(420), &table, &rows), Ok(()));
+        assert_eq!(
+            crate::scheduler::observe(rows.clone())[session].agent,
+            Some("working")
+        );
+        rows[0].pane_active = true;
+        rows[1].pane_active = false;
+        assert_eq!(
+            crate::scheduler::observe(rows.clone())[session].agent,
+            Some("needs-input")
+        );
+        rows[0].pane_active = false;
+        assert_eq!(
+            crate::scheduler::observe(rows)[session].agent,
+            None,
+            "no target, no fallback"
+        );
+        reset_for_tests();
+        crate::notify::retain(&std::collections::HashSet::new());
+    }
+
+    // ---------- FR-SI-04: protocol v2 and the interaction tracker ----------
+
+    const A: &str = "0199aaaa-bbbb-7ccc-8ddd-00000000000a";
+    const B: &str = "0199aaaa-bbbb-7ccc-8ddd-00000000000b";
+
+    fn event_v2(state: &str, pane: &str, id: &str) -> String {
+        event_line(state, pane)
+            .replace("\"v\":1", "\"v\":2")
+            .replace("}", &format!(",\"interaction\":\"{id}\"}}"))
+    }
+
+    #[test]
+    fn v2_carries_exactly_one_validated_interaction_and_v1_none() {
+        let parsed = parse_event(&event_v2("working", "%3", A)).unwrap();
+        assert_eq!(parsed.interaction.as_deref(), Some(A));
+        assert_eq!(
+            parse_event(&event_line("working", "%3"))
+                .unwrap()
+                .interaction,
+            None
+        );
+        // v2 without, or with an invalid, id; v1 with one
+        let no_id = event_line("working", "%3").replace("\"v\":1", "\"v\":2");
+        assert_eq!(parse_event(&no_id), Err("bad-interaction"));
+        for bad in ["0199AAAA-BBBB-7CCC-8DDD-00000000000A", "not-a-uuid", ""] {
+            assert_eq!(
+                parse_event(&event_v2("working", "%3", bad)),
+                Err("bad-interaction"),
+                "{bad}"
+            );
+        }
+        let numeric = event_line("working", "%3")
+            .replace("\"v\":1", "\"v\":2")
+            .replace("}", ",\"interaction\":7}");
+        assert_eq!(parse_event(&numeric), Err("bad-interaction"));
+        let v1_with_id = event_v2("working", "%3", A).replace("\"v\":2", "\"v\":1");
+        assert_eq!(parse_event(&v1_with_id), Err("bad-interaction"));
+    }
+
+    /// Mixed versions: a Deck built before FR-SI-04 gates on `v == 1` (the
+    /// exact pre-v2 check, quoted below), so a v2 line is refused there as
+    /// `bad-version` — it fails closed (no Signal) instead of being
+    /// half-read. The helper and backend ship in one bundle and the updater
+    /// relaunches after replacing it, so an old backend meets a new helper
+    /// only transiently — in the short bundle-replacement → relaunch window
+    /// of an in-place update, or from a second, older Deck (a dev build).
+    /// Either way the Signal is briefly absent, never wrong.
+    #[test]
+    fn a_v1_only_parser_refuses_a_v2_line() {
+        let v1_only = |line: &str| -> Result<(), &'static str> {
+            let value: serde_json::Value = serde_json::from_str(line).map_err(|_| "bad-json")?;
+            let obj = value.as_object().ok_or("bad-json")?;
+            // pre-FR-SI-04 agent_status::parse_event, verbatim:
+            if obj.get("v").and_then(|v| v.as_u64()) != Some(1) {
+                return Err("bad-version");
+            }
+            Ok(())
+        };
+        assert_eq!(v1_only(&event_v2("turn-done", "%3", A)), Err("bad-version"));
+        assert_eq!(v1_only(&event_line("turn-done", "%3")), Ok(()));
+    }
+
+    #[test]
+    fn the_interaction_tracker_separates_but_never_orders() {
+        let mut t = Interactions::default();
+        // working(A), working(B), late Stop(A) → B stays current
+        assert_eq!(t.admit(WORKING, Some(A)), Ok(()));
+        assert_eq!(t.admit(WORKING, Some(B)), Ok(()));
+        assert_eq!(t.admit(TURN_DONE, Some(A)), Err("interaction-mismatch"));
+        assert_eq!(t.current.as_deref(), Some(B));
+        // … and A is remembered as ended: its late start is stale
+        assert_eq!(t.admit(WORKING, Some(A)), Err("stale-interaction"));
+        assert_eq!(t.admit(NEEDS_INPUT, Some(A)), Err("stale-interaction"));
+        // the current interaction's input request and ending are accepted
+        assert_eq!(t.admit(NEEDS_INPUT, Some(B)), Ok(()));
+        assert_eq!(t.admit(TURN_DONE, Some(B)), Ok(()));
+        assert_eq!(t.current, None);
+        // Stop(B) again: a duplicate, not a new boundary
+        assert_eq!(t.admit(TURN_DONE, Some(B)), Err("duplicate-interaction"));
+        // Stop(B), late needs-input(B): stale
+        assert_eq!(t.admit(NEEDS_INPUT, Some(B)), Err("stale-interaction"));
+
+        // current = None: needs-input bootstraps, turn-done is an unpaired boundary
+        let mut t = Interactions::default();
+        assert_eq!(t.admit(NEEDS_INPUT, Some(A)), Ok(()));
+        assert_eq!(t.current.as_deref(), Some(A));
+        let mut t = Interactions::default();
+        assert_eq!(t.admit(TURN_DONE, Some(A)), Ok(()));
+        assert_eq!(t.current, None);
+        assert!(t.has_ended(A));
+
+        // no downgrade: once an id was seen, a v1 word changes nothing
+        let mut t = Interactions::default();
+        assert_eq!(t.admit(WORKING, None), Ok(()), "legacy v1 is accepted");
+        assert_eq!(t.admit(WORKING, Some(A)), Ok(()));
+        for state in [WORKING, NEEDS_INPUT, TURN_DONE] {
+            assert_eq!(t.admit(state, None), Err("identity-downgrade"), "{state}");
+        }
+        assert_eq!(t.current.as_deref(), Some(A));
+
+        // documented UNSOLVED class: working(B), then a late working(A)
+        // before Stop(A) marked A ended — no source ordering exists, so A
+        // becomes current (and B's own Stop is then refused as a mismatch)
+        let mut t = Interactions::default();
+        assert_eq!(t.admit(WORKING, Some(B)), Ok(()));
+        assert_eq!(t.admit(WORKING, Some(A)), Ok(()));
+        assert_eq!(
+            t.current.as_deref(),
+            Some(A),
+            "not guessed from UUID time or arrival"
+        );
+
+        // the ended memory is bounded
+        let mut t = Interactions::default();
+        for i in 0..20 {
+            t.end(&format!("0199aaaa-bbbb-7ccc-8ddd-{i:012}"));
+        }
+        assert_eq!(t.ended.len(), ENDED_CAP);
+    }
+
+    /// The side-effect-relevant regression: B asks for input, then a late
+    /// Stop of the previous interaction A arrives. B stays `needs-input` —
+    /// the Board, the scheduler hold (an owner row is NOT released), the
+    /// notification state, the unread set and the Dock count all keep B.
+    #[test]
+    fn a_late_ending_cannot_release_the_current_input_request() {
+        let _guard = STORE_TEST_LOCK.lock_or_recover();
+        reset_for_tests();
+        crate::notify::retain(&std::collections::HashSet::new());
+        let session = "deck-card-v2";
+        let rows = [row(session, "$1", "%3", 300, true, "codex")];
+        let table = with_helper(world(&[pane(300, 7, 310, 2000)]), 320, 310);
+        let send = |line: String| {
+            ingest(
+                &line,
+                &Origin {
+                    peer: Some(320),
+                    table: table.clone(),
+                },
+                || Some(rows.to_vec()),
+            )
+        };
+        assert_eq!(send(event_v2("working", "%3", A)), Ok(()));
+        assert_eq!(send(event_v2("working", "%3", B)), Ok(()));
+        assert_eq!(send(event_v2("needs-input", "%3", B)), Ok(()));
+        let (_, _, dock_before) = crate::notify::snapshot_for_tests();
+        assert_eq!(
+            send(event_v2("turn-done", "%3", A)),
+            Err("interaction-mismatch")
+        );
+        assert_eq!(projection(&rows, session), Some("needs-input"));
+        let (states, unread, dock) = crate::notify::snapshot_for_tests();
+        assert_eq!(states.get(session), Some(&"needs-input"));
+        assert!(!unread.contains(session), "no false turn-ended unread");
+        assert_eq!(dock, dock_before);
+        // the scheduler still holds an automatic owner row
+        let seen = crate::scheduler::observe(rows.to_vec());
+        let owner: crate::scheduler::QueueItem = serde_json::from_value(serde_json::json!({
+            "id": "o", "session": session, "card_id": "c", "dir": "", "cmd": "",
+            "text": "x", "mode": "chain", "added": 0
+        }))
+        .unwrap();
+        assert!(crate::scheduler::agent_holds(&owner, seen.get(session)));
+
+        // Stop(B) ends it; a late needs-input(B) is stale: no re-arm
+        assert_eq!(send(event_v2("turn-done", "%3", B)), Ok(()));
+        let (_, unread_after_end, dock_after_end) = crate::notify::snapshot_for_tests();
+        assert!(unread_after_end.contains(session));
+        assert_eq!(
+            send(event_v2("needs-input", "%3", B)),
+            Err("stale-interaction")
+        );
+        assert_eq!(projection(&rows, session), Some("turn-done"));
+        let (states, _, dock) = crate::notify::snapshot_for_tests();
+        assert_eq!(
+            states.get(session),
+            Some(&"turn-done"),
+            "no input request re-armed"
+        );
+        assert_eq!(dock, dock_after_end);
+        // a late working(A) of an ended interaction is refused too
+        assert_eq!(send(event_v2("working", "%3", A)), Err("stale-interaction"));
+        assert_eq!(projection(&rows, session), Some("turn-done"));
+
+        // same generation, a v1 word after v2: refused, state untouched
+        assert_eq!(
+            send(event_v2(
+                "working",
+                "%3",
+                "0199aaaa-bbbb-7ccc-8ddd-00000000000c"
+            )),
+            Ok(())
+        );
+        assert_eq!(
+            send(event_line("turn-done", "%3")),
+            Err("identity-downgrade")
+        );
+        assert_eq!(projection(&rows, session), Some("working"));
+
+        // a NEW foreground generation starts a fresh (legacy) tracker
+        let next = with_helper(world(&[pane(300, 7, 311, 3000)]), 321, 311);
+        let origin = Origin {
+            peer: Some(321),
+            table: next.clone(),
+        };
+        assert_eq!(
+            ingest(&event_line("turn-done", "%3"), &origin, || Some(
+                rows.to_vec()
+            )),
+            Ok(())
+        );
+        reconcile(&rows, &next);
+        assert_eq!(projection(&rows, session), Some("turn-done"));
+        reset_for_tests();
+        crate::notify::retain(&std::collections::HashSet::new());
+    }
+
+    /// Protocol v2 changes nothing in the installed hook commands: the
+    /// helper reads the payload it already received on stdin, so there is
+    /// no hook migration. The exact pre-v2 command shapes, pinned.
+    #[test]
+    fn hook_commands_are_unchanged_by_protocol_v2() {
+        assert_eq!(
+            hook_value(HookStyle::Exec, HELPER, "claude-code", "turn-done"),
+            serde_json::json!({"type": "command", "command": HELPER, "args": ["claude-code", "turn-done"], "timeout": 10})
+        );
+        assert_eq!(
+            hook_value(HookStyle::ShellAsync, HELPER, "codex", "turn-done"),
+            serde_json::json!({"type": "command", "command": format!("\"{HELPER}\" codex turn-done"), "timeout": 10, "async": true})
+        );
+    }
+
+    /// FR-SI-05 diagnostics: the first 20 refusals one by one, every one
+    /// counted by its closed reason, one summary per ten minutes, reset.
+    #[test]
+    fn drop_diagnostics_are_closed_bounded_and_summarized() {
+        let t0 = std::time::Instant::now();
+        let mut drops = Drops::new(t0);
+        assert_eq!(
+            drops.observe(Some("generation-mismatch"), t0),
+            ["[agent-status] dropped (generation-mismatch)"]
+        );
+        assert_eq!(
+            drops.observe(Some("not-a-code"), t0),
+            ["[agent-status] dropped (other)"],
+            "closed vocabulary"
+        );
+        for _ in 0..18 {
+            drops.observe(Some("stale-interaction"), t0);
+        }
+        assert_eq!(
+            drops.observe(Some("stale-interaction"), t0),
+            ["[agent-status] further drops summarized every 10 min"]
+        );
+        assert!(
+            drops.observe(Some("interaction-mismatch"), t0).is_empty(),
+            "no line per drop past 20"
+        );
+        assert!(
+            drops
+                .observe(None, t0 + Duration::from_secs(599))
+                .is_empty(),
+            "not before ten minutes"
+        );
+        assert_eq!(
+            drops.observe(None, t0 + DROP_SUMMARY_EVERY),
+            ["[agent-status] drops generation-mismatch=1 interaction-mismatch=1 other=1 stale-interaction=19"]
+        );
+        assert!(
+            drops.observe(None, t0 + DROP_SUMMARY_EVERY * 3).is_empty(),
+            "counts were reset"
+        );
+        for reason in DROP_REASONS {
+            assert!(
+                reason.bytes().all(|b| b.is_ascii_lowercase() || b == b'-'),
+                "{reason}"
+            );
+        }
+    }
+
+    #[test]
+    fn identity_absence_is_reported_once_per_source_on_a_fresh_generation() {
+        let source = "drift-test-source";
+        assert!(
+            !identity_absent(source, false, true),
+            "never seen with identity: legacy, silent"
+        );
+        assert!(!identity_absent(source, true, false));
+        assert!(
+            !identity_absent(source, false, false),
+            "same generation: the tracker refuses it instead"
+        );
+        assert!(
+            identity_absent(source, false, true),
+            "a fresh generation without identity"
+        );
+        assert!(!identity_absent(source, false, true), "once");
     }
 
     #[test]
@@ -1055,85 +2323,10 @@ mod tests {
         assert!(!hooks_installed(&claude_only, CODEX_HOOKS));
     }
 
-    #[test]
-    fn ingest_reconcile_and_current_follow_the_pane_foreground() {
-        let _guard = STORE_TEST_LOCK.lock_or_recover();
-        reset_for_tests();
-        let resolve = |pane: &str, _pid: u32| {
-            (pane == "%3").then(|| ("deck-card-ab12".to_string(), "claude".to_string(), 300))
-        };
-        // the reporting process descends from the pane's process (300)
-        let origin = [100, 200, 300, 400];
-        assert!(ingest(&event_line("needs-input", "%3"), &origin, resolve).is_ok());
-        assert_eq!(current("deck-card-ab12"), Some("needs-input"));
-        assert_eq!(current("deck-card-other"), None);
-        assert_eq!(
-            ingest(&event_line("working", "%9"), &origin, resolve),
-            Err("no-such-pane")
-        );
-
-        let pane = |fg: &str| PaneRow {
-            command: fg.into(),
-            ..PaneRow::default()
-        };
-        // same foreground → state survives the poll
-        let mut panes = HashMap::new();
-        panes.insert("deck-card-ab12".to_string(), pane("claude"));
-        reconcile(&panes);
-        assert_eq!(current("deck-card-ab12"), Some("needs-input"));
-        // foreground fell back to a shell → the agent exited → state cleared
-        panes.insert("deck-card-ab12".to_string(), pane("zsh"));
-        reconcile(&panes);
-        assert_eq!(current("deck-card-ab12"), None);
-
-        // a replaced foreground (different program) also clears
-        assert!(ingest(&event_line("working", "%3"), &origin, resolve).is_ok());
-        panes.insert("deck-card-ab12".to_string(), pane("vim"));
-        reconcile(&panes);
-        assert_eq!(current("deck-card-ab12"), None);
-
-        // a vanished session clears
-        assert!(ingest(&event_line("working", "%3"), &origin, resolve).is_ok());
-        reconcile(&HashMap::new());
-        assert_eq!(current("deck-card-ab12"), None);
-
-        // a shell foreground at event time is refused outright
-        let shell_resolve =
-            |_: &str, _: u32| Some(("deck-card-ab12".to_string(), "zsh".to_string(), 300));
-        assert_eq!(
-            ingest(&event_line("working", "%3"), &origin, shell_resolve),
-            Err("shell-foreground")
-        );
-        assert_eq!(current("deck-card-ab12"), None);
-        reset_for_tests();
-    }
-
-    #[test]
-    fn events_are_bound_to_the_pane_they_name() {
-        let _guard = STORE_TEST_LOCK.lock_or_recover();
-        reset_for_tests();
-        let resolve =
-            |_: &str, _: u32| Some(("deck-card-ab12".to_string(), "claude".to_string(), 300));
-        // a reporter whose chain never reaches the pane's process
-        assert_eq!(
-            ingest(&event_line("turn-done", "%3"), &[100, 200, 250], resolve),
-            Err("foreign-pane")
-        );
-        // no kernel peer pid at all
-        assert_eq!(
-            ingest(&event_line("turn-done", "%3"), &[], resolve),
-            Err("no-peer")
-        );
-        assert_eq!(current("deck-card-ab12"), None);
-        // the pane process itself, or any descendant, is accepted
-        assert!(ingest(&event_line("turn-done", "%3"), &[300], resolve).is_ok());
-        assert_eq!(current("deck-card-ab12"), Some("turn-done"));
-        reset_for_tests();
-    }
-
-    /// The real socket path through the kernel: the peer's parent chain
-    /// decides. A client that is this test process is "the pane" only when
-    /// the resolver names this process (or an ancestor) as the pane's pid.
+    /// The real socket path through the kernel: the peer's pid and one
+    /// process-table snapshot decide. This test process is "the pane" only
+    /// when the listing names it (or an ancestor) as the pane's process and
+    /// its tty's foreground leader is in its chain.
     #[test]
     fn the_listener_binds_a_real_peer_to_its_pane() {
         use std::io::Write;
@@ -1144,40 +2337,35 @@ mod tests {
         let path = dir.join("status.sock");
         let listener = listen_at(&path).unwrap();
         let line = event_line("needs-input", "%3");
-        let connect = || {
-            let mut client = UnixStream::connect(&path).unwrap();
-            writeln!(client, "{line}").unwrap();
-            let (mut stream, _) = listener.accept().unwrap();
-            let read = read_first_line(&mut stream).unwrap();
-            assert_eq!(read, line);
-            let origin = crate::procinfo::peer_pid(&stream)
-                .map(|pid| crate::procinfo::ancestry(pid, ORIGIN_HOPS))
-                .unwrap_or_default();
-            drop(client);
-            (read, origin)
+        let mut client = UnixStream::connect(&path).unwrap();
+        writeln!(client, "{line}").unwrap();
+        let (mut stream, _) = listener.accept().unwrap();
+        let read = read_first_line(&mut stream).unwrap();
+        assert_eq!(read, line);
+        let origin = Origin {
+            peer: crate::procinfo::peer_pid(&stream),
+            table: crate::procinfo::processes(),
         };
+        drop(client);
         let me = std::process::id();
-        let (read, origin) = connect();
-        assert_eq!(origin.first(), Some(&me), "the kernel names this process");
-        assert!(origin.len() >= 2, "and its parent: {origin:?}");
-        let pane_is_me =
-            |_: &str, _: u32| Some(("deck-card-ab12".to_string(), "claude".to_string(), me));
-        assert!(ingest(&read, &origin, pane_is_me).is_ok());
-        assert_eq!(current("deck-card-ab12"), Some("needs-input"));
-        reset_for_tests();
-        let (read, origin) = connect();
-        let pane_is_elsewhere = |_: &str, _: u32| {
-            Some((
-                "deck-card-ab12".to_string(),
-                "claude".to_string(),
-                u32::MAX - 1,
-            ))
-        };
+        assert_eq!(origin.peer, Some(me), "the kernel names this process");
+        let chain = crate::procinfo::ancestry_in(&origin.table, me, ORIGIN_HOPS);
+        assert!(chain.len() >= 2, "and its parent: {chain:?}");
+        let pane_is = |pid: u32| vec![row("deck-card-ab12", "$1", "%3", pid, true, "claude")];
+        // a pane process outside this chain → foreign
         assert_eq!(
-            ingest(&read, &origin, pane_is_elsewhere),
+            ingest(&read, &origin, || Some(pane_is(u32::MAX - 1))),
             Err("foreign-pane")
         );
-        assert_eq!(current("deck-card-ab12"), None);
+        // this process as the pane: accepted exactly when its tty's
+        // foreground leader is in the chain (a test run may have no tty)
+        let generation = foreground_generation(&origin.table, me);
+        let expected = match generation {
+            None => Err("no-generation"),
+            Some(g) if chain.contains(&g.pid) => Ok(()),
+            Some(_) => Err("generation-mismatch"),
+        };
+        assert_eq!(ingest(&read, &origin, || Some(pane_is(me))), expected);
         drop(listener);
         let _ = std::fs::remove_dir_all(&dir);
         reset_for_tests();
@@ -1296,23 +2484,38 @@ mod tests {
         stream.set_nonblocking(false).unwrap();
         let read = read_first_line(&mut stream).unwrap();
         assert_eq!(read, line);
-        let origin = crate::procinfo::peer_pid(&stream)
-            .map(|pid| crate::procinfo::ancestry(pid, ORIGIN_HOPS))
-            .unwrap_or_default();
+        let origin = Origin {
+            peer: crate::procinfo::peer_pid(&stream),
+            table: crate::procinfo::processes(),
+        };
         drop(stream);
-        let resolve = |pane: &str, server_pid: u32| resolve_in(&rows, pane, server_pid);
         assert_eq!(
-            origin.first(),
-            Some(&rows[0].pane_pid),
-            "nc is the pane process itself: {origin:?}"
+            origin.peer,
+            Some(rows[0].pane_pid),
+            "nc is the pane process itself"
         );
-        assert_eq!(ingest(&line, &origin, resolve), Ok(()));
-        assert_eq!(current("t"), Some("working"));
+        assert_eq!(ingest(&line, &origin, || Some(rows.clone())), Ok(()));
+        assert_eq!(
+            projections(&rows).get("t").map(|o| o.state),
+            Some("working")
+        );
+        // the generation recorded is the one the admission snapshot saw
+        reconcile(&rows, &origin.table);
+        assert_eq!(
+            projections(&rows).get("t").map(|o| o.state),
+            Some("working")
+        );
         reset_for_tests();
         // the same bytes from outside the pane
-        let outsider = crate::procinfo::ancestry(std::process::id(), ORIGIN_HOPS);
-        assert_eq!(ingest(&line, &outsider, resolve), Err("foreign-pane"));
-        assert_eq!(current("t"), None);
+        let outsider = Origin {
+            peer: Some(std::process::id()),
+            table: crate::procinfo::processes(),
+        };
+        assert_eq!(
+            ingest(&line, &outsider, || Some(rows.clone())),
+            Err("foreign-pane")
+        );
+        assert_eq!(projections(&rows).get("t").map(|o| o.state), None);
         drop(server);
         drop(listener);
         let _ = std::fs::remove_dir_all(&dir);
@@ -1339,17 +2542,13 @@ mod tests {
         let mut stream = stream;
         let read = read_first_line(&mut stream).unwrap();
         assert_eq!(read, line);
-        let origin = crate::procinfo::peer_pid(&stream)
-            .map(|pid| crate::procinfo::ancestry(pid, ORIGIN_HOPS))
-            .unwrap_or_default();
+        let peer = crate::procinfo::peer_pid(&stream);
         drop(client);
-        assert!(ingest(&read, &origin, |_, _| Some((
-            "deck-card-ab12".into(),
-            "claude".into(),
-            std::process::id()
-        )))
-        .is_ok());
-        assert_eq!(current("deck-card-ab12"), Some("turn-done"));
+        assert_eq!(
+            peer,
+            Some(std::process::id()),
+            "the kernel names the writer"
+        );
         // rebinding over a stale socket file must work (previous run crashed)
         drop(listener);
         let listener2 = listen_at(&path).unwrap();

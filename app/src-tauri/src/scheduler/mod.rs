@@ -64,9 +64,11 @@
 //! `agent_holds`) closes the permission-prompt case: no automatic row of
 //! any mode fires while the agent hook reports `needs-input`, and an
 //! `external` row (admitted through `channel_queue_add*`, or carrying a
-//! verbatim external message) that follows a previous row waits for a
-//! positive `turn-done` — without hooks it waits for the user. The hold only
-//! delays; it never moves a card, and the plan reports it as stage `agent`.
+//! verbatim external message) that follows a previous row is never selected
+//! automatically — `turn-done` ends an interaction, it does not say the
+//! agent is ready for outside text — so it waits for the user's send-now.
+//! The hold only delays; it never moves a card, and the plan reports it as
+//! stage `agent`.
 //! Round-2/3 semantics (`scheduler/` is the reference, all unit-tested):
 //! - at most ONE candidate per session per tick, ≥60s between any two
 //!   injections into the same session; each due session gets its own
@@ -282,8 +284,8 @@ pub(crate) struct QueueItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     review: Option<ReviewCheckpoint>,
     /// Admitted on the external-message path (`channel_queue_add*`, or a
-    /// verbatim external message): as a follow-up row it waits for the
-    /// agent's positive `turn-done` (`select::agent_holds`).
+    /// verbatim external message): as a follow-up row (chain) it is never
+    /// selected automatically, only by send-now (`select::agent_holds`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     external: bool,
 }

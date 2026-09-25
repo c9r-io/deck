@@ -674,6 +674,10 @@ dependencies = [
 [[package]]
 name = "deck-status-helper"
 version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "defmt"

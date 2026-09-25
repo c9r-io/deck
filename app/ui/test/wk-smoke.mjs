@@ -2659,6 +2659,11 @@ export async function verifyAttention() {
   await runAttentionSmoke();
 }
 
+export async function verifySignalFinish() {
+  const { runSignalFinishSmoke } = await import('./signal-smoke.mjs');
+  await runSignalFinishSmoke();
+}
+
 export async function verifyVoice() {
   const { runVoiceSmoke } = await import('./voice-smoke.mjs');
   await runVoiceSmoke();

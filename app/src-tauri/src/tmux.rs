@@ -539,6 +539,14 @@ pub(crate) struct PaneRow {
     pub(crate) pane_pid: u32,
     pub(crate) window_activity: u64,
     pub(crate) in_mode: bool,
+    /// `#{window_active}`: the pane's window is its session's current
+    /// window.
+    pub(crate) window_active: bool,
+    /// `#{pane_active}`: the pane is its window's active pane. Both flags
+    /// together name the pane `pane_target(session)` reaches — the target
+    /// of prompt delivery and the one pane whose agent observation is the
+    /// card's Signal (`agent_status::signal_targets`).
+    pub(crate) pane_active: bool,
     /// `#{pane_current_command}` verbatim; callers sanitize.
     pub(crate) command: String,
     pub(crate) tty: String,
@@ -563,7 +571,7 @@ pub(crate) fn same_pane(a: &PaneRow, b: &PaneRow) -> bool {
         && a.pane_id == b.pane_id
         && a.pane_pid == b.pane_pid
 }
-pub(crate) const PANE_FORMAT: &str = "#{pid}\t#{session_id}\t#{session_name}\t#{window_id}\t#{pane_id}\t#{pane_pid}\t#{window_activity}\t#{pane_in_mode}\t#{pane_current_command}\t#{pane_tty}\t#{pane_current_path}";
+pub(crate) const PANE_FORMAT: &str = "#{pid}\t#{session_id}\t#{session_name}\t#{window_id}\t#{pane_id}\t#{pane_pid}\t#{window_activity}\t#{pane_in_mode}\t#{window_active}\t#{pane_active}\t#{pane_current_command}\t#{pane_tty}\t#{pane_current_path}";
 
 fn tmux_id(value: &str, prefix: char) -> bool {
     value
@@ -577,7 +585,7 @@ fn tmux_id(value: &str, prefix: char) -> bool {
 /// the socket must not blank the listing; callers that store a name check
 /// it with `validate_session_name`.)
 pub(crate) fn parse_pane_row(line: &str) -> Option<PaneRow> {
-    let mut fields = line.trim_end_matches(['\r', '\n']).splitn(11, '\t');
+    let mut fields = line.trim_end_matches(['\r', '\n']).splitn(13, '\t');
     let server_pid: u32 = fields.next()?.parse().ok()?;
     let session_id = fields.next()?;
     let session_name = fields.next()?;
@@ -585,11 +593,14 @@ pub(crate) fn parse_pane_row(line: &str) -> Option<PaneRow> {
     let pane_id = fields.next()?;
     let pane_pid: u32 = fields.next()?.parse().ok()?;
     let window_activity: u64 = fields.next()?.parse().ok()?;
-    let in_mode = match fields.next()? {
-        "0" => false,
-        "1" => true,
-        _ => return None,
+    let flag = |field: &str| match field {
+        "0" => Some(false),
+        "1" => Some(true),
+        _ => None,
     };
+    let in_mode = flag(fields.next()?)?;
+    let window_active = flag(fields.next()?)?;
+    let pane_active = flag(fields.next()?)?;
     let command = fields.next()?;
     let tty = fields.next()?;
     let path = fields.next()?;
@@ -610,6 +621,8 @@ pub(crate) fn parse_pane_row(line: &str) -> Option<PaneRow> {
         pane_pid,
         window_activity,
         in_mode,
+        window_active,
+        pane_active,
         command: command.into(),
         tty: tty.into(),
         path: path.into(),
@@ -1212,6 +1225,8 @@ mod tests {
             "44",
             "1700000005",
             "1",
+            "1",
+            "0",
             "claude",
             "/dev/ttys004",
             "/tmp/a\tb",
@@ -1228,6 +1243,8 @@ mod tests {
                 pane_pid: 44,
                 window_activity: 1700000005,
                 in_mode: true,
+                window_active: true,
+                pane_active: false,
                 command: "claude".into(),
                 tty: "/dev/ttys004".into(),
                 path: "/tmp/a\tb".into(),
@@ -1235,7 +1252,7 @@ mod tests {
         );
         assert_eq!(
             PANE_FORMAT.split('\t').count(),
-            11,
+            13,
             "one field per struct member"
         );
     }
@@ -1251,6 +1268,8 @@ mod tests {
             "44",
             "1",
             "0",
+            "1",
+            "1",
             "zsh",
             "/dev/ttys0",
             "/",
@@ -1265,6 +1284,8 @@ mod tests {
             (5, "0"),     // pane pid 0
             (6, "later"), // activity non-numeric
             (7, "2"),     // in_mode outside 0/1
+            (8, ""),      // window_active missing
+            (9, "yes"),   // pane_active outside 0/1
         ] {
             let mut fields = good;
             fields[i] = bad;
@@ -1273,7 +1294,7 @@ mod tests {
                 "field {i} = {bad:?}"
             );
         }
-        assert!(parse_pane_row(&row(&good[..10])).is_none(), "missing field");
+        assert!(parse_pane_row(&row(&good[..12])).is_none(), "missing field");
         assert!(parse_pane_row("junk-line").is_none());
         assert!(parse_pane_row("").is_none());
     }
@@ -1467,7 +1488,7 @@ mod tests {
         format!("{TEST_NONCE}\t{}\t{TEST_NONCE}", row(fields))
     }
 
-    const GOOD_FIELDS: [&str; 11] = [
+    const GOOD_FIELDS: [&str; 13] = [
         "99",
         "$1",
         "deck-card-ab12",
@@ -1476,6 +1497,8 @@ mod tests {
         "44",
         "1700000005",
         "0",
+        "1",
+        "1",
         "zsh",
         "/dev/ttys004",
         "/tmp/a\tb",
@@ -1681,6 +1704,57 @@ mod tests {
                 let _ = std::fs::remove_file(path);
             }
         }
+    }
+
+    /// FR-SI-03 against the real bundled tmux: the agent-status Signal
+    /// selector names exactly the pane `pane_target(session)` reaches — the
+    /// delivery target — through splits, focus changes and a second window,
+    /// per session.
+    #[test]
+    fn the_signal_target_is_the_pane_delivery_reaches() {
+        let _serial = CONTROL_CLIENT_TESTS.lock_or_recover();
+        let server = IsolatedControlServer::new();
+        server.new_session("alpha", "sleep");
+        server.new_session("beta", "sleep");
+        let run = |args: &[&str]| server.tmux(args);
+        let check = |label: &str| {
+            let rows = list_panes_with(&run).unwrap();
+            let targets = crate::agent_status::signal_targets(&rows);
+            for session in ["alpha", "beta"] {
+                let delivery = pane_row_with(&run, &pane_target(session)).unwrap();
+                assert_eq!(
+                    targets.get(session).map(|row| row.pane_id.as_str()),
+                    Some(delivery.pane_id.as_str()),
+                    "{label}: {session}"
+                );
+            }
+            targets["alpha"].pane_id.clone()
+        };
+        let first = check("one pane");
+        // FR-SI-03.1: a single-pane session carries retirement evidence
+        let finish = || crate::agent_status::finish_foregrounds(&list_panes_with(&run).unwrap());
+        assert_eq!(finish().get("alpha").map(String::as_str), Some("sleep"));
+        server.run(&["split-window", "-t", "alpha:", "sleep", "30"]);
+        let split = check("after a split");
+        assert_ne!(split, first, "a split makes the new pane active");
+        // a split session carries none, whichever pane is active; the
+        // untouched single-pane session keeps its evidence
+        assert!(!finish().contains_key("alpha"), "split: new pane active");
+        assert_eq!(finish().get("beta").map(String::as_str), Some("sleep"));
+        server.run(&["select-pane", "-t", &first]);
+        assert_eq!(check("after focusing the first pane"), first);
+        assert!(!finish().contains_key("alpha"), "split: first pane active");
+        server.run(&["new-window", "-t", "alpha:", "sleep", "30"]);
+        let window = check("in a second window");
+        assert!(window != first && window != split);
+        let rows = list_panes_with(&run).unwrap();
+        assert_eq!(
+            rows.iter()
+                .filter(|r| r.session_name == "alpha" && r.window_active && r.pane_active)
+                .count(),
+            1,
+            "exactly one marked pane per session"
+        );
     }
 
     #[test]

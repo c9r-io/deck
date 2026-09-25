@@ -2653,12 +2653,14 @@ fn needs_input_holds_every_automatic_mode() {
 }
 
 #[test]
-fn external_follow_up_row_needs_a_positive_turn_done() {
+fn external_follow_up_row_is_never_released_by_a_hook_word() {
     let mut c = qi("c", "chain");
     c.external = true;
     let q = qs(vec![c]);
     let quiet = NOW - 400;
-    for agent in ["working", "needs-input"] {
+    // `turn-done` ends an interaction; the agent may still own background
+    // work and resume on its own, so it is no readiness for external text
+    for agent in ["working", "needs-input", "turn-done"] {
         assert!(
             select_due(&q, NOW, 720, &seen_agent(quiet, agent)).is_empty(),
             "{agent}"
@@ -2668,15 +2670,31 @@ fn external_follow_up_row_needs_a_positive_turn_done() {
     assert!(select_due(&q, NOW, 720, &seen(quiet)).is_empty());
     // a dead session has no hook word either
     assert!(select_due(&q, NOW, 720, &HashMap::new()).is_empty());
-    assert_eq!(
-        ids(&select_due(&q, NOW, 720, &seen_agent(quiet, "turn-done"))),
-        ["c"]
-    );
-    // turn-done does not skip the quiet time
-    assert!(select_due(&q, NOW, 720, &seen_agent(NOW - 10, "turn-done")).is_empty());
-    // an owner row keeps the quiet-only rule, dead session included
+    // the user's send-now remains the release, whatever the hook said
+    for agent in ["working", "turn-done"] {
+        assert_eq!(
+            select_for_request(&q, "s", NOW, 720, &seen_agent(quiet, agent), Some("c"))
+                .unwrap()
+                .id,
+            "c",
+            "{agent}"
+        );
+    }
+    // an owner row keeps the quiet-only rule, dead session and every
+    // non-input word included
     let q = qs(vec![qi("o", "chain")]);
     assert_eq!(ids(&select_due(&q, NOW, 720, &HashMap::new())), ["o"]);
+    for agent in ["working", "turn-done"] {
+        assert_eq!(
+            ids(&select_due(&q, NOW, 720, &seen_agent(quiet, agent))),
+            ["o"],
+            "{agent}"
+        );
+    }
+    // an owner row still waits for its quiet time
+    assert!(select_due(&q, NOW, 720, &seen_agent(NOW - 10, "turn-done")).is_empty());
+    // and an input request holds an owner row too
+    assert!(select_due(&q, NOW, 720, &seen_agent(quiet, "needs-input")).is_empty());
 }
 
 #[test]
@@ -2714,7 +2732,11 @@ fn plan_reports_the_agent_hold() {
         serde_json::to_value(plan_item(&q, &q.items[0], NOW, 720, obs)).unwrap()["stage"].clone()
     };
     assert_eq!(stage(Some(&seen(NOW - 400))), "agent");
-    assert_eq!(stage(Some(&seen_agent(NOW - 400, "turn-done"))), "context");
+    assert_eq!(
+        stage(Some(&seen_agent(NOW - 400, "turn-done"))),
+        "agent",
+        "an interaction boundary does not release an external follow-up"
+    );
     assert_eq!(stage(None), "unknown");
 }
 

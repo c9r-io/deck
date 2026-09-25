@@ -37,8 +37,8 @@
 //!   the separate Enter is refused because the foreground changed. Saving a
 //!   list as a template is the user adopting that text as their own. Every
 //!   row admitted here is marked `external` (backend-set, `channel_path`),
-//!   and its follow-up rows wait for a positive agent `turn-done`
-//!   (`select.rs`, agent hold).
+//!   and its follow-up rows wait for the user's send-now (`select.rs`,
+//!   agent hold: no hook word is readiness for external text).
 //! - `external_text` is the caller's statement that a row's text IS an
 //!   external message verbatim (a Slack buffer entry, on either path).
 //!   `validate_add` then requires the channel agent command and refuses a

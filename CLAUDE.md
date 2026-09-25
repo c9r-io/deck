@@ -17,9 +17,15 @@ same commit as the behaviour it describes.
   automatic retirement is an automation run whose rule says "close the
   card" (`runFinishHolds` in `pure.js`, driven by the `board.js` poll):
   the user chose it per rule, it never fires while a pane shows the card,
-  it goes through the same close path as a click, and the `turn-done` it
-  reads is accepted only from the card's own pane (`agent_status.rs` binds
-  every hook event to the pane's process tree through the kernel peer pid). Other non-click card
+  it goes through the same close path as a click, and it reads only
+  process-level evidence: no agent state and a shell back in the pane's
+  foreground (the agent program exited). **An agent hook word is never
+  side-effect authority**: `turn-done` is an interaction boundary, not the
+  end of the agent's work (Claude Code resumes on its own after background
+  work; a Codex interrupt leaves background terminals running), so it
+  neither retires a run nor releases an external follow-up row
+  (`scheduler/select.rs` agent hold). `tests/signal_census.rs` pins every
+  consumer of the words as presentation, attention or side effect. Other non-click card
   creation/retirement paths are closed: an explicit MCP request (`mcp.js`,
   `mcp/`) names one target; create needs the locally authorized client's
   create permission, close needs its current control generation/epoch/holder

@@ -152,3 +152,45 @@ test('old settings migrate to system locale and unknown fields round-trip', () =
   assert.equal('debug' in saved, false);
   assert.deepEqual(saved.future, { kept: 1 });
 });
+
+/* Signal Integrity FR-SI-02: agent hook words are interaction observations.
+   The governed Signal copy may not claim more than the source can prove: a
+   turn ENDED (never "finished"/"completed" work), input was REQUESTED (never
+   a present "needs your input"/"waiting for you"). Only this explicit surface
+   is checked — an unrelated string may say "completed" — and adding or
+   removing a governed key is an intentional edit of this list. The status
+   tooltip and hook-observation families are governed in full. */
+const SIGNAL_COPY_KEYS = Object.freeze([
+  'attention.summaryGlobal', 'attention.filter.input', 'attention.filter.done',
+  'attention.input', 'attention.working', 'attention.doneRead', 'attention.doneUnread',
+  'attention.noSignal', 'attention.noSignalHint', 'attention.viewed', 'attention.emptyPending',
+  'session.status.running', 'session.status.waiting', 'session.status.attention',
+  'session.status.done', 'session.status.stopped', 'session.doneTab',
+  'settings.agentHooksHint', 'settings.codexHooksHint', 'settings.notifyAwayHint',
+  'queue.signal.working', 'queue.signal.input', 'queue.signal.done', 'queue.signal.none',
+  'queue.stage.agent',
+  'automation.hint', 'automation.finish', 'automation.kv.finish',
+  'automation.runClosed', 'automation.runCloseFailed',
+]);
+const SIGNAL_COPY_FAMILIES = Object.freeze(['session.status.', 'queue.signal.']);
+
+test('agent signal wording never claims task completion or a present wait', () => {
+  assert.equal(new Set(SIGNAL_COPY_KEYS).size, SIGNAL_COPY_KEYS.length, 'no key listed twice');
+  for (const locale of ['en', 'zh-Hans']) {
+    for (const key of SIGNAL_COPY_KEYS) assert.equal(typeof dictionaries[locale][key], 'string', `${locale} ${key}`);
+    for (const key of Object.keys(dictionaries[locale])) {
+      if (SIGNAL_COPY_FAMILIES.some(prefix => key.startsWith(prefix))) {
+        assert.ok(SIGNAL_COPY_KEYS.includes(key), `${key} is Signal copy: list it`);
+      }
+    }
+  }
+  const en = /needs? (your )?input|turn finished|finished (its|a) turn|waiting for your (review|input)|task (is )?(complete|done|finished)/i;
+  const zh = /已完成本轮|本轮完成|完成一轮|已完成一轮|等待你的输入|需要你的输入|正在等待你|任务已完成/;
+  for (const key of SIGNAL_COPY_KEYS) {
+    assert.doesNotMatch(dictionaries.en[key], en, key);
+    assert.doesNotMatch(dictionaries['zh-Hans'][key], zh, key);
+  }
+  assert.match(dictionaries.en['session.status.done'], /turn ended/i);
+  assert.match(dictionaries.en['attention.input'], /requested/i);
+  assert.match(dictionaries['zh-Hans']['attention.input'], /请求输入/);
+});

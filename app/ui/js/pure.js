@@ -63,12 +63,16 @@ export function nextFire(i, now = Math.floor(Date.now() / 1000)) {
 
 /* ---------- card status ---------- */
 export const CARD_QUIET_SECS = 15;
-/* One place decides what a card's status word is. `agent` is the closed
-   agent-hook state from poll_sessions ("working" | "needs-input" |
-   "turn-done", agent_status.rs) and OUTRANKS the output-recency heuristic:
-   a hook said what the agent is actually doing, so a long silent tool run
-   stays "running" instead of drifting to the ambiguous amber "waiting".
-   Without agent state the classic heuristic applies unchanged. */
+/* One place decides what a card's status COLOUR is (presentation only).
+   `agent` is the closed agent-hook word from poll_sessions and OUTRANKS the
+   output-recency heuristic, so a long silent tool run stays "running"
+   instead of drifting to the ambiguous amber "waiting". The words are
+   interaction observations (agent_status.rs header): "working" = an
+   interaction is active, "needs-input" = input was requested (not proof
+   the agent still waits), "turn-done" = an interaction ended. The status
+   word "done" therefore means "turn ended", never task complete, program
+   finished or safe to close — no side effect reads this function (signal
+   census). Without agent state the classic heuristic applies unchanged. */
 /* the closed agent state words agent_status.rs accepts */
 export const AGENT_STATES = Object.freeze(['working', 'needs-input', 'turn-done']);
 export function effectiveCardStatus(alive, agent, quiet) {
@@ -919,19 +923,26 @@ export function nextScheduleSlot(schedule, now, since = 0) {
 }
 
 /* a condition that must hold on N consecutive observations before it counts:
-   the finish rule closes a run only after the "prompts delivered + agent
-   done" reading survives three polls, buffering short gaps between a step's
-   delivery and the next `working` hook; this does not correlate a turn to a delivery */
-/* one poll's reading for a `close` finish rule: the run is over when its
-   session has nothing queued, the agent reported its turn done (or, with no
-   agent reporting, the program left the foreground), the card is alive and
-   nobody is looking at it — a run whose pane is open is the user's to read
-   and talk to; it is only retired after they leave it and the agent is done */
+   the finish rule closes a run only after its "prompts delivered + program
+   gone" reading survives three polls */
+/* one poll's reading for a `close` finish rule. Process-level evidence
+   only: the run's session has nothing queued, NO agent state is reported
+   and a shell is back in the pane's foreground (the agent program exited),
+   the card is alive and nobody is looking at it — a run whose pane is open
+   is the user's to read and talk to.
+   `turn-done` is an interaction boundary, never lifecycle authority: an
+   agent that ended a turn may still own background work (Claude Code
+   resumes on its own when a background command finishes; a Codex
+   interrupt leaves background terminals running), and closing the card
+   kills that work with the session. Any reported agent word therefore
+   holds the close; a live interactive agent keeps its card until the
+   program exits or the user closes it (signal census:
+   tests/signal_census.rs). */
 export function runFinishHolds({ rule, queued, agent, fg, alive, stopped, viewing, reviewRequired, finalReviewed }, shellFg) {
   if (reviewRequired && !finalReviewed) return false;
   if (!alive || stopped || viewing || queued) return false;
   if (!rule || rule.finish !== 'close') return false;
-  return agent === 'turn-done' || (!agent && shellFg.test(fg || ''));
+  return !agent && shellFg.test(fg || '');
 }
 
 /* pause ↔ resume of a clock rule: resuming starts fresh from `now`, exactly

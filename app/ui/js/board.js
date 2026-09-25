@@ -33,7 +33,7 @@ import { formatShortcut } from './shortcuts.js';
 import { renderAutomations, ruleOf } from './automation.js';
 import { createDefaultColumns, migrateColumnSemantics } from './board-defaults.js';
 import { attentionStatusText, paintCardAttentionBadge, refreshAttention } from './attention.js';
-import { cardLabels, labelsKey, seenDismissals } from './notify-model.js';
+import { cardLabels, dismissKey, labelsKey, seenDismissals } from './notify-model.js';
 import { addManual, addQueueCopy, bufferLimitError, copyEvidence, deleteEntry, editEntry, emptyBuffer, retainedBuffer } from './buffer-model.js';
 import { nextCollectedAt } from './channel-model.js';
 import { normalizeTaskPresets } from './connector-model.js';
@@ -853,13 +853,13 @@ function noteRunEnded(card) {
 }
 
 /* the finish rule of an automation run: once the run's prompts are all
-   delivered, the agent reported its turn done (or the program left the
-   foreground) and no pane shows the card, it is retired through the same
-   path as an explicit close (`runFinishHolds` in pure.js is the reading).
-   The reading must survive three consecutive polls, so the instant between
-   a step's delivery and the agent's next `working` hook — when the queue is
-   already empty but the old `turn-done` still stands — buffers a short gap, but cannot prove which delivery the done belongs to. An open pane holds the close for as long as the user keeps it:
-   a run they are reading or talking to is theirs until they leave. */
+   delivered, the agent program has left the pane's foreground (no agent
+   state, a shell in front) and no pane shows the card, it is retired through
+   the same path as an explicit close (`runFinishHolds` in pure.js is the
+   reading). A reported `turn-done` is NOT enough — it ends an interaction,
+   not the agent's work. The reading must survive three consecutive polls. An
+   open pane holds the close for as long as the user keeps it: a run they are
+   reading or talking to is theirs until they leave. */
 const runConfirm = createConfirmationCounter(3);
 const runRetirement = createExitRetirementTracker();
 function observeRunFinish(c, info) {
@@ -871,7 +871,10 @@ function observeRunFinish(c, info) {
     reviewRequired: c.inboundPlan?.reviewEach === true || c.origin.reviewEach === true,
     finalReviewed: (ctx.queueCache.review_completed || []).includes(c.session),
     queued: (ctx.queueCache.items || []).some(i => i.session === c.session),
-    agent: info.agent, fg: info.fg, alive: true,
+    /* agent and fg from the SAME Signal target pane, and fg only for a
+       single-pane session (poll_sessions `finish_fg`): no pane-local shell
+       may read as "the agent exited" while another pane's agent lives */
+    agent: info.agent, fg: info.finish_fg, alive: true,
     stopped: c.status === 'stopped', viewing: hasPane(c.session),
   }, SHELL_FG);
   if (runConfirm.observe(c.id, holds)) {
@@ -1016,10 +1019,23 @@ async function pollSessionsNow() {
   return true;
 }
 /* Away notifications (notify.rs): the backend learns card titles and
-   project names only from here (memory, never logged), and is told once
-   per turn that an unread ending was viewed. Nothing here posts anything. */
+   project names only from here (memory, never logged), and is told which
+   exact ending episode was viewed (FR-SI-05). Nothing here posts anything.
+   A dismissal counts only once `notify_dismiss` succeeded: a failed call
+   leaves it eligible, and the next sync retries it; `dismissInflight`
+   keeps one call per episode in the air. */
 let notifyLabelsKey = '';
-const notifyDismissed = new Set();
+const dismissInflight = new Set();
+function sendDismissals(cards) {
+  for (const { card, session, episode } of seenDismissals(cards, ctx.attention, dismissInflight)) {
+    const key = dismissKey(session, episode);
+    dismissInflight.add(key);
+    inv('notify_dismiss', { session, episode })
+      .then(() => ctx.attention.confirmViewed(card, episode))
+      .catch(() => {})
+      .finally(() => dismissInflight.delete(key));
+  }
+}
 function syncNotify() {
   const cards = provider.list();
   const labels = cardLabels(cards, provider.projects());
@@ -1028,9 +1044,7 @@ function syncNotify() {
     notifyLabelsKey = key;
     inv('notify_cards', { cards: labels }).catch(() => { notifyLabelsKey = ''; });
   }
-  for (const session of seenDismissals(cards, ctx.attention, notifyDismissed)) {
-    inv('notify_dismiss', { session }).catch(() => {});
-  }
+  sendDismissals(cards);
 }
 const tabsKey = () => provider.projects().map(p => {
   const cards = provider.list(p.id);
@@ -1228,10 +1242,7 @@ export function markSessionSeen(sid) {
   if (ctx.attention.get(card)?.seen || !ctx.attention.saw(card)) return;
   renderTabs();
   refreshAttention();
-  if (ctx.attention.get(card)?.agent === 'turn-done' && !notifyDismissed.has(card.session)) {
-    notifyDismissed.add(card.session);
-    inv('notify_dismiss', { session: card.session }).catch(() => {});
-  }
+  sendDismissals([card]);
 }
 
 export function renameTab(el, p) {

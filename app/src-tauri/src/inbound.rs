@@ -60,8 +60,12 @@
 //! webview
 //! refuses a slot while a card of the same rule is still on the Board
 //! (`busy`, acked skipped) and, for a rule whose `finish` is `close`, closes
-//! the run's card once its prompts are all delivered and the agent reported
-//! `turn-done` or the program left the foreground (three consecutive polls).
+//! the run's card once its prompts are all delivered and the agent program
+//! has left the foreground (three consecutive polls). A reported `turn-done`
+//! never closes a run: it ends an interaction, and the agent may still own
+//! background work that closing the session would kill. A live interactive
+//! agent therefore keeps its card (and a later slot of the rule is `busy`)
+//! until the program exits or the user closes it.
 //! The ledger's `runs` list (rule, slot, card id, times, closed outcome word;
 //! capped) is the drawer's history — identifiers and times only.
 

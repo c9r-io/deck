@@ -132,6 +132,65 @@ pub(crate) fn smoke_query_channel() -> Result<bool, DeckError> {
     Ok(crate::tmux::query_channel_connected())
 }
 
+/// The `signal-finish` smoke's deterministic fake agent
+/// (`examples/signal_fixture.rs`, built by `app/run.sh` for that mode only
+/// and never bundled): where it and this bundle's real status helper are,
+/// and what its closed sentinels say. Sentinels live in the isolated smoke
+/// data directory; nothing here spawns a process.
+#[derive(Debug, Serialize)]
+pub(crate) struct SmokeSignalFixture {
+    fixture: String,
+    helper: String,
+    dir: String,
+    started: bool,
+    completed: bool,
+    fixture_alive: bool,
+    child_alive: bool,
+}
+
+fn fixture_process_alive(dir: &std::path::Path, name: &str) -> bool {
+    std::fs::read_to_string(dir.join(name))
+        .ok()
+        .and_then(|text| text.trim().parse::<u32>().ok())
+        .is_some_and(|pid| {
+            crate::procinfo::process_start(pid).is_some()
+                && crate::procinfo::argv0(pid)
+                    .is_some_and(|argv0| argv0.rsplit('/').next() == Some("signal_fixture"))
+        })
+}
+
+#[tauri::command]
+pub(crate) fn smoke_signal_fixture() -> Result<SmokeSignalFixture, DeckError> {
+    let unavailable = || DeckError::new(ErrorKind::Other, "signal fixture is unavailable");
+    if !enabled() {
+        return Err(unavailable());
+    }
+    let exe = std::env::current_exe().map_err(|_| unavailable())?;
+    let macos = exe.parent().ok_or_else(unavailable)?;
+    let helper = macos.join("deck-status-helper");
+    // target/debug/deck-smoke.app/Contents/MacOS → target/debug/examples
+    let fixture = macos
+        .ancestors()
+        .nth(3)
+        .ok_or_else(unavailable)?
+        .join("examples/signal_fixture");
+    if !helper.is_file() || !fixture.is_file() {
+        return Err(unavailable());
+    }
+    let dir = crate::datadir::deck_dir().join("signal-fixture");
+    crate::datadir::create_private_dir(&dir)?;
+    let text = |path: std::path::PathBuf| path.to_str().map(str::to_owned).ok_or_else(unavailable);
+    Ok(SmokeSignalFixture {
+        started: dir.join("STARTED").is_file(),
+        completed: dir.join("COMPLETED").is_file(),
+        fixture_alive: fixture_process_alive(&dir, "fixture.pid"),
+        child_alive: fixture_process_alive(&dir, "child.pid"),
+        fixture: text(fixture)?,
+        helper: text(helper)?,
+        dir: text(dir)?,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -176,6 +235,10 @@ mod tests {
         assert_eq!(
             smoke_clipboard_metrics().unwrap_err(),
             "smoke clipboard metrics are unavailable"
+        );
+        assert_eq!(
+            smoke_signal_fixture().unwrap_err(),
+            "signal fixture is unavailable"
         );
     }
 }

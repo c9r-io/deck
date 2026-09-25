@@ -1,9 +1,31 @@
 // attention-model.js — runtime-only observations and derived attention.
 // No Board writes, hook installation, inferred readiness, or durable ordering.
-// A snapshot belongs to a card AND its session identity. Missing/failed polls
-// retain explicitly stale observations. Read means successfully displayed,
-// never handled; a new observed status re-arms it. No turn IDs exist, so an
-// unobserved working→done between polls cannot be distinguished from a repeat.
+// Three layers, kept apart:
+// - Observation: `alive`, `agent` (a closed interaction word: working =
+//   interaction active, needs-input = input requested, turn-done =
+//   interaction ended — never task/program completion), `status`, `idle`.
+//   Only a successful poll writes it.
+// - Attention: `seen` (read/unread) and the derived categories. Read means
+//   successfully displayed, never handled. With a backend episode (FR-SI-05:
+//   `episode` is Deck's opaque token for one accepted observation) the
+//   backend's `episode_viewed` is the authoritative truth: the same episode
+//   stays read across pane switches, webview reloads and missed polls, and a
+//   new episode re-arms. Local `seen` only bridges the moment between a view
+//   and the acknowledged `notify_dismiss(session, episode)`. Snapshots
+//   without an episode keep the status rule: a new observed status re-arms.
+//   Viewing never changes an observation.
+// - Freshness: `stale` and `freshness()`. A failed or partial poll keeps the
+//   last observation and marks it stale; stale is not an agent state and
+//   never changes `agent`/`status`.
+// A snapshot belongs to a card AND its session identity. Source interaction
+// identity (an agent's own turn id) stays backend-private; what crosses the
+// projection boundary is Deck's local, opaque `episode` for each accepted
+// observation. It distinguishes observation episodes even across missed
+// polls (an ending, a new turn and a second ending between two polls arrive
+// as a NEW episode, not a repeat), pane switches and a recreated webview.
+// Only snapshots without an episode fall back to status comparison, where a
+// missed working→done cannot be told from a repeat. Presentation (Board badge, list, tab dot, Dock) reads these
+// categories; none of them is side-effect authority (tests/signal_census.rs).
 import { CARD_QUIET_SECS, effectiveCardStatus } from './pure.js';
 
 export const ATTENTION_FILTERS = Object.freeze(['pending', 'input', 'done', 'followed', 'unavailable', 'stopped']);
@@ -50,10 +72,14 @@ export function createAttentionTracker() {
         }
         const agent = info.alive && ['working', 'needs-input', 'turn-done'].includes(info.agent) ? info.agent : null;
         const status = effectiveCardStatus(info.alive, agent, info.idle_secs != null && info.idle_secs >= CARD_QUIET_SECS);
+        const episode = agent && Number.isSafeInteger(info.episode) ? info.episode : null;
+        const episodeViewed = episode != null && info.episode_viewed === true;
         snapshots.set(card.id, {
           session: card.session, alive: info.alive, agent, status,
-          idle: info.idle_secs ?? null, observedAt: now, stale: false,
-          seen: !!((old?.status === status && old?.agent === agent && old.seen) || visible.has(card.id)),
+          idle: info.idle_secs ?? null, observedAt: now, stale: false, episode, episodeViewed,
+          seen: episode != null
+            ? !!(episodeViewed || visible.has(card.id) || (old?.episode === episode && old.seen))
+            : !!((old?.status === status && old?.agent === agent && old.seen) || visible.has(card.id)),
         });
       }
       failed = !complete;
@@ -68,6 +94,12 @@ export function createAttentionTracker() {
       if (!value || value.stale) return false;
       value.seen = true;
       return true;
+    },
+    /* the backend acknowledged `notify_dismiss(session, episode)`: until
+       the next poll says so itself, this episode is known viewed */
+    confirmViewed(card, episode) {
+      const value = get(card);
+      if (value && value.episode === episode) value.episodeViewed = true;
     },
     freshness(cards) {
       const known = cards.filter(card => get(card));

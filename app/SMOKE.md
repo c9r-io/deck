@@ -106,6 +106,68 @@ survive. Inspect and capture the plan, independent observations, records and
 last-row confirmation. Do not confirm it until persistence evidence is captured.
 The full release checklist and its known selection baseline remain separate.
 
+## Signal integrity: automation finish (FR-SI-01)
+
+Run `DECK_SMOKE_DATA_DIR="$(mktemp -d /tmp/deck-signal.XXXXXX)" DECK_SMOKE_TMUX_SOCKET=deck-smoke-signal-UNIQUE DECK_SMOKE_WKWEBVIEW=signal-finish app/run.sh`.
+`run.sh` also builds the debug example `signal_fixture` (never bundled), a
+fake agent that refuses to run outside this data dir and `deck-smoke*`
+socket. A clock rule with "close the card" launches it in a real pane; it
+reports through the bundle's real `deck-status-helper`: prompt delivered →
+`working` → a background command writes `STARTED` → `turn-done` while that
+command runs. The run must stay on the Board for ten polls (every one reading
+`turn-done`, queue drained) until the command writes `COMPLETED`; the fixture
+then resumes (`working`, `turn-done`), exits, and only then does the existing
+finish path close the card and the run (outcome `closed`). Both fixture
+processes and the session must be gone. Every fixture hook pipes a Claude
+Code-shaped payload into the real helper (FR-SI-04): the isolated app.log
+must show four `[agent-status] … v=2` lines (two interactions) and none of
+the fixture's decoy text or fake id. The carrier forces polls
+(`pollNow`), so a regression that trusts `turn-done` fails within about a
+second: that is deterministic regression timing, not production timing
+(the reported real-agent case closed ~7 s after the first `turn-done`);
+real-agent timing and semantics belong to the candidate step below. About a
+minute. Run
+`scripts/smoke-verdict <root> signal-finish`; exit 0. Then
+`scripts/edr_runtime.py --cleanup --socket deck-smoke-signal-UNIQUE`.
+
+Candidate step with a real agent (release-location install, Claude Code
+status integration on — dev/smoke bundles cannot install hooks): create a
+clock automation with "close the card" whose template asks Claude Code to
+run `sleep 30 && touch /tmp/deck-bg-COMPLETED` in the background and then
+stop; do not open the card. After the turn ends the card must stay for as
+long as `claude` runs; `/tmp/deck-bg-COMPLETED` appears, Claude resumes on its
+own, and the card is never closed while `claude` is in front. Record the
+Claude Code version, the Deck build and pass/fail; `/exit` must then let the
+run close. Repeat with Codex: Esc-interrupt while a background terminal
+runs; the card stays.
+
+## Signal candidate (installed build, manual)
+
+Required before a release that touches agent hooks, the status helper,
+process identity, attention, notifications, scheduler signal admission or
+automation finish. On the INSTALLED Deck with both agent integrations on,
+in a scratch project, run each case, then note the card's session tag
+(`sess-…` in `~/.deck/app.log`) and the case's start/end epoch seconds in a
+plan file:
+
+- `claude-normal`, `claude-permission`, `claude-restart` (quit and relaunch
+  Deck between the prompt and its end), `claude-background-resume` (an
+  automation with "close the card" whose prompt runs a background command
+  and ends the turn; Claude resumes by itself; the card must stay);
+- `codex-normal`, `codex-permission`, `codex-interrupt` (Esc),
+  `codex-background-interrupt` (automation with "close the card"; Esc while
+  a background terminal runs; the card must stay), `codex-rapid` (a second
+  prompt right after the first ends).
+
+Then `scripts/signal-candidate --log ~/.deck/app.log --plan plan.json
+--deck-version … --deck-build … --claude-version … --codex-version …`
+prints a `deck-signal-candidate/1` verdict and exits 0 only when every case
+is `pass`; `fail` and `insufficient-evidence` both block. It reads only
+Deck's content-free log lines, never an agent transcript. `[inbound] run
+closed` carries no session tag, so the two auto-close cases treat ANY run
+closing inside their window as premature: run them with no other automation
+active (an unrelated close gives a false fail, never a false pass).
+
 ## Away notifications (manual)
 
 Release-location or `app/run.sh` bundle, an Agent status integration on,
@@ -113,7 +175,7 @@ Release-location or `app/run.sh` bundle, an Agent status integration on,
 the macOS permission dialog; the status row must read "Notifications
 allowed"). Start a `claude` card, ask it a question that needs a tool
 approval, hide deck with ⌘W: a macOS notification titled with the card
-title and "<project> · needs your input" appears; the Dock badge shows 1.
+title and "<project> · asked for your input" appears; the Dock badge shows 1.
 Click the notification: deck comes to the front on that session. Answer,
 let the turn end while deck is hidden: a "· a turn has ended" notification
 appears; open the card: it is withdrawn and the badge drops. Leave deck in

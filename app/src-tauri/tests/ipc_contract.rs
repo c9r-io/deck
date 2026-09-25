@@ -69,6 +69,7 @@ const DEBUG_ONLY: &[&str] = &[
     "smoke_fault_set",
     "smoke_flush_queue",
     "smoke_query_channel",
+    "smoke_signal_fixture",
     "smoke_queue_state",
     "smoke_seed_ambiguous",
     "terminal_metrics",

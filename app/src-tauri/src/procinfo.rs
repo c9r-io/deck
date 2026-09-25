@@ -21,6 +21,11 @@ pub(crate) struct ProcessInfo {
     pub(crate) tty: u32,
     /// The controlling terminal's foreground process group.
     pub(crate) tty_pgid: u32,
+    /// Birth instant (`pbi_start_tvsec` / `pbi_start_tvusec`) from the same
+    /// `proc_bsdinfo` read: with the pid it tells a process generation
+    /// apart from a later process that reused the pid. 0 when unknown.
+    pub(crate) start_seconds: u64,
+    pub(crate) start_micros: u32,
 }
 
 /// Stable process birth identity used by the Connector generation token.
@@ -100,6 +105,8 @@ fn bsd_info(pid: libc::pid_t) -> Option<ProcessInfo> {
         pgid: info.pbi_pgid,
         tty: info.e_tdev,
         tty_pgid: info.e_tpgid,
+        start_seconds: info.pbi_start_tvsec,
+        start_micros: info.pbi_start_tvusec as u32,
     })
 }
 
@@ -163,31 +170,23 @@ pub(crate) fn peer_pid(_stream: &std::os::unix::net::UnixStream) -> Option<u32> 
     None
 }
 
-/// Parent pid of one live process; `None` once it is gone.
-#[cfg(target_os = "macos")]
-pub(crate) fn parent_pid(pid: u32) -> Option<u32> {
-    bsd_info(pid as libc::pid_t).map(|info| info.ppid)
-}
-
-#[cfg(not(target_os = "macos"))]
-pub(crate) fn parent_pid(_pid: u32) -> Option<u32> {
-    None
-}
-
-/// `pid` and its ancestors, nearest first: at most `cap` entries, stopping
-/// at launchd (pid 1) or at a process that no longer exists. One libproc
-/// query per hop; nothing but the parent link is read. A chain that ends
-/// early (the starting process already exited) is simply short — callers
-/// treat "the pane is not in the chain" as a refusal.
-pub(crate) fn ancestry(pid: u32, cap: usize) -> Vec<u32> {
+/// `pid` and its ancestors, nearest first, from one process-table snapshot
+/// (so the chain and any other fact taken from `table` describe the same
+/// instant): at most `cap` entries, stopping at launchd (pid 1) or at a
+/// process missing from the snapshot. A chain that ends early is simply
+/// short — callers treat "the pane is not in the chain" as a refusal.
+pub(crate) fn ancestry_in(table: &HashMap<u32, ProcessInfo>, pid: u32, cap: usize) -> Vec<u32> {
     let mut chain = Vec::new();
     let mut current = pid;
     while current > 1 && chain.len() < cap {
+        let Some(info) = table.get(&current) else {
+            break;
+        };
         chain.push(current);
-        match parent_pid(current) {
-            Some(parent) if parent != current => current = parent,
-            _ => break,
+        if info.ppid == current {
+            break;
         }
+        current = info.ppid;
     }
     chain
 }
@@ -356,10 +355,13 @@ pub(crate) fn tty_device(path: &str) -> Option<u32> {
 }
 
 /// Sum of physical footprint over `roots` and all their descendants, in
-/// MiB, keyed exactly like `roots`.
+/// MiB, keyed exactly like `roots`, over one process-table snapshot (the
+/// poll shares it with agent-status reconciliation).
 #[cfg(target_os = "macos")]
-pub(crate) fn tree_memory(roots: &HashMap<String, u32>) -> HashMap<String, f64> {
-    let table = processes();
+pub(crate) fn tree_memory(
+    table: &HashMap<u32, ProcessInfo>,
+    roots: &HashMap<String, u32>,
+) -> HashMap<String, f64> {
     let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
     for info in table.values() {
         children.entry(info.ppid).or_default().push(info.pid);
@@ -496,16 +498,16 @@ mod tests {
 
     #[test]
     fn ancestry_walks_parents_nearest_first_and_respects_its_cap() {
+        let table = super::processes();
         let me = std::process::id();
-        let chain = super::ancestry(me, 32);
+        let chain = super::ancestry_in(&table, me, 32);
         assert_eq!(chain.first(), Some(&me));
-        assert_eq!(chain.get(1), super::parent_pid(me).as_ref());
+        assert_eq!(chain.get(1), table.get(&me).map(|info| &info.ppid));
         assert!(chain.len() >= 2, "a test process has a parent: {chain:?}");
         assert!(!chain.contains(&1), "launchd is never listed");
-        assert_eq!(super::ancestry(me, 1), vec![me]);
-        assert!(super::ancestry(0, 32).is_empty());
-        // a pid that cannot exist ends the chain at itself
-        assert_eq!(super::ancestry(u32::MAX - 1, 32).len(), 1);
+        assert_eq!(super::ancestry_in(&table, me, 1), vec![me]);
+        assert!(super::ancestry_in(&table, 0, 32).is_empty());
+        assert!(super::ancestry_in(&table, u32::MAX - 1, 32).is_empty());
     }
 
     use super::*;
@@ -517,6 +519,7 @@ mod tests {
             pgid,
             tty,
             tty_pgid,
+            ..ProcessInfo::default()
         }
     }
 
@@ -631,6 +634,26 @@ mod tests {
         );
         assert_eq!(footprint_kib(u32::MAX), 0);
         assert_eq!(argv0(u32::MAX), None);
+        // the snapshot's birth instant is the one process_start reads
+        let (seconds, micros) = process_start(me).expect("own start");
+        assert_eq!((mine.start_seconds, mine.start_micros), (seconds, micros));
+    }
+
+    #[test]
+    fn snapshot_ancestry_stops_at_launchd_a_gap_or_the_cap() {
+        let mut table = HashMap::new();
+        table.insert(10, info(10, 1, 10, 0, 0));
+        table.insert(20, info(20, 10, 20, 0, 0));
+        table.insert(30, info(30, 20, 30, 0, 0));
+        assert_eq!(ancestry_in(&table, 30, 32), vec![30, 20, 10]);
+        assert_eq!(ancestry_in(&table, 30, 2), vec![30, 20]);
+        table.remove(&20);
+        assert_eq!(
+            ancestry_in(&table, 30, 32),
+            vec![30],
+            "a gap ends the chain"
+        );
+        assert_eq!(ancestry_in(&table, 99, 32), Vec::<u32>::new());
     }
 
     /// `TZ` is process-wide: the one test that changes it and every test

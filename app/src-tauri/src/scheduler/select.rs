@@ -6,21 +6,22 @@
 //! The agent hook's closed state word (`agent_status`) can only HOLD a row,
 //! never release one, and it holds automatic selection only (`agent_holds`):
 //! - no row of any mode is selected while the session's agent reports
-//!   `needs-input` — the pasted text and its Enter would answer the agent's
-//!   question or permission prompt (typically accepting the highlighted
-//!   "Yes") instead of reaching the prompt box;
-//! - an `external` follow-up row (chain) additionally requires a POSITIVE
-//!   `turn-done`: quiet alone cannot tell a finished turn from a permission
-//!   prompt, and text that arrived from outside deck must never be what
-//!   answers one. Without a hook report (hooks not enabled, the agent
-//!   exited, a dead session) such a row keeps waiting; the user can still
-//!   send it by hand.
+//!   `needs-input` (an input request) — the pasted text and its Enter would
+//!   answer the agent's question or permission prompt (typically accepting
+//!   the highlighted "Yes") instead of reaching the prompt box;
+//! - an `external` follow-up row (chain) is never selected automatically.
+//!   Quiet alone cannot tell a finished turn from a permission prompt, and
+//!   `turn-done` only says an interaction ended: the agent may still own
+//!   background work and resume on its own, so no hook word is readiness
+//!   for text that arrived from outside deck. Until a stronger positive
+//!   readiness signal exists such a row waits for the user's send-now.
 //!
-//! Owner rows without a hook report keep the quiet-only rule. Manual
-//! send-now (`select_requested`) is the user acting while looking at the
+//! Owner rows keep the quiet-only rule (plus the `needs-input` hold). Manual
+//! send-now (`select_for_request`) is the user acting while looking at the
 //! pane and is not held. A stale `needs-input` (a question dismissed with
 //! Esc fires no Stop hook) holds until the next hook word, or until the
-//! poll reconciliation sees the agent leave the foreground.
+//! poll reconciliation sees the agent leave the foreground. The hold is a
+//! signal consumer pinned by `tests/signal_census.rs`.
 
 use std::collections::HashMap;
 
@@ -29,24 +30,30 @@ use crate::agent_status;
 use crate::tmux::PaneRow;
 
 /// One tick's view of a session: its pane's last output instant and the
-/// agent hook's closed state word, if an agent module reported one.
+/// agent hook's closed state word projected from the session's Signal
+/// target pane (`agent_status::signal_targets`: the active pane of its
+/// current window, the pane delivery pastes into), if one reported it.
 #[derive(Clone, Copy, Default)]
 pub(crate) struct Observed {
     pub(crate) activity: u64,
     pub(crate) agent: Option<&'static str>,
 }
 
-/// Session name → observation, one snapshot per tick (first pane wins).
+/// Session name → observation, one snapshot per tick. `activity` keeps the
+/// first listed pane (unchanged quiet-time semantics); the agent word never
+/// falls back to it. No process-table scan here: the Board poll reconciles
+/// generations, and a word that outlived its process can only HOLD.
 pub(crate) type Observations = HashMap<String, Observed>;
 
 pub(crate) fn observe(rows: Vec<PaneRow>) -> Observations {
+    let agents = crate::agent_status::projections(&rows);
     let mut seen = Observations::new();
     for row in rows {
         let activity = row.window_activity;
         seen.entry(row.session_name)
             .or_insert_with_key(|session| Observed {
                 activity,
-                agent: crate::agent_status::current(session),
+                agent: agents.get(session).map(|o| o.state),
             });
     }
     seen
@@ -56,8 +63,7 @@ pub(crate) fn observe(rows: Vec<PaneRow>) -> Observations {
 /// automatic paste of `i` into its session.
 pub(crate) fn agent_holds(i: &QueueItem, seen: Option<&Observed>) -> bool {
     let agent = seen.and_then(|o| o.agent);
-    agent == Some(agent_status::NEEDS_INPUT)
-        || (i.external && i.mode == "chain" && agent != Some(agent_status::TURN_DONE))
+    agent == Some(agent_status::NEEDS_INPUT) || (i.external && i.mode == "chain")
 }
 
 /// Deterministic candidate order within a session: retries whose backoff

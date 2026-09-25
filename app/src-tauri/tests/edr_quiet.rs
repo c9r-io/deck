@@ -493,9 +493,9 @@ fn native_notifications_are_in_process_and_content_closed() {
     // the body comes from body_text and nowhere else
     assert_eq!(notify.matches("&body_text(").count(), 1);
     for phrase in [
-        "needs your input",
+        "asked for your input",
         "a turn has ended",
-        "需要你的输入",
+        "请求了你的输入",
         "一轮已结束",
     ] {
         assert_eq!(

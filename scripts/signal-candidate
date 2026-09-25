@@ -1,0 +1,5 @@
+#!/bin/sh
+# Signal Integrity real-agent candidate verdict from app.log (manual, offline;
+# rules and schema in scripts/signal_candidate.py; exit 0 pass, 1 fail or
+# insufficient evidence, 2 usage)
+exec python3 "$(dirname "$0")/signal_candidate.py" "$@"

@@ -197,6 +197,14 @@ const KEY_CLASSES: &[&str] = &[
 const FG_CLASSES: &[&str] = &["no-card", "no-fg", "agent", "editor", "repl", "other"];
 const SMOKE_CHECKS: &[&str] = &[
     "selection-events-ready",
+    "signal-fixture",
+    "signal-run-created",
+    "signal-turn-done",
+    "signal-held",
+    "signal-completed",
+    "signal-closed",
+    "signal-cleanup",
+    "signal-exception",
     "resume-capture-0",
     "resume-capture-1",
     "resume-priority",

@@ -33,22 +33,23 @@ export function labelsKey(labels) {
   return labels.map(l => `${l.session}\u0000${l.title}\u0000${l.project}`).join('\u0001');
 }
 
-/** Sessions whose unread turn ending has now been viewed and not yet
- * reported: each is returned once per turn. `sent` is the caller's memory;
- * a session leaves it when its agent state is no longer `turn-done`, so
- * the next turn's viewing is reported again. */
-export function seenDismissals(cards, tracker, sent) {
+/** The in-flight key of one dismissal. */
+export const dismissKey = (session, episode) => `${session}\u0000${episode}`;
+
+/** Viewed turn endings the backend does not know about yet (FR-SI-05):
+ * each `{card, session, episode}` names the EXACT episode that was
+ * displayed, so a backend that has meanwhile advanced keeps its newer
+ * ending unread. Attention bookkeeping only — viewing is not handling. A
+ * dismissal is done when the backend says `episode_viewed` (or acked it);
+ * until then it is returned again on every sync, except while `inflight`
+ * holds it, so a failed call is retried by the normal sync path. */
+export function seenDismissals(cards, tracker, inflight) {
   const out = [];
   for (const card of cards || []) {
     const snapshot = tracker.get(card);
-    if (snapshot?.agent === 'turn-done') {
-      if (snapshot.seen && !sent.has(card.session)) {
-        sent.add(card.session);
-        out.push(card.session);
-      }
-    } else {
-      sent.delete(card.session);
-    }
+    if (snapshot?.agent !== 'turn-done' || !snapshot.seen || snapshot.episode == null || snapshot.episodeViewed) continue;
+    if (inflight.has(dismissKey(card.session, snapshot.episode))) continue;
+    out.push({ card, session: card.session, episode: snapshot.episode });
   }
   return out;
 }

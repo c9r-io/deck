@@ -46,11 +46,11 @@ a placeholder. The editor refuses a badge rule that fails this, a stored one
 is listed as blocked, and a badge that reaches it is skipped before any card
 is created. The rows are queued through the native agent-only gate, so they
 are pasted only while that agent is the pane's foreground program. Such a
-run's rows are marked external: after the first, each waits for the agent's
-status hook to report the turn ended (quiet output alone cannot tell a
-finished turn from a permission prompt, and the next row's Enter would
-answer that prompt). Without agent status hooks enabled, those follow-up
-rows wait for you to send them from the ⏱ panel. No automatic row of any
+run's rows are marked external: after the first, each waits for you to send
+it from the ⏱ panel. Quiet output alone cannot tell a finished turn from a
+permission prompt (the next row's Enter would answer that prompt), and a
+reported turn end is not readiness either — the agent may still own
+background work and resume on its own. No automatic row of any
 list is pasted while the hook reports the agent waiting for input or
 permission. Clock rules send only your own text and keep any command.
 
@@ -80,15 +80,15 @@ existing session. The command may independently resume its own prior context.
   change or resume never fire. Slot keys come from `mktime` of local
   midnight, one value for the whole day, so a DST switch never hands a slot
   two keys.
-- **close the card** (both triggers): the existing finish check requires an
-  empty queue plus a reported turn end, or a shell in the foreground when
-  there is no hook state. This must hold for three consecutive polls, and
-  never while a pane shows the card. Three polls cannot establish business
-  success or associate an old turn report with the final row. A turn end is
-  only accepted from a process inside the card's own pane (deck checks the
-  reporting process's parent chain through the kernel), so a program in
-  another pane cannot end this card's run. **keep it** leaves the card for
-  you.
+- **close the card** (both triggers): the finish check requires an empty
+  queue, no agent state and a shell back in the foreground — the agent
+  program exited. This must hold for three consecutive polls, and never
+  while a pane shows the card. A reported turn end never closes a run: it
+  ends an interaction, and the agent may still run background work that
+  closing the session would kill. A live interactive agent therefore keeps
+  its card until it exits or you close it, and a clock rule's next slot is
+  skipped as `busy` meanwhile. The check cannot establish business success.
+  **keep it** leaves the card for you.
 - **Inspect every row before continuing** is off by default and affects new
   runs when enabled on a rule. All template rows enter the reviewed list in
   one queue transaction. Each delivered row leaves a durable human checkpoint,
