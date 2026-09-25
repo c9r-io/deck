@@ -1,147 +1,25 @@
-// inbound_slack.rs — the Slack source for `inbound`.
-//
-// Two paths, one token, one Event:
-// - catch-up: every poll runs `search.messages` with `hasmy::<badge>:` for
-//   each badge a rule names. The result is exactly the set of messages the
-//   user reacted to with that emoji — never their other reactions — inside
-//   a bounded lookback window. Slack's search index lags a fresh reaction by
-//   about a minute, which is why this path is the safety net, not the ear.
-// - live: a Socket Mode connection (app-level token) subscribed to the USER
-//   event `reaction_added`. Reactions by anyone in the user's channels
-//   arrive; only the user's own reactions with a ruled badge are fetched
-//   and turned into events. Slack retries an undelivered event only a few
-//   times, so anything missed while disconnected is left to the catch-up.
-//
-// Credentials come from the Keychain per request and are never cached in
-// a struct field, logged or placed in an error string. Every failure maps
-// to a closed code; the raw Slack error and any URL stay inside this module.
+//! Reaction consumer and search catch-up for the canonical Deck Slack app.
+//! The shared transport ACKs routed reaction envelopes before invoking this
+//! consumer's Web API fetch. Search remains independent and runs every poll,
+//! recovering reactions missed during sleep, disconnect or fetch failure.
+//! Only the current user's configured badges become inbound events.
 
 use serde_json::Value;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Duration;
 use tauri::AppHandle;
 
-use crate::applog::applog;
 use crate::datadir::now_epoch as now_secs;
 use crate::inbound::{self, Config, Event, Source, SourceStatus};
 use crate::keychain::{self, Slot};
-use crate::sync::LockRecover;
+use crate::slack_api::call;
+#[cfg(test)]
+use crate::slack_api::{encode, last_slack_error, manifest, setup_url, verify, USER_SCOPES};
+#[cfg(test)]
+use crate::slack_api::{TEST_API, TEST_API_LOCK};
 
-const API: &str = "https://slack.com/api/";
-const HTTP_TIMEOUT: Duration = Duration::from_secs(20);
 const SEARCH_PAGE: u32 = 100;
 const SEARCH_MAX_PAGES: u32 = 3;
-const SOCKET_READ_TIMEOUT: Duration = Duration::from_secs(90);
 const MAX_TEXT: usize = 16 * 1024;
-
-/// Test seam: the Web API base every `call` posts to. Set only while holding
-/// `TEST_API_LOCK`, which the channel monitor's tests share.
-#[cfg(test)]
-pub(crate) static TEST_API: Mutex<Option<String>> = Mutex::new(None);
-#[cfg(test)]
-pub(crate) static TEST_API_LOCK: Mutex<()> = Mutex::new(());
-
-/* ---------- HTTP ---------- */
-
-fn client() -> &'static reqwest::Client {
-    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
-    CLIENT.get_or_init(|| {
-        // reqwest is built with `rustls-no-provider`; the updater installs
-        // ring lazily too. Installing twice is harmless (the second fails).
-        if rustls::crypto::CryptoProvider::get_default().is_none() {
-            let _ = rustls::crypto::ring::default_provider().install_default();
-        }
-        reqwest::Client::builder()
-            .timeout(HTTP_TIMEOUT)
-            .user_agent("deck")
-            .build()
-            .expect("reqwest client")
-    })
-}
-
-fn endpoint(method: &str) -> String {
-    #[cfg(test)]
-    if let Some(base) = TEST_API.lock_or_recover().clone() {
-        return format!("{base}{method}");
-    }
-    format!("{API}{method}")
-}
-
-/// Slack's own error names are a closed, lowercase vocabulary. Keep the
-/// last one seen (bounded, charset-checked) so a verification failure can
-/// name it in the log and the toast without ever carrying content.
-static LAST_SLACK_ERROR: Mutex<String> = Mutex::new(String::new());
-
-pub(crate) fn last_slack_error() -> String {
-    LAST_SLACK_ERROR.lock_or_recover().clone()
-}
-
-fn note_slack_error(name: &str) {
-    let clean: String = name
-        .chars()
-        .filter(|c| c.is_ascii_lowercase() || *c == '_')
-        .take(48)
-        .collect();
-    *LAST_SLACK_ERROR.lock_or_recover() = clean;
-}
-
-/// One Slack Web API call — always POST with a form body, as every method
-/// documents. `Err` is a closed code suitable for logs.
-pub(crate) fn call(
-    method: &str,
-    token: &str,
-    params: &[(&str, &str)],
-) -> Result<Value, &'static str> {
-    let form: Vec<String> = params
-        .iter()
-        .map(|(k, v)| format!("{}={}", encode(k), encode(v)))
-        .collect();
-    let req = client()
-        .post(endpoint(method))
-        .bearer_auth(token)
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .body(form.join("&"));
-    let body: Value = tauri::async_runtime::block_on(async move {
-        let resp = req
-            .send()
-            .await
-            .map_err(|e| if e.is_timeout() { "timeout" } else { "network" })?;
-        if resp.status().as_u16() == 429 {
-            return Err("ratelimited");
-        }
-        if !resp.status().is_success() {
-            return Err("http");
-        }
-        resp.json::<Value>().await.map_err(|_| "parse")
-    })?;
-    if body.get("ok").and_then(Value::as_bool) != Some(true) {
-        let name = body.get("error").and_then(Value::as_str).unwrap_or("");
-        note_slack_error(name);
-        return Err(match name {
-            "invalid_auth" | "not_authed" | "token_revoked" | "token_expired"
-            | "account_inactive" => "auth",
-            "missing_scope" => "scope",
-            "ratelimited" => "ratelimited",
-            _ => "slack",
-        });
-    }
-    Ok(body)
-}
-
-/// RFC 3986 percent-encoding of one query component (unreserved bytes pass).
-pub(crate) fn encode(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for b in s.bytes() {
-        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
-            out.push(b as char);
-        } else {
-            out.push_str(&format!("%{b:02X}"));
-        }
-    }
-    out
-}
 
 /// `YYYY-MM-DD` for Slack's `after:` modifier, `days` back from now (UTC).
 pub(crate) fn after_date(now: u64, days: u64) -> String {
@@ -333,66 +211,6 @@ fn search_badge(token: &str, badge: &str) -> Result<Vec<Event>, &'static str> {
     Ok(events)
 }
 
-/* ---------- setup: one prefilled "Create an app" page ---------- */
-
-/// The user scopes both paths need. Kept in one place so the manifest, the
-/// Settings hint and the docs cannot drift apart.
-pub(crate) const USER_SCOPES: &[&str] = &[
-    "search:read",
-    "reactions:read",
-    "channels:history",
-    "groups:history",
-    "im:history",
-    "mpim:history",
-    "users:read",
-    "channels:read",
-    "groups:read",
-    "im:read",
-    "mpim:read",
-];
-
-/// Slack's manifest for a personal, user-scoped, Socket Mode app: no bot
-/// user, no public URL, one user event. `apps?new_app=1&manifest_json=…`
-/// opens the Create page prefilled; the user only picks a workspace.
-/// Tokens still have to be copied back by hand — Slack offers no OAuth
-/// redirect to a local app and no API that mints app-level tokens.
-pub(crate) fn manifest() -> Value {
-    serde_json::json!({
-        "display_information": {
-            "name": "deck",
-            "description": "Badges you add in Slack start sessions in deck on your Mac.",
-            "background_color": "#101318"
-        },
-        "oauth_config": { "scopes": { "user": USER_SCOPES } },
-        "settings": {
-            "socket_mode_enabled": true,
-            "event_subscriptions": { "user_events": ["reaction_added"] },
-            "org_deploy_enabled": false,
-            "token_rotation_enabled": false
-        }
-    })
-}
-
-pub(crate) fn setup_url() -> String {
-    format!(
-        "https://api.slack.com/apps?new_app=1&manifest_json={}",
-        encode(&manifest().to_string())
-    )
-}
-
-/// Prove a pasted token is the right kind and alive before it is stored:
-/// `auth.test` for the user token, `apps.connections.open` for the
-/// app-level token (the only call it can make). Returns a closed code.
-pub(crate) fn verify(slot: Slot, value: &str) -> Result<(), &'static str> {
-    match slot {
-        Slot::SlackUserToken => call("auth.test", value, &[]).map(|_| ()),
-        Slot::SlackAppToken => call("apps.connections.open", value, &[]).map(|_| ()),
-        Slot::SlackChannelBotToken => call("auth.test", value, &[]).map(|_| ()),
-        Slot::SlackChannelAppToken => call("apps.connections.open", value, &[]).map(|_| ()),
-        Slot::ConnectorIdentity => Err("slot"),
-    }
-}
-
 /* ---------- live path helpers (need the user token) ---------- */
 
 #[derive(Default)]
@@ -556,169 +374,39 @@ pub(crate) fn parse_envelope(
     )
 }
 
-/* ---------- the socket thread ---------- */
+/* ---------- routed live Reaction consumer ---------- */
 
-struct Live {
-    /// Bumped to retire a running thread; the thread exits when it no
-    /// longer matches. Cheap, lock-free, and survives a stuck read because
-    /// the read has a timeout.
-    epoch: Arc<AtomicU64>,
-    badges: Arc<Mutex<Vec<String>>>,
-    connected: Arc<Mutex<bool>>,
-    running: bool,
-}
-
-impl Default for Live {
-    fn default() -> Self {
-        Live {
-            epoch: Arc::new(AtomicU64::new(0)),
-            badges: Arc::new(Mutex::new(Vec::new())),
-            connected: Arc::new(Mutex::new(false)),
-            running: false,
-        }
-    }
-}
-
-fn socket_loop(
-    app: AppHandle,
-    epoch: Arc<AtomicU64>,
-    my_epoch: u64,
-    badges: Arc<Mutex<Vec<String>>>,
-    connected: Arc<Mutex<bool>>,
-) {
-    use tungstenite::stream::MaybeTlsStream;
-    use tungstenite::Message;
-    let mut backoff = 1u64;
+/// Platform ACK is emitted by slack_transport before this fetch. A failure
+/// here is recovered by the unchanged search.messages catch-up path.
+pub(crate) fn handle_reaction(app: &AppHandle, value: &Value, self_id: &str, badges: &[String]) {
+    let (.., hit) = parse_envelope(&value.to_string(), self_id, badges);
+    let Some((channel, ts, badge)) = hit else {
+        return;
+    };
+    let Some(user) = keychain::get(Slot::SlackUserToken) else {
+        return;
+    };
+    let Ok(text) = message_text(&user, &channel, &ts) else {
+        return;
+    };
     let mut names = Names::default();
-    let mut failures = 0u32;
-    while epoch.load(Ordering::SeqCst) == my_epoch {
-        let (Some(user), Some(app_token)) = (
-            keychain::get(Slot::SlackUserToken),
-            keychain::get(Slot::SlackAppToken),
-        ) else {
-            std::thread::sleep(Duration::from_secs(5));
-            continue;
-        };
-        let attempt = (|| -> Result<(), &'static str> {
-            let self_id = call("auth.test", &user, &[])?
-                .get("user_id")
-                .and_then(Value::as_str)
-                .map(str::to_string)
-                .ok_or("parse")?;
-            let url = call("apps.connections.open", &app_token, &[])?
-                .get("url")
-                .and_then(Value::as_str)
-                .map(str::to_string)
-                .ok_or("parse")?;
-            if rustls::crypto::CryptoProvider::get_default().is_none() {
-                let _ = rustls::crypto::ring::default_provider().install_default();
-            }
-            let (mut ws, _) = tungstenite::connect(url.as_str()).map_err(|_| "socket")?;
-            if let MaybeTlsStream::Rustls(s) = ws.get_mut() {
-                let _ = s.get_mut().set_read_timeout(Some(SOCKET_READ_TIMEOUT));
-            }
-            *connected.lock_or_recover() = true;
-            applog("[inbound] slack live connected");
-            backoff = 1;
-            let mut idle = 0u32;
-            let result = loop {
-                if epoch.load(Ordering::SeqCst) != my_epoch {
-                    let _ = ws.close(None);
-                    break Ok(());
-                }
-                match ws.read() {
-                    Ok(Message::Text(t)) => {
-                        idle = 0;
-                        let current = badges.lock_or_recover().clone();
-                        let (envelope, hit) = parse_envelope(&t, &self_id, &current);
-                        if let Some(id) = envelope {
-                            let ack = serde_json::json!({ "envelope_id": id }).to_string();
-                            if ws.send(Message::Text(ack.into())).is_err() {
-                                break Err("socket");
-                            }
-                        }
-                        if t.contains("\"disconnect\"") && t.contains("\"type\"") {
-                            if let Ok(v) = serde_json::from_str::<Value>(&t) {
-                                if v.get("type").and_then(Value::as_str) == Some("disconnect") {
-                                    break Err("reconnect");
-                                }
-                            }
-                        }
-                        if let Some((channel, ts, badge)) = hit {
-                            match message_text(&user, &channel, &ts) {
-                                Ok(text) => {
-                                    let ev = Event {
-                                        source: "slack".into(),
-                                        key: format!("{channel}/{ts}"),
-                                        badge,
-                                        text: clip(&text),
-                                        from: user_name(&user, &mut names, &self_id),
-                                        where_: channel_label(&user, &mut names, &channel),
-                                        link: permalink(&user, &channel, &ts),
-                                    };
-                                    let cfg = inbound::read_config();
-                                    inbound::offer(&app, &cfg, vec![ev], true);
-                                }
-                                Err(code) => {
-                                    failures = failures.saturating_add(1);
-                                    if failures <= 20 {
-                                        applog(&format!(
-                                            "[inbound] slack live fetch FAILED ({code})"
-                                        ));
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    Ok(Message::Ping(_)) | Ok(Message::Pong(_)) => {
-                        idle = 0;
-                        let _ = ws.flush();
-                    }
-                    Ok(Message::Close(_)) => break Err("closed"),
-                    Ok(_) => {}
-                    Err(tungstenite::Error::Io(e))
-                        if matches!(
-                            e.kind(),
-                            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                        ) =>
-                    {
-                        idle += 1;
-                        if idle > 1 || ws.send(Message::Ping(Vec::new().into())).is_err() {
-                            break Err("stalled");
-                        }
-                    }
-                    Err(_) => break Err("socket"),
-                }
-            };
-            *connected.lock_or_recover() = false;
-            result
-        })();
-        *connected.lock_or_recover() = false;
-        match attempt {
-            Ok(()) => {}
-            Err(code) => {
-                if code != "reconnect" {
-                    applog(&format!(
-                        "[inbound] slack live dropped ({code}); retry in {backoff}s"
-                    ));
-                }
-                if epoch.load(Ordering::SeqCst) != my_epoch {
-                    break;
-                }
-                let wait = if code == "reconnect" { 1 } else { backoff };
-                std::thread::sleep(Duration::from_secs(wait));
-                backoff = (backoff * 2).min(120);
-            }
-        }
-    }
-    applog("[inbound] slack live stopped");
+    let ev = Event {
+        source: "slack".into(),
+        key: format!("{channel}/{ts}"),
+        badge,
+        text: clip(&text),
+        from: user_name(&user, &mut names, self_id),
+        where_: channel_label(&user, &mut names, &channel),
+        link: permalink(&user, &channel, &ts),
+    };
+    let cfg = inbound::read_config();
+    inbound::offer(app, &cfg, vec![ev], true);
 }
 
 /* ---------- Source impl ---------- */
 
 #[derive(Default)]
 pub(crate) struct Slack {
-    live: Live,
     last_poll: Option<u64>,
     last_error: Option<&'static str>,
 }
@@ -734,6 +422,9 @@ impl Source for Slack {
 
     fn poll(&mut self, _cfg: &Config, badges: &[String]) -> Result<Vec<Event>, &'static str> {
         let token = keychain::get(Slot::SlackUserToken).ok_or("no-token")?;
+        // Search is a separate recovery path, but it shares the same installed
+        // scope gate as live delivery. A token with partial scopes is not ready.
+        crate::slack_api::verify(Slot::SlackUserToken, &token)?;
         let mut all = Vec::new();
         let mut result = Ok(());
         for badge in badges {
@@ -752,28 +443,11 @@ impl Source for Slack {
         result.map(|_| all)
     }
 
-    fn set_live(&mut self, app: &AppHandle, wanted: bool, badges: &[String]) {
-        *self.live.badges.lock_or_recover() = badges.to_vec();
-        let can = wanted && keychain::has(Slot::SlackAppToken);
-        if can && !self.live.running {
-            let my_epoch = self.live.epoch.fetch_add(1, Ordering::SeqCst) + 1;
-            let (app, epoch, badges, connected) = (
-                app.clone(),
-                self.live.epoch.clone(),
-                self.live.badges.clone(),
-                self.live.connected.clone(),
-            );
-            std::thread::spawn(move || socket_loop(app, epoch, my_epoch, badges, connected));
-            self.live.running = true;
-        } else if !can && self.live.running {
-            self.live.epoch.fetch_add(1, Ordering::SeqCst);
-            self.live.running = false;
-        }
-    }
+    fn set_live(&mut self, _app: &AppHandle, _wanted: bool, _badges: &[String]) {}
 
     fn status(&self) -> SourceStatus {
         SourceStatus {
-            live: *self.live.connected.lock_or_recover(),
+            live: crate::slack_transport::connected(),
             last_poll: self.last_poll,
             last_error: self.last_error,
         }
@@ -783,10 +457,12 @@ impl Source for Slack {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sync::LockRecover;
     use serde_json::json;
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::thread;
+    use std::time::Duration;
 
     /// Point `call` at a port nothing listens on for the duration of `f`.
     fn with_offline<T>(f: impl FnOnce() -> T) -> T {
@@ -850,7 +526,7 @@ mod tests {
                 };
                 write!(
                     stream,
-                    "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nx-oauth-scopes: search:read,reactions:read,channels:history,groups:history,im:history,mpim:history,users:read,channels:read,groups:read,im:read,mpim:read\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                     body.len()
                 )
                 .unwrap();
@@ -921,8 +597,11 @@ mod tests {
             .and_then(Value::as_array)
             .unwrap();
         assert_eq!(scopes.len(), USER_SCOPES.len());
-        assert!(m.get("features").is_none(), "no bot user");
-        assert!(m.pointer("/oauth_config/scopes/bot").is_none());
+        assert!(m.get("features").is_some(), "one app includes the bot");
+        assert_eq!(
+            m.pointer("/oauth_config/scopes/bot"),
+            Some(&json!(["channels:history", "groups:history"]))
+        );
         assert!(m.pointer("/oauth_config/redirect_urls").is_none());
     }
 
@@ -1089,15 +768,18 @@ mod tests {
         assert_eq!(with_offline(|| call("offline", "t", &[])), Err("network"));
 
         let (verified, _) = with_responses(
-            vec![(200, r#"{"ok":true}"#), (200, r#"{"ok":true}"#)],
+            vec![
+                (200, r#"{"ok":true,"team_id":"T1"}"#),
+                (200, r#"{"ok":true,"team_id":"T1"}"#),
+            ],
             || {
                 (
                     verify(Slot::SlackUserToken, "xoxp-test"),
-                    verify(Slot::SlackAppToken, "xapp-test"),
+                    verify(Slot::SlackBotToken, "xoxb-test"),
                 )
             },
         );
-        assert_eq!(verified, (Ok(()), Ok(())));
+        assert!(verified.0.is_ok() && verified.1.is_ok());
 
         let page_one = r#"{"ok":true,"messages":{"matches":[{"ts":"1.0","text":"first","username":"alice","channel":{"id":"C1","name":"dev"}}],"pagination":{"page_count":2}}}"#;
         let page_two = r#"{"ok":true,"messages":{"matches":[{"ts":"2.0","text":"second","user":"U2","channel":{"id":"C2","name":"ops"}}],"pagination":{"page_count":2}}}"#;
@@ -1169,24 +851,26 @@ mod tests {
         assert!(status.last_poll.is_none());
         assert!(status.last_error.is_none());
         assert!(now_secs() > 0);
-        let _ = client();
     }
 
     #[test]
     fn verify_probes_each_slot_with_the_call_it_can_make() {
         let (verified, requests) = with_responses(
-            vec![(200, r#"{"ok":true}"#), (200, r#"{"ok":true}"#)],
+            vec![
+                (200, r#"{"ok":true,"team_id":"T1"}"#),
+                (200, r#"{"ok":true,"team_id":"T1"}"#),
+            ],
             || {
                 (
-                    verify(Slot::SlackChannelBotToken, "xoxb-test"),
-                    verify(Slot::SlackChannelAppToken, "xapp-test"),
+                    verify(Slot::SlackBotToken, "xoxb-test"),
+                    verify(Slot::SlackUserToken, "xoxp-test"),
                 )
             },
         );
-        assert_eq!(verified, (Ok(()), Ok(())));
+        assert!(verified.0.is_ok() && verified.1.is_ok());
         assert!(requests[0].starts_with("POST /auth.test HTTP/1.1\r\n"));
         assert!(requests[0].contains("authorization: Bearer xoxb-test\r\n"));
-        assert!(requests[1].starts_with("POST /apps.connections.open HTTP/1.1\r\n"));
+        assert!(requests[1].starts_with("POST /auth.test HTTP/1.1\r\n"));
         // the Connector identity is not a Slack token: no request is made
         assert_eq!(
             with_offline(|| verify(Slot::ConnectorIdentity, "v1_identity")),

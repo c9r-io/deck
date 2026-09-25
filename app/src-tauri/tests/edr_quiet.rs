@@ -235,7 +235,6 @@ const ALLOWED_LITERAL_SITES: &[(&str, &str)] = &[
     ("relaunch.rs", "/usr/bin/plutil"),
     ("commands.rs", "/usr/bin/pbcopy"),
     ("inbound.rs", "/usr/bin/open"),
-    ("inbound_channel.rs", "/usr/bin/open"),
 ];
 
 /// Computed executables, each reviewed at an exact file AND enclosing
@@ -268,7 +267,7 @@ const ALLOWED_EXPRESSIONS: &[(&str, &str, &str)] = &[
 /// compiled into isolated smoke builds only.
 const DEBUG_ONLY_LITERALS: &[(&str, &str)] = &[("smoke_faults.rs", "pbpaste")];
 
-const EXPECTED_COMMAND_SITES: usize = 24;
+const EXPECTED_COMMAND_SITES: usize = 23;
 
 type UsedLiteral = (String, String);
 type UsedExpression = (String, String, String);

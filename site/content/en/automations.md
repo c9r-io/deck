@@ -49,7 +49,7 @@ Templates can use `{{msg.text}}`, `{{msg.from}}`, `{{msg.where}}` and `{{msg.lin
 
 Only your own reactions trigger work. Reactions already present when the rule is added are not replayed. The same reaction on the same message creates a card only once; an emoji name can belong to only one rule across projects. Slack rules have no pause: delete the rule to stop future triggers. Existing cards remain.
 
-For messages posted in a selected channel by allowed users or bots, use the **separate Slack channel monitor** connection. Its first match can create a card and queue a saved template; later matches add scratchpad notes without sending them to the agent. Channel text remains untrusted even when its sender is allowed. [Compare optional integrations →](/guide/integrations/#slack-reactions-and-channel-monitoring)
+For messages posted in a selected channel by allowed users or bots, enable **channel monitoring in the same Deck Slack app**. Update and reinstall an existing app, paste its new bot token, then add the bot to each monitored public or private channel. Its first match can create a card and queue a saved template; later matches add scratchpad notes without sending them to the agent. Channel text remains untrusted even when its sender is allowed. [Compare optional integrations →](/guide/integrations/#slack-reactions-and-channel-monitoring)
 
 ## Finishing and inspection
 

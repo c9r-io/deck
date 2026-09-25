@@ -420,7 +420,7 @@
           <h2 id="set-heading-integrations" data-i18n="settings.integrations">Integrations</h2>
           <div class="set-group" id="set-item-slack-reactions" data-setting-id="slack-reactions" tabindex="-1" role="group" aria-labelledby="set-item-slack-reactions-title">
             <div class="set-group-head">
-              <h3 class="set-group-title" id="set-item-slack-reactions-title" data-i18n="settings.slack">Slack reactions</h3>
+              <h3 class="set-group-title" id="set-item-slack-reactions-title" data-i18n="settings.slack">Slack</h3>
               <span class="set-group-status" id="set-inbound-status"></span>
               <button class="btn" id="set-inbound-check" data-i18n="settings.inboundCheckNow">Check now</button>
             </div>
@@ -432,7 +432,7 @@
             </div>
             <details class="set-details">
               <summary data-i18n="settings.details">Learn more</summary>
-              <div class="set-hint" data-i18n="settings.inboundSetupHint">Opens Slack’s “Create an app” page with everything prefilled (name, user scopes, Socket Mode, the reaction event). Pick a workspace and create it, then: Install App → Install to Workspace → Allow, copy the User OAuth Token below; Basic Information → App-Level Tokens → Generate with connections:write, copy it below. Each token is checked with Slack before it is stored.</div>
+              <div class="set-hint" data-i18n="settings.inboundSetupHint">New users create one Deck Slack app with the unified manifest. Existing Reaction users update their existing app. Install or reinstall it, then copy only the credentials needed for your capabilities.</div>
             </details>
             <div class="set-row">
               <label for="set-inbound-slack-user" data-i18n="settings.inboundUserToken">User token</label>
@@ -444,18 +444,24 @@
               <input type="password" id="set-inbound-slack-app" autocomplete="off" spellcheck="false" placeholder="xapp-…">
               <button class="btn" id="set-inbound-slack-app-clear" data-i18n="common.clear">Clear</button>
             </div>
+            <div class="set-hint" id="set-slack-workspace"></div>
+            <div class="set-hint" id="set-slack-transport"></div>
+            <div class="set-hint" id="set-slack-reaction-ready"></div>
+            <div class="set-hint" id="set-channel-status"></div>
+            <div class="set-hint" id="set-slack-legacy" hidden></div>
+            <div class="set-row"><label for="set-channel-enabled" data-i18n="settings.channelMonitor">Channel monitoring</label><input type="checkbox" id="set-channel-enabled"><button class="btn" id="set-channel-upgrade" data-i18n="settings.channelEnable">Enable Channel Monitoring</button></div>
+            <div id="set-channel-upgrade-steps" hidden>
+              <div class="set-hint" id="set-channel-upgrade-hint" data-i18n="settings.channelUpgradeSteps">Update your existing Deck Slack app manifest, reinstall it, paste its new Bot OAuth Token, and add the Deck bot to every channel you monitor. Existing channel IDs are preserved.</div>
+              <button class="btn" id="set-channel-manifest" data-i18n="settings.channelManifest">Show unified manifest</button>
+              <textarea id="set-channel-manifest-text" readonly spellcheck="false" hidden></textarea>
+              <div class="set-row"><label for="set-channel-bot" data-i18n="settings.channelBotToken">Bot token</label><input type="password" id="set-channel-bot" autocomplete="off" spellcheck="false" placeholder="xoxb-…"><button class="btn" id="set-channel-bot-clear" data-i18n="common.clear">Clear</button></div>
+              <div class="set-hint" id="set-channel-ids"></div>
+              <button class="btn" id="set-channel-finish" data-i18n="settings.channelFinish">Verify and enable channel monitoring</button>
+            </div>
             <details class="set-details">
               <summary data-i18n="settings.details">Learn more</summary>
-              <div class="set-hint" data-i18n="settings.inboundSlackHint">Tokens are kept in your macOS Keychain, never under ~/.deck, and are never shown again here. The user token finds your badged messages (search, about a minute behind); the app token hears new badges instantly. Only your own reactions count. There is no token without installing the app yourself: Slack has no OAuth redirect to a local app and no API that mints app-level tokens.</div>
+              <div class="set-hint" data-i18n="settings.inboundSlackHint">Tokens remain in macOS Keychain. User OAuth powers badge search; Bot OAuth powers channel monitoring; one App token powers live Socket Mode. Badge search continues as catch-up. Add the Deck bot to each monitored channel.</div>
             </details>
-          </div>
-          <div class="set-group" id="set-item-slack-channel" data-setting-id="slack-channel" tabindex="-1" role="group" aria-labelledby="set-item-slack-channel-title">
-            <div class="set-group-head"><h3 class="set-group-title" id="set-item-slack-channel-title" data-i18n="settings.channelMonitor">Slack channel monitor</h3><span class="set-group-status" id="set-channel-status"></span></div>
-            <div class="set-hint" data-i18n="settings.channelMonitorHint">Collects only explicitly allowed channels and senders into card scratchpads. It never writes to Slack and cannot backfill gaps.</div>
-            <div class="set-row"><label for="set-channel-enabled" data-i18n="settings.slackConnect">Connect</label><input type="checkbox" id="set-channel-enabled"><button class="btn" id="set-channel-setup" style="margin-left:auto" data-i18n="settings.inboundSetup">Create the Slack app…</button></div>
-            <div class="set-row"><label for="set-channel-bot" data-i18n="settings.channelBotToken">Bot token</label><input type="password" id="set-channel-bot" autocomplete="off" spellcheck="false" placeholder="xoxb-…"><button class="btn" id="set-channel-bot-clear" data-i18n="common.clear">Clear</button></div>
-            <div class="set-row"><label for="set-channel-app" data-i18n="settings.channelAppToken">App token</label><input type="password" id="set-channel-app" autocomplete="off" spellcheck="false" placeholder="xapp-…"><button class="btn" id="set-channel-app-clear" data-i18n="common.clear">Clear</button></div>
-            <details class="set-details"><summary data-i18n="settings.details">Learn more</summary><div class="set-hint" data-i18n="settings.channelMonitorDetails">Uses separate least-privilege bot and Socket Mode credentials stored in Keychain. Rules are configured per project under Automations. Disconnects create an explicit unresolved gap; Slack retries are finite.</div></details>
           </div>
         </section>
         <section class="set-panel" id="set-panel-remote" aria-labelledby="set-heading-remote" hidden>

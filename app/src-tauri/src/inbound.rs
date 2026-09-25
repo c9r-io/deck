@@ -14,7 +14,7 @@
 //! `after:` window, every 30s; NOT `reactions.list`, which has no time filter,
 //! returns every reaction ever and has undocumented order; Slack's search
 //! index lags a fresh reaction by ~1 minute, measured) and live via Socket
-//! Mode USER events `reaction_added` (app-level token; own reactions only;
+//! Mode USER events `reaction_added` (shared transport; own reactions only;
 //! text fetched with `conversations.history`/`replies`; Slack retries an
 //! undelivered event only a few times, so the catch-up is the safety net).
 //! The DISPATCHER dedupes on `(source, key, badge)` in `~/.deck/inbound.json`
@@ -36,11 +36,9 @@
 //! written under `~/.deck`, never logged, never in an error string, and never
 //! read back into the webview (status reports presence only); a pasted token
 //! is verified with Slack (`auth.test` / `apps.connections.open`) before it is
-//! stored. Setup is one compiled deep link
-//! (`api.slack.com/apps?new_app=1&manifest_json=…`, `inbound_slack::manifest`)
-//! that prefills the Create page — the user picks a workspace, installs, and
-//! copies two tokens back; nothing shorter exists because Slack has no OAuth
-//! redirect to a local app and no API that mints app-level tokens. Cards are
+//! stored. One manifest configures the canonical Slack app for user reactions
+//! and optional bot channel monitoring. Existing reaction users retain their
+//! user and app tokens; adding monitoring verifies a new bot token. Cards are
 //! never moved and deck never writes to Slack. Adding a source = one `Source`
 //! impl + one trigger in the drawer; rules/templates/dispatch do not change.
 //! A badge item's ack carries the card it created, so the run ledger and the
@@ -847,12 +845,31 @@ pub(crate) fn inbound_status() -> InboundStatus {
                         slot: "slack-app-token",
                         present: keychain::has(keychain::Slot::SlackAppToken),
                     },
+                    SecretView {
+                        slot: "slack-bot-token",
+                        present: keychain::has(keychain::Slot::SlackBotToken),
+                    },
+                    SecretView {
+                        slot: "slack-channel-bot-token",
+                        present: keychain::has(keychain::Slot::SlackChannelBotToken),
+                    },
+                    SecretView {
+                        slot: "slack-channel-app-token",
+                        present: keychain::has(keychain::Slot::SlackChannelAppToken),
+                    },
                 ],
                 _ => Vec::new(),
             };
             sources.push(SourceStatusView {
                 id,
-                live: st.live,
+                // The shared socket updates independently of the 30-second
+                // source poll; project its current state instead of a stale
+                // snapshot captured on the previous poll.
+                live: if *id == "slack" {
+                    crate::slack_transport::connected()
+                } else {
+                    st.live
+                },
                 last_poll: st.last_poll,
                 last_error: st.last_error,
                 secrets,
@@ -976,7 +993,7 @@ pub(crate) fn inbound_runs() -> Vec<Run> {
 #[tauri::command]
 pub(crate) fn inbound_setup(source: String) -> Result<(), DeckError> {
     let url = match source.as_str() {
-        "slack" => crate::inbound_slack::setup_url(),
+        "slack" => crate::slack_api::setup_url(),
         _ => return Err(DeckError::new(ErrorKind::Invalid, "unknown source")),
     };
     let status = std::process::Command::new("/usr/bin/open")
@@ -1013,7 +1030,9 @@ fn set_secret(slot: &str, value: &str) -> Result<(), DeckError> {
     ))?;
     if !matches!(
         slot,
-        keychain::Slot::SlackUserToken | keychain::Slot::SlackAppToken
+        keychain::Slot::SlackUserToken
+            | keychain::Slot::SlackBotToken
+            | keychain::Slot::SlackAppToken
     ) {
         return Err(DeckError::new(
             ErrorKind::Invalid,
@@ -1026,8 +1045,13 @@ fn set_secret(slot: &str, value: &str) -> Result<(), DeckError> {
         if !keychain::accepts(slot, trimmed) {
             return Err(DeckError::new(ErrorKind::Invalid, "shape"));
         }
-        crate::inbound_slack::verify(slot, trimmed).map_err(|code| {
-            let slack_error = crate::inbound_slack::last_slack_error();
+        let verified = (if slot == keychain::Slot::SlackAppToken {
+            crate::slack_transport::open_url(trimmed).map(|_| Value::Null)
+        } else {
+            crate::slack_api::verify(slot, trimmed)
+        })
+        .map_err(|code| {
+            let slack_error = crate::slack_api::last_slack_error();
             applog(&format!(
                 "[inbound] credential verify FAILED ({code}:{slack_error})"
             ));
@@ -1036,11 +1060,35 @@ fn set_secret(slot: &str, value: &str) -> Result<(), DeckError> {
                 ErrorKind::Other,
                 match code {
                     "auth" => "auth".to_string(),
+                    "scope" => "scope".to_string(),
                     "network" | "timeout" | "http" => "network".to_string(),
                     _ => format!("slack:{slack_error}"),
                 },
             )
         })?;
+        if slot == keychain::Slot::SlackBotToken || slot == keychain::Slot::SlackUserToken {
+            let other = if slot == keychain::Slot::SlackBotToken {
+                keychain::Slot::SlackUserToken
+            } else {
+                keychain::Slot::SlackBotToken
+            };
+            if let Some(other_token) = keychain::get(other) {
+                let other_identity = crate::slack_api::verify(other, &other_token)
+                    .map_err(|_| DeckError::new(ErrorKind::Other, "other-credential"))?;
+                let team = verified.get("team_id").and_then(Value::as_str);
+                let other_team = other_identity.get("team_id").and_then(Value::as_str);
+                let enterprise = verified.get("enterprise_id").and_then(Value::as_str);
+                let other_enterprise = other_identity.get("enterprise_id").and_then(Value::as_str);
+                if team.is_none()
+                    || team != other_team
+                    || (enterprise.is_some()
+                        && other_enterprise.is_some()
+                        && enterprise != other_enterprise)
+                {
+                    return Err(DeckError::new(ErrorKind::Other, "workspace"));
+                }
+            }
+        }
     }
     keychain::set(slot, value).map_err(|code| {
         DeckError::new(
@@ -1064,9 +1112,9 @@ pub(crate) fn inbound_check_now() {
     let (flag, cv) = wake();
     *flag.lock_or_recover() = true;
     cv.notify_all();
-    // every inbound settings save ends here: the idle Slack channel thread
-    // re-reads its settings now instead of polling for them
-    crate::inbound_channel::wake_channel();
+    // Every inbound settings save wakes the shared Slack transport so it
+    // re-reads credentials and both capability configurations immediately.
+    crate::slack_transport::wake();
 }
 
 /* ---------- the poller ---------- */

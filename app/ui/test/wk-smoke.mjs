@@ -2493,7 +2493,7 @@ export async function verifyChannel() {
     const { openSettings, renderConnectorSettings, selectSettingsSection } = await import('../js/settings.js');
     await openSettings(); selectSettingsSection('integrations'); await renderConnectorSettings();
     const settingsVisible = !$('set-channel-enabled').closest('.set-group').hidden
-      && $('set-channel-bot').type === 'password' && $('set-channel-app').type === 'password';
+      && $('set-channel-bot').type === 'password' && $('set-inbound-slack-app').type === 'password';
     $('set-close').click();
     await provider.saveTemplate(project.id, 'channel smoke', ['Inspect {{msg.text}}']);
     await provider.saveTemplate(project.id, '{text}', ['Inspect {{msg.text}}']);

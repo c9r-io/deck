@@ -8,30 +8,17 @@ in. Cards are never moved automatically and deck never writes anything back
 to Slack. This document is the Slack connection (Settings) and the rules
 that both triggers share; the app's Automations drawer is where rules live.
 
-## One-time Slack setup
+## One Slack app
 
-Every Slack token comes from an app you create and install for yourself;
-there is no token without that step (Slack allows no OAuth redirect to a
-local app and has no API that mints app-level tokens). Bot users and
-channel invites are not needed. deck does everything it can:
+New users create **one Deck Slack app** from Settings → Slack → Create the Slack app. Its unified manifest contains the Reaction user scopes, channel-monitor bot scopes, both event subscriptions, and Socket Mode. Install it to the workspace, then copy the User OAuth Token (`xoxp-…`) for badge triggers, Bot OAuth Token (`xoxb-…`) for channel monitoring, and App-Level Token (`xapp-…`, `connections:write`) for live delivery. Use only the capabilities you want: channel-only users do not need to enter `xoxp`. Tokens are verified with Slack, including installed OAuth scopes, before Keychain storage.
 
-1. Settings → Slack → **Create the Slack app…** opens Slack's
-   "Create an app" page with the manifest prefilled: name, the user scopes,
-   Socket Mode, the `reaction_added` user event. Pick a workspace, **Create**.
-2. **Install App → Install to Workspace → Allow** (some workspaces route
-   this through an admin approval). Copy the **User OAuth Token**
-   (`xoxp-…`) into deck's *User token* field.
-3. **Basic Information → App-Level Tokens → Generate Token and Scopes**,
-   add `connections:write`, generate, copy the `xapp-…` token into deck's
-   *App token* field.
+Existing Reaction users keep their current `xoxp` and `xapp`. To enable monitoring, open **Settings → Slack → Enable Channel Monitoring**, copy the unified manifest, and update **your existing Deck Slack app** under App Manifest. Save, then **Reinstall to Workspace** so the new bot scopes are granted. Paste only the new Bot OAuth Token into Deck. Add the Deck bot to **every public or private channel** you intend to monitor; membership from an older standalone monitor app does not transfer. Preserve your saved channel IDs. Slack sends message events only for conversations the App/bot can access. Deck does not request permission to join channels and cannot automatically join private channels.
 
-deck checks each token with Slack before storing it in your macOS Keychain
-(never under `~/.deck`). Then tick **Slack** and add rules.
+If Deck detects credentials for an older standalone Channel Monitor app, it leaves them in Keychain but no longer connects to that App. Existing rules, cards, handled history and durably staged inbox entries stay intact; already staged entries continue through the normal Board transaction and acknowledgement flow. The Settings notice explains the required upgrade. A Channel-only user with only old credentials must set up the canonical connection manually; Deck never combines tokens from different Apps.
 
-The app token is optional: without it deck only searches every 30 seconds,
-and Slack's search index lags a fresh reaction by about a minute. With it,
-new reactions arrive within a second; the search stays on as the catch-up
-for anything missed while deck was closed or the Mac was asleep.
+The App token is optional for Reaction search: without it Deck still searches every 30 seconds, and Slack's index may lag a fresh reaction by about a minute. With it, live reactions arrive through the single Socket Mode connection while search remains the catch-up path after sleep, disconnect or app downtime. Channel monitoring requires the App token for new events and has no history backfill. Valid credentials and a connected socket do not prove that every configured channel is delivering events; verify bot membership and an observed test message.
+
+The runtime checks that user and bot tokens belong to the same workspace when both are present. Slack's authenticated responses used here do not prove that all three tokens belong to the same App; updating the existing App and copying its new bot token is the provenance step.
 
 ## Rules
 

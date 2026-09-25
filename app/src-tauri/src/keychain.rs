@@ -24,7 +24,7 @@ const MAX_LEN: usize = 512;
 /// again after every rebuild of an unsigned development binary), so the
 /// pollers read each slot once per process instead of every 30 seconds.
 /// Presence checks never touch the data at all (`has`).
-static CACHE: Mutex<[Option<String>; 5]> = Mutex::new([None, None, None, None, None]);
+static CACHE: Mutex<[Option<String>; 6]> = Mutex::new([None, None, None, None, None, None]);
 
 /// Closed set of credential slots. Adding a source means adding its slots
 /// here — never accept an account name from the webview.
@@ -33,6 +33,7 @@ static CACHE: Mutex<[Option<String>; 5]> = Mutex::new([None, None, None, None, N
 pub(crate) enum Slot {
     SlackUserToken,
     SlackAppToken,
+    SlackBotToken,
     SlackChannelBotToken,
     SlackChannelAppToken,
     ConnectorIdentity,
@@ -43,6 +44,7 @@ impl Slot {
         match name {
             "slack-user-token" => Some(Slot::SlackUserToken),
             "slack-app-token" => Some(Slot::SlackAppToken),
+            "slack-bot-token" => Some(Slot::SlackBotToken),
             "slack-channel-bot-token" => Some(Slot::SlackChannelBotToken),
             "slack-channel-app-token" => Some(Slot::SlackChannelAppToken),
             "connector-identity" => Some(Slot::ConnectorIdentity),
@@ -53,6 +55,7 @@ impl Slot {
         match self {
             Slot::SlackUserToken => "slack-user-token",
             Slot::SlackAppToken => "slack-app-token",
+            Slot::SlackBotToken => "slack-bot-token",
             Slot::SlackChannelBotToken => "slack-channel-bot-token",
             Slot::SlackChannelAppToken => "slack-channel-app-token",
             Slot::ConnectorIdentity => "connector-identity",
@@ -74,6 +77,7 @@ impl Slot {
             && match self {
                 Slot::SlackUserToken => value.starts_with("xoxp-"),
                 Slot::SlackAppToken => value.starts_with("xapp-"),
+                Slot::SlackBotToken => value.starts_with("xoxb-"),
                 Slot::SlackChannelBotToken => value.starts_with("xoxb-"),
                 Slot::SlackChannelAppToken => value.starts_with("xapp-"),
                 Slot::ConnectorIdentity => value.starts_with("v1_"),
@@ -89,9 +93,10 @@ fn cache_slot(slot: Slot) -> usize {
     match slot {
         Slot::SlackUserToken => 0,
         Slot::SlackAppToken => 1,
-        Slot::SlackChannelBotToken => 2,
-        Slot::SlackChannelAppToken => 3,
-        Slot::ConnectorIdentity => 4,
+        Slot::SlackBotToken => 2,
+        Slot::SlackChannelBotToken => 3,
+        Slot::SlackChannelAppToken => 4,
+        Slot::ConnectorIdentity => 5,
     }
 }
 
@@ -234,6 +239,7 @@ mod tests {
     fn slots_are_a_closed_set() {
         assert_eq!(Slot::parse("slack-user-token"), Some(Slot::SlackUserToken));
         assert_eq!(Slot::parse("slack-app-token"), Some(Slot::SlackAppToken));
+        assert_eq!(Slot::parse("slack-bot-token"), Some(Slot::SlackBotToken));
         assert_eq!(
             Slot::parse("slack-channel-bot-token"),
             Some(Slot::SlackChannelBotToken)
@@ -256,6 +262,8 @@ mod tests {
         assert!(!Slot::SlackUserToken.accepts("xapp-1-abc"));
         assert!(!Slot::SlackAppToken.accepts("xoxp-1-abc"));
         assert!(Slot::SlackAppToken.accepts("xapp-1-A0-2-deadbeef"));
+        assert!(Slot::SlackBotToken.accepts("xoxb-1-abc_DEF-2"));
+        assert!(!Slot::SlackBotToken.accepts("xoxp-1-abc"));
         assert!(Slot::SlackChannelBotToken.accepts("xoxb-1-abc_DEF-2"));
         assert!(!Slot::SlackChannelBotToken.accepts("xoxp-1-abc"));
         assert!(Slot::SlackChannelAppToken.accepts("xapp-1-A0-2-deadbeef"));
@@ -271,6 +279,7 @@ mod tests {
     fn cached_credentials_serve_reads_and_presence_without_keychain_io() {
         cache_put(Slot::SlackUserToken, Some("xoxp-cached".into()));
         cache_put(Slot::SlackAppToken, Some("xapp-cached".into()));
+        cache_put(Slot::SlackBotToken, Some("xoxb-canonical".into()));
         cache_put(Slot::SlackChannelBotToken, Some("xoxb-cached".into()));
         cache_put(
             Slot::SlackChannelAppToken,
@@ -278,6 +287,7 @@ mod tests {
         );
         assert_eq!(Slot::SlackUserToken.account(), "slack-user-token");
         assert_eq!(Slot::SlackAppToken.account(), "slack-app-token");
+        assert_eq!(Slot::SlackBotToken.account(), "slack-bot-token");
         assert_eq!(
             Slot::SlackChannelBotToken.account(),
             "slack-channel-bot-token"
@@ -291,10 +301,12 @@ mod tests {
         assert_eq!(get(Slot::SlackAppToken).as_deref(), Some("xapp-cached"));
         assert!(has(Slot::SlackUserToken));
         assert!(has(Slot::SlackAppToken));
+        assert!(has(Slot::SlackBotToken));
         assert!(has(Slot::SlackChannelBotToken));
         assert!(has(Slot::SlackChannelAppToken));
         cache_put(Slot::SlackUserToken, None);
         cache_put(Slot::SlackAppToken, None);
+        cache_put(Slot::SlackBotToken, None);
         cache_put(Slot::SlackChannelBotToken, None);
         cache_put(Slot::SlackChannelAppToken, None);
     }

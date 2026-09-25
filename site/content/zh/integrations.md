@@ -10,7 +10,7 @@
 
 个人 Slack 连接可以在**你自己**给消息加上指定表情时触发自动化。在「设置 → 集成与自动化」配置连接，再到项目自动化中设置模板。触发时 deck 必须正在运行。[设置表情标记自动化 →](/zh/guide/automations/#从-slack-标记开始)
 
-**Slack 频道监控**是另一条只读 Slack 连接，使用独立的 Bot 和 App token。项目规则需明确指定频道 ID、允许的用户或 Bot ID，以及文字匹配条件。第一条匹配消息会创建卡片并写入备忘录；后续匹配只增加笔记，不会自动发送给 agent。工作目录和裸 `claude` 或 `codex` 启动命令都来自已保存的规则。即使发送者在允许名单中，频道文字仍是不可信的 agent 输入；启用前请检查范围和模板。[阅读频道监控说明](https://github.com/c9r-io/deck/blob/692438f9310f079743700a10bda7cf80f77b06c6/docs/channel-monitor.md)。
+**Slack 频道监控**是同一个 Deck Slack App 的可选能力：Bot token 独立，App token 共用。已有表情标记用户应更新并重装现有 App，粘贴新增 Bot token，再把 Bot 加入每个要监控的公开或私有频道；旧 Bot 的频道成员资格不会转移。项目规则需明确指定频道 ID、允许的用户或 Bot ID，以及文字匹配条件。第一条匹配消息会创建卡片并写入备忘录；后续匹配只增加笔记，不会自动发送给 agent。工作目录和裸 `claude` 或 `codex` 启动命令都来自已保存的规则。即使发送者在允许名单中，频道文字仍是不可信的 agent 输入；启用前请检查范围和模板。[阅读频道监控说明](https://github.com/c9r-io/deck/blob/main/docs/channel-monitor.md)。
 
 ## 卡片备忘录
 

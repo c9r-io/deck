@@ -1,8 +1,10 @@
 # Slack channel monitor
 
-The channel monitor is a separate, read-only Slack connection for explicitly scoped project automations. It does not reuse the personal reaction connection or its credentials, and it never writes to Slack.
+Channel monitoring is an optional capability of **one Deck Slack app**. It uses a separate bot OAuth token (`xoxb`) from badge automation's user OAuth token (`xoxp`), while both consume one Socket Mode connection through the canonical App token (`xapp`). Deck never writes to Slack.
 
-Create the Slack app from **Settings → Integrations → Slack channel monitor**, install it in the chosen workspace, then store its bot token and Socket Mode app token. The credentials stay in the macOS Keychain. Enabling the connection without both credentials leaves it visibly disconnected.
+For an existing Reaction setup, use **Settings → Slack → Enable Channel Monitoring**. Update the manifest of your **existing** Deck Slack app, save and reinstall it to the workspace, then paste its new Bot OAuth Token. Add the Deck bot to every public or private channel you intend to monitor; an older standalone monitor bot's channel membership does not transfer. Slack sends these events only for conversations the App/bot can access. Deck does not join channels automatically. Existing channel IDs and rules remain saved.
+
+For a new Channel-only setup, create one Deck Slack app from the unified manifest, install it, store `xoxb` and `xapp`, and add its bot to each monitored channel. `xoxp` is needed only for badge automations. Older standalone Channel Monitor credentials remain in Keychain but are not used for new events. Already staged inbox entries still drain through the normal Board transaction and `channel_ack`; no credential migration silently merges Apps.
 
 Create rules from a project's **Automations** drawer. Every rule requires explicit channel IDs and at least one allowed user or bot ID. Matching is deterministic: a substring, a keyword list, or a regular expression. A named regular-expression capture can provide an incident key. Cards are grouped only by connection, workspace, channel, rule, and that optional captured value; deck does not infer incidents with AI. Thread replies can be included or excluded.
 

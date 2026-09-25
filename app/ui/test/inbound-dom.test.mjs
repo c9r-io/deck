@@ -148,3 +148,36 @@ test('the Board queue transaction preserves a frozen plan after a partial backen
     listeners.clear(); for (const listener of savedListeners) listeners.add(listener);
   }
 });
+
+test('a legacy staged Channel inbox item drains without any Slack credentials', async () => {
+  const { drainChannel } = await import('../js/inbound.js');
+  const staged = { id: 'default/T1/E1/rule', operationKey: 'channel:default/T1/E1/rule', groupKey: 'default/T1/C1/rule',
+    connectionId: 'default', workspaceId: 'T1', eventId: 'E1', ruleId: 'rule', channelId: 'C1',
+    messageTs: '1.0', occurredAt: Math.floor(Date.now() / 1000), senderUserId: 'U1', body: 'incident',
+    target: { projectId: 'P1', columnId: 'C1', dir: '/tmp', cmd: 'claude', template: 'triage', idleMinutes: 30 } };
+  store.cards = [];
+  store.projects = [{ id: 'P1', columns: [{ id: 'C1' }], templates: [{ name: 'triage', steps: ['Inspect {{msg.text}}'] }] }];
+  const calls = [];
+  provider.createStarted = async card => {
+    calls.push('board-persist');
+    const saved = { ...card, session: 'deck-test' };
+    store.cards.push(saved);
+    return { card: saved };
+  };
+  provider.queueChannelPlan = async () => { calls.push('queue'); return true; };
+  window.__TAURI__ = { core: { invoke: async cmd => {
+    calls.push(cmd);
+    if (cmd === 'channel_pending') return [staged];
+  } } };
+  // A second pending read terminates the drain; the staged item has already
+  // been acknowledged only after the mocked durable Board transaction.
+  let read = false;
+  window.__TAURI__.core.invoke = async cmd => {
+    calls.push(cmd);
+    if (cmd === 'channel_pending') { if (read) return []; read = true; return [staged]; }
+  };
+  await drainChannel();
+  assert.ok(calls.indexOf('board-persist') >= 0, calls.join(','));
+  assert.ok(calls.indexOf('channel_ack') > calls.indexOf('board-persist'), calls.join(','));
+  assert.equal(store.cards[0].origin.source, 'channel');
+});

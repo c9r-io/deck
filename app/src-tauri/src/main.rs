@@ -42,6 +42,8 @@ mod resume;
 mod scheduler;
 mod session_runtime;
 mod shell_state;
+mod slack_api;
+mod slack_transport;
 mod smoke_faults;
 mod storage;
 mod sync;
@@ -206,7 +208,7 @@ fn main() {
             tmux::exit_on_termination_signals(app.handle().clone());
             scheduler::spawn_scheduler(app.handle().clone());
             inbound::spawn_inbound(app.handle().clone());
-            inbound_channel::spawn_channel(app.handle().clone());
+            slack_transport::spawn(app.handle().clone());
             connector::spawn_connector(app.handle().clone());
             mcp::spawn(app.handle().clone());
             // Agent-status socket: content-free state words from agent hooks
@@ -426,9 +428,8 @@ fn main() {
             inbound_channel::channel_pending,
             inbound_channel::channel_ack,
             inbound_channel::channel_status,
-            inbound_channel::channel_token_set,
-            inbound_channel::channel_token_clear,
-            inbound_channel::channel_setup,
+            slack_transport::slack_connection_status,
+            slack_api::slack_manifest,
             inbound_channel::channel_smoke_seed,
             connector::connector_status,
             connector::connector_addresses,

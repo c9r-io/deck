@@ -1,27 +1,11 @@
-//! Scoped Slack channel monitor.
+//! Scoped Slack channel monitor consumer.
 //!
-//! This adapter is deliberately separate from the personal Slack reaction
-//! source. It consumes bot `message.channels` / `message.groups` Socket Mode
-//! events, applies saved deterministic rules, and atomically stages matched
-//! entries in `channel-inbox.json` before allowing the platform envelope ACK.
-//! The webview pulls entries and acks each only after its Board transaction
-//! persisted the corresponding card buffer entry.
-//!
-//! There is no history backfill. A disconnect therefore opens an explicit,
-//! unresolved gap in status. Slack retries are deduped by
-//! connection/workspace/event/rule; handled identities remain for 45 days,
-//! and deliveries older than that horizon are ignored rather than recreated
-//! after ledger eviction. Withholding an envelope ACK applies backpressure but
-//! does not promise Slack will retry forever; a later disconnect still leaves
-//! the explicit unresolved gap. Message bodies live only in this private durable
-//! inbox and the eventual card buffer. Tokens live only in closed Keychain
-//! slots, read once per connection attempt; a missing token is re-read only
-//! after a Deck credential change, a settings save or a 5 min backstop, never
-//! per tick. While idle (disabled, no active rule, or no token) the thread
-//! sleeps on a condition (`wake_channel`, signalled by credential set/clear
-//! and by `inbound_check_now`, which every inbound settings save calls) with
-//! a 60 s backstop when disabled — it does not poll. The adapter never
-//! writes to Slack.
+//! The shared Slack transport routes bot message events here. This module
+//! validates deterministic rules and atomically stages matches in
+//! channel-inbox.json before the transport can ACK the Slack envelope.
+//! Previously staged entries remain drainable even when legacy credentials
+//! are retired; only a successful Board transaction calls channel_ack.
+//! No history backfill exists. A disconnect opens an unresolved gap.
 //!
 //! Channel text is untrusted agent input. Admission is the shared policy in
 //! `admission.rs` (`channel_agent_command`): a remote target command must be
@@ -47,11 +31,9 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
-use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 
 use crate::admission::{channel_agent_command, strip_invisible};
-use crate::applog::applog;
 use crate::datadir::now_epoch as now_secs;
 use crate::error::{DeckError, ErrorKind};
 use crate::keychain::{self, Slot};
@@ -74,7 +56,6 @@ const MAX_ENVELOPE_BYTES: usize = 256 * 1024;
 const MAX_LEDGER: usize = 5000;
 const LEDGER_HORIZON_SECS: u64 = 45 * 24 * 3600;
 const MAX_FUTURE_SKEW_SECS: u64 = 5 * 60;
-const READ_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -185,7 +166,7 @@ fn rule_admitted(rule: &ChannelRule) -> bool {
     rule.enabled && channel_agent_command(&rule.target.cmd).is_some()
 }
 
-fn any_rule_active(cfg: &ChannelConfig) -> bool {
+pub(crate) fn any_rule_active(cfg: &ChannelConfig) -> bool {
     cfg.rules.iter().any(rule_admitted)
 }
 
@@ -343,7 +324,7 @@ pub(crate) fn config_from_value(v: Option<&Value>) -> ChannelConfig {
     }
 }
 
-fn read_config() -> ChannelConfig {
+pub(crate) fn read_config() -> ChannelConfig {
     let raw = match crate::storage::load_typed::<crate::documents::SettingsDoc>(
         &crate::documents::settings_path(),
     ) {
@@ -358,7 +339,7 @@ fn read_config() -> ChannelConfig {
 }
 
 #[derive(Clone, Debug)]
-struct Identity {
+pub(crate) struct Identity {
     team_id: String,
     own_user_id: String,
     own_bot_id: String,
@@ -783,7 +764,7 @@ fn event_entries(cfg: &ChannelConfig, event: &MessageEvent) -> Vec<PendingChanne
                 rule.id,
                 incident
                     .as_ref()
-                    .map(|s| format!("/{}", crate::inbound_slack::encode(s)))
+                    .map(|s| format!("/{}", crate::slack_api::encode(s)))
                     .unwrap_or_default()
             );
             Some(PendingChannelEvent {
@@ -908,48 +889,7 @@ static LIVE: Mutex<LiveStatus> = Mutex::new(LiveStatus {
     connected: false,
     last_error: None,
 });
-static CHANNEL_CONTROL: Mutex<()> = Mutex::new(());
-static CREDENTIAL_EPOCH: AtomicU64 = AtomicU64::new(1);
 static REJECTED_COUNT: AtomicU64 = AtomicU64::new(0);
-
-fn credentials_unchanged(epoch: u64) -> bool {
-    CREDENTIAL_EPOCH.load(Ordering::SeqCst) == epoch
-}
-
-/// With a token missing, the socket loop does not re-query the Keychain on
-/// every tick: only a Deck credential save/clear or settings save (both call
-/// `wake_channel`) or a long backstop leads to the next read.
-const MISSING_TOKEN_RECHECK: Duration = Duration::from_secs(300);
-/// Backstop re-check while the connection is disabled or has no active rule;
-/// a settings save wakes the thread at once.
-const DISABLED_RECHECK: Duration = Duration::from_secs(60);
-
-/// Wakes the idle socket thread (disabled, or waiting for a token) instead of
-/// letting it poll. The flag stays set until the thread consumes it, so a
-/// signal between its config read and its wait is never lost.
-static CHANNEL_WAKE: (Mutex<bool>, std::sync::Condvar) =
-    (Mutex::new(false), std::sync::Condvar::new());
-
-/// Settings or credentials changed: re-read them now.
-pub(crate) fn wake_channel() {
-    let (flag, wake) = &CHANNEL_WAKE;
-    *flag.lock_or_recover() = true;
-    wake.notify_all();
-}
-
-fn wait_for_wake(backstop: Duration) {
-    let (flag, wake) = &CHANNEL_WAKE;
-    let deadline = std::time::Instant::now() + backstop;
-    let mut woken = flag.lock_or_recover();
-    while !*woken {
-        let left = deadline.saturating_duration_since(std::time::Instant::now());
-        if left.is_zero() {
-            break;
-        }
-        woken = crate::sync::wait_timeout_or_recover(wake, woken, left);
-    }
-    *woken = false;
-}
 
 fn note_rejected(code: &'static str) {
     REJECTED_COUNT.fetch_add(1, Ordering::Relaxed);
@@ -1072,8 +1012,7 @@ pub(crate) fn channel_status() -> ChannelStatus {
     ChannelStatus {
         enabled: cfg.connection.enabled,
         connected: live.connected,
-        token_ready: keychain::has(Slot::SlackChannelBotToken)
-            && keychain::has(Slot::SlackChannelAppToken),
+        token_ready: keychain::has(Slot::SlackBotToken) && keychain::has(Slot::SlackAppToken),
         pending_count,
         last_connected,
         gap_since,
@@ -1085,108 +1024,6 @@ pub(crate) fn channel_status() -> ChannelStatus {
             live.last_error
         },
     }
-}
-
-#[tauri::command]
-pub(crate) async fn channel_token_set(slot: String, value: String) -> Result<(), DeckError> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let slot = match slot.as_str() {
-            "bot" => Slot::SlackChannelBotToken,
-            "app" => Slot::SlackChannelAppToken,
-            _ => {
-                return Err(DeckError::new(
-                    ErrorKind::Invalid,
-                    "unknown channel credential slot",
-                ))
-            }
-        };
-        let value = value.trim();
-        if !keychain::accepts(slot, value) {
-            return Err(DeckError::new(ErrorKind::Invalid, "shape"));
-        }
-        crate::inbound_slack::verify(slot, value).map_err(|code| {
-            DeckError::new(
-                ErrorKind::Other,
-                match code {
-                    "auth" => "auth",
-                    "network" | "timeout" | "http" => "network",
-                    _ => "slack",
-                },
-            )
-        })?;
-        let _control = CHANNEL_CONTROL.lock_or_recover();
-        keychain::set(slot, value).map_err(|_| DeckError::new(ErrorKind::Other, "keychain"))?;
-        CREDENTIAL_EPOCH.fetch_add(1, Ordering::SeqCst);
-        wake_channel();
-        Ok(())
-    })
-    .await
-    .map_err(|_| DeckError::new(ErrorKind::Other, "credential worker failed"))?
-}
-
-#[tauri::command]
-pub(crate) fn channel_token_clear(slot: String) -> Result<(), DeckError> {
-    let slot = match slot.as_str() {
-        "bot" => Slot::SlackChannelBotToken,
-        "app" => Slot::SlackChannelAppToken,
-        _ => {
-            return Err(DeckError::new(
-                ErrorKind::Invalid,
-                "unknown channel credential slot",
-            ))
-        }
-    };
-    let _control = CHANNEL_CONTROL.lock_or_recover();
-    let result = keychain::clear(slot);
-    CREDENTIAL_EPOCH.fetch_add(1, Ordering::SeqCst);
-    wake_channel();
-    result.map_err(|_| DeckError::new(ErrorKind::Other, "keychain"))
-}
-
-pub(crate) fn manifest() -> Value {
-    serde_json::json!({
-        "display_information": {"name":"deck channel monitor","description":"Stages explicitly scoped Slack channel messages in deck.","background_color":"#101318"},
-        "features": {"bot_user":{"display_name":"deck monitor","always_online":false}},
-        "oauth_config":{"scopes":{"bot":["channels:history","groups:history"]}},
-        "settings":{"socket_mode_enabled":true,"event_subscriptions":{"bot_events":["message.channels","message.groups"]},"org_deploy_enabled":false,"token_rotation_enabled":false}
-    })
-}
-
-fn channel_manifest_url() -> String {
-    format!(
-        "https://api.slack.com/apps?new_app=1&manifest_json={}",
-        crate::inbound_slack::encode(&manifest().to_string())
-    )
-}
-
-#[tauri::command]
-pub(crate) fn channel_setup() -> Result<(), DeckError> {
-    let status = std::process::Command::new("/usr/bin/open")
-        .arg(channel_manifest_url())
-        .status()
-        .map_err(|_| DeckError::new(ErrorKind::Other, "could not open the browser"))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(DeckError::new(
-            ErrorKind::Other,
-            "could not open the browser",
-        ))
-    }
-}
-
-fn confined_socket_url(raw: &str) -> bool {
-    let Ok(url) = reqwest::Url::parse(raw) else {
-        return false;
-    };
-    url.scheme() == "wss"
-        && matches!(
-            url.host_str(),
-            Some("wss-primary.slack.com" | "wss-backup.slack.com")
-        )
-        && url.username().is_empty()
-        && url.password().is_none()
-        && url.port().is_none()
 }
 
 fn set_gap(connected: bool, error: Option<&'static str>) {
@@ -1212,8 +1049,8 @@ fn set_disabled() {
     live.last_error = None;
 }
 
-fn connection_identity(bot: &str) -> Result<Identity, &'static str> {
-    let body = crate::inbound_slack::call("auth.test", bot, &[])?;
+pub(crate) fn connection_identity(bot: &str) -> Result<Identity, &'static str> {
+    let body = crate::slack_api::call("auth.test", bot, &[])?;
     Ok(Identity {
         team_id: body
             .get("team_id")
@@ -1233,168 +1070,52 @@ fn connection_identity(bot: &str) -> Result<Identity, &'static str> {
     })
 }
 
-fn injected_connection_fault() -> Option<&'static str> {
-    if crate::smoke_faults::take("channel-network") {
-        Some("network")
-    } else if crate::smoke_faults::take("channel-scope") {
-        Some("scope")
-    } else {
-        None
-    }
-}
-
-fn socket_loop(app: AppHandle) {
-    use tungstenite::stream::MaybeTlsStream;
-    use tungstenite::Message;
-    let mut backoff = 1u64;
-    loop {
-        let cfg = read_config();
-        if !cfg.connection.enabled || !any_rule_active(&cfg) {
-            set_disabled();
-            wait_for_wake(DISABLED_RECHECK);
-            continue;
+/// Called only by the shared transport. Matching events are durably staged
+/// before it returns Ack; storage/capacity failures return Retry without ACK.
+pub(crate) fn handle_message(
+    app: &AppHandle,
+    identity: &Identity,
+    text: &str,
+) -> Result<(), &'static str> {
+    let cfg = read_config();
+    let entries = match entries_from_envelope(&cfg, identity, text, now_secs()) {
+        Ok(entries) => entries,
+        Err(code) => {
+            note_rejected(code);
+            return Ok(());
         }
-        let credential_epoch = CREDENTIAL_EPOCH.load(Ordering::SeqCst);
-        let (Some(bot), Some(app_token)) = (
-            keychain::get(Slot::SlackChannelBotToken),
-            keychain::get(Slot::SlackChannelAppToken),
-        ) else {
-            set_gap(false, Some("no-token"));
-            wait_for_wake(MISSING_TOKEN_RECHECK);
-            continue;
+    };
+    if entries.is_empty() {
+        return Ok(());
+    }
+    with_store(|store| store.stage(entries, now_secs())).map_err(|e| {
+        let code = if e.kind() == ErrorKind::DiskFull {
+            "capacity"
+        } else {
+            "storage"
         };
-        if !credentials_unchanged(credential_epoch) {
-            continue;
-        }
-        let attempt = (|| -> Result<(), &'static str> {
-            if let Some(code) = injected_connection_fault() {
-                return Err(code);
-            }
-            let identity = connection_identity(&bot)?;
-            if !credentials_unchanged(credential_epoch) {
-                return Err("credential-changed");
-            }
-            let body = crate::inbound_slack::call("apps.connections.open", &app_token, &[])?;
-            let url = body.get("url").and_then(Value::as_str).ok_or("parse")?;
-            if !confined_socket_url(url) {
-                return Err("url");
-            }
-            if rustls::crypto::CryptoProvider::get_default().is_none() {
-                let _ = rustls::crypto::ring::default_provider().install_default();
-            }
-            let (mut ws, _) = tungstenite::connect(url).map_err(|_| "socket")?;
-            if let MaybeTlsStream::Rustls(s) = ws.get_mut() {
-                let _ = s.get_mut().set_read_timeout(Some(READ_TIMEOUT));
-            }
-            set_gap(true, None);
-            backoff = 1;
-            loop {
-                if let Some(code) = injected_connection_fault() {
-                    return Err(code);
-                }
-                match ws.read() {
-                    Ok(Message::Text(text)) => {
-                        let value = serde_json::from_str::<Value>(&text).ok();
-                        let envelope_id = value
-                            .as_ref()
-                            .and_then(|v| v.get("envelope_id"))
-                            .and_then(Value::as_str)
-                            .map(str::to_string);
-                        let _control = CHANNEL_CONTROL.lock_or_recover();
-                        if !credentials_unchanged(credential_epoch) {
-                            if let Some(id) = envelope_id {
-                                ws.send(Message::Text(
-                                    serde_json::json!({"envelope_id":id}).to_string().into(),
-                                ))
-                                .map_err(|_| "socket")?;
-                            }
-                            return Err("credential-changed");
-                        }
-                        let current = read_config();
-                        if !current.connection.enabled || !any_rule_active(&current) {
-                            if let Some(id) = envelope_id {
-                                ws.send(Message::Text(
-                                    serde_json::json!({"envelope_id":id}).to_string().into(),
-                                ))
-                                .map_err(|_| "socket")?;
-                            }
-                            return Err("disabled");
-                        }
-                        let entries =
-                            match entries_from_envelope(&current, &identity, &text, now_secs()) {
-                                Ok(entries) => entries,
-                                Err(code) => {
-                                    note_rejected(code);
-                                    Vec::new()
-                                }
-                            };
-                        if !entries.is_empty() {
-                            if let Err(e) = with_store(|store| store.stage(entries, now_secs())) {
-                                let code = if e.kind() == ErrorKind::DiskFull {
-                                    "capacity"
-                                } else {
-                                    "storage"
-                                };
-                                note_rejected(code);
-                                return Err(code);
-                            }
-                        }
-                        drop(_control);
-                        if let Some(id) = envelope_id {
-                            ws.send(Message::Text(
-                                serde_json::json!({"envelope_id":id}).to_string().into(),
-                            ))
-                            .map_err(|_| "socket")?;
-                            let _ = app.emit("channel-changed", ());
-                        }
-                    }
-                    Ok(Message::Ping(v)) => {
-                        ws.send(Message::Pong(v)).map_err(|_| "socket")?;
-                    }
-                    Ok(Message::Close(_)) => return Err("closed"),
-                    Ok(_) => {}
-                    Err(tungstenite::Error::Io(e))
-                        if matches!(
-                            e.kind(),
-                            std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
-                        ) =>
-                    {
-                        if !credentials_unchanged(credential_epoch) {
-                            return Err("credential-changed");
-                        }
-                        let current = read_config();
-                        if !current.connection.enabled || !any_rule_active(&current) {
-                            return Err("disabled");
-                        }
-                        ws.send(Message::Ping(Vec::new().into()))
-                            .map_err(|_| "stalled")?;
-                    }
-                    Err(_) => return Err("socket"),
-                }
-            }
-        })();
-        let code = attempt.err().unwrap_or("socket");
-        if matches!(code, "disabled" | "credential-changed") {
-            set_disabled();
-            continue;
-        }
-        set_gap(false, Some(code));
-        applog(&format!(
-            "[channel] socket dropped ({code}); retry in {backoff}s"
-        ));
-        std::thread::sleep(Duration::from_secs(backoff));
-        backoff = (backoff * 2).min(120);
-    }
+        note_rejected(code);
+        code
+    })?;
+    let _ = app.emit("channel-changed", ());
+    Ok(())
 }
 
-pub(crate) fn spawn_channel(app: AppHandle) {
-    std::thread::spawn(move || socket_loop(app));
+pub(crate) fn transport_connected() {
+    set_gap(true, None);
+}
+pub(crate) fn transport_disconnected(code: &'static str) {
+    set_gap(false, Some(code));
+}
+pub(crate) fn transport_disabled() {
+    set_disabled();
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::time::Duration;
 
     fn temp_store(tag: &str) -> InboxStore {
         let dir = std::env::temp_dir().join(format!("deck-channel-{tag}-{}", std::process::id()));
@@ -1858,10 +1579,10 @@ mod tests {
 
     #[test]
     fn socket_url_is_confined_to_slack_wss_hosts() {
-        assert!(confined_socket_url(
+        assert!(crate::slack_transport::confined_socket_url(
             "wss://wss-primary.slack.com/link/?ticket=x"
         ));
-        assert!(confined_socket_url(
+        assert!(crate::slack_transport::confined_socket_url(
             "wss://wss-backup.slack.com/link/?ticket=x"
         ));
         for bad in [
@@ -1871,7 +1592,7 @@ mod tests {
             "wss://user@wss-primary.slack.com/x",
             "wss://wss-primary.slack.com:444/x",
         ] {
-            assert!(!confined_socket_url(bad), "{bad}");
+            assert!(!crate::slack_transport::confined_socket_url(bad), "{bad}");
         }
     }
 
@@ -1916,38 +1637,37 @@ mod tests {
     }
 
     #[test]
-    fn disabled_config_and_credential_epoch_stop_new_staging() {
+    fn disabled_config_stops_new_staging_but_preserves_pending_entries() {
         let mut disabled = config();
         disabled.connection.enabled = false;
+        let mut store = temp_store("disabled-pending");
+        store
+            .stage(
+                event_entries(
+                    &config(),
+                    &parse_message(
+                        &serde_json::from_str(&envelope(json!({}))).unwrap(),
+                        &identity(),
+                        2_000_000_001,
+                    )
+                    .unwrap(),
+                ),
+                2_000_000_001,
+            )
+            .unwrap();
         assert!(
-            entries_from_envelope(&disabled, &identity(), &envelope(json!({})), 2_000_000_001,)
+            entries_from_envelope(&disabled, &identity(), &envelope(json!({})), 2_000_000_001)
                 .unwrap()
                 .is_empty()
         );
-
-        let _serial = EPOCH_TESTS.lock_or_recover();
-        let epoch = CREDENTIAL_EPOCH.load(Ordering::SeqCst);
-        assert!(credentials_unchanged(epoch));
-        CREDENTIAL_EPOCH.fetch_add(1, Ordering::SeqCst);
-        assert!(!credentials_unchanged(epoch));
-    }
-
-    #[test]
-    fn idle_thread_wakes_on_a_signal_instead_of_polling() {
-        // a signal that landed before the wait is not lost
-        wake_channel();
-        let started = std::time::Instant::now();
-        wait_for_wake(Duration::from_secs(30));
-        assert!(started.elapsed() < Duration::from_secs(5));
-        // a signal during the wait (a settings save, a token stored) ends it
-        let waker = std::thread::spawn(|| {
-            std::thread::sleep(Duration::from_millis(100));
-            crate::inbound::inbound_check_now();
-        });
-        let started = std::time::Instant::now();
-        wait_for_wake(Duration::from_secs(30));
-        assert!(started.elapsed() < Duration::from_secs(5));
-        waker.join().unwrap();
+        assert_eq!(
+            InboxStore::load(store.path.clone())
+                .unwrap()
+                .doc
+                .pending
+                .len(),
+            1
+        );
     }
 
     #[test]
@@ -2038,7 +1758,7 @@ mod tests {
     /// A one-shot fake Slack Web API: answers exactly `responses.len()`
     /// requests while `f` runs and returns the raw requests it received.
     fn fake_api<T>(responses: Vec<(u16, &str)>, f: impl FnOnce() -> T) -> (T, Vec<String>) {
-        use crate::inbound_slack::{TEST_API, TEST_API_LOCK};
+        use crate::slack_api::{TEST_API, TEST_API_LOCK};
         use std::io::{Read, Write};
         let _serial = TEST_API_LOCK.lock_or_recover();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -2090,22 +1810,6 @@ mod tests {
         *TEST_API.lock_or_recover() = None;
         (value, worker.join().unwrap())
     }
-
-    /// Point the Web API at a port nothing listens on while `f` runs.
-    fn offline<T>(f: impl FnOnce() -> T) -> T {
-        use crate::inbound_slack::{TEST_API, TEST_API_LOCK};
-        let _serial = TEST_API_LOCK.lock_or_recover();
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let unused = listener.local_addr().unwrap();
-        drop(listener);
-        *TEST_API.lock_or_recover() = Some(format!("http://{unused}/"));
-        let value = f();
-        *TEST_API.lock_or_recover() = None;
-        value
-    }
-
-    /// Serializes the tests that read or bump `CREDENTIAL_EPOCH`.
-    static EPOCH_TESTS: Mutex<()> = Mutex::new(());
 
     fn refused(value: Value, expect: &str) {
         let err = validate_settings(&value).unwrap_err();
@@ -2541,97 +2245,17 @@ mod tests {
     }
 
     #[test]
-    fn manifest_link_prefills_a_bot_scoped_to_channel_history_only() {
-        let url = channel_manifest_url();
-        assert!(url.starts_with("https://api.slack.com/apps?new_app=1&manifest_json=%7B"));
-        let encoded = url.split("manifest_json=").nth(1).unwrap();
-        let bytes = encoded.as_bytes();
-        let mut out = Vec::new();
-        let mut i = 0;
-        while i < bytes.len() {
-            if bytes[i] == b'%' {
-                out.push(
-                    u8::from_str_radix(std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap(), 16)
-                        .unwrap(),
-                );
-                i += 3;
-            } else {
-                out.push(bytes[i]);
-                i += 1;
-            }
-        }
-        let m: Value = serde_json::from_str(&String::from_utf8(out).unwrap()).unwrap();
-        assert_eq!(m, manifest());
+    fn unified_manifest_has_channel_scopes_and_events() {
+        let m = crate::slack_api::manifest();
         assert_eq!(
             m.pointer("/oauth_config/scopes/bot"),
             Some(&json!(["channels:history", "groups:history"]))
-        );
-        assert!(
-            m.pointer("/oauth_config/scopes/user").is_none(),
-            "no user scopes"
         );
         assert_eq!(
             m.pointer("/settings/event_subscriptions/bot_events"),
             Some(&json!(["message.channels", "message.groups"]))
         );
-        assert_eq!(
-            m.pointer("/settings/socket_mode_enabled"),
-            Some(&Value::Bool(true))
-        );
-        assert!(m.pointer("/oauth_config/redirect_urls").is_none());
-        assert!(m.pointer("/features/bot_user").is_some());
-    }
-
-    #[test]
-    fn credential_commands_fail_closed_before_the_keychain() {
-        let _serial = EPOCH_TESTS.lock_or_recover();
-        let epoch = CREDENTIAL_EPOCH.load(Ordering::SeqCst);
-        let set = |slot: &str, value: &str| {
-            tauri::async_runtime::block_on(channel_token_set(slot.into(), value.into()))
-                .unwrap_err()
-        };
-        assert_eq!(
-            channel_token_clear("user".into()).unwrap_err().kind(),
-            ErrorKind::Invalid
-        );
-        let err = set("user", "xoxp-test");
-        assert_eq!(err.kind(), ErrorKind::Invalid);
-        assert_eq!(err.message(), "unknown channel credential slot");
-        for (slot, value) in [
-            ("bot", "xoxp-wrong-kind"),
-            ("app", " xoxb-wrong "),
-            ("bot", "xoxb-has space"),
-        ] {
-            let err = set(slot, value);
-            assert_eq!(err.kind(), ErrorKind::Invalid, "{slot} {value:?}");
-            assert_eq!(err.message(), "shape");
-        }
-        // a token of the right shape is proven with Slack first; every
-        // failure maps to a closed word and nothing is stored
-        let (auth, requests) = fake_api(
-            vec![(200, r#"{"ok":false,"error":"invalid_auth"}"#)],
-            || set("bot", " xoxb-test "),
-        );
-        assert_eq!((auth.kind(), auth.message()), (ErrorKind::Other, "auth"));
-        assert!(requests[0].starts_with("POST /auth.test "));
-        assert!(
-            requests[0].contains("authorization: Bearer xoxb-test\r\n"),
-            "trimmed"
-        );
-        let (scope, requests) = fake_api(
-            vec![(200, r#"{"ok":false,"error":"missing_scope"}"#)],
-            || set("app", "xapp-test"),
-        );
-        assert_eq!(scope.message(), "slack");
-        assert!(requests[0].starts_with("POST /apps.connections.open "));
-        let (http, _) = fake_api(vec![(500, "{}")], || set("bot", "xoxb-test"));
-        assert_eq!(http.message(), "network");
-        assert_eq!(offline(|| set("bot", "xoxb-test")).message(), "network");
-        assert_eq!(
-            CREDENTIAL_EPOCH.load(Ordering::SeqCst),
-            epoch,
-            "no credential changed, so the socket thread was not told to re-read"
-        );
+        assert!(m.pointer("/oauth_config/scopes/user").is_some());
     }
 
     #[test]
@@ -2666,7 +2290,6 @@ mod tests {
 
     #[test]
     fn live_status_words_are_closed_and_smoke_faults_stay_unarmed() {
-        let _control = CHANNEL_CONTROL.lock_or_recover();
         let rejected = REJECTED_COUNT.load(Ordering::Relaxed);
         note_rejected("oversize");
         note_rejected("future-event");
@@ -2684,10 +2307,5 @@ mod tests {
         assert!(!live.connected);
         assert!(live.last_error.is_none(), "disabled is not an error");
         drop(live);
-        assert_eq!(
-            injected_connection_fault(),
-            None,
-            "no smoke hooks outside the isolated smoke"
-        );
     }
 }

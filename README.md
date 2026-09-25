@@ -273,7 +273,7 @@ rule (New session ▾ → Automations… on the Board, or the ↻ chip once the
 project has one) with a **trigger** — a clock (every day,
 chosen weekdays or days of the month, at a local time) or a **Slack badge**
 (an emoji reaction you put on a message; see
-[docs/auto-respond.md](docs/auto-respond.md) for the one-time Slack
+[docs/auto-respond.md](docs/auto-respond.md) for the one-app Slack
 connection in Settings). When it fires, deck creates a fresh card in a
 column, launches the command and queues a template in a new session. A launch
 command may restore its own prior context; a clock runs one card at a time.

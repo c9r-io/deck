@@ -100,8 +100,8 @@ test('text that lives only in hints or Learn more never surfaces a group', () =>
 
 test('matching is case-insensitive, trims whitespace and needs every term', () => {
   assert.deepEqual(search('  SLACK  '), search('slack'));
-  assert.deepEqual(ids('slack'), ['slack-reactions', 'slack-channel']);
-  assert.deepEqual(ids('slack channel'), ['slack-channel']);
+  assert.deepEqual(ids('slack'), ['slack-reactions']);
+  assert.deepEqual(ids('slack channel'), ['slack-reactions']);
   assert.deepEqual(ids('codex'), ['agent-status', 'mcp']);
   assert.deepEqual(ids('codex hook'), ['agent-status']);
 });
@@ -119,7 +119,7 @@ test('a section title and a setting name narrow together; a named setting beats 
     { section: 'remote', items: ['mcp'] },
   ]);
   assert.deepEqual(search('terminal voice'), [{ section: 'terminal', items: ['voice'] }]);
-  assert.deepEqual(search('集成'), [{ section: 'integrations', items: ['slack-reactions', 'slack-channel'] }]);
+  assert.deepEqual(search('集成'), [{ section: 'integrations', items: ['slack-reactions'] }]);
 });
 
 test('an unknown query has no results', () => {
