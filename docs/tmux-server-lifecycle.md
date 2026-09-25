@@ -172,11 +172,24 @@ carry a `phase` key, which is ignored.
 A different unexpected server or socket is preserved and returned to the
 pending/diagnostic path.
 
-The frontend detaches PTY clients and marks cards stopped before resuming
-polling, so intentional server replacement cannot be mistaken for individual
-shell exits and delete cards. Cards, boards, queue records, and bounded shell
+The frontend marks ordinary cards stopped after replacement succeeds, or after
+an error when a fresh status shows the server identity changed (or replacement
+began and status cannot be read), and before resuming polling. A refused
+restart leaves their live presentation intact. Intentional server replacement
+cannot be mistaken for individual shell exits and delete cards. Cards, boards,
+queue records, and bounded shell
 snapshots remain; Unix processes inside the old tmux server do not migrate and
 are described honestly as terminated.
+
+MCP-managed runners cannot use ordinary shell restoration. Restart status lists
+their blocking card and session identifiers before the user confirms. Deck can
+close these cards through the normal local Board close path, then verifies each
+close and refreshes server impact before attempting the existing restart. Active
+managed jobs stop with their cards. Control leases, execution grants, runner
+authentication and job bindings are not restored. A failed or uncertain close,
+new blocker, or unexpected server identity change stops the transaction. The
+backend still checks the durable MCP ledger under the lifecycle gate immediately
+before any server replacement side effect.
 
 ## Security and privacy boundary
 

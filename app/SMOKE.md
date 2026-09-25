@@ -627,6 +627,20 @@ a fixture.
 - [ ] `chmod 644 ~/.deck/deck.json; chmod 755 ~/.deck` → relaunch deck →
       both are back to 0600/0700 (boot-time migration)
 
+## MCP-managed session blocks shell restart
+
+- [ ] MCP-managed session blocks shell restart: with an isolated test profile,
+      create a visible idle managed card and make shell restart required. Open
+      restart review: it names the card and explains why it cannot be restored
+      as an ordinary shell. Ordinary Restart must not fail once before showing
+      this explanation. Cancel: card and service remain. Confirm “Close MCP
+      sessions and restart”: Board closes the card, then the service restarts;
+      ordinary cards retain their existing stopped/restartable behavior and the
+      MCP card is not restored as an ordinary shell. Repeat with an active job:
+      the warning explains termination and the job stops before restart.
+      Inject a rejected or uncertain close: service PID remains unchanged and
+      unrelated ordinary cards never show a false stopped state.
+
 ## Security baseline
 - [ ] `app.log` contains no `CSP` violation lines after a full session of use
       (the securitypolicyviolation listener logs any)

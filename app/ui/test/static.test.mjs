@@ -86,7 +86,18 @@ test('the updater, relaunch and server restart stay backend-owned', () => {
   assert.match(app, /if \(event\.key === 'Enter'\) \{ event\.preventDefault\(\); event\.stopPropagation\(\); \}/);
   assert.match(app, /expectedImpactToken: status\.impactToken/,
     'restart executes only against the reviewed session/pane identity set');
-  assert.match(app, /markSessionsStoppedForServerRestart\(\)[\s\S]*restart_tmux_server/);
+  assert.match(app, /restart_tmux_server[\s\S]*markSessionsStoppedForServerRestart\(\)/,
+    'a backend blocker refusal must not present ordinary cards as stopped');
+  assert.match(app, /closeManagedForRestart\(review[\s\S]*restart_tmux_server/,
+    'known managed blockers use the local close transaction before restart');
+  assert.match(app, /managedBlockers\(status\)[\s\S]*tmux\.managedExplanation/,
+    'restart review explains and lists managed blockers');
+  assert.match(app, /row\.textContent = t\('tmux\.managedCard'/,
+    'the review lists each blocking card from backend status');
+  assert.match(app, /list\.style\.display = managedBlockers\(status\)\.length \? 'block'/,
+    'blocking cards are visible before a destructive click');
+  assert.match(app, /if \(!review \|\| ctx\.tmuxRestarting\) return;/,
+    'repeat clicks cannot start another restart transaction');
   const run = read('app/run.sh');
   assert.match(run, /BUNDLE_ID=io\.c9r\.deck\.dev/);
   assert.match(run, /deck-smoke\*/);

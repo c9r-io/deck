@@ -1539,20 +1539,21 @@ pub(crate) fn stop_managed_jobs(tmux_session: &str) {
     );
 }
 
-/// Managed runner panes cannot be reconstructed by the ordinary shell
-/// restart transaction. The user must explicitly close them first.
-pub(crate) fn guard_server_restart() -> Result<(), DeckError> {
+/// Managed runner panes cannot be reconstructed by ordinary shell restore.
+/// This provider exposes only bounded identifiers from the durable ledger.
+pub(crate) fn guard_server_restart() -> Result<Vec<crate::tmux_lifecycle::RestartBlocker>, DeckError>
+{
     let Some(runtime) = RUNTIME.get() else {
-        return Ok(());
+        return Ok(Vec::new());
     };
     runtime.read(|doc| {
-        if doc.sessions.is_empty() {
-            Ok(())
-        } else {
-            Err(DeckError::new(
-                ErrorKind::Locked,
-                "tmux-restart-mcp-managed-sessions",
-            ))
-        }
-    })?
+        doc.sessions
+            .iter()
+            .map(|session| crate::tmux_lifecycle::RestartBlocker {
+                kind: crate::tmux_lifecycle::RestartBlockerKind::ManagedSession,
+                session: session.tmux_session.clone(),
+                card_id: session.card_id.clone(),
+            })
+            .collect()
+    })
 }

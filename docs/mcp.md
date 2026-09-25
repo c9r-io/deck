@@ -271,6 +271,12 @@ reasons.
   create or close: such operations become `ambiguous` (`deck-restarted`).
   Runners created by the earlier Deck process are `stale`
   (`RUNNER_STALE`): they can only be closed.
+- A shell-service replacement cannot restore an MCP runner as an ordinary
+  shell. Restart review identifies blocking managed cards; the local user can
+  explicitly close them and continue after Deck checks the remaining restart
+  impact again. Active jobs stop with the cards. An uncertain close never
+  proceeds to service replacement, and no lease, execution grant, job or runner
+  authentication is transparently restored.
 - Human takeover never starts a shell. It hands the pane keyboard to the
   running job's stdin and makes **Ctrl-C** in the pane interrupt that job's
   process group (the runner itself ignores terminal signals). Full-screen TUI

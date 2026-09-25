@@ -9,7 +9,7 @@ import {
   activeProject, closeBuffer, initBuffer, panes, markSessionsStoppedForServerRestart, migrateColumnSemantics, newSessionSummary, openProjectDefaults, pollNow,
   projectDefaultsSummary, prepareCardsForServerRestart, provider, render, startPolling, stopPolling, switchProject,
 } from './board.js';
-import { initLayout, leaveSessionView, openSession } from './layout.js';
+import { closePaneBySid, initLayout, leaveSessionView, openSession } from './layout.js';
 import { initTerminalChrome, newDefaultSession } from './terminal.js';
 import { initScheduler, refreshQueue } from './scheduler.js';
 import { initTemplates } from './templates.js';
@@ -25,6 +25,7 @@ import { initVoice } from './voice.js';
 import { createVoiceTarget } from './voice-target.js';
 import { initInputSource } from './input-source.js';
 import { cancelTerminalSelection } from './selection.js';
+import { closeManagedForRestart, managedBlockers } from './restart-managed.js';
 
 setLocale('system');
 activateTheme({ theme: 'deck-dark', accent: 'teal' });
@@ -92,7 +93,7 @@ function renderTmuxDiagnostics(status = ctx.tmuxServerStatus) {
     ? new Date(status.serverStartedAt * 1000).toLocaleString() : '—';
   $('set-tmux-details').textContent = t('tmux.diagnostics', {
     current, server, pid, started,
-  });
+  }) + (managedBlockers(status).length ? '\n' + t('tmux.managedStatus', { count: managedBlockers(status).length }) : '');
 }
 
 function renderImpactList(status) {
@@ -113,7 +114,17 @@ function renderImpactList(status) {
     row.append(name, meta);
     list.appendChild(row);
   }
-  list.style.display = 'none';
+  for (const blocker of managedBlockers(status)) {
+    const row = document.createElement('div');
+    row.className = 'tmux-impact-row';
+    const card = provider.get(blocker.cardId);
+    row.textContent = t('tmux.managedCard', {
+      card: card ? `${card.title} (${blocker.cardId})` : blocker.cardId,
+      session: blocker.session,
+    });
+    list.appendChild(row);
+  }
+  list.style.display = managedBlockers(status).length ? 'block' : 'none';
   $('tmux-view-sessions').style.display = status.sessionCount > 0 ? '' : 'none';
   $('tmux-view-sessions').textContent = t('tmux.viewSessions');
 }
@@ -131,6 +142,8 @@ function showTmuxLifecycle(status, manual = false) {
       active: status.foregroundSessionCount || 0,
     });
   if (!ctx.settings.sessionRestore) $('tmux-lifecycle-message').textContent += '\n' + t('tmux.restoreOff');
+  if (managedBlockers(status).length) $('tmux-lifecycle-message').textContent += '\n' + t('tmux.managedExplanation');
+  $('tmux-restart').textContent = t(managedBlockers(status).length ? 'tmux.closeManagedRestart' : 'tmux.restart');
   renderImpactList(status);
   $('tmux-lifecycle-modal').dataset.manual = manual && !status.pendingRestart ? 'true' : 'false';
   $('tmux-lifecycle-modal').style.display = 'flex';
@@ -157,6 +170,7 @@ async function refreshTmuxLifecycle({ prompt = false } = {}) {
 }
 
 async function deferTmuxRestart() {
+  if (ctx.tmuxRestarting) return;
   $('tmux-lifecycle-modal').style.display = 'none';
   if (!ctx.tmuxServerStatus?.pendingRestart) return;
   try {
@@ -168,34 +182,47 @@ async function deferTmuxRestart() {
 }
 
 async function restartTmuxServer() {
-  const status = ctx.tmuxServerStatus;
-  if (!status || ctx.tmuxRestarting) return;
+  const review = ctx.tmuxServerStatus;
+  if (!review || ctx.tmuxRestarting) return;
   ctx.tmuxRestarting = true;
-  renderTmuxDiagnostics(status);
+  renderTmuxDiagnostics(review);
   $('tmux-restart').disabled = true;
   $('tmux-later').disabled = true;
   $('tmux-view-sessions').disabled = true;
   $('tmux-restart').textContent = t('tmux.restarting');
   stopPolling();
-  const detachedSessions = [...panes.keys()];
-  // Backend validates the reviewed attached-client counts before detaching.
-  leaveSessionView({ detach: false });
-  state.view = 'board';
-  state.sessionId = null;
-  markSessionsStoppedForServerRestart();
-  render();
+  let detachedSessions = [];
+  let replacementStarted = false;
+  let invokedStatus = null;
   const requestId = genId('R');
   let unlisten = null;
   const began = performance.now();
   try {
+    const status = managedBlockers(review).length
+      ? await closeManagedForRestart(review, {
+        readStatus: () => inv('tmux_server_status'),
+        getCard: id => provider.get(id),
+        closeCard: id => provider.close(id, { detail: true, quiet: true }),
+        closePane: id => { closePaneBySid(id, { detach: false }); render(); },
+      })
+      : review;
+    if ((status.restartBlockers || []).length) throw new Error('tmux-restart-mcp-managed-sessions');
+    ctx.tmuxServerStatus = status;
+    detachedSessions = [...panes.keys()];
+    // Backend validates the reviewed attached-client counts before detaching.
+    leaveSessionView({ detach: false });
+    state.view = 'board';
+    state.sessionId = null;
     unlisten = await listen('tmux-restart-progress', event => {
       const progress = event.payload;
+      if (progress.requestId === requestId && progress.phase === 'replacing') replacementStarted = true;
       if (!ctx.tmuxRestarting || progress.requestId !== requestId || performance.now() - began < 300) return;
       const key = { exiting: 'tmux.progress.exiting', saving: 'tmux.progress.saving', replacing: 'tmux.progress.replacing' }[progress.phase];
       if (key) $('tmux-restart').textContent = t(key, progress);
     });
     await prepareCardsForServerRestart(status.sessions || []);
-    ctx.tmuxServerStatus = await inv('restart_tmux_server', {
+    invokedStatus = status;
+    const restarted = await inv('restart_tmux_server', {
       expectedPid: status.serverPid || 0,
       expectedStartedAt: status.serverStartedAt || 0,
       expectedImpactToken: status.impactToken || '',
@@ -205,20 +232,38 @@ async function restartTmuxServer() {
       restoreShells: !!ctx.settings.sessionRestore,
       requestId,
     });
+    if (restarted.serverPid === status.serverPid && restarted.serverStartedAt === status.serverStartedAt) {
+      throw new Error('tmux-server-impact-changed');
+    }
+    ctx.tmuxServerStatus = restarted;
+    markSessionsStoppedForServerRestart();
+    render();
     $('tmux-lifecycle-modal').style.display = 'none';
     toast(t('tmux.restartComplete'));
     inv('acknowledge_tmux_lifecycle_notice').catch(() => {});
   } catch (error) {
-    const changed = String(error).includes('impact-changed');
-    const message = String(error);
-    const key = changed ? 'tmux.impactChanged'
-      : message.includes('agent-timeout') ? 'tmux.agentTimeout'
-      : message.includes('snapshot-failed') ? 'tmux.snapshotFailed'
-      : message.includes('restart-busy') ? 'tmux.restartBusy'
-      : message.includes('restart-timeout') ? 'tmux.restartTimeout' : 'tmux.restartFailed';
-    toast(t(key));
-    if (!message.includes('restart-timeout')) {
-      await refreshTmuxLifecycle();
+    const message = error?.message || String(error);
+    const key = {
+      'managed-review-changed': 'tmux.impactChanged',
+      'managed-status-unavailable': 'tmux.managedStatusUnavailable',
+      'managed-close-rejected': 'tmux.managedCloseRejected',
+      'managed-close-ambiguous': 'tmux.managedCloseAmbiguous',
+      'tmux-restart-mcp-managed-sessions': 'tmux.managedStillBlocked',
+      'tmux-server-impact-changed': 'tmux.impactChanged',
+      'tmux-restart-agent-timeout': 'tmux.agentTimeout',
+      'tmux-restart-snapshot-failed': 'tmux.snapshotFailed',
+      'tmux-restart-busy': 'tmux.restartBusy',
+      'tmux-restart-timeout': 'tmux.restartTimeout',
+    }[message] || 'tmux.restartFailed';
+    toast(t(key, { card: error?.cardId || '?', count: error?.closedCount || 0 }));
+    const observed = await refreshTmuxLifecycle();
+    if (invokedStatus && (observed
+      ? (observed.serverPid !== invokedStatus.serverPid || observed.serverStartedAt !== invokedStatus.serverStartedAt)
+      : replacementStarted)) {
+      markSessionsStoppedForServerRestart();
+      render();
+    }
+    if (message !== 'tmux-restart-timeout') {
       if (ctx.tmuxServerStatus?.pendingRestart) showTmuxLifecycle(ctx.tmuxServerStatus, false);
     }
   } finally {
@@ -228,7 +273,7 @@ async function restartTmuxServer() {
     $('tmux-restart').disabled = false;
     $('tmux-later').disabled = false;
     $('tmux-view-sessions').disabled = false;
-    $('tmux-restart').textContent = t('tmux.restart');
+    $('tmux-restart').textContent = t(managedBlockers(ctx.tmuxServerStatus).length ? 'tmux.closeManagedRestart' : 'tmux.restart');
     renderTmuxDiagnostics();
     startPolling();
   }
@@ -454,6 +499,9 @@ function wireChrome() {
 
   document.addEventListener('keydown', event => {
     if ($('tmux-lifecycle-modal').style.display !== 'flex') return;
+    if (ctx.tmuxRestarting && (event.key === 'Enter' || event.key === 'Escape')) {
+      event.preventDefault(); event.stopPropagation(); return;
+    }
     if (event.key === 'Enter') { event.preventDefault(); event.stopPropagation(); }
     if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); deferTmuxRestart(); }
   }, true);

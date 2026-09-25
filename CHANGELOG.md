@@ -2,6 +2,10 @@
 
 ## 0.7.12 — 2026-09-25 (Nightly)
 
+- Shell-service restart now shows blocking MCP-managed cards before it begins.
+  A confirmed action closes those cards through their normal lifecycle, then
+  checks the remaining sessions again before restarting. Active jobs stop with
+  their cards; a failed or uncertain close leaves the service running.
 - Session header shows the current macOS input source. Input source changes
   update automatically, and returning to deck resynchronizes the indicator.
   Where macOS provides an input source icon, deck uses it and keeps the full

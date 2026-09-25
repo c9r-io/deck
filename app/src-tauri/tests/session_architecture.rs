@@ -12,6 +12,28 @@ fn source(name: &str) -> String {
     std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join(name)).unwrap()
 }
 
+#[test]
+fn managed_creation_and_final_restart_check_share_the_lifecycle_gate() {
+    let managed = source("mcp/commands.rs");
+    let start = managed.find("fn mcp_start_session(").unwrap();
+    let creation = &managed[start
+        ..managed
+            .find("fn runner_launch_args(")
+            .unwrap_or(managed.len())];
+    assert!(creation.contains("tmux_lifecycle::session_creation_guard()?"));
+    let lifecycle = source("tmux_lifecycle.rs");
+    let restart = &lifecycle[lifecycle.find("fn restart_tmux_server_inner(").unwrap()..];
+    let gate = restart.find("let _guard = try_operation()?").unwrap();
+    let blockers = restart
+        .find("require_no_restart_blockers(&restart_constraints()?)?")
+        .unwrap();
+    let destructive = restart.find("tmux::stop_query_channel()").unwrap();
+    assert!(
+        gate < blockers && blockers < destructive,
+        "the final blocker check must run inside the shared gate before tmux impact"
+    );
+}
+
 fn is_ident(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || byte == b'_'
 }

@@ -947,7 +947,7 @@ fn command_surface_exercises_local_authorization_and_board_reconciliation() {
     // and a server restart all pass through.
     assert!(guard_terminal_input("deck-mcp-test").is_ok());
     stop_managed_jobs("deck-mcp-test");
-    assert!(guard_server_restart().is_ok());
+    assert!(guard_server_restart().unwrap().is_empty());
     assert_eq!(runner.count("stop"), 0);
     assert!(RUNTIME.set(runtime.clone()).is_ok());
 
@@ -1011,7 +1011,13 @@ fn command_surface_exercises_local_authorization_and_board_reconciliation() {
     );
     assert!(managed.execution_grant_active);
     assert!(guard_terminal_input("deck-mcp-test").is_err());
-    assert!(guard_server_restart().is_err());
+    let blockers = guard_server_restart().unwrap();
+    assert_eq!(blockers.len(), 1);
+    assert_eq!(
+        blockers[0].kind,
+        crate::tmux_lifecycle::RestartBlockerKind::ManagedSession
+    );
+    assert_eq!(blockers[0].card_id, "M1");
 
     // Retention is a closed range, applied to every live runner.
     assert_eq!(
@@ -1132,7 +1138,7 @@ fn command_surface_exercises_local_authorization_and_board_reconciliation() {
         }))
         .unwrap());
     mcp_card_closed("M1".into()).unwrap();
-    assert!(guard_server_restart().is_ok());
+    assert!(guard_server_restart().unwrap().is_empty());
     assert!(guard_terminal_input("ordinary-session").is_ok());
 
     drop(runner);

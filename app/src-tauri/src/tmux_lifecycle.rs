@@ -16,12 +16,13 @@
 //! and waits, validates a stale socket against its captured device/inode, starts
 //! from the current sidecar, then requires a new PID and read-back identity.
 //! The updater takes the same gate before setting its creation embargo. Cards
-//! are marked stopped before polling so a
-//! whole-server restart is not mistaken for natural card exits.
+//! are marked stopped after replacement is confirmed or observed and before
+//! polling, so a refused restart never presents live cards as stopped.
 //! A managed MCP runner cannot use ordinary shell restoration, so an explicit
 //! restart is refused until its MCP cards are closed through the Board path:
-//! MCP registers that check once at boot (`set_restart_guard`, from
-//! `mcp::spawn`) and this module names no feature module itself; the
+//! MCP registers a display-safe constraint provider once at boot
+//! (`set_restart_guard`, from `mcp::spawn`); this module names no feature module
+//! itself. The
 //! restart transaction runs the registered guard before any tmux impact,
 //! and an unset guard means no feature objects.
 //!
@@ -126,6 +127,21 @@ pub(crate) struct SessionImpact {
     recently_active: bool,
 }
 
+/// Feature-owned, display-safe reasons that prevent server replacement.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum RestartBlockerKind {
+    ManagedSession,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RestartBlocker {
+    pub(crate) kind: RestartBlockerKind,
+    pub(crate) session: String,
+    pub(crate) card_id: String,
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ServerStatus {
@@ -133,6 +149,7 @@ pub(crate) struct ServerStatus {
     pending_restart: bool,
     should_prompt: bool,
     can_restart: bool,
+    restart_blockers: Vec<RestartBlocker>,
     current_build: CurrentBuildIdentity,
     server_build: Option<ServerMetadata>,
     server_pid: Option<u32>,
@@ -966,6 +983,7 @@ fn status_from_probe_with(
             pending_restart: false,
             should_prompt: false,
             can_restart: source_can_create(&build),
+            restart_blockers: Vec::new(),
             current_build: build,
             server_build: None,
             server_pid: None,
@@ -986,6 +1004,7 @@ fn status_from_probe_with(
             pending_restart: true,
             should_prompt: false,
             can_restart: false,
+            restart_blockers: Vec::new(),
             current_build: build,
             server_build: None,
             server_pid: None,
@@ -1021,6 +1040,7 @@ fn status_from_probe_with(
                 pending_restart: pending,
                 should_prompt,
                 can_restart: source_can_create(&build),
+                restart_blockers: Vec::new(),
                 current_build: build,
                 server_build,
                 server_pid: Some(snapshot.pid),
@@ -1211,8 +1231,10 @@ pub(crate) fn app_update_installing() -> bool {
 }
 
 #[tauri::command]
-pub(crate) fn tmux_server_status() -> ServerStatus {
-    status_from_probe(current_build(), probe_server())
+pub(crate) fn tmux_server_status() -> Result<ServerStatus, DeckError> {
+    let mut status = status_from_probe(current_build(), probe_server());
+    status.restart_blockers = restart_constraints()?;
+    Ok(status)
 }
 
 #[tauri::command]
@@ -1226,7 +1248,7 @@ pub(crate) fn defer_tmux_restart() -> Result<ServerStatus, DeckError> {
     disk.deferred_build = Some(build_key(&build));
     write_disk(&disk)?;
     applog("[tmux-lifecycle] restart deferred");
-    Ok(status_from_probe(build, probe_server()))
+    tmux_server_status()
 }
 
 #[tauri::command]
@@ -1299,10 +1321,26 @@ pub(crate) async fn restart_tmux_server(
 
 /// The one feature check a server restart consults (see the header): set
 /// once at boot by the feature that owns live sessions, never replaced.
-static RESTART_GUARD: OnceLock<fn() -> Result<(), DeckError>> = OnceLock::new();
+type RestartGuard = fn() -> Result<Vec<RestartBlocker>, DeckError>;
+static RESTART_GUARD: OnceLock<RestartGuard> = OnceLock::new();
 
-pub(crate) fn set_restart_guard(guard: fn() -> Result<(), DeckError>) {
+pub(crate) fn set_restart_guard(guard: RestartGuard) {
     let _ = RESTART_GUARD.set(guard);
+}
+
+fn restart_constraints() -> Result<Vec<RestartBlocker>, DeckError> {
+    RESTART_GUARD.get().map_or(Ok(Vec::new()), |guard| guard())
+}
+
+fn require_no_restart_blockers(blockers: &[RestartBlocker]) -> Result<(), DeckError> {
+    if blockers.is_empty() {
+        Ok(())
+    } else {
+        Err(DeckError::new(
+            ErrorKind::Locked,
+            "tmux-restart-mcp-managed-sessions",
+        ))
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1323,9 +1361,7 @@ fn restart_tmux_server_inner(
         crate::session_runtime::Deadline::until(started + crate::restart::PREPARE_BUDGET);
     let _guard = try_operation()?;
     let _activity = crate::session_runtime::exclusive()?;
-    if let Some(guard) = RESTART_GUARD.get() {
-        guard()?;
-    }
+    require_no_restart_blockers(&restart_constraints()?)?;
     // The query client is still an attached tmux client. Stop it before
     // capturing/rechecking restart impact so it cannot keep the old server
     // alive or perturb attached-client counts during replacement.
@@ -2347,11 +2383,11 @@ mod tests {
 
     #[test]
     fn the_restart_guard_is_registered_once_and_never_replaced() {
-        fn first() -> Result<(), DeckError> {
+        fn first() -> Result<Vec<RestartBlocker>, DeckError> {
             Err(DeckError::new(ErrorKind::Other, "first-guard"))
         }
-        fn second() -> Result<(), DeckError> {
-            Ok(())
+        fn second() -> Result<Vec<RestartBlocker>, DeckError> {
+            Ok(Vec::new())
         }
         set_restart_guard(first);
         set_restart_guard(second);
@@ -2912,6 +2948,48 @@ mod tests {
                 .unwrap_err()
                 .message(),
             "tmux start-server failed: refused"
+        );
+    }
+
+    #[test]
+    fn real_tmux_managed_blocker_refusal_leaves_server_and_intent_untouched() {
+        let current = build(SourceCategory::Development, "0.4.41", "bbbbbbb", 1);
+        let server = IsolatedServer::new("managed-blocker");
+        let dir = TestDir::new("managed-blocker");
+        server.start(Some(&metadata_for_current(&current)));
+        server.new_session("alpha");
+        let run = |args: &[&str]| server.tmux(args);
+        let run_owned = |args: &[String]| server.tmux_owned(args);
+        let handle = ServerHandle {
+            run: &run,
+            run_owned: &run_owned,
+            owned_client: &no_owned_client,
+            socket_name: &server.socket,
+            lifecycle_file: dir.file(),
+        };
+        let Probe::Reachable(old) = probe_server_on(&handle) else {
+            panic!("old server reachable");
+        };
+        let blocker = RestartBlocker {
+            kind: RestartBlockerKind::ManagedSession,
+            session: "alpha".into(),
+            card_id: "M1".into(),
+        };
+        let refused = require_no_restart_blockers(&[blocker]).and_then(|()| {
+            complete_restart_on(&handle, &current, &old, "restartCompleted").map(|_| ())
+        });
+        assert_eq!(
+            refused.unwrap_err().message(),
+            "tmux-restart-mcp-managed-sessions"
+        );
+        assert_eq!(server.pid(), old.pid);
+        assert!(server
+            .output(&["has-session", "-t", "=alpha"])
+            .status
+            .success());
+        assert!(read_disk_at(&dir.file()).operation.is_none());
+        assert!(
+            matches!(probe_server_on(&handle), Probe::Reachable(snapshot) if snapshot.pid == old.pid)
         );
     }
 
