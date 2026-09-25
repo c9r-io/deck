@@ -62,6 +62,26 @@ fn committed_sidecar_matches_its_pin() {
     );
 }
 
+#[test]
+fn kill_missing_session_on_reachable_empty_server_reports_no_current_target() {
+    let server = Server::new("empty-kill");
+    server.run(&["set-option", "-g", "exit-empty", "off"]);
+    server.run(&["kill-session", "-t", "=t"]);
+    let out = Command::new(tmux_bin())
+        .args(["-f", "/dev/null", "-L", &server.0])
+        .args(["kill-session", "-t", "=t"])
+        .output()
+        .expect("bundled tmux runs");
+    assert!(!out.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&out.stderr).trim(),
+        "no current target"
+    );
+    assert!(server
+        .run(&["list-sessions", "-F", "#{session_name}"])
+        .is_empty());
+}
+
 /// A name no other server or directory in this or any concurrent test run
 /// uses: the process id separates runs, the sequence separates tests (and a
 /// tag reused by two of them) inside one run.

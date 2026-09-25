@@ -2,6 +2,8 @@
 
 ## 0.7.12 — 2026-09-25 (Nightly)
 
+- Stopped cards left after a shell-service restart can be closed normally when
+  their old tmux session is already gone.
 - Fixed shell-service restart after the last MCP-managed card closes: a
   still-running service with no remaining sessions now restarts normally.
 - Shell-service restart now shows blocking MCP-managed cards before it begins.

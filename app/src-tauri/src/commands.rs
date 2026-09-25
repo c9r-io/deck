@@ -11,7 +11,9 @@
 //! output.
 //! Poll IO runs on the blocking pool with a tmux deadline. A failed listing
 //! rejects the poll, never reports dead sessions; unusable cwd metadata is
-//! omitted independently of liveness.
+//! omitted independently of liveness. Closing an already-absent session is
+//! successful, including tmux's `no current target` reply on a reachable
+//! server with no sessions; other tmux failures still reject the close.
 //!
 //! # Wire naming (all commands, not only this file's)
 //! A NEW struct returned to JS is `#[serde(rename_all = "camelCase")]`
@@ -411,8 +413,24 @@ pub(crate) fn idempotent_kill_result(result: Result<String, DeckError>) -> Resul
     match result {
         Ok(_) => Ok(()),
         // Closing an already-gone session is the successful end state. This
-        // also covers an empty deck tmux server ("no server running").
-        Err(e) if matches!(e.kind(), ErrorKind::NoSession | ErrorKind::Missing) => Ok(()),
+        // also covers an empty deck tmux server ("no server running"). A
+        // reachable server kept alive by exit-empty=off instead responds
+        // "no current target" to this exact kill-session command. Match the
+        // command and stderr, not the broad Missing error category: an
+        // unrelated missing resource cannot prove the session is absent.
+        Err(e)
+            if e.message()
+                .starts_with("tmux kill-session failed: can't find session: ")
+                || e.message()
+                    .starts_with("tmux kill-session failed: no server running")
+                || e.message() == "tmux kill-session failed: no current target"
+                || (e
+                    .message()
+                    .starts_with("tmux kill-session failed: error connecting to ")
+                    && e.message().ends_with("(No such file or directory)")) =>
+        {
+            Ok(())
+        }
         Err(e) => Err(e),
     }
 }
@@ -986,13 +1004,19 @@ mod tests {
             "tmux kill-session failed: can't find session: x",
             "tmux kill-session failed: no server running",
             "tmux kill-session failed: error connecting to socket (No such file or directory)",
+            "tmux kill-session failed: no current target",
         ] {
             assert!(idempotent_kill_result(Err(DeckError::classified(missing))).is_ok());
         }
-        let real = idempotent_kill_result(Err(DeckError::classified(
+        for uncertain in [
             "tmux kill-session failed: permission denied",
-        )));
-        assert!(real.is_err());
+            "tmux kill-session failed: connection timed out",
+            "tmux kill-session failed: malformed response",
+            "tmux kill-session failed: unrelated resource not found",
+            "tmux list-panes failed: no current target",
+        ] {
+            assert!(idempotent_kill_result(Err(DeckError::classified(uncertain))).is_err());
+        }
         assert!(idempotent_kill_result(Ok(String::new())).is_ok());
     }
 

@@ -394,6 +394,10 @@ a fixture.
 - [ ] Double-click board title renames (no render() mid-dblclick regression)
 - [ ] Card ✕ closes instantly; in-session Close shows the custom confirm
       (window.confirm is a silent no-op in WKWebView — never use it)
+- [ ] In an isolated profile, restart the shell service with two ordinary
+      cards. Both show stopped/old snapshot; Close one and verify it disappears
+      from Board and sidebar without an error, while the other remains. Start
+      a fresh ordinary card and Close it to verify the live path.
 - [ ] With delayed persistence, overlap two card closes; close+rename/move;
       project delete+unrelated create/rename; and a failed first write followed
       by a successful second mutation. Reload `deck.json`: it must exactly equal
