@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.7.11 — 2026-09-25 (Nightly)
 
 - MCP: if the managed-shell runner ever hits an internal error it now
   stops (the pane shows "Deck MCP managed shell stopped: internal error"
@@ -24,16 +24,6 @@
   starting any new session (a card, or one an MCP client asked for) failed
   with "tmux server unreachable" until Deck was restarted. (MCP clients saw
   a rejected create with `create-failed`.)
-- Away notifications and a Dock badge, off by default. With **Notify me
-  when away** on (Settings → Integrations & automation), macOS shows a
-  notification when an agent reports needs-input or an unread turn ending
-  while the deck window is not in front; the Dock icon counts needs-input
-  plus unread endings. The notification carries the card title, the
-  project name and one of two fixed phrases, nothing else, and clicking it
-  opens the card. The decision is made in the backend as each hook event
-  arrives, so App Nap freezing the webview does not delay it. Permission
-  is asked once when the switch is turned on; a blocked state is shown,
-  never worked around. See `docs/notifications.md`.
 - Phone Connector: a message or note containing a control character (for
   example a pasted carriage return) is now refused on the phone with a
   message saying what to fix, instead of failing on the Mac as "Deck host
@@ -82,6 +72,19 @@
   pinned coverage and audit runners as checksum-verified prebuilt binaries
   instead of compiling them on every run: that step drops from about five
   minutes to a few seconds.
+
+## 0.7.10 — 2026-09-24 (Nightly)
+
+- Away notifications and a Dock badge, off by default. With **Notify me
+  when away** on (Settings → Integrations & automation), macOS shows a
+  notification when an agent reports needs-input or an unread turn ending
+  while the deck window is not in front; the Dock icon counts needs-input
+  plus unread endings. The notification carries the card title, the
+  project name and one of two fixed phrases, nothing else, and clicking it
+  opens the card. The decision is made in the backend as each hook event
+  arrives, so App Nap freezing the webview does not delay it. Permission
+  is asked once when the switch is turned on; a blocked state is shown,
+  never worked around. See `docs/notifications.md`.
 
 ## 0.7.9 — 2026-09-24 (Nightly)
 
