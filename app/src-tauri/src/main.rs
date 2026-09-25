@@ -21,6 +21,7 @@ mod inbound;
 mod inbound_channel;
 mod inbound_clock;
 mod inbound_slack;
+mod input_source;
 mod instance_lock;
 mod keychain;
 mod launch_args;
@@ -136,6 +137,7 @@ pub(crate) const SMOKE_ENTRIES: &[(&str, &str)] = &[
     ("voice", "m.verifyVoice()"),
     ("resume", "m.verifyResume()"),
     ("buffer", "m.verifyBuffer()"),
+    ("buffer-narrow", "m.verifyBufferNarrow()"),
     ("channel", "m.verifyChannel()"),
     ("channel-fault", "m.verifyChannelFault()"),
     ("connector", "m.verifyConnector()"),
@@ -219,6 +221,16 @@ fn main() {
                 notify::init(app.handle().clone(), enabled, sound);
             }
             agent_status::spawn_listener();
+            input_source::init(app.handle().clone());
+            // Narrow-window smoke uses the actual WKWebView geometry without
+            // adding a frontend window-control permission or production seam.
+            if crate::launch_args::debug_arg("--smoke-wkwebview").as_deref()
+                == Some("buffer-narrow")
+            {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.set_size(tauri::LogicalSize::new(800.0, 600.0));
+                }
+            }
             // Update-check heartbeat from a Rust thread: webview timers are
             // frozen by App Nap when the app is backgrounded, so a JS
             // setInterval would effectively never fire. One latest.json
@@ -303,6 +315,9 @@ fn main() {
             // Away = the main window is not in front (notify.rs).
             if let tauri::WindowEvent::Focused(focused) = event {
                 notify::set_focused(*focused);
+                if *focused {
+                    input_source::resync();
+                }
             }
             // ⌘W / red button hides instead of destroying the only window;
             // the Dock icon (Reopen) brings it back.
@@ -314,6 +329,7 @@ fn main() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            input_source::input_source_snapshot,
             notify::notify_configure,
             notify::notify_status,
             notify::notify_cards,

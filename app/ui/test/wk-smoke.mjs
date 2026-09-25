@@ -7,14 +7,14 @@ let renameCardInline, renderSuggest, resetSuggest, newSession;
 let showLinkCtx, toggleSidebar, addSplit, backToBoard, openSession, strToB64;
 let closePaneBySid, focusPane, cancelTerminalSelection, copyTerminalSelection, terminalSelectionElsewhere;
 let refreshQueue, toggleQueuePanel;
-let renderBufferUI;
+let renderBufferUI, openBuffer, closeBuffer;
 let drainChannel, drainConnector;
 let activateTheme, persistThemeChoice, persistInbound, applyFontScale, getFontScale;
 let toggleAutomations;
 let terminalLogicalLine, tokenizeTerminalLinks;
 if (typeof window !== 'undefined') {
   ({ $, ctx, inv, state, store } = await import('../js/state.js'));
-  ({ panes, provider, render, pollNow, renderBufferUI } = await import('../js/board.js'));
+  ({ panes, provider, render, pollNow, renderBufferUI, openBuffer, closeBuffer } = await import('../js/board.js'));
   ({ boardData } = await import('../js/persistence.js'));
   ({
     renameCardInline, renderSuggest, resetSuggest, newSession,
@@ -1869,12 +1869,23 @@ async function bufferSmoke(main, project, column) {
   cardEl.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
   $('ctx').querySelector('[data-a="buffer"]')?.click();
   const openedOnBoard = !$('buffer-panel').hidden && state.view === 'board' && stopped.status === 'stopped';
+  const boardRect = $('board-view').getBoundingClientRect();
+  const drawerRect = $('buffer-panel').getBoundingClientRect();
+  await report('buffer-board-overlay', openedOnBoard && $('buffer-panel').parentElement === $('board-view')
+    && drawerRect.right <= boardRect.right + 1 && drawerRect.height > boardRect.height * 0.8);
   $('buffer-new').value = 'board-only note'; $('buffer-add').click();
   const added = await waitFor(() => provider.get(stopped.id)?.buffer?.entries?.length === 1);
   const field = document.querySelector('#buffer-list textarea');
   field.value = 'edited board-only note'; field.dispatchEvent(new Event('change', { bubbles: true }));
   const edited = await waitFor(() => provider.get(stopped.id)?.buffer?.entries?.[0]?.text === 'edited board-only note');
   await report('buffer-board-stopped', openedOnBoard && added && edited, added ? 1 : 0, edited ? 1 : 0);
+  document.querySelector('.buffer-row input[type=checkbox]').click();
+  await openBuffer(main.id);
+  const isolated = $('buffer-queue').disabled && !document.querySelector('.buffer-row input[type=checkbox]')?.checked;
+  closeBuffer();
+  await openBuffer(stopped.id);
+  await report('buffer-selection-isolation', isolated && $('buffer-queue').disabled
+    && !document.querySelector('.buffer-row input[type=checkbox]')?.checked);
   const base = structuredClone(provider.get(stopped.id).buffer);
   const a = structuredClone(base), b = structuredClone(base);
   a.revision++; a.entries[0].text = 'winner'; a.entries[0].revision++;
@@ -1886,7 +1897,25 @@ async function bufferSmoke(main, project, column) {
     && provider.get(stopped.id).buffer.entries[0].text === 'winner', raced.filter(result => result.status === 'fulfilled').length);
   $('buffer-close').click();
 
+  const { showAttention } = await import('../js/attention.js');
+  showAttention();
+  const sidebarCard = document.querySelector(`#side-list .side-item[data-sid="${stopped.id}"]`);
+  sidebarCard?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+  $('ctx').querySelector('[data-a="buffer"]')?.click();
+  await report('buffer-attention-overlay', !$('buffer-panel').hidden
+    && $('buffer-panel').parentElement === $('attention-view')
+    && $('buffer-queue').disabled);
+  $('attention-back').click();
+  await report('buffer-attention-cleanup', $('buffer-panel').hidden
+    && $('buffer-queue').disabled && state.view === 'board');
+
   await openSession(main.id); $('buffer-btn').click();
+  const docked = await waitFor(() => !$('session-workspace').classList.contains('buffer-overlay')
+    && $('buffer-panel').parentElement === $('session-workspace'));
+  const terminalRect = $('terminal-host').getBoundingClientRect();
+  const sessionDrawerRect = $('buffer-panel').getBoundingClientRect();
+  await report('buffer-session-dock', docked && terminalRect.right <= sessionDrawerRect.left + 1
+    && terminalRect.width >= 480);
   $('buffer-new').value = ': # immutable buffer smoke'; $('buffer-add').click();
   await waitFor(() => provider.get(main.id)?.buffer?.entries?.some(e => e.text.includes('immutable')));
   $('buffer-new').value = 'second selected snapshot'; $('buffer-add').click();
@@ -2230,7 +2259,21 @@ export async function verifyBuffer() {
       projectId: project.id, columnId: column.id, title: 'scratchpad evidence', cmd: '', dir: '/tmp',
     });
     render();
-    await openSession(main.id);
+    const opening = openSession(main.id);
+    const ordinaryHiddenFromFirstFrame = $('mcp-control-btn').hidden && $('mcp-grant-btn').hidden
+      && getComputedStyle($('mcp-control-btn')).display === 'none'
+      && getComputedStyle($('mcp-grant-btn')).display === 'none';
+    await opening;
+    await report('mcp-ordinary-first-frame', ordinaryHiddenFromFirstFrame
+      && $('mcp-control-btn').hidden && $('mcp-grant-btn').hidden);
+    const inputSnapshot = await inv('input_source_snapshot');
+    const inputShown = await waitFor(() => !!inputSnapshot.name
+      && $('input-source-indicator').hidden === false
+      && $('input-source-indicator').title.includes(inputSnapshot.name)
+      && (inputSnapshot.icon
+        ? !$('input-source-icon').hidden && $('input-source-name').hidden
+        : $('input-source-icon').hidden && $('input-source-name').textContent === inputSnapshot.name));
+    await report('input-source-initial', inputShown);
     await bufferSmoke(main, project, column);
 
     const { upsertExternal } = await import('../js/buffer-model.js');
@@ -2242,12 +2285,41 @@ export async function verifyBuffer() {
     });
     await provider.setBuffer(card.id, card.buffer.revision, external.buffer);
 
+    const { addManual } = await import('../js/buffer-model.js');
+    card = provider.get(main.id);
+    let many = card.buffer;
+    for (let i = 0; i < 22; i++) {
+      const result = addManual(many, { id: `Nsmoke${i}`, text: i === 0
+        ? 'Long multiline note\n'.repeat(12) : `Compact note ${i}`, now: Date.now() });
+      if (result.error) throw new Error('buffer fixture limit');
+      many = result.buffer;
+    }
+    await provider.setBuffer(card.id, card.buffer.revision, many);
+
     await openSession(main.id);
     $('buffer-btn').click();
     $('buffer-new').value = 'Queue this after the external review is resolved.';
     $('buffer-add').click();
-    await waitFor(() => provider.get(main.id)?.buffer?.entries?.length === 4);
+    await waitFor(() => provider.get(main.id)?.buffer?.entries?.length === 26);
     renderBufferUI();
+    const header = $('buffer-panel').querySelector('.buffer-head');
+    const footer = $('buffer-panel').querySelector('.buffer-add');
+    const list = $('buffer-list');
+    list.scrollTop = list.scrollHeight;
+    const panelRect = $('buffer-panel').getBoundingClientRect();
+    await report('buffer-scroll-layout', list.scrollHeight > list.clientHeight
+      && header.getBoundingClientRect().top >= panelRect.top
+      && footer.getBoundingClientRect().bottom <= panelRect.bottom + 1
+      && getComputedStyle($('buffer-panel')).overflow === 'hidden');
+    const editing = document.querySelector('.buffer-row textarea:not([readonly])');
+    editing.focus(); editing.setSelectionRange(3, 3);
+    card = provider.get(main.id);
+    const incoming = addManual(card.buffer, { id: 'Nfocus1', text: 'Arrived during edit', now: Date.now() });
+    if (incoming.error) throw new Error('buffer focus fixture limit');
+    await provider.setBuffer(card.id, card.buffer.revision, incoming.buffer);
+    await report('buffer-edit-focus', editing.isConnected && document.activeElement === editing
+      && editing.selectionStart === 3 && editing.selectionEnd === 3);
+    editing.blur(); renderBufferUI();
     const rows = [...document.querySelectorAll('.buffer-row')];
     const latest = rows.find(row => row.querySelector('textarea')?.value.startsWith('Queue this'));
     latest?.querySelector('input[type=checkbox]')?.click();
@@ -2260,10 +2332,84 @@ export async function verifyBuffer() {
     const readonlyExternal = rows.some(row => row.querySelector('textarea[readonly]')?.value.startsWith('External review'));
     const states = new Set([...document.querySelectorAll('.buffer-copies [data-state]')].map(badge => badge.dataset.state));
     await report('buffer-visual-fixture', readonlyExternal && states.has('queued') && states.has('canceled'), states.size, 2);
+
+    const splitCards = [];
+    for (const [target, dir] of [[main.id, 'row'], [main.id, 'col'], [main.id, 'row']]) {
+      const split = await provider.create({ projectId: project.id, columnId: column.id,
+        title: `buffer-split-${splitCards.length}`, cmd: '', dir: '/tmp' });
+      splitCards.push(split);
+      await addSplit(target, dir, false, split.id);
+    }
+    await openBuffer(splitCards[splitCards.length - 1].id);
+    const splitFit = await waitFor(async () => {
+      if (panes.size !== 4 || !ctx.layout || $('buffer-panel').hidden) return false;
+      for (const pane of panes.values()) {
+        const metrics = await inv('terminal_metrics', { name: pane.session });
+        if (metrics.pane_cols !== pane.term.cols || metrics.pane_rows !== pane.term.rows
+          || pane.el.getBoundingClientRect().width < 60) return false;
+      }
+      return true;
+    });
+    await report('buffer-nested-split-fit', splitFit, panes.size, 4);
+    const originalScale = getFontScale();
+    applyFontScale(1.5);
+    const scaledFit = await waitFor(async () => {
+      if (panes.size !== 4 || $('buffer-panel').hidden) return false;
+      for (const pane of panes.values()) {
+        const metrics = await inv('terminal_metrics', { name: pane.session });
+        if (metrics.pane_cols !== pane.term.cols || metrics.pane_rows !== pane.term.rows) return false;
+      }
+      return true;
+    });
+    await report('buffer-font-scale-fit', scaledFit && getFontScale() === 1.5);
+    applyFontScale(originalScale);
+    closeBuffer();
+    for (const split of splitCards.reverse()) closePaneBySid(split.id);
+    await openBuffer(main.id);
+    document.querySelector('.buffer-row input[type=checkbox]')?.click();
+    toggleQueuePanel(true);
+    await report('buffer-queue-mutual', $('buffer-panel').hidden && $('buffer-queue').disabled
+      && $('buffer-btn').getAttribute('aria-pressed') === 'false');
+    toggleQueuePanel(false);
+    await openBuffer(main.id);
     await report('done', !smokeFailed, 1, 0);
   } catch (error) {
     await inv('ui_event', { code: 'js-reject', detail: (error && error.name) || 'error', a: 16, b: 0 });
     await report('done', false, 0, 16);
+  }
+}
+
+export async function verifyBufferNarrow() {
+  try {
+    await waitFor(() => provider.projects().length > 0);
+    const project = provider.projects()[0];
+    const card = await provider.create({ projectId: project.id, columnId: project.columns[0].id,
+      title: 'narrow scratchpad', cmd: '', dir: '/tmp' });
+    await openSession(card.id);
+    const pane = panes.get(card.session);
+    const before = pane.term.cols;
+    await openBuffer(card.id);
+    const overlay = await waitFor(() => $('session-workspace').classList.contains('buffer-overlay'));
+    const panel = $('buffer-panel').getBoundingClientRect();
+    const terminal = $('terminal-host').getBoundingClientRect();
+    const list = $('buffer-list').getBoundingClientRect();
+    const head = $('buffer-panel').querySelector('.buffer-head').getBoundingClientRect();
+    const foot = $('buffer-panel').querySelector('.buffer-add').getBoundingClientRect();
+    await report('buffer-narrow-overlay', overlay && panel.left >= terminal.left
+      && panel.right <= terminal.right + 1 && pane.term.cols === before);
+    await report('buffer-narrow-sections', head.bottom <= list.top + 1
+      && list.bottom <= foot.top + 1 && foot.bottom <= panel.bottom + 1);
+    closeBuffer();
+    await report('buffer-narrow-close', $('buffer-panel').hidden && $('buffer-queue').disabled);
+    await openBuffer(card.id);
+    await report('buffer-narrow-reopen', !$('buffer-panel').hidden && $('buffer-queue').disabled);
+    backToBoard();
+    await report('buffer-leave-cleanup', $('buffer-panel').hidden && $('buffer-queue').disabled
+      && $('buffer-btn').getAttribute('aria-pressed') === 'false');
+    await report('done', !smokeFailed, 1, 0);
+  } catch (error) {
+    await inv('ui_event', { code: 'js-reject', detail: (error && error.name) || 'error', a: 17, b: 0 });
+    await report('done', false, 0, 17);
   }
 }
 

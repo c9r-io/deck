@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.7.12 — 2026-09-25 (Nightly)
+
+- Session header shows the current macOS input source. Input source changes
+  update automatically, and returning to deck resynchronizes the indicator.
+  Where macOS provides an input source icon, deck uses it and keeps the full
+  system name available as a tooltip.
+- MCP controls appear only for a confirmed, active MCP-managed session. Ordinary,
+  stale and failed-status sessions keep the actions hidden, including during
+  asynchronous status checks and card switches.
+- Card Scratchpad is now a right-side workspace: it docks beside the terminal
+  on wide windows and overlays it on narrow windows. Its notes scroll between
+  fixed header and footer controls; card changes clear temporary selection.
+- The Board now marks the card that needs you: a *Needs input* or *Turn
+  ended, unread* badge in the card's top row, the same set the Dock badge
+  counts, so coming back to deck shows which card it was. Viewing an
+  unread ending clears its badge; a card that still needs input keeps it.
+  It works whether or not notifications are on.
+- Terminal links: code in a pane is no longer underlined as a file path.
+  A dotted call or index such as `pathlib.Path(`, `p.read_text()`,
+  `re.search(` or `sys.argv[1]` was offered as a path; a quoted filename
+  inside the call (`'admission_tests.rs'`) still is.
+
 ## 0.7.11 — 2026-09-25 (Nightly)
 
 - MCP: if the managed-shell runner ever hits an internal error it now

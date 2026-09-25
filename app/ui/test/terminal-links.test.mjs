@@ -154,3 +154,23 @@ test('an agent hard newline with padding and indentation keeps one path and its 
   assert.equal(terminalLogicalLine(term, 1).text, '/tmp/very/long/path/with',
     'indented prose does not become a path suffix');
 });
+
+test('the production Python one-liner links only its quoted filename, wrapped or not', () => {
+  const line = "p=pathlib.Path('admission_tests.rs');t=p.read_text()";
+  const quoted = "'admission_tests.rs'";
+  for (const cols of [80, 30]) {
+    const rows = [];
+    for (let at = 0; at < line.length; at += cols) rows.push(row(line.slice(at, at + cols), at > 0));
+    const term = { cols, buffer: { active: { length: rows.length, getLine: i => rows[i] } } };
+    for (let requested = 1; requested <= rows.length; requested++) {
+      const logical = terminalLogicalLine(term, requested);
+      assert.equal(logical.text, line);
+      const ranges = terminalLinkRanges({ matches: tokenizeTerminalLinks(logical.text), positions: logical.positions, lineNo: requested });
+      const at = line.indexOf(quoted);
+      const expected = { start: logical.positions[at], end: logical.positions[at + quoted.length - 1] };
+      const onThisRow = requested >= expected.start.y && requested <= expected.end.y;
+      assert.deepEqual(ranges.map(link => link.text), onThisRow ? [quoted] : [],
+        `cols ${cols}, row ${requested}: no link on pathlib.Path( or p.read_text()`);
+    }
+  }
+});

@@ -11,10 +11,15 @@
         "automation": {},
         "board-concurrency": {},
         "board-fault": {},
+        "buffer-board-overlay": {},
         "buffer-board-stopped": {},
+        "buffer-attention-overlay": {},
+        "buffer-attention-cleanup": {},
         "buffer-cas": {},
         "buffer-natural-exit-retained": {},
         "buffer-queue-copy": {},
+        "buffer-selection-isolation": {},
+        "buffer-session-dock": {},
         "button-context-menu": {},
         "button-force-touch": {},
         "command-without-pane": {},
@@ -114,11 +119,33 @@
     "buffer": {
       "terminal": "done",
       "checks": {
+        "buffer-board-overlay": {},
         "buffer-board-stopped": {},
+        "buffer-attention-overlay": {},
+        "buffer-attention-cleanup": {},
         "buffer-cas": {},
+        "buffer-edit-focus": {},
+        "buffer-font-scale-fit": {},
         "buffer-natural-exit-retained": {},
+        "buffer-nested-split-fit": {},
         "buffer-queue-copy": {},
-        "buffer-visual-fixture": {}
+        "buffer-queue-mutual": {},
+        "buffer-scroll-layout": {},
+        "buffer-selection-isolation": {},
+        "buffer-session-dock": {},
+        "buffer-visual-fixture": {},
+        "input-source-initial": {},
+        "mcp-ordinary-first-frame": {}
+      }
+    },
+    "buffer-narrow": {
+      "terminal": "done",
+      "checks": {
+        "buffer-narrow-overlay": {},
+        "buffer-narrow-sections": {},
+        "buffer-narrow-close": {},
+        "buffer-leave-cleanup": {},
+        "buffer-narrow-reopen": {}
       }
     },
     "channel": {
@@ -177,6 +204,7 @@
         "attention-reorder-focus": {},
         "attention-return": {},
         "attention-seen": {},
+        "attention-card-badge": {},
         "attention-split-fail": {},
         "attention-stage": { "failureOnly": true },
         "attention-stale": {},

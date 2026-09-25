@@ -967,10 +967,36 @@ test('balanced filename brackets and URL punctuation retain their own ranges', (
   assert.deepEqual(tokenizeTerminalLinks('/tmp/work/[中文)]').map(x => x.value), ['/tmp/work/']);
 });
 
+test('a dotted member call is code, not a filename, and its quoted argument still is', () => {
+  const values = line => tokenizeTerminalLinks(line).map(token => token.value);
+  /* The production screenshot: a Python one-liner in a pane. The quoted
+     filename is the only path in it. */
+  assert.deepEqual(values("p=pathlib.Path('admission_tests.rs');t=p.read_text()"),
+    ["'admission_tests.rs'"]);
+  assert.deepEqual(values('m=re.search(...)'), []);
+  assert.deepEqual(values("m=re.search(r'x', 'src/main.rs')"), ["'src/main.rs'"]);
+  for (const code of ['foo.bar()', 'foo.bar(baz)', 'object.method(', 'module.function("x")',
+    'vec.len() == 3', 'print(os.path.join(a))', 'x = foo.bar(1).baz', 'p.read_text().strip()',
+    'self.items[0].name()', '$.ajax({})', 'sys.argv[1]', "os.environ['HOME']"]) {
+    assert.deepEqual(values(code), [], `${code} is code`);
+  }
+  /* The rule needs BOTH halves: a dotted identifier chain AND a call paren.
+     A bare dotted word stays a candidate (it may be a real file), and a
+     filename's own brackets are kept when the part before them has no dot. */
+  for (const name of ['foo.bar', 'file.rs', 'file.123', 'file(1).txt', 'dir(copy)/a.rs',
+    'src/foo.bar(1).txt', './a.b(c)', '.env', 'Makefile.am']) {
+    assert.deepEqual(values(name), [name], `${name} stays a candidate`);
+  }
+  assert.deepEqual(values('see (file.rs) and foo.bar(x)'), ['file.rs'],
+    'a filename in prose parentheses survives beside a call');
+  assert.deepEqual(values('call(src/main.rs:42)'), ['src/main.rs:42'],
+    'a path argument of a plain call is still a path');
+});
+
 test('long rejected candidates advance without quadratic suffix rescans', () => {
   // 64k is larger than a usual 32-row hover. A generous one-second budget
   // distinguishes the previous multi-second quadratic scan even with coverage.
-  for (const pattern of ['note:', '[中文]', '0.', 'http://[']) {
+  for (const pattern of ['note:', '[中文]', '0.', 'http://[', 'a.b(', 'x.y().', ').z']) {
     const input = pattern.repeat(Math.ceil(64000 / pattern.length)) + ' /tmp/end.rs';
     const started = performance.now();
     const tokens = tokenizeTerminalLinks(input);

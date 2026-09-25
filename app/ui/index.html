@@ -157,6 +157,7 @@
         <div class="sess-title"><span class="name" id="sess-name"></span></div>
         <span class="sess-path" id="sess-path"></span>
         <div class="sess-spacer"></div>
+        <span id="input-source-indicator" class="input-source-indicator" hidden><img id="input-source-icon" alt="" hidden><span id="input-source-name"></span></span>
         <span class="mem-chip" id="sess-mem" title="Memory of the whole session process tree: shell + agent + spawned children" data-i18n-title="session.memory"></span>
         <button class="btn" id="mcp-control-btn" type="button" hidden></button>
         <button class="btn" id="mcp-grant-btn" type="button" hidden></button>
@@ -168,12 +169,6 @@
         <button class="btn icon-btn" id="queue-btn" title="Scheduled prompts — send prompts to this session later" data-i18n-title="queue.title"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8.8" r="5"/><path d="M8 6.2v2.6l1.8 1.2"/><path d="M13.9 2.8l-1.7 1.5M2.1 2.8l1.7 1.5" stroke-linecap="round"/></svg><span class="cnt" id="queue-cnt"></span></button>
         <button class="btn danger" id="sess-close" title="Close session (terminates the shell and removes the card)" data-i18n="session.close" data-i18n-title="session.closeTitle">Close</button>
       </div>
-      <section id="buffer-panel" hidden aria-labelledby="buffer-title">
-        <div class="buffer-head"><strong id="buffer-title" data-i18n="buffer.title">Card scratchpad</strong><b id="buffer-collecting" hidden data-i18n="buffer.collecting">Collecting</b><button class="btn" id="buffer-stop" hidden data-i18n="buffer.stop">Stop collecting</button><span data-i18n="buffer.hint">Notes stay with this card and are never sent automatically.</span><button class="btn" id="buffer-close" type="button" data-i18n="common.close">Close</button></div>
-        <div id="buffer-list"></div>
-        <div id="buffer-empty" data-i18n="buffer.empty">No notes yet.</div>
-        <div class="buffer-add"><textarea id="buffer-new" rows="2" maxlength="32768" data-i18n-placeholder="buffer.placeholder" placeholder="Add a note…"></textarea><button class="btn" id="buffer-add" data-i18n="common.add">Add</button><button class="btn primary" id="buffer-queue" disabled data-i18n="buffer.queue">Queue selected copy</button></div>
-      </section>
       <div id="queue-panel">
         <div id="queue-list" tabindex="-1"></div>
         <div class="q-new" id="q-new">
@@ -224,7 +219,14 @@
         <div class="q-hint" data-i18n="queue.explainer">Prompts are typed into the session at the scheduled moment.</div>
         <div id="tpl-pop"></div>
       </div>
-      <div id="terminal-host"><div id="terminal"></div><div id="quick-bar"></div></div>
+      <div id="session-workspace">
+        <div id="terminal-host"><div id="terminal"></div><div id="quick-bar"></div></div>
+        <section id="buffer-panel" role="dialog" aria-modal="false" hidden aria-labelledby="buffer-title">
+          <div class="buffer-head"><div class="buffer-head-main"><strong id="buffer-title" data-i18n="buffer.title">Card scratchpad</strong><span id="buffer-note-count"></span><b id="buffer-collecting" hidden data-i18n="buffer.collecting">Collecting</b><button class="btn" id="buffer-stop" hidden data-i18n="buffer.stop">Stop collecting</button><button class="btn icon-btn" id="buffer-close" type="button" data-i18n-title="common.close" data-i18n-aria-label="common.close" title="Close" aria-label="Close">✕</button></div><span data-i18n="buffer.hint">Notes stay with this card and are never sent automatically.</span></div>
+          <div id="buffer-list"><div id="buffer-empty" data-i18n="buffer.empty">No notes yet.</div></div>
+          <div class="buffer-add"><textarea id="buffer-new" rows="2" maxlength="32768" data-i18n-placeholder="buffer.placeholder" placeholder="Add a note…"></textarea><div class="buffer-actions"><button class="btn" id="buffer-add" data-i18n="common.add">Add</button><button class="btn primary" id="buffer-queue" disabled></button></div></div>
+        </section>
+      </div>
     </div>
   </div>
 </div>

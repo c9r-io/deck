@@ -30,7 +30,7 @@ import { formatNumber, t } from './i18n.js';
 import { formatShortcut } from './shortcuts.js';
 import { renderAutomations, ruleOf } from './automation.js';
 import { createDefaultColumns, migrateColumnSemantics } from './board-defaults.js';
-import { attentionStatusText, refreshAttention } from './attention.js';
+import { attentionStatusText, paintCardAttentionBadge, refreshAttention } from './attention.js';
 import { cardLabels, labelsKey, seenDismissals } from './notify-model.js';
 import { addManual, addQueueCopy, bufferLimitError, copyEvidence, deleteEntry, editEntry, emptyBuffer, retainedBuffer } from './buffer-model.js';
 import { nextCollectedAt } from './channel-model.js';
@@ -610,7 +610,34 @@ export const provider = {
 
 /* ---------- card scratchpad ------------------------------------------------ */
 let bufferTargetId = null;
+let bufferUiEpoch = 0;
 const bufferSelected = new Set();
+const activeBufferCard = () => bufferTargetId ? provider.get(bufferTargetId) : null;
+const bufferStillShows = (cardId, epoch) => bufferTargetId === cardId
+  && epoch === bufferUiEpoch && !$('buffer-panel').hidden;
+
+export function closeBuffer() {
+  bufferUiEpoch++;
+  $('buffer-panel').hidden = true;
+  bufferTargetId = null;
+  bufferSelected.clear();
+  $('buffer-new').value = '';
+  $('buffer-btn').setAttribute('aria-pressed', 'false');
+  syncBufferQueueButton();
+}
+
+function changeBufferTarget(cardId) {
+  if (bufferTargetId !== cardId) {
+    bufferUiEpoch++;
+    bufferSelected.clear();
+    $('buffer-new').value = '';
+  }
+  bufferTargetId = cardId;
+  const host = state.view === 'session' ? $('session-workspace') : state.view === 'attention' ? $('attention-view') : $('board-view');
+  if ($('buffer-panel').parentElement !== host) host.appendChild($('buffer-panel'));
+  $('buffer-btn').setAttribute('aria-pressed', String(state.view === 'session' && state.sessionId === cardId));
+  syncBufferQueueButton();
+}
 const bufferLimitKey = error => ({ entries: 'buffer.limit.entries', copies: 'buffer.limit.copies', entry: 'buffer.limit.entry', total: 'buffer.limit.total',
   'leading-command': 'buffer.leadingCommand' })[error];
 
@@ -631,12 +658,15 @@ const openExternalLink = href => inv('open_target', { kind: 'url', value: href, 
 export function renderBufferUI() {
   const panel = $('buffer-panel');
   if (!panel || panel.hidden) return;
-  const card = provider.get(bufferTargetId || state.sessionId);
-  if (!card) { panel.hidden = true; return; }
+  const card = activeBufferCard();
+  if (!card) { closeBuffer(); return; }
+  const uiEpoch = bufferUiEpoch;
   const buffer = card.buffer || emptyBuffer();
+  const entryIds = new Set(buffer.entries.map(entry => entry.id));
+  for (const id of bufferSelected) if (!entryIds.has(id)) bufferSelected.delete(id);
   $('buffer-collecting').hidden = !buffer.collecting;
   $('buffer-stop').hidden = !buffer.collecting || !card.channelRun;
-  const list = $('buffer-list'); list.replaceChildren();
+  const list = $('buffer-list'); list.replaceChildren($('buffer-empty'));
   for (const entry of buffer.entries) {
     const row = document.createElement('article'); row.className = 'buffer-row'; row.dataset.id = entry.id;
     const check = document.createElement('input'); check.type = 'checkbox'; check.checked = bufferSelected.has(entry.id);
@@ -654,7 +684,7 @@ export function renderBufferUI() {
     field.onchange = entry.kind === 'external' ? null : async () => {
       const result = editEntry(buffer, entry.id, field.value, Date.now());
       if (result.error) { toast(t(bufferLimitKey(result.error))); field.value = entry.text; return; }
-      if (await persistBuffer(card, buffer.revision || 0, result.buffer)) renderBufferUI();
+      if (await persistBuffer(card, buffer.revision || 0, result.buffer) && bufferStillShows(card.id, uiEpoch)) renderBufferUI();
     };
     const links = document.createElement('div'); links.className = 'buffer-links';
     for (const href of (entry.source?.links || []).filter(value => /^https?:\/\//.test(value))) {
@@ -669,20 +699,28 @@ export function renderBufferUI() {
     for (const copy of entry.copies || []) {
       const badge = document.createElement('span'); badge.textContent = t(`buffer.state.${bufferEvidence(copy)}`); badge.dataset.state = bufferEvidence(copy); copies.appendChild(badge);
     }
-    const del = document.createElement('button'); del.className = 'btn buffer-del'; del.textContent = t('common.delete');
+    const del = document.createElement('button'); del.className = 'btn buffer-del'; del.textContent = '✕';
+    del.title = t('common.delete'); del.setAttribute('aria-label', t('common.delete'));
     del.onclick = async () => {
       if (!await confirmDialog(t('buffer.deleteConfirm'))) return;
-      bufferSelected.delete(entry.id);
-      if (await persistBuffer(card, buffer.revision || 0, deleteEntry(buffer, entry.id))) renderBufferUI();
+      if (await persistBuffer(card, buffer.revision || 0, deleteEntry(buffer, entry.id)) && bufferStillShows(card.id, uiEpoch)) {
+        bufferSelected.delete(entry.id);
+        renderBufferUI();
+      }
     };
     body.append(meta, field, links, copies); row.append(check, body, del); list.appendChild(row);
   }
   $('buffer-empty').hidden = buffer.entries.length > 0;
   $('buffer-count').textContent = buffer.entries.length ? String(buffer.entries.length) : '';
+  $('buffer-note-count').textContent = t('buffer.noteCount', { count: formatNumber(buffer.entries.length) });
   syncBufferQueueButton();
 }
 
-function syncBufferQueueButton() { $('buffer-queue').disabled = bufferSelected.size === 0; }
+function syncBufferQueueButton() {
+  const count = bufferSelected.size;
+  $('buffer-queue').disabled = count === 0;
+  $('buffer-queue').textContent = count ? t('buffer.queueCount', { count: formatNumber(count) }) : t('buffer.queue');
+}
 
 export async function queueBufferEntries(sid, requests) {
   const card = provider.get(sid);
@@ -730,53 +768,71 @@ export const queueBufferEntry = (sid, entryId, operationId) =>
   queueBufferEntries(sid, [{ entryId, operationId }]);
 
 async function queueSelectedBufferEntries() {
-  const sid = bufferTargetId || state.sessionId;
+  const sid = bufferTargetId;
+  if (!sid) return;
+  const uiEpoch = bufferUiEpoch;
   const submitted = [...bufferSelected];
   await queueBufferEntries(sid, submitted.map(entryId => ({ entryId })));
-  submitted.forEach(entryId => bufferSelected.delete(entryId));
-  await refreshQueue(); renderBufferUI();
+  if (bufferStillShows(sid, uiEpoch)) {
+    submitted.forEach(entryId => bufferSelected.delete(entryId));
+    await refreshQueue();
+    if (bufferStillShows(sid, uiEpoch)) renderBufferUI();
+  }
 }
 
 export async function openBuffer(sid) {
-  bufferTargetId = sid;
-  if ($('buffer-panel').parentElement !== document.body) document.body.appendChild($('buffer-panel'));
-  $('queue-panel').style.display = 'none'; $('buffer-panel').hidden = false;
-  $('buffer-btn').setAttribute('aria-pressed', 'true'); renderBufferUI();
+  if (!provider.get(sid)) return;
+  changeBufferTarget(sid);
+  $('queue-panel').style.display = 'none';
+  ctx.queueOpen = false;
+  $('buffer-panel').hidden = false;
+  renderBufferUI();
 }
 
 export function initBuffer() {
   $('buffer-btn').onclick = () => {
-    bufferTargetId = state.sessionId;
-    if ($('buffer-panel').parentElement !== document.body) document.body.appendChild($('buffer-panel'));
-    const panel = $('buffer-panel'); panel.hidden = !panel.hidden;
-    $('buffer-btn').setAttribute('aria-pressed', String(!panel.hidden));
-    if (!panel.hidden) { $('queue-panel').style.display = 'none'; renderBufferUI(); }
+    if (!$('buffer-panel').hidden && bufferTargetId === state.sessionId) closeBuffer();
+    else openBuffer(state.sessionId);
   };
   $('buffer-add').onclick = async () => {
-    const target = bufferTargetId || state.sessionId;
+    const target = bufferTargetId;
+    const uiEpoch = bufferUiEpoch;
     const card = provider.get(target); const field = $('buffer-new'); const submitted = field.value; const text = submitted.trim();
     if (!card || !text) { field.focus(); return; }
     const result = addManual(card.buffer || emptyBuffer(), { id: genId('N'), text, now: Date.now() });
     if (result.error) { toast(t(bufferLimitKey(result.error))); return; }
     if (await persistBuffer(card, card.buffer?.revision || 0, result.buffer)) {
-      if ((bufferTargetId || state.sessionId) === target && field.value === submitted) field.value = '';
-      renderBufferUI();
+      if (bufferStillShows(target, uiEpoch)) {
+        if (field.value === submitted) field.value = '';
+        renderBufferUI();
+      }
     }
   };
   $('buffer-queue').onclick = queueSelectedBufferEntries;
   $('buffer-stop').onclick = async () => {
-    const card = provider.get(bufferTargetId || state.sessionId);
+    const card = activeBufferCard();
     if (!card?.channelRun) return;
-    try { await provider.setChannelRun(card.id, card.channelRun.groupKey, { collecting: false }); renderBufferUI(); }
+    const uiEpoch = bufferUiEpoch;
+    try {
+      await provider.setChannelRun(card.id, card.channelRun.groupKey, { collecting: false });
+      if (bufferStillShows(card.id, uiEpoch)) renderBufferUI();
+    }
     catch (_) { toast(t('buffer.saveFailed')); }
   };
-  $('buffer-close').onclick = () => { $('buffer-panel').hidden = true; bufferTargetId = null; $('buffer-btn').setAttribute('aria-pressed', 'false'); };
+  $('buffer-close').onclick = closeBuffer;
+  $('buffer-panel').addEventListener('keydown', event => {
+    if (event.key !== 'Escape' || event.isComposing || event.keyCode === 229) return;
+    event.preventDefault(); event.stopPropagation(); closeBuffer();
+  });
   provider.subscribe((event, card) => {
     if (event !== 'list' || card?.id !== bufferTargetId || $('buffer-panel').hidden) return;
     if (document.activeElement?.closest?.('#buffer-panel')) return;
     renderBufferUI();
   });
-  window.addEventListener('deck-voice-session-changed', renderBufferUI);
+  window.addEventListener('deck-voice-session-changed', () => {
+    if (state.view === 'session' && bufferTargetId !== state.sessionId) closeBuffer();
+    else renderBufferUI();
+  });
   onLocaleChange(renderBufferUI);
 }
 
@@ -1180,6 +1236,7 @@ export function renameTab(el, p) {
 export function switchProject(pid) {
   ctx.attentionReturn = null;
   if (state.projectId === pid && state.view === 'board') return;
+  closeBuffer();
   if (state.view === 'session') leaveSessionView();
   state.projectId = pid;
   state.view = 'board';
@@ -1352,14 +1409,16 @@ export function cardEl(s) {
 
   /* fixed shape: no hover-only rows, the description line is reserved even
      while empty, and a poll only changes text and classes — cards never
-     change size under the pointer or when a description is added */
+     change size under the pointer or when a description is added. The
+     attention badge is always present and only hidden (attention.js). */
   el.innerHTML = `
-    <div class="card-top"><span class="dot ${s.status}"></span><span class="card-title"></span><button class="card-pin" type="button"></button><button class="card-x" type="button">✕</button></div>
+    <div class="card-top"><span class="dot ${s.status}"></span><span class="card-title"></span><span class="card-attention-badge" hidden></span><button class="card-pin" type="button"></button><button class="card-x" type="button">✕</button></div>
     <div class="card-meta"><span class="cmd"></span><span class="dir"></span><span class="auto-chip"></span><span class="q-chip"></span><span class="mem-chip"></span></div>
     <div class="card-status"></div>
     <div class="card-desc"></div>`;
   el.querySelector('.card-title').textContent = s.title;
   el.querySelector('.card-status').textContent = attentionStatusText(s);
+  paintCardAttentionBadge(el.querySelector('.card-attention-badge'), s);
   el.querySelector('.dot').title = dotTitle(s.status);
   const pin = el.querySelector('.card-pin');
   const pinLabel = t(s.pinned === true ? 'card.unmarkImportant' : 'card.markImportant');
@@ -1420,6 +1479,7 @@ export async function closeSession(sid, needConfirm = false) {
   try {
     const result = await provider.close(sid, { detail: true });
     if (!result.ok || !result.applied) return;
+    if (bufferTargetId === sid) closeBuffer();
     closePaneBySid(sid, { detach: false });
     toast(t('session.closed', { name: s.title }));
     render();

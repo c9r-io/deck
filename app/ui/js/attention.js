@@ -10,6 +10,12 @@
 //   ("unknown"), and a retry button re-polls. `attentionStatusText` and the
 //   status title also feed the Board card's status line, so both surfaces
 //   read the same words.
+// - The Board card's attention badge (`paintCardAttentionBadge`) shows the
+//   Dock badge's set — needs input, or a turn that ended unread — from
+//   `attentionBadge` over the same tracker. `cardEl` creates it once and
+//   `refreshBoardAttention` repaints it in place on every attention refresh,
+//   so viewing an ending clears it without a card rebuild or a status change.
+//   It never reflects native notification delivery.
 // - Keyed rows preserve focus and scroll: `updateRows` reconciles children by
 //   key instead of rebuilding, restores the focused button after the
 //   insertBefore blur, and a pointer held inside the list freezes
@@ -24,13 +30,13 @@
 //   the focused row from the `ctx.attentionReturn` that `openSession` kept.
 // - A leaf of the import graph: the Board and layout actions it calls
 //   (`pollNow`, `provider`, `render`, `switchProject`, `leaveSessionView`,
-//   `openSession`) arrive through `initAttention(deps)` from app.js, so
+//   `closeBuffer`, `openSession`) arrive through `initAttention(deps)` from app.js, so
 //   board.js and layout.js may import this module without a cycle.
 import { $, ctx, QUIET_SECS, state, store } from './state.js';
-import { ATTENTION_FILTERS, attentionRows } from './attention-model.js';
+import { ATTENTION_BADGE_LABELS, ATTENTION_FILTERS, attentionBadge, attentionRows } from './attention-model.js';
 import { formatDateTime, formatNumber, t } from './i18n.js';
 
-let pollNow, provider, render, switchProject, leaveSessionView, openSession;
+let pollNow, provider, render, switchProject, leaveSessionView, closeBuffer, openSession;
 
 let pointerHeld = false;
 let deferredRender = false;
@@ -54,6 +60,25 @@ export function attentionStatusText(card) {
   else text = t(snapshot.idle == null ? 'attention.noSignal'
     : snapshot.idle >= QUIET_SECS ? 'attention.quiet' : 'attention.recent');
   return snapshot.stale ? `${text} · ${t('attention.old')}` : text;
+}
+
+/* One card's badge element, painted from the live tracker. Hidden (not
+   removed) when there is nothing to show, so the card keeps one shape. */
+export function paintCardAttentionBadge(el, card) {
+  if (!el) return;
+  const badge = attentionBadge(ctx.attention, card);
+  el.hidden = !badge;
+  el.classList.toggle('stale', !!badge?.stale);
+  if (!badge) {
+    delete el.dataset.kind;
+    el.textContent = '';
+    el.removeAttribute('title');
+    return;
+  }
+  el.dataset.kind = badge.kind;
+  el.textContent = t(ATTENTION_BADGE_LABELS[badge.kind]);
+  // the full status, "old snapshot" included when stale (also on the card's status line)
+  el.title = attentionStatusText(card);
 }
 
 function sourceText(card) {
@@ -127,6 +152,7 @@ export function refreshBoardAttention() {
       if (!card) continue;
       const status = el.querySelector('.card-status');
       if (status) { status.textContent = attentionStatusText(card); status.title = sourceText(card); }
+      paintCardAttentionBadge(el.querySelector('.card-attention-badge'), card);
     }
     let empty = column.querySelector('.attention-column-empty');
     if (!empty) { empty = node('p', 'attention-column-empty'); column.querySelector('.col-cards').append(empty); }
@@ -237,6 +263,7 @@ export function refreshAttention() {
 export function showAttention(returning = false) {
   const saved = returning ? ctx.attentionReturn : null;
   navigation++;
+  closeBuffer();
   if (state.view === 'session') leaveSessionView();
   if (saved && provider.project(saved.projectId)) state.projectId = saved.projectId;
   state.view = 'attention'; state.sessionId = null;
@@ -286,7 +313,7 @@ export async function openFromNotification(session) {
 }
 
 export function initAttention(deps) {
-  ({ pollNow, provider, render, switchProject, leaveSessionView, openSession } = deps);
+  ({ pollNow, provider, render, switchProject, leaveSessionView, closeBuffer, openSession } = deps);
   $('attention-btn').onclick = () => showAttention();
   $('attention-back').onclick = () => switchProject(state.projectId);
   document.addEventListener('pointerdown', event => {

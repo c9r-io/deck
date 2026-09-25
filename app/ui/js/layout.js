@@ -26,7 +26,7 @@
 import { $, ctx, dotTitle, duev, inv, listen, setMemChip, state, store, uev } from './state.js';
 import { choiceDialog, confirmDialog, inlineRename, toast } from './dialogs.js';
 import { t } from './i18n.js';
-import { markSessionSeen, panes, pollNow, provider, render, renderSidebar, updateSidebarSelection, activeProject } from './board.js';
+import { closeBuffer, markSessionSeen, panes, pollNow, provider, render, renderSidebar, updateSidebarSelection, activeProject } from './board.js';
 import { SHELL_FG, acceptGhost, feedMirror, maybeRecordCommand, mountQuickBar, nextShellTitle, renderSuggest, resetSuggest, showLinkCtx, updateGhost } from './terminal.js';
 import { AGENT_HISTORY_VERTICAL_UP, collapseHome, isNotDirectoryError, MAX_DROP_BYTES, mcpErrorKey, newSessionColumn, startCommand, createTerminalResizeCoordinator, createTerminalWheelAccumulator, createTerminalWheelFrameScheduler, isComposingKeyEvent, isPlainShiftKeydown, isTerminalAutoReply, scrollResultView, shouldRouteImeKeydownThroughInput, shQuote, terminalAgentComposerGeometry, terminalAgentHistoryUpRoute, terminalSelectionWheelRoute, terminalWheelLines } from './pure.js';
 import { toggleQueuePanel } from './scheduler.js';
@@ -38,6 +38,10 @@ import { createTerminalCopy, writeClipboard } from './terminal-clipboard.js';
 import { getFontScale, onFontScaleChange, TERMINAL_BASE_FONT_SIZE } from './font-scale.js';
 import { registerShortcutAction } from './shortcuts.js';
 import { showAttention } from './attention.js';
+import { createMcpSessionUiGate, resetMcpSessionControls } from './mcp-session-ui.js';
+import { refreshInputSource } from './input-source.js';
+
+const mcpUiGate = createMcpSessionUiGate();
 
 /* ----- layout tree helpers ----- */
 export const leafOf = sid => ({ type: 'leaf', sid });
@@ -575,6 +579,14 @@ export function wireTerminalInput(pane, term, host) {
 }
 
 /* ----- layout rendering & pane lifecycle ----- */
+function updateBufferOverlay() {
+  const workspace = $('session-workspace');
+  // The dock needs its 520 px drawer plus a useful terminal at the current
+  // font scale. The class changes only presentation; the existing terminal
+  // ResizeObserver fits every pane when its actual width changes.
+  workspace.classList.toggle('buffer-overlay', workspace.clientWidth < 520 + 480 * getFontScale());
+}
+
 export function fitAll() {
   requestAnimationFrame(() => {
     panes.forEach(p => {
@@ -688,6 +700,7 @@ export function focusPane(session) {
   else mountQuickBar(p);
   if (ctx.ghostEl && ctx.ghostEl.parentElement !== p.body) p.body.appendChild(ctx.ghostEl);
   renderSessionView();
+  refreshInputSource();
   updateSidebarSelection();
   p.term.focus();
   window.dispatchEvent(new Event('deck-voice-session-changed'));
@@ -955,6 +968,7 @@ export async function openSession(sid, opts = {}) {
 }
 
 export function leaveSessionView({ switchingSession = false, detach = true } = {}) {
+  closeBuffer();
   window.dispatchEvent(new CustomEvent('deck-session-leave', { detail: { switchingSession } }));
   cancelAllTerminalSelections('leave');
   resetSuggest(null);
@@ -1011,12 +1025,13 @@ export function renderSessionView() {
   $('voice-btn').disabled = s.origin?.source === 'mcp';
   const mcp = $('mcp-control-btn');
   const grant = $('mcp-grant-btn');
-  mcp.hidden = s.origin?.source !== 'mcp';
-  grant.hidden = mcp.hidden;
-  if (!mcp.hidden) {
+  const epoch = mcpUiGate.begin();
+  resetMcpSessionControls(mcp, grant);
+  {
     const cardId = s.id;
     inv('mcp_session_ui', { cardId }).then(status => {
-      if (provider.get(cardId) !== s || state.sessionId !== cardId || !status.managed) return;
+      if (provider.get(cardId) !== s || state.view !== 'session'
+        || !mcpUiGate.accept(epoch, cardId, state.sessionId, status)) return;
       mcp.dataset.human = String(status.humanControl === true);
       const action = t(status.humanControl ? 'mcp.return' : 'mcp.takeover');
       const task = status.stale ? t('mcp.stale') : (status.jobState || t('mcp.noJob'));
@@ -1034,6 +1049,10 @@ export function renderSessionView() {
         : t('mcp.executionRequired');
       grant.title = [executionTitle, status.outputShared ? t('mcp.outputSharingActive') : '']
         .filter(Boolean).join(' ');
+      mcp.disabled = false;
+      grant.disabled = false;
+      mcp.hidden = false;
+      grant.hidden = false;
     }).catch(() => {});
   }
 }
@@ -1045,6 +1064,7 @@ export function initLayout() {
 
   onFontScaleChange(scale => {
     panes.forEach(pane => { pane.term.options.fontSize = TERMINAL_BASE_FONT_SIZE * scale; });
+    updateBufferOverlay();
     fitAll();
   });
 
@@ -1053,6 +1073,8 @@ export function initLayout() {
     ctx.resizeTimer = setTimeout(fitAll, 80);
   }).observe(document.getElementById('terminal'));
 
+  new ResizeObserver(updateBufferOverlay).observe($('session-workspace'));
+
   $('split-right').onclick = e => { e.stopPropagation(); showSplitPicker('row'); };
 
   $('split-down').onclick = e => { e.stopPropagation(); showSplitPicker('col'); };
@@ -1060,9 +1082,10 @@ export function initLayout() {
   $('mcp-control-btn').onclick = async e => {
     e.stopPropagation();
     const cardId = state.sessionId;
-    if (!cardId) return;
+    if (!cardId || !mcpUiGate.mayAct(cardId) || e.currentTarget.hidden || e.currentTarget.disabled) return;
     const human = $('mcp-control-btn').dataset.human === 'true';
     if (!human && !(await confirmDialog(t('mcp.takeoverConfirm')))) return;
+    if (!mcpUiGate.mayAct(cardId) || state.sessionId !== cardId) return;
     try {
       await inv(human ? 'mcp_return_control' : 'mcp_takeover', { sessionId: cardId });
     } catch (error) {
@@ -1075,9 +1098,10 @@ export function initLayout() {
   $('mcp-grant-btn').onclick = async e => {
     e.stopPropagation();
     const sessionId = state.sessionId;
-    if (!sessionId) return;
+    if (!sessionId || !mcpUiGate.mayAct(sessionId) || e.currentTarget.hidden || e.currentTarget.disabled) return;
     const active = $('mcp-grant-btn').dataset.active === 'true';
     if (!active && !(await confirmDialog(t('mcp.approveExecutionConfirm')))) return;
+    if (!mcpUiGate.mayAct(sessionId) || state.sessionId !== sessionId) return;
     try {
       if (active) await inv('mcp_execution_revoke', { sessionId });
       else {
@@ -1087,6 +1111,7 @@ export function initLayout() {
         if (!minutes) return;
         const allowStdin = await confirmDialog(t('mcp.allowStdinConfirm'));
         const allowOutput = await confirmDialog(t('mcp.allowOutputConfirm'));
+        if (!mcpUiGate.mayAct(sessionId) || state.sessionId !== sessionId) return;
         await inv('mcp_execution_grant', {
           sessionId, durationMs: Number(minutes) * 60 * 1000, allowStdin, allowOutput,
         });

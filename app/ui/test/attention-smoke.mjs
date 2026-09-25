@@ -215,6 +215,52 @@ export async function runAttentionSmoke() {
     ctx.attentionFilter = 'stopped'; refreshAttention();
     await openAttentionCard(samples.get('05').card.id); await pollNow();
     await report('attention-locate-only', starts === 0 && state.view === 'board' && document.activeElement?.dataset.sid === samples.get('05').card.id);
+    // The Board card badge (attention.js paintCardAttentionBadge): the Dock's
+    // set, painted by cardEl and repainted in place by refreshBoardAttention.
+    // Viewing clears an unread ending without a status change; a question
+    // stays until it is answered. One bit per step, so a red names its step.
+    {
+      const { switchProject } = await import('../js/board.js');
+      await reset();
+      const cardOf = id => document.querySelector(`#columns .card[data-sid="${id}"]`);
+      const badgeOf = id => cardOf(id)?.querySelector('.card-attention-badge');
+      const shown = id => { const b = badgeOf(id); return b && !b.hidden ? b.dataset.kind : null; };
+      const expected = card => { const kind = ctx.attention.category(card); return kind === 'input' || kind === 'done' ? kind : null; };
+      const mapped = () => [...document.querySelectorAll('#columns .card[data-sid]')]
+        .map(el => provider.get(el.dataset.sid)).every(card => shown(card.id) === expected(card));
+      const waitSeen = async card => { for (let i = 0; i < 100 && !ctx.attention.get(card)?.seen; i++) await pause(20); };
+      const steps = [];
+      switchProject(ending.projectId); await pollNow();
+      steps.push(mapped() && shown(ending.id) === 'done');
+      const el = badgeOf(ending.id), height = cardOf(ending.id).offsetHeight;
+      ctx.attention.saw(ending); refreshAttention();
+      steps.push(badgeOf(ending.id) === el && el.isConnected && el.hidden
+        && ctx.attention.get(ending).status === 'done' && cardOf(ending.id).offsetHeight === height);
+      statuses.get(ending.session).agent = 'working'; await pollNow();
+      const clearedWhileWorking = shown(ending.id) === null;
+      statuses.get(ending.session).agent = 'turn-done'; await pollNow();
+      steps.push(clearedWhileWorking && shown(ending.id) === 'done');
+      await openSession(ending.id); await waitSeen(ending);
+      backToBoard(); await pollNow();
+      steps.push(state.view === 'board' && shown(ending.id) === null && ctx.attention.get(ending).status === 'done' && mapped());
+      switchProject(input.projectId); await pollNow();
+      steps.push(shown(input.id) === 'input' && mapped());
+      await openSession(input.id); await waitSeen(input);
+      backToBoard(); await pollNow();
+      steps.push(ctx.attention.get(input).seen && shown(input.id) === 'input');
+      statuses.get(input.session).agent = 'working'; await pollNow();
+      const inputCleared = shown(input.id) === null;
+      statuses.get(input.session).agent = 'needs-input'; await pollNow();
+      steps.push(inputCleared && shown(input.id) === 'input');
+      failPoll = true; await pollNow();
+      const staleShown = shown(input.id) === 'input' && badgeOf(input.id).classList.contains('stale')
+        && badgeOf(input.id).title.endsWith(t('attention.old'));
+      failPoll = false; await pollNow();
+      steps.push(staleShown && !badgeOf(input.id).classList.contains('stale'));
+      steps.push(starts === 0);
+      const badgeBits = bits(steps.map(ok => !!ok));
+      await report('attention-card-badge', badgeBits === 0, steps.length, badgeBits);
+    }
     stage = 4;
     // Real WebKit layout at the native window size, 12 locale/theme/font combinations.
     showAttention(); ctx.attentionFilter = 'pending'; refreshAttention();

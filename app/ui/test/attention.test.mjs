@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createAttentionTracker, attentionRows } from '../js/attention-model.js';
+import { ATTENTION_BADGE_LABELS, attentionBadge, createAttentionTracker, attentionRows } from '../js/attention-model.js';
+import { NOTIFY_COUNTED_FILTERS } from '../js/notify-model.js';
+import { dictionaries } from '../js/i18n.js';
 import fixture from './fixtures/attention-fixture.mjs';
 const projects = ['Atlas', 'Beacon', 'Cedar'].map(id => ({ id, name: id, columns: ['Attention', 'Working', 'Queued', 'Parked'].map(name => ({ id: name, name })) }));
 const cards = fixture.cards.map(c => ({ ...c, pinned: c.pin === true, projectId: c.project, columnId: c.group, session: `fixture-${c.id}` }));
@@ -154,4 +156,65 @@ test('followed filter includes overlapping live reasons without changing project
   const stopped = { ...cards[4], pinned: true };
   assert.equal(tracker.matches(stopped, 'stopped'), true);
   assert.equal(attentionRows(projects, [stopped], tracker, 'pending')[0].kind, 'followed');
+});
+
+test('the card badge is the Dock set: needs input or an unread ending, nothing else', () => {
+  const tracker = trackerOf();
+  const kinds = Object.fromEntries(cards.map(card => [card.id, attentionBadge(tracker, card)?.kind ?? null]));
+  // every card: a badge exactly when the attention category is input or done
+  for (const card of cards) {
+    const category = tracker.category(card);
+    assert.equal(kinds[card.id], ['input', 'done'].includes(category) ? category : null, `card ${card.id} (${category})`);
+  }
+  assert.deepEqual(cards.filter(card => kinds[card.id]).map(card => `${card.id}:${kinds[card.id]}`),
+    ['01:input', '07:done', '08:input', '10:done']);
+  const counts = tracker.counts(cards);
+  assert.equal(Object.values(kinds).filter(Boolean).length,
+    NOTIFY_COUNTED_FILTERS.reduce((sum, filter) => sum + counts[filter], 0),
+    'as many badges as the Dock badge counts');
+  assert.deepEqual(Object.keys(ATTENTION_BADGE_LABELS), [...NOTIFY_COUNTED_FILTERS]);
+  // manual follow-up alone, working, quiet, unavailable and stopped carry none
+  for (const id of ['02', '03', '04', '05', '06', '09', '11', '12']) assert.equal(kinds[id], null, `card ${id}`);
+  for (const [locale, dictionary] of Object.entries(dictionaries)) {
+    for (const key of Object.values(ATTENTION_BADGE_LABELS)) assert.equal(typeof dictionary[key], 'string', `${locale} ${key}`);
+  }
+});
+
+test('the card badge follows one attention episode through viewing and back', () => {
+  const tracker = createAttentionTracker();
+  const card = cards[1];
+  const as = (agent, visible = new Set(), now = 0) => tracker.record(cards,
+    infos.map(info => info.name === card.session ? { ...info, agent } : info), visible, now);
+  const badge = () => attentionBadge(tracker, card);
+  assert.equal(badge(), null, 'no observation yet: nothing is claimed');
+  as('working', undefined, 1);
+  assert.equal(badge(), null);
+  as('needs-input', undefined, 2);
+  assert.deepEqual(badge(), { kind: 'input', stale: false });
+  assert.ok(tracker.saw(card));
+  assert.deepEqual(badge(), { kind: 'input', stale: false }, 'viewing does not answer the question');
+  as('needs-input', new Set([card.id]), 3);
+  assert.deepEqual(badge(), { kind: 'input', stale: false });
+  as('working', undefined, 4);
+  assert.equal(badge(), null, 'working again clears it');
+  as('turn-done', undefined, 5);
+  assert.deepEqual(badge(), { kind: 'done', stale: false });
+  const before = tracker.get(card).status;
+  assert.ok(tracker.saw(card));
+  assert.equal(badge(), null, 'a viewed ending clears at once…');
+  assert.equal(tracker.get(card).status, before, '…while the card status stays the same');
+  as('turn-done', undefined, 6);
+  assert.equal(badge(), null, 'a repeated report of the same ending does not re-arm it');
+  as('working', undefined, 7);
+  as('turn-done', undefined, 8);
+  assert.deepEqual(badge(), { kind: 'done', stale: false }, 'the next ending shows again');
+  tracker.fail();
+  assert.deepEqual(badge(), { kind: 'done', stale: true }, 'a failed poll keeps it, marked old');
+  assert.equal(tracker.saw(card), false, 'and a stale snapshot cannot be acknowledged');
+  as('turn-done', undefined, 9);
+  assert.deepEqual(badge(), { kind: 'done', stale: false });
+  tracker.record(cards, infos.map(info => info.name === card.session ? { ...info, alive: false, agent: null } : info), new Set(), 10);
+  assert.equal(badge(), null, 'a stopped session carries none');
+  assert.equal(attentionBadge(tracker, { ...card, session: 'other-session' }), null,
+    'a snapshot of a previous session never labels the card');
 });

@@ -120,10 +120,11 @@ fn stage_frontend() {
 // Swift is compiled and statically linked at build time, never spawned by Deck.
 // New Speech APIs remain availability-guarded; older macOS uses local-only SF.
 // The notification bridge (UNUserNotificationCenter) is compiled into the same
-// library: one object, one archive, two closed C surfaces (voice.rs, notify.rs).
+// library: one object and archive for voice, notifications, and input source.
 fn build_native_bridges() {
     println!("cargo:rerun-if-changed=native/SpeechBridge.swift");
     println!("cargo:rerun-if-changed=native/NotificationBridge.swift");
+    println!("cargo:rerun-if-changed=native/InputSourceBridge.swift");
     println!("cargo:rerun-if-env-changed=DEVELOPER_DIR");
     println!("cargo:rerun-if-env-changed=DECK_REQUIRE_MODERN_SPEECH");
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("macos") {
@@ -153,6 +154,7 @@ fn build_native_bridges() {
             "-whole-module-optimization",
             "native/SpeechBridge.swift",
             "native/NotificationBridge.swift",
+            "native/InputSourceBridge.swift",
             "-o",
         ])
         .arg(&object)
@@ -189,6 +191,8 @@ fn build_native_bridges() {
         "CoreMedia",
         "AudioToolbox",
         "UserNotifications",
+        "Carbon",
+        "ImageIO",
     ] {
         println!("cargo:rustc-link-lib=framework={framework}");
     }

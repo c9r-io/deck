@@ -49,6 +49,22 @@ manual follow-up. It updates whether or not the window is focused, and it
 is cleared and no longer updated when the switch is off. Viewing a card
 that still needs input keeps it counted: the question is still open.
 
+## Finding the card when you come back
+
+The same set is marked on the Board itself: a card that **needs input**
+carries a *Needs input* (等待输入) badge in its top row, and a card whose
+turn **ended unread** carries *Turn ended, unread* (结束未读). Returning to
+deck after a notification or a Dock count, the badge shows which card it
+was, without opening the Needs attention list. The badge is independent
+of this feature: it shows with notifications off, with permission
+blocked, and whether or not a notification was actually delivered.
+
+Viewing an unread ending clears its badge at once (the card itself does
+not change); a card that still needs input keeps its badge until the
+agent moves on. A badge on a card whose status could not be refreshed is
+drawn dashed and its tooltip says *old snapshot*. Badges never move a
+card.
+
 ## Permission and status
 
 Turning the switch on is the one moment deck asks macOS for notification
@@ -82,5 +98,6 @@ an unread ending was viewed, and passes the two settings.
 Contract and code: `app/src-tauri/src/notify.rs` (policy, tests),
 `app/src-tauri/native/NotificationBridge.swift` (UNUserNotificationCenter
 only, no-op outside a bundle; `scripts/test-notification-bridge`),
-`app/ui/js/notify-model.js` (labels and viewed-dismissals), pinned by
+`app/ui/js/notify-model.js` (labels and viewed-dismissals),
+`app/ui/js/attention-model.js` `attentionBadge` (the Board card badge), pinned by
 `tests/edr_quiet.rs` and `tests/log_privacy.rs`.

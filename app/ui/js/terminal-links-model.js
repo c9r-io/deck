@@ -7,7 +7,15 @@
    against the pane cwd (`links.rs`). ASCII prose wrappers end a candidate;
    balanced brackets within a filename are retained. Failed scans advance
    past the inspected span, so long non-path output cannot cause quadratic
-   suffix rescans. Bracket matching and URL punctuation trimming are linear. */
+   suffix rescans. Bracket matching and URL punctuation trimming are linear.
+   Code is not a filename: a bare dotted identifier chain directly followed
+   by `(` or `[` (`pathlib.Path(`, `p.read_text()`, `re.search(`,
+   `sys.argv[1]`) is a member call or index,
+   and a `.name` directly after `)` or `]` continues one. Both are rejected
+   by tokenizer state alone and the scan resumes at the paren, so a quoted
+   filename argument inside the call is still found. A dotted word without a
+   call (`foo.bar`, `file.123`) and a filename whose bracketed part follows
+   an undotted head (`file(1).txt`, `dir(copy)/a.rs`) stay candidates. */
 const URL_SCHEMES = ['https://', 'http://'];
 const PATH_START_DELIMS = '=:()[]{}<,;|';
 const TOKEN_END_DELIMS = '"\'`<>|\\';
@@ -82,6 +90,7 @@ const isCJK = ch => {
    names and must survive whole. */
 const isScriptBoundary = (prev, ch) =>
   (isCJK(prev) && isAsciiLetter(ch)) || (isAsciiLetter(prev) && isCJK(ch));
+const isIdentifierChar = ch => isAsciiLetter(ch) || isAsciiDigit(ch) || ch === '_' || ch === '$';
 const isStartBoundary = ch => !ch || isSpace(ch) || PATH_START_DELIMS.includes(ch)
   || TOKEN_END_DELIMS.includes(ch) || isProseSeparator(ch);
 const isTokenEnd = ch => !ch || isSpace(ch) || TOKEN_END_DELIMS.includes(ch)
@@ -182,7 +191,15 @@ function unquotedPathAt(text, index, pairs) {
   if ((!isStartBoundary(text[index - 1]) && !isScriptBoundary(text[index - 1], text[index]))
       || isTokenEnd(text[index])
       || PATH_START_DELIMS.includes(text[index])) return null;
+  // `foo(1).baz`: a member access chained after a call or index, not `.baz`.
+  if (text[index] === '.' && (text[index - 1] === ')' || text[index - 1] === ']')) {
+    return { skipTo: index + 1 };
+  }
   let end = index;
+  /* Member-call state, O(1) per character: the head so far is an identifier
+     chain (`a.b.c`, or `.c` continuing one) while it has only identifier
+     characters and dots, no empty or digit-led segment, and at least one dot. */
+  let chain = true, chainDot = false, segmentStart = true;
   /* Inside the scan the two directions are not symmetric. Handing prose OVER
      to a path only counts while the token is still a bare word: once a `/` or
      a `.` has been seen the token is a path already, and a script change
@@ -197,6 +214,16 @@ function unquotedPathAt(text, index, pairs) {
   while (end < text.length && !isTokenEnd(text[end])
          && !PATH_HARD_END_DELIMS.includes(text[end])) {
     const ch = text[end];
+    if ((ch === '(' || ch === '[') && chain && chainDot && !segmentStart) return { skipTo: end };
+    if (ch === '.') {
+      if (segmentStart && end > index) chain = false;
+      chainDot = true; segmentStart = true;
+    } else if (isIdentifierChar(ch)) {
+      if (segmentStart && chainDot && isAsciiDigit(ch)) chain = false;
+      segmentStart = false;
+    } else {
+      chain = false;
+    }
     if (LINK_BRACKETS[ch]) {
       const close = pairs.get(end);
       // An unmatched opener after a path is prose, not a filename bracket.

@@ -6,7 +6,7 @@ import { $, ctx, genId, initInputDiagnostics, inv, listen, state, store, uev } f
 import { initDialogs, toast } from './dialogs.js';
 import { initSettings, loadSettings } from './settings.js';
 import {
-  activeProject, initBuffer, panes, markSessionsStoppedForServerRestart, migrateColumnSemantics, newSessionSummary, openProjectDefaults, pollNow,
+  activeProject, closeBuffer, initBuffer, panes, markSessionsStoppedForServerRestart, migrateColumnSemantics, newSessionSummary, openProjectDefaults, pollNow,
   projectDefaultsSummary, prepareCardsForServerRestart, provider, render, startPolling, stopPolling, switchProject,
 } from './board.js';
 import { initLayout, leaveSessionView, openSession } from './layout.js';
@@ -23,6 +23,7 @@ import { onLocaleChange, setLocale, t, translateNotice } from './i18n.js';
 import { activateTheme, revealThemedWindow } from './theme.js';
 import { initVoice } from './voice.js';
 import { createVoiceTarget } from './voice-target.js';
+import { initInputSource } from './input-source.js';
 import { cancelTerminalSelection } from './selection.js';
 
 setLocale('system');
@@ -286,9 +287,9 @@ function initModules() {
   initDialogs();
   initSettings();
   initTerminalChrome();
-  initAttention({ pollNow, provider, render, switchProject, leaveSessionView, openSession });
+  initAttention({ pollNow, provider, render, switchProject, leaveSessionView, closeBuffer, openSession });
   initLayout();
-  initScheduler({ provider, pollNow });
+  initScheduler({ provider, pollNow, closeBuffer });
   initBuffer();
   initTemplates({ provider });
   initInbound();
@@ -302,6 +303,7 @@ export async function boot() {
   initModules();
   window.__DECK_DEBUG = await inv('debug_logging_enabled').catch(() => false);
   await loadSettings();
+  await initInputSource();
   /* away notifications: apply the saved switch without asking macOS
      (that is the user's click in Settings); the badge follows from here */
   inv('notify_configure', {

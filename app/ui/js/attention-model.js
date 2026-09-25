@@ -91,6 +91,20 @@ export function createAttentionTracker() {
   };
 }
 
+/* The Board card's attention badge. The same live set the Dock badge counts
+   (needs-input plus unread turn-done, notify.rs) and the Needs-attention list
+   shows minus manual follow-up, read from `category`, so the three surfaces
+   cannot disagree and viewing an ending (`saw`) clears it without any change
+   to the card. `stale` passes the snapshot's own honesty through. Nothing
+   here depends on whether a native notification was posted. */
+export const ATTENTION_BADGE_LABELS = Object.freeze({ input: 'attention.filter.input', done: 'attention.filter.done' });
+
+export function attentionBadge(tracker, card) {
+  const kind = tracker.category(card);
+  if (kind !== 'input' && kind !== 'done') return null;
+  return { kind, stale: tracker.get(card).stale === true };
+}
+
 // Presentation order only. Never sort the durable card/project arrays.
 export function attentionRows(projects, cards, tracker, filter) {
   const ordered = [];
