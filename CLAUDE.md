@@ -20,7 +20,22 @@ conservatism at any cost. Automation is core when it reduces that cost without
 hiding uncertainty or taking ownership of the work, within honest safety boundaries.
 
 **Deck owns attention around work. The Agent owns the work.** Deck may
-coordinate an Agent session; it does not own Agent execution.
+coordinate an Agent session; it does not own Agent execution. An Agent manages
+its own work. Deck manages the human's attention across many pieces of work:
+Agents, ordinary shells, automations and other long-running interactive work.
+Deck does not manage Agents; it brings work requiring human attention into
+one coherent surface, so the user need not patrol every session.
+
+Agent-agnostic design is a strategic choice. Agent vendors control model behavior,
+training/inference, planning, task context, tools, permissions, background work,
+turn semantics and native UI. They can improve when their Agent continues,
+asks, interrupts or presents progress, including below the UI layer. Deck should
+not try to outsmart or out-manage one Agent by reconstructing those semantics.
+The Agent answers “What does this Agent need from the human?”; Deck answers
+“Which work deserves the human's attention now?” Deck need not beat Claude Code
+or Codex at managing one session. Better autonomy, recovery and signaling should
+reduce Deck's work inside each session and increase the value of its durable
+cross-work attention layer, which no individual Agent vendor naturally owns.
 
 - Deck owns: session/work identity, session lifecycle coordination, the
   Board projection, observable Agent Signal, attention routing, safe prompt
@@ -32,12 +47,24 @@ coordinate an Agent session; it does not own Agent execution.
 - Agent-specific Signal is a narrow, deliberate exception to Agent
   agnosticism: Deck consumes it only to protect its own concerns (attention
   integrity and coverage, input safety, safe degradation), never to understand or steer
-  the work. Direction: Agent-specific adapter → narrow generic observation →
-  Deck attention/safety decision; never Deck → Agent-specific execution.
+  the work. Keep adapters thin: Agent → authoritative/narrow observation →
+  Deck adapter → generic Deck observation → cross-work attention routing.
+  Consume useful vendor-native facts; do not infer Agent internals to reproduce
+  workflow semantics or orchestrate Agent execution. Integration depth alone is
+  not the boundary; ownership of meaning and work is.
 - Authority stays separate: Signal may inform and HOLD ≠ Signal may
   authorize; external provenance ≠ content authority; authorization ≠ input
   readiness. The mechanics live in the owning module headers and docs
   (`docs/scheduler-context-safety.md`, `docs/auto-respond.md`).
+
+**Prefer authoritative upstream facts over downstream inference.** Trustworthy
+Codex client provenance should replace process-ancestry guesses, terminal-title
+inference, screen parsing or quiet-time heuristics; an authoritative Claude
+input-needed event should replace reconstruction from terminal presentation.
+Fallback observations may aid presentation or degraded coverage, with an explicit
+trust ceiling. When a better official primitive arrives, prefer replacing the
+heuristic over retaining a parallel inference system. Temporary API gaps and useful
+prototype observations do not by themselves justify permanent product complexity.
 
 **Signal Integrity ≠ Signal Suppression. Signal may inform.** Trusted Signal
 should actively route attention when it offers a useful, honest observation:
@@ -59,11 +86,12 @@ as “Agent status unavailable” may help, but is not automatically “needs at
 or an urgent notification. Expose blind spots without making each one an interruption.
 For Codex's shared-daemon case, unattributable Signal means no trusted Signal and no
 authority from it: safety is preserved, attention coverage is degraded, not fully solved.
-Trustworthy per-client attribution would serve Deck's core by reducing manual checking;
-unlike headless Agent execution, pools or workflow orchestration, it need not own the work.
+Prefer a future official client-provenance primitive to a permanent substitute
+protocol; expose the gap honestly while authoritative attribution is unavailable.
 
-As a product design test, aspire to let users think: “I can go do something else.
-If I am needed, Deck will tell me. If I am not needed, Deck will leave me alone.”
+As a product design test, aspire to let users think: “I can start several pieces
+of work and go do something else. Each Agent can manage itself. When work needs
+me, Deck brings the right work back to my attention; otherwise it stays out of the way.”
 This evaluates the experience, not a guaranteed technical SLA.
 
 Before a substantial feature, ask:
@@ -75,12 +103,19 @@ Before a substantial feature, ask:
 5. Can the same value be reached while staying Agent-agnostic?
 6. Does it improve trustworthy attention coverage, or merely add state/mechanisms?
 7. Must users understand Deck's internal safety model during normal use?
+8. Does this coordinate attention across work or improve one Agent's internal behavior?
+9. Does the Agent/vendor own this semantic more authoritatively; can Deck consume its fact?
+10. If the upstream API improves, can this adapter disappear cleanly?
+11. Does this improve Deck across Agents or deepen dependence on one Agent's internals?
+
+These are scope heuristics: Agent-specific work can serve cross-work attention well.
 
 Good features should generally make normal use require less thought. Complexity can
-be justified where errors harm Deck's core: identity, authority, persistence,
-side-effect fencing, attention integrity and coverage, and input safety. Stay simple
-outside its ownership: Agent task semantics, planning, execution strategy, worktrees,
-Git/PR semantics, success/completion judgment and internal workflow.
+be justified where errors harm Deck's unique responsibility: cross-work identity,
+attention routing, authority boundaries, input safety, persistence, side-effect
+fencing and honest degradation. This is product positioning, not just engineering
+preference. Stay simple outside its ownership: task meaning, Agent progress semantics,
+planning, tool strategy, worktrees, Git/PR semantics, completion judgment and internal workflow.
 **Deck can be a strict small system; it should not become a smart large system.**
 Count persistent mental-model concepts, not just lines of code. Prefer reusing
 Observation, Authority, Readiness and Lifecycle; before adding a security/state
