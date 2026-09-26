@@ -3,6 +3,11 @@
 //! consumer's Web API fetch. Search remains independent and runs every poll,
 //! recovering reactions missed during sleep, disconnect or fetch failure.
 //! Only the current user's configured badges become inbound events.
+//! Both paths build their event with the ONE constructor `badge_event`, so
+//! the same message yields the same canonical bytes (invisible formatting
+//! stripped by `admission::strip_invisible` before the event exists) and
+//! `{{msg.from}}` names the message's author on both — a user's handle or a
+//! bot's name — never the user who added the badge.
 
 use serde_json::Value;
 use std::collections::HashMap;
@@ -96,14 +101,89 @@ fn clip(s: &str) -> String {
         .chars()
         .filter(|c| !c.is_control() || *c == '\n' || *c == '\t')
         .collect();
-    if s.len() <= MAX_TEXT {
+    bound(crate::admission::strip_invisible(&s), MAX_TEXT)
+}
+
+/// Longest `from` / `where` / `link` label a badge event carries.
+const MAX_LABEL: usize = 1024;
+
+/// A one-line display field of a badge event (author, conversation, link):
+/// every control character removed, the same invisible-character stripping
+/// as the message text, bounded.
+fn label(s: &str) -> String {
+    let s: String = s.chars().filter(|c| !c.is_control()).collect();
+    bound(crate::admission::strip_invisible(&s), MAX_LABEL)
+}
+
+fn bound(s: String, max: usize) -> String {
+    if s.len() <= max {
         return s;
     }
-    let mut end = MAX_TEXT;
+    let mut end = max;
     while !s.is_char_boundary(end) {
         end -= 1;
     }
     s[..end].to_string()
+}
+
+/// The ONE constructor of a Slack badge event, shared by the live reaction
+/// path and the search catch-up, so both hand the dispatcher the same
+/// canonical bytes for the same message: the text is plain text (mrkdwn
+/// resolved), control-filtered, stripped of bidi controls, directional
+/// marks, zero-width characters, word joiners, BOM and Unicode tags
+/// (`admission::strip_invisible`, which keeps a single ZWJ/ZWNJ between
+/// visible characters) and bounded; the author, conversation and link
+/// labels get the same treatment on one line. This happens BEFORE the
+/// event exists, so the pending event, the webview's frozen plan, the
+/// native bounded-step proof and the pasted prompt all carry these bytes.
+/// It hides nothing from the person reading the message; it is not a
+/// prompt-injection defence.
+fn badge_event(
+    channel: &str,
+    ts: &str,
+    badge: &str,
+    text: &str,
+    from: &str,
+    where_: &str,
+    link: &str,
+) -> Event {
+    Event {
+        source: "slack".into(),
+        key: format!("{channel}/{ts}"),
+        badge: badge.to_string(),
+        text: clip(text),
+        from: label(from),
+        where_: label(where_),
+        link: label(link),
+    }
+}
+
+/// Who wrote a Slack message, as both the search match and the message
+/// object name it: its `username` (a user's handle in a search match; a
+/// bot's or webhook's display name), else the author's user id, else a
+/// bot's profile name or id. `{{msg.from}}` is always the AUTHOR of the
+/// message that was reacted to — never the person who added the badge.
+enum Author<'a> {
+    Name(&'a str),
+    User(&'a str),
+    Unknown,
+}
+
+fn author(m: &Value) -> Author<'_> {
+    let field = |p: &str| {
+        m.pointer(p)
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+    };
+    if let Some(name) = field("/username") {
+        Author::Name(name)
+    } else if let Some(user) = field("/user") {
+        Author::User(user)
+    } else if let Some(bot) = field("/bot_profile/name").or_else(|| field("/bot_id")) {
+        Author::Name(bot)
+    } else {
+        Author::Unknown
+    }
 }
 
 /// A reaction name as the API spells it, minus any skin-tone suffix.
@@ -154,25 +234,20 @@ pub(crate) fn events_from_search(body: &Value, badge: &str) -> Vec<Event> {
             continue;
         };
         let text = m.get("text").and_then(Value::as_str).unwrap_or("");
-        let from = m
-            .get("username")
-            .and_then(Value::as_str)
-            .filter(|s| !s.is_empty())
-            .or_else(|| m.get("user").and_then(Value::as_str))
-            .unwrap_or("?");
-        out.push(Event {
-            source: "slack".into(),
-            key: format!("{channel}/{ts}"),
-            badge: badge.to_string(),
-            text: clip(text),
-            from: from.to_string(),
-            where_: where_label(m.get("channel").unwrap_or(&Value::Null)),
-            link: m
-                .get("permalink")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string(),
-        });
+        // a search match names a user author by handle (`username`)
+        let from = match author(m) {
+            Author::Name(name) | Author::User(name) => name,
+            Author::Unknown => "?",
+        };
+        out.push(badge_event(
+            channel,
+            ts,
+            badge,
+            text,
+            from,
+            &where_label(m.get("channel").unwrap_or(&Value::Null)),
+            m.get("permalink").and_then(Value::as_str).unwrap_or(""),
+        ));
     }
     out
 }
@@ -219,6 +294,8 @@ struct Names {
     channels: HashMap<String, String>,
 }
 
+/// A user's handle (`users.info` `name`) — what a search match reports as
+/// the author's `username` — else the id itself.
 fn user_name(token: &str, names: &mut Names, id: &str) -> String {
     if let Some(n) = names.users.get(id) {
         return n.clone();
@@ -226,16 +303,10 @@ fn user_name(token: &str, names: &mut Names, id: &str) -> String {
     let name = call("users.info", token, &[("user", id)])
         .ok()
         .and_then(|b| {
-            let u = b.get("user")?;
-            let pick = |p: &str| {
-                u.pointer(p)
-                    .and_then(Value::as_str)
-                    .filter(|s| !s.is_empty())
-                    .map(str::to_string)
-            };
-            pick("/profile/display_name")
-                .or_else(|| pick("/real_name"))
-                .or_else(|| pick("/name"))
+            b.pointer("/user/name")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
         })
         .unwrap_or_else(|| id.to_string());
     names.users.insert(id.to_string(), name.clone());
@@ -254,7 +325,18 @@ fn channel_label(token: &str, names: &mut Names, id: &str) -> String {
     label
 }
 
+#[cfg(test)]
 fn message_text(token: &str, channel: &str, ts: &str) -> Result<String, &'static str> {
+    message(token, channel, ts).map(|m| {
+        m.get("text")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string()
+    })
+}
+
+/// The reacted-to message object (text and author fields).
+fn message(token: &str, channel: &str, ts: &str) -> Result<Value, &'static str> {
     let body = call(
         "conversations.history",
         token,
@@ -274,11 +356,7 @@ fn message_text(token: &str, channel: &str, ts: &str) -> Result<String, &'static
                 .find(|m| m.get("ts").and_then(Value::as_str) == Some(ts))
         })
     {
-        return Ok(m
-            .get("text")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string());
+        return Ok(m.clone());
     }
     // A thread reply is only reachable through the thread.
     let mut cursor = String::new();
@@ -297,11 +375,7 @@ fn message_text(token: &str, channel: &str, ts: &str) -> Result<String, &'static
                     .find(|m| m.get("ts").and_then(Value::as_str) == Some(ts))
             })
         {
-            return Ok(m
-                .get("text")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string());
+            return Ok(m.clone());
         }
         cursor = body
             .pointer("/response_metadata/next_cursor")
@@ -386,21 +460,29 @@ pub(crate) fn handle_reaction(app: &AppHandle, value: &Value, self_id: &str, bad
     let Some(user) = keychain::get(Slot::SlackUserToken) else {
         return;
     };
-    let Ok(text) = message_text(&user, &channel, &ts) else {
+    let Some(ev) = live_event(&user, &channel, &ts, &badge) else {
         return;
-    };
-    let mut names = Names::default();
-    let ev = Event {
-        source: "slack".into(),
-        key: format!("{channel}/{ts}"),
-        badge,
-        text: clip(&text),
-        from: user_name(&user, &mut names, self_id),
-        where_: channel_label(&user, &mut names, &channel),
-        link: permalink(&user, &channel, &ts),
     };
     let cfg = inbound::read_config();
     inbound::offer(app, &cfg, vec![ev], true);
+}
+
+/// The live path's event for the reacted-to message: the same facts the
+/// search catch-up reads, through `badge_event`. The author is the
+/// message's (a user id resolved to the handle a search match carries),
+/// never the reaction's user.
+fn live_event(token: &str, channel: &str, ts: &str, badge: &str) -> Option<Event> {
+    let m = message(token, channel, ts).ok()?;
+    let text = m.get("text").and_then(Value::as_str).unwrap_or("");
+    let mut names = Names::default();
+    let from = match author(&m) {
+        Author::Name(name) => name.to_string(),
+        Author::User(id) => user_name(token, &mut names, id),
+        Author::Unknown => "?".to_string(),
+    };
+    let where_ = channel_label(token, &mut names, channel);
+    let link = permalink(token, channel, ts);
+    Some(badge_event(channel, ts, badge, text, &from, &where_, &link))
 }
 
 /* ---------- Source impl ---------- */
@@ -829,8 +911,8 @@ mod tests {
                 permalink("xoxp-test", "C1", "2.0"),
             )
         });
-        assert_eq!(resolved.0, "Alice");
-        assert_eq!(resolved.1, "Alice");
+        assert_eq!(resolved.0, "alice", "the handle a search match reports");
+        assert_eq!(resolved.1, "alice");
         assert_eq!(resolved.2, "#dev");
         assert_eq!(resolved.3, "#dev");
         assert_eq!(resolved.4, Ok("root".into()));
@@ -978,6 +1060,126 @@ mod tests {
         assert!(
             !Slack::default().polled_events_are_live(),
             "polled badges go through the first-poll baseline"
+        );
+    }
+
+    /// B.2: every Slack badge event is canonical before it exists — hidden
+    /// formatting characters are stripped from the text AND the author,
+    /// conversation and link labels, with `admission::strip_invisible`'s own
+    /// rules (a single ZWJ/ZWNJ between visible characters survives).
+    #[test]
+    fn badge_events_carry_no_invisible_formatting() {
+        let hidden =
+            "a\u{202A}b\u{202B}c\u{202C}d\u{202D}e\u{202E}f\u{2066}g\u{2067}h\u{2068}i\u{2069}\
+                      j\u{200E}k\u{200F}l\u{200B}m\u{2060}n\u{FEFF}o\u{E0041}\u{E007F}p";
+        let body = json!({"ok": true, "messages": {"matches": [
+            {"ts": "1.5", "text": format!("{hidden} 👨\u{200D}👩 می\u{200C}خواهم \u{200D}x"),
+             "user": "U1", "username": format!("al\u{202E}ice\u{200B}"),
+             "channel": {"id": "C1", "name": format!("front\u{2066}end")},
+             "permalink": "https://x.slack.com/archives/C1/p15\u{FEFF}"}
+        ]}});
+        let ev = &events_from_search(&body, "deck")[0];
+        assert_eq!(ev.text, "abcdefghijklmnop 👨\u{200D}👩 می\u{200C}خواهم x");
+        assert_eq!(ev.from, "alice");
+        assert_eq!(ev.where_, "#frontend");
+        assert_eq!(ev.link, "https://x.slack.com/archives/C1/p15");
+        for field in [&ev.text, &ev.from, &ev.where_, &ev.link] {
+            assert_eq!(
+                &crate::admission::strip_invisible(field),
+                field,
+                "already canonical"
+            );
+        }
+        // labels are one bounded line; text keeps its lines
+        let long = label(&format!("x\ny\t{}", "z".repeat(4000)));
+        assert!(long.starts_with("xyz") && long.len() <= MAX_LABEL);
+    }
+
+    /// B.2: the live reaction path and the search catch-up produce the SAME
+    /// event for the same message, and `{{msg.from}}` is the message's
+    /// author — never the user who added the badge (`U_ME` is not asked for).
+    #[test]
+    fn live_and_catch_up_agree_on_the_same_message() {
+        let text = "please <@U2|bob> look \u{202E}here\u{200B}";
+        let search = json!({"ok": true, "messages": {"matches": [
+            {"ts": "7.0", "text": text, "user": "U1", "username": "alice",
+             "channel": {"id": "C1", "name": "dev"}, "permalink": "https://x.slack.com/p7"}
+        ]}});
+        let caught_up = events_from_search(&search, "deck").remove(0);
+        let history = json!({"ok": true, "messages": [{"ts": "7.0", "text": text, "user": "U1"}]})
+            .to_string();
+        let (live, requests) = with_responses(
+            vec![
+                (200, &history),
+                (
+                    200,
+                    r#"{"ok":true,"user":{"name":"alice","real_name":"Alice A","profile":{"display_name":"Al"}}}"#,
+                ),
+                (200, r#"{"ok":true,"channel":{"id":"C1","name":"dev"}}"#),
+                (200, r#"{"ok":true,"permalink":"https://x.slack.com/p7"}"#),
+            ],
+            || live_event("xoxp-test", "C1", "7.0", "deck").unwrap(),
+        );
+        assert_eq!(live, caught_up);
+        assert_eq!(live.from, "alice");
+        assert_eq!(live.text, "please @bob look here");
+        assert!(requests[1].starts_with("POST /users.info ") && requests[1].contains("user=U1"));
+        assert!(requests.iter().all(|r| !r.contains("U_ME")));
+        // a bot-authored message: the same bot name on both paths
+        let bot_search = json!({"ok": true, "messages": {"matches": [
+            {"ts": "8.0", "text": "deploy failed", "username": "deploy-bot", "bot_id": "B1",
+             "channel": {"id": "C1", "name": "dev"}, "permalink": "https://x.slack.com/p8"}
+        ]}});
+        let bot_history = json!({"ok": true, "messages": [
+            {"ts": "8.0", "text": "deploy failed", "bot_id": "B1", "username": "deploy-bot",
+             "bot_profile": {"name": "Deploy"}}]})
+        .to_string();
+        let (bot_live, requests) = with_responses(
+            vec![
+                (200, &bot_history),
+                (200, r#"{"ok":true,"channel":{"id":"C1","name":"dev"}}"#),
+                (200, r#"{"ok":true,"permalink":"https://x.slack.com/p8"}"#),
+            ],
+            || live_event("xoxp-test", "C1", "8.0", "deck").unwrap(),
+        );
+        assert_eq!(bot_live, events_from_search(&bot_search, "deck").remove(0));
+        assert_eq!(bot_live.from, "deploy-bot");
+        assert!(
+            requests.iter().all(|r| !r.contains("users.info")),
+            "no user lookup for a bot"
+        );
+        // a bot message without a username falls back to its profile name;
+        // an author Slack does not name is "?" — never invented
+        assert!(matches!(
+            author(&json!({"bot_id": "B1", "bot_profile": {"name": "CI"}})),
+            Author::Name("CI")
+        ));
+        assert!(matches!(
+            author(&json!({"bot_id": "B1"})),
+            Author::Name("B1")
+        ));
+        assert!(matches!(author(&json!({})), Author::Unknown));
+    }
+
+    /// B.2: the native bounded-step proof validates exactly the canonical
+    /// bytes: the expansion over the backend's event carries no hidden
+    /// character, and a row still holding the raw message fails the proof.
+    #[test]
+    fn the_bounded_proof_sees_the_canonical_message() {
+        let body = json!({"ok": true, "messages": {"matches": [
+            {"ts": "9.0", "text": "rm\u{202E}fr- mr\u{200B} now", "user": "U1", "username": "al\u{2066}ice",
+             "channel": {"id": "C1", "name": "ops"}}
+        ]}});
+        let ev = events_from_search(&body, "eyes").remove(0);
+        let skeleton = "Investigate: {{msg.text}} (from {{msg.from}})";
+        let expanded = crate::scheduler::expand_bounded(skeleton, &ev);
+        assert_eq!(expanded, "Investigate: rmfr- mr now (from alice)");
+        assert_eq!(crate::admission::strip_invisible(&expanded), expanded);
+        let raw = "Investigate: rm\u{202E}fr- mr\u{200B} now (from al\u{2066}ice)";
+        assert_ne!(
+            crate::scheduler::normalize_prompt(raw),
+            expanded,
+            "the raw bytes never match the proof"
         );
     }
 }

@@ -157,6 +157,12 @@ class CandidateVerdicts(unittest.TestCase):
         # another card's send is not this case's business
         other = f"14 [queue] sent to {OTHER} (85B, mode at)"
         self.assertEqual(judge("codex-bootstrap-waits", [started, other])["verdict"], "pass")
+        # an approved automatic send is still a send into the fresh agent
+        for cls in ("fixed", "bounded"):
+            approved = f"14 [queue] sent to {S} (85B, mode chain, approved {cls} step)"
+            r = judge("claude-bootstrap-waits", [started, approved])
+            self.assertEqual(r["verdict"], "fail", cls)
+            self.assertEqual(r["observed"], {"started": 1, "sent": 1})
 
     def test_drops_notifications_and_drift_are_recorded_as_evidence(self):
         lines = [line(10, "codex", "working"), "11 [agent-status] dropped (interaction-mismatch)",

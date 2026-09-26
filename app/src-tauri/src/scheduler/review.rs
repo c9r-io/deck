@@ -30,8 +30,10 @@
 //! - `QueuePlan` / `queue_view` are the read-only projection the panel shows:
 //!   the backend's own selection stage per item (review, review-approved,
 //!   ambiguous, firing, failed, paused, retry, previous, iteration, gap,
-//!   time, agent, quiet, context, unknown) with its observation time, so the
-//!   webview never derives readiness from hook state.
+//!   time, agent, external, codex-signal, first-send, authority-unverified,
+//!   quiet, context,
+//!   unknown) with its observation time and whether the row carries content
+//!   authority, so the webview never derives readiness from hook state.
 
 use super::*;
 use crate::datadir::now_epoch;
@@ -409,6 +411,9 @@ pub(crate) struct QueuePlan {
     checked_at: u64,
     quiet_remaining: Option<u64>,
     gap_until: Option<u64>,
+    /// the row carries content authority (`authority.rs`): its holds are
+    /// readiness, not a missing approval
+    authorized: bool,
 }
 
 pub(crate) fn plan_item(
@@ -458,7 +463,10 @@ pub(crate) fn plan_item(
     } else if let Some(hold) = activity.and_then(|a| hold_reason(i, a.get(&i.session))) {
         match hold {
             Hold::FirstInteraction => "first-send",
-            Hold::Agent => "agent",
+            Hold::NeedsInput => "agent",
+            Hold::External => "external",
+            Hold::CodexUnavailable => "codex-signal",
+            Hold::AuthorityUnverified => "authority-unverified",
         }
     } else if i.mode == "chain" && quiet_remaining.is_some_and(|s| s > 0) {
         "quiet"
@@ -473,6 +481,7 @@ pub(crate) fn plan_item(
         checked_at: now,
         quiet_remaining,
         gap_until,
+        authorized: i.authority.is_some(),
     }
 }
 
@@ -485,7 +494,14 @@ pub(crate) struct QueueView {
 
 pub(crate) fn queue_view(q: QueueState) -> QueueView {
     let now = now_epoch();
-    let activity = crate::tmux::list_panes().ok().map(observe);
+    let mut activity = crate::tmux_lifecycle::scheduler_pane_listing()
+        .ok()
+        .map(observe);
+    if let Some(seen) = activity.as_mut() {
+        if any_authority(&q) && crate::inbound::read_config_strict().is_none() {
+            mark_authority_unverified(seen);
+        }
+    }
     let plans = q
         .items
         .iter()

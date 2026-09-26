@@ -16,6 +16,8 @@ The first matching event creates a card and stores the original message in its s
 
 A channel rule's command must start with `claude` or `codex`. Simple, unquoted arguments are allowed, including `--yolo`, `--dangerously-skip-permissions` and `-c approval_policy=never`. Environment prefixes, executable paths, quoting and shell syntax are refused. These flags can let an agent act without approval, including on untrusted Slack text. Every line of the rule's template must begin with your own words, not a message placeholder, so a message that starts with `!` or `/` never becomes the first thing the agent reads. A rule saved by an older deck that breaks either condition still loads: the Automations drawer shows it as blocked, it matches nothing, and messages already staged for it stay pending until you edit the rule.
 
+Channel rules have no automatic-sending approval: a channel message triggers without a per-message human action, so every follow-up step of a channel run waits for **Send now**. (Slack badge rules can be approved; see `docs/auto-respond.md`.)
+
 Queued channel text is pasted only while the expected agent is the pane's foreground program and has bracketed paste enabled, checked atomically with the paste and again with Enter; **Send now** applies the same check and has no bypass. See `docs/scheduler-context-safety.md` for the one residual window.
 
 ## Trust: what an allowlist does and does not mean

@@ -1,10 +1,25 @@
 // automation-model.js — the automations drawer's DOM-free half: what a rule
-// and its runs READ as, how the editor's fields become a rule, and how a saved
-// rule joins the settings list. automation.js owns the drawer's DOM and
+// and its runs READ as, how the editor's fields become a rule, how a saved
+// rule joins the settings list, and a Slack badge rule's delivery approval.
+//
+// Approval (`approveRule` / `grantState`, backend twin scheduler/authority.rs):
+// the user's explicit consent that Deck may send THIS version of the rule's
+// template steps without a per-row send-now. It is content-addressed — the
+// digest covers the rule's id, trigger, badge, project, directory, full
+// command, template name, finish and reviewEach plus every step's SHA-256,
+// class and the external-content acknowledgment — so editing any of them
+// (or the template) leaves a `stale` approval that grants nothing until the
+// user approves again; name, column and pause state are presentation. A step
+// is `fixed` (the owner's text) or `bounded` (owner text with `{{msg.*}}`
+// placeholders); bounded steps are approved only with `external`, the
+// explicit acceptance that untrusted Slack text may reach the agent. The
+// approval authorizes content, never readiness: a fresh agent, an input
+// request or a checkpoint still pauses the run. Hashes only — no prompt text
+// is copied into settings. automation.js owns the drawer's DOM and
 // imports these; node tests exercise them directly
 // (../test/automation-model.test.mjs). Keep this module free of
 // document/window access and Tauri APIs; "now" comes in as an argument.
-import { badgeTaken, hmToMin, INBOUND_BADGE_RE, minToHM, nextScheduleSlot } from './pure.js';
+import { badgeTaken, hmToMin, INBOUND_BADGE_RE, INBOUND_PLACEHOLDERS, minToHM, nextScheduleSlot, normalizeTemplateStep } from './pure.js';
 import { DEFAULT_GRACE_MIN, GRACE_CHOICES } from './settings-model.js';
 import { formatNumber, t } from './i18n.js';
 import { fmtClock } from './scheduler-model.js';
@@ -68,7 +83,7 @@ export function runSummary(run, now = new Date()) {
 /* the key/value rows under a rule: target, command, template, inspection,
    finish, then the trigger's own facts (grace and next slot for a clock rule,
    the connection state for a Slack rule) */
-export function ruleFacts(rule, { columnName = null, home = '', slackConnected = false, nowSecs = Math.floor(Date.now() / 1000) } = {}) {
+export function ruleFacts(rule, { columnName = null, home = '', slackConnected = false, approval = 'none', nowSecs = Math.floor(Date.now() / 1000) } = {}) {
   const rows = [
     ['automation.kv.target', `${columnName || t('automation.missingTarget')} · ${rule.dir || home}`],
     ['automation.kv.cmd', rule.cmd || t('automation.shellOnly')],
@@ -87,6 +102,7 @@ export function ruleFacts(rule, { columnName = null, home = '', slackConnected =
     rows.push(['automation.kv.idle', rule.idleMinutes === 0 ? t('automation.manualStop') : t('automation.idleValue', { count: formatNumber(rule.idleMinutes) })]);
   } else {
     rows.push(['automation.kv.connection', t(slackConnected ? 'automation.slackOn' : 'automation.slackOff')]);
+    rows.push(['automation.kv.autoSend', approvalText(rule, approval)]);
   }
   return rows;
 }
@@ -156,3 +172,59 @@ export function liveRules(rules, projects) {
   const kept = rules.filter(r => live.has(r.projectId));
   return kept.length === rules.length ? null : kept;
 }
+
+/* ---------- delivery approval (Slack badge rules) ---------- */
+
+const PLACEHOLDER = /\{\{\s*msg\.([a-z]+)\s*\}\}/g;
+
+/* 'bounded' when the step pastes message content through a known
+   placeholder (an unknown one stays literal text), else 'fixed' */
+export const stepClass = step => ([...String(step).matchAll(PLACEHOLDER)]
+  .some(match => INBOUND_PLACEHOLDERS.includes(match[1])) ? 'bounded' : 'fixed');
+
+export const templateCarriesMessage = template => (template?.steps || []).some(step => stepClass(step) === 'bounded');
+
+async function sha256(text) {
+  const bytes = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+  return [...new Uint8Array(bytes)].map(byte => byte.toString(16).padStart(2, '0')).join('');
+}
+
+/* the canonical manifest the digest covers — byte-identical to
+   `grant_digest` in scheduler/authority.rs (test/fixtures/automation-grant.json) */
+export const grantManifest = (rule, steps, classes, external) => JSON.stringify([
+  'deck-automation-grant', 1, rule.id, rule.source, rule.badge, rule.projectId,
+  rule.dir || '', rule.cmd || '', rule.template, rule.finish === 'close' ? 'close' : 'keep',
+  rule.reviewEach === true, steps, classes, external === true,
+]);
+
+export const grantDigest = (rule, grant) => sha256(grantManifest(rule, grant.steps, grant.classes, grant.external));
+
+async function templateGrant(template) {
+  const normalized = (template?.steps || []).map(normalizeTemplateStep);
+  return { steps: await Promise.all(normalized.map(sha256)), classes: normalized.map(stepClass) };
+}
+
+/* `rule` approved against `template`; `external` is the separate consent
+   for bounded steps (meaningless, and stored false, without one) */
+export async function approveRule(rule, template, { external = false } = {}) {
+  const { steps, classes } = await templateGrant(template);
+  const grant = { steps, classes, external: external === true && classes.includes('bounded') };
+  return { ...rule, autoSend: { digest: await grantDigest(rule, grant), ...grant } };
+}
+
+/* 'none' (never approved) | 'valid' | 'stale' (the rule or its template
+   changed since approval: grants nothing) */
+export async function grantState(rule, template) {
+  const grant = rule?.autoSend;
+  if (!grant) return 'none';
+  if (rule.source !== 'slack' || !template) return 'stale';
+  const current = await templateGrant(template);
+  if (JSON.stringify(current.steps) !== JSON.stringify(grant.steps)
+    || JSON.stringify(current.classes) !== JSON.stringify(grant.classes)) return 'stale';
+  return (await grantDigest(rule, grant)) === grant.digest ? 'valid' : 'stale';
+}
+
+/* the approval row of a Slack badge rule's facts, from its `grantState` */
+export const approvalText = (rule, state) => t(state === 'valid'
+  ? (rule.autoSend.external ? 'automation.autoSend.onExternal' : 'automation.autoSend.on')
+  : state === 'stale' ? 'automation.autoSend.stale' : 'automation.autoSend.off');

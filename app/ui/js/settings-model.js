@@ -70,6 +70,25 @@ export const MAX_GRACE_MIN = 1440;
 export const GRACE_CHOICES = Object.freeze([DEFAULT_GRACE_MIN, MAX_GRACE_MIN]);
 export const normalizeGrace = raw => (Number.isInteger(raw) && raw >= 0 && raw <= MAX_GRACE_MIN ? raw : DEFAULT_GRACE_MIN);
 export const MAX_INBOUND_RULES = 32;
+/* an automation approval (inbound.rs `AutoSend`): at most this many steps,
+   each of a closed content class */
+export const AUTO_SEND_MAX_STEPS = 64;
+export const AUTO_SEND_CLASSES = Object.freeze(['fixed', 'bounded']);
+const SHA256_HEX = /^[0-9a-f]{64}$/;
+
+/* A Slack badge rule's approval, kept only when it has the shape the
+   backend accepts (`AutoSend::validate`); anything else is dropped, which
+   only ever withdraws automatic sending. Whether it still MATCHES its rule
+   is decided at dispatch (`grantState`) and by the backend. */
+export function normalizeAutoSend(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const steps = Array.isArray(raw.steps) ? raw.steps.map(String) : [];
+  const classes = Array.isArray(raw.classes) ? raw.classes.map(String) : [];
+  if (!SHA256_HEX.test(String(raw.digest || '')) || !steps.length || steps.length > AUTO_SEND_MAX_STEPS
+    || steps.length !== classes.length || !steps.every(h => SHA256_HEX.test(h))
+    || !classes.every(c => AUTO_SEND_CLASSES.includes(c))) return null;
+  return { digest: String(raw.digest), steps, classes, external: raw.external === true };
+}
 export const INBOUND_RULE_ID_MAX = 64;
 export const INBOUND_NAME_MAX = 120;
 export const INBOUND_CMD_MAX = 200;
@@ -123,6 +142,8 @@ export function normalizeInbound(value) {
       since: Number.isInteger(r.since) && r.since >= 0 ? r.since : 0,
     };
     if (!LOCAL_ID_RE.test(rule.id) || rule.id.length > INBOUND_RULE_ID_MAX) continue;
+    const autoSend = rule.source === 'slack' ? normalizeAutoSend(r.autoSend) : null;
+    if (autoSend) rule.autoSend = autoSend;
     if (rule.source === 'clock') {
       rule.badge = rule.id;
       rule.schedule = normalizeSchedule(r.schedule);

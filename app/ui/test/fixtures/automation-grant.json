@@ -1,0 +1,120 @@
+{
+  "_comment": "Shared automation-grant digest vector: scheduler/authority.rs grant_digest and automation-model.js grantDigest must both produce `rule.autoSend.digest` for `rule`, and each template step's SHA-256 is `rule.autoSend.steps`.",
+  "templateSteps": [
+    "Review the latest changes and run the tests.",
+    "Investigate the issue described below:\n\n{{msg.text}} (from {{ msg.from }})",
+    "总结「结果」并给出 \"下一步\" \\ 建议"
+  ],
+  "manifest": "[\"deck-automation-grant\",1,\"Rbadge01\",\"slack\",\"eyes\",\"P1\",\"~/work/app\",\"codex --yolo\",\"triage\",\"close\",true,[\"1d745cc6da4b659c29a7d369e3e195b04d9f9f458724cd95c2e677b6f1e655d8\",\"693f4ee2395a210776218f8078581714db2923be9608d54ea0bec87df8f6d6d6\",\"6813a69cbdc70baa39a78d784ed19ad09bfaac944d2f392809e4122a090f3efa\"],[\"fixed\",\"bounded\",\"fixed\"],true]",
+  "rule": {
+    "id": "Rbadge01",
+    "source": "slack",
+    "badge": "eyes",
+    "projectId": "P1",
+    "columnId": "C1",
+    "cmd": "codex --yolo",
+    "template": "triage",
+    "dir": "~/work/app",
+    "name": "Triage",
+    "enabled": true,
+    "finish": "close",
+    "reviewEach": true,
+    "since": 0,
+    "autoSend": {
+      "digest": "19c3fae4721cf96551bfea7e3ff5617e70eec6fd3a5ce25e31eb0cdf96baa40e",
+      "steps": [
+        "1d745cc6da4b659c29a7d369e3e195b04d9f9f458724cd95c2e677b6f1e655d8",
+        "693f4ee2395a210776218f8078581714db2923be9608d54ea0bec87df8f6d6d6",
+        "6813a69cbdc70baa39a78d784ed19ad09bfaac944d2f392809e4122a090f3efa"
+      ],
+      "classes": [
+        "fixed",
+        "bounded",
+        "fixed"
+      ],
+      "external": true
+    }
+  },
+  "expansions": [
+    {
+      "skeleton": "Investigate the issue described below:\n\n{{msg.text}} (from {{ msg.from }})",
+      "msg": {
+        "text": "please rm -rf /\n\t now",
+        "from": "U1",
+        "where": "#ops",
+        "link": ""
+      },
+      "expected": "Investigate the issue described below:\n\nplease rm -rf / now (from U1)"
+    },
+    {
+      "skeleton": "Look at {{msg.text}}",
+      "msg": {
+        "text": "  a\r\n\r\n  b   c  \n d  ",
+        "from": "",
+        "where": "",
+        "link": ""
+      },
+      "expected": "Look at a b c d"
+    },
+    {
+      "skeleton": "{{msg.where}}: {{msg.unknown}} {{ msg.link }}\t\nend   ",
+      "msg": {
+        "text": "",
+        "from": "",
+        "where": "#a  b",
+        "link": "https://x/y"
+      },
+      "expected": "#a b: {{msg.unknown}} https://x/y\nend"
+    },
+    {
+      "skeleton": "Triage {{msg.text}}",
+      "msg": {
+        "text": "​hidden‮ zero-width and bidi stay bytes",
+        "from": "U",
+        "where": "",
+        "link": ""
+      },
+      "expected": "Triage ​hidden‮ zero-width and bidi stay bytes"
+    },
+    {
+      "skeleton": "{{{{msg.text}}}} x",
+      "msg": {
+        "text": "nest",
+        "from": "",
+        "where": "",
+        "link": ""
+      },
+      "expected": "{{nest}} x"
+    },
+    {
+      "skeleton": "Summarize 「{{msg.text}}」 　",
+      "msg": {
+        "text": "中文　消息\n第二行",
+        "from": "",
+        "where": "",
+        "link": ""
+      },
+      "expected": "Summarize 「中文　消息 第二行」"
+    },
+    {
+      "skeleton": "Check {{msg.text}}",
+      "msg": {
+        "text": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "from": "",
+        "where": "",
+        "link": ""
+      },
+      "expected": "Check xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    },
+    {
+      "skeleton": "A {{ msg.text }} B {{msg.from}}{{msg.from}}",
+      "msg": {
+        "text": "\n",
+        "from": " z ",
+        "where": "",
+        "link": ""
+      },
+      "expected": "A  B zz"
+    }
+  ]
+}

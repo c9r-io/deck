@@ -9,7 +9,11 @@
 //! two sources; the drawer edits both, Settings holds only the Slack
 //! connection. Three layers and only the top one knows a service. SOURCES produce a fixed
 //! `Event {source, key, badge, text, from, where, link}` and nothing else;
-//! the Slack source has two paths on ONE user token: catch-up via
+//! a Slack badge event is canonical before it exists (`inbound_slack::
+//! badge_event`, shared by both paths: plain text, control characters and
+//! invisible formatting removed from text, author, conversation and link,
+//! bounded; `from` is always the reacted-to message's AUTHOR); the Slack
+//! source has two paths on ONE user token: catch-up via
 //! `search.messages` `hasmy::<badge>:` (one request per ruled badge, 30-day
 //! `after:` window, every 30s; NOT `reactions.list`, which has no time filter,
 //! returns every reaction ever and has undocumented order; Slack's search
@@ -21,7 +25,9 @@
 //! (identifiers + time only, ephemeral save, no `.bak`), matches
 //! `settings.inbound.rules` (validated structurally by `SettingsDoc` on load
 //! AND save: closed source names, emoji-name badges, one rule per badge,
-//! bounded ids/cmd/dir), and announces with a CONTENT-FREE `inbound-changed`
+//! bounded ids/cmd/dir; a Slack badge rule's optional `autoSend` approval is
+//! shape-checked here and judged by `scheduler/authority.rs`), and announces
+//! with a CONTENT-FREE `inbound-changed`
 //! event; the webview pulls `inbound_pending`, `planInbound` (pure.js)
 //! decides, the card is created through the ordinary Board transaction with
 //! an `origin` field (persisted; the idempotency key) and a frozen, durable
@@ -172,6 +178,68 @@ pub(crate) struct Rule {
     /// later the slot is recorded as missed
     #[serde(default = "default_grace")]
     pub(crate) grace_min: u32,
+    /// Slack badge rules only: the user's explicit approval for Deck to send
+    /// this exact version of the rule's steps without a per-row send-now
+    /// (`scheduler/authority.rs`). Absent on every legacy rule.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) auto_send: Option<AutoSend>,
+}
+
+/// An automation delivery grant, stored on the rule it approves. `digest` is
+/// the SHA-256 of the canonical authority manifest (`scheduler::authority::
+/// grant_digest`: rule id, trigger, project, directory, command, template
+/// name, finish, reviewEach, and the fields below), so any change to what the
+/// rule sends or where no longer matches and needs a fresh approval. `steps`
+/// are the SHA-256 of each normalized template step in order, `classes` their
+/// content class (`fixed`: owner text only; `bounded`: owner text with
+/// `{{msg.*}}` placeholders), and `external` is the separate acknowledgment
+/// that bounded steps may carry Slack message content. Hashes only: the
+/// prompt text is never copied into settings.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AutoSend {
+    pub(crate) digest: String,
+    pub(crate) steps: Vec<String>,
+    pub(crate) classes: Vec<String>,
+    #[serde(default)]
+    pub(crate) external: bool,
+}
+
+/// Most steps a grant can name (templates are short lists).
+pub(crate) const AUTO_SEND_MAX_STEPS: usize = 64;
+/// The closed content classes a grant may approve.
+pub(crate) const AUTO_SEND_CLASSES: &[&str] = &["fixed", "bounded"];
+
+fn sha_hex(s: &str) -> bool {
+    s.len() == 64
+        && s.bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+impl AutoSend {
+    fn validate(&self) -> Result<(), DeckError> {
+        let bad = |m: &str| Err(DeckError::new(ErrorKind::InvalidDoc, m.to_string()));
+        if !sha_hex(&self.digest) {
+            return bad("an automation approval needs its digest");
+        }
+        if self.steps.is_empty()
+            || self.steps.len() > AUTO_SEND_MAX_STEPS
+            || self.steps.len() != self.classes.len()
+        {
+            return bad("an automation approval names each step once");
+        }
+        if !self.steps.iter().all(|h| sha_hex(h)) {
+            return bad("an automation approval step is a SHA-256");
+        }
+        if !self
+            .classes
+            .iter()
+            .all(|c| AUTO_SEND_CLASSES.contains(&c.as_str()))
+        {
+            return bad("an automation approval step class is fixed or bounded");
+        }
+        Ok(())
+    }
 }
 
 fn default_true() -> bool {
@@ -404,6 +472,15 @@ pub(crate) fn validate_settings(v: &Value) -> Result<(), DeckError> {
                     "inbound rule directory must be one bounded line",
                 ));
             }
+            if let Some(grant) = &rule.auto_send {
+                if rule.source != "slack" {
+                    return Err(DeckError::new(
+                        ErrorKind::InvalidDoc,
+                        "only a Slack badge rule carries an automation approval",
+                    ));
+                }
+                grant.validate()?;
+            }
             if !ids.insert(rule.id.clone()) {
                 return Err(DeckError::new(
                     ErrorKind::InvalidDoc,
@@ -424,17 +501,26 @@ pub(crate) fn validate_settings(v: &Value) -> Result<(), DeckError> {
 /// Lenient read for the poller: an unreadable or invalid settings file
 /// yields the empty config (nothing enabled), never a panic or a guess.
 pub(crate) fn read_config() -> Config {
+    read_config_strict().unwrap_or_default()
+}
+
+/// `read_config` that tells a failed read apart: `None` when settings.json
+/// exists but cannot be read, parsed or validated, so a caller deciding
+/// about authority (`scheduler::authority`) can treat "unknown" as neither
+/// granted nor revoked. A missing file is a real empty config.
+pub(crate) fn read_config_strict() -> Option<Config> {
     let raw = match storage::load_typed::<crate::documents::SettingsDoc>(
         &crate::documents::settings_path(),
     ) {
         Ok(Some(doc)) => doc.payload,
-        _ => return Config::default(),
+        Ok(None) => return Some(Config::default()),
+        Err(_) => return None,
     };
-    let v: Value = match serde_json::from_str(&raw) {
-        Ok(v) => v,
-        Err(_) => return Config::default(),
-    };
-    config_from_value(v.get("inbound"))
+    let v: Value = serde_json::from_str(&raw).ok()?;
+    match v.get("inbound") {
+        Some(inbound) if validate_settings(inbound).is_err() => None,
+        inbound => Some(config_from_value(inbound)),
+    }
 }
 
 pub(crate) fn config_from_value(v: Option<&Value>) -> Config {
@@ -890,6 +976,22 @@ pub(crate) fn inbound_status() -> InboundStatus {
 #[tauri::command]
 pub(crate) fn inbound_pending() -> Vec<PendingView> {
     with_rt(|rt| rt.pending.iter().map(|p| p.view.clone()).collect())
+}
+
+/// The still-pending Slack badge event `key` matched to rule `rule_id` — the
+/// backend's own copy of the message, proof material for an approved
+/// bounded step (`scheduler/authority.rs`). The webview acks an item only
+/// after its whole plan is queued, so every first admission finds it; a
+/// replay after a restart finds it only once the source announces it again,
+/// and otherwise the row is admitted without authority.
+pub(crate) fn pending_event(key: &str, rule_id: &str) -> Option<Event> {
+    with_rt(|rt| {
+        rt.pending
+            .iter()
+            .map(|p| &p.view)
+            .find(|v| v.event.source == "slack" && v.event.key == key && v.rule.id == rule_id)
+            .map(|v| v.event.clone())
+    })
 }
 
 /// The webview has created the card (or decided it cannot). Both outcomes

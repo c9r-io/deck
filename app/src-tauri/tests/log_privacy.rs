@@ -210,3 +210,46 @@ fn scheduler_context_probe_is_metadata_only_and_content_free() {
 // idempotently, quarantined_corrupt_file_is_user_only, concurrent_saves_stay_
 // user_only) and history.rs (history_files_are_user_only_and_clear_removes_
 // backup) verify real filesystem metadata in temp dirs.
+
+/// Automation delivery authority (`scheduler/authority.rs`): a log line may
+/// say THAT an approval applied, was refused (closed code) or withdrawn (a
+/// count) and its closed class — never the rule id, the grant digest, the
+/// step's text or the Slack message. The whole `applog(&format!(…))` call is
+/// scanned, not only its first line.
+#[test]
+fn approval_log_lines_carry_closed_words_only() {
+    let forbidden = [
+        ".grant",
+        ".digest",
+        ".rule",
+        "claim",
+        ".text",
+        "steps",
+        "auto_send",
+    ];
+    let mut scanned = 0;
+    for (name, src) in backend_sources() {
+        if !name.starts_with("scheduler") {
+            continue;
+        }
+        for (at, _) in src.match_indices("applog(&format!(") {
+            let end = src[at..].find("));").map_or(src.len(), |n| at + n);
+            // a prompt's byte length is the one text-derived value allowed
+            let call = &src[at..end].replace(".text.len()", "");
+            if !(call.contains("approv") || call.contains("authority")) {
+                continue;
+            }
+            scanned += 1;
+            for pat in forbidden {
+                assert!(
+                    !call.contains(pat),
+                    "{name}: an approval log line interpolates {pat}:\n{call}"
+                );
+            }
+        }
+    }
+    assert!(
+        scanned >= 3,
+        "the approval log lines were found ({scanned})"
+    );
+}

@@ -131,6 +131,9 @@
             </div>
           </div>
           <label class="q-review-option q-p q-p-clock q-p-slack"><input type="checkbox" id="auto-review"><span data-i18n="queue.review.option">Inspect after every row, including the last</span></label>
+          <label class="q-review-option q-p q-p-slack"><input type="checkbox" id="auto-send"><span data-i18n="automation.autoSend.option">Continue approved steps automatically</span></label>
+          <p class="q-hint q-p q-p-slack" id="auto-send-hint" data-i18n="automation.autoSend.hint">The first step runs as it always has. With this on, the later steps of this version of the template continue once the agent is safely ready, without a Send now for each. A newly started agent, an agent asking for input or permission, and inspection checkpoints still pause the automation. Editing the rule or its template turns this off until you approve again.</p>
+          <label class="q-review-option q-p q-p-slack" id="auto-send-external-row"><input type="checkbox" id="auto-send-external"><span data-i18n="automation.autoSend.external">Also send steps that contain Slack message content. External messages are untrusted input and may influence the agent.</span></label>
           <p class="q-hint q-p q-p-clock q-p-slack" data-i18n="automation.plan">Creates a new session; the command may restore its own context. Inspection applies only to new runs.</p>
           <div class="set-actions" style="gap:8px">
             <button class="btn" id="auto-cancel" data-i18n="common.cancel">Cancel</button>

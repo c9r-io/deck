@@ -124,6 +124,26 @@ fn uses_buffer(v: &serde_json::Value) -> bool {
 }
 static SAVE_LOCK: Mutex<()> = Mutex::new(());
 
+/// The settings fence: a settings.json write (`documents::save_settings`)
+/// and a decision that must observe ONE settings version before an
+/// irreversible side effect (the scheduler's automation-authority check,
+/// held until the firing intent is persisted — `scheduler/authority.rs`)
+/// serialize on it. So once a settings write that revokes an approval has
+/// returned, no automatic send can still begin under the revoked grant.
+/// Lock order: this fence, then the queue lock, then `SAVE_LOCK`; nothing
+/// that holds the queue lock or `SAVE_LOCK` may take it.
+static SETTINGS_FENCE: Mutex<()> = Mutex::new(());
+
+pub(crate) fn settings_fence() -> std::sync::MutexGuard<'static, ()> {
+    SETTINGS_FENCE.lock_or_recover()
+}
+
+/// Test probe: whether the fence is held right now (by anyone).
+#[cfg(test)]
+pub(crate) fn settings_fence_busy() -> bool {
+    SETTINGS_FENCE.try_lock().is_err()
+}
+
 /// What a boot/storage notice is about: the closed codes the webview
 /// translates (`translateNotice`). These are notice categories, not errors —
 /// the emitter names one; nothing infers it from the note's wording.

@@ -64,6 +64,11 @@ fn inbound_rule_limits_match_the_fixture() {
     );
     assert_eq!(number(&i["rule_cmd_max_chars"]), RULE_CMD_MAX_CHARS as u64);
     assert_eq!(
+        number(&i["auto_send_max_steps"]),
+        AUTO_SEND_MAX_STEPS as u64
+    );
+    assert_eq!(words(&i["auto_send_classes"]), AUTO_SEND_CLASSES);
+    assert_eq!(
         number(&i["template_name_max_chars"]),
         TEMPLATE_NAME_MAX_CHARS as u64
     );

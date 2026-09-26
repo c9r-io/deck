@@ -2200,6 +2200,7 @@ mod tests {
         }))
         .unwrap();
         let seen = crate::scheduler::Observed {
+            authority_unverified: false,
             activity: 0,
             agent: projections(rows).get(session).map(|o| o.state),
             codex: trust(rows, table).get(session).copied(),
@@ -2362,6 +2363,7 @@ mod tests {
         }))
         .unwrap();
         let seen = |codex| crate::scheduler::Observed {
+            authority_unverified: false,
             activity: 0,
             agent: Some("turn-done"),
             codex,
@@ -2542,6 +2544,7 @@ mod tests {
                 },
                 persist: &|_| Ok(()),
                 kill: &|_| {},
+                authority: &|| None,
             },
             &crate::scheduler::ContextHooks {
                 prepare: &|_, _| crate::scheduler::Prepared::Probe(ready()),

@@ -748,3 +748,152 @@ fn only_a_real_cfg_test_declaration_hides_a_module_from_the_censuses() {
         assert!(names.iter().any(|n| n == production), "{production}");
     }
 }
+
+// ------------------------------------------- automation delivery authority
+
+/// Every production site that WRITES a row's content authority
+/// (`scheduler/authority.rs`), pinned to its function. Admission and the
+/// frozen-plan copy are the only producers; every other writer only
+/// removes. None of them may read an agent word, a hold or the Signal
+/// observation: Signal can hold an approved row, never create, restore or
+/// upgrade its approval (`turn_done_may_release_no_authority_even_when_
+/// unattended_grant_exists` in scheduler/tests.rs is the behaviour proof).
+const AUTHORITY_WRITERS: &[(&str, &str, &str, usize)] = &[
+    // the one admission: verified claims of an external call
+    ("scheduler/ops.rs", "admit_authority", "granted.push(", 1),
+    ("scheduler/ops.rs", "admit_authority", ".granted = ", 1),
+    // the row core stores the verdict; a reviewed list hands row k its own
+    (
+        "scheduler/ops.rs",
+        "add_item_bound",
+        "authority: args.granted",
+        1,
+    ),
+    ("scheduler/ops.rs", "add_reviewed_rows", ".granted = ", 1),
+    // removals: an edited text, the revocation sweep, a spawned step
+    ("scheduler/ops.rs", "update_text", "authority = ", 1),
+    ("scheduler/authority.rs", "revoke_stale", "authority = ", 1),
+    // the pre-fire fence strips a revoked approval under the settings fence
+    (
+        "scheduler/delivery.rs",
+        "send_one_guarded",
+        "authority = ",
+        1,
+    ),
+    (
+        "scheduler/delivery.rs",
+        "finalize_delivery",
+        "authority: None",
+        1,
+    ),
+    // the audit copy of what the delivered row carried
+    (
+        "scheduler/delivery.rs",
+        "finalize_delivery",
+        "authority: item.authority.clone()",
+        1,
+    ),
+];
+
+const AUTHORITY_TOKENS: &[&str] = &[
+    "granted.push(",
+    ".granted = ",
+    "authority: args.granted",
+    "authority = ",
+    "authority: None",
+    "authority: Some",
+    "authority: item.authority.clone()",
+    ".authority.insert(",
+    ".authority.replace(",
+    "verify_claim(",
+];
+
+#[test]
+fn signal_never_writes_content_authority() {
+    let mut found = Census::new();
+    for (file, source) in production_sources() {
+        for token in AUTHORITY_TOKENS {
+            for at in sites(&source, token, is_ident) {
+                let line_start = source[..at].rfind('\n').map_or(0, |n| n + 1);
+                let line = source[line_start..at].trim_start();
+                if line.starts_with("//")
+                    || line.starts_with("pub(crate) fn")
+                    || line.starts_with("fn")
+                {
+                    continue;
+                }
+                bump(&mut found, &file, rust_function_at(&source, at), token);
+            }
+        }
+    }
+    // `verify_claim(` has exactly one production caller: the admission
+    let mut violations = Vec::new();
+    for (file, function, token, count) in &found {
+        if *token == "verify_claim(" {
+            if !(file == "scheduler/ops.rs" && function == "admit_authority" && *count == 1) {
+                violations.push(format!("{file} fn {function} calls verify_claim ({count})"));
+            }
+            continue;
+        }
+        match AUTHORITY_WRITERS
+            .iter()
+            .find(|(f, n, t, _)| f == file && n == function && t == token)
+        {
+            Some((_, _, _, expected)) if expected == count => {}
+            _ => violations.push(format!(
+                "unreviewed authority write `{token}` in {file} fn {function} ({count})"
+            )),
+        }
+    }
+    for (file, function, token, _) in AUTHORITY_WRITERS {
+        if !found
+            .iter()
+            .any(|(f, n, t, _)| f == file && n == function && t == token)
+        {
+            violations.push(format!(
+                "stale authority entry {file} fn {function} {token}"
+            ));
+        }
+    }
+    assert!(violations.is_empty(), "{violations:#?}");
+    // no writer (and nothing in authority.rs) reads Signal
+    let sources = production_sources();
+    let source = |file: &str| {
+        sources
+            .iter()
+            .find(|(name, _)| name == file)
+            .map(|(_, s)| code_only(s))
+            .unwrap_or_else(|| panic!("{file}"))
+    };
+    let signal: Vec<&str> = RUST_TOKENS
+        .iter()
+        .copied()
+        .chain(["Observed", "Hold::"])
+        .collect();
+    let authority = source("scheduler/authority.rs");
+    for token in &signal {
+        assert!(
+            !authority.contains(token),
+            "authority.rs must not read Signal ({token})"
+        );
+    }
+    for (file, function, _, _) in
+        AUTHORITY_WRITERS
+            .iter()
+            .chain([&("scheduler/ops.rs", "admit_authority", "", 0)])
+    {
+        let code = source(file);
+        let at = code
+            .find(&format!("fn {function}("))
+            .or_else(|| code.find(&format!("fn {function}<")))
+            .unwrap_or_else(|| panic!("fn {function} in {file}"));
+        let (open, close) = body_span(&code, at).expect("body");
+        let body = &code[open..=close];
+        for token in &signal {
+            assert!(
+                !body.contains(token),
+                "{file} fn {function} writes authority and must not read Signal ({token})"
+            );
+        }
+    }
+}

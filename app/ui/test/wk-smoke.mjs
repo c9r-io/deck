@@ -2664,6 +2664,19 @@ export async function verifySignalFinish() {
   await runSignalFinishSmoke();
 }
 
+// Live-agent acceptance setup for automation delivery authority (manual
+// sequence in app/SMOKE.md); real Claude/Codex, fixed approved steps.
+export async function verifyAuthorityLive() {
+  const { runAuthorityLiveSmoke } = await import('./authority-smoke.mjs');
+  await runAuthorityLiveSmoke();
+}
+
+// Automation from a genuinely empty isolated tmux socket (B.2).
+export async function verifyEmptyStart() {
+  const { runEmptyStartSmoke } = await import('./authority-smoke.mjs');
+  await runEmptyStartSmoke();
+}
+
 export async function verifyVoice() {
   const { runVoiceSmoke } = await import('./voice-smoke.mjs');
   await runVoiceSmoke();

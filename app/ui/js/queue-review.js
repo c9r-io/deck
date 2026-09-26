@@ -22,6 +22,7 @@ import { ctx, inv } from './state.js';
 import { t } from './i18n.js';
 import { confirmDialog, toast } from './dialogs.js';
 import { formatInterval } from './i18n.js';
+import { approvedWait } from './scheduler-model.js';
 
 export const isReview = i => i && ['review', 'review-approved'].includes(i.state);
 const stageKeys = {
@@ -29,8 +30,10 @@ const stageKeys = {
   firing: 'queue.meta.sending', failed: 'queue.gaveUp', paused: 'queue.meta.paused', retry: 'queue.failedRetrying',
   previous: 'queue.stage.previous', iteration: 'queue.stage.iteration', gap: 'queue.stage.gap', time: 'queue.stage.time',
   quiet: 'queue.stage.quiet', unknown: 'queue.stage.unknown', context: 'queue.stage.context', agent: 'queue.stage.agent',
-  'first-send': 'queue.stage.firstSend',
+  'first-send': 'queue.stage.firstSend', external: 'queue.stage.external', 'codex-signal': 'queue.stage.codexSignal',
+  'authority-unverified': 'queue.stage.authorityUnverified',
 };
+
 const node = (tag, cls, text) => {
   const e = document.createElement(tag); e.className = cls;
   if (text !== undefined) e.textContent = text;
@@ -49,9 +52,10 @@ const button = (id, action, label, run) => {
 export function stageText(item) {
   const plan = (ctx.queueCache.plans || []).find(p => p.item === item.id);
   if (!plan || Date.now() / 1000 - plan.checked_at > 40) return t('queue.stage.unknown');
-  return t(stageKeys[plan.stage] || 'queue.stage.unknown', {
+  const text = t(stageKeys[plan.stage] || 'queue.stage.unknown', {
     duration: formatInterval(plan.stage === 'gap' ? Math.max(0, plan.gap_until - plan.checked_at) : (plan.quiet_remaining || 0)),
   });
+  return approvedWait(plan) ? t('queue.stage.authorized', { stage: text }) : text;
 }
 
 export async function cancelQueueList(item, refresh) {
@@ -122,7 +126,12 @@ export function queueHistory(card) {
   const entries = [...deliveries.map(d => ({ ...d, type: d.assumed ? 'queue.history.assumed' : 'queue.history.sent' })),
     ...reviews.map(r => ({ ...r, id: r.delivery, type: r.next ? 'queue.history.checked' : 'queue.history.last' }))]
     .sort((a, b) => b.at - a.at);
-  for (const d of entries) details.append(node('p', 'q-history-record', `${new Date(d.at * 1000).toLocaleString()} · ${t(d.type)} · ${d.id}`));
+  /* why it was sent: an approval (step and class only) and who sent it */
+  const why = d => [
+    d.authority ? t(d.authority.class === 'bounded' ? 'queue.history.approvedMessage' : 'queue.history.approved', { step: d.authority.step + 1 }) : null,
+    d.manual ? t('queue.history.manual') : null,
+  ].filter(Boolean).map(text => ` · ${text}`).join('');
+  for (const d of entries) details.append(node('p', 'q-history-record', `${new Date(d.at * 1000).toLocaleString()} · ${t(d.type)}${why(d)} · ${d.id}`));
   if (!entries.length) details.append(node('p', 'q-hint', t('queue.history.empty')));
   return details;
 }

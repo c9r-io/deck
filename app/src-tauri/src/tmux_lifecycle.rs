@@ -713,6 +713,60 @@ fn probe_server_on(server: &ServerHandle<'_>) -> Probe {
     }))
 }
 
+/// The scheduler's pane listing of Deck's own server (`scheduler/thread.rs`,
+/// the panel plan). A failed `list-panes -a` proves nothing about a live
+/// agent, so it stays an error — EXCEPT when a fresh probe of the same server
+/// POSITIVELY proves there is nothing to protect: no Deck server at all
+/// (`Probe::Absent`: tmux's own "no server running" / missing-socket
+/// replies, `absent_error`), or a reachable server with zero sessions and
+/// zero panes that answered `list-panes` with exactly "no current target"
+/// (how tmux 3.7c answers on an empty server). Those read as an empty
+/// listing, so a due automation row can be selected and `prepare_context`
+/// may START its session (which never types into a recognized agent).
+/// Every other failure — a timeout, malformed output, an unreachable or
+/// inconsistent probe, a server that has sessions — stays a failed listing.
+pub(crate) fn scheduler_pane_listing() -> Result<Vec<tmux::PaneRow>, DeckError> {
+    scheduler_pane_listing_on(&deck_server())
+}
+
+/// `scheduler_pane_listing` against another server (the scheduler's
+/// real-process tests run it on a throwaway bundled-tmux socket).
+#[cfg(test)]
+pub(crate) fn scheduler_pane_listing_with(
+    run: &dyn Fn(&[&str]) -> Result<String, DeckError>,
+) -> Result<Vec<tmux::PaneRow>, DeckError> {
+    let run_owned = |args: &[String]| {
+        let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        run(&refs)
+    };
+    let none = || None;
+    scheduler_pane_listing_on(&ServerHandle {
+        run,
+        run_owned: &run_owned,
+        owned_client: &none,
+        socket_name: "scheduler-test",
+        lifecycle_file: PathBuf::new(),
+    })
+}
+
+fn scheduler_pane_listing_on(server: &ServerHandle<'_>) -> Result<Vec<tmux::PaneRow>, DeckError> {
+    let error = match tmux::list_panes_with(server.run) {
+        Ok(rows) => return Ok(rows),
+        Err(error) => error,
+    };
+    match probe_server_on(server) {
+        Probe::Absent => Ok(Vec::new()),
+        Probe::Reachable(current)
+            if current.sessions.is_empty()
+                && current.panes.is_empty()
+                && error.message() == "tmux list-panes failed: no current target" =>
+        {
+            Ok(Vec::new())
+        }
+        _ => Err(error),
+    }
+}
+
 /// `list-panes -a` needs a pane target even though a reachable Deck server
 /// may legitimately have no sessions. Only the exact empty-target response
 /// may stand for empty rows, and only after a fresh probe proves the same
@@ -2687,6 +2741,87 @@ mod tests {
         };
         assert_eq!(emptied.pid, server_pid);
         assert!(emptied.sessions.is_empty() && emptied.panes.is_empty());
+        server.stop();
+    }
+
+    /// The scheduler's listing: only a positively empty or absent Deck
+    /// server reads as an empty listing; every other failure stays a
+    /// failure (the zero-session automation deadlock without weakening the
+    /// failed-listing hold).
+    #[test]
+    fn real_tmux_scheduler_listing_is_empty_only_on_positive_proof() {
+        let server = IsolatedServer::new("sched-empty");
+        let dir = TestDir::new("sched-empty");
+        let none = || None;
+        let run = |args: &[&str]| server.tmux(args);
+        let run_owned = |args: &[String]| server.tmux_owned(args);
+        let listed = |run: &dyn Fn(&[&str]) -> Result<String, DeckError>| {
+            scheduler_pane_listing_on(&ServerHandle {
+                run,
+                run_owned: &run_owned,
+                owned_client: &none,
+                socket_name: &server.socket,
+                lifecycle_file: dir.file(),
+            })
+        };
+        // no Deck server at all: positively nothing to protect
+        assert!(!server.is_running());
+        assert!(
+            tmux::list_panes_with(&run).is_err(),
+            "the raw listing fails"
+        );
+        assert_eq!(listed(&run).unwrap().len(), 0);
+        // a reachable server with zero sessions ("no current target")
+        server.start(None);
+        let raw = tmux::list_panes_with(&run).unwrap_err();
+        assert_eq!(raw.message(), "tmux list-panes failed: no current target");
+        assert_eq!(listed(&run).unwrap().len(), 0);
+        // a server with a session lists it
+        server.new_session("alpha");
+        let rows = listed(&run).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].session_name, "alpha");
+        // arbitrary listing failures on a server that HAS sessions stay
+        // failures, whatever the error says
+        for injected in [
+            "tmux list-panes failed: no current target",
+            "tmux list-panes failed: server exited unexpectedly",
+            "tmux control timeout",
+        ] {
+            let failing = |args: &[&str]| {
+                if args.first() == Some(&"list-panes") {
+                    Err(DeckError::classified(injected))
+                } else {
+                    server.tmux(args)
+                }
+            };
+            assert!(listed(&failing).is_err(), "{injected}");
+        }
+        // malformed output from a live server is a failure
+        let garbled = |args: &[&str]| {
+            if args.first() == Some(&"list-panes") {
+                Ok("not\ta\tpane\trow\n".to_string())
+            } else {
+                server.tmux(args)
+            }
+        };
+        assert!(listed(&garbled).is_err());
+        server.run(&["kill-session", "-t", "alpha"]);
+        // an empty server, but the listing failed for another reason: only
+        // the exact empty-target reply stands for "empty"
+        let other = |args: &[&str]| {
+            if args.first() == Some(&"list-panes") {
+                Err(DeckError::classified(
+                    "tmux list-panes failed: permission denied",
+                ))
+            } else {
+                server.tmux(args)
+            }
+        };
+        assert!(listed(&other).is_err());
+        // a probe that cannot be trusted (unreachable/timeout) is a failure
+        let blind = |_: &[&str]| Err(DeckError::classified("tmux control timeout"));
+        assert!(listed(&blind).is_err());
         server.stop();
     }
 

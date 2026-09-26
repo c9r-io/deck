@@ -11,7 +11,7 @@ import {
   LOCAL_ID_RE, MAX_DROP_BYTES, MAX_QUIET_SECS, MCP_ERROR_KEYS, MIN_QUIET_SECS,
 } from '../js/pure.js';
 import {
-  ACCENTS, DEFAULT_GRACE_MIN, FINISH_MODES, FONT_SCALE_MAX, FONT_SCALE_MIN, INBOUND_CMD_MAX,
+  ACCENTS, AUTO_SEND_CLASSES, AUTO_SEND_MAX_STEPS, DEFAULT_GRACE_MIN, FINISH_MODES, FONT_SCALE_MAX, FONT_SCALE_MIN, INBOUND_CMD_MAX,
   INBOUND_NAME_MAX, INBOUND_RULE_ID_MAX, INBOUND_SOURCES, MAX_GRACE_MIN, MAX_INBOUND_RULES,
   SCHEDULE_UNITS, SHORTCUT_MAX_LEN, TEMPLATE_NAME_MAX, THEMES, UPDATE_CHANNELS,
 } from '../js/settings-model.js';
@@ -41,6 +41,7 @@ test('inbound rule mirrors', () => {
     grace_min_default: DEFAULT_GRACE_MIN, grace_min_max: MAX_GRACE_MIN, rules_max: MAX_INBOUND_RULES,
     rule_id_max: INBOUND_RULE_ID_MAX, rule_name_max_chars: INBOUND_NAME_MAX,
     rule_cmd_max_chars: INBOUND_CMD_MAX, template_name_max_chars: TEMPLATE_NAME_MAX,
+    auto_send_max_steps: AUTO_SEND_MAX_STEPS, auto_send_classes: [...AUTO_SEND_CLASSES],
   }, limits.inbound);
 });
 

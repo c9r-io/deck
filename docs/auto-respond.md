@@ -55,7 +55,8 @@ is listed as blocked, and a badge that reaches it is skipped before any card
 is created. The rows are queued through the native agent-only gate, so they
 are pasted only while that agent is the pane's foreground program. Such a
 run's rows are marked external: after the first, each waits for you to send
-it from the ⏱ panel. Quiet output alone cannot tell a finished turn from a
+it from the ⏱ panel — unless you approved the rule for automatic sending
+(below). Quiet output alone cannot tell a finished turn from a
 permission prompt (the next row's Enter would answer that prompt), and a
 reported turn end is not readiness either — the agent may still own
 background work and resume on its own. No automatic row of any
@@ -67,6 +68,32 @@ with several badges makes one card per rule; the same badge on the same
 message only ever makes one. Only your own reactions count. A badge rule
 has no pause: the backlog it would collect while paused has no honest
 reading, so it is deleted instead (cards it already created stay).
+
+### Continue approved steps automatically
+
+A Slack badge rule has one more choice: **Continue approved steps
+automatically**. The run's first step behaves exactly as before either way;
+ticking it approves *this version* of the rule and its template so that the
+run's later steps continue once the agent is safely ready, without a Send
+now per step. Unticked, each follow-up waits for Send now, as on Stable. It does not make the agent unattended:
+
+- a newly started Claude or Codex is never typed into — the first step
+  still waits for one real interaction with the agent (or your Send now);
+- an agent asking for input or permission, a Codex process whose status
+  hooks cannot be attributed to it, and inspection checkpoints still pause
+  the run, and the ⏱ panel says which ("Approved step · …");
+- editing anything the approval covers — the badge, directory, command
+  (`codex` → `codex --yolo` included), template or its steps, finish or
+  inspection mode — turns it off until you tick it again, and unticking it
+  (or deleting the rule) also stops the unsent steps of runs already under
+  way.
+
+Steps that paste Slack message content (`{{msg.text}}` and friends) need a
+second, explicit tick: external messages are untrusted input and may
+influence the agent. Without it, only your fixed steps are sent
+automatically and the others wait for Send now. Deck does not claim to make
+message text safe. See `docs/scheduler-context-safety.md` ("Automation
+delivery authority") for the exact rules.
 
 ## The clock trigger
 

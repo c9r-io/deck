@@ -9,12 +9,18 @@
 //!   `needs-input` (an input request) — the pasted text and its Enter would
 //!   answer the agent's question or permission prompt (typically accepting
 //!   the highlighted "Yes") instead of reaching the prompt box;
-//! - an `external` follow-up row (chain) is never selected automatically.
-//!   Quiet alone cannot tell a finished turn from a permission prompt, and
-//!   `turn-done` only says an interaction ended: the agent may still own
-//!   background work and resume on its own, so no hook word is readiness
-//!   for text that arrived from outside deck. Until a stronger positive
-//!   readiness signal exists such a row waits for the user's send-now.
+//! - an `external` follow-up row (chain) is never selected automatically
+//!   unless it carries content authority (`authority.rs`). Quiet alone
+//!   cannot tell a finished turn from a permission prompt, and `turn-done`
+//!   only says an interaction ended: the agent may still own background
+//!   work and resume on its own, so no hook word is readiness or approval
+//!   for text that arrived from outside deck. Such a row waits for the
+//!   user's send-now — or, when the user approved this exact version of a
+//!   Slack badge automation's steps, it is selected like an owner row and
+//!   every hold here still applies (needs-input, Codex trust, the
+//!   first-interaction gate). Authority is durable and checked at
+//!   admission; readiness is not: an approval never substitutes for
+//!   interaction evidence, and Signal never creates or restores approval.
 //!
 //! - no row of any mode is selected while the session's Signal target runs
 //!   Codex in the foreground and Codex Signal is not `Trusted` for that
@@ -82,6 +88,20 @@ pub(crate) struct Observed {
     /// An accepted Claude interaction word came from the Signal target's
     /// current foreground generation (`agent_status::Evidence`).
     pub(crate) claude_interaction: bool,
+    /// Not Signal: a tick-wide fact copied to every session so selection
+    /// stays pure — this tick could not read the automation-authority source
+    /// (settings), so no row may be sent automatically on its approval
+    /// (`mark_authority_unverified`, `authority.rs`).
+    pub(crate) authority_unverified: bool,
+}
+
+/// The tick could not revalidate approvals: every session's observation
+/// holds rows that rely on one (`Hold::AuthorityUnverified`), without
+/// touching the rows or their stored authority.
+pub(crate) fn mark_authority_unverified(seen: &mut Observations) {
+    for observed in seen.values_mut() {
+        observed.authority_unverified = true;
+    }
 }
 
 /// Session name → observation, one snapshot per tick. `activity` keeps the
@@ -114,19 +134,30 @@ pub(crate) fn observe_with(
                 agent: agents.get(session).map(|o| o.state),
                 codex: evidence.get(session).and_then(|e| e.codex),
                 claude_interaction: evidence.get(session).is_some_and(|e| e.claude_interaction),
+                authority_unverified: false,
             });
     }
     seen
 }
 
-/// Why an automatic row is held (module header).
+/// Why an automatic row is held (module header). Each is a closed plan
+/// stage (`review.rs` `plan_item`) so the panel can say why a row waits.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Hold {
-    /// an input request, an external follow-up, or Codex `Unavailable`
-    Agent,
+    /// the agent reported an input request (plan stage `agent`)
+    NeedsInput,
+    /// an external follow-up without content authority: send-now only
+    /// (plan stage `external`)
+    External,
+    /// Codex Signal is `Unavailable` for this generation (plan stage
+    /// `codex-signal`)
+    CodexUnavailable,
     /// a recognized agent's current generation has no
     /// `AgentInteractionEstablished` evidence yet (plan stage `first-send`)
     FirstInteraction,
+    /// the row relies on an approval that could not be revalidated this
+    /// tick (plan stage `authority-unverified`); send-now still works
+    AuthorityUnverified,
 }
 
 /// The recognized interactive agent a row is configured for, if any.
@@ -142,10 +173,21 @@ pub(crate) fn row_agent(i: &QueueItem) -> Option<&'static str> {
 /// starting a recognized agent never delivers.
 pub(crate) fn hold_reason(i: &QueueItem, seen: Option<&Observed>) -> Option<Hold> {
     let agent = seen.and_then(|o| o.agent);
-    if agent == Some(agent_status::NEEDS_INPUT) || (i.external && i.mode == "chain") {
-        return Some(Hold::Agent);
+    if agent == Some(agent_status::NEEDS_INPUT) {
+        return Some(Hold::NeedsInput);
+    }
+    // provenance stays external; only the row's own content authority
+    // (`authority.rs`, verified at admission, swept on revocation) lifts
+    // this one hold — never a hook word, quiet time or elapsed time
+    if i.external && i.mode == "chain" && i.authority.is_none() {
+        return Some(Hold::External);
     }
     let o = seen?;
+    // a failed read of the authority source is no proof the approval
+    // still stands (and no proof it was revoked): hold, keep everything
+    if o.authority_unverified && relies_on_authority(i) {
+        return Some(Hold::AuthorityUnverified);
+    }
     let configured = row_agent(i);
     // Codex: the target's proof or literal `codex` foreground, or a row
     // configured for Codex (a wrapper or `node` foreground) — `Trusted` is
@@ -154,7 +196,7 @@ pub(crate) fn hold_reason(i: &QueueItem, seen: Option<&Observed>) -> Option<Hold
         .codex
         .or((configured == Some("codex")).then_some(agent_status::CodexSignalTrust::Unknown));
     match codex {
-        Some(agent_status::CodexSignalTrust::Unavailable) => return Some(Hold::Agent),
+        Some(agent_status::CodexSignalTrust::Unavailable) => return Some(Hold::CodexUnavailable),
         Some(agent_status::CodexSignalTrust::Unknown) => return Some(Hold::FirstInteraction),
         _ => {}
     }
@@ -348,7 +390,11 @@ pub(crate) fn select_due(
 /// The tick's automatic candidates. `listing` is `None` when the pane
 /// listing failed: that proves no session absent (a live Codex may be
 /// waiting on a permission prompt), so nothing is selected this tick and the
-/// next tick simply tries again.
+/// next tick simply tries again. A Deck server positively proven absent or
+/// empty is NOT a failure but an empty listing
+/// (`tmux_lifecycle::scheduler_pane_listing`): nothing exists to protect,
+/// so a due row may be selected and its session started — and starting a
+/// recognized agent never delivers (`StartedAwaitingInteraction`).
 pub(crate) fn tick_selection(
     q: &QueueState,
     now: u64,

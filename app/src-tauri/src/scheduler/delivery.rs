@@ -359,6 +359,8 @@ pub(crate) fn finalize_delivery(
         at: now,
         assumed,
         operation_id: item.operation_id.clone(),
+        authority: item.authority.clone(),
+        manual: false,
     });
     if let Some(operation_id) = &item.operation_id {
         if let Some(operation) = q.operations.iter_mut().find(|op| &op.id == operation_id) {
@@ -438,6 +440,7 @@ pub(crate) fn finalize_delivery(
                     review_each: item.review_each,
                     review: None,
                     external: item.external,
+                    authority: None,
                 });
             }
         }
@@ -580,6 +583,17 @@ pub(crate) struct SendHooks<'a> {
     pub(crate) persist: &'a (dyn Fn(&QueueState) -> Result<(), DeckError> + Sync),
     /// kill a session whose card was deleted DURING this send
     pub(crate) kill: &'a (dyn Fn(&str) + Sync),
+    /// read the automation-authority source (settings) for the pre-fire
+    /// fence (`authority.rs`); `None` = unreadable
+    pub(crate) authority: &'a (dyn Fn() -> Option<crate::inbound::Config> + Sync),
+}
+
+/// What the pre-fire transaction decided.
+enum PreFire {
+    /// the firing intent is persisted: cross the irreversible boundary
+    Fire(Box<QueueItem>, String),
+    /// the row's approval was revoked: it was stripped, nothing is sent
+    Revoked,
 }
 
 pub(crate) struct ContextHooks<'a> {
@@ -663,6 +677,15 @@ fn send_one_guarded(
     expected: Option<(&str, u64, &PaneIdentity)>,
 ) -> SendResult {
     let persist = h.persist;
+    // The authority fence (`authority.rs`): an automatic send decides on its
+    // row's approval under the same lock a settings write takes, and keeps
+    // it until the firing intent is persisted — so a revocation that has
+    // returned is always seen, and one that lands later finds the row
+    // already inside the irreversible window. Lock order: fence, queue.
+    let fence_guard = request
+        .requested
+        .is_none()
+        .then(crate::storage::settings_fence);
     // Persist the firing intent (delivery id + ledger snapshot) BEFORE
     // injecting — this ordering preserves an honest ambiguity record across
     // crashes, and the snapshot makes resolution independent of item survival.
@@ -684,6 +707,21 @@ fn send_one_guarded(
         }) {
             return Ok(None);
         }
+        // automatic only: send-now is the user acting, not the approval
+        if request.requested.is_none() && relies_on_authority(&sel) {
+            match fence(&sel, (h.authority)().as_ref()) {
+                Fence::Clear => {}
+                // unverifiable: keep the row and its approval, send nothing
+                Fence::Unverified => return Ok(None),
+                Fence::Revoked => {
+                    if let Some(it) = q.items.iter_mut().find(|i| i.id == sel.id) {
+                        it.authority = None;
+                        it.revision = it.revision.wrapping_add(1);
+                    }
+                    return Ok(Some(PreFire::Revoked));
+                }
+            }
+        }
         let delivery = next_delivery_id();
         let Some(it) = q.items.iter_mut().find(|i| i.id == sel.id) else {
             return Ok(None);
@@ -697,10 +735,19 @@ fn send_one_guarded(
             id: delivery.clone(),
             snapshot: snapshot.clone(),
         });
-        Ok(Some((snapshot, delivery)))
+        Ok(Some(PreFire::Fire(Box::new(snapshot), delivery)))
     });
+    // the firing intent is on disk (or nothing will be sent): release the
+    // fence before the injection, which may wait on a session boot
+    drop(fence_guard);
     let (item, delivery) = match pre {
-        Ok(Some(v)) => v,
+        Ok(Some(PreFire::Fire(item, delivery))) => (*item, delivery),
+        Ok(Some(PreFire::Revoked)) => {
+            applog(
+                "[queue] automation approval withdrawn before sending — the row waits for send-now",
+            );
+            return SendResult::Nothing;
+        }
         Ok(None) => return SendResult::Nothing,
         Err(e) => {
             applog(&format!(
@@ -712,15 +759,26 @@ fn send_one_guarded(
     };
     match (h.fire)(&item) {
         Ok(()) => {
-            // never log prompt contents — length only (privacy)
+            // never log prompt contents — length only (privacy); an
+            // approval is logged as its closed class, never its ids
             applog(&format!(
-                "[queue] sent to {} ({}B, mode {})",
+                "[queue] sent to {} ({}B, mode {}{})",
                 crate::applog::session_tag(&item.session),
                 item.text.len(),
-                item.mode
+                item.mode,
+                match (&item.authority, request.requested) {
+                    (Some(a), None) => format!(", approved {} step", a.class.as_str()),
+                    _ => String::new(),
+                }
             ));
             let mut q = qm.lock_or_recover();
             finalize_delivery(&mut q, &item.id, &delivery, now_epoch(), false);
+            if request.requested.is_some() {
+                // audit: the user sent it, not the scheduler
+                if let Some(record) = q.deliveries.iter_mut().rfind(|d| d.id == delivery) {
+                    record.manual = true;
+                }
+            }
             let cancelled = is_cancelled(&q, &item.session);
             if let Err(e) = persist(&q) {
                 note_persist_lag(dirty, "post-fire", e.message());

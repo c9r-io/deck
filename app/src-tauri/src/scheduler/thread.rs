@@ -97,7 +97,11 @@ pub(crate) fn spawn_scheduler(app: AppHandle) {
         }
         // pane activity (chain quiet) and agent hook words (agent hold), one
         // snapshot per tick; a failed listing sends nothing this tick
-        let listing = crate::tmux::list_panes().ok().map(observe);
+        // a failed listing selects nothing; a POSITIVELY empty or absent
+        // Deck server is an empty listing (`scheduler_pane_listing`)
+        let mut listing = crate::tmux_lifecycle::scheduler_pane_listing()
+            .ok()
+            .map(observe);
         // expired rules die quietly, transactionally like every other change
         let now = now_epoch();
         if state
@@ -118,6 +122,41 @@ pub(crate) fn spawn_scheduler(app: AppHandle) {
                     "[queue] persist (expiry purge) FAILED ({}) — rules kept",
                     e.code()
                 )),
+            }
+        }
+        // a withdrawn or changed automation approval stops every unsent row
+        // that relied on it BEFORE this tick selects anything; unreadable
+        // settings neither grant nor revoke (`authority.rs`)
+        if any_authority(&state.q.lock_or_recover()) {
+            let config = crate::inbound::read_config_strict();
+            if config.is_none() {
+                // no proof either way: rows and approvals stay, automatic
+                // sends that rely on one hold this tick
+                if let Some(seen) = listing.as_mut() {
+                    mark_authority_unverified(seen);
+                }
+            }
+            if let Some(config) = config {
+                match with_queue_opt(&state.q, &save_queue, |q| {
+                    let n = revoke_stale(q, &config);
+                    Ok((n > 0).then_some(n))
+                }) {
+                    Ok(Some(n)) => {
+                        applog(&format!(
+                            "[queue] automation approval withdrawn — {n} row(s) now wait for send-now"
+                        ));
+                        let _ = app.emit("queue-changed", ());
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        // memory still holds the stale approval: send nothing
+                        applog(&format!(
+                            "[queue] persist (approval sweep) FAILED ({}) — nothing sent this tick",
+                            e.code()
+                        ));
+                        continue;
+                    }
+                }
             }
         }
         // tick-start candidate pass: at most one session slot each. The
@@ -159,6 +198,7 @@ pub(crate) fn spawn_scheduler(app: AppHandle) {
                         fire: &fire_item,
                         persist: &save_queue,
                         kill: &kill_session_quietly,
+                        authority: &crate::inbound::read_config_strict,
                     },
                     &ContextHooks {
                         prepare: &prepare_context,

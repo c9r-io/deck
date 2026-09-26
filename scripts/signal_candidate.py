@@ -56,7 +56,9 @@ ABSENT = re.compile(r"^(?P<t>\d+) \[agent-status\] (?P<source>[a-z-]+) identity-
 RUN_CLOSED = re.compile(r"^(?P<t>\d+) \[inbound\] run closed$")
 BOOT = re.compile(r"^(?P<t>\d+) \[notify\] boot [a-z-]+$")
 QUEUE_STARTED = re.compile(r"^(?P<t>\d+) \[queue\] started (?P<s>sess-[0-9a-f]+) — its first prompt waits for an agent interaction$")
-QUEUE_SENT = re.compile(r"^(?P<t>\d+) \[queue\] sent to (?P<s>sess-[0-9a-f]+) \(\d+B, mode [a-z]+\)$")
+# an automatic send under an automation approval adds its closed class
+# (`, approved fixed step` / `, approved bounded step`); it is still a send
+QUEUE_SENT = re.compile(r"^(?P<t>\d+) \[queue\] sent to (?P<s>sess-[0-9a-f]+) \(\d+B, mode [a-z]+(?:, approved (?:fixed|bounded) step)?\)$")
 NOTIFY = re.compile(r"^(?P<t>\d+) \[notify\] (?P<kind_>posted [a-z-]+|viewed|suppressed viewed-episode) s=(?P<s>sess-[0-9a-f]+) e=\d+$")
 
 CASES = {

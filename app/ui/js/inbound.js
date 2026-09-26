@@ -19,6 +19,13 @@
 // channel admission (`channelBlockReason`, acked `blocked` before any card
 // exists) and is queued through the native agent-only gate
 // (`channel_queue_add*`); a clock item's text is the user's own template.
+// A badge rule the user approved for automatic sending (automation-model.js
+// `grantState` is `valid` for the CURRENT rule and template) freezes that
+// approval into the plan — `{rule, grant, trigger, classes}`, ids and closed
+// words only — and each queued row carries its step's claim; the backend
+// re-checks every claim against settings (scheduler/authority.rs) and the
+// rows stay `external` either way. A later rule edit changes future runs
+// only; revoking the approval stops this run's unsent rows too.
 import { ctx, genId, inv, listen, store, uev } from './state.js';
 import { provider } from './board.js';
 import { toast } from './dialogs.js';
@@ -26,7 +33,8 @@ import { planInbound } from './pure.js';
 import { t } from './i18n.js';
 import { bufferLimitError, emptyBuffer, upsertExternal } from './buffer-model.js';
 import { channelBlockReason, channelDigestId, channelRunExpired, channelSource, channelTemplatePlan, collectingCard, unfinishedChannelPlans } from './channel-model.js';
-import { expandHome } from './pure.js';
+import { expandHome, normalizeTemplateStep } from './pure.js';
+import { grantState } from './automation-model.js';
 
 let draining = false;
 let again = false;
@@ -155,6 +163,24 @@ async function ack(id, outcome, code, extra = {}) {
   catch (e) { uev('inbound', 'ack-fail'); }
 }
 
+/* the approval this run may carry: only a Slack badge rule's, only while it
+   is valid for the rule and template as they are NOW, and only when every
+   template step became one queued step (so step k is template step k) */
+async function frozenApproval(item, plan) {
+  const rule = item.rule;
+  if (rule?.source !== 'slack' || !rule.autoSend) return null;
+  const project = store.projects.find(value => value.id === rule.projectId);
+  const template = (project?.templates || []).find(value => value.name === plan.template);
+  if (!template || template.steps.length !== plan.steps.length) return null;
+  if ((await grantState(rule, template)) !== 'valid') return null;
+  /* proof material for bounded steps: the event the run was made from and
+     each such step's approved skeleton; the backend re-expands the skeleton
+     over its own copy of the event and compares bytes */
+  const skeletons = rule.autoSend.classes.map((cls, k) => (cls === 'bounded' ? normalizeTemplateStep(template.steps[k]) : null));
+  return { rule: rule.id, grant: rule.autoSend.digest, trigger: 'slack-badge', classes: [...rule.autoSend.classes],
+    event: item.event.key, skeletons };
+}
+
 const ruleLabel = item => (item.event.source === 'clock' ? (item.rule.name || item.rule.id) : `:${item.event.badge}:`);
 
 async function handleInbound(item) {
@@ -186,6 +212,7 @@ async function handleInbound(item) {
     return skip('blocked');
   }
   const now = Math.floor(Date.now() / 1000);
+  const authority = clock ? null : await frozenApproval(item, plan);
   const cardId = genId('S');
   const operationId = await channelDigestId('B', `${cardId}/list`);
   const initialSteps = await Promise.all(plan.steps.map(async (text, index) => ({
@@ -197,6 +224,7 @@ async function handleInbound(item) {
   try {
     card = await provider.create({ ...plan.card, id: cardId, inboundPlan: {
       operationId, reviewEach: item.rule.reviewEach === true, initialSteps, initialQueued: false,
+      ...(authority ? { authority } : {}),
     } });
   } catch (e) {
     toast(t('inbound.createFailed', { badge }));

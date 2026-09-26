@@ -109,7 +109,8 @@ row, never release or target one (`scheduler/select.rs`, `agent_holds`):
 - A row marked `external` — admitted through `channel_queue_add*` (Slack
   channel and badge rules, every Connector-originated row) or queued with
   `externalText` (a verbatim Slack buffer entry) — that follows a previous
-  row (`chain`) is never selected automatically; the user sends it by hand.
+  row (`chain`) is never selected automatically; the user sends it by hand
+  (stage `external`) — unless it carries **content authority** (below).
   No hook word releases it: `turn-done` ends an interaction but the agent
   may still own background work and resume on its own. The first row of a
   run is not held without hooks, since the agent has had no turn yet.
@@ -124,7 +125,15 @@ row, never release or target one (`scheduler/select.rs`, `agent_holds`):
   which also withdraws its earlier status and is never healed by a later
   hook of the same process — Deck cannot see a Codex permission prompt, so
   "no hook word" must not fall back to the quiet-only rule. A failed pane
-  listing sends nothing that tick.
+  listing sends nothing that tick. A Deck server POSITIVELY proven absent
+  (tmux's own no-server reply) or reachable with zero sessions (its exact
+  `no current target` answer, confirmed by a fresh probe of the same
+  server) is not a failure but an empty listing
+  (`tmux_lifecycle::scheduler_pane_listing`): there is no agent to protect,
+  so a due automation row is selected and its session started — which for
+  Claude or Codex is `StartedAwaitingInteraction`, never a paste. Every
+  other failure (timeout, malformed output, an unreachable or inconsistent
+  probe, a server with sessions) still selects nothing.
 - **Agent Bootstrap Input Safety.** Unattended prompt delivery to Claude or
   Codex requires the Agent Status integration and at least one trustworthy
   interaction in the current agent process generation: for Codex its status
@@ -157,7 +166,118 @@ row, never release or target one (`scheduler/select.rs`, `agent_holds`):
   fires no Stop hook) holds until the next hook word or until poll
   reconciliation sees the agent leave the foreground.
 - The hold never moves a card and consumes no attempt. The panel plan
-  reports it as stage `agent`; the hook observation is shown beside it.
+  names each hold as its own closed stage — `agent` (an input or permission
+  request), `external` (external content no approval covers), `codex-signal`
+  (Codex Signal cannot be attributed to this process), `first-send` — and
+  says whether the row carries an approval ("Approved step · …"); the hook
+  observation is shown beside it.
+
+## Automation delivery authority
+
+Deck may coordinate an Agent session; it does not own the Agent's execution.
+Deck owns attention around work; the Agent owns the work. Three facts about a
+row are kept apart (`scheduler/authority.rs`):
+
+- **Provenance** — `external`: the row entered through the external
+  admission. Never cleared or rewritten by anything below.
+- **Content authority** — `authority`: the user explicitly approved this
+  exact step of this exact version of a Slack badge automation for
+  automatic delivery. External provenance ≠ unapproved content.
+- **Input readiness** — every hold above. Authorization ≠ input readiness.
+
+An approval is stored on the rule (`autoSend` in settings.json) as a
+content-addressed grant: a SHA-256 over the rule's id, trigger, badge,
+project, directory, full command, template name, finish mode and review mode,
+together with each template step's SHA-256, its class and the external-content
+acknowledgment. Hashes only; no prompt text is copied. Any change to those
+fields or to the template voids it (the drawer shows "needs approval again");
+the name, the board column and pause state are presentation. Step classes:
+
+| Class | Example | Automatic delivery |
+|---|---|---|
+| fixed — owner text only | `Review the latest changes and run the tests.` | with an approval |
+| bounded — owner text with `{{msg.*}}` | `Investigate the issue below: {{msg.text}}` | only with the separate, explicit acknowledgment that untrusted Slack text may reach the agent — Deck does not claim the text is safe |
+| verbatim external — the message is the prompt (a scratchpad copy, a Connector message) | `{{msg.text}}` alone is refused by admission; copies use `externalText` | never; send-now only |
+| generated / derived content | — | out of scope: no agent result, hook word or Signal creates content |
+
+The webview freezes a run's approval into its `inboundPlan` (`{rule, grant,
+trigger, classes, event, skeletons}`) and claims step k for row k on
+`channel_queue_add*` only; the owner commands refuse a claim. The backend
+re-checks each claim against the CURRENT settings grant (`verify_claim`: a
+Slack badge rule, a valid grant equal to the claimed one, the rule's exact
+command, not verbatim text) and proves the row's bytes natively:
+
+- a **fixed** step: the row text's SHA-256 equals the approved step's;
+- a **bounded** step: the claim's skeleton hashes to the approved step and
+  carries a known placeholder, and its deterministic expansion
+  (`expand_bounded`, the twin of the webview's `fillInboundTemplate`, both
+  pinned by the vectors in `ui/test/fixtures/automation-grant.json`) over
+  the backend's own copy of the claimed Slack event (still pending until
+  the whole plan is queued; source, key, badge and rule must match) equals
+  the row text byte for byte. An authority-bearing bounded row therefore
+  holds no byte outside the expansion of the approved step over the exact
+  admitted event: replacement text, another event, another step index,
+  another skeleton of the same shape, an edited message or a different
+  class all fail closed.
+
+A refused claim admits the row without authority: it still runs by
+send-now. An approved external follow-up is then selected like an owner
+row — quiet time, group order, send gap, pause, review checkpoints,
+needs-input, Codex trust, the first-interaction gate, target identity,
+expected process and the bracketed-paste check all still apply.
+
+- **Signal never authorizes.** `working`, `needs-input`, `turn-done`,
+  quiet time and output activity can hold an approved row; none creates,
+  restores or upgrades an approval (`tests/signal_census.rs`
+  `signal_never_writes_content_authority`; scheduler test
+  `turn_done_may_release_no_authority_even_when_unattended_grant_exists`).
+- **Authorization survives; readiness does not.** A row's authority is
+  durable (queue.json); interaction evidence is in memory only, so after a
+  Deck restart or a new agent generation the first-interaction gate holds
+  the approved row again until the agent proves an interaction.
+- **Fresh agents.** An approved first step for a fresh Claude or Codex is
+  started and never typed into (`StartedAwaitingInteraction`), exactly as
+  without an approval. Zero-click bootstrap of a fresh interactive agent is
+  not supported: the one real interaction (or send-now) there is a safety
+  boundary, not a confirmation to optimize away.
+- **Revocation fence.** The irreversible boundary is the persisted firing
+  intent. An automatic send of an approved row re-reads settings and
+  re-validates the approval inside the very transaction that persists that
+  intent, holding `storage::settings_fence` — the lock every settings write
+  takes. So once a revoking write (unticked, the rule or template edited,
+  the rule deleted) has returned, no automatic send can begin under the
+  revoked grant: the fence strips the row's authority (revision bumped)
+  and sends nothing. A send already past the boundary completes; a crash
+  there stays ambiguous and is resolved by the user as before. The tick's
+  sweep (`revoke_stale`) strips the same rows so the panel and disk agree;
+  a failed save of it sends nothing that tick. Re-approving creates a new
+  grant: a revoked run stays manual. Editing a row's text also drops its
+  authority. Send-now never consults the fence.
+- **Unreadable settings hold.** A failed read is no proof either way: no
+  row, and no stored authority, is removed or rewritten, but every
+  automatic send that relies on an approval holds (stage
+  `authority-unverified`, and the fence refuses) until settings can be read
+  again. Send-now still works.
+- **Content snapshot vs authority lifetime.** A run's prompt bytes are frozen
+  when it is created; no rule or template edit ever rewrites them. Its
+  authority is not frozen: it lives exactly as long as the grant version it
+  was admitted under. Editing anything the grant covers retires that
+  version (this is deliberately conservative: an edited definition is a
+  different approval), so the run's unsent rows keep their text and lose
+  only automatic delivery.
+- **Scope.** Only Slack badge rules carry approvals. Slack channel monitors
+  (a message triggers without a per-message human action), Connector rows
+  and scratchpad copies stay manual; clock rules are owner text and
+  unchanged.
+- **Audit.** A delivery record copies the row's authority (rule id, grant
+  digest, step, class, trigger) and whether the user sent it by hand; the
+  ⏱ history shows "approved step N" and "sent by you". Log lines carry
+  closed words and counts only (`tests/log_privacy.rs`).
+- **Compatibility.** No schema door is needed: an older Deck ignores the
+  row's `authority` (it keeps holding the external row) and a rule's
+  `autoSend` (its drawer drops it on the next edit, which only withdraws
+  automatic sending). Legacy rules have no approval and keep the Stable
+  behaviour.
 
 A verbatim external message is also refused at admission when its first
 visible character is `!`, `/` or `#` (after Unicode whitespace and format
@@ -168,7 +288,8 @@ characters): `ops::leading_command` is authoritative, and buffer-model.js
 
 No hook, agent class, readiness label, quiet state or output heuristic is a
 necessary condition for delivery; an `external` follow-up row is delivered
-only by the user's send-now (agent hold above). A resolvable pane owned by the card is
+only by the user's send-now or under the user's explicit, revision-bound
+automation approval (agent hold and delivery authority above). A resolvable pane owned by the card is
 always necessary, and the identity read from it must stay stable from the
 readiness probe through the atomic paste. Foreground equality is necessary
 only when deck captured an expected executable automatically. Compatibility

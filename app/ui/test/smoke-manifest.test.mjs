@@ -20,6 +20,7 @@ const CARRIERS = {
   'review-smoke.mjs': ['review', 'review-restart'],
   'voice-smoke.mjs': ['voice'],
   'signal-smoke.mjs': ['signal-finish'],
+  'authority-smoke.mjs': ['authority-live', 'empty-start'],
 };
 
 /* Names built at runtime, which a single-line literal scan cannot read:

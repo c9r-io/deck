@@ -319,6 +319,23 @@
         "signal-run-created": {},
         "signal-turn-done": {}
       }
+    },
+    "authority-live": {
+      "terminal": "done",
+      "checks": {
+        "authority-live-exception": { "failureOnly": true },
+        "authority-live-setup": {}
+      }
+    },
+    "empty-start": {
+      "terminal": "done",
+      "checks": {
+        "empty-start-delivered": {},
+        "empty-start-empty": {},
+        "empty-start-exception": { "failureOnly": true },
+        "empty-start-queued": {},
+        "empty-start-started": {}
+      }
     }
   }
 }

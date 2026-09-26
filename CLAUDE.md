@@ -37,6 +37,19 @@ same commit as the behaviour it describes.
   by a saved Slack channel rule (`inbound.js`) may create that rule's
   collection card; both use `provider.createStarted`, and neither moves or
   retires a card. Nothing else retires or relocates a card on its own.
+- **Deck may coordinate an Agent session ≠ Deck owns Agent execution.**
+  Deck owns attention around work; the Agent owns the work. No headless
+  agent transport, `-p`/`exec`/SDK orchestration, agent pools, worktrees or
+  permission auto-approval. Three row facts stay separate
+  (`scheduler/authority.rs`): external **provenance** (`external`, never
+  cleared) ≠ **content authority** (`authority`: the user's explicit,
+  revision-bound approval of a Slack badge automation's exact steps, checked
+  by the backend at admission and revoked by the tick) ≠ **input readiness**
+  (every scheduler hold, including the first-interaction gate). An approval
+  releases only the external-follow-up hold; a fresh interactive agent is
+  never typed into automatically, approval or not. No Signal word, quiet
+  time or activity ever creates, restores or upgrades authority
+  (`tests/signal_census.rs`).
 - **deck is EDR-QUIET by rule** (a corporate EDR flagged it and IT demanded the
   app be stopped). The whole process-surface contract — every allowed spawn
   and its exact file, the launchd/login-item ban, the bundled-tmux-only
@@ -115,6 +128,7 @@ loaded by `ui/index.html`; xterm.js vendored in `app/ui/vendor/`. Backend
 | Dropdowns (deck's own listbox over every `<select>`) | `ui/js/dropdown.js` |
 | Settings modal: sections and search, the ONE settings writer, font scale, shortcuts, theme/locale/channel choices, inbound/Connector/MCP settings; dialog primitives (confirm, choice, prompt, toast, inline rename, project defaults) stay separate; the section list, stable setting ids and search rules are DOM-free | `ui/js/settings.js`, `ui/js/settings-search-model.js`, `ui/js/dialogs.js` |
 | Lists (the ⏱ panel): queue model, selection, delivery state machine, tick | `scheduler/` (+ `docs/scheduler-context-safety.md`), `context.rs`, `ui/js/scheduler.js`, `ui/js/queue-review.js`, `scheduler/review.rs` |
+| Automation delivery authority: the approval grant, claim verification at admission, revocation sweep, delivery audit | `scheduler/authority.rs`, `inbound.rs` (`AutoSend`), `ui/js/automation-model.js` (`approveRule` / `grantState`, shared vector `ui/test/fixtures/automation-grant.json`) |
 | Templates (saved lists, shared by cards and automations) | `ui/js/templates.js` |
 | Needs-attention view (sidebar entry), runtime read state, tab done-dot | `ui/js/attention.js`, `ui/js/attention-model.js` |
 | Away notifications and the Dock badge (Rust-side trigger, closed content, in-process UNUserNotificationCenter bridge) | `notify.rs`, `native/NotificationBridge.swift`, `ui/js/notify-model.js` (+ `docs/notifications.md`) |

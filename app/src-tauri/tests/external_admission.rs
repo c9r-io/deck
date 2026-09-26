@@ -343,6 +343,23 @@ const ADMISSION_SITES: &[(&str, &str, &str, usize, Entry)] = &[
         1,
         Entry::Migration,
     ),
+    // content authority (`scheduler/authority.rs`) is admitted only on the
+    // external commands, after `admit_external`: an approval never opens a
+    // second entry for non-owner text, and never clears `external`
+    (
+        "scheduler/ops.rs",
+        "channel_queue_add",
+        "admit_authority(",
+        1,
+        Entry::Admission,
+    ),
+    (
+        "scheduler/ops.rs",
+        "channel_queue_add_reviewed_list",
+        "admit_authority(",
+        1,
+        Entry::Admission,
+    ),
 ];
 
 #[test]
@@ -355,6 +372,7 @@ fn external_text_reaches_the_one_admission() {
             "expected_process = ",
             "expected_process: None",
             ".external = ",
+            "admit_authority(",
         ],
         |source, at| source[..at].ends_with("fn ") || source[..at].ends_with("let "),
     );
@@ -389,6 +407,48 @@ fn external_text_reaches_the_one_admission() {
     );
     assert!(body("scheduler/mod.rs", "migrate_context")
         .contains("if item.expected_process.is_none() {"));
+    // an approval is admitted only after the external admission ran...
+    for external in ["channel_queue_add", "channel_queue_add_reviewed_list"] {
+        let text = body("scheduler/ops.rs", external);
+        let admitted = text.find("admit_external(&mut args)?;").expect(external);
+        let approved = text.find("admit_authority(&mut args,").expect(external);
+        assert!(admitted < approved, "{external}: admission before approval");
+    }
+    // ...a bounded step's proof reads the backend's own pending event, and
+    // only there...
+    let ops_src = production_sources();
+    let callers: Vec<_> = ops_src
+        .iter()
+        .flat_map(|(file, source)| {
+            token_sites(source, "pending_event(")
+                .into_iter()
+                .filter(|&at| !source[..at].ends_with("fn "))
+                .map(|at| (file.clone(), function_at(source, at)))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    assert_eq!(
+        callers,
+        [(
+            "scheduler/ops.rs".to_string(),
+            "admit_authority".to_string()
+        )],
+        "the inbound event is proof material for the admission only"
+    );
+    // ...an owner command refuses a claim outright...
+    assert!(validate.contains("if a.authority.is_some() && !a.channel_path {"));
+    // ...and the verdict is the backend's own (`#[serde(skip)]`), never a
+    // caller field, while provenance stays set beside it
+    let ops = production_sources()
+        .into_iter()
+        .find(|(name, _)| name == "scheduler/ops.rs")
+        .unwrap()
+        .1;
+    assert!(ops.contains("#[serde(skip)]\n    pub(crate) granted: Vec<Option<StepAuthority>>,"));
+    let core = body("scheduler/ops.rs", "add_item_bound");
+    assert!(
+        core.contains("external: args.channel_path || args.external_text,\n        authority: args.granted.first().cloned().flatten(),")
+    );
 }
 
 // ------------------------------------------- 3. text-carrying Tauri commands
@@ -756,6 +816,23 @@ const FRONTEND_SITES: &[FrontendSite] = &[
 /// Calls a pinned function must keep before it queues external text.
 const FRONTEND_ADMISSION: &[(&str, &str, &str)] = &[
     ("inbound.js", "handleInbound", "channelBlockReason("),
+    // an approval claim rides only on the external path (the owner commands
+    // refuse one) and is frozen only from a Slack badge rule's valid grant
+    (
+        "board.js",
+        "queueInboundPlan",
+        "const approval = external && plan.authority ? plan.authority : null;",
+    ),
+    (
+        "inbound.js",
+        "handleInbound",
+        "clock ? null : await frozenApproval(",
+    ),
+    (
+        "inbound.js",
+        "frozenApproval",
+        "if ((await grantState(rule, template)) !== 'valid') return null;",
+    ),
     ("board.js", "queueChannelPlan", "channelAgentCommand("),
     (
         "board.js",

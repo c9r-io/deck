@@ -500,14 +500,22 @@ export const provider = {
       const command = external ? 'channel_queue_add' : 'queue_add';
       const base = { session: card.session, cardId: card.id, dir: card.dir, cmd: card.cmd,
         reviewEach: plan.reviewEach === true };
+      /* a frozen approval claims step k for row k; only on the external
+         path (the owner commands refuse a claim) and re-checked there */
+      const approval = external && plan.authority ? plan.authority : null;
+      const claim = (step, count = 1) => (approval ? { authority: { rule: approval.rule, grant: approval.grant, step,
+        ...(approval.event ? { event: approval.event } : {}),
+        skeletons: (approval.skeletons || []).slice(step, step + count) } } : {});
       if (plan.reviewEach) {
         const first = plan.initialSteps[0];
         await inv(external ? 'channel_queue_add_reviewed_list' : 'queue_add_reviewed_list', {
-          args: { ...base, ...first, operationId: plan.operationId },
+          args: { ...base, ...first, operationId: plan.operationId, ...claim(0, plan.initialSteps.length) },
           texts: plan.initialSteps.map(step => step.text),
         });
       } else {
-        for (const step of plan.initialSteps) await inv(command, { args: { ...base, ...step } });
+        for (const [index, step] of plan.initialSteps.entries()) {
+          await inv(command, { args: { ...base, ...step, ...claim(index) } });
+        }
       }
       plan.initialQueued = true;
       plan.initialSteps = [];

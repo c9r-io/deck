@@ -15,7 +15,9 @@
     "rule_id_max": 64,
     "rule_name_max_chars": 120,
     "rule_cmd_max_chars": 200,
-    "template_name_max_chars": 120
+    "template_name_max_chars": 120,
+    "auto_send_max_steps": 64,
+    "auto_send_classes": ["fixed", "bounded"]
   },
   "local_id": {
     "pattern": "^[A-Za-z0-9_-]{1,128}$",

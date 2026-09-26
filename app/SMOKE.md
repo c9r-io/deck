@@ -59,7 +59,13 @@ open for the Swift transport test; see `connector/ios/README.md`), and two
 that relaunch a finished `run` root: `ambiguous` (relaunch with
 `app/run.sh --smoke-fault queue-save` so the boot repair write fails) and
 `restart`. A relaunch appends to the same `app.log`; judge each mode before
-relaunching the next.
+relaunching the next. `authority-live` only prepares the live-agent sequence
+below; its verdict covers that setup, not the agents. `empty-start` begins on
+a never-used isolated socket (no server, no session — never add a helper
+session): a clock-style automation card with one owner `:` no-op must be
+started by the scheduler and delivered (`scripts/smoke-verdict <root>
+empty-start`). It is the regression for the zero-session deadlock, where a
+failed `list-panes -a` on an empty server selected nothing forever.
 
 
 Everything below is a **live** checklist of WKWebView/xterm integration
@@ -105,6 +111,33 @@ socket** and `DECK_SMOKE_WKWEBVIEW=review-restart`, then run
 survive. Inspect and capture the plan, independent observations, records and
 last-row confirmation. Do not confirm it until persistence evidence is captured.
 The full release checklist and its known selection baseline remain separate.
+
+## Automation authority: live agents
+
+Run `DECK_SMOKE_DATA_DIR="$(mktemp -d /tmp/deck-authz.XXXXXX)" DECK_SMOKE_TMUX_SOCKET=deck-smoke-authz-UNIQUE DECK_SMOKE_WKWEBVIEW=authority-live app/run.sh`
+with the Agent Status hooks installed and Claude Code and Codex trusting
+`/tmp`. It approves three Slack badge rules (`claude`, `codex`,
+`codex --no-daemon`) through the settings writer and queues each run's frozen
+three-step FIXED plan through the real `queueInboundPlan` → `channel_queue_add`
+→ native claim check (`scripts/smoke-verdict <root> authority-live`: all nine
+rows `external` with fixed authority). No Slack event exists, so a bounded
+step is not exercised live. Then, as the user, in the panes:
+
+1. Deck starts each agent from the empty isolated server and types nothing
+   (`[queue] started … waits`, no `sent to`).
+2. Interact once with an agent yourself (type a prompt into its EMPTY input
+   box; never press Enter on a dialog). After its real hook, approved steps
+   continue on their own (`sent to … approved fixed step`); step 2 asks the
+   agent to run a command.
+3. Where the agent requests permission (`needs-input`), no approved step is
+   sent for as long as it waits; decline with Esc, and the next real hook
+   word releases the run.
+4. A Codex client sharing a managed daemon started elsewhere gets no trusted
+   Signal: its approved rows stay pending (0 attempts) however long you wait.
+
+Judge the bootstrap windows with `scripts/signal-candidate`
+(`claude-bootstrap-waits` / `codex-bootstrap-waits`). Record CLI versions
+before and after; quit only this instance and stop its server.
 
 ## Signal integrity: automation finish (FR-SI-01)
 

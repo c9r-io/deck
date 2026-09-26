@@ -66,7 +66,10 @@
 //! `external` row (admitted through `channel_queue_add*`, or carrying a
 //! verbatim external message) that follows a previous row is never selected
 //! automatically — `turn-done` ends an interaction, it does not say the
-//! agent is ready for outside text — so it waits for the user's send-now.
+//! agent is ready for outside text — so it waits for the user's send-now,
+//! unless the row carries content authority (`authority.rs`: a step of the
+//! user's current approval of a Slack badge automation). Provenance stays
+//! `external` either way; authority releases only that one hold.
 //! A Codex foreground whose Signal is not `Trusted` for its process
 //! generation holds every automatic row too (`CodexSignalTrust`).
 //! The hold only delays; it never moves a card, and the plan reports it as
@@ -151,6 +154,7 @@
 //! to JS use camelCase, like `QueueAddArgs`; the full rule is in the
 //! `commands.rs` header.
 
+mod authority;
 pub(crate) mod connector;
 mod delivery;
 mod ops;
@@ -160,6 +164,7 @@ mod select;
 mod tests;
 mod thread;
 
+pub(crate) use authority::*;
 pub(crate) use delivery::*;
 pub(crate) use ops::*;
 pub(crate) use review::*;
@@ -290,6 +295,13 @@ pub(crate) struct QueueItem {
     /// selected automatically, only by send-now (`select::agent_holds`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     external: bool,
+    /// Content authority, separate from provenance: set only on the external
+    /// admission path when the row is a step of a valid automation grant
+    /// (`authority.rs`). An `external` follow-up with it is selected like an
+    /// owner row, still under every other hold; without it, send-now only.
+    /// Older decks ignore the field and keep holding the row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    authority: Option<StepAuthority>,
 }
 
 pub(crate) fn default_state() -> ItemState {
@@ -467,6 +479,13 @@ pub(crate) struct DeliveryRecord {
     assumed: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     operation_id: Option<String>,
+    /// The approval the delivered row carried (ids and closed words only):
+    /// why an automatic send of external-origin text was allowed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    authority: Option<StepAuthority>,
+    /// The user sent it with send-now (not the scheduler).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    manual: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone)]

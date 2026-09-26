@@ -178,3 +178,22 @@ test('review is opt-in per new run and incomplete reviewed runs never auto-finis
   assert.equal(runFinishHolds({ ...args, finalReviewed: true, queued: true }, /^zsh$/), false);
   assert.equal(runFinishHolds({ ...args, finalReviewed: true, viewing: true }, /^zsh$/), false);
 });
+
+test('an automation approval survives normalization only in the backend\'s shape, on a Slack badge rule', async () => {
+  const { normalizeInbound } = await import('../js/settings-model.js');
+  const { readFileSync } = await import('node:fs');
+  const vector = JSON.parse(readFileSync(new URL('./fixtures/automation-grant.json', import.meta.url), 'utf8'));
+  const keep = normalizeInbound({ rules: [vector.rule] }).rules[0];
+  assert.deepEqual(keep.autoSend, vector.rule.autoSend);
+  const grant = vector.rule.autoSend;
+  for (const bad of [
+    { ...grant, digest: 'x' }, { ...grant, steps: [] }, { ...grant, classes: ['fixed'] },
+    { ...grant, classes: ['fixed', 'verbatim', 'fixed'] }, { ...grant, steps: ['nothex', ...grant.steps.slice(1)] }, null,
+  ]) {
+    const rule = normalizeInbound({ rules: [{ ...vector.rule, autoSend: bad }] }).rules[0];
+    assert.equal('autoSend' in rule, false, 'a malformed approval is dropped (it only withdraws)');
+  }
+  const clock = normalizeInbound({ rules: [{ ...vector.rule, id: 'a1', badge: 'a1', source: 'clock',
+    schedule: { unit: 'day', days: [], minute: 60 } }] }).rules[0];
+  assert.equal('autoSend' in clock, false, 'a clock rule never carries one');
+});

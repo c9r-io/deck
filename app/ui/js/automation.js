@@ -17,6 +17,15 @@
 // Both Slack triggers carry other people's text, so a badge rule obeys the
 // channel admission (`channelBlockReason`): the editor refuses to save one
 // that fails it and the list shows a stored one as blocked.
+// A Slack badge rule may carry the user's approval to send its steps
+// automatically (automation-model.js `approveRule`): the editor's checkbox
+// is ticked only while the stored approval is valid for the rule and its
+// template, any edit to a field the approval covers unticks it (the user
+// approves the new version by ticking again), and a template carrying
+// `{{msg.*}}` needs the second, explicit external-content box for those
+// steps. Saving unticked drops the approval, which also stops the unsent
+// rows of runs that relied on it (scheduler/authority.rs). The list shows
+// each Slack rule's approval as on / off / needs approval again.
 // This module is only the drawer that lists the CURRENT project's rules of
 // either trigger, edits them through `persistInbound` (one durable settings
 // write), and shows each rule's next slot (clock) or last runs. What a rule
@@ -58,7 +67,7 @@ import { $, ctx, genId, inv, listen, state, store, uev } from './state.js';
 import { confirmDialog, toast } from './dialogs.js';
 import { persistInbound } from './settings.js';
 import { minToHM, projectDefaults, projectRules, ruleByOrigin, toggleClockRule } from './pure.js';
-import { composeRule, graceOptions, graceText, liveRules, mergeRules, recentRuns, ruleFacts, ruleLabel, runSummary, triggerText } from './automation-model.js';
+import { approveRule, composeRule, graceOptions, graceText, grantState, liveRules, mergeRules, recentRuns, ruleFacts, ruleLabel, runSummary, templateCarriesMessage, triggerText } from './automation-model.js';
 import { formatNumber, onLocaleChange, t } from './i18n.js';
 import { formatShortcut } from './shortcuts.js';
 import { DEFAULT_GRACE_MIN } from './settings-model.js';
@@ -129,6 +138,16 @@ function runLine(run) {
   return line;
 }
 
+/* rule id → its approval state for the list, computed before a render
+   (hashing is async); a missing entry reads as not approved */
+let approvals = new Map();
+let renderSeq = 0;
+
+function ruleTemplate(rule) {
+  const project = store.projects.find(p => p.id === rule.projectId);
+  return (project?.templates || []).find(tp => tp.name === rule.template) || null;
+}
+
 function ruleEl(rule) {
   const project = activeProject();
   const column = project && project.columns.find(c => c.id === rule.columnId);
@@ -164,7 +183,8 @@ function ruleEl(rule) {
     renderAutomations();
   };
   const kv = el.querySelector('.ar-kv');
-  const rows = ruleFacts(rule, { columnName: column ? column.name : null, home: ctx.HOME, slackConnected: slackConnected() });
+  const rows = ruleFacts(rule, { columnName: column ? column.name : null, home: ctx.HOME, slackConnected: slackConnected(),
+    approval: approvals.get(rule.id) || 'none' });
   for (const [key, value] of rows) {
     const k = document.createElement('span'); k.textContent = t(key);
     const v = document.createElement('b'); v.textContent = value; v.title = value;
@@ -180,6 +200,26 @@ function ruleEl(rule) {
 export function renderAutomations() {
   refreshAutomationBadge();
   if (!isOpen()) return;
+  const seq = ++renderSeq;
+  paintAutomations();
+  /* approval states hash asynchronously: repaint once, if they changed and
+     no newer render took over */
+  refreshApprovals().then(changed => {
+    if (changed && seq === renderSeq && isOpen()) paintAutomations();
+  }).catch(() => {});
+}
+
+async function refreshApprovals() {
+  const next = new Map();
+  for (const rule of rulesOf().filter(r => r.source === 'slack')) {
+    next.set(rule.id, await grantState(rule, ruleTemplate(rule)));
+  }
+  const changed = next.size !== approvals.size || [...next].some(([id, value]) => approvals.get(id) !== value);
+  approvals = next;
+  return changed;
+}
+
+function paintAutomations() {
   const list = $('auto-list');
   list.innerHTML = '';
   const rules = rulesOf();
@@ -245,6 +285,28 @@ function syncEditor() {
   $('auto-dom').hidden = trigger !== 'clock' || unit !== 'month';
   $('auto-slack-state').textContent = t(slackConnected() ? 'automation.slackOn' : 'automation.slackOffHint');
   $('auto-capture-row').hidden = trigger !== 'channel' || $('auto-match-kind').value !== 'regex';
+  syncApproval();
+}
+
+/* the external-content box exists only for a template that carries message
+   content, and only as an addition to the approval itself */
+function syncApproval() {
+  const project = activeProject();
+  const template = (project?.templates || []).find(tp => tp.name === $('auto-template').value);
+  const slack = segGet('auto-trigger') === 'slack';
+  $('auto-send-external-row').hidden = !slack || !templateCarriesMessage(template);
+  $('auto-send-external').disabled = !$('auto-send').checked;
+  if (!$('auto-send').checked) $('auto-send-external').checked = false;
+}
+
+/* an edit to anything the approval covers withdraws the tick: the user
+   approves the edited version explicitly (or saves without approval) */
+function withdrawApproval() {
+  if (!$('auto-send').checked && !$('auto-send-external').checked) return;
+  $('auto-send').checked = false;
+  $('auto-send-external').checked = false;
+  syncApproval();
+  toast(t('automation.autoSend.withdrawn'));
 }
 
 function fillTargets(rule) {
@@ -305,6 +367,9 @@ export function openEditor(rule) {
   fillTargets(rule);
   $('auto-review').checked = rule?.reviewEach === true;
   segSet('auto-finish', rule ? (rule.finish === 'close' ? 'close' : 'keep') : 'close');
+  const approved = rule?.source === 'slack' && approvals.get(rule.id) === 'valid';
+  $('auto-send').checked = approved;
+  $('auto-send-external').checked = approved && rule.autoSend.external === true;
   syncEditor();
   $('auto-editor').hidden = false;
   $(channel ? 'auto-channel-ids' : 'auto-name').focus();
@@ -365,6 +430,17 @@ function readEditor() {
     return null;
   }
   return read.rule;
+}
+
+/* the rule to store: approved against its template when the box is ticked,
+   without any approval otherwise (a stale one never survives a save) */
+async function withApproval(rule) {
+  const plain = { ...rule };
+  delete plain.autoSend;
+  if (rule.source !== 'slack' || !$('auto-send').checked) return plain;
+  const template = ruleTemplate(plain);
+  if (!template) return plain;
+  return approveRule(plain, template, { external: $('auto-send-external').checked });
 }
 
 async function saveRule(rule) {
@@ -498,17 +574,29 @@ export function initAutomation(deps) {
   $('auto-new').onclick = () => openEditor(null);
   $('auto-cancel').onclick = () => closeEditor();
   $('auto-save').onclick = async () => {
-    const rule = readEditor();
-    if (!rule) return;
+    const read = readEditor();
+    if (!read) return;
+    const rule = await withApproval(read);
     if (await saveRule(rule)) { closeEditor(); toast(t('automation.saved')); }
   };
+  $('auto-send').addEventListener('change', syncApproval);
+  for (const id of ['auto-badge', 'auto-dir', 'auto-cmd', 'auto-template', 'auto-review']) {
+    $(id).addEventListener(id === 'auto-template' || id === 'auto-review' ? 'change' : 'input', withdrawApproval);
+  }
+  $('auto-template').addEventListener('change', syncApproval);
   $('auto-unit').addEventListener('change', syncEditor);
   $('auto-match-kind').addEventListener('change', syncEditor);
   $('auto-trigger').querySelectorAll('button').forEach(b => {
-    b.onclick = () => { segSet('auto-trigger', b.dataset.v); syncEditor(); };
+    b.onclick = () => {
+      if (segGet('auto-trigger') !== b.dataset.v) withdrawApproval();
+      segSet('auto-trigger', b.dataset.v); syncEditor();
+    };
   });
   $('auto-finish').querySelectorAll('button').forEach(b => {
-    b.onclick = () => segSet('auto-finish', b.dataset.v);
+    b.onclick = () => {
+      if (segGet('auto-finish') !== b.dataset.v) withdrawApproval();
+      segSet('auto-finish', b.dataset.v);
+    };
   });
   $('auto-drawer').addEventListener('keydown', event => {
     if (event.key !== 'Escape') return;

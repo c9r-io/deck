@@ -93,3 +93,11 @@ export function listStartCalls(base, sched, steps, tpl = null) {
     return ['queue_add', { args: { ...base, ...(k === 0 ? sched : follow), text, ...tag(k) } }];
   });
 }
+
+/* A row carrying an automation approval (scheduler/authority.rs) that is
+   still waiting: its plan stage names readiness (first agent interaction,
+   an input request, Codex Signal, quiet, order), never a missing approval,
+   so the panel prefixes it "Approved step". Sent, sending, ambiguous and
+   given-up rows are past that question. */
+const PAST_APPROVAL = new Set(['review', 'review-approved', 'ambiguous', 'firing', 'failed']);
+export const approvedWait = plan => plan?.authorized === true && !PAST_APPROVAL.has(plan.stage);

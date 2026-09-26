@@ -3,7 +3,8 @@
 // The drawer itself (automation.js) is verified by the WKWebView smoke.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { composeRule, graceOptions, graceText, liveRules, mergeRules, recentRuns, ruleFacts, ruleLabel, runSummary, scheduleText, triggerText } from '../js/automation-model.js';
+import { approvalText, approveRule, composeRule, graceOptions, graceText, grantDigest, grantManifest, grantState, liveRules, mergeRules, recentRuns, ruleFacts, ruleLabel, runSummary, scheduleText, stepClass, templateCarriesMessage, triggerText } from '../js/automation-model.js';
+import { readFileSync } from 'node:fs';
 import { GRACE_CHOICES } from '../js/settings-model.js';
 import { setLocale } from '../js/i18n.js';
 
@@ -68,8 +69,9 @@ test('the fact rows name the target, the inspection mode and the trigger\'s own 
   assert.equal(paused[3][1], 'Inspect after each row');
   assert.equal(paused[6][1], 'paused');
   const slack = ruleFacts(slackRule(), { columnName: 'Working', slackConnected: true });
-  assert.deepEqual(slack.slice(-1)[0], ['automation.kv.connection', 'connected']);
-  assert.match(ruleFacts(slackRule(), {}).slice(-1)[0][1], /^not connected/);
+  assert.deepEqual(slack.slice(-2)[0], ['automation.kv.connection', 'connected']);
+  assert.match(ruleFacts(slackRule(), {}).slice(-2)[0][1], /^not connected/);
+  assert.deepEqual(slack.slice(-1)[0], ['automation.kv.autoSend', 'off — each follow-up waits for Send now']);
 });
 
 test('recent runs belong to the rule by id (clock) or badge (Slack), newest first, at most four', () => {
@@ -134,4 +136,73 @@ test('rules of a deleted project are dropped; nothing changes when every project
   const rules = [clockRule(), slackRule({ projectId: 'gone' })];
   assert.equal(liveRules(rules, [{ id: 'P' }, { id: 'gone' }]), null);
   assert.deepEqual(liveRules(rules, [{ id: 'P' }]).map(r => r.id), ['a1']);
+});
+
+/* ---------- delivery approval (twin of scheduler/authority.rs) ---------- */
+
+const vector = JSON.parse(readFileSync(new URL('./fixtures/automation-grant.json', import.meta.url), 'utf8'));
+const template = { name: vector.rule.template, steps: vector.templateSteps };
+
+test('the approval digest is byte-identical to the backend vector', async () => {
+  const grant = vector.rule.autoSend;
+  assert.equal(grantManifest(vector.rule, grant.steps, grant.classes, grant.external), vector.manifest);
+  assert.equal(await grantDigest(vector.rule, grant), grant.digest);
+  const { autoSend, ...plain } = vector.rule;
+  const approved = await approveRule(plain, template, { external: true });
+  assert.deepEqual(approved.autoSend, autoSend, 'approving the fixture rule reproduces its stored approval');
+  assert.equal(await grantState(vector.rule, template), 'valid');
+});
+
+test('steps are fixed owner text or bounded by known message placeholders', async () => {
+  assert.equal(stepClass('Review and run the tests.'), 'fixed');
+  assert.equal(stepClass('Look at {{msg.text}}'), 'bounded');
+  assert.equal(stepClass('Look at {{ msg.link }}'), 'bounded');
+  assert.equal(stepClass('Literal {{msg.unknown}} stays text'), 'fixed');
+  assert.equal(templateCarriesMessage(template), true);
+  assert.equal(templateCarriesMessage({ steps: ['a', 'b'] }), false);
+  // the external box is meaningless without a bounded step and is stored false
+  const { autoSend, ...plain } = vector.rule;
+  const fixedOnly = await approveRule(plain, { steps: ['one', 'two'] }, { external: true });
+  assert.equal(fixedOnly.autoSend.external, false);
+  assert.deepEqual(fixedOnly.autoSend.classes, ['fixed', 'fixed']);
+});
+
+test('any meaning-bearing edit leaves a stale approval; presentation edits do not', async () => {
+  const rule = vector.rule;
+  for (const [what, edited, tpl] of [
+    ['template text', rule, { ...template, steps: ['changed', ...template.steps.slice(1)] }],
+    ['step order', rule, { ...template, steps: [...template.steps].reverse() }],
+    ['step removed', rule, { ...template, steps: template.steps.slice(1) }],
+    ['template missing', rule, null],
+    ['Claude ↔ Codex', { ...rule, cmd: 'claude' }, template],
+    ['command args', { ...rule, cmd: 'codex' }, template],
+    ['directory', { ...rule, dir: '~/other' }, template],
+    ['project', { ...rule, projectId: 'P2' }, template],
+    ['template identity', { ...rule, template: 'other' }, template],
+    ['badge', { ...rule, badge: 'rocket' }, template],
+    ['trigger', { ...rule, source: 'clock' }, template],
+    ['review', { ...rule, reviewEach: false }, template],
+    ['finish', { ...rule, finish: 'keep' }, template],
+    ['external policy', { ...rule, autoSend: { ...rule.autoSend, external: false } }, template],
+  ]) assert.equal(await grantState(edited, tpl), 'stale', what);
+  for (const [what, edited] of [
+    ['name', { ...rule, name: 'Renamed' }], ['column', { ...rule, columnId: 'C9' }], ['enabled', { ...rule, enabled: false }],
+  ]) assert.equal(await grantState(edited, template), 'valid', what);
+  assert.equal(await grantState({ ...rule, autoSend: undefined }, template), 'none');
+  assert.equal(approvalText(rule, 'valid'), 'approved follow-up steps continue, including Slack message content');
+  assert.equal(approvalText({ ...rule, autoSend: { ...rule.autoSend, external: false } }, 'valid'), 'approved follow-up steps continue (no Slack message content)');
+  assert.match(approvalText(rule, 'stale'), /^off — the rule or its template changed/);
+  assert.match(approvalText(rule, 'none'), /^off — each follow-up waits/);
+});
+
+test('composing a rule never carries an old approval forward', () => {
+  const { rule } = composeRule({ trigger: 'slack', badge: 'deck', columnId: 'C', template: 'tpl', cmd: 'claude', finish: 'keep' },
+    { previous: { ...slackRule(), autoSend: vector.rule.autoSend }, rules: [], projectId: 'P', genId });
+  assert.equal('autoSend' in rule, false);
+});
+
+test('the bounded-step expansion vectors are the webview\'s own fill (the backend twin checks the same vectors)', async () => {
+  const { fillInboundTemplate } = await import('../js/pure.js');
+  assert.ok(vector.expansions.length >= 5);
+  for (const v of vector.expansions) assert.equal(fillInboundTemplate(v.skeleton, v.msg), v.expected, v.skeleton);
 });

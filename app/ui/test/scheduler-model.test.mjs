@@ -66,3 +66,16 @@ test('starting a list is one rule, one reviewed transaction, or a head plus chai
   assert.deepEqual(plain[2][1].args, { ...base, mode: 'chain', quietSecs: null, text: 'three', tpl: 'tpl', tplIdx: 3, tplTotal: 3 });
   assert.equal('tpl' in listStartCalls(base, { mode: 'at', at: 1 }, ['x'])[0][1].args, false, 'no template tag without a template');
 });
+
+test('an approved row that still waits names readiness, never a missing approval', async () => {
+  const { approvedWait } = await import('../js/scheduler-model.js');
+  for (const stage of ['first-send', 'agent', 'codex-signal', 'quiet', 'previous', 'gap', 'context', 'paused']) {
+    assert.equal(approvedWait({ stage, authorized: true }), true, stage);
+    assert.equal(approvedWait({ stage, authorized: false }), false, stage);
+  }
+  for (const stage of ['review', 'review-approved', 'ambiguous', 'firing', 'failed']) {
+    assert.equal(approvedWait({ stage, authorized: true }), false, stage);
+  }
+  assert.equal(approvedWait(undefined), false);
+  assert.equal(approvedWait({ stage: 'external' }), false, 'a plan from an older backend carries no approval');
+});

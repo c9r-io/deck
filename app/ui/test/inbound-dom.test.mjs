@@ -149,6 +149,54 @@ test('the Board queue transaction preserves a frozen plan after a partial backen
   }
 });
 
+test('an approved badge rule freezes its approval and claims each step on the external path only', async () => {
+  const { approveRule } = await import('../js/automation-model.js');
+  const savedListeners = [...listeners]; listeners.clear();
+  try {
+    const steps = ['Review the change.', 'Investigate {{msg.text}}', 'Run the tests.'];
+    const rule = await approveRule({ ...item.rule, source: 'slack', badge: 'deck' },
+      { name: 'triage', steps }, { external: true });
+    for (const reviewEach of [false, true]) {
+      const approved = await approveRule({ ...rule, reviewEach }, { name: 'triage', steps }, { external: true });
+      const f = setup([{ ...item, rule: approved }], '', steps);
+      provider.queueInboundPlan = realQueueInboundPlan;
+      await drainInbound();
+      const plan = store.cards[0].inboundPlan;
+      /* the frozen proof material: the event key and each bounded step's
+         approved skeleton (fixed steps carry none) */
+      assert.deepEqual(plan.authority, { rule: 'rule-1', grant: approved.autoSend.digest, trigger: 'slack-badge',
+        classes: ['fixed', 'bounded', 'fixed'], event: 'C9/1.2', skeletons: [null, 'Investigate {{msg.text}}', null] });
+      if (reviewEach) {
+        const [[, args]] = f.calls.filter(([name]) => name === 'channel_queue_add_reviewed_list');
+        assert.deepEqual(args.args.authority, { rule: 'rule-1', grant: approved.autoSend.digest, step: 0,
+          event: 'C9/1.2', skeletons: [null, 'Investigate {{msg.text}}', null] });
+      } else {
+        const claims = f.calls.filter(([name]) => name === 'channel_queue_add').map(([, args]) => args.args.authority);
+        assert.deepEqual(claims.map(claim => claim.step), [0, 1, 2]);
+        assert.deepEqual(claims.map(claim => claim.skeletons), [[null], ['Investigate {{msg.text}}'], [null]]);
+        assert.ok(claims.every(claim => claim.grant === approved.autoSend.digest && claim.event === 'C9/1.2'));
+      }
+      assert.equal(f.calls.filter(([name]) => name === 'queue_add' || name === 'queue_add_reviewed_list').length, 0);
+    }
+    // a template edited after approval: no approval is frozen, rows stay manual
+    const f = setup([{ ...item, rule }], '', ['Review the change.', 'Something else']);
+    provider.queueInboundPlan = realQueueInboundPlan;
+    await drainInbound();
+    assert.equal('authority' in store.cards[0].inboundPlan, false);
+    assert.ok(f.calls.filter(([name]) => name === 'channel_queue_add').every(([, args]) => !('authority' in args.args)));
+    // a clock run never claims one, even with an approval-shaped field
+    const clock = { id: 'item-3', event: { source: 'clock', key: '1700000001', badge: 'rule-1' },
+      rule: { ...item.rule, cmd: '', autoSend: rule.autoSend } };
+    const c = setup([clock], '', steps);
+    provider.queueInboundPlan = realQueueInboundPlan;
+    await drainInbound();
+    assert.ok(c.calls.filter(([name]) => name === 'queue_add').every(([, args]) => !('authority' in args.args)));
+  } finally {
+    provider.queueInboundPlan = realQueueInboundPlan;
+    listeners.clear(); for (const listener of savedListeners) listeners.add(listener);
+  }
+});
+
 test('a legacy staged Channel inbox item drains without any Slack credentials', async () => {
   const { drainChannel } = await import('../js/inbound.js');
   const { removeLegacySlackCredentials } = await import('../js/slack-legacy-cleanup.js');

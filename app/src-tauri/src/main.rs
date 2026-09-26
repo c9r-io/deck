@@ -148,6 +148,8 @@ pub(crate) const SMOKE_ENTRIES: &[(&str, &str)] = &[
     ("connector-transport", "m.verifyConnectorTransport()"),
     ("selection-events", "m.verifySelectionEvents()"),
     ("signal-finish", "m.verifySignalFinish()"),
+    ("authority-live", "m.verifyAuthorityLive()"),
+    ("empty-start", "m.verifyEmptyStart()"),
 ];
 
 fn smoke_entry(mode: &str) -> &'static str {

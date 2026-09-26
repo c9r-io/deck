@@ -192,3 +192,28 @@ fn documents_delegate_only_settings_validation_and_preset_admission() {
     assert_eq!(references(&documents, "admission"), 1);
     assert!(documents.contains("crate::admission::channel_agent_command("));
 }
+
+/// Automation authority revocation fence (`scheduler/authority.rs`): a
+/// settings write and the automatic send's pre-fire authority decision
+/// serialize on `storage::settings_fence`, taken before the queue lock and
+/// released only after the firing intent transaction, before injection.
+#[test]
+fn settings_writes_and_the_pre_fire_authority_check_share_one_fence() {
+    let documents = source("documents.rs");
+    let save = &documents[documents.find("fn save_settings(").unwrap()..];
+    let save = &save[..save.find("\n}\n").unwrap()];
+    let fence = save
+        .find("storage::settings_fence()")
+        .expect("save_settings takes the fence");
+    assert!(fence < save.find("save_validated::<SettingsDoc>").unwrap());
+    let delivery = source("scheduler/delivery.rs");
+    let guarded = &delivery[delivery.find("fn send_one_guarded(").unwrap()..];
+    let taken = guarded
+        .find(".then(crate::storage::settings_fence)")
+        .expect("fence taken");
+    let intent = guarded.find("with_queue_opt(qm, persist,").unwrap();
+    let released = guarded.find("drop(fence_guard);").expect("fence released");
+    let fire = guarded.find("match (h.fire)(&item)").unwrap();
+    assert!(taken < intent && intent < released && released < fire);
+    assert!(guarded[..released].contains("fence(&sel, (h.authority)().as_ref())"));
+}

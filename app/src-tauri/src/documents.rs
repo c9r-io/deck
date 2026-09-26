@@ -892,6 +892,9 @@ pub(crate) fn save_settings(data: String) -> Result<(), DeckError> {
         ));
     }
     validate_saved_update_channel(&data)?;
+    // a revoked automation approval is committed only under the fence the
+    // scheduler's pre-fire authority check holds (storage::settings_fence)
+    let _fence = storage::settings_fence();
     save_validated::<SettingsDoc>(&settings_path(), &data, "settings")
 }
 

@@ -39,6 +39,11 @@
 //!   row admitted here is marked `external` (backend-set, `channel_path`),
 //!   and its follow-up rows wait for the user's send-now (`select.rs`,
 //!   agent hold: no hook word is readiness for external text).
+//! - `admit_authority` (external commands only, after `admit_external`)
+//!   turns the frozen plan's `authority` claim into the row's verified
+//!   content authority (`authority.rs`) or into nothing; the owner commands
+//!   refuse a claim outright (`validate_add`). Editing a row's text drops
+//!   its authority. Authority never changes `external`.
 //! - `external_text` is the caller's statement that a row's text IS an
 //!   external message verbatim (a Slack buffer entry, on either path).
 //!   `validate_add` then requires the channel agent command and refuses a
@@ -242,6 +247,18 @@ pub(crate) struct QueueAddArgs {
     /// on the external-message path (`QueueItem.external`).
     #[serde(skip)]
     pub(crate) channel_path: bool,
+    /// The frozen plan's statement that this row is step `step` of the
+    /// automation grant `grant` of rule `rule` (`authority.rs`). A request
+    /// only, accepted on the external path alone and checked there against
+    /// the current settings; omitted when absent so older operation
+    /// fingerprints stay identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) authority: Option<AuthorityClaim>,
+    /// Set only by `admit_authority`, never by a caller: the verified
+    /// authority of row k of this call (one entry per text of a reviewed
+    /// list, one for a single row).
+    #[serde(skip)]
+    pub(crate) granted: Vec<Option<StepAuthority>>,
 }
 
 /// Format (Unicode Cf) characters: invisible, so they must not hide what
@@ -301,6 +318,12 @@ pub(crate) const MAX_QUIET_SECS: u64 = 86_400;
 /// Reject invalid schedule combinations up front.
 pub(crate) fn validate_add(a: &QueueAddArgs) -> Result<(), DeckError> {
     crate::tmux::validate_session_name(&a.session)?;
+    if a.authority.is_some() && !a.channel_path {
+        return Err(DeckError::new(
+            ErrorKind::Invalid,
+            "only an automation's external rows carry an approval",
+        ));
+    }
     if a.external_text {
         require_channel_agent(a)?;
         if leading_command(&a.text) {
@@ -598,6 +621,7 @@ fn add_item_bound(
         review_each: args.review_each || inherited_review,
         review: None,
         external: args.channel_path || args.external_text,
+        authority: args.granted.first().cloned().flatten(),
     });
     if let (Some(id), Some(fingerprint)) = (operation_id, operation_fingerprint) {
         let item = q.items.last().expect("queue item just appended");
@@ -641,6 +665,8 @@ pub(crate) fn channel_queue_add(
 ) -> Result<(), DeckError> {
     let result = (|| {
         admit_external(&mut args)?;
+        let text = normalize_prompt(&args.text);
+        admit_authority(&mut args, std::slice::from_ref(&text));
         queue_add(state, app, args)
     })();
     if let Err(error) = &result {
@@ -658,6 +684,51 @@ pub(super) fn admit_external(args: &mut QueueAddArgs) -> Result<(), DeckError> {
     require_channel_agent(args)?;
     args.channel_path = true;
     Ok(())
+}
+
+/// Content authority for an externally admitted call (`authority.rs`): each
+/// text's claim (`step + k` for text k) is checked against the CURRENT
+/// settings grant. A refused claim admits the row without authority — it
+/// still runs, by send-now — and logs a closed code. Only the external
+/// commands call this, after `admit_external`.
+pub(super) fn admit_authority(args: &mut QueueAddArgs, texts: &[String]) {
+    args.granted = Vec::new();
+    let Some(claim) = args.authority.clone() else {
+        return;
+    };
+    let config = crate::inbound::read_config_strict();
+    // the backend's own copy of the event the run was made from
+    let event = claim
+        .event
+        .as_deref()
+        .and_then(|key| crate::inbound::pending_event(key, &claim.rule));
+    for (k, text) in texts.iter().enumerate() {
+        let step = AuthorityClaim {
+            step: claim.step.saturating_add(k as u32),
+            ..claim.clone()
+        };
+        let proof = Proof {
+            skeleton: claim.skeletons.get(k).and_then(Option::as_deref),
+            event: event.as_ref(),
+        };
+        let verdict = verify_claim(
+            config.as_ref(),
+            &step,
+            &args.cmd,
+            &normalize_prompt(text),
+            args.external_text,
+            proof,
+        );
+        args.granted.push(match verdict {
+            Ok(authority) => Some(authority),
+            Err(code) => {
+                applog(&format!(
+                    "[queue] automation approval not applied ({code}) — the row waits for send-now"
+                ));
+                None
+            }
+        });
+    }
 }
 
 pub(super) fn require_channel_agent(args: &QueueAddArgs) -> Result<(), DeckError> {
@@ -707,6 +778,8 @@ pub(crate) fn update_text(q: &mut QueueState, id: &str, text: String) -> Result<
         item.text = text;
         item.revision = item.revision.wrapping_add(1);
         item.last_context = None;
+        // the approved text is gone: an edited external row is send-now only
+        item.authority = None;
     }
     Ok(())
 }
@@ -1092,6 +1165,7 @@ pub(crate) fn queue_send_now(
             fire: &fire_once,
             persist: &save_queue,
             kill: &kill_session_quietly,
+            authority: &crate::inbound::read_config_strict,
         },
         &ContextHooks {
             prepare: &prepare_once,
@@ -1165,6 +1239,7 @@ pub(super) fn add_reviewed_rows(
         row.text = text.clone();
         row.operation_id = args.operation_id.as_ref().map(|id| format!("{id}-{k}"));
         row.tpl_idx = row.tpl.as_ref().map(|_| k as u32 + 1);
+        row.granted = vec![args.granted.get(k).cloned().flatten()];
         row.tpl_total = row.tpl.as_ref().map(|_| texts.len() as u32);
         if k > 0 {
             row.mode = "chain".into();
@@ -1206,6 +1281,7 @@ pub(crate) fn channel_queue_add_reviewed_list(
 ) -> Result<(), DeckError> {
     let result = (|| {
         admit_external(&mut args)?;
+        admit_authority(&mut args, &texts);
         queue_add_reviewed_list(state, app, args, texts)
     })();
     if let Err(error) = &result {
