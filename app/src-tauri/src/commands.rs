@@ -9,6 +9,11 @@
 //! for fixed-height, bottom-aligned card previews. Frontend polls every 2.5s and
 //! diffs into granular UI events (status/mem/output) — never full re-renders on
 //! output.
+//! Codex coverage is projected separately from the same Signal target and
+//! process snapshot as generation evidence. Unknown is not a diagnosis of
+//! shared-daemon mode; unavailable is only the proven target's refusal.
+//! Coverage is diagnostic presentation only, never an attention episode,
+//! input-readiness proof or retirement evidence.
 //! Poll IO runs on the blocking pool with a tmux deadline. A failed listing
 //! rejects the poll, never reports dead sessions; unusable cwd metadata is
 //! omitted independently of liveness. Closing an already-absent session is
@@ -462,6 +467,9 @@ pub(crate) struct SessInfo {
     /// active pane of its current window, `agent_status::signal_targets`),
     /// if that pane's current foreground generation reported one
     agent: Option<&'static str>,
+    /// Diagnostic coverage of the SAME Signal target's foreground generation.
+    /// None for other programs; unknown never claims a particular cause.
+    codex_signal: Option<crate::agent_status::CodexSignalTrust>,
     /// the Deck-local attention episode of that same observation
     /// (`agent_status::Observation`): opaque, never a source id, never
     /// authority. None without an observation.
@@ -629,6 +637,9 @@ pub(crate) fn poll_from_listing(
     // foreground process generation that reported it
     crate::agent_status::reconcile(&rows, &table);
     let agents = crate::agent_status::projections(&rows);
+    let evidence = crate::agent_status::generation_evidence(&rows, |pane| {
+        crate::agent_status::foreground_generation(&table, pane)
+    });
     let mut finish = crate::agent_status::finish_foregrounds(&rows);
     let panes = representative_panes(rows);
 
@@ -682,6 +693,7 @@ pub(crate) fn poll_from_listing(
                 cwd: pane.and_then(|pane| usable_cwd(&pane.path).map(str::to_owned)),
                 scrolled: pane.map(|pane| pane.in_mode),
                 agent: pane.and(agents.get(&name)).map(|o| o.state),
+                codex_signal: pane.and(evidence.get(&name)).and_then(|e| e.codex),
                 episode: pane.and(agents.get(&name)).map(|o| o.episode),
                 episode_viewed: pane.and(agents.get(&name)).is_some_and(|o| o.viewed),
                 finish_fg: pane.and_then(|_| finish.remove(&name)),
@@ -911,6 +923,117 @@ mod tests {
             let name = "deck-preview-unit".to_string();
             assert!(capture_tails(&[&name], 2).is_empty());
         }
+    }
+
+    #[test]
+    fn codex_coverage_uses_the_signal_target_and_current_generation() {
+        use crate::agent_status::CodexSignalTrust::{Trusted, Unknown};
+        use crate::procinfo::ProcessInfo;
+        let _store = crate::agent_status::STORE_TEST_LOCK.lock_or_recover();
+        let _tracker = crate::shell_state::TRACKER_TEST_LOCK.lock_or_recover();
+        crate::agent_status::reset_for_tests();
+        let process = |pid, ppid, tty, fg, start| ProcessInfo {
+            pid,
+            ppid,
+            pgid: pid,
+            tty,
+            tty_pgid: fg,
+            start_seconds: start,
+            start_micros: 0,
+        };
+        let table: crate::agent_status::ProcessTable = [
+            process(300, 42, 7, 300, 1000),
+            process(400, 42, 8, 410, 1000),
+            process(410, 400, 8, 410, 2000),
+            process(420, 410, 8, 410, 3000),
+        ]
+        .into_iter()
+        .map(|info| (info.pid, info))
+        .collect();
+        let row = |pane: &str, pid, active, command: &str| PaneRow {
+            server_pid: 42,
+            session_id: "$1".into(),
+            session_name: "deck-card-coverage".into(),
+            window_id: "@1".into(),
+            pane_id: pane.into(),
+            pane_pid: pid,
+            window_active: true,
+            pane_active: active,
+            command: command.into(),
+            ..PaneRow::default()
+        };
+        let rows = vec![row("%3", 300, false, "zsh"), row("%4", 400, true, "codex")];
+        let poll = |rows: Vec<PaneRow>, table: crate::agent_status::ProcessTable| {
+            poll_from_listing(
+                vec!["deck-card-coverage".into()],
+                vec![],
+                false,
+                Ok(rows),
+                || table,
+            )
+            .unwrap()
+            .remove(0)
+        };
+        let info = poll(rows.clone(), table.clone());
+        assert_eq!(info.fg.as_deref(), Some("zsh"));
+        assert_eq!(
+            info.codex_signal,
+            Some(Unknown),
+            "selected pane, never representative pane"
+        );
+        assert_eq!(
+            serde_json::to_value(&info).unwrap()["codex_signal"],
+            "unknown"
+        );
+        assert_eq!(info.episode, None);
+        let line = format!(
+            "{{\"v\":1,\"source\":\"codex\",\"state\":\"working\",\"socket\":\"{}\",\"server_pid\":42,\"pane\":\"%4\"}}",
+            crate::tmux::socket()
+        );
+        let origin = crate::agent_status::Origin {
+            peer: Some(420),
+            table: table.clone(),
+        };
+        assert_eq!(
+            crate::agent_status::ingest(&line, &origin, || Some(rows.clone())),
+            Ok(())
+        );
+        let info = poll(rows.clone(), table.clone());
+        assert_eq!(info.codex_signal, Some(Trusted));
+        assert_eq!(info.agent, Some("working"));
+        let mut wrapped = rows.clone();
+        wrapped[1].command = "node".into();
+        assert_eq!(
+            poll(wrapped, table.clone()).codex_signal,
+            Some(Trusted),
+            "proven wrapper"
+        );
+        let mut replaced = table.clone();
+        replaced.get_mut(&410).unwrap().start_seconds += 1;
+        let info = poll(rows.clone(), replaced);
+        assert_eq!(
+            info.codex_signal,
+            Some(Unknown),
+            "PID reuse loses old evidence"
+        );
+        assert_eq!(info.agent, None);
+        let mut switched = rows.clone();
+        switched[0].pane_active = true;
+        switched[1].pane_active = false;
+        assert_eq!(
+            poll(switched, table.clone()).codex_signal,
+            None,
+            "active shell has no Codex coverage"
+        );
+        let mut ambiguous = rows;
+        ambiguous[0].pane_active = true;
+        assert_eq!(
+            poll(ambiguous, table.clone()).codex_signal,
+            None,
+            "no unique target"
+        );
+        assert_eq!(poll(vec![], table).codex_signal, None, "stopped session");
+        crate::agent_status::reset_for_tests();
     }
 
     /// FR-SI-03/03.1: `agent` and the finish rule's `finish_fg` come from

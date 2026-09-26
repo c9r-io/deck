@@ -208,9 +208,17 @@ const RUST: &[(&str, &str, &str, usize, Class)] = &[
     ),
     // Per-generation evidence (Codex shared-daemon FR + Agent Bootstrap Input
     // Safety): Codex Signal trust and Claude interaction evidence are not
-    // words; admission produces them and the hold alone reads them, which
-    // they can only tighten (no evidence holds every automatic agent row)
+    // words; admission produces them, the hold consumes them for safety,
+    // and the Board explains missing coverage without creating an episode.
     ("agent_status.rs", "", "generation_evidence(", 1, Producer),
+    // Coverage is explanatory UI only, not an interaction or a new hold.
+    (
+        "commands.rs",
+        "poll_from_listing",
+        "generation_evidence(",
+        1,
+        Presentation,
+    ),
     (
         "scheduler/select.rs",
         "observe_with",
@@ -443,6 +451,13 @@ const JS: &[(&str, &str, &str, usize, Class)] = &[
         Attention,
     ),
     ("attention-model.js", "record", ".agent", 3, Attention),
+    (
+        "attention-model.js",
+        "codexCoverageGap",
+        ".agent",
+        1,
+        Presentation,
+    ),
     ("attention-model.js", "record", "'turn-done'", 1, Attention),
     (
         "attention-model.js",

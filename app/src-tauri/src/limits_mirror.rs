@@ -144,6 +144,11 @@ fn settings_limits_match_the_fixture() {
 fn closed_status_vocabularies_match_the_fixture() {
     let l = limits();
     assert_eq!(words(&l["agent_states"]), crate::agent_status::STATES);
+    use crate::agent_status::CodexSignalTrust::{Trusted, Unavailable, Unknown};
+    assert_eq!(
+        serde_json::to_value([Unknown, Trusted, Unavailable]).unwrap(),
+        l["codex_signal_trust"]
+    );
     let notices: Vec<&str> = crate::storage::StorageNotice::ALL
         .iter()
         .map(|notice| notice.code())

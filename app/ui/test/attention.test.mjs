@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ATTENTION_BADGE_LABELS, attentionBadge, createAttentionTracker, attentionRows } from '../js/attention-model.js';
+import { ATTENTION_BADGE_LABELS, attentionBadge, createAttentionTracker, attentionRows, codexCoverageGap } from '../js/attention-model.js';
 import { NOTIFY_COUNTED_FILTERS } from '../js/notify-model.js';
 import { dictionaries } from '../js/i18n.js';
 import fixture from './fixtures/attention-fixture.mjs';
@@ -12,6 +12,38 @@ const trackerOf = () => {
   tracker.record(cards, infos, new Set(cards.filter(c => c.read).map(c => c.id)), 100);
   return tracker;
 };
+
+test('Codex coverage is diagnostic only and follows live session snapshots', () => {
+  const tracker = createAttentionTracker();
+  const card = { id: 'codex', session: 'pane', cmd: 'codex' };
+  const poll = (codex_signal, rest = {}) => tracker.record([card], [{ name: 'pane', alive: true, idle_secs: 200, codex_signal, ...rest }]);
+  assert.equal(codexCoverageGap(tracker.get(card)), null);
+  for (const coverage of ['unknown', 'unavailable']) {
+    poll(coverage);
+    assert.equal(codexCoverageGap(tracker.get(card)), coverage);
+    assert.equal(tracker.category(card), 'unavailable');
+    assert.equal(tracker.counts([card]).pending, 0);
+    assert.equal(attentionBadge(tracker, card), null);
+    assert.equal(tracker.get(card).episode, null);
+    tracker.fail();
+    assert.equal(codexCoverageGap(tracker.get(card)), coverage);
+    assert.equal(tracker.get(card).stale, true);
+  }
+  poll('trusted', { agent: 'working' });
+  assert.equal(codexCoverageGap(tracker.get(card)), null);
+  poll('unavailable', { agent: 'needs-input' });
+  assert.equal(codexCoverageGap(tracker.get(card)), null, 'real observation outranks coverage even for an inconsistent row');
+  poll('unavailable', { alive: false });
+  assert.equal(codexCoverageGap(tracker.get(card)), null);
+  for (const malformed of [undefined, null, 'daemon', {}, true]) {
+    poll(malformed);
+    assert.equal(codexCoverageGap(tracker.get(card)), null);
+  }
+  poll('unknown');
+  assert.equal(codexCoverageGap(tracker.get({ ...card, session: 'replacement' })), null);
+  poll(null);
+  assert.equal(codexCoverageGap(tracker.get(card)), null, 'shell/other program removes the gap; saved codex command is not evidence');
+});
 
 test('12-card fixture: manual follow-up joins pending without changing live categories or placement', () => {
   const tracker = trackerOf();

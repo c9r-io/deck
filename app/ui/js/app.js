@@ -4,7 +4,7 @@ import './persistence.js';
 import './board.js';
 import { $, ctx, genId, initInputDiagnostics, inv, listen, state, store, uev } from './state.js';
 import { initDialogs, toast } from './dialogs.js';
-import { initSettings, loadSettings } from './settings.js';
+import { initSettings, loadSettings, openSettings } from './settings.js';
 import {
   activeProject, closeBuffer, initBuffer, panes, markSessionsStoppedForServerRestart, migrateColumnSemantics, newSessionSummary, openProjectDefaults, pollNow,
   projectDefaultsSummary, prepareCardsForServerRestart, provider, render, startPolling, stopPolling, switchProject,
@@ -332,7 +332,7 @@ function initModules() {
   initDialogs();
   initSettings();
   initTerminalChrome();
-  initAttention({ pollNow, provider, render, switchProject, leaveSessionView, closeBuffer, openSession });
+  initAttention({ pollNow, provider, render, switchProject, leaveSessionView, closeBuffer, openSession, openSettings });
   initLayout();
   initScheduler({ provider, pollNow, closeBuffer });
   initBuffer();

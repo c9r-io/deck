@@ -5,6 +5,9 @@
 //   interaction active, needs-input = input requested, turn-done =
 //   interaction ended — never task/program completion), `status`, `idle`.
 //   Only a successful poll writes it.
+// - Codex coverage: `codexSignal` is the backend's generation-bound diagnostic
+//   evidence, independent of observation/attention. A gap never creates a
+//   pending episode, readiness or permission; an unknown cause stays unknown.
 // - Attention: `seen` (read/unread) and the derived categories. Read means
 //   successfully displayed, never handled. With a backend episode (FR-SI-05:
 //   `episode` is Deck's opaque token for one accepted observation) the
@@ -29,6 +32,7 @@
 import { CARD_QUIET_SECS, effectiveCardStatus } from './pure.js';
 
 export const ATTENTION_FILTERS = Object.freeze(['pending', 'input', 'done', 'followed', 'unavailable', 'stopped']);
+export const CODEX_SIGNAL_TRUST = Object.freeze(['unknown', 'trusted', 'unavailable']);
 
 export function createAttentionTracker() {
   const snapshots = new Map();
@@ -76,6 +80,7 @@ export function createAttentionTracker() {
         const episodeViewed = episode != null && info.episode_viewed === true;
         snapshots.set(card.id, {
           session: card.session, alive: info.alive, agent, status,
+          codexSignal: info.alive && CODEX_SIGNAL_TRUST.includes(info.codex_signal) ? info.codex_signal : null,
           idle: info.idle_secs ?? null, observedAt: now, stale: false, episode, episodeViewed,
           seen: episode != null
             ? !!(episodeViewed || visible.has(card.id) || (old?.episode === episode && old.seen))
@@ -121,6 +126,14 @@ export function createAttentionTracker() {
       return counts;
     },
   };
+}
+
+// The diagnostic applies only to a live target without a real observation.
+// A stale snapshot retains its explanation with the existing "old" mark;
+// stopped/replaced sessions and a newly established signal remove the gap.
+export function codexCoverageGap(snapshot) {
+  if (!snapshot?.alive || snapshot.agent) return null;
+  return ['unknown', 'unavailable'].includes(snapshot.codexSignal) ? snapshot.codexSignal : null;
 }
 
 /* The Board card's attention badge. The same live set the Dock badge counts

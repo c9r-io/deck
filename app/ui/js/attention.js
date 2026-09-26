@@ -10,6 +10,9 @@
 //   ("unknown"), and a retry button re-polls. `attentionStatusText` and the
 //   status title also feed the Board card's status line, so both surfaces
 //   read the same words.
+// - Missing Codex coverage is a quiet status line with a diagnostic action,
+//   never a new attention category or notification. Diagnostics explain the
+//   observed gap and link to settings; they do not install hooks or send text.
 // - The Board card's attention badge (`paintCardAttentionBadge`) shows the
 //   Dock badge's set — needs input, or a turn that ended unread — from
 //   `attentionBadge` over the same tracker. `cardEl` creates it once and
@@ -33,10 +36,11 @@
 //   `closeBuffer`, `openSession`) arrive through `initAttention(deps)` from app.js, so
 //   board.js and layout.js may import this module without a cycle.
 import { $, ctx, QUIET_SECS, state, store } from './state.js';
-import { ATTENTION_BADGE_LABELS, ATTENTION_FILTERS, attentionBadge, attentionRows } from './attention-model.js';
+import { ATTENTION_BADGE_LABELS, ATTENTION_FILTERS, attentionBadge, attentionRows, codexCoverageGap } from './attention-model.js';
 import { formatDateTime, formatNumber, t } from './i18n.js';
+import { choiceDialog } from './dialogs.js';
 
-let pollNow, provider, render, switchProject, leaveSessionView, closeBuffer, openSession;
+let pollNow, provider, render, switchProject, leaveSessionView, closeBuffer, openSession, openSettings;
 
 let pointerHeld = false;
 let deferredRender = false;
@@ -52,14 +56,40 @@ const node = (tag, className, text) => {
 export function attentionStatusText(card) {
   const snapshot = ctx.attention.get(card);
   if (!snapshot) return t('attention.unknown');
+  const gap = codexCoverageGap(snapshot);
   let text;
   if (!snapshot.alive) text = t('attention.stopped');
   else if (snapshot.agent === 'needs-input') text = t('attention.input');
   else if (snapshot.agent === 'turn-done') text = t(snapshot.seen ? 'attention.doneRead' : 'attention.doneUnread');
   else if (snapshot.agent === 'working') text = t('attention.working');
+  else if (gap) text = t(gap === 'unknown' ? 'signal.codex.unknown' : 'signal.codex.unavailable');
   else text = t(snapshot.idle == null ? 'attention.noSignal'
     : snapshot.idle >= QUIET_SECS ? 'attention.quiet' : 'attention.recent');
   return snapshot.stale ? `${text} · ${t('attention.old')}` : text;
+}
+
+export async function showSignalDiagnostics(card, opener = null) {
+  const snapshot = ctx.attention.get(card);
+  const gap = codexCoverageGap(snapshot);
+  if (!gap) return;
+  const message = [snapshot.stale ? t('signal.stale') : '', t(gap === 'unknown' ? 'signal.codex.unknownHint' : 'signal.codex.unavailableHint'),
+    t('signal.codex.checks'), t('signal.codex.compatibility')].filter(Boolean).join('\n\n');
+  const selected = await choiceDialog(message, [{ id: 'settings', label: t('signal.settings'), primary: true }]);
+  if (selected === 'settings') await openSettings({ setting: 'agent-status' });
+  else if (opener?.isConnected && !opener.hidden) opener.focus();
+}
+
+// Repaint without replacing the action: polls preserve keyboard focus and
+// the fixed card shape. The click reads the current snapshot, not its initial gap.
+export function paintCardSignalStatus(el, card) {
+  if (!el) return;
+  el.querySelector('.card-status-text').textContent = attentionStatusText(card);
+  el.title = sourceText(card);
+  const help = el.querySelector('.card-signal-help');
+  help.hidden = !codexCoverageGap(ctx.attention.get(card));
+  help.textContent = t('signal.details');
+  help.setAttribute('aria-label', t('signal.detailsNamed', { name: card.title }));
+  help.onclick = event => { event.stopPropagation(); void showSignalDiagnostics(card, help); };
 }
 
 /* One card's badge element, painted from the live tracker. Hidden (not
@@ -150,8 +180,7 @@ export function refreshBoardAttention() {
     for (const el of column.querySelectorAll('.card[data-sid]')) {
       const card = provider.get(el.dataset.sid);
       if (!card) continue;
-      const status = el.querySelector('.card-status');
-      if (status) { status.textContent = attentionStatusText(card); status.title = sourceText(card); }
+      paintCardSignalStatus(el.querySelector('.card-status'), card);
       paintCardAttentionBadge(el.querySelector('.card-attention-badge'), card);
     }
     let empty = column.querySelector('.attention-column-empty');
@@ -313,7 +342,7 @@ export async function openFromNotification(session) {
 }
 
 export function initAttention(deps) {
-  ({ pollNow, provider, render, switchProject, leaveSessionView, closeBuffer, openSession } = deps);
+  ({ pollNow, provider, render, switchProject, leaveSessionView, closeBuffer, openSession, openSettings } = deps);
   $('attention-btn').onclick = () => showAttention();
   $('attention-back').onclick = () => switchProject(state.projectId);
   document.addEventListener('pointerdown', event => {

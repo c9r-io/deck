@@ -261,6 +261,49 @@ export async function runAttentionSmoke() {
       const badgeBits = bits(steps.map(ok => !!ok));
       await report('attention-card-badge', badgeBits === 0, steps.length, badgeBits);
     }
+    // Missing Codex coverage is visible without an attention badge or any
+    // navigation/input side effect. Exercise the real diagnostic/settings link.
+    {
+      const { switchProject } = await import('../js/board.js');
+      const card = samples.get('04').card;
+      const prior = { ...statuses.get(card.session) };
+      const originalBoard = JSON.stringify(boardData());
+      switchProject(card.projectId);
+      const steps = [];
+      for (const locale of ['en', 'zh-Hans']) {
+        setLocale(locale);
+        Object.assign(statuses.get(card.session), { codex_signal: 'unknown', agent: null });
+        await pollNow();
+        const el = document.querySelector(`#columns .card[data-sid="${card.id}"]`);
+        const help = el.querySelector('.card-signal-help');
+        const height = el.offsetHeight;
+        steps.push(!help.hidden && el.textContent.includes(t('signal.codex.unknown'))
+          && el.querySelector('.card-attention-badge').hidden && ctx.attention.category(card) === 'unavailable');
+        help.focus(); await pollNow();
+        steps.push(document.activeElement === help && height === el.offsetHeight);
+        help.click(); await pause(20);
+        steps.push(state.view === 'board' && $('chd').style.display === 'flex'
+          && $('chd-msg').textContent.includes('/hooks') && $('chd-msg').textContent.includes('--no-daemon'));
+        $('chd-actions').firstElementChild.click(); await pause(20);
+        steps.push(document.activeElement === help && state.view === 'board');
+        help.click(); await pause(20);
+        $('chd-actions').lastElementChild.click(); await pause(60);
+        steps.push($('settings-modal').style.display === 'flex' && !$('set-panel-agents').hidden);
+        $('set-close').click();
+        statuses.get(card.session).codex_signal = 'unavailable'; await pollNow();
+        steps.push(el.textContent.includes(t('signal.codex.unavailable')) && height === el.offsetHeight);
+        failPoll = true; await pollNow(); failPoll = false;
+        steps.push(el.textContent.includes(t('attention.old')));
+        Object.assign(statuses.get(card.session), { codex_signal: 'trusted', agent: 'working' });
+        await pollNow();
+        steps.push(help.hidden && el.textContent.includes(t('attention.working')) && height === el.offsetHeight);
+      }
+      statuses.set(card.session, prior);
+      setLocale('en'); await pollNow();
+      steps.push(JSON.stringify(boardData()) === originalBoard && starts === 0);
+      const failures = steps.filter(ok => !ok).length;
+      await report('attention-codex-coverage', failures === 0, steps.length, failures);
+    }
     stage = 4;
     // Real WebKit layout at the native window size, 12 locale/theme/font combinations.
     showAttention(); ctx.attentionFilter = 'pending'; refreshAttention();
@@ -566,10 +609,11 @@ export async function runAttentionSmoke() {
     const strip = document.createElement('div');
     strip.style.cssText = 'padding:6px 12px;border-bottom:1px solid var(--border);display:flex;gap:12px;color:var(--muted);font-size:12px';
     const label = document.createElement('span'); label.textContent = '隔离验证 · 真实实现 / 虚构状态'; strip.append(label);
-    for (const mode of ['看板', '空项目', '待关注', '更新失败', '项目默认值示例', '真实轮询']) {
+    for (const mode of ['看板', '空项目', '待关注', '更新失败', 'Codex 状态缺口', '项目默认值示例', '真实轮询']) {
       const btn = document.createElement('button'); btn.textContent = mode;
       btn.onclick = async () => {
         failPoll = false; missing = null;
+        for (const id of ['04', '06']) delete statuses.get(samples.get(id).card.session).codex_signal;
         if (mode === '真实轮询') {
           // Hand the page back to the real backend: polls, exits and closes
           // behave as in production from here on ("更新失败" no longer injects).
@@ -577,6 +621,11 @@ export async function runAttentionSmoke() {
           await reset(); switchProject(atlas.id); await pollNow(); return;
         }
         await reset();
+        if (mode === 'Codex 状态缺口') {
+          statuses.get(samples.get('04').card.session).codex_signal = 'unknown';
+          statuses.get(samples.get('06').card.session).codex_signal = 'unavailable';
+          switchProject(atlas.id); await pollNow(); return;
+        }
         if (mode === '项目默认值示例') {
           // Atlas gets a harmless demo default (a directory that exists and an
           // echo), so ＋ / ▾ / the tab menu can be inspected; the fixture

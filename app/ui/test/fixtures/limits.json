@@ -56,6 +56,7 @@
     "shortcut_max_len": 64
   },
   "agent_states": ["working", "needs-input", "turn-done"],
+  "codex_signal_trust": ["unknown", "trusted", "unavailable"],
   "notify_status_words": ["unsupported", "not-determined", "denied", "authorized", "provisional"],
   "context_statuses": ["ready", "foreground-different", "session-replaced", "unavailable", "starting", "unknown"],
   "storage_notices": ["storage.privacy", "queue.persist", "queue.load", "history.load", "queue.interrupted", "storage.recovered"],

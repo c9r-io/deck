@@ -25,6 +25,7 @@ import { PRESET_MAX } from '../js/connector-model.js';
 import { dictionaries, LOCALE_CHOICES } from '../js/i18n.js';
 import { ACCENT_IDS, THEME_IDS } from '../js/theme.js';
 import { NOTIFY_STATUS_WORDS } from '../js/notify-model.js';
+import { CODEX_SIGNAL_TRUST } from '../js/attention-model.js';
 
 const limits = JSON.parse(readFileSync(new URL('./fixtures/limits.json', import.meta.url), 'utf8'));
 
@@ -78,6 +79,7 @@ test('settings mirrors', () => {
 
 test('closed status vocabularies', () => {
   assert.deepEqual([...AGENT_STATES], limits.agent_states);
+  assert.deepEqual([...CODEX_SIGNAL_TRUST], limits.codex_signal_trust);
   assert.deepEqual([...NOTIFY_STATUS_WORDS], limits.notify_status_words);
   assert.deepEqual(Object.keys(CONTEXT_STATUS_KEYS), limits.context_statuses);
   assert.deepEqual(Object.keys(MCP_ERROR_KEYS), limits.mcp_local_errors);

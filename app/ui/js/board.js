@@ -9,6 +9,8 @@
 // Never infer permission to delete a card from disappearance.
 // Live status never changes placement or durable ordering. Cards carry no
 // terminal preview: output is read in the terminal, never on the Board.
+// Codex coverage diagnostics live in the runtime attention snapshot and
+// the status row; no card field or persistence is added for signal coverage.
 // Foreground changes in the focused pane invalidate ephemeral resume hints.
 // Creation (04 A v01): `provider.createStarted` is the ONE path that makes a
 // card for a new session — it starts the tmux session first and persists the
@@ -35,7 +37,7 @@ import { formatNumber, t } from './i18n.js';
 import { formatShortcut } from './shortcuts.js';
 import { renderAutomations, ruleOf } from './automation.js';
 import { createDefaultColumns, migrateColumnSemantics } from './board-defaults.js';
-import { attentionStatusText, paintCardAttentionBadge, refreshAttention } from './attention.js';
+import { paintCardSignalStatus, paintCardAttentionBadge, refreshAttention } from './attention.js';
 import { cardLabels, dismissKey, labelsKey, seenDismissals } from './notify-model.js';
 import { addManual, addQueueCopy, bufferLimitError, copyEvidence, deleteEntry, editEntry, emptyBuffer, retainedBuffer } from './buffer-model.js';
 import { nextCollectedAt } from './channel-model.js';
@@ -1432,10 +1434,10 @@ export function cardEl(s) {
   el.innerHTML = `
     <div class="card-top"><span class="dot ${s.status}"></span><span class="card-title"></span><span class="card-attention-badge" hidden></span><button class="card-pin" type="button"></button><button class="card-x" type="button">✕</button></div>
     <div class="card-meta"><span class="cmd"></span><span class="dir"></span><span class="auto-chip"></span><span class="q-chip"></span><span class="mem-chip"></span></div>
-    <div class="card-status"></div>
+    <div class="card-status"><span class="card-status-text"></span><button class="card-signal-help" type="button" hidden></button></div>
     <div class="card-desc"></div>`;
   el.querySelector('.card-title').textContent = s.title;
-  el.querySelector('.card-status').textContent = attentionStatusText(s);
+  paintCardSignalStatus(el.querySelector('.card-status'), s);
   paintCardAttentionBadge(el.querySelector('.card-attention-badge'), s);
   el.querySelector('.dot').title = dotTitle(s.status);
   const pin = el.querySelector('.card-pin');
@@ -1475,7 +1477,7 @@ export function cardEl(s) {
   };
   el.addEventListener('click', e => {
     e.stopPropagation();   // don't toggle the board selection underneath
-    if (e.target.closest('.card-x, .card-pin')) return;
+    if (e.target.closest('.card-x, .card-pin, .card-signal-help')) return;
     openSession(s.id);
   });
   el.oncontextmenu = e => showSessionCtx(e, s.id);

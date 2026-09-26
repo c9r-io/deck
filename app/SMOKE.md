@@ -200,10 +200,10 @@ plan file:
   of the dialog afterwards; never answer it with Enter;
 - Codex in two modes, certified separately:
   - **embedded (functional)** — Codex running without its shared background
-    service. To create this topology for the test only, stop any running
-    Codex app-server daemon and launch each Codex with `--disable
-    daemon_auto_start`; this is certification setup, never a product
-    requirement. Cases: `codex-normal`, `codex-permission`, `codex-interrupt`
+    service. Launch each test Codex with `--no-daemon` (0.157.1), which
+    stays embedded even if a shared daemon already exists. Never stop a
+    user daemon for certification. This is a test topology and optional
+    compatibility path, never a product requirement. Cases: `codex-normal`, `codex-permission`, `codex-interrupt`
     (Esc), `codex-background-interrupt` (automation with "close the card";
     release its first row with one send now, then Esc while a background
     terminal runs; the card must stay), `codex-rapid` (a second prompt right

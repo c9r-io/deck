@@ -93,6 +93,21 @@ card.
 
 ## Permission and status
 
+Codex cards without a reliable hook observation show **Agent status not
+connected**, or **Agent status unavailable** when Deck has proved that events
+cannot be attributed to that terminal. **Why?** explains the gap and opens
+Agent status settings. Unknown does not diagnose a shared server: hooks may
+be disabled, awaiting review in Codex `/hooks`, or simply not observed since
+Deck restarted. The hint does not count as Needs attention, notify, or change
+automatic-send holds. A failed poll marks this information as an old snapshot.
+
+For a new interactive Codex session, `codex --no-daemon` is an optional hook
+compatibility path, including when a shared server is already running. That
+session does not use shared-server continuity. Review and trust the Deck
+hooks in Codex `/hooks`; installed does not mean trusted. PermissionRequest
+hooks do not cover every question or MCP elicitation, and a turn ending does
+not prove task success. Deck never switches modes or approves hooks for you.
+
 Turning the switch on is the one moment deck asks macOS for notification
 permission (alert, badge, sound). The row under the switch shows the
 closed status: *allowed*, *delivered quietly*, *blocked* (allow deck in

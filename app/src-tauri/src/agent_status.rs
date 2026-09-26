@@ -143,6 +143,9 @@
 //! trustworthy per-client hook binding. Embedded Codex (no daemon) and
 //! Claude Code keep theirs. `$TMUX_PANE`, inherited environment, cwd,
 //! transcript paths, executable names and timing are never pane proof.
+//! The Board receives generation-bound Codex coverage separately from the
+//! observation: a quiet diagnostic can explain missing Signal without
+//! creating an attention episode or changing any automation hold.
 //! `poll_sessions` reconciles with one process-table snapshot so the state dies with the
 //! pane or process generation that reported it — no TTLs. Frontend:
 //! `effectiveCardStatus` (pure.js) — agent state OUTRANKS the 15s heuristic
@@ -424,7 +427,9 @@ fn with_agents<R>(f: impl FnOnce(&mut HashMap<PaneKey, Entry>) -> R) -> R {
 
 /// Whether Codex Signal can be trusted for one pane's foreground generation
 /// (the Codex shared-daemon FR). NOT an agent state and never shown as one:
-/// the scheduler's agent hold alone reads it (`select::agent_holds`), for
+/// the scheduler's agent hold reads it (`select::agent_holds`), and the
+/// Board projects it separately as diagnostic coverage (never an agent
+/// state or an attention episode), for
 /// an existing session whose Signal target's foreground is literally
 /// `codex`, whose current foreground generation has a matching trust
 /// record whatever its executable name (a wrapper, `node`), or whose queue
@@ -455,7 +460,8 @@ fn with_agents<R>(f: impl FnOnce(&mut HashMap<PaneKey, Entry>) -> R) -> R {
 /// client sharing another pane's daemon marks only the daemon's starter.
 /// Claude-sourced events neither set nor obey it. Never inferred from a
 /// Codex version.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
 pub(crate) enum CodexSignalTrust {
     #[default]
     Unknown,

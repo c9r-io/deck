@@ -316,6 +316,7 @@ const SMOKE_CHECKS: &[&str] = &[
     "attention-reorder-focus",
     "attention-board",
     "attention-card-badge",
+    "attention-codex-coverage",
     "attention-attach-pending",
     "attention-exit-generation",
     "attention-fixture",

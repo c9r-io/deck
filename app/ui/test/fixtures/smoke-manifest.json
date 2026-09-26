@@ -216,6 +216,7 @@
         "attention-return": {},
         "attention-seen": {},
         "attention-card-badge": {},
+        "attention-codex-coverage": {},
         "attention-split-fail": {},
         "attention-stage": { "failureOnly": true },
         "attention-stale": {},

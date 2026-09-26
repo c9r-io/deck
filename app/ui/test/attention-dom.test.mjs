@@ -5,12 +5,12 @@
 // smoke (`attention-card-badge`).
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { fakeDocument } from './fixtures/dom-fixture.mjs';
+import { FakeElement, fakeDocument } from './fixtures/dom-fixture.mjs';
 
 globalThis.document = fakeDocument;
 globalThis.window = { __TAURI__: null, __DECK_DEBUG: false };
 
-const { paintCardAttentionBadge } = await import('../js/attention.js');
+const { paintCardAttentionBadge, paintCardSignalStatus, attentionStatusText } = await import('../js/attention.js');
 const { createAttentionTracker } = await import('../js/attention-model.js');
 const { ctx } = await import('../js/state.js');
 const { setLocale, t } = await import('../js/i18n.js');
@@ -24,6 +24,32 @@ class Badge {
   set title(value) { this.attrs.title = value; }
   removeAttribute(name) { delete this.attrs[name]; }
 }
+
+test('coverage status stays quiet, localized, stale-aware and clears on real signal', () => {
+  const card = { id: 'coverage', session: 'coverage-session', title: 'Coverage' };
+  ctx.attention = createAttentionTracker();
+  const label = new FakeElement(), help = new FakeElement('button');
+  const row = { querySelector: selector => selector === '.card-status-text' ? label : help };
+  for (const locale of ['en', 'zh-Hans']) {
+    setLocale(locale);
+    for (const coverage of ['unknown', 'unavailable']) {
+      ctx.attention.record([card], [{ name: card.session, alive: true, codex_signal: coverage }]);
+      paintCardSignalStatus(row, card);
+      assert.equal(label.textContent, t(`signal.codex.${coverage}`));
+      assert.equal(help.hidden, false);
+      assert.equal(help['aria-label'], t('signal.detailsNamed', { name: card.title }));
+      assert.equal(ctx.attention.counts([card]).pending, 0);
+      ctx.attention.fail();
+      assert.equal(attentionStatusText(card), `${t(`signal.codex.${coverage}`)} · ${t('attention.old')}`);
+    }
+    ctx.attention.record([card], [{ name: card.session, alive: true, codex_signal: 'trusted', agent: 'working' }]);
+    paintCardSignalStatus(row, card);
+    assert.equal(help.hidden, true);
+    assert.equal(label.textContent, t('attention.working'));
+  }
+  paintCardSignalStatus(null, card);
+  setLocale('en');
+});
 
 test('the badge is painted from the tracker and repainted in place', () => {
   setLocale('en');
