@@ -10,6 +10,51 @@ full contract lives in the `//!` (Rust) or leading `//` (JS) header of the modul
 that owns it — read that header before changing the module, and update it in the
 same commit as the behaviour it describes.
 
+## Product north star and boundaries
+
+Deck manages human attention around interactive CLI work. Its goal is to cut
+unnecessary attention cost — repetitive checking, confirming, context
+switching, polling and manual continuation — without hiding real
+uncertainty and without taking ownership of the work itself. Automation is
+core to Deck exactly when it removes that cost while keeping honest
+authority and safety boundaries.
+
+**Deck owns attention around work. The Agent owns the work.** Deck may
+coordinate an Agent session; it does not own Agent execution.
+
+- Deck owns: session/work identity, session lifecycle coordination, the
+  Board projection, observable Agent Signal, attention routing, safe prompt
+  delivery, automation trigger/admission/authority, persistence and
+  recovery, external integrations.
+- The Agent owns: task semantics, planning, reasoning, tool execution, its
+  internal context, subagents, worktrees, Git/PR workflow, and whether a
+  task is done or succeeded.
+- Agent-specific Signal is a narrow, deliberate exception to Agent
+  agnosticism: Deck consumes it only to protect its own concerns (attention
+  integrity, input safety, safe degradation), never to understand or steer
+  the work. Direction: Agent-specific adapter → narrow generic observation →
+  Deck attention/safety decision; never Deck → Agent-specific execution.
+- Authority stays separate: Signal may inform and HOLD ≠ Signal may
+  authorize; external provenance ≠ content authority; authorization ≠ input
+  readiness. The mechanics live in the owning module headers and docs
+  (`docs/scheduler-context-safety.md`, `docs/auto-respond.md`).
+
+Before a substantial feature, ask:
+
+1. What human attention cost does it remove or protect?
+2. What new authority would Deck acquire?
+3. Does it require Deck to understand Agent task semantics?
+4. Can the same value be reached while staying Agent-agnostic?
+5. Is it coordinating attention around the work, or starting to own how the
+   work is performed?
+
+A feature that mainly expands Deck's ownership of how work is performed is
+scope expansion needing exceptional, explicit justification — not the
+product's default direction. Headless Agent transports, Agent pools, Agent
+task orchestration, worktree ownership, Git/PR orchestration and
+task-success judgment should all trigger this scrutiny. This is not a ban on
+evolution; it makes scope expansion deliberate.
+
 ## Hard rules
 
 - **No automatic card movement.** The board never moves a card; not on agent
