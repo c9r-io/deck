@@ -81,6 +81,36 @@ class CandidateVerdicts(unittest.TestCase):
         booted = seq[:1] + ["20 [notify] boot authorized"] + seq[1:]
         self.assertEqual(judge("claude-restart", booted)["verdict"], "pass")
 
+    def test_a_restart_case_may_span_the_tags_of_both_deck_processes(self):
+        # the tag is re-seeded at every Deck start: the same session is
+        # sess-ab12c before the restart and sess-cd34e after it
+        after = "sess-cd34e"
+        seq = [line(10, "claude-code", "working"), "20 [notify] boot authorized",
+               line(30, "claude-code", "turn-done", s=after, e=1)]
+        self.assertEqual(judge("claude-restart", seq)["verdict"], "insufficient-evidence", "one tag sees half")
+        self.assertEqual(judge("claude-restart", seq, session=[S, after])["verdict"], "pass")
+        # still requires the boot BETWEEN the events
+        no_boot = [seq[0], seq[2]]
+        self.assertEqual(judge("claude-restart", no_boot, session=[S, after])["verdict"], "insufficient-evidence")
+        # an unrelated session's events are never pulled in by a list
+        other = [line(10, "claude-code", "working", s=OTHER), "20 [notify] boot authorized",
+                 line(30, "claude-code", "turn-done", s=OTHER, e=1)]
+        self.assertEqual(judge("claude-restart", other, session=[S, after])["verdict"], "insufficient-evidence")
+        # the real 0.7.14 candidate shape: the first turn ended BEFORE the
+        # restart, the agent resumed and ended again AFTER it (new tag)
+        real = [line(10, "claude-code", "working", e=2), line(15, "claude-code", "turn-done", e=3),
+                "25 [notify] boot not-determined",
+                line(100, "claude-code", "working", s=after, e=2), line(102, "claude-code", "turn-done", s=after, e=3)]
+        self.assertEqual(judge("claude-restart", real, session=[S, after])["verdict"], "pass")
+        # a boot AFTER the last event proves nothing
+        late = real[:2] + real[3:] + ["200 [notify] boot not-determined"]
+        self.assertEqual(judge("claude-restart", late, session=[S, after])["verdict"], "insufficient-evidence")
+        # malformed tags are a usage error, not an empty match
+        with self.assertRaises(ValueError):
+            judge("claude-restart", seq, session=[])
+        with self.assertRaises(ValueError):
+            judge("claude-restart", seq, session=["not-a-tag"])
+
     def test_drops_notifications_and_drift_are_recorded_as_evidence(self):
         lines = [line(10, "codex", "working"), "11 [agent-status] dropped (interaction-mismatch)",
                  "12 [agent-status] codex identity-absent", f"13 [notify] posted turn-done s={S} e=2",

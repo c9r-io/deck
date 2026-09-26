@@ -19,6 +19,11 @@ an allowlist.
       --claude-version 2.1.282 --codex-version 0.157.0
 
 plan.json: [{"case": "claude-normal", "session": "sess-ab12c", "since": <epoch>, "until": <epoch>}]
+
+A Deck restart re-seeds app.log's session tags (the same tmux session is
+logged under a new `sess-…` afterwards), so a case spanning a restart names
+every tag it was logged under: "session": ["sess-before", "sess-after"].
+A single string stays the normal form.
 """
 import argparse
 import json
@@ -86,9 +91,12 @@ def subsequence(words, required):
 def judge(case_id, session, since, until, events):
     if case_id not in CASES:
         raise ValueError(f"unknown case {case_id}")
+    tags = [session] if isinstance(session, str) else list(session)
+    if not tags or not all(isinstance(t, str) and re.fullmatch(r"sess-[0-9a-f]+", t) for t in tags):
+        raise ValueError(f"bad session tag(s) for {case_id}")
     source, required, no_close, needs_restart = CASES[case_id]
     window = [e for e in events if since <= e["t"] <= until]
-    mine = [e for e in window if e["kind"] == "accepted" and e["s"] == session]
+    mine = [e for e in window if e["kind"] == "accepted" and e["s"] in tags]
     drops = {}
     for e in window:
         if e["kind"] == "dropped":
@@ -97,7 +105,7 @@ def judge(case_id, session, since, until, events):
         "id": case_id, "agent": source, "session": session,
         "observed": {"accepted": len(mine), "v2_accepted": sum(1 for e in mine if e["v"] == "2"),
                      "drops": drops, "identity_absent": any(e["kind"] == "absent" and e["source"] == source for e in window),
-                     "notify": {kind: sum(1 for e in window if e["kind"] == "notify" and e["s"] == session and e["kind_"].startswith(kind))
+                     "notify": {kind: sum(1 for e in window if e["kind"] == "notify" and e["s"] in tags and e["kind_"].startswith(kind))
                                 for kind in ("posted", "viewed", "suppressed")}},
         "assertions": {}, "timings_s": {},
     }
@@ -142,9 +150,15 @@ def judge(case_id, session, since, until, events):
                 fail = True
                 reasons.append("run-closed-while-agent-live")
         if needs_restart:
-            boots = [e for e in window if e["kind"] == "boot" and first["t"] < e["t"] <= last["t"]]
-            result["assertions"]["survived_deck_restart"] = bool(boots)
-            if not boots:
+            # the agent survived a Deck restart AND the restarted Deck still
+            # admits its signal: a boot between the session's first and last
+            # accepted events, with an accepted event after that boot (not
+            # necessarily inside the earliest matching pair — a turn may end
+            # before the restart and the agent resume after it)
+            boots = [e for e in window if e["kind"] == "boot" and targeted[0]["t"] < e["t"] < targeted[-1]["t"]]
+            survived = any(any(ev["t"] > b["t"] for ev in targeted) for b in boots)
+            result["assertions"]["survived_deck_restart"] = survived
+            if not survived:
                 insufficient = True
                 reasons.append("no-deck-restart-inside-the-sequence")
     result["verdict"] = "fail" if fail else "insufficient-evidence" if insufficient else "pass"
