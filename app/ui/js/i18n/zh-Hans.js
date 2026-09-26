@@ -262,7 +262,7 @@ const dictionary = {
   'settings.agentHooksHint': '默认关闭。启用后，deck 会在 ~/.claude/settings.json 中添加三条 hook，使卡片能显示“请求输入”和“本轮结束”。Hook 只发送固定状态词、pane 编号和 agent 的不透明轮次 ID——绝不发送提示词、输出或路径。关闭时只移除这几条 hook。',
   'settings.agentHooksEnableConfirm': '启用 agent 状态 hook？deck 将向 ~/.claude/settings.json 添加三条条目（你的其他设置和 hook 保持不变）。它们只向 deck 报告状态词、pane 编号和 agent 的不透明轮次 ID，提示词、输出和路径永远不会离开 pane。',
   'settings.codexHooks': 'Codex',
-  'settings.codexHooksHint': '默认关闭。启用后，deck 会在 ~/.codex/hooks.json 中添加四条 hook，使卡片能显示“请求输入”和“本轮结束”。你已有的 hook 和 notify 程序继续照常工作。Hook 只发送固定状态词、pane 编号和 agent 的不透明轮次 ID——绝不发送提示词、输出或路径。关闭时只移除这几条 hook。',
+  'settings.codexHooksHint': '默认关闭。启用后，deck 会在 ~/.codex/hooks.json 中添加四条 hook，使卡片能显示“请求输入”和“本轮结束”。你已有的 hook 和 notify 程序继续照常工作。Hook 只发送固定状态词、pane 编号和 agent 的不透明轮次 ID——绝不发送提示词、输出或路径。关闭时只移除这几条 hook。Codex 使用共享后台服务时（0.157 起默认如此），不提供足以把 hook 可靠归属到某个终端的按客户端身份：deck 会拒绝这些事件而不去猜测，因此这些卡片不显示 agent 状态，清单也会暂停向它们自动发送（「立即发送」仍可用）。',
   'settings.notifyAway': '离席时通知我',
   'settings.notifySound': '播放提示音',
   'settings.notifyAwayHint': '默认关闭。开启后，当 deck 窗口不在前台时，若 agent 请求输入或结束一轮（需先开启上方的 Agent 状态集成），macOS 会弹出通知，Dock 图标显示输入请求与本轮结束未读的卡片数。通知只包含卡片标题、项目名和一句固定文字——绝不包含提示词、输出或路径。点击通知即可打开该卡片。',

@@ -113,7 +113,22 @@ row, never release or target one (`scheduler/select.rs`, `agent_holds`):
   No hook word releases it: `turn-done` ends an interaction but the agent
   may still own background work and resume on its own. The first row of a
   run is not held without hooks, since the agent has had no turn yet.
-- Owner rows without a hook word keep the quiet-only rule. Manual immediate
+- No automatic row of any mode is selected into an existing session whose
+  active pane runs Codex — the foreground is `codex`, a Codex trust proof
+  exists for the current process, or the row is configured for Codex
+  (covering `node` and wrapper launches) — unless Codex's status is
+  *trusted* for that Codex process: one of its hooks was accepted as
+  provably from that pane. Until then (a fresh process, or Deck just
+  restarted), and once any of its hooks is refused as
+  `terminal-discontinuity` (Codex 0.157's shared background service) —
+  which also withdraws its earlier status and is never healed by a later
+  hook of the same process — Deck cannot see a Codex permission prompt, so
+  "no hook word" must not fall back to the quiet-only rule. A session that a
+  successful pane listing shows absent may still be started with its first
+  row; a failed listing sends nothing that tick. Other agents are
+  unaffected.
+- Owner rows without a hook word keep the quiet-only rule (Codex: once
+  trusted). Manual immediate
   send is not held. A stale `needs-input` (a question dismissed with Esc
   fires no Stop hook) holds until the next hook word or until poll
   reconciliation sees the agent leave the foreground.

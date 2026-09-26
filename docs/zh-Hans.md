@@ -5,7 +5,7 @@
 [官网](https://deck.c9r.io/zh/) · [26 秒真实演示](https://deck.c9r.io/zh/#demo) · [下载稳定版](https://github.com/c9r-io/deck/releases/latest) · [使用指南](https://deck.c9r.io/zh/guide/) · [English](../README.md)
 
 - **整理多个任务**：每张卡片都是真实的 tmux session，可以按项目分组，也可以分屏查看。卡片的位置和顺序由你决定。
-- **找到需要关注的 session**：启用 Claude Code 或 Codex 状态集成后，跨项目查看输入请求和本轮结束未读；未启用时只显示输出活动，安静不代表任务完成。
+- **找到需要关注的 session**：启用 Claude Code 或 Codex 状态集成后，跨项目查看输入请求和本轮结束未读；未启用时只显示输出活动，安静不代表任务完成。Codex 使用共享后台服务时（0.157 起默认）不说明 hook 来自哪个终端，deck 会拒绝这些事件而不去猜测，因此没有 agent 状态。
 - **退出应用，session 仍在运行**：重新打开 deck 可以继续查看；重启机器或后台 Shell 服务会结束运行中的进程。
 
 deck 在本机运行，已内置 tmux，无需 deck 账号，采用 MIT 许可证。Agent CLI 需要自行安装和登录，模型服务与费用由相应工具提供和收取。

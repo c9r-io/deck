@@ -20,6 +20,9 @@ board, and find the sessions that need your attention.
 - **Find where to look next.** Enable Claude Code or Codex status integration
   to see input requests and unread turn endings across projects. Without it,
   deck shows output activity; silence alone does not mean a task is finished.
+  Codex on its shared background service (the default since 0.157) has no
+  agent status in deck: it does not say which terminal a hook came from, so
+  deck rejects those events rather than guess.
   Turn on **Notify me when away** and macOS tells you when an agent needs you
   while deck is not in front; the Dock icon counts the cards waiting.
 - **Leave the app, keep sessions running.** Sessions survive quitting deck.

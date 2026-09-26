@@ -2,7 +2,8 @@
 //!
 //! ONE trace file (`ui/test/fixtures/signal-traces.json`) describes Agent
 //! lifecycles as steps — hook events (v1 or v2), polls, view/dismiss calls,
-//! active-pane switches, generation replacement, exits, stops — plus
+//! active-pane switches, generation replacement, exits, stops, hooks sent
+//! through a Codex shared daemon (`"from": "daemon:<pane>"`) — plus
 //! `expect` steps. This runner replays each trace against the REAL backend
 //! derivations over a deterministic synthetic world (tmux server 42, one
 //! process table): `agent_status::ingest` admission and the interaction
@@ -64,6 +65,8 @@ struct Pane {
     old: Option<(u32, u64)>,
     active: bool,
     stopped: bool,
+    /// the foreground program's name when it is not the shell
+    agent: String,
 }
 
 struct World {
@@ -98,6 +101,7 @@ impl World {
                 old: None,
                 active: false,
                 stopped: false,
+                agent: pane["agent"].as_str().unwrap_or("claude").to_string(),
             });
         }
         let mut world = Self {
@@ -164,11 +168,10 @@ impl World {
                     window_active: true,
                     pane_active: p.active,
                     command: if p.leader == p.pane_pid {
-                        "zsh"
+                        "zsh".into()
                     } else {
-                        "claude"
-                    }
-                    .into(),
+                        p.agent.clone()
+                    },
                     ..PaneRow::default()
                 }
             })
@@ -223,17 +226,35 @@ fn run(trace: &Value) -> Value {
         if let Some(state) = step["event"].as_str() {
             let label = step["pane"].as_str().unwrap();
             let id = step["id"].as_str().map(|l| world.interaction(l));
-            let helper = world.next_helper;
-            world.next_helper += 1;
+            let hook = world.next_helper;
+            world.next_helper += 2;
             let mut table = world.table();
-            let pane = world.pane(label);
-            let parent = if step["from"] == "old" {
-                pane.old.expect("an old generation").0
-            } else {
-                pane.leader
+            let from = step["from"].as_str();
+            let parent = match from.and_then(|f| f.strip_prefix("daemon:")) {
+                // a Codex 0.157 shared app-server started by that pane's
+                // agent: no terminal, its own group; it spawns the hooks
+                // of EVERY client with the starter's `$TMUX_PANE`
+                Some(starter) => {
+                    let starter = world.pane(starter).leader;
+                    let daemon = 40_000 + starter;
+                    table.insert(daemon, process(daemon, starter, 0, 0, 4000));
+                    daemon
+                }
+                None if from == Some("old") => world.pane(label).old.expect("an old generation").0,
+                None => world.pane(label).leader,
             };
-            let (tty, fg, pane_id) = (pane.tty, pane.leader, pane.pane_id.clone());
-            table.insert(helper, process(helper, parent, tty, fg, 5000));
+            let pane_id = world.pane(label).pane_id.clone();
+            // the probed hook shape: a fresh terminal-less group (`sh`)
+            // holding the helper
+            table.insert(hook, process(hook, parent, 0, 0, 5000));
+            let helper = hook + 1;
+            table.insert(
+                helper,
+                ProcessInfo {
+                    pgid: hook,
+                    ..process(helper, hook, 0, 0, 5000)
+                },
+            );
             let line = match &id {
                 Some(id) => format!(
                     "{{\"v\":2,\"source\":\"codex\",\"state\":\"{state}\",\"socket\":\"{}\",\"server_pid\":{SERVER},\"pane\":\"{pane_id}\",\"interaction\":\"{id}\"}}",
@@ -349,7 +370,10 @@ fn run(trace: &Value) -> Value {
 fn check(at: &str, expect: &Value, world: &World, last: &HashMap<String, Value>) {
     let (states, unread, dock) = crate::notify::snapshot_for_tests();
     let announced = crate::notify::announced_for_tests();
-    let observed = crate::scheduler::observe(world.rows());
+    let table = world.table();
+    let observed = crate::scheduler::observe_with(world.rows(), |pane| {
+        crate::agent_status::foreground_generation(&table, pane)
+    });
     for (session, want) in expect["sessions"].as_object().into_iter().flatten() {
         let name = World::name(session);
         let polled = last.get(session).cloned().unwrap_or(Value::Null);

@@ -1287,6 +1287,96 @@
           "step": 48
         }
       ]
+    },
+    {
+      "name": "a-shared-codex-daemon-withdraws-its-starter-s-signal-and-paints-no-card",
+      "records": [
+        {
+          "poll": "ok",
+          "sessions": {
+            "s1": {
+              "agent": "turn-done",
+              "alive": true,
+              "episode": "e1",
+              "episode_viewed": false,
+              "finish": "agent"
+            },
+            "s2": {
+              "agent": null,
+              "alive": true,
+              "episode": null,
+              "episode_viewed": false,
+              "finish": "agent"
+            }
+          },
+          "step": 3
+        },
+        {
+          "poll": "ok",
+          "sessions": {
+            "s1": {
+              "agent": null,
+              "alive": true,
+              "episode": null,
+              "episode_viewed": false,
+              "finish": "agent"
+            },
+            "s2": {
+              "agent": null,
+              "alive": true,
+              "episode": null,
+              "episode_viewed": false,
+              "finish": "agent"
+            }
+          },
+          "step": 8
+        },
+        {
+          "poll": "ok",
+          "sessions": {
+            "s1": {
+              "agent": null,
+              "alive": true,
+              "episode": null,
+              "episode_viewed": false,
+              "finish": "agent"
+            },
+            "s2": {
+              "agent": null,
+              "alive": true,
+              "episode": null,
+              "episode_viewed": false,
+              "finish": "agent"
+            }
+          },
+          "step": 12
+        }
+      ]
+    },
+    {
+      "name": "a-daemon-restarted-elsewhere-contaminates-neither-pane",
+      "records": [
+        {
+          "poll": "ok",
+          "sessions": {
+            "s1": {
+              "agent": null,
+              "alive": true,
+              "episode": null,
+              "episode_viewed": false,
+              "finish": "agent"
+            },
+            "s2": {
+              "agent": null,
+              "alive": true,
+              "episode": null,
+              "episode_viewed": false,
+              "finish": "agent"
+            }
+          },
+          "step": 3
+        }
+      ]
     }
   ]
 }

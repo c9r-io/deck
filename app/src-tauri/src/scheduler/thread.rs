@@ -96,8 +96,8 @@ pub(crate) fn spawn_scheduler(app: AppHandle) {
             continue;
         }
         // pane activity (chain quiet) and agent hook words (agent hold), one
-        // snapshot per tick
-        let activity = observe(crate::tmux::list_panes().unwrap_or_default());
+        // snapshot per tick; a failed listing sends nothing this tick
+        let listing = crate::tmux::list_panes().ok().map(observe);
         // expired rules die quietly, transactionally like every other change
         let now = now_epoch();
         if state
@@ -125,10 +125,13 @@ pub(crate) fn spawn_scheduler(app: AppHandle) {
         // re-selects from FRESH state under the lock before sending.
         let sessions: Vec<String> = {
             let q = state.q.lock_or_recover();
-            select_due(&q, now_epoch(), local_minutes(), &activity)
+            tick_selection(&q, now_epoch(), local_minutes(), listing.as_ref())
                 .into_iter()
                 .map(|i| i.session)
                 .collect()
+        };
+        let Some(activity) = listing else {
+            continue;
         };
         // One short-lived worker thread per session: a slow send (e.g. the
         // 2.5s boot wait of a dead session) delays only its own session.

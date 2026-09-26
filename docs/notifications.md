@@ -118,6 +118,21 @@ an unread ending was viewed, and passes the two settings.
   tmux session name.
 - No history panel, no snooze, no per-project switch: one switch, two
   signals.
+- Codex using its shared background service (feature `daemon_auto_start`,
+  on by default since Codex 0.157) does not currently expose enough
+  per-client identity for deck to safely attribute hooks to a terminal: the
+  service runs every client's hooks with the environment of the client that
+  started it. deck rejects those events (`terminal-discontinuity` in the
+  log) rather than guessing, so such a card has no agent state, never
+  notifies and never counts on the Dock, and no other card receives its
+  events. The first such refusal also withdraws that Codex process's earlier
+  status (the channel is now ambiguous), and no later hook of the same
+  process restores it. Because Deck then cannot see a Codex permission
+  prompt, lists hold every automatic send into that card (send-now still
+  works). Installing the hooks does not by itself mean
+  status works. Codex running without the shared service (embedded) reports
+  normally. This lasts until Codex exposes a trustworthy per-client hook
+  binding.
 - Codex reports *turn ended* when the model attempts to stop, so its ending
   can be slightly early, and an Esc-interrupt reports it too while
   background terminals may keep running (see the agent-status contract).

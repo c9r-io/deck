@@ -154,10 +154,27 @@ plan file:
   Deck between the prompt and its end), `claude-background-resume` (an
   automation with "close the card" whose prompt runs a background command
   and ends the turn; Claude resumes by itself; the card must stay);
-- `codex-normal`, `codex-permission`, `codex-interrupt` (Esc),
-  `codex-background-interrupt` (automation with "close the card"; Esc while
-  a background terminal runs; the card must stay), `codex-rapid` (a second
-  prompt right after the first ends).
+- Codex in two modes, certified separately:
+  - **embedded (functional)** — Codex running without its shared background
+    service. To create this topology for the test only, stop any running
+    Codex app-server daemon and launch each Codex with `--disable
+    daemon_auto_start`; this is certification setup, never a product
+    requirement. Cases: `codex-normal`, `codex-permission`, `codex-interrupt`
+    (Esc), `codex-background-interrupt` (automation with "close the card";
+    Esc while a background terminal runs; the card must stay), `codex-rapid`
+    (a second prompt right after the first ends). Each must pass with v2
+    identity; the stale-interaction and cross-pane regressions are pinned by
+    the unit and trace suites.
+  - **shared daemon (safety)** — `codex-daemon-refused`: at least two Codex
+    clients in two cards sharing ONE daemon (default launch), each running a
+    normal turn, a permission request and an interrupt. Its plan's
+    "session" lists every client card's tag. It passes only when the log
+    shows `terminal-discontinuity` refusals and not one accepted event or
+    notification for those cards; also check by eye that no card (the
+    daemon starter's included) shows agent status, Needs Attention or a Dock
+    count, that a due owner-list row for each card stays in the ⏱ panel at
+    stage `agent` (never pasted), and that the row's send-now still sends.
+    This is a safe-degradation pass, not a functional one.
 
 Then `scripts/signal-candidate --log ~/.deck/app.log --plan plan.json
 --deck-version … --deck-build … --claude-version … --codex-version …`

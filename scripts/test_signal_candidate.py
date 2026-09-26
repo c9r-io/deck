@@ -111,6 +111,38 @@ class CandidateVerdicts(unittest.TestCase):
         with self.assertRaises(ValueError):
             judge("claude-restart", seq, session=["not-a-tag"])
 
+    def test_the_daemon_safety_case_passes_only_on_refusal_without_any_signal(self):
+        # two Codex clients sharing one daemon: sess-ab12c (the starter) and OTHER
+        both = [S, OTHER]
+        refused = ["10 [agent-status] dropped (terminal-discontinuity)",
+                   "11 [agent-status] dropped (terminal-discontinuity)"]
+        r = judge("codex-daemon-refused", refused, session=both)
+        self.assertEqual(r["verdict"], "pass")
+        self.assertEqual(r["observed"]["drops"], {"terminal-discontinuity": 2})
+        # refusals only in a periodic summary still count as observed
+        summary = ["900 [agent-status] drops terminal-discontinuity=40"]
+        r = judge("codex-daemon-refused", summary, session=both)
+        self.assertEqual(r["verdict"], "pass")
+        self.assertEqual(r["observed"]["drops"], {}, "summaries are never added to the detailed count")
+        # ANY accepted event or notification for a daemon client fails
+        leaked = refused + [line(12, "codex", "working", s=OTHER)]
+        r = judge("codex-daemon-refused", leaked, session=both)
+        self.assertEqual(r["verdict"], "fail")
+        self.assertIn("event-accepted-for-a-daemon-client", r["reasons"])
+        posted = refused + [f"13 [notify] posted turn-done s={S} e=2"]
+        self.assertEqual(judge("codex-daemon-refused", posted, session=both)["verdict"], "fail")
+        # no refusal seen, or one client only: not proven
+        self.assertEqual(judge("codex-daemon-refused", [], session=both)["verdict"], "insufficient-evidence")
+        other_reason = ["10 [agent-status] dropped (foreign-pane)"]
+        self.assertEqual(judge("codex-daemon-refused", other_reason, session=both)["verdict"],
+                         "insufficient-evidence")
+        r = judge("codex-daemon-refused", refused, session=S)
+        self.assertEqual(r["verdict"], "insufficient-evidence")
+        self.assertIn("fewer-than-two-daemon-clients", r["reasons"])
+        # an unrelated card's accepted Signal is not this case's business
+        self.assertEqual(judge("codex-daemon-refused", refused + [line(12, "claude-code", "working", s="sess-77777")],
+                               session=both)["verdict"], "pass")
+
     def test_drops_notifications_and_drift_are_recorded_as_evidence(self):
         lines = [line(10, "codex", "working"), "11 [agent-status] dropped (interaction-mismatch)",
                  "12 [agent-status] codex identity-absent", f"13 [notify] posted turn-done s={S} e=2",

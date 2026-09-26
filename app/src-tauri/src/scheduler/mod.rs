@@ -67,6 +67,8 @@
 //! verbatim external message) that follows a previous row is never selected
 //! automatically — `turn-done` ends an interaction, it does not say the
 //! agent is ready for outside text — so it waits for the user's send-now.
+//! A Codex foreground whose Signal is not `Trusted` for its process
+//! generation holds every automatic row too (`CodexSignalTrust`).
 //! The hold only delays; it never moves a card, and the plan reports it as
 //! stage `agent`.
 //! Round-2/3 semantics (`scheduler/` is the reference, all unit-tested):

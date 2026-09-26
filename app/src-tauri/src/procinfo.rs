@@ -12,12 +12,17 @@
 
 use std::collections::HashMap;
 
+/// `e_tdev` of a process without a controlling terminal.
+#[cfg(target_os = "macos")]
+const NODEV: u32 = u32::MAX;
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct ProcessInfo {
     pub(crate) pid: u32,
     pub(crate) ppid: u32,
     pub(crate) pgid: u32,
-    /// Controlling terminal device (`st_rdev` of the tty node), 0 if none.
+    /// Controlling terminal device (`st_rdev` of the tty node), 0 if none
+    /// (the kernel's NODEV is normalized to 0).
     pub(crate) tty: u32,
     /// The controlling terminal's foreground process group.
     pub(crate) tty_pgid: u32,
@@ -103,7 +108,9 @@ fn bsd_info(pid: libc::pid_t) -> Option<ProcessInfo> {
         pid: pid as u32,
         ppid: info.pbi_ppid,
         pgid: info.pbi_pgid,
-        tty: info.e_tdev,
+        // the kernel reports "no controlling terminal" as NODEV
+        // ((dev_t)-1), not 0 — found by the real detached-hook test
+        tty: if info.e_tdev == NODEV { 0 } else { info.e_tdev },
         tty_pgid: info.e_tpgid,
         start_seconds: info.pbi_start_tvsec,
         start_micros: info.pbi_start_tvusec as u32,
@@ -142,6 +149,18 @@ pub(crate) fn processes() -> HashMap<u32, ProcessInfo> {
         .filter_map(bsd_info)
         .map(|info| (info.pid, info))
         .collect()
+}
+
+/// One process's identity facts — the same read `processes` makes per pid —
+/// for a point check that must not scan the whole table.
+#[cfg(target_os = "macos")]
+pub(crate) fn process(pid: u32) -> Option<ProcessInfo> {
+    bsd_info(libc::pid_t::try_from(pid).ok()?)
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn process(_pid: u32) -> Option<ProcessInfo> {
+    None
 }
 
 /// The pid on the other end of a connected unix socket, from the kernel
@@ -508,6 +527,16 @@ mod tests {
         assert_eq!(super::ancestry_in(&table, me, 1), vec![me]);
         assert!(super::ancestry_in(&table, 0, 32).is_empty());
         assert!(super::ancestry_in(&table, u32::MAX - 1, 32).is_empty());
+    }
+
+    /// A process without a controlling terminal (any user agent daemon)
+    /// reads 0, never the kernel's NODEV — terminal continuity compares
+    /// against 0.
+    #[test]
+    fn a_process_without_a_terminal_reads_tty_zero() {
+        let table = super::processes();
+        assert!(table.values().all(|info| info.tty != super::NODEV));
+        assert!(table.values().any(|info| info.tty == 0));
     }
 
     use super::*;

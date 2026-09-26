@@ -16,7 +16,23 @@
 //!   for text that arrived from outside deck. Until a stronger positive
 //!   readiness signal exists such a row waits for the user's send-now.
 //!
-//! Owner rows keep the quiet-only rule (plus the `needs-input` hold). Manual
+//! - no row of any mode is selected while the session's Signal target runs
+//!   Codex in the foreground and Codex Signal is not `Trusted` for that
+//!   process generation (`agent_status::CodexSignalTrust`): `Unknown` (no
+//!   proof yet) and `Unavailable` (its hooks are refused as
+//!   `terminal-discontinuity`, e.g. Codex 0.157's shared daemon) both hold.
+//!   Without a trusted hook Deck cannot see a Codex permission prompt, and
+//!   "no agent word" must not fall back to the quiet-only rule for it. The
+//!   gate applies to an existing session whose Signal target has a trust
+//!   proof for its current generation (whatever the foreground's name), is
+//!   literally `codex`, or whose row is configured for Codex
+//!   (`expected_process`, covering `node`/wrapper launches); every other
+//!   session is unchanged. A session that a SUCCESSFUL pane listing proves
+//!   absent is not gated: the row may start Codex and deliver its bootstrap
+//!   prompt. A failed listing proves nothing, so that tick selects nothing
+//!   (`tick_selection`).
+//!
+//! Owner rows keep the quiet-only rule (plus the holds above). Manual
 //! send-now (`select_for_request`) is the user acting while looking at the
 //! pane and is not held. A stale `needs-input` (a question dismissed with
 //! Esc fires no Stop hook) holds until the next hook word, or until the
@@ -37,16 +53,37 @@ use crate::tmux::PaneRow;
 pub(crate) struct Observed {
     pub(crate) activity: u64,
     pub(crate) agent: Option<&'static str>,
+    /// Codex Signal trust for the Signal target's current foreground
+    /// generation (`agent_status::codex_trust`): its proof when a matching
+    /// trust record exists, whatever the executable name (a wrapper,
+    /// `node`); else `Unknown` when the foreground is literally `codex`;
+    /// else `None`. `agent_holds` also treats a row configured for Codex
+    /// (`expected_process`) in an existing session as `Unknown` here. A name
+    /// only decides that a hold applies — never proof.
+    pub(crate) codex: Option<agent_status::CodexSignalTrust>,
 }
 
 /// Session name → observation, one snapshot per tick. `activity` keeps the
 /// first listed pane (unchanged quiet-time semantics); the agent word never
 /// falls back to it. No process-table scan here: the Board poll reconciles
-/// generations, and a word that outlived its process can only HOLD.
+/// generations, and a word that outlived its process can only HOLD. Codex
+/// trust is re-bound to the live foreground generation with two point reads
+/// per Codex target (`agent_status::live_generation`), so a proof never
+/// releases a later process.
 pub(crate) type Observations = HashMap<String, Observed>;
 
 pub(crate) fn observe(rows: Vec<PaneRow>) -> Observations {
+    observe_with(rows, crate::agent_status::live_generation)
+}
+
+/// `observe` with the foreground-generation reader injected (the Signal
+/// Trace harness passes its synthetic world's).
+pub(crate) fn observe_with(
+    rows: Vec<PaneRow>,
+    generation_now: impl Fn(u32) -> Option<agent_status::ForegroundGeneration>,
+) -> Observations {
     let agents = crate::agent_status::projections(&rows);
+    let codex = crate::agent_status::codex_trust(&rows, generation_now);
     let mut seen = Observations::new();
     for row in rows {
         let activity = row.window_activity;
@@ -54,6 +91,7 @@ pub(crate) fn observe(rows: Vec<PaneRow>) -> Observations {
             .or_insert_with_key(|session| Observed {
                 activity,
                 agent: agents.get(session).map(|o| o.state),
+                codex: codex.get(session).copied(),
             });
     }
     seen
@@ -63,7 +101,16 @@ pub(crate) fn observe(rows: Vec<PaneRow>) -> Observations {
 /// automatic paste of `i` into its session.
 pub(crate) fn agent_holds(i: &QueueItem, seen: Option<&Observed>) -> bool {
     let agent = seen.and_then(|o| o.agent);
-    agent == Some(agent_status::NEEDS_INPUT) || (i.external && i.mode == "chain")
+    // the gate applies to a listed session whose target is proven or named
+    // Codex, or whose row is configured for Codex (a wrapper or `node`
+    // foreground); an absent session (no observation) may bootstrap
+    let codex = seen.and_then(|o| {
+        o.codex.or((i.expected_process.as_deref() == Some("codex"))
+            .then_some(agent_status::CodexSignalTrust::Unknown))
+    });
+    let codex_untrusted =
+        codex.is_some_and(|trust| trust != agent_status::CodexSignalTrust::Trusted);
+    agent == Some(agent_status::NEEDS_INPUT) || codex_untrusted || (i.external && i.mode == "chain")
 }
 
 /// Deterministic candidate order within a session: retries whose backoff
@@ -240,6 +287,19 @@ pub(crate) fn select_due(
         .into_iter()
         .filter_map(|s| select_for_session(q, s, now, now_min, activity))
         .collect()
+}
+
+/// The tick's automatic candidates. `listing` is `None` when the pane
+/// listing failed: that proves no session absent (a live Codex may be
+/// waiting on a permission prompt), so nothing is selected this tick and the
+/// next tick simply tries again.
+pub(crate) fn tick_selection(
+    q: &QueueState,
+    now: u64,
+    now_min: u32,
+    listing: Option<&Observations>,
+) -> Vec<QueueItem> {
+    listing.map_or_else(Vec::new, |activity| select_due(q, now, now_min, activity))
 }
 
 /// A rule whose stop instant passed (while deck slept, typically).

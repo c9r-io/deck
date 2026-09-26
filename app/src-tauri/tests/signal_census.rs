@@ -80,6 +80,7 @@ const RUST_TOKENS: &[&str] = &[
     "\"working\"",
     "agent_status::projected",
     "agent_status::projections",
+    "codex_trust(",
     "agent_holds(",
     "notify::observe(",
     ".agent",
@@ -162,11 +163,12 @@ const RUST: &[(&str, &str, &str, usize, Class)] = &[
     // (refuses late/ended/mismatched ones); it grants nothing
     ("agent_status.rs", "admit", "NEEDS_INPUT", 4, Producer),
     // ingest forwards a word to the desktop attention loop only from the
-    // session's Signal target pane; reconcile re-projects on target changes
+    // session's Signal target pane; `renotify` re-projects (reconcile on
+    // target changes, ingest when a Codex generation turns ambiguous)
     ("agent_status.rs", "ingest", "notify::observe(", 1, Producer),
     (
         "agent_status.rs",
-        "reconcile",
+        "renotify",
         "notify::observe(",
         1,
         Producer,
@@ -196,8 +198,19 @@ const RUST: &[(&str, &str, &str, usize, Class)] = &[
     // the scheduler's agent hold: may only withhold an automatic paste
     (
         "scheduler/select.rs",
-        "observe",
+        "observe_with",
         "agent_status::projections",
+        1,
+        Hold,
+    ),
+    // Codex shared-daemon FR: Codex Signal trust is not a word; it is
+    // produced by admission and read by the hold alone, which it can only
+    // tighten (an untrusted Codex foreground holds every automatic row)
+    ("agent_status.rs", "", "codex_trust(", 1, Producer),
+    (
+        "scheduler/select.rs",
+        "observe_with",
+        "codex_trust(",
         1,
         Hold,
     ),

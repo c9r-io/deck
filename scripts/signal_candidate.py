@@ -24,6 +24,13 @@ A Deck restart re-seeds app.log's session tags (the same tmux session is
 logged under a new `sess-…` afterwards), so a case spanning a restart names
 every tag it was logged under: "session": ["sess-before", "sess-after"].
 A single string stays the normal form.
+
+`codex-daemon-refused` is a SAFETY case, not a functional one: Codex 0.157's
+shared app-server daemon spawns every client's hooks with the starter's
+pane, and Deck refuses them (`terminal-discontinuity`). Its "session" lists
+the cards of at least two simultaneous Codex clients sharing one daemon; it
+passes only when the window shows such refusals and NOT ONE accepted event
+or notification for any of those cards.
 """
 import argparse
 import json
@@ -59,6 +66,11 @@ CASES = {
     "codex-rapid": ("codex", ["working", "turn-done", "working", "turn-done"], False, False),
 }
 
+# safety cases: agent, the refusal reason that must be observed
+SAFETY_CASES = {
+    "codex-daemon-refused": ("codex", "terminal-discontinuity"),
+}
+
 
 def parse(lines):
     events = []
@@ -88,19 +100,63 @@ def subsequence(words, required):
     return positions
 
 
+def refusals(window):
+    """Refusal counts in the window: (the per-event lines, only the first 20
+    of a Deck process; the periodic summaries, which count EVERY refusal
+    including those 20 — kept apart so nothing is counted twice)."""
+    detailed, summarized = {}, {}
+    for e in window:
+        if e["kind"] == "dropped":
+            detailed[e["reason"]] = detailed.get(e["reason"], 0) + 1
+        elif e["kind"] == "summary":
+            for pair in e["counts"].split():
+                reason, count = pair.split("=")
+                summarized[reason] = summarized.get(reason, 0) + int(count)
+    return detailed, summarized
+
+
+def judge_safety(case_id, tags, session, window):
+    source, reason = SAFETY_CASES[case_id]
+    accepted = [e for e in window if e["kind"] == "accepted" and e["s"] in tags]
+    notified = [e for e in window if e["kind"] == "notify" and e["s"] in tags and e["kind_"].startswith("posted")]
+    drops, summarized = refusals(window)
+    seen = drops.get(reason, 0) > 0 or summarized.get(reason, 0) > 0
+    result = {
+        "id": case_id, "agent": source, "session": session,
+        "observed": {"accepted": len(accepted), "drops": drops, "drops_summarized": summarized,
+                     "notify_posted": len(notified)},
+        "assertions": {"no_accepted_signal": not accepted, "no_notification": not notified,
+                       "refusal_observed": seen, "two_clients": len(set(tags)) >= 2},
+        "timings_s": {},
+    }
+    reasons = []
+    if accepted:
+        reasons.append("event-accepted-for-a-daemon-client")
+    if notified:
+        reasons.append("notification-for-a-daemon-client")
+    if not seen:
+        reasons.append(f"no-{reason}-observed")
+    if len(set(tags)) < 2:
+        reasons.append("fewer-than-two-daemon-clients")
+    fail = bool(accepted or notified)
+    result["verdict"] = "fail" if fail else "insufficient-evidence" if reasons else "pass"
+    if reasons:
+        result["reasons"] = reasons
+    return result
+
+
 def judge(case_id, session, since, until, events):
-    if case_id not in CASES:
+    if case_id not in CASES and case_id not in SAFETY_CASES:
         raise ValueError(f"unknown case {case_id}")
     tags = [session] if isinstance(session, str) else list(session)
     if not tags or not all(isinstance(t, str) and re.fullmatch(r"sess-[0-9a-f]+", t) for t in tags):
         raise ValueError(f"bad session tag(s) for {case_id}")
-    source, required, no_close, needs_restart = CASES[case_id]
     window = [e for e in events if since <= e["t"] <= until]
+    if case_id in SAFETY_CASES:
+        return judge_safety(case_id, tags, session, window)
+    source, required, no_close, needs_restart = CASES[case_id]
     mine = [e for e in window if e["kind"] == "accepted" and e["s"] in tags]
-    drops = {}
-    for e in window:
-        if e["kind"] == "dropped":
-            drops[e["reason"]] = drops.get(e["reason"], 0) + 1
+    drops = refusals(window)[0]
     result = {
         "id": case_id, "agent": source, "session": session,
         "observed": {"accepted": len(mine), "v2_accepted": sum(1 for e in mine if e["v"] == "2"),

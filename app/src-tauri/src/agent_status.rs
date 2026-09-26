@@ -129,8 +129,21 @@
 //! reporter must also descend from the pane's CURRENT foreground leader
 //! (`generation-mismatch` otherwise; `no-generation` when it cannot be
 //! read): proven at runtime for Claude Code 2.1.282 and Codex 0.156.1, whose
-//! helper's parent is that leader for every hook word. `poll_sessions`
-//! reconciles with one process-table snapshot so the state dies with the
+//! helper's parent is that leader for every hook word. Finally the chain
+//! from the helper to that leader must stay on the pane's terminal, apart
+//! from the one terminal-less process group the agent spawns the hook in
+//! (`terminal-discontinuity`, `terminal_continuous`). Codex 0.157's shared
+//! background app-server (feature `daemon_auto_start`) spawns EVERY
+//! client's hooks with the environment of the client that started it, so
+//! `$TMUX_PANE` names the starter's pane for all of them; while the starter
+//! TUI lives in pane P, another client's hook passes `foreign-pane` and the
+//! generation check for P. The daemon is a second terminal-less group in the
+//! chain, so those events are refused: Codex in shared-daemon mode has no
+//! Agent Signal in Deck (unavailable, never guessed) until Codex exposes a
+//! trustworthy per-client hook binding. Embedded Codex (no daemon) and
+//! Claude Code keep theirs. `$TMUX_PANE`, inherited environment, cwd,
+//! transcript paths, executable names and timing are never pane proof.
+//! `poll_sessions` reconciles with one process-table snapshot so the state dies with the
 //! pane or process generation that reported it — no TTLs. Frontend:
 //! `effectiveCardStatus` (pure.js) — agent state OUTRANKS the 15s heuristic
 //! (card statuses `attention`/`done`; a working agent never shows amber). The
@@ -257,6 +270,9 @@ struct Entry {
     episode: EpisodeId,
     last: Option<(Option<String>, &'static str)>,
     viewed: bool,
+    /// The last accepted word came from Codex (the only source whose
+    /// observation an `Unavailable` trust proof clears).
+    codex: bool,
 }
 
 /// Deck-local, process-local attention episode (FR-SI-05): "is this the
@@ -404,6 +420,154 @@ static AGENTS: Mutex<Option<HashMap<PaneKey, Entry>>> = Mutex::new(None);
 fn with_agents<R>(f: impl FnOnce(&mut HashMap<PaneKey, Entry>) -> R) -> R {
     let mut guard = AGENTS.lock_or_recover();
     f(guard.get_or_insert_with(HashMap::new))
+}
+
+/// Whether Codex Signal can be trusted for one pane's foreground generation
+/// (the Codex shared-daemon FR). NOT an agent state and never shown as one:
+/// the scheduler's agent hold alone reads it (`select::agent_holds`), for
+/// an existing session whose Signal target's foreground is literally
+/// `codex`, whose current foreground generation has a matching trust
+/// record whatever its executable name (a wrapper, `node`), or whose queue
+/// row is configured for Codex (`expected_process`), where anything short
+/// of `Trusted` holds. Executable names only decide that a hold applies;
+/// they never prove anything. Evidence comes only from
+/// Codex-sourced hooks and only degrades toward safety within one
+/// generation — `Unknown → Trusted`, `Unknown → Unavailable`,
+/// `Trusted → Unavailable`, never back — and a new generation starts
+/// `Unknown`:
+/// - `Trusted`: a Codex hook of this generation was ACCEPTED — it proved
+///   itself pane-bound through every admission rule;
+/// - `Unavailable`: a hook whose ancestry reaches this pane's own process
+///   and current foreground leader (so it passed `foreign-pane` and the
+///   generation check) was refused for `terminal-discontinuity`: this
+///   generation's hooks are not provably its own (Codex 0.157 shared daemon);
+/// - `Unknown`: no evidence yet (fresh process, or Deck restarted).
+///
+/// A discontinuity proves that events can now claim this pane without
+/// trustworthy attribution, so it dominates an earlier `Trusted`: the
+/// generation's Codex observation is cleared at once (no stale attention
+/// or notification), and its later Codex hooks are refused
+/// (`ambiguous-generation`) even when otherwise admissible — one good hook
+/// never heals an ambiguous generation. This may drop a valid observation
+/// because another client shared the channel; that is the intended failure
+/// direction. A refused hook can only mark the generation its ancestry
+/// proves, never the pane its inherited `$TMUX_PANE` merely names, so a
+/// client sharing another pane's daemon marks only the daemon's starter.
+/// Claude-sourced events neither set nor obey it. Never inferred from a
+/// Codex version.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum CodexSignalTrust {
+    #[default]
+    Unknown,
+    Trusted,
+    Unavailable,
+}
+
+/// The trust proof for one pane generation (same identity as `Entry`).
+struct TrustRecord {
+    session_id: String,
+    pane_pid: u32,
+    generation: ForegroundGeneration,
+    trust: CodexSignalTrust,
+}
+
+static TRUST: Mutex<Option<HashMap<PaneKey, TrustRecord>>> = Mutex::new(None);
+
+fn with_trust<R>(f: impl FnOnce(&mut HashMap<PaneKey, TrustRecord>) -> R) -> R {
+    let mut guard = TRUST.lock_or_recover();
+    f(guard.get_or_insert_with(HashMap::new))
+}
+
+/// Record `trust` for the pane generation, only ever toward safety: within
+/// one generation `Unavailable` replaces anything and nothing replaces
+/// `Unavailable`; another generation's record is replaced outright.
+fn prove_trust(row: &PaneRow, generation: ForegroundGeneration, trust: CodexSignalTrust) {
+    with_trust(|records| {
+        let same = records.get_mut(&PaneKey::of(row)).filter(|r| {
+            r.session_id == row.session_id
+                && r.pane_pid == row.pane_pid
+                && r.generation == generation
+        });
+        if let Some(record) = same {
+            if trust == CodexSignalTrust::Unavailable {
+                record.trust = trust;
+            }
+        } else {
+            records.insert(
+                PaneKey::of(row),
+                TrustRecord {
+                    session_id: row.session_id.clone(),
+                    pane_pid: row.pane_pid,
+                    generation,
+                    trust,
+                },
+            );
+        }
+    });
+}
+
+/// Whether this exact pane generation was proven `Unavailable`.
+fn ambiguous(row: &PaneRow, generation: ForegroundGeneration) -> bool {
+    with_trust(|records| {
+        records.get(&PaneKey::of(row)).is_some_and(|r| {
+            r.session_id == row.session_id
+                && r.pane_pid == row.pane_pid
+                && r.generation == generation
+                && r.trust == CodexSignalTrust::Unavailable
+        })
+    })
+}
+
+/// Codex Signal trust per session's Signal target: its proof when one
+/// exists for the target's CURRENT foreground generation — whatever the
+/// foreground's name (`node`, a wrapper) — else `Unknown` when the
+/// foreground is literally `codex`; sessions with neither are absent (the
+/// scheduler adds the gate for rows configured for Codex). The current
+/// generation comes from `generation_now` (point reads in production,
+/// `live_generation`), so a proof never outlives the process that earned
+/// it, even between Board polls. The executable name only decides that a
+/// hold applies — it never proves anything.
+pub(crate) fn codex_trust(
+    rows: &[PaneRow],
+    generation_now: impl Fn(u32) -> Option<ForegroundGeneration>,
+) -> HashMap<String, CodexSignalTrust> {
+    let targets = signal_targets(rows);
+    with_trust(|records| {
+        targets
+            .into_iter()
+            .filter_map(|(session, row)| {
+                let proven = records
+                    .get(&PaneKey::of(row))
+                    .filter(|r| {
+                        r.session_id == row.session_id
+                            && r.pane_pid == row.pane_pid
+                            && generation_now(row.pane_pid) == Some(r.generation)
+                    })
+                    .map(|r| r.trust);
+                let trust =
+                    proven.or((row.command == "codex").then_some(CodexSignalTrust::Unknown))?;
+                Some((session, trust))
+            })
+            .collect()
+    })
+}
+
+/// The foreground generation of `pane_pid`'s terminal from two point reads
+/// (the pane process for its tty's foreground group, then that group's
+/// leader) — the same facts `foreground_generation` takes from a snapshot,
+/// without a table scan on the scheduler tick.
+pub(crate) fn live_generation(pane_pid: u32) -> Option<ForegroundGeneration> {
+    let pane = crate::procinfo::process(pane_pid)?;
+    let leader = crate::procinfo::process(pane.tty_pgid)?;
+    (pane.tty != 0
+        && leader.tty == pane.tty
+        && leader.pgid == leader.pid
+        && leader.start_seconds != 0)
+        .then_some(ForegroundGeneration {
+            pid: leader.pid,
+            start_seconds: leader.start_seconds,
+            start_micros: leader.start_micros,
+        })
 }
 
 /// One process-table snapshot (`procinfo::processes`).
@@ -595,6 +759,46 @@ pub(crate) struct Origin {
     pub(crate) table: ProcessTable,
 }
 
+/// Terminal continuity (the Codex shared-daemon FR): from the reporting
+/// helper up to the pane's foreground leader, every process is on the
+/// pane's controlling terminal — except the ONE process group the agent
+/// detached the hook into. Runtime proof (Claude Code 2.1.283, Codex
+/// 0.157.0 embedded): both spawn each hook in a fresh session, so the hook
+/// (its `sh` and the helper) has no terminal and leads its own group, and
+/// that group leader's parent is the agent on the pane's tty. That leading
+/// run is allowed only when it is terminal-less, is all the helper's group,
+/// and ends at the group's leader; everything above it must hold the pane's
+/// non-zero tty. Codex 0.157's shared app-server daemon is a second
+/// terminal-less group between the hook and the TUI that started it, so its
+/// hooks fail here even though the starter pane passes `foreign-pane` and
+/// the generation check. Deck does not claim the discontinuity IS a daemon;
+/// any topology it cannot prove this way fails closed. One snapshot, no
+/// extra reads. Accepted residual: an agent host that ran hooks inside its
+/// OWN terminal-less group (no new group per hook) would look like a hook
+/// wrapper; Codex 0.157 does not.
+fn terminal_continuous(table: &ProcessTable, chain: &[u32], leader: u32, pane_pid: u32) -> bool {
+    let Some(tty) = table.get(&pane_pid).map(|p| p.tty).filter(|tty| *tty != 0) else {
+        return false;
+    };
+    let Some(end) = chain.iter().position(|pid| *pid == leader) else {
+        return false;
+    };
+    let Some(segment) = chain.get(..=end).and_then(|pids| {
+        pids.iter()
+            .map(|pid| table.get(pid))
+            .collect::<Option<Vec<_>>>()
+    }) else {
+        return false;
+    };
+    let hook_group = segment[0].pgid;
+    let detached = segment.iter().take_while(|p| p.tty != tty).count();
+    let (hook, above) = segment.split_at(detached);
+    hook.iter().all(|p| p.tty == 0 && p.pgid == hook_group)
+        && hook.last().is_none_or(|top| top.pid == hook_group)
+        && !above.is_empty()
+        && above.iter().all(|p| p.tty == tty)
+}
+
 /// Validate one wire line and commit it to the store. Admission, in order:
 /// a kernel peer (`no-peer`), a pane of this server generation
 /// (`no-such-pane`), the pane's own process in the peer's ancestry
@@ -602,9 +806,13 @@ pub(crate) struct Origin {
 /// establishable foreground generation (`no-generation`) whose leader is
 /// also in the peer's ancestry (`generation-mismatch`: the reporter is not
 /// the pane's current foreground program — a late event of an exited or
-/// replaced agent). Runtime proof (Claude Code 2.1.282, Codex 0.156.1): the
-/// helper's parent IS the foreground leader; no fixed depth is required, so
-/// a wrapper leader is accepted.
+/// replaced agent), and an unbroken terminal from the helper to that leader
+/// (`terminal-discontinuity`, see `terminal_continuous`); a Codex event of
+/// a generation already proven ambiguous is refused too
+/// (`ambiguous-generation`, `CodexSignalTrust`). Runtime proof
+/// (Claude Code 2.1.282, Codex 0.156.1): the helper's parent IS the
+/// foreground leader; no fixed depth is required, so a wrapper leader is
+/// accepted.
 ///
 /// The observation is stored under its pane. Only an event from the pane
 /// that is its session's Signal target reaches the notification layer;
@@ -642,6 +850,30 @@ pub(crate) fn ingest(
     if !chain.contains(&generation.pid) {
         return Err("generation-mismatch");
     }
+    let codex = event.source == "codex";
+    if !terminal_continuous(&origin.table, &chain, generation.pid, row.pane_pid) {
+        if codex {
+            prove_trust(row, generation, CodexSignalTrust::Unavailable);
+            // the generation's Codex observation stops presenting at once
+            let key = PaneKey::of(row);
+            let cleared = with_agents(|agents| {
+                let stale = agents.get(&key).is_some_and(|entry| {
+                    entry.codex
+                        && entry.session_id == row.session_id
+                        && entry.pane_pid == row.pane_pid
+                        && entry.generation == generation
+                });
+                stale && agents.remove(&key).is_some()
+            });
+            if cleared {
+                renotify(&rows);
+            }
+        }
+        return Err("terminal-discontinuity");
+    }
+    if codex && ambiguous(row, generation) {
+        return Err("ambiguous-generation");
+    }
     let key = PaneKey::of(row);
     let observation = with_agents(|agents| -> Result<Observation, &'static str> {
         // the same pane generation keeps its interaction tracker; anything
@@ -668,6 +900,7 @@ pub(crate) fn ingest(
                     episode: 0,
                     last: None,
                     viewed: false,
+                    codex,
                 },
             );
         }
@@ -676,6 +909,7 @@ pub(crate) fn ingest(
             .interactions
             .admit(event.state, event.interaction.as_deref())?;
         entry.state = event.state;
+        entry.codex = codex;
         // only an accepted observation allocates or changes an episode
         let sameness = (event.interaction.clone(), event.state);
         if entry.last.as_ref() != Some(&sameness) {
@@ -689,6 +923,9 @@ pub(crate) fn ingest(
             viewed: entry.viewed,
         })
     })?;
+    if codex {
+        prove_trust(row, generation, CodexSignalTrust::Trusted);
+    }
     let targeted = signal_targets(&rows)
         .get(&row.session_name)
         .is_some_and(|target| target.pane_id == row.pane_id);
@@ -732,6 +969,24 @@ pub(crate) fn reconcile(rows: &[PaneRow], table: &ProcessTable) {
                 })
         });
     });
+    with_trust(|records| {
+        records.retain(|key, record| {
+            rows.iter()
+                .find(|row| PaneKey::of(row) == *key)
+                .is_some_and(|row| {
+                    row.session_id == record.session_id
+                        && row.pane_pid == record.pane_pid
+                        && foreground_generation(table, row.pane_pid) == Some(record.generation)
+                })
+        });
+    });
+    renotify(rows);
+}
+
+/// Bring the notification layer to the projected Signal of every session:
+/// a session whose target changed hears its new target's word, a session
+/// without one is forgotten.
+fn renotify(rows: &[PaneRow]) {
     let projected = projections(rows);
     for (session, observation) in &projected {
         crate::notify::observe(session, *observation);
@@ -742,6 +997,7 @@ pub(crate) fn reconcile(rows: &[PaneRow], table: &ProcessTable) {
 #[cfg(test)]
 pub(crate) fn reset_for_tests() {
     with_agents(|agents| agents.clear());
+    with_trust(|records| records.clear());
 }
 
 // ---------- socket listener --------------------------------------------------
@@ -788,6 +1044,8 @@ const DROP_REASONS: &[&str] = &[
     "shell-foreground",
     "no-generation",
     "generation-mismatch",
+    "terminal-discontinuity",
+    "ambiguous-generation",
     "stale-interaction",
     "interaction-mismatch",
     "duplicate-interaction",
@@ -1682,6 +1940,478 @@ mod tests {
         reset_for_tests();
     }
 
+    /// The runtime shape of a hook (Claude Code 2.1.283, Codex 0.157.0,
+    /// probed): the agent spawns it in a fresh session, so the hook's `sh`
+    /// (`group`) has no terminal and leads its own group, and the helper
+    /// (`group + 1`) is in that group. Returns the helper.
+    fn detached_hook(table: &mut ProcessTable, group: u32, parent: u32) -> u32 {
+        table.insert(group, process(group, parent, 0, 0, 5000));
+        let helper = ProcessInfo {
+            pgid: group,
+            ..process(group + 1, group, 0, 0, 5000)
+        };
+        table.insert(helper.pid, helper);
+        helper.pid
+    }
+
+    /// A Codex 0.157 shared app-server daemon started by the TUI `starter`:
+    /// its own group, no terminal.
+    fn daemon(table: &mut ProcessTable, pid: u32, starter: u32) {
+        table.insert(pid, process(pid, starter, 0, 0, 4000));
+    }
+
+    fn signal(rows: &[PaneRow], session: &str) -> Option<(&'static str, EpisodeId)> {
+        projections(rows).get(session).map(|o| (o.state, o.episode))
+    }
+
+    /// Embedded Codex, Claude and a same-terminal wrapper keep their Signal
+    /// with the real detached hook shape; nothing but the one hook group may
+    /// be off the pane's terminal.
+    #[test]
+    fn a_detached_hook_under_the_pane_s_terminal_is_continuous() {
+        let _guard = STORE_TEST_LOCK.lock_or_recover();
+        reset_for_tests();
+        let rows = [row("deck-card-ab12", "$1", "%3", 300, true, "codex")];
+        // embedded Codex: TUI 310 → hook sh 330 → helper 331
+        let mut embedded = world(&[pane(300, 7, 310, 2000)]);
+        let helper = detached_hook(&mut embedded, 330, 310);
+        assert_eq!(
+            report("working", "%3", Some(helper), &embedded, &rows),
+            Ok(())
+        );
+        // Claude's exec form: the helper alone leads the hook group
+        reset_for_tests();
+        let mut claude = world(&[pane(300, 7, 310, 2000)]);
+        claude.insert(335, process(335, 310, 0, 0, 5000));
+        assert_eq!(report("working", "%3", Some(335), &claude, &rows), Ok(()));
+        // `caffeinate claude`: wrapper leader 310, agent 311 on the same tty
+        reset_for_tests();
+        let mut wrapped = world(&[pane(300, 7, 310, 2000)]);
+        wrapped.insert(
+            311,
+            ProcessInfo {
+                pgid: 310,
+                ..process(311, 310, 7, 310, 2001)
+            },
+        );
+        let helper = detached_hook(&mut wrapped, 330, 311);
+        assert_eq!(
+            report("working", "%3", Some(helper), &wrapped, &rows),
+            Ok(())
+        );
+        // the hook run must be terminal-less, ONE group, ending at its leader
+        let mut other_tty = wrapped.clone();
+        other_tty.get_mut(&330).unwrap().tty = 9;
+        let mut split_group = wrapped.clone();
+        split_group.get_mut(&331).unwrap().pgid = 331;
+        let mut no_leader = wrapped.clone();
+        no_leader.get_mut(&330).unwrap().pgid = 331;
+        no_leader.get_mut(&331).unwrap().pgid = 331;
+        let mut gap = wrapped.clone();
+        gap.get_mut(&311).unwrap().tty = 0; // the agent itself left the terminal
+        for broken in [other_tty, split_group, no_leader, gap] {
+            reset_for_tests();
+            assert_eq!(
+                report("working", "%3", Some(331), &broken, &rows),
+                Err("terminal-discontinuity")
+            );
+            assert_eq!(signal(&rows, "deck-card-ab12"), None);
+        }
+        reset_for_tests();
+    }
+
+    /// Codex 0.157's shared app-server daemon, as probed: every client's hook
+    /// is spawned by the daemon and inherits the STARTER's `$TMUX_PANE`, so
+    /// all of them name the starter's pane — and pass `foreign-pane` and the
+    /// generation check while the starter TUI lives there. Terminal
+    /// continuity refuses them all; the starter's own earlier observation is
+    /// withdrawn (the channel is now ambiguous) and no other card gains one.
+    #[test]
+    fn shared_codex_daemon_hooks_are_refused_and_contaminate_no_pane() {
+        let _guard = STORE_TEST_LOCK.lock_or_recover();
+        reset_for_tests();
+        crate::notify::reset_for_tests();
+        let rows = [
+            row("deck-card-aaaa", "$1", "%3", 300, true, "codex"),
+            row("deck-card-bbbb", "$2", "%4", 400, true, "codex"),
+        ];
+        let panes = world(&[pane(300, 7, 310, 2000), pane(400, 8, 410, 2000)]);
+
+        // A started the daemon; A's own hook comes through it
+        let mut from_a = panes.clone();
+        daemon(&mut from_a, 350, 310);
+        let a_hook = detached_hook(&mut from_a, 360, 350);
+        assert!(
+            ancestry_contains(&from_a, a_hook, 300),
+            "passes foreign-pane"
+        );
+        assert_eq!(
+            codex_report("working", "%3", Some(a_hook), &from_a, &rows),
+            Err("terminal-discontinuity")
+        );
+        assert_eq!(signal(&rows, "deck-card-aaaa"), None);
+
+        // the latent misattribution: A holds a proven observation (an
+        // embedded-shaped hook of the same generation); B's turn, spawned by
+        // A's daemon, claims A's inherited pane and must not become A's
+        // (a fresh start: A's own daemon hook above already made this
+        // generation ambiguous, which would refuse the seed)
+        reset_for_tests();
+        let mut seeded = panes.clone();
+        let own = detached_hook(&mut seeded, 330, 310);
+        assert_eq!(
+            codex_report("needs-input", "%3", Some(own), &seeded, &rows),
+            Ok(())
+        );
+        let before = signal(&rows, "deck-card-aaaa");
+        let notified_before = notified("deck-card-aaaa");
+        let b_hook = detached_hook(&mut from_a, 370, 350);
+        for word in ["working", "turn-done"] {
+            assert_eq!(
+                codex_report(word, "%3", Some(b_hook), &from_a, &rows),
+                Err("terminal-discontinuity")
+            );
+        }
+        assert!(before.is_some() && notified_before.is_some());
+        assert_eq!(
+            signal(&rows, "deck-card-aaaa"),
+            None,
+            "withdrawn, never B's word"
+        );
+        assert_eq!(
+            notified("deck-card-aaaa"),
+            None,
+            "no attention attributed to A"
+        );
+        assert_eq!(signal(&rows, "deck-card-bbbb"), None);
+        assert_eq!(notified("deck-card-bbbb"), None);
+
+        // the daemon restarted from B: now EVERY hook names B's pane
+        reset_for_tests();
+        let mut from_b = panes.clone();
+        daemon(&mut from_b, 450, 410);
+        let a_again = detached_hook(&mut from_b, 460, 450);
+        let b_again = detached_hook(&mut from_b, 470, 450);
+        for helper in [a_again, b_again] {
+            assert_eq!(
+                codex_report("turn-done", "%4", Some(helper), &from_b, &rows),
+                Err("terminal-discontinuity")
+            );
+        }
+        assert_eq!(
+            signal(&rows, "deck-card-bbbb"),
+            None,
+            "B is not contaminated"
+        );
+        assert_eq!(signal(&rows, "deck-card-aaaa"), None);
+        // and a daemon-inherited claim of the OTHER pane is still foreign
+        assert_eq!(
+            codex_report("turn-done", "%3", Some(a_again), &from_b, &rows),
+            Err("foreign-pane")
+        );
+        reset_for_tests();
+    }
+
+    /// `report` with a Codex-sourced line.
+    fn codex_report(
+        state: &str,
+        pane: &str,
+        peer: Option<u32>,
+        table: &ProcessTable,
+        rows: &[PaneRow],
+    ) -> Result<(), &'static str> {
+        let origin = Origin {
+            peer,
+            table: table.clone(),
+        };
+        let line = event_line(state, pane).replace("\"claude-code\"", "\"codex\"");
+        ingest(&line, &origin, || Some(rows.to_vec()))
+    }
+
+    /// Every session's Codex trust against the snapshot `table`.
+    fn trust(rows: &[PaneRow], table: &ProcessTable) -> HashMap<String, CodexSignalTrust> {
+        codex_trust(rows, |pane| foreground_generation(table, pane))
+    }
+
+    /// The scheduler's automatic hold for an owner row of `session`, from
+    /// the Signal projection and Codex trust against `table`.
+    fn owner_held(rows: &[PaneRow], table: &ProcessTable, session: &str) -> bool {
+        let owner: crate::scheduler::QueueItem = serde_json::from_value(serde_json::json!({
+            "id": "o", "session": session, "card_id": "c", "dir": "", "cmd": "",
+            "text": "x", "mode": "chain", "added": 0
+        }))
+        .unwrap();
+        let seen = crate::scheduler::Observed {
+            activity: 0,
+            agent: projections(rows).get(session).map(|o| o.state),
+            codex: trust(rows, table).get(session).copied(),
+        };
+        crate::scheduler::agent_holds(&owner, Some(&seen))
+    }
+
+    /// Codex trust per foreground generation only degrades toward safety:
+    /// an accepted Codex hook proves Trusted; a discontinuity whose ancestry
+    /// reaches the pane's own generation makes it Unavailable, over an
+    /// earlier Trusted, and clears the generation's Codex observation; no
+    /// later hook heals it; a new process starts Unknown again. Only Codex
+    /// is gated, and Claude-sourced events neither set nor obey it.
+    #[test]
+    fn codex_trust_is_proven_per_generation_and_only_degrades() {
+        use CodexSignalTrust::{Trusted, Unavailable, Unknown};
+        let _guard = STORE_TEST_LOCK.lock_or_recover();
+        reset_for_tests();
+        crate::notify::reset_for_tests();
+        let rows = [row("deck-card-aaaa", "$1", "%3", 300, true, "codex")];
+        let mut table = world(&[pane(300, 7, 310, 2000)]);
+        // a fresh process: no evidence, held although quiet with no word
+        assert_eq!(trust(&rows, &table).get("deck-card-aaaa"), Some(&Unknown));
+        assert!(owner_held(&rows, &table, "deck-card-aaaa"));
+        // an accepted hook that is not Codex's proves nothing about Codex
+        let other = detached_hook(&mut table, 320, 310);
+        assert_eq!(
+            report("turn-done", "%3", Some(other), &table, &rows),
+            Ok(())
+        );
+        assert_eq!(trust(&rows, &table).get("deck-card-aaaa"), Some(&Unknown));
+        reset_for_tests();
+        // an accepted embedded Codex hook: Trusted, existing semantics
+        let helper = detached_hook(&mut table, 330, 310);
+        assert_eq!(
+            codex_report("turn-done", "%3", Some(helper), &table, &rows),
+            Ok(())
+        );
+        assert_eq!(trust(&rows, &table).get("deck-card-aaaa"), Some(&Trusted));
+        assert!(
+            !owner_held(&rows, &table, "deck-card-aaaa"),
+            "turn-done: quiet rule"
+        );
+        assert_eq!(notified("deck-card-aaaa"), Some("turn-done"));
+        // Trusted → later discontinuity, same generation → Unavailable: the
+        // turn-done stops presenting (Signal, attention, notification) and
+        // automatic rows are held
+        daemon(&mut table, 350, 310);
+        let through = detached_hook(&mut table, 360, 350);
+        assert_eq!(
+            codex_report("working", "%3", Some(through), &table, &rows),
+            Err("terminal-discontinuity")
+        );
+        assert_eq!(
+            trust(&rows, &table).get("deck-card-aaaa"),
+            Some(&Unavailable)
+        );
+        assert_eq!(signal(&rows, "deck-card-aaaa"), None);
+        assert_eq!(notified("deck-card-aaaa"), None, "no stale attention");
+        assert!(owner_held(&rows, &table, "deck-card-aaaa"));
+        // Unavailable → a later, otherwise admissible Codex hook of the same
+        // generation is refused and heals nothing
+        let again = detached_hook(&mut table, 340, 310);
+        assert_eq!(
+            codex_report("turn-done", "%3", Some(again), &table, &rows),
+            Err("ambiguous-generation")
+        );
+        assert_eq!(
+            trust(&rows, &table).get("deck-card-aaaa"),
+            Some(&Unavailable)
+        );
+        assert_eq!(signal(&rows, "deck-card-aaaa"), None);
+        assert!(owner_held(&rows, &table, "deck-card-aaaa"));
+        // a new Codex process in the pane: Unknown again, even before a
+        // Board poll reconciles, and still held until it proves itself
+        let mut relaunched = world(&[pane(300, 7, 311, 3000)]);
+        assert_eq!(
+            trust(&rows, &relaunched).get("deck-card-aaaa"),
+            Some(&Unknown)
+        );
+        assert!(owner_held(&rows, &relaunched, "deck-card-aaaa"));
+        let fresh = detached_hook(&mut relaunched, 370, 311);
+        assert_eq!(
+            codex_report("working", "%3", Some(fresh), &relaunched, &rows),
+            Ok(())
+        );
+        assert_eq!(
+            trust(&rows, &relaunched).get("deck-card-aaaa"),
+            Some(&Trusted)
+        );
+        // reconciliation drops a proof whose generation is gone
+        reconcile(&rows, &world(&[pane(300, 7, 312, 4000)]));
+        assert!(with_trust(|records| records.is_empty()));
+        reset_for_tests();
+        crate::notify::reset_for_tests();
+    }
+
+    /// A Claude foreground is never gated and a Codex-sourced discontinuity
+    /// never clears a Claude observation.
+    #[test]
+    fn claude_is_unchanged_by_codex_trust() {
+        let _guard = STORE_TEST_LOCK.lock_or_recover();
+        reset_for_tests();
+        let rows = [row("deck-card-aaaa", "$1", "%3", 300, true, "claude")];
+        let mut table = world(&[pane(300, 7, 310, 2000)]);
+        let hook = detached_hook(&mut table, 330, 310);
+        assert_eq!(
+            report("needs-input", "%3", Some(hook), &table, &rows),
+            Ok(())
+        );
+        assert!(trust(&rows, &table).is_empty(), "no Codex gate");
+        // Codex's daemon nested under the Claude pane (e.g. run by a tool)
+        daemon(&mut table, 350, 310);
+        let nested = detached_hook(&mut table, 360, 350);
+        assert_eq!(
+            codex_report("working", "%3", Some(nested), &table, &rows),
+            Err("terminal-discontinuity")
+        );
+        assert_eq!(
+            signal(&rows, "deck-card-aaaa").map(|s| s.0),
+            Some("needs-input")
+        );
+        let later = detached_hook(&mut table, 340, 310);
+        assert_eq!(
+            report("turn-done", "%3", Some(later), &table, &rows),
+            Ok(())
+        );
+        assert_eq!(
+            signal(&rows, "deck-card-aaaa").map(|s| s.0),
+            Some("turn-done")
+        );
+        reset_for_tests();
+    }
+
+    /// Codex launched through `node` or a wrapper: tmux does not name the
+    /// foreground `codex`, yet a proof for its current generation is still
+    /// what the scheduler sees.
+    #[test]
+    fn a_trust_proof_is_visible_whatever_the_foreground_name() {
+        use CodexSignalTrust::Trusted;
+        let _guard = STORE_TEST_LOCK.lock_or_recover();
+        reset_for_tests();
+        let rows = [row("deck-card-aaaa", "$1", "%3", 300, true, "node")];
+        let mut table = world(&[pane(300, 7, 310, 2000)]);
+        assert!(
+            trust(&rows, &table).is_empty(),
+            "no proof, no name: the row config decides"
+        );
+        let hook = detached_hook(&mut table, 330, 310);
+        assert_eq!(
+            codex_report("turn-done", "%3", Some(hook), &table, &rows),
+            Ok(())
+        );
+        assert_eq!(trust(&rows, &table).get("deck-card-aaaa"), Some(&Trusted));
+        // an owner row configured for Codex resumes its normal semantics
+        let owner: crate::scheduler::QueueItem = serde_json::from_value(serde_json::json!({
+            "id": "o", "session": "deck-card-aaaa", "card_id": "c", "dir": "", "cmd": "codex",
+            "text": "x", "mode": "chain", "added": 0, "expected_process": "codex"
+        }))
+        .unwrap();
+        let seen = |codex| crate::scheduler::Observed {
+            activity: 0,
+            agent: Some("turn-done"),
+            codex,
+        };
+        assert!(!crate::scheduler::agent_holds(
+            &owner,
+            Some(&seen(Some(Trusted)))
+        ));
+        assert!(crate::scheduler::agent_holds(&owner, Some(&seen(None))));
+        reset_for_tests();
+    }
+
+    /// The demonstrated multi-client misattribution cannot reach another
+    /// pane: B's hooks run inside A's daemon and name A's pane; the only pane
+    /// they can ever mark is the one their ancestry proves (A, which started
+    /// the daemon) — where the ambiguity correctly dominates A's own proof —
+    /// and B's own pane gains nothing.
+    #[test]
+    fn a_shared_daemon_moves_no_other_pane_s_trust_or_hold() {
+        use CodexSignalTrust::{Trusted, Unavailable, Unknown};
+        let _guard = STORE_TEST_LOCK.lock_or_recover();
+        reset_for_tests();
+        crate::notify::reset_for_tests();
+        let rows = [
+            row("deck-card-aaaa", "$1", "%3", 300, true, "codex"),
+            row("deck-card-bbbb", "$2", "%4", 400, true, "codex"),
+            row("deck-card-cccc", "$3", "%5", 500, true, "codex"),
+        ];
+        let mut table = world(&[
+            pane(300, 7, 310, 2000),
+            pane(400, 8, 410, 2000),
+            pane(500, 9, 510, 2000),
+        ]);
+        // C is an unrelated, proven embedded Codex
+        let c_hook = detached_hook(&mut table, 520, 510);
+        assert_eq!(
+            codex_report("turn-done", "%5", Some(c_hook), &table, &rows),
+            Ok(())
+        );
+        // A proved itself, then started a daemon that B attached to
+        let own = detached_hook(&mut table, 330, 310);
+        assert_eq!(
+            codex_report("turn-done", "%3", Some(own), &table, &rows),
+            Ok(())
+        );
+        daemon(&mut table, 350, 310);
+        for (group, word) in [(360, "working"), (370, "needs-input"), (380, "turn-done")] {
+            let b_hook = detached_hook(&mut table, group, 350);
+            assert_eq!(
+                codex_report(word, "%3", Some(b_hook), &table, &rows),
+                Err("terminal-discontinuity")
+            );
+        }
+        let seen = trust(&rows, &table);
+        assert_eq!(
+            seen.get("deck-card-aaaa"),
+            Some(&Unavailable),
+            "the ambiguity dominates"
+        );
+        assert_eq!(
+            seen.get("deck-card-bbbb"),
+            Some(&Unknown),
+            "B gains nothing"
+        );
+        assert_eq!(seen.get("deck-card-cccc"), Some(&Trusted), "C untouched");
+        for held in ["deck-card-aaaa", "deck-card-bbbb"] {
+            assert!(owner_held(&rows, &table, held), "{held}");
+        }
+        assert!(!owner_held(&rows, &table, "deck-card-cccc"));
+        // no Signal, attention or notification lands on A or B; C keeps its own
+        assert_eq!(
+            signal(&rows, "deck-card-aaaa"),
+            None,
+            "B's needs-input is not A's"
+        );
+        assert_eq!(signal(&rows, "deck-card-bbbb"), None);
+        assert_eq!(
+            signal(&rows, "deck-card-cccc").map(|s| s.0),
+            Some("turn-done")
+        );
+        assert_eq!(notified("deck-card-aaaa"), None);
+        assert_eq!(notified("deck-card-bbbb"), None);
+        assert_eq!(notified("deck-card-cccc"), Some("turn-done"));
+
+        // the daemon restarted from B: every hook names B; B started it, so
+        // B's generation is the one proven Unavailable; A's new process is
+        // untouched (Unknown until it proves itself)
+        reset_for_tests();
+        let mut table = world(&[pane(300, 7, 311, 3000), pane(400, 8, 410, 2000)]);
+        daemon(&mut table, 450, 410);
+        for group in [460, 470] {
+            let hook = detached_hook(&mut table, group, 450);
+            assert_eq!(
+                codex_report("needs-input", "%4", Some(hook), &table, &rows),
+                Err("terminal-discontinuity")
+            );
+        }
+        let seen = trust(&rows, &table);
+        assert_eq!(seen.get("deck-card-bbbb"), Some(&Unavailable));
+        assert_eq!(seen.get("deck-card-aaaa"), Some(&Unknown));
+        assert!(projections(&rows).is_empty(), "no Signal anywhere");
+        reset_for_tests();
+        crate::notify::reset_for_tests();
+    }
+
+    fn ancestry_contains(table: &ProcessTable, pid: u32, want: u32) -> bool {
+        crate::procinfo::ancestry_in(table, pid, ORIGIN_HOPS).contains(&want)
+    }
+
     /// Agent generation A reported; A exited and B (same executable name)
     /// took the foreground. A late event from A's tree is refused, and A's
     /// stored observation dies at the next reconciliation.
@@ -2362,8 +3092,11 @@ mod tests {
         let generation = foreground_generation(&origin.table, me);
         let expected = match generation {
             None => Err("no-generation"),
-            Some(g) if chain.contains(&g.pid) => Ok(()),
-            Some(_) => Err("generation-mismatch"),
+            Some(g) if !chain.contains(&g.pid) => Err("generation-mismatch"),
+            Some(g) if !terminal_continuous(&origin.table, &chain, g.pid, me) => {
+                Err("terminal-discontinuity")
+            }
+            Some(_) => Ok(()),
         };
         assert_eq!(ingest(&read, &origin, || Some(pane_is(me))), expected);
         drop(listener);
@@ -2371,45 +3104,41 @@ mod tests {
         reset_for_tests();
     }
 
-    /// End to end against a throwaway tmux server: a client started INSIDE
-    /// the pane (a descendant of `#{pane_pid}`) is accepted, the same line
-    /// from this test process (outside the pane) is refused.
-    #[test]
-    fn a_pane_s_own_descendant_reports_and_an_outsider_is_refused() {
-        use std::process::Command;
-        let _guard = STORE_TEST_LOCK.lock_or_recover();
-        reset_for_tests();
-        /// (socket name, tmux binary, socket path captured while alive)
-        struct Server(String, PathBuf, Option<PathBuf>);
-        impl Server {
-            fn run(&self, args: &[&str]) -> String {
-                let out = Command::new(&self.1)
-                    .args(["-f", "/dev/null", "-L", &self.0])
-                    .args(args)
-                    .output()
-                    .expect("tmux spawn");
-                String::from_utf8_lossy(&out.stdout).into_owned()
-            }
+    /// A throwaway bundled-tmux server for the real-process tests:
+    /// (socket name, tmux binary, socket path captured while alive)
+    struct Server(String, PathBuf, Option<PathBuf>);
+    impl Server {
+        fn run(&self, args: &[&str]) -> String {
+            let out = std::process::Command::new(&self.1)
+                .args(["-f", "/dev/null", "-L", &self.0])
+                .args(args)
+                .output()
+                .expect("tmux spawn");
+            String::from_utf8_lossy(&out.stdout).into_owned()
         }
-        impl Drop for Server {
-            fn drop(&mut self) {
-                // like the contract suite's guard: kill the server and
-                // remove exactly its socket file, which tmux leaves behind.
-                // The path was captured while the server was alive: once
-                // nc exits the empty server exits by itself and can no
-                // longer be asked.
-                let _ = self.run(&["kill-server"]);
-                if let Some(path) = self.2.take() {
-                    if path.file_name().and_then(|n| n.to_str()) == Some(&self.0)
-                        && std::fs::symlink_metadata(&path).is_ok_and(|m| {
-                            std::os::unix::fs::FileTypeExt::is_socket(&m.file_type())
-                        })
-                    {
-                        let _ = std::fs::remove_file(path);
-                    }
+    }
+    impl Drop for Server {
+        fn drop(&mut self) {
+            // like the contract suite's guard: kill the server and
+            // remove exactly its socket file, which tmux leaves behind.
+            // The path was captured while the server was alive: once
+            // nc exits the empty server exits by itself and can no
+            // longer be asked.
+            let _ = self.run(&["kill-server"]);
+            if let Some(path) = self.2.take() {
+                if path.file_name().and_then(|n| n.to_str()) == Some(&self.0)
+                    && std::fs::symlink_metadata(&path)
+                        .is_ok_and(|m| std::os::unix::fs::FileTypeExt::is_socket(&m.file_type()))
+                {
+                    let _ = std::fs::remove_file(path);
                 }
             }
         }
+    }
+
+    /// A fresh throwaway server and a status listener in its own temp dir:
+    /// (server, listener, dir, listener socket path).
+    fn throwaway(kind: &str) -> (Server, UnixListener, PathBuf, PathBuf) {
         let bin =
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("binaries/tmux-aarch64-apple-darwin");
         // one per run and per call: the sequence keeps a second use of this
@@ -2417,15 +3146,26 @@ mod tests {
         static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let dir =
-            std::env::temp_dir().join(format!("deck-status-e2e-{}-{seq}", std::process::id()));
+            std::env::temp_dir().join(format!("deck-status-{kind}-{}-{seq}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("status.sock");
         let listener = listen_at(&path).unwrap();
-        let mut server = Server(
+        let server = Server(
             format!("deck-test-status-{}-{seq}", std::process::id()),
             bin,
             None,
         );
+        (server, listener, dir, path)
+    }
+
+    /// End to end against a throwaway tmux server: a client started INSIDE
+    /// the pane (a descendant of `#{pane_pid}`) is accepted, the same line
+    /// from this test process (outside the pane) is refused.
+    #[test]
+    fn a_pane_s_own_descendant_reports_and_an_outsider_is_refused() {
+        let _guard = STORE_TEST_LOCK.lock_or_recover();
+        reset_for_tests();
+        let (mut server, listener, dir, path) = throwaway("e2e");
         // The pane program IS the client: `exec` makes nc the pane's own
         // process (same pid tmux recorded as #{pane_pid}) and its
         // foreground, so a shell never owns the pane while it reports —
@@ -2516,6 +3256,136 @@ mod tests {
             Err("foreign-pane")
         );
         assert_eq!(projections(&rows).get("t").map(|o| o.state), None);
+        drop(server);
+        drop(listener);
+        let _ = std::fs::remove_dir_all(&dir);
+        reset_for_tests();
+    }
+
+    /// Real processes, real `setsid()`: two panes of a throwaway server run
+    /// a stand-in agent (perl, the pane's own foreground program). Each
+    /// reports the way Claude Code 2.1.283 and Codex 0.157.0 were probed to
+    /// spawn hooks — in a fresh terminal-less session — and builds its line
+    /// from the INHERITED `$TMUX`/`$TMUX_PANE`, like the helper. Pane `emb`
+    /// spawns the hook itself (embedded Codex): accepted. Pane `dmn` first
+    /// starts a detached "daemon" that spawns the hook: the hook names the
+    /// starter's own pane and its chain reaches that pane and its foreground
+    /// leader, yet the daemon breaks terminal continuity: refused.
+    #[test]
+    fn a_real_detached_daemon_breaks_terminal_continuity() {
+        let _guard = STORE_TEST_LOCK.lock_or_recover();
+        reset_for_tests();
+        let (mut server, listener, dir, path) = throwaway("tty");
+        let script = dir.join("agent.pl");
+        std::fs::write(
+            &script,
+            r#"use POSIX (); use IO::Socket::UNIX;
+            my ($mode, $sock, $name) = @ARGV;
+            sub hook {
+              POSIX::setsid();
+              my (undef, $server) = split /,/, $ENV{TMUX};
+              my $s = IO::Socket::UNIX->new(Peer => $sock) or exit 1;
+              print $s qq({"v":1,"source":"codex","state":"working","socket":"$name","server_pid":$server,"pane":"$ENV{TMUX_PANE}"}\n);
+              1 while <$s>;
+              exit 0;
+            }
+            if (fork() == 0) {
+              if ($mode eq "daemon") { POSIX::setsid(); if (fork() == 0) { hook() } wait(); exit 0 }
+              hook();
+            }
+            sleep 30;"#,
+        )
+        .unwrap();
+        let agent = |mode: &str| {
+            format!(
+                "exec /usr/bin/perl '{}' {mode} '{}' {}",
+                script.display(),
+                path.display(),
+                crate::tmux::socket()
+            )
+        };
+        let (embedded, daemon) = (agent("embedded"), agent("daemon"));
+        server.run(&[
+            "start-server",
+            ";",
+            "new-session",
+            "-d",
+            "-s",
+            "emb",
+            "-x",
+            "80",
+            "-y",
+            "12",
+            &embedded,
+            ";",
+            "new-session",
+            "-d",
+            "-s",
+            "dmn",
+            "-x",
+            "80",
+            "-y",
+            "12",
+            &daemon,
+        ]);
+        let socket = server.run(&["display-message", "-p", "#{socket_path}"]);
+        server.2 = Some(PathBuf::from(socket.trim()));
+        listener.set_nonblocking(true).unwrap();
+        let mut reports = Vec::new();
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while reports.len() < 2 {
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    stream.set_nonblocking(false).unwrap();
+                    let line = read_first_line(&mut stream).unwrap();
+                    // identity read while the reporter is still connected
+                    let origin = Origin {
+                        peer: crate::procinfo::peer_pid(&stream),
+                        table: crate::procinfo::processes(),
+                    };
+                    reports.push((line, origin));
+                }
+                Err(_) if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(20))
+                }
+                Err(e) => panic!("both panes report: {e}"),
+            }
+        }
+        let rows: Vec<PaneRow> = server
+            .run(&["list-panes", "-a", "-F", crate::tmux::PANE_FORMAT])
+            .lines()
+            .filter_map(crate::tmux::parse_pane_row)
+            .collect();
+        assert_eq!(rows.len(), 2, "{rows:?}");
+        assert!(rows.iter().all(|r| r.command == "perl"), "{rows:?}");
+        for (line, origin) in &reports {
+            let row = rows
+                .iter()
+                .find(|r| line.contains(&format!("\"pane\":\"{}\"", r.pane_id)))
+                .expect("the hook named one of the panes");
+            let chain = crate::procinfo::ancestry_in(&origin.table, origin.peer.unwrap(), 32);
+            let hook = &origin.table[&chain[0]];
+            assert_eq!((hook.tty, hook.pgid), (0, hook.pid), "a detached hook");
+            // both pass the pre-existing rules for the pane they name
+            assert!(chain.contains(&row.pane_pid), "not foreign");
+            let generation = foreground_generation(&origin.table, row.pane_pid).unwrap();
+            assert!(chain.contains(&generation.pid), "the pane's generation");
+            let want = if row.session_name == "emb" {
+                Ok(())
+            } else {
+                Err("terminal-discontinuity")
+            };
+            assert_eq!(
+                ingest(line, origin, || Some(rows.clone())),
+                want,
+                "{}",
+                row.session_name
+            );
+        }
+        let states = projections(&rows);
+        assert_eq!(states.get("emb").map(|o| o.state), Some("working"));
+        assert_eq!(states.get("dmn").map(|o| o.state), None);
+        drop(reports);
         drop(server);
         drop(listener);
         let _ = std::fs::remove_dir_all(&dir);

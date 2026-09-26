@@ -1852,6 +1852,228 @@
      }
     }
    ]
+  },
+  {
+   "name": "a-shared-codex-daemon-withdraws-its-starter-s-signal-and-paints-no-card",
+   "sessions": [
+    "s1",
+    "s2"
+   ],
+   "panes": {
+    "s1a": {
+     "session": "s1",
+     "agent": "codex"
+    },
+    "s2a": {
+     "session": "s2",
+     "agent": "codex"
+    }
+   },
+   "steps": [
+    {
+     "expect": {
+      "sessions": {
+       "s1": {
+        "hold": true
+       },
+       "s2": {
+        "hold": true
+       }
+      }
+     }
+    },
+    {
+     "event": "working",
+     "pane": "s1a",
+     "id": "A"
+    },
+    {
+     "event": "turn-done",
+     "pane": "s1a",
+     "id": "A"
+    },
+    {
+     "poll": true
+    },
+    {
+     "expect": {
+      "sessions": {
+       "s1": {
+        "agent": "turn-done",
+        "unread": true,
+        "hold": false,
+        "announced": 1,
+        "category": "done",
+        "badge": "done"
+       },
+       "s2": {
+        "agent": null,
+        "unread": false,
+        "hold": true,
+        "announced": 0,
+        "category": "unavailable",
+        "badge": null
+       }
+      },
+      "dock": 1,
+      "pending": [
+       "s1"
+      ]
+     }
+    },
+    {
+     "event": "working",
+     "pane": "s1a",
+     "id": "B",
+     "from": "daemon:s1a",
+     "result": "terminal-discontinuity"
+    },
+    {
+     "event": "needs-input",
+     "pane": "s1a",
+     "id": "B",
+     "from": "daemon:s1a",
+     "result": "terminal-discontinuity"
+    },
+    {
+     "event": "turn-done",
+     "pane": "s1a",
+     "id": "B",
+     "from": "daemon:s1a",
+     "result": "terminal-discontinuity"
+    },
+    {
+     "poll": true
+    },
+    {
+     "expect": {
+      "sessions": {
+       "s1": {
+        "agent": null,
+        "unread": false,
+        "hold": true,
+        "category": "unavailable",
+        "badge": null
+       },
+       "s2": {
+        "agent": null,
+        "unread": false,
+        "hold": true,
+        "announced": 0,
+        "category": "unavailable",
+        "badge": null
+       }
+      },
+      "dock": 0,
+      "pending": []
+     }
+    },
+    {
+     "event": "working",
+     "pane": "s1a",
+     "id": "C",
+     "result": "ambiguous-generation"
+    },
+    {
+     "event": "turn-done",
+     "pane": "s1a",
+     "id": "C",
+     "result": "ambiguous-generation"
+    },
+    {
+     "poll": true
+    },
+    {
+     "expect": {
+      "sessions": {
+       "s1": {
+        "agent": null,
+        "unread": false,
+        "hold": true,
+        "category": "unavailable",
+        "badge": null
+       },
+       "s2": {
+        "agent": null,
+        "unread": false,
+        "hold": true,
+        "announced": 0,
+        "category": "unavailable",
+        "badge": null
+       }
+      },
+      "dock": 0,
+      "pending": []
+     }
+    }
+   ]
+  },
+  {
+   "name": "a-daemon-restarted-elsewhere-contaminates-neither-pane",
+   "sessions": [
+    "s1",
+    "s2"
+   ],
+   "panes": {
+    "s1a": {
+     "session": "s1",
+     "agent": "codex"
+    },
+    "s2a": {
+     "session": "s2",
+     "agent": "codex"
+    }
+   },
+   "steps": [
+    {
+     "event": "working",
+     "pane": "s2a",
+     "id": "X",
+     "from": "daemon:s2a",
+     "result": "terminal-discontinuity"
+    },
+    {
+     "event": "needs-input",
+     "pane": "s2a",
+     "id": "X",
+     "from": "daemon:s2a",
+     "result": "terminal-discontinuity"
+    },
+    {
+     "event": "turn-done",
+     "pane": "s2a",
+     "id": "Y",
+     "from": "daemon:s2a",
+     "result": "terminal-discontinuity"
+    },
+    {
+     "poll": true
+    },
+    {
+     "expect": {
+      "sessions": {
+       "s1": {
+        "agent": null,
+        "unread": false,
+        "hold": true,
+        "announced": 0,
+        "category": "unavailable",
+        "badge": null
+       },
+       "s2": {
+        "agent": null,
+        "unread": false,
+        "hold": true,
+        "announced": 0,
+        "category": "unavailable",
+        "badge": null
+       }
+      },
+      "dock": 0,
+      "pending": []
+     }
+    }
+   ]
   }
  ]
 }

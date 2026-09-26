@@ -40,7 +40,9 @@ fn qi(id: &str, mode: &str) -> QueueItem {
         seq: None,
         rule: None,
         delivery: None,
-        expected_process: Some("codex".into()),
+        // a process-bound row; Codex-configured rows (which the Codex trust
+        // gate applies to) are built explicitly by their own tests
+        expected_process: Some("claude".into()),
         binding: None,
         last_context: None,
         revision: 0,
@@ -78,7 +80,7 @@ fn seen(activity: u64) -> Observations {
         "s".to_string(),
         Observed {
             activity,
-            agent: None,
+            ..Observed::default()
         },
     )])
 }
@@ -90,6 +92,7 @@ fn seen_agent(activity: u64, agent: &'static str) -> Observations {
         Observed {
             activity,
             agent: Some(agent),
+            ..Observed::default()
         },
     )])
 }
@@ -2563,7 +2566,7 @@ fn process_bound_delivery_requires_paste_mode_and_compatibility_does_not() {
     };
     let bound = qi("a", "at");
     let request = delivery::literal_request(&bound, &pane, "d1");
-    assert_eq!(request.expected_process, Some("codex"));
+    assert_eq!(request.expected_process, Some("claude"));
     assert!(request.require_paste_mode);
     let mut compatibility = qi("b", "at");
     compatibility.expected_process = None;
@@ -2720,6 +2723,181 @@ fn manual_send_now_is_not_held_by_the_agent() {
             .unwrap()
             .id,
         "c"
+    );
+}
+
+/// Session "s" quiet since `activity`, Codex in the foreground of its
+/// Signal target with `trust`, and the agent hook reporting `agent`.
+fn seen_codex(
+    activity: u64,
+    agent: Option<&'static str>,
+    trust: crate::agent_status::CodexSignalTrust,
+) -> Observations {
+    HashMap::from([(
+        "s".to_string(),
+        Observed {
+            activity,
+            agent,
+            codex: Some(trust),
+        },
+    )])
+}
+
+/// Codex shared-daemon FR: without a trusted Codex Signal, "no agent word"
+/// must not fall back to the quiet-only rule — a Codex permission prompt
+/// is quiet too.
+#[test]
+fn a_codex_foreground_without_trusted_signal_holds_every_automatic_row() {
+    use crate::agent_status::CodexSignalTrust::{Trusted, Unavailable, Unknown};
+    let quiet = NOW - 400;
+    let mut a = qi("a", "at");
+    a.at = Some(NOW - 1);
+    for item in [a, qi("c", "chain"), rule(300)] {
+        let id = item.id.clone();
+        let q = qs(vec![item]);
+        // non-Codex baseline: the owner row is due
+        assert_eq!(ids(&select_due(&q, NOW, 720, &seen(quiet))), [id.as_str()]);
+        for trust in [Unknown, Unavailable] {
+            for agent in [None, Some("working"), Some("turn-done")] {
+                assert!(
+                    select_due(&q, NOW, 720, &seen_codex(quiet, agent, trust)).is_empty(),
+                    "{id}/{trust:?}/{agent:?}: an unproven Codex gets no automatic paste"
+                );
+            }
+            // the user's send-now is not held
+            assert_eq!(
+                select_for_request(
+                    &q,
+                    "s",
+                    NOW,
+                    720,
+                    &seen_codex(quiet, None, trust),
+                    Some(&id)
+                )
+                .map(|i| i.id),
+                Some(id.clone()),
+                "{id}/{trust:?}: manual send-now"
+            );
+        }
+        // Trusted: exactly the existing semantics
+        for agent in [None, Some("working"), Some("turn-done")] {
+            assert_eq!(
+                ids(&select_due(
+                    &q,
+                    NOW,
+                    720,
+                    &seen_codex(quiet, agent, Trusted)
+                )),
+                [id.as_str()],
+                "{id}/{agent:?}: a trusted Codex keeps the quiet-only rule"
+            );
+        }
+        assert!(
+            select_due(
+                &q,
+                NOW,
+                720,
+                &seen_codex(quiet, Some("needs-input"), Trusted)
+            )
+            .is_empty(),
+            "{id}: a trusted input request holds"
+        );
+    }
+    // a trusted owner chain still waits for its quiet time
+    let q = qs(vec![qi("o", "chain")]);
+    assert!(select_due(&q, NOW, 720, &seen_codex(NOW - 10, None, Trusted)).is_empty());
+    // the external follow-up rule is unchanged: held even when trusted
+    let mut ext = qi("e", "chain");
+    ext.external = true;
+    let q = qs(vec![ext]);
+    assert!(select_due(&q, NOW, 720, &seen_codex(quiet, Some("turn-done"), Trusted)).is_empty());
+    // the plan names the hold
+    let q = qs(vec![qi("o", "chain")]);
+    let stage = serde_json::to_value(plan_item(
+        &q,
+        &q.items[0],
+        NOW,
+        720,
+        Some(&seen_codex(quiet, None, Unavailable)),
+    ))
+    .unwrap()["stage"]
+        .clone();
+    assert_eq!(stage, "agent");
+}
+
+/// A row configured for Codex (`expected_process`) is gated in an EXISTING
+/// session even when tmux names the foreground `node` or a wrapper, and
+/// released by a trust proof; a session a successful listing proves absent
+/// may still bootstrap. Rows configured for anything else are unchanged.
+#[test]
+fn a_codex_configured_row_is_gated_whatever_the_foreground_name() {
+    use crate::agent_status::CodexSignalTrust::{Trusted, Unavailable};
+    let quiet = NOW - 400;
+    let mut row = qi("o", "chain");
+    row.cmd = "codex".into();
+    row.expected_process = Some("codex".into());
+    let q = qs(vec![row]);
+    // existing session, `node` foreground, no proof: codex trust is absent
+    // from the observation, the configuration alone holds
+    assert!(select_due(&q, NOW, 720, &seen(quiet)).is_empty());
+    assert!(select_due(&q, NOW, 720, &seen_agent(quiet, "turn-done")).is_empty());
+    let plan =
+        serde_json::to_value(plan_item(&q, &q.items[0], NOW, 720, Some(&seen(quiet)))).unwrap();
+    assert_eq!(plan["stage"], "agent");
+    // a pane-bound Codex hook proved this generation: normal semantics
+    assert_eq!(
+        ids(&select_due(&q, NOW, 720, &seen_codex(quiet, None, Trusted))),
+        ["o"]
+    );
+    assert!(select_due(
+        &q,
+        NOW,
+        720,
+        &seen_codex(quiet, Some("needs-input"), Trusted)
+    )
+    .is_empty());
+    assert!(select_due(&q, NOW, 720, &seen_codex(quiet, None, Unavailable)).is_empty());
+    // a session the listing proves absent: the first row starts Codex
+    assert_eq!(ids(&select_due(&q, NOW, 720, &HashMap::new())), ["o"]);
+    // send-now is never held
+    assert!(select_for_request(&q, "s", NOW, 720, &seen(quiet), Some("o")).is_some());
+    // rows configured for another program keep the quiet-only rule
+    for other in [Some("claude"), Some("zsh"), None] {
+        let mut row = qi("o", "chain");
+        row.expected_process = other.map(str::to_string);
+        let q = qs(vec![row]);
+        assert_eq!(
+            ids(&select_due(&q, NOW, 720, &seen(quiet))),
+            ["o"],
+            "{other:?}"
+        );
+    }
+}
+
+/// A failed pane listing proves no session absent: a live Codex may be
+/// waiting on a permission prompt. Nothing is selected that tick; a
+/// successful listing that shows the session absent still bootstraps.
+#[test]
+fn a_failed_pane_listing_selects_nothing() {
+    let mut owner = qi("o", "chain");
+    owner.cmd = "codex".into();
+    owner.expected_process = Some("codex".into());
+    let mut at = qi("a", "at");
+    at.at = Some(NOW - 1);
+    let mut plain = qi("p", "chain");
+    plain.session = "t".into();
+    let q = qs(vec![owner, at, plain]);
+    assert!(tick_selection(&q, NOW, 720, None).is_empty());
+    let absent = Observations::new();
+    let mut due = ids(&tick_selection(&q, NOW, 720, Some(&absent)))
+        .into_iter()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    due.sort();
+    assert_eq!(
+        due,
+        ["a", "p"],
+        "one per session; the at row leads session s"
     );
 }
 
