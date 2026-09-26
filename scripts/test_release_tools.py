@@ -328,6 +328,12 @@ class ReleaseChannelTests(unittest.TestCase):
         self.assertIn("NIGHTLY_TAURI_SIGNING_PRIVATE_KEY", nightly)
         self.assertIn("legacy Stable updater key is permitted only for the v0.5.4 migration", nightly)
         self.assertIn("Stable-only key", promote)
+        self.assertIn("helper_name=$(jq -er '.helper.archive' candidate/provenance.json)", promote)
+        self.assertIn('cp "candidate/$helper_name" "stable/$helper_name"', promote)
+        self.assertIn("'helper_archive')],", promote)
+        self.assertIn('deck_aarch64.app.tar.gz.sig "$helper_name"', promote)
+        self.assertIn('"stable/$helper_name"', promote)
+        self.assertIn('deck_aarch64.app.tar.gz.sig "$helper_name" SHA256SUMS promotion.json', promote)
         site = (ROOT / ".github/workflows/site-deploy.yml").read_text()
         self.assertNotIn("gitHubToken", site)
         for path in (ROOT / ".github/workflows").glob("*.yml"):
