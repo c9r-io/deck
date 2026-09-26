@@ -5,9 +5,11 @@
    Path tokens are only CANDIDATES: they are offered on their text alone so a
    hovered link cannot flicker, and the link actions resolve and validate them
    against the pane cwd (`links.rs`). ASCII prose wrappers end a candidate;
-   balanced brackets within a filename are retained. Failed scans advance
-   past the inspected span, so long non-path output cannot cause quadratic
-   suffix rescans. Bracket matching and URL punctuation trimming are linear.
+   balanced brackets within a filename are retained. A numeric line/column
+   suffix ends before adjacent CJK prose, while the wider reading is retained
+   for the filesystem fallback used by genuine colon-number filenames.
+   Failed scans advance past the inspected span, so long non-path output cannot
+   cause quadratic suffix rescans. Bracket matching and URL punctuation trimming are linear.
    Code is not a filename: a bare dotted identifier chain directly followed
    by `(` or `[` (`pathlib.Path(`, `p.read_text()`, `re.search(`,
    `sys.argv[1]`) is a member call or index,
@@ -115,6 +117,12 @@ function isDottedNumber(value) {
   return parts.length > 1 && parts.every(allAsciiDigits);
 }
 
+function endsWithLineLocation(text, start, end) {
+  const digitEnd = end;
+  while (end > start && isAsciiDigit(text[end - 1])) end--;
+  return end < digitEnd && end > start && text[end - 1] === ':';
+}
+
 export function looksLikeTerminalPathCandidate(value) {
   let raw = String(value);
   if ((raw[0] === '"' || raw[0] === '\'') && raw.lastIndexOf(raw[0]) > 0) {
@@ -195,7 +203,7 @@ function unquotedPathAt(text, index, pairs) {
   if (text[index] === '.' && (text[index - 1] === ')' || text[index - 1] === ']')) {
     return { skipTo: index + 1 };
   }
-  let end = index;
+  let end = index, proseBoundary = null;
   /* Member-call state, O(1) per character: the head so far is an identifier
      chain (`a.b.c`, or `.c` continuing one) while it has only identifier
      characters and dots, no empty or digit-led segment, and at least one dot. */
@@ -242,17 +250,27 @@ function unquotedPathAt(text, index, pairs) {
     if (ch === ':' && !structural) break;
     if (end > index) {
       const prev = text[end - 1];
-      if ((isAsciiLetter(prev) && isCJK(ch))
+      if (!proseBoundary && isCJK(ch) && endsWithLineLocation(text, index, end)) {
+        // `file.rs:12说明` has the same implicit boundary as `file.rs:12 notes`.
+        // Keep scanning once for the wider literal-filename fallback, but expose
+        // only the location-bearing path as the hovered link.
+        proseBoundary = end;
+      } else if ((isAsciiLetter(prev) && isCJK(ch))
           || (!structural && isCJK(prev) && isAsciiLetter(ch))) break;
     }
     if (ch === '/' || ch === '.') structural = true;
     end++;
   }
-  const rawValue = text.slice(index, end);
+  const rawValue = text.slice(index, proseBoundary ?? end);
   let value = rawValue;
   while (value && PATH_TRAILING.includes(value.at(-1))) value = value.slice(0, -1);
   if (!looksLikeTerminalPathCandidate(value)) return { skipTo: Math.max(index + 1, end) };
   const token = { kind: 'path', value, index, end: index + value.length };
+  if (proseBoundary) {
+    let wider = text.slice(index, end);
+    while (wider && PATH_TRAILING.includes(wider.at(-1))) wider = wider.slice(0, -1);
+    if (wider !== value && looksLikeTerminalPathCandidate(wider)) token.lookback = wider;
+  }
   // If a real filename ends in ':', the filesystem can still choose the
   // original spelling after the punctuation-free reading fails.
   if (rawValue.endsWith(':') && rawValue !== value) token.lookback = rawValue;

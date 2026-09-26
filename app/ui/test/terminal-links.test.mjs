@@ -174,3 +174,36 @@ test('the production Python one-liner links only its quoted filename, wrapped or
     }
   }
 });
+
+test('a numeric source location stops before adjacent CJK prose', () => {
+  const tokens = text => tokenizeTerminalLinks(text);
+  const reported = '【app/SMOKE.md:180要求的安装版真实】';
+  assert.deepEqual(tokens(reported), [{
+    kind: 'path', value: 'app/SMOKE.md:180', index: 1, end: 17,
+    lookback: 'app/SMOKE.md:180要求的安装版真实',
+  }]);
+  const f = fixture(reported);
+  const [link] = f.query();
+  assert.equal(link.text, 'app/SMOKE.md:180');
+  assert.deepEqual(link.range, { start: { x: 2, y: 1 }, end: { x: 17, y: 1 } });
+  f.pane.disposeLinks();
+  assert.deepEqual(tokens('参见（app/SMOKE.md:180:7要求与安装版一致）')
+    .map(({ value, lookback }) => ({ value, lookback })), [{
+      value: 'app/SMOKE.md:180:7', lookback: 'app/SMOKE.md:180:7要求与安装版一致',
+    }], 'line and column suffixes remain part of the selected path');
+  assert.deepEqual(tokens('文档/笔记2024.md app/安装版真实.md').map(token => token.value),
+    ['文档/笔记2024.md', 'app/安装版真实.md'],
+  'ordinary CJK filenames and digit-bearing names stay whole');
+  assert.deepEqual(tokens('app/构建:180要求.md')[0], {
+    kind: 'path', value: 'app/构建:180', index: 0, end: 10,
+    lookback: 'app/构建:180要求.md',
+  }, 'the wider literal colon filename remains available for exact-path retry');
+});
+
+test('CJK prose after a source location remains a bounded scan', () => {
+  const input = 'app/SMOKE.md:180' + '要'.repeat(64000) + '。 /tmp/end.rs';
+  const started = performance.now();
+  const tokens = tokenizeTerminalLinks(input);
+  assert.deepEqual(tokens.map(token => token.value), ['app/SMOKE.md:180', '/tmp/end.rs']);
+  assert.ok(performance.now() - started < 1000);
+});
