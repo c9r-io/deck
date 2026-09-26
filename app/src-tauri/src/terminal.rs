@@ -6,6 +6,16 @@
 //! `display-message` line in a pure core (`parse_terminal_selection_status`,
 //! `parse_copy_mode_snapshot`) that the unit tests pin.
 //!
+//! Ordinary wheel input carries an optional zero-based pointer cell. Missing
+//! coordinates preserve the history-only contract used by selection and old
+//! callers. With a complete cell, Deck probes pane geometry under the shared
+//! resize lock, clamps the cell, and tmux rechecks ownership immediately
+//! before dispatch: copy-mode owns scrolling; otherwise current application
+//! mouse flags select SGR, UTF-8 or X10 bytes; without them history owns it.
+//! Only a live-app candidate crosses the MCP terminal-input fence. The final
+//! tmux conditional rechecks live flags so an exited app is not sent a frame
+//! selected from stale probe state.
+//!
 //! A drag keeps tmux selection-FREE: tmux repaints the whole selected region
 //! after every motion repetition, so re-placing the copy cursor from
 //! `top-line` on each pointer move cost ~19 KB of PTY traffic per move on a
@@ -38,10 +48,12 @@ use crate::terminal_selection::{
 };
 use crate::tmux::{pane_target, tmux, tmux_owned, validate_session_name};
 
-/// Wheel scrolling is deck-driven: xterm keeps LOCAL selection (mouse mode
-/// stays off) and deck translates wheel deltas into tmux copy-mode motion.
-/// Returns copy-mode and live-cursor visibility AFTER the scroll, so the UI
-/// can update both without waiting for the next poll.
+/// Wheel scrolling keeps Deck's local selection authority while the backend
+/// negotiates ownership at dispatch: copy-mode scrolls history, a live app
+/// with mouse tracking receives wheel frames, and other panes scroll history.
+/// Pointer coordinates are an explicit opt-in; legacy/selection callers that
+/// omit either coordinate always retain the history path. Returns copy-mode
+/// and live-cursor visibility AFTER the operation.
 #[derive(Debug, Serialize)]
 pub(crate) struct TerminalScrollResult {
     active: bool,
@@ -68,14 +80,79 @@ fn parse_terminal_scroll_result(raw: &str) -> Result<TerminalScrollResult, DeckE
 }
 
 #[tauri::command]
-pub(crate) fn scroll_session(name: String, lines: i32) -> Result<TerminalScrollResult, DeckError> {
+pub(crate) fn scroll_session(
+    name: String,
+    lines: i32,
+    column: Option<u32>,
+    row: Option<u32>,
+) -> Result<TerminalScrollResult, DeckError> {
+    let _operation = terminal_selection_operation_lock().lock_or_recover();
     validate_session_name(&name)?;
     let t = pane_target(&name);
-    // State test, optional copy-mode entry, movement and post-state report all
-    // execute in one tmux server command list. This removes two to three
-    // process/IPC round trips from every display-frame scroll update.
-    let after = tmux_owned(&crate::terminal_scroll::cursor_following_args(&t, lines))?;
+    // History state, optional copy-mode entry, movement and post-state report
+    // execute in one tmux server command list. Pointer routing adds one locked
+    // geometry/ownership probe only when both coordinates are present.
+    let args = if lines == 0 {
+        crate::terminal_scroll::cursor_following_args(&t, lines)
+    } else {
+        match (column, row) {
+            (Some(column), Some(row)) => {
+                // This path can inject application input, so it carries the same
+                // MCP ownership fence as keyboard/paste input. Holding the shared
+                // operation lock keeps Deck-driven resize out of the geometry
+                // query -> clamped dispatch window.
+                let probe = tmux_owned(&[
+                "display-message".into(),
+                "-p".into(),
+                "-t".into(),
+                t.clone(),
+                "#{pane_in_mode}\t#{||:#{mouse_any_flag},#{mouse_button_flag},#{mouse_standard_flag}}\t#{pane_width}\t#{pane_height}".into(),
+            ])?;
+                let (in_mode, mouse_active, width, height) = parse_wheel_probe(&probe)?;
+                if wheel_probe_requires_input_fence(in_mode, mouse_active) {
+                    crate::mcp::guard_terminal_input(&name)?;
+                    crate::terminal_scroll::negotiated_args(
+                        &t,
+                        lines,
+                        crate::terminal_scroll::WheelCell::clamped(column, row, width, height),
+                    )
+                } else {
+                    crate::terminal_scroll::cursor_following_args(&t, lines)
+                }
+            }
+            _ => crate::terminal_scroll::cursor_following_args(&t, lines),
+        }
+    };
+    let after = tmux_owned(&args)?;
     parse_terminal_scroll_result(&after)
+}
+
+fn parse_wheel_probe(raw: &str) -> Result<(bool, bool, u32, u32), DeckError> {
+    let mut fields = raw.trim_end().split('\t');
+    let (Some(in_mode), Some(mouse), Some(width), Some(height), None) = (
+        fields.next(),
+        fields.next(),
+        fields.next(),
+        fields.next(),
+        fields.next(),
+    ) else {
+        return Err(DeckError::new(ErrorKind::Other, "scroll-geometry-invalid"));
+    };
+    let width = width
+        .parse::<u32>()
+        .ok()
+        .filter(|value| *value > 0)
+        .ok_or(DeckError::new(ErrorKind::Other, "scroll-geometry-invalid"))?;
+    let height = height
+        .parse::<u32>()
+        .ok()
+        .filter(|value| *value > 0)
+        .ok_or(DeckError::new(ErrorKind::Other, "scroll-geometry-invalid"))?;
+    Ok((in_mode == "1", mouse == "1", width, height))
+}
+
+fn wheel_probe_requires_input_fence(in_mode: bool, mouse_active: bool) -> bool {
+    mouse_active && !in_mode
 }
 
 /// Leave copy-mode and return to the live view (typing, the scrollback
@@ -1256,6 +1333,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn wheel_probe_fences_only_live_application_input() {
+        assert!(wheel_probe_requires_input_fence(false, true));
+        assert!(!wheel_probe_requires_input_fence(true, true));
+        assert!(!wheel_probe_requires_input_fence(false, false));
+        assert_eq!(
+            parse_wheel_probe("0\t1\t80\t24\n").unwrap(),
+            (false, true, 80, 24)
+        );
+        for invalid in ["", "0\t1\t80", "0\t1\t0\t24", "0\t1\t80\t0"] {
+            assert_eq!(
+                parse_wheel_probe(invalid).unwrap_err(),
+                "scroll-geometry-invalid"
+            );
+        }
+    }
+
+    #[test]
     fn terminal_selection_rejects_a_stale_frontend_grid_instead_of_clamping_it() {
         assert!(require_terminal_selection_dimensions(80, 24, 80, 24).is_ok());
         assert_eq!(
@@ -1340,7 +1434,7 @@ mod tests {
         assert!(
             crate::commands::start_session(bad.clone(), "/tmp".into(), "".into(), false).is_err()
         );
-        assert!(scroll_session(bad.clone(), 1).is_err());
+        assert!(scroll_session(bad.clone(), 1, None, None).is_err());
         assert!(scroll_bottom(bad.clone()).is_err());
         clear_history(bad.clone());
         assert!(terminal_metrics(bad.clone()).is_err());
@@ -1564,7 +1658,10 @@ mod tests {
                 ErrorKind::TmuxMissing
             );
             assert_eq!(
-                scroll_session(name.clone(), 3).err().unwrap().kind(),
+                scroll_session(name.clone(), 3, None, None)
+                    .err()
+                    .unwrap()
+                    .kind(),
                 ErrorKind::TmuxMissing
             );
             scroll_bottom(name.clone()).unwrap();

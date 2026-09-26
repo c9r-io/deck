@@ -4,6 +4,9 @@
 // one is in flight runs after it (its request may predate the caller's event),
 // and every such caller receives the follow-up's promise. The interval tick
 // only coalesces. Attention snapshots and read state are runtime only.
+// A missing session only becomes stopped: liveness cannot distinguish an
+// intentional shell exit from a crash or an externally replaced tmux server.
+// Never infer permission to delete a card from disappearance.
 // Live status never changes placement or durable ordering. Cards carry no
 // terminal preview: output is read in the terminal, never on the Board.
 // Foreground changes in the focused pane invalidate ephemeral resume hints.
@@ -45,7 +48,6 @@ export const defaultColumns = () => createDefaultColumns(genId, t);
 
 /* ---------- provider (every persistent mutation is one queued transaction) ---------- */
 export const activeProject = () => provider.project(state.projectId);
-const exitRetirement = createExitRetirementTracker();
 
 const closeOperations = new Map();
 
@@ -957,15 +959,19 @@ async function pollSessionsNow() {
   for (const c of store.cards) {
     const info = byName.get(c.session);
     if (!info || typeof info.alive !== 'boolean') continue;
-    /* the shell exited (Ctrl+D etc.) → the card has nothing left to hold;
-       close it without ceremony. Only live→dead transitions count, so cards
-       that were already stopped (e.g. after an app restart) stay. */
-    if (!info.alive && c.status !== 'stopped') {
-      if (retainedBuffer(c)) {
-        c.status = 'stopped';
+    // Absence is not deletion authority, including recovery onto a fresh
+    // server whose successful listing no longer contains old sessions.
+    if (!info.alive) {
+      const changed = c.status !== 'stopped' || c.mem != null || c.idle != null || c.fg != null || c.scrolled;
+      c.status = 'stopped';
+      c.mem = null;
+      c.idle = null;
+      c.fg = null;
+      c.scrolled = false;
+      if (changed) {
+        updatePaneChrome(c);
         emit('status', c);
-      } else {
-        exitRetirement.observe(c.id);
+        emit('mem', c);
       }
       continue;
     }
@@ -996,20 +1002,6 @@ async function pollSessionsNow() {
   }
   updateQuietHints();
   refreshQueuePlans();
-  /* a shell that exited on its own retires its card through the SAME
-     reliable path as an explicit close: cancel the schedule first, and keep
-     the card if that cannot be persisted */
-  await exitRetirement.drain({
-    get: sid => provider.get(sid),
-    markStopped: c => { c.status = 'stopped'; emit('status', c); },
-    close: c => ctx.tmuxRestarting ? { ok: false, applied: false } : provider.close(c.id, { quiet: true, detail: true, automatic: true }),
-    failed: () => toast(t('error.retire')),
-    succeeded: c => {
-      closePaneBySid(c.id, { detach: false });
-      toast(t('session.closedExited', { name: c.title }));
-    },
-  });
-  if (epoch !== pollEpoch || ctx.tmuxRestarting) return false;
   await runRetirement.drain({
     get: sid => provider.get(sid),
     markStopped: c => { c.status = 'stopped'; emit('status', c); },
@@ -1069,7 +1061,6 @@ export function stopPolling() {
   pollEpoch++;
   clearInterval(ctx.pollTimer);
   ctx.pollTimer = null;
-  exitRetirement.clear();
   runRetirement.clear();
   runConfirm.clear();
 }
@@ -1088,9 +1079,8 @@ export async function prepareCardsForServerRestart(sessions) {
 
 /// Intentional whole-server replacement is not a set of natural shell exits.
 /// Move every card to the already-supported stopped state before polling the
-/// fresh empty server, so exit retirement cannot delete durable card metadata.
+/// fresh empty server, so the view immediately reflects the stopped runtime.
 export function markSessionsStoppedForServerRestart() {
-  exitRetirement.clear();
   ctx.attention.record(store.cards, store.cards.map(c => ({ name: c.session, alive: false })));
   for (const card of store.cards) {
     card.status = 'stopped';

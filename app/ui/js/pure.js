@@ -302,7 +302,8 @@ export function createSerialTransactionQueue({ snapshot, persist, commit, serial
   return { enqueue, idle: () => chain.catch(() => {}) };
 }
 
-/** Stable retry/no-spam lifecycle for shells discovered dead by polling. */
+/** Retry/no-spam lifecycle for explicitly configured automation retirement.
+ * Missing sessions alone never authorize observing a card here. */
 export function createExitRetirementTracker() {
   const pending = new Set();
   const warned = new Set();

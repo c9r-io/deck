@@ -1,4 +1,9 @@
 //! Pure tmux command-list construction for frame-paced terminal scrolling.
+//!
+//! Ordinary wheel input is negotiated at the pane at dispatch time: copy-mode
+//! keeps viewport ownership, a live mouse-reporting application receives its
+//! negotiated protocol, and every other pane uses Deck's history path. Mouse
+//! frames are fixed hexadecimal argv, never literal user-controlled strings.
 
 pub(crate) const CURSOR_ROW_OPTION: &str = "@deck-scroll-cursor-row";
 
@@ -18,6 +23,151 @@ pub(crate) fn args(target: &str, lines: i32) -> Vec<String> {
 /// visible and clamp it at the viewport edge after it scrolls out of view.
 pub(crate) fn cursor_following_args(target: &str, lines: i32) -> Vec<String> {
     build_args(target, lines, true)
+}
+
+/// A pointer cell supplied by the frontend, clamped against the pane geometry
+/// read while terminal's resize/selection operation lock is held.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct WheelCell {
+    pub(crate) column: u32,
+    pub(crate) row: u32,
+}
+
+impl WheelCell {
+    pub(crate) fn clamped(column: u32, row: u32, pane_width: u32, pane_height: u32) -> Self {
+        Self {
+            column: column.min(pane_width.saturating_sub(1)),
+            row: row.min(pane_height.saturating_sub(1)),
+        }
+    }
+}
+
+/// Route an ordinary physical wheel atomically inside tmux. `cell` is an
+/// explicit opt-in: callers without both coordinates retain history-only
+/// behavior. The route condition is evaluated by the server immediately
+/// before the bytes are sent; if the pane no longer reports mouse tracking,
+/// that execution takes the history branch. An application that exits without
+/// resetting its modes leaves the same terminal state as any other client.
+pub(crate) fn negotiated_args(target: &str, lines: i32, cell: WheelCell) -> Vec<String> {
+    if lines == 0 {
+        return build_args(target, lines, true);
+    }
+    let history = command_string(build_args(target, lines, true));
+    let sgr = mouse_command(target, lines, cell, MouseEncoding::Sgr);
+    let utf8 = mouse_command(target, lines, cell, MouseEncoding::Utf8);
+    let x10 = mouse_command(target, lines, cell, MouseEncoding::X10);
+    let legacy = nested_if(target, "#{mouse_utf8_flag}", &utf8, &x10);
+    let negotiated = nested_if(target, "#{mouse_sgr_flag}", &sgr, &legacy);
+    let capture = "#{||:#{mouse_any_flag},#{mouse_button_flag},#{mouse_standard_flag}}";
+    let live = nested_if(target, capture, &negotiated, &history);
+    vec![
+        "if-shell".into(),
+        "-F".into(),
+        "-t".into(),
+        target.into(),
+        "#{pane_in_mode}".into(),
+        history.clone(),
+        live,
+        ";".into(),
+        "display-message".into(),
+        "-p".into(),
+        "-t".into(),
+        target.into(),
+        scroll_report(),
+    ]
+}
+
+#[derive(Clone, Copy)]
+enum MouseEncoding {
+    Sgr,
+    Utf8,
+    X10,
+}
+
+fn command_string(mut args: Vec<String>) -> String {
+    // A nested route reports once after the outer conditional.
+    args.truncate(args.len().saturating_sub(5));
+    if args.last().is_some_and(|arg| arg == ";") {
+        args.pop();
+    }
+    args.iter()
+        .map(|arg| {
+            if arg == ";" {
+                ";".to_string()
+            } else {
+                tmux_quote(arg)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn nested_if(target: &str, condition: &str, yes: &str, no: &str) -> String {
+    [
+        "if-shell".to_string(),
+        "-F".to_string(),
+        "-t".to_string(),
+        target.to_string(),
+        condition.to_string(),
+        yes.to_string(),
+        no.to_string(),
+    ]
+    .iter()
+    .map(|arg| tmux_quote(arg))
+    .collect::<Vec<_>>()
+    .join(" ")
+}
+
+fn tmux_quote(value: &str) -> String {
+    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+fn scroll_report() -> String {
+    let content_row = format!("#{{e|+:#{{{CURSOR_ROW_OPTION}}},#{{scroll_position}}}}");
+    format!(
+        "#{{pane_in_mode}}\t#{{?#{{&&:#{{pane_in_mode}},#{{e|>=:{content_row},#{{pane_height}}}}}},0,1}}"
+    )
+}
+
+fn mouse_command(target: &str, lines: i32, cell: WheelCell, encoding: MouseEncoding) -> String {
+    let button = if lines < 0 { 64 } else { 65 };
+    let count = lines.unsigned_abs().clamp(1, 60);
+    let frame = match encoding {
+        MouseEncoding::Sgr => format!(
+            "\x1b[<{button};{};{}M",
+            cell.column.saturating_add(1),
+            cell.row.saturating_add(1)
+        )
+        .into_bytes(),
+        MouseEncoding::Utf8 => {
+            let mut bytes = vec![0x1b, b'[', b'M', button + 32];
+            push_utf8_codepoint(&mut bytes, cell.column.min(2014).saturating_add(33));
+            push_utf8_codepoint(&mut bytes, cell.row.min(2014).saturating_add(33));
+            bytes
+        }
+        MouseEncoding::X10 => vec![
+            0x1b,
+            b'[',
+            b'M',
+            button + 32,
+            cell.column.min(222) as u8 + 33,
+            cell.row.min(222) as u8 + 33,
+        ],
+    };
+    let hex: Vec<String> = frame
+        .iter()
+        .cycle()
+        .take(frame.len() * count as usize)
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    format!("send-keys -t {target} -H {}", hex.join(" "))
+}
+
+fn push_utf8_codepoint(bytes: &mut Vec<u8>, value: u32) {
+    if let Some(ch) = char::from_u32(value) {
+        let mut encoded = [0; 4];
+        bytes.extend_from_slice(ch.encode_utf8(&mut encoded).as_bytes());
+    }
 }
 
 fn build_args(target: &str, lines: i32, follow_live_cursor: bool) -> Vec<String> {
@@ -89,10 +239,7 @@ fn build_args(target: &str, lines: i32, follow_live_cursor: bool) -> Vec<String>
         args.push(";".into());
     }
     let report = if follow_live_cursor {
-        let content_row = format!("#{{e|+:#{{{CURSOR_ROW_OPTION}}},#{{scroll_position}}}}");
-        format!(
-            "#{{pane_in_mode}}\t#{{?#{{&&:#{{pane_in_mode}},#{{e|>=:{content_row},#{{pane_height}}}}}},0,1}}"
-        )
+        scroll_report()
     } else {
         "#{pane_in_mode}".into()
     };
@@ -146,7 +293,7 @@ fn push_cursor_follow(args: &mut Vec<String>, target: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::{args, cursor_following_args, CURSOR_ROW_OPTION};
+    use super::{args, cursor_following_args, negotiated_args, WheelCell, CURSOR_ROW_OPTION};
 
     #[test]
     fn scroll_is_one_bounded_tmux_command_list() {
@@ -188,5 +335,31 @@ mod tests {
         assert!(!selection.contains(CURSOR_ROW_OPTION));
         assert!(!selection.contains("cursor-down"));
         assert!(!selection.contains("cursor-up"));
+    }
+
+    #[test]
+    fn negotiated_wheel_is_bounded_hex_and_keeps_history_fallbacks() {
+        let args = negotiated_args("=deck-card:", -999, WheelCell { column: 4, row: 7 });
+        let joined = args.join(" ");
+        assert!(joined.contains("#{pane_in_mode}"));
+        assert!(joined.contains("#{mouse_any_flag}"));
+        assert!(joined.contains("#{mouse_sgr_flag}"));
+        assert!(joined.contains("#{mouse_utf8_flag}"));
+        assert!(joined.contains("#{mouse_standard_flag}"));
+        assert!(joined.contains("send-keys -t =deck-card: -H"));
+        assert!(!joined.contains("send-keys -l"));
+        assert!(joined.matches("1b 5b 3c 36 34 3b 35 3b 38 4d").count() >= 60);
+        assert!(joined.matches("1b 5b 4d 60 25 28").count() >= 60);
+        assert!(joined.contains("scroll-up"));
+
+        let idle = negotiated_args("=deck-card:", 0, WheelCell { column: 0, row: 0 });
+        assert!(!idle.join(" ").contains("send-keys -H"));
+        assert_eq!(
+            WheelCell::clamped(u32::MAX, u32::MAX, 80, 24),
+            WheelCell {
+                column: 79,
+                row: 23
+            }
+        );
     }
 }

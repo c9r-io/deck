@@ -488,6 +488,16 @@ a fixture.
 - [ ] Inside `claude`: long output scrollable; typing still reaches the agent
       (typing while scrolled first leaves copy-mode, so keys are never eaten
       as copy-mode commands)
+- [ ] `terminal-paint` in the automated WK run compares xterm's public buffer
+      with its rendered DOM after `onRender`, wheel up/down, and new output
+      after reattach. This catches a consumed-but-unpainted terminal; manual
+      screenshots remain necessary to check WebView compositing/capture.
+- [ ] Start default `codex` (no `--no-alt-screen`) in an isolated instance,
+      request 80 numbered lines without tools, and wheel up/down. Codex's own
+      transcript must scroll and return to bottom without changing its composer.
+      Then exit Codex and verify shell history and local word/line selection.
+      Mouse negotiation must be on before the app starts; an already-running
+      app may retain the old policy until it restores its terminal screen.
 - [ ] Drag-select multiple lines → ⌘C → paste elsewhere matches
 - [ ] Double-click a word / triple-click a line, keep the last press held,
       and drag up, down, then reverse across the original unit. The original
@@ -531,9 +541,10 @@ a fixture.
       project delete+unrelated create/rename; and a failed first write followed
       by a successful second mutation. Reload `deck.json`: it must exactly equal
       the final visible Board, with no resurrection or lost unrelated change.
-- [ ] Ctrl+D/natural exit with queue-cancel or Board-save failure keeps the
-      stopped card and pane visible, toasts only once, and retries. After durable
-      success it closes the pane and retires once without repeated toasts.
+- [ ] Ctrl+D/natural exit keeps the stopped card, pane and queued prompts.
+      Explicit Close with queue-cancel or Board-save failure keeps the card and
+      pane visible; retry after restoring writes closes them only after durable
+      success. Repeated polling never retries a close on its own.
 
 ## Completion & separators
 - [ ] Second command typed shows gray ghost; Tab applies remainder only
@@ -569,8 +580,8 @@ a fixture.
       re-arms or restarts
 - [ ] Delete a whole project holding 2–3 scheduled cards → every one of their
       queue rows is gone at once, other projects untouched
-- [ ] Ctrl+D a shell that has queued prompts → card retires itself and its
-      queue rows go with it
+- [ ] Ctrl+D a shell that has queued prompts → card remains stopped and its
+      queue rows remain; explicit Close removes the card and cancels its queue
 - [ ] `chmod 400 ~/.deck/queue.json` → close a card → an explicit toast, the
       card STAYS on the board (never a silent delete with a live schedule);
       `chmod 600` back → closing works

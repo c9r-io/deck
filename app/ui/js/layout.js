@@ -23,12 +23,15 @@
 // This module composes terminal-clipboard.js and terminal-links.js with pane
 // selection, diagnostics and context-menu callbacks; those adapters own copy
 // routing and link gestures. Pane teardown disposes their link listeners.
+// tmux mouse negotiation is enabled for applications. The outer client's
+// mouse-only mode requests are consumed with xterm's public parser so pointer
+// selection remains local; wheel ownership is decided from live pane state.
 import { $, ctx, dotTitle, duev, inv, listen, setMemChip, state, store, uev } from './state.js';
 import { choiceDialog, confirmDialog, inlineRename, toast } from './dialogs.js';
 import { t } from './i18n.js';
 import { closeBuffer, markSessionSeen, panes, pollNow, provider, render, renderSidebar, updateSidebarSelection, activeProject } from './board.js';
 import { SHELL_FG, acceptGhost, feedMirror, maybeRecordCommand, mountQuickBar, nextShellTitle, renderSuggest, resetSuggest, showLinkCtx, updateGhost } from './terminal.js';
-import { AGENT_HISTORY_VERTICAL_UP, collapseHome, isNotDirectoryError, MAX_DROP_BYTES, mcpErrorKey, newSessionColumn, startCommand, createTerminalResizeCoordinator, createTerminalWheelAccumulator, createTerminalWheelFrameScheduler, isComposingKeyEvent, isPlainShiftKeydown, isTerminalAutoReply, scrollResultView, shouldRouteImeKeydownThroughInput, shQuote, terminalAgentComposerGeometry, terminalAgentHistoryUpRoute, terminalSelectionWheelRoute, terminalWheelLines } from './pure.js';
+import { AGENT_HISTORY_VERTICAL_UP, collapseHome, isNotDirectoryError, MAX_DROP_BYTES, mcpErrorKey, newSessionColumn, startCommand, createTerminalResizeCoordinator, createTerminalWheelAccumulator, createTerminalWheelFrameScheduler, isComposingKeyEvent, isPlainShiftKeydown, isTerminalAutoReply, scrollResultView, shouldRouteImeKeydownThroughInput, shQuote, terminalAgentComposerGeometry, terminalAgentHistoryUpRoute, terminalCellAt, terminalSelectionWheelRoute, terminalWheelLines } from './pure.js';
 import { toggleQueuePanel } from './scheduler.js';
 import { cancelAllTerminalSelections, cancelTerminalSelection, copyTerminalSelection, hasTerminalSelection, terminalSelectionElsewhere, wireTerminalSelection } from './selection.js';
 import { getTerminalTheme, onThemeChange, syncThemeIntegrations } from './theme.js';
@@ -40,6 +43,7 @@ import { registerShortcutAction } from './shortcuts.js';
 import { showAttention } from './attention.js';
 import { createMcpSessionUiGate, resetMcpSessionControls } from './mcp-session-ui.js';
 import { refreshInputSource } from './input-source.js';
+import { keepLocalTerminalMouse } from './terminal-mouse.js';
 
 const mcpUiGate = createMcpSessionUiGate();
 
@@ -177,6 +181,7 @@ export function createPane(card) {
     theme: getTerminalTheme(),
   });
   const fit = new FitAddon.FitAddon();
+  keepLocalTerminalMouse(term);
   term.loadAddon(fit);
   term.open(body);
 
@@ -529,7 +534,8 @@ export function wireTerminalInput(pane, term, host) {
     },
   });
 
-  /* Wheel handling, deck-driven: tmux mouse mode stays OFF. xterm owns
+  /* Wheel handling, deck-driven: the backend checks inner app mouse modes.
+     The outer tmux mouse mode is deliberately not an ownership signal. xterm owns
      double/triple-click selection and held multi-click drags; the coordinator
      owns promoted single-click drags. A held native drag must not be frozen
      halfway through by wheel adoption.
@@ -537,12 +543,14 @@ export function wireTerminalInput(pane, term, host) {
      backend request in flight; tmux remains the scrollback authority without
      imposing the old 50ms/20fps timer or dropping each batch's remainder. */
   const wheel = createTerminalWheelAccumulator();
+  let wheelPoint = null;
   const wheelFrames = createTerminalWheelFrameScheduler({
     requestFrame: callback => requestAnimationFrame(callback),
     ready: wheel.ready,
     take: wheel.take,
     active: () => host.isConnected,
     run: lines => {
+      const point = wheelPoint;
       if (pane.selection.isNativeDragging()) {
         term.scrollLines(lines);
         return;
@@ -558,7 +566,8 @@ export function wireTerminalInput(pane, term, host) {
           ? pane.selection.freezeNative().then(adopted => adopted
             ? pane.selection.scroll(lines)
             : inv('scroll_session', { name: session, lines }))
-          : inv('scroll_session', { name: session, lines });
+          : inv('scroll_session', { name: session, lines,
+            column: point?.col, row: point?.row });
       request.then(result => {
         const { inMode, cursorVisible } = scrollResultView(result);
         setScrollCursorVisible(pane, !inMode || cursorVisible !== false);
@@ -568,10 +577,10 @@ export function wireTerminalInput(pane, term, host) {
     },
   });
   host.addEventListener('wheel', e => {
-    const mode = term.modes && term.modes.mouseTrackingMode;
-    if (mode && mode !== 'none') return;   // app owns the mouse
     e.preventDefault();
     e.stopPropagation();
+    wheelPoint = terminalCellAt({ rect: host.querySelector('.xterm-screen')?.getBoundingClientRect(),
+      rows: term.rows, cols: term.cols, clientX: e.clientX, clientY: e.clientY });
     wheel.add(terminalWheelLines(e.deltaY, e.deltaMode, term.rows));
     wheelFrames.schedule();
   }, { passive: false, capture: true });

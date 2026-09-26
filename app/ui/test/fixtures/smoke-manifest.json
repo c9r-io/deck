@@ -53,6 +53,7 @@
         "rename": {},
         "scheduler-context": {},
         "scroll-frame": {},
+        "terminal-paint": { "a": 31 },
         "selection-blur": {},
         "selection-cancel": {},
         "selection-clipboard": {},

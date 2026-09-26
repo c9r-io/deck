@@ -363,6 +363,65 @@ function visibleTerminalLine(pane, row) {
   return buffer.getLine(buffer.viewportY + row)?.translateToString(true) || '';
 }
 
+// Buffer consumption is not proof of painting. Compare the public buffer
+// with the DOM renderer after actual render events, wheel routing and reattach.
+// Only closed numeric verdicts leave this synthetic terminal fixture.
+async function terminalPaintSmoke(project, column) {
+  const card = await provider.create({ projectId: project.id, columnId: column.id,
+    title: 'terminal paint', cmd: '', dir: '/tmp' });
+  await openSession(card.id);
+  let pane = panes.get(card.session);
+  await pause(1200); // fresh-pane history cleanup must precede the fixture
+  let renders = 0;
+  let subscription = pane.term.onRender(() => { renders++; });
+  const painted = marker => {
+    const rows = [...pane.body.querySelectorAll('.xterm-rows > div')];
+    const numbered = rows.map(row => /^PAINT-(\d{3})$/.exec(row.textContent.trim()))
+      .filter(Boolean).map(match => Number(match[1]));
+    return numbered.length >= pane.term.rows - 4
+      && numbered.every((value, i) => !i || value === numbered[i - 1] + 1)
+      && rows.length === pane.term.rows && rows.some(row => row.textContent.includes(marker))
+      && rows.every((row, i) => row.textContent.replace(/\u00a0/g, ' ').trimEnd()
+        === visibleTerminalLine(pane, i).trimEnd());
+  };
+  let mask = 0;
+  try {
+    await inv('pty_write', { name: card.session,
+      dataB64: strToB64("python3 -c 'import time; print(\"\\033[?1049h\\033[?1003h\\033[?1006hALT-FIXTURE\", end=\"\", flush=True); time.sleep(0.2); print(\"\\033[?1003l\\033[?1006l\\033[?1049l\", end=\"\", flush=True); [print(f\"PAINT-{i:03d}\") for i in range(100)]'\r") });
+    if (await waitFor(() => renders > 0 && painted('PAINT-099'))) mask |= 1;
+    const wheel = lines => pane.body.querySelector('.xterm-screen').dispatchEvent(
+      new WheelEvent('wheel', { deltaY: lines, deltaMode: 1, bubbles: true, cancelable: true }));
+    const before = renders;
+    wheel(-30);
+    if (await waitFor(async () => {
+      const metrics = await inv('terminal_metrics', { name: card.session });
+      return metrics.scroll_position === 30 && renders > before && painted('PAINT-069');
+    })) mask |= 2;
+    wheel(60);
+    if (await waitFor(async () => {
+      const metrics = await inv('terminal_metrics', { name: card.session });
+      return !metrics.in_copy_mode && painted('PAINT-099');
+    })) mask |= 4;
+    subscription.dispose();
+    backToBoard();
+    await openSession(card.id);
+    pane = panes.get(card.session);
+    renders = 0;
+    subscription = pane.term.onRender(() => { renders++; });
+    // New bytes after reattach must repaint, not merely preserve an old DOM.
+    await inv('pty_write', { name: card.session, dataB64: strToB64("printf '%s%s\\n' 'PAINT-' 'REATTACHED'\r") });
+    if (await waitFor(() => renders > 0 && painted('PAINT-REATTACHED'))) mask |= 8;
+    // Production tmux now negotiates mouse with apps, but its outer capture
+    // must not turn native xterm word/line selection into application input.
+    if (pane.term.modes.mouseTrackingMode === 'none') mask |= 16;
+  } finally {
+    subscription.dispose();
+    backToBoard();
+    await provider.close(card.id);
+  }
+  await report('terminal-paint', mask === 31, mask, 31);
+}
+
 // Compare production multi-click drags with an independent, unmodified xterm.
 // Both receive real DOM event sequences in WKWebView; the clipboard oracle
 // reads the OS pasteboard. No xterm private APIs or production selection helper
@@ -1695,17 +1754,20 @@ async function naturalExitFaultSmoke(project, column) {
   const selectedBeforeExit = await waitFor(() => pane.selection.hasSelection(), 3000);
   document.dispatchEvent(pointer('pointerup', 51, rect.left + 50, rect.top + 5));
   card.status = 'running';
-  await inv('smoke_fault_set', { kind: 'queue-cancel', count: 8 });
   await inv('kill_session', { name: card.session });
   const selectionCleared = await waitFor(() => !pane.selection.hasSelection(), 3000);
   await pollNow();
-  const keptAfterCancel = !!provider.get(card.id) && panes.has(card.session);
+  const retained = provider.get(card.id)?.status === 'stopped' && panes.has(card.session);
+  // Only explicit closure may retire the card; failures must still retain it.
+  await inv('smoke_fault_set', { kind: 'queue-cancel', count: 8 });
+  await provider.close(card.id, { quiet: true });
+  const keptAfterCancel = retained && !!provider.get(card.id) && panes.has(card.session);
   await inv('smoke_fault_set', { kind: 'queue-cancel', count: 0 });
   await inv('smoke_fault_set', { kind: 'board-save', count: 8 });
-  await pollNow();
+  await provider.close(card.id, { quiet: true });
   const keptAfterSave = !!provider.get(card.id) && panes.has(card.session);
   await inv('smoke_fault_set', { kind: 'board-save', count: 0 });
-  await pollNow();
+  if (await provider.close(card.id)) closePaneBySid(card.id, { detach: false });
   const retired = await waitFor(() => !provider.get(card.id) && !panes.has(card.session), 6000);
   await pollNow();
   const stable = !provider.get(card.id) && !panes.has(card.session);
@@ -2257,6 +2319,7 @@ export async function run() {
     await report('scheduler-context', mask === 31, mask, 31);
     stage = 15;
     await automationSmoke(project, column);
+    await terminalPaintSmoke(project, column);
     await inv('smoke_seed_ambiguous');
     await report('done', !smokeFailed, 1, 0);
   } catch (error) {

@@ -257,6 +257,7 @@ const SMOKE_CHECKS: &[&str] = &[
     "selection-clipboard-copy",
     "selection-down-scroll",
     "scroll-frame",
+    "terminal-paint",
     "link-activate",
     "link-classify",
     "link-repaint",

@@ -7,6 +7,42 @@ const { ctx, state, store } = await import('../js/state.js');
 const { pollNow, stopPolling, prepareCardsForServerRestart } = await import('../js/board.js');
 const { openSession } = await import('../js/layout.js');
 
+test('session disappearance after a server failure preserves every card and queued prompt', async () => {
+  const previousView = state.view;
+  state.view = 'session';
+  store.projects = [];
+  const cards = ['a', 'b'].map(id => ({ id, session: `deck-${id}`, title: id,
+    projectId: 'p', columnId: 'c', cmd: 'codex', dir: '/tmp', launched: true,
+    status: 'running', fg: 'codex', mem: 100, scrolled: true }));
+  store.cards = cards;
+  const queue = { items: [{ id: 'q', session: 'deck-a' }], last_fired: {} };
+  ctx.queueCache = queue;
+  let disconnected = true;
+  const calls = [];
+  window.__TAURI__ = { core: { invoke: async cmd => {
+    calls.push(cmd);
+    if (cmd === 'ui_event' || cmd === 'notify_cards') return;
+    assert.equal(cmd, 'poll_sessions', 'disappearance must not kill, cancel schedules, or persist deletion');
+    if (disconnected) throw new Error('tmux unavailable');
+    return cards.map(c => ({ name: c.session, alive: false, agent: null }));
+  } } };
+  try {
+    assert.equal(await pollNow(), false);
+    disconnected = false;
+    for (let i = 0; i < 3; i++) assert.equal(await pollNow(), true);
+    assert.equal(store.cards, cards);
+    assert.deepEqual(store.cards.map(c => [c.id, c.status, c.fg, c.mem, c.scrolled]),
+      [['a', 'stopped', null, null, false], ['b', 'stopped', null, null, false]]);
+    assert.ok(cards.every(c => c.cmd === 'codex' && c.launched && c.columnId === 'c'));
+    assert.equal(ctx.queueCache, queue);
+    assert.ok(calls.every(cmd => ['poll_sessions', 'ui_event', 'notify_cards'].includes(cmd)), JSON.stringify(calls));
+  } finally {
+    stopPolling();
+    state.view = previousView;
+    ctx.queueCache = { items: [], last_fired: {} };
+  }
+});
+
 test('a rejected poll preserves live cards and schedules, then recovers without closing', async () => {
   const calls = [];
   let fail = true;

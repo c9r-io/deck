@@ -1546,6 +1546,137 @@ fn production_scroll_cursor_stays_with_the_live_input_row(topology: Topology) {
 }
 topology_matrix!(production_scroll_cursor_stays_with_the_live_input_row);
 
+/// Ordinary wheel routing is decided inside one tmux command list. A live
+/// application requesting SGR mouse receives exact wheel bytes at the
+/// supplied cell, without key-name parsing or a shell intermediary.
+#[test]
+fn negotiated_sgr_wheel_reaches_the_live_application_byte_for_byte() {
+    let s = Server::fixture(
+        "wheel-sgr",
+        40,
+        8,
+        "sh -c 'printf \"\\033[?1000h\\033[?1006hREADY\\r\\n\"; stty raw -echo; dd bs=1 count=10 2>/dev/null | od -An -tx1; stty sane; sleep 30'",
+    );
+    assert_eq!(s.fmt("#{mouse_standard_flag}:#{mouse_sgr_flag}"), "1:1");
+    let args =
+        terminal_scroll::negotiated_args("t", -1, terminal_scroll::WheelCell { column: 4, row: 7 });
+    let result = s
+        .run_owned(&args)
+        .unwrap_or_else(|error| panic!("negotiated SGR wheel: {error}; args={args:?}"));
+    assert_eq!(result.trim(), "0\t1");
+    wait_until("the SGR wheel-up frame", || {
+        compact_screen(&s.run(&["capture-pane", "-p", "-t", "t"])).contains("1b5b3c36343b353b384d")
+    });
+
+    let down = Server::fixture(
+        "wheel-sgr-down",
+        40,
+        8,
+        "sh -c 'printf \"\\033[?1000h\\033[?1006hREADY\\r\\n\"; stty raw -echo; dd bs=1 count=20 2>/dev/null | od -An -tx1; stty sane; sleep 30'",
+    );
+    down.run_owned(&terminal_scroll::negotiated_args(
+        "t",
+        2,
+        terminal_scroll::WheelCell { column: 4, row: 7 },
+    ))
+    .expect("two SGR wheel-down frames");
+    wait_until("two SGR wheel-down frames", || {
+        compact_screen(&down.run(&["capture-pane", "-p", "-t", "t"]))
+            .contains("1b5b3c36353b353b384d1b5b3c36353b353b384d")
+    });
+}
+
+fn compact_screen(screen: &str) -> String {
+    screen.split_whitespace().collect()
+}
+
+/// UTF-8 extended coordinates and legacy X10 are explicit negotiated
+/// encodings. UTF-8 carries cells beyond 222; X10 clamps each coordinate so
+/// its one-byte `coordinate + 33` field cannot overflow.
+#[test]
+fn negotiated_legacy_mouse_encodings_are_exact_and_bounded() {
+    let utf8 = Server::fixture(
+        "wheel-utf8",
+        400,
+        12,
+        "sh -c 'printf \"\\033[?1000h\\033[?1006hREADY\\r\\n\"; stty raw -echo; dd bs=1 count=7 2>/dev/null | od -An -tx1; stty sane; sleep 30'",
+    );
+    let utf8_args = terminal_scroll::negotiated_args(
+        "t",
+        -1,
+        terminal_scroll::WheelCell {
+            column: 300,
+            row: 7,
+        },
+    );
+    utf8.write_pane("\x1b[?1006l\x1b[?1005h");
+    wait_until("mouse encoding to change before dispatch", || {
+        utf8.fmt("#{mouse_utf8_flag}:#{mouse_sgr_flag}") == "1:0"
+    });
+    assert_eq!(
+        utf8.fmt("#{mouse_standard_flag}:#{mouse_utf8_flag}:#{mouse_sgr_flag}"),
+        "1:1:0"
+    );
+    utf8.run_owned(&utf8_args).expect("UTF-8 wheel dispatch");
+    wait_until("the UTF-8 wheel frame", || {
+        compact_screen(&utf8.run(&["capture-pane", "-p", "-t", "t"])).contains("1b5b4d60c58d28")
+    });
+
+    let x10 = Server::fixture(
+        "wheel-x10",
+        400,
+        230,
+        "sh -c 'printf \"\\033[?1000hREADY\\r\\n\"; stty raw -echo; dd bs=1 count=6 2>/dev/null | od -An -tx1; stty sane; sleep 30'",
+    );
+    assert_eq!(
+        x10.fmt("#{mouse_standard_flag}:#{mouse_utf8_flag}:#{mouse_sgr_flag}"),
+        "1:0:0"
+    );
+    x10.run_owned(&terminal_scroll::negotiated_args(
+        "t",
+        -1,
+        terminal_scroll::WheelCell {
+            column: 399,
+            row: 229,
+        },
+    ))
+    .expect("X10 wheel dispatch");
+    wait_until("the clamped X10 wheel frame", || {
+        compact_screen(&x10.run(&["capture-pane", "-p", "-t", "t"])).contains("1b5b4d60ffff")
+    });
+}
+
+/// Constructing an app route is not authority to deliver it later. If the
+/// app disables mouse reporting before tmux executes the list, the same list
+/// takes the history branch and sends no stale application bytes.
+#[test]
+fn negotiated_wheel_rechecks_copy_mode_and_mouse_state_at_dispatch() {
+    let s = Server::fixture(
+        "wheel-stale",
+        40,
+        8,
+        "sh -c 'i=0; while test $i -lt 30; do printf \"row-%02d\\r\\n\" $i; i=$((i+1)); done; printf \"\\033[?1000h\\033[?1006hREADY\\r\\n\"; stty raw -echo; dd bs=1 count=10 2>/dev/null | od -An -tx1; stty sane; sleep 30'",
+    );
+    let args =
+        terminal_scroll::negotiated_args("t", -2, terminal_scroll::WheelCell { column: 3, row: 4 });
+
+    s.run(&["copy-mode", "-e", "-t", "t"]);
+    let copy = s.run_owned(&args).expect("copy-mode owns the wheel");
+    assert!(copy.trim().starts_with("1\t"));
+    assert_eq!(s.scroll_position(), 2);
+    assert!(!compact_screen(&s.run(&["capture-pane", "-p", "-t", "t"])).contains("1b5b3c"));
+    s.run(&["send-keys", "-t", "t", "-X", "cancel"]);
+
+    s.write_pane("\x1b[?1000l\x1b[?1006l");
+    wait_until("mouse reporting to turn off", || {
+        s.fmt("#{mouse_standard_flag}:#{mouse_sgr_flag}") == "0:0"
+    });
+    let fallback = s.run_owned(&args).expect("stale app route falls back");
+    assert!(fallback.trim().starts_with("1\t"));
+    assert_eq!(s.scroll_position(), 2);
+    assert!(!compact_screen(&s.run(&["capture-pane", "-p", "-t", "t"])).contains("1b5b3c"));
+}
+
 /// Scheduled prompts and pty_write inject via `send-keys -l`: the text must
 /// arrive byte-for-byte — no tmux format expansion (#{...}), no key-name
 /// parsing ("C-c"), no shell splitting on semicolons.
