@@ -31,6 +31,12 @@ pane, and Deck refuses them (`terminal-discontinuity`). Its "session" lists
 the cards of at least two simultaneous Codex clients sharing one daemon; it
 passes only when the window shows such refusals and NOT ONE accepted event
 or notification for any of those cards.
+
+`claude-bootstrap-waits` / `codex-bootstrap-waits` are Agent Bootstrap Input
+Safety cases: an automation started the agent's session, and the case passes
+only when the window shows `[queue] started <tag>` and NOT ONE `[queue] sent
+to <tag>` — the new agent was never typed into. End the window before the
+row's send now.
 """
 import argparse
 import json
@@ -49,6 +55,8 @@ SUMMARY = re.compile(r"^(?P<t>\d+) \[agent-status\] drops (?P<counts>(?:[a-z-]+=
 ABSENT = re.compile(r"^(?P<t>\d+) \[agent-status\] (?P<source>[a-z-]+) identity-absent$")
 RUN_CLOSED = re.compile(r"^(?P<t>\d+) \[inbound\] run closed$")
 BOOT = re.compile(r"^(?P<t>\d+) \[notify\] boot [a-z-]+$")
+QUEUE_STARTED = re.compile(r"^(?P<t>\d+) \[queue\] started (?P<s>sess-[0-9a-f]+) — its first prompt waits for an agent interaction$")
+QUEUE_SENT = re.compile(r"^(?P<t>\d+) \[queue\] sent to (?P<s>sess-[0-9a-f]+) \(\d+B, mode [a-z]+\)$")
 NOTIFY = re.compile(r"^(?P<t>\d+) \[notify\] (?P<kind_>posted [a-z-]+|viewed|suppressed viewed-episode) s=(?P<s>sess-[0-9a-f]+) e=\d+$")
 
 CASES = {
@@ -71,13 +79,20 @@ SAFETY_CASES = {
     "codex-daemon-refused": ("codex", "terminal-discontinuity"),
 }
 
+# bootstrap cases: agent whose freshly started session must receive nothing
+BOOTSTRAP_CASES = {
+    "claude-bootstrap-waits": "claude-code",
+    "codex-bootstrap-waits": "codex",
+}
+
 
 def parse(lines):
     events = []
     for raw in lines:
         line = raw.rstrip("\n")
         for kind, pattern in (("accepted", ACCEPTED), ("dropped", DROPPED), ("summary", SUMMARY),
-                              ("absent", ABSENT), ("closed", RUN_CLOSED), ("boot", BOOT), ("notify", NOTIFY)):
+                              ("absent", ABSENT), ("closed", RUN_CLOSED), ("boot", BOOT), ("notify", NOTIFY),
+                              ("started", QUEUE_STARTED), ("sent", QUEUE_SENT)):
             m = pattern.match(line)
             if m:
                 event = {"kind": kind, **m.groupdict()}
@@ -145,8 +160,28 @@ def judge_safety(case_id, tags, session, window):
     return result
 
 
+def judge_bootstrap(case_id, tags, session, window):
+    started = [e for e in window if e["kind"] == "started" and e["s"] in tags]
+    sent = [e for e in window if e["kind"] == "sent" and e["s"] in tags]
+    result = {
+        "id": case_id, "agent": BOOTSTRAP_CASES[case_id], "session": session,
+        "observed": {"started": len(started), "sent": len(sent)},
+        "assertions": {"started_by_automation": bool(started), "nothing_typed": not sent},
+        "timings_s": {},
+    }
+    reasons = []
+    if sent:
+        reasons.append("prompt-sent-into-a-fresh-agent")
+    if not started:
+        reasons.append("no-automatic-start-observed")
+    result["verdict"] = "fail" if sent else "insufficient-evidence" if reasons else "pass"
+    if reasons:
+        result["reasons"] = reasons
+    return result
+
+
 def judge(case_id, session, since, until, events):
-    if case_id not in CASES and case_id not in SAFETY_CASES:
+    if case_id not in CASES and case_id not in SAFETY_CASES and case_id not in BOOTSTRAP_CASES:
         raise ValueError(f"unknown case {case_id}")
     tags = [session] if isinstance(session, str) else list(session)
     if not tags or not all(isinstance(t, str) and re.fullmatch(r"sess-[0-9a-f]+", t) for t in tags):
@@ -154,6 +189,8 @@ def judge(case_id, session, since, until, events):
     window = [e for e in events if since <= e["t"] <= until]
     if case_id in SAFETY_CASES:
         return judge_safety(case_id, tags, session, window)
+    if case_id in BOOTSTRAP_CASES:
+        return judge_bootstrap(case_id, tags, session, window)
     source, required, no_close, needs_restart = CASES[case_id]
     mine = [e for e in window if e["kind"] == "accepted" and e["s"] in tags]
     drops = refusals(window)[0]

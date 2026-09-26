@@ -123,10 +123,34 @@ row, never release or target one (`scheduler/select.rs`, `agent_holds`):
   `terminal-discontinuity` (Codex 0.157's shared background service) —
   which also withdraws its earlier status and is never healed by a later
   hook of the same process — Deck cannot see a Codex permission prompt, so
-  "no hook word" must not fall back to the quiet-only rule. A session that a
-  successful pane listing shows absent may still be started with its first
-  row; a failed listing sends nothing that tick. Other agents are
-  unaffected.
+  "no hook word" must not fall back to the quiet-only rule. A failed pane
+  listing sends nothing that tick.
+- **Agent Bootstrap Input Safety.** Unattended prompt delivery to Claude or
+  Codex requires the Agent Status integration and at least one trustworthy
+  interaction in the current agent process generation: for Codex its status
+  is *trusted* (above); for Claude one of its interaction hooks
+  (UserPromptSubmit, the permission notification, Stop) was accepted from
+  that exact process. Until then every automatic row configured for that
+  agent is held at stage `first-send` ("Waiting for first agent
+  interaction"). Process identity is not input readiness and time is not
+  input authority: the agent being in the foreground, a quiet pane,
+  bracketed paste or a startup delay proves nothing, because a startup
+  dialog — an update offer, folder trust, first-run setup, an MCP or hooks
+  review — may own Enter. A new agent process and a Deck restart both start
+  without evidence; nothing is persisted to skip this. Without the
+  integration the stage never clears and the row waits for **send now** —
+  an intentional degradation. Interacting with the agent once (so its hook
+  is accepted) releases it; send now does not by itself, since only an
+  accepted hook is evidence. The evidence is only this prerequisite: every
+  other hold still applies after it. Programs other than Claude and Codex
+  are unaffected.
+- **A newly started agent is never sent its first prompt automatically.**
+  When a successful pane listing shows the session absent, the scheduler
+  may start it (a clock automation's card starts this way), bind its pane
+  and stop there: nothing is pasted, no Enter is sent, and the row is not
+  consumed, retried, counted or advanced — it stays pending at
+  `first-send`. Other process-bound programs keep the old fresh-start path
+  (a 2.5 s settle, then delivery).
 - Owner rows without a hook word keep the quiet-only rule (Codex: once
   trusted). Manual immediate
   send is not held. A stale `needs-input` (a question dismissed with Esc

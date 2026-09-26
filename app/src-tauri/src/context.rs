@@ -242,10 +242,17 @@ pub(crate) fn probe_from_row(row: &PaneRow) -> RawProbe {
 /// One metadata-only tmux read (`tmux::pane_row`). No pane capture, prompt
 /// text, argument, path or user-configured hook participates in the decision.
 pub(crate) fn raw_probe(session: &str) -> Result<RawProbe, DeckError> {
-    let row = crate::tmux::pane_row(&pane_target(session))?;
-    let mut probe = probe_from_row(&row);
+    Ok(raw_probe_of_row(&crate::tmux::pane_row(&pane_target(
+        session,
+    ))?))
+}
+
+/// `raw_probe` of an already-listed pane row (the scheduler's real-process
+/// bootstrap test lists a throwaway server's panes itself).
+pub(crate) fn raw_probe_of_row(row: &PaneRow) -> RawProbe {
+    let mut probe = probe_from_row(row);
     probe.foreground_argv = foreground_from_tty(&row.tty);
-    Ok(probe)
+    probe
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

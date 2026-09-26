@@ -171,7 +171,9 @@ pub(crate) fn spawn_scheduler(app: AppHandle) {
                         let _ = app2.emit("queue-fired", QueueFired { session });
                         let _ = app2.emit("queue-changed", ());
                     }
-                    SendResult::Failed { .. } | SendResult::Blocked { .. } => {
+                    SendResult::Failed { .. }
+                    | SendResult::Blocked { .. }
+                    | SendResult::StartedAwaitingInteraction { .. } => {
                         let _ = app2.emit("queue-changed", ());
                     }
                     SendResult::Nothing | SendResult::NotPersisted => {}

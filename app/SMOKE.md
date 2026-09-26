@@ -134,7 +134,10 @@ Candidate step with a real agent (release-location install, Claude Code
 status integration on — dev/smoke bundles cannot install hooks): create a
 clock automation with "close the card" whose template asks Claude Code to
 run `sleep 30 && touch /tmp/deck-bg-COMPLETED` in the background and then
-stop; do not open the card. After the turn ends the card must stay for as
+stop. The automation starts Claude but never sends it its first prompt
+(Agent Bootstrap Input Safety): the row waits at "Waiting for first agent
+interaction"; open the card's ⏱ panel and use send now once (do not type
+anything else). After the turn ends the card must stay for as
 long as `claude` runs; `/tmp/deck-bg-COMPLETED` appears, Claude resumes on its
 own, and the card is never closed while `claude` is in front. Record the
 Claude Code version, the Deck build and pass/fail; `/exit` must then let the
@@ -153,7 +156,15 @@ plan file:
 - `claude-normal`, `claude-permission`, `claude-restart` (quit and relaunch
   Deck between the prompt and its end), `claude-background-resume` (an
   automation with "close the card" whose prompt runs a background command
-  and ends the turn; Claude resumes by itself; the card must stay);
+  and ends the turn; Claude resumes by itself; the card must stay — its
+  first row is released with one send now, see below), and
+  `claude-bootstrap-waits`: a clock automation whose command is `claude`
+  and whose directory has never been trusted, so Claude opens on its
+  folder-trust dialog; the row must stay at "Waiting for first agent
+  interaction", the dialog must receive no keystroke (Claude is still on it
+  a minute later) and `[queue] started sess-… — its first prompt waits for
+  an agent interaction` must be the only queue line for that card. Esc out
+  of the dialog afterwards; never answer it with Enter;
 - Codex in two modes, certified separately:
   - **embedded (functional)** — Codex running without its shared background
     service. To create this topology for the test only, stop any running
@@ -161,8 +172,11 @@ plan file:
     daemon_auto_start`; this is certification setup, never a product
     requirement. Cases: `codex-normal`, `codex-permission`, `codex-interrupt`
     (Esc), `codex-background-interrupt` (automation with "close the card";
-    Esc while a background terminal runs; the card must stay), `codex-rapid`
-    (a second prompt right after the first ends). Each must pass with v2
+    release its first row with one send now, then Esc while a background
+    terminal runs; the card must stay), `codex-rapid` (a second prompt right
+    after the first ends), and `codex-bootstrap-waits` (a clock automation
+    starting `codex`: its row stays at "Waiting for first agent
+    interaction" and nothing is typed into Codex until send now). Each must pass with v2
     identity; the stale-interaction and cross-pane regressions are pinned by
     the unit and trace suites.
   - **shared daemon (safety)** — `codex-daemon-refused`: at least two Codex
@@ -172,8 +186,11 @@ plan file:
     shows `terminal-discontinuity` refusals and not one accepted event or
     notification for those cards; also check by eye that no card (the
     daemon starter's included) shows agent status, Needs Attention or a Dock
-    count, that a due owner-list row for each card stays in the ⏱ panel at
-    stage `agent` (never pasted), and that the row's send-now still sends.
+    count, that a due owner-list row for each card stays in the ⏱ panel —
+    the daemon starter at the agent hold (Codex Unavailable), the other
+    clients at "Waiting for first agent interaction" (no trusted evidence
+    can ever arrive) — never pasted, and that the row's send-now still
+    sends.
     This is a safe-degradation pass, not a functional one.
 
 Then `scripts/signal-candidate --log ~/.deck/app.log --plan plan.json

@@ -455,8 +455,11 @@ pub(crate) fn plan_item(
         || i.mode == "every" && !every_due(i, now, minutes)
     {
         "time"
-    } else if activity.is_some_and(|a| agent_holds(i, a.get(&i.session))) {
-        "agent"
+    } else if let Some(hold) = activity.and_then(|a| hold_reason(i, a.get(&i.session))) {
+        match hold {
+            Hold::FirstInteraction => "first-send",
+            Hold::Agent => "agent",
+        }
     } else if i.mode == "chain" && quiet_remaining.is_some_and(|s| s > 0) {
         "quiet"
     } else if activity.is_none() {

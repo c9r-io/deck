@@ -80,7 +80,8 @@ const RUST_TOKENS: &[&str] = &[
     "\"working\"",
     "agent_status::projected",
     "agent_status::projections",
-    "codex_trust(",
+    "generation_evidence(",
+    "hold_reason(",
     "agent_holds(",
     "notify::observe(",
     ".agent",
@@ -154,8 +155,10 @@ fn rust_census() -> Census {
 
 const RUST: &[(&str, &str, &str, usize, Class)] = &[
     // the closed vocabulary, the parser and the hook spec tables
-    ("agent_status.rs", "", "TURN_DONE", 2, Producer),
-    ("agent_status.rs", "", "NEEDS_INPUT", 2, Producer),
+    // (+1 each: `CLAUDE_INTERACTION_WORDS`, the closed list of Claude words
+    // that may establish interaction evidence — a producer fact, no authority)
+    ("agent_status.rs", "", "TURN_DONE", 3, Producer),
+    ("agent_status.rs", "", "NEEDS_INPUT", 3, Producer),
     ("agent_status.rs", "", "\"turn-done\"", 4, Producer),
     ("agent_status.rs", "", "\"needs-input\"", 3, Producer),
     ("agent_status.rs", "", "\"working\"", 3, Producer),
@@ -203,26 +206,35 @@ const RUST: &[(&str, &str, &str, usize, Class)] = &[
         1,
         Hold,
     ),
-    // Codex shared-daemon FR: Codex Signal trust is not a word; it is
-    // produced by admission and read by the hold alone, which it can only
-    // tighten (an untrusted Codex foreground holds every automatic row)
-    ("agent_status.rs", "", "codex_trust(", 1, Producer),
+    // Per-generation evidence (Codex shared-daemon FR + Agent Bootstrap Input
+    // Safety): Codex Signal trust and Claude interaction evidence are not
+    // words; admission produces them and the hold alone reads them, which
+    // they can only tighten (no evidence holds every automatic agent row)
+    ("agent_status.rs", "", "generation_evidence(", 1, Producer),
     (
         "scheduler/select.rs",
         "observe_with",
-        "codex_trust(",
+        "generation_evidence(",
+        1,
+        Hold,
+    ),
+    ("scheduler/select.rs", "", "hold_reason(", 1, Hold),
+    ("scheduler/select.rs", "hold_reason", "NEEDS_INPUT", 1, Hold),
+    ("scheduler/select.rs", "hold_reason", ".agent", 1, Hold),
+    (
+        "scheduler/select.rs",
+        "agent_holds",
+        "hold_reason(",
         1,
         Hold,
     ),
     ("scheduler/select.rs", "", "agent_holds(", 1, Hold),
-    ("scheduler/select.rs", "agent_holds", "NEEDS_INPUT", 1, Hold),
-    ("scheduler/select.rs", "agent_holds", ".agent", 1, Hold),
     ("scheduler/select.rs", "eligible", "agent_holds(", 1, Hold),
-    // the panel plan names the hold (stage `agent`)
+    // the panel plan names the hold (stage `agent` / `first-send`)
     (
         "scheduler/review.rs",
         "plan_item",
-        "agent_holds(",
+        "hold_reason(",
         1,
         Presentation,
     ),

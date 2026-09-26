@@ -1109,6 +1109,15 @@ pub(crate) fn queue_send_now(
             ErrorKind::Other,
             "target context is unavailable",
         )),
+        // the agent was started but is never typed into while it may be
+        // showing a startup dialog; the user sends again once it has opened
+        SendResult::StartedAwaitingInteraction { .. } => {
+            let _ = app.emit("queue-changed", ());
+            Err(DeckError::new(
+                ErrorKind::Other,
+                "the agent was started; send again once it has opened",
+            ))
+        }
         SendResult::Nothing => Err(DeckError::new(
             ErrorKind::Other,
             "prompt is no longer eligible to send",

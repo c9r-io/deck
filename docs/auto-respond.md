@@ -4,7 +4,15 @@ An automation is a project-level rule (↻ Automations on the Board) with a
 trigger — a clock, or a badge you put on a Slack message. When it fires,
 deck starts a session: one card in the column the rule names, launched
 with the rule's command, then the rule's template with the message filled
-in. Cards are never moved automatically and deck never writes anything back
+in. When the command is Claude or Codex, the first template row is **not**
+sent automatically: a newly started agent may be showing a startup dialog
+(an update offer, folder trust, first-run setup, MCP or hooks review) that
+would take the Enter. The row waits at "Waiting for first agent
+interaction" until you interact with the agent once — with its Agent
+Status integration on, that interaction is what releases it — or you use
+**send now**. Unattended delivery to Claude or Codex therefore needs the
+Agent Status integration and one real interaction in that agent process;
+later rows then follow the usual rules. Cards are never moved automatically and deck never writes anything back
 to Slack. This document is the Slack connection (Settings) and the rules
 that both triggers share; the app's Automations drawer is where rules live.
 

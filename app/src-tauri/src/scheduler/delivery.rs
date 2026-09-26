@@ -118,35 +118,92 @@ pub(crate) fn poll_readiness(
     unreachable!()
 }
 
+/// What the context front half of a send concluded.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Prepared {
+    /// A probe of the target: `is_ready()` means the send may proceed,
+    /// anything else is a closed context block.
+    Probe(ProbeResult),
+    /// The scheduler started an absent session for a recognized interactive
+    /// agent and bound its pane (the carried probe is the ready identity),
+    /// but starting is NOT delivery: nothing is pasted and no Enter is sent,
+    /// because a startup dialog may own Enter (Agent Bootstrap Input
+    /// Safety). The row stays pending until the new generation establishes
+    /// interaction evidence or the user sends it.
+    StartedAwaitingInteraction(ProbeResult),
+}
+
+/// The side effects `prepare_context_with` needs, injected so a real-process
+/// test can point them at a throwaway tmux server.
+pub(crate) struct StartOps<'a> {
+    pub(crate) exists: &'a (dyn Fn(&QueueItem) -> bool + Sync),
+    pub(crate) start: &'a (dyn Fn(&QueueItem) -> Result<(), DeckError> + Sync),
+    /// `context::probe` of the item's session against an optional expected
+    /// identity and the item's expected process
+    pub(crate) probe: &'a (dyn Fn(&QueueItem, Option<&PaneIdentity>) -> ProbeResult + Sync),
+    pub(crate) sleep: &'a (dyn Fn(std::time::Duration) + Sync),
+}
+
 /// Production readiness probe. Existing live sessions are checked once.
 /// A dead session is started once, then polled with a bounded timeout. The
 /// cancellation callback is consulted between every probe and sleep, so a
 /// pause/edit/delete does not wait for the timeout.
-pub(crate) fn prepare_context(item: &QueueItem, cancelled: &dyn Fn() -> bool) -> ProbeResult {
+pub(crate) fn prepare_context(item: &QueueItem, cancelled: &dyn Fn() -> bool) -> Prepared {
+    prepare_context_with(
+        item,
+        cancelled,
+        &StartOps {
+            exists: &|item| {
+                tmux(&[
+                    "has-session",
+                    "-t",
+                    &crate::tmux::session_target(&item.session),
+                ])
+                .is_ok()
+            },
+            start: &|item| {
+                start_session(
+                    item.session.clone(),
+                    item.dir.clone(),
+                    item.cmd.clone(),
+                    false,
+                )
+                .map(|_| ())
+            },
+            probe: &|item, identity| {
+                context::probe(&item.session, identity, item.expected_process.as_deref())
+            },
+            sleep: &std::thread::sleep,
+        },
+    )
+}
+
+/// `prepare_context` over injected side effects. A recognized interactive
+/// agent (`select::row_agent`) that this call had to START returns
+/// `StartedAwaitingInteraction` as soon as its process is bound — no settle
+/// delay, no delivery. Any other process-bound program keeps the fresh-start
+/// settle and is delivered as before.
+pub(crate) fn prepare_context_with(
+    item: &QueueItem,
+    cancelled: &dyn Fn() -> bool,
+    ops: &StartOps,
+) -> Prepared {
     if cancelled() {
-        return ProbeResult::blocked(ContextStatus::Unavailable, ContextCode::CancelledOrRevised);
+        return Prepared::Probe(ProbeResult::blocked(
+            ContextStatus::Unavailable,
+            ContextCode::CancelledOrRevised,
+        ));
     }
-    let existed = tmux(&[
-        "has-session",
-        "-t",
-        &crate::tmux::session_target(&item.session),
-    ])
-    .is_ok();
-    if existed {
-        return current_context_probe(item);
+    if (ops.exists)(item) {
+        return Prepared::Probe((ops.probe)(item, None));
     }
     // A session that appeared between the existence check and start_session's
     // idempotent inner check is probed like any other live one.
-    match start_session(
-        item.session.clone(),
-        item.dir.clone(),
-        item.cmd.clone(),
-        false,
-    ) {
-        Ok(_) => {}
-        Err(_) => {
-            return ProbeResult::blocked(ContextStatus::Unavailable, ContextCode::StartupFailed);
-        }
+    if (ops.start)(item).is_err() {
+        return Prepared::Probe(ProbeResult::blocked(
+            ContextStatus::Unavailable,
+            ContextCode::StartupFailed,
+        ));
     }
 
     let interval = std::time::Duration::from_millis(READY_PROBE_INTERVAL_MS);
@@ -157,31 +214,39 @@ pub(crate) fn prepare_context(item: &QueueItem, cancelled: &dyn Fn() -> bool) ->
         &mut |identity| {
             // The first observation acquires the binding; a pane replaced
             // again while deck is still waiting for startup is rejected.
-            context::probe(&item.session, identity, item.expected_process.as_deref())
+            (ops.probe)(item, identity)
         },
-        &mut || std::thread::sleep(interval),
+        &mut || (ops.sleep)(interval),
     );
     if ready.status != ContextStatus::Ready {
-        return ready;
+        return Prepared::Probe(ready);
+    }
+    if row_agent(item).is_some() {
+        // process identity is not input readiness, and time is not input
+        // authority: the agent's first prompt waits for its first real
+        // interaction (select.rs, first-interaction gate)
+        return Prepared::StartedAwaitingInteraction(ready);
     }
     // The process is in the foreground the instant it execs, while its TUI
     // is still booting and not yet reading stdin. Bytes pasted now queue in
     // the pty and are read together with the Enter that follows — one burst,
-    // which agent inputs treat as a paste with a trailing newline. Give a
-    // fresh start a moment to settle, then confirm it is still the same pane.
-    std::thread::sleep(std::time::Duration::from_millis(FRESH_START_SETTLE_MS));
+    // which inputs treat as a paste with a trailing newline. Give a fresh
+    // start a moment to settle, then confirm it is still the same pane.
+    // (Never for a recognized agent — above.)
+    (ops.sleep)(std::time::Duration::from_millis(FRESH_START_SETTLE_MS));
     if cancelled() {
-        return ProbeResult::blocked(ContextStatus::Unavailable, ContextCode::CancelledOrRevised);
+        return Prepared::Probe(ProbeResult::blocked(
+            ContextStatus::Unavailable,
+            ContextCode::CancelledOrRevised,
+        ));
     }
-    context::probe(
-        &item.session,
-        ready.identity.as_ref(),
-        item.expected_process.as_deref(),
-    )
+    Prepared::Probe((ops.probe)(item, ready.identity.as_ref()))
 }
 
-/// Grace between "the agent is in the foreground" and the first paste into a
-/// session the scheduler started itself.
+/// Grace between "the program is in the foreground" and the first paste into
+/// a session the scheduler started itself — for process-bound programs that
+/// are NOT recognized interactive agents (those are never auto-sent a first
+/// prompt).
 pub(crate) const FRESH_START_SETTLE_MS: u64 = 2500;
 
 /// Observe the pane the card owns right now. A tmux generation change (the
@@ -491,6 +556,12 @@ pub(crate) enum SendResult {
         session: String,
         gave_up: bool,
     },
+    /// A recognized agent's absent session was started and bound, and its
+    /// row left pending: start-only, never a delivery (no attempt, ledger,
+    /// gap, group advance or sent event).
+    StartedAwaitingInteraction {
+        session: String,
+    },
     /// Due, but automatic identity/process protection blocked the target.
     /// This is not a delivery attempt and never creates firing ambiguity.
     Blocked {
@@ -512,7 +583,7 @@ pub(crate) struct SendHooks<'a> {
 }
 
 pub(crate) struct ContextHooks<'a> {
-    pub(crate) prepare: &'a (dyn Fn(&QueueItem, &dyn Fn() -> bool) -> ProbeResult + Sync),
+    pub(crate) prepare: &'a (dyn Fn(&QueueItem, &dyn Fn() -> bool) -> Prepared + Sync),
     pub(crate) final_probe: &'a (dyn Fn(&QueueItem) -> ProbeResult + Sync),
 }
 
@@ -809,7 +880,34 @@ pub(super) fn send_one_safe_requested(
                     && !i.state.blocks_firing()
             })
     };
-    let prepared = (context_hooks.prepare)(&selected, &cancelled);
+    let prepared = match (context_hooks.prepare)(&selected, &cancelled) {
+        Prepared::Probe(result) => result,
+        Prepared::StartedAwaitingInteraction(bound) => {
+            if reap_probe_start_after_delete(qm, &selected.session, h) {
+                return SendResult::Nothing;
+            }
+            // record the bound pane like any context observation; the row
+            // itself stays pending
+            return match persist_context_result(qm, h.persist, &selected, &bound) {
+                Ok(_) => {
+                    applog(&format!(
+                        "[queue] started {} — its first prompt waits for an agent interaction",
+                        crate::applog::session_tag(&selected.session)
+                    ));
+                    SendResult::StartedAwaitingInteraction {
+                        session: selected.session,
+                    }
+                }
+                Err(e) => {
+                    applog(&format!(
+                        "[queue] persist (started-awaiting-interaction) FAILED ({})",
+                        e.code()
+                    ));
+                    SendResult::NotPersisted
+                }
+            };
+        }
+    };
     if reap_probe_start_after_delete(qm, &selected.session, h) {
         return SendResult::Nothing;
     }

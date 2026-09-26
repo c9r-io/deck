@@ -168,7 +168,7 @@ const SIGNAL_COPY_KEYS = Object.freeze([
   'session.status.done', 'session.status.stopped', 'session.doneTab',
   'settings.agentHooksHint', 'settings.codexHooksHint', 'settings.notifyAwayHint',
   'queue.signal.working', 'queue.signal.input', 'queue.signal.done', 'queue.signal.none',
-  'queue.stage.agent',
+  'queue.stage.agent', 'queue.stage.firstSend',
   'automation.hint', 'automation.finish', 'automation.kv.finish',
   'automation.runClosed', 'automation.runCloseFailed',
 ]);

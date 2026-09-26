@@ -463,90 +463,143 @@ pub(crate) enum CodexSignalTrust {
     Unavailable,
 }
 
-/// The trust proof for one pane generation (same identity as `Entry`).
-struct TrustRecord {
+/// The interaction words a Claude hook may prove `AgentInteractionEstablished`
+/// with: each comes from an interaction-level hook (UserPromptSubmit,
+/// the permission Notification, Stop). Closed on purpose — a future
+/// startup/session lifecycle word accepted by the transport must NOT count
+/// merely because it was admitted.
+const CLAUDE_INTERACTION_WORDS: &[&str] = &[WORKING, NEEDS_INPUT, TURN_DONE];
+
+/// Evidence Deck holds about ONE pane foreground generation (same identity
+/// as `Entry`: pane, leader pid, birth instant), in memory only — a Deck
+/// restart starts without any, and nothing is persisted or reconstructed.
+///
+/// - `codex`: `CodexSignalTrust` for this generation, `None` until a
+///   Codex-sourced hook proved or disproved it (see `prove_trust`).
+/// - `claude_interaction`: an ACCEPTED Claude interaction word
+///   (`CLAUDE_INTERACTION_WORDS`) came from this generation.
+///
+/// Together they define `AgentInteractionEstablished` for the scheduler's
+/// first-interaction gate (`scheduler/select.rs`): Codex `Trusted`, or a
+/// Claude interaction. It means only "this exact process generation has
+/// produced at least one real agent interaction through Deck's admission
+/// path" — never a current agent state, never "the editor is ready now",
+/// and never lifecycle, close or external-chain authority.
+struct GenerationEvidence {
     session_id: String,
     pane_pid: u32,
     generation: ForegroundGeneration,
-    trust: CodexSignalTrust,
+    codex: Option<CodexSignalTrust>,
+    claude_interaction: bool,
 }
 
-static TRUST: Mutex<Option<HashMap<PaneKey, TrustRecord>>> = Mutex::new(None);
+static EVIDENCE: Mutex<Option<HashMap<PaneKey, GenerationEvidence>>> = Mutex::new(None);
 
-fn with_trust<R>(f: impl FnOnce(&mut HashMap<PaneKey, TrustRecord>) -> R) -> R {
-    let mut guard = TRUST.lock_or_recover();
+fn with_evidence<R>(f: impl FnOnce(&mut HashMap<PaneKey, GenerationEvidence>) -> R) -> R {
+    let mut guard = EVIDENCE.lock_or_recover();
     f(guard.get_or_insert_with(HashMap::new))
 }
 
-/// Record `trust` for the pane generation, only ever toward safety: within
-/// one generation `Unavailable` replaces anything and nothing replaces
-/// `Unavailable`; another generation's record is replaced outright.
+/// Apply `update` to this exact pane generation's evidence, starting a
+/// fresh record when the pane has none or another generation's.
+fn with_generation(
+    row: &PaneRow,
+    generation: ForegroundGeneration,
+    update: impl FnOnce(&mut GenerationEvidence),
+) {
+    with_evidence(|records| {
+        let record = records
+            .entry(PaneKey::of(row))
+            .or_insert_with(|| GenerationEvidence {
+                session_id: row.session_id.clone(),
+                pane_pid: row.pane_pid,
+                generation,
+                codex: None,
+                claude_interaction: false,
+            });
+        if record.session_id != row.session_id
+            || record.pane_pid != row.pane_pid
+            || record.generation != generation
+        {
+            *record = GenerationEvidence {
+                session_id: row.session_id.clone(),
+                pane_pid: row.pane_pid,
+                generation,
+                codex: None,
+                claude_interaction: false,
+            };
+        }
+        update(record);
+    });
+}
+
+/// Record Codex `trust` for the pane generation, only ever toward safety:
+/// within one generation `Unavailable` replaces anything and nothing
+/// replaces `Unavailable`.
 fn prove_trust(row: &PaneRow, generation: ForegroundGeneration, trust: CodexSignalTrust) {
-    with_trust(|records| {
-        let same = records.get_mut(&PaneKey::of(row)).filter(|r| {
-            r.session_id == row.session_id
-                && r.pane_pid == row.pane_pid
-                && r.generation == generation
-        });
-        if let Some(record) = same {
-            if trust == CodexSignalTrust::Unavailable {
-                record.trust = trust;
-            }
-        } else {
-            records.insert(
-                PaneKey::of(row),
-                TrustRecord {
-                    session_id: row.session_id.clone(),
-                    pane_pid: row.pane_pid,
-                    generation,
-                    trust,
-                },
-            );
+    with_generation(row, generation, |record| {
+        if record.codex.is_none() || trust == CodexSignalTrust::Unavailable {
+            record.codex = Some(trust);
         }
     });
 }
 
-/// Whether this exact pane generation was proven `Unavailable`.
+/// Record that an accepted Claude interaction word came from this pane
+/// generation.
+fn prove_claude_interaction(row: &PaneRow, generation: ForegroundGeneration) {
+    with_generation(row, generation, |record| record.claude_interaction = true);
+}
+
+/// Whether this exact pane generation was proven Codex-`Unavailable`.
 fn ambiguous(row: &PaneRow, generation: ForegroundGeneration) -> bool {
-    with_trust(|records| {
+    with_evidence(|records| {
         records.get(&PaneKey::of(row)).is_some_and(|r| {
             r.session_id == row.session_id
                 && r.pane_pid == row.pane_pid
                 && r.generation == generation
-                && r.trust == CodexSignalTrust::Unavailable
+                && r.codex == Some(CodexSignalTrust::Unavailable)
         })
     })
 }
 
-/// Codex Signal trust per session's Signal target: its proof when one
-/// exists for the target's CURRENT foreground generation — whatever the
-/// foreground's name (`node`, a wrapper) — else `Unknown` when the
-/// foreground is literally `codex`; sessions with neither are absent (the
-/// scheduler adds the gate for rows configured for Codex). The current
-/// generation comes from `generation_now` (point reads in production,
-/// `live_generation`), so a proof never outlives the process that earned
+/// What the scheduler may know about one session's Signal target's CURRENT
+/// foreground generation.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Evidence {
+    /// Codex Signal trust: the generation's proof whatever the foreground's
+    /// name (`node`, a wrapper), else `Unknown` when the foreground is
+    /// literally `codex`, else `None`.
+    pub(crate) codex: Option<CodexSignalTrust>,
+    /// An accepted Claude interaction came from this generation.
+    pub(crate) claude_interaction: bool,
+}
+
+/// Evidence per session's Signal target, bound to its CURRENT foreground
+/// generation via `generation_now` (point reads in production,
+/// `live_generation`), so evidence never outlives the process that earned
 /// it, even between Board polls. The executable name only decides that a
 /// hold applies — it never proves anything.
-pub(crate) fn codex_trust(
+pub(crate) fn generation_evidence(
     rows: &[PaneRow],
     generation_now: impl Fn(u32) -> Option<ForegroundGeneration>,
-) -> HashMap<String, CodexSignalTrust> {
+) -> HashMap<String, Evidence> {
     let targets = signal_targets(rows);
-    with_trust(|records| {
+    with_evidence(|records| {
         targets
             .into_iter()
-            .filter_map(|(session, row)| {
-                let proven = records
-                    .get(&PaneKey::of(row))
-                    .filter(|r| {
-                        r.session_id == row.session_id
-                            && r.pane_pid == row.pane_pid
-                            && generation_now(row.pane_pid) == Some(r.generation)
-                    })
-                    .map(|r| r.trust);
-                let trust =
-                    proven.or((row.command == "codex").then_some(CodexSignalTrust::Unknown))?;
-                Some((session, trust))
+            .map(|(session, row)| {
+                let proven = records.get(&PaneKey::of(row)).filter(|r| {
+                    r.session_id == row.session_id
+                        && r.pane_pid == row.pane_pid
+                        && generation_now(row.pane_pid) == Some(r.generation)
+                });
+                let evidence = Evidence {
+                    codex: proven
+                        .and_then(|r| r.codex)
+                        .or((row.command == "codex").then_some(CodexSignalTrust::Unknown)),
+                    claude_interaction: proven.is_some_and(|r| r.claude_interaction),
+                };
+                (session, evidence)
             })
             .collect()
     })
@@ -925,6 +978,8 @@ pub(crate) fn ingest(
     })?;
     if codex {
         prove_trust(row, generation, CodexSignalTrust::Trusted);
+    } else if event.source == "claude-code" && CLAUDE_INTERACTION_WORDS.contains(&event.state) {
+        prove_claude_interaction(row, generation);
     }
     let targeted = signal_targets(&rows)
         .get(&row.session_name)
@@ -969,7 +1024,7 @@ pub(crate) fn reconcile(rows: &[PaneRow], table: &ProcessTable) {
                 })
         });
     });
-    with_trust(|records| {
+    with_evidence(|records| {
         records.retain(|key, record| {
             rows.iter()
                 .find(|row| PaneKey::of(row) == *key)
@@ -997,7 +1052,7 @@ fn renotify(rows: &[PaneRow]) {
 #[cfg(test)]
 pub(crate) fn reset_for_tests() {
     with_agents(|agents| agents.clear());
-    with_trust(|records| records.clear());
+    with_evidence(|records| records.clear());
 }
 
 // ---------- socket listener --------------------------------------------------
@@ -2130,7 +2185,10 @@ mod tests {
 
     /// Every session's Codex trust against the snapshot `table`.
     fn trust(rows: &[PaneRow], table: &ProcessTable) -> HashMap<String, CodexSignalTrust> {
-        codex_trust(rows, |pane| foreground_generation(table, pane))
+        generation_evidence(rows, |pane| foreground_generation(table, pane))
+            .into_iter()
+            .filter_map(|(session, evidence)| evidence.codex.map(|trust| (session, trust)))
+            .collect()
     }
 
     /// The scheduler's automatic hold for an owner row of `session`, from
@@ -2145,6 +2203,7 @@ mod tests {
             activity: 0,
             agent: projections(rows).get(session).map(|o| o.state),
             codex: trust(rows, table).get(session).copied(),
+            claude_interaction: false,
         };
         crate::scheduler::agent_holds(&owner, Some(&seen))
     }
@@ -2234,7 +2293,7 @@ mod tests {
         );
         // reconciliation drops a proof whose generation is gone
         reconcile(&rows, &world(&[pane(300, 7, 312, 4000)]));
-        assert!(with_trust(|records| records.is_empty()));
+        assert!(with_evidence(|records| records.is_empty()));
         reset_for_tests();
         crate::notify::reset_for_tests();
     }
@@ -2306,6 +2365,7 @@ mod tests {
             activity: 0,
             agent: Some("turn-done"),
             codex,
+            claude_interaction: false,
         };
         assert!(!crate::scheduler::agent_holds(
             &owner,
@@ -2406,6 +2466,140 @@ mod tests {
         assert!(projections(&rows).is_empty(), "no Signal anywhere");
         reset_for_tests();
         crate::notify::reset_for_tests();
+    }
+
+    /// The scheduler's view of one session, as `scheduler::observe_with`
+    /// builds it against `table`.
+    fn observed(
+        rows: &[PaneRow],
+        table: &ProcessTable,
+        session: &str,
+    ) -> crate::scheduler::Observed {
+        crate::scheduler::observe_with(rows.to_vec(), |pane| foreground_generation(table, pane))
+            .remove(session)
+            .expect("listed session")
+    }
+
+    fn claude_row_held(rows: &[PaneRow], table: &ProcessTable, session: &str) -> bool {
+        let row: crate::scheduler::QueueItem = serde_json::from_value(serde_json::json!({
+            "id": "o", "session": session, "card_id": "c", "dir": "", "cmd": "claude",
+            "text": "x", "mode": "chain", "added": 0, "expected_process": "claude"
+        }))
+        .unwrap();
+        crate::scheduler::agent_holds(&row, Some(&observed(rows, table, session)))
+    }
+
+    /// `AgentInteractionEstablished` for Claude: an ACCEPTED interaction word
+    /// of the exact current foreground generation. A new generation and a
+    /// Deck restart (the in-memory store reset) start without it; a manual
+    /// send through the scheduler never writes it — only hook admission does.
+    #[test]
+    fn claude_interaction_evidence_is_per_generation_and_only_from_hooks() {
+        let _guard = STORE_TEST_LOCK.lock_or_recover();
+        reset_for_tests();
+        let rows = [row("deck-card-aaaa", "$1", "%3", 300, true, "claude")];
+        let mut gen_a = world(&[pane(300, 7, 310, 2000)]);
+        // a live Claude with no accepted interaction (startup dialog, fresh
+        // process, hooks off): held
+        assert!(!observed(&rows, &gen_a, "deck-card-aaaa").claude_interaction);
+        assert!(claude_row_held(&rows, &gen_a, "deck-card-aaaa"));
+        // a delivery through the scheduler (the path send-now shares) writes
+        // no interaction evidence: only hook admission does
+        let item: crate::scheduler::QueueItem = serde_json::from_value(serde_json::json!({
+            "id": "o", "session": "deck-card-aaaa", "card_id": "c", "dir": "", "cmd": "claude",
+            "text": "x", "mode": "at", "at": 1, "added": 0, "expected_process": "claude"
+        }))
+        .unwrap();
+        let queue: crate::scheduler::QueueState =
+            serde_json::from_value(serde_json::json!({ "items": [item], "last_fired": {} }))
+                .unwrap();
+        let queue = Mutex::new(queue);
+        let ready = || crate::context::ProbeResult {
+            status: crate::context::ContextStatus::Ready,
+            code: crate::context::ContextCode::ProcessMatched,
+            identity: Some(crate::context::PaneIdentity {
+                server_pid: 42,
+                session_id: "$1".into(),
+                window_id: "@1".into(),
+                pane_id: "%3".into(),
+                pane_pid: 300,
+            }),
+            current_process: Some("claude".into()),
+        };
+        let fired = std::sync::atomic::AtomicBool::new(false);
+        let mut established = observed(&rows, &gen_a, "deck-card-aaaa");
+        established.claude_interaction = true; // let the send through
+        let sent = crate::scheduler::send_one_safe(
+            &queue,
+            &std::sync::atomic::AtomicBool::new(false),
+            "deck-card-aaaa",
+            720,
+            &HashMap::from([("deck-card-aaaa".to_string(), established)]),
+            &crate::scheduler::SendHooks {
+                fire: &|_| {
+                    fired.store(true, std::sync::atomic::Ordering::SeqCst);
+                    Ok(())
+                },
+                persist: &|_| Ok(()),
+                kill: &|_| {},
+            },
+            &crate::scheduler::ContextHooks {
+                prepare: &|_, _| crate::scheduler::Prepared::Probe(ready()),
+                final_probe: &|_| ready(),
+            },
+        );
+        assert!(fired.load(std::sync::atomic::Ordering::SeqCst), "{sent:?}");
+        assert!(!observed(&rows, &gen_a, "deck-card-aaaa").claude_interaction);
+        assert!(claude_row_held(&rows, &gen_a, "deck-card-aaaa"));
+        // a Codex-sourced accepted hook is not Claude evidence
+        let codex_hook = detached_hook(&mut gen_a, 320, 310);
+        assert_eq!(
+            codex_report("turn-done", "%3", Some(codex_hook), &gen_a, &rows),
+            Ok(())
+        );
+        assert!(!observed(&rows, &gen_a, "deck-card-aaaa").claude_interaction);
+        reset_for_tests();
+        // an accepted Claude interaction establishes it; ordinary rules resume
+        let hook = detached_hook(&mut gen_a, 330, 310);
+        assert_eq!(report("turn-done", "%3", Some(hook), &gen_a, &rows), Ok(()));
+        assert!(observed(&rows, &gen_a, "deck-card-aaaa").claude_interaction);
+        assert!(!claude_row_held(&rows, &gen_a, "deck-card-aaaa"));
+        // generation B (same executable name, new process) inherits nothing
+        let gen_b = world(&[pane(300, 7, 311, 3000)]);
+        assert!(!observed(&rows, &gen_b, "deck-card-aaaa").claude_interaction);
+        assert!(claude_row_held(&rows, &gen_b, "deck-card-aaaa"));
+        // a Deck restart: the still-running generation A has no evidence
+        // until a new interaction arrives (nothing is persisted)
+        reset_for_tests();
+        assert!(claude_row_held(&rows, &gen_a, "deck-card-aaaa"));
+        let again = detached_hook(&mut gen_a, 340, 310);
+        assert_eq!(report("working", "%3", Some(again), &gen_a, &rows), Ok(()));
+        assert!(!claude_row_held(&rows, &gen_a, "deck-card-aaaa"));
+        // a refused event proves nothing
+        reset_for_tests();
+        let foreign = with_helper(
+            world(&[pane(300, 7, 310, 2000), pane(400, 8, 410, 2000)]),
+            420,
+            410,
+        );
+        assert_eq!(
+            report("turn-done", "%3", Some(420), &foreign, &rows),
+            Err("foreign-pane")
+        );
+        assert!(!observed(&rows, &foreign, "deck-card-aaaa").claude_interaction);
+        reset_for_tests();
+    }
+
+    /// Tripwire: every accepted Claude word counts as interaction evidence
+    /// today because every word comes from an interaction-level hook. A new
+    /// word (e.g. a future startup/session hook) must be classified here on
+    /// purpose, never counted automatically.
+    #[test]
+    fn claude_interaction_words_are_a_reviewed_closed_list() {
+        assert_eq!(
+            CLAUDE_INTERACTION_WORDS, STATES,
+            "classify the new agent word: is it real interaction evidence?"
+        );
     }
 
     fn ancestry_contains(table: &ProcessTable, pid: u32, want: u32) -> bool {

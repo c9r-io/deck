@@ -27,10 +27,28 @@
 //!   proof for its current generation (whatever the foreground's name), is
 //!   literally `codex`, or whose row is configured for Codex
 //!   (`expected_process`, covering `node`/wrapper launches); every other
-//!   session is unchanged. A session that a SUCCESSFUL pane listing proves
-//!   absent is not gated: the row may start Codex and deliver its bootstrap
-//!   prompt. A failed listing proves nothing, so that tick selects nothing
-//!   (`tick_selection`).
+//!   session is unchanged. A failed listing proves nothing, so that tick
+//!   selects nothing (`tick_selection`).
+//! - First-interaction gate (Agent Bootstrap Input Safety): no automatic
+//!   row for a recognized interactive agent (`admission::interactive_agent`
+//!   on the row's `expected_process`: Claude or Codex) is selected into an
+//!   EXISTING session until that session's current foreground generation
+//!   has `AgentInteractionEstablished` evidence — Codex `Trusted`, or an
+//!   accepted Claude interaction word (`agent_status::Evidence`). A process
+//!   in the foreground, a quiet pane, bracketed paste or elapsed time is not
+//!   evidence: a startup dialog (update, trust, first-run setup, MCP or
+//!   hooks review) may own Enter. Without the Agent Status integration the
+//!   gate never clears and the row waits for send-now — an intentional,
+//!   documented degradation. A new generation and a Deck restart both start
+//!   without evidence. The evidence is only this prerequisite; every other
+//!   hold here still applies once it exists. Other process-bound rows
+//!   (`expected_process` naming any other program) are unchanged.
+//! - A session a SUCCESSFUL listing proves absent is not gated: the row is
+//!   selected so the worker may START it, but for a recognized agent
+//!   starting is not delivery (`delivery::prepare_context_with` returns
+//!   `StartedAwaitingInteraction`): no prompt, no Enter, no attempt, no
+//!   ledger; the row stays pending and the next tick holds it at stage
+//!   `first-send`.
 //!
 //! Owner rows keep the quiet-only rule (plus the holds above). Manual
 //! send-now (`select_for_request`) is the user acting while looking at the
@@ -54,13 +72,16 @@ pub(crate) struct Observed {
     pub(crate) activity: u64,
     pub(crate) agent: Option<&'static str>,
     /// Codex Signal trust for the Signal target's current foreground
-    /// generation (`agent_status::codex_trust`): its proof when a matching
+    /// generation (`agent_status::generation_evidence`): its proof when a matching
     /// trust record exists, whatever the executable name (a wrapper,
     /// `node`); else `Unknown` when the foreground is literally `codex`;
     /// else `None`. `agent_holds` also treats a row configured for Codex
     /// (`expected_process`) in an existing session as `Unknown` here. A name
     /// only decides that a hold applies — never proof.
     pub(crate) codex: Option<agent_status::CodexSignalTrust>,
+    /// An accepted Claude interaction word came from the Signal target's
+    /// current foreground generation (`agent_status::Evidence`).
+    pub(crate) claude_interaction: bool,
 }
 
 /// Session name → observation, one snapshot per tick. `activity` keeps the
@@ -83,7 +104,7 @@ pub(crate) fn observe_with(
     generation_now: impl Fn(u32) -> Option<agent_status::ForegroundGeneration>,
 ) -> Observations {
     let agents = crate::agent_status::projections(&rows);
-    let codex = crate::agent_status::codex_trust(&rows, generation_now);
+    let evidence = crate::agent_status::generation_evidence(&rows, generation_now);
     let mut seen = Observations::new();
     for row in rows {
         let activity = row.window_activity;
@@ -91,26 +112,61 @@ pub(crate) fn observe_with(
             .or_insert_with_key(|session| Observed {
                 activity,
                 agent: agents.get(session).map(|o| o.state),
-                codex: codex.get(session).copied(),
+                codex: evidence.get(session).and_then(|e| e.codex),
+                claude_interaction: evidence.get(session).is_some_and(|e| e.claude_interaction),
             });
     }
     seen
 }
 
-/// The agent hold (module header): true while the hook state forbids an
-/// automatic paste of `i` into its session.
-pub(crate) fn agent_holds(i: &QueueItem, seen: Option<&Observed>) -> bool {
+/// Why an automatic row is held (module header).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Hold {
+    /// an input request, an external follow-up, or Codex `Unavailable`
+    Agent,
+    /// a recognized agent's current generation has no
+    /// `AgentInteractionEstablished` evidence yet (plan stage `first-send`)
+    FirstInteraction,
+}
+
+/// The recognized interactive agent a row is configured for, if any.
+pub(crate) fn row_agent(i: &QueueItem) -> Option<&'static str> {
+    i.expected_process
+        .as_deref()
+        .and_then(crate::admission::interactive_agent)
+}
+
+/// The agent hold (module header): why the hook state and interaction
+/// evidence forbid an automatic paste of `i` into its session, if they do.
+/// `None` for an absent session (no observation): it may be started, and
+/// starting a recognized agent never delivers.
+pub(crate) fn hold_reason(i: &QueueItem, seen: Option<&Observed>) -> Option<Hold> {
     let agent = seen.and_then(|o| o.agent);
-    // the gate applies to a listed session whose target is proven or named
-    // Codex, or whose row is configured for Codex (a wrapper or `node`
-    // foreground); an absent session (no observation) may bootstrap
-    let codex = seen.and_then(|o| {
-        o.codex.or((i.expected_process.as_deref() == Some("codex"))
-            .then_some(agent_status::CodexSignalTrust::Unknown))
-    });
-    let codex_untrusted =
-        codex.is_some_and(|trust| trust != agent_status::CodexSignalTrust::Trusted);
-    agent == Some(agent_status::NEEDS_INPUT) || codex_untrusted || (i.external && i.mode == "chain")
+    if agent == Some(agent_status::NEEDS_INPUT) || (i.external && i.mode == "chain") {
+        return Some(Hold::Agent);
+    }
+    let o = seen?;
+    let configured = row_agent(i);
+    // Codex: the target's proof or literal `codex` foreground, or a row
+    // configured for Codex (a wrapper or `node` foreground) — `Trusted` is
+    // its interaction evidence
+    let codex = o
+        .codex
+        .or((configured == Some("codex")).then_some(agent_status::CodexSignalTrust::Unknown));
+    match codex {
+        Some(agent_status::CodexSignalTrust::Unavailable) => return Some(Hold::Agent),
+        Some(agent_status::CodexSignalTrust::Unknown) => return Some(Hold::FirstInteraction),
+        _ => {}
+    }
+    if configured == Some("claude") && !o.claude_interaction {
+        return Some(Hold::FirstInteraction);
+    }
+    None
+}
+
+/// Whether any hold applies (`hold_reason`).
+pub(crate) fn agent_holds(i: &QueueItem, seen: Option<&Observed>) -> bool {
+    hold_reason(i, seen).is_some()
 }
 
 /// Deterministic candidate order within a session: retries whose backoff

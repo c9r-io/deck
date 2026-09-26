@@ -29,6 +29,7 @@ const stageKeys = {
   firing: 'queue.meta.sending', failed: 'queue.gaveUp', paused: 'queue.meta.paused', retry: 'queue.failedRetrying',
   previous: 'queue.stage.previous', iteration: 'queue.stage.iteration', gap: 'queue.stage.gap', time: 'queue.stage.time',
   quiet: 'queue.stage.quiet', unknown: 'queue.stage.unknown', context: 'queue.stage.context', agent: 'queue.stage.agent',
+  'first-send': 'queue.stage.firstSend',
 };
 const node = (tag, cls, text) => {
   const e = document.createElement(tag); e.className = cls;

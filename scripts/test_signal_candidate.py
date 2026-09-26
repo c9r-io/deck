@@ -143,6 +143,21 @@ class CandidateVerdicts(unittest.TestCase):
         self.assertEqual(judge("codex-daemon-refused", refused + [line(12, "claude-code", "working", s="sess-77777")],
                                session=both)["verdict"], "pass")
 
+    def test_a_bootstrap_case_passes_only_when_nothing_was_typed(self):
+        started = f"10 [queue] started {S} — its first prompt waits for an agent interaction"
+        r = judge("codex-bootstrap-waits", [started])
+        self.assertEqual(r["verdict"], "pass")
+        self.assertEqual(r["observed"], {"started": 1, "sent": 0})
+        sent = f"14 [queue] sent to {S} (85B, mode at)"
+        r = judge("claude-bootstrap-waits", [started, sent])
+        self.assertEqual(r["verdict"], "fail")
+        self.assertIn("prompt-sent-into-a-fresh-agent", r["reasons"])
+        # no automatic start seen: not proven
+        self.assertEqual(judge("claude-bootstrap-waits", [])["verdict"], "insufficient-evidence")
+        # another card's send is not this case's business
+        other = f"14 [queue] sent to {OTHER} (85B, mode at)"
+        self.assertEqual(judge("codex-bootstrap-waits", [started, other])["verdict"], "pass")
+
     def test_drops_notifications_and_drift_are_recorded_as_evidence(self):
         lines = [line(10, "codex", "working"), "11 [agent-status] dropped (interaction-mismatch)",
                  "12 [agent-status] codex identity-absent", f"13 [notify] posted turn-done s={S} e=2",

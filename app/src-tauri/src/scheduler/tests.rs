@@ -74,24 +74,43 @@ fn qs(items: Vec<QueueItem>) -> QueueState {
     q
 }
 
-/// Session "s" last produced output at `activity`; no agent hook word.
+/// Session "s" last produced output at `activity`; no agent hook word. Its
+/// Claude generation has already established an interaction (the generic
+/// scheduling tests model an agent past its bootstrap; the
+/// first-interaction gate has its own tests with `unestablished`).
 fn seen(activity: u64) -> Observations {
     HashMap::from([(
         "s".to_string(),
         Observed {
             activity,
+            claude_interaction: true,
             ..Observed::default()
         },
     )])
 }
 
-/// Session "s" quiet since `activity`, with the agent hook reporting `agent`.
+/// Session "s" quiet since `activity`, with the agent hook reporting `agent`
+/// (so its Claude generation has an accepted interaction).
 fn seen_agent(activity: u64, agent: &'static str) -> Observations {
     HashMap::from([(
         "s".to_string(),
         Observed {
             activity,
             agent: Some(agent),
+            claude_interaction: true,
+            ..Observed::default()
+        },
+    )])
+}
+
+/// Session "s" exists, quiet since `activity`, and its current foreground
+/// generation has NO interaction evidence (a fresh or restarted agent, a
+/// startup dialog, hooks off).
+fn unestablished(activity: u64) -> Observations {
+    HashMap::from([(
+        "s".to_string(),
+        Observed {
+            activity,
             ..Observed::default()
         },
     )])
@@ -1301,7 +1320,9 @@ fn send_safe_test(
             kill: &kill,
         },
         &ContextHooks {
-            prepare,
+            prepare: &|item: &QueueItem, cancelled: &dyn Fn() -> bool| {
+                Prepared::Probe(prepare(item, cancelled))
+            },
             final_probe,
         },
     )
@@ -1507,11 +1528,11 @@ fn delete_during_probe_reaps_a_session_the_worker_may_have_started() {
         &ContextHooks {
             prepare: &|_: &QueueItem, _: &dyn Fn() -> bool| {
                 clear_session_items(&mut qm.lock_or_recover(), "s");
-                probe_result(
+                Prepared::Probe(probe_result(
                     ContextStatus::Unavailable,
                     ContextCode::CancelledOrRevised,
                     1,
-                )
+                ))
             },
             final_probe: &|_: &QueueItem| panic!("deleted prompt has no final probe"),
         },
@@ -1610,7 +1631,11 @@ fn one_sessions_context_wait_does_not_block_another_session() {
                     prepare: &|_: &QueueItem, _: &dyn Fn() -> bool| {
                         entered_ref.wait();
                         release_ref.wait();
-                        probe_result(ContextStatus::Ready, ContextCode::ProcessMatched, 1)
+                        Prepared::Probe(probe_result(
+                            ContextStatus::Ready,
+                            ContextCode::ProcessMatched,
+                            1,
+                        ))
                     },
                     final_probe: &|_: &QueueItem| {
                         probe_result(ContextStatus::Ready, ContextCode::ProcessMatched, 1)
@@ -1634,7 +1659,11 @@ fn one_sessions_context_wait_does_not_block_another_session() {
             },
             &ContextHooks {
                 prepare: &|_: &QueueItem, _: &dyn Fn() -> bool| {
-                    probe_result(ContextStatus::Ready, ContextCode::ProcessMatched, 2)
+                    Prepared::Probe(probe_result(
+                        ContextStatus::Ready,
+                        ContextCode::ProcessMatched,
+                        2,
+                    ))
                 },
                 final_probe: &|_: &QueueItem| {
                     probe_result(ContextStatus::Ready, ContextCode::ProcessMatched, 2)
@@ -2473,7 +2502,11 @@ fn observed_replacement_revokes_inspection_before_any_injection() {
         },
         &ContextHooks {
             prepare: &|_, _| {
-                probe_result(ContextStatus::Ready, ContextCode::CompatibilityTarget, 2)
+                Prepared::Probe(probe_result(
+                    ContextStatus::Ready,
+                    ContextCode::CompatibilityTarget,
+                    2,
+                ))
             },
             final_probe: &|_| panic!("revoked before final probe"),
         },
@@ -2739,6 +2772,7 @@ fn seen_codex(
             activity,
             agent,
             codex: Some(trust),
+            claude_interaction: false,
         },
     )])
 }
@@ -2752,11 +2786,13 @@ fn a_codex_foreground_without_trusted_signal_holds_every_automatic_row() {
     let quiet = NOW - 400;
     let mut a = qi("a", "at");
     a.at = Some(NOW - 1);
-    for item in [a, qi("c", "chain"), rule(300)] {
+    for mut item in [a, qi("c", "chain"), rule(300)] {
+        item.expected_process = Some("codex".into());
         let id = item.id.clone();
         let q = qs(vec![item]);
-        // non-Codex baseline: the owner row is due
-        assert_eq!(ids(&select_due(&q, NOW, 720, &seen(quiet))), [id.as_str()]);
+        // configured for Codex: without a proof the row is held even when
+        // tmux does not name the foreground `codex`
+        assert!(select_due(&q, NOW, 720, &seen(quiet)).is_empty(), "{id}");
         for trust in [Unknown, Unavailable] {
             for agent in [None, Some("working"), Some("turn-done")] {
                 assert!(
@@ -2843,7 +2879,7 @@ fn a_codex_configured_row_is_gated_whatever_the_foreground_name() {
     assert!(select_due(&q, NOW, 720, &seen_agent(quiet, "turn-done")).is_empty());
     let plan =
         serde_json::to_value(plan_item(&q, &q.items[0], NOW, 720, Some(&seen(quiet)))).unwrap();
-    assert_eq!(plan["stage"], "agent");
+    assert_eq!(plan["stage"], "first-send");
     // a pane-bound Codex hook proved this generation: normal semantics
     assert_eq!(
         ids(&select_due(&q, NOW, 720, &seen_codex(quiet, None, Trusted))),
@@ -3392,4 +3428,375 @@ fn with_queue_opt_never_persists_a_noop() {
     assert_eq!(some, Some(7));
     assert_eq!(writes.get(), 1);
     assert!(qm.lock_or_recover().items.is_empty());
+}
+
+// ---------- Agent Bootstrap Input Safety (select.rs first-interaction gate) --
+
+/// A due `at` row configured for `process`.
+fn bootstrap_row(process: &str) -> QueueItem {
+    let mut row = qi("b", "at");
+    row.at = Some(NOW - 1);
+    row.cmd = process.into();
+    row.expected_process = Some(process.into());
+    row
+}
+
+/// An existing recognized-agent session without interaction evidence in
+/// its current generation is held at `first-send`, whatever the reason
+/// (startup dialog, fresh process, Deck restarted, hooks off); evidence
+/// resumes the ordinary rules; send-now is never held; other process-bound
+/// programs are unchanged.
+#[test]
+fn a_recognized_agent_needs_current_generation_interaction_evidence() {
+    use crate::agent_status::CodexSignalTrust::{Trusted, Unavailable, Unknown};
+    let quiet = NOW - 400;
+    let stage = |q: &QueueState, obs: &Observations| {
+        serde_json::to_value(plan_item(q, &q.items[0], NOW, 720, Some(obs))).unwrap()["stage"]
+            .clone()
+    };
+    // Claude: no evidence → held at first-send (hooks off stays like this)
+    let q = qs(vec![bootstrap_row("claude")]);
+    assert!(select_due(&q, NOW, 720, &unestablished(quiet)).is_empty());
+    assert_eq!(stage(&q, &unestablished(quiet)), "first-send");
+    assert_eq!(
+        hold_reason(&q.items[0], unestablished(quiet).get("s")),
+        Some(Hold::FirstInteraction)
+    );
+    // evidence (an accepted Claude interaction) → ordinary rules resume
+    assert_eq!(ids(&select_due(&q, NOW, 720, &seen(quiet))), ["b"]);
+    assert!(select_due(&q, NOW, 720, &seen_agent(quiet, "needs-input")).is_empty());
+    // send-now bypasses the automatic hold
+    assert!(select_for_request(&q, "s", NOW, 720, &unestablished(quiet), Some("b")).is_some());
+    // Codex: Trusted is its evidence; Unknown is first-send; Unavailable is
+    // the (unchanged) agent hold
+    let q = qs(vec![bootstrap_row("codex")]);
+    assert_eq!(stage(&q, &seen_codex(quiet, None, Unknown)), "first-send");
+    assert_eq!(stage(&q, &unestablished(quiet)), "first-send");
+    assert_eq!(stage(&q, &seen_codex(quiet, None, Unavailable)), "agent");
+    assert_eq!(
+        ids(&select_due(&q, NOW, 720, &seen_codex(quiet, None, Trusted))),
+        ["b"]
+    );
+    // a Claude interaction is not Codex evidence (and vice versa)
+    assert!(select_due(&q, NOW, 720, &seen(quiet)).is_empty());
+    let q = qs(vec![bootstrap_row("claude")]);
+    assert!(select_due(&q, NOW, 720, &seen_codex(quiet, None, Trusted)).is_empty());
+    // a session a successful listing proves absent is selected: the worker
+    // may start it (and prepare_context_with never delivers to it)
+    assert_eq!(ids(&select_due(&q, NOW, 720, &HashMap::new())), ["b"]);
+    // any other process-bound program keeps its existing semantics
+    for other in ["python3", "pyapp", "node"] {
+        let q = qs(vec![bootstrap_row(other)]);
+        assert_eq!(
+            ids(&select_due(&q, NOW, 720, &unestablished(quiet))),
+            ["b"],
+            "{other}"
+        );
+        assert_eq!(
+            hold_reason(&q.items[0], unestablished(quiet).get("s")),
+            None
+        );
+    }
+}
+
+/// Fake start/probe/sleep for `prepare_context_with`: the session is absent
+/// until started; every probe after the start is ready on pane 1.
+struct FakeStart {
+    started: AtomicBool,
+    sleeps: Mutex<Vec<u64>>,
+}
+
+impl FakeStart {
+    fn new() -> Self {
+        Self {
+            started: AtomicBool::new(false),
+            sleeps: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn prepare(&self, item: &QueueItem) -> Prepared {
+        prepare_context_with(
+            item,
+            &|| false,
+            &StartOps {
+                exists: &|_| self.started.load(std::sync::atomic::Ordering::SeqCst),
+                start: &|_| {
+                    self.started
+                        .store(true, std::sync::atomic::Ordering::SeqCst);
+                    Ok(())
+                },
+                probe: &|_, _| probe_result(ContextStatus::Ready, ContextCode::ProcessMatched, 1),
+                sleep: &|d| self.sleeps.lock_or_recover().push(d.as_millis() as u64),
+            },
+        )
+    }
+}
+
+/// Starting a recognized agent is not delivery: bound at once, no settle
+/// delay, `StartedAwaitingInteraction`. Any other process-bound program keeps
+/// the fresh-start settle and is prepared for delivery as before.
+#[test]
+fn starting_a_recognized_agent_never_prepares_a_delivery() {
+    for agent in ["claude", "codex"] {
+        let fake = FakeStart::new();
+        let prepared = fake.prepare(&bootstrap_row(agent));
+        assert!(
+            fake.started.load(std::sync::atomic::Ordering::SeqCst),
+            "{agent}: the session is started"
+        );
+        assert!(
+            matches!(&prepared, Prepared::StartedAwaitingInteraction(p) if p.is_ready()),
+            "{agent}: {prepared:?}"
+        );
+        assert!(
+            !fake
+                .sleeps
+                .lock_or_recover()
+                .contains(&FRESH_START_SETTLE_MS),
+            "{agent}: elapsed time never authorizes a first send"
+        );
+        // an existing session is only probed
+        assert!(matches!(
+            fake.prepare(&bootstrap_row(agent)),
+            Prepared::Probe(_)
+        ));
+    }
+    let fake = FakeStart::new();
+    let prepared = fake.prepare(&bootstrap_row("pyapp"));
+    assert!(matches!(&prepared, Prepared::Probe(p) if p.is_ready()));
+    assert!(
+        fake.sleeps
+            .lock_or_recover()
+            .contains(&FRESH_START_SETTLE_MS),
+        "unchanged"
+    );
+}
+
+/// The start-only outcome leaves NO delivery bookkeeping: the row stays
+/// queued with no attempt, ledger, gap, fired count, group advance or
+/// spawned step, and nothing is fired; the pane binding is recorded.
+#[test]
+fn a_started_agent_row_stays_pending_without_delivery_bookkeeping() {
+    for agent in ["claude", "codex"] {
+        let mut row = bootstrap_row(agent);
+        row.tpl = Some("t".into());
+        row.tpl_idx = Some(1);
+        row.tpl_total = Some(2);
+        row.steps = vec!["second".into()];
+        let before = row.clone();
+        let qm = Mutex::new(qs(vec![row]));
+        let result = send_one_safe(
+            &qm,
+            &AtomicBool::new(false),
+            "s",
+            720,
+            &HashMap::new(),
+            &SendHooks {
+                fire: &|_: &QueueItem| panic!("{agent}: a started agent is never typed into"),
+                persist: &ok_persist,
+                kill: &|_: &str| {},
+            },
+            &ContextHooks {
+                prepare: &|_: &QueueItem, _: &dyn Fn() -> bool| {
+                    Prepared::StartedAwaitingInteraction(probe_result(
+                        ContextStatus::Ready,
+                        ContextCode::ProcessMatched,
+                        1,
+                    ))
+                },
+                final_probe: &|_: &QueueItem| panic!("{agent}: no final probe"),
+            },
+        );
+        assert_eq!(
+            result,
+            SendResult::StartedAwaitingInteraction {
+                session: "s".into()
+            }
+        );
+        let q = qm.lock_or_recover();
+        assert_eq!(
+            q.items.len(),
+            1,
+            "{agent}: consumed nothing, spawned nothing"
+        );
+        let it = &q.items[0];
+        assert_eq!(it.state, before.state);
+        assert_eq!(it.attempts, 0);
+        assert_eq!(it.last_attempt_at, None);
+        assert_eq!(it.delivery, None);
+        assert_eq!(it.fired, 0);
+        assert_eq!(it.steps, before.steps);
+        assert!(q.pending.is_empty(), "{agent}: no delivery ledger");
+        assert!(q.deliveries.is_empty(), "{agent}: no delivery record");
+        assert!(!q.last_fired.contains_key("s"), "{agent}: no send gap");
+        assert_eq!(
+            it.binding,
+            Some(pane(1)),
+            "{agent}: the started pane is bound"
+        );
+    }
+}
+
+// ---------- real processes: a fake startup modal owns Enter ----------------
+
+/// A throwaway bundled-tmux server (socket name, tmux binary).
+struct ModalServer(String, std::path::PathBuf);
+
+impl ModalServer {
+    fn run(&self, args: &[&str]) -> Result<String, DeckError> {
+        let out = std::process::Command::new(&self.1)
+            .args(["-f", "/dev/null", "-L", &self.0])
+            .args(args)
+            .output()
+            .map_err(DeckError::from)?;
+        if out.status.success() {
+            Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+        } else {
+            Err(DeckError::new(crate::error::ErrorKind::Tmux, "tmux failed"))
+        }
+    }
+}
+
+impl Drop for ModalServer {
+    fn drop(&mut self) {
+        let _ = self.run(&["kill-server"]);
+    }
+}
+
+/// Run one automatic send of a due row configured for `argv0` into a session
+/// the listing proves absent, on a throwaway server whose pane program is a
+/// fake startup modal (perl under `exec -a <argv0>`): it enables bracketed
+/// paste like an agent TUI, draws an update-style menu and records every
+/// byte its stdin receives. The delivery path is the real one
+/// (`send_one_safe` → `prepare_context_with` → start, readiness probe of the
+/// real process, settle, final probe) with the throwaway server swapped in
+/// for Deck's socket; `fire` pastes the text and sends Enter the way
+/// `prompt_delivery` does. Returns the send result and the recorded bytes.
+fn send_into_fake_modal(argv0: &str) -> (SendResult, String) {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("deck-modal-{}-{seq}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let log = dir.join("stdin.hex");
+    std::fs::write(&log, "").unwrap();
+    let script = dir.join("modal.pl");
+    std::fs::write(
+        &script,
+        r#"$| = 1; my $log = shift;
+print "\e[?2004h", "Update available\r\n> 1. Update now\r\n  2. Skip\r\nenter continue\r\n";
+system("stty raw -echo");
+open(my $l, ">>", $log) or die; select($l); $| = 1;
+while (sysread(STDIN, my $b, 1)) { printf $l "%02x", ord($b); }
+"#,
+    )
+    .unwrap();
+    let server = ModalServer(
+        format!("deck-test-modal-{}-{seq}", std::process::id()),
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("binaries/tmux-aarch64-apple-darwin"),
+    );
+    let program = format!(
+        "exec -a {argv0} /usr/bin/perl '{}' '{}'",
+        script.display(),
+        log.display()
+    );
+    let rows =
+        || crate::tmux::list_panes_with(&|args: &[&str]| server.run(args)).unwrap_or_default();
+    let probe = |item: &QueueItem, identity: Option<&PaneIdentity>| match rows()
+        .into_iter()
+        .find(|row| row.session_name == item.session)
+    {
+        Some(row) => crate::context::evaluate(
+            &crate::context::raw_probe_of_row(&row),
+            identity,
+            item.expected_process.as_deref(),
+        ),
+        None => ProbeResult::blocked(ContextStatus::Unavailable, ContextCode::SessionMissing),
+    };
+    let ops = StartOps {
+        exists: &|item| {
+            server
+                .run(&["has-session", "-t", &format!("={}", item.session)])
+                .is_ok()
+        },
+        start: &|item| {
+            server
+                .run(&[
+                    "new-session",
+                    "-d",
+                    "-s",
+                    &item.session,
+                    "-x",
+                    "80",
+                    "-y",
+                    "12",
+                    &program,
+                ])
+                .map(|_| ())
+        },
+        probe: &probe,
+        // keep the real ordering, compress the waits
+        sleep: &|d| std::thread::sleep(d.min(std::time::Duration::from_millis(300))),
+    };
+    let mut row = bootstrap_row(argv0);
+    row.session = format!("modal-{seq}");
+    let session = row.session.clone();
+    let qm = Mutex::new(qs(vec![row]));
+    let fire = |item: &QueueItem| -> Result<(), DeckError> {
+        let target = format!("={}:", item.session);
+        server.run(&["send-keys", "-t", &target, "-l", &item.text])?;
+        server
+            .run(&["send-keys", "-t", &target, "Enter"])
+            .map(|_| ())
+    };
+    let result = send_one_safe(
+        &qm,
+        &AtomicBool::new(false),
+        &session,
+        720,
+        &HashMap::new(),
+        &SendHooks {
+            fire: &fire,
+            persist: &ok_persist,
+            kill: &|_: &str| {},
+        },
+        &ContextHooks {
+            prepare: &|item: &QueueItem, cancelled: &dyn Fn() -> bool| {
+                prepare_context_with(item, cancelled, &ops)
+            },
+            final_probe: &|item: &QueueItem| probe(item, item.binding.as_ref()),
+        },
+    );
+    // give any byte that was sent time to reach the program
+    std::thread::sleep(std::time::Duration::from_millis(700));
+    let bytes = std::fs::read_to_string(&log).unwrap();
+    drop(server);
+    let _ = std::fs::remove_dir_all(&dir);
+    (result, bytes)
+}
+
+/// The real regression: a freshly started Codex/Claude whose startup modal
+/// owns Enter receives ZERO bytes and no Enter from the automatic path. The
+/// same harness with a non-agent program still delivers (text + Enter), so
+/// the harness can see bytes and non-agent semantics are unchanged.
+#[test]
+fn a_fresh_agent_s_startup_modal_receives_no_automatic_bytes() {
+    for agent in ["codex", "claude"] {
+        let (result, bytes) = send_into_fake_modal(agent);
+        assert_eq!(
+            bytes, "",
+            "{agent}: no prompt bytes and no Enter reached the modal"
+        );
+        assert!(
+            matches!(result, SendResult::StartedAwaitingInteraction { .. }),
+            "{agent}: {result:?}"
+        );
+    }
+    let (result, bytes) = send_into_fake_modal("pyapp");
+    assert!(matches!(result, SendResult::Sent { .. }), "{result:?}");
+    assert!(
+        bytes.ends_with("0d"),
+        "the text and its Enter arrived: {bytes}"
+    );
+    assert!(bytes.len() > 2);
 }

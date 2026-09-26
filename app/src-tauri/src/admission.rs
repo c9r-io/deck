@@ -11,11 +11,7 @@
 /// command when the saved command is sent to the pane's shell.
 pub(crate) fn channel_agent_command(cmd: &str) -> Option<&'static str> {
     let mut words = cmd.split(' ');
-    let agent = match words.next()? {
-        "claude" => Some("claude"),
-        "codex" => Some("codex"),
-        _ => None,
-    }?;
+    let agent = interactive_agent(words.next()?)?;
     words
         .all(|word| {
             !word.is_empty()
@@ -24,6 +20,18 @@ pub(crate) fn channel_agent_command(cmd: &str) -> Option<&'static str> {
                     .all(|byte| byte.is_ascii_alphanumeric() || b"-_./:=+,@".contains(&byte))
         })
         .then_some(agent)
+}
+
+/// Deck's closed set of recognized interactive agents, by executable
+/// basename. Remote admission above and the scheduler's first-interaction
+/// gate (`scheduler/select.rs`) both read this one list; any other program —
+/// including an arbitrary process-bound one — is not an agent here.
+pub(crate) fn interactive_agent(process: &str) -> Option<&'static str> {
+    match process {
+        "claude" => Some("claude"),
+        "codex" => Some("codex"),
+        _ => None,
+    }
 }
 
 /// Invisible characters that can hide instructions from the person who
