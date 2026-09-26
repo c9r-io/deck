@@ -12,12 +12,12 @@ same commit as the behaviour it describes.
 
 ## Product north star and boundaries
 
-Deck manages human attention around interactive CLI work. Its goal is to cut
-unnecessary attention cost — repetitive checking, confirming, context
-switching, polling and manual continuation — without hiding real
-uncertainty and without taking ownership of the work itself. Automation is
-core to Deck exactly when it removes that cost while keeping honest
-authority and safety boundaries.
+Deck manages human attention around interactive CLI work. Its goal is to reduce
+total attention-management cost: unnecessary interruptions from misleading signals,
+manual checking from missed or unavailable signals, and effort spent understanding
+Deck's internal state. It does not aim to minimize notifications or maximize
+conservatism at any cost. Automation is core when it reduces that cost without
+hiding uncertainty or taking ownership of the work, within honest safety boundaries.
 
 **Deck owns attention around work. The Agent owns the work.** Deck may
 coordinate an Agent session; it does not own Agent execution.
@@ -31,7 +31,7 @@ coordinate an Agent session; it does not own Agent execution.
   task is done or succeeded.
 - Agent-specific Signal is a narrow, deliberate exception to Agent
   agnosticism: Deck consumes it only to protect its own concerns (attention
-  integrity, input safety, safe degradation), never to understand or steer
+  integrity and coverage, input safety, safe degradation), never to understand or steer
   the work. Direction: Agent-specific adapter → narrow generic observation →
   Deck attention/safety decision; never Deck → Agent-specific execution.
 - Authority stays separate: Signal may inform and HOLD ≠ Signal may
@@ -39,14 +39,53 @@ coordinate an Agent session; it does not own Agent execution.
   readiness. The mechanics live in the owning module headers and docs
   (`docs/scheduler-context-safety.md`, `docs/auto-respond.md`).
 
+**Signal Integrity ≠ Signal Suppression. Signal may inform.** Trusted Signal
+should actively route attention when it offers a useful, honest observation:
+`needs-input` is actionable; `turn-done` is an interaction boundary worth surfacing,
+not task completion, Agent idleness, permission to close, or authority to send another prompt.
+
+**Attention should surface actionable truth. Authority should require positive proof.**
+Uncertain authority or readiness must block automatic side effects: do not type into
+an uncertain target, auto-send unverified external content, or release automation
+using unattributable Signal. Attention has a different trade-off: neither interrupt
+when the user is not needed nor stay silent when silence forces them to babysit the Board.
+Attention integrity needs both precision (signals mean what Deck says) and coverage
+(observe and surface states the user should reasonably know about). Even technically
+correct signals fail the product goal if blind spots teach users to keep polling cards.
+
+Unknown ≠ safe: unknown authority remains fail-closed; unknown attention coverage
+must not become an invented Agent state. An honest, low-interruption indication such
+as “Agent status unavailable” may help, but is not automatically “needs attention”
+or an urgent notification. Expose blind spots without making each one an interruption.
+For Codex's shared-daemon case, unattributable Signal means no trusted Signal and no
+authority from it: safety is preserved, attention coverage is degraded, not fully solved.
+Trustworthy per-client attribution would serve Deck's core by reducing manual checking;
+unlike headless Agent execution, pools or workflow orchestration, it need not own the work.
+
+As a product design test, aspire to let users think: “I can go do something else.
+If I am needed, Deck will tell me. If I am not needed, Deck will leave me alone.”
+This evaluates the experience, not a guaranteed technical SLA.
+
 Before a substantial feature, ask:
 
 1. What human attention cost does it remove or protect?
-2. What new authority would Deck acquire?
-3. Does it require Deck to understand Agent task semantics?
-4. Can the same value be reached while staying Agent-agnostic?
-5. Is it coordinating attention around the work, or starting to own how the
-   work is performed?
+2. Does it reduce unnecessary interruption, manual checking, or both?
+3. What new authority would Deck acquire?
+4. Does it require Deck to understand Agent task semantics or own how work is performed?
+5. Can the same value be reached while staying Agent-agnostic?
+6. Does it improve trustworthy attention coverage, or merely add state/mechanisms?
+7. Must users understand Deck's internal safety model during normal use?
+
+Good features should generally make normal use require less thought. Complexity can
+be justified where errors harm Deck's core: identity, authority, persistence,
+side-effect fencing, attention integrity and coverage, and input safety. Stay simple
+outside its ownership: Agent task semantics, planning, execution strategy, worktrees,
+Git/PR semantics, success/completion judgment and internal workflow.
+**Deck can be a strict small system; it should not become a smart large system.**
+Count persistent mental-model concepts, not just lines of code. Prefer reusing
+Observation, Authority, Readiness and Lifecycle; before adding a security/state
+primitive, ask whether it is independent or the existing model is being misused.
+This is a complexity-budget heuristic, not an absolute architectural prohibition.
 
 A feature that mainly expands Deck's ownership of how work is performed is
 scope expansion needing exceptional, explicit justification — not the
