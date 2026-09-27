@@ -18,6 +18,11 @@ trap cleanup EXIT HUP INT TERM
 tar -xzf "$archive" -C "$work"
 app="$work/deck-compat.app"
 codesign --verify --deep --strict "$app"
+tmux_version=$("$app/Contents/MacOS/tmux" -V)
+test "$tmux_version" = 'tmux 3.7c' || {
+  echo "bundled tmux did not load on macOS 14" >&2
+  exit 1
+}
 open -n "$app"
 deadline=$(($(date +%s) + 60))
 while [ "$(date +%s)" -lt "$deadline" ]; do
@@ -38,4 +43,4 @@ path = pathlib.Path(sys.argv[1])
 settings = json.loads(path.read_text()) if path.exists() else {}
 assert settings.get("localIntelligence", {}).get("translation", {}).get("enabled", False) is False
 PY
-echo "macOS 14 LaunchServices candidate ready; Local Translation default OFF; pid=$pid"
+echo "macOS 14 LaunchServices candidate ready; bundled tmux=$tmux_version; Local Translation default OFF; pid=$pid"
