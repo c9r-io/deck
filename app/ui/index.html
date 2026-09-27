@@ -169,6 +169,7 @@
         <button class="btn icon-btn voice-btn" id="voice-btn" type="button" aria-pressed="false" data-phase="idle" data-i18n-title="voice.phase.idle" data-i18n-aria-label="voice.phase.idle"><svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="7" y="2" width="6" height="10" rx="3"/><path d="M4 9v1a6 6 0 0 0 12 0V9M10 16v3M7 19h6"/></svg><span id="voice-time" class="voice-time" hidden></span></button>
         <div id="voice-caption" class="voice-caption" aria-hidden="true" hidden></div>
         <button class="btn icon-btn" id="buffer-btn" type="button" aria-pressed="false" data-i18n-title="buffer.title" title="Card scratchpad">▤<span class="cnt" id="buffer-count"></span></button>
+        <button class="btn icon-btn" id="translation-btn" type="button" hidden aria-pressed="false" data-i18n-title="translation.title" data-i18n-aria-label="translation.title" title="Local Translation" aria-label="Local Translation">文A</button>
         <button class="btn icon-btn" id="queue-btn" title="Scheduled prompts — send prompts to this session later" data-i18n-title="queue.title"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8.8" r="5"/><path d="M8 6.2v2.6l1.8 1.2"/><path d="M13.9 2.8l-1.7 1.5M2.1 2.8l1.7 1.5" stroke-linecap="round"/></svg><span class="cnt" id="queue-cnt"></span></button>
         <button class="btn danger" id="sess-close" title="Close session (terminates the shell and removes the card)" data-i18n="session.close" data-i18n-title="session.closeTitle">Close</button>
       </div>
@@ -228,6 +229,22 @@
           <div class="buffer-head"><div class="buffer-head-main"><strong id="buffer-title" data-i18n="buffer.title">Card scratchpad</strong><span id="buffer-note-count"></span><b id="buffer-collecting" hidden data-i18n="buffer.collecting">Collecting</b><button class="btn" id="buffer-stop" hidden data-i18n="buffer.stop">Stop collecting</button><button class="btn icon-btn" id="buffer-close" type="button" data-i18n-title="common.close" data-i18n-aria-label="common.close" title="Close" aria-label="Close">✕</button></div><span data-i18n="buffer.hint">Notes stay with this card and are never sent automatically.</span></div>
           <div id="buffer-list"><div id="buffer-empty" data-i18n="buffer.empty">No notes yet.</div></div>
           <div class="buffer-add"><textarea id="buffer-new" rows="2" maxlength="32768" data-i18n-placeholder="buffer.placeholder" placeholder="Add a note…"></textarea><div class="buffer-actions"><button class="btn" id="buffer-add" data-i18n="common.add">Add</button><button class="btn primary" id="buffer-queue" disabled></button></div></div>
+        </section>
+        <section id="translation-panel" role="region" hidden aria-labelledby="translation-title">
+          <div class="translation-head">
+            <strong id="translation-title" data-i18n="translation.title">Local Translation</strong>
+            <button class="btn" id="translation-copy-source" type="button" data-i18n="translation.copySource" disabled>Copy Source</button>
+            <button class="btn icon-btn" id="translation-copy" type="button" data-i18n-title="translation.copy" data-i18n-aria-label="translation.copy" disabled>⧉</button>
+            <button class="btn icon-btn" id="translation-close" type="button" data-i18n-title="common.close" data-i18n-aria-label="common.close">✕</button>
+          </div>
+          <div class="translation-controls">
+            <select id="translation-mode" data-i18n-aria-label="translation.source"><option value="live" data-i18n="translation.live">Live view</option><option value="clipboard" data-i18n="translation.clipboard">Clipboard</option></select>
+            <select id="translation-target" disabled data-i18n-aria-label="translation.target"><option value="zh-Hans" data-i18n="settings.locale.zh-Hans">简体中文</option></select>
+          </div>
+          <div id="translation-status" class="translation-status" role="status"></div>
+          <button class="btn" id="translation-use-current" type="button" hidden data-i18n="translation.useCurrent">Use current clipboard</button>
+          <button class="btn" id="translation-resume" type="button" hidden data-i18n="translation.resume">Resume</button>
+          <div id="translation-result" class="translation-result" tabindex="0"></div>
         </section>
       </div>
     </div>
@@ -351,6 +368,15 @@
             </div>
             <div class="set-hint" data-i18n="settings.voiceHint">Choose at least one language. Follow system language picks among the chosen ones. Recognition files download only when a recording needs them.</div>
           </fieldset>
+          <div class="set-group" id="set-item-local-translation" data-setting-id="local-translation" tabindex="-1">
+            <h3 class="set-group-title" data-i18n="settings.localIntelligence">Local Intelligence</h3>
+            <div class="set-row"><label for="set-local-translation" data-i18n="settings.localTranslation">Local Translation</label><input type="checkbox" id="set-local-translation"></div>
+            <div class="set-hint" data-i18n="settings.localTranslationHint">Fast, private on-device translation for everyday reading. For important content, verify with a professional translation service.</div>
+            <div class="set-row"><span data-i18n="settings.translationTarget">Target language</span><span id="set-translation-target"></span></div>
+            <div class="set-row"><label for="set-translation-document-limit" data-i18n="settings.translationDocumentLimit">Long-text translation limit</label><select id="set-translation-document-limit" class="col-select" disabled></select></div>
+            <div class="set-row"><span data-i18n="settings.translationPack">Offline language pack · English → Simplified Chinese</span><span id="set-translation-pack-status"></span></div>
+            <div class="set-row"><span id="set-translation-pack-size"></span><button class="btn" id="set-translation-download" type="button" data-i18n="settings.translationDownload">Download offline translation support</button><button class="btn" id="set-translation-delete" type="button" hidden data-i18n="settings.translationDelete">Delete language pack</button></div>
+          </div>
           <div class="set-group" id="set-item-editor" data-setting-id="editor" tabindex="-1">
             <div class="set-row">
               <label for="set-editor" data-i18n="settings.openFiles">Open files in</label>

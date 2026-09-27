@@ -1,0 +1,75 @@
+#!/usr/bin/env python3
+"""One-command offline launch; --prepare explicitly permits setup downloads."""
+
+import argparse
+from pathlib import Path
+import plistlib
+import subprocess
+import sys
+import os
+import shutil
+
+DEMO_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(DEMO_DIR))
+from model import fetch_model, verify_model  # noqa: E402
+
+DEFAULT_STATE = Path(os.environ.get("DECK_TRANSLATION_DEMO_STATE", "/tmp/deck-translation-quality-demo"))
+
+
+def build_window(state):
+    bundle = state / "Bergamot Translation Quality Lab.app"
+    executable = bundle / "Contents/MacOS/Bergamot Translation Quality Lab"
+    source = DEMO_DIR / "host.swift"
+    if not executable.is_file() or executable.stat().st_mtime < source.stat().st_mtime:
+        executable.parent.mkdir(parents=True, exist_ok=True)
+        with (bundle / "Contents/Info.plist").open("wb") as output:
+            plistlib.dump({"CFBundleName": "Bergamot Translation Quality Lab",
+                           "CFBundleDisplayName": "Bergamot Translation Quality Lab",
+                           "CFBundleIdentifier": "io.c9r.deck.translation-quality-demo",
+                           "CFBundleExecutable": "Bergamot Translation Quality Lab",
+                           "CFBundlePackageType": "APPL",
+                           "NSPrincipalClass": "NSApplication",
+                           "LSMinimumSystemVersion": "11.0",
+                           "NSHighResolutionCapable": True}, output)
+        subprocess.run(["swiftc", "-swift-version", "5", "-O", "-framework", "AppKit",
+                        "-framework", "WebKit", str(source), "-o", str(executable)], check=True)
+    return bundle
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Isolated Bergamot translation quality demo")
+    parser.add_argument("--prepare", action="store_true", help="explicitly fetch the pinned model data before launch")
+    parser.add_argument("--model-dir", type=Path, help="existing pinned model directory")
+    args = parser.parse_args()
+    model_dir = args.model_dir or DEFAULT_STATE / "model"
+    try:
+        if args.prepare:
+            fetch_model(model_dir)
+        else:
+            verify_model(model_dir)
+    except (ValueError, OSError, RuntimeError) as error:
+        print(f"Demo model unavailable: {error}", file=sys.stderr)
+        print("Explicit model setup: scripts/translation-quality-demo/run --prepare", file=sys.stderr)
+        print("Or provide existing assets: scripts/translation-quality-demo/run --model-dir /path/to/pinned/model", file=sys.stderr)
+        return 2
+    cmake = os.environ.get("CMAKE") or shutil.which("cmake")
+    if not cmake:
+        calibration = DEFAULT_STATE / "tools/cmake/data/bin/cmake"
+        cmake = str(calibration) if calibration.is_file() else None
+    if not cmake:
+        print("CMake is required to compile the repository-owned Bergamot source. Install it or set CMAKE=/path/to/cmake.", file=sys.stderr)
+        return 2
+    root = DEMO_DIR.parents[1]
+    manifest = root / "app/src-tauri/Cargo.toml"
+    environment = {**os.environ, "CMAKE": cmake}
+    subprocess.run(["cargo", "build", "--locked", "--manifest-path", str(manifest),
+                    "--example", "local_translation_quality"], check=True, env=environment)
+    binary = root / "app/src-tauri/target/debug/examples/local_translation_quality"
+    bundle = build_window(DEFAULT_STATE)
+    subprocess.run(["open", "-n", str(bundle), "--args", str(binary),
+                    str(model_dir.resolve()), str(DEMO_DIR / "index.html")], check=True)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -45,9 +45,11 @@ export const ctx = {
     editor: '', locale: 'system', theme: 'deck-dark', accent: 'teal',
     updateChannel: 'stable', sessionRestore: false, fontScale: 1,
     voice: { languages: ['zh-CN', 'en-US', 'ja-JP'], defaultLanguage: 'system' },
+    localIntelligence: { translation: { enabled: false, targetLanguage: 'zh-Hans', documentLimitBytes: 16384 } },
     shortcuts: {
       newSession: 'Meta+KeyN', toggleSidebar: 'Meta+KeyB',
       splitRight: 'Meta+KeyD', splitDown: 'Meta+Shift+KeyD',
+      translationLens: 'Meta+Shift+KeyT',
       fontIncrease: 'Meta+Equal', fontDecrease: 'Meta+Minus', fontReset: 'Meta+Digit0',
     },
     inbound: { sources: { slack: { enabled: false } }, rules: [],

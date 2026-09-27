@@ -44,6 +44,8 @@ export const SETTING_ITEMS = Object.freeze([
   ['keyboard', 'hotkey', 'key binding', 'keybinding', '键盘', '热键']),
   item('voice', 'terminal', ['settings.voice', 'settings.voiceDefault'],
     ['speech', 'dictation', 'microphone', 'mic', '听写', '麦克风', '识别']),
+  item('local-translation', 'terminal', ['settings.localIntelligence', 'settings.localTranslation'],
+    ['translation', 'offline', 'local', '本地', '翻译', '离线']),
   item('editor', 'terminal', ['settings.openFiles'],
     ['editor', 'ide', 'vs code', 'vscode', 'cursor', 'zed', '编辑器']),
   item('session-restore', 'terminal', ['settings.shellRecovery'],

@@ -16,6 +16,7 @@ export const SHORTCUT_ACTIONS = Object.freeze([
   Object.freeze({ id: 'toggleSidebar', defaultBinding: 'Meta+KeyB', customizable: true }),
   Object.freeze({ id: 'splitRight', defaultBinding: 'Meta+KeyD', customizable: true }),
   Object.freeze({ id: 'splitDown', defaultBinding: 'Meta+Shift+KeyD', customizable: true }),
+  Object.freeze({ id: 'translationLens', defaultBinding: 'Meta+Shift+KeyT', customizable: true }),
   Object.freeze({ id: 'fontIncrease', defaultBinding: 'Meta+Equal', customizable: false }),
   Object.freeze({ id: 'fontDecrease', defaultBinding: 'Meta+Minus', customizable: false }),
   Object.freeze({ id: 'fontReset', defaultBinding: 'Meta+Digit0', customizable: false }),
@@ -170,6 +171,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
   updateChannel: 'stable', sessionRestore: false, fontScale: 1,
   notifyAway: false, notifySound: false,
   shortcuts: DEFAULT_SHORTCUTS, inbound: DEFAULT_INBOUND, voice: DEFAULT_VOICE_PREFERENCES,
+  localIntelligence: { translation: { enabled: false, targetLanguage: 'zh-Hans', documentLimitBytes: 16384 } },
 });
 
 export function normalizeSettings(value) {
@@ -199,6 +201,13 @@ export function normalizeSettings(value) {
   merged.shortcuts = shortcuts;
   merged.inbound = normalizeInbound(raw.inbound);
   merged.voice = normalizeVoicePreferences(raw.voice);
+  const translation = raw.localIntelligence?.translation;
+  merged.localIntelligence = { translation: {
+    enabled: translation?.enabled === true,
+    targetLanguage: 'zh-Hans',
+    documentLimitBytes: [8192, 16384].includes(translation?.documentLimitBytes)
+      ? translation.documentLimitBytes : 16384,
+  } };
   return merged;
 }
 

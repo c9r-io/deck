@@ -1,0 +1,41 @@
+#!/bin/sh
+# Launch the CI-produced candidate on an older macOS through LaunchServices.
+set -eu
+archive=${1:?usage: scripts/test-compat-candidate deck-compat-candidate.tar.gz}
+os_major=$(sw_vers -productVersion | cut -d. -f1)
+test "$os_major" = 14 || { echo "expected macOS 14, got $os_major" >&2; exit 1; }
+test "$(uname -m)" = arm64
+test ! -e "$HOME/.deck" || { echo "runner already has Deck data" >&2; exit 1; }
+work=$(mktemp -d "${RUNNER_TEMP:-/tmp}/deck-compat.XXXXXX")
+cleanup() {
+  if [ -n "${pid:-}" ]; then kill "$pid" 2>/dev/null || true; fi
+  if [ -x "$work/deck-compat.app/Contents/MacOS/tmux" ]; then
+    "$work/deck-compat.app/Contents/MacOS/tmux" -L deck kill-server 2>/dev/null || true
+  fi
+  rm -rf "$work" "$HOME/.deck"
+}
+trap cleanup EXIT HUP INT TERM
+tar -xzf "$archive" -C "$work"
+app="$work/deck-compat.app"
+codesign --verify --deep --strict "$app"
+open -n "$app"
+deadline=$(($(date +%s) + 60))
+while [ "$(date +%s)" -lt "$deadline" ]; do
+  pid=$(pgrep -f "$app/Contents/MacOS/deck" | head -1 || true)
+  if [ -n "$pid" ] && [ -f "$HOME/.deck/app.log" ] &&
+     grep -q '\[ui\] ping-recv' "$HOME/.deck/app.log"; then
+    break
+  fi
+  sleep 1
+done
+if [ -z "${pid:-}" ] || ! grep -q '\[ui\] ping-recv' "$HOME/.deck/app.log" 2>/dev/null; then
+  echo "Deck did not reach UI ping readiness on macOS 14" >&2
+  exit 1
+fi
+python3 - "$HOME/.deck/settings.json" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+settings = json.loads(path.read_text()) if path.exists() else {}
+assert settings.get("localIntelligence", {}).get("translation", {}).get("enabled", False) is False
+PY
+echo "macOS 14 LaunchServices candidate ready; Local Translation default OFF; pid=$pid"

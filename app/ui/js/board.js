@@ -801,6 +801,7 @@ async function queueSelectedBufferEntries() {
 
 export async function openBuffer(sid) {
   if (!provider.get(sid)) return;
+  window.dispatchEvent(new Event('deck-buffer-open'));
   changeBufferTarget(sid);
   $('queue-panel').style.display = 'none';
   ctx.queueOpen = false;

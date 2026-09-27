@@ -77,7 +77,7 @@ test('custom shortcut normalization is closed, safe and conflict-aware', () => {
     'custom actions cannot shadow a fixed font shortcut');
   assert.equal(shortcutActionForEvent(key('K', { metaKey: true, shiftKey: true }), bindings), 'newSession');
   assert.deepEqual(CUSTOMIZABLE_SHORTCUT_ACTIONS.map(action => action.id), [
-    'newSession', 'toggleSidebar', 'splitRight', 'splitDown',
+    'newSession', 'toggleSidebar', 'splitRight', 'splitDown', 'translationLens',
   ]);
 });
 
@@ -99,6 +99,21 @@ test('old settings gain bounded font and shortcut defaults while extensions roun
   assert.equal(normalizeFontScale(99), 1);
   assert.equal(normalizeSettings({ fontScale: 0.5 }).fontScale, 0.5);
   assert.equal(normalizeSettings({ fontScale: 1.6 }).fontScale, 1.6);
+});
+
+test('translation settings default off and keep only the certified target and document limits', () => {
+  const normalized = normalizeSettings({ localIntelligence: { translation: {
+    targetLanguage: 'zh-Hans', sourceText: 'must not persist', result: 'must not persist',
+  } } });
+  assert.deepEqual(normalized.localIntelligence, { translation: {
+    enabled: false, targetLanguage: 'zh-Hans', documentLimitBytes: 16384,
+  } });
+  assert.equal(normalizeSettings({ localIntelligence: { translation: { targetLanguage: '-bad' } } })
+    .localIntelligence.translation.targetLanguage, 'zh-Hans');
+  assert.equal(normalizeSettings({ localIntelligence: { translation: { enabled: true, documentLimitBytes: 8192 } } })
+    .localIntelligence.translation.documentLimitBytes, 8192);
+  assert.equal(normalizeSettings({ localIntelligence: { translation: { enabled: true, documentLimitBytes: 32768 } } })
+    .localIntelligence.translation.documentLimitBytes, 16384);
 });
 
 test('font scale updates the rem root at the same bounded value used by xterm', () => {

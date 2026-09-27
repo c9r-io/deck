@@ -626,6 +626,28 @@ struct VoicePreferencesDoc {
     #[serde(rename = "defaultLanguage")]
     default_language: String,
 }
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TranslationPreferencesDoc {
+    #[serde(default)]
+    #[allow(dead_code)]
+    enabled: bool,
+    #[serde(rename = "targetLanguage")]
+    target_language: String,
+    #[serde(
+        default = "default_translation_document_limit",
+        rename = "documentLimitBytes"
+    )]
+    document_limit_bytes: usize,
+}
+fn default_translation_document_limit() -> usize {
+    16 * 1024
+}
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LocalIntelligenceDoc {
+    translation: TranslationPreferencesDoc,
+}
 fn deserialize_voice_preferences<'de, D>(
     deserializer: D,
 ) -> Result<Option<VoicePreferencesDoc>, D::Error>
@@ -637,6 +659,8 @@ where
 
 #[derive(serde::Deserialize)]
 pub(crate) struct SettingsDocRaw {
+    #[serde(default, rename = "localIntelligence")]
+    local_intelligence: Option<LocalIntelligenceDoc>,
     #[serde(default, deserialize_with = "deserialize_voice_preferences")]
     voice: Option<VoicePreferencesDoc>,
     #[serde(default)]
@@ -761,6 +785,21 @@ impl TryFrom<SettingsDocRaw> for SettingsDoc {
                 return Err(DeckError::new(
                     ErrorKind::InvalidDoc,
                     "voice languages must be supported, unique, non-empty, and include the default",
+                ));
+            }
+        }
+        if let Some(local) = &raw.local_intelligence {
+            let target = &local.translation.target_language;
+            if !matches!(target.as_str(), "zh-Hans" | "system") {
+                return Err(DeckError::new(
+                    ErrorKind::InvalidDoc,
+                    "translation target language must be zh-Hans",
+                ));
+            }
+            if !matches!(local.translation.document_limit_bytes, 8192 | 16384) {
+                return Err(DeckError::new(
+                    ErrorKind::InvalidDoc,
+                    "translation document limit must be certified",
                 ));
             }
         }
@@ -923,6 +962,27 @@ fn settings_value() -> Option<serde_json::Value> {
         .ok()??
         .payload;
     serde_json::from_str(&raw).ok()
+}
+
+/// Advisory at-rest feature setting. The native translation facade also
+/// verifies the installed model before every initial load.
+pub(crate) fn local_translation_settings() -> (bool, usize) {
+    let value = settings_value();
+    let translation = value
+        .as_ref()
+        .and_then(|settings| settings.get("localIntelligence"))
+        .and_then(|local| local.get("translation"));
+    let enabled = translation
+        .and_then(|item| item.get("enabled"))
+        .and_then(serde_json::Value::as_bool)
+        == Some(true);
+    let limit = translation
+        .and_then(|item| item.get("documentLimitBytes"))
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|value| usize::try_from(value).ok())
+        .filter(|value| matches!(value, 8192 | 16384))
+        .unwrap_or(16384);
+    (enabled, limit)
 }
 
 fn editor_from(settings: Option<&serde_json::Value>) -> Option<String> {
@@ -1460,6 +1520,17 @@ mod tests {
         .is_ok());
         assert!(serde_json::from_str::<SettingsDoc>(r#"{"shortcuts":[]}"#).is_err());
         assert!(serde_json::from_str::<SettingsDoc>(r#"{"shortcuts":{"x":1}}"#).is_err());
+        assert!(serde_json::from_str::<SettingsDoc>(
+            r#"{"localIntelligence":{"translation":{"targetLanguage":"zh-Hans"}}}"#
+        )
+        .is_ok());
+        assert!(serde_json::from_str::<SettingsDoc>(
+            r#"{"localIntelligence":{"translation":{"targetLanguage":"-bad"}}}"#
+        )
+        .is_err());
+        assert!(serde_json::from_str::<SettingsDoc>(
+            r#"{"localIntelligence":{"translation":{"targetLanguage":"system","sourceText":"secret"}}}"#
+        ).is_err());
         assert!(serde_json::from_str::<SettingsDoc>(r#"[1,2]"#).is_err());
         for channel in [
             r#""stable""#,

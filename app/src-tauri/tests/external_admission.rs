@@ -499,6 +499,13 @@ const TEXT_COMMANDS: &[(&str, &str, Command)] = &[
     ("voice.rs", "voice_deliver", Command::OwnerTerminal),
     ("commands.rs", "start_session", Command::OwnerTerminal),
     ("commands.rs", "write_clipboard", Command::NotTerminal),
+    // User-visible/selected/copied text is read-only translation input;
+    // it never acquires terminal or scheduler delivery authority.
+    (
+        "intelligence/translation.rs",
+        "translation_translate",
+        Command::NotTerminal,
+    ),
     ("history.rs", "record_command", Command::NotTerminal),
     ("drops.rs", "save_dropped_file", Command::NotTerminal),
     ("documents.rs", "save_board", Command::NotTerminal),

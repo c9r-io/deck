@@ -46,6 +46,9 @@
   },
   "presets_max": 50,
   "drop_max_bytes": 33554432,
+  "translation_max_bytes": 16384,
+  "translation_live_bytes": 4096,
+  "translation_document_choices": [8192, 16384],
   "settings": {
     "font_scale_min": 0.5,
     "font_scale_max": 1.6,

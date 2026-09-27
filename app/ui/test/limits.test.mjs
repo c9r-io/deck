@@ -26,6 +26,7 @@ import { dictionaries, LOCALE_CHOICES } from '../js/i18n.js';
 import { ACCENT_IDS, THEME_IDS } from '../js/theme.js';
 import { NOTIFY_STATUS_WORDS } from '../js/notify-model.js';
 import { CODEX_SIGNAL_TRUST } from '../js/attention-model.js';
+import { MAX_TRANSLATION_BYTES, MAX_LIVE_TRANSLATION_BYTES } from '../js/local-intelligence.js';
 
 const limits = JSON.parse(readFileSync(new URL('./fixtures/limits.json', import.meta.url), 'utf8'));
 
@@ -66,6 +67,9 @@ test('channel, buffer, preset and drop mirrors', () => {
   }, limits.buffer);
   assert.equal(PRESET_MAX, limits.presets_max);
   assert.equal(MAX_DROP_BYTES, limits.drop_max_bytes);
+  assert.equal(MAX_TRANSLATION_BYTES, limits.translation_max_bytes);
+  assert.equal(MAX_LIVE_TRANSLATION_BYTES, limits.translation_live_bytes);
+  assert.deepEqual(limits.translation_document_choices, [8192, 16384]);
 });
 
 test('settings mirrors', () => {

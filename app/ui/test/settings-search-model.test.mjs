@@ -115,7 +115,7 @@ test('a section title shows that section when no setting names the query', () =>
 
 test('a section title and a setting name narrow together; a named setting beats its section title', () => {
   assert.deepEqual(search('terminal'), [
-    { section: 'terminal', items: ['voice', 'editor', 'session-restore', 'shell-service'] },
+    { section: 'terminal', items: ['voice', 'local-translation', 'editor', 'session-restore', 'shell-service'] },
     { section: 'remote', items: ['mcp'] },
   ]);
   assert.deepEqual(search('terminal voice'), [{ section: 'terminal', items: ['voice'] }]);
