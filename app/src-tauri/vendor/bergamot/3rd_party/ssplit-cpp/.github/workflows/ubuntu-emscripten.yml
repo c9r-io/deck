@@ -1,0 +1,26 @@
+name: "Compile on Ubuntu with emscripten"
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v2
+    - uses: mymindstorm/setup-emsdk@v11
+      with:
+          version: 3.1.8
+    - name: build
+      run: |
+        emcmake cmake -E make_directory build
+        cd build
+        emcmake cmake -DSSPLIT_USE_INTERNAL_PCRE2=on ..
+        emmake make -j2
+    - name: list build dir
+      run: ls -hal
+      working-directory: build

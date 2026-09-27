@@ -13,6 +13,26 @@ fn limits() -> Value {
     serde_json::from_str(include_str!("../../ui/test/fixtures/limits.json")).unwrap()
 }
 
+#[test]
+fn translation_input_bound_matches_frontend() {
+    assert_eq!(
+        number(&limits()["translation_max_bytes"]),
+        crate::intelligence::pack::SELECTION_BYTES as u64
+    );
+    assert_eq!(
+        number(&limits()["translation_live_bytes"]),
+        crate::intelligence::pack::LIVE_BYTES as u64
+    );
+    assert_eq!(
+        number(&limits()["translation_document_choices"][0]),
+        crate::intelligence::pack::DOCUMENT_CHOICES[0] as u64
+    );
+    assert_eq!(
+        number(&limits()["translation_document_choices"][1]),
+        crate::intelligence::pack::DOCUMENT_CHOICES[1] as u64
+    );
+}
+
 fn words(value: &Value) -> Vec<&str> {
     value
         .as_array()

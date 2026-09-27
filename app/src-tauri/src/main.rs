@@ -23,6 +23,7 @@ mod inbound_clock;
 mod inbound_slack;
 mod input_source;
 mod instance_lock;
+mod intelligence;
 mod keychain;
 mod launch_args;
 mod ledger;
@@ -139,6 +140,8 @@ pub(crate) const SMOKE_ENTRIES: &[(&str, &str)] = &[
     ("attention", "m.verifyAttention()"),
     ("settings", "m.verifySettings()"),
     ("voice", "m.verifyVoice()"),
+    ("translation", "m.verifyTranslation()"),
+    ("translation-native", "m.verifyTranslationNative()"),
     ("resume", "m.verifyResume()"),
     ("buffer", "m.verifyBuffer()"),
     ("buffer-narrow", "m.verifyBufferNarrow()"),
@@ -310,6 +313,9 @@ fn main() {
             // palette flash without duplicating settings into another store.
             if payload.event() == tauri::webview::PageLoadEvent::Finished {
                 if let Some(mode) = crate::launch_args::debug_arg("--smoke-wkwebview") {
+                    if mode == "translation" || mode == "translation-native" {
+                        let _ = webview.eval("window.__DECK_SMOKE_TRANSLATION = true");
+                    }
                     let entry = smoke_entry(&mode);
                     let script = format!(
                         "setTimeout(() => import('./test/wk-smoke.mjs').then(m => {entry}).catch(e => {{ window.__TAURI__.core.invoke('ui_event', {{code:'js-reject',detail:(e&&e.name)||'error',a:0,b:0}}); window.__TAURI__.core.invoke('ui_event', {{code:'smoke-check',detail:'done',a:0,b:-1}}); }}), 1800)"
@@ -322,6 +328,7 @@ fn main() {
             // Away = the main window is not in front (notify.rs).
             if let tauri::WindowEvent::Focused(focused) = event {
                 notify::set_focused(*focused);
+                intelligence::pasteboard::focus_changed(*focused);
                 if *focused {
                     input_source::resync();
                 }
@@ -330,12 +337,24 @@ fn main() {
             // the Dock icon (Reopen) brings it back.
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 voice::voice_cancel(0);
+                intelligence::pasteboard::translation_clipboard_disarm();
                 let _ = window.emit("voice-window-hidden", ());
                 let _ = window.hide();
                 api.prevent_close();
             }
         })
         .invoke_handler(tauri::generate_handler![
+            intelligence::translation::translation_capability,
+            intelligence::translation::translation_translate,
+            intelligence::translation::translation_cancel,
+            intelligence::translation::translation_pack_status,
+            intelligence::translation::translation_pack_install,
+            intelligence::translation::translation_pack_delete,
+            intelligence::translation::translation_unload,
+            intelligence::pasteboard::translation_clipboard_arm,
+            intelligence::pasteboard::translation_clipboard_disarm,
+            intelligence::pasteboard::translation_clipboard_poll,
+            intelligence::pasteboard::translation_clipboard_current,
             input_source::input_source_snapshot,
             notify::notify_configure,
             notify::notify_status,

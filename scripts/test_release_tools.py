@@ -19,6 +19,7 @@ spec = importlib.util.spec_from_file_location("release_channels", ROOT / "script
 assert spec and spec.loader
 rc = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(rc)
+translation_binary = runpy.run_path(str(ROOT / "scripts" / "check_local_translation_binary.py"))
 
 
 class VersionToolTests(unittest.TestCase):
@@ -356,6 +357,22 @@ class ReleaseChannelTests(unittest.TestCase):
             self.assertEqual(len(pins), uses, f"every rust-toolchain step in {path.name} pins a version")
             for pin in pins:
                 self.assertEqual(pin, channel.group(1), f"{path.name} pins the rust-toolchain.toml version")
+
+    def test_translation_gate_build_and_deployment_target(self) -> None:
+        workflow = (ROOT / ".github/workflows/gate.yml").read_text()
+        self.assertIn("runs-on: macos-26", workflow)
+        self.assertIn("DEVELOPER_DIR: /Applications/Xcode_26.4.1.app/Contents/Developer", workflow)
+        self.assertIn("cargo build --release --locked", workflow)
+        self.assertIn("python3 scripts/check_local_translation_binary.py app/src-tauri/target/release/deck-app", workflow)
+        config = (ROOT / "app/src-tauri/tauri.conf.json").read_text()
+        self.assertIn('"minimumSystemVersion": "11.0"', config)
+
+    def test_translation_artifact_gate_reads_macho_dependencies(self) -> None:
+        parse = translation_binary["dependencies"]
+        source = "Load command 1\n          cmd LC_LOAD_DYLIB\n"
+        apple = "         name /System/Library/Frameworks/Translation.framework/Versions/A/Translation (offset 24)\n"
+        self.assertEqual(parse(source + apple), ["/System/Library/Frameworks/Translation.framework/Versions/A/Translation"])
+        self.assertEqual(parse(source), [])
 
     def test_provenance_generation_and_complete_candidate_verification(self) -> None:
         directory, _ = self.candidate_fixture()

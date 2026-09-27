@@ -1,0 +1,5 @@
+#!/bin/sh
+# The CLT 27 compatibility delta must still match the vendored patched source.
+set -eu
+cd "$(dirname "$0")/../app/src-tauri/vendor/bergamot"
+git apply --reverse --check patches/DECK_CLT27.patch

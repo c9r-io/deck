@@ -152,6 +152,38 @@ fn backend_logs_carry_no_user_content() {
     }
 }
 
+#[test]
+fn translation_text_has_no_log_network_or_process_sink() {
+    for path in [
+        "src/intelligence/translation.rs",
+        "src/intelligence/pasteboard.rs",
+        "src/intelligence/protected.rs",
+        "src/intelligence/provider.rs",
+        "native/PasteboardBridge.swift",
+        "native/BergamotBridge.cpp",
+        "../ui/js/local-intelligence.js",
+        "../ui/js/translation-lens.js",
+    ] {
+        let source = std::fs::read_to_string(manifest(path)).expect(path);
+        for forbidden in [
+            "applog(",
+            "uev(",
+            "duev(",
+            "fetch(",
+            "Command::new(",
+            "pbpaste",
+            "FoundationModels",
+            "SystemLanguageModel",
+            "LanguageModelSession",
+        ] {
+            assert!(
+                !source.contains(forbidden),
+                "{path} contains forbidden translation sink: {forbidden}"
+            );
+        }
+    }
+}
+
 /// Verbose diagnostics are maintainer-only: they must stay default-off, derive
 /// from the launch flag rather than user settings, and use the structured
 /// channel (duev), not free-form strings.

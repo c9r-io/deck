@@ -812,3 +812,27 @@ fn the_restore_path_has_no_script_shell_argv_or_deck_bootstrap() {
         assert!(!restore.contains(token), "restore path regressed: {token}");
     }
 }
+
+#[test]
+fn bergamot_bridge_is_an_in_process_data_only_boundary() {
+    let bridge = std::fs::read_to_string("native/BergamotBridge.cpp").unwrap();
+    for forbidden in [
+        "system(",
+        "popen(",
+        "fork(",
+        "posix_spawn(",
+        "execve(",
+        "dlopen(",
+        "socket(",
+        "connect(",
+        "curl_easy_",
+    ] {
+        assert!(
+            !bridge.contains(forbidden),
+            "translation bridge must not add process or network transport: {forbidden}"
+        );
+    }
+    let build = std::fs::read_to_string("build.rs").unwrap();
+    assert!(build.contains("cargo:rustc-link-lib=static=deck_bergamot"));
+    assert!(!build.contains("cargo:rustc-link-lib=framework=Translation"));
+}

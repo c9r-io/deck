@@ -30,6 +30,32 @@ binary is committed together with its new pin.
 | xterm.js (`xterm.js`, `xterm.css`) | MIT | https://github.com/xtermjs/xterm.js |
 | @xterm/addon-fit | MIT | https://github.com/xtermjs/xterm.js |
 
+## Local Translation (optional, offline model pack)
+
+The app statically compiles the repository-owned Bergamot source under
+`app/src-tauri/vendor/bergamot/`, pinned to commit
+`9271618ebbdc5d21ac4dc4df9e72beb7ce644774`. Its Marian submodule is
+pinned to `2781d735`. Build patches and the exact engine delta are described
+in `app/src-tauri/vendor/bergamot/DECK_PROVENANCE.md`. The offline
+English → Simplified Chinese base-memory model is downloaded only after the
+user explicitly approves it. Its fixed asset URLs, sizes, and SHA-256 values
+are in `app/src-tauri/src/intelligence/pack.rs`; Deck verifies every asset
+before activation and use.
+
+| Component | License | Source |
+|---|---|---|
+| Bergamot translator | MPL-2.0 | https://github.com/browsermt/bergamot-translator |
+| Marian NMT | MIT | https://github.com/marian-nmt/marian-dev |
+| Mozilla en→zh base-memory data pack | MPL-2.0 | https://storage.googleapis.com/moz-fx-translations-data--303e-prod-translations-data/db/models.json |
+| ssplit-cpp | Apache-2.0 for C++ and build files; model/data licenses as noted upstream | https://github.com/mediacloud/ssplit-cpp |
+| SentencePiece | Apache-2.0 | https://github.com/google/sentencepiece |
+| yaml-cpp | MIT | https://github.com/jbeder/yaml-cpp |
+| intgemm | MIT | https://github.com/marian-nmt/intgemm |
+| ruy | Apache-2.0 | https://github.com/google/ruy |
+| spdlog | MIT | https://github.com/gabime/spdlog |
+| zlib | zlib | https://zlib.net/ |
+| PCRE2 (system library) | BSD-3-Clause | https://www.pcre.org/ |
+
 ## Rust dependencies
 
 Both crates (the TUI at the repo root and the app backend in

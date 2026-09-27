@@ -1,0 +1,41 @@
+#!/bin/sh
+# Build a non-release, ad-hoc-signed carrier for older macOS launch testing.
+set -eu
+ROOT=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
+TAURI="$ROOT/app/src-tauri"
+APP="$TAURI/target/deck-compat.app"
+ARCHIVE="$TAURI/target/deck-compat-candidate.tar.gz"
+test -f "$TAURI/target/release/deck-app"
+rm -rf "$APP"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+cp "$TAURI/target/release/deck-app" "$APP/Contents/MacOS/deck"
+cp "$TAURI/icons/icon.icns" "$APP/Contents/Resources/deck.icns"
+for pair in tmux deck-status-helper deck-mcp deck-mcp-runner; do
+  source="$TAURI/binaries/$pair-aarch64-apple-darwin"
+  test -f "$source"
+  cp "$source" "$APP/Contents/MacOS/$pair"
+done
+version=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["version"])' "$TAURI/tauri.conf.json")
+cat > "$APP/Contents/Info.plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleName</key><string>deck compatibility candidate</string>
+<key>CFBundleExecutable</key><string>deck</string>
+<key>CFBundleIdentifier</key><string>io.c9r.deck.compat-candidate</string>
+<key>CFBundleVersion</key><string>$version</string>
+<key>CFBundleShortVersionString</key><string>$version</string>
+<key>CFBundleIconFile</key><string>deck</string>
+<key>CFBundlePackageType</key><string>APPL</string>
+<key>LSMinimumSystemVersion</key><string>11.0</string>
+<key>NSMicrophoneUsageDescription</key><string>Record your voice to compose a prompt using on-device recognition.</string>
+<key>NSSpeechRecognitionUsageDescription</key><string>Convert your voice into an editable prompt on this Mac.</string>
+<key>NSLocalNetworkUsageDescription</key><string>Terminal tools running in deck may connect to local services and devices you choose.</string>
+</dict></plist>
+EOF
+codesign --force --sign - --entitlements "$TAURI/Entitlements.plist" "$APP"
+codesign --verify --deep --strict "$APP"
+python3 "$ROOT/scripts/check_local_translation_binary.py" "$APP"
+"$ROOT/scripts/check-edr-binary" "$APP"
+tar -czf "$ARCHIVE" -C "$TAURI/target" deck-compat.app
+echo "compatibility candidate: $ARCHIVE"

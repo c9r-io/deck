@@ -1,5 +1,6 @@
 target/
 node_modules/
+__pycache__/
 # built by app/src-tauri/build.rs from app/status-helper (committed source)
 app/src-tauri/binaries/deck-status-helper-*
 app/src-tauri/binaries/deck-mcp-*

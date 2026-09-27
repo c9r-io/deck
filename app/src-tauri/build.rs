@@ -120,11 +120,12 @@ fn stage_frontend() {
 // Swift is compiled and statically linked at build time, never spawned by Deck.
 // New Speech APIs remain availability-guarded; older macOS uses local-only SF.
 // The notification bridge (UNUserNotificationCenter) is compiled into the same
-// library: one object and archive for voice, notifications, and input source.
+// library: one object and archive for voice, notifications, input source and translation.
 fn build_native_bridges() {
     println!("cargo:rerun-if-changed=native/SpeechBridge.swift");
     println!("cargo:rerun-if-changed=native/NotificationBridge.swift");
     println!("cargo:rerun-if-changed=native/InputSourceBridge.swift");
+    println!("cargo:rerun-if-changed=native/PasteboardBridge.swift");
     println!("cargo:rerun-if-env-changed=DEVELOPER_DIR");
     println!("cargo:rerun-if-env-changed=DECK_REQUIRE_MODERN_SPEECH");
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("macos") {
@@ -155,6 +156,7 @@ fn build_native_bridges() {
             "native/SpeechBridge.swift",
             "native/NotificationBridge.swift",
             "native/InputSourceBridge.swift",
+            "native/PasteboardBridge.swift",
             "-o",
         ])
         .arg(&object)
@@ -193,13 +195,90 @@ fn build_native_bridges() {
         "UserNotifications",
         "Carbon",
         "ImageIO",
+        "NaturalLanguage",
+        "AppKit",
     ] {
         println!("cargo:rustc-link-lib=framework={framework}");
     }
 }
 
+// Bergamot is repository-owned C++ source. CMake only compiles local inputs;
+// it must never fetch source or a model. The resulting archives are merged
+// into one static archive so Deck ships no executable translation sidecar.
+fn build_bergamot() {
+    println!("cargo:rerun-if-changed=vendor/bergamot");
+    println!("cargo:rerun-if-changed=native/BergamotBridge.cpp");
+    println!("cargo:rerun-if-env-changed=CMAKE");
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("macos") {
+        return;
+    }
+    let out = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
+    let build = out.join("bergamot-build");
+    let arch = match std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() {
+        Ok("aarch64") => ("arm64", "armv8-a"),
+        Ok("x86_64") => ("x86_64", "core2"),
+        other => panic!("unsupported Bergamot target arch: {other:?}"),
+    };
+    let cmake = std::env::var("CMAKE").unwrap_or_else(|_| "cmake".into());
+    let status = std::process::Command::new(&cmake)
+        .args(["-S", "vendor/bergamot", "-B"])
+        .arg(&build)
+        .args([
+            "-DCMAKE_BUILD_TYPE=Release",
+            "-DCMAKE_POLICY_VERSION_MINIMUM=3.5",
+            "-DCMAKE_OSX_DEPLOYMENT_TARGET=11.0",
+            "-DUSE_STATIC_LIBS=ON",
+            "-DCOMPILE_CPU=ON",
+            "-DCOMPILE_CUDA=OFF",
+        ])
+        .arg(format!("-DCMAKE_OSX_ARCHITECTURES={}", arch.0))
+        .arg(format!("-DBUILD_ARCH={}", arch.1))
+        .status()
+        .expect("CMake is required to build vendored Bergamot");
+    assert!(status.success(), "Bergamot configure failed");
+    let status = std::process::Command::new(&cmake)
+        .args(["--build"])
+        .arg(&build)
+        .args(["--target", "deck_bergamot_bridge", "--parallel", "8"])
+        .status()
+        .expect("failed to run Bergamot build");
+    assert!(status.success(), "Bergamot static build failed");
+    fn archives(dir: &std::path::Path, found: &mut Vec<std::path::PathBuf>) {
+        for entry in std::fs::read_dir(dir).expect("read Bergamot build directory") {
+            let path = entry.expect("Bergamot build entry").path();
+            if path.is_dir() {
+                archives(&path, found);
+            } else if path.extension().is_some_and(|ext| ext == "a") {
+                found.push(path);
+            }
+        }
+    }
+    let mut inputs = Vec::new();
+    archives(&build, &mut inputs);
+    inputs.sort();
+    assert!(
+        inputs.len() >= 5,
+        "Bergamot static dependency closure missing"
+    );
+    let combined = out.join("libdeck_bergamot.a");
+    let status = std::process::Command::new("xcrun")
+        .args(["libtool", "-static", "-o"])
+        .arg(&combined)
+        .args(&inputs)
+        .status()
+        .expect("failed to merge Bergamot archives");
+    assert!(status.success(), "Bergamot archive merge failed");
+    println!("cargo:rustc-link-search=native={}", out.display());
+    println!("cargo:rustc-link-lib=static=deck_bergamot");
+    println!("cargo:rustc-link-lib=framework=Accelerate");
+    println!("cargo:rustc-link-lib=iconv");
+    println!("cargo:rustc-link-lib=pcre2-8");
+    println!("cargo:rustc-link-lib=c++");
+}
+
 fn main() {
     build_native_bridges();
+    build_bergamot();
     build_sidecars();
     stage_frontend();
     println!("cargo:rerun-if-env-changed=DECK_BUILD_COMMIT");

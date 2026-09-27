@@ -676,6 +676,23 @@ html[data-effective-theme="light"] #input-source-icon { background: var(--panel)
   position: absolute; z-index: 30; top: 0; right: 0; bottom: 0;
   width: min(520px, 100%);
 }
+#translation-btn { font-size: 0.95rem; letter-spacing: -0.08em; }
+#translation-panel { width: 440px; max-width: 100%; min-width: 0; flex: none; min-height: 0;
+  display: flex; flex-direction: column; background: var(--panel); border-left: 1px solid var(--border);
+  box-shadow: -14px 0 40px var(--shadow-menu); }
+#translation-panel[hidden] { display: none; }
+#session-workspace.translation-overlay #translation-panel { position: absolute; z-index: 30;
+  top: 0; right: 0; bottom: 0; width: min(440px, 100%); }
+.translation-head { display: flex; align-items: center; gap: 8px; padding: 12px 14px 10px;
+  border-bottom: 1px solid var(--border-soft); }
+.translation-head strong { flex: 1; min-width: 0; font-weight: 600; }
+.translation-controls { display: flex; gap: 8px; padding: 10px 14px; }
+.translation-controls .dd { min-width: 0; flex: 1; }
+.translation-controls select { min-width: 0; flex: 1; }
+.translation-status { color: var(--muted); font-size: 0.85rem; padding: 0 14px 8px; }
+#translation-use-current, #translation-resume { margin: 0 14px 8px; align-self: flex-start; }
+.translation-result { flex: 1; min-height: 0; overflow: auto; padding: 12px 14px 20px;
+  white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; line-height: 1.55; }
 .buffer-head { flex: none; padding: 12px 14px 10px; border-bottom: 1px solid var(--border-soft); }
 .buffer-head-main { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .buffer-head strong { font-size: 1.076923rem; font-weight: 600; white-space: nowrap; }

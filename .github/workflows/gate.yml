@@ -19,11 +19,11 @@ jobs:
   gate:
     # arm64 runner: the committed tmux sidecar the contract tests drive is
     # an aarch64 binary
-    runs-on: macos-15
+    runs-on: macos-26
     permissions:
       contents: read
     env:
-      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+      DEVELOPER_DIR: /Applications/Xcode_26.4.1.app/Contents/Developer
       DECK_REQUIRE_MODERN_SPEECH: "1"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -60,6 +60,9 @@ jobs:
       - name: Bundled tmux matches its committed SHA-256
         run: shasum -a 256 -c app/src-tauri/binaries/tmux-aarch64-apple-darwin.sha256
 
+      - name: Vendored Bergamot compatibility patch matches source
+        run: scripts/check-bergamot-patches
+
       # one workspace (app/src-tauri + its status-helper member): fmt --check,
       # clippy -D warnings, tests with coverage — each once
       - name: cargo fmt
@@ -79,6 +82,25 @@ jobs:
       # restores --test-threads=1 at once; no second attempt.
       - name: cargo test + coverage (unit, storage/scheduler recovery, log privacy, tmux contract, status helper)
         run: cargo llvm-cov --workspace --all-targets --all-features --locked --fail-under-lines 75 --fail-under-functions 75 --manifest-path app/src-tauri/Cargo.toml
+
+      - name: Release executable linkage and EDR vocabulary
+        run: |
+          cargo build --release --locked --manifest-path app/src-tauri/Cargo.toml
+          python3 scripts/check_local_translation_binary.py app/src-tauri/target/release/deck-app
+          scripts/check-edr-binary app/src-tauri/target/release/deck-app
+
+      # A non-release carrier for the older-runtime launch check below. This
+      # is a release-profile executable in a minimal ad-hoc-signed app bundle;
+      # no updater artifact, release feed, tag, or production signing is used.
+      - name: Package compatibility candidate
+        run: scripts/package-compat-candidate
+      - name: Transfer compatibility candidate within this gate
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: deck-compat-candidate
+          path: app/src-tauri/target/deck-compat-candidate.tar.gz
+          if-no-files-found: error
+          retention-days: 1
 
       # no-build frontend, three gates:
       # 1. real syntax check of every module (node --check)
@@ -128,3 +150,20 @@ jobs:
           cargo test --all-targets --locked --manifest-path tools/deck-tunnelctl/Cargo.toml
       - name: cargo audit (Tunnel Helper lockfile)
         run: cargo audit --file tools/deck-tunnelctl/Cargo.lock
+
+  macos14-launch:
+    needs: gate
+    runs-on: macos-14
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: deck-compat-candidate
+          path: ${{ runner.temp }}
+      - name: Launch candidate through LaunchServices on macOS 14
+        run: scripts/test-compat-candidate "${{ runner.temp }}/deck-compat-candidate.tar.gz"

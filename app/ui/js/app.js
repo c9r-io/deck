@@ -26,6 +26,8 @@ import { createVoiceTarget } from './voice-target.js';
 import { initInputSource } from './input-source.js';
 import { cancelTerminalSelection } from './selection.js';
 import { closeManagedForRestart, managedBlockers } from './restart-managed.js';
+import { initTranslationLens } from './translation-lens.js';
+import { persistSettings } from './settings.js';
 
 setLocale('system');
 activateTheme({ theme: 'deck-dark', accent: 'teal' });
@@ -336,6 +338,7 @@ function initModules() {
   initLayout();
   initScheduler({ provider, pollNow, closeBuffer });
   initBuffer();
+  initTranslationLens({ panes, closeBuffer, saveTarget: persistSettings });
   initTemplates({ provider });
   initInbound();
   initConnector();

@@ -1,0 +1,3 @@
+# Keep pinned upstream C++ source byte-for-byte; its existing whitespace is
+# outside Deck's patch hygiene. Deck-owned files still use git diff --check.
+app/src-tauri/vendor/bergamot/** -whitespace

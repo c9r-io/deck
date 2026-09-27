@@ -2745,6 +2745,214 @@ export async function verifyVoice() {
   await runVoiceSmoke();
 }
 
+// Local Translation UI/integration smoke uses a controlled provider and pack.
+// The real native model and AppKit clipboard gate are certified separately.
+export async function verifyTranslation() {
+  const { installTranslationSmokeBackend } = await import('../js/local-intelligence.js');
+  const { closeTranslationLens } = await import('../js/translation-lens.js');
+  const { t } = await import('../js/i18n.js');
+  const requests = [];
+  let clipboard = '', version = 0, baseline = 0, armed = false, focused = true;
+  let installed = false, copied = '', loadCount = 0;
+  const pack = () => ({ installed, corrupt: false, downloadBytes: 36745493,
+    installedBytes: 49913927, liveBytes: 4096, selectionBytes: 16384,
+    documentChoices: [8192, 16384], targetLanguage: 'zh-Hans' });
+  installTranslationSmokeBackend({
+    capability: async () => ({ available: installed && ctx.settings.localIntelligence.translation.enabled,
+      enabled: ctx.settings.localIntelligence.translation.enabled, installed, loaded: false }),
+    packStatus: async () => pack(),
+    packInstall: async () => { installed = true; return pack(); },
+    packDelete: async () => { installed = false; },
+    unload: async () => { loadCount++; },
+    translate: (id, text, target, strategy) => new Promise(resolve => {
+      requests.push({ id, text, target, strategy, resolve, done: false });
+    }),
+    cancel: async () => {},
+    arm: async () => { if (!focused) throw new Error('clipboard-not-focused'); armed = true; baseline = version; },
+    disarm: async () => { armed = false; },
+    poll: async () => { if (!focused || !armed || version <= baseline) return null;
+      baseline = version; return clipboard; },
+    current: async () => clipboard,
+    copy: async text => { copied = text; clipboard = text; version++; },
+  });
+  const finish = (item, text) => { item.done = true; item.resolve({ requestId: item.id, text,
+    sourceLanguage: 'en', targetLanguage: 'zh-Hans' }); };
+  const pending = mode => requests.find(item => item.strategy === mode && !item.done);
+  const chord = () => document.dispatchEvent(new KeyboardEvent('keydown', {
+    key: 'T', code: 'KeyT', metaKey: true, shiftKey: true, bubbles: true,
+  }));
+  let stream = null, stage = 0;
+  try {
+    await waitFor(() => provider.projects().length > 0);
+    const project = provider.projects()[0];
+    const { card } = await provider.createStarted({ projectId: project.id, columnId: project.columns[0].id,
+      title: 'translation smoke', cmd: '', dir: '/tmp' });
+    render(); await openSession(card.id);
+    const pane = panes.get(card.session);
+    await report('translation-default-off', $('translation-btn').hidden && $('translation-panel').hidden);
+    chord(); await pause(100);
+    await report('translation-disabled-shortcut', $('translation-panel').hidden);
+    stage = 1;
+    const { openSettings } = await import('../js/settings.js');
+    await openSettings({ section: 'terminal' });
+    await waitFor(() => $('set-translation-pack-status').textContent.length > 0);
+    $('set-local-translation').click();
+    await report('translation-enable-confirm', await waitFor(() => $('cfm').style.display === 'flex')
+      && !installed && !ctx.settings.localIntelligence.translation.enabled);
+    $('cfm-no').click();
+    await report('translation-enable-cancel', await waitFor(() => !$('set-local-translation').checked)
+      && !installed && !ctx.settings.localIntelligence.translation.enabled);
+    $('set-local-translation').click();
+    await waitFor(() => $('cfm').style.display === 'flex');
+    $('cfm-yes').click();
+    await report('translation-download-enable', await waitFor(() => installed && ctx.settings.localIntelligence.translation.enabled));
+    $('set-close').click();
+    stage = 2;
+    await report('translation-enabled', await waitFor(() => !$('translation-btn').hidden));
+    chord(); await report('translation-shortcut-live', await waitFor(() => !$('translation-panel').hidden));
+    chord(); await report('translation-shortcut-close', await waitFor(() => $('translation-panel').hidden));
+    $('translation-btn').click();
+    await report('translation-open', await waitFor(() => !$('translation-panel').hidden));
+    const dock = $('translation-panel').getBoundingClientRect();
+    const terminal = $('terminal-host').getBoundingClientRect();
+    await report('translation-dock', !$('session-workspace').classList.contains('translation-overlay')
+      && terminal.right <= dock.left + 1);
+    pane.term.write('The build completed successfully.\r\n');
+    await report('translation-live', await waitFor(() => !!pending('live')));
+    const first = pending('live'); finish(first, '第一版译文');
+    await report('translation-first', await waitFor(() => $('translation-result').textContent === '第一版译文'));
+    const streamStart = requests.length;
+    let writes = 0;
+    stream = setInterval(() => pane.term.write(`stream ${++writes}\r\n`), 70);
+    await pause(1700);
+    await report('translation-stream-retains', $('translation-result').textContent === '第一版译文');
+    await report('translation-stream-bounded', writes >= 20 && requests.length - streamStart <= 2);
+    const running = pending('live');
+    finish(running, '流中译文');
+    await report('translation-stale-updating', await waitFor(() =>
+      $('translation-result').textContent === '流中译文' && $('translation-status').textContent === t('translation.updating')));
+    clearInterval(stream); stream = null;
+    await waitFor(() => requests.length > streamStart + 1);
+    const latest = requests.at(-1); finish(latest, '最后译文');
+    await report('translation-final', await waitFor(() => $('translation-result').textContent === '最后译文'));
+    $('translation-copy-source').click();
+    await report('translation-copy-source', await waitFor(() => copied === latest.text));
+    $('translation-result').dispatchEvent(new Event('pointerdown', { bubbles: true }));
+    await report('translation-pause', $('translation-status').textContent === t('translation.paused'));
+    pane.term.write('while paused\r\n'); await pause(500);
+    await report('translation-frozen', $('translation-result').textContent === '最后译文');
+    $('translation-resume').click();
+    await report('translation-resume', await waitFor(() => requests.some(item => item.strategy === 'live' && !item.done && item !== latest)));
+    const beforeClipboard = requests.length;
+    $('translation-mode').value = 'clipboard';
+    $('translation-mode').dispatchEvent(new Event('change', { bubbles: true }));
+    await pause(100);
+    await report('translation-clipboard-baseline', armed && requests.length === beforeClipboard);
+    clipboard = 'new copied answer'; version++;
+    await report('translation-clipboard', await waitFor(() => requests.some(item => item.text === clipboard && item.strategy === 'clipboard')));
+    const documentRequest = requests.find(item => item.text === clipboard); finish(documentRequest, '剪贴板译文');
+    await waitFor(() => $('translation-result').textContent === '剪贴板译文');
+    $('translation-copy').click();
+    await report('translation-copy', await waitFor(() => copied === '剪贴板译文'));
+    await pause(500);
+    await report('translation-no-feedback', !requests.some(item => item.text === '剪贴板译文'));
+    $('translation-copy-source').click();
+    await report('translation-clipboard-copy-source', await waitFor(() => copied === 'new copied answer'));
+    await pause(500);
+    await report('translation-source-no-feedback', requests.filter(item => item.text === 'new copied answer').length === 1);
+    focused = false; window.dispatchEvent(new Event('blur'));
+    clipboard = 'unrelated away copy'; version++;
+    focused = true; window.dispatchEvent(new Event('focus')); await pause(500);
+    await report('translation-away-private', !requests.some(item => item.text === 'unrelated away copy'));
+    pane.term.focus();
+    $('translation-use-current').click();
+    await report('translation-explicit-current', await waitFor(() => requests.some(item => item.text === 'unrelated away copy')),
+      Number(document.hasFocus()) + Number($('translation-use-current').hidden) * 2 + Number(armed) * 4);
+    closeTranslationLens(); pane.term.selectAll(); chord();
+    await report('translation-selection', await waitFor(() => !$('translation-panel').hidden
+      && $('translation-status').textContent === t('translation.selected')));
+    const selectionCount = requests.length;
+    pane.term.write('selection stays static\r\n'); await pause(500);
+    await report('translation-selection-static', requests.length === selectionCount);
+    $('session-workspace').style.maxWidth = '750px';
+    await report('translation-overlay', await waitFor(() => $('session-workspace').classList.contains('translation-overlay')));
+    $('session-workspace').style.maxWidth = '';
+    await openBuffer(card.id);
+    await report('translation-buffer-mutual', $('translation-panel').hidden && !$('buffer-panel').hidden);
+    $('translation-btn').click();
+    await report('translation-buffer-close', $('buffer-panel').hidden && !$('translation-panel').hidden);
+    closeTranslationLens();
+    await report('translation-close', $('translation-panel').hidden && !$('translation-result').textContent);
+    await openSettings({ section: 'terminal' });
+    $('set-local-translation').click();
+    await report('translation-disable', await waitFor(() => $('translation-btn').hidden)
+      && loadCount > 0 && installed);
+    $('set-translation-delete').click();
+    await waitFor(() => $('cfm').style.display === 'flex');
+    $('cfm-yes').click();
+    await report('translation-delete', await waitFor(() => !installed));
+    $('set-close').click();
+    backToBoard();
+    await report('translation-leave', $('translation-panel').hidden && state.view === 'board');
+    await report('done', !smokeFailed);
+  } catch (_) { clearInterval(stream); await report('done', false, stage); }
+}
+
+// Real AppKit pasteboard/focus certification on an isolated GUI Mac. Only
+// translation itself is stubbed; the clipboard gate and writes are native.
+export async function verifyTranslationNative() {
+  const { installTranslationSmokeBackend } = await import('../js/local-intelligence.js');
+  const { serializeSettings } = await import('../js/settings-model.js');
+  const requests = [];
+  const awayText = 'deck harmless away copy';
+  let awaySeen = false, focusReturned = false;
+  window.addEventListener('blur', () => { awaySeen = true; }, { once: true });
+  window.addEventListener('focus', () => { if (awaySeen) focusReturned = true; });
+  installTranslationSmokeBackend({
+    capability: async () => ({ available: true, enabled: true, installed: true }),
+    translate: async (id, text) => { requests.push(text); return { requestId: id,
+      text: 'deck harmless translated result', sourceLanguage: 'en', targetLanguage: 'zh-Hans' }; },
+    cancel: async () => {},
+  });
+  try {
+    await waitFor(() => provider.projects().length > 0);
+    const project = provider.projects()[0];
+    const { card } = await provider.createStarted({ projectId: project.id, columnId: project.columns[0].id,
+      title: 'native clipboard smoke', cmd: '', dir: '/tmp' });
+    render(); await openSession(card.id);
+    ctx.settings.localIntelligence.translation.enabled = true;
+    await inv('save_settings', { data: serializeSettings(ctx.settings) });
+    window.dispatchEvent(new Event('deck-translation-enabled-changed'));
+    await waitFor(() => !$('translation-btn').hidden);
+    $('translation-btn').click();
+    await waitFor(() => !$('translation-panel').hidden);
+    $('translation-mode').value = 'clipboard';
+    $('translation-mode').dispatchEvent(new Event('change', { bubbles: true }));
+    await pause(650); // native arm has recorded its baseline
+    await inv('write_clipboard', { text: 'deck harmless focused copy' });
+    await report('translation-native-focused', await waitFor(() => requests.includes('deck harmless focused copy')));
+    await report('translation-native-await-away', true);
+    if (!await waitFor(() => awaySeen, 30000)) throw new Error('no away focus');
+    if (!await waitFor(() => focusReturned, 30000)) throw new Error('no focus return');
+    await pause(650); // focus regain must only baseline the away change
+    await report('translation-native-away-private', !requests.includes(awayText));
+    $('translation-use-current').click();
+    await report('translation-native-explicit', await waitFor(() => requests.includes(awayText)));
+    await waitFor(() => $('translation-result').textContent === 'deck harmless translated result');
+    const beforeCopy = requests.length;
+    $('translation-copy').click();
+    await pause(750);
+    await report('translation-native-self-copy', requests.length === beforeCopy);
+    await inv('write_clipboard', { text: 'deck harmless post-focus copy' });
+    await report('translation-native-post-focus', await waitFor(() => requests.includes('deck harmless post-focus copy')));
+    $('translation-close').click(); backToBoard();
+    ctx.settings.localIntelligence.translation.enabled = false;
+    await inv('save_settings', { data: serializeSettings(ctx.settings) });
+    window.dispatchEvent(new Event('deck-translation-disabled'));
+    await report('done', !smokeFailed);
+  } catch (_) { await report('done', false); }
+}
+
 export async function verifyResume() {
   const { runResumeSmoke } = await import('./resume-smoke.mjs');
   await runResumeSmoke();

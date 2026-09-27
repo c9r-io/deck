@@ -212,8 +212,13 @@ export function createPane(card) {
     if (ctx.ghostRemainder && ctx.attachedName === session) updateGhost();
     positionSeparators(pane);
     pane.selection?.writeParsed();
+    window.dispatchEvent(new CustomEvent('deck-terminal-changed', { detail: session }));
   });
-  term.onScroll(() => positionSeparators(pane));
+  term.onScroll(() => {
+    positionSeparators(pane);
+    window.dispatchEvent(new CustomEvent('deck-terminal-changed', { detail: session }));
+  });
+  term.onResize(() => window.dispatchEvent(new CustomEvent('deck-terminal-changed', { detail: session })));
   panes.set(session, pane);
   // A first session can start after the boot-time theme application, so sync
   // tmux's transient copy-mode highlight once its private server exists.
@@ -713,6 +718,7 @@ export function focusPane(session) {
   updateSidebarSelection();
   p.term.focus();
   window.dispatchEvent(new Event('deck-voice-session-changed'));
+  if (changed) window.dispatchEvent(new Event('deck-pane-focused'));
 }
 
 /* the attachment's stream ended: the pane keeps its transcript but is no

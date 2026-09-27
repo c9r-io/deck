@@ -44,6 +44,7 @@ import {
   formatShortcut, isSafeShortcut, registerShortcutAction, shortcutConflict, shortcutFromEvent,
 } from './shortcuts.js';
 import { choiceDialog, confirmDangerDialog, confirmDialog, toast } from './dialogs.js';
+import { packStatus, packInstall, packDelete, unload } from './local-intelligence.js';
 
 /* ---------- settings ---------- */
 const SECTION_IDS = SETTINGS_SECTIONS.map(section => section.id);
@@ -104,6 +105,85 @@ export function locateSetting(id) {
 function closeSettings() {
   $('settings-modal').style.display = 'none';
   $('settings-btn').focus();
+}
+
+let translationPack = null;
+function renderLocalTranslationSettings() {
+  const pref = ctx.settings.localIntelligence.translation;
+  $('set-local-translation').checked = pref.enabled === true;
+  const choices = $('set-translation-document-limit');
+  choices.replaceChildren();
+  for (const size of translationPack?.documentChoices || []) {
+    if (![8192, 16384].includes(size)) continue;
+    const option = document.createElement('option');
+    option.value = String(size); option.textContent = `${size / 1024} KiB`;
+    choices.appendChild(option);
+  }
+  choices.disabled = choices.options.length === 0;
+  choices.value = String(pref.documentLimitBytes);
+  $('set-translation-target').textContent = translationPack?.targetLanguage === 'zh-Hans'
+    ? t('settings.locale.zh-Hans') : '';
+  if (!translationPack) return;
+  const state = translationPack.corrupt ? 'corrupt' : translationPack.installed ? 'installed' : 'missing';
+  $('set-translation-pack-status').textContent = t(`settings.translationPackState.${state}`);
+  $('set-translation-pack-size').textContent = t(translationPack.installed
+    ? 'settings.translationPackInstalledSize' : 'settings.translationPackSize', {
+    size: formatNumber(Math.round((translationPack.installed
+      ? translationPack.installedBytes : translationPack.downloadBytes) / 1048576)),
+  });
+  $('set-translation-download').hidden = translationPack.installed;
+  $('set-translation-delete').hidden = !translationPack.installed && !translationPack.corrupt;
+}
+async function refreshTranslationPack() {
+  try { translationPack = await packStatus(); renderLocalTranslationSettings(); }
+  catch { translationPack = null; $('set-translation-pack-status').textContent = t('settings.translationPackState.unavailable'); }
+}
+function translationChoice(enabled, documentLimitBytes) {
+  return normalizeSettings({ ...ctx.settings, localIntelligence: { translation: {
+    ...ctx.settings.localIntelligence.translation, enabled, documentLimitBytes,
+  } } });
+}
+async function saveTranslationEnabled(enabled) {
+  const current = ctx.settings.localIntelligence.translation.enabled;
+  if (current === enabled) return true;
+  if (!enabled) {
+    window.dispatchEvent(new Event('deck-translation-disabled'));
+    try { await unload(); }
+    catch { toast(t('settings.translationUnloadFailed')); renderLocalTranslationSettings(); return false; }
+  }
+  const ok = await commitSettings({ key: 'local-translation', exclusive: true,
+    candidate: translationChoice(enabled, ctx.settings.localIntelligence.translation.documentLimitBytes),
+    locked: ['set-local-translation', 'set-translation-download', 'set-translation-delete'],
+    apply: renderLocalTranslationSettings,
+    onCommit: () => window.dispatchEvent(new Event('deck-translation-enabled-changed')),
+  });
+  renderLocalTranslationSettings();
+  return ok;
+}
+async function installTranslationPack(enableAfter) {
+  await refreshTranslationPack();
+  if (translationPack?.corrupt) { toast(t('settings.translationPackCorrupt')); return false; }
+  if (translationPack?.installed) return enableAfter ? saveTranslationEnabled(true) : true;
+  const size = formatNumber(Math.round((translationPack?.downloadBytes || 36745493) / 1048576));
+  if (!(await confirmDialog(t(enableAfter ? 'settings.translationDownloadConfirm'
+    : 'settings.translationDownloadOnlyConfirm', { size })))) {
+    renderLocalTranslationSettings(); return false;
+  }
+  $('set-translation-download').disabled = true;
+  $('set-local-translation').disabled = true;
+  try {
+    translationPack = await packInstall();
+    renderLocalTranslationSettings();
+    return enableAfter ? saveTranslationEnabled(true) : true;
+  } catch {
+    toast(t('settings.translationDownloadFailed'));
+    await refreshTranslationPack();
+    return false;
+  } finally {
+    $('set-translation-download').disabled = false;
+    $('set-local-translation').disabled = false;
+    renderLocalTranslationSettings();
+  }
 }
 
 let logOperationPending = false;
@@ -374,6 +454,8 @@ export async function openSettings(target) {
   renderFontScale();
   renderShortcutSettings();
   renderVoicePreferences();
+  renderLocalTranslationSettings();
+  refreshTranslationPack();
   renderInboundSettings();
   renderConnectorSettings();
   renderMcpSettings();
@@ -1105,6 +1187,29 @@ export function initSettings() {
   });
 
   $('settings-btn').onclick = () => openSettings();
+  $('set-local-translation').onchange = async event => {
+    if (event.target.checked) {
+      await installTranslationPack(true);
+    } else {
+      await saveTranslationEnabled(false);
+    }
+    renderLocalTranslationSettings();
+  };
+  $('set-translation-document-limit').onchange = async event => {
+    const documentLimitBytes = Number(event.target.value);
+    if (![8192, 16384].includes(documentLimitBytes)) { renderLocalTranslationSettings(); return; }
+    await commitSettings({ key: 'translation-limit', exclusive: true,
+      candidate: translationChoice(ctx.settings.localIntelligence.translation.enabled, documentLimitBytes),
+      locked: ['set-translation-document-limit'], apply: renderLocalTranslationSettings });
+    renderLocalTranslationSettings();
+  };
+  $('set-translation-download').onclick = () => installTranslationPack(false);
+  $('set-translation-delete').onclick = async () => {
+    if (!(await confirmDangerDialog(t('settings.translationDeleteConfirm'), t('settings.translationDelete')))) return;
+    if (ctx.settings.localIntelligence.translation.enabled && !(await saveTranslationEnabled(false))) return;
+    try { await packDelete(); await refreshTranslationPack(); }
+    catch { toast(t('settings.translationDeleteFailed')); }
+  };
 
   $('set-close').onclick = closeSettings;
 
