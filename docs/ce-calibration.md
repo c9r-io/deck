@@ -93,7 +93,8 @@ environments: synthetic `.zshenv`/`.zprofile`/`.zshrc`, shadowing and
 (same identity, version and interpreter). The invocation completed
 unattended every time (ci 45–69 ms, real 0.4–0.5 s, exit 0, no output).
 
-Confirmed Full Local regressions on fe19a89 (all `FULL_LOCAL_PARITY_REGRESSION`):
+Confirmed Full Local regressions on fe19a89 (all `FULL_LOCAL_PARITY_REGRESSION`;
+repaired by CE1b, below):
 
 | Defect | Evidence |
 |---|---|
@@ -102,17 +103,45 @@ Confirmed Full Local regressions on fe19a89 (all `FULL_LOCAL_PARITY_REGRESSION`)
 | Session environment coordinates are stripped | ci `CE_DEV_VAR`; `SHELL` in ci and real |
 | An existing cwd outside the project root is refused | `deck_exec` answers `PERMISSION_DENIED` |
 
-## CI gate (design; wired in once the ci lanes can pass)
+### CE1b repair on the same plan v2 (host-terminal-env-v1)
 
-- A gate step runs the harness itself, not only the aggregator's tests:
-  `ce_parity.py --plan plan-full-local-2.json --mode ci --app-probe`, then
-  `ce_verdict.py … --gate full_local_parity:ci` (exit 0 only when that
-  sub-status passes and the ci run counters are 0).
-- Separate steps, each failing the job on its own exit code: harness
-  completeness, then the verdict. No pipeline, no retry: a lane error is
-  UNKNOWN, which blocks.
-- The v2 ci corpus is host-independent (synthetic tools and variables only),
-  so it can run on any macOS arm64 runner with the bundled tmux.
-- Designated cases stay a separate certification on a real user machine
-  (`--gate full_local_parity:designated`); ordinary CI never needs a real
-  user environment.
+Plan v2 unchanged (digest sha256:42afe7fa…). `full_local_parity = pass`,
+45/45 mandatory cases, every counter 0:
+
+- ci: 25/25 pass — `--gate full_local_parity:ci` exits 0.
+- designated (clean smoke launch, runner rebuilt from this source): 20/20
+  pass — `--gate full_local_parity:designated` exits 0.
+- `overall` stays `blocked` because the protected / authority / EDR tracks
+  have no cases yet; nothing about Protected exists.
+
+Real tools after the repair: the direct job now resolves exactly what the
+session base resolves — node and npm absent (they live on the PATH `.zshrc`
+builds), cargo and rustc absent (added by `.zshenv`), python3 and git the
+system ones (Apple git 2.54.0, no Homebrew injection) — and `/bin/zsh -lic`
+still reproduces the terminal (nvm node v24.19.0 with npm 11.17.0 on it,
+cargo/rustc 1.97.1, Homebrew git 2.55.0). The SSH agent is reachable in both
+forms; `SHELL` is present.
+
+Remaining differences are the registered transport differences only (TD-1
+to TD-4) plus the uncalibrated shells (anything but zsh).
+
+## CI gate
+
+`.github/workflows/gate.yml` runs the real workload on every gate, not only
+the aggregator's tests, in three steps that each fail the job on their own
+exit code (no pipe, no `|| true`, no retry — a lane error is UNKNOWN and
+blocks):
+
+1. build `deck-mcp-runner`;
+2. `ce_parity.py --plan scripts/ce/plan-full-local-2.json --mode ci
+   --app-probe` — evidence generation; exits 1 unless every planned ci
+   observation was recorded and cleanup was confirmed;
+3. `ce_verdict.py … --gate full_local_parity:ci` — exits 0 only when the
+   ci sub-status of `full_local_parity` passes and every ci run counter
+   (cleanup, friction, prompts, fallback, run errors) is 0.
+
+The ci corpus is host-independent (synthetic tools and variables only), so it
+runs on any macOS arm64 runner with the bundled tmux. The designated cases
+stay a separate certification on a real user machine (`--gate
+full_local_parity:designated`); ordinary CI never needs a real user
+environment and CI evidence never substitutes for it.

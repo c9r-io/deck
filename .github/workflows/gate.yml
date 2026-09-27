@@ -127,6 +127,19 @@ jobs:
       - name: Release tooling fixtures
         run: python3 -m unittest scripts/test_release_tools.py scripts/test_edr_runtime.py scripts/test_signal_candidate.py scripts/test_codex_title_probe.py scripts/test_ce_verdict.py
 
+      # Full Local parity (Controlled Execution, docs/ce-calibration.md): the
+      # REAL workload on the frozen plan v2, not only the aggregator's unit
+      # tests. Deterministic lanes only (synthetic HOME, tools and variables
+      # on a disposable bundled-tmux server); the designated real-user lanes
+      # are a separate certification. Three steps, each failing on its own
+      # exit code: no pipe, no retry — a lane error is UNKNOWN and blocks.
+      - name: Build the MCP runner for the Full Local parity workload
+        run: cargo build --locked -p deck-mcp-runner --manifest-path app/src-tauri/Cargo.toml
+      - name: Full Local parity evidence (plan v2, deterministic lanes)
+        run: python3 scripts/ce_parity.py --plan scripts/ce/plan-full-local-2.json --mode ci --app-probe --deck-build "$GITHUB_SHA" --out "$RUNNER_TEMP/ce-full-local.jsonl"
+      - name: Full Local parity verdict gate (full_local_parity:ci)
+        run: python3 scripts/ce_verdict.py --plan scripts/ce/plan-full-local-2.json --evidence "$RUNNER_TEMP/ce-full-local.jsonl" --evidence "$RUNNER_TEMP/ce-full-local.jsonl.app.jsonl" --out "$RUNNER_TEMP/ce-full-local-verdict.json" --gate full_local_parity:ci
+
       - name: Workflow syntax and expression validation
         run: scripts/check-workflows
 

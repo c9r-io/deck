@@ -82,8 +82,10 @@ pub(super) fn exec(runtime: &Runtime, client_id: &str, arguments: Value) -> Resu
             }
             let claim = ControlClaim { generation: &args.expected_generation, epoch: Some(args.control_epoch), holder_id: Some(&args.holder_id) };
             let grant = admit_exec(runtime, doc, client_id, &session, &claim, ExecStage::Accept).map_err(AdmissionReason::error)?.clone();
-            let project = scoped_project(&client, &session.project_id)?;
-            let cwd = canonical_scope(args.cwd.as_deref().unwrap_or(&session.cwd), &project.roots)?;
+            // The client must still hold the session's project; the job cwd
+            // is any existing directory (Full Local is not a sandbox).
+            scoped_project(&client, &session.project_id)?;
+            let cwd = full_local_cwd(args.cwd.as_deref().unwrap_or(&session.cwd))?;
             let operation_id = random_id("op_", 16)?;
             let job_id = random_id("job_", 16)?;
             let binding = JobBinding { job_id: job_id.clone(), client_id: client_id.into(), session_id: session.session_id.clone(), session_generation: session.generation.clone(), request_hash: hash.clone(), operation_id: operation_id.clone(), grant_id: grant.grant_id.clone(), grant_version: grant.grant_version, allow_output: grant.allow_output };

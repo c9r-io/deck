@@ -2553,6 +2553,20 @@ fn protocol_views_are_honest_about_state_and_identity() {
     assert_eq!(capabilities["stateSchemaVersion"], STATE_VERSION);
     assert_eq!(capabilities["executionMode"], "structured-direct-default");
     assert_eq!(capabilities["directExecution"]["arbitraryPrograms"], true);
+    // host-terminal-env-v1 is advertised; the old fixed PATH is not
+    assert_eq!(
+        capabilities["directExecution"]["environment"],
+        "host-terminal-env-v1"
+    );
+    assert_eq!(
+        capabilities["directExecution"]["terminalSemantics"]["zsh"]["args"],
+        json!(["-lic", "<command>"])
+    );
+    assert_eq!(
+        capabilities["directExecution"]["terminalSemantics"]["otherShells"],
+        "not-certified"
+    );
+    assert!(capabilities["directExecution"].get("path").is_none());
     assert!(capabilities.get("shellFallback").is_none());
     assert!(capabilities.get("featureEnabled").is_none());
     let create = route(
@@ -4615,6 +4629,124 @@ fn local_command_error_codes_match_the_frontend_fixture() {
             FENCE_UNPERSISTED,
         ]
     );
+}
+
+/// CE1b: a document written before host-terminal-env-v1 still loads, keeps
+/// its legacy grant as history (never rewritten), and that grant never
+/// authorizes — not even in the same service instance and window. An
+/// unknown profile still fails the whole document closed.
+#[test]
+fn legacy_environment_profile_loads_as_history_and_never_authorizes() {
+    let clone = |doc: &DiskDoc| -> DiskDoc {
+        serde_json::from_value(serde_json::to_value(doc).unwrap()).unwrap()
+    };
+    let (runtime, runner, root) = fixture("legacy-env", "svc_test");
+    let path = root.join("legacy.json");
+    let mut doc = runtime.read(clone).unwrap();
+    let mut legacy = execution_grant(&doc.sessions[0]);
+    legacy.environment_profile = "developer-sanitized-v1".into();
+    doc.execution_grants.push(legacy);
+    save(&path, &doc).unwrap();
+    let loaded = load(&path).expect("a legacy profile loads");
+    assert_eq!(
+        loaded.execution_grants[0].environment_profile,
+        "developer-sanitized-v1"
+    );
+    save(&path, &loaded).unwrap();
+    assert_eq!(
+        load(&path).unwrap().execution_grants[0].environment_profile,
+        "developer-sanitized-v1",
+        "a save never rewrites history"
+    );
+
+    runtime
+        .write(|current| {
+            current.execution_grants = loaded.execution_grants.clone();
+            Ok(())
+        })
+        .unwrap();
+    let exec = route(
+        &runtime,
+        request(
+            "deck_exec",
+            json!({"request_id":"legacy_exec","session_id":"mcp_a","expected_generation":"g_a","control_epoch":1,"holder_id":"holder_a","cwd":root.display().to_string(),"executable":"/usr/bin/true","args":[]}),
+        ),
+    );
+    assert_eq!(exec["error"]["code"], "EXECUTION_GRANT_REQUIRED", "{exec}");
+    assert_eq!(runner.count("exec"), 0, "nothing reached the runner");
+    let inspect = route(
+        &runtime,
+        request("deck_session_inspect", json!({"session_id":"mcp_a"})),
+    );
+    assert_ne!(inspect["executionAuthorization"]["status"], "active");
+
+    let mut unknown = clone(&doc);
+    unknown.execution_grants[0].environment_profile = "made-up-env-v9".into();
+    assert!(save(&path, &unknown).is_err(), "Deck never writes one");
+    std::fs::write(&path, serde_json::to_vec(&unknown).unwrap()).unwrap();
+    let error = match load(&path) {
+        Err(error) => error,
+        Ok(_) => panic!("an unknown environment profile was accepted"),
+    };
+    assert_eq!(error.kind(), ErrorKind::Recovery);
+    drop(runner);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// CE1b cwd rules: a Full Local job may work in any existing directory,
+/// while session creation stays inside the authorized project root and a
+/// missing directory is still refused.
+#[test]
+fn full_local_exec_cwd_is_any_existing_directory_but_session_create_stays_scoped() {
+    let (runtime, runner, root) = fixture("fl-cwd", "svc_test");
+    runtime
+        .write(|doc| {
+            doc.execution_grants.push(execution_grant(&doc.sessions[0]));
+            Ok(())
+        })
+        .unwrap();
+    let outside = test_root("fl-cwd-outside");
+    let exec = route(
+        &runtime,
+        request(
+            "deck_exec",
+            json!({"request_id":"outside_exec","session_id":"mcp_a","expected_generation":"g_a","control_epoch":1,"holder_id":"holder_a","cwd":outside.display().to_string(),"executable":"/usr/bin/true","args":[]}),
+        ),
+    );
+    assert_eq!(exec["ok"], true, "{exec}");
+    let sent = runner.last("exec").unwrap();
+    assert_eq!(
+        sent["cwd"],
+        std::fs::canonicalize(&outside)
+            .unwrap()
+            .display()
+            .to_string()
+    );
+
+    let missing = route(
+        &runtime,
+        request(
+            "deck_exec",
+            json!({"request_id":"missing_exec","session_id":"mcp_a","expected_generation":"g_a","control_epoch":1,"holder_id":"holder_a","cwd":outside.join("absent").display().to_string(),"executable":"/usr/bin/true","args":[]}),
+        ),
+    );
+    assert_eq!(missing["ok"], false, "{missing}");
+    assert_eq!(runner.count("exec"), 1);
+
+    let create = route(
+        &runtime,
+        request(
+            "deck_session_create",
+            json!({"request_id":"outside_create","project_id":"P1","cwd":outside.display().to_string(),"create_sequence":0}),
+        ),
+    );
+    assert_eq!(
+        create["ok"], false,
+        "session creation stays scoped: {create}"
+    );
+    drop(runner);
+    std::fs::remove_dir_all(root).unwrap();
+    std::fs::remove_dir_all(outside).unwrap();
 }
 
 /// CE1 calibration probe (`scripts/ce_parity.py --app-probe`, lane

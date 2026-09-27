@@ -713,7 +713,9 @@ pub(super) fn validate_doc(doc: &DiskDoc) -> Result<(), DeckError> {
                 && valid_id(&grant.service_instance)
                 && grant.duration_ms <= MAX_EXECUTION_GRANT_MS
                 && grant.expires_at >= grant.issued_at
-                && grant.environment_profile == ENVIRONMENT_PROFILE
+                // closed set: a legacy profile loads as history, an unknown
+                // one fails the whole document closed
+                && KNOWN_ENVIRONMENT_PROFILES.contains(&grant.environment_profile.as_str())
         });
     let audit_valid = doc.audit.len() <= MAX_AUDIT_EVENTS
         && doc.audit.iter().all(|event| {

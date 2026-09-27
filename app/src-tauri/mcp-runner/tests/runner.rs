@@ -255,6 +255,17 @@ fn reports_exit_input_and_interrupt_without_terminal_markers() {
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
+        // host-terminal-env-v1: the session baseline the pane was given
+        // reaches the job unchanged (PATH included) ...
+        .env("PATH", "/usr/bin:/bin:/ce-session-root")
+        .env("SSH_AUTH_SOCK", "/tmp/ce-synthetic-agent.sock")
+        .env("SHELL", "/bin/zsh")
+        .env("TERM", "ce-term")
+        .env("CE_SESSION_VAR", "ce-session-value")
+        // ... minus Deck's control-plane coordinates only
+        .env("TMUX", "/tmp/ce-synthetic-tmux,1,0")
+        .env("TMUX_PANE", "%9")
+        .env("DECK_STATUS_SOCK", "/tmp/ce-synthetic-status.sock")
         .env("DECK_SYNTHETIC_SECRET", "must-not-reach-job")
         .spawn()
         .unwrap();
@@ -284,11 +295,14 @@ fn reports_exit_input_and_interrupt_without_terminal_markers() {
 
     call(
         &socket,
-        json!({"kind":"exec","job_id":"job_env","request_hash":"hash_env","executable":"/bin/zsh","args":["-c","if [[ -n ${DECK_SYNTHETIC_SECRET-} ]]; then print leaked; exit 9; fi; print clean"],"cwd":"/tmp","wait_ms":0,"context":context('b')}),
+        json!({"kind":"exec","job_id":"job_env","request_hash":"hash_env","executable":"/bin/zsh","args":["-fc","for v in PATH SSH_AUTH_SOCK SHELL TERM CE_SESSION_VAR; do print -r -- \"$v=${(P)v-unset}\"; done; for v in TMUX TMUX_PANE DECK_STATUS_SOCK DECK_SYNTHETIC_SECRET; do [[ -n ${(P)v+set} ]] && print -r -- \"leaked $v\"; done; print end"],"cwd":"/tmp","wait_ms":0,"context":context('b')}),
     );
-    let clean = wait_for(&socket, "job_env");
-    assert_eq!(clean["job"]["exitCode"], 0);
-    assert_eq!(clean["output"], "clean\n");
+    let environment = wait_for(&socket, "job_env");
+    assert_eq!(environment["job"]["exitCode"], 0);
+    assert_eq!(
+        environment["output"],
+        "PATH=/usr/bin:/bin:/ce-session-root\nSSH_AUTH_SOCK=/tmp/ce-synthetic-agent.sock\nSHELL=/bin/zsh\nTERM=ce-term\nCE_SESSION_VAR=ce-session-value\nend\n"
+    );
 
     call(
         &socket,

@@ -27,6 +27,22 @@ test-owned tmux servers): `cargo test -p deck-mcp-runner -p deck-mcp`
 baseline (CE1, `docs/ce-calibration.md`) is a separate machine verdict and is
 not summarized here.
 
+**CURRENTLY REPRODUCED — CE1b (fe19a89 + the uncommitted CE1b worktree,
+2026-09-27).** Jobs run under `host-terminal-env-v1` (session environment
+minus `TMUX`/`TMUX_PANE`/`DECK_*`, no Deck PATH) and a Full Local exec cwd
+may be any existing directory. Frozen plan v2 (unchanged): `full_local_parity`
+45/45 pass — ci 25/25 (`--gate full_local_parity:ci` exits 0) and designated
+20/20 on an isolated smoke Deck (`--gate full_local_parity:designated` exits
+0); every counter 0. Workspace gates on the same tree: `cargo fmt --check`,
+`cargo clippy --workspace --all-targets --all-features -D warnings`,
+`cargo test --workspace --all-targets --all-features` (911 passed, 1
+ignored — includes runner 19 + 10, `edr_quiet` 15, the legacy-profile and
+cwd counterexamples), `scripts/ui-tests` (369), `node app/ui/js/check.mjs`,
+Python fixtures (79), `scripts/check-workflows`, and the gate's
+`cargo llvm-cov … --fail-under-lines 75 --fail-under-functions 75` (lines
+83.93 %, functions 82.19 %). No signed app,
+Keychain or Tunnel exercise (NOT RUN, unchanged).
+
 ## Scheme-B remaining-requirement matrix
 
 Freshness: **SOURCE-GROUNDED** — every cited test except the two marked STALE

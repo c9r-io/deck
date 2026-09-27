@@ -243,6 +243,23 @@ reasons.
   refused. Execution approval therefore permits arbitrary programs with the
   logged-in user's permissions and is not a sandbox. argv is visible in
   ordinary host process metadata, so never put secrets there.
+- Environment (`host-terminal-env-v1`, Full Local): a job inherits the Deck
+  session's own environment — what an ordinary Deck terminal starts from —
+  with PATH, `SSH_AUTH_SOCK`, `SHELL`, `TERM` and every other session
+  variable unchanged. Only Deck's control-plane coordinates are removed:
+  `TMUX`, `TMUX_PANE` and the `DECK_*` namespace (a job must not reach
+  Deck's tmux server or agent-status channel without Deck's authority).
+  Nothing is dropped for looking sensitive, and Deck never synthesizes a
+  PATH. A `#!/usr/bin/env` script resolves its interpreter through that
+  session PATH.
+- A job is not a shell and reads no shell startup file. For the developer
+  environment your startup files build (nvm, rustup, PATH additions), run
+  the certified zsh Terminal-semantic form: executable `/bin/zsh`, args
+  `-lic <command>` — it needs no user confirmation and no terminal. Other
+  shells are not certified. Alternatively name the tool by absolute path.
+- `cwd` may be any existing directory the account can reach (default: the
+  session's directory). The authorized project root scopes session creation
+  and structured reads, not where an approved job works.
 - Default wait is 1 second; maximum wait is 5 seconds. A wait timeout returns
   `running` and never resubmits or kills the job.
 - Absolute executable paths are limited to 4 KiB; direct launch accepts at most 256
@@ -356,18 +373,21 @@ permanently closes the output of every job that existed before it.
 
 An approved program can use every permission of the Deck account, including
 reading outside the project and using the network. Cwd, worktrees, tmux,
-0700/0600 files, command digests, and the sanitized environment profile are
-not a sandbox. Digests bind submitted executable/argument bytes and request context; they
-does not freeze referenced files, interpreters, dependencies, or network
-responses. Strong containment requires a future scheme-C backend.
+0700/0600 files, command digests, and the environment profile are not a
+sandbox: Full Local (`host-terminal-env-v1`) deliberately gives a job the
+same environment and reach as the user's terminal. Digests bind submitted executable/argument bytes and request context; they
+do not freeze referenced files, interpreters, dependencies, or network
+responses. There is no Protected (contained) execution mode; strong
+containment would require a future backend that does not exist today.
 
 ## Instructions for ChatGPT
 
 Use only Deck MCP for development operations; do not start another coding
 agent. Call `deck_capabilities` first, choose an authorized workspace, and
 create a dedicated shell session. Inspect real files before edits. Use an
-explicit cwd; when shell composition is needed, call a shell explicitly via
-`deck_exec`. Retain operation, session, generation, control epoch,
+explicit cwd; when shell composition or the user's shell toolchain (nvm,
+rustup, PATH additions from startup files) is needed, call
+`/bin/zsh -lic '<command>'` explicitly via `deck_exec`. Retain operation, session, generation, control epoch,
 job, and cursor values. Continue long reads with the returned cursor instead
 of repeating `deck_exec`. If a state is unknown or ambiguous, inspect it and do
 not blindly retry. Stop writing immediately after human takeover. Treat

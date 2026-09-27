@@ -33,8 +33,21 @@ pub(super) fn capabilities(
                     "arbitraryPrograms": true,
                     "executableResolution": "absolute-path-only",
                     "argumentsVisibleInProcessMetadata": true,
-                    "path": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
-                    "pathPurpose": "child-process-environment",
+                    // host-terminal-env-v1: the Deck session's own
+                    // environment, PATH unchanged, minus Deck control-plane
+                    // coordinates; a job is not a shell and reads no
+                    // startup file. zsh Terminal semantics are certified
+                    // through the client's own explicit zsh `-lic` call (the
+                    // system zsh, docs/mcp.md); other shells are not
+                    // certified. deck-app names no shell path (EDR-quiet).
+                    "environment": ENVIRONMENT_PROFILE,
+                    "environmentSource": "deck-session-baseline",
+                    "shellStartupFiles": false,
+                    "cwd": "any-existing-directory",
+                    "terminalSemantics": {
+                        "zsh": {"shell": "the system zsh", "args": ["-lic", "<command>"], "certified": true},
+                        "otherShells": "not-certified"
+                    },
                     "outputKind": "pty_combined"
                 },
                 "limits": {

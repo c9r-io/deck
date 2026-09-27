@@ -19,6 +19,23 @@ pub(super) fn runner_program() -> Result<PathBuf, DeckError> {
         .ok_or_else(|| DeckError::new(ErrorKind::Missing, "MCP runner is not bundled"))
 }
 
+/// The cwd of a Full Local job (`host-terminal-env-v1`): any existing
+/// directory, canonicalized. The authorized project root scopes session
+/// creation and structured reads (`canonical_scope`, `mcp_fs`), never where
+/// an approved host-authority job may work; checking it here only made a
+/// Full Local job weaker than the Terminal. Not a filesystem boundary.
+pub(super) fn full_local_cwd(path: &str) -> Result<PathBuf, DeckError> {
+    let path = std::fs::canonicalize(path)
+        .map_err(|_| DeckError::new(ErrorKind::NotDir, "working directory is unavailable"))?;
+    if !path.is_dir() {
+        return Err(DeckError::new(
+            ErrorKind::NotDir,
+            "working directory is unavailable",
+        ));
+    }
+    Ok(path)
+}
+
 pub(super) fn canonical_scope(path: &str, roots: &[String]) -> Result<PathBuf, DeckError> {
     let path = std::fs::canonicalize(path)
         .map_err(|_| DeckError::new(ErrorKind::NotDir, "working directory is unavailable"))?;
@@ -279,9 +296,12 @@ pub(super) fn grant_standing(
 
 /// Pure core of `grant_standing`: revocation (a revoked_at stamp, a
 /// revocation version at or above the grant's, a client credential that
-/// moved on or vanished, another Deck service instance) outranks expiry
-/// (the monotonic window elapsed, the clock went backwards, or the wall
-/// deadline passed).
+/// moved on or vanished, another Deck service instance, or an environment
+/// profile this build no longer issues) outranks expiry (the monotonic
+/// window elapsed, the clock went backwards, or the wall deadline passed).
+/// A legacy-profile grant is kept as history and never authorizes again:
+/// its jobs ran under that environment, and a new approval issues a grant
+/// under the current one.
 pub(super) fn standing_at(
     grant: &ExecutionGrant,
     client_credential_version: Option<u64>,
@@ -293,6 +313,7 @@ pub(super) fn standing_at(
         || grant.grant_version <= grant.revocation_version
         || client_credential_version != Some(grant.credential_version)
         || grant.service_instance != service_instance
+        || grant.environment_profile != ENVIRONMENT_PROFILE
     {
         return GrantStanding::Revoked;
     }
@@ -444,6 +465,14 @@ mod tests {
         // service-instance axis
         assert_eq!(
             at(&live, Some(1), "svc_old", 200, 2_000),
+            GrantStanding::Revoked
+        );
+        // environment-profile axis: a legacy grant never authorizes, even
+        // in the same service instance and window
+        let mut legacy = grant();
+        legacy.environment_profile = "developer-sanitized-v1".into();
+        assert_eq!(
+            at(&legacy, Some(1), "svc", 200, 2_000),
             GrantStanding::Revoked
         );
         // time axis

@@ -4,8 +4,12 @@
 //! process of an explicitly created MCP session. It accepts structured direct
 //! launches over a user-only Unix socket, executes each job in a fresh process, mirrors
 //! combined output into the real pane, and retains a bounded copy for cursor
-//! reads. Fresh jobs receive the versioned sanitized developer environment,
-//! not the runner's complete host environment. Process exit and each output
+//! reads. Fresh jobs receive `host-terminal-env-v1`: this runner's own
+//! environment — the Deck tmux session baseline, PATH included, unchanged —
+//! minus Deck's control-plane coordinates (`is_control_plane_coordinate`).
+//! A job is not a shell: no startup file is read (the certified way to get
+//! zsh Terminal semantics is for the client to run the system zsh with
+//! `-lic …`, docs/mcp.md). Process exit and each output
 //! pipe's EOF are reported separately. The runner has no model, persistence,
 //! or Board authority; trusted-host jobs retain the user's ordinary OS/network
 //! permissions and the environment profile is not a sandbox.
@@ -871,6 +875,25 @@ enum OwnedLaunch {
     },
 }
 
+/// Deck control-plane coordinates a job must not inherit (registered
+/// transport difference TD-4). Each names a Deck or tmux control channel, not
+/// a user capability, and forwarding it would let job code act on Deck's
+/// control plane without Deck's holder/epoch/runner authority:
+/// - `TMUX`: the Deck tmux server socket. Any `tmux` command a job runs
+///   (a test suite, an editor plugin) would otherwise target Deck's own
+///   server and could type into other cards or create/kill sessions.
+/// - `TMUX_PANE`: this pane's id on that server (same channel).
+/// - `DECK_*`: Deck's namespace — `DECK_STATUS_SOCK` is the agent-status
+///   channel whose words route the user's attention; smoke/test variables
+///   (`DECK_SMOKE_*`) are Deck's own too.
+///
+/// Nothing else is removed: Full Local is the user's approved host
+/// authority, so variables are never dropped for looking sensitive.
+fn is_control_plane_coordinate(key: &std::ffi::OsStr) -> bool {
+    let key = key.as_encoded_bytes();
+    key == b"TMUX" || key == b"TMUX_PANE" || key.starts_with(b"DECK_")
+}
+
 fn spawn_job(
     shared: &Arc<Shared>,
     job_id: &str,
@@ -900,21 +923,16 @@ fn spawn_job(
     };
     command
         .current_dir(cwd)
-        .env_clear()
-        .env(
-            "PATH",
-            "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
-        )
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    // Preserve only ordinary developer/runtime coordinates. Authentication
-    // variables, agent sockets and application-specific secrets are excluded.
-    for key in [
-        "HOME", "USER", "LOGNAME", "TMPDIR", "LANG", "LC_ALL", "TERM",
-    ] {
-        if let Some(value) = std::env::var_os(key) {
-            command.env(key, value);
+    // host-terminal-env-v1: the job inherits this runner's environment — the
+    // Deck tmux session baseline, exactly as tmux gave it to the pane — with
+    // PATH, SSH_AUTH_SOCK, SHELL, TERM and every other session variable
+    // unchanged, minus Deck's control-plane coordinates only.
+    for (key, _) in std::env::vars_os() {
+        if is_control_plane_coordinate(&key) {
+            command.env_remove(&key);
         }
     }
     // SAFETY: only async-signal-safe setpgid/signal/sigprocmask
@@ -1866,6 +1884,48 @@ fn bind_private_socket(socket: &Path) -> std::io::Result<UnixListener> {
 #[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
+
+    /// host-terminal-env-v1 removes Deck's control-plane coordinates and
+    /// nothing else — not look-alikes, not variables that merely look secret.
+    #[test]
+    fn only_deck_control_plane_coordinates_are_removed() {
+        let removed = [
+            "TMUX",
+            "TMUX_PANE",
+            "DECK_STATUS_SOCK",
+            "DECK_SMOKE_DATA_DIR",
+            "DECK_",
+        ];
+        for key in removed {
+            assert!(
+                is_control_plane_coordinate(std::ffi::OsStr::new(key)),
+                "{key}"
+            );
+        }
+        let kept = [
+            "PATH",
+            "SSH_AUTH_SOCK",
+            "SHELL",
+            "TERM",
+            "COLORTERM",
+            "LANG",
+            "HOME",
+            "TMPDIR",
+            "TMUX_TMPDIR",
+            "TMUXP_CONFIGDIR",
+            "DECKHAND",
+            "deck_status_sock",
+            "AWS_PROFILE",
+            "GITHUB_TOKEN",
+            "NVM_DIR",
+        ];
+        for key in kept {
+            assert!(
+                !is_control_plane_coordinate(std::ffi::OsStr::new(key)),
+                "{key}"
+            );
+        }
+    }
 
     fn shared() -> Arc<Shared> {
         Arc::new(Shared {

@@ -5,7 +5,12 @@
 //! sessions, and jobs are disjoint. Creating a session never grants execution;
 //! only the local Tauri command may create or expand an execution window.
 //! Authorization roots are canonicalized directories before the UI confirms
-//! them. Client deletion is available only after revocation has fenced live
+//! them; they scope session creation and structured reads, never an approved
+//! job's cwd, which is any existing directory (`grants::full_local_cwd`).
+//! Jobs run under `host-terminal-env-v1` (`ENVIRONMENT_PROFILE`): the Deck
+//! session environment minus Deck's control-plane coordinates, applied by
+//! the runner; a grant stored under a legacy profile loads as history and
+//! never authorizes (`grants::standing_at`). Client deletion is available only after revocation has fenced live
 //! authority; it removes the display authorization but retains ledger history.
 //! Project list/read/search use descriptor-relative no-follow filesystem IO in
 //! `mcp_fs.rs` and never start a shell or repository helper. The control
@@ -217,7 +222,14 @@ const MIN_OUTPUT_RETENTION_MS: u64 = 60_000;
 const DEFAULT_OUTPUT_RETENTION_MS: u64 = 24 * 60 * 60_000;
 const MAX_OUTPUT_RETENTION_MS: u64 = 7 * 24 * 60 * 60_000;
 const POLICY_VERSION: u32 = 2;
-const ENVIRONMENT_PROFILE: &str = "developer-sanitized-v1";
+/// The environment every new Full Local grant is issued under: the job
+/// inherits the runner's own environment — the Deck tmux session baseline —
+/// minus Deck's control-plane coordinates (`mcp-runner` `spawn_job`).
+const ENVIRONMENT_PROFILE: &str = "host-terminal-env-v1";
+/// Every profile a stored grant may carry (closed). `developer-sanitized-v1`
+/// is the pre-CE1b sanitized environment: such grants still load as
+/// history, are never rewritten and never authorize (`grants::standing_at`).
+const KNOWN_ENVIRONMENT_PROFILES: [&str; 2] = [ENVIRONMENT_PROFILE, "developer-sanitized-v1"];
 
 fn now_ms() -> u64 {
     let wall = SystemTime::now()

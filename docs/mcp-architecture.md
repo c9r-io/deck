@@ -75,6 +75,20 @@ shell hooks. It intentionally does not preserve `cd`, `export`, aliases, or
 functions across calls. Use `cwd`; invoke a shell explicitly through
 `deck_exec` only when composition is genuinely required.
 
+Environment (`host-terminal-env-v1`). The runner is the pane process tmux
+starts in the Deck session, so its own environment is the session baseline
+an ordinary Deck terminal starts from. A job inherits it unchanged — PATH,
+`SSH_AUTH_SOCK`, `SHELL`, `TERM` included — minus Deck's control-plane
+coordinates (`TMUX`, `TMUX_PANE`, `DECK_*`: forwarding them would let job
+code drive Deck's tmux server or agent-status channel outside Deck's
+holder/epoch/runner authority). No variable is removed for looking
+sensitive and no PATH is synthesized. A job reads no shell startup file;
+the certified way to get zsh Terminal semantics is the client's own
+`/bin/zsh -lic <command>` (a program the client names, not a shell Deck
+spawns). Grants issued before this profile (`developer-sanitized-v1`)
+load as history and never authorize again. Measured by
+`docs/ce-calibration.md` (plan v2, deterministic and designated lanes).
+
 ## Board transaction
 
 `deck_session_create` persists an accepted operation first. `ui/js/mcp.js`
@@ -105,7 +119,7 @@ Control operations use `accepted`, `executing`, `admitted` (close only),
 and never completion evidence.
 
 Every exec verifies the authenticated adapter principal, holder, execution-grant and policy versions,
-service-start identity, project/session scope, canonical cwd, generation,
+service-start identity, project/session scope, canonical existing cwd (any directory, not the project root), generation,
 control epoch, lease, environment profile, executable/argv digests and sizes, timeout and
 request identity. A
 single delivery fence serializes dispatch with revoke, disable, close,
@@ -227,8 +241,9 @@ cleared.
 
 This is trusted-host execution, not a sandbox. An authorized program has the
 macOS account's permissions and may access paths outside its initial cwd.
-Canonical root checks prevent accidental selection of another workspace; they
-do not create filesystem isolation. Code run by package managers, builds, and
+Canonical root checks scope session creation and structured reads to the
+authorized project; they do not create filesystem isolation, and an
+approved job's cwd is any existing directory. Code run by package managers, builds, and
 tests is equally privileged. Same-UID malicious code is outside the protection
 provided by a 0600 socket and 0600 state file.
 
