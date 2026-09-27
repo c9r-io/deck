@@ -6,11 +6,38 @@ Historical signed-smoke results below apply to protocol v1. They are not proof
 that the current control-protocol-v5 scheme-B UI has been exercised in an
 installed signed app.
 
+## Evidence freshness (2026-09-27, fe19a89)
+
+Every section below carries one freshness label (Controlled Execution
+governance r2, GX-1). Only **CURRENTLY REPRODUCED** evidence counts toward a
+runtime certification; source-grounded evidence is design evidence only.
+
+| Label | Meaning |
+|---|---|
+| CURRENTLY REPRODUCED | Re-run on the named commit and passed there. |
+| SOURCE-GROUNDED | The cited tests still exist in current source (and pass in the current gate), but the experiment described in prose was not repeated. |
+| HISTORICAL ONLY | True for the commit it names; not re-run on current source. |
+| STALE | Contradicts the current source; kept only as history, corrected inline. |
+| NOT RUN | Never executed. |
+
+Reproduced on fe19a89 (2026-09-27, isolated temporary directories and
+test-owned tmux servers): `cargo test -p deck-mcp-runner -p deck-mcp`
+(runner 18 + 10, adapter 2 + 5), `cargo test -p deck-app -- mcp` (94),
+`cargo test -p deck-app --test edr_quiet` (15). The Full Local parity
+baseline (CE1, `docs/ce-calibration.md`) is a separate machine verdict and is
+not summarized here.
+
 ## Scheme-B remaining-requirement matrix
 
-The current source uses control protocol v5, state schema v6 and runner
-protocol 3. v5/v6/3 makes structured direct launch the default and gates the
-arbitrary-shell fallback behind a separate local approval. The MCP standard protocol version is negotiated independently by
+Freshness: **SOURCE-GROUNDED** — every cited test except the two marked STALE
+exists in current source; the signed-app rows (R05, R12) remain NOT RUN.
+
+The current source uses control protocol v5 and state schema v6; the runner
+accepts structured direct launches only (the arbitrary-shell fallback and its
+separate approval were removed; legacy `allowShell` state fields are read and
+ignored). *(STALE, corrected 2026-09-27: this paragraph used to say that
+"runner protocol 3" gates an arbitrary-shell fallback behind a separate local
+approval.)* The MCP standard protocol version is negotiated independently by
 the SDK. Rows below describe the v3-era evidence; the 2026-09-21 remediation
 section supersedes them where they differ.
 
@@ -18,7 +45,7 @@ section supersedes them where they differ.
 |---|---|---|---|---|
 | R01 | Implemented and verified | `mcp_close_admit`, `validate_close_admission`, `provider.close`, `queue_clear_sessions`, `kill_session` | `production_routes_cover_authorized_job_and_control_lifecycle`; `app/ui/test/mcp.test.mjs` | Signed WebView exercise remains R12. |
 | R02 | Implemented and verified | runner `DispatchContext`, service identity, epoch/holder/grant fences and `RevokeGrant` | `stale_epoch_and_old_service_are_fenced_before_spawn`; `duplicate_dispatch_returns_one_job` | Cross-process loss is reported uncertain, not made transactional. |
-| R03 | Implemented and verified | nonblocking script/stdin pipes, `bounded_write`, per-chunk stdin recheck | `script_pipe_write_has_a_deadline_when_reader_stalls`; runner black-box stdin test | Bytes already accepted by a pipe cannot be recalled. |
+| R03 | Implemented and verified | nonblocking stdin pipes, `bounded_write`, per-chunk stdin recheck | runner black-box stdin test (`reports_exit_input_and_interrupt_without_terminal_markers`) *(STALE: `script_pipe_write_has_a_deadline_when_reader_stalls` no longer exists; the script pipe left with the shell fallback)* | Bytes already accepted by a pipe cannot be recalled. |
 | R04 | Implemented and verified | encoded-frame checks, 32-KiB script and 16-KiB read budgets, response-sized search pages | `encoded_frames_fit_the_advertised_budget`; runner UTF-8 paging test | Transport failure remains non-retriable for side effects. |
 | R05 | Implemented but pending designated-environment verification | public client id plus Keychain bearer; Adapter Keychain/credential-FD read; wire authentication | Adapter STDIO synthetic credential-FD test; bad-credential route test | A signed installed Adapter/Keychain ACL prompt is R12. The credential-FD carrier is explicit and intended for isolated harnesses; ordinary launches read Keychain. |
 | R06 | Implemented and verified | `control_holder`, strict action-specific Request/Renew/Release validation and exec/stdin/close fencing | Adapter STDIO independent request samples; holder-conflict and control lifecycle assertions in `production_routes_cover_authorized_job_and_control_lifecycle` | Holder is a caller-generated candidate flow identifier, not a second human identity or evidence of granted control. |
@@ -27,9 +54,12 @@ section supersedes them where they differ.
 | R09 | Implemented and verified | bounded metadata-only `AuditEvent`; approval/revoke/expiry/control/intent/dispatch/takeover/denial events; memory-first emergency fences remain effective when state persistence fails | `grant_expiry_is_audited_once_without_reviving_authority`; `emergency_fence_survives_state_write_failure`; audit-kind assertions; privacy gates | A failed persistent revoke is effective only for the current service instance and is reported as unconfirmed across restart. Same-UID state is not tamper-proof audit. |
 | R10 | Implemented and verified | live configurable output retention; expired bytes preserve job/idempotency metadata and report a gap | `expired_output_reports_a_gap_without_deleting_job_metadata` | tmux scrollback is intentionally separate. |
 | R11 | Implemented and verified | `guard_terminal_input` at PTY and prompt-delivery boundaries; scheduler/voice/Phone reuse prompt delivery; output sharing gates inspect/job reads | repository PTY, scheduler, connector, UI and MCP tests | Full GUI/runner/tmux restart experience remains subject to R12. |
-| R12 | Implemented but pending designated-environment verification | updated `scripts/mcp-e2e.mjs` uses production Adapter/control/runner route and synthetic credential FD | Script syntax/static checks only in this workspace | Requires an isolated signed app, WebView and separately authorized real Tunnel/account; not run here. |
+| R12 | Implemented but pending designated-environment verification | updated `scripts/mcp-e2e.mjs` uses production Adapter/control/runner route and synthetic credential FD | An isolated debug-bundle run passed on 286a9c6 (HISTORICAL ONLY, see "2026-09-25 isolated E2E"); signed app NOT RUN *(STALE, corrected: this cell said "Script syntax/static checks only")* | Requires an isolated signed app, WebView and separately authorized real Tunnel/account; not run here. |
 
 ## Side-effect linearization
+
+Freshness: **SOURCE-GROUNDED** — describes the current admission design; the
+cited behaviour is covered by the current F1 and remediation tests.
 
 - Exec is only recorded as an intent at `accepted`. Its final admission is the
   delivery-locked authorization recheck immediately before runner dispatch;
@@ -55,22 +85,30 @@ section supersedes them where they differ.
 
 ## Automated evidence
 
-- **PASS** — official-SDK STDIO adapter initializes, lists all 15 tools,
+Freshness: **HISTORICAL ONLY** (protocol v3 era), except the two cargo
+commands, which are **CURRENTLY REPRODUCED** on fe19a89 with the current
+counts corrected inline. The smoke and takeover bullets were not re-run.
+
+- **PASS** — official-SDK STDIO adapter initializes, lists all 14 tools,
   advertises strict schemas and annotations, rejects unknown arguments, calls
   a separate mock Deck service, returns structured content, and emits only MCP
-  JSON on stdout: `cargo test -p deck-mcp --test stdio`.
-- **PASS** — production runner executes structured direct children and an
-  explicitly selected real zsh fallback, ignores a forged
-  completion-looking output line, reports exit 17, routes interactive input to
-  the exact job, refuses late input, sends SIGINT to the owned process group,
-  and confirms signal 2: `cargo test -p deck-mcp-runner --test runner`.
+  JSON on stdout: `cargo test -p deck-mcp --test stdio`. *(STALE, corrected:
+  said "all 15 tools"; the current registry and `mcp-fixtures/tools.json`
+  have 14.)*
+- **PASS** — production runner executes structured direct children,
+  ignores a forged completion-looking output line, reports exit 17, routes
+  interactive input to the exact job, refuses late input, sends SIGINT to the
+  owned process group, and confirms signal 2: `cargo test -p deck-mcp-runner
+  --test runner`. *(STALE, corrected: said it also executes "an explicitly
+  selected real zsh fallback"; the fallback no longer exists — a shell is an
+  ordinary direct executable.)*
 - **PASS** — direct isolated runner exercise covered Unicode/multiline output,
   exit 0, exit 23, cursor read, interactive input, late-input rejection,
   interrupt, human takeover, and return.
 - **PASS** — a fresh `deck-smoke-mcp-e2e-20260920` tmux server, private smoke
   data directory, disposable Git repository, production Deck WebView, bundled
   Adapter, and bundled runner completed the real protocol loop. The client
-  discovered 11 tools, created a visible card despite the project's `codex`
+  discovered 11 tools (the 2026-09-20 registry; 14 today), created a visible card despite the project's `codex`
   default, observed failing exit 1, fixed the file and observed exit 0, read
   the real diff, continued a running job by cursor, supplied bound Unicode
   stdin, refused late stdin, confirmed an interrupt-requested exit 130, and
@@ -93,6 +131,8 @@ The repository-wide gate results and any environmental blockers are recorded
 in the implementation handoff for the change that introduced this document.
 
 ## Protocol-v3 workspace verification (historical, before F1–F4)
+
+Freshness: **HISTORICAL ONLY** (protocol v3; counts are those of that run).
 
 This rerun predates control protocol 4 / state schema 5; its counts are kept
 as recorded. The 2026-09-21 isolated rerun used synthetic principals, private temporary
@@ -120,6 +160,10 @@ start the installed app or read the user's Deck state.
 
 ## 2026-09-21 remediation of acceptance blockers (control/runner group)
 
+Freshness: **SOURCE-GROUNDED** for the named tests (all present and passing
+on fe19a89, one renamed as noted); the before/after process experiments in
+prose are **HISTORICAL ONLY**.
+
 Isolated evidence only: private temporary directories, bundled tmux on unique
 `deck-smoke-h1-*` sockets with `-f /dev/null`, synthetic service instances.
 The installed app, `~/.deck`, the production `deck` socket and the retained
@@ -146,7 +190,9 @@ acceptance session were not touched.
 - **Large requests to the runner.** Before: 100/100 execs with a 32-KiB script
   failed (accepted socket inherited O_NONBLOCK). After: 0/100 exec and 0/100
   16-KiB read failures. Test:
-  `large_scripts_and_full_reads_cross_the_accepted_socket_intact`.
+  `large_arguments_and_full_reads_cross_the_accepted_socket_intact` *(STALE
+  name corrected: was `large_scripts_…`; the request now carries direct
+  arguments, not a script)*.
 - **Restart staleness.** `a_restarted_deck_is_reported_stale_but_can_still_stop`,
   `a_runner_from_before_a_restart_is_stale_but_still_fenced_and_stoppable`.
 - **Emergency ordering.** `takeover_fences_before_waiting_for_an_in_flight_dispatch`.
@@ -172,6 +218,10 @@ acceptance session were not touched.
   (see below), and the E2E client against an isolated app.
 
 ## 2026-09-21 F1–F4 follow-up (replay identity, revocation admission)
+
+Freshness: **SOURCE-GROUNDED** — every counterexample test named below is
+present and passes in the fe19a89 `mcp` run; the Swift/iOS items remain as
+recorded there.
 
 Source-level and isolated-test evidence only (fake runner, temporary state
 directories, loopback TLS); no signed app, WebView, real tmux, Keychain,
@@ -227,6 +277,9 @@ classes.
 
 ## 2026-09-25 isolated E2E after FR-4 (286a9c6)
 
+Freshness: **HISTORICAL ONLY** (286a9c6; needs a person to approve the
+execution window, not re-run on fe19a89).
+
 A debug `deck-smoke.app` on a private data directory and the
 `deck-smoke-mcp-e2e` tmux socket, a disposable Git repository, and a client
 and project authorized in that instance's UI; the credential was read from
@@ -255,6 +308,8 @@ A person approved the execution window in the UI.
   only object errors, not the string an `invoke` rejects with.
 
 ## Ordinary ChatGPT manual acceptance
+
+Freshness: **NOT RUN**.
 
 Status: **MANUAL_PENDING**. Protocol and local execution can be automated;
 account login, workspace policy, Tunnel association, model tool availability,

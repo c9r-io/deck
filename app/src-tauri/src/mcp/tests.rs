@@ -4616,3 +4616,56 @@ fn local_command_error_codes_match_the_frontend_fixture() {
         ]
     );
 }
+
+/// CE1 calibration probe (`scripts/ce_parity.py --app-probe`, lane
+/// `B-admission` of `scripts/ce/plan-full-local-1.json`): how the production
+/// `deck_exec` route admits a Full Local cwd that exists but lies outside
+/// the authorized project root. It OBSERVES the current behaviour and never
+/// asserts which one is right — `scripts/ce_verdict.py` classifies it — so a
+/// later contract change does not have to edit this test. Evidence is written
+/// only when `DECK_CE_EVIDENCE` names a file; it holds a closed admission
+/// code and no path.
+#[test]
+fn ce1_probe_full_local_exec_cwd_outside_the_project_root() {
+    let (runtime, runner, root) = fixture("ce1-cwd", "svc_test");
+    runtime
+        .write(|doc| {
+            doc.execution_grants.push(execution_grant(&doc.sessions[0]));
+            Ok(())
+        })
+        .unwrap();
+    let outside = test_root("ce1-outside");
+    let reply = route(
+        &runtime,
+        request(
+            "deck_exec",
+            json!({"request_id":"ce1_cwd","session_id":"mcp_a","expected_generation":"g_a","control_epoch":1,"holder_id":"holder_a","cwd":outside.display().to_string(),"executable":"/usr/bin/true","args":[]}),
+        ),
+    );
+    let admitted = reply["ok"] == true;
+    let code = reply["error"]["code"].as_str().map(str::to_owned);
+    assert!(
+        admitted || code.is_some(),
+        "the route answered without a code: {reply}"
+    );
+    if let (Some(path), Some(digest)) = (
+        std::env::var_os("DECK_CE_EVIDENCE"),
+        std::env::var_os("DECK_CE_PLAN_DIGEST"),
+    ) {
+        let build = std::env::var("DECK_CE_DECK_BUILD").unwrap_or_else(|_| "unknown".into());
+        // The plan names the case; plan v1's id is the default.
+        let plan = std::env::var("DECK_CE_PLAN_ID").unwrap_or_else(|_| "ce-full-local-1".into());
+        let case =
+            std::env::var("DECK_CE_CASE").unwrap_or_else(|_| "FL-CWD-outside-project".into());
+        let lines = [
+            json!({"kind":"run","schema":"deck-ce-evidence/1","plan":plan,"plan_digest":digest.to_string_lossy(),"evidence_env":"ci","lanes":["B-admission"],"deck_build":build,"runner_build":"fake-runner","started_at_ms":now_ms()}),
+            json!({"kind":"observation","case":case,"lane":"B-admission","observation":{"kind":"cwd-admission","capable":admitted,"detail":code.clone().unwrap_or_else(|| "admitted".into())}}),
+            json!({"kind":"cleanup","tmux_server_gone":true,"pane_processes_gone":true,"listeners_closed":true,"work_dir_removed":true}),
+        ];
+        let text: String = lines.iter().map(|line| format!("{line}\n")).collect();
+        std::fs::write(path, text).unwrap();
+    }
+    drop(runner);
+    std::fs::remove_dir_all(root).unwrap();
+    std::fs::remove_dir_all(outside).unwrap();
+}

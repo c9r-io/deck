@@ -1,0 +1,85 @@
+{
+  "schema": "deck-ce-plan/1",
+  "id": "ce-full-local-2",
+  "contract": "full-local-v1 parity baseline, calibrated comparison (CE1.1)",
+  "governance": "deck-ce-governance-2026-09-27-r2 (approved); supersedes plan ce-full-local-1 for new runs, which stays frozen with its evidence",
+  "comparison_contract": {
+    "target": "Deck's ordinary Terminal: a login interactive shell in a Deck tmux server session",
+    "host-capability": "What any program started in the Deck session receives WITHOUT shell startup files: the session base environment (the Deck tmux server environment, as a process tmux starts directly sees it), filesystem, sockets, localhost, subprocesses, cwd. A structured direct job must have all of it. Compared against A-base (environment) or the terminal (capabilities that do not depend on startup files).",
+    "shell-semantic": "The developer environment that shell startup files build (.zshenv, .zprofile, .zshrc: PATH additions, shadowing, #!/usr/bin/env interpreters). Obtained by the documented Terminal-semantic Full Local invocation (candidate: executable /bin/zsh, args -lic <command>), compared against the terminal.",
+    "transport": "Registered differences between structured direct execution / a non-tty job and an interactive terminal that remove no work the user can do (see registered_transport_differences)."
+  },
+  "registered_transport_differences": [
+    {"id": "TD-1 no-startup-files-in-direct", "reason": "A structured direct launch is not a shell and does not run shell startup files; toolchains built by startup files are obtained through the documented Terminal-semantic invocation, which an Agent can use automatically with no user confirmation. Therefore startup-file tools are compared in the shell-semantic class, and the direct lane is compared with the session base environment instead."},
+    {"id": "TD-2 no-tty", "reason": "Jobs have piped stdio, not a terminal: isatty is false, no job control, no line editor; programs that need a tty are the terminal's job (human takeover)."},
+    {"id": "TD-3 no-persistent-shell-state", "reason": "cd/export/aliases do not persist between deck_exec calls; use cwd and an explicit shell."},
+    {"id": "TD-4 no-deck-internal-coordinates", "reason": "DECK_*, TMUX and TMUX_PANE belong to Deck and tmux, not to the user's environment; they must NOT reach an MCP job (checked by the deck-internal cases)."}
+  ],
+  "reclassified_from_v1": [
+    {"v1": "FL-TOOL-{env,login,rc,shadow,launcher}/direct", "v2": "FL2-HOST-* (direct vs session base) + FL2-SHELL-tool-* (terminal vs B-shell)", "reason": "TD-1: the direct lane was compared with the terminal's startup-file toolchain, which a non-shell process never has; the host question is whether direct gets the session base environment unchanged."},
+    {"v1": "FL-TOOL-*/login, FL-ENV-*/login, FL-SHELL-compose/login", "v2": "FL2-SHELL-* (lane B-shell)", "reason": "calibration mismatch: /bin/zsh -lc is non-interactive and never reads .zshrc, while the terminal is login AND interactive; -lc is not the Terminal-semantic invocation."},
+    {"v1": "FL-ENV-shell-var/direct (not mandatory)", "v2": "FL2-HOST-shell-var (mandatory)", "reason": "SHELL is a session base coordinate (the user's login shell, from the GUI session) that tools use to start the user's shell; it belongs to host-terminal-env-v1."},
+    {"v1": "FL-TOOL-git/* (host-dependent, not mandatory)", "v2": "FL2-HOST-path-value (mandatory, deterministic) + FL2-D-HOST-tool-* (designated)", "reason": "the defect behind the git drift is that the direct lane's PATH is not the session PATH; that is measured deterministically by value, and the real tool effect in the designated lanes."}
+  ],
+  "lanes": {
+    "A1": "ci: Deck-Terminal baseline: login interactive zsh in a disposable bundled-tmux server with synthetic HOME, dotfiles and toolchain shims",
+    "A1-base": "ci: session base: the probe as a pane process started directly by the same tmux server (no shell, no startup files)",
+    "B-direct": "ci: deck-mcp-runner pane in the same server; probe as a structured direct launch",
+    "B-shell": "ci: same runner; executable /bin/zsh, args -lic (the candidate Terminal-semantic invocation)",
+    "B-admission": "ci: the production deck_exec route (fake runner) admitting a Full Local cwd",
+    "A2": "designated: an ordinary terminal session of an isolated smoke Deck with the real user shell configuration",
+    "A2-base": "designated: session base process in the same smoke Deck tmux server",
+    "B2-direct": "designated: real deck-mcp-runner pane in the smoke Deck tmux server; structured direct launch",
+    "B2-shell": "designated: same runner; /bin/zsh -lic"
+  },
+  "cases": [
+    {"id": "FL2-HOST-path-value", "class": "host-capability", "track": "full_local_parity", "mandatory": true, "evidence_env": "ci", "compare": "env-coord", "lanes": ["A1-base", "B-direct"], "probe": ["env-coord", "PATH"], "note": "the direct job's PATH must be the session PATH, not a Deck policy PATH"},
+    {"id": "FL2-HOST-tool-base", "class": "host-capability", "track": "full_local_parity", "mandatory": true, "evidence_env": "ci", "compare": "tool-exact", "lanes": ["A1-base", "B-direct"], "probe": ["tool", "ce-tool-base"], "note": "a tool on the session PATH (not added by any startup file)"},
+    {"id": "FL2-HOST-env-shebang", "class": "host-capability", "track": "full_local_parity", "mandatory": true, "evidence_env": "ci", "compare": "tool-exact", "lanes": ["A1-base", "B-direct"], "probe": ["script", "{base_launcher}"], "note": "an absolute-path #!/usr/bin/env script: its interpreter resolves through the session PATH"},
+    {"id": "FL2-HOST-ssh-agent", "class": "host-capability", "track": "full_local_parity", "mandatory": true, "evidence_env": "ci", "compare": "capability", "lanes": ["A1-base", "B-direct"], "probe": ["ssh-agent"]},
+    {"id": "FL2-HOST-dev-var", "class": "host-capability", "track": "full_local_parity", "mandatory": true, "evidence_env": "ci", "compare": "capability", "lanes": ["A1-base", "B-direct"], "probe": ["env", "CE_DEV_VAR"]},
+    {"id": "FL2-HOST-shell-var", "class": "host-capability", "track": "full_local_parity", "mandatory": true, "evidence_env": "ci", "compare": "capability", "lanes": ["A1-base", "B-direct"], "probe": ["env", "SHELL"]},
+    {"id": "FL2-HOST-coordinates", "class": "host-capability", "track": "full_local_parity", "mandatory": true, "evidence_env": "ci", "compare": "env-coord", "lanes": ["A1-base", "B-direct"], "probe": ["env-coord", "HOME", "TMPDIR", "USER", "LANG", "SHELL"]},
+    {"id": "FL2-HOST-deck-internal", "class": "transport", "track": "full_local_parity", "mandatory": true, "evidence_env": "ci", "compare": "b-absent", "lanes": ["B-direct"], "probe": ["env", "DECK_STATUS_SOCK", "TMUX", "TMUX_PANE"], "note": "TD-4"},
+    {"id": "FL2-HOST-tmp", "class": "host-capability", "track": "full_local_parity", "mandatory": true, "evidence_env": "ci", "compare": "capability", "lanes": ["A1", "B-direct"], "probe": ["tmp"]},
+    {"id": "FL2-HOST-outside-read", "class": "host-capability", "track": "full_local_parity", "mandatory": true, "evidence_env": "ci", "compare": "capability", "lanes": ["A1", "B-direct"], "probe": ["read", "{outside_file}", "{outside_token}"]},
+    {"id": "FL2-HOST-localhost", "class": "host-capability", "track": "full_local_parity", "mandatory": true, "evidence_env": "ci", "compare": "capability", "lanes": ["A1", "B-direct"], "probe": ["tcp", "{tcp_port}", "{tcp_token}"]},
+    {"id": "FL2-HOST-unix-socket", "class": "host-capability", "track": "full_local_parity", "mandatory": true, "evidence_env": "ci", "compare": "capability", "lanes": ["A1", "B-direct"], "probe": ["unix", "{unix_path}", "{unix_token}"]},
+    {"id": "FL2-HOST-process-tree", "class": "host-capability", "track": "full_local_parity", "mandatory": true, "evidence_env": "ci", "compare": "capability", "lanes": ["A1", "B-direct"], "probe": ["tree"]},
+    {"id": "FL2-HOST-git-workflow", "class": "host-capability", "track": "full_local_parity", "mandatory": true, "evidence_env": "ci", "compare": "capability", "lanes": ["A1", "B-direct"], "probe": ["git"]},
+    {"id": "FL2-HOST-cwd-outside-project", "class": "host-capability", "track": "full_local_parity", "mandatory": true, "evidence_env": "ci", "compare": "capability", "lanes": ["A1", "B-admission"], "probe": ["cwd", "{outside_dir}"], "a_cwd": "{outside_dir}"},
+
+    {"id": "FL2-SHELL-invocation-health", "class": "shell-semantic", "track": "full_local_parity", "mandatory": true, "evidence_env": "ci", "compare": "b-capable", "lanes": ["B-shell"], "probe": ["noop"], "note": "the invocation completes with no tty and no input, with no user confirmation"},
+    {"id": "FL2-SHELL-tool-env", "class": "shell-semantic", "track": "full_local_parity", "mandatory": true, "evidence_env": "ci", "compare": "tool", "lanes": ["A1", "B-shell"], "probe": ["tool", "ce-tool-env"], "note": ".zshenv"},
+    {"id": "FL2-SHELL-tool-login", "class": "shell-semantic", "track": "full_local_parity", "mandatory": true, "evidence_env": "ci", "compare": "tool", "lanes": ["A1", "B-shell"], "probe": ["tool", "ce-tool-login"], "note": ".zprofile"},
+    {"id": "FL2-SHELL-tool-rc", "class": "shell-semantic", "track": "full_local_parity", "mandatory": true, "evidence_env": "ci", "compare": "tool", "lanes": ["A1", "B-shell"], "probe": ["tool", "ce-tool-rc"], "note": ".zshrc"},
+    {"id": "FL2-SHELL-tool-shadow", "class": "shell-semantic", "track": "full_local_parity", "mandatory": true, "evidence_env": "ci", "compare": "tool", "lanes": ["A1", "B-shell"], "probe": ["tool", "ce-tool-shadow"], "note": "shadowing: .zshrc root must win over .zprofile root"},
+    {"id": "FL2-SHELL-env-launcher", "class": "shell-semantic", "track": "full_local_parity", "mandatory": true, "evidence_env": "ci", "compare": "tool", "lanes": ["A1", "B-shell"], "probe": ["tool", "ce-launcher"], "note": "#!/usr/bin/env interpreter shadowed like the tool above"},
+    {"id": "FL2-SHELL-compose", "class": "shell-semantic", "track": "full_local_parity", "mandatory": true, "evidence_env": "ci", "compare": "capability", "lanes": ["A1", "B-shell"], "probe": ["compose"]},
+    {"id": "FL2-SHELL-ssh-agent", "class": "shell-semantic", "track": "full_local_parity", "mandatory": true, "evidence_env": "ci", "compare": "capability", "lanes": ["A1", "B-shell"], "probe": ["ssh-agent"], "note": "the shell invocation must not lose what the session base provides"},
+    {"id": "FL2-SHELL-dev-var", "class": "shell-semantic", "track": "full_local_parity", "mandatory": true, "evidence_env": "ci", "compare": "capability", "lanes": ["A1", "B-shell"], "probe": ["env", "CE_DEV_VAR"]},
+    {"id": "FL2-SHELL-deck-internal", "class": "transport", "track": "full_local_parity", "mandatory": true, "evidence_env": "ci", "compare": "b-absent", "lanes": ["B-shell"], "probe": ["env", "DECK_STATUS_SOCK", "TMUX", "TMUX_PANE"], "note": "TD-4"},
+
+    {"id": "FL2-D-HOST-tool-node", "class": "host-capability", "track": "full_local_parity", "mandatory": true, "evidence_env": "designated", "compare": "tool-exact", "lanes": ["A2-base", "B2-direct"], "probe": ["tool", "node"]},
+    {"id": "FL2-D-HOST-tool-npm", "class": "host-capability", "track": "full_local_parity", "mandatory": true, "evidence_env": "designated", "compare": "tool-exact", "lanes": ["A2-base", "B2-direct"], "probe": ["tool", "npm"]},
+    {"id": "FL2-D-HOST-tool-cargo", "class": "host-capability", "track": "full_local_parity", "mandatory": true, "evidence_env": "designated", "compare": "tool-exact", "lanes": ["A2-base", "B2-direct"], "probe": ["tool", "cargo"]},
+    {"id": "FL2-D-HOST-tool-rustc", "class": "host-capability", "track": "full_local_parity", "mandatory": true, "evidence_env": "designated", "compare": "tool-exact", "lanes": ["A2-base", "B2-direct"], "probe": ["tool", "rustc"]},
+    {"id": "FL2-D-HOST-tool-python3", "class": "host-capability", "track": "full_local_parity", "mandatory": true, "evidence_env": "designated", "compare": "tool-exact", "lanes": ["A2-base", "B2-direct"], "probe": ["tool", "python3"]},
+    {"id": "FL2-D-HOST-tool-git", "class": "host-capability", "track": "full_local_parity", "mandatory": true, "evidence_env": "designated", "compare": "tool-exact", "lanes": ["A2-base", "B2-direct"], "probe": ["tool", "git"]},
+    {"id": "FL2-D-HOST-ssh-agent", "class": "host-capability", "track": "full_local_parity", "mandatory": true, "evidence_env": "designated", "compare": "capability", "lanes": ["A2-base", "B2-direct"], "probe": ["ssh-agent-reach"]},
+    {"id": "FL2-D-HOST-shell-var", "class": "host-capability", "track": "full_local_parity", "mandatory": true, "evidence_env": "designated", "compare": "capability", "lanes": ["A2-base", "B2-direct"], "probe": ["env", "SHELL"]},
+    {"id": "FL2-D-HOST-internet", "class": "host-capability", "track": "full_local_parity", "mandatory": true, "evidence_env": "designated", "compare": "capability", "lanes": ["A2", "B2-direct"], "probe": ["https-head", "https://example.com/"]},
+    {"id": "FL2-D-HOST-home-read", "class": "host-capability", "track": "full_local_parity", "mandatory": true, "evidence_env": "designated", "compare": "capability", "lanes": ["A2", "B2-direct"], "probe": ["read", "{home_sentinel}", "{home_token}"], "note": "random synthetic sentinel in the real HOME, deleted after the run"},
+    {"id": "FL2-D-HOST-deck-internal", "class": "transport", "track": "full_local_parity", "mandatory": true, "evidence_env": "designated", "compare": "b-absent", "lanes": ["B2-direct"], "probe": ["env", "DECK_STATUS_SOCK", "TMUX", "TMUX_PANE"], "note": "TD-4"},
+
+    {"id": "FL2-D-SHELL-invocation-health", "class": "shell-semantic", "track": "full_local_parity", "mandatory": true, "evidence_env": "designated", "compare": "b-capable", "lanes": ["B2-shell"], "probe": ["noop"], "note": "the real startup files complete under -lic with no tty and no input"},
+    {"id": "FL2-D-SHELL-tool-node", "class": "shell-semantic", "track": "full_local_parity", "mandatory": true, "evidence_env": "designated", "compare": "tool", "lanes": ["A2", "B2-shell"], "probe": ["tool", "node"]},
+    {"id": "FL2-D-SHELL-tool-npm", "class": "shell-semantic", "track": "full_local_parity", "mandatory": true, "evidence_env": "designated", "compare": "tool", "lanes": ["A2", "B2-shell"], "probe": ["tool", "npm"]},
+    {"id": "FL2-D-SHELL-tool-cargo", "class": "shell-semantic", "track": "full_local_parity", "mandatory": true, "evidence_env": "designated", "compare": "tool", "lanes": ["A2", "B2-shell"], "probe": ["tool", "cargo"]},
+    {"id": "FL2-D-SHELL-tool-rustc", "class": "shell-semantic", "track": "full_local_parity", "mandatory": true, "evidence_env": "designated", "compare": "tool", "lanes": ["A2", "B2-shell"], "probe": ["tool", "rustc"]},
+    {"id": "FL2-D-SHELL-tool-python3", "class": "shell-semantic", "track": "full_local_parity", "mandatory": true, "evidence_env": "designated", "compare": "tool", "lanes": ["A2", "B2-shell"], "probe": ["tool", "python3"]},
+    {"id": "FL2-D-SHELL-tool-git", "class": "shell-semantic", "track": "full_local_parity", "mandatory": true, "evidence_env": "designated", "compare": "tool", "lanes": ["A2", "B2-shell"], "probe": ["tool", "git"]},
+    {"id": "FL2-D-SHELL-ssh-agent", "class": "shell-semantic", "track": "full_local_parity", "mandatory": true, "evidence_env": "designated", "compare": "capability", "lanes": ["A2", "B2-shell"], "probe": ["ssh-agent-reach"]},
+    {"id": "FL2-D-SHELL-internet", "class": "shell-semantic", "track": "full_local_parity", "mandatory": true, "evidence_env": "designated", "compare": "capability", "lanes": ["A2", "B2-shell"], "probe": ["https-head", "https://example.com/"]}
+  ]
+}
