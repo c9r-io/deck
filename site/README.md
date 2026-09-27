@@ -48,14 +48,21 @@ summary of the flow and a direct MP4 link.
   over engineering shorthand or slogans that tell the reader how to feel. Keep
   quoted UI labels exact, and preserve behavior, defaults and recovery conditions
   when making wording more natural. Published section anchors should remain usable.
-- Lead with what deck is: a local terminal interface that also organizes multiple
-  task sessions. Ordinary shell use needs no agent integration or automation.
-  Describe optional features plainly, without slogans, emotional appeals or
-  promises of autonomous completion. Explain that deck has no cloud service,
-  cloud account or remote task-hosting server; distinguish the local tmux process
-  and user-selected CLI/integration network access. Detailed timing/target rules
-  belong in the guide. The homepage signal example
-  uses fictional tasks and is explicitly labeled as a simplified illustration.
+- Lead with cross-work human attention: when several terminal tasks run at once,
+  deck helps the user see which work needs them without checking every session.
+  Deck is Agent-agnostic by design. Real local terminal/tmux sessions are the
+  foundation, not the primary product definition. Agent vendors own each
+  Agent's planning, execution, questions, permissions and turn semantics.
+  Describe authoritative observations and their coverage limits; do not infer
+  task meaning, readiness or success from quiet, turn endings or missing signals.
+  Automation reduces repetitive coordination and attention cost; it does not
+  make deck the owner of task execution. Avoid Agent-orchestrator, AI-OS,
+  workflow-engine and autonomous-platform positioning or completion promises.
+  Ordinary shell use needs no Agent integration or automation. Explain that
+  deck has no cloud account or remote task-hosting server; distinguish local
+  tmux from user-selected CLI and integration network access. Detailed timing
+  and target rules belong in the guide. The homepage signal example uses
+  fictional tasks and is labeled as a simplified illustration.
 - Keep agent observations, delivery and human inspection distinct. Include what
   the user must do next for uncertain, failed, stale or stopped states.
 - Keep privacy text aligned with voice, agent hooks, Slack, Phone Connector,

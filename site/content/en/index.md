@@ -1,6 +1,6 @@
 # User guide
 
-deck is an interface around local terminals. Use it for ordinary commands, or organize multiple task sessions by project. This guide covers the basics and optional features.
+deck brings attention across your terminal work into one place. Each card is still a real local session for ordinary commands, scripts or your own Agent CLI. This guide covers the basics and optional features.
 
 ## Start with one task
 
