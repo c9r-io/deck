@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.7.19 — 2026-09-28 (Nightly)
+
+- Closing a shell with Ctrl+D or `exit` closes its card again. Deck now acts
+  only on tmux's own record that the shell exited normally, so a lost or
+  restarted shell service, a killed session or a signal still leaves the
+  card stopped instead of removing it. This also works when the exiting
+  shell was the last session.
+- Slack badge rules with "Send the first step to a newly started agent
+  without waiting for readiness": Deck now waits 6 seconds after starting
+  the agent before sending that first step. A freshly started Claude could
+  silently drop a prompt sent during its startup. The wait lowers that risk
+  but is not proof the agent is ready. If the text was pasted but Enter was
+  refused, the step is marked as uncertain for you to resolve instead of
+  being counted as sent; Deck never resends it on its own.
+
 ## 0.7.18 — 2026-09-28 (Nightly)
 
 - Slack badge automations have a new, separate option: **Send the first step
