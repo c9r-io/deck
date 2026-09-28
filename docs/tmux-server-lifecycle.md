@@ -130,7 +130,14 @@ libproc and `kill(2)`; nothing is spawned).
 Discovery and the first failure of a channel generation use the existing
 one-shot query as an oracle. A ten-second cooldown then fails closed instead
 of creating a new process on every Board poll. No sentinel session is created:
-an empty server has no persistent query client. Every write, PTY, stdin,
+an empty server has no persistent query client. On such a server `list-panes
+-a` fails with exactly `no current target`; only then one more command list —
+the server line followed by `list-sessions` — may prove a reachable server
+with zero sessions, and the poll reads an empty snapshot that still carries
+the server identity and exit ledger (`tmux::snapshot_or_empty_with`, the
+`probe_server_on` emptiness criterion read atomically). No server, a session
+in the proof, or a missing, malformed or foreign-nonce server line keeps the
+original failure. Every write, PTY, stdin,
 session mutation and lifecycle operation remains on the existing one-shot
 path.
 
@@ -180,7 +187,9 @@ and start time, session id, one of its pane ids — for the session's last pane
 signal, for a session no MCP runner owns. A reused name replaces the
 identity; a Deck restart starts with none; the restart transaction forgets
 all identities before it sends its first key. Everything else is Missing and
-only marks the card stopped. Contract: `src/shell_exit.rs`,
+only marks the card stopped. The last session ending leaves an empty server;
+the poll still reads its ledger through the proven empty snapshot (Board query
+channel above), so that exit is verified too. Contract: `src/shell_exit.rs`,
 `tests/tmux_contract.rs` (real-tmux matrix, bound, concurrent reads and
 dead-pane observability).
 

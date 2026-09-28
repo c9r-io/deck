@@ -716,6 +716,28 @@ impl PaneQuery {
         crate::shell_exit::parse_server_line(self.framed(line)?)
     }
 
+    /// The one-command proof that a reachable server has no session: its
+    /// server line, then `list-sessions` with every session framed.
+    fn empty_proof_args(&self) -> [String; 7] {
+        [
+            "display-message".into(),
+            "-p".into(),
+            self.server_format(),
+            ";".into(),
+            "list-sessions".into(),
+            "-F".into(),
+            format!("{}\tsession\t#{{session_id}}\t{}", self.nonce, self.nonce),
+        ]
+    }
+
+    /// Exactly one framed, well-formed server line and nothing else: the
+    /// server answered, and it has zero sessions (hence zero panes).
+    fn empty(&self, raw: &str) -> Option<crate::shell_exit::ServerLedger> {
+        let mut lines = raw.lines();
+        let server = crate::shell_exit::parse_server_line(self.framed(lines.next()?)?)?;
+        lines.next().is_none().then_some(server)
+    }
+
     /// A one-shot snapshot's output: the pane rows and at most one server
     /// line, every line framed. Any unframed line fails the whole read.
     fn snapshot(&self, raw: &str) -> Result<PaneSnapshot, DeckError> {
@@ -786,6 +808,40 @@ pub(crate) fn snapshot_with(
         "-p",
         &server_format,
     ])?)
+}
+
+/// tmux 3.7c's whole answer to `list-panes -a` on a reachable server with
+/// no session: the ONE failure an empty snapshot may replace.
+const EMPTY_SERVER_REPLY: &str = "tmux list-panes failed: no current target";
+
+/// The Board snapshot, including a reachable EMPTY server. When the last
+/// session ends (its shell exited), `list-panes -a` fails with exactly
+/// `EMPTY_SERVER_REPLY`, which alone proves nothing. Only then, one more
+/// command list — the server line followed by `list-sessions` — must show a
+/// reachable server that answered with its identity and ledger and has zero
+/// sessions (the `tmux_lifecycle::probe_server_on` emptiness criterion, read
+/// atomically in one exec). That is an empty snapshot that still carries the
+/// exit evidence. Anything else — no server, a session in the proof, a
+/// missing, malformed or foreign-nonce server line, any other failure —
+/// returns the original error: an unprovable empty server stays Unavailable.
+pub(crate) fn snapshot_or_empty_with(
+    run: &dyn Fn(&[&str]) -> Result<String, DeckError>,
+) -> Result<PaneSnapshot, DeckError> {
+    let error = match snapshot_with(run) {
+        Ok(snapshot) => return Ok(snapshot),
+        Err(error) if error.message() == EMPTY_SERVER_REPLY => error,
+        Err(error) => return Err(error),
+    };
+    let query = PaneQuery::new()?;
+    let args = query.empty_proof_args();
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    match run(&args).ok().and_then(|raw| query.empty(&raw)) {
+        Some(server) => Ok(PaneSnapshot {
+            rows: Vec::new(),
+            server: Some(server),
+        }),
+        None => Err(error),
+    }
 }
 
 // ---------- persistent query channel ----------------------------------------
@@ -1166,7 +1222,7 @@ pub(crate) fn query_snapshot() -> Result<PaneSnapshot, DeckError> {
                 state.retry_after = Some(Instant::now() + CONTROL_RETRY_DELAY);
                 // Exactly one one-shot oracle read accompanies a failed
                 // generation. Cooldown polls fail closed instead of exec-looping.
-                return snapshot_with(&tmux);
+                return snapshot_or_empty_with(&tmux);
             }
         }
     }
@@ -1177,7 +1233,7 @@ pub(crate) fn query_snapshot() -> Result<PaneSnapshot, DeckError> {
         return Err(DeckError::new(ErrorKind::Tmux, "tmux control recovering"));
     }
     state.retry_after = None;
-    let snapshot = snapshot_with(&tmux)?;
+    let snapshot = snapshot_or_empty_with(&tmux)?;
     if snapshot.rows.is_empty() {
         return Ok(snapshot);
     }
@@ -1677,6 +1733,70 @@ mod tests {
         assert_eq!(query.server(&format!("{line}\n{line}")), None);
     }
 
+    fn proof_line(nonce: &str) -> String {
+        format!("{nonce}\tdeck-exits\t42\t7\tx1|42|7|$1|%2|1|1|0|;\t{nonce}")
+    }
+
+    type Proof<'a> = &'a dyn Fn(&str) -> Result<String, DeckError>;
+
+    /// Run `snapshot_or_empty_with` with a listing that fails with `listing`
+    /// and a proof answered by `proof(nonce)`.
+    fn empty_attempt(listing: &str, proof: Proof<'_>) -> Result<PaneSnapshot, DeckError> {
+        let run = |args: &[&str]| -> Result<String, DeckError> {
+            if args[0] == "list-panes" {
+                return Err(DeckError::classified(listing));
+            }
+            assert_eq!(args[0], "display-message");
+            assert_eq!(args[3..6], [";", "list-sessions", "-F"]);
+            proof(args[2].split('\t').next().unwrap())
+        };
+        snapshot_or_empty_with(&run)
+    }
+
+    /// Only tmux's exact empty-server reply may become an empty snapshot,
+    /// and only when the proof command list shows one well-framed server line
+    /// and no session. Every other outcome keeps the original failure.
+    #[test]
+    fn an_empty_snapshot_needs_the_exact_reply_and_a_positive_proof() {
+        assert_eq!(
+            DeckError::classified(EMPTY_SERVER_REPLY).message(),
+            EMPTY_SERVER_REPLY
+        );
+        let proven =
+            empty_attempt(EMPTY_SERVER_REPLY, &|n| Ok(format!("{}\n", proof_line(n)))).unwrap();
+        assert!(proven.rows.is_empty());
+        let server = proven.server.unwrap();
+        assert_eq!(
+            (server.server_pid, server.server_start, server.records.len()),
+            (42, 7, 1)
+        );
+        let refused: [(&str, Proof<'_>); 5] = [
+            ("a session appeared", &|n| {
+                Ok(format!("{}\n{n}\tsession\t$3\t{n}\n", proof_line(n)))
+            }),
+            ("foreign nonce", &|_| {
+                Ok(format!("{}\n", proof_line("ffff")))
+            }),
+            ("malformed server line", &|n| {
+                Ok(format!("{n}\tdeck-exits\tx\t7\t\t{n}\n"))
+            }),
+            ("no server line", &|_| Ok(String::new())),
+            ("proof failed", &|_| {
+                Err(DeckError::classified(
+                    "tmux display-message failed: no server running on /x",
+                ))
+            }),
+        ];
+        for (what, proof) in refused {
+            let error = empty_attempt(EMPTY_SERVER_REPLY, proof).expect_err(what);
+            assert_eq!(error.message(), EMPTY_SERVER_REPLY, "{what}");
+        }
+        // any other listing failure is returned as it is, without a proof
+        let other = "tmux list-panes failed: no server running on /x";
+        let error = empty_attempt(other, &|_| panic!("no proof for another failure")).unwrap_err();
+        assert_eq!(error.message(), other);
+    }
+
     #[test]
     fn pane_query_nonces_are_fresh_hex() {
         let first = PaneQuery::new().unwrap();
@@ -1861,6 +1981,104 @@ mod tests {
                 let _ = std::fs::remove_file(path);
             }
         }
+    }
+
+    /// The last session's shell ending leaves a reachable, EMPTY Deck server:
+    /// the real snapshot succeeds with no rows and still carries the server
+    /// identity and exit ledger, so the production poll reports the verified
+    /// exit (`exit 7`, then Ctrl+D). An empty server without evidence is only
+    /// missing, and a server that is gone still fails the poll.
+    #[test]
+    fn real_tmux_last_session_exit_reaches_the_poll_through_an_empty_snapshot() {
+        let _store = crate::agent_status::STORE_TEST_LOCK.lock_or_recover();
+        let _tracker = crate::shell_state::TRACKER_TEST_LOCK.lock_or_recover();
+        let server = IsolatedControlServer::new();
+        let run = |args: &[&str]| server.tmux(args);
+        server.run(&["start-server", ";", "set-option", "-g", "exit-empty", "off"]);
+        init_deck_server_with(&run, std::path::Path::new("/tmp/deck-test-empty"));
+        let identity = server.run(&["display-message", "-p", "#{pid}\t#{start_time}"]);
+        let mut evidence = crate::shell_exit::ExitEvidence::new();
+        let mut poll = |name: &str| -> Result<(bool, bool), DeckError> {
+            let info = crate::commands::poll_from_listing(
+                vec![name.to_owned()],
+                vec![],
+                false,
+                snapshot_or_empty_with(&run),
+                crate::procinfo::processes,
+                &mut evidence,
+                &|_| false,
+            )?;
+            let json = serde_json::to_value(&info).unwrap();
+            Ok((
+                json[0]["alive"].as_bool().unwrap(),
+                json[0]["exited_normally"].as_bool().unwrap(),
+            ))
+        };
+        let gone = |name: &str| {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while server
+                .tmux(&["has-session", "-t", &format!("={name}")])
+                .is_ok()
+            {
+                assert!(Instant::now() < deadline, "{name} never ended");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        };
+
+        // reachable and empty: a valid snapshot, and nothing to verify
+        let raw = snapshot_with(&run).unwrap_err();
+        assert_eq!(raw.message(), EMPTY_SERVER_REPLY);
+        let empty = snapshot_or_empty_with(&run).unwrap();
+        assert!(empty.rows.is_empty());
+        let line = empty.server.unwrap();
+        assert_eq!(
+            format!("{}\t{}", line.server_pid, line.server_start),
+            identity
+        );
+        assert_eq!(poll("card").unwrap(), (false, false));
+
+        for (name, keys) in [("card", &["exit 7", "Enter"][..]), ("card2", &["C-d"][..])] {
+            server.run(&["new-session", "-d", "-s", name, "/bin/sh"]);
+            assert_eq!(poll(name).unwrap(), (true, false), "{name} observed alive");
+            let mut args = vec!["send-keys", "-t"];
+            let target = format!("={name}:");
+            args.push(&target);
+            args.extend_from_slice(keys);
+            server.run(&args);
+            gone(name);
+            let snapshot = snapshot_or_empty_with(&run).expect("an emptied server snapshot");
+            assert!(snapshot.rows.is_empty(), "{name}: the server is empty");
+            let ledger = snapshot.server.expect("identity and ledger survive");
+            assert_eq!(
+                format!("{}\t{}", ledger.server_pid, ledger.server_start),
+                identity
+            );
+            assert!(!ledger.records.is_empty());
+            assert_eq!(poll(name).unwrap(), (false, true), "{name} verified");
+        }
+        let records = crate::shell_exit::parse_ledger(&server.run(&[
+            "show-options",
+            "-gqv",
+            crate::shell_exit::LEDGER_OPTION,
+        ]));
+        let statuses: Vec<_> = records.iter().map(|r| r.status).collect();
+        assert_eq!(statuses, [Some(7), Some(0)]);
+
+        // an emptied server without evidence for the observed identity
+        server.run(&["new-session", "-d", "-s", "ghost", "/bin/sh"]);
+        assert_eq!(poll("ghost").unwrap(), (true, false));
+        server.run(&["kill-session", "-t", "=ghost"]);
+        assert!(snapshot_or_empty_with(&run).unwrap().rows.is_empty());
+        assert_eq!(
+            poll("ghost").unwrap(),
+            (false, false),
+            "absence stays missing"
+        );
+
+        // no server at all is not an empty server
+        server.run(&["kill-server"]);
+        assert!(snapshot_or_empty_with(&run).is_err());
+        assert!(poll("card").is_err());
     }
 
     /// FR-SI-03 against the real bundled tmux: the agent-status Signal

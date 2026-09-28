@@ -32,6 +32,9 @@
 //! record (`#{=-N:…}`). Deck only ever READS it (a `display-message` line in
 //! the same tmux command list as the pane listing, `SERVER_FORMAT`), so no
 //! consumer can erase a concurrent append; there is no clear step to race.
+//! When the last session ended, the server is empty and `list-panes -a`
+//! fails; `tmux::snapshot_or_empty_with` then proves a reachable server with
+//! zero sessions and still delivers its server line, so that exit counts.
 //! Overflow drops the oldest records and truncates at most the first one,
 //! which fails the strict parse: lost evidence means a stopped card, never a
 //! deletion. Record fields are tmux-generated numbers, ids and a signal name;
