@@ -14,10 +14,23 @@ same commit as the behaviour it describes.
 
 Deck manages human attention around interactive CLI work. Its goal is to reduce
 total attention-management cost: unnecessary interruptions from misleading signals,
-manual checking from missed or unavailable signals, and effort spent understanding
-Deck's internal state. It does not aim to minimize notifications or maximize
+manual checking from missed or unavailable signals, effort spent understanding
+Deck's internal state, and the times a user must come back to re-engage, find the
+work and rebuild its context. It does not aim to minimize notifications or maximize
 conservatism at any cost. Automation is core when it reduces that cost without
 hiding uncertainty or taking ownership of the work, within honest safety boundaries.
+
+**Optimize for reliable progress without repeated human intervention, not merely
+the shortest unattended latency.** Within existing authority, safety and explicit
+risk-acceptance boundaries, a brief, bounded background wait nobody has to watch
+can beat a faster flow that sends the user back to confirm, check or nudge; a few
+more machine seconds are not automatically worse than one more human action. When
+intent was stated once and the user moved on, reliable later progress usually beats
+making them return, locate the work and repeat the step; a genuinely new decision
+or risk still needs them. This never excuses unbounded or silent stalls: a wait is
+not readiness evidence, real failures and needed decisions still surface promptly
+and accurately, and interaction is never reduced by hiding failure, suppressing
+signal or bypassing authority.
 
 **Deck owns attention around work. The Agent owns the work.** Deck may
 coordinate an Agent session; it does not own Agent execution. An Agent manages
@@ -97,7 +110,9 @@ This evaluates the experience, not a guaranteed technical SLA.
 Before a substantial feature, ask:
 
 1. What human attention cost does it remove or protect?
-2. Does it reduce unnecessary interruption, manual checking, or both?
+2. Does it reduce unnecessary interruption, manual checking, or both? For a latency
+   change: does it save machine time or human attention? Never trade verified
+   reliability for a shorter clock, or hand checking and recovery back to the user.
 3. What new authority would Deck acquire?
 4. Does it require Deck to understand Agent task semantics or own how work is performed?
 5. Can the same value be reached while staying Agent-agnostic?
