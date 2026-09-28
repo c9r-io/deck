@@ -43,7 +43,7 @@ func realDeckLoopbackHTTPSAndWKBridgeTransport() async throws {
 
     let initialSnapshot = try await client.snapshot()
     let card = try #require(initialSnapshot.cards.first(where: { $0.id == fixture.cardId }))
-    #expect(!card.canQueue)
+    #expect(card.canQueue)
     #expect(!card.canSend)
     let initialQueue = initialSnapshot.queue.filter { $0.cardId == fixture.cardId }
     if let output = try? await client.output(cardID: fixture.cardId) {

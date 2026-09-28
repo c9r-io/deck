@@ -30,6 +30,19 @@ command launches `codex` or `claude` with at most simple arguments, and its queu
 items belonging to those listed cards. Ordinary shell cards and their queued
 items are not exposed to the phone.
 
+The output GET distinguishes a missing or unreadable session (`503
+session-unavailable`), a pane whose foreground is not a supported Agent (`409
+agent-not-in-foreground`), a target changed during capture (`409
+context-changed`), and a probe/history/capture failure (`503
+output-read-failed`). None means task completion. The phone keeps the card and
+scratchpad, refuses shell output and input, and can refresh the snapshot and
+output after the target becomes readable again. The host logs the failure
+stage, closed ErrorKind, per-run card tag, request counter and duration for
+real read failures, without terminal text or underlying stderr. Older hosts'
+`503 unavailable` stays an unknown read failure. Output GET never uses the
+command journal's `410 expired` handling; operation IDs, sequences and replay
+rules remain unchanged.
+
 Remote commands first enter a bounded native journal and are then handled by the same serialized Board writer as desktop actions. Buffer edits use the visible buffer revision and manual-entry rules. Queue requests persist immutable copies before scheduler admission and retain deterministic operation IDs. Task creation starts the deterministic session before committing a card with its frozen initial plan; an unknown matching session is left as an ambiguous orphan and is never adopted. Connector rows carry no automatic-sending approval: a paired phone is not prompt authority, so every follow-up step of a Connector-created run waits for **Send now** on the desktop (`docs/scheduler-context-safety.md`, "Automation delivery authority").
 
 Connector uses the existing local network, including a VPN that already provides direct reachability and assigns an address in the allowed ranges above; it does not create a network, public relay, or APNs path. The iOS app refreshes when opened or returned to the foreground and does not promise background delivery. See the [iOS client README](../connector/ios/README.md) for the required Xcode, Simulator, signing, and physical-device gates.

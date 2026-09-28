@@ -112,6 +112,45 @@ struct HTTPClientTests {
     await #expect(throws: ConnectorError.unsupportedTarget) { try await client.buffer(cardID: "shell-card") }
 }
 
+@Test func outputCodesStayDistinctFromCommandExpiryAndLegacyUnavailable() async throws {
+    let url = try #require(Bundle.module.url(forResource: "http-status-map", withExtension: "json", subdirectory: "Fixtures"))
+    let map = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+    let responses = try #require(map["outputResponses"] as? [[String: Any]])
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.protocolClasses = [StatusURLProtocol.self]
+    let credential = DeviceCredential(origin: "https://deck.test", fingerprint: String(repeating: "0", count: 64), hostId: "host", deviceId: "device", token: "token")
+    let client = try DeckHTTPClient(credential: credential, configuration: configuration)
+    defer { client.invalidate() }
+    for response in responses {
+        let status = try #require(response["status"] as? Int)
+        let code = try #require(response["code"] as? String)
+        StatusURLProtocol.status = status
+        StatusURLProtocol.code = code
+        await #expect(throws: ConnectorError.outputResponse(status: status, code: code)) {
+            try await client.output(cardID: "agent-card")
+        }
+    }
+    StatusURLProtocol.status = 410
+    StatusURLProtocol.code = "session-unavailable"
+    await #expect(throws: ConnectorError.outputResponse(status: 410, code: "session-unavailable")) {
+        try await client.output(cardID: "agent-card")
+    }
+    StatusURLProtocol.code = "expired"
+    await #expect(throws: ConnectorError.commandExpired) { try await client.query(id: "op-1") }
+}
+
+@Test func frozenOldOutputDecoderFailsClosedForNewCodes() {
+    func oldOutputError(status: Int, code: String) -> ConnectorError {
+        if status == 401 || status == 403 { return .revoked }
+        if status == 409 || status == 412 { return .conflict(code) }
+        if code == "unsupported-target" { return .unsupportedTarget }
+        return .transport("Deck host error: \(code)")
+    }
+    #expect(oldOutputError(status: 503, code: "session-unavailable") == .transport("Deck host error: session-unavailable"))
+    #expect(oldOutputError(status: 409, code: "agent-not-in-foreground") == .conflict("agent-not-in-foreground"))
+    #expect(oldOutputError(status: 503, code: "output-read-failed") == .transport("Deck host error: output-read-failed"))
+}
+
 @Test func cancellingSwiftTaskCancelsUnderlyingRequestAndResumesOnce() async throws {
     let client = try hangingClient()
     defer { client.invalidate() }

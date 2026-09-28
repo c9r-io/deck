@@ -231,9 +231,24 @@ struct TaskDetailView: View {
                 if output.truncated { Label("Older output was truncated by the host.", systemImage: "scissors").font(.caption).foregroundStyle(.orange) }
                 Text("This is a bounded terminal snapshot, not complete chat history.").font(.caption).foregroundStyle(.secondary)
             } else if let unavailable = model.outputUnavailable[card.id] {
-                Label("Output unavailable: \(unavailable)", systemImage: "terminal.fill").foregroundStyle(.secondary)
-                Text("Scratchpad notes remain available for stopped tasks.").font(.caption).foregroundStyle(.secondary)
+                Label("Output unavailable: \(outputIssueMessage(unavailable))", systemImage: "terminal.fill")
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("deck.output.unavailable")
+                Button("Refresh output") { Task { await refreshCurrentTaskDetails() } }
+                    .accessibilityIdentifier("deck.output.refresh")
+                Text("Scratchpad notes remain available when output cannot be read.").font(.caption).foregroundStyle(.secondary)
             } else { ProgressView() }
+        }
+    }
+
+    private func outputIssueMessage(_ issue: AppModel.OutputIssue) -> String {
+        switch issue {
+        case .sessionUnavailable: String(localized: "taskDetail.output.sessionUnavailable")
+        case .agentNotInForeground: String(localized: "taskDetail.output.agentNotInForeground")
+        case .readFailed: String(localized: "taskDetail.output.readFailed")
+        case .targetChanged: String(localized: "taskDetail.output.targetChanged")
+        case .unsupportedTarget: ConnectorError.unsupportedTarget.localizedDescription
+        case .unknown: String(localized: "taskDetail.output.unknown")
         }
     }
 
@@ -243,6 +258,7 @@ struct TaskDetailView: View {
         Section(String(localized: "taskDetail.message.title")) {
             TextEditor(text: Binding(get: { composer.text }, set: { value in composer.edit(value); model.stageDraft(composer.snapshot) }))
                 .frame(minHeight: 90)
+                .accessibilityIdentifier("deck.message.draft")
                 .focused($focusedField, equals: .message)
                 .disabled(model.sendingCards.contains(card.id))
                 .onAppear { composer.merge(remote: model.drafts[card.id], fallbackGeneration: card.generation) }
@@ -283,6 +299,7 @@ struct TaskDetailView: View {
                 }
             }
                 .buttonStyle(.borderedProminent)
+                .accessibilityIdentifier("deck.message.send")
                 .disabled(!card.canSend || composer.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || generationChanged || pending != nil || model.sendingCards.contains(card.id))
             if !card.canSend {
                 Label(sendUnavailableReason(card), systemImage: "exclamationmark.circle")
@@ -323,6 +340,7 @@ struct TaskDetailView: View {
 
     private func refreshCurrentTaskDetails() async {
         await model.checkOriginalOperations()
+        await model.refresh()
         guard let latestCard = model.snapshot?.cards.first(where: { $0.id == cardID }) else { return }
         await model.loadDetails(card: latestCard)
     }

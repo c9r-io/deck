@@ -1,6 +1,36 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "taskDetail.output.sessionUnavailable" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "There is no readable session for this card right now." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "此卡片目前没有可读取的会话。" } }
+      }
+    },
+    "taskDetail.output.agentNotInForeground" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "A supported agent is not in the foreground, so its output cannot be read." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "前台没有受支持的智能体，无法读取智能体输出。" } }
+      }
+    },
+    "taskDetail.output.readFailed" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Deck could not read the agent output. Refresh to try again." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "Deck 无法读取智能体输出。请刷新后重试。" } }
+      }
+    },
+    "taskDetail.output.targetChanged" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "The target changed while output was being read. Refresh to try again." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "读取输出时目标发生变化。请刷新后重试。" } }
+      }
+    },
+    "taskDetail.output.unknown" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Deck could not read this output. Refresh to try again." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "Deck 无法读取此输出。请刷新后重试。" } }
+      }
+    },
     "taskDetail.keyboard.done" : {
       "localizations" : {
         "en" : { "stringUnit" : { "state" : "translated", "value" : "Done" } },

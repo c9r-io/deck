@@ -130,6 +130,21 @@ fn mapped(error_value: &DeckError) -> Resp {
     }
 }
 
+fn mapped_output(error_value: &DeckError) -> Resp {
+    match error_value.message() {
+        "session-unavailable" if error_value.kind() == ErrorKind::NoSession => {
+            error(StatusCode::SERVICE_UNAVAILABLE, "session-unavailable")
+        }
+        "agent-not-in-foreground" if error_value.kind() == ErrorKind::Invalid => {
+            error(StatusCode::CONFLICT, "agent-not-in-foreground")
+        }
+        "output-read-failed" if error_value.kind() == ErrorKind::Tmux => {
+            error(StatusCode::SERVICE_UNAVAILABLE, "output-read-failed")
+        }
+        _ => mapped(error_value),
+    }
+}
+
 pub(super) fn spawn(
     runtime: Arc<Runtime>,
     cfg: Config,
@@ -465,7 +480,7 @@ async fn handle(
                     return match leaf {
                         "output" => output(&id)
                             .map(|value| response(StatusCode::OK, value))
-                            .unwrap_or_else(|failure| mapped(&failure)),
+                            .unwrap_or_else(|failure| mapped_output(&failure)),
                         "buffer" => state
                             .app
                             .as_ref()
@@ -802,6 +817,46 @@ mod tests {
     }
 
     #[test]
+    fn output_failure_mapping_is_route_specific() {
+        let map: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../connector/ios/Tests/DeckConnectorCoreTests/Fixtures/http-status-map.json"
+        )))
+        .unwrap();
+        let cases = [
+            (ErrorKind::NoSession, "session-unavailable"),
+            (ErrorKind::Invalid, "agent-not-in-foreground"),
+            (ErrorKind::Tmux, "output-read-failed"),
+            (ErrorKind::ContextChanged, "target-changed"),
+            (ErrorKind::NoSession, "old-host-no-session"),
+        ];
+        for ((kind, message), expected) in cases
+            .into_iter()
+            .zip(map["outputResponses"].as_array().unwrap())
+        {
+            let response = mapped_output(&DeckError::new(kind, message));
+            let status = response.status().as_u16();
+            let bytes = tokio::runtime::Builder::new_current_thread()
+                .build()
+                .unwrap()
+                .block_on(response.into_body().collect())
+                .unwrap()
+                .to_bytes();
+            let body: Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(status, expected["status"].as_u64().unwrap() as u16);
+            assert_eq!(body["error"]["code"], expected["code"]);
+        }
+        assert_eq!(
+            mapped(&DeckError::new(ErrorKind::NoSession, "session-unavailable")).status(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        assert_eq!(
+            mapped(&DeckError::new(ErrorKind::ContextChanged, COMMAND_EXPIRED)).status(),
+            StatusCode::GONE
+        );
+    }
+
+    #[test]
     fn failure_mapping_and_path_decoding_are_closed() {
         for (kind, message, status, code) in [
             (ErrorKind::Missing, "card not found", 404, "not-found"),
@@ -836,6 +891,7 @@ mod tests {
                 503,
                 "unavailable",
             ),
+            (ErrorKind::NoSession, "session missing", 503, "unavailable"),
             (
                 ErrorKind::Invalid,
                 "unsupported-target",

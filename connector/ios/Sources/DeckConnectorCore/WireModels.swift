@@ -40,6 +40,8 @@ public enum ConnectorError: Error, Equatable, LocalizedError, Sendable {
     case capacityExceeded
     case upgradeRequired
     case unsupportedTarget
+    /// A card-scoped output GET failed; keep route-specific status and code.
+    case outputResponse(status: Int, code: String)
     case transport(String)
 
     public var errorDescription: String? {
@@ -61,6 +63,7 @@ public enum ConnectorError: Error, Equatable, LocalizedError, Sendable {
         case .capacityExceeded: "The local recovery archive has no safe space for another operation while unresolved operations and drafts are preserved."
         case .upgradeRequired: "The Deck host requires a newer version of this app. Update it before sending."
         case .unsupportedTarget: "This action is available only for a card whose saved desktop command is exactly Codex or Claude."
+        case .outputResponse: "The Deck host could not read this card's output. Refresh to try again."
         case let .transport(message): message
         }
     }

@@ -6,6 +6,96 @@ final class ConnectorUITests: XCTestCase {
         continueAfterFailure = false
     }
 
+    func testIsolatedStoppedAgentVisibilityAndOutput() throws {
+        let app = XCUIApplication()
+        app.launchArguments.append("--deck-diagnostic")
+        app.launchArguments += ["-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
+        for round in 1...3 {
+            app.launch()
+            let target = app.staticTexts["connector transport"].firstMatch
+            XCTAssertTrue(target.waitForExistence(timeout: 20), "Round \(round): saved agent card must appear.")
+            XCTAssertFalse(app.staticTexts["connector ordinary shell"].exists,
+                           "Round \(round): unsupported shell card must be filtered.")
+            target.tap()
+            let unavailable = app.staticTexts["deck.output.unavailable"].firstMatch
+            XCTAssertTrue(reveal(unavailable, in: app),
+                          "Round \(round): stopped output area must be reachable in the normal detail layout.")
+            XCTAssertEqual(unavailable.label, Self.sessionUnavailableLabel,
+                           "Round \(round): missing session must have its own output state.")
+            XCTAssertTrue(revealBySwipingDown(app.textViews["deck.note.new"].firstMatch, in: app),
+                          "Scratchpad remains available without a readable session.")
+            let send = app.buttons["deck.message.send"].firstMatch
+            XCTAssertTrue(reveal(send, in: app), "The send control must remain reachable.")
+            XCTAssertFalse(send.isEnabled,
+                           "Missing session must not allow sending.")
+            XCTAssertTrue(reveal(unavailable, in: app), "The output state must remain reachable.")
+            let attachment = XCTAttachment(screenshot: app.screenshot())
+            attachment.name = "Stopped agent round \(round)"
+            attachment.lifetime = .keepAlways
+            add(attachment)
+            if round == 1 {
+                XCUIDevice.shared.press(.home)
+                app.activate()
+                XCTAssertTrue(reveal(unavailable, in: app), "The output state must survive foregrounding.")
+            }
+            app.terminate()
+        }
+    }
+
+    func testIsolatedLiveCodexOutput() throws {
+        guard let marker = ProcessInfo.processInfo.environment["DECK_DIAG_EXPECTED_MARKER"],
+              marker.hasPrefix("deckprobe") else {
+            throw XCTSkip("The isolated real Codex did not produce its expected marker.")
+        }
+        let app = XCUIApplication()
+        app.launchArguments += ["--deck-diagnostic", "-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
+        app.launch()
+        openCard(named: "connector live codex", in: app)
+        let output = app.descendants(matching: .any)["deck.output.text"].firstMatch
+        if !reveal(output, in: app) {
+            let unavailable = app.staticTexts["deck.output.unavailable"].firstMatch
+            if unavailable.exists {
+                XCTFail("Real Codex foreground/output failed: \(unavailable.label)")
+                return
+            }
+            XCTFail("Live Codex card did not show output or an error.")
+            return
+        }
+        XCTAssertTrue(output.label.contains(marker),
+                      "The pinned host output must contain the isolated Agent's response marker.")
+        app.terminate()
+    }
+
+    func testIsolatedCodexExitToShellRejectsOutputAndSend() throws {
+        guard let marker = ProcessInfo.processInfo.environment["DECK_DIAG_EXITED_MARKER"],
+              marker.hasPrefix("shellmarker") else {
+            throw XCTSkip("The isolated Agent-to-shell transition was not prepared.")
+        }
+        let app = XCUIApplication()
+        app.launchArguments += ["--deck-diagnostic", "-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
+        app.launch()
+        openCard(named: "connector live codex", in: app)
+        let draft = app.textViews["deck.message.draft"].firstMatch
+        XCTAssertTrue(reveal(draft, in: app), "The normal message composer must be reachable.")
+        draft.tap()
+        draft.typeText("unsent-shell-test")
+        let done = app.buttons["deck.keyboard.done"].firstMatch
+        XCTAssertTrue(done.waitForExistence(timeout: 5), "The normal keyboard toolbar must offer Done.")
+        done.tap()
+        let send = app.buttons["deck.message.send"].firstMatch
+        XCTAssertTrue(reveal(send, in: app), "The send control must be reachable.")
+        XCTAssertFalse(send.isEnabled, "An Agent card whose foreground returned to shell must not allow sending.")
+        let unavailable = app.staticTexts["deck.output.unavailable"].firstMatch
+        XCTAssertTrue(reveal(unavailable, in: app), "The normal output area must be reachable after Agent exit.")
+        XCTAssertEqual(unavailable.label,
+                       "Output unavailable: A supported agent is not in the foreground, so its output cannot be read.")
+        XCTAssertFalse(app.descendants(matching: .any)["deck.output.text"].exists,
+                       "The host must not return the shell's \(marker) output as Agent output.")
+        app.terminate()
+    }
+
+    private static let sessionUnavailableLabel = "Output unavailable: There is no readable session for this card right now."
+
     func testPairedCardOutputSurvivesForegroundCycle() throws {
         let environment = ProcessInfo.processInfo.environment
         guard environment["DECK_UI_PAIRED_SMOKE"] == "1" else {
@@ -393,7 +483,8 @@ final class ConnectorUITests: XCTestCase {
     private func reveal(_ element: XCUIElement, in app: XCUIApplication) -> Bool {
         if element.waitForExistence(timeout: 2), element.isHittable { return true }
         for _ in 0..<8 {
-            app.swipeUp()
+            let list = app.collectionViews.firstMatch
+            if list.exists { list.swipeUp() } else { app.swipeUp() }
             if element.waitForExistence(timeout: 1), element.isHittable { return true }
         }
         return false
@@ -407,4 +498,5 @@ final class ConnectorUITests: XCTestCase {
         }
         return false
     }
+
 }

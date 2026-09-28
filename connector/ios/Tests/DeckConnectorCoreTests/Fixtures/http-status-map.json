@@ -1,5 +1,5 @@
 {
-  "note": "How the host answers a failed command query (GET /v1/commands/<id>) and which ConnectorError case the phone raises. 404 and 410 are command-specific only on /v1/commands paths.",
+  "note": "Command responses and output-specific responses share an envelope. 404 and 410 are command-specific only on /v1/commands paths.",
   "responses": [
     {
       "status": 401,
@@ -51,5 +51,12 @@
       "code": "connector-disabled",
       "phone": "transport"
     }
+  ],
+  "outputResponses": [
+    {"status": 503, "code": "session-unavailable", "phone": "outputResponse"},
+    {"status": 409, "code": "agent-not-in-foreground", "phone": "outputResponse"},
+    {"status": 503, "code": "output-read-failed", "phone": "outputResponse"},
+    {"status": 409, "code": "context-changed", "phone": "outputResponse"},
+    {"status": 503, "code": "unavailable", "phone": "outputResponse"}
   ]
 }

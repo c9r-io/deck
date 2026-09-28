@@ -58,6 +58,7 @@ pub(crate) fn connector_smoke_seed(
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SmokeTransportView {
     pub(super) path: String,
+    pub(super) agent_dir: String,
 }
 
 pub(super) fn require_smoke_session_stopped(
@@ -94,7 +95,10 @@ pub(super) fn require_smoke_session_stopped(
 }
 
 #[tauri::command]
-pub(crate) fn connector_smoke_transport(card_id: String) -> Result<SmokeTransportView, DeckError> {
+pub(crate) fn connector_smoke_transport(
+    card_id: String,
+    shell_card_id: String,
+) -> Result<SmokeTransportView, DeckError> {
     if !crate::smoke_faults::enabled() || !command_id(&card_id) {
         return Err(DeckError::new(
             ErrorKind::Other,
@@ -102,6 +106,13 @@ pub(crate) fn connector_smoke_transport(card_id: String) -> Result<SmokeTranspor
         ));
     }
     let card = committed_card(&card_id)?;
+    let shell_card = committed_card(&shell_card_id)?;
+    if shell_card.agent_target {
+        return Err(DeckError::new(
+            ErrorKind::Invalid,
+            "smoke shell card must be excluded",
+        ));
+    }
     require_smoke_session_stopped(
         &card.session,
         crate::tmux::tmux(&["list-sessions", "-F", "#{session_name}"]),
@@ -156,10 +167,20 @@ pub(crate) fn connector_smoke_transport(card_id: String) -> Result<SmokeTranspor
     }
 
     let pairing = connector_pairing()?;
+    let agent_dir = crate::datadir::deck_dir().join("agent-work");
+    std::fs::create_dir(&agent_dir)
+        .map_err(|_| DeckError::new(ErrorKind::Other, "smoke agent directory unavailable"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&agent_dir, std::fs::Permissions::from_mode(0o700))
+            .map_err(|_| DeckError::new(ErrorKind::Other, "smoke agent directory unavailable"))?;
+    }
     let path = crate::datadir::deck_dir().join("connector-smoke-transport.json");
     let bytes = serde_json::to_vec(&json!({
         "pairingURI": pairing.uri,
         "cardId": card_id,
+        "shellCardId": shell_card_id,
     }))
     .map_err(|_| DeckError::new(ErrorKind::Other, "smoke fixture encoding failed"))?;
     if let Err(error) = crate::datadir::atomic_write(&path, &bytes) {
@@ -170,7 +191,10 @@ pub(crate) fn connector_smoke_transport(card_id: String) -> Result<SmokeTranspor
         .to_str()
         .ok_or_else(|| DeckError::new(ErrorKind::Other, "smoke fixture path is invalid"))?
         .to_owned();
-    Ok(SmokeTransportView { path })
+    Ok(SmokeTransportView {
+        path,
+        agent_dir: agent_dir.to_string_lossy().into_owned(),
+    })
 }
 
 #[tauri::command]

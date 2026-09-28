@@ -40,7 +40,7 @@ swift test -j 1 \
 
 ### Opt-in real Deck loopback transport smoke
 
-This macOS-only package test is skipped unless an isolated Deck smoke fixture has already been authorized and launched. From the isolated smoke WK bridge, call `connector_smoke_transport({cardId})`; after it returns, use its `{path}` result. The mode-0600 private JSON contains exactly `{ "pairingURI": "deck-connector://pair?...", "cardId": "..." }`. Its card must be stopped, use `cmd: ""`, report `canQueue: false`, and belong to disposable smoke data. The test additionally rejects any fixture whose parsed origin host is not exactly `127.0.0.1`. The returned credential remains in memory and is never written to Keychain.
+This macOS-only package test is skipped unless an isolated Deck smoke fixture has already been authorized and launched. From the isolated smoke WK bridge, call `connector_smoke_transport({cardId, shellCardId})`; after it returns, use its `{path}` result. The mode-0600 private JSON contains exactly `{ "pairingURI": "deck-connector://pair?...", "cardId": "...", "shellCardId": "..." }`. The target card must be stopped, use the saved `codex` command, report `canQueue: true` and `canSend: false`, and belong to disposable smoke data. The shell card must exist in the isolated Board and remain excluded from the Connector snapshot. The test additionally rejects any fixture whose parsed origin host is not exactly `127.0.0.1`. The returned credential remains in memory and is never written to Keychain.
 
 ```sh
 DECK_CONNECTOR_SMOKE_FIXTURE=/absolute/private/path/fixture.json \
@@ -53,6 +53,20 @@ swift test -j 1 --filter realDeckLoopbackHTTPSAndWKBridgeTransport \
 The fixture call returns only after the listener is bound and the one-use five-minute pairing is installed. Afterwards call `connector_disable()` and close only that exact isolated app, socket, session, and data root. The test uses a 25-second command deadline and verifies real loopback TLS/pinning, pairing, snapshot/output/buffer decoding, a 32 KiB escaped-Unicode note, idempotent replay, stale-revision rejection, and fail-closed buffer queueing. It does not log the QR payload, token, or note contents. It is not an iOS UI, Keychain, LAN, or device test.
 
 ## Xcode and Simulator checks
+
+The disposable, unattended Connector diagnostic is available through
+`python3 scripts/connector-simulator-diagnose.py` from the repository root. It
+uses the verified external Xcode at `/Volumes/Yotta/Applications/Xcode.app` by
+default, creates separate isolated smoke hosts and disposable Simulators for
+the UI and app-hosted suites, and writes a `report.json` under its printed
+private run directory. Set `DECK_DIAG_SUITE=ui` or `appmodel` to run one suite.
+Each suite builds and installs before obtaining its own one-use pairing fixture.
+The Debug Simulator app reads that private loopback fixture and invokes normal
+pairing; Release builds have no such bootstrap. The UI test uses the normal
+detail layout and scrolls to the output area. The stopped-session assertion
+verifies the fixed output state in three rounds; the historical defect baseline
+remains in its original report. The default report separates historical
+reproduction from current product acceptance. Unrun cases remain marked unrun.
 
 If Xcode is outside the default path, keep its selection scoped to the current shell:
 

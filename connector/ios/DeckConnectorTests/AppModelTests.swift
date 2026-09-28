@@ -20,6 +20,24 @@ final class AppModelTests: XCTestCase {
         model = nil
     }
 
+    func testOutputIssueRecoversWhenAReadableOutputArrives() throws {
+        model.receiveOutput(cardID: "C1", result: .failure(ConnectorError.outputResponse(status: 503, code: "session-unavailable")))
+        XCTAssertEqual(model.outputUnavailable["C1"], .sessionUnavailable)
+        model.receiveOutput(cardID: "C1", result: .failure(ConnectorError.outputResponse(status: 503, code: "unavailable")))
+        XCTAssertEqual(model.outputUnavailable["C1"], .unknown,
+                       "An old host's unavailable code must not be inferred as a missing session.")
+        let json = """
+        {"capturedAt":1789776000,"cardId":"C1","generation":"g","revision":"r","text":"live marker","truncated":false}
+        """
+        let output = try JSONDecoder().decode(TerminalOutput.self, from: Data(json.utf8))
+        model.receiveOutput(cardID: "C1", result: .success(output))
+        XCTAssertNil(model.outputUnavailable["C1"])
+        XCTAssertEqual(model.outputs["C1"]?.text, "live marker")
+        model.receiveOutput(cardID: "C1", result: .failure(ConnectorError.outputResponse(status: 409, code: "agent-not-in-foreground")))
+        XCTAssertEqual(model.outputUnavailable["C1"], .agentNotInForeground)
+        XCTAssertNil(model.outputs["C1"], "A later unreadable target cannot retain captured output.")
+    }
+
     private func awaitTerminal(
         _ outcome: AppModel.MutationOutcome,
         timeout: Duration = .seconds(15)
@@ -66,7 +84,11 @@ final class AppModelTests: XCTestCase {
               !fixturePath.isEmpty, fixturePath != "$(DECK_CONNECTOR_SMOKE_FIXTURE)" else {
             throw XCTSkip("Set DECK_CONNECTOR_SMOKE_FIXTURE in the disposable Simulator's launch environment.")
         }
-        struct Fixture: Decodable { let pairingURI: String; let cardId: String }
+        struct Fixture: Decodable { let pairingURI: String; let cardId: String; let shellCardId: String }
+        // Xcode may reset the app container after installing the test host.
+        for _ in 0..<100 where !FileManager.default.fileExists(atPath: fixturePath) {
+            try await Task.sleep(for: .milliseconds(100))
+        }
         let attributes = try FileManager.default.attributesOfItem(atPath: fixturePath)
         guard let size = attributes[.size] as? NSNumber, size.intValue <= ConnectorLimits.pairingDescriptorBytes * 2 else {
             throw ConnectorError.invalidPairingDescriptor
@@ -79,9 +101,20 @@ final class AppModelTests: XCTestCase {
         await model.pair(descriptor: fixture.pairingURI)
         XCTAssertEqual(model.connection, .online)
         let card = try XCTUnwrap(model.snapshot?.cards.first(where: { $0.id == fixture.cardId }))
+        XCTAssertFalse(model.snapshot?.cards.contains(where: { $0.id == fixture.shellCardId }) ?? true,
+                       "The persisted ordinary shell card must be filtered from the host snapshot.")
         XCTAssertFalse(card.canSend)
-        XCTAssertFalse(card.canQueue)
+        XCTAssertTrue(card.canQueue)
+        #if DEBUG && targetEnvironment(simulator)
+        let savedCredential = try XCTUnwrap(KeychainCredentialStore().load())
+        let diagnosticClient = try DeckHTTPClient(credential: savedCredential)
+        let outputHTTP = try await diagnosticClient.diagnosticOutputHTTPResult(cardID: card.id)
+        XCTAssertEqual(outputHTTP.status, 503, "Stopped fixture card must return HTTP 503.")
+        XCTAssertEqual(outputHTTP.code, "session-unavailable", "Stopped fixture card must carry the session code.")
+        #endif
         await model.loadDetails(card: card)
+        XCTAssertEqual(model.outputUnavailable[card.id], .sessionUnavailable,
+                       "The same fixture card's HTTP error must reach AppModel as a structured state.")
         let before = try XCTUnwrap(model.buffers[card.id])
 
         let note = "simulator-smoke-\(UUID().uuidString.lowercased())"
@@ -115,11 +148,23 @@ final class AppModelTests: XCTestCase {
         let edited = try XCTUnwrap(model.buffers[card.id]?.entries.first(where: { $0.id == added.id }))
         XCTAssertEqual(edited.text, editedText)
 
+        await model.checkOriginalOperations()
+        XCTAssertTrue(model.pendingCardCommands[card.id]?.isEmpty ?? true,
+                      "The prior note edit must settle before the stale-revision probe.")
         model.buffers[card.id] = before
         let staleText = "stale-write-must-not-appear"
         let staleOutcome = await model.bufferAdd(card: card, text: staleText)
-        let staleResult = try await awaitTerminal(staleOutcome)
-        XCTAssertEqual(staleResult?.state, .rejected)
+        switch staleOutcome {
+        case let .failed(staleCode):
+            XCTAssertEqual(staleCode, "revision-changed")
+            XCTAssertEqual(model.message, "revision-changed")
+        case .pending:
+            let staleResult = try await awaitTerminal(staleOutcome)
+            XCTAssertEqual(staleResult?.state, .rejected)
+            XCTAssertEqual(staleResult?.code, "revision-changed")
+        case .applied:
+            XCTFail("A stale scratchpad revision must never be applied.")
+        }
         await model.loadDetails(card: card)
         XCTAssertFalse(model.buffers[card.id]?.entries.contains(where: { $0.text == staleText }) ?? true)
 

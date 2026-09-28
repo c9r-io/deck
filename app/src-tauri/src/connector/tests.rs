@@ -438,7 +438,9 @@ fn phone_output_and_send_are_limited_to_saved_agent_cards() {
         mcp_owned: false,
         pane_calls: std::cell::Cell::new(0),
     };
-    assert!(output_with(&agent, "C1").is_err());
+    let missing_session = output_with(&agent, "C1").unwrap_err();
+    assert_eq!(missing_session.kind(), ErrorKind::NoSession);
+    assert_eq!(missing_session.message(), "session-unavailable");
     assert_eq!(agent.pane_calls.get(), 1, "an agent card reaches the probe");
 
     let mcp = FakeOutput {
@@ -473,7 +475,7 @@ fn phone_output_refuses_a_saved_agent_card_when_foreground_is_shell() {
     };
     let refused = output_with(&shell, "C1").unwrap_err();
     assert_eq!(refused.kind(), ErrorKind::Invalid);
-    assert_eq!(refused.message(), "unsupported-target");
+    assert_eq!(refused.message(), "agent-not-in-foreground");
     assert_eq!(shell.pane_calls.get(), 0, "no output is captured");
 }
 
@@ -485,8 +487,8 @@ fn phone_output_drops_captured_bytes_when_agent_returns_to_shell() {
         pane_calls: std::cell::Cell::new(0),
     };
     let refused = output_with(&changed, "C1").unwrap_err();
-    assert_eq!(refused.kind(), ErrorKind::Invalid);
-    assert_eq!(refused.message(), "unsupported-target");
+    assert_eq!(refused.kind(), ErrorKind::ContextChanged);
+    assert_eq!(refused.message(), "target-changed");
     assert_eq!(
         changed.pane_calls.get(),
         2,
@@ -772,12 +774,16 @@ fn command_surface_preserves_the_durable_lifecycle_and_closes_on_disable() {
         ErrorKind::Other
     );
     assert_eq!(
-        connector_smoke_transport("C1".into()).err().unwrap().kind(),
+        connector_smoke_transport("C1".into(), "S1".into())
+            .err()
+            .unwrap()
+            .kind(),
         ErrorKind::Other
     );
     assert_eq!(
         serde_json::to_value(SmokeTransportView {
-            path: "/private/fixture".into()
+            path: "/private/fixture".into(),
+            agent_dir: "/private/agent".into()
         })
         .unwrap()["path"],
         "/private/fixture"
@@ -1730,6 +1736,7 @@ struct ScriptedOutput {
     probe_calls: std::cell::Cell<usize>,
     card_calls: std::cell::Cell<usize>,
     tmux_calls: std::cell::RefCell<Vec<String>>,
+    failure: Option<(&'static str, ErrorKind)>,
 }
 impl ScriptedOutput {
     fn new(history: &'static str, generations: &[&'static str], sessions: &[&'static str]) -> Self {
@@ -1740,7 +1747,13 @@ impl ScriptedOutput {
             probe_calls: std::cell::Cell::new(0),
             card_calls: std::cell::Cell::new(0),
             tmux_calls: std::cell::RefCell::new(vec![]),
+            failure: None,
         }
+    }
+
+    fn failing(mut self, stage: &'static str, kind: ErrorKind) -> Self {
+        self.failure = Some((stage, kind));
+        self
     }
 }
 impl OutputIo for ScriptedOutput {
@@ -1756,6 +1769,16 @@ impl OutputIo for ScriptedOutput {
     fn probe(&self, _: &str) -> Result<crate::context::ConnectorProbe, DeckError> {
         let index = self.probe_calls.get();
         self.probe_calls.set(index + 1);
+        let stage = if index == 0 {
+            "probe-before"
+        } else {
+            "probe-after"
+        };
+        if let Some((failed, kind)) = self.failure {
+            if failed == stage {
+                return Err(DeckError::new(kind, "fixture"));
+            }
+        }
         Ok(crate::context::ConnectorProbe {
             identity: crate::context::PaneIdentity {
                 server_pid: 1,
@@ -1773,6 +1796,11 @@ impl OutputIo for ScriptedOutput {
     }
     fn tmux(&self, args: &[String]) -> Result<String, DeckError> {
         self.tmux_calls.borrow_mut().push(args[0].clone());
+        if let Some((failed, kind)) = self.failure {
+            if failed == args[0] {
+                return Err(DeckError::new(kind, "fixture"));
+            }
+        }
         assert_eq!(args[3], "%7", "the probed pane is the one read");
         Ok(if args[0] == "display-message" {
             self.history.into()
@@ -1782,6 +1810,53 @@ impl OutputIo for ScriptedOutput {
     }
     fn mcp_fence(&self, _: &str) -> Result<(), DeckError> {
         Ok(())
+    }
+}
+
+#[test]
+fn phone_output_failure_stages_do_not_return_captured_text() {
+    for (stage, kind, expected_kind, expected_message) in [
+        (
+            "probe-before",
+            ErrorKind::Tmux,
+            ErrorKind::Tmux,
+            "output-read-failed",
+        ),
+        (
+            "display-message",
+            ErrorKind::Tmux,
+            ErrorKind::Tmux,
+            "output-read-failed",
+        ),
+        (
+            "capture-pane",
+            ErrorKind::Tmux,
+            ErrorKind::Tmux,
+            "output-read-failed",
+        ),
+        (
+            "probe-after",
+            ErrorKind::Tmux,
+            ErrorKind::Tmux,
+            "output-read-failed",
+        ),
+        (
+            "probe-after",
+            ErrorKind::NoSession,
+            ErrorKind::ContextChanged,
+            "target-changed",
+        ),
+        (
+            "capture-pane",
+            ErrorKind::NoSession,
+            ErrorKind::ContextChanged,
+            "target-changed",
+        ),
+    ] {
+        let io = ScriptedOutput::new("12", &["gen-1"], &["deck-card-0001"]).failing(stage, kind);
+        let error = output_with(&io, "C1").unwrap_err();
+        assert_eq!(error.kind(), expected_kind, "{stage}");
+        assert_eq!(error.message(), expected_message, "{stage}");
     }
 }
 
@@ -1816,7 +1891,7 @@ fn phone_output_succeeds_only_when_target_and_generation_survive_the_capture() {
     let unreadable = ScriptedOutput::new("many", &["gen-1"], &["deck-card-0001"]);
     let failed = output_with(&unreadable, "C1").unwrap_err();
     assert_eq!(failed.kind(), ErrorKind::Tmux);
-    assert_eq!(failed.message(), "output-history-unavailable");
+    assert_eq!(failed.message(), "output-read-failed");
     assert_eq!(
         *unreadable.tmux_calls.borrow(),
         ["display-message"],

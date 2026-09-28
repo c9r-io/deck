@@ -4,6 +4,8 @@
 //! stays in `connector/mod.rs`. `snapshot` and `buffer` read the committed
 //! board and the managed queues, then delegate to the pure `snapshot_in`
 //! (with the pane probe injected) and `buffer_in`, which tests feed directly.
+//! Output maps failures only within the read operation: a missing pane before
+//! capture is unavailable, while loss during capture is a changed target.
 
 use super::*;
 
@@ -241,7 +243,29 @@ impl OutputIo for LiveOutput {
         committed_card(id)
     }
     fn probe(&self, session: &str) -> Result<crate::context::ConnectorProbe, DeckError> {
-        crate::context::connector_probe(session)
+        match crate::context::connector_probe(session) {
+            Ok(probe) => Ok(probe),
+            Err(error) if error.kind() == ErrorKind::Tmux => {
+                // A missing target can produce a malformed display-message row
+                // with exit 0. Recheck existence without parsing tmux stderr.
+                let target = crate::tmux::session_target(session);
+                match crate::tmux::tmux(&["has-session", "-t", &target]) {
+                    Err(check) if check.kind() == ErrorKind::NoSession => Err(check),
+                    Ok(_) => match crate::tmux::list_panes() {
+                        Ok(rows)
+                            if !rows.iter().any(|row| {
+                                row.session_name == session && row.window_active && row.pane_active
+                            }) =>
+                        {
+                            Err(DeckError::new(ErrorKind::NoSession, "pane unavailable"))
+                        }
+                        _ => Err(error),
+                    },
+                    Err(_) => Err(error),
+                }
+            }
+            Err(error) => Err(error),
+        }
     }
     fn tmux(&self, args: &[String]) -> Result<String, DeckError> {
         crate::tmux::tmux_owned(args)
@@ -264,13 +288,20 @@ pub(super) fn output(card_id: &str) -> Result<Value, DeckError> {
 /// output sharing is consent for the MCP client, not for a phone. The fence
 /// is checked before any pane access and again after the capture.
 pub(super) fn output_with(io: &dyn OutputIo, card_id: &str) -> Result<Value, DeckError> {
+    let started = std::time::Instant::now();
+    let request = OUTPUT_REQUEST.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let card = io.card(card_id)?;
     require_agent_card(&card)?;
     let unsupported = |_| DeckError::new(ErrorKind::Invalid, "unsupported-target");
     io.mcp_fence(&card.session).map_err(unsupported)?;
-    let before = io.probe(&card.session)?;
+    let before = io
+        .probe(&card.session)
+        .map_err(|error| output_failure("probe-before", card_id, request, started, error))?;
     if before.agent.is_none() {
-        return Err(DeckError::new(ErrorKind::Invalid, "unsupported-target"));
+        return Err(DeckError::new(
+            ErrorKind::Invalid,
+            "agent-not-in-foreground",
+        ));
     }
     let history_size = io
         .tmux(&[
@@ -279,23 +310,39 @@ pub(super) fn output_with(io: &dyn OutputIo, card_id: &str) -> Result<Value, Dec
             "-t".into(),
             before.identity.pane_id.clone(),
             "#{history_size}".into(),
-        ])?
+        ])
+        .map_err(|error| output_failure("history-size", card_id, request, started, error))?
         .trim()
         .parse::<usize>()
-        .map_err(|_| DeckError::new(ErrorKind::Tmux, "output-history-unavailable"))?;
-    let text = io.tmux(&[
-        "capture-pane".into(),
-        "-p".into(),
-        "-t".into(),
-        before.identity.pane_id.clone(),
-        "-S".into(),
-        "-200".into(),
-    ])?;
-    let after = io.probe(&card.session)?;
+        .map_err(|_| {
+            output_failure(
+                "history-size",
+                card_id,
+                request,
+                started,
+                DeckError::new(ErrorKind::Tmux, "output-history-unavailable"),
+            )
+        })?;
+    let text = io
+        .tmux(&[
+            "capture-pane".into(),
+            "-p".into(),
+            "-t".into(),
+            before.identity.pane_id.clone(),
+            "-S".into(),
+            "-200".into(),
+        ])
+        .map_err(|error| output_failure("capture-pane", card_id, request, started, error))?;
+    let after = io
+        .probe(&card.session)
+        .map_err(|error| output_failure("probe-after", card_id, request, started, error))?;
     let still = io.card(card_id)?;
     io.mcp_fence(&card.session).map_err(unsupported)?;
-    if after.agent.is_none() || !still.agent_target {
+    if !still.agent_target {
         return Err(DeckError::new(ErrorKind::Invalid, "unsupported-target"));
+    }
+    if after.agent.is_none() {
+        return Err(DeckError::new(ErrorKind::ContextChanged, "target-changed"));
     }
     if before.generation != after.generation || still.session != card.session {
         return Err(DeckError::new(ErrorKind::ContextChanged, "target-changed"));
@@ -305,4 +352,35 @@ pub(super) fn output_with(io: &dyn OutputIo, card_id: &str) -> Result<Value, Dec
     Ok(
         json!({"cardId":card_id,"generation":before.generation,"revision":revision,"capturedAt":now(),"text":text,"truncated":truncated}),
     )
+}
+
+static OUTPUT_REQUEST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+fn output_failure(
+    stage: &'static str,
+    card_id: &str,
+    request: u64,
+    started: std::time::Instant,
+    error: DeckError,
+) -> DeckError {
+    let kind = error.kind();
+    let mapped = match kind {
+        ErrorKind::NoSession if stage == "probe-before" => {
+            DeckError::new(ErrorKind::NoSession, "session-unavailable")
+        }
+        ErrorKind::NoSession | ErrorKind::ContextChanged => {
+            DeckError::new(ErrorKind::ContextChanged, "target-changed")
+        }
+        ErrorKind::Perm | ErrorKind::Missing => error,
+        _ => DeckError::new(ErrorKind::Tmux, "output-read-failed"),
+    };
+    if mapped.kind() != ErrorKind::NoSession {
+        crate::applog::applog(&format!(
+            "[connector-output] stage={stage} kind={} card={} request={request} duration_ms={}",
+            kind.as_str(),
+            crate::applog::session_tag(card_id),
+            started.elapsed().as_millis()
+        ));
+    }
+    mapped
 }

@@ -10,13 +10,34 @@ final class AppModel: ObservableObject {
     }
     enum MutationOutcome: Equatable { case applied, pending(id: String?, state: String), failed(String) }
     enum DraftPersistenceStatus: Equatable { case saving(UInt64), saved(UInt64), failed(UInt64, String) }
+    enum OutputIssue: Equatable {
+        case sessionUnavailable, agentNotInForeground, readFailed, targetChanged
+        case unsupportedTarget, unknown
+
+        init(_ error: Error) {
+            switch error {
+            case ConnectorError.outputResponse(503, "session-unavailable"):
+                self = .sessionUnavailable
+            case ConnectorError.outputResponse(409, "agent-not-in-foreground"):
+                self = .agentNotInForeground
+            case ConnectorError.outputResponse(503, "output-read-failed"):
+                self = .readFailed
+            case ConnectorError.outputResponse(409, "context-changed"):
+                self = .targetChanged
+            case ConnectorError.unsupportedTarget:
+                self = .unsupportedTarget
+            default:
+                self = .unknown
+            }
+        }
+    }
 
     @Published var connection: ConnectionState = .loading
     @Published var snapshot: Snapshot?
     @Published var outputs: [String: TerminalOutput] = [:]
     @Published var buffers: [String: CardBuffer] = [:]
     @Published var drafts: [String: MessageDraft] = [:]
-    @Published var outputUnavailable: [String: String] = [:]
+    @Published var outputUnavailable: [String: OutputIssue] = [:]
     @Published var pendingSends: [String: CommandRecord] = [:]
     @Published var pendingCardCommands: [String: [CommandRecord]] = [:]
     @Published var hasPendingTaskCreate = false
@@ -171,12 +192,21 @@ final class AppModel: ObservableObject {
         do {
             let output = try await client.output(cardID: cardID)
             guard isCurrent(client: client, journal: journal, epoch: epoch) else { return }
-            outputs[cardID] = output
-            outputUnavailable.removeValue(forKey: cardID)
+            receiveOutput(cardID: cardID, result: .success(output))
         } catch {
             guard isCurrent(client: client, journal: journal, epoch: epoch) else { return }
+            receiveOutput(cardID: cardID, result: .failure(error))
+        }
+    }
+
+    func receiveOutput(cardID: String, result: Result<TerminalOutput, Error>) {
+        switch result {
+        case let .success(output):
+            outputs[cardID] = output
+            outputUnavailable.removeValue(forKey: cardID)
+        case let .failure(error):
             outputs.removeValue(forKey: cardID)
-            outputUnavailable[cardID] = error.localizedDescription
+            outputUnavailable[cardID] = OutputIssue(error)
         }
     }
 

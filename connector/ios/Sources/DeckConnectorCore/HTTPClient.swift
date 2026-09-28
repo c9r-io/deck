@@ -84,6 +84,21 @@ public final class DeckHTTPClient: NSObject, URLSessionDelegate, URLSessionTaskD
         return output
     }
 
+    #if DEBUG && targetEnvironment(simulator)
+    public func diagnosticOutputHTTPResult(cardID: String) async throws -> (status: Int, code: String?) {
+        let url = try origin.endpoint("/v1/cards/\(encodePath(cardID))/output")
+        guard origin.matches(url), !credential.token.isEmpty else { throw ConnectorError.invalidOrigin }
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 30)
+        request.httpMethod = "GET"
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("Bearer \(credential.token)", forHTTPHeaderField: "Authorization")
+        let (data, response) = try await load(request, limit: ConnectorLimits.responseBytes)
+        guard let http = response as? HTTPURLResponse else { throw ConnectorError.invalidResponse }
+        let code = try? JSONDecoder().decode(ErrorEnvelope.self, from: data).error.code
+        return (http.statusCode, code)
+    }
+    #endif
+
     public func buffer(cardID: String) async throws -> CardBuffer {
         let value: CardBuffer = try await request(path: "/v1/cards/\(encodePath(cardID))/buffer", method: "GET", body: nil, authenticated: true, responseLimit: ConnectorLimits.serializedBufferBytes)
         try WireValidator.validate(value)
@@ -122,8 +137,11 @@ public final class DeckHTTPClient: NSObject, URLSessionDelegate, URLSessionTaskD
         if http.statusCode == 426 { throw ConnectorError.upgradeRequired }
         guard (200..<300).contains(http.statusCode) else {
             let code = (try? JSONDecoder().decode(ErrorEnvelope.self, from: data).error.code) ?? "http-\(http.statusCode)"
-            if http.statusCode == 409 || http.statusCode == 412 { throw ConnectorError.conflict(code) }
             if code == "unsupported-target" { throw ConnectorError.unsupportedTarget }
+            if path.hasPrefix("/v1/cards/"), path.hasSuffix("/output") {
+                throw ConnectorError.outputResponse(status: http.statusCode, code: code)
+            }
+            if http.statusCode == 409 || http.statusCode == 412 { throw ConnectorError.conflict(code) }
             throw ConnectorError.transport("Deck host error: \(code)")
         }
         do { return try JSONDecoder().decode(Response.self, from: data) }

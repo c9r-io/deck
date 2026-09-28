@@ -2705,11 +2705,23 @@ export async function verifyConnectorTransport() {
     const { addManual, emptyBuffer } = await import('../js/buffer-model.js');
     const seeded = addManual(emptyBuffer(), { id: 'Nconnectortransport', text: 'transport seed', now: Date.now() });
     const card = await provider.create({ projectId: project.id, columnId: column.id,
-      title: 'connector transport', cmd: '', dir: '/tmp', buffer: seeded.buffer });
+      title: 'connector transport', cmd: 'codex', dir: '/tmp', buffer: seeded.buffer });
+    const shellCard = await provider.create({ projectId: project.id, columnId: column.id,
+      title: 'connector ordinary shell', cmd: '', dir: '/tmp' });
     await inv('connector_smoke_window', { visible: false });
-    await inv('connector_smoke_transport', { cardId: card.id });
+    const transport = await inv('connector_smoke_transport', { cardId: card.id, shellCardId: shellCard.id });
     await report('connector-transport-ready', provider.get(card.id)?.status === 'stopped'
-      && provider.get(card.id)?.cmd === '' && provider.get(card.id)?.buffer?.entries?.length === 1, 1, 0);
+      && provider.get(card.id)?.cmd === 'codex' && provider.get(card.id)?.buffer?.entries?.length === 1
+      && provider.get(shellCard.id)?.cmd === ''
+      && JSON.parse((await inv('load_board')).data).cards.some(c => c.id === shellCard.id), 1, 0);
+    // A real interactive Codex is launched through Deck's ordinary card path.
+    // Its private work directory has no host credentials or pairing fixture.
+    if (transport.agentDir) {
+      try {
+        await provider.createStarted({ projectId: project.id, columnId: column.id,
+          title: 'connector live codex', cmd: 'codex', dir: transport.agentDir });
+      } catch (_) { /* The independent live-Agent case reports this as unavailable. */ }
+    }
   } catch (_) {
     await inv('connector_smoke_window', { visible: true }).catch(() => {});
     await report('connector-transport-ready', false, 0, 1);
