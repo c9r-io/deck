@@ -414,6 +414,9 @@ pub(crate) struct QueuePlan {
     /// the row carries content authority (`authority.rs`): its holds are
     /// readiness, not a missing approval
     authorized: bool,
+    /// the row carries a first-send readiness override (`first_send.rs`):
+    /// its rule allows sending it without first-interaction evidence
+    first_send_override: bool,
 }
 
 pub(crate) fn plan_item(
@@ -482,6 +485,7 @@ pub(crate) fn plan_item(
         quiet_remaining,
         gap_until,
         authorized: i.authority.is_some(),
+        first_send_override: i.readiness_override.is_some(),
     }
 }
 
@@ -498,7 +502,9 @@ pub(crate) fn queue_view(q: QueueState) -> QueueView {
         .ok()
         .map(observe);
     if let Some(seen) = activity.as_mut() {
-        if any_authority(&q) && crate::inbound::read_config_strict().is_none() {
+        if (any_authority(&q) || first_send::any_override(&q))
+            && crate::inbound::read_config_strict().is_none()
+        {
             mark_authority_unverified(seen);
         }
     }

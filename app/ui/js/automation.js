@@ -26,6 +26,11 @@
 // steps. Saving unticked drops the approval, which also stops the unsent
 // rows of runs that relied on it (scheduler/authority.rs). The list shows
 // each Slack rule's approval as on / off / needs approval again.
+// A Slack badge rule also has a separate, unticked-by-default box to send
+// its FIRST step without agent readiness (automation-model.js
+// `withFirstSend`, scheduler/first_send.rs): ticking it asks for an explicit
+// confirmation of the startup-dialog risk, unticking is immediate, and it
+// is independent of the approval box (which governs the later steps).
 // This module is only the drawer that lists the CURRENT project's rules of
 // either trigger, edits them through `persistInbound` (one durable settings
 // write), and shows each rule's next slot (clock) or last runs. What a rule
@@ -67,7 +72,7 @@ import { $, ctx, genId, inv, listen, state, store, uev } from './state.js';
 import { confirmDialog, toast } from './dialogs.js';
 import { persistInbound } from './settings.js';
 import { minToHM, projectDefaults, projectRules, ruleByOrigin, toggleClockRule } from './pure.js';
-import { approveRule, composeRule, graceOptions, graceText, grantState, liveRules, mergeRules, recentRuns, ruleFacts, ruleLabel, runSummary, templateCarriesMessage, triggerText } from './automation-model.js';
+import { approveRule, composeRule, firstSendNeedsConfirm, withFirstSend, graceOptions, graceText, grantState, liveRules, mergeRules, recentRuns, ruleFacts, ruleLabel, runSummary, templateCarriesMessage, triggerText } from './automation-model.js';
 import { formatNumber, onLocaleChange, t } from './i18n.js';
 import { formatShortcut } from './shortcuts.js';
 import { DEFAULT_GRACE_MIN } from './settings-model.js';
@@ -370,6 +375,7 @@ export function openEditor(rule) {
   const approved = rule?.source === 'slack' && approvals.get(rule.id) === 'valid';
   $('auto-send').checked = approved;
   $('auto-send-external').checked = approved && rule.autoSend.external === true;
+  $('auto-first-send').checked = rule?.source === 'slack' && rule.firstSendWithoutReadiness === true;
   syncEditor();
   $('auto-editor').hidden = false;
   $(channel ? 'auto-channel-ids' : 'auto-name').focus();
@@ -576,10 +582,18 @@ export function initAutomation(deps) {
   $('auto-save').onclick = async () => {
     const read = readEditor();
     if (!read) return;
-    const rule = await withApproval(read);
+    const rule = withFirstSend(await withApproval(read), $('auto-first-send').checked);
     if (await saveRule(rule)) { closeEditor(); toast(t('automation.saved')); }
   };
   $('auto-send').addEventListener('change', syncApproval);
+  /* the first-send risk is accepted explicitly: the box stays unticked
+     unless the confirmation is answered yes; unticking needs nothing */
+  $('auto-first-send').addEventListener('change', async () => {
+    const box = $('auto-first-send');
+    if (!firstSendNeedsConfirm(false, box.checked)) return;
+    box.checked = false;
+    if (await confirmDialog(t('automation.firstSend.confirm'))) box.checked = true;
+  });
   for (const id of ['auto-badge', 'auto-dir', 'auto-cmd', 'auto-template', 'auto-review']) {
     $(id).addEventListener(id === 'auto-template' || id === 'auto-review' ? 'change' : 'input', withdrawApproval);
   }

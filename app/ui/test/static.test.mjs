@@ -261,3 +261,16 @@ test('forensic reasons and movement sources are closed at the Rust log boundary'
   assert.match(selection, /forensics\.reason\(\)/);
   assert.doesNotMatch(read('app/ui/js/selection-forensics.js'), /getSelection\(|terminal_selection_copy|clipboard|session/);
 });
+
+test('the first-send option is a separate, unticked Slack-badge-only box with its warning', () => {
+  const html = read('app/ui/index.html');
+  const box = /<label class="([^"]*)"><input type="checkbox" id="auto-first-send"([^>]*)>/.exec(html);
+  assert.ok(box, 'the box exists');
+  assert.ok(box[1].split(' ').includes('q-p-slack'), 'shown for a Slack badge trigger only');
+  assert.equal(/checked/.test(box[2]), false, 'unticked by default');
+  assert.ok(/id="auto-first-send-hint"[^>]*class|class="[^"]*q-p-slack[^"]*" id="auto-first-send-hint"/.test(html));
+  assert.ok(html.indexOf('id="auto-first-send"') > html.indexOf('id="auto-send"'), 'after, and apart from, the approval box');
+  const js = read('app/ui/js/automation.js');
+  assert.ok(/firstSendNeedsConfirm\(false, box\.checked\)/.test(js) && /confirmDialog\(t\('automation\.firstSend\.confirm'\)\)/.test(js),
+    'turning it on asks for confirmation');
+});

@@ -197,3 +197,19 @@ test('an automation approval survives normalization only in the backend\'s shape
     schedule: { unit: 'day', days: [], minute: 60 } }] }).rules[0];
   assert.equal('autoSend' in clock, false, 'a clock rule never carries one');
 });
+
+test('the first-send override survives normalization on a Slack badge rule only', () => {
+  const base = { projectId: 'P1', columnId: 'C1', cmd: 'claude', template: 'triage' };
+  const { rules } = normalizeInbound({ rules: [
+    { ...base, id: 'on', source: 'slack', badge: 'deck', firstSendWithoutReadiness: true },
+    { ...base, id: 'off', source: 'slack', badge: 'bug' },
+    { ...base, id: 'truthy', source: 'slack', badge: 'eyes', firstSendWithoutReadiness: 'yes' },
+    { ...base, id: 'daily', source: 'clock', badge: 'daily', firstSendWithoutReadiness: true,
+      schedule: { unit: 'day', days: [], minute: 540 } },
+  ] });
+  const flag = id => rules.find(rule => rule.id === id).firstSendWithoutReadiness;
+  assert.equal(flag('on'), true);
+  assert.equal(flag('off'), undefined, 'legacy rules read as off');
+  assert.equal(flag('truthy'), undefined, 'only an explicit true');
+  assert.equal(flag('daily'), undefined, 'a clock rule never keeps it');
+});

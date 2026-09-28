@@ -95,6 +95,9 @@
 //!   human action), Connector rows (a paired phone is not prompt authority)
 //!   and verbatim scratchpad copies stay send-now only; clock rows are owner
 //!   text and never needed an approval.
+//! - Not readiness, and not the first-send readiness override: a badge
+//!   rule's separate risk acceptance for its runs' head row lives in
+//!   `first_send.rs` and never writes or reads `StepAuthority`.
 
 use serde::{Deserialize, Serialize};
 

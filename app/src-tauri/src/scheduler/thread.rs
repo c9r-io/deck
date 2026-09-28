@@ -65,6 +65,46 @@ fn tick_wake() -> &'static (Mutex<bool>, std::sync::Condvar) {
     TICK_WAKE.get_or_init(|| (Mutex::new(false), std::sync::Condvar::new()))
 }
 
+/// When each session last got its post-start wake (`start_wake_due`).
+static START_WAKES: Mutex<Option<HashMap<String, std::time::Instant>>> = Mutex::new(None);
+
+/// Whether a worker that just STARTED `session`'s agent
+/// (`StartedAwaitingInteraction`, zero bytes) may wake the scheduler for an
+/// immediate follow-up pass: at most once per session per `TICK_SECS`, so a
+/// session that keeps disappearing and being restarted can never spin the
+/// scheduler faster than twice its normal cadence. The follow-up pass is an
+/// ordinary tick — it reads no new fact and creates no evidence: a normal
+/// row is held at `first-send` again (no worker, so no further wake), and
+/// only a head row carrying a first-send readiness override
+/// (`first_send.rs`) can go on through the existing-session checks and the
+/// pre-fire fence without waiting out the rest of the tick.
+pub(crate) fn start_wake_due(
+    last: &mut HashMap<String, std::time::Instant>,
+    session: &str,
+    now: std::time::Instant,
+) -> bool {
+    let window = Duration::from_secs(TICK_SECS);
+    last.retain(|_, at| now.saturating_duration_since(*at) < window);
+    if last.contains_key(session) {
+        return false;
+    }
+    last.insert(session.to_string(), now);
+    true
+}
+
+fn wake_after_start(session: &str) {
+    let due = start_wake_due(
+        START_WAKES
+            .lock_or_recover()
+            .get_or_insert_with(HashMap::new),
+        session,
+        std::time::Instant::now(),
+    );
+    if due {
+        wake_scheduler();
+    }
+}
+
 pub(crate) fn wake_scheduler() {
     let (flag, cv) = tick_wake();
     *flag.lock_or_recover() = true;
@@ -124,27 +164,40 @@ pub(crate) fn spawn_scheduler(app: AppHandle) {
                 )),
             }
         }
-        // a withdrawn or changed automation approval stops every unsent row
-        // that relied on it BEFORE this tick selects anything; unreadable
-        // settings neither grant nor revoke (`authority.rs`)
-        if any_authority(&state.q.lock_or_recover()) {
+        // a withdrawn or changed automation approval, or a withdrawn
+        // first-send readiness override, stops every unsent row that relied
+        // on it BEFORE this tick selects anything; unreadable settings
+        // neither grant nor revoke (`authority.rs`, `first_send.rs`)
+        let needs_settings = {
+            let q = state.q.lock_or_recover();
+            any_authority(&q) || first_send::any_override(&q)
+        };
+        if needs_settings {
             let config = crate::inbound::read_config_strict();
             if config.is_none() {
-                // no proof either way: rows and approvals stay, automatic
-                // sends that rely on one hold this tick
+                // no proof either way: rows, approvals and overrides stay;
+                // automatic sends that rely on one hold this tick
                 if let Some(seen) = listing.as_mut() {
                     mark_authority_unverified(seen);
                 }
             }
             if let Some(config) = config {
                 match with_queue_opt(&state.q, &save_queue, |q| {
-                    let n = revoke_stale(q, &config);
-                    Ok((n > 0).then_some(n))
+                    let approvals = revoke_stale(q, &config);
+                    let overrides = first_send::revoke_stale(q, &config);
+                    Ok((approvals + overrides > 0).then_some((approvals, overrides)))
                 }) {
-                    Ok(Some(n)) => {
-                        applog(&format!(
-                            "[queue] automation approval withdrawn — {n} row(s) now wait for send-now"
-                        ));
+                    Ok(Some((approvals, overrides))) => {
+                        if approvals > 0 {
+                            applog(&format!(
+                                "[queue] automation approval withdrawn — {approvals} row(s) now wait for send-now"
+                            ));
+                        }
+                        if overrides > 0 {
+                            applog(&format!(
+                                "[queue] first-send policy withdrawn — {overrides} first step(s) now wait for an agent interaction"
+                            ));
+                        }
                         let _ = app.emit("queue-changed", ());
                     }
                     Ok(None) => {}
@@ -211,9 +264,13 @@ pub(crate) fn spawn_scheduler(app: AppHandle) {
                         let _ = app2.emit("queue-fired", QueueFired { session });
                         let _ = app2.emit("queue-changed", ());
                     }
-                    SendResult::Failed { .. }
-                    | SendResult::Blocked { .. }
-                    | SendResult::StartedAwaitingInteraction { .. } => {
+                    SendResult::StartedAwaitingInteraction { session } => {
+                        let _ = app2.emit("queue-changed", ());
+                        // the busy claim is already released: the woken
+                        // pass may serve this now-existing session
+                        wake_after_start(&session);
+                    }
+                    SendResult::Failed { .. } | SendResult::Blocked { .. } => {
                         let _ = app2.emit("queue-changed", ());
                     }
                     SendResult::Nothing | SendResult::NotPersisted => {}

@@ -227,8 +227,17 @@ const RUST: &[(&str, &str, &str, usize, Class)] = &[
         Hold,
     ),
     ("scheduler/select.rs", "", "hold_reason(", 1, Hold),
-    ("scheduler/select.rs", "hold_reason", "NEEDS_INPUT", 1, Hold),
-    ("scheduler/select.rs", "hold_reason", ".agent", 1, Hold),
+    // `hold_reason` delegates to `hold_reason_with` (the first-send
+    // readiness override lifts only the first-interaction branch there; the
+    // agent word still only HOLDS)
+    (
+        "scheduler/select.rs",
+        "hold_reason_with",
+        "NEEDS_INPUT",
+        1,
+        Hold,
+    ),
+    ("scheduler/select.rs", "hold_reason_with", ".agent", 1, Hold),
     (
         "scheduler/select.rs",
         "agent_holds",

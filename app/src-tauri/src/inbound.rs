@@ -26,7 +26,9 @@
 //! `settings.inbound.rules` (validated structurally by `SettingsDoc` on load
 //! AND save: closed source names, emoji-name badges, one rule per badge,
 //! bounded ids/cmd/dir; a Slack badge rule's optional `autoSend` approval is
-//! shape-checked here and judged by `scheduler/authority.rs`), and announces
+//! shape-checked here and judged by `scheduler/authority.rs`, and its
+//! optional `firstSendWithoutReadiness` risk acceptance is judged by
+//! `scheduler/first_send.rs`), and announces
 //! with a CONTENT-FREE `inbound-changed`
 //! event; the webview pulls `inbound_pending`, `planInbound` (pure.js)
 //! decides, the card is created through the ordinary Board transaction with
@@ -183,6 +185,13 @@ pub(crate) struct Rule {
     /// (`scheduler/authority.rs`). Absent on every legacy rule.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) auto_send: Option<AutoSend>,
+    /// Slack badge rules only: the user explicitly accepted that the first
+    /// step of this rule's runs may be sent to a freshly started agent
+    /// without first-interaction evidence (`scheduler/first_send.rs`). A
+    /// readiness-risk policy, not an approval and never readiness. Absent
+    /// (false) on every legacy rule; an older Deck ignores it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) first_send_without_readiness: bool,
 }
 
 /// An automation delivery grant, stored on the rule it approves. `digest` is
@@ -480,6 +489,12 @@ pub(crate) fn validate_settings(v: &Value) -> Result<(), DeckError> {
                     ));
                 }
                 grant.validate()?;
+            }
+            if rule.first_send_without_readiness && rule.source != "slack" {
+                return Err(DeckError::new(
+                    ErrorKind::InvalidDoc,
+                    "only a Slack badge rule may send its first step without readiness",
+                ));
             }
             if !ids.insert(rule.id.clone()) {
                 return Err(DeckError::new(
@@ -1584,6 +1599,30 @@ mod tests {
         let invalid =
             json!({"sources": {"slack": {"enabled": true}}, "rules": [rule("deck"), rule("deck")]});
         assert_eq!(config_from_value(Some(&invalid)), Config::default());
+    }
+
+    /// The first-send readiness override is a Slack badge rule's alone;
+    /// absent reads as off, and a clock rule carrying it is refused whole.
+    #[test]
+    fn only_a_slack_badge_rule_may_carry_the_first_send_override() {
+        let mut on = rule("deck");
+        on["firstSendWithoutReadiness"] = json!(true);
+        let v = json!({"sources": {"slack": {"enabled": true}}, "rules": [on, rule("bug")]});
+        let cfg = config_from_value(Some(&v));
+        assert!(
+            cfg.rule_for("slack", "deck")
+                .unwrap()
+                .first_send_without_readiness
+        );
+        assert!(
+            !cfg.rule_for("slack", "bug")
+                .unwrap()
+                .first_send_without_readiness
+        );
+        let mut clock = clock_rule("daily", json!({"unit": "day", "days": [], "minute": 540}));
+        clock["firstSendWithoutReadiness"] = json!(true);
+        let v = json!({"sources": {"slack": {"enabled": true}}, "rules": [clock]});
+        assert_eq!(config_from_value(Some(&v)), Config::default());
     }
 
     #[test]

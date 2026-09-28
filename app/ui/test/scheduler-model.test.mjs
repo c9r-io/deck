@@ -79,3 +79,15 @@ test('an approved row that still waits names readiness, never a missing approval
   assert.equal(approvedWait(undefined), false);
   assert.equal(approvedWait({ stage: 'external' }), false, 'a plan from an older backend carries no approval');
 });
+
+test('a waiting head row with a first-send override says so; sent rows are past it', async () => {
+  const { firstSendOverrideWait } = await import('../js/scheduler-model.js');
+  for (const stage of ['time', 'gap', 'agent', 'codex-signal', 'context', 'first-send']) {
+    assert.equal(firstSendOverrideWait({ stage, first_send_override: true }), true, stage);
+    assert.equal(firstSendOverrideWait({ stage, first_send_override: false }), false, stage);
+  }
+  for (const stage of ['review', 'firing', 'ambiguous', 'failed']) {
+    assert.equal(firstSendOverrideWait({ stage, first_send_override: true }), false, stage);
+  }
+  assert.equal(firstSendOverrideWait({ stage: 'time' }), false, 'an older backend reports nothing');
+});

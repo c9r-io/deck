@@ -145,6 +145,9 @@ export function normalizeInbound(value) {
     if (!LOCAL_ID_RE.test(rule.id) || rule.id.length > INBOUND_RULE_ID_MAX) continue;
     const autoSend = rule.source === 'slack' ? normalizeAutoSend(r.autoSend) : null;
     if (autoSend) rule.autoSend = autoSend;
+    /* a Slack badge rule's first-send readiness override (automation-model.js
+       `withFirstSend`); anything but an explicit true reads as off */
+    if (rule.source === 'slack' && r.firstSendWithoutReadiness === true) rule.firstSendWithoutReadiness = true;
     if (rule.source === 'clock') {
       rule.badge = rule.id;
       rule.schedule = normalizeSchedule(r.schedule);

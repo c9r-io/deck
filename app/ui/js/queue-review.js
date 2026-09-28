@@ -22,7 +22,7 @@ import { ctx, inv } from './state.js';
 import { t } from './i18n.js';
 import { confirmDialog, toast } from './dialogs.js';
 import { formatInterval } from './i18n.js';
-import { approvedWait } from './scheduler-model.js';
+import { approvedWait, firstSendOverrideWait } from './scheduler-model.js';
 
 export const isReview = i => i && ['review', 'review-approved'].includes(i.state);
 const stageKeys = {
@@ -55,7 +55,8 @@ export function stageText(item) {
   const text = t(stageKeys[plan.stage] || 'queue.stage.unknown', {
     duration: formatInterval(plan.stage === 'gap' ? Math.max(0, plan.gap_until - plan.checked_at) : (plan.quiet_remaining || 0)),
   });
-  return approvedWait(plan) ? t('queue.stage.authorized', { stage: text }) : text;
+  const shown = firstSendOverrideWait(plan) ? t('queue.stage.firstSendOverride', { stage: text }) : text;
+  return approvedWait(plan) ? t('queue.stage.authorized', { stage: shown }) : shown;
 }
 
 export async function cancelQueueList(item, refresh) {

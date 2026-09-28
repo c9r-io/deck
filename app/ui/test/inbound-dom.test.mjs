@@ -197,6 +197,44 @@ test('an approved badge rule freezes its approval and claims each step on the ex
   }
 });
 
+test('a badge rule that accepted the first-send risk claims it on the head row only', async () => {
+  const savedListeners = [...listeners]; listeners.clear();
+  try {
+    for (const reviewEach of [false, true]) {
+      const f = setup([{ ...item, rule: { ...item.rule, source: 'slack', badge: 'deck', reviewEach,
+        firstSendWithoutReadiness: true } }], '', ['first', 'second', 'third']);
+      provider.queueInboundPlan = realQueueInboundPlan;
+      await drainInbound();
+      assert.deepEqual(store.cards[0].inboundPlan.firstSend, { rule: 'rule-1' });
+      assert.equal('authority' in store.cards[0].inboundPlan, false, 'independent of the follow-up approval');
+      if (reviewEach) {
+        const [[, args]] = f.calls.filter(([name]) => name === 'channel_queue_add_reviewed_list');
+        assert.deepEqual(args.args.firstSend, { rule: 'rule-1', event: 'C9/1.2' });
+      } else {
+        const claims = f.calls.filter(([name]) => name === 'channel_queue_add').map(([, args]) => args.args.firstSend);
+        assert.deepEqual(claims, [{ rule: 'rule-1', event: 'C9/1.2' }, undefined, undefined]);
+      }
+    }
+    // default (legacy) rule: nothing frozen, nothing claimed
+    const f = setup([{ ...item, rule: { ...item.rule, source: 'slack', badge: 'deck' } }]);
+    provider.queueInboundPlan = realQueueInboundPlan;
+    await drainInbound();
+    assert.equal('firstSend' in store.cards[0].inboundPlan, false);
+    assert.ok(f.calls.filter(([name]) => name === 'channel_queue_add').every(([, args]) => !('firstSend' in args.args)));
+    // a clock run never claims it, even with the field present
+    const clock = { id: 'item-4', event: { source: 'clock', key: '1700000002', badge: 'rule-1' },
+      rule: { ...item.rule, cmd: '', firstSendWithoutReadiness: true } };
+    const c = setup([clock]);
+    provider.queueInboundPlan = realQueueInboundPlan;
+    await drainInbound();
+    assert.equal('firstSend' in store.cards[0].inboundPlan, false);
+    assert.ok(c.calls.filter(([name]) => name === 'queue_add').every(([, args]) => !('firstSend' in args.args)));
+  } finally {
+    provider.queueInboundPlan = realQueueInboundPlan;
+    listeners.clear(); for (const listener of savedListeners) listeners.add(listener);
+  }
+});
+
 test('a legacy staged Channel inbox item drains without any Slack credentials', async () => {
   const { drainChannel } = await import('../js/inbound.js');
   const { removeLegacySlackCredentials } = await import('../js/slack-legacy-cleanup.js');

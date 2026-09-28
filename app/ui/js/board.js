@@ -510,15 +510,19 @@ export const provider = {
       const claim = (step, count = 1) => (approval ? { authority: { rule: approval.rule, grant: approval.grant, step,
         ...(approval.event ? { event: approval.event } : {}),
         skeletons: (approval.skeletons || []).slice(step, step + count) } } : {});
+      /* the first-send readiness override belongs to the head row alone
+         (scheduler/first_send.rs); only on the external path, re-checked */
+      const firstSend = external && plan.firstSend?.rule
+        ? { firstSend: { rule: plan.firstSend.rule, event: card.origin.key } } : {};
       if (plan.reviewEach) {
         const first = plan.initialSteps[0];
         await inv(external ? 'channel_queue_add_reviewed_list' : 'queue_add_reviewed_list', {
-          args: { ...base, ...first, operationId: plan.operationId, ...claim(0, plan.initialSteps.length) },
+          args: { ...base, ...first, operationId: plan.operationId, ...claim(0, plan.initialSteps.length), ...firstSend },
           texts: plan.initialSteps.map(step => step.text),
         });
       } else {
         for (const [index, step] of plan.initialSteps.entries()) {
-          await inv(command, { args: { ...base, ...step, ...claim(index) } });
+          await inv(command, { args: { ...base, ...step, ...claim(index), ...(index === 0 ? firstSend : {}) } });
         }
       }
       plan.initialQueued = true;

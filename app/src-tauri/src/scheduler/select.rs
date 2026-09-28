@@ -49,6 +49,15 @@
 //!   without evidence. The evidence is only this prerequisite; every other
 //!   hold here still applies once it exists. Other process-bound rows
 //!   (`expected_process` naming any other program) are unchanged.
+//! - First-send readiness override (`first_send.rs`): the head row of a
+//!   Slack badge run whose rule explicitly accepted the startup-dialog risk
+//!   carries `readiness_override`; it lifts the first-interaction gate for
+//!   that row alone — never needs-input, Codex `Unavailable`, the external
+//!   or authority holds, or anything else — and only while this tick could
+//!   read settings (`authority_unverified` false; otherwise the ordinary
+//!   gate holds). It is not evidence: the generation stays unestablished,
+//!   so every later row is still gated. `relies_on_readiness_override` says
+//!   when a send depends on it (the pre-fire fence and the audit).
 //! - A session a SUCCESSFUL listing proves absent is not gated: the row is
 //!   selected so the worker may START it, but for a recognized agent
 //!   starting is not delivery (`delivery::prepare_context_with` returns
@@ -91,7 +100,8 @@ pub(crate) struct Observed {
     /// Not Signal: a tick-wide fact copied to every session so selection
     /// stays pure — this tick could not read the automation-authority source
     /// (settings), so no row may be sent automatically on its approval
-    /// (`mark_authority_unverified`, `authority.rs`).
+    /// (`mark_authority_unverified`, `authority.rs`) or on a first-send
+    /// readiness override (`first_send.rs`).
     pub(crate) authority_unverified: bool,
 }
 
@@ -172,6 +182,20 @@ pub(crate) fn row_agent(i: &QueueItem) -> Option<&'static str> {
 /// `None` for an absent session (no observation): it may be started, and
 /// starting a recognized agent never delivers.
 pub(crate) fn hold_reason(i: &QueueItem, seen: Option<&Observed>) -> Option<Hold> {
+    hold_reason_with(i, seen, true)
+}
+
+/// Whether an automatic send of `i` now depends on its first-send readiness
+/// override: without it the first-interaction gate would hold the row, and
+/// with it nothing holds.
+pub(crate) fn relies_on_readiness_override(i: &QueueItem, seen: Option<&Observed>) -> bool {
+    i.readiness_override.is_some()
+        && hold_reason_with(i, seen, false) == Some(Hold::FirstInteraction)
+        && hold_reason_with(i, seen, true).is_none()
+}
+
+/// `hold_reason`, with the first-send readiness override honored or not.
+fn hold_reason_with(i: &QueueItem, seen: Option<&Observed>, honor_override: bool) -> Option<Hold> {
     let agent = seen.and_then(|o| o.agent);
     if agent == Some(agent_status::NEEDS_INPUT) {
         return Some(Hold::NeedsInput);
@@ -189,6 +213,13 @@ pub(crate) fn hold_reason(i: &QueueItem, seen: Option<&Observed>) -> Option<Hold
         return Some(Hold::AuthorityUnverified);
     }
     let configured = row_agent(i);
+    // the rule's explicit risk acceptance stands in for missing interaction
+    // evidence on the run's head row only, and only while settings could be
+    // read this tick (`first_send.rs`); it is never evidence itself
+    let overridden = honor_override
+        && i.readiness_override.is_some()
+        && i.mode == "at"
+        && !o.authority_unverified;
     // Codex: the target's proof or literal `codex` foreground, or a row
     // configured for Codex (a wrapper or `node` foreground) — `Trusted` is
     // its interaction evidence
@@ -197,10 +228,12 @@ pub(crate) fn hold_reason(i: &QueueItem, seen: Option<&Observed>) -> Option<Hold
         .or((configured == Some("codex")).then_some(agent_status::CodexSignalTrust::Unknown));
     match codex {
         Some(agent_status::CodexSignalTrust::Unavailable) => return Some(Hold::CodexUnavailable),
-        Some(agent_status::CodexSignalTrust::Unknown) => return Some(Hold::FirstInteraction),
+        Some(agent_status::CodexSignalTrust::Unknown) if !overridden => {
+            return Some(Hold::FirstInteraction)
+        }
         _ => {}
     }
-    if configured == Some("claude") && !o.claude_interaction {
+    if configured == Some("claude") && !o.claude_interaction && !overridden {
         return Some(Hold::FirstInteraction);
     }
     None

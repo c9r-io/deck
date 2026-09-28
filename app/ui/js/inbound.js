@@ -26,6 +26,11 @@
 // re-checks every claim against settings (scheduler/authority.rs) and the
 // rows stay `external` either way. A later rule edit changes future runs
 // only; revoking the approval stops this run's unsent rows too.
+// A badge rule that accepted sending its first step without agent
+// readiness (`firstSendWithoutReadiness`, scheduler/first_send.rs) freezes
+// `firstSend: {rule}` into the plan; the head row alone claims it with the
+// event key, and the backend re-checks the claim against settings and its
+// own copy of the event. A clock run never carries it.
 import { ctx, genId, inv, listen, store, uev } from './state.js';
 import { provider } from './board.js';
 import { toast } from './dialogs.js';
@@ -213,6 +218,8 @@ async function handleInbound(item) {
   }
   const now = Math.floor(Date.now() / 1000);
   const authority = clock ? null : await frozenApproval(item, plan);
+  const firstSend = !clock && item.rule?.source === 'slack' && item.rule.firstSendWithoutReadiness === true
+    ? { rule: item.rule.id } : null;
   const cardId = genId('S');
   const operationId = await channelDigestId('B', `${cardId}/list`);
   const initialSteps = await Promise.all(plan.steps.map(async (text, index) => ({
@@ -225,6 +232,7 @@ async function handleInbound(item) {
     card = await provider.create({ ...plan.card, id: cardId, inboundPlan: {
       operationId, reviewEach: item.rule.reviewEach === true, initialSteps, initialQueued: false,
       ...(authority ? { authority } : {}),
+      ...(firstSend ? { firstSend } : {}),
     } });
   } catch (e) {
     toast(t('inbound.createFailed', { badge }));

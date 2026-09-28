@@ -69,16 +69,19 @@ message only ever makes one. Only your own reactions count. A badge rule
 has no pause: the backlog it would collect while paused has no honest
 reading, so it is deleted instead (cards it already created stay).
 
-### Continue approved steps automatically
+### Automatically continue approved follow-up steps
 
-A Slack badge rule has one more choice: **Continue approved steps
-automatically**. The run's first step behaves exactly as before either way;
-ticking it approves *this version* of the rule and its template so that the
-run's later steps continue once the agent is safely ready, without a Send
-now per step. Unticked, each follow-up waits for Send now, as on Stable. It does not make the agent unattended:
+Your reaction on the message already approves the run and its first step.
+A Slack badge rule has one more choice: **Automatically continue approved
+follow-up steps**. Ticking it approves *this version* of the rule and its
+template so that the run's later steps continue once the agent is safely
+ready, without a Send now per step. Unticked, each follow-up waits for Send
+now, as on Stable. It does not make the agent unattended:
 
-- a newly started Claude or Codex is never typed into — the first step
-  still waits for one real interaction with the agent (or your Send now);
+- a newly started Claude or Codex is not typed into on its own — the first
+  step still waits for one real interaction with the agent (or your Send
+  now, which is your confirmation that the agent is ready, not an approval),
+  unless you chose the separate first-send option below;
 - an agent asking for input or permission, a Codex process whose status
   hooks cannot be attributed to it, and inspection checkpoints still pause
   the run, and the ⏱ panel says which ("Approved step · …");
@@ -94,6 +97,41 @@ influence the agent. Without it, only your fixed steps are sent
 automatically and the others wait for Send now. Deck does not claim to make
 message text safe. See `docs/scheduler-context-safety.md` ("Automation
 delivery authority") for the exact rules.
+
+### Send the first step to a newly started agent without waiting for readiness
+
+A separate, unticked-by-default choice on a Slack badge rule, independent of
+the one above. It exists because neither Claude Code nor Codex currently
+exposes a trustworthy "ready for the first prompt" fact, so by default Deck
+waits for one real interaction with a freshly started agent: a Trust,
+Update, sign-in, permission or other startup dialog may be showing, and the
+text or its Enter would answer that dialog instead (trust the folder, start
+an update). Ticking it — after an explicit confirmation — tells Deck to send
+the run's **first step** anyway: you accept that risk for this rule, so the
+reaction stays the only thing you do. Deck does not claim the agent is
+ready; it only stops waiting for proof.
+
+- Only the first step of runs this rule creates. Later steps keep every
+  normal check, with or without the approval above: after the first step
+  the agent has still not *proven* an interaction to Deck, so an approved
+  follow-up waits for its hooks (or your Send now) as before.
+- Everything else still applies to that first step: an input or permission
+  request the agent reports, a Codex process whose Signal cannot be
+  attributed, pause, the list order, its time, the send gap, the exact
+  target pane and program, and the paste-mode check.
+- Claude, and Codex only when the command includes `--no-daemon`: Codex's
+  default shared background service gives Deck no attributable Signal at
+  all, so the option does nothing there (the rule's facts say so).
+- Starting still types nothing: the session is started, and the first step
+  goes on the scheduler pass that follows right after, into the now-running
+  agent.
+- Unticking it, deleting the rule or changing its command before the first
+  step is sent stops it for runs already waiting; if Deck cannot read its
+  settings it does not use it. Send now always works.
+- Slack channel monitors, the Connector, clock rules and lists never have
+  this option. A delivery sent this way is recorded as such (no text).
+- It is a temporary escape hatch: when an agent exposes an official
+  readiness fact, Deck should use that instead.
 
 ## The clock trigger
 

@@ -413,6 +413,12 @@ fn external_text_reaches_the_one_admission() {
         let admitted = text.find("admit_external(&mut args)?;").expect(external);
         let approved = text.find("admit_authority(&mut args,").expect(external);
         assert!(admitted < approved, "{external}: admission before approval");
+        // the first-send readiness override (`first_send.rs`) too
+        let first_send = text.find("admit_first_send(&mut args);").expect(external);
+        assert!(
+            admitted < first_send,
+            "{external}: admission before first-send"
+        );
     }
     // ...a bounded step's proof reads the backend's own pending event, and
     // only there...
@@ -429,14 +435,21 @@ fn external_text_reaches_the_one_admission() {
         .collect();
     assert_eq!(
         callers,
-        [(
-            "scheduler/ops.rs".to_string(),
-            "admit_authority".to_string()
-        )],
+        [
+            (
+                "scheduler/ops.rs".to_string(),
+                "admit_authority".to_string()
+            ),
+            (
+                "scheduler/ops.rs".to_string(),
+                "admit_first_send".to_string()
+            )
+        ],
         "the inbound event is proof material for the admission only"
     );
     // ...an owner command refuses a claim outright...
     assert!(validate.contains("if a.authority.is_some() && !a.channel_path {"));
+    assert!(validate.contains("if a.first_send.is_some() && !a.channel_path {"));
     // ...and the verdict is the backend's own (`#[serde(skip)]`), never a
     // caller field, while provenance stays set beside it
     let ops = production_sources()
@@ -445,6 +458,8 @@ fn external_text_reaches_the_one_admission() {
         .unwrap()
         .1;
     assert!(ops.contains("#[serde(skip)]\n    pub(crate) granted: Vec<Option<StepAuthority>>,"));
+    assert!(ops
+        .contains("#[serde(skip)]\n    pub(crate) first_send_granted: Option<ReadinessOverride>,"));
     let core = body("scheduler/ops.rs", "add_item_bound");
     assert!(
         core.contains("external: args.channel_path || args.external_text,\n        authority: args.granted.first().cloned().flatten(),")

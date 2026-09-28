@@ -259,6 +259,17 @@ pub(crate) struct QueueAddArgs {
     /// list, one for a single row).
     #[serde(skip)]
     pub(crate) granted: Vec<Option<StepAuthority>>,
+    /// The frozen plan's statement that this call's first text is the head
+    /// row of a Slack badge run whose rule may send it without readiness
+    /// (`first_send.rs`). A request only, accepted on the external path
+    /// alone; omitted when absent so older operation fingerprints stay
+    /// identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) first_send: Option<FirstSendClaim>,
+    /// Set only by `admit_first_send`, never by a caller: the verified
+    /// override for this call's FIRST row (none for any later row).
+    #[serde(skip)]
+    pub(crate) first_send_granted: Option<ReadinessOverride>,
 }
 
 /// Format (Unicode Cf) characters: invisible, so they must not hide what
@@ -322,6 +333,12 @@ pub(crate) fn validate_add(a: &QueueAddArgs) -> Result<(), DeckError> {
         return Err(DeckError::new(
             ErrorKind::Invalid,
             "only an automation's external rows carry an approval",
+        ));
+    }
+    if a.first_send.is_some() && !a.channel_path {
+        return Err(DeckError::new(
+            ErrorKind::Invalid,
+            "only a Slack badge run's external head row carries a first-send policy",
         ));
     }
     if a.external_text {
@@ -622,6 +639,7 @@ fn add_item_bound(
         review: None,
         external: args.channel_path || args.external_text,
         authority: args.granted.first().cloned().flatten(),
+        readiness_override: args.first_send_granted,
     });
     if let (Some(id), Some(fingerprint)) = (operation_id, operation_fingerprint) {
         let item = q.items.last().expect("queue item just appended");
@@ -667,6 +685,7 @@ pub(crate) fn channel_queue_add(
         admit_external(&mut args)?;
         let text = normalize_prompt(&args.text);
         admit_authority(&mut args, std::slice::from_ref(&text));
+        admit_first_send(&mut args);
         queue_add(state, app, args)
     })();
     if let Err(error) = &result {
@@ -728,6 +747,34 @@ pub(super) fn admit_authority(args: &mut QueueAddArgs, texts: &[String]) {
                 None
             }
         });
+    }
+}
+
+/// The first-send readiness override for an externally admitted call
+/// (`first_send.rs`): its claim names the head row of a Slack badge run and
+/// is checked against the CURRENT settings and the backend's own copy of
+/// the event. A refused claim admits the row without it — the ordinary
+/// first-interaction gate holds it — and logs a closed code. Only the
+/// external commands call this, after `admit_external`.
+pub(super) fn admit_first_send(args: &mut QueueAddArgs) {
+    args.first_send_granted = None;
+    let Some(claim) = args.first_send.clone() else {
+        return;
+    };
+    let config = crate::inbound::read_config_strict();
+    let event = crate::inbound::pending_event(&claim.event, &claim.rule);
+    match first_send::verify(
+        config.as_ref(),
+        &claim,
+        &args.cmd,
+        &args.mode,
+        args.external_text,
+        event.as_ref(),
+    ) {
+        Ok(granted) => args.first_send_granted = Some(granted),
+        Err(code) => applog(&format!(
+            "[queue] first-send policy not applied ({code}) — the first step waits for an agent interaction"
+        )),
     }
 }
 
@@ -1240,6 +1287,8 @@ pub(super) fn add_reviewed_rows(
         row.operation_id = args.operation_id.as_ref().map(|id| format!("{id}-{k}"));
         row.tpl_idx = row.tpl.as_ref().map(|_| k as u32 + 1);
         row.granted = vec![args.granted.get(k).cloned().flatten()];
+        // the first-send override belongs to the head row alone
+        row.first_send_granted = args.first_send_granted.clone().filter(|_| k == 0);
         row.tpl_total = row.tpl.as_ref().map(|_| texts.len() as u32);
         if k > 0 {
             row.mode = "chain".into();
@@ -1282,6 +1331,7 @@ pub(crate) fn channel_queue_add_reviewed_list(
     let result = (|| {
         admit_external(&mut args)?;
         admit_authority(&mut args, &texts);
+        admit_first_send(&mut args);
         queue_add_reviewed_list(state, app, args, texts)
     })();
     if let Err(error) = &result {

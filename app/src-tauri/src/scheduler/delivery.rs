@@ -224,7 +224,9 @@ pub(crate) fn prepare_context_with(
     if row_agent(item).is_some() {
         // process identity is not input readiness, and time is not input
         // authority: the agent's first prompt waits for its first real
-        // interaction (select.rs, first-interaction gate)
+        // interaction (select.rs, first-interaction gate) — or, for a row
+        // carrying a first-send readiness override (`first_send.rs`), for a
+        // LATER tick that finds the session existing; starting never types
         return Prepared::StartedAwaitingInteraction(ready);
     }
     // The process is in the foreground the instant it execs, while its TUI
@@ -361,6 +363,7 @@ pub(crate) fn finalize_delivery(
         operation_id: item.operation_id.clone(),
         authority: item.authority.clone(),
         manual: false,
+        readiness_overridden: false,
     });
     if let Some(operation_id) = &item.operation_id {
         if let Some(operation) = q.operations.iter_mut().find(|op| &op.id == operation_id) {
@@ -441,6 +444,7 @@ pub(crate) fn finalize_delivery(
                     review: None,
                     external: item.external,
                     authority: None,
+                    readiness_override: None,
                 });
             }
         }
@@ -590,10 +594,14 @@ pub(crate) struct SendHooks<'a> {
 
 /// What the pre-fire transaction decided.
 enum PreFire {
-    /// the firing intent is persisted: cross the irreversible boundary
-    Fire(Box<QueueItem>, String),
+    /// the firing intent is persisted: cross the irreversible boundary;
+    /// the flag says the send relies on a first-send readiness override
+    Fire(Box<QueueItem>, String, bool),
     /// the row's approval was revoked: it was stripped, nothing is sent
     Revoked,
+    /// the row's first-send readiness override is no longer allowed by its
+    /// rule: it was stripped, nothing is sent (`first_send.rs`)
+    OverrideWithdrawn,
 }
 
 pub(crate) struct ContextHooks<'a> {
@@ -708,8 +716,14 @@ fn send_one_guarded(
             return Ok(None);
         }
         // automatic only: send-now is the user acting, not the approval
-        if request.requested.is_none() && relies_on_authority(&sel) {
-            match fence(&sel, (h.authority)().as_ref()) {
+        // and not the first-send override
+        let automatic = request.requested.is_none();
+        let overridden =
+            automatic && relies_on_readiness_override(&sel, request.activity.get(&sel.session));
+        let config =
+            (automatic && (relies_on_authority(&sel) || overridden)).then(|| (h.authority)());
+        if automatic && relies_on_authority(&sel) {
+            match fence(&sel, config.as_ref().and_then(Option::as_ref)) {
                 Fence::Clear => {}
                 // unverifiable: keep the row and its approval, send nothing
                 Fence::Unverified => return Ok(None),
@@ -719,6 +733,20 @@ fn send_one_guarded(
                         it.revision = it.revision.wrapping_add(1);
                     }
                     return Ok(Some(PreFire::Revoked));
+                }
+            }
+        }
+        if overridden {
+            match first_send::fence(&sel, config.as_ref().and_then(Option::as_ref)) {
+                Fence::Clear => {}
+                // unverifiable: keep the row and its override, send nothing
+                Fence::Unverified => return Ok(None),
+                Fence::Revoked => {
+                    if let Some(it) = q.items.iter_mut().find(|i| i.id == sel.id) {
+                        it.readiness_override = None;
+                        it.revision = it.revision.wrapping_add(1);
+                    }
+                    return Ok(Some(PreFire::OverrideWithdrawn));
                 }
             }
         }
@@ -735,16 +763,26 @@ fn send_one_guarded(
             id: delivery.clone(),
             snapshot: snapshot.clone(),
         });
-        Ok(Some(PreFire::Fire(Box::new(snapshot), delivery)))
+        Ok(Some(PreFire::Fire(
+            Box::new(snapshot),
+            delivery,
+            overridden,
+        )))
     });
     // the firing intent is on disk (or nothing will be sent): release the
     // fence before the injection, which may wait on a session boot
     drop(fence_guard);
-    let (item, delivery) = match pre {
-        Ok(Some(PreFire::Fire(item, delivery))) => (*item, delivery),
+    let (item, delivery, overridden) = match pre {
+        Ok(Some(PreFire::Fire(item, delivery, overridden))) => (*item, delivery, overridden),
         Ok(Some(PreFire::Revoked)) => {
             applog(
                 "[queue] automation approval withdrawn before sending — the row waits for send-now",
+            );
+            return SendResult::Nothing;
+        }
+        Ok(Some(PreFire::OverrideWithdrawn)) => {
+            applog(
+                "[queue] first-send policy withdrawn before sending — the first step waits for an agent interaction",
             );
             return SendResult::Nothing;
         }
@@ -769,14 +807,21 @@ fn send_one_guarded(
                 match (&item.authority, request.requested) {
                     (Some(a), None) => format!(", approved {} step", a.class.as_str()),
                     _ => String::new(),
+                } + if overridden {
+                    ", first send without readiness confirmation"
+                } else {
+                    ""
                 }
             ));
             let mut q = qm.lock_or_recover();
             finalize_delivery(&mut q, &item.id, &delivery, now_epoch(), false);
-            if request.requested.is_some() {
-                // audit: the user sent it, not the scheduler
+            if request.requested.is_some() || overridden {
+                // audit: the user sent it, not the scheduler — or the
+                // scheduler sent it without interaction evidence because
+                // the rule explicitly allowed that (`first_send.rs`)
                 if let Some(record) = q.deliveries.iter_mut().rfind(|d| d.id == delivery) {
-                    record.manual = true;
+                    record.manual = request.requested.is_some();
+                    record.readiness_overridden = overridden;
                 }
             }
             let cancelled = is_cancelled(&q, &item.session);

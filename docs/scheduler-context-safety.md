@@ -237,9 +237,53 @@ expected process and the bracketed-paste check all still apply.
   the approved row again until the agent proves an interaction.
 - **Fresh agents.** An approved first step for a fresh Claude or Codex is
   started and never typed into (`StartedAwaitingInteraction`), exactly as
-  without an approval. Zero-click bootstrap of a fresh interactive agent is
-  not supported: the one real interaction (or send-now) there is a safety
-  boundary, not a confirmation to optimize away.
+  without an approval. The one real interaction (or send-now) there is a
+  readiness confirmation, not an approval: the reaction already approved
+  the run. By default it is a safety boundary; the only way past it is the
+  explicit per-rule first-send readiness override below.
+
+## First-send readiness override
+
+Three things stay distinct: **run/content approval** (the Slack reaction,
+plus `authority.rs` for follow-ups), **readiness evidence**
+(`agent_status::Evidence`, the first-interaction gate), and an **explicit
+readiness-risk override** (`scheduler/first_send.rs`). The override is a
+temporary compatibility escape hatch for the missing upstream primitive —
+no current Claude Code or Codex fact proves a fresh TUI is ready for its
+first typed prompt — and never a claim that the agent is ready.
+
+- A Slack badge rule may carry `firstSendWithoutReadiness` (settings.json,
+  absent = off, refused on any other rule). The frozen plan of a run it
+  creates carries `firstSend: {rule}`; the HEAD row alone claims it with
+  the event key through `channel_queue_add*`, and `first_send::verify`
+  admits it only against the current settings and the backend's own copy
+  of that rule's Slack event, for Claude or for Codex with a literal
+  `--no-daemon`. The row keeps `readiness_override {rule, trigger}`. Owner
+  commands refuse the claim; channel monitors, Connector, clock, lists and
+  MCP never produce one; later steps never carry it.
+- Selection: the override lifts only the first-interaction gate (Claude
+  without an interaction word, Codex `Unknown`) for that `at` row, and only
+  while the tick read settings successfully. Needs-input, Codex
+  `Unavailable`, the external and authority holds, pause, review, group
+  order, time, send gap, target identity, expected process and the
+  bracketed-paste check all still apply. No evidence is written: every
+  later row stays gated until the agent really interacts.
+- Starting is unchanged: an absent session is started and bound with zero
+  bytes (`StartedAwaitingInteraction`); the worker then wakes the scheduler
+  once (at most once per session per tick, `thread::start_wake_due`) and
+  that ordinary pass sends the head row into the existing session through
+  the existing-session probe. For a row without the override the same pass
+  holds it at `first-send` and starts no worker, so nothing wakes again.
+  No settle delay, title, quiet time or foreground name is used as
+  readiness.
+- Revocation: the tick sweep strips it from unsent rows whose rule no longer
+  allows it (unticked, deleted, command changed), and the pre-fire fence
+  re-reads settings under `storage::settings_fence` in the transaction that
+  persists the firing intent. Unreadable settings strip nothing and send
+  nothing on the override. Send-now never consults it.
+- Audit: the delivery record's `readiness_overridden` says the scheduler
+  sent the row without interaction evidence because the rule allowed it; a
+  send-now of the same row is `manual` instead.
 - **Revocation fence.** The irreversible boundary is the persisted firing
   intent. An automatic send of an approved row re-reads settings and
   re-validates the approval inside the very transaction that persists that

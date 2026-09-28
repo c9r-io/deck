@@ -3,7 +3,7 @@
 // The drawer itself (automation.js) is verified by the WKWebView smoke.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { approvalText, approveRule, composeRule, graceOptions, graceText, grantDigest, grantManifest, grantState, liveRules, mergeRules, recentRuns, ruleFacts, ruleLabel, runSummary, scheduleText, stepClass, templateCarriesMessage, triggerText } from '../js/automation-model.js';
+import { approvalText, approveRule, composeRule, firstSendNeedsConfirm, firstSendSupported, firstSendText, withFirstSend, graceOptions, graceText, grantDigest, grantManifest, grantState, liveRules, mergeRules, recentRuns, ruleFacts, ruleLabel, runSummary, scheduleText, stepClass, templateCarriesMessage, triggerText } from '../js/automation-model.js';
 import { readFileSync } from 'node:fs';
 import { GRACE_CHOICES } from '../js/settings-model.js';
 import { setLocale } from '../js/i18n.js';
@@ -69,9 +69,10 @@ test('the fact rows name the target, the inspection mode and the trigger\'s own 
   assert.equal(paused[3][1], 'Inspect after each row');
   assert.equal(paused[6][1], 'paused');
   const slack = ruleFacts(slackRule(), { columnName: 'Working', slackConnected: true });
-  assert.deepEqual(slack.slice(-2)[0], ['automation.kv.connection', 'connected']);
-  assert.match(ruleFacts(slackRule(), {}).slice(-2)[0][1], /^not connected/);
-  assert.deepEqual(slack.slice(-1)[0], ['automation.kv.autoSend', 'off — each follow-up waits for Send now']);
+  assert.deepEqual(slack.slice(-3)[0], ['automation.kv.connection', 'connected']);
+  assert.match(ruleFacts(slackRule(), {}).slice(-3)[0][1], /^not connected/);
+  assert.deepEqual(slack.slice(-2)[0], ['automation.kv.autoSend', 'off — each follow-up waits for Send now']);
+  assert.deepEqual(slack.slice(-1)[0], ['automation.kv.firstSend', 'waits for your first interaction or Send now']);
 });
 
 test('recent runs belong to the rule by id (clock) or badge (Slack), newest first, at most four', () => {
@@ -205,4 +206,68 @@ test('the bounded-step expansion vectors are the webview\'s own fill (the backen
   const { fillInboundTemplate } = await import('../js/pure.js');
   assert.ok(vector.expansions.length >= 5);
   for (const v of vector.expansions) assert.equal(fillInboundTemplate(v.skeleton, v.msg), v.expected, v.skeleton);
+});
+
+test('the first-send readiness override is a separate, Slack-badge-only, confirmed choice', async () => {
+  // off unless explicitly on; only a Slack badge rule keeps it
+  assert.equal('firstSendWithoutReadiness' in withFirstSend(slackRule(), false), false);
+  assert.equal(withFirstSend(slackRule(), true).firstSendWithoutReadiness, true);
+  assert.equal('firstSendWithoutReadiness' in withFirstSend(slackRule({ firstSendWithoutReadiness: true }), false), false,
+    'turning it off removes it');
+  assert.equal('firstSendWithoutReadiness' in withFirstSend(clockRule(), true), false);
+  assert.equal('firstSendWithoutReadiness' in withFirstSend({ source: 'channel', id: 'c1' }, true), false);
+  assert.equal(withFirstSend(slackRule(), 'yes').firstSendWithoutReadiness, undefined, 'only a real true');
+  // turning it on asks; turning it off (or keeping it) never does
+  assert.equal(firstSendNeedsConfirm(false, true), true);
+  assert.equal(firstSendNeedsConfirm(true, false), false);
+  assert.equal(firstSendNeedsConfirm(false, false), false);
+  // Claude, or Codex kept out of its shared daemon (twin of first_send.rs)
+  for (const [cmd, ok] of [['claude', true], ['claude --model opus', true], ['codex --no-daemon', true],
+    ['codex --yolo --no-daemon', true], ['codex', false], ['codex --yolo', false], ['codex --no-daemon=false', false],
+    ['', false], ['bash', false]]) assert.equal(firstSendSupported(cmd), ok, cmd);
+  // independent of the follow-up approval: not part of the grant digest
+  const template = { name: 'tpl', steps: ['Review.', 'Test.'] };
+  const plain = await approveRule(slackRule({ cmd: 'claude' }), template);
+  const withIt = await approveRule(withFirstSend(slackRule({ cmd: 'claude' }), true), template);
+  assert.equal(withIt.autoSend.digest, plain.autoSend.digest);
+  assert.equal(await grantState(withFirstSend(plain, true), template), 'valid');
+  // what the rule's facts say, per state
+  assert.equal(firstSendText(slackRule()), 'waits for your first interaction or Send now');
+  assert.equal(firstSendText(slackRule({ cmd: 'claude', firstSendWithoutReadiness: true })),
+    'sent without waiting for readiness (startup-dialog risk accepted)');
+  assert.equal(firstSendText(slackRule({ cmd: 'codex', firstSendWithoutReadiness: true })),
+    'on, but not used: the command must be Claude, or Codex with --no-daemon');
+  const facts = rule => Object.fromEntries(ruleFacts(rule));
+  assert.equal(facts(slackRule())['automation.kv.firstSend'], 'waits for your first interaction or Send now');
+  assert.equal('automation.kv.firstSend' in facts(clockRule()), false, 'clock rules never show it');
+  assert.equal('automation.kv.firstSend' in facts({ ...slackRule(), source: 'channel', channelIds: [], senderUserIds: [], senderBotIds: [], idleMinutes: 30 }), false);
+});
+
+test('the first-send option and its warning are in both languages and say the right thing', async () => {
+  const en = (await import('../js/i18n/en.js')).default;
+  const zh = (await import('../js/i18n/zh-Hans.js')).default;
+  for (const key of ['automation.firstSend.option', 'automation.firstSend.hint', 'automation.firstSend.confirm',
+    'automation.firstSend.on', 'automation.firstSend.off', 'automation.firstSend.unsupported',
+    'automation.kv.firstSend', 'queue.stage.firstSendOverride']) {
+    assert.ok(en[key] && zh[key], key);
+  }
+  assert.equal(en['automation.autoSend.option'], 'Automatically continue approved follow-up steps');
+  assert.equal(zh['automation.autoSend.option'], '自动继续已批准的后续步骤');
+  assert.equal(zh['automation.firstSend.option'], '新启动的 Agent 也直接发送第一步');
+  for (const word of ['Trust', 'Update', 'permission', 'Enter', 'risk']) {
+    assert.ok(en['automation.firstSend.confirm'].includes(word), word);
+  }
+  for (const word of ['Trust', 'Update', 'Permission', '回车', '风险']) {
+    assert.ok(zh['automation.firstSend.confirm'].includes(word), word);
+  }
+  assert.ok(/--no-daemon/.test(en['automation.firstSend.hint']) && /--no-daemon/.test(zh['automation.firstSend.hint']));
+  // the user-facing concept is never "bypass", and the ordinary first-send
+  // stage asks for readiness, not approval
+  for (const dict of [en, zh]) {
+    for (const key of Object.keys(dict).filter(k => k.startsWith('automation.firstSend.'))) {
+      assert.equal(/bypass|绕过/i.test(dict[key]), false, key);
+    }
+  }
+  assert.equal(/approv/i.test(en['queue.stage.firstSend']), false);
+  assert.ok(/ready/.test(en['queue.stage.firstSend']));
 });

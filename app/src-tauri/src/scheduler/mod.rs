@@ -157,6 +157,7 @@
 mod authority;
 pub(crate) mod connector;
 mod delivery;
+pub(crate) mod first_send;
 mod ops;
 mod review;
 mod select;
@@ -166,6 +167,7 @@ mod thread;
 
 pub(crate) use authority::*;
 pub(crate) use delivery::*;
+pub(crate) use first_send::{FirstSendClaim, ReadinessOverride};
 pub(crate) use ops::*;
 pub(crate) use review::*;
 pub(crate) use select::*;
@@ -302,6 +304,14 @@ pub(crate) struct QueueItem {
     /// Older decks ignore the field and keep holding the row.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     authority: Option<StepAuthority>,
+    /// First-send readiness override (`first_send.rs`), separate from
+    /// content authority: set only on the external admission path for the
+    /// head row of a Slack badge run whose rule explicitly accepted sending
+    /// it without first-interaction evidence. It lifts only the
+    /// first-interaction hold, is revalidated before the send and swept on
+    /// revocation. Older decks ignore the field and keep holding the row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    readiness_override: Option<ReadinessOverride>,
 }
 
 pub(crate) fn default_state() -> ItemState {
@@ -486,6 +496,11 @@ pub(crate) struct DeliveryRecord {
     /// The user sent it with send-now (not the scheduler).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     manual: bool,
+    /// The scheduler sent this head row to an agent generation WITHOUT
+    /// first-interaction evidence because its Slack badge rule explicitly
+    /// allowed it (`first_send.rs`) — never "the agent was proven ready".
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    readiness_overridden: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone)]

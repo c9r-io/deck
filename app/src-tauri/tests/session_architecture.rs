@@ -215,5 +215,15 @@ fn settings_writes_and_the_pre_fire_authority_check_share_one_fence() {
     let released = guarded.find("drop(fence_guard);").expect("fence released");
     let fire = guarded.find("match (h.fire)(&item)").unwrap();
     assert!(taken < intent && intent < released && released < fire);
-    assert!(guarded[..released].contains("fence(&sel, (h.authority)().as_ref())"));
+    // one settings read under the fence decides both the approval and the
+    // first-send readiness override (`scheduler/first_send.rs`)
+    let held = &guarded[..released];
+    let read = held
+        .find(".then(|| (h.authority)())")
+        .expect("settings read");
+    assert!(taken < read);
+    assert!(held.contains("match fence(&sel, config.as_ref().and_then(Option::as_ref))"));
+    assert!(
+        held.contains("match first_send::fence(&sel, config.as_ref().and_then(Option::as_ref))")
+    );
 }

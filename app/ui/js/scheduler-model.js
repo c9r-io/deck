@@ -101,3 +101,8 @@ export function listStartCalls(base, sched, steps, tpl = null) {
    given-up rows are past that question. */
 const PAST_APPROVAL = new Set(['review', 'review-approved', 'ambiguous', 'firing', 'failed']);
 export const approvedWait = plan => plan?.authorized === true && !PAST_APPROVAL.has(plan.stage);
+
+/* A head row whose Slack badge rule allows sending it without agent
+   readiness (scheduler/first_send.rs) and that is still waiting: the panel
+   says so, so a first step typed into a fresh agent is never a surprise. */
+export const firstSendOverrideWait = plan => plan?.first_send_override === true && !PAST_APPROVAL.has(plan.stage);

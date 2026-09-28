@@ -49,6 +49,7 @@ fn qi(id: &str, mode: &str) -> QueueItem {
         review: None,
         external: false,
         authority: None,
+        readiness_override: None,
     }
 }
 
@@ -620,6 +621,8 @@ fn add_validation_rejects_bad_combinations() {
         channel_path: false,
         authority: None,
         granted: Vec::new(),
+        first_send: None,
+        first_send_granted: None,
     };
     assert!(validate_add(&base()).is_ok());
     let mut a = base();
@@ -726,6 +729,8 @@ fn add_validation_covers_quiet_and_start() {
         channel_path: false,
         authority: None,
         granted: Vec::new(),
+        first_send: None,
+        first_send_granted: None,
     };
     let mut a = base();
     a.quiet_secs = Some(MIN_QUIET_SECS);
@@ -1882,6 +1887,8 @@ fn add_args(session: &str, text: &str) -> QueueAddArgs {
         channel_path: false,
         authority: None,
         granted: Vec::new(),
+        first_send: None,
+        first_send_granted: None,
     }
 }
 
@@ -3249,6 +3256,7 @@ fn retry_and_acknowledge_resolve_every_delivery_state_exactly_once() {
         operation_id: None,
         authority: None,
         manual: false,
+        readiness_overridden: false,
     });
     assert!(acknowledge_ambiguous(&mut q, "gone").is_ok());
     assert!(retry_item(&mut q, "gone").is_ok());
@@ -3264,6 +3272,7 @@ fn retry_and_acknowledge_resolve_every_delivery_state_exactly_once() {
         operation_id: None,
         authority: None,
         manual: false,
+        readiness_overridden: false,
     });
     assert!(acknowledge_ambiguous(&mut q, "plain").is_ok());
     assert!(
@@ -5170,6 +5179,30 @@ enum EmptyState {
 /// `prepare_context_with` start into a fake agent TUI that records every
 /// stdin byte. Returns (candidates, send result, recorded bytes, started).
 fn automation_from(state: EmptyState, argv0: &str) -> (usize, Option<SendResult>, String, bool) {
+    let (candidates, result, bytes, started, _) = automation_run(state, argv0, None, false);
+    (candidates, result, bytes, started)
+}
+
+/// `automation_from`, optionally for the head row of a Slack badge run whose
+/// rule allows a first send without readiness (`first_send` = that rule's
+/// command). With `follow_up`, the immediate pass the worker's post-start
+/// wake triggers (`thread::start_wake_due`) runs right after the start as
+/// an ordinary tick — fresh listing, `tick_selection`, a worker only for a
+/// selected session, no interaction evidence — and its candidate count,
+/// result and the bytes recorded by then are returned too.
+#[allow(clippy::type_complexity)]
+fn automation_run(
+    state: EmptyState,
+    argv0: &str,
+    first_send: Option<&str>,
+    follow_up: bool,
+) -> (
+    usize,
+    Option<SendResult>,
+    String,
+    bool,
+    Option<(usize, Option<SendResult>, String)>,
+) {
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let dir = std::env::temp_dir().join(format!("deck-empty-{}-{seq}", std::process::id()));
@@ -5256,6 +5289,13 @@ while (sysread(STDIN, my $b, 1)) { printf $l "%02x", ord($b); }
     row.session = format!("empty-{seq}");
     row.external = true;
     row.authority = Some(step_authority(0));
+    if let Some(cmd) = first_send {
+        row.cmd = cmd.into();
+        row.readiness_override = Some(ReadinessOverride {
+            rule: granted_rule().id,
+            trigger: TriggerClass::SlackBadge,
+        });
+    }
     let session = row.session.clone();
     let qm = Mutex::new(qs(vec![row]));
     let candidates = tick_selection(&qm.lock_or_recover(), NOW, 720, observations.as_ref());
@@ -5289,9 +5329,45 @@ while (sysread(STDIN, my $b, 1)) { printf $l "%02x", ord($b); }
     std::thread::sleep(std::time::Duration::from_millis(700));
     let bytes = std::fs::read_to_string(&log).unwrap();
     let started = run(&["has-session", "-t", &format!("={session}")]).is_ok();
+    let second = follow_up.then(|| {
+        let cmd = first_send.unwrap_or(argv0);
+        let rule_source = || Some(config_with(vec![first_send_rule(cmd)]));
+        let observations = crate::tmux_lifecycle::scheduler_pane_listing_with(&run)
+            .ok()
+            .map(observe)
+            .expect("the started session is listed");
+        let candidates = tick_selection(&qm.lock_or_recover(), NOW, 720, Some(&observations));
+        let result = (!candidates.is_empty()).then(|| {
+            send_one_safe(
+                &qm,
+                &AtomicBool::new(false),
+                &session,
+                720,
+                &observations,
+                &SendHooks {
+                    fire: &fire,
+                    persist: &ok_persist,
+                    kill: &|_: &str| {},
+                    authority: &rule_source,
+                },
+                &ContextHooks {
+                    prepare: &|item: &QueueItem, cancelled: &dyn Fn() -> bool| {
+                        prepare_context_with(item, cancelled, &ops)
+                    },
+                    final_probe: &|item: &QueueItem| probe(item, item.binding.as_ref()),
+                },
+            )
+        });
+        std::thread::sleep(std::time::Duration::from_millis(700));
+        (
+            candidates.len(),
+            result,
+            std::fs::read_to_string(&log).unwrap(),
+        )
+    });
     drop(server);
     let _ = std::fs::remove_dir_all(&dir);
-    (candidates.len(), result, bytes, started)
+    (candidates.len(), result, bytes, started, second)
 }
 
 /// From a Deck server with no sessions (or none at all) an approved
@@ -5325,4 +5401,796 @@ fn an_arbitrary_listing_failure_starts_nothing_and_sends_nothing() {
         assert_eq!(candidates, 0, "{agent}");
         assert!(result.is_none() && !started && bytes.is_empty(), "{agent}");
     }
+}
+
+// ---------- first-send readiness override (first_send.rs) ------------------
+
+/// The fixture's Slack badge rule with the first-send override accepted for
+/// command `cmd` (no approval: the override is independent of it).
+fn first_send_rule(cmd: &str) -> crate::inbound::Rule {
+    let mut rule = granted_rule();
+    rule.cmd = cmd.into();
+    rule.auto_send = None;
+    rule.first_send_without_readiness = true;
+    rule
+}
+
+fn first_send_override() -> ReadinessOverride {
+    ReadinessOverride {
+        rule: granted_rule().id,
+        trigger: TriggerClass::SlackBadge,
+    }
+}
+
+/// The head row (step 0, `at`) of a Slack badge run for Claude, external,
+/// carrying the override.
+fn overridden_head(id: &str) -> QueueItem {
+    let mut row = bootstrap_row("claude");
+    row.id = id.into();
+    row.external = true;
+    row.readiness_override = Some(first_send_override());
+    row
+}
+
+fn slack_event(key: &str, badge: &str, source: &str) -> crate::inbound::Event {
+    crate::inbound::Event {
+        source: source.into(),
+        key: key.into(),
+        badge: badge.into(),
+        text: "sample".into(),
+        from: "tester".into(),
+        where_: "#test".into(),
+        link: String::new(),
+    }
+}
+
+fn first_send_claim() -> FirstSendClaim {
+    FirstSendClaim {
+        rule: granted_rule().id,
+        event: "C9/1.2".into(),
+    }
+}
+
+/// Legacy documents carry nothing: a rule reads as override OFF (and writes
+/// no field), a row reads as no override, a delivery as not overridden.
+#[test]
+fn legacy_rules_rows_and_deliveries_read_as_no_first_send_override() {
+    let rule = granted_rule();
+    assert!(!rule.first_send_without_readiness);
+    let json = serde_json::to_value(&rule).unwrap();
+    assert!(json.get("firstSendWithoutReadiness").is_none());
+    let on = first_send_rule("claude");
+    assert_eq!(
+        serde_json::to_value(&on).unwrap()["firstSendWithoutReadiness"],
+        true
+    );
+    let q = qs(vec![bootstrap_row("claude")]);
+    let raw = serde_json::to_string(&q).unwrap();
+    assert!(!raw.contains("readiness_override") && !raw.contains("readiness_overridden"));
+    let reloaded: QueueState = serde_json::from_str(&raw).unwrap();
+    assert!(reloaded.items[0].readiness_override.is_none());
+    // the row copy is ids and closed words only
+    assert_eq!(
+        serde_json::to_value(first_send_override()).unwrap(),
+        serde_json::json!({"rule": "Rbadge01", "trigger": "slack-badge"})
+    );
+}
+
+/// Admission: only the head row of a run made by a Slack badge rule that
+/// accepted the risk, for a supported agent command, against the backend's
+/// own copy of that rule's event. Every refusal admits the row without it.
+#[test]
+fn only_a_slack_badge_head_row_can_be_admitted_with_the_override() {
+    let claim = first_send_claim();
+    let event = slack_event("C9/1.2", "eyes", "slack");
+    let config = config_with(vec![first_send_rule("claude")]);
+    let verify = |config: Option<&crate::inbound::Config>,
+                  cmd: &str,
+                  mode: &str,
+                  verbatim: bool,
+                  event: Option<&crate::inbound::Event>| {
+        first_send::verify(config, &claim, cmd, mode, verbatim, event)
+    };
+    assert_eq!(
+        verify(Some(&config), "claude", "at", false, Some(&event)),
+        Ok(first_send_override())
+    );
+    // a later step, a verbatim external text, unreadable settings
+    assert_eq!(
+        verify(Some(&config), "claude", "chain", false, Some(&event)),
+        Err("step")
+    );
+    assert_eq!(
+        verify(Some(&config), "claude", "at", true, Some(&event)),
+        Err("verbatim")
+    );
+    assert_eq!(
+        verify(None, "claude", "at", false, Some(&event)),
+        Err("settings-unreadable")
+    );
+    // the rule: off by default, gone, another trigger, another command
+    let off = config_with(vec![granted_rule()]);
+    assert_eq!(
+        verify(Some(&off), "codex --yolo", "at", false, Some(&event)),
+        Err("off")
+    );
+    assert_eq!(
+        verify(
+            Some(&config_with(vec![])),
+            "claude",
+            "at",
+            false,
+            Some(&event)
+        ),
+        Err("no-rule")
+    );
+    let mut clock = first_send_rule("claude");
+    clock.source = "clock".into();
+    assert_eq!(
+        verify(
+            Some(&config_with(vec![clock])),
+            "claude",
+            "at",
+            false,
+            Some(&event)
+        ),
+        Err("trigger")
+    );
+    assert_eq!(
+        verify(Some(&config), "claude --resume", "at", false, Some(&event)),
+        Err("command")
+    );
+    // the event: absent (a replay before re-announcement), another badge,
+    // another key, a clock slot
+    assert_eq!(
+        verify(Some(&config), "claude", "at", false, None),
+        Err("no-event")
+    );
+    for other in [
+        slack_event("C9/1.2", "fire", "slack"),
+        slack_event("C9/9.9", "eyes", "slack"),
+        slack_event("C9/1.2", "eyes", "clock"),
+    ] {
+        assert_eq!(
+            verify(Some(&config), "claude", "at", false, Some(&other)),
+            Err("event")
+        );
+    }
+}
+
+/// Codex is supported only when forced out of the shared daemon: its
+/// default shared app-server gives Deck no attributable Signal for the
+/// process, so the override never reaches plain `codex`.
+#[test]
+fn the_override_reaches_claude_and_codex_no_daemon_only() {
+    assert!(first_send::supported_command("claude"));
+    assert!(first_send::supported_command("claude --model opus"));
+    assert!(first_send::supported_command("codex --no-daemon"));
+    assert!(first_send::supported_command("codex --yolo --no-daemon"));
+    assert!(!first_send::supported_command("codex"));
+    assert!(!first_send::supported_command("codex --yolo"));
+    assert!(!first_send::supported_command("codex --no-daemon=false"));
+    assert!(!first_send::supported_command("bash"));
+    assert!(!first_send::supported_command(""));
+    let claim = first_send_claim();
+    let event = slack_event("C9/1.2", "eyes", "slack");
+    for (cmd, ok) in [("codex", false), ("codex --no-daemon", true)] {
+        let config = config_with(vec![first_send_rule(cmd)]);
+        assert_eq!(
+            first_send::verify(Some(&config), &claim, cmd, "at", false, Some(&event)).is_ok(),
+            ok,
+            "{cmd}"
+        );
+    }
+}
+
+/// The claim is refused on the owner path and, on a reviewed list, the
+/// verified override lands on the head row alone.
+#[test]
+fn the_override_rides_the_external_head_row_only() {
+    let mut args = QueueAddArgs {
+        session: "s".into(),
+        card_id: "card-s".into(),
+        operation_id: Some("op".into()),
+        dir: String::new(),
+        cmd: "claude".into(),
+        text: "first".into(),
+        mode: "at".into(),
+        at: Some(NOW),
+        quiet_secs: None,
+        review_each: true,
+        every: None,
+        not_before: None,
+        win_from: None,
+        win_to: None,
+        until_n: None,
+        until_at: None,
+        steps: None,
+        tpl: Some("triage".into()),
+        tpl_idx: Some(1),
+        tpl_total: Some(3),
+        group: None,
+        external_text: false,
+        channel_path: false,
+        authority: None,
+        granted: Vec::new(),
+        first_send: Some(first_send_claim()),
+        first_send_granted: None,
+    };
+    assert!(
+        validate_add(&args).is_err(),
+        "an owner row never carries the claim"
+    );
+    args.channel_path = true;
+    args.first_send_granted = Some(first_send_override());
+    let mut q = qs(vec![]);
+    let creation = context::CreationContext {
+        binding: None,
+        expected_process: Some("claude".into()),
+    };
+    add_reviewed_rows(
+        &mut q,
+        &args,
+        &["first".into(), "second".into(), "third".into()],
+        &creation,
+    )
+    .unwrap();
+    let carried: Vec<bool> = q
+        .items
+        .iter()
+        .map(|i| i.readiness_override.is_some())
+        .collect();
+    assert_eq!(carried, [true, false, false]);
+    assert!(q.items.iter().all(|i| i.external));
+}
+
+/// Default safety is unchanged: without the override a fresh agent is
+/// started with zero bytes and its first step waits at `first-send`.
+#[test]
+fn without_the_override_a_fresh_agent_still_gets_nothing() {
+    for agent in ["claude", "codex"] {
+        let mut row = bootstrap_row(agent);
+        row.external = true;
+        let qm = Mutex::new(qs(vec![row]));
+        let r = send_one_safe(
+            &qm,
+            &AtomicBool::new(false),
+            "s",
+            720,
+            &HashMap::new(),
+            &SendHooks {
+                fire: &|_: &QueueItem| panic!("{agent}: never typed into"),
+                persist: &ok_persist,
+                kill: &|_: &str| {},
+                authority: &|| Some(config_with(vec![first_send_rule("claude")])),
+            },
+            &ContextHooks {
+                prepare: &|_: &QueueItem, _: &dyn Fn() -> bool| {
+                    Prepared::StartedAwaitingInteraction(probe_result(
+                        ContextStatus::Ready,
+                        ContextCode::ProcessMatched,
+                        1,
+                    ))
+                },
+                final_probe: &|_: &QueueItem| panic!("{agent}: no final probe"),
+            },
+        );
+        assert_eq!(
+            r,
+            SendResult::StartedAwaitingInteraction {
+                session: "s".into()
+            }
+        );
+        let q = qm.lock_or_recover();
+        assert_eq!(
+            hold_reason(&q.items[0], unestablished(NOW - 400).get("s")),
+            Some(Hold::FirstInteraction),
+            "{agent}: a rule allowing it elsewhere changes nothing for this row"
+        );
+    }
+}
+
+/// The override lifts the first-interaction gate and nothing else.
+#[test]
+fn the_override_lifts_only_the_first_interaction_hold() {
+    use crate::agent_status::CodexSignalTrust::{Trusted, Unavailable, Unknown};
+    let quiet = NOW - 400;
+    let q = qs(vec![overridden_head("h")]);
+    assert_eq!(ids(&select_due(&q, NOW, 720, &unestablished(quiet))), ["h"]);
+    assert!(relies_on_readiness_override(
+        &q.items[0],
+        unestablished(quiet).get("s")
+    ));
+    // with evidence it is not needed, and an established generation is
+    // not "overridden"
+    assert!(!relies_on_readiness_override(
+        &q.items[0],
+        seen(quiet).get("s")
+    ));
+    // a real input request still holds
+    let mut asking = unestablished(quiet);
+    asking.get_mut("s").unwrap().agent = Some("needs-input");
+    assert_eq!(
+        hold_reason(&q.items[0], asking.get("s")),
+        Some(Hold::NeedsInput)
+    );
+    assert!(select_due(&q, NOW, 720, &asking).is_empty());
+    // unreadable settings: back to the ordinary gate
+    let mut unverified = unestablished(quiet);
+    mark_authority_unverified(&mut unverified);
+    assert_eq!(
+        hold_reason(&q.items[0], unverified.get("s")),
+        Some(Hold::FirstInteraction)
+    );
+    assert!(!relies_on_readiness_override(
+        &q.items[0],
+        unverified.get("s")
+    ));
+    // Codex: Unknown (no evidence yet) is the first-interaction gate;
+    // Unavailable is never lifted
+    let mut codex = overridden_head("c");
+    codex.cmd = "codex --no-daemon".into();
+    codex.expected_process = Some("codex".into());
+    let q = qs(vec![codex]);
+    assert_eq!(
+        ids(&select_due(&q, NOW, 720, &seen_codex(quiet, None, Unknown))),
+        ["c"]
+    );
+    assert_eq!(
+        hold_reason(&q.items[0], seen_codex(quiet, None, Unavailable).get("s")),
+        Some(Hold::CodexUnavailable)
+    );
+    assert!(select_due(&q, NOW, 720, &seen_codex(quiet, None, Unavailable)).is_empty());
+    assert!(!relies_on_readiness_override(
+        &q.items[0],
+        seen_codex(quiet, None, Trusted).get("s")
+    ));
+    // pause, a future `at`, the send gap and a later step are untouched
+    let mut paused = overridden_head("p");
+    paused.paused = true;
+    assert!(select_due(&qs(vec![paused]), NOW, 720, &unestablished(quiet)).is_empty());
+    let mut future = overridden_head("f");
+    future.at = Some(NOW + 60);
+    assert!(select_due(&qs(vec![future]), NOW, 720, &unestablished(quiet)).is_empty());
+    let mut gap = qs(vec![overridden_head("g")]);
+    gap.last_fired.insert("s".into(), NOW - 1);
+    assert!(select_due(&gap, NOW, 720, &unestablished(quiet)).is_empty());
+    let mut chain = overridden_head("n");
+    chain.mode = "chain".into();
+    chain.at = None;
+    chain.authority = Some(step_authority(1));
+    assert_eq!(
+        hold_reason(&chain, unestablished(quiet).get("s")),
+        Some(Hold::FirstInteraction),
+        "a later step never uses it, even if a row claimed it"
+    );
+}
+
+/// End to end with fake hooks: the start types nothing; the next tick
+/// sends the head row into the existing, still-unestablished session and
+/// audits it as overridden — while every later step stays gated.
+#[test]
+fn an_overridden_first_step_is_sent_on_the_next_tick_and_audited_honestly() {
+    for approved in [false, true] {
+        let mut step1 = external_step("s1", approved.then(|| step_authority(1)));
+        step1.cmd = "claude".into();
+        let qm = Mutex::new(qs(vec![overridden_head("h"), step1]));
+        let source = || Some(config_with(vec![first_send_rule("claude")]));
+        let fired = Mutex::new(Vec::new());
+        let fire = |i: &QueueItem| {
+            fired.lock_or_recover().push(i.id.clone());
+            Ok(())
+        };
+        let ready = |_: &QueueItem, _: &dyn Fn() -> bool| {
+            Prepared::Probe(probe_result(
+                ContextStatus::Ready,
+                ContextCode::ProcessMatched,
+                1,
+            ))
+        };
+        let hooks = SendHooks {
+            fire: &fire,
+            persist: &ok_persist,
+            kill: &|_: &str| {},
+            authority: &source,
+        };
+        // tick 1: the session is absent — started, nothing typed
+        let r = send_one_safe(
+            &qm,
+            &AtomicBool::new(false),
+            "s",
+            720,
+            &HashMap::new(),
+            &hooks,
+            &ContextHooks {
+                prepare: &|_: &QueueItem, _: &dyn Fn() -> bool| {
+                    Prepared::StartedAwaitingInteraction(probe_result(
+                        ContextStatus::Ready,
+                        ContextCode::ProcessMatched,
+                        1,
+                    ))
+                },
+                final_probe: &|_: &QueueItem| panic!("starting is not delivery"),
+            },
+        );
+        assert!(matches!(r, SendResult::StartedAwaitingInteraction { .. }));
+        assert!(fired.lock_or_recover().is_empty());
+        // tick 2: the session exists, no interaction evidence
+        let obs = unestablished(NOW - 400);
+        let r = send_one_safe(
+            &qm,
+            &AtomicBool::new(false),
+            "s",
+            720,
+            &obs,
+            &hooks,
+            &ContextHooks {
+                prepare: &ready,
+                final_probe: &|_: &QueueItem| {
+                    probe_result(ContextStatus::Ready, ContextCode::ProcessMatched, 1)
+                },
+            },
+        );
+        assert!(matches!(r, SendResult::Sent { .. }), "{r:?}");
+        assert_eq!(*fired.lock_or_recover(), ["h"]);
+        let mut q = qm.lock_or_recover();
+        let record = &q.deliveries[0];
+        assert!(record.readiness_overridden && !record.manual);
+        let json = serde_json::to_string(record).unwrap();
+        assert!(json.contains("\"readiness_overridden\":true"));
+        // no evidence was fabricated: the observation Deck holds is
+        // unchanged, so step 1 — approved or not — is still gated
+        assert!(!obs["s"].claude_interaction);
+        q.last_fired.clear();
+        let expected = if approved {
+            Hold::FirstInteraction
+        } else {
+            Hold::External
+        };
+        assert_eq!(hold_reason(&q.items[0], obs.get("s")), Some(expected));
+        assert!(select_due(&q, NOW, 720, &obs).is_empty());
+        // once the agent really interacts, only the approved step continues
+        assert_eq!(
+            ids(&select_due(&q, NOW, 720, &seen(NOW - 400))).len(),
+            usize::from(approved)
+        );
+    }
+}
+
+/// A send-now of an overridden head row is the user acting: manual, and
+/// not recorded as overridden.
+#[test]
+fn a_send_now_of_an_overridden_row_is_manual() {
+    let qm = Mutex::new(qs(vec![overridden_head("h")]));
+    let r = send_one_safe_requested(
+        &qm,
+        &AtomicBool::new(false),
+        SendRequest {
+            session: "s",
+            now_min: 720,
+            activity: &unestablished(NOW - 400),
+            requested: Some("h"),
+        },
+        &SendHooks {
+            fire: &|_: &QueueItem| Ok(()),
+            persist: &ok_persist,
+            kill: &|_: &str| {},
+            authority: &|| panic!("send-now never consults the fence"),
+        },
+        &ContextHooks {
+            prepare: &|_: &QueueItem, _: &dyn Fn() -> bool| {
+                Prepared::Probe(probe_result(
+                    ContextStatus::Ready,
+                    ContextCode::ProcessMatched,
+                    1,
+                ))
+            },
+            final_probe: &|_: &QueueItem| {
+                probe_result(ContextStatus::Ready, ContextCode::ProcessMatched, 1)
+            },
+        },
+    );
+    assert!(matches!(r, SendResult::Sent { .. }));
+    let q = qm.lock_or_recover();
+    assert!(q.deliveries[0].manual && !q.deliveries[0].readiness_overridden);
+}
+
+/// Revocation before the first send: unticking, deleting the rule or
+/// changing its command stops the override at the fence and in the sweep;
+/// unreadable settings keep the row and send nothing on it.
+#[test]
+fn a_withdrawn_override_restores_the_first_interaction_gate() {
+    let obs = unestablished(NOW - 400);
+    let mut off = first_send_rule("claude");
+    off.first_send_without_readiness = false;
+    let changed = first_send_rule("claude --model opus");
+    for (name, config) in [
+        ("unticked", Some(config_with(vec![off.clone()]))),
+        ("deleted", Some(config_with(vec![]))),
+        ("command changed", Some(config_with(vec![changed.clone()]))),
+    ] {
+        let qm = Mutex::new(qs(vec![overridden_head("h")]));
+        let source = || config.clone();
+        let r = send_one(
+            &qm,
+            &AtomicBool::new(false),
+            "s",
+            720,
+            &obs,
+            &SendHooks {
+                fire: &|_: &QueueItem| panic!("{name}: nothing is sent"),
+                persist: &ok_persist,
+                kill: &|_: &str| {},
+                authority: &source,
+            },
+        );
+        assert_eq!(r, SendResult::Nothing, "{name}");
+        let q = qm.lock_or_recover();
+        assert!(q.items[0].readiness_override.is_none(), "{name}: stripped");
+        assert_eq!(q.items[0].revision, 1, "{name}");
+        assert_eq!(
+            hold_reason(&q.items[0], obs.get("s")),
+            Some(Hold::FirstInteraction),
+            "{name}"
+        );
+    }
+    // unreadable: kept, not sent, not stripped
+    let qm = Mutex::new(qs(vec![overridden_head("h")]));
+    let r = send_test_with(&qm, &obs, &|| None);
+    assert_eq!(r, SendResult::Nothing);
+    assert!(qm.lock_or_recover().items[0].readiness_override.is_some());
+    // the tick's sweep agrees with the fence
+    for (config, stripped) in [
+        (config_with(vec![first_send_rule("claude")]), 0),
+        (config_with(vec![off]), 1),
+        (config_with(vec![]), 1),
+        (config_with(vec![changed]), 1),
+    ] {
+        let mut q = qs(vec![overridden_head("h")]);
+        assert!(first_send::any_override(&q));
+        assert_eq!(first_send::revoke_stale(&mut q, &config), stripped);
+        assert_eq!(q.items[0].readiness_override.is_none(), stripped == 1);
+    }
+    // a firing/ambiguous row keeps its crash semantics
+    let mut firing = overridden_head("f");
+    firing.state = ItemState::Ambiguous;
+    let mut q = qs(vec![firing]);
+    assert!(!first_send::any_override(&q));
+    assert_eq!(first_send::revoke_stale(&mut q, &config_with(vec![])), 0);
+}
+
+/// Restart: the rule flag and the row copy are durable, interaction
+/// evidence is not and is never invented; a still-allowed pending head row
+/// may still be sent on the override after the restart.
+#[test]
+fn the_override_survives_a_restart_without_inventing_evidence() {
+    let q = qs(vec![overridden_head("h")]);
+    let reloaded: QueueState = serde_json::from_str(&serde_json::to_string(&q).unwrap()).unwrap();
+    assert_eq!(
+        reloaded.items[0].readiness_override,
+        Some(first_send_override())
+    );
+    let fresh = unestablished(NOW - 400);
+    assert!(!fresh["s"].claude_interaction);
+    assert_eq!(ids(&select_due(&reloaded, NOW, 720, &fresh)), ["h"]);
+    let qm = Mutex::new(reloaded);
+    let r = send_test_with(&qm, &fresh, &|| {
+        Some(config_with(vec![first_send_rule("claude")]))
+    });
+    assert!(matches!(r, SendResult::Sent { .. }));
+    assert!(qm.lock_or_recover().deliveries[0].readiness_overridden);
+}
+
+/// Identity safety is untouched: a replaced session or another foreground
+/// process blocks the overridden row exactly like any other.
+#[test]
+fn an_overridden_row_keeps_every_identity_check() {
+    for (status, code) in [
+        (ContextStatus::SessionReplaced, ContextCode::IdentityChanged),
+        (
+            ContextStatus::ForegroundDifferent,
+            ContextCode::ForegroundDifferent,
+        ),
+    ] {
+        let qm = Mutex::new(qs(vec![overridden_head("h")]));
+        let r = send_one_safe(
+            &qm,
+            &AtomicBool::new(false),
+            "s",
+            720,
+            &unestablished(NOW - 400),
+            &SendHooks {
+                fire: &|_: &QueueItem| panic!("{status:?}: never sent"),
+                persist: &ok_persist,
+                kill: &|_: &str| {},
+                authority: &|| Some(config_with(vec![first_send_rule("claude")])),
+            },
+            &ContextHooks {
+                prepare: &|_: &QueueItem, _: &dyn Fn() -> bool| {
+                    Prepared::Probe(probe_result(status, code, 1))
+                },
+                final_probe: &|_: &QueueItem| panic!("blocked before the final probe"),
+            },
+        );
+        assert!(matches!(r, SendResult::Blocked { .. }), "{status:?}: {r:?}");
+        assert!(qm.lock_or_recover().deliveries.is_empty());
+    }
+    // the final exact-identity probe still runs after a ready first probe
+    let qm = Mutex::new(qs(vec![overridden_head("h")]));
+    let r = send_one_safe(
+        &qm,
+        &AtomicBool::new(false),
+        "s",
+        720,
+        &unestablished(NOW - 400),
+        &SendHooks {
+            fire: &|_: &QueueItem| panic!("replaced between probes: never sent"),
+            persist: &ok_persist,
+            kill: &|_: &str| {},
+            authority: &|| Some(config_with(vec![first_send_rule("claude")])),
+        },
+        &ContextHooks {
+            prepare: &|_: &QueueItem, _: &dyn Fn() -> bool| {
+                Prepared::Probe(probe_result(
+                    ContextStatus::Ready,
+                    ContextCode::ProcessMatched,
+                    1,
+                ))
+            },
+            final_probe: &|_: &QueueItem| {
+                probe_result(
+                    ContextStatus::SessionReplaced,
+                    ContextCode::IdentityChanged,
+                    2,
+                )
+            },
+        },
+    );
+    assert!(!matches!(r, SendResult::Sent { .. }), "{r:?}");
+}
+
+/// Passive and other sources never get it: a Slack channel monitor's head
+/// row, a Connector row and a clock row — all `at` head rows — stay held by
+/// the first-interaction gate on a fresh agent whatever the badge rules
+/// say, because only admission writes the override and it refuses them.
+#[test]
+fn channel_monitor_connector_and_clock_head_rows_cannot_use_the_override() {
+    let obs = unestablished(NOW - 400);
+    // channel monitor: external head row with message text; channel rules
+    // are not badge rules, so no claim naming one is ever admitted
+    let mut channel = bootstrap_row("claude");
+    channel.external = true;
+    channel.text = "an incident message from someone else".into();
+    // Connector: external verbatim head row
+    let mut connector = bootstrap_row("claude");
+    connector.external = true;
+    connector.id = "k".into();
+    // clock: owner text
+    let mut clock = bootstrap_row("claude");
+    clock.id = "c".into();
+    for row in [channel, connector, clock] {
+        assert_eq!(
+            hold_reason(&row, obs.get("s")),
+            Some(Hold::FirstInteraction),
+            "{}",
+            row.id
+        );
+        assert!(!relies_on_readiness_override(&row, obs.get("s")));
+    }
+    let claim = FirstSendClaim {
+        rule: "channel-rule".into(),
+        event: "C9/1.2".into(),
+    };
+    let everything_on = config_with(vec![first_send_rule("claude")]);
+    let event = slack_event("C9/1.2", "eyes", "slack");
+    assert_eq!(
+        first_send::verify(
+            Some(&everything_on),
+            &claim,
+            "claude",
+            "at",
+            false,
+            Some(&event)
+        ),
+        Err("no-rule")
+    );
+    assert_eq!(
+        first_send::verify(
+            Some(&everything_on),
+            &first_send_claim(),
+            "claude",
+            "at",
+            true,
+            Some(&event)
+        ),
+        Err("verbatim"),
+        "a verbatim external text (Connector buffer) never carries it"
+    );
+}
+
+/// Startup-dialog risk contract on a real bundled-tmux server with a fake
+/// agent that shows a dialog and records every stdin byte: the start still
+/// types NOTHING; the prompt goes only on the immediate follow-up pass the
+/// post-start wake triggers, only because the rule's explicit override
+/// exists — no timer, title or activity involved.
+#[test]
+fn a_real_fresh_agent_gets_its_overridden_first_step_only_on_the_next_tick() {
+    for (agent, cmd) in [("claude", "claude"), ("codex", "codex --no-daemon")] {
+        let (candidates, result, bytes, started, second) =
+            automation_run(EmptyState::ZeroSessions, agent, Some(cmd), true);
+        assert_eq!(candidates, 1, "{agent}");
+        assert!(
+            matches!(result, Some(SendResult::StartedAwaitingInteraction { .. })),
+            "{agent}: {result:?}"
+        );
+        assert!(started, "{agent}");
+        assert_eq!(
+            bytes, "",
+            "{agent}: starting types nothing, override or not"
+        );
+        let (candidates, result, bytes) = second.expect("second tick ran");
+        assert_eq!(candidates, 1, "{agent}: the override row is selected");
+        assert!(
+            matches!(result, Some(SendResult::Sent { .. })),
+            "{agent}: {result:?}"
+        );
+        let text: String = step_text_hex();
+        assert!(bytes.starts_with(&text), "{agent}: {bytes}");
+        assert!(bytes.ends_with("0d"), "{agent}: submitted with Enter");
+    }
+}
+
+/// The hex of `bootstrap_row`'s text, as the fake agent records it.
+fn step_text_hex() -> String {
+    bootstrap_row("claude")
+        .text
+        .bytes()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// The post-start wake's follow-up pass for an ORDINARY fresh agent (no
+/// override): the session now exists, has no interaction evidence, and the
+/// row is held at `first-send` — nothing is selected, no worker runs (so
+/// nothing can wake again) and the agent has still received zero bytes.
+#[test]
+fn the_post_start_follow_up_pass_still_holds_an_ordinary_fresh_agent() {
+    for agent in ["claude", "codex"] {
+        let (candidates, result, bytes, started, second) =
+            automation_run(EmptyState::ZeroSessions, agent, None, true);
+        assert_eq!(candidates, 1, "{agent}");
+        assert!(
+            matches!(result, Some(SendResult::StartedAwaitingInteraction { .. })),
+            "{agent}: {result:?}"
+        );
+        assert!(started && bytes.is_empty(), "{agent}");
+        let (candidates, result, bytes) = second.expect("follow-up pass ran");
+        assert_eq!(candidates, 0, "{agent}: held at first-send, no worker");
+        assert!(result.is_none(), "{agent}");
+        assert_eq!(bytes, "", "{agent}: still zero bytes");
+    }
+}
+
+/// The post-start wake is bounded: at most once per session per tick
+/// interval, so a session that keeps vanishing and being restarted cannot
+/// spin the scheduler; other sessions are independent, and old entries are
+/// forgotten.
+#[test]
+fn the_post_start_wake_is_at_most_once_per_session_per_tick() {
+    let t0 = std::time::Instant::now();
+    let tick = std::time::Duration::from_secs(TICK_SECS);
+    let mut last = HashMap::new();
+    assert!(start_wake_due(&mut last, "a", t0));
+    assert!(
+        !start_wake_due(&mut last, "a", t0),
+        "a restart loop gets no second wake"
+    );
+    assert!(!start_wake_due(&mut last, "a", t0 + tick / 2));
+    assert!(start_wake_due(&mut last, "b", t0 + tick / 2), "per session");
+    assert!(
+        start_wake_due(&mut last, "a", t0 + tick),
+        "one per interval"
+    );
+    assert!(start_wake_due(&mut last, "c", t0 + tick * 3));
+    assert_eq!(last.len(), 1, "expired entries are pruned");
 }
