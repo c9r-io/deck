@@ -302,8 +302,11 @@ export function createSerialTransactionQueue({ snapshot, persist, commit, serial
   return { enqueue, idle: () => chain.catch(() => {}) };
 }
 
-/** Retry/no-spam lifecycle for explicitly configured automation retirement.
- * Missing sessions alone never authorize observing a card here. */
+/** Retry/no-spam lifecycle for automatic retirement: a verified normal exit
+ * of the card's owning shell (`exited_normally`, shell_exit.rs) or an
+ * explicitly configured automation finish. Missing sessions alone never
+ * authorize observing a card here. `forget` drops a card whose authority is
+ * no longer current (a close already in flight still settles). */
 export function createExitRetirementTracker() {
   const pending = new Set();
   const warned = new Set();
@@ -311,6 +314,7 @@ export function createExitRetirementTracker() {
   let lifecycle = 0;
   return {
     observe(sid) { pending.add(sid); },
+    forget(sid) { if (!inFlight.has(sid)) { pending.delete(sid); warned.delete(sid); } },
     async drain({ get, markStopped, close, failed, succeeded }) {
       const turn = lifecycle;
       const tasks = [];

@@ -109,7 +109,12 @@ pub(crate) fn deliver_with(
         "{}:{}:{}:{}:{}",
         pane.server_pid, pane.session_id, pane.window_id, pane.pane_id, pane.pane_pid
     );
-    let identity_condition = format!("#{{==:{actual},{expected}}}");
+    // A dead pane accepts a paste and `send-keys` with success and delivers
+    // nothing. `shell_exit.rs` keeps it unobservable (the pane-died hook
+    // removes it before any client command runs); the guard refuses it anyway,
+    // so no delivery can ever read as sent into a pane that cannot read.
+    let identity_condition =
+        format!("#{{&&:#{{==:{actual},{expected}}},#{{==:#{{pane_dead}},0}}}}");
     // tmux can only compare its own `pane_current_command` atomically. When
     // the expected process was recognized through its argv name (a launcher
     // symlink to a versioned binary — tmux says `2.1.259`, ps says `claude`),

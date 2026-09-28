@@ -30,6 +30,9 @@ use std::process::{Child, Command, Stdio};
 use std::thread::sleep;
 use std::time::Duration;
 
+#[path = "../src/shell_exit.rs"]
+#[allow(dead_code)]
+mod shell_exit;
 #[path = "../src/terminal_scroll.rs"]
 mod terminal_scroll;
 #[path = "../src/terminal_selection.rs"]
@@ -2609,4 +2612,438 @@ fn agent_frame_selection_copies_the_cells_the_pointer_crossed() {
         s.production_selection_snapshot("deck-copy-agent-wrapped-"),
         b"tail-of-"
     );
+}
+
+// ---------- verified shell-exit evidence (shell_exit.rs) ----------------------
+//
+// A server started with the production `conf_lines()` (hook + remain-on-exit)
+// and read the way the Board poll reads it: the pane listing and the
+// `SERVER_FORMAT` line in ONE command list, classified by the production
+// `ExitEvidence`. Only the owning shell's normal end of the session Deck saw
+// alive is `ExitedNormally`; every other disappearance is `Missing`.
+
+use shell_exit::{ExitEvidence, LivePane, Verdict};
+
+fn exit_server_named(name: &str) -> Server {
+    let conf = std::env::temp_dir().join(format!("{name}.conf"));
+    std::fs::write(
+        &conf,
+        format!("set -g exit-empty off\n{}", shell_exit::conf_lines()),
+    )
+    .unwrap();
+    let out = Command::new(tmux_bin())
+        .args(["-f", conf.to_str().unwrap(), "-L", name])
+        .args(["new-session", "-d", "-s", "keep", "/bin/sh"])
+        .output()
+        .expect("tmux spawn");
+    let _ = std::fs::remove_file(&conf);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    Server(name.to_string())
+}
+
+fn exit_server(tag: &str) -> Server {
+    exit_server_named(&unique_name(&format!("deck-test-{tag}")))
+}
+
+impl Server {
+    fn has_session(&self, name: &str) -> bool {
+        Command::new(tmux_bin())
+            .args(["-f", "/dev/null", "-L", &self.0])
+            .args(["has-session", "-t", &format!("={name}")])
+            .output()
+            .expect("tmux spawn")
+            .status
+            .success()
+    }
+
+    fn shell_session(&self, name: &str) -> String {
+        self.run(&["new-session", "-d", "-s", name, "/bin/sh"]);
+        let target = format!("={name}:");
+        self.wait_for_prompt(&target);
+        target
+    }
+
+    fn gone(&self, name: &str) {
+        wait_until(&format!("session {name} to end"), || {
+            !self.has_session(name)
+        });
+    }
+
+    /// The Board poll's snapshot: pane identities and the server line.
+    fn exit_snapshot(&self) -> (Vec<[String; 4]>, Option<shell_exit::ServerLedger>) {
+        let raw = self.run_raw_checked(&[
+            "list-panes",
+            "-a",
+            "-F",
+            "pane\t#{pid}\t#{session_name}\t#{session_id}\t#{pane_id}\t#{pane_dead}",
+            ";",
+            "display-message",
+            "-p",
+            shell_exit::SERVER_FORMAT,
+        ]);
+        let raw = String::from_utf8(raw).unwrap();
+        let mut rows = Vec::new();
+        let mut server = None;
+        for line in raw.lines() {
+            if let Some(pane) = line.strip_prefix("pane\t") {
+                let f: Vec<&str> = pane.split('\t').collect();
+                assert_eq!(f[4], "0", "a dead pane was listed: {line}");
+                rows.push([f[0], f[1], f[2], f[3]].map(str::to_string));
+            } else {
+                assert!(server.is_none());
+                server = Some(shell_exit::parse_server_line(line).expect("server line"));
+            }
+        }
+        (rows, server)
+    }
+
+    fn classify(
+        &self,
+        evidence: &mut ExitEvidence,
+        names: &[&str],
+        managed: &dyn Fn(&str) -> bool,
+    ) -> Vec<Verdict> {
+        let (rows, server) = self.exit_snapshot();
+        let live: Vec<LivePane> = rows
+            .iter()
+            .map(|[pid, name, session, pane]| LivePane {
+                server_pid: pid.parse().unwrap(),
+                session_name: name,
+                session_id: session,
+                pane_id: pane,
+            })
+            .collect();
+        let names: Vec<String> = names.iter().map(|n| n.to_string()).collect();
+        evidence.classify(&names, &live, server.as_ref(), managed)
+    }
+
+    fn ledger(&self) -> String {
+        self.run(&["show-options", "-gqv", shell_exit::LEDGER_OPTION])
+    }
+}
+
+const ORDINARY: &dyn Fn(&str) -> bool = &|_| false;
+
+/// The whole matrix on one server: Ctrl+D, `exit 0`, `exit 7` retire; a
+/// foreground child returning to the shell, SIGKILL, `kill-session`, an
+/// MCP-managed session, and a non-final pane never do; the final pane of a
+/// split session does. Every ended session is destroyed (no dead pane stays).
+#[test]
+fn only_a_normal_end_of_the_owning_shell_is_verified() {
+    let s = exit_server("exit-matrix");
+    let names = [
+        "ctrl-d", "exit-0", "exit-7", "child", "sigkill", "killed", "managed", "split",
+    ];
+    let targets: Vec<String> = names.iter().map(|n| s.shell_session(n)).collect();
+    s.run(&["split-window", "-d", "-t", "=split:", "/bin/sh"]);
+    wait_until("the split pane", || {
+        s.run(&["list-panes", "-t", "=split:", "-F", "#{pane_id}"])
+            .lines()
+            .count()
+            == 2
+    });
+    let managed: &dyn Fn(&str) -> bool = &|name| name == "managed";
+    let mut evidence = ExitEvidence::new();
+    assert!(s
+        .classify(&mut evidence, &names, managed)
+        .iter()
+        .all(|v| *v == Verdict::Alive));
+
+    s.run(&["send-keys", "-t", &targets[0], "C-d"]);
+    s.run(&["send-keys", "-t", &targets[1], "exit 0", "Enter"]);
+    s.run(&["send-keys", "-t", &targets[2], "exit 7", "Enter"]);
+    s.run_line(&targets[3], "sh -c 'exit 0'");
+    let pid: i32 = s
+        .run(&["display-message", "-p", "-t", &targets[4], "#{pane_pid}"])
+        .parse()
+        .unwrap();
+    // SAFETY: the pane's own shell, a child of this test's tmux server.
+    assert_eq!(unsafe { libc::kill(pid, libc::SIGKILL) }, 0);
+    s.run(&["kill-session", "-t", "=killed"]);
+    s.run(&["send-keys", "-t", &targets[6], "exit 0", "Enter"]);
+    // the split's second pane ends first: not the session ending
+    s.run(&["send-keys", "-t", "=split:.1", "exit 0", "Enter"]);
+    wait_until("the non-final pane to go", || {
+        s.run(&["list-panes", "-t", "=split:", "-F", "#{pane_id}"])
+            .lines()
+            .count()
+            == 1
+    });
+    for name in ["ctrl-d", "exit-0", "exit-7", "sigkill", "killed", "managed"] {
+        s.gone(name);
+    }
+    assert_eq!(
+        s.classify(&mut evidence, &names, managed),
+        [
+            Verdict::ExitedNormally,
+            Verdict::ExitedNormally,
+            Verdict::ExitedNormally,
+            Verdict::Alive,
+            Verdict::Missing,
+            Verdict::Missing,
+            Verdict::Missing,
+            Verdict::Alive,
+        ]
+    );
+    s.run(&["send-keys", "-t", "=split:", "exit 0", "Enter"]);
+    s.gone("split");
+    assert_eq!(
+        s.classify(&mut evidence, &["split", "child"], ORDINARY),
+        [Verdict::ExitedNormally, Verdict::Alive]
+    );
+    // the evidence the classification used, as tmux wrote it
+    let records = shell_exit::parse_ledger(&s.ledger());
+    assert!(records.iter().any(|r| r.status == Some(7)));
+    assert!(records.iter().any(|r| r.signal.as_deref() == Some("kill")));
+    assert!(records
+        .iter()
+        .any(|r| r.window_panes == 2 && r.status == Some(0)));
+    assert_eq!(
+        records.len(),
+        7,
+        "kill-session and a child exit record nothing"
+    );
+    // every dead pane was removed by the hook itself
+    assert!(!s
+        .run(&["list-panes", "-a", "-F", "#{pane_dead}"])
+        .lines()
+        .any(|l| l == "1"));
+}
+
+/// A name reused by a new session never consumes the old evidence; a server
+/// replaced on the same socket (kill-server, then a fresh server whose ids
+/// restart and whose own shell exits normally) never matches; malformed
+/// ledger text authorizes nothing.
+#[test]
+fn stale_reused_replaced_and_malformed_evidence_never_verifies() {
+    let name = unique_name("deck-test-exit-stale");
+    let s = exit_server_named(&name);
+    let mut evidence = ExitEvidence::new();
+    let card = s.shell_session("card");
+    assert_eq!(
+        s.classify(&mut evidence, &["card"], ORDINARY),
+        [Verdict::Alive]
+    );
+    s.run(&["send-keys", "-t", &card, "exit 0", "Enter"]);
+    s.gone("card");
+    s.shell_session("card");
+    assert_eq!(
+        s.classify(&mut evidence, &["card"], ORDINARY),
+        [Verdict::Alive]
+    );
+    s.run(&["kill-session", "-t", "=card"]);
+    assert_eq!(
+        s.classify(&mut evidence, &["card"], ORDINARY),
+        [Verdict::Missing]
+    );
+
+    // malformed evidence: forged text naming the observed identity
+    s.shell_session("card");
+    assert_eq!(
+        s.classify(&mut evidence, &["card"], ORDINARY),
+        [Verdict::Alive]
+    );
+    let (rows, server) = s.exit_snapshot();
+    let row = rows.iter().find(|r| r[1] == "card").unwrap().clone();
+    let server = server.unwrap();
+    let forged = format!(
+        "x2|{0}|{1}|{2}|{3}|1|1|0|;x1|{0}|{1}|{2}|{3}|1|1|0|kill;x1|{0}|{1}|{2}|{3}|1|1|0|",
+        server.server_pid, server.server_start, row[2], row[3]
+    );
+    s.run(&["set-option", "-g", shell_exit::LEDGER_OPTION, &forged]);
+    s.run(&["kill-session", "-t", "=card"]);
+    assert_eq!(
+        s.classify(&mut evidence, &["card"], ORDINARY),
+        [Verdict::Missing]
+    );
+
+    // replacement: the fresh server's first session reuses $0/%0-style ids
+    s.shell_session("card");
+    assert_eq!(
+        s.classify(&mut evidence, &["card"], ORDINARY),
+        [Verdict::Alive]
+    );
+    s.run(&["kill-server"]);
+    let fresh = exit_server_named(&name);
+    let decoy = fresh.shell_session("decoy");
+    fresh.run(&["send-keys", "-t", &decoy, "exit 0", "Enter"]);
+    fresh.gone("decoy");
+    assert_eq!(
+        fresh.classify(&mut evidence, &["card"], ORDINARY),
+        [Verdict::Missing]
+    );
+    drop(s);
+}
+
+/// The ledger is bounded where it is written: however many shells end while
+/// nobody reads, the option stays within the limit plus one record, and the
+/// records it keeps (the newest) still parse.
+#[test]
+fn the_exit_ledger_is_bounded_at_its_source() {
+    let s = exit_server("exit-bound");
+    for i in 0..150 {
+        s.run(&[
+            "new-session",
+            "-d",
+            "-s",
+            &format!("b{i}"),
+            "/bin/sh",
+            "-c",
+            "exit 3",
+        ]);
+    }
+    wait_until("every short shell to end", || {
+        s.run(&["list-sessions", "-F", "#{session_name}"])
+            .lines()
+            .count()
+            == 1
+    });
+    let ledger = s.ledger();
+    let record_len = ledger.rsplit(';').nth(1).unwrap().len() + 1;
+    assert!(
+        ledger.len() <= shell_exit::LEDGER_LIMIT + record_len,
+        "{} > {} + {record_len}",
+        ledger.len(),
+        shell_exit::LEDGER_LIMIT
+    );
+    let records = shell_exit::parse_ledger(&ledger);
+    assert!(
+        records.len() > 50 && records.len() < 150,
+        "{}",
+        records.len()
+    );
+    assert!(records.iter().all(|r| r.status == Some(3)));
+}
+
+/// B1: the consumer never writes the ledger, so a concurrent append cannot be
+/// erased. Sixty shells end while another client polls the snapshot as fast
+/// as it can; every one of them is afterwards verified, and the ledger holds
+/// all sixty records.
+#[test]
+fn concurrent_exits_are_never_lost_to_a_polling_reader() {
+    let s = exit_server("exit-race");
+    let names: Vec<String> = (0..60).map(|i| format!("r{i}")).collect();
+    let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+    for name in &names {
+        s.shell_session(name);
+    }
+    let mut evidence = ExitEvidence::new();
+    assert!(s
+        .classify(&mut evidence, &refs, ORDINARY)
+        .iter()
+        .all(|v| *v == Verdict::Alive));
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let reader = {
+        let stop = stop.clone();
+        let socket = s.0.clone();
+        std::thread::spawn(move || {
+            let mut reads = 0u64;
+            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                let out = Command::new(tmux_bin())
+                    .args(["-f", "/dev/null", "-L", &socket])
+                    .args(["list-panes", "-a", "-F", "#{pane_dead}", ";"])
+                    .args(["display-message", "-p", shell_exit::SERVER_FORMAT])
+                    .output()
+                    .unwrap();
+                assert!(!String::from_utf8_lossy(&out.stdout)
+                    .lines()
+                    .any(|l| l == "1"));
+                reads += 1;
+            }
+            reads
+        })
+    };
+    for name in &names {
+        s.run(&["send-keys", "-t", &format!("={name}:"), "exit 0", "Enter"]);
+    }
+    for name in &names {
+        s.gone(name);
+    }
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    assert!(reader.join().unwrap() > 0);
+    assert!(s
+        .classify(&mut evidence, &refs, ORDINARY)
+        .iter()
+        .all(|v| *v == Verdict::ExitedNormally));
+    assert_eq!(shell_exit::parse_ledger(&s.ledger()).len(), 60);
+}
+
+/// B2: between a shell's death and the hook removing its pane, no client
+/// command runs. A control client hammering `list-panes` + `send-keys` at the
+/// victim and a one-shot client polling `#{pane_dead}` never see a dead pane
+/// across a hundred deaths.
+#[test]
+fn a_dead_pane_is_never_observable_to_any_client() {
+    let s = exit_server("exit-dead-window");
+    let mut control = Command::new(tmux_bin())
+        .args(["-f", "/dev/null", "-L", &s.0])
+        .args(tmux_clients::query_client_args("=keep"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let stdout = control.stdout.take().unwrap();
+    let seen_dead = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let lines = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let scanner = {
+        let seen_dead = seen_dead.clone();
+        let lines = lines.clone();
+        std::thread::spawn(move || {
+            use std::io::BufRead;
+            for line in std::io::BufReader::new(stdout)
+                .lines()
+                .map_while(Result::ok)
+            {
+                lines.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if line.ends_with(" dead=1") {
+                    seen_dead.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
+        })
+    };
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut stdin = control.stdin.take().unwrap();
+    let hammer = {
+        let stop = stop.clone();
+        std::thread::spawn(move || {
+            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                if stdin
+                    .write_all(
+                        b"list-panes -a -F '#{pane_id} dead=#{pane_dead}' ; send-keys -t =victim: ''\n",
+                    )
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        })
+    };
+    for i in 0..100 {
+        let script = if i % 2 == 0 {
+            "exit 0"
+        } else {
+            "sleep 0.01; exit 3"
+        };
+        s.run(&["new-session", "-d", "-s", "victim", "/bin/sh", "-c", script]);
+        while s.has_session("victim") {
+            assert_ne!(
+                s.run(&["display-message", "-p", "-t", "=victim:", "#{pane_dead}"]),
+                "1",
+                "a one-shot client saw the dead pane"
+            );
+        }
+    }
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    hammer.join().unwrap();
+    let _ = control.kill();
+    let _ = control.wait();
+    scanner.join().unwrap();
+    assert!(lines.load(std::sync::atomic::Ordering::Relaxed) > 1000);
+    assert_eq!(seen_dead.load(std::sync::atomic::Ordering::Relaxed), 0);
+    assert_eq!(shell_exit::parse_ledger(&s.ledger()).len(), 100);
 }

@@ -3,6 +3,9 @@
 //! `list_panes`, `pane_row`) every probe in deck reads panes through. Every
 //! production listing is framed by a per-query random nonce (`PaneQuery`)
 //! and fails whole when an untrusted pane path splits or forges a row.
+//! The Board poll reads a `PaneSnapshot`: the listing plus one server line
+//! (server identity and the verified-exit ledger, `shell_exit.rs`) in the
+//! same command list; every server runs the `pane-died` exit hook.
 //! Everything deck knows about tmux lives here. The spawn sites stay in
 //! `tmux`, `tmux_owned`, `tmux_with_stdin`, `tmux_batch` and `connect_with`;
 //! the processing behind them (`captured_output`, `command_with_stdin`,
@@ -170,8 +173,9 @@ pub(crate) fn tmux_conf_text(deck_dir: &std::path::Path) -> String {
          set -g copy-mode-position-style 'reverse'\n\
          set -g copy-mode-position-format ''\n\
          set-environment -g COLORTERM truecolor\n\
-         {}",
-        status_sock_env_line(deck_dir)
+         {}{}",
+        status_sock_env_line(deck_dir),
+        crate::shell_exit::conf_lines()
     )
 }
 
@@ -510,6 +514,15 @@ pub(crate) fn init_deck_server_with(
     let _ = run(&["set", "-g", "copy-mode-selection-style", "none"]);
     let _ = run(&["set", "-g", "copy-mode-position-style", "reverse"]);
     let _ = run(&["set", "-g", "copy-mode-position-format", ""]);
+    // Verified shell-exit evidence (`shell_exit.rs`): the hook that records
+    // and removes a dead pane first; `remain-on-exit` only once it is in
+    // place, so this server never keeps a dead pane nothing removes.
+    let [hook, remain] = crate::shell_exit::server_setup();
+    let hook: Vec<&str> = hook.iter().map(String::as_str).collect();
+    let remain: Vec<&str> = remain.iter().map(String::as_str).collect();
+    if run(&hook).is_ok() {
+        let _ = run(&remain);
+    }
 }
 
 // ---------- pane rows -------------------------------------------------------
@@ -669,13 +682,59 @@ impl PaneQuery {
         &self.format
     }
 
-    fn row(&self, line: &str) -> Option<PaneRow> {
-        let body = line
-            .strip_prefix(self.nonce.as_str())?
+    /// The `display-message` format of the snapshot's server line, framed
+    /// by the same nonce (`shell_exit::SERVER_FORMAT`).
+    pub(crate) fn server_format(&self) -> String {
+        format!(
+            "{}\t{}\t{}",
+            self.nonce,
+            crate::shell_exit::SERVER_FORMAT,
+            self.nonce
+        )
+    }
+
+    fn framed<'a>(&self, line: &'a str) -> Option<&'a str> {
+        line.strip_prefix(self.nonce.as_str())?
             .strip_prefix('\t')?
             .strip_suffix(self.nonce.as_str())?
-            .strip_suffix('\t')?;
-        parse_pane_row(body)
+            .strip_suffix('\t')
+    }
+
+    fn row(&self, line: &str) -> Option<PaneRow> {
+        parse_pane_row(self.framed(line)?)
+    }
+
+    /// The server line of a snapshot: exactly one framed line. A missing or
+    /// malformed line is `None` — no exit evidence, never an error for the
+    /// listing it accompanies.
+    fn server(&self, raw: &str) -> Option<crate::shell_exit::ServerLedger> {
+        let mut lines = raw.lines();
+        let line = lines.next()?;
+        if lines.next().is_some() {
+            return None;
+        }
+        crate::shell_exit::parse_server_line(self.framed(line)?)
+    }
+
+    /// A one-shot snapshot's output: the pane rows and at most one server
+    /// line, every line framed. Any unframed line fails the whole read.
+    fn snapshot(&self, raw: &str) -> Result<PaneSnapshot, DeckError> {
+        let mut rows = Vec::new();
+        let mut server = None;
+        let mut server_lines = 0;
+        for line in raw.lines() {
+            let body = self.framed(line).ok_or_else(malformed_row)?;
+            if body.starts_with(crate::shell_exit::SERVER_TAG) {
+                server_lines += 1;
+                server = crate::shell_exit::parse_server_line(body);
+            } else {
+                rows.push(parse_pane_row(body).ok_or_else(malformed_row)?);
+            }
+        }
+        if server_lines != 1 {
+            server = None;
+        }
+        Ok(PaneSnapshot { rows, server })
     }
 
     /// Every row of one listing, or an error when ANY line is not exactly
@@ -700,6 +759,33 @@ pub(crate) fn list_panes_with(
 ) -> Result<Vec<PaneRow>, DeckError> {
     let query = PaneQuery::new()?;
     query.rows(&run(&["list-panes", "-a", "-F", query.format()])?)
+}
+
+/// One Board poll: every pane plus the snapshot's server line (server
+/// identity and the verified-exit ledger, `shell_exit.rs`), read by ONE tmux
+/// command list so both describe the same server.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct PaneSnapshot {
+    pub(crate) rows: Vec<PaneRow>,
+    pub(crate) server: Option<crate::shell_exit::ServerLedger>,
+}
+
+/// The one-shot snapshot against whichever server `run` reaches.
+pub(crate) fn snapshot_with(
+    run: &dyn Fn(&[&str]) -> Result<String, DeckError>,
+) -> Result<PaneSnapshot, DeckError> {
+    let query = PaneQuery::new()?;
+    let server_format = query.server_format();
+    query.snapshot(&run(&[
+        "list-panes",
+        "-a",
+        "-F",
+        query.format(),
+        ";",
+        "display-message",
+        "-p",
+        &server_format,
+    ])?)
 }
 
 // ---------- persistent query channel ----------------------------------------
@@ -995,16 +1081,23 @@ impl TmuxQueryChannel {
         }
     }
 
-    fn list_panes(&mut self) -> Result<Vec<PaneRow>, DeckError> {
+    /// The listing and the server line as one command list: two frames.
+    fn snapshot(&mut self) -> Result<PaneSnapshot, DeckError> {
         let query = PaneQuery::new()?;
-        let command = format!("list-panes -a -F '{}'\n", query.format());
+        let command = format!(
+            "list-panes -a -F '{}' ; display-message -p '{}'\n",
+            query.format(),
+            query.server_format()
+        );
         self.child
             .stdin
             .as_mut()
             .ok_or_else(|| DeckError::new(ErrorKind::Tmux, "tmux control stdin unavailable"))?
             .write_all(command.as_bytes())
             .map_err(|_| DeckError::new(ErrorKind::Tmux, "tmux control stdin failed"))?;
-        let raw = self.read_frame(Instant::now() + CONTROL_QUERY_BUDGET)?;
+        let deadline = Instant::now() + CONTROL_QUERY_BUDGET;
+        let raw = self.read_frame(deadline)?;
+        let server = self.read_frame(deadline)?;
         let rows = query.rows(&raw)?;
         if rows.is_empty() || rows.iter().any(|row| row.server_pid != self.server_pid) {
             return Err(DeckError::new(
@@ -1012,7 +1105,10 @@ impl TmuxQueryChannel {
                 "tmux control generation changed",
             ));
         }
-        Ok(rows)
+        Ok(PaneSnapshot {
+            rows,
+            server: query.server(&server),
+        })
     }
 
     fn stop(&mut self) {
@@ -1059,18 +1155,18 @@ static QUERY_STATE: Mutex<QueryState> = Mutex::new(QueryState {
 /// existing one-shot implementation as an oracle, then stable polling stays
 /// on one control client. No user value is ever parsed as a control
 /// command.
-pub(crate) fn query_list_panes() -> Result<Vec<PaneRow>, DeckError> {
+pub(crate) fn query_snapshot() -> Result<PaneSnapshot, DeckError> {
     let mut state = QUERY_STATE.lock_or_recover();
     if let Some(channel) = state.channel.as_mut() {
-        match channel.list_panes() {
-            Ok(rows) => return Ok(rows),
+        match channel.snapshot() {
+            Ok(snapshot) => return Ok(snapshot),
             Err(error) => {
                 applog(&format!("[tmux-control] query reset ({})", error.code()));
                 state.channel.take();
                 state.retry_after = Some(Instant::now() + CONTROL_RETRY_DELAY);
                 // Exactly one one-shot oracle read accompanies a failed
                 // generation. Cooldown polls fail closed instead of exec-looping.
-                return list_panes();
+                return snapshot_with(&tmux);
             }
         }
     }
@@ -1081,11 +1177,11 @@ pub(crate) fn query_list_panes() -> Result<Vec<PaneRow>, DeckError> {
         return Err(DeckError::new(ErrorKind::Tmux, "tmux control recovering"));
     }
     state.retry_after = None;
-    let rows = list_panes()?;
-    if rows.is_empty() {
-        return Ok(rows);
+    let snapshot = snapshot_with(&tmux)?;
+    if snapshot.rows.is_empty() {
+        return Ok(snapshot);
     }
-    match TmuxQueryChannel::connect(&rows) {
+    match TmuxQueryChannel::connect(&snapshot.rows) {
         Ok(channel) => {
             applog("[tmux-control] read channel connected");
             state.channel = Some(channel);
@@ -1098,7 +1194,7 @@ pub(crate) fn query_list_panes() -> Result<Vec<PaneRow>, DeckError> {
             state.retry_after = Some(Instant::now() + CONTROL_RETRY_DELAY);
         }
     }
-    Ok(rows)
+    Ok(snapshot)
 }
 
 /// Smoke evidence only (`smoke_faults::smoke_query_channel`): whether the
@@ -1525,6 +1621,62 @@ mod tests {
         assert!(query.rows("").unwrap().is_empty());
     }
 
+    /// Without the hook that removes dead panes, a server never keeps them.
+    #[test]
+    fn remain_on_exit_is_applied_only_after_the_exit_hook() {
+        let calls = Mutex::new(Vec::new());
+        let run = |args: &[&str]| {
+            calls.lock_or_recover().push(args.join(" "));
+            if args[0] == "set-hook" {
+                Err(DeckError::new(ErrorKind::Tmux, "hook refused"))
+            } else {
+                Ok(String::new())
+            }
+        };
+        init_deck_server_with(&run, std::path::Path::new("/tmp/deck-test-init"));
+        let calls = calls.lock_or_recover();
+        assert!(calls.iter().any(|c| c.starts_with("set-hook -g pane-died")));
+        assert!(
+            !calls.iter().any(|c| c.contains("remain-on-exit")),
+            "{calls:?}"
+        );
+        let conf = tmux_conf_text(std::path::Path::new("/tmp/deck"));
+        assert!(conf.find("set-hook -g pane-died").unwrap() < conf.find("remain-on-exit").unwrap());
+    }
+
+    /// A snapshot is framed rows plus exactly one server line; a missing,
+    /// doubled or malformed server line only removes the evidence, while an
+    /// unframed line still fails the whole read.
+    #[test]
+    fn a_snapshot_carries_rows_and_one_server_line() {
+        let query = PaneQuery::with_nonce(TEST_NONCE.into());
+        let server = |body: &str| format!("{TEST_NONCE}\t{body}\t{TEST_NONCE}");
+        let line = server("deck-exits\t42\t7\tx1|42|7|$1|%2|1|1|0|;");
+        let raw = format!("{}\n{line}\n", framed(&GOOD_FIELDS));
+        let snapshot = query.snapshot(&raw).unwrap();
+        assert_eq!(snapshot.rows.len(), 1);
+        let ledger = snapshot.server.unwrap();
+        assert_eq!((ledger.server_pid, ledger.server_start), (42, 7));
+        assert_eq!(ledger.records.len(), 1);
+        assert!(query
+            .snapshot(&format!("{line}\n"))
+            .unwrap()
+            .rows
+            .is_empty());
+        assert_eq!(query.snapshot(&framed(&GOOD_FIELDS)).unwrap().server, None);
+        assert_eq!(
+            query.snapshot(&format!("{line}\n{line}\n")).unwrap().server,
+            None
+        );
+        let bad = server("deck-exits\tx\t7\t");
+        assert_eq!(query.snapshot(&bad).unwrap().server, None);
+        assert!(query.snapshot(&format!("{line}\nloose\n")).is_err());
+        assert!(query
+            .server_format()
+            .starts_with(&format!("{TEST_NONCE}\tdeck-exits\t#{{pid}}")));
+        assert_eq!(query.server(&format!("{line}\n{line}")), None);
+    }
+
     #[test]
     fn pane_query_nonces_are_fresh_hex() {
         let first = PaneQuery::new().unwrap();
@@ -1796,8 +1948,16 @@ mod tests {
             owned_control_client(),
             Some((channel.child.id(), expected[0].server_pid, "alpha".into()))
         );
-        let actual = channel.list_panes().expect("persistent list-panes");
-        assert_eq!(actual, expected);
+        let actual = channel.snapshot().expect("persistent snapshot");
+        assert_eq!(actual.rows, expected);
+        // the server line rides in the same command list: identity + ledger
+        let server_line = actual.server.expect("the snapshot's server line");
+        assert_eq!(server_line.server_pid, expected[0].server_pid);
+        assert!(server_line.records.is_empty());
+        let run = |args: &[&str]| server.tmux(args);
+        let one_shot = snapshot_with(&run).unwrap();
+        assert_eq!(one_shot.rows, expected);
+        assert_eq!(one_shot.server, Some(server_line));
 
         let clients = server.run(&[
             "list-clients",
@@ -1830,7 +1990,7 @@ mod tests {
         );
 
         server.run(&["kill-session", "-t", "=alpha"]);
-        assert!(channel.list_panes().is_err());
+        assert!(channel.snapshot().is_err());
         drop(channel);
         assert_eq!(owned_control_client(), None);
     }
@@ -1867,7 +2027,7 @@ mod tests {
             &clean,
         )
         .expect("connect persistent control client");
-        assert_eq!(channel.list_panes().unwrap(), clean);
+        assert_eq!(channel.snapshot().unwrap().rows, clean);
 
         server.run(&[
             "new-session",
@@ -1886,7 +2046,7 @@ mod tests {
             "tmux printed the path verbatim"
         );
         assert_eq!(query.rows(&raw).unwrap_err().kind(), ErrorKind::Tmux);
-        assert_eq!(channel.list_panes().unwrap_err().kind(), ErrorKind::Tmux);
+        assert_eq!(channel.snapshot().unwrap_err().kind(), ErrorKind::Tmux);
         drop(channel);
     }
 
@@ -2012,6 +2172,7 @@ mod tests {
             ("copy-mode-selection-style", "none"),
             ("copy-mode-position-style", "reverse"),
             ("copy-mode-position-format", ""),
+            ("remain-on-exit", "on"),
         ] {
             assert_eq!(
                 server.run(&["show-options", "-gv", option]),
@@ -2019,6 +2180,11 @@ mod tests {
                 "{option}"
             );
         }
+        let hooks = server.run(&["show-hooks", "-g", "pane-died"]);
+        assert!(
+            hooks.contains("@deck_exits") && hooks.contains("kill-pane"),
+            "{hooks}"
+        );
         let env = server.run(&["show-environment", "-g"]);
         assert!(
             env.lines().any(|line| line == "COLORTERM=truecolor"),
@@ -2069,14 +2235,17 @@ mod tests {
             &expected,
         )
         .expect("connect persistent control client");
-        assert_eq!(channel.list_panes().unwrap(), expected);
+        assert_eq!(channel.snapshot().unwrap().rows, expected);
         let client_pid = channel.child.id();
 
         stop_query_channel();
         assert!(!query_channel_connected());
         QUERY_STATE.lock_or_recover().channel = Some(channel);
         assert!(query_channel_connected());
-        assert_eq!(query_list_panes().expect("rows from the channel"), expected);
+        assert_eq!(
+            query_snapshot().expect("rows from the channel").rows,
+            expected
+        );
         let clients = server.run(&["list-clients", "-F", "#{client_pid}"]);
         assert!(clients.lines().any(|line| line == client_pid.to_string()));
 
@@ -2101,7 +2270,7 @@ mod tests {
         );
 
         QUERY_STATE.lock_or_recover().retry_after = Some(Instant::now() + CONTROL_RETRY_DELAY);
-        let cooling = query_list_panes().expect_err("cooldown fails closed");
+        let cooling = query_snapshot().expect_err("cooldown fails closed");
         assert_eq!(cooling.message(), "tmux control recovering");
         assert_eq!(cooling.kind(), ErrorKind::Tmux);
         stop_query_channel();
@@ -2122,7 +2291,7 @@ mod tests {
             TmuxQueryChannel::connect_with(program, "/dev/null", &server.socket, &rows)
                 .expect("connect persistent control client");
         reap_orphaned_query_clients(program, "/dev/null", &server.socket);
-        assert_eq!(channel.list_panes().unwrap(), rows);
+        assert_eq!(channel.snapshot().unwrap().rows, rows);
         let clients = server.run(&["list-clients", "-F", "#{client_pid}"]);
         assert!(
             clients

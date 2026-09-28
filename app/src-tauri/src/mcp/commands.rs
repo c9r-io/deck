@@ -1515,6 +1515,24 @@ pub(crate) fn guard_terminal_input(tmux_session: &str) -> Result<(), DeckError> 
     }
 }
 
+/// Whether an MCP runner owns `tmux_session` (`shell_exit.rs`: a runner
+/// ending is a job end, never verified shell-exit authority). An unreadable
+/// ledger answers `true`, so doubt removes authority. With MCP never started
+/// in this run there is no runner to own it; the Board still refuses to
+/// auto-retire any MCP-origin card on its own.
+pub(crate) fn manages_tmux_session(tmux_session: &str) -> bool {
+    let Some(runtime) = RUNTIME.get() else {
+        return false;
+    };
+    runtime
+        .read(|doc| {
+            doc.sessions
+                .iter()
+                .any(|session| session.tmux_session == tmux_session)
+        })
+        .unwrap_or(true)
+}
+
 /// Close path hook (`commands::kill_session`): before tmux kills a managed
 /// pane, ask its runner to stop every job group with bounded escalation
 /// (SIGINT → SIGTERM → SIGKILL). Best effort by design — after a Deck restart

@@ -104,8 +104,11 @@ plus unread endings. See [away notifications](docs/notifications.md).
 
 **Sessions outlive the app.** deck runs its own private tmux server, so
 quitting deck (or it crashing) never kills your agents. Reopen and everything
-is exactly where you left it. Closing a card (corner ✕, or Ctrl+D in the
-shell) is the only way a session ends.
+is exactly where you left it. Closing a card (corner ✕, or Ctrl+D / `exit`
+in its shell) is the only way a session ends. Losing a tmux session or the
+server, a crash, a shell killed by a signal, or any other unexplained
+disappearance never deletes a card: it stays stopped and restartable, with
+its queued prompts.
 
 **Upgrades have an explicit process boundary.** Reopening the same deck build
 keeps the same tmux server PID and every running process. After deck itself is
@@ -370,7 +373,8 @@ ANSI drawing sequences are excluded. Each pane keeps a 50,000-row tmux history;
 deck reports when that reachable history limit is hit and refuses a clipboard
 payload above 64 MiB instead of silently truncating the highlighted selection.
 
-Closing a card — or deleting a project, or letting its shell exit —
+Closing a card — or deleting a project, or exiting the card's own shell
+(Ctrl+D / `exit`) —
 permanently cancels every scheduled prompt for that session, and the card
 only leaves the board once that cancellation is on disk, its tmux session is
 stopped, and the resulting Board is durably saved. A kill or save failure keeps

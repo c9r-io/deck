@@ -227,6 +227,7 @@
         "defaults-exit": {},
         "defaults-here": {},
         "defaults-menu": {},
+        "defaults-missing": {},
         "defaults-not-dir": {},
         "defaults-persistence": {},
         "defaults-shell-only": {},

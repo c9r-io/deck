@@ -336,6 +336,7 @@ const SMOKE_CHECKS: &[&str] = &[
     "defaults-dialog",
     "defaults-empty",
     "defaults-persistence",
+    "defaults-missing",
     "defaults-exit",
     "review-default",
     "review-atomic-list",

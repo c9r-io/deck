@@ -446,6 +446,11 @@ pub(crate) fn idempotent_kill_result(result: Result<String, DeckError>) -> Resul
 pub(crate) struct SessInfo {
     name: String,
     alive: bool,
+    /// The owning shell of the session Deck last observed alive exited by
+    /// itself (`shell_exit::Verdict::ExitedNormally`); the one liveness fact
+    /// that may lead the frontend to retire the card. `alive == false`
+    /// without it is an unexplained absence and never authority.
+    exited_normally: bool,
     /// seconds since the pane last produced output (None if unknown)
     idle_secs: Option<u64>,
     /// physical footprint of the whole process tree under the pane, in MB
@@ -596,20 +601,36 @@ pub(crate) async fn poll_sessions(
             names,
             tail_for,
             checkpoint_shells,
-            crate::tmux::query_list_panes(),
+            crate::tmux::query_snapshot(),
             crate::procinfo::processes,
+            &mut EXIT_EVIDENCE.lock_or_recover(),
+            &crate::mcp::manages_tmux_session,
         )
     })
     .await
     .map_err(|_| DeckError::new(ErrorKind::Other, "session poll worker failed"))?
 }
 
+/// Identities the poll positively observed, the only thing a verified exit
+/// record can match (`shell_exit.rs`). Process memory: a Deck restart starts
+/// empty, so an exit it did not witness alive stays a stopped card.
+static EXIT_EVIDENCE: std::sync::Mutex<crate::shell_exit::ExitEvidence> =
+    std::sync::Mutex::new(crate::shell_exit::ExitEvidence::new());
+
+/// An intentional service restart: nothing that ends from now on may
+/// authorize retirement until it is observed alive again.
+pub(crate) fn forget_exit_identities() {
+    EXIT_EVIDENCE.lock_or_recover().forget_all();
+}
+
 pub(crate) fn poll_from_listing(
     names: Vec<String>,
     tail_for: Vec<String>,
     checkpoint_shells: bool,
-    listing: Result<Vec<PaneRow>, DeckError>,
+    listing: Result<crate::tmux::PaneSnapshot, DeckError>,
     processes: impl FnOnce() -> crate::agent_status::ProcessTable,
+    evidence: &mut crate::shell_exit::ExitEvidence,
+    managed: &dyn Fn(&str) -> bool,
 ) -> Result<Vec<SessInfo>, DeckError> {
     // one listing supplies liveness + activity + pid + fg for every session
     // Log transitions, then propagate failures before reconciling agents,
@@ -629,7 +650,21 @@ pub(crate) fn poll_from_listing(
             _ => {}
         }
     }
-    let rows = listing?;
+    let crate::tmux::PaneSnapshot { rows, server } = listing?;
+    // Liveness and verified exits from the same snapshot. Only
+    // `ExitedNormally` may lead to retirement; absence is `Missing`.
+    let verdicts = {
+        let live: Vec<crate::shell_exit::LivePane> = rows
+            .iter()
+            .map(|row| crate::shell_exit::LivePane {
+                server_pid: row.server_pid,
+                session_name: &row.session_name,
+                session_id: &row.session_id,
+                pane_id: &row.pane_id,
+            })
+            .collect();
+        evidence.classify(&names, &live, server.as_ref(), managed)
+    };
     // ONE process-table snapshot per poll, shared by agent-status
     // reconciliation and the memory footprint
     let table = processes();
@@ -682,10 +717,12 @@ pub(crate) fn poll_from_listing(
 
     Ok(names
         .into_iter()
-        .map(|name| {
+        .zip(verdicts)
+        .map(|(name, verdict)| {
             let pane = panes.get(&name);
             SessInfo {
                 alive: pane.is_some(),
+                exited_normally: verdict == crate::shell_exit::Verdict::ExitedNormally,
                 idle_secs: pane.map(|pane| now.saturating_sub(pane.window_activity)),
                 mem_mb: mem.get(&name).copied(),
                 tail: tails.remove(&name).unwrap_or_default(),
@@ -710,6 +747,12 @@ fn usable_cwd(path: &str) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A successful listing without a server line: liveness only, no exit
+    /// evidence can be derived from it.
+    fn listed(rows: Vec<PaneRow>) -> Result<crate::tmux::PaneSnapshot, DeckError> {
+        Ok(crate::tmux::PaneSnapshot { rows, server: None })
+    }
 
     /// A runtime check would clobber the developer's clipboard, so this pins
     /// the configured spawn instead: without a UTF-8 locale pbcopy turns any
@@ -814,6 +857,82 @@ mod tests {
         assert_eq!(panes["beta"].pane_pid, 200);
     }
 
+    /// Liveness and verified exits come from one snapshot: absence alone,
+    /// an MCP-managed session and a missing server line never report an
+    /// exit; the observed identity's normal final exit does.
+    #[test]
+    fn poll_reports_exited_normally_only_with_matching_evidence() {
+        let _store = crate::agent_status::STORE_TEST_LOCK.lock_or_recover();
+        let _tracker = crate::shell_state::TRACKER_TEST_LOCK.lock_or_recover();
+        let live = vec![PaneRow {
+            server_pid: 100,
+            session_id: "$1".into(),
+            session_name: "card".into(),
+            window_id: "@1".into(),
+            pane_id: "%2".into(),
+            pane_pid: u32::MAX,
+            command: "zsh".into(),
+            ..PaneRow::default()
+        }];
+        let server = |ledger: &str| {
+            crate::shell_exit::parse_server_line(&format!("deck-exits\t100\t5000\t{ledger}"))
+        };
+        let exit0 = "x1|100|5000|$1|%2|1|1|0|;";
+        let poll = |evidence: &mut crate::shell_exit::ExitEvidence,
+                    rows: Vec<PaneRow>,
+                    ledger: Option<&str>,
+                    managed: bool| {
+            let info = poll_from_listing(
+                vec!["card".into()],
+                vec![],
+                false,
+                Ok(crate::tmux::PaneSnapshot {
+                    rows,
+                    server: ledger.and_then(server),
+                }),
+                crate::procinfo::processes,
+                evidence,
+                &|_| managed,
+            )
+            .unwrap();
+            (info[0].alive, info[0].exited_normally)
+        };
+        let mut evidence = crate::shell_exit::ExitEvidence::new();
+        assert_eq!(
+            poll(&mut evidence, vec![], Some(exit0), false),
+            (false, false)
+        );
+        assert_eq!(
+            poll(&mut evidence, live.clone(), Some(""), false),
+            (true, false)
+        );
+        assert_eq!(poll(&mut evidence, vec![], Some(""), false), (false, false));
+        assert_eq!(poll(&mut evidence, vec![], None, false), (false, false));
+        assert_eq!(
+            poll(&mut evidence, vec![], Some(exit0), true),
+            (false, false)
+        );
+        assert_eq!(
+            poll(&mut evidence, vec![], Some(exit0), false),
+            (false, true)
+        );
+        let json = serde_json::to_value(
+            poll_from_listing(
+                vec!["card".into()],
+                vec![],
+                false,
+                listed(vec![]),
+                crate::procinfo::processes,
+                &mut evidence,
+                &|_| false,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(json[0]["exited_normally"], false);
+        assert_eq!(json[0]["alive"], false);
+    }
+
     /// One listing feeds every card: a present pane is alive with its
     /// recency, footprint, foreground and (only when usable) cwd; an absent
     /// name is dead with nothing else claimed about it. Previews are capped
@@ -842,6 +961,8 @@ mod tests {
             false,
             Err(DeckError::new(ErrorKind::Tmux, "listing unavailable")),
             crate::procinfo::processes,
+            &mut crate::shell_exit::ExitEvidence::new(),
+            &|_| false,
         )
         .is_err());
         let mut previews: Vec<String> = (0..MAX_TAIL_SESSIONS)
@@ -852,8 +973,10 @@ mod tests {
             vec!["alpha".into(), "beta".into(), "gone".into()],
             previews,
             false,
-            Ok(rows),
+            listed(rows),
             crate::procinfo::processes,
+            &mut crate::shell_exit::ExitEvidence::new(),
+            &|_| false,
         )
         .unwrap();
         assert_eq!(info.len(), 3);
@@ -968,8 +1091,10 @@ mod tests {
                 vec!["deck-card-coverage".into()],
                 vec![],
                 false,
-                Ok(rows),
+                listed(rows),
                 || table,
+                &mut crate::shell_exit::ExitEvidence::new(),
+                &|_| false,
             )
             .unwrap()
             .remove(0)
@@ -1091,8 +1216,10 @@ mod tests {
                 vec!["deck-card-mixed".into()],
                 vec![],
                 false,
-                Ok(rows),
+                listed(rows),
                 move || table,
+                &mut crate::shell_exit::ExitEvidence::new(),
+                &|_| false,
             )
             .unwrap()
             .remove(0)
@@ -1253,8 +1380,10 @@ mod tests {
                     names.clone(),
                     vec![],
                     false,
-                    Ok(rows.clone()),
+                    listed(rows.clone()),
                     crate::procinfo::processes,
+                    &mut crate::shell_exit::ExitEvidence::new(),
+                    &|_| false,
                 )
                 .unwrap();
             }
@@ -1293,6 +1422,8 @@ mod tests {
                 false,
                 Err(DeckError::new(kind, "listing unavailable")),
                 crate::procinfo::processes,
+                &mut crate::shell_exit::ExitEvidence::new(),
+                &|_| false,
             );
             assert_eq!(result.unwrap_err().kind(), kind);
         }

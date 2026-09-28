@@ -97,8 +97,10 @@ an existing server but cannot become the creator of a new long-lived one.
 
 The Board's high-frequency pane inventory uses one serialized tmux control
 client after an initial one-shot discovery. The client attaches with
-`ignore-size,no-output` and receives only Deck's compiled `list-panes -a -F`
-query; user, project, session and prompt values can never become control
+`ignore-size,no-output` and receives only Deck's compiled snapshot — one
+`list-panes -a -F` query plus one `display-message -p` server line (server
+PID, start time and the shell-exit ledger), each framed by the query's nonce;
+user, project, session and prompt values can never become control
 commands. Replies are correlated by tmux command ID and have a 1.5 second
 deadline plus a 2 MiB output bound. Malformed, nested, mismatched, failed or
 exited frames destroy the channel.
@@ -144,6 +146,44 @@ record lasts until the channel is next polled, and tmux answers
 would otherwise read as an unreachable server and refuse every new session.
 The channel is stopped before a server restart and on app exit.
 
+## Shell exit evidence
+
+Exit evidence is not absence. Without it, a shell ending and a session lost
+to `kill-session`, a crash or a replaced server look identical to Deck: the
+name is missing from a successful listing (`alive=false`), and the attach
+client's `pty-exit` and tmux's `[exited]` text are the same for a shell exit
+and an external `kill-session`. So neither is ever retirement authority;
+`pty-exit` only wakes the poll.
+
+The evidence is recorded by tmux at the moment the pane's process ends. Every
+Deck server (`tmux.conf` and the reuse defaults) installs a global
+`pane-died` hook and then sets `remain-on-exit on` — hook first, so a server
+never keeps a dead pane nothing removes. The hook, in one server command
+list, appends `x1|pid|start_time|$session|%pane|window_panes|session_windows|
+status|signal;` to the server option `@deck_exits` and `kill-pane`s the dead
+pane, so the session is destroyed exactly as before. tmux runs the
+notification queue before any client command in the same server loop, so no
+client — listing, delivery, input — ever sees the dead pane; the literal
+delivery guard also requires `pane_dead == 0`.
+
+The ledger is append-only and bounded where it is written (the hook keeps the
+last 4096 characters and appends). Deck never writes it, so a concurrent
+append cannot be erased by a reader; overflow drops the oldest records and at
+most truncates one, which the strict parser rejects. `kill-session` and
+`kill-server` run no hook and record nothing.
+
+`poll_sessions` classifies each card session as Alive, ExitedNormally or
+Missing (a failed listing is Unavailable). ExitedNormally requires a record
+matching the identity Deck last observed alive in this process — server PID
+and start time, session id, one of its pane ids — for the session's last pane
+(`window_panes = 1`, `session_windows = 1`), with an exit status and no
+signal, for a session no MCP runner owns. A reused name replaces the
+identity; a Deck restart starts with none; the restart transaction forgets
+all identities before it sends its first key. Everything else is Missing and
+only marks the card stopped. Contract: `src/shell_exit.rs`,
+`tests/tmux_contract.rs` (real-tmux matrix, bound, concurrent reads and
+dead-pane observability).
+
 ## Restart transaction and recovery
 
 The backend owns one serialized restart operation:
@@ -179,7 +219,9 @@ The frontend marks ordinary cards stopped after replacement succeeds, or after
 an error when a fresh status shows the server identity changed (or replacement
 began and status cannot be read), and before resuming polling. A refused
 restart leaves their live presentation intact. Intentional server replacement
-cannot be mistaken for individual shell exits and delete cards. Cards, boards,
+cannot be mistaken for individual shell exits and delete cards: the old
+server's exit evidence dies with it, identities are forgotten when the
+transaction starts, and a fresh server can never match an old identity. Cards, boards,
 queue records, and bounded shell
 snapshots remain; Unix processes inside the old tmux server do not migrate and
 are described honestly as terminated.

@@ -541,10 +541,19 @@ a fixture.
       project delete+unrelated create/rename; and a failed first write followed
       by a successful second mutation. Reload `deck.json`: it must exactly equal
       the final visible Board, with no resurrection or lost unrelated change.
-- [ ] Ctrl+D/natural exit keeps the stopped card, pane and queued prompts.
-      Explicit Close with queue-cancel or Board-save failure keeps the card and
-      pane visible; retry after restoring writes closes them only after durable
-      success. Repeated polling never retries a close on its own.
+- [ ] Verified shell exit: Ctrl+D, `exit`, or `exit 7` at the prompt of an
+      ordinary card's owning shell retires the card through the durable close
+      transaction (queue cancelled, Board saved, pane closed) with one
+      "closed — shell exited" toast. With queue-cancel or Board-save failure the
+      stopped card and pane stay visible, the retire error toasts once, and a
+      later poll retries; after writes are restored it retires exactly once.
+- [ ] Unexplained session loss keeps the card stopped/restartable with its
+      queued prompts: `tmux -L deck kill-session -t =<session>`, `kill -9` of the
+      pane's shell, `tmux -L deck kill-server`, a service restart, or an
+      MCP-origin card whose runner ends. `claude`/`codex` exiting back to the
+      shell never retires anything. Explicit Close with queue-cancel or
+      Board-save failure keeps the card and pane; retry after restoring writes
+      closes them only after durable success.
 
 ## Completion & separators
 - [ ] Second command typed shows gray ghost; Tab applies remainder only
@@ -580,8 +589,11 @@ a fixture.
       re-arms or restarts
 - [ ] Delete a whole project holding 2–3 scheduled cards → every one of their
       queue rows is gone at once, other projects untouched
-- [ ] Ctrl+D a shell that has queued prompts → card remains stopped and its
-      queue rows remain; explicit Close removes the card and cancels its queue
+- [ ] Ctrl+D a shell that has queued prompts → card retires itself and its
+      queue rows go with it
+- [ ] `kill-session` (or kill-server) under a card that has queued prompts →
+      card remains stopped and its queue rows remain; explicit Close removes
+      the card and cancels its queue
 - [ ] `chmod 400 ~/.deck/queue.json` → close a card → an explicit toast, the
       card STAYS on the board (never a silent delete with a live schedule);
       `chmod 600` back → closing works

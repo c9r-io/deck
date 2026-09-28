@@ -4,9 +4,16 @@
 // one is in flight runs after it (its request may predate the caller's event),
 // and every such caller receives the follow-up's promise. The interval tick
 // only coalesces. Attention snapshots and read state are runtime only.
-// A missing session only becomes stopped: liveness cannot distinguish an
-// intentional shell exit from a crash or an externally replaced tmux server.
-// Never infer permission to delete a card from disappearance.
+// Absence is not deletion authority: a missing session (poll `alive=false`)
+// only becomes stopped — liveness cannot tell a shell exit from a crash, a
+// `kill-session` or a replaced tmux server. The ONE lifecycle fact that
+// retires a card is the backend's `exited_normally`: tmux itself recorded that
+// the owning shell of the exact session Deck saw alive ended with an exit
+// status and no signal (shell_exit.rs). It retires through the ordinary
+// durable close (`provider.close({ automatic })`: queue cancelled first, the
+// Board saved, then the pane closed), re-proven on every poll, never for an
+// MCP-origin card or a card whose buffer is retained. `pty-exit` only wakes
+// the poll; it is never evidence.
 // Live status never changes placement or durable ordering. Cards carry no
 // terminal preview: output is read in the terminal, never on the Board.
 // Codex coverage diagnostics live in the runtime attention snapshot and
@@ -52,6 +59,7 @@ export const defaultColumns = () => createDefaultColumns(genId, t);
 export const activeProject = () => provider.project(state.projectId);
 
 const closeOperations = new Map();
+const exitRetirement = createExitRetirementTracker();
 
 export const provider = {
   projects: () => store.projects,
@@ -969,6 +977,8 @@ async function pollSessionsNow() {
     // Absence is not deletion authority, including recovery onto a fresh
     // server whose successful listing no longer contains old sessions.
     if (!info.alive) {
+      if (info.exited_normally === true && c.origin?.source !== 'mcp' && !retainedBuffer(c)) exitRetirement.observe(c.id);
+      else exitRetirement.forget(c.id);
       const changed = c.status !== 'stopped' || c.mem != null || c.idle != null || c.fg != null || c.scrolled;
       c.status = 'stopped';
       c.mem = null;
@@ -982,6 +992,7 @@ async function pollSessionsNow() {
       }
       continue;
     }
+    exitRetirement.forget(c.id);
     const status = effectiveCardStatus(info.alive, info.agent,
       info.idle_secs != null && info.idle_secs >= QUIET_SECS);
     const mem = info.alive && info.mem_mb != null ? info.mem_mb : null;
@@ -1009,6 +1020,20 @@ async function pollSessionsNow() {
   }
   updateQuietHints();
   refreshQueuePlans();
+  /* a verified normal shell exit retires its card through the SAME reliable
+     path as an explicit close: cancel the schedule first, and keep the card
+     (toasting once, retrying on later polls) if that cannot be persisted */
+  await exitRetirement.drain({
+    get: sid => provider.get(sid),
+    markStopped: c => { c.status = 'stopped'; emit('status', c); },
+    close: c => ctx.tmuxRestarting ? { ok: false, applied: false } : provider.close(c.id, { quiet: true, detail: true, automatic: true }),
+    failed: () => toast(t('error.retire')),
+    succeeded: c => {
+      closePaneBySid(c.id, { detach: false });
+      toast(t('session.closedExited', { name: c.title }));
+    },
+  });
+  if (epoch !== pollEpoch || ctx.tmuxRestarting) return false;
   await runRetirement.drain({
     get: sid => provider.get(sid),
     markStopped: c => { c.status = 'stopped'; emit('status', c); },
@@ -1068,6 +1093,7 @@ export function stopPolling() {
   pollEpoch++;
   clearInterval(ctx.pollTimer);
   ctx.pollTimer = null;
+  exitRetirement.clear();
   runRetirement.clear();
   runConfirm.clear();
 }
@@ -1088,6 +1114,7 @@ export async function prepareCardsForServerRestart(sessions) {
 /// Move every card to the already-supported stopped state before polling the
 /// fresh empty server, so the view immediately reflects the stopped runtime.
 export function markSessionsStoppedForServerRestart() {
+  exitRetirement.clear();
   ctx.attention.record(store.cards, store.cards.map(c => ({ name: c.session, alive: false })));
   for (const card of store.cards) {
     card.status = 'stopped';

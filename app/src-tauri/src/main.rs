@@ -42,6 +42,7 @@ mod restart;
 mod resume;
 mod scheduler;
 mod session_runtime;
+mod shell_exit;
 mod shell_state;
 #[cfg(test)]
 mod signal_trace;

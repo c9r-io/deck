@@ -512,19 +512,27 @@ export async function runAttentionSmoke() {
     if (c2) await provider.close(c2.id);
     backToBoard(); await pollNow();
     await report('defaults-shell-only', shellOk);
-    // Poll liveness cannot establish why a shell exited. Keep its card and
-    // attached transcript until an explicit close, even without a buffer.
+    // Absence is not deletion authority: a session that is merely missing
+    // keeps its stopped card and attached transcript. Only the backend's
+    // verified normal exit of the owning shell (`exited_normally`) retires
+    // it, through the real close. This harness replaces poll_sessions with a
+    // synthetic snapshot that knows only the fixture cards, so the new card
+    // is registered in it first; the close itself is the real one.
     const exiting = await newDefaultSession({ shellOnly: true }); await pause(80);
     const c4 = exiting && provider.get(exiting.id);
     if (c4) statuses.set(c4.session, { name: c4.session, alive: true, agent: null, idle_secs: 1, fg: 'zsh', mem_mb: 5 });
     await pollNow();
     const wentLive = !!c4 && c4.status !== 'stopped';
-    if (c4) { statuses.get(c4.session).alive = false; statuses.get(c4.session).mem_mb = null; }
+    if (c4) Object.assign(statuses.get(c4.session), { alive: false, mem_mb: null, exited_normally: false });
     await pollNow(); await pause(80);
     const retained = !!c4 && provider.get(c4.id)?.status === 'stopped' && panes.has(c4.session);
+    await report('defaults-missing', wentLive && retained);
+    if (c4) statuses.get(c4.session).exited_normally = true;
+    await pollNow(); await pause(80);
+    const retired = !!c4 && !provider.get(c4.id) && state.view === 'board' && !panes.has(c4.session);
     if (c4) statuses.delete(c4.session);
-    await report('defaults-exit', wentLive && retained);
-    if (c4) await provider.close(c4.id);
+    await report('defaults-exit', wentLive && retired);
+    if (c4 && provider.get(c4.id)) await provider.close(c4.id);
     backToBoard();
     // A default directory that does not exist: the dialog names it, nothing
     // was written, cancel leaves it so; the home-shell choice creates a shell.

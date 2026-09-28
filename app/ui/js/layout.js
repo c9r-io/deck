@@ -7,8 +7,11 @@
 // DOM element must stay distinct from the imported runtime state (`ctx`).
 // Attention navigation passes allowStart:false: attaching never creates a shell.
 // A pane that is already open is only focused: a detached pane (shell exited,
-// attach failed) is never re-attached or restarted by a click; exit retirement
-// in board.js owns it. A pty-exit may land before its attach reply — the reply
+// attach failed) is never re-attached or restarted by a click; the poll in
+// board.js decides whether its card retires (only on the backend's verified
+// shell exit). `pty-exit` means the attach client's stream ended — shell exit,
+// kill-session, detach and a lost server all look alike — so it only wakes
+// that poll and is never retirement evidence. A pty-exit may land before its attach reply — the reply
 // never marks a pane attached once its generation has exited. Each pane is
 // synchronously fitted before attach and confirms that grid afterwards;
 // the asynchronous layout RAF must never attach tmux at xterm's 80x24 default.
@@ -722,7 +725,8 @@ export function focusPane(session) {
 }
 
 /* the attachment's stream ended: the pane keeps its transcript but is no
-   longer viewing; the poll decides whether the card retires */
+   longer viewing. Wake-up only: the poll decides whether the card retires,
+   from verified backend evidence, never from this event */
 function paneExited(pane, gen) {
   window.dispatchEvent(new CustomEvent('deck-voice-target-exit', { detail: pane.session }));
   pane.exitedGen = gen;

@@ -262,6 +262,60 @@ impl Drop for IsolatedTmux {
         }
     }
 }
+/// A dead pane (remain-on-exit without the hook that removes it) accepts a
+/// paste with success and reads nothing: the atomic guard refuses it.
+#[test]
+fn production_paste_guard_refuses_a_dead_pane() {
+    let _scope = crate::session_runtime::test_activity_scope();
+    let io = IsolatedTmux(format!("deck-test-dead-delivery-{}", std::process::id()));
+    let run = |args: &[&str]| {
+        io.run(&args.iter().map(|s| s.to_string()).collect::<Vec<_>>())
+            .unwrap()
+    };
+    run(&["new-session", "-d", "-s", "keep", "/bin/cat"]);
+    run(&["set-option", "-g", "remain-on-exit", "on"]);
+    run(&["new-session", "-d", "-s", "t", "/bin/sh", "-c", "exit 0"]);
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while run(&["display-message", "-p", "-t", "t", "#{pane_dead}"]).trim() != "1" {
+        assert!(std::time::Instant::now() < deadline, "the pane never died");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let raw = run(&[
+        "display-message",
+        "-p",
+        "-t",
+        "t",
+        "#{pid}:#{session_id}:#{window_id}:#{pane_id}:#{pane_pid}",
+    ]);
+    let fields: Vec<_> = raw.trim().split(':').collect();
+    let pane = PaneIdentity {
+        server_pid: fields[0].parse().unwrap(),
+        session_id: fields[1].into(),
+        window_id: fields[2].into(),
+        pane_id: fields[3].into(),
+        pane_pid: fields[4].parse().unwrap(),
+    };
+    // the hazard itself: tmux reports success for input to a dead pane
+    assert_eq!(
+        io.run(&[
+            "send-keys".into(),
+            "-t".into(),
+            pane.pane_id.clone(),
+            "x".into()
+        ])
+        .map(|_| ()),
+        Ok(())
+    );
+    let mut req = request(&pane);
+    req.expected_process = None;
+    req.require_bracketed = false;
+    assert_eq!(
+        deliver_with(req, &io).unwrap_err().to_string(),
+        "target-changed"
+    );
+    assert!(!run(&["list-buffers"]).contains("deck-send-voice-1"));
+}
+
 #[test]
 fn production_paste_guards_reject_changed_generation_foreground_multiline_and_copy_mode() {
     let _scope = crate::session_runtime::test_activity_scope();

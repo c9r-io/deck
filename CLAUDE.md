@@ -132,8 +132,17 @@ evolution; it makes scope expansion deliberate.
 ## Hard rules
 
 - **No automatic card movement.** The board never moves a card; not on agent
-  state, not on inbound events, not on delivery. The ONE sanctioned
-  automatic retirement is an automation run whose rule says "close the
+  state, not on inbound events, not on delivery. There are exactly TWO
+  sanctioned automatic retirements, both through the ordinary durable
+  `provider.close` path. (1) A verified normal exit of an ordinary card's
+  owning shell (Ctrl+D, `exit N`): tmux's own `pane-died` hook recorded an
+  exit status and no signal for the last pane of the exact session identity
+  Deck observed alive (`shell_exit.rs`, poll `exited_normally`, `board.js`
+  exit retirement); never for an MCP-origin card or a retained buffer.
+  **Absence is not deletion authority**: `pty-exit`, tmux's `[exited]`,
+  a session missing from a listing, `kill-session`, server loss or
+  replacement, and a signal death grant no retirement — the card stays
+  stopped. (2) An automation run whose rule says "close the
   card" (`runFinishHolds` in `pure.js`, driven by the `board.js` poll):
   the user chose it per rule, it never fires while a pane shows the card,
   it goes through the same close path as a click, and it reads only
@@ -237,6 +246,7 @@ loaded by `ui/index.html`; xterm.js vendored in `app/ui/vendor/`. Backend
 | Session start/kill, poll (status, memory footprint, preview rows), clipboard write | `commands.rs` |
 | tmux sidecar, socket, server conf; long-lived client argv (query client, pane attach) shared with the contract suite's client-topology matrix | `tmux.rs`, `tmux_clients.rs` |
 | Server lifecycle: protocol metadata, reuse/replace, restart transaction, channel sockets | `tmux_lifecycle.rs`, `restart.rs` (exit/restart policy), `session_runtime.rs` (shared guards and deadlines) (+ `docs/tmux-server-lifecycle.md`) |
+| Verified shell-exit evidence (tmux `pane-died` ledger, identity-bound Alive / ExitedNormally / Missing; absence is never retirement authority) | `shell_exit.rs` (+ `docs/tmux-server-lifecycle.md`) |
 | PTY attach bridge with end-to-end flow control | `pty.rs` |
 | Opt-in MCP terminal control: local grants/ledger/fencing, STDIO adapter, visible pane runner, Board bridge | `mcp/` (contract in `mcp/mod.rs`), `mcp-adapter/`, `mcp-runner/`, `mcp-fixtures/` (shared contract JSON), `ui/js/mcp.js` (+ `docs/mcp.md`, `docs/mcp-architecture.md`) |
 | Controlled Execution calibration (CE1): frozen corpus, probe, A1/B harness, the ONE certification aggregator (evidence only; verdicts come from the aggregator) | `scripts/ce/`, `scripts/ce_parity.py`, `scripts/ce_verdict.py`, `mcp/tests.rs` `ce1_probe_*` (+ `docs/ce-calibration.md`) |

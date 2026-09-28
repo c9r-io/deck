@@ -134,6 +134,10 @@ pub(crate) fn prepare(
     progress: &dyn Fn(&str, usize, usize),
 ) -> Result<Vec<PaneRow>, DeckError> {
     check_deadline()?;
+    // The exit keys below may end a shell (a second Ctrl+D landing after its
+    // agent already quit). That is Deck's own keystroke, not the user's, so
+    // no shell that ends from here on may authorize card retirement.
+    crate::commands::forget_exit_identities();
     let started = Instant::now();
     let rows = list()?;
     if !unchanged_rows(reviewed, &rows) {

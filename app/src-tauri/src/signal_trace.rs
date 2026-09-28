@@ -311,8 +311,13 @@ fn run(trace: &Value) -> Value {
                 names,
                 vec![],
                 false,
-                Ok(world.rows()),
+                Ok(crate::tmux::PaneSnapshot {
+                    rows: world.rows(),
+                    server: None,
+                }),
                 move || table,
+                &mut crate::shell_exit::ExitEvidence::new(),
+                &|_| false,
             )
             .unwrap();
             let mut sessions = serde_json::Map::new();
