@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.7.18 — 2026-09-28 (Nightly)
+
+- Slack badge automations have a new, separate option: **Send the first step
+  to a newly started agent without waiting for readiness**. Your reaction
+  already approves the run; normally Deck still waits for one real
+  interaction with a freshly started Claude or Codex before sending its first
+  step, because a startup dialog (Trust, Update, sign-in, permission) may be
+  showing. With this option, which asks for confirmation when you turn it on,
+  Deck sends the first step anyway and you accept that risk for that rule.
+  Later steps keep every normal check. It works with Claude, and with Codex
+  only when the command includes `--no-daemon`. Unticking it, deleting the
+  rule or changing its command stops it for runs still waiting.
+- "Automatically continue approved follow-up steps" is the new English name
+  of the approval option (it governs the steps after the first). The ⏱ panel
+  now describes the first-step wait as confirming the agent is ready, not as
+  an approval.
+- Optional local translation lens: an off-by-default, on-device translation
+  companion for sessions, with verified language packs.
+- MCP Full Local jobs now run with the same environment as an ordinary Deck
+  terminal (session PATH, SSH agent, shell and session variables) and may use
+  any existing working directory; only Deck's own control variables are
+  removed. MCP execution is not sandboxed: it runs with your permissions
+  after an explicit local approval.
+- Stable promotion now includes the Tunnel Helper.
+
 ## 0.7.12 — 2026-09-25 (Nightly)
 
 - Stopped cards left after a shell-service restart can be closed normally when
