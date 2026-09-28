@@ -34,10 +34,11 @@
 //! (`paste-buffer -p`: bracketed only for an application that asked). The
 //! text may be many lines; its newlines paste as newlines and only CRs are
 //! folded away up front (`ops::normalize_prompt`). Enter
-//! is sent 300ms later as a SEPARATE key under the same condition — a CR
+//! is sent 600ms later as a SEPARATE key under the same condition — a CR
 //! inside the paste burst is a pasted newline to agent inputs (Claude Code,
-//! Codex) and the prompt sat unsent in the box; a refused Enter is logged and
-//! the delivery still counts, because the bytes are visibly in the pane. The
+//! Codex) and the prompt sat unsent in the box; a refused Enter after paste
+//! leaves the row ambiguous for explicit resolution, never counted as an
+//! ordinary submitted delivery or automatically retried. The
 //! foreground check matches tmux's `pane_current_command` OR the argv name of
 //! the tty's foreground process group (`ps … stat=+`): a launcher symlink to a
 //! versioned binary (Claude Code's `claude → versions/2.1.259`) reports the

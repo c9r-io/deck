@@ -5,7 +5,7 @@ trigger — a clock, or a badge you put on a Slack message. When it fires,
 deck starts a session: one card in the column the rule names, launched
 with the rule's command, then the rule's template with the message filled
 in. When the command is Claude or Codex, the first template row is **not**
-sent automatically: a newly started agent may be showing a startup dialog
+sent automatically by default: a newly started agent may be showing a startup dialog
 (an update offer, folder trust, first-run setup, MCP or hooks review) that
 would take the Enter. The row waits at "Waiting for first agent
 interaction" until you interact with the agent once — with its Agent
@@ -122,9 +122,13 @@ ready; it only stops waiting for proof.
 - Claude, and Codex only when the command includes `--no-daemon`: Codex's
   default shared background service gives Deck no attributable Signal at
   all, so the option does nothing there (the rule's facts say so).
-- Starting still types nothing: the session is started, and the first step
-  goes on the scheduler pass that follows right after, into the now-running
-  agent.
+- Starting still types nothing. The scheduler wakes immediately, then the
+  eligible per-session worker waits 6 seconds before the first paste. This
+  is compatibility grace for a known fresh-Claude input-loss window, not
+  proof that the composer is ready or that no startup dialog owns Enter.
+  During and after it, cancellation, rule/settings changes, current Agent
+  holds and the exact target generation are checked again. The wait spends
+  no delivery attempt, and restarting Deck or the Agent begins a new wait.
 - Unticking it, deleting the rule or changing its command before the first
   step is sent stops it for runs already waiting; if Deck cannot read its
   settings it does not use it. Send now always works.
@@ -132,6 +136,14 @@ ready; it only stops waiting for proof.
   this option. A delivery sent this way is recorded as such (no text).
 - It is a temporary escape hatch: when an agent exposes an official
   readiness fact, Deck should use that instead.
+- The 6-second grace extends Deck's historical 2.5-second fresh-start settle
+  after a real Claude 2.1.283 prompt was lost at 3.35 seconds from binding
+  while a delivery at 5.8 seconds was processed in the same isolated setup.
+  It must be checked against each supported Agent version. It cannot guarantee
+  a future or unusually slow startup. Deck does not infer a lost prompt
+  from a response timeout and does not automatically resend it. If text was
+  pasted but Enter was refused, the row stays in the existing
+  ambiguous-delivery state until you explicitly resolve it.
 
 ## The clock trigger
 

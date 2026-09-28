@@ -247,6 +247,15 @@ const RUST: &[(&str, &str, &str, usize, Class)] = &[
     ),
     ("scheduler/select.rs", "", "agent_holds(", 1, Hold),
     ("scheduler/select.rs", "eligible", "agent_holds(", 1, Hold),
+    // Startup stabilization may stop on a newly observed Agent hold. It
+    // never converts a Signal observation into send authority.
+    (
+        "scheduler/delivery.rs",
+        "send_one_safe_requested_with_stabilization",
+        "hold_reason(",
+        1,
+        Hold,
+    ),
     // the panel plan names the hold (stage `agent` / `first-send`)
     (
         "scheduler/review.rs",

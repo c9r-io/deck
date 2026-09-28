@@ -1230,6 +1230,44 @@ fn send_one_failure_is_retryable_and_never_audited() {
     assert!(q.last_fired.is_empty(), "no gap update for a refused send");
 }
 
+/// A refused Enter follows a successful paste. It is neither a completed
+/// submission nor a safe automatic retry, including across crash recovery.
+#[test]
+fn enter_refused_after_paste_requires_explicit_resolution() {
+    let qm = Mutex::new(qs(vec![due_at("a", "s")]));
+    let res = send_test(
+        &qm,
+        &AtomicBool::new(false),
+        "s",
+        720,
+        &HashMap::new(),
+        &|_| {
+            Err(DeckError::new(
+                crate::error::ErrorKind::PartialDelivery,
+                "Enter refused",
+            ))
+        },
+        &ok_persist,
+    );
+    assert_eq!(
+        res,
+        SendResult::Partial {
+            session: "s".into()
+        }
+    );
+    let q = qm.lock_or_recover();
+    assert_eq!(q.items[0].state, ItemState::Ambiguous);
+    assert_eq!(q.items[0].attempts, 1);
+    assert_eq!(q.pending.len(), 1);
+    assert!(q.deliveries.is_empty() && q.last_fired.is_empty());
+    assert!(select_due(&q, NOW, 720, &HashMap::new()).is_empty());
+    let mut restarted = q.clone();
+    drop(q);
+    recover_interrupted(&mut restarted);
+    assert_eq!(restarted.items[0].state, ItemState::Ambiguous);
+    assert!(restarted.deliveries.is_empty());
+}
+
 #[test]
 fn retry_after_failure_sends_the_full_text_exactly_once() {
     use std::sync::atomic::{AtomicU32, Ordering};
@@ -5857,6 +5895,200 @@ fn an_overridden_first_step_is_sent_on_the_next_tick_and_audited_honestly() {
     }
 }
 
+/// The production worker waits outside the firing ledger, then selects from
+/// fresh Signal/settings while keeping the original pane generation.
+#[test]
+fn overridden_first_send_stabilizes_and_rechecks_before_paste() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let qm = Mutex::new(qs(vec![overridden_head("h")]));
+    let sleeps = AtomicUsize::new(0);
+    let fires = AtomicUsize::new(0);
+    let obs = unestablished(NOW - 400);
+    let result = send_one_safe_stabilized(
+        &qm,
+        &AtomicBool::new(false),
+        SendRequest {
+            session: "s",
+            now_min: 720,
+            activity: &obs,
+            requested: None,
+        },
+        &SendHooks {
+            fire: &|_| {
+                assert_eq!(sleeps.load(Ordering::SeqCst), 60);
+                fires.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            },
+            persist: &ok_persist,
+            kill: &|_| {},
+            authority: &|| Some(config_with(vec![first_send_rule("claude")])),
+        },
+        &ContextHooks {
+            prepare: &|_, _| {
+                Prepared::Probe(probe_result(
+                    ContextStatus::Ready,
+                    ContextCode::ProcessMatched,
+                    1,
+                ))
+            },
+            final_probe: &|_| probe_result(ContextStatus::Ready, ContextCode::ProcessMatched, 1),
+        },
+        &StabilizationOps {
+            sleep: &|duration| {
+                assert_eq!(duration.as_millis(), 100);
+                assert!(qm.lock_or_recover().pending.is_empty());
+                sleeps.fetch_add(1, Ordering::SeqCst);
+            },
+            observe: &|| Some(obs.clone()),
+        },
+    );
+    assert!(matches!(result, SendResult::Sent { .. }), "{result:?}");
+    assert_eq!(fires.load(Ordering::SeqCst), 1);
+    assert!(qm.lock_or_recover().deliveries[0].readiness_overridden);
+    assert!(!obs["s"].claude_interaction);
+}
+
+/// A policy/row/Signal/target change during the grace never spends an
+/// attempt or sends the old prompt. A later worker must start its own wait.
+#[test]
+fn overridden_stabilization_cancels_on_withdrawal_hold_or_replacement() {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    for change in [
+        "pause",
+        "delete",
+        "revision",
+        "revocation",
+        "needs-input",
+        "unreadable",
+        "replacement",
+    ] {
+        let qm = Mutex::new(qs(vec![overridden_head("h")]));
+        let ticks = AtomicUsize::new(0);
+        let revoked = AtomicBool::new(false);
+        let obs = unestablished(NOW - 400);
+        let result = send_one_safe_stabilized(
+            &qm,
+            &AtomicBool::new(false),
+            SendRequest {
+                session: "s",
+                now_min: 720,
+                activity: &obs,
+                requested: None,
+            },
+            &SendHooks {
+                fire: &|_| panic!("{change}: no paste after withdrawal"),
+                persist: &ok_persist,
+                kill: &|_| {},
+                authority: &|| {
+                    if revoked.load(Ordering::SeqCst) && change == "unreadable" {
+                        None
+                    } else {
+                        let mut rule = first_send_rule("claude");
+                        if revoked.load(Ordering::SeqCst) && change == "revocation" {
+                            rule.first_send_without_readiness = false;
+                        }
+                        Some(config_with(vec![rule]))
+                    }
+                },
+            },
+            &ContextHooks {
+                prepare: &|_, _| {
+                    Prepared::Probe(probe_result(
+                        ContextStatus::Ready,
+                        ContextCode::ProcessMatched,
+                        1,
+                    ))
+                },
+                final_probe: &|_| {
+                    probe_result(
+                        if change == "replacement" && ticks.load(Ordering::SeqCst) > 0 {
+                            ContextStatus::SessionReplaced
+                        } else {
+                            ContextStatus::Ready
+                        },
+                        ContextCode::ProcessMatched,
+                        1,
+                    )
+                },
+            },
+            &StabilizationOps {
+                sleep: &|_| {
+                    if ticks.fetch_add(1, Ordering::SeqCst) == 0 {
+                        let mut q = qm.lock_or_recover();
+                        match change {
+                            "pause" => q.items[0].paused = true,
+                            "delete" => q.items.clear(),
+                            "revision" => q.items[0].revision += 1,
+                            "revocation" | "unreadable" => revoked.store(true, Ordering::SeqCst),
+                            _ => {}
+                        }
+                    }
+                },
+                observe: &|| {
+                    let mut latest = obs.clone();
+                    if change == "needs-input" {
+                        latest.get_mut("s").unwrap().agent = Some("needs-input");
+                    }
+                    Some(latest)
+                },
+            },
+        );
+        assert!(
+            matches!(result, SendResult::Nothing | SendResult::Blocked { .. }),
+            "{change}: {result:?}"
+        );
+        let q = qm.lock_or_recover();
+        assert!(q.pending.is_empty() && q.deliveries.is_empty(), "{change}");
+        assert!(q.items.iter().all(|i| i.attempts == 0), "{change}");
+    }
+}
+
+/// A Codex generation that becomes unattributable during the grace remains
+/// held even though the rule had accepted unknown first-send readiness.
+#[test]
+fn codex_unavailable_during_stabilization_never_injects() {
+    use crate::agent_status::CodexSignalTrust::{Unavailable, Unknown};
+    let mut row = overridden_head("c");
+    row.cmd = "codex --no-daemon".into();
+    row.expected_process = Some("codex".into());
+    let qm = Mutex::new(qs(vec![row]));
+    let original = seen_codex(NOW - 400, None, Unknown);
+    let result = send_one_safe_stabilized(
+        &qm,
+        &AtomicBool::new(false),
+        SendRequest {
+            session: "s",
+            now_min: 720,
+            activity: &original,
+            requested: None,
+        },
+        &SendHooks {
+            fire: &|_| panic!("unavailable Codex must not receive the prompt"),
+            persist: &ok_persist,
+            kill: &|_| {},
+            authority: &|| Some(config_with(vec![first_send_rule("codex --no-daemon")])),
+        },
+        &ContextHooks {
+            prepare: &|_, _| {
+                Prepared::Probe(probe_result(
+                    ContextStatus::Ready,
+                    ContextCode::ProcessMatched,
+                    1,
+                ))
+            },
+            final_probe: &|_| probe_result(ContextStatus::Ready, ContextCode::ProcessMatched, 1),
+        },
+        &StabilizationOps {
+            sleep: &|_| {},
+            observe: &|| Some(seen_codex(NOW - 400, None, Unavailable)),
+        },
+    );
+    assert_eq!(result, SendResult::Nothing);
+    let q = qm.lock_or_recover();
+    assert_eq!(q.items[0].attempts, 0);
+    assert!(q.pending.is_empty() && q.deliveries.is_empty());
+}
+
 /// A send-now of an overridden head row is the user acting: manual, and
 /// not recorded as overridden.
 #[test]
@@ -6193,4 +6425,408 @@ fn the_post_start_wake_is_at_most_once_per_session_per_tick() {
     );
     assert!(start_wake_due(&mut last, "c", t0 + tick * 3));
     assert_eq!(last.len(), 1, "expired entries are pruned");
+}
+
+mod real_claude {
+    //! Opt-in, authenticated Claude startup regression on disposable tmux sockets.
+    //!
+    //! Run only with DECK_FIRST_SEND_REAL_ROOT=/tmp/deck-firstsend-... after
+    //! authenticating CLAUDE_CONFIG_DIR=<root>/claude and installing the
+    //! test-owned UserPromptSubmit hook. Ordinary CI never invokes this test.
+    //! The scheduler's start, selection, stabilization, ledger and literal
+    //! delivery code is used; only tmux transport and settings storage are
+    //! pointed at private test resources.
+
+    use super::*;
+    use crate::prompt_delivery::{LiteralOutcome, LiteralRequest, Transport};
+    use std::io::Write;
+    use std::path::{Path, PathBuf};
+    use std::process::{Command, Stdio};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+    struct TestTransport<'a>(&'a ModalServer);
+
+    impl Transport for TestTransport<'_> {
+        fn probe(&self, session: &str) -> Result<crate::context::RawProbe, DeckError> {
+            let rows = crate::tmux::list_panes_with(&|args| self.0.run(args))?;
+            rows.into_iter()
+                .find(|row| row.session_name == session)
+                .map(|row| crate::context::raw_probe_of_row(&row))
+                .ok_or_else(|| {
+                    DeckError::new(crate::error::ErrorKind::NoSession, "test pane missing")
+                })
+        }
+
+        fn run(&self, args: &[String]) -> Result<String, DeckError> {
+            self.0
+                .run(&args.iter().map(String::as_str).collect::<Vec<_>>())
+        }
+
+        fn run_with_stdin(&self, args: &[String], input: &[u8]) -> Result<String, DeckError> {
+            let mut child = Command::new(&self.0 .1)
+                .args(["-f", "/dev/null", "-L", &self.0 .0])
+                .args(args)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .map_err(DeckError::from)?;
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(input)
+                .map_err(DeckError::from)?;
+            let out = child.wait_with_output().map_err(DeckError::from)?;
+            if out.status.success() {
+                Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+            } else {
+                Err(DeckError::new(
+                    crate::error::ErrorKind::Tmux,
+                    "test tmux failed",
+                ))
+            }
+        }
+
+        fn pause(&self, duration: Duration) {
+            std::thread::sleep(duration);
+        }
+    }
+
+    fn assistant_marker_count(dir: &Path, marker: &str) -> usize {
+        let mut dirs = vec![dir.to_path_buf()];
+        let mut count = 0;
+        while let Some(next) = dirs.pop() {
+            let Ok(entries) = std::fs::read_dir(next) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    dirs.push(path);
+                } else if path.extension().is_some_and(|ext| ext == "jsonl") {
+                    if let Ok(bytes) = std::fs::read_to_string(path) {
+                        for line in bytes.lines() {
+                            let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+                                continue;
+                            };
+                            if value["type"] == "assistant"
+                                && value["message"]["content"].to_string().contains(marker)
+                            {
+                                count += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        count
+    }
+
+    fn hook_count(path: &Path, trial: &str) -> usize {
+        std::fs::read_to_string(path)
+            .unwrap_or_default()
+            .lines()
+            .filter(|line| line.starts_with(&format!("{trial} ")))
+            .count()
+    }
+
+    fn elapsed_ms(origin: Instant) -> u128 {
+        origin.elapsed().as_millis()
+    }
+
+    fn install_test_hook(config: &Path) {
+        let settings = config.join("settings.json");
+        let mut value: serde_json::Value = std::fs::read(&settings)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_else(|| serde_json::json!({}));
+        let script = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("scripts/first-send-real-hook.py");
+        let entry = serde_json::json!({
+            "hooks": [{
+                "type": "command",
+                "command": "/usr/bin/python3",
+                "args": [script.to_str().unwrap()],
+                "timeout": 5
+            }]
+        });
+        let hooks = value
+            .as_object_mut()
+            .unwrap()
+            .entry("hooks")
+            .or_insert_with(|| serde_json::json!({}));
+        let list = hooks
+            .as_object_mut()
+            .unwrap()
+            .entry("UserPromptSubmit")
+            .or_insert_with(|| serde_json::json!([]));
+        let entries = list.as_array_mut().unwrap();
+        if !entries.contains(&entry) {
+            entries.push(entry);
+        }
+        crate::datadir::write_private(
+            &settings,
+            serde_json::to_vec_pretty(&value).unwrap().as_slice(),
+        )
+        .unwrap();
+    }
+
+    /// Opt-in A/B: `DECK_FIRST_SEND_REAL_MODE=baseline` uses the old immediate
+    /// second-pass path; `candidate` uses the actual production grace. Every
+    /// trial starts a fresh detached Claude in a test-owned config/workdir and
+    /// requires a real submit hook plus a unique assistant transcript marker.
+    #[test]
+    #[ignore = "requires authenticated isolated Claude and disposable tmux"]
+    fn opt_in_real_claude_first_send_matrix() {
+        let root = PathBuf::from(std::env::var("DECK_FIRST_SEND_REAL_ROOT").expect("test root"));
+        assert!(root.is_dir() && root.to_string_lossy().starts_with("/tmp/deck-firstsend-"));
+        let config = root.join("claude");
+        let work = root.join("work");
+        let evidence = root.join("evidence");
+        assert!(config.is_dir() && work.is_dir() && evidence.is_dir());
+        let mode = std::env::var("DECK_FIRST_SEND_REAL_MODE").expect("baseline or candidate");
+        assert!(mode == "baseline" || mode == "candidate");
+        let trials: usize = std::env::var("DECK_FIRST_SEND_REAL_TRIALS")
+            .unwrap_or_else(|_| if mode == "candidate" { "20" } else { "10" }.into())
+            .parse()
+            .expect("trial count");
+        assert!((1..=40).contains(&trials));
+        let hook_log = evidence.join("user-prompt-submit.log");
+        let report = evidence.join(format!("{mode}-matrix.jsonl"));
+        install_test_hook(&config);
+        let offsets = [0, 150, 400, 900, 1500];
+        let forced_offset = std::env::var("DECK_FIRST_SEND_REAL_OFFSET_MS")
+            .ok()
+            .map(|value| value.parse::<u64>().expect("offset milliseconds"));
+        let label = std::env::var("DECK_FIRST_SEND_REAL_LABEL").unwrap_or_default();
+        assert!(label.chars().all(|c| c.is_ascii_alphanumeric()));
+        for n in 0..trials {
+            let trial = format!("{mode}{label}{n:02}");
+            let marker = format!("DECK_REAL_{}_OK", trial.to_ascii_uppercase());
+            let origin = Instant::now();
+            let server = ModalServer(
+                format!("deck-smoke-firstsend-{}-{trial}", std::process::id()),
+                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("binaries/tmux-aarch64-apple-darwin"),
+            );
+            server
+                .run(&["start-server", ";", "set-option", "-g", "exit-empty", "off"])
+                .unwrap();
+            server
+                .run(&[
+                    "set-environment",
+                    "-g",
+                    "CLAUDE_CONFIG_DIR",
+                    config.to_str().unwrap(),
+                ])
+                .unwrap();
+            server
+                .run(&[
+                    "set-environment",
+                    "-g",
+                    "DECK_FIRST_SEND_HOOK_LOG",
+                    hook_log.to_str().unwrap(),
+                ])
+                .unwrap();
+            let pane_rows =
+                || crate::tmux::list_panes_with(&|args| server.run(args)).unwrap_or_default();
+            let probe = |item: &QueueItem, identity: Option<&PaneIdentity>| {
+                pane_rows()
+                    .into_iter()
+                    .find(|row| row.session_name == item.session)
+                    .map(|row| {
+                        crate::context::evaluate(
+                            &crate::context::raw_probe_of_row(&row),
+                            identity,
+                            item.expected_process.as_deref(),
+                        )
+                    })
+                    .unwrap_or_else(|| {
+                        ProbeResult::blocked(
+                            ContextStatus::Unavailable,
+                            ContextCode::SessionMissing,
+                        )
+                    })
+            };
+            let ops = StartOps {
+                exists: &|item| {
+                    server
+                        .run(&["has-session", "-t", &format!("={}", item.session)])
+                        .is_ok()
+                },
+                start: &|item| {
+                    server
+                        .run(&[
+                            "new-session",
+                            "-d",
+                            "-s",
+                            &item.session,
+                            "-c",
+                            work.to_str().unwrap(),
+                            "-e",
+                            &format!("DECK_FIRST_SEND_TRIAL={trial}"),
+                            "claude",
+                        ])
+                        .map(|_| ())
+                },
+                probe: &probe,
+                sleep: &std::thread::sleep,
+            };
+            let mut row = overridden_head(&trial);
+            row.session = trial.clone();
+            row.text = format!("Reply with exactly {marker}. No tools.");
+            row.dir = work.to_string_lossy().into_owned();
+            let qm = Mutex::new(qs(vec![row]));
+            let transport = TestTransport(&server);
+            let fires = AtomicUsize::new(0);
+            let fire = |item: &QueueItem| {
+                fires.fetch_add(1, Ordering::SeqCst);
+                let pane = item.binding.as_ref().unwrap();
+                let delivery = item.delivery.as_deref().unwrap();
+                let request: LiteralRequest<'_> = literal_request(item, pane, delivery);
+                match crate::prompt_delivery::deliver_with(request, &transport)? {
+                    LiteralOutcome::Submitted => Ok(()),
+                    LiteralOutcome::EnterRefused => Err(DeckError::new(
+                        crate::error::ErrorKind::PartialDelivery,
+                        "test Enter refused after paste",
+                    )),
+                    LiteralOutcome::Inserted => panic!("scheduler request must submit"),
+                }
+            };
+            let queue_file = evidence.join(format!("{trial}-queue.json"));
+            let persist = |q: &QueueState| {
+                std::fs::write(&queue_file, serde_json::to_vec(q).unwrap()).map_err(DeckError::from)
+            };
+            let authority = || Some(config_with(vec![first_send_rule("claude")]));
+            let hooks = SendHooks {
+                fire: &fire,
+                persist: &persist,
+                kill: &|session| {
+                    let _ = server.run(&["kill-session", "-t", &format!("={session}")]);
+                },
+                authority: &authority,
+            };
+            let context_hooks = ContextHooks {
+                prepare: &|item, cancelled| prepare_context_with(item, cancelled, &ops),
+                final_probe: &|item| probe(item, item.binding.as_ref()),
+            };
+            let first = send_one_safe(
+                &qm,
+                &AtomicBool::new(false),
+                &trial,
+                720,
+                &Observations::new(),
+                &hooks,
+                &context_hooks,
+            );
+            assert!(
+                matches!(first, SendResult::StartedAwaitingInteraction { .. }),
+                "{trial}: {first:?}"
+            );
+            let bound_ms = elapsed_ms(origin);
+            assert!(qm.lock_or_recover().deliveries.is_empty());
+            assert_eq!(
+                fires.load(Ordering::SeqCst),
+                0,
+                "fresh start must type zero bytes"
+            );
+            let offset_ms = forced_offset.unwrap_or(offsets[n % offsets.len()]);
+            std::thread::sleep(Duration::from_millis(offset_ms));
+            let initial = observe(pane_rows());
+            let second_start_ms = elapsed_ms(origin);
+            let stabilization_start_ms = Mutex::new(None);
+            let stabilization_end_ms = Mutex::new(None);
+            let second = if mode == "candidate" {
+                send_one_safe_stabilized(
+                    &qm,
+                    &AtomicBool::new(false),
+                    SendRequest {
+                        session: &trial,
+                        now_min: 720,
+                        activity: &initial,
+                        requested: None,
+                    },
+                    &hooks,
+                    &context_hooks,
+                    &StabilizationOps {
+                        sleep: &|duration| {
+                            let mut start = stabilization_start_ms.lock_or_recover();
+                            if start.is_none() {
+                                *start = Some(elapsed_ms(origin));
+                            }
+                            drop(start);
+                            std::thread::sleep(duration);
+                        },
+                        observe: &|| {
+                            *stabilization_end_ms.lock_or_recover() = Some(elapsed_ms(origin));
+                            Some(observe(pane_rows()))
+                        },
+                    },
+                )
+            } else {
+                send_one_safe(
+                    &qm,
+                    &AtomicBool::new(false),
+                    &trial,
+                    720,
+                    &initial,
+                    &hooks,
+                    &context_hooks,
+                )
+            };
+            let delivered_ms = elapsed_ms(origin);
+            let audit = qm
+                .lock_or_recover()
+                .deliveries
+                .first()
+                .map(|d| d.readiness_overridden);
+            let deadline =
+                Instant::now() + Duration::from_secs(if mode == "baseline" { 15 } else { 75 });
+            let mut submit_count = 0;
+            let mut response_count = 0;
+            while Instant::now() < deadline {
+                submit_count = hook_count(&hook_log, &trial);
+                response_count = assistant_marker_count(&config, &marker);
+                if submit_count > 0 && response_count > 0 {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(250));
+            }
+            let response_ms = elapsed_ms(origin);
+            let record = serde_json::json!({
+                "trial": trial, "mode": mode, "offset_ms": offset_ms,
+                "bound_ms": bound_ms, "second_start_ms": second_start_ms,
+                "delivery_ms": delivered_ms, "response_ms": response_ms,
+                "stabilization_start_ms": *stabilization_start_ms.lock_or_recover(),
+                "stabilization_end_ms": *stabilization_end_ms.lock_or_recover(),
+                "send_result": format!("{second:?}"), "readiness_overridden": audit,
+                "user_prompt_submit_count": submit_count, "assistant_marker_count": response_count,
+                "fire_count": fires.load(Ordering::SeqCst), "fresh_start_fire_count": 0,
+                "fresh_detached": true,
+                "epoch_ms": SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis(),
+            });
+            let mut out = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&report)
+                .unwrap();
+            writeln!(out, "{record}").unwrap();
+            if mode == "candidate" {
+                assert!(
+                    matches!(second, SendResult::Sent { .. })
+                        && audit == Some(true)
+                        && fires.load(Ordering::SeqCst) == 1
+                        && submit_count == 1
+                        && response_count >= 1,
+                    "{trial}: {record}"
+                );
+            }
+        }
+    }
 }

@@ -174,8 +174,11 @@ evolution; it makes scope expansion deliberate.
   revision-bound approval of a Slack badge automation's exact steps, checked
   by the backend at admission and revoked by the tick) ≠ **input readiness**
   (every scheduler hold, including the first-interaction gate). An approval
-  releases only the external-follow-up hold; a fresh interactive agent is
-  never typed into automatically, approval or not. No Signal word, quiet
+  releases only the external-follow-up hold; the fresh-start pass never types
+  into an interactive agent. A separately enabled Slack badge first-send
+  override may send the head row on a later pass after bounded compatibility
+  stabilization and current fences; it is not Agent readiness evidence.
+  No Signal word, quiet
   time or activity ever creates, restores or upgrades authority
   (`tests/signal_census.rs`).
 - **deck is EDR-QUIET by rule** (a corporate EDR flagged it and IT demanded the

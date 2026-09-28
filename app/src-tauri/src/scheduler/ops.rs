@@ -1251,6 +1251,13 @@ pub(crate) fn queue_send_now(
             ErrorKind::Tmux,
             "tmux refused the literal send",
         )),
+        SendResult::Partial { .. } => {
+            let _ = app.emit("queue-changed", ());
+            Err(DeckError::new(
+                ErrorKind::PartialDelivery,
+                "Enter was refused after paste; inspect the prompt before resolving delivery",
+            ))
+        }
     }
 }
 

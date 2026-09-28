@@ -48,8 +48,12 @@
 //!   unchanged (`StartedAwaitingInteraction`: no bytes); the worker then
 //!   wakes the scheduler once (`thread::start_wake_due`, at most once per
 //!   session per tick), and that ordinary pass sends the row into the
-//!   now-existing session through the existing-session probe — no settle
-//!   delay and no readiness claim.
+//!   now-existing session through the existing-session probe. When that
+//!   automatic send still relies on the override, its own per-session worker
+//!   waits a bounded 6 s compatibility grace before the firing intent and
+//!   paste. It rechecks current Signal, settings, row and pane generation
+//!   after the wait. The grace is never evidence or authority, and an Agent
+//!   restart begins a new wait.
 //! - Revocation: the sweep (`revoke_stale`) strips the override from every
 //!   unsent row whose rule no longer allows it (unticked, deleted, command
 //!   changed, trigger changed); the pre-fire `fence` re-reads settings under

@@ -202,9 +202,9 @@ pub(crate) fn deliver_with(
         "display-message -p deck-context-refused".into(),
     ]);
     if !out.as_ref().is_ok_and(|stdout| !refused(stdout)) {
-        // The text is already in the pane; the user sees it and can submit
-        // it. Counting this as sent keeps the audit honest about the bytes
-        // that landed, and the log names the one thing that did not.
+        // The text may already be in the pane. Callers must distinguish
+        // this partial result from a confirmed submission and must not
+        // automatically retry it.
         return Ok(LiteralOutcome::EnterRefused);
     }
     Ok(LiteralOutcome::Submitted)

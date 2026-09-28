@@ -47,6 +47,7 @@ pub(crate) enum ErrorKind {
     NoSession,
     Tmux,
     Recovery,
+    PartialDelivery,
     Other,
 }
 
@@ -69,6 +70,7 @@ impl ErrorKind {
             ErrorKind::NoSession => "no-session",
             ErrorKind::Tmux => "tmux",
             ErrorKind::Recovery => "recovery",
+            ErrorKind::PartialDelivery => "partial-delivery",
             ErrorKind::Other => "other",
         }
     }

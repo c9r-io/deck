@@ -42,14 +42,16 @@ Every delivery uses the following order:
    shell, an agent without hooks, output activity, quiet output and unknown
    agent type do not block compatibility delivery.
 6. Re-select and probe again immediately before persisting firing intent.
-7. After intent, one synchronous tmux command queue loads prompt plus CR into
-   a private buffer and atomically checks the identity persisted in step 3
+7. After intent, one synchronous tmux command queue loads the literal prompt
+   into a private buffer and atomically checks the identity persisted in step 3
    and, when present, the foreground process before literal paste. When a
    foreground process is expected, the same condition also requires the pane
    to have bracketed paste enabled, for single-line text too: an agent that
    is still starting, or has just exited, has not enabled it. The separate
-   Enter repeats the whole condition. The refusal branch deletes the buffer
-   and sends nothing.
+   Enter repeats the whole condition after the paste. A refusal before paste
+   deletes the buffer and sends nothing. If paste succeeded but Enter was
+   refused, text may remain in an input editor: the row becomes ambiguous
+   for explicit user resolution, with no automatic retry or success audit.
 
 Only the transition into `firing` increments attempts and creates the pending
 ledger. Context waiting cannot become ambiguous after a crash. Existing
@@ -94,6 +96,7 @@ blocked after every update, with chain groups stalled behind their head step.
 | Final probe -> paste | The synchronous tmux condition checks exact identity and, for a process-bound row, the foreground process and bracketed paste; any change takes the refusal branch. |
 | Paste landed -> program reads it | Not closable from tmux. If the agent exits after the atomic check and before it reads the bytes, they stay in the tty for the next reader (the shell). They are wrapped in bracketed-paste marks, which zsh's default binding inserts into the line editor instead of running (not verified for every shell configuration), and the Enter step is refused because the foreground changed. |
 | Intent persisted -> accepted send | Existing pending-ledger and ambiguous-on-crash contract applies. |
+| Paste accepted -> Enter refused | Persist the existing ambiguous state and ledger; no ordinary delivery audit, group advance or automatic retry. |
 | Delete during send | Existing tombstone and session-reaping contract applies. |
 
 ## Agent hold
@@ -153,13 +156,14 @@ row, never release or target one (`scheduler/select.rs`, `agent_holds`):
   accepted hook is evidence. The evidence is only this prerequisite: every
   other hold still applies after it. Programs other than Claude and Codex
   are unaffected.
-- **A newly started agent is never sent its first prompt automatically.**
+- **The pass that starts a new agent never sends its first prompt.**
   When a successful pane listing shows the session absent, the scheduler
   may start it (a clock automation's card starts this way), bind its pane
   and stop there: nothing is pasted, no Enter is sent, and the row is not
   consumed, retried, counted or advanced — it stays pending at
-  `first-send`. Other process-bound programs keep the old fresh-start path
-  (a 2.5 s settle, then delivery).
+  `first-send` unless the separate, explicitly consented Slack badge
+  override applies on a later pass. Other process-bound programs keep the
+  old fresh-start path (a 2.5 s settle, then delivery).
 - Owner rows without a hook word keep the quiet-only rule (Codex: once
   trusted). Manual immediate
   send is not held. A stale `needs-input` (a question dismissed with Esc
@@ -274,8 +278,14 @@ first typed prompt — and never a claim that the agent is ready.
   that ordinary pass sends the head row into the existing session through
   the existing-session probe. For a row without the override the same pass
   holds it at `first-send` and starts no worker, so nothing wakes again.
-  No settle delay, title, quiet time or foreground name is used as
-  readiness.
+  A first send that still relies on the override waits a bounded 6 s in
+  its per-session worker before persisting firing intent or pasting. This
+  extends the historical 2.5 s fresh-start grace as compatibility stabilization;
+  it is not readiness evidence. The worker checks cancellation throughout
+  and re-reads Signal, settings, row selection and the same target generation
+  afterward. No global lock is held while waiting; a Deck or Agent restart
+  never inherits elapsed credit. A startup/permission dialog can still own
+  Enter, which is the risk explicitly accepted for this rule.
 - Revocation: the tick sweep strips it from unsent rows whose rule no longer
   allows it (unticked, deleted, command changed), and the pre-fire fence
   re-reads settings under `storage::settings_fence` in the transaction that

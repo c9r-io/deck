@@ -30,8 +30,8 @@ pub(crate) struct QueueFired {
 /// The injection is one tmux server command queue: store the literal prompt
 /// in a private buffer, compare the full server/session/window/pane
 /// generation plus the optional expected foreground process, and paste only
-/// on an exact match. There is no window where
-/// the text landed but Enter did not. A prompt may be MANY LINES — its
+/// on an exact match. Enter is a later guarded operation and may be
+/// refused after the paste; that partial result remains ambiguous. A prompt may be MANY LINES — its
 /// newlines are pasted as newlines inside the bracketed-paste marks — but
 /// `ops::normalize_prompt` has folded every CR away at add/update time, so
 /// the separate Enter below is the only submit in the burst. (Residual
@@ -50,6 +50,10 @@ pub(crate) fn fire_item(item: &QueueItem) -> Result<(), DeckError> {
     let result = crate::prompt_delivery::deliver(literal_request(item, pane, delivery))?;
     if result == crate::prompt_delivery::LiteralOutcome::EnterRefused {
         applog("[queue] Enter refused after paste — prompt left in the input");
+        return Err(DeckError::new(
+            ErrorKind::PartialDelivery,
+            "Enter was refused after paste; inspect the prompt before retrying",
+        ));
     }
     Ok(())
 }
@@ -250,6 +254,14 @@ pub(crate) fn prepare_context_with(
 /// are NOT recognized interactive agents (those are never auto-sent a first
 /// prompt).
 pub(crate) const FRESH_START_SETTLE_MS: u64 = 2500;
+
+/// Compatibility grace for a fresh, explicitly overridden Slack badge head.
+/// The historical 2.5 s settle lost a real Claude 2.1.283 prompt at 3.35 s
+/// after binding; a 5.8 s delivery was processed in the same isolated setup.
+/// This 6 s worker-local wait gives that measured normal startup a margin.
+/// It is measured from the second pass, never persisted as readiness evidence.
+pub(crate) const OVERRIDDEN_FIRST_SEND_SETTLE_MS: u64 = 6000;
+const OVERRIDDEN_SETTLE_SLICE_MS: u64 = 100;
 
 /// Observe the pane the card owns right now. A tmux generation change (the
 /// server was replaced by an upgrade, a crash or a reboot) is adopted rather
@@ -503,6 +515,21 @@ pub(crate) fn note_failed(q: &mut QueueState, id: &str, delivery: &str, err: &st
     q.pending.retain(|p| p.id != delivery);
 }
 
+/// Paste may already be in the Agent editor, but Enter was positively
+/// refused. Keep the persisted ledger and require an explicit resolution;
+/// neither a successful delivery nor an automatic retry is justified.
+pub(crate) fn note_partial(q: &mut QueueState, id: &str, delivery: &str) {
+    if let Some(it) = q.items.iter_mut().find(|i| i.id == id) {
+        it.state.move_to(ItemState::Ambiguous);
+        it.last_error = Some("Enter refused after paste (partial delivery)".into());
+    }
+    if let Some(operation) = q.operations.iter_mut().find(|op| op.item == id) {
+        operation.state = OperationState::Uncertain;
+    }
+    // The ledger remains for crash recovery and explicit user resolution.
+    debug_assert!(q.pending.iter().any(|p| p.id == delivery));
+}
+
 /// Crash recovery exposes unresolved firing intents as ambiguous. The send
 /// may or may not have reached tmux, so neither automatic retry nor automatic
 /// delivery accounting is honest. The user must acknowledge it as sent or
@@ -563,6 +590,10 @@ pub(crate) enum SendResult {
         session: String,
         gave_up: bool,
     },
+    /// Text may have been pasted, but Enter was refused: user resolution only.
+    Partial {
+        session: String,
+    },
     /// A recognized agent's absent session was started and bound, and its
     /// row left pending: start-only, never a delivery (no attempt, ledger,
     /// gap, group advance or sent event).
@@ -609,8 +640,16 @@ pub(crate) struct ContextHooks<'a> {
     pub(crate) final_probe: &'a (dyn Fn(&QueueItem) -> ProbeResult + Sync),
 }
 
+/// A worker-local compatibility wait and fresh post-wait observation. The
+/// production thread supplies these; tests may inject controlled time and
+/// Signal changes without making ordinary CI launch an authenticated Agent.
+pub(crate) struct StabilizationOps<'a> {
+    pub(crate) sleep: &'a (dyn Fn(std::time::Duration) + Sync),
+    pub(crate) observe: &'a (dyn Fn() -> Option<Observations> + Sync),
+}
+
 #[derive(Clone, Copy)]
-pub(super) struct SendRequest<'a> {
+pub(crate) struct SendRequest<'a> {
     pub(super) session: &'a str,
     pub(super) now_min: u32,
     pub(super) activity: &'a Observations,
@@ -634,7 +673,8 @@ fn reap_if_cancelled(cancelled: bool, session: &str, h: &SendHooks) {
 ///
 ///   pending ──(re-select fresh under lock, persist intent+ledger)──► firing
 ///   firing ──fire Ok──► finalize_delivery (audit, gap, consume/count/spawn)
-///   firing ──fire Err──► note_failed (retryable, ledger dropped)
+///   firing ──pre-paste refusal──► note_failed (retryable, ledger dropped)
+///   firing ──Enter refused after paste──► ambiguous (explicit resolution)
 ///   firing ──crash──► ambiguous (user acknowledge or risk-accepting retry)
 ///   finalize with review_each ──► pushes a `review` checkpoint clone
 ///     (confirm ──► review-approved; its successor changed ──► review)
@@ -836,6 +876,22 @@ fn send_one_guarded(
         }
         Err(e) => {
             let mut q = qm.lock_or_recover();
+            if e.kind() == ErrorKind::PartialDelivery {
+                note_partial(&mut q, &item.id, &delivery);
+                let cancelled = is_cancelled(&q, &item.session);
+                if let Err(pe) = persist(&q) {
+                    note_persist_lag(dirty, "post-partial", pe.message());
+                }
+                drop(q);
+                reap_if_cancelled(cancelled, &item.session, h);
+                applog(&format!(
+                    "[queue] partial delivery for {} — Enter refused; explicit resolution required",
+                    crate::applog::session_tag(&item.session)
+                ));
+                return SendResult::Partial {
+                    session: item.session.clone(),
+                };
+            }
             note_failed(&mut q, &item.id, &delivery, e.message());
             let gave_up = q.items.iter().any(|i| i.id == item.id && item_dead(i));
             let cancelled = is_cancelled(&q, &item.session);
@@ -929,6 +985,7 @@ fn reap_probe_start_after_delete(qm: &Mutex<QueueState>, session: &str, h: &Send
 
 /// Context-safe front half of one send. No firing intent or delivery attempt
 /// exists until both readiness and a final exact-identity probe pass.
+#[cfg(test)]
 pub(crate) fn send_one_safe(
     qm: &Mutex<QueueState>,
     dirty: &AtomicBool,
@@ -938,7 +995,7 @@ pub(crate) fn send_one_safe(
     h: &SendHooks,
     context_hooks: &ContextHooks,
 ) -> SendResult {
-    send_one_safe_requested(
+    send_one_safe_requested_with_stabilization(
         qm,
         dirty,
         SendRequest {
@@ -949,6 +1006,28 @@ pub(crate) fn send_one_safe(
         },
         h,
         context_hooks,
+        None,
+    )
+}
+
+/// Production automatic worker: the override's bounded startup grace is
+/// applied only on an existing, bound first step that still needs it.
+pub(crate) fn send_one_safe_stabilized(
+    qm: &Mutex<QueueState>,
+    dirty: &AtomicBool,
+    request: SendRequest<'_>,
+    h: &SendHooks,
+    context_hooks: &ContextHooks,
+    stabilization: &StabilizationOps,
+) -> SendResult {
+    debug_assert!(request.requested.is_none());
+    send_one_safe_requested_with_stabilization(
+        qm,
+        dirty,
+        request,
+        h,
+        context_hooks,
+        Some(stabilization),
     )
 }
 
@@ -958,6 +1037,17 @@ pub(super) fn send_one_safe_requested(
     request: SendRequest<'_>,
     h: &SendHooks,
     context_hooks: &ContextHooks,
+) -> SendResult {
+    send_one_safe_requested_with_stabilization(qm, dirty, request, h, context_hooks, None)
+}
+
+fn send_one_safe_requested_with_stabilization(
+    qm: &Mutex<QueueState>,
+    dirty: &AtomicBool,
+    request: SendRequest<'_>,
+    h: &SendHooks,
+    context_hooks: &ContextHooks,
+    stabilization: Option<&StabilizationOps>,
 ) -> SendResult {
     let selected = {
         let q = qm.lock_or_recover();
@@ -1047,6 +1137,90 @@ pub(super) fn send_one_safe_requested(
             ));
             return SendResult::NotPersisted;
         }
+    };
+
+    // This is compatibility grace under a pre-existing risk acceptance, not
+    // readiness evidence. Starting an absent Agent returned above with zero
+    // bytes. A restarted worker begins a full new wait. Keep the persisted
+    // pane generation fixed so no replacement inherits this wait.
+    let mut refreshed = None;
+    if request.requested.is_none()
+        && relies_on_readiness_override(&bound, request.activity.get(&bound.session))
+    {
+        if let Some(ops) = stabilization {
+            let started = std::time::Instant::now();
+            applog(&format!(
+                "[queue] first-send stabilization started for {}",
+                crate::applog::session_tag(&bound.session)
+            ));
+            let slices = OVERRIDDEN_FIRST_SEND_SETTLE_MS / OVERRIDDEN_SETTLE_SLICE_MS;
+            for slice in 0..slices {
+                if cancelled() {
+                    return SendResult::Nothing;
+                }
+                (ops.sleep)(std::time::Duration::from_millis(OVERRIDDEN_SETTLE_SLICE_MS));
+                if (slice + 1) % 5 == 0 {
+                    let Some(current) = (ops.observe)() else {
+                        return SendResult::Nothing;
+                    };
+                    if matches!(
+                        hold_reason(&bound, current.get(&bound.session)),
+                        Some(Hold::NeedsInput | Hold::CodexUnavailable)
+                    ) {
+                        return SendResult::Nothing;
+                    }
+                }
+            }
+            if cancelled() {
+                return SendResult::Nothing;
+            }
+            let same_generation = (context_hooks.final_probe)(&bound);
+            if !same_generation.is_ready() {
+                return SendResult::Blocked {
+                    session: bound.session,
+                    status: same_generation.status,
+                    code: same_generation.code,
+                };
+            }
+            let Some(mut latest) = (ops.observe)() else {
+                return SendResult::Nothing;
+            };
+            if (h.authority)().is_none() {
+                mark_authority_unverified(&mut latest);
+            }
+            let still_selected = {
+                let q = qm.lock_or_recover();
+                select_for_request(
+                    &q,
+                    request.session,
+                    now_epoch(),
+                    local_minutes(),
+                    &latest,
+                    None,
+                )
+                .is_some_and(|i| {
+                    i.id == bound.id && i.revision == bound.revision && i.binding == bound.binding
+                })
+            };
+            if !still_selected {
+                return SendResult::Nothing;
+            }
+            applog(&format!(
+                "[queue] first-send stabilization finished for {} ({}ms)",
+                crate::applog::session_tag(&bound.session),
+                started.elapsed().as_millis()
+            ));
+            refreshed = Some(latest);
+        }
+    }
+    let request = SendRequest {
+        activity: refreshed.as_ref().unwrap_or(request.activity),
+        now_min: if refreshed.is_some() {
+            local_minutes()
+        } else {
+            request.now_min
+        },
+        ..request
     };
 
     // Re-read metadata immediately before opening the irreversible firing

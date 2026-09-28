@@ -1,5 +1,7 @@
 //! The scheduler thread: boot-time queue recovery, the 20s tick with a
-//! condition-variable wake, and per-session worker threads.
+//! condition-variable wake, and per-session worker threads. An immediately
+//! woken override worker may wait for startup compatibility without blocking
+//! any other session or pretending that time proves Agent readiness.
 
 use std::sync::atomic::Ordering as AtomicOrdering;
 use std::sync::Mutex;
@@ -241,12 +243,15 @@ pub(crate) fn spawn_scheduler(app: AppHandle) {
                     release_session(&state.busy, &session);
                     return;
                 };
-                let res = send_one_safe(
+                let res = send_one_safe_stabilized(
                     &state.q,
                     &state.dirty,
-                    &session,
-                    local_minutes(),
-                    &act,
+                    SendRequest {
+                        session: &session,
+                        now_min: local_minutes(),
+                        activity: &act,
+                        requested: None,
+                    },
                     &SendHooks {
                         fire: &fire_item,
                         persist: &save_queue,
@@ -256,6 +261,14 @@ pub(crate) fn spawn_scheduler(app: AppHandle) {
                     &ContextHooks {
                         prepare: &prepare_context,
                         final_probe: &final_context_probe,
+                    },
+                    &StabilizationOps {
+                        sleep: &std::thread::sleep,
+                        observe: &|| {
+                            crate::tmux_lifecycle::scheduler_pane_listing()
+                                .ok()
+                                .map(observe)
+                        },
                     },
                 );
                 release_session(&state.busy, &session);
@@ -270,7 +283,9 @@ pub(crate) fn spawn_scheduler(app: AppHandle) {
                         // pass may serve this now-existing session
                         wake_after_start(&session);
                     }
-                    SendResult::Failed { .. } | SendResult::Blocked { .. } => {
+                    SendResult::Failed { .. }
+                    | SendResult::Partial { .. }
+                    | SendResult::Blocked { .. } => {
                         let _ = app2.emit("queue-changed", ());
                     }
                     SendResult::Nothing | SendResult::NotPersisted => {}

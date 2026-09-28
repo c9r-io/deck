@@ -7,6 +7,46 @@ the server's `source=smoke` metadata and never targets production `-L deck`. It
 refuses a non-shell foreground process unless the operator deliberately adds
 `--include-foreground`. A final read-only audit must print nothing and exit 0.
 
+## Opt-in real Claude first-send compatibility matrix
+
+This local integration test is ignored by ordinary CI and requires an
+authenticated, disposable Claude Code configuration. It exercises the real
+scheduler start pass, immediate follow-up selection, worker stabilization,
+ledger, and `prompt_delivery::deliver_with` on a unique detached bundled-tmux
+socket. Only the tmux transport and settings persistence are redirected to
+test-owned resources; it never reads `~/.deck` or the normal tmux server.
+
+1. Create a private `/tmp/deck-firstsend-<unique>` directory with `claude`,
+   `work`, and `evidence` subdirectories. Authenticate Claude with
+   `CLAUDE_CONFIG_DIR=<root>/claude` from `<root>/work`; complete login and
+   trust for this harmless test directory through Claude's normal flow.
+   Do not copy an existing `~/.claude` tree. The test installs one
+   `UserPromptSubmit` observer into this private config. It records only a
+   trial ID and timestamp, never hook payload or prompt text.
+2. Run baseline behavior first, then the candidate, from this repository:
+
+   ```sh
+   DECK_FIRST_SEND_REAL_ROOT=<root> DECK_FIRST_SEND_REAL_MODE=baseline \
+     cargo test --manifest-path app/src-tauri/Cargo.toml --bin deck-app \
+     opt_in_real_claude_first_send_matrix -- --ignored --nocapture
+   DECK_FIRST_SEND_REAL_ROOT=<root> DECK_FIRST_SEND_REAL_MODE=candidate \
+     cargo test --manifest-path app/src-tauri/Cargo.toml --bin deck-app \
+     opt_in_real_claude_first_send_matrix -- --ignored --nocapture
+   ```
+
+   Baseline mode deliberately omits the new wait while retaining the same
+   production selection and delivery path. Candidate mode defaults to 20
+   fresh detached launches at 0, 150, 400, 900 and 1500 ms after process
+   binding. Each trial requires a real Claude `UserPromptSubmit` and a
+   unique assistant response in the isolated transcript. Results are
+   appended to `<root>/evidence/{baseline,candidate}-matrix.jsonl`; a failed
+   candidate assertion preserves that trial's bounded evidence.
+3. Record the Claude version and exact candidate diff/build identity.
+   Report the actual number and conditions tested. A successful finite
+   matrix does not prove readiness for future versions or startup dialogs.
+   Stop only the test-owned tmux server and Agent, then move the disposable
+   root to a uniquely named Trash location after retaining bounded evidence.
+
 ## Manual physical selection evidence
 
 The `selection-events` mode keeps an isolated terminal open for actual mouse
