@@ -1,9 +1,36 @@
-# Controlled Execution calibration (CE1, CE1.1)
+# Controlled Execution: calibration and status
 
-The ruler for Controlled Execution: it measures Full Local parity today and
-will carry the Protected tracks later. Governance: Controlled Execution r2
-(approved 2026-09-27). This file is an index plus the recorded baselines; each
-contract lives in the header of the file that owns it.
+The ruler for Controlled Execution (MCP-managed execution): it measures Full
+Local parity with Deck's ordinary Terminal and keeps it from regressing.
+Governance: Controlled Execution r2 (approved 2026-09-27). This file is an
+index, the recorded baselines and the current status; each contract lives in
+the header of the file that owns it.
+
+## Status
+
+- **Shipped boundary: Full Local / trusted-host.** After an explicit local
+  approval, a job runs with the logged-in user's host permissions for the
+  chosen window (`host-terminal-env-v1`). It is not an OS sandbox.
+- **Certified baseline:** `8e5d5fe` (CE1, this ruler) and `98e6b35` (CE1b,
+  the Full Local parity repair). Frozen plan v2: ci 25/25 PASS, designated
+  20/20 PASS, every counter 0. CI runs the real ci workload on every gate.
+- **Protected (contained) execution: deferred.** The Seatbelt candidate
+  stopped at its mandatory production-supportability gate (SB-7B,
+  BACKEND_UNSUPPORTED): the SDK's sandbox API is deprecated, its documented
+  contract covers only Apple's named built-in profiles, and applying the
+  per-session custom policy Protected needs is reserved/undocumented
+  behaviour (`sandbox-exec` is deprecated too). SB-1..SB-6 and SB-7A were
+  closed as NOT_RUN_AFTER_EARLY_STOP — not passes. A VZ Linux VM cannot meet
+  the native macOS CLI contract; a macOS VM is technically possible, but its
+  product cost is not currently justified. There is no active Protected
+  roadmap.
+- **Re-entry conditions** — reopen Protected research only if one holds:
+  Apple ships a supported public mechanism suited to dynamic process
+  containment; Deck's product needs change enough to justify macOS-VM-level
+  cost; or a new backend can meet the frozen protected-v1 Security + Utility
+  contract without turning Deck into an environment/container platform.
+  The threat model, the r2 contract and the SB-1..SB-7 gates are kept as
+  the ruler for that re-evaluation.
 
 | Piece | File | Owns |
 |---|---|---|
@@ -14,8 +41,9 @@ contract lives in the header of the file that owns it.
 | B-admission probe | `app/src-tauri/src/mcp/tests.rs` `ce1_probe_*` | how the production `deck_exec` route admits a Full Local cwd; observes, never asserts the outcome |
 | Aggregator | `scripts/ce_verdict.py` (+ `scripts/test_ce_verdict.py`) | the ONLY verdict: closed classification, tracks, counters, exit code |
 
-Raw evidence of each accepted run is archived read-only with `SHA256SUMS`
-outside the repository (`~/c9r-io/deck-ce-evidence/<date>-plan-v<n>/`).
+Raw evidence of each accepted run (and of the CE2 closure) is archived
+read-only with `SHA256SUMS` in the maintainer's evidence archive, outside
+the repository; nothing in it is needed to run the gate.
 
 ## Comparison contract (plan v2)
 
@@ -112,7 +140,8 @@ Plan v2 unchanged (digest sha256:42afe7fa…). `full_local_parity = pass`,
 - designated (clean smoke launch, runner rebuilt from this source): 20/20
   pass — `--gate full_local_parity:designated` exits 0.
 - `overall` stays `blocked` because the protected / authority / EDR tracks
-  have no cases yet; nothing about Protected exists.
+  have no cases: Protected execution is deferred (see Status), so the gate
+  judges `full_local_parity` only.
 
 Real tools after the repair: the direct job now resolves exactly what the
 session base resolves — node and npm absent (they live on the PATH `.zshrc`

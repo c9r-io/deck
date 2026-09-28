@@ -377,8 +377,9 @@ reading outside the project and using the network. Cwd, worktrees, tmux,
 sandbox: Full Local (`host-terminal-env-v1`) deliberately gives a job the
 same environment and reach as the user's terminal. Digests bind submitted executable/argument bytes and request context; they
 do not freeze referenced files, interpreters, dependencies, or network
-responses. There is no Protected (contained) execution mode; strong
-containment would require a future backend that does not exist today.
+responses. Deck does not offer a sandboxed or contained execution mode:
+execution runs with your logged-in user's host permissions after your
+explicit local approval, for the window you chose.
 
 ## Instructions for ChatGPT
 
