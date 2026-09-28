@@ -297,7 +297,7 @@ async function themeSmoke(card) {
     Math.round(settingsBox.clientHeight), Math.round(innerHeight));
   const shortcutIds = [...settingsBox.querySelectorAll('.shortcut-capture')]
     .map(button => button.dataset.action).join(',');
-  const fixedFontHidden = shortcutIds === 'newSession,toggleSidebar,splitRight,splitDown';
+  const fixedFontHidden = shortcutIds === 'newSession,toggleSidebar,splitRight,splitDown,translationLens';
   const rowsStacked = [...settingsBox.querySelectorAll('.set-row')].every(row => {
     const label = row.querySelector(':scope > label');
     if (!label || !row.getClientRects().length) return true;
