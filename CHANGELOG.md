@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.7.20 — 2026-09-29 (Nightly)
+
+- Local Translation starts translating as soon as you open it, even when the
+  terminal shows output that is already there and nothing new arrives.
+- After you scroll a terminal, the translation follows the view you stop on;
+  it no longer translates every position you scroll past.
+- Reading the translation no longer pauses it: clicking, scrolling or using
+  keys in the translation panel keeps it following the terminal, so the
+  "Resume" button is gone. While you select text in the translation, a newer
+  result waits until you finish selecting.
+- Live view and Copied text are now two tabs. On Copied text, run `/copy` in
+  your Agent (or copy text in Deck) and the new text is translated
+  automatically; what was on the clipboard before you chose the tab is never
+  read. The "Use current clipboard" button is removed.
+- A copy that happens to match part of an earlier translation is now
+  translated instead of being ignored; only Deck's own copies (Copy
+  Translation, Copy Source, ⌘C in the translation) are skipped.
+- A failed translation update now says so and keeps the previous result,
+  instead of showing "Updating" indefinitely; a transient failure is retried
+  automatically.
+
 ## 0.7.19 — 2026-09-28 (Nightly)
 
 - Closing a shell with Ctrl+D or `exit` closes its card again. Deck now acts
