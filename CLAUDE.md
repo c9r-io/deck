@@ -269,7 +269,7 @@ loaded by `ui/index.html`; xterm.js vendored in `app/ui/vendor/`. Backend
 | Opt-in MCP terminal control: local grants/ledger/fencing, STDIO adapter, visible pane runner, Board bridge | `mcp/` (contract in `mcp/mod.rs`), `mcp-adapter/`, `mcp-runner/`, `mcp-fixtures/` (shared contract JSON), `ui/js/mcp.js` (+ `docs/mcp.md`, `docs/mcp-architecture.md`) |
 | Controlled Execution calibration (CE1): frozen corpus, probe, A1/B harness, the ONE certification aggregator (evidence only; verdicts come from the aggregator) | `scripts/ce/`, `scripts/ce_parity.py`, `scripts/ce_verdict.py`, `mcp/tests.rs` `ce1_probe_*` (+ `docs/ce-calibration.md`) |
 | Native on-device voice input typed straight into the pane (one mic, one bound pane, no draft), shared literal paste | `native/SpeechBridge.swift`, `voice.rs`, `prompt_delivery.rs`, `ui/js/voice.js`, `voice-model.js`, `voice-target.js`, `voice-settings.js` (+ `docs/voice-input.md`) |
-| Optional local translation, focus-bounded pasteboard observation, and the session companion Lens | `native/BergamotBridge.cpp`, `native/PasteboardBridge.swift`, `vendor/bergamot/`, `intelligence/`, `ui/js/local-intelligence.js`, `translation-lens.js`, `translation-lens-model.js` (+ `docs/translation-lens.md`) |
+| Optional local translation, focus-bounded pasteboard observation, and the session companion Lens (Live view / Copied text tabs; unattended acceptance `scripts/translation-lens-verify.py`) | `native/BergamotBridge.cpp`, `native/PasteboardBridge.swift`, `vendor/bergamot/`, `intelligence/`, `ui/js/local-intelligence.js`, `translation-lens.js`, `translation-lens-model.js` (+ `docs/translation-lens.md`) |
 | Terminal scroll + token-bound selection lease commands | `terminal.rs`, `terminal_selection.rs`, `terminal_scroll.rs` |
 | Pointer/selection authority, overlay, wheel routing (frontend) | `ui/js/selection.js`, `layout.js` |
 | Completion bar, links, context menus, the ONE new-session path (start first, persist after; project defaults for ＋/⌘N, context entries keep their directory and never a command) | `ui/js/terminal.js` (`newSession` / `newDefaultSession`), `provider.createStarted` + `openProjectDefaults` in `board.js`, `projectDefaults` / `newSessionPlan` in `pure.js`, `links.rs` |
@@ -291,7 +291,7 @@ loaded by `ui/index.html`; xterm.js vendored in `app/ui/vendor/`. Backend
 | Structured diagnostics, ui_event whitelist, exports | `diagnostics.rs` |
 | File drop / image paste | `drops.rs` |
 | Process facts without spawning `ps` | `procinfo.rs` |
-| Debug/isolated-smoke fault injection | `smoke_faults.rs` |
+| Debug/isolated-smoke fault injection; debug-only native driver (own-window AppKit input, own-webview snapshots, general-pasteboard guard, named test pasteboard) | `smoke_faults.rs`, `smoke_native.rs`, `native/SmokeBridge.swift` (compiled into debug profiles only) |
 
 Status semantics (card colour) are documented on `effectiveCardStatus` in
 `pure.js`: agent state outranks the 15s output heuristic.

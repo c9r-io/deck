@@ -14,7 +14,8 @@ const manifest = JSON.parse(readFileSync(new URL('./fixtures/smoke-manifest.json
    --smoke-wkwebview mode into wk-smoke.mjs, whose verify* entries hand
    five of them to their own files. */
 const CARRIERS = {
-  'wk-smoke.mjs': ['run', 'settings', 'ambiguous', 'restart', 'buffer', 'buffer-narrow', 'channel', 'channel-fault', 'connector', 'connector-transport', 'selection-events', 'translation', 'translation-native'],
+  'wk-smoke.mjs': ['run', 'settings', 'ambiguous', 'restart', 'buffer', 'buffer-narrow', 'channel', 'channel-fault', 'connector', 'connector-transport', 'selection-events'],
+  'translation-smoke.mjs': ['translation', 'translation-native'],
   'attention-smoke.mjs': ['attention'],
   'resume-smoke.mjs': ['resume'],
   'review-smoke.mjs': ['review', 'review-restart'],
@@ -26,6 +27,13 @@ const CARRIERS = {
 /* Names built at runtime, which a single-line literal scan cannot read:
    (file, the exact source text that builds them, the names it yields). */
 const DYNAMIC = [
+  ['translation-smoke.mjs', "await report(`tl-n-d05-${item.id}`, ", ["tl-n-d05-prose", "tl-n-d05-mixed", "tl-n-d05-fence", "tl-n-d05-chinese", "tl-n-d05-unsupported"]],
+  ['translation-smoke.mjs', "await report(`tl-n-c06-${limit / 1024}k`, ", ["tl-n-c06-8k", "tl-n-c06-16k"]],
+  ['translation-smoke.mjs', "await report(`tl-n-d06-${limit / 1024}k-anchors`, ", ["tl-n-d06-8k-anchors", "tl-n-d06-16k-anchors"]],
+  ['translation-smoke.mjs', "await metric(`tl-t-doc-${limit / 1024}k`, ", ["tl-t-doc-8k", "tl-t-doc-16k"]],
+  ['translation-smoke.mjs', "await report(`tl-n-c06-${limit / 1024}k-over`, ", ["tl-n-c06-8k-over", "tl-n-c06-16k-over"]],
+  ['translation-smoke.mjs', "await report(`tl-n-d07-await-${step}`, ", ["tl-n-d07-await-corrupt", "tl-n-d07-await-missing"]],
+  ['translation-smoke.mjs', "await report(`tl-n-d07-${step}`, ", ["tl-n-d07-corrupt", "tl-n-d07-missing"]],
   ['wk-smoke.mjs', 'await report(kind, ', ['channel-network', 'channel-scope']],
   ['resume-smoke.mjs', "report('resume-capture-' + i, ", ['resume-capture-0', 'resume-capture-1']],
   ['review-smoke.mjs', "report(seq === 2 ? 'review-second' : 'review-last', ", ['review-second', 'review-last']],
@@ -83,6 +91,13 @@ test('each carrier emits exactly the checkpoints the manifest expects from its m
     }
     assert.deepEqual([...emitted].sort(), [...expectedFor(modes)].sort(), file);
   }
+});
+
+test('checkpoint names survive app.log redaction (under 24 chars when they contain a digit)', () => {
+  // redact.rs treats a 24+ byte run mixing letters and digits as an opaque token.
+  const long = Object.values(manifest.modes).flatMap(mode => Object.keys(mode.checks))
+    .filter(name => name.length >= 24 && /\d/.test(name));
+  assert.deepEqual(long, []);
 });
 
 test('the literal scan reads one line and nothing else', () => {

@@ -591,6 +591,9 @@ export function wireTerminalInput(pane, term, host) {
       rows: term.rows, cols: term.cols, clientX: e.clientX, clientY: e.clientY });
     wheel.add(terminalWheelLines(e.deltaY, e.deltaMode, term.rows));
     wheelFrames.schedule();
+    // The raw user gesture, before tmux/xterm redraw it as ordinary output:
+    // consumers (translation-lens.js) debounce on this, never on onScroll.
+    window.dispatchEvent(new CustomEvent('deck-terminal-scroll', { detail: session }));
   }, { passive: false, capture: true });
 
 }

@@ -126,6 +126,7 @@ fn build_native_bridges() {
     println!("cargo:rerun-if-changed=native/NotificationBridge.swift");
     println!("cargo:rerun-if-changed=native/InputSourceBridge.swift");
     println!("cargo:rerun-if-changed=native/PasteboardBridge.swift");
+    println!("cargo:rerun-if-changed=native/SmokeBridge.swift");
     println!("cargo:rerun-if-env-changed=DEVELOPER_DIR");
     println!("cargo:rerun-if-env-changed=DECK_REQUIRE_MODERN_SPEECH");
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("macos") {
@@ -147,7 +148,10 @@ fn build_native_bridges() {
     {
         compiler.args(["-D", "DECK_REQUIRE_MODERN_SPEECH"]);
     }
-    let status = compiler
+    // The smoke driver (own-window events, own-webview snapshots, pasteboard
+    // guard) exists only in debug builds; a release object never contains it.
+    let smoke = std::env::var("PROFILE").as_deref() != Ok("release");
+    compiler
         .args(["-parse-as-library", "-swift-version", "5", "-O", "-target"])
         .arg(format!("{arch}-apple-macosx11.0"))
         .args([
@@ -157,8 +161,12 @@ fn build_native_bridges() {
             "native/NotificationBridge.swift",
             "native/InputSourceBridge.swift",
             "native/PasteboardBridge.swift",
-            "-o",
-        ])
+        ]);
+    if smoke {
+        compiler.arg("native/SmokeBridge.swift");
+    }
+    let status = compiler
+        .arg("-o")
         .arg(&object)
         .status()
         .expect("Swift compiler is required (use the macOS 26 SDK for SpeechAnalyzer)");
@@ -199,6 +207,9 @@ fn build_native_bridges() {
         "AppKit",
     ] {
         println!("cargo:rustc-link-lib=framework={framework}");
+    }
+    if smoke {
+        println!("cargo:rustc-link-lib=framework=WebKit");
     }
 }
 

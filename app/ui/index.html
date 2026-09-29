@@ -240,13 +240,11 @@
             <button class="btn icon-btn" id="translation-close" type="button" data-i18n-title="common.close" data-i18n-aria-label="common.close">✕</button>
           </div>
           <div class="translation-controls">
-            <select id="translation-mode" data-i18n-aria-label="translation.source"><option value="live" data-i18n="translation.live">Live view</option><option value="clipboard" data-i18n="translation.clipboard">Clipboard</option></select>
+            <div id="translation-tabs" class="translation-tabs" role="tablist" data-i18n-aria-label="translation.source" aria-label="Translation source"><button class="translation-tab selected" id="translation-tab-live" type="button" role="tab" aria-selected="true" aria-controls="translation-result" data-i18n="translation.live">Live view</button><button class="translation-tab" id="translation-tab-clipboard" type="button" role="tab" aria-selected="false" aria-controls="translation-result" tabindex="-1" data-i18n="translation.clipboard">Copied text</button></div>
             <select id="translation-target" disabled data-i18n-aria-label="translation.target"><option value="zh-Hans" data-i18n="settings.locale.zh-Hans">简体中文</option></select>
           </div>
           <div id="translation-status" class="translation-status" role="status"></div>
-          <button class="btn" id="translation-use-current" type="button" hidden data-i18n="translation.useCurrent">Use current clipboard</button>
-          <button class="btn" id="translation-resume" type="button" hidden data-i18n="translation.resume">Resume</button>
-          <div id="translation-result" class="translation-result" tabindex="0"></div>
+          <div id="translation-result" class="translation-result" role="tabpanel" tabindex="0" aria-labelledby="translation-tab-live"></div>
         </section>
       </div>
     </div>

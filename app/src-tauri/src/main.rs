@@ -49,6 +49,7 @@ mod signal_trace;
 mod slack_api;
 mod slack_transport;
 mod smoke_faults;
+mod smoke_native;
 mod storage;
 mod sync;
 mod terminal;
@@ -355,7 +356,6 @@ fn main() {
             intelligence::pasteboard::translation_clipboard_arm,
             intelligence::pasteboard::translation_clipboard_disarm,
             intelligence::pasteboard::translation_clipboard_poll,
-            intelligence::pasteboard::translation_clipboard_current,
             input_source::input_source_snapshot,
             notify::notify_configure,
             notify::notify_status,
@@ -502,6 +502,10 @@ fn main() {
             smoke_faults::smoke_clipboard_metrics,
             smoke_faults::smoke_query_channel,
             smoke_faults::smoke_signal_fixture,
+            smoke_native::smoke_native_input,
+            smoke_native::smoke_native_snapshot,
+            smoke_native::smoke_native_fixture,
+            smoke_native::smoke_pasteboard,
         ])
         .build(tauri::generate_context!())
         .expect("error while building deck")

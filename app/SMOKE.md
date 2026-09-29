@@ -275,6 +275,25 @@ closed` carries no session tag, so the two auto-close cases treat ANY run
 closing inside their window as premature: run them with no other automation
 active (an unrelated close gives a false fail, never a false pass).
 
+## Local Translation (unattended)
+
+One command from the repository root, no manual step:
+
+    python3 scripts/translation-lens-verify.py
+
+It needs an unlocked GUI session and an ASCII keyboard layout (it reports
+BLOCKED otherwise). It creates `/tmp/deck-tl-verify-*` (0700), a bundle with
+its own path and `io.c9r.deck.smoke.tl*` identifier, one `deck-smoke-*`
+socket and one data root per mode and run, verifies the pinned model pack
+(read-only cache or a download into the run root), builds, runs L1, the
+baseline negative control, then `DECK_TL_RUNS` (default 3) serial runs of the
+`translation` and `translation-native` WKWebView modes, judges each with
+`scripts/smoke-verdict`, and cleans up only what it started. The report is
+`<run root>/report.json`; screenshots and per-run checkpoint lines are under
+`<run root>/evidence/`. The general pasteboard is shared with the login
+session and is used only inside the guarded window described in
+`docs/translation-lens.md`.
+
 ## Away notifications (manual)
 
 Release-location or `app/run.sh` bundle, an Agent status integration on,

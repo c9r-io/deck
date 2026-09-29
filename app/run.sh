@@ -9,6 +9,24 @@ APP_DIR=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
 REPO_ROOT=$(dirname "$APP_DIR")
 cd "$APP_DIR/src-tauri"
 
+# A smoke launch must never fall into the default development path below,
+# whose pkill pattern also matches an installed deck.app. Refuse partial
+# smoke settings and validate the isolation arguments before building.
+if [ -z "${DECK_SMOKE_DATA_DIR:-}" ] && { [ -n "${DECK_SMOKE_WKWEBVIEW:-}" ] || [ -n "${DECK_SMOKE_TMUX_SOCKET:-}" ]; }; then
+  echo "DECK_SMOKE_WKWEBVIEW / DECK_SMOKE_TMUX_SOCKET require DECK_SMOKE_DATA_DIR" >&2
+  exit 2
+fi
+if [ -n "${DECK_SMOKE_DATA_DIR:-}" ]; then
+  case "$DECK_SMOKE_DATA_DIR" in
+    /*) ;;
+    *) echo "DECK_SMOKE_DATA_DIR must be absolute" >&2; exit 2 ;;
+  esac
+  case "${DECK_SMOKE_TMUX_SOCKET:-deck-smoke-$$}" in
+    deck-smoke*) ;;
+    *) echo "DECK_SMOKE_TMUX_SOCKET must start with deck-smoke" >&2; exit 2 ;;
+  esac
+fi
+
 cargo build
 
 APP=target/debug/deck-dev.app
@@ -80,15 +98,7 @@ EOF
 codesign --force --sign - --entitlements Entitlements.plist "$APP"
 
 if [ -n "${DECK_SMOKE_DATA_DIR:-}" ]; then
-  case "$DECK_SMOKE_DATA_DIR" in
-    /*) ;;
-    *) echo "DECK_SMOKE_DATA_DIR must be absolute" >&2; exit 2 ;;
-  esac
   DECK_SMOKE_TMUX_SOCKET=${DECK_SMOKE_TMUX_SOCKET:-deck-smoke-$$}
-  case "$DECK_SMOKE_TMUX_SOCKET" in
-    deck-smoke*) ;;
-    *) echo "DECK_SMOKE_TMUX_SOCKET must start with deck-smoke" >&2; exit 2 ;;
-  esac
   if [ -n "${DECK_SMOKE_WKWEBVIEW:-}" ]; then
     SMOKE_MODE=$DECK_SMOKE_WKWEBVIEW
     case "$SMOKE_MODE" in

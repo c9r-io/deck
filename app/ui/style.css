@@ -687,10 +687,19 @@ html[data-effective-theme="light"] #input-source-icon { background: var(--panel)
   border-bottom: 1px solid var(--border-soft); }
 .translation-head strong { flex: 1; min-width: 0; font-weight: 600; }
 .translation-controls { display: flex; gap: 8px; padding: 10px 14px; }
-.translation-controls .dd { min-width: 0; flex: 1; }
-.translation-controls select { min-width: 0; flex: 1; }
+.translation-controls { flex-wrap: wrap; align-items: center; }
+.translation-controls .dd { min-width: 0; flex: 1 1 120px; }
+.translation-controls select { min-width: 0; flex: 1 1 120px; }
+.translation-tabs { display: flex; flex: 2 1 200px; min-width: 0; border: 1px solid var(--border);
+  border-radius: 7px; overflow: hidden; }
+.translation-tab { flex: 1 1 0; min-width: 0; padding: 5px 10px; border: 0; background: transparent;
+  color: var(--muted); font: inherit; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.translation-tab + .translation-tab { border-left: 1px solid var(--border); }
+.translation-tab:hover { color: var(--text); }
+.translation-tab.selected { background: var(--accent-dim); color: var(--text); font-weight: 600; }
+.translation-tab:hover:not(.selected) { background: var(--hover); }
+.translation-tab:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
 .translation-status { color: var(--muted); font-size: 0.85rem; padding: 0 14px 8px; }
-#translation-use-current, #translation-resume { margin: 0 14px 8px; align-self: flex-start; }
 .translation-result { flex: 1; min-height: 0; overflow: auto; padding: 12px 14px 20px;
   white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; line-height: 1.55; }
 .buffer-head { flex: none; padding: 12px 14px 10px; border-bottom: 1px solid var(--border-soft); }

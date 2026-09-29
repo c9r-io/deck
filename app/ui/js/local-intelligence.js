@@ -22,7 +22,6 @@ export const cancel = requestId => smoke ? smoke.cancel(requestId) : inv('transl
 export const clipboardArm = () => smoke?.arm ? smoke.arm() : inv('translation_clipboard_arm');
 export const clipboardDisarm = () => smoke?.disarm ? smoke.disarm() : inv('translation_clipboard_disarm').catch(() => {});
 export const clipboardPoll = () => smoke?.poll ? smoke.poll() : inv('translation_clipboard_poll');
-export const clipboardCurrent = () => smoke?.current ? smoke.current() : inv('translation_clipboard_current');
 export const copyTranslation = text => smoke?.copy ? smoke.copy(text) : writeClipboard(text);
 const CODES = Object.freeze(['translation-disabled', 'translation-model-missing', 'translation-model-corrupt',
   'translation-model-download-failed', 'translation-model-delete-failed', 'source-language-unsupported',

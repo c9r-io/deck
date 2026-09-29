@@ -1,24 +1,71 @@
 // Local Translation is an optional session companion. It reads the focused
-// xterm viewport, a user selection, or a focus-bounded clipboard snapshot;
-// it never reconstructs Agent messages or writes into a terminal.
-import { $, ctx, state } from './state.js';
+// xterm viewport, a user selection, or text newly copied while Deck is in
+// front; it never reconstructs Agent messages or writes into a terminal.
+//
+// Contract (see translation-lens-model.js for the state machine):
+// - Opening, choosing a tab, returning focus and switching panes are user
+//   intent: Live captures the current viewport after layout frames, even
+//   when nothing is written afterwards. Nothing needs a "resume".
+// - Output uses a bounded throttle; a raw user wheel gesture on a terminal
+//   (`deck-terminal-scroll`, layout.js) uses a trailing debounce, so a burst
+//   never translates intermediate positions and the final view is captured.
+// - At most ONE native request is outstanding (a cancelled one included:
+//   cancel only removes publication authority, the native segment still
+//   finishes) plus one replaceable latest snapshot in the model.
+// - Copied content: the tab establishes the observation scope. The native
+//   gate records a baseline (never reads existing text); a later change
+//   while Deck is focused is translated automatically. Readiness is shown
+//   only after the baseline exists. Focus loss disarms; nothing copied while
+//   away is read. Deck's own copies are recognised and never fed back.
+// - Reading never pauses: a live selection inside the result only defers
+//   showing a newer result until the selection or its focus ends.
+import { $, ctx, state, listen, uev } from './state.js';
 import { t, onLocaleChange } from './i18n.js';
 import { toast } from './dialogs.js';
 import { registerShortcutAction } from './shortcuts.js';
 import { copyTerminalSelection, hasTerminalSelection } from './selection.js';
 import { TranslationLensModel, LiveCadence, translationShortcutAction } from './translation-lens-model.js';
 import { capability, translate, cancel, clipboardArm, clipboardDisarm,
-  clipboardPoll, clipboardCurrent, copyTranslation, unload, closedCode } from './local-intelligence.js';
+  clipboardPoll, copyTranslation, unload, closedCode,
+  MAX_LIVE_TRANSLATION_BYTES, MAX_TRANSLATION_BYTES } from './local-intelligence.js';
 
+const CLIPBOARD_POLL_MS = 350;
+const ARM_RETRY_MS = 250, ARM_ATTEMPTS = 12;
+const MODES = ['live', 'clipboard'];
 const model = new TranslationLensModel();
 let backend = { available: false }, deps, shortcutDispose = null;
-let pollTimer = null, polling = false, clipboardEpoch = 0, requestCounter = Date.now() * 1000;
+let requestCounter = Date.now() * 1000, inflight = null, retryTimer = null;
+let clipboardEpoch = 0, pollTimer = null, armTimer = null, polling = false;
 let clipboardChain = Promise.resolve();
-const activeRequests = new Set();
-const bytes = text => new TextEncoder().encode(text).length;
+let renderedText = null, pointerHeld = false;
+// "Deck is in front" comes from the native window focus (tauri://focus/blur).
+// document.hasFocus() is not that fact: Tab out of the last control moves
+// AppKit key focus off the webview while Deck stays in front, and hiding the
+// app does not reliably blur the page.
+let appFocused = true;
+const paneIds = new WeakMap(), submitted = new WeakMap(); let paneCounter = 0;
+// Test-visible counters only (no content): schedules, requests and DOM writes.
+const metrics = { captures: 0, submitted: 0, settled: 0, cancelled: 0, maxInflight: 0,
+  domWrites: 0, retries: 0, clipboardAccepted: 0, clipboardIgnored: 0, last: {}, history: {}, accepted: [] };
+const stamp = name => {
+  const now = performance.now(); metrics.last[name] = now;
+  const list = metrics.history[name] ||= []; list.push(now); if (list.length > 64) list.shift();
+};
+export const translationLensMetrics = () => ({ ...metrics, last: { ...metrics.last }, history: { ...metrics.history }, accepted: [...metrics.accepted],
+  inflight: inflight ? 1 : 0, pending: model.pending ? 1 : 0, status: model.status({ active: meaningful() }) });
+
+// In-page view of the shown snapshot for the WKWebView smoke's assertions
+// (the DOM already shows it); it is never logged or sent anywhere.
+export const translationLensView = () => ({ text: model.resultText(), source: model.sourceForCopy() });
 const enabled = () => ctx.settings.localIntelligence?.translation?.enabled === true;
-const meaningful = () => enabled() && model.open && state.view === 'session' && !document.hidden && document.hasFocus();
+const meaningful = () => enabled() && model.open && state.view === 'session' && !document.hidden && appFocused;
 const focusedPane = () => deps.panes.get(ctx.attachedName);
+const paneId = pane => {
+  if (!pane) return null;
+  if (!paneIds.has(pane)) paneIds.set(pane, ++paneCounter);
+  return paneIds.get(pane);
+};
+const documentLimit = () => ctx.settings.localIntelligence?.translation?.documentLimitBytes || MAX_TRANSLATION_BYTES;
 
 export function visibleViewport(pane) {
   if (!pane?.term) return '';
@@ -28,33 +75,166 @@ export function visibleViewport(pane) {
   while (lines.length && !lines.at(-1).trim()) lines.pop();
   return lines.join('\n');
 }
-function cancelRequests() { for (const id of activeRequests) cancel(id); activeRequests.clear(); }
-function stopClipboard() {
-  clipboardEpoch++; clearInterval(pollTimer); pollTimer = null;
-  clipboardChain = clipboardChain.then(clipboardDisarm);
-  return clipboardChain;
+
+/* ----- requests: one outstanding native call, pumped from the model ----- */
+function pump() {
+  if (inflight) {
+    if (inflight.ticket !== model.running && !inflight.cancelled) {
+      inflight.cancelled = true; metrics.cancelled++; cancel(inflight.id);
+    }
+    return;
+  }
+  const ticket = model.running;
+  if (!ticket || submitted.has(ticket) || !meaningful()) return;
+  submitted.set(ticket, true);
+  const id = ++requestCounter;
+  inflight = { id, ticket, cancelled: false };
+  metrics.submitted++; metrics.maxInflight = Math.max(metrics.maxInflight, 1); stamp('submit');
+  const at = performance.now();
+  translate(id, ticket.text, 'zh-Hans', ticket.mode)
+    .then(reply => settle(ticket, reply?.text || null, reply?.text ? null : 'translation-failed', at),
+      error => settle(ticket, null, closedCode(error), at));
+}
+function settle(ticket, text, error, submittedAt) {
+  inflight = null; metrics.settled++; stamp('settle');
+  const { retry, accepted } = model.finish(ticket, text, error);
+  if (accepted) {
+    metrics.accepted.push({ submit: submittedAt, settle: performance.now() });
+    if (metrics.accepted.length > 32) metrics.accepted.shift();
+  }
+  if (retry !== null && retry !== undefined) {
+    clearTimeout(retryTimer);
+    retryTimer = setTimeout(() => { retryTimer = null; metrics.retries++; model.retry(); pump(); render(); }, retry);
+  }
+  pump(); render();
+}
+function dropWork() {
+  clearTimeout(retryTimer); retryTimer = null;
+  model.interrupt(); pump();
+}
+
+/* ----- rendering: write the result only when its text changed ----- */
+function readingHold() {
+  const result = $('translation-result');
+  if (pointerHeld) return true;
+  const selection = document.getSelection?.();
+  return !!selection && !selection.isCollapsed && document.activeElement === result
+    && !!result.contains?.(selection.anchorNode);
+}
+function renderTabs() {
+  for (const mode of MODES) {
+    const tab = $(`translation-tab-${mode}`), selected = model.mode === mode;
+    tab.setAttribute('aria-selected', String(selected));
+    tab.tabIndex = selected || (model.mode === 'selection' && mode === 'live') ? 0 : -1;
+    tab.classList.toggle('selected', selected);
+  }
+  const panel = $('translation-result');
+  panel.setAttribute('aria-labelledby', MODES.includes(model.mode) ? `translation-tab-${model.mode}` : 'translation-title');
 }
 function render() {
   $('translation-btn').hidden = !enabled() || !backend.available;
   $('translation-panel').hidden = !model.open;
   $('translation-btn').setAttribute('aria-pressed', String(model.open));
-  if (!model.open) return;
-  const mode = $('translation-mode');
-  if (model.mode === 'selection') mode.selectedIndex = -1;
-  else mode.value = model.mode;
-  $('translation-result').textContent = model.result;
-  $('translation-copy').disabled = !model.result;
+  if (!model.open) {
+    if (renderedText) { $('translation-result').textContent = ''; metrics.domWrites++; }
+    renderedText = null; return;
+  }
+  renderTabs();
+  model.present(readingHold());
+  const text = model.resultText(), result = $('translation-result');
+  if (text !== renderedText) {
+    const top = result.scrollTop, sameContext = renderedText !== null && text.length > 0;
+    result.textContent = text; renderedText = text; metrics.domWrites++; stamp('display');
+    if (sameContext) result.scrollTop = top;
+  }
+  $('translation-copy').disabled = !text;
   $('translation-copy-source').disabled = !model.sourceForCopy();
-  $('translation-resume').hidden = !(model.mode === 'live' && model.paused);
-  $('translation-use-current').hidden = model.mode !== 'clipboard';
-  let key;
-  if (model.paused) key = 'translation.paused';
-  else if (model.error) key = `translation.error.${model.error}`;
-  else if (model.mode === 'selection') key = model.result ? 'translation.ready' : 'translation.selected';
-  else if (model.mode === 'clipboard' && !model.source) key = 'translation.waiting';
-  else if (model.mode === 'live' && !model.source) key = 'translation.empty';
-  else key = model.isUpdating() ? 'translation.updating' : model.result ? 'translation.ready' : 'translation.translating';
-  $('translation-status').textContent = t(key) || t('translation.error.translation-failed');
+  const status = t(model.status({ active: meaningful() })) || t('translation.error.translation-failed');
+  if ($('translation-status').textContent !== status) $('translation-status').textContent = status;
+}
+
+/* ----- Live capture ----- */
+function captureLive({ intent = false } = {}) {
+  if (!meaningful() || model.mode !== 'live' || !backend.available) return;
+  const pane = focusedPane();
+  if (!pane) { render(); return; }
+  metrics.captures++; stamp('capture');
+  model.observeLive(visibleViewport(pane), paneId(pane), { intent, maxBytes: MAX_LIVE_TRANSLATION_BYTES });
+  pump(); render();
+}
+const cadence = new LiveCadence({ onCapture: captureLive, clock: {
+  now: () => Date.now(), setTimeout: (fn, ms) => setTimeout(fn, ms), clearTimeout: id => clearTimeout(id),
+  frame: fn => (typeof requestAnimationFrame === 'function' ? requestAnimationFrame(fn) : setTimeout(fn, 16)),
+} });
+const liveActive = () => meaningful() && model.mode === 'live';
+function liveIntent() { if (liveActive()) cadence.intent(); }
+
+/* ----- copied content: scope = this tab while Deck is focused ----- */
+function stopClipboard() {
+  clipboardEpoch++; clearInterval(pollTimer); clearTimeout(armTimer);
+  pollTimer = null; armTimer = null; model.clipboardReady = false;
+  clipboardChain = clipboardChain.then(clipboardDisarm, clipboardDisarm);
+  return clipboardChain;
+}
+const clipboardWanted = epoch => epoch === clipboardEpoch && meaningful() && model.mode === 'clipboard';
+function startClipboard(attempt = 0) {
+  if (attempt === 0) stopClipboard();
+  const epoch = clipboardEpoch;
+  render();
+  clipboardChain = clipboardChain.then(async () => {
+    if (!clipboardWanted(epoch)) return;
+    try { await clipboardArm(); } // records a baseline only; never reads existing text
+    catch (error) {
+      if (!clipboardWanted(epoch)) return;
+      const code = closedCode(error);
+      if (code === 'clipboard-not-focused' && attempt + 1 < ARM_ATTEMPTS) {
+        armTimer = setTimeout(() => { armTimer = null; if (clipboardWanted(epoch)) startClipboard(attempt + 1); }, ARM_RETRY_MS);
+      } else { model.fail(code); render(); }
+      return;
+    }
+    if (!clipboardWanted(epoch)) return; // the later stop's disarm follows on this chain
+    model.clipboardReady = true; stamp('armed'); render();
+    pollTimer = setInterval(() => pollClipboard(epoch), CLIPBOARD_POLL_MS);
+    pollClipboard(epoch);
+  });
+}
+async function pollClipboard(epoch) {
+  if (polling || !clipboardWanted(epoch)) return;
+  polling = true;
+  try {
+    const text = await clipboardPoll();
+    if (!clipboardWanted(epoch) || typeof text !== 'string') return;
+    if (!model.newCopy(text)) { metrics.clipboardIgnored++; return; }
+    metrics.clipboardAccepted++; stamp('copied');
+    model.snapshot(text, 'clipboard', documentLimit());
+    pump(); render();
+  } catch (error) {
+    if (!clipboardWanted(epoch)) return;
+    const code = closedCode(error);
+    if (code === 'clipboard-not-focused') {
+      clearInterval(pollTimer); pollTimer = null; model.clipboardReady = false; startClipboard(1);
+    }
+    else { model.fail(code); render(); }
+  } finally { polling = false; }
+}
+
+/* ----- lifecycle ----- */
+function enterMode(mode) {
+  cadence.stop(); stopClipboard(); dropWork(); render();
+  if (mode === 'live') liveIntent(); else if (mode === 'clipboard') startClipboard();
+}
+function selectMode(mode) {
+  if (!model.modeTo(mode)) return; // re-choosing the current tab changes nothing
+  enterMode(mode);
+}
+function interrupt() {
+  cadence.stop(); stopClipboard(); dropWork(); pointerHeld = false; render();
+}
+function resumeFocus() {
+  if (!model.open || !meaningful()) return;
+  if (model.mode === 'clipboard') startClipboard();
+  else if (model.mode === 'live') liveIntent();
+  pump(); render();
 }
 async function refreshCapability() {
   if (!enabled()) { backend = { available: false }; closeTranslationLens(); shortcutDispose?.(); shortcutDispose = null; render(); return; }
@@ -64,69 +244,20 @@ async function refreshCapability() {
   if (!backend.available && shortcutDispose) { shortcutDispose(); shortcutDispose = null; closeTranslationLens(); }
   render();
 }
-function execute(ticket) {
-  if (!ticket || !meaningful()) return;
-  const id = ++requestCounter;
-  activeRequests.add(id);
-  translate(id, ticket.text, 'zh-Hans', ticket.mode).then(reply => {
-    activeRequests.delete(id);
-    const { next } = model.finish(ticket, reply.text);
-    render(); if (next) execute(next);
-  }).catch(error => {
-    activeRequests.delete(id);
-    const { next } = model.finish(ticket, null, closedCode(error));
-    render(); if (next) execute(next);
-  });
-  render();
-}
-function captureLive() {
-  if (!meaningful() || model.mode !== 'live' || model.paused || !backend.available) return;
-  const pane = focusedPane();
-  execute(model.observeLive(visibleViewport(pane), ctx.attachedName || null));
-  render();
-}
-function scheduleLive() { if (meaningful() && model.mode === 'live' && !model.paused) cadence.dirty(); }
-const cadence = new LiveCadence({ onCapture: captureLive,
-  clock: { now: () => Date.now(), setTimeout: (fn, ms) => window.setTimeout(fn, ms),
-    clearTimeout: id => window.clearTimeout(id) } });
-
-async function pollClipboard() {
-  if (polling || !meaningful() || model.mode !== 'clipboard') return;
-  polling = true; const generation = clipboardEpoch;
-  try {
-    const text = await clipboardPoll();
-    if (generation === clipboardEpoch && typeof text === 'string' && meaningful() && model.mode === 'clipboard') {
-      cancelRequests(); execute(model.snapshot(text, 'clipboard'));
-    }
-  } catch (error) {
-    if (meaningful() && model.mode === 'clipboard') {
-      const code = closedCode(error);
-      if (code === 'clipboard-not-focused') stopClipboard();
-      else { model.error = code; render(); }
-    }
-  } finally { polling = false; }
-}
-async function startClipboard() {
-  await stopClipboard();
-  if (!meaningful() || model.mode !== 'clipboard') return;
-  const generation = clipboardEpoch;
-  try {
-    await clipboardArm(); // new baseline only; never reads existing clipboard
-    if (generation !== clipboardEpoch || !meaningful() || model.mode !== 'clipboard') return;
-    pollTimer = setInterval(pollClipboard, 350);
-  } catch { /* native focus gate is authoritative */ }
-}
 export function closeTranslationLens() {
   if (!model.open) return;
-  cadence.stop(); stopClipboard(); cancelRequests(); model.close(); render();
+  cadence.stop(); stopClipboard(); clearTimeout(retryTimer); retryTimer = null;
+  model.close(); pump(); pointerHeld = false; render();
   unload().catch(() => {});
+}
+function syncOverlay() {
+  $('session-workspace').classList.toggle('translation-overlay',
+    $('session-workspace').clientWidth < 440 + 480);
 }
 function open(mode = 'live') {
   if (!enabled() || !backend.available || state.view !== 'session') return;
-  deps.closeBuffer(); model.show(mode);
-  $('session-workspace').classList.toggle('translation-overlay',
-    $('session-workspace').clientWidth < 440 + 480);
-  render(); if (mode === 'live') scheduleLive();
+  deps.closeBuffer(); model.show(mode); stamp('open');
+  syncOverlay(); enterMode(mode);
 }
 async function selectedText() {
   const pane = focusedPane(); let text = null;
@@ -136,11 +267,10 @@ async function selectedText() {
 }
 function translateSelection(text) {
   if (!model.open) open('selection');
-  else { cadence.stop(); stopClipboard(); cancelRequests(); }
   if (!model.open) return;
-  if (bytes(text) > 16384) { model.snapshot('', 'selection'); model.running = null;
-    model.error = 'text-too-large'; render(); return; }
-  execute(model.snapshot(text, 'selection'));
+  cadence.stop(); stopClipboard(); clearTimeout(retryTimer); retryTimer = null;
+  model.snapshot(text, 'selection', MAX_TRANSLATION_BYTES);
+  pump(); render();
 }
 async function translationShortcut() {
   if (!enabled() || state.view !== 'session') return;
@@ -152,50 +282,61 @@ async function translationShortcut() {
 }
 async function copySnapshot(text, source = false) {
   if (!text) return;
-  const clipboardMode = model.mode === 'clipboard';
-  if (clipboardMode) await stopClipboard();
   try { await copyTranslation(text); toast(t(source ? 'translation.sourceCopied' : 'translation.copied')); }
   catch { toast(t('translation.copyFailed')); }
-  finally { if (clipboardMode && meaningful() && model.mode === 'clipboard') startClipboard(); }
+}
+function tabKey(event) {
+  const order = { ArrowLeft: -1, ArrowRight: 1, Home: -9, End: 9 }[event.key];
+  if (!order) return;
+  event.preventDefault();
+  const index = Math.max(0, MODES.indexOf(model.mode));
+  const next = order === -9 ? 0 : order === 9 ? MODES.length - 1
+    : (index + order + MODES.length) % MODES.length;
+  $(`translation-tab-${MODES[next]}`).focus();
+  selectMode(MODES[next]);
 }
 export function initTranslationLens({ panes, closeBuffer }) {
   deps = { panes, closeBuffer };
   $('translation-btn').onclick = () => { if (model.open) closeTranslationLens(); else open(); };
   $('translation-close').onclick = closeTranslationLens;
-  $('translation-mode').onchange = event => {
-    const mode = event.target.value;
-    if (!model.modeTo(mode)) return;
-    cadence.stop(); stopClipboard(); cancelRequests(); render();
-    if (mode === 'live') scheduleLive(); else startClipboard();
-  };
-  $('translation-use-current').onclick = async () => {
-    if (!meaningful() || model.mode !== 'clipboard') return;
-    try { const text = await clipboardCurrent();
-      if (!meaningful() || model.mode !== 'clipboard') return;
-      cancelRequests(); execute(model.snapshot(text, 'clipboard'));
-    } catch (error) { model.error = closedCode(error); render(); }
-  };
-  $('translation-resume').onclick = () => { if (model.resume()) scheduleLive(); };
-  $('translation-copy').onclick = () => copySnapshot(model.result);
+  for (const mode of MODES) $(`translation-tab-${mode}`).onclick = () => selectMode(mode);
+  $('translation-tabs').addEventListener('keydown', tabKey);
+  $('translation-copy').onclick = () => copySnapshot(model.resultText());
   $('translation-copy-source').onclick = () => copySnapshot(model.sourceForCopy(), true);
   const result = $('translation-result');
-  const pause = () => { if (model.pause()) { cadence.stop(); cancelRequests(); render(); } };
-  result.addEventListener('pointerdown', pause);
-  result.addEventListener('wheel', pause, { passive: true });
-  result.addEventListener('keydown', pause);
-  window.addEventListener('deck-terminal-changed', event => { if (event.detail === ctx.attachedName) scheduleLive(); });
-  window.addEventListener('deck-pane-focused', scheduleLive);
+  const release = () => { if (pointerHeld) { pointerHeld = false; render(); } };
+  result.addEventListener('pointerdown', () => { pointerHeld = true; });
+  // Any sign that the button is no longer pressed ends the hold: a lost
+  // pointerup must never leave a frozen result.
+  for (const type of ['pointerup', 'pointercancel', 'mouseup', 'keydown']) window.addEventListener(type, release, true);
+  window.addEventListener('pointermove', event => { if (event.buttons === 0) release(); }, true);
+  const unhold = () => { if (model.open && model.heldBack() && !readingHold()) render(); };
+  document.addEventListener('selectionchange', unhold);
+  document.addEventListener('focusin', unhold);
+  window.addEventListener('deck-terminal-changed', event => {
+    if (event.detail === ctx.attachedName && liveActive()) cadence.output();
+  });
+  window.addEventListener('deck-terminal-scroll', event => {
+    if (event.detail === ctx.attachedName && liveActive()) cadence.scroll();
+  });
+  window.addEventListener('deck-pane-focused', () => {
+    if (!model.retarget()) return; // a snapshot tab keeps its snapshot
+    cadence.stop(); dropWork(); liveIntent(); render();
+  });
   window.addEventListener('deck-session-leave', closeTranslationLens);
   window.addEventListener('deck-buffer-open', closeTranslationLens);
   window.addEventListener('deck-translation-disabled', closeTranslationLens);
   window.addEventListener('deck-translation-enabled-changed', refreshCapability);
-  window.addEventListener('blur', () => { stopClipboard(); cadence.stop(); cancelRequests();
-    model.running = null; model.pending = null; if (model.mode === 'live') model.source = ''; });
-  window.addEventListener('focus', () => { if (model.mode === 'clipboard') startClipboard(); else scheduleLive(); });
+  const focusChanged = focused => { appFocused = focused; if (focused) resumeFocus(); else interrupt(); };
+  window.addEventListener('focus', () => focusChanged(true)); // page focus implies the app is in front
+  if (window.__TAURI__?.event) {
+    listen('tauri://focus', () => focusChanged(true)).catch(() => uev('listen-fail', 'window-focus'));
+    listen('tauri://blur', () => focusChanged(false)).catch(() => uev('listen-fail', 'window-focus'));
+  } else window.addEventListener('blur', () => focusChanged(false)); // no native window events (tests)
+  document.addEventListener('visibilitychange', () => { if (document.hidden) interrupt(); else resumeFocus(); });
   new ResizeObserver(() => {
-    $('session-workspace').classList.toggle('translation-overlay',
-      $('session-workspace').clientWidth < 440 + 480);
-    scheduleLive();
+    syncOverlay();
+    if (liveActive()) cadence.output();
   }).observe($('session-workspace'));
   onLocaleChange(render);
   refreshCapability(); // default OFF never verifies or loads a model

@@ -4,7 +4,12 @@ import Foundation
 import AppKit
 import NaturalLanguage
 
-private func onMain<T>(_ body: () -> T) -> T {
+// Debug smoke builds compile native/SmokeBridge.swift, which may point the
+// same gate at a test-owned named pasteboard. Release never sets it.
+var deckSmokeTranslationPasteboard: NSPasteboard? = nil
+func deckTranslationPasteboard() -> NSPasteboard { deckSmokeTranslationPasteboard ?? .general }
+
+func onMain<T>(_ body: () -> T) -> T {
     if Thread.isMainThread { return body() }
     return DispatchQueue.main.sync(execute: body)
 }
@@ -13,7 +18,7 @@ private func onMain<T>(_ body: () -> T) -> T {
 public func deckPasteboardFocusedCount() -> Int64 {
     onMain {
         guard NSApp.isActive, NSApp.keyWindow != nil else { return -1 }
-        return Int64(NSPasteboard.general.changeCount)
+        return Int64(deckTranslationPasteboard().changeCount)
     }
 }
 
@@ -21,7 +26,7 @@ public func deckPasteboardFocusedCount() -> Int64 {
 public func deckPasteboardReadText() -> UnsafeMutablePointer<CChar>? {
     onMain {
         guard NSApp.isActive, NSApp.keyWindow != nil,
-              let text = NSPasteboard.general.string(forType: .string),
+              let text = deckTranslationPasteboard().string(forType: .string),
               !text.contains("\0") else { return nil }
         return strdup(text)
     }

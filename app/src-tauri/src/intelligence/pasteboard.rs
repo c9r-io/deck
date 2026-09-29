@@ -1,6 +1,10 @@
 //! Clipboard authority: automatic reads require an armed, focused Lens and
 //! a post-baseline change. Native AppKit focus checks are repeated at read
 //! time. Focus loss clears ownership; a new arm only records changeCount.
+//! There is no command that reads the clipboard's existing content: text
+//! copied before the Copied-text tab armed (or while Deck was away) is
+//! never read. Debug smoke builds may point this same gate at a named test
+//! pasteboard (`native/SmokeBridge.swift`); the gate logic is unchanged.
 use crate::error::{DeckError, ErrorKind};
 use crate::sync::LockRecover;
 use std::ffi::{c_char, CStr};
@@ -126,36 +130,19 @@ pub(crate) fn translation_clipboard_poll() -> Result<Option<String>, DeckError> 
     let text = read_text();
     // A second native focus/count probe closes a race with focus loss and a
     // second clipboard write while the AppKit read was in flight.
-    let stable = focused_count()? == count;
-    let mut state = locked();
-    if !stable || !state.changed(count, generation) {
+    let recheck = focused_count()?;
+    if !accept_read(&mut locked(), count, recheck, generation) {
         return Ok(None);
     }
     text.map(Some)
 }
 
-#[tauri::command]
-pub(crate) fn translation_clipboard_current() -> Result<String, DeckError> {
-    if !crate::documents::local_translation_settings().0 {
-        return Err(error("translation-disabled"));
-    }
-    let generation = {
-        let state = locked();
-        if !state.armed {
-            return Err(error("clipboard-unavailable"));
-        }
-        state.generation
-    };
-    let before = focused_count()?;
-    let text = read_text()?;
-    if focused_count()? != before {
-        return Err(error("clipboard-unavailable"));
-    }
-    let state = locked();
-    if !state.armed || state.generation != generation {
-        return Err(error("clipboard-unavailable"));
-    }
-    Ok(text)
+/// A read taken between two native probes is published only when both saw
+/// the same change, the gate is still the one armed before the read, and
+/// that change is past the baseline. A change during the read leaves the
+/// baseline untouched, so the next poll reads the newer text instead.
+fn accept_read(state: &mut Gate, count: i64, recheck: i64, generation: u64) -> bool {
+    recheck == count && state.changed(count, generation)
 }
 
 #[cfg(test)]
@@ -185,6 +172,29 @@ mod tests {
         state.arm(14); // focus regained: baseline without reading
         assert!(!state.changed(14, state.generation));
         assert!(state.changed(15, state.generation));
+    }
+    #[test]
+    fn change_during_read_is_not_published_and_the_newer_change_is() {
+        let mut state = Gate::default();
+        state.arm(20);
+        let generation = state.generation;
+        assert!(!accept_read(&mut state, 21, 22, generation)); // copied again mid-read
+        assert_eq!(
+            state.baseline, 20,
+            "baseline stays before the unstable read"
+        );
+        assert!(accept_read(&mut state, 22, 22, generation)); // next poll: newest text
+        assert!(
+            !accept_read(&mut state, 22, 22, generation),
+            "published once"
+        );
+        state.arm(22); // the Lens was re-armed (mode/epoch change) during a read
+        assert!(
+            !accept_read(&mut state, 23, 23, generation),
+            "a stale generation never publishes"
+        );
+        let current = state.generation;
+        assert!(accept_read(&mut state, 23, 23, current));
     }
     #[test]
     fn self_write_rebaseline_excludes_own_change() {

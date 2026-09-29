@@ -514,6 +514,15 @@ const TEXT_COMMANDS: &[(&str, &str, Command)] = &[
     ("voice.rs", "voice_deliver", Command::OwnerTerminal),
     ("commands.rs", "start_session", Command::OwnerTerminal),
     ("commands.rs", "write_clipboard", Command::NotTerminal),
+    // Debug-only isolated smoke driver (refused unless smoke_faults::enabled):
+    // synthetic key events reach a pane only as the owner's keyboard would;
+    // pasteboard text is test-owned synthetic content and never reaches a pane.
+    (
+        "smoke_native.rs",
+        "smoke_native_input",
+        Command::OwnerTerminal,
+    ),
+    ("smoke_native.rs", "smoke_pasteboard", Command::NotTerminal),
     // User-visible/selected/copied text is read-only translation input;
     // it never acquires terminal or scheduler delivery authority.
     (

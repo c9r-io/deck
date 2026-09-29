@@ -16,6 +16,11 @@ from pathlib import Path
 FORBIDDEN = ("/Translation.framework/", "/FoundationModels.framework/",
              "libbergamot", "libmarian", "libdeck_bergamot")
 STATIC_MARKERS = ("bergamot-mode", "int8shiftAlphaAll")
+# native/SmokeBridge.swift (own-window event injection, webview snapshots,
+# pasteboard guard) is compiled into debug builds only.
+DEBUG_ONLY_SYMBOLS = ("_deck_smoke_mouse", "_deck_smoke_scroll", "_deck_smoke_key",
+                      "_deck_smoke_snapshot", "_deck_smoke_pb_guard_begin")
+DEBUG_ONLY_MARKER = "io.c9r.deck.smoke.translation."
 
 
 def dependencies(otool_text: str) -> list[str]:
@@ -47,6 +52,12 @@ def main() -> int:
                               text=True, check=True).stdout
     if any(marker not in contents for marker in STATIC_MARKERS):
         print("in-process Bergamot bridge markers are absent", file=sys.stderr)
+        return 1
+    symbols = subprocess.run(["nm", "-j", str(executable)], capture_output=True, text=True).stdout.split()
+    leaked = [symbol for symbol in DEBUG_ONLY_SYMBOLS if symbol in symbols]
+    leaked += [DEBUG_ONLY_MARKER] if DEBUG_ONLY_MARKER in contents else []
+    if leaked:
+        print(f"debug-only smoke driver present in this executable: {leaked}", file=sys.stderr)
         return 1
     if Path(sys.argv[1]).is_dir():
         helpers = [p.name for p in Path(sys.argv[1]).glob("Contents/MacOS/*")

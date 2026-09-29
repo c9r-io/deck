@@ -82,3 +82,15 @@ The source calibration had one Apple Silicon Mac and a small set of synthetic
 technical fixtures. Human quality review remains subjective. English to
 Simplified Chinese is the only certified pair, and the final app/older-macOS
 runtime evidence must be reported separately from these calibration results.
+
+## Later Lens behaviour (2026-09-29)
+
+The calibration above is dated September 2026 and keeps that boundary. The
+Lens interaction was later changed without changing the provider, the pack or
+the bounds: Live starts on open for a static viewport, a user wheel gesture is
+debounced (250 ms) separately from the output throttle, reading no longer
+pauses Live, the explicit "use current clipboard" read was removed in favour
+of the Copied-text tab, and *Updating* is shown only while work is pending.
+Its acceptance evidence is produced by `scripts/translation-lens-verify.py`
+(isolated runs, machine report) and is not a re-certification of the numbers
+above.
