@@ -655,9 +655,10 @@ export async function retryOnStaleGrid({ prepare, send, invalidate, attempts = 3
    and the first command typed after attaching is never captured:
    - CSI with a ?/> prefix (DA1/DA2, DECRPM `$y`, mode reports …) — user keys
      never carry those prefixes
+   - DSR status OK `ESC[0n` (the response to `ESC[5n`)
    - DSR cursor reports `ESC[..R`, focus events `ESC[I`/`ESC[O`
    - OSC / DCS responses */
-const TERMINAL_AUTO_REPLY = /^(?:\x1b\[[?>][0-9;$]*[a-zA-Z]|\x1b\[[0-9;]*R|\x1b\[[IO]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1bP[^\x1b]*\x1b\\)+$/;
+const TERMINAL_AUTO_REPLY = /^(?:\x1b\[0n|\x1b\[[?>][0-9;$]*[a-zA-Z]|\x1b\[[0-9;]*R|\x1b\[[IO]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1bP[^\x1b]*\x1b\\)+$/;
 export const isTerminalAutoReply = data => TERMINAL_AUTO_REPLY.test(data);
 
 /** A scroll command's reply as the pane chrome reads it: `scroll_session`

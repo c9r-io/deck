@@ -68,3 +68,28 @@ test('a cancelled pending gesture is distinguishable from one still held', () =>
   f.abort();
   assert.equal(f.reason(), 'gesture-cancelled');
 });
+
+
+test('live and adopted native ranges are not end evidence and ordering stays intact', () => {
+  const f = createSelectionForensics(() => 100);
+  f.nativeOutcome('live', 1, 1);
+  assert.equal(f.reason(), 'no-gesture');
+  f.nativeOutcome('adopted', 1, 1);
+  assert.equal(f.reason(), 'no-gesture');
+  for (const cause of ['pointer', 'input', 'output', 'buffer', 'deck', 'dispose', 'other']) {
+    f.nativeOutcome(`native-end-${cause}`, 1, 1);
+    assert.equal(f.reason(), 'native-range-ended');
+  }
+  f.begin({ id: 2, cell: { row: 0, col: 0 } }); f.end(false);
+  assert.equal(f.reason(), 'same-cell', 'New gesture supersedes an old native end');
+  f.nativeOutcome('live', 2, 2);
+  assert.equal(f.reason(), 'same-cell', 'Live range is not end evidence');
+  f.selectionOutcome('revoked-input', 3, 2);
+  f.nativeOutcome('adopted', 2, 2);
+  assert.equal(f.reason(), 'selection-revoked-input', 'Adoption must not hide a revoke');
+  f.nativeOutcome('native-end-input', 2, 2);
+  assert.equal(f.reason(), 'native-range-ended', 'A later real end remains observable');
+  f.selectionOutcome('revoked-pointer', 3, 1, 2);
+  f.nativeOutcome('native-end-pointer', 2, 2);
+  assert.equal(f.reason(), 'selection-revoked-pointer', 'Pointer revocation retains priority');
+});

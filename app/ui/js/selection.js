@@ -109,11 +109,14 @@
 // A separate bounded forensic summary retains the last gesture, Deck lease
 // outcome and native range outcome. On copy without a source it emits only
 // closed reasons, numeric IDs and relative cell deltas; it never influences
-// ownership, snapshot bytes or clipboard routing.
+// ownership, snapshot bytes or clipboard routing. Input attribution excludes
+// recognized auto-replies; actual input revokes add only entry/shape/length.
+// onData provenance is unknown; compositionstart is an explicit entry.
 import { duev, inv, uev } from './state.js';
 import { toast } from './dialogs.js';
 import {
   createTerminalSelectionModel,
+  isTerminalAutoReply,
   nativeSelectionEndLabel,
   nativeSelectionRows,
   retryOnStaleGrid,
@@ -714,9 +717,14 @@ function terminalSelectionController(pane, onModeChange) {
      logged ONLY when something real was destroyed, so an ordinary click —
      which cancels an empty controller on every pointerdown — stays silent.
      Callers that already logged a more specific failure pass null. */
-  async function cancel(clearNative = true, reason = 'other') {
+  async function cancel(clearNative = true, reason = 'other', input = null) {
     const oldToken = token;
     const hadSelection = selected || !!gesture?.promoted;
+    if (hadSelection && reason === 'input') {
+      const inputEvent = input?.composition ? 'input-compositionstart'
+        : input ? 'input-ondata-unknown' : 'input-unknown';
+      sevPair(inputEvent, input?.category || 0, input?.length || 0);
+    }
     if (hadSelection && reason) sev(`cancel-${reason}`, frozen ? 1 : 0);
     if (gesture) forensics.abort();
     if (hadSelection && reason && reason !== 'empty') {
@@ -859,7 +867,8 @@ function terminalSelectionController(pane, onModeChange) {
       pane.term.options.disableStdin = false;
       return Promise.resolve();
     }
-    return cancel(true, 'input');
+    const diagnostic = { composition: true };
+    return cancel(true, 'input', diagnostic);
   };
 
   const resize = () => {
@@ -1003,7 +1012,7 @@ function terminalSelectionController(pane, onModeChange) {
           gestureId: forensics.snapshot().active || Date.now() - lastPointerUpAt < 150
             ? forensics.snapshot().gesture?.id || 0 : 0,
         };
-        forensics.nativeOutcome('native-live', native.token, native.gestureId);
+        forensics.nativeOutcome('live', native.token, native.gestureId);
         uev('terminal-selection', 'native-select', native.rows,
           Date.now() - pressAt < 1000 ? pressDetail : 0, traceContext());
       }
@@ -1030,7 +1039,7 @@ function terminalSelectionController(pane, onModeChange) {
       input: inputSeq !== inputAt, output: parsedFrame !== frameAt,
     })));
   });
-  inputDisposable = pane.term.onData?.(() => { inputSeq++; });
+  inputDisposable = pane.term.onData?.(data => { if (!isTerminalAutoReply(data)) inputSeq++; });
   controllers.add(api);
   return api;
 }
@@ -1043,8 +1052,8 @@ export function wireTerminalSelection(pane, onModeChange) {
 
 export const hasTerminalSelection = pane => !!pane?.selection?.hasSelection();
 export const copyTerminalSelection = pane => pane?.selection?.copy();
-export const cancelTerminalSelection = (pane, reason = 'other') =>
-  pane?.selection?.cancel(true, reason);
+export const cancelTerminalSelection = (pane, reason = 'other', input = null) =>
+  pane?.selection?.cancel(true, reason, input);
 export const cancelAllTerminalSelections = (reason = 'leave') => {
   for (const controller of [...controllers]) controller.cancel(true, reason);
 };

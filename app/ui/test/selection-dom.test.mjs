@@ -2,6 +2,9 @@
 // event surface is deterministic; WK event delivery needs the separate smoke.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createRequire } from 'node:module';
+import { createTerminalDataHandler } from '../js/terminal-input.js';
+const { Terminal } = createRequire(import.meta.url)('../vendor/xterm.js');
 
 class Surface {
   constructor() { this.listeners = new Map(); this.children = []; this.style = {}; this.dataset = {}; }
@@ -59,7 +62,7 @@ const { createTerminalCopy } = await import('../js/terminal-clipboard.js');
 let harness = null;
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
-function fixture() {
+function fixture(engine = null) {
   logs.length = 0; calls.length = 0;
   anchorCell = null; activeCell = null;
   const body = new Surface(), screen = new Surface();
@@ -74,7 +77,8 @@ function fixture() {
     clearSelection() { if (this.nativeText) { this.nativeText = ''; this.listeners.forEach(fn => fn()); } },
     select(text) { this.nativeText = text; this.listeners.forEach(fn => fn()); },
     onSelectionChange(fn) { this.listeners.push(fn); return { dispose: () => { this.listeners = this.listeners.filter(f => f !== fn); } }; },
-    onData() { return { dispose() {} }; },
+    dataListeners: [],
+    onData(fn) { if (engine) return engine.onData(fn); this.dataListeners.push(fn); return { dispose() {} }; },
   };
   const pane = { body, term, session: 'private-test', syncSize: async () => true };
   wireTerminalSelection(pane, () => {});
@@ -198,4 +202,77 @@ test('double and triple click held drags stay native and route their own bytes',
     assert.equal(calls.filter(x => x.name === 'clipboard').length, 1);
     f.dispose();
   }
+});
+
+
+test('generated replies retain the production selection token and copy bytes; input revokes before send', async () => {
+  const engine = new Terminal({ allowProposedApi: true });
+  const f = fixture(engine), sent = [], input = [];
+  const handle = createTerminalDataHandler({ pane: f.pane, blocked: () => false,
+    onInput: data => input.push(data), hasSelection: () => f.pane.selection.hasSelection(),
+    cancelSelection: diagnostic => f.pane.selection.cancel(true, 'input', diagnostic),
+    scrolled: () => false, goLive: () => assert.fail('Replies must retain the view'),
+    write: data => { sent.push(data); calls.push({ name: 'send' }); },
+  });
+  engine.onData(handle);
+  try {
+    f.down(90); f.move('pointermove', 90); f.up(90); await f.settle();
+    const token = f.pane.selection.traceContext().selection;
+    await new Promise(resolve => engine.write('\x1b[5n', resolve));
+    await f.settle();
+    assert.equal(f.pane.selection.traceContext().selection, token, 'Generated reply must retain the token');
+    assert.equal(f.pane.selection.isFrozen(), true);
+    f.key(); await f.settle();
+    assert.equal(calls.find(x => x.name === 'clipboard')?.text, 'selected bytes');
+    assert.deepEqual(input, []);
+    assert.deepEqual(sent, ['\x1b[0n']);
+    assert.equal(logs.filter(x => x.detail === 'cancel-input').length, 0);
+    calls.length = 0;
+    handle('typed');
+    assert.equal(f.pane.selection.hasSelection(), false, 'Input revokes synchronously');
+    assert.equal(calls.some(x => x.name === 'send'), false, 'Cleanup must precede send');
+    await f.pane.liveQ;
+    assert.ok(calls.findIndex(x => x.name === 'terminal_selection_cancel') < calls.findIndex(x => x.name === 'send'));
+    const diagnostic = logs.find(x => x.detail === 'input-ondata-unknown');
+    assert.deepEqual([diagnostic.a, diagnostic.b], [1, 5]);
+    assert.equal(diagnostic.context.selection, token);
+  } finally { f.dispose(); engine.dispose(); }
+});
+
+test('native end attribution excludes replies from the user input counter', async () => {
+  for (const [data, expected] of [['\x1b[0n', 'native-end-other'], ['typed', 'native-end-input']]) {
+    const f = fixture();
+    f.term.select('native words');
+    assert.equal(f.pane.selection.forensicSnapshot().native.kind, 'live');
+    assert.equal(f.pane.selection.forensicReason(), 'no-gesture');
+    f.term.clearSelection();
+    f.term.dataListeners.forEach(fn => fn(data));
+    await tick();
+    assert.equal(f.pane.selection.forensicSnapshot().native.kind, expected);
+    f.dispose();
+  }
+});
+
+test('composition revokes once with an explicit entry and silent empty repeats', async () => {
+  const f = fixture();
+  try {
+    f.down(91); f.move('pointermove', 91); await f.settle();
+    f.pane.liveQ = f.pane.selection.prepareInput();
+    const sent = [];
+    const handle = createTerminalDataHandler({ pane: f.pane, blocked: () => false,
+      onInput: () => {}, hasSelection: () => f.pane.selection.hasSelection(),
+      cancelSelection: () => assert.fail('Composition already revoked the selection'),
+      scrolled: () => false, goLive: () => assert.fail('No scroll transition'),
+      write: data => sent.push(data),
+    });
+    handle('中文');
+    assert.deepEqual(sent, [], 'Composition commit waits for backend cleanup');
+    await f.pane.liveQ;
+    assert.deepEqual(sent, ['中文']);
+    await f.pane.selection.prepareInput();
+    const entries = logs.filter(x => x.detail === 'input-compositionstart');
+    assert.equal(entries.length, 1);
+    assert.deepEqual([entries[0].a, entries[0].b], [0, 0]);
+    assert.equal(logs.filter(x => x.detail === 'cancel-input').length, 1);
+  } finally { f.dispose(); }
 });

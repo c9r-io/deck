@@ -78,6 +78,10 @@
 //! compatibility-mouse replay); and `terminal-copy keydown-elsewhere` replaces
 //! `keydown-none` when another pane still holds a live Deck/native selection (count +
 //! its age), separating "revoked" from "⌘C reached the wrong pane".
+//! Actual input revokes additionally emit input-ondata-unknown (a = shape:
+//! 0 empty, 1 text, 2 control, 3 escape-bearing, 4 bracketed paste; b = bounded
+//! UTF-16 length), input-compositionstart, or input-unknown (both ints zero).
+//! Shape never establishes provenance. Replies and empty controllers stay silent.
 //! A native xterm word/line selection has its own lifecycle: `native-select`
 //! (a = rows, b = click count of the press that made it, 0 when none) and one
 //! `native-end-<reason>` (a = rows, b = age ms) — pointer, input, output,
@@ -718,6 +722,9 @@ const SELECTION_EVENTS: &[&str] = &[
     "cancel-blur",
     "cancel-hidden",
     "cancel-input",
+    "input-ondata-unknown",
+    "input-compositionstart",
+    "input-unknown",
     "cancel-escape",
     "cancel-focus",
     "cancel-live",
@@ -1305,6 +1312,29 @@ mod tests {
                 .is_some_and(|l| !l.contains("<redacted>")),
                 "revoke reason cancel-{reason} must stay loggable"
             );
+        }
+    }
+
+    #[test]
+    fn input_revoke_details_are_closed_and_survive_sanitization() {
+        for detail in [
+            "input-ondata-unknown",
+            "input-compositionstart",
+            "input-unknown",
+        ] {
+            let line =
+                format_ui_event("terminal-selection", Some(detail), Some(4), Some(99)).unwrap();
+            assert_eq!(line, format!("[ui] terminal-selection {detail} a=4 b=99"));
+            assert_eq!(crate::redact::sanitize_log(&line), line);
+        }
+        for detail in [
+            "input-ondata-keyboard",
+            "input-ondata-secret",
+            "input-/private/path",
+            "\x1b[0n",
+        ] {
+            let line = format_ui_event("terminal-selection", Some(detail), None, None).unwrap();
+            assert_eq!(line, "[ui] terminal-selection <redacted>");
         }
     }
 

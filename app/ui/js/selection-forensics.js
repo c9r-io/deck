@@ -1,5 +1,7 @@
-// Content-free, bounded observations of terminal selection ownership. This
-// model never decides whether a gesture selects or whether a copy may write.
+// Content-free, bounded observations of terminal selection ownership.
+// Native lifecycle uses live / adopted / native-end-<cause>; only an explicit
+// end is evidence of disappearance. Adoption is a handoff, not a lost range.
+// This model never decides whether a gesture selects or whether a copy may write.
 const bound = (value, limit) => Math.max(-limit, Math.min(limit, Math.trunc(value) || 0));
 const delta = (start, cell) => cell && start
   ? { row: bound(cell.row - start.row, 99), col: bound(cell.col - start.col, 999) }
@@ -97,7 +99,7 @@ export function createSelectionForensics(now = Date.now) {
     const candidates = [
       lastGesture && { order: lastGesture.order, reason: lastGesture.outcome },
       lastSelectionOutcome && { order: lastSelectionOutcome.order, reason: selectionReason },
-      lastNativeOutcome?.kind !== 'live' && lastNativeOutcome
+      /^native-end-(pointer|input|output|buffer|deck|dispose|other)$/.test(lastNativeOutcome?.kind)
         && { order: lastNativeOutcome.order, reason: 'native-range-ended' },
     ].filter(Boolean).sort((a, b) => b.order - a.order);
     const found = candidates[0]?.reason;

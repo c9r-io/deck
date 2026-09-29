@@ -26,6 +26,7 @@
 // This module composes terminal-clipboard.js and terminal-links.js with pane
 // selection, diagnostics and context-menu callbacks; those adapters own copy
 // routing and link gestures. Pane teardown disposes their link listeners.
+// terminal-input.js gates input-only effects and preserves cleanup/write ordering.
 // tmux mouse negotiation is enabled for applications. The outer client's
 // mouse-only mode requests are consumed with xterm's public parser so pointer
 // selection remains local; wheel ownership is decided from live pane state.
@@ -34,7 +35,7 @@ import { choiceDialog, confirmDialog, inlineRename, toast } from './dialogs.js';
 import { t } from './i18n.js';
 import { closeBuffer, markSessionSeen, panes, pollNow, provider, render, renderSidebar, updateSidebarSelection, activeProject } from './board.js';
 import { SHELL_FG, acceptGhost, feedMirror, maybeRecordCommand, mountQuickBar, nextShellTitle, renderSuggest, resetSuggest, showLinkCtx, updateGhost } from './terminal.js';
-import { AGENT_HISTORY_VERTICAL_UP, collapseHome, isNotDirectoryError, MAX_DROP_BYTES, mcpErrorKey, newSessionColumn, startCommand, createTerminalResizeCoordinator, createTerminalWheelAccumulator, createTerminalWheelFrameScheduler, isComposingKeyEvent, isPlainShiftKeydown, isTerminalAutoReply, scrollResultView, shouldRouteImeKeydownThroughInput, shQuote, terminalAgentComposerGeometry, terminalAgentHistoryUpRoute, terminalCellAt, terminalSelectionWheelRoute, terminalWheelLines } from './pure.js';
+import { AGENT_HISTORY_VERTICAL_UP, collapseHome, isNotDirectoryError, MAX_DROP_BYTES, mcpErrorKey, newSessionColumn, startCommand, createTerminalResizeCoordinator, createTerminalWheelAccumulator, createTerminalWheelFrameScheduler, isComposingKeyEvent, isPlainShiftKeydown, scrollResultView, shouldRouteImeKeydownThroughInput, shQuote, terminalAgentComposerGeometry, terminalAgentHistoryUpRoute, terminalCellAt, terminalSelectionWheelRoute, terminalWheelLines } from './pure.js';
 import { toggleQueuePanel } from './scheduler.js';
 import { cancelAllTerminalSelections, cancelTerminalSelection, copyTerminalSelection, hasTerminalSelection, terminalSelectionElsewhere, wireTerminalSelection } from './selection.js';
 import { getTerminalTheme, onThemeChange, syncThemeIntegrations } from './theme.js';
@@ -46,6 +47,7 @@ import { registerShortcutAction } from './shortcuts.js';
 import { showAttention } from './attention.js';
 import { createMcpSessionUiGate, resetMcpSessionControls } from './mcp-session-ui.js';
 import { refreshInputSource } from './input-source.js';
+import { createTerminalDataHandler } from './terminal-input.js';
 import { keepLocalTerminalMouse } from './terminal-mouse.js';
 
 const mcpUiGate = createMcpSessionUiGate();
@@ -411,56 +413,43 @@ export function wireTerminalInput(pane, term, host) {
   }, true);
 
   let odLogged = 0, escLogged = 0;
-  term.onData(d => {
-    /* xterm's auto-answers to terminal queries are not user input */
-    const isAutoReply = isTerminalAutoReply(d);
-    if (!isAutoReply && ctx.voiceDelivering === session) return;
-    /* the input mirror / completion only tracks the focused pane */
-    if (!isAutoReply && ctx.attachedName === session) {
-      if (d.includes('\x1b') && escLogged < 5) {
-        escLogged++;
-        /* control replies (ESC-prefixed) are loggable; anything else could be
-           typed/pasted user text — length only */
-        duev('mirror-desync', d.startsWith('\x1b') ? 'esc' : 'plain', d.length);
+  term.onData(createTerminalDataHandler({
+    pane,
+    blocked: () => ctx.voiceDelivering === session,
+    onInput: d => {
+      /* the input mirror / completion only tracks the focused pane */
+      if (ctx.attachedName === session) {
+        if (d.includes('\x1b') && escLogged < 5) {
+          escLogged++;
+          /* control replies (ESC-prefixed) are loggable; anything else could be
+             typed/pasted user text — length only */
+          duev('mirror-desync', d.startsWith('\x1b') ? 'esc' : 'plain', d.length);
+        }
+        const preDesynced = ctx.lineBuf === null;
+        const completed = feedMirror(d);
+        if (completed) maybeRecordCommand(completed);
+        /* separator on submit — SHELLS ONLY: markers assume append-scroll
+           output; agent TUIs (claude) repaint in place, so a line anchored
+           to "the input row" ends up crossing arbitrary repainted content.
+           Agent UIs already delineate messages with their own ❯ rows. */
+        if (completed || (preDesynced && (d.includes('\r') || d.includes('\n')))) {
+          const c = card();
+          if (c && SHELL_FG.test(c.fg || '')) addInputSeparator(pane);
+        }
+        renderSuggest();
+        if (odLogged < 3) {
+          odLogged++;
+          duev('ondata', ctx.lineBuf === null ? 'desync' : 'ok', d.length, ctx.lineBuf === null ? -1 : ctx.lineBuf.length);
+        }
       }
-      const preDesynced = ctx.lineBuf === null;
-      const completed = feedMirror(d);
-      if (completed) maybeRecordCommand(completed);
-      /* separator on submit — SHELLS ONLY: markers assume append-scroll
-         output; agent TUIs (claude) repaint in place, so a line anchored
-         to "the input row" ends up crossing arbitrary repainted content.
-         Agent UIs already delineate messages with their own ❯ rows. */
-      if (completed || (preDesynced && (d.includes('\r') || d.includes('\n')))) {
-        const c = card();
-        if (c && SHELL_FG.test(c.fg || '')) addInputSeparator(pane);
-      }
-      renderSuggest();
-      if (odLogged < 3) {
-        odLogged++;
-        duev('ondata', ctx.lineBuf === null ? 'desync' : 'ok', d.length, ctx.lineBuf === null ? -1 : ctx.lineBuf.length);
-      }
-    }
-    /* typing while the view is frozen in scrollback: leave copy-mode FIRST
-       (otherwise tmux eats the keys as copy-mode commands), then write —
-       chained so keystroke order is preserved; once the chain drains,
-       writes go direct again. Terminal auto-replies never trigger this. */
-    const doWrite = bytes => inv('pty_write', { name: session, dataB64: strToB64(bytes) })
-      .catch(() => { uev('pty-write-fail'); });
-    const cc = card();
-    if (!isAutoReply && hasTerminalSelection(pane)) {
-      pane.liveQ = cancelTerminalSelection(pane, 'input');
-    }
-    if (!isAutoReply && cc && cc.scrolled) {
-      pane.liveQ = goLive(session);
-    }
-    if (pane.liveQ) {
-      const q = pane.liveQ.then(() => doWrite(d));
-      pane.liveQ = q;
-      q.then(() => { if (pane.liveQ === q) pane.liveQ = null; });
-    } else {
-      doWrite(d);
-    }
-  });
+    },
+    hasSelection: () => hasTerminalSelection(pane),
+    cancelSelection: diagnostic => cancelTerminalSelection(pane, 'input', diagnostic),
+    scrolled: () => !!card()?.scrolled,
+    goLive: () => goLive(session),
+    write: bytes => inv('pty_write', { name: session, dataB64: strToB64(bytes) })
+      .catch(() => { uev('pty-write-fail'); }),
+  }));
   const copyKey = createTerminalCopy({
     selection: pane.selection, term,
     copySelection: () => copyTerminalSelection(pane),

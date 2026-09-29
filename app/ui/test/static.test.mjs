@@ -242,7 +242,7 @@ test('clipboard and selection diagnostics are wired at every handoff', () => {
     'every selection cancel must carry a reason label or an explicit null');
   const reasons = new Set();
   for (const source of [selection, layout])
-    for (const [, r] of source.matchAll(/cancel(?:TerminalSelection|AllTerminalSelections)?\(\s*(?:pane|previous|p|true|false)?\s*,?\s*'([a-z-]+)'\s*\)/g))
+    for (const [, r] of source.matchAll(/cancel(?:TerminalSelection|AllTerminalSelections)?\(\s*(?:pane|previous|p|true|false)?\s*,?\s*'([a-z-]+)'\s*(?:,\s*diagnostic)?\)/g))
       reasons.add(r);
   for (const r of ['pointer', 'pointer-cancel', 'blur', 'hidden', 'input', 'escape',
     'focus', 'live', 'exit', 'leave', 'dispose'])
@@ -257,6 +257,10 @@ test('forensic reasons and movement sources are closed at the Rust log boundary'
   for (const source of PROMOTION_SOURCES) {
     assert.ok(rust.includes(`"copy-promotion-${source}"`), source);
     assert.ok(rust.includes(`"copy-gesture-${source}"`) || source === 'up', source);
+  }
+  for (const label of ['input-ondata-unknown', 'input-compositionstart', 'input-unknown']) {
+    assert.ok(selection.includes(`'${label}'`), `Input entry must be wired: ${label}`);
+    assert.ok(rust.includes(`"${label}"`), `Input entry must be whitelisted: ${label}`);
   }
   assert.match(selection, /forensics\.reason\(\)/);
   assert.doesNotMatch(read('app/ui/js/selection-forensics.js'), /getSelection\(|terminal_selection_copy|clipboard|session/);

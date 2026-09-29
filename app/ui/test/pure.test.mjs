@@ -1228,10 +1228,10 @@ test('retryOnStaleGrid retries only a stale-grid rejection of the send step', as
 });
 
 test('terminal auto-replies are recognised; user bytes are not', () => {
-  for (const reply of ['\x1b[?1;2c', '\x1b[>0;276;0c', '\x1b[12;40R', '\x1b[I', '\x1b[O',
+  for (const reply of ['\x1b[0n', '\x1b[?1;2c', '\x1b[>0;276;0c', '\x1b[12;40R', '\x1b[I', '\x1b[O',
     '\x1b]10;rgb:ffff/ffff/ffff\x07', '\x1bP1$r0 q\x1b\\', '\x1b[?1;2c\x1b[12;40R'])
     assert.equal(isTerminalAutoReply(reply), true, JSON.stringify(reply));
-  for (const typed of ['ls\r', '\x1b[A', '\x1b', 'a\x1b[?1;2c', '\x1b[?1;2cx', ''])
+  for (const typed of ['ls\r', '\x1b[A', '\x1b', 'a\x1b[?1;2c', '\x1b[?1;2cx', '', '\x1b[1n', '\x1b[5n', '\x1b[0t', 'text\x1b[0n', '\x1b[0ntext'])
     assert.equal(isTerminalAutoReply(typed), false, JSON.stringify(typed));
 });
 
