@@ -292,7 +292,7 @@ baseline negative control, then `DECK_TL_RUNS` (default 3) serial runs of the
 `<run root>/report.json`; screenshots and per-run checkpoint lines are under
 `<run root>/evidence/`. Each run starts with the `translation-guard` mode
 (harness-safety negatives on a test-owned named pasteboard); the
-general-pasteboard mode of that run is not started when it fails. The
+general-pasteboard mode of that run is not started when it fails, nor when one of the driver fault probes (the real driver as a child, failing inside `run_mode` while a named guard holds modified content) fails. The
 general pasteboard is used only inside the gated sections described in
 `docs/translation-lens.md`; the report gives functional, harness-safety,
 process-cleanup and shared-resource results separately.

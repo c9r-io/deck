@@ -510,6 +510,7 @@ fn main() {
             smoke_native::smoke_pasteboard,
             smoke_native::smoke_pasteboard_audit,
             smoke_native::smoke_native_fixture_receipt,
+            smoke_native::smoke_native_scenario,
         ])
         .build(tauri::generate_context!())
         .expect("error while building deck")

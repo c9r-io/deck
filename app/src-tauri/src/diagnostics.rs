@@ -499,6 +499,8 @@ const SMOKE_CHECKS: &[&str] = &[
     "tl-f06-await-cancel",
     "tl-f06-await-kill",
     "tl-f06-cancel-settled",
+    "tl-f06-hold",
+    "tl-f06-hold-refused",
     "tl-f07-empty",
     "tl-f07-multi",
     "tl-f07-non-text",

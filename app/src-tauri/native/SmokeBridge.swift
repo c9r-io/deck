@@ -157,7 +157,11 @@ public func deckSmokeSnapshot(_ path: UnsafePointer<CChar>?) -> Int32 {
    Nothing here returns, logs or stores pasteboard content outside memory. */
 private let namedBoardName = NSPasteboard.Name("io.c9r.deck.smoke.translation.\(getpid())")
 private func testBoard() -> NSPasteboard { NSPasteboard(name: namedBoardName) }
-private struct GuardRecord { var id: Int; var board: Int; var writes = 0; var rejects = 0; var reason = 0; var result = 0 }
+// `writes` counts complete test writes; `modified` is set the moment the guard
+// itself changed the board (a successful clearContents), even if the fill that
+// follows fails — nothing else may then report "not written" or "external".
+private struct GuardRecord { var id: Int; var board: Int; var writes = 0; var rejects = 0; var reason = 0; var result = 0
+                             var modified = false }
 private enum Phase { case idle, active, conflicted, settled }
 private var phase = Phase.idle
 private var guardItems: [[(NSPasteboard.PasteboardType, Data)]] = []
@@ -169,7 +173,7 @@ private var records: [GuardRecord] = []
 private let NOT_WRITTEN: Int32 = 10, RESTORED: Int32 = 11, EXTERNAL_KEPT: Int32 = 12, RESTORE_FAILED: Int32 = 13,
             BEGIN_REFUSED: Int32 = 15
 // refusal reasons
-private let R_NO_GUARD = 1, R_VERSION = 2, R_SETTLED = 3, R_RECEIPT = 4, R_NO_PERMIT = 5
+private let R_NO_GUARD = 1, R_VERSION = 2, R_SETTLED = 3, R_RECEIPT = 4, R_NO_PERMIT = 5, R_FILL = 8
 
 private func reject(_ reason: Int) -> Int64 {
     if !records.isEmpty && phase != .idle {
@@ -239,8 +243,21 @@ public func deckSmokePbWrite(_ text: UnsafePointer<CChar>?) -> Int64 {
         }
         guard owned(board) else { return reject(R_VERSION) }
         let count = board.clearContents()
-        guard board.setString(String(cString: text), forType: .string) else { return reject(R_VERSION) }
-        guardOwned = count; records[records.count - 1].writes += 1
+        #if !SMOKE_MUTANT_LATE_ACCOUNTING
+        // The clear already changed the board: record its receipt and the fact
+        // before the fill, which may fail.
+        guardOwned = count
+        #if !SMOKE_MUTANT_VERSION_ONLY
+        records[records.count - 1].modified = true
+        #endif
+        #endif
+        let failFill = failNextFill && board.name == namedBoardName
+        failNextFill = false
+        guard !failFill, board.setString(String(cString: text), forType: .string) else { return reject(R_FILL) }
+        #if SMOKE_MUTANT_LATE_ACCOUNTING
+        guardOwned = count; records[records.count - 1].modified = true
+        #endif
+        records[records.count - 1].writes += 1
         return Int64(count)
     }
 }
@@ -268,6 +285,7 @@ public func deckSmokePbAdopt(_ receipt: Int64) -> Int64 {
         #else
         guard receipt > Int64(permitFrom), receipt == Int64(board.changeCount) else { return reject(R_RECEIPT) }
         guardOwned = Int(receipt); permitFrom = -1; records[records.count - 1].writes += 1
+        records[records.count - 1].modified = true
         return 0
         #endif
     }
@@ -290,7 +308,9 @@ public func deckSmokePbGuardEnd() -> Int32 {
             #endif
             return code
         }
-        if records[index].writes == 0 && board.changeCount == guardOwned { return finish(NOT_WRITTEN) }
+        if !records[index].modified && records[index].writes == 0 && board.changeCount == guardOwned {
+            return finish(NOT_WRITTEN)
+        }
         #if !SMOKE_MUTANT_NO_PRECHECK
         guard board.changeCount == guardOwned else { return finish(EXTERNAL_KEPT) }
         #endif
@@ -301,8 +321,8 @@ public func deckSmokePbGuardEnd() -> Int32 {
                 for (type, data) in entry { item.setData(data, forType: type) }
                 return item
             }
-            let failNow = failNextRestore && board.name == namedBoardName
-            failNextRestore = false
+            let failNow = failRestores > 0 && board.name == namedBoardName
+            if failNow { failRestores -= 1 }
             guard !failNow, board.writeObjects(objects) else { phase = .conflicted; return finish(RESTORE_FAILED) }
         }
         guard let now = snapshot(board), same(now, guardItems) else { phase = .conflicted; return finish(RESTORE_FAILED) }
@@ -310,10 +330,27 @@ public func deckSmokePbGuardEnd() -> Int32 {
     }
 }
 
-// Fault for the NAMED board only: the next restore reports failure.
-private var failNextRestore = false
+// Faults for the NAMED test board only (they never apply to the general
+// board): the next N restores fail; the next test fill fails after its clear.
+// Arming is refused while a guard on the general board is active.
+private var failRestores = 0
+private var failNextFill = false
 @_cdecl("deck_smoke_pb_fail_next_restore")
-public func deckSmokePbFailNextRestore() { onMain { failNextRestore = true } }
+public func deckSmokePbFailNextRestore() { onMain { if guardBoard?.name != NSPasteboard.general.name { failRestores += 1 } } }
+@_cdecl("deck_smoke_pb_fail_restores")
+public func deckSmokePbFailRestores(_ count: Int32) -> Int32 {
+    onMain {
+        if guardBoard?.name == NSPasteboard.general.name { return -1 }
+        failRestores = Int(max(0, count)); return 0
+    }
+}
+@_cdecl("deck_smoke_pb_fail_next_fill")
+public func deckSmokePbFailNextFill() -> Int32 {
+    onMain {
+        if guardBoard?.name == NSPasteboard.general.name { return -1 }
+        failNextFill = true; return 0
+    }
+}
 
 // 0 idle/settled (writes refused), 1 active, 2 conflicted.
 @_cdecl("deck_smoke_pb_state")
@@ -321,11 +358,12 @@ public func deckSmokePbState() -> Int32 {
     onMain { phase == .active ? 1 : phase == .conflicted ? 2 : 0 }
 }
 
-// Content-free audit: "id,board,writes,rejects,reason,result;..."
+// Content-free audit: "id,board,writes,rejects,reason,result,modified;..."
 @_cdecl("deck_smoke_pb_audit")
 public func deckSmokePbAudit() -> UnsafeMutablePointer<CChar>? {
     onMain {
-        strdup(records.map { "\($0.id),\($0.board),\($0.writes),\($0.rejects),\($0.reason),\($0.result)" }.joined(separator: ";"))
+        strdup(records.map { "\($0.id),\($0.board),\($0.writes),\($0.rejects),\($0.reason),\($0.result),\($0.modified ? 1 : 0)" }
+            .joined(separator: ";"))
     }
 }
 

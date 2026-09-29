@@ -1115,8 +1115,28 @@ export async function runTranslationNativeSmoke() {
    impostor, exception, driver cancel, kill) runs on the named board through
    the same guard implementation the general sections use. The general
    pasteboard is never written by this mode. */
+// Driver fault probe (scripts/translation-lens-verify.py --fault-probe): a
+// guarded, already-modified NAMED board held while the driver itself fails;
+// the driver's outer cleanup must settle through this live process first.
+async function holdScenario(scenario) {
+  const opts = scenario.split(':').slice(1);
+  await pb(opts.includes('empty') ? 'named-clear' : 'named-multi');
+  const restoreFail = opts.find(option => option.startsWith('restore-fail-'));
+  if (restoreFail) await pb('fail-restores', { receipt: Number(restoreFail.split('-').at(-1)) });
+  if (opts.includes('late-reply')) await pb('delay-next-settle', { receipt: 4000 });
+  const id = await pb('guard-begin', { board: 1 });
+  if (opts.includes('fill-fail')) { await pb('fail-next-fill'); await pb('write', { text: 'never filled' }); }
+  else await pb('write', { text: 'written before the driver fault' });
+  if (opts.includes('external')) await pb('named-text', { text: 'external after the failed fill' });
+  await report('tl-f06-hold', id > 0, 1, id);
+  const settled = await waitFor(async () => (await pb('state')) === 0, 120000, 100);
+  await report('tl-f06-hold-refused', settled && (await pb('write', { text: 'x' })) < 0);
+}
+
 export async function runTranslationGuardSmoke() {
   let stage = 0;
+  const scenario = await inv('smoke_native_scenario').catch(() => '');
+  if (scenario.startsWith('hold')) return holdScenario(scenario);
   const count = () => pb('count', { board: 1 });
   const results = [];
   const guarded = (body, board = 1) => withGuard(pb, board, body, info => { results.push(info); });

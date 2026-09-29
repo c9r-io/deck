@@ -14,7 +14,7 @@ build() {
 }
 build
 "$dir/guard-tests"
-for mutant in SMOKE_MUTANT_NO_PRECHECK SMOKE_MUTANT_TEXT_CLAIM SMOKE_MUTANT_EARLY_DISCARD; do
+for mutant in SMOKE_MUTANT_NO_PRECHECK SMOKE_MUTANT_TEXT_CLAIM SMOKE_MUTANT_EARLY_DISCARD SMOKE_MUTANT_LATE_ACCOUNTING SMOKE_MUTANT_VERSION_ONLY; do
   build -D "$mutant"
   if "$dir/guard-tests" >"$dir/$mutant.log" 2>&1; then
     echo "mutant $mutant was NOT caught" >&2; exit 1

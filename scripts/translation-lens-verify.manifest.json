@@ -1,5 +1,5 @@
 {
-  "note": "Required Local Translation acceptance IDs. Each ID passes only when every listed evidence item was executed and passed: l1 = node:test titles containing [ID] in the listed files; rust = exact cargo test names; l2/l3 = smoke-check names in the translation / translation-native WKWebView modes (l2/l3) and the translation-guard mode (lg, named pasteboard only), in EVERY independent GUI run; driver = checks performed by scripts/translation-lens-verify.py itself.",
+  "note": "Required Local Translation acceptance IDs. Each ID passes only when every listed evidence item was executed and passed: l1 = node:test titles containing [ID] in the listed files; rust = exact cargo test names; l2/l3 = smoke-check names in the translation / translation-native WKWebView modes (l2/l3) and the translation-guard mode (lg, named pasteboard only), in EVERY independent GUI run; driver = checks performed by scripts/translation-lens-verify.py itself. Sub-assertions for the driver failure paths are driver refs probe-* (real child driver runs with an injected fault inside run_mode, named pasteboard only).",
   "l1Files": [
     "app/ui/test/translation-lens-model.test.mjs",
     "app/ui/test/translation-lens-dom.test.mjs",
@@ -31,15 +31,21 @@
       ]
     },
     "nativeMutants": [
+      "SMOKE_MUTANT_EARLY_DISCARD",
+      "SMOKE_MUTANT_LATE_ACCOUNTING",
       "SMOKE_MUTANT_NO_PRECHECK",
       "SMOKE_MUTANT_TEXT_CLAIM",
-      "SMOKE_MUTANT_EARLY_DISCARD"
+      "SMOKE_MUTANT_VERSION_ONLY"
     ],
     "historicalFirstRound": {
       "commit": "904e1c9a8e983f71e58f10dfda9a1032b14dfae1",
       "file": "app/ui/test/translation-lens-dom.test.mjs",
       "note": "previous round's negative control, kept"
-    }
+    },
+    "driverMutants": [
+      "skip-cleanup-settle",
+      "no-settle-retry"
+    ]
   },
   "fixedThresholds": {
     "l2StreamSubmissionsPer650ms": "ceil(streamMs / 650) + 3",
@@ -471,6 +477,9 @@
       ],
       "lg": [
         "tl-f04-takeover"
+      ],
+      "driver": [
+        "probe-fill-fail-external"
       ]
     },
     "F05": {
@@ -483,6 +492,12 @@
       "lg": [
         "tl-f05-assertion",
         "tl-f05-ipc"
+      ],
+      "driver": [
+        "probe-exception",
+        "probe-timeout",
+        "probe-cleanup-error",
+        "probe-fill-fail"
       ]
     },
     "F06": {
@@ -492,8 +507,14 @@
         "tl-f06-await-kill"
       ],
       "driver": [
+        "driver-mutants-caught",
         "f06-cancel-settled-before-teardown",
-        "f06-kill-reported-unconfirmed"
+        "f06-kill-reported-unconfirmed",
+        "idempotent-cleanup",
+        "probe-cancel",
+        "probe-exhausted",
+        "probe-late-reply",
+        "probe-restore-retry"
       ]
     },
     "F07": {
@@ -504,6 +525,9 @@
         "tl-f07-empty",
         "tl-f07-multi",
         "tl-f07-non-text"
+      ],
+      "driver": [
+        "probe-fill-fail-empty"
       ]
     },
     "F08": {

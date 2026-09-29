@@ -76,6 +76,7 @@ const DEBUG_ONLY: &[&str] = &[
     "smoke_pasteboard",
     "smoke_pasteboard_audit",
     "smoke_native_fixture_receipt",
+    "smoke_native_scenario",
     "smoke_queue_state",
     "smoke_seed_ambiguous",
     "terminal_metrics",

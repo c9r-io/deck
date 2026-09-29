@@ -50,6 +50,8 @@ mod native {
         pub fn deck_smoke_pb_named(enable: i32) -> i32;
         pub fn deck_smoke_pb_named_write(kind: i32, text: *const c_char) -> i64;
         pub fn deck_smoke_pb_count(board: i32) -> i64;
+        pub fn deck_smoke_pb_fail_restores(count: i32) -> i32;
+        pub fn deck_smoke_pb_fail_next_fill() -> i32;
         pub fn deck_pasteboard_free(text: *mut c_char);
     }
 }
@@ -197,9 +199,15 @@ fn fixture_dir() -> std::path::PathBuf {
     crate::datadir::deck_dir().join("translation-fixture")
 }
 
+/// Test-only delay of the next driver settlement reply (named-board fault
+/// probes: a reply that is not yet available must not be taken as absent).
+static DELAY_NEXT_SETTLE_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// Driver-side settlement: while this process lives, a `settle-request`
-/// file makes it settle the guard and write `settle-result`
-/// (`<code>|<audit>`, numbers only) before the driver may terminate it.
+/// file (holding the driver's nonce) makes it settle the guard and write
+/// `settle-result` as `<nonce>|<code>|<audit>` (numbers only), so a stale
+/// reply can never stand in for this request. The driver waits for it before
+/// it may terminate this process.
 #[cfg(all(debug_assertions, target_os = "macos"))]
 fn start_settle_watcher() {
     static STARTED: std::sync::Once = std::sync::Once::new();
@@ -207,13 +215,21 @@ fn start_settle_watcher() {
         std::thread::spawn(|| loop {
             std::thread::sleep(std::time::Duration::from_millis(100));
             let request = fixture_dir().join("settle-request");
-            if request.is_file() {
-                let _ = std::fs::remove_file(&request);
-                let code = settle();
-                let _ = std::fs::write(
-                    fixture_dir().join("settle-result"),
-                    format!("{code}|{}", audit()),
-                );
+            let Ok(nonce) = std::fs::read_to_string(&request) else {
+                continue;
+            };
+            let _ = std::fs::remove_file(&request);
+            let delay = DELAY_NEXT_SETTLE_MS.swap(0, std::sync::atomic::Ordering::SeqCst);
+            std::thread::sleep(std::time::Duration::from_millis(delay));
+            let code = settle();
+            let nonce: String = nonce
+                .chars()
+                .filter(char::is_ascii_alphanumeric)
+                .take(32)
+                .collect();
+            let staged = fixture_dir().join("settle-result.tmp");
+            if std::fs::write(&staged, format!("{nonce}|{code}|{}", audit())).is_ok() {
+                let _ = std::fs::rename(&staged, fixture_dir().join("settle-result"));
             }
         });
     });
@@ -250,6 +266,16 @@ pub(crate) async fn smoke_pasteboard(
                 "named-multi" => native::deck_smoke_pb_named_write(3, text.as_ptr()),
                 "named-lazy" => native::deck_smoke_pb_named_write(4, text.as_ptr()),
                 "named-clear" => native::deck_smoke_pb_named_write(5, text.as_ptr()),
+                // named-board faults; the bridge refuses them while a general guard is active
+                "fail-restores" => i64::from(native::deck_smoke_pb_fail_restores(
+                    receipt.unwrap_or(1).clamp(0, 99) as i32,
+                )),
+                "fail-next-fill" => i64::from(native::deck_smoke_pb_fail_next_fill()),
+                "delay-next-settle" => {
+                    let ms = receipt.unwrap_or(0).clamp(0, 10_000) as u64;
+                    DELAY_NEXT_SETTLE_MS.store(ms, std::sync::atomic::Ordering::SeqCst);
+                    0
+                }
                 _ => return Err(unavailable()),
             })
         }
@@ -290,6 +316,20 @@ pub(crate) fn smoke_native_fixture_receipt() -> Result<i64, DeckError> {
     Ok(value
         .and_then(|text| text.trim().parse::<i64>().ok())
         .unwrap_or(-1))
+}
+
+/// The driver's closed scenario word for this launch (`translation-fixture/
+/// scenario`), or "" — the guard mode's fault probes read it.
+#[tauri::command]
+pub(crate) fn smoke_native_scenario() -> Result<String, DeckError> {
+    gate()?;
+    let text = std::fs::read_to_string(fixture_dir().join("scenario")).unwrap_or_default();
+    Ok(text
+        .trim()
+        .chars()
+        .filter(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '-' || *c == ':')
+        .take(64)
+        .collect())
 }
 
 /// Where the isolated driver placed the deterministic `/copy` CLI fixture.

@@ -264,7 +264,10 @@ def processes():
 
 
 def production_pids():
-    return sorted(pid for pid, command in processes() if command.startswith("/Applications/deck.app/"))
+    """The production app process itself. Its tmux attach clients come and go
+    as the user works and are not a signal of this test's behaviour."""
+    return sorted(pid for pid, command in processes()
+                  if command.split(" ", 1)[0] == "/Applications/deck.app/Contents/MacOS/deck-app")
 
 
 def l1():
@@ -381,28 +384,107 @@ def network(pid):
     return [line for line in listing.splitlines()[1:] if line.strip()]
 
 
-def settle_guard(data, pid, executable):
+def settle_guard(data, pid, executable, timeout=15):
     """Ask the live app to settle its pasteboard guard (it disarms Copied-text
-    observation first) and return (code, audit rows); None = unconfirmed."""
+    observation first) and return (code, audit rows). The reply must carry this
+    request's nonce, so an older reply never stands in for it. None =
+    unconfirmed (no reply within `timeout`, or the process is gone)."""
     fixture = data / "translation-fixture"
     result = fixture / "settle-result"
-    if result.exists():
-        result.unlink()
     if our_pid(executable, data) != pid:
         return None
-    (fixture / "settle-request").write_text("settle")
-    deadline = time.monotonic() + 15
-    while time.monotonic() < deadline and not result.is_file():
+    nonce = os.urandom(8).hex()
+    staged = fixture / "settle-request.tmp"
+    staged.write_text(nonce)
+    os.replace(staged, fixture / "settle-request")
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if result.is_file():
+            got, _, rest = result.read_text().partition("|")
+            if got == nonce:
+                code, _, audit = rest.partition("|")
+                return int(code), parse_audit(audit)
         time.sleep(0.1)
-    if not result.is_file():
-        return None
-    code, _, audit = result.read_text().partition("|")
-    rows = [dict(zip(("id", "board", "writes", "rejects", "reason", "result"), map(int, row.split(","))))
-            for row in audit.split(";") if row.count(",") == 5]
-    for row in rows:
-        row["resultName"] = RESULT_NAMES.get(row["result"], str(row["result"]))
-        row["boardName"] = "general" if row["board"] == 0 else "named-test"
-    return int(code), rows
+    return None
+
+
+def parse_audit(audit):
+    rows = []
+    for row in audit.split(";"):
+        fields = row.split(",")
+        if len(fields) == 7 and all(f.lstrip("-").isdigit() for f in fields):
+            item = dict(zip(("id", "board", "writes", "rejects", "reason", "result", "modified"), map(int, fields)))
+            item["resultName"] = RESULT_NAMES.get(item["result"], str(item["result"]))
+            item["boardName"] = "general" if item["board"] == 0 else "named-test"
+            item["modified"] = bool(item["modified"])
+            rows.append(item)
+    return rows
+
+
+# Settle budget: a failed or unconfirmed settlement is retried while the only
+# process holding the backup is alive; the process is terminated only after a
+# confirmed final result or when the budget is spent (recorded as such).
+SETTLE_ATTEMPT_TIMEOUTS = (3, 5, 8, 10)
+DRIVER_MUTANT = os.environ.get("DECK_TL_DRIVER_MUTANT", "")  # negative controls only
+
+
+def finish_instance(item, entry):
+    """The one resource-finishing sequence for a test instance: stop new test
+    writes and settle the guard through the live process (bounded retries) →
+    record → terminate the process → clean its socket. Idempotent: a second
+    call (the outer finally after a normal tail) changes nothing and keeps
+    the first record."""
+    record = item["record"]
+    if item.get("finished"):
+        record.setdefault("finishCalls", []).append({"entry": entry, "result": "already-finished"})
+        return record["guardSettle"]
+    executable, data = Path(item["executable"]), Path(item["data"])
+    pid = item.get("pid") or our_pid(executable, data)
+    item["pid"] = pid
+    events = record.setdefault("finishEvents", [])
+    t0 = time.monotonic()
+    attempts, settled = [], None
+    skip = DRIVER_MUTANT == "skip-cleanup-settle" and entry == "outer-cleanup"
+    budget = SETTLE_ATTEMPT_TIMEOUTS[:1] if DRIVER_MUTANT == "no-settle-retry" else SETTLE_ATTEMPT_TIMEOUTS
+    alive = bool(pid) and our_pid(executable, data) == pid
+    if alive and not skip:
+        for timeout in budget:
+            if our_pid(executable, data) != pid:
+                attempts.append({"t": round(time.monotonic() - t0, 2), "outcome": "process-gone"})
+                break
+            reply = settle_guard(data, pid, executable, timeout)
+            if reply is None:
+                attempts.append({"t": round(time.monotonic() - t0, 2), "outcome": "unconfirmed"})
+                continue
+            code, rows = reply
+            pending = [r for r in rows if r["result"] in (0, 13)]
+            attempts.append({"t": round(time.monotonic() - t0, 2), "outcome": "reply", "code": code,
+                             "pendingGuards": len(pending)})
+            settled = reply
+            if not pending:
+                break
+    events.append({"event": "settle", "entry": entry, "attempts": attempts, "skipped": skip or not alive})
+    rows = settled[1] if settled else None
+    final_pending = [r for r in (rows or []) if r["result"] in (0, 13)]
+    outcome = ("unconfirmed" if settled is None else "restore-failed" if final_pending else "settled")
+    record["guardSettle"] = {"entry": entry, "confirmed": settled is not None and not final_pending,
+                             "code": settled[0] if settled else None, "rows": rows, "outcome": outcome,
+                             "attempts": len(attempts)}
+    events.append({"event": "terminate", "t": round(time.monotonic() - t0, 2)})
+    stop_process(pid, executable, data)
+    item["finished"] = True
+    record.setdefault("finishCalls", []).append({"entry": entry, "result": outcome})
+    if outcome != "settled" and not record.get("killedGuard"):
+        fail(f"run {record['run']} {record['mode']}: guard settlement {outcome} after {len(attempts)} attempt(s) "
+             f"({entry}{', process already gone' if not alive else ''})")
+    try:
+        if os.environ.get("DECK_TL_FAULT_SOCKET") == "1" and not item.get("socketFaulted"):
+            item["socketFaulted"] = True
+            raise RuntimeError("injected socket cleanup fault")
+        stop_socket(item["socket"], Path(item["bundle"]))
+    except Exception as error:  # one resource's failure never stops the others
+        fail(f"cleanup {item['socket']}: {type(error).__name__}: {error}")
+    return record["guardSettle"]
 
 
 def release_named_board(pid):
@@ -410,7 +492,10 @@ def release_named_board(pid):
                    capture_output=True, timeout=20)
 
 
-def run_mode(index, mode, bundle, cache, pack_id, assets):
+RUN_RECORDS = []
+
+
+def run_mode(index, mode, bundle, cache, pack_id, assets, scenario="", probe=None):
     data = (RUN / f"run-{index}" / mode / "data")
     data.mkdir(parents=True, mode=0o700)
     for parent in (data.parent, data.parent.parent):
@@ -426,8 +511,16 @@ def run_mode(index, mode, bundle, cache, pack_id, assets):
     socket = f"deck-smoke-tl{RUN_ID}{index}{'n' if mode == 'translation-native' else 'u'}"
     executable = bundle / "Contents/MacOS/deck"
     record = {"run": index, "mode": mode, "dataRoot": str(data), "socket": socket, "actions": [],
-              "isolation": {}, "network": [], "timeout": False}
-    owned["sockets"].append({"socket": socket, "tmux": str(bundle / "Contents/MacOS/tmux")})
+              "isolation": {}, "network": [], "timeout": False, "checks": {}, "verdictExit": None,
+              "screenshots": [], "complete": False, "scenario": scenario}
+    if scenario:
+        (fixture_dir / "scenario").write_text(scenario)
+    # Registered BEFORE any side effect: an exception anywhere below still
+    # leaves this record in the report and this instance to the outer cleanup.
+    RUN_RECORDS.append(record)
+    item = {"pid": None, "executable": str(bundle / "Contents/MacOS/deck"), "data": str(data), "socket": socket,
+            "bundle": str(bundle), "record": record}
+    owned["processes"].append(item)
     report["ownedResources"].append({"kind": "tmux-socket", "name": socket})
     busy = [command for _, command in processes() if re.search(r"(^|/)(rustc|cargo) ", command + " ")]
     record["concurrentBuildProcesses"] = len(busy)
@@ -442,7 +535,7 @@ def run_mode(index, mode, bundle, cache, pack_id, assets):
         time.sleep(0.2)
     if not pid:
         raise RuntimeError(f"{mode}: isolated app did not start")
-    owned["processes"].append({"pid": pid, "executable": str(executable), "data": str(data)})
+    item["pid"] = pid
     # A bundle launched from a background process may not be activated; the
     # Lens (correctly) does nothing unfocused. Bring OUR bundle forward.
     front_deadline = time.monotonic() + 20
@@ -525,6 +618,18 @@ def run_mode(index, mode, bundle, cache, pack_id, assets):
                 capture(["open", str(bundle)], 30)
                 record["actions"].append({"at": name, "action": "compare-and-write of synthetic away text, then activate",
                                           "deckWasAway": away, "written": wrote.isdigit()})
+            elif name == "tl-f06-hold" and probe:
+                # A REAL driver fault inside run_mode: the instance is left to the
+                # outer except/finally, which must settle before terminating.
+                handled.add(name)
+                record["actions"].append({"at": name, "action": f"inject driver fault: {probe}"})
+                save()
+                if probe == "timeout":
+                    capture(["sleep", "5"], timeout=1)
+                if probe == "cancel":
+                    os.kill(os.getpid(), signal.SIGINT)
+                    time.sleep(5)
+                raise RuntimeError(f"injected driver fault ({probe})")
             elif name == "tl-f06-await-cancel":
                 handled.add(name)
                 settled = settle_guard(data, pid, executable)
@@ -559,13 +664,9 @@ def run_mode(index, mode, bundle, cache, pack_id, assets):
     if pack_dir is not None:
         record["packParentEntries"] = sorted(p.name for p in pack_dir.parent.iterdir())
     # Settle BEFORE teardown: the backup lives only in this process.
-    settled = settle_guard(data, pid, executable) if our_pid(executable, data) == pid else None
-    record["guardSettle"] = {"confirmed": settled is not None, "code": settled[0] if settled else None,
-                             "rows": settled[1] if settled else None}
-    if mode == "translation-guard" and settled is None and record.get("killedGuard"):
+    finish_instance(item, "normal")
+    if mode == "translation-guard" and record.get("killedGuard"):
         record["guardSettle"]["expectedUnconfirmed"] = "process killed on purpose (F06); named board only"
-    stop_process(pid, executable, data)
-    stop_socket(socket, bundle)
     checks = smoke_checks(log_path)
     mode_evidence = EVIDENCE / f"run-{index}" / mode
     mode_evidence.mkdir(parents=True, mode=0o700)
@@ -583,6 +684,7 @@ def run_mode(index, mode, bundle, cache, pack_id, assets):
         slot["passed"] = slot["passed"] and (a >= 0 if name in metrics else a > 0)
         slot["values"].append([a, b])
     record["exception"] = record["checks"].get("tl-exception", {}).get("values")
+    record["complete"] = True
     # times another app took focus mid-run and the smoke window re-activated itself
     record["frontRegains"] = sum(v[0] for v in record["checks"].get("tl-front-regains", {}).get("values", []))
     return record
@@ -621,19 +723,30 @@ def stop_socket(socket, bundle):
 def cleanup():
     audit = {"processesRemaining": [], "socketsRemaining": [], "caffeinateReleased": None}
     for item in owned["processes"]:
-        pid = item["pid"]
-        release_named_board(pid)
-        stop_process(pid, Path(item["executable"]), Path(item["data"]))
+        # Same sequence as the normal tail: settle through the live process,
+        # THEN terminate. A no-op for instances the normal tail finished.
+        try:
+            finish_instance(item, "outer-cleanup")
+        except Exception as error:  # keep going: the other resources still need finishing
+            fail(f"cleanup {item['socket']}: {type(error).__name__}: {error}")
+        pid = item.get("pid") or our_pid(Path(item["executable"]), Path(item["data"]))
+        if pid:
+            release_named_board(pid)
         if our_pid(Path(item["executable"]), Path(item["data"])):
             audit["processesRemaining"].append(pid)
-    for item in owned["sockets"]:
-        bundle = Path(item["tmux"]).parent.parent.parent
-        stop_socket(item["socket"], bundle)
+        try:
+            stop_socket(item["socket"], Path(item["bundle"]))
+        except Exception as error:
+            fail(f"cleanup {item['socket']}: {type(error).__name__}: {error}")
         if any(f"-L {item['socket']} " in command + " " for _, command in processes()):
             audit["socketsRemaining"].append(item["socket"])
         inventory = subprocess.run([sys.executable, str(ROOT / "scripts/edr_runtime.py"), "--json", "--socket",
                                     item["socket"]], cwd=ROOT, capture_output=True, text=True, timeout=60)
         audit.setdefault("edrRuntimeInventoryExit", []).append(inventory.returncode)
+    # settlement outcome of every instance, kept apart from process cleanup
+    audit["guardSettlements"] = [{"run": i["record"]["run"], "mode": i["record"]["mode"],
+                                  **{k: v for k, v in (i["record"].get("guardSettle") or {}).items() if k != "rows"}}
+                                 for i in owned["processes"]]
     if owned["caffeinate"]:
         owned["caffeinate"].terminate()
         try:
@@ -680,6 +793,83 @@ def evaluate(l1_results, rust_results, runs):
     report["tests"]["required"] = per_id
     report["executedCount"], report["passedCount"] = executed, passed
     report["failedCount"] = report["requiredCount"] - passed
+
+
+# Driver fault probes: the REAL driver is run as a child against a held,
+# already-modified NAMED guard and fails inside run_mode (exception, command
+# timeout, SIGINT). kind -> (JS scenario, driver fault, expected final guard
+# result). The parent judges the child's own report.
+PROBES = {
+    "exception": ("hold", "exception", "restored"),
+    "timeout": ("hold", "timeout", "restored"),
+    "cancel": ("hold", "cancel", "restored"),
+    "restore-retry": ("hold:restore-fail-1", "exception", "restored"),
+    "late-reply": ("hold:late-reply", "exception", "restored"),
+    "exhausted": ("hold:restore-fail-99", "exception", "restore-failed"),
+    "fill-fail": ("hold:fill-fail", "exception", "restored"),
+    "fill-fail-empty": ("hold:fill-fail:empty", "exception", "restored"),
+    "fill-fail-external": ("hold:fill-fail:external", "exception", "external-kept"),
+    "cleanup-error": ("hold", "exception", "restored"),
+}
+
+
+def run_probe(kind, bundle, parent_dir, mutant=""):
+    """Run one child driver fault probe; return the judged evidence."""
+    env = dict(os.environ, DECK_TL_DRIVER_MUTANT=mutant)
+    env.pop("DECK_TL_FAULT_SOCKET", None)
+    if kind == "cleanup-error":
+        env["DECK_TL_FAULT_SOCKET"] = "1"
+    log = parent_dir / f"probe-{kind}{'-' + mutant if mutant else ''}.log"
+    done = subprocess.run([sys.executable, str(Path(__file__).resolve()), "--fault-probe", kind, "--bundle", str(bundle)],
+                          cwd=ROOT, env=env, capture_output=True, text=True, timeout=300)
+    log.write_text(done.stdout + done.stderr)
+    evidence = {"kind": kind, "mutant": mutant or None, "childExit": done.returncode, "passed": False}
+    try:
+        child = json.loads(Path(json.loads(done.stdout[done.stdout.index("{"):])["report"]).read_text())
+    except (ValueError, KeyError, OSError):
+        evidence["reason"] = "no child report"
+        return evidence
+    runs = child.get("runs") or []
+    record = runs[0] if runs else {}
+    settle = record.get("guardSettle") or {}
+    events = record.get("finishEvents") or []
+    rows = settle.get("rows") or []
+    held = rows[-1] if rows else {}
+    attempts = (events[0].get("attempts") if events else []) or []
+    order_ok = [e["event"] for e in events[:2]] == ["settle", "terminate"] and (
+        not attempts or events[1]["t"] >= attempts[-1]["t"])
+    scenario, fault, expected = PROBES[kind]
+    final = held.get("resultName") if settle.get("outcome") != "unconfirmed" else "unconfirmed"
+    evidence.update({
+        "childReport": child.get("evidencePaths", {}).get("report"), "entry": settle.get("entry"),
+        "attempts": attempts, "final": final, "modified": held.get("modified"), "writes": held.get("writes"),
+        "settleBeforeTerminate": order_ok, "childVerdict": child.get("verdict"),
+        "firstFailure": (child.get("failures") or [""])[0][:120],
+        "processesRemaining": child.get("cleanupAudit", {}).get("processesRemaining"),
+    })
+    checks = [
+        settle.get("entry") == "outer-cleanup", order_ok, final == expected, held.get("modified") is True,
+        child.get("verdict") != "PASS", done.returncode != 0,
+        not child.get("cleanupAudit", {}).get("processesRemaining"),
+    ]
+    if kind == "restore-retry":
+        checks.append(len(attempts) >= 2 and attempts[0].get("pendingGuards") == 1)
+    if kind == "late-reply":
+        checks.append(attempts and attempts[0]["outcome"] == "unconfirmed")
+    if kind == "exhausted":
+        checks += [settle.get("outcome") == "restore-failed", len(attempts) == len(SETTLE_ATTEMPT_TIMEOUTS),
+                   any("restore-failed" in f for f in child.get("failures", []))]
+    if kind.startswith("fill-fail"):
+        checks.append(held.get("writes") == 0)
+    if kind == "cleanup-error":
+        failures = child.get("failures", [])
+        checks += [failures and "injected driver fault" in failures[0],
+                   any("injected socket cleanup fault" in f for f in failures),
+                   not child.get("cleanupAudit", {}).get("socketsRemaining")]
+    if kind == "cancel":
+        checks.append(child.get("cancelled") is True)
+    evidence["passed"] = all(bool(c) for c in checks)
+    return evidence
 
 
 def guard_results(runs):
@@ -740,6 +930,12 @@ def driver_checks(runs):
             and not r["killedGuard"]["countedAsSuccess"] for r in guard_runs),
     })
     report["externalInterference"] = [r for r in general if r["resultName"] == "external-kept"]
+    probes = report.get("probes", [])
+    for kind in PROBES:
+        mine = [p for p in probes if p["kind"] == kind]
+        report["driverChecks"][f"probe-{kind}"] = len(mine) == RUNS and all(p["passed"] for p in mine)
+    controls = report.get("driverMutantControls", [])
+    report["driverChecks"]["driver-mutants-caught"] = len(controls) == 2 and all(c["caught"] for c in controls)
 
 
 def timings(runs):
@@ -753,8 +949,25 @@ def timings(runs):
                                for name, v in sorted(samples.items()) if v}
 
 
+def probe_main(kind, bundle):
+    """Child of run_probe: one guard-mode instance, a real fault inside run_mode."""
+    report["probe"] = kind
+    report["sourceCommit"] = capture(["git", "rev-parse", "HEAD"])
+    if screen_locked():
+        fail("BLOCKED: the macOS GUI session is locked")
+        return 2
+    report["environmentReady"] = True
+    scenario, fault, _ = PROBES[kind]
+    report["runs"] = RUN_RECORDS
+    run_mode(1, "translation-guard", Path(bundle), None, None, None, scenario=scenario, probe=fault)
+    fail("probe finished without its injected fault")
+    return None
+
+
 def main():
     save()
+    if "--fault-probe" in sys.argv:
+        return probe_main(sys.argv[sys.argv.index("--fault-probe") + 1], sys.argv[sys.argv.index("--bundle") + 1])
     report["sourceCommit"] = capture(["git", "rev-parse", "HEAD"])
     report["branch"] = capture(["git", "branch", "--show-current"])
     report["gitStatusAtStart"] = capture(["git", "status", "--short"]).splitlines()
@@ -795,7 +1008,16 @@ def main():
         fail("iteration run: L1 and negative controls skipped (DECK_TL_QUICK=1)")
     owned["caffeinate"] = subprocess.Popen(["caffeinate", "-d", "-i", "-w", str(os.getpid())])
     report["ownedResources"].append({"kind": "caffeinate", "pid": owned["caffeinate"].pid})
-    runs = []
+    runs = RUN_RECORDS
+    report["runs"] = runs
+    # Negative controls for the driver fixes (named board only): with the
+    # driver mutants the probe assertions must FAIL.
+    controls = []
+    for kind, mutant in (("exception", "skip-cleanup-settle"), ("restore-retry", "no-settle-retry")):
+        evidence = run_probe(kind, bundle, EVIDENCE, mutant)
+        controls.append({**evidence, "caught": not evidence["passed"]})
+    report["driverMutantControls"] = controls
+    report["probes"] = []
     for index in range(1, RUNS + 1):
         for mode in RUN_MODES:
             if screen_locked():
@@ -808,8 +1030,19 @@ def main():
                 fail(f"run {index}: named-board harness safety failed; the general-pasteboard mode was NOT run")
                 report["runs"] = runs
                 return None
+            if mode == "translation" and any(r["run"] == index and r["mode"] == "translation-guard" for r in runs):
+                # driver fault probes on the named board, right after this run's safety mode
+                for kind in PROBES:
+                    evidence = run_probe(kind, bundle, EVIDENCE / f"run-{index}")
+                    evidence["run"] = index
+                    report["probes"].append(evidence)
+                    save()
+                if not all(p["passed"] for p in report["probes"] if p["run"] == index):
+                    fail(f"run {index}: a driver fault probe failed; the general-pasteboard mode will not run")
+            if mode == "translation-native" and any(not p["passed"] for p in report["probes"] if p["run"] == index):
+                return None
+            (EVIDENCE / f"run-{index}").mkdir(parents=True, exist_ok=True, mode=0o700)
             record = run_mode(index, mode, bundle, cache, pack_id, assets)
-            runs.append(record)
             report["runs"] = runs
             save()
     report["isolationChecks"] = {
@@ -836,8 +1069,10 @@ if __name__ == "__main__":
     code = None
     try:
         code = main()
-    except Exception as error:  # the report is always written
+    except BaseException as error:  # the report is always written; SIGINT cancels land here too
         fail(f"{type(error).__name__}: {error}")
+        if isinstance(error, KeyboardInterrupt):
+            report["cancelled"] = True
     finally:
         try:
             cleanup()
@@ -845,6 +1080,12 @@ if __name__ == "__main__":
             fail(f"cleanup: {type(error).__name__}: {error}")
         report.setdefault("driverChecks", {})
         report["driverChecks"]["cleanup"] = report["cleanupCompleted"]
+        # a normal tail finished each instance once; the outer cleanup found it done
+        finished = [r for r in RUN_RECORDS if r.get("complete")]
+        report["driverChecks"]["idempotent-cleanup"] = bool(finished) and all(
+            [c["entry"] for c in r.get("finishCalls", [])] == ["normal", "outer-cleanup"]
+            and r["finishCalls"][1]["result"] == "already-finished" for r in finished)
+        report["runs"] = RUN_RECORDS
         if "runs" in report and report["runs"]:
             evaluate(report["tests"].get("l1", {}), report["tests"].get("rust", {}), report["runs"])
         report["sharedClipboardHandling"] = {
@@ -867,6 +1108,8 @@ if __name__ == "__main__":
         req = report["tests"].get("required", {})
         harness_ids = set(MANIFEST["harnessSafetyIds"])
         report["functionalAssertionsPassed"] = bool(req) and all(v["passed"] for k, v in req.items() if k not in harness_ids)
+        report["baselineRegressionDetected"] = (report.get("baselineRegressionDetected") is True
+                                                and report.get("driverChecks", {}).get("driver-mutants-caught") is True)
         report["harnessSafetyPassed"] = (bool(req) and all(req[k]["passed"] for k in harness_ids if k in req)
                                          and report["tests"].get("nativeGuardHarnessExit") == 0
                                          and report.get("baselineRegressionDetected") is True)

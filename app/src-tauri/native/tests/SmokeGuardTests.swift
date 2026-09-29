@@ -13,6 +13,8 @@ import AppKit
 @_silgen_name("deck_smoke_pb_named_write") func external(_ kind: Int32, _ text: UnsafePointer<CChar>?) -> Int64
 @_silgen_name("deck_smoke_pb_count") func count(_ board: Int32) -> Int64
 @_silgen_name("deck_smoke_pb_fail_next_restore") func tFailNextRestore()
+@_silgen_name("deck_smoke_pb_fail_next_fill") func tFailNextFill() -> Int32
+@_silgen_name("deck_smoke_pb_audit") func tAudit() -> UnsafeMutablePointer<CChar>?
 
 let board = NSPasteboard(name: NSPasteboard.Name("io.c9r.deck.smoke.translation.\(getpid())"))
 var failures: [String] = []
@@ -88,6 +90,44 @@ let T_RESTORED: Int32 = 11, T_EXTERNAL_KEPT: Int32 = 12, T_NOT_WRITTEN: Int32 = 
         check(end() == T_RESTORE_FAILED, "restore failure reported")
         check(write("more") < 0, "no writes while restore is pending")
         check(end() == T_RESTORED && (board.pasteboardItems ?? []).count == 2, "backup kept and restored later")
+        // F07/F05 fill failure after a successful clear: the guard's own clear is
+        // recorded at once, so settle neither reports "not written" nor "external".
+        func items() -> [[(NSPasteboard.PasteboardType, Data?)]] {
+            (board.pasteboardItems ?? []).map { item in item.types.map { ($0, item.data(forType: $0)) } }
+        }
+        func exact(_ a: [[(NSPasteboard.PasteboardType, Data?)]], _ b: [[(NSPasteboard.PasteboardType, Data?)]]) -> Bool {
+            a.count == b.count && zip(a, b).allSatisfy { x, y in x.count == y.count && zip(x, y).allSatisfy { $0.0 == $1.0 && $0.1 == $1.1 } }
+        }
+        func lastModified() -> Bool {
+            guard let ptr = tAudit() else { return false }
+            let last = String(cString: ptr).split(separator: ";").last.map(String.init) ?? ""
+            free(ptr)
+            return last.hasSuffix(",1")
+        }
+        for (kind, name) in [(Int32(3), "multi-item"), (5, "empty"), (1, "non-text")] {
+            _ = external(kind, nil)
+            let original = items()
+            check(begin(1) > 0, "fill-fail begin \(name)")
+            check(tFailNextFill() == 0, "fill-fail armed \(name)")
+            check(write("never filled") < 0, "fill-fail write refused \(name)")
+            check(lastModified(), "fill-fail recorded as modified \(name)")
+            check(write("again") < 0 && state() == 2, "fill-fail stops later writes \(name)")
+            let code = end()
+            check(code == T_RESTORED, "fill-fail restored, not \(code) \(name)")
+            check(exact(items(), original), "fill-fail exact snapshot \(name)")
+        }
+        // fill failure, then a real external write: the external version stays
+        _ = external(3, nil)
+        check(begin(1) > 0 && tFailNextFill() == 0 && write("x") < 0, "fill-fail external setup")
+        _ = external(0, "external after the failed fill")
+        check(end() == T_EXTERNAL_KEPT && text() == "external after the failed fill", "fill-fail external kept")
+        // fill failure, then the first restore fails: backup and fact kept, retry restores
+        _ = external(3, nil)
+        let original = items()
+        check(begin(1) > 0 && tFailNextFill() == 0 && write("x") < 0, "fill-fail restore-retry setup")
+        tFailNextRestore()
+        check(end() == T_RESTORE_FAILED, "fill-fail first restore fails")
+        check(end() == T_RESTORED && exact(items(), original), "fill-fail retry restores exactly")
         board.releaseGlobally()
         if failures.isEmpty { print("smoke guard: ok") } else { print("smoke guard FAILED: \(failures)"); exit(1) }
     }
