@@ -2769,6 +2769,11 @@ export async function verifyTranslationNative() {
   await runTranslationNativeSmoke();
 }
 
+export async function verifyTranslationGuard() {
+  const { runTranslationGuardSmoke } = await import('./translation-smoke.mjs');
+  await runTranslationGuardSmoke();
+}
+
 export async function verifyResume() {
   const { runResumeSmoke } = await import('./resume-smoke.mjs');
   await runResumeSmoke();

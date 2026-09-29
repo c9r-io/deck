@@ -104,6 +104,19 @@ public func deckSmokeApp(_ action: Int32) -> Int32 {
     }
 }
 
+// Restrict Deck's OWN webview input context to Roman input sources, so native
+// test keystrokes are not composed by a CJK input method. App-scoped: the
+// user's input-source setting is not changed and it ends with this process.
+@_cdecl("deck_smoke_roman_input")
+public func deckSmokeRomanInput() -> Int32 {
+    onMain {
+        guard let window = smokeWindow(), let web = findWebView(window.contentView),
+              let context = web.inputContext else { return -1 }
+        context.allowedInputSourceLocales = [NSAllRomanInputSourcesLocaleIdentifier]
+        return 0
+    }
+}
+
 // Must be called off the main thread; writes a PNG of Deck's own WKWebView.
 @_cdecl("deck_smoke_snapshot")
 public func deckSmokeSnapshot(_ path: UnsafePointer<CChar>?) -> Int32 {
@@ -125,126 +138,252 @@ public func deckSmokeSnapshot(_ path: UnsafePointer<CChar>?) -> Int32 {
     return done.wait(timeout: .now() + 10) == .success ? code : -5
 }
 
-/* ----- shared general pasteboard guard ----- */
-private var guardItems: [[(NSPasteboard.PasteboardType, Data)]]? = nil
+/* ----- pasteboard guard (general or the test-owned named board) -----
+   Contract (translation-smoke.mjs `withGuard`, smoke_native.rs):
+   - begin captures every item/type/data and requires the changeCount to be
+     stable across the capture; lazy/promised data refuses the guard.
+   - every test write needs an active guard AND the board still at the last
+     version this guard owns; otherwise it is refused BEFORE touching the
+     board and the guard becomes conflicted (all later writes refused).
+   - writes this process does not perform (a fixture's /copy, Deck's own copy
+     button, the driver) need a permit first (same version check) and are
+     adopted only by a writer RECEIPT equal to the current changeCount —
+     never by comparing text.
+   - settle restores only while the board is still at the owned version and
+     keeps the backup when a restore fails, so a later settle can retry.
+   NSPasteboard offers no cross-process compare-and-swap: between a version
+   check and clearContents() another process can still write. That window is
+   narrowed, not closed; cases that need it closed use the named board.
+   Nothing here returns, logs or stores pasteboard content outside memory. */
+private let namedBoardName = NSPasteboard.Name("io.c9r.deck.smoke.translation.\(getpid())")
+private func testBoard() -> NSPasteboard { NSPasteboard(name: namedBoardName) }
+private struct GuardRecord { var id: Int; var board: Int; var writes = 0; var rejects = 0; var reason = 0; var result = 0 }
+private enum Phase { case idle, active, conflicted, settled }
+private var phase = Phase.idle
+private var guardItems: [[(NSPasteboard.PasteboardType, Data)]] = []
 private var guardOwned = -1
-private var guardExternal = false
+private var permitFrom = -1
+private var guardBoard: NSPasteboard? = nil
+private var records: [GuardRecord] = []
+// result codes
+private let NOT_WRITTEN: Int32 = 10, RESTORED: Int32 = 11, EXTERNAL_KEPT: Int32 = 12, RESTORE_FAILED: Int32 = 13,
+            BEGIN_REFUSED: Int32 = 15
+// refusal reasons
+private let R_NO_GUARD = 1, R_VERSION = 2, R_SETTLED = 3, R_RECEIPT = 4, R_NO_PERMIT = 5
 
-// >= 0: item count captured; -1 already active; -2 an item type is not
-// preservable (lazy/promised data), so the shared-pasteboard cases must stop.
-@_cdecl("deck_smoke_pb_guard_begin")
-public func deckSmokePbGuardBegin() -> Int32 {
-    onMain {
-        guard guardItems == nil else { return -1 }
-        let board = NSPasteboard.general
-        var items: [[(NSPasteboard.PasteboardType, Data)]] = []
-        for item in board.pasteboardItems ?? [] {
-            var entry: [(NSPasteboard.PasteboardType, Data)] = []
-            for type in item.types {
-                guard let data = item.data(forType: type) else { return -2 }
-                entry.append((type, data))
-            }
-            items.append(entry)
+private func reject(_ reason: Int) -> Int64 {
+    if !records.isEmpty && phase != .idle {
+        records[records.count - 1].rejects += 1
+        if records[records.count - 1].reason == 0 { records[records.count - 1].reason = reason }
+    }
+    if phase == .active { phase = .conflicted }
+    return Int64(-reason)
+}
+private func snapshot(_ board: NSPasteboard) -> [[(NSPasteboard.PasteboardType, Data)]]? {
+    var items: [[(NSPasteboard.PasteboardType, Data)]] = []
+    for item in board.pasteboardItems ?? [] {
+        var entry: [(NSPasteboard.PasteboardType, Data)] = []
+        for type in item.types {
+            guard let data = item.data(forType: type) else { return nil }
+            entry.append((type, data))
         }
-        guardItems = items; guardOwned = board.changeCount; guardExternal = false
-        return Int32(min(items.count, 10_000))
+        items.append(entry)
+    }
+    return items
+}
+private func same(_ a: [[(NSPasteboard.PasteboardType, Data)]], _ b: [[(NSPasteboard.PasteboardType, Data)]]) -> Bool {
+    guard a.count == b.count else { return false }
+    for (x, y) in zip(a, b) {
+        guard x.count == y.count else { return false }
+        for ((t1, d1), (t2, d2)) in zip(x, y) where t1 != t2 || d1 != d2 { return false }
+    }
+    return true
+}
+// Is the board still exactly at the version this guard owns?
+private func owned(_ board: NSPasteboard) -> Bool {
+    #if SMOKE_MUTANT_NO_PRECHECK
+    return true
+    #else
+    return board.changeCount == guardOwned
+    #endif
+}
+
+// board 0 general, 1 named test board. >= 0: guard id; -1 already active;
+// -2 lazy/promised data; -3 the board changed during the capture.
+@_cdecl("deck_smoke_pb_guard_begin")
+public func deckSmokePbGuardBegin(_ boardKind: Int32) -> Int32 {
+    onMain {
+        guard phase == .idle || phase == .settled else { return -1 }
+        let board = boardKind == 1 ? testBoard() : NSPasteboard.general
+        let id = records.count + 1
+        let before = board.changeCount
+        guard let items = snapshot(board) else {
+            records.append(GuardRecord(id: id, board: Int(boardKind), reason: 6, result: Int(BEGIN_REFUSED))); return -2
+        }
+        guard board.changeCount == before, let again = snapshot(board), same(items, again) else {
+            records.append(GuardRecord(id: id, board: Int(boardKind), reason: 7, result: Int(BEGIN_REFUSED))); return -3
+        }
+        guardItems = items; guardOwned = before; permitFrom = -1; guardBoard = board; phase = .active
+        records.append(GuardRecord(id: id, board: Int(boardKind)))
+        return Int32(id)
     }
 }
 
-// Test-owned text write; returns the new changeCount (or -1 without a guard).
+// Test-owned text write on the guarded board; the new changeCount, or a
+// negative refusal reason (the board is untouched).
 @_cdecl("deck_smoke_pb_write")
 public func deckSmokePbWrite(_ text: UnsafePointer<CChar>?) -> Int64 {
     onMain {
-        guard guardItems != nil, let text else { return -1 }
-        let board = NSPasteboard.general
-        board.clearContents()
-        guard board.setString(String(cString: text), forType: .string) else { return -2 }
-        guardOwned = board.changeCount
+        guard phase == .active, let board = guardBoard, let text else {
+            return reject(phase == .idle ? R_NO_GUARD : R_SETTLED)
+        }
+        guard owned(board) else { return reject(R_VERSION) }
+        let count = board.clearContents()
+        guard board.setString(String(cString: text), forType: .string) else { return reject(R_VERSION) }
+        guardOwned = count; records[records.count - 1].writes += 1
+        return Int64(count)
+    }
+}
+
+// Permit for a write another path performs: the version it must start from.
+@_cdecl("deck_smoke_pb_permit")
+public func deckSmokePbPermit() -> Int64 {
+    onMain {
+        guard phase == .active, let board = guardBoard else { return reject(phase == .idle ? R_NO_GUARD : R_SETTLED) }
+        guard owned(board) else { return reject(R_VERSION) }
+        permitFrom = guardOwned
         return Int64(guardOwned)
     }
 }
 
-// Claim the current change as test-owned: the count advanced past the last
-// test-owned change AND the text is what this test's action wrote (a
-// fixture's pbcopy, Deck's own copy, a native Cmd+C), compared after line-end
-// and trailing-space normalisation. Otherwise it is an external change and
-// restoration is refused. 0 owned; 1 external.
-private func normalized(_ text: String) -> String {
-    text.replacingOccurrences(of: "\r\n", with: "\n").split(separator: "\n", omittingEmptySubsequences: false)
-        .map { $0.replacingOccurrences(of: "\u{00a0}", with: " ").trimmingCharacters(in: .whitespaces) }
-        .joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-}
-@_cdecl("deck_smoke_pb_claim")
-public func deckSmokePbClaim(_ expected: UnsafePointer<CChar>?) -> Int32 {
+// Adopt the write a permitted path performed, by that writer's receipt
+// (the changeCount its clearContents() returned). 0 adopted; < 0 refused.
+@_cdecl("deck_smoke_pb_adopt")
+public func deckSmokePbAdopt(_ receipt: Int64) -> Int64 {
     onMain {
-        guard guardItems != nil, let expected else { return -1 }
-        let board = NSPasteboard.general
-        guard board.changeCount > guardOwned,
-              normalized(board.string(forType: .string) ?? "") == normalized(String(cString: expected)) else {
-            guardExternal = true; return 1
-        }
-        guardOwned = board.changeCount
+        guard phase == .active, let board = guardBoard else { return reject(phase == .idle ? R_NO_GUARD : R_SETTLED) }
+        guard permitFrom >= 0 else { return reject(R_NO_PERMIT) }
+        #if SMOKE_MUTANT_TEXT_CLAIM
+        guardOwned = board.changeCount; permitFrom = -1; records[records.count - 1].writes += 1; return 0
+        #else
+        guard receipt > Int64(permitFrom), receipt == Int64(board.changeCount) else { return reject(R_RECEIPT) }
+        guardOwned = Int(receipt); permitFrom = -1; records[records.count - 1].writes += 1
         return 0
+        #endif
     }
 }
 
-// 0 restored and verified; 1 no guard; 2 external change (not restored);
-// 3 write failed; 4 restored content differs.
+// Settle the guard. NOT_WRITTEN (nothing to undo), RESTORED (verified),
+// EXTERNAL_KEPT (a newer external version stays), RESTORE_FAILED (the backup
+// is KEPT so a later settle can retry), 1 no guard.
 @_cdecl("deck_smoke_pb_guard_end")
 public func deckSmokePbGuardEnd() -> Int32 {
     onMain {
-        guard let items = guardItems else { return 1 }
-        defer { guardItems = nil; guardOwned = -1; guardExternal = false }
-        let board = NSPasteboard.general
-        if guardExternal || board.changeCount != guardOwned { return 2 }
-        board.clearContents()
-        if !items.isEmpty {
-            let objects = items.map { entry -> NSPasteboardItem in
+        guard phase == .active || phase == .conflicted, let board = guardBoard else { return 1 }
+        let index = records.count - 1
+        let finish = { (code: Int32) -> Int32 in
+            records[index].result = Int(code)
+            #if SMOKE_MUTANT_EARLY_DISCARD
+            phase = .settled; guardItems = []; guardBoard = nil
+            #else
+            if code != RESTORE_FAILED { phase = .settled; guardItems = []; guardBoard = nil }
+            #endif
+            return code
+        }
+        if records[index].writes == 0 && board.changeCount == guardOwned { return finish(NOT_WRITTEN) }
+        #if !SMOKE_MUTANT_NO_PRECHECK
+        guard board.changeCount == guardOwned else { return finish(EXTERNAL_KEPT) }
+        #endif
+        guardOwned = board.clearContents() // our own clear: a retry still owns the board
+        if !guardItems.isEmpty {
+            let objects = guardItems.map { entry -> NSPasteboardItem in
                 let item = NSPasteboardItem()
                 for (type, data) in entry { item.setData(data, forType: type) }
                 return item
             }
-            if !board.writeObjects(objects) { return 3 }
+            let failNow = failNextRestore && board.name == namedBoardName
+            failNextRestore = false
+            guard !failNow, board.writeObjects(objects) else { phase = .conflicted; return finish(RESTORE_FAILED) }
         }
-        let now = (board.pasteboardItems ?? []).map { item in item.types.map { ($0, item.data(forType: $0)) } }
-        guard now.count == items.count else { return 4 }
-        for (restored, original) in zip(now, items) {
-            guard restored.count == original.count else { return 4 }
-            for ((type, data), (otype, odata)) in zip(restored, original) where type != otype || data != odata {
-                return 4
-            }
-        }
-        return 0
+        guard let now = snapshot(board), same(now, guardItems) else { phase = .conflicted; return finish(RESTORE_FAILED) }
+        return finish(RESTORED)
     }
 }
 
-/* ----- test-owned named pasteboard for boundary and race cases ----- */
+// Fault for the NAMED board only: the next restore reports failure.
+private var failNextRestore = false
+@_cdecl("deck_smoke_pb_fail_next_restore")
+public func deckSmokePbFailNextRestore() { onMain { failNextRestore = true } }
+
+// 0 idle/settled (writes refused), 1 active, 2 conflicted.
+@_cdecl("deck_smoke_pb_state")
+public func deckSmokePbState() -> Int32 {
+    onMain { phase == .active ? 1 : phase == .conflicted ? 2 : 0 }
+}
+
+// Content-free audit: "id,board,writes,rejects,reason,result;..."
+@_cdecl("deck_smoke_pb_audit")
+public func deckSmokePbAudit() -> UnsafeMutablePointer<CChar>? {
+    onMain {
+        strdup(records.map { "\($0.id),\($0.board),\($0.writes),\($0.rejects),\($0.reason),\($0.result)" }.joined(separator: ";"))
+    }
+}
+
+/* ----- test-owned named pasteboard: seeding and simulated external writers ----- */
 @_cdecl("deck_smoke_pb_named")
 public func deckSmokePbNamed(_ enable: Int32) -> Int32 {
     onMain {
         if enable != 0 {
-            let board = NSPasteboard(name: NSPasteboard.Name("io.c9r.deck.smoke.translation.\(getpid())"))
+            let board = testBoard()
             board.clearContents()
             deckSmokeTranslationPasteboard = board
         } else {
-            deckSmokeTranslationPasteboard?.releaseGlobally()
             deckSmokeTranslationPasteboard = nil
+            testBoard().releaseGlobally()
         }
         return 0
     }
 }
 
-// kind 0 text, 1 non-text (PNG bytes), 2 empty string; returns changeCount.
+private final class NoData: NSObject, NSPasteboardItemDataProvider {
+    func pasteboard(_ pasteboard: NSPasteboard?, item: NSPasteboardItem, provideDataForType type: NSPasteboard.PasteboardType) {}
+}
+private let noData = NoData()
+
+// Writes the NAMED test board only, bypassing the guard (an "external" writer
+// for negatives, or seeding). kind 0 text, 1 non-text (PNG bytes), 2 empty
+// string, 3 multi-item multi-type, 4 lazy/promised item, 5 clear.
+// Returns the changeCount clearContents() produced (the writer's receipt).
 @_cdecl("deck_smoke_pb_named_write")
 public func deckSmokePbNamedWrite(_ kind: Int32, _ text: UnsafePointer<CChar>?) -> Int64 {
     onMain {
-        guard let board = deckSmokeTranslationPasteboard else { return -1 }
-        board.clearContents()
+        let board = testBoard()
+        let count = board.clearContents()
+        let value = text.map { String(cString: $0) } ?? ""
         switch kind {
-        case 0: board.setString(text.map { String(cString: $0) } ?? "", forType: .string)
+        case 0: board.setString(value, forType: .string)
         case 1: board.setData(Data([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), forType: .png)
-        default: board.setString("", forType: .string)
+        case 2: board.setString("", forType: .string)
+        case 3:
+            let first = NSPasteboardItem()
+            first.setString("synthetic multi-item text", forType: .string)
+            first.setString("<b>synthetic</b>", forType: .html)
+            first.setData(Data([1, 2, 3, 4]), forType: NSPasteboard.PasteboardType("io.c9r.deck.smoke.custom"))
+            let second = NSPasteboardItem()
+            second.setData(Data([0x89, 0x50, 0x4e, 0x47]), forType: .png)
+            board.writeObjects([first, second])
+        case 4:
+            let item = NSPasteboardItem()
+            item.setDataProvider(noData, forTypes: [.string])
+            board.writeObjects([item])
+        default: break
         }
-        return Int64(board.changeCount)
+        return Int64(count)
     }
+}
+
+// changeCount of a board (0 general, 1 named) — a version number, no content.
+@_cdecl("deck_smoke_pb_count")
+public func deckSmokePbCount(_ boardKind: Int32) -> Int64 {
+    onMain { Int64((boardKind == 1 ? testBoard() : NSPasteboard.general).changeCount) }
 }

@@ -126,13 +126,15 @@ export class TranslationLensModel {
   heldBack() { return !!this.holding && this.shown !== this.display; }
   sourceForCopy() { return this.shown?.source || ''; }
   resultText() { return this.shown?.text || ''; }
-  // Deck's own copies (buttons, ⌘C inside the result) never feed back.
-  ownText(text) {
-    const views = [this.shown, this.display].filter(Boolean);
-    return views.some(view => text === view.source || text === view.text
-      || (text.length > 0 && view.text.includes(text)));
+  // Result dedupe only, never a guess about who wrote the clipboard: Deck's
+  // own copies are excluded by the native gate from their write receipt
+  // (pasteboard.rs). A copy is skipped only when it is the current source and
+  // that source is already being translated or shown without an error; any
+  // other text — even equal to or part of an old translation — is new input.
+  newCopy(text) {
+    if (text !== this.source || this.error) return true;
+    return !(this.running?.revision === this.sourceRevision || this.display?.revision === this.sourceRevision);
   }
-  newCopy(text) { return !this.ownText(text) && (text !== this.source || !!this.error); }
   isUpdating() { return !!this.display && this.display.revision !== this.sourceRevision && this.working(); }
   // One closed status, in priority order: error, not-ready, empty, work, stale, ready.
   status({ active = true } = {}) {

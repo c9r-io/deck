@@ -44,11 +44,25 @@ TAURI = ROOT / "app/src-tauri"
 MANIFEST = json.loads((ROOT / "scripts/translation-lens-verify.manifest.json").read_text())
 SMOKE_MANIFEST = json.loads((ROOT / "app/ui/test/fixtures/smoke-manifest.json").read_text())
 RUNS = int(os.environ.get("DECK_TL_RUNS", "3"))
-MODES = ("translation", "translation-native")
+MODES = ("translation-guard", "translation", "translation-native")
 # Iteration aid only: a subset of modes can never satisfy the manifest, so
 # such a run is reported FAIL (missing evidence), never PASS.
 RUN_MODES = tuple(m for m in os.environ.get("DECK_TL_MODES", ",".join(MODES)).split(",") if m in MODES)
 AWAY_TEXT = "Deck harmless text copied while Deck was away."
+# The driver's own general-pasteboard write (C04): compare-and-write against
+# the version the guard permitted; prints the clearContents() receipt or
+# "refused". NSPasteboard has no cross-process CAS, so a narrow window remains.
+JXA_WRITE = """function run(argv) {
+  ObjC.import('AppKit');
+  const board = $.NSPasteboard.generalPasteboard;
+  if (Number(board.changeCount) !== Number(argv[1])) return 'refused';
+  const receipt = board.clearContents;
+  board.setStringForType($(argv[0]), $.NSPasteboardTypeString);
+  return String(receipt);
+}"""
+JXA_RELEASE = """function run(argv) { ObjC.import('AppKit'); $.NSPasteboard.pasteboardWithName(argv[0]).releaseGlobally; return 'ok'; }"""
+RESULT_NAMES = {10: "not-written", 11: "restored", 12: "external-kept", 13: "restore-failed", 15: "begin-refused",
+                0: "active-unsettled"}
 RUN = Path(tempfile.mkdtemp(prefix="deck-tl-verify-", dir="/tmp")).resolve()
 os.chmod(RUN, 0o700)
 RUN_ID = RUN.name.replace("deck-tl-verify-", "").replace("_", "").lower()
@@ -82,6 +96,13 @@ report = {
     "timingSamples": {}, "ownedResources": [], "sharedClipboardHandling": {},
     "baselineReproduction": None, "failures": [], "evidencePaths": {"runRoot": str(RUN), "report": str(REPORT_PATH)},
     "tests": {}, "runs": [], "verdict": "BLOCKED",
+    "functionalAssertionsPassed": False, "harnessSafetyPassed": False, "processCleanupCompleted": False,
+    "sharedResourceSafetyPassed": False, "clipboardGuardResults": [], "baselineRegressionDetected": None,
+    "incidents": [{
+        "when": "2026-09-29 ~09:51 JST, first debug L2 run of the previous round (9a2e8b1 development)",
+        "what": "the old guard refused to restore after a text-equality claim failed; the user's original general "
+                "pasteboard content from before that run was overwritten by a synthetic Cmd+C and could not be recovered",
+        "status": "recorded; not re-created; this round removes the failure path (hard gates before any write)"}],
 }
 owned = {"processes": [], "sockets": [], "caffeinate": None}
 
@@ -263,30 +284,63 @@ def l1():
         if match:
             rust[match.group(1)] = match.group(2) == "ok"
     report["tests"]["l1CargoExit"] = rust_code
+    # the whole Rust workspace gate (privacy, EDR, IPC and admission censuses included)
+    report["tests"]["cargoWorkspaceExit"] = run_logged(
+        ["cargo", "test", "--workspace", "--locked", "--manifest-path", str(TAURI / "Cargo.toml")],
+        EVIDENCE / "cargo-workspace.log", 3600)
+    report["tests"]["clippyExit"] = run_logged(
+        ["cargo", "clippy", "--workspace", "--all-targets", "--all-features", "--locked", "--manifest-path",
+         str(TAURI / "Cargo.toml"), "--", "-D", "warnings"], EVIDENCE / "clippy.log", 3600)
+    harness_log = EVIDENCE / "native-guard-harness.log"
+    report["tests"]["nativeGuardHarnessExit"] = run_logged([str(ROOT / MANIFEST["nativeHarness"])], harness_log, 900)
+    report["tests"]["nativeGuardMutantsCaught"] = sorted(re.findall(r"mutant (\S+) caught", harness_log.read_text()))
     gate_log = EVIDENCE / "ui-tests.log"
     report["tests"]["uiGateExit"] = run_logged(["sh", "scripts/ui-tests"], gate_log, 900)
     return results, rust
 
 
 def baseline():
+    """Negative controls, kept apart from product evidence: the new G tests on
+    the start version's sources, the F01/F02/F05 tests on the start version's
+    guard control flow (compat carrier), and the native mutants (L1 above)."""
     spec = MANIFEST["baseline"]
     tree = RUN / "baseline"
     tree.mkdir(mode=0o700)
     archive = subprocess.run(["git", "archive", spec["commit"], "app/ui"], cwd=ROOT, capture_output=True, timeout=120)
     subprocess.run(["tar", "-x", "-C", str(tree)], input=archive.stdout, check=True, timeout=120)
-    shutil.copy2(ROOT / spec["file"], tree / spec["file"])
-    log = EVIDENCE / "baseline-reproduction.tap"
-    run_logged(["node", "--test", "--test-reporter=tap", spec["file"]], log, 300, cwd=tree)
-    failed = set()
-    for line in log.read_text().splitlines():
-        match = re.match(r"^not ok \d+ - (.*)$", line.strip())
-        if match:
-            failed.update(re.findall(r"\[([A-E]\d\d)\]", match.group(1)))
-    expected = set(spec["expectedFailures"])
+    for name in spec["files"]:
+        shutil.copy2(ROOT / name, tree / name)
+    shutil.copy2(ROOT / "app/ui/test/fixtures/dom-fixture.mjs", tree / "app/ui/test/fixtures/dom-fixture.mjs")
+
+    def failed_ids(log):
+        found = set()
+        for line in log.read_text().splitlines():
+            match = re.match(r"^not ok \d+ - (.*)$", line.strip())
+            if match:
+                found.update(re.findall(r"\[([A-G]\d\d)\]", match.group(1)))
+        return found
+    log = EVIDENCE / "baseline-g.tap"
+    run_logged(["node", "--test", "--test-reporter=tap", *spec["files"]], log, 300, cwd=tree)
+    g_failed = failed_ids(log)
+    legacy = spec["legacyGuardFlow"]
+    legacy_log = EVIDENCE / "baseline-f-legacy-flow.tap"
+    run_logged(["node", "--test", "--test-reporter=tap", legacy["file"]], legacy_log, 120,
+               env=dict(os.environ, TL_GUARD_FLOW="legacy"))
+    f_failed = failed_ids(legacy_log)
+    mutants = report["tests"].get("nativeGuardMutantsCaught", [])
     report["baselineReproduction"] = {
-        "kind": "expected-failure negative control (NOT product evidence)", "commit": spec["commit"],
-        "test": spec["file"], "expectedFailures": sorted(expected), "observedFailures": sorted(failed),
-        "confirmed": expected <= failed, "log": str(log)}
+        "kind": "expected-failure negative controls (NOT product evidence)",
+        "startCommit": spec["commit"],
+        "g": {"files": spec["files"], "expected": sorted(spec["expectedFailures"]), "observed": sorted(g_failed),
+              "confirmed": set(spec["expectedFailures"]) <= g_failed, "log": str(log)},
+        "fCompatCarrier": {"carrier": "app/ui/test/fixtures/legacy-guard-flow.mjs (control flow of the start version)",
+                           "expected": sorted(legacy["expectedFailures"]), "observed": sorted(f_failed),
+                           "confirmed": set(legacy["expectedFailures"]) <= f_failed, "log": str(legacy_log)},
+        "fNativeMutants": {"expected": sorted(spec["nativeMutants"]), "caught": mutants,
+                           "confirmed": sorted(spec["nativeMutants"]) == mutants},
+    }
+    report["baselineRegressionDetected"] = all(report["baselineReproduction"][k]["confirmed"]
+                                               for k in ("g", "fCompatCarrier", "fNativeMutants"))
     save()
 
 
@@ -325,6 +379,35 @@ def open_files_outside(pid, data):
 def network(pid):
     listing = capture(["lsof", "-nP", "-a", "-p", str(pid), "-i"], 20, check=False)
     return [line for line in listing.splitlines()[1:] if line.strip()]
+
+
+def settle_guard(data, pid, executable):
+    """Ask the live app to settle its pasteboard guard (it disarms Copied-text
+    observation first) and return (code, audit rows); None = unconfirmed."""
+    fixture = data / "translation-fixture"
+    result = fixture / "settle-result"
+    if result.exists():
+        result.unlink()
+    if our_pid(executable, data) != pid:
+        return None
+    (fixture / "settle-request").write_text("settle")
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline and not result.is_file():
+        time.sleep(0.1)
+    if not result.is_file():
+        return None
+    code, _, audit = result.read_text().partition("|")
+    rows = [dict(zip(("id", "board", "writes", "rejects", "reason", "result"), map(int, row.split(","))))
+            for row in audit.split(";") if row.count(",") == 5]
+    for row in rows:
+        row["resultName"] = RESULT_NAMES.get(row["result"], str(row["result"]))
+        row["boardName"] = "general" if row["board"] == 0 else "named-test"
+    return int(code), rows
+
+
+def release_named_board(pid):
+    subprocess.run(["osascript", "-l", "JavaScript", "-e", JXA_RELEASE, f"io.c9r.deck.smoke.translation.{pid}"],
+                   capture_output=True, timeout=20)
 
 
 def run_mode(index, mode, bundle, cache, pack_id, assets):
@@ -377,10 +460,35 @@ def run_mode(index, mode, bundle, cache, pack_id, assets):
         time.sleep(0.2)
         if not our_pid(executable, data):
             break
-        names = [name for name, _, _ in smoke_checks(log_path)]
-        if "done" in names:
+        entries = smoke_checks(log_path)
+        names = [name for name, _, _ in entries]
+        if mode == "translation-guard" and "tl-f06-await-kill" in names:
+            # F06 kill: SIGKILL the process that alone holds the named guard's
+            # backup. The only honest classification is "unconfirmed".
+            if our_pid(executable, data) == pid:
+                os.kill(pid, signal.SIGKILL)
+                time.sleep(1)
+            kill_id = next(b for n, _, b in entries if n == "tl-f06-await-kill")
+            result = data / "translation-fixture/settle-result"
+            settled_rows = result.read_text().partition("|")[2] if result.is_file() else ""
+            confirmed = any(row.split(",")[0] == str(kill_id) and row.split(",")[-1] not in ("0", "")
+                            for row in settled_rows.split(";") if row.count(",") == 5)
+            record["killedGuard"] = {"id": kill_id, "board": "named-test",
+                                     "classification": "confirmed" if confirmed else "unconfirmed",
+                                     "countedAsSuccess": False}
+            release_named_board(pid)
+            done = "done" in names
+            break
+        if mode != "translation-guard" and "done" in names:
             done = True
             break
+        if samples % 5 == 0:
+            current = front_pid()
+            if current and current != pid:
+                label = f"pid {current}: " + " ".join(capture(["ps", "-o", "comm=", "-p", str(current)], 10,
+                                                              check=False).split("/")[-1:])
+                last = entries[-1][0] if entries else ""
+                record.setdefault("foreignFront", []).append({"after": last, "app": label})
         if samples % 25 == 0:
             outside = open_files_outside(pid, data)
             if outside:
@@ -401,15 +509,31 @@ def run_mode(index, mode, bundle, cache, pack_id, assets):
                     record["actions"].append({"at": name, "action": "returned via NSApp.activate"})
             elif name == "tl-n-c04-await-away":
                 handled.add(name)
+                version = next(b for n, _, b in entries if n == name)
                 wait = time.monotonic() + 5
                 while time.monotonic() < wait and front_pid() == pid:
                     time.sleep(0.1)
                 away = front_pid() != pid
-                subprocess.run(["pbcopy"], input=AWAY_TEXT.encode(), check=True, timeout=10)
+                wrote = "refused"
+                if away and version > 0:
+                    wrote = capture(["osascript", "-l", "JavaScript", "-e", JXA_WRITE, AWAY_TEXT, str(version)],
+                                    20, check=False)
+                    if wrote.isdigit():
+                        receipt = data / "translation-fixture/copy-receipt"
+                        receipt.write_text(wrote)
                 time.sleep(0.5)
                 capture(["open", str(bundle)], 30)
-                record["actions"].append({"at": name, "action": "pbcopy synthetic away text, then activate",
-                                          "deckWasAway": away})
+                record["actions"].append({"at": name, "action": "compare-and-write of synthetic away text, then activate",
+                                          "deckWasAway": away, "written": wrote.isdigit()})
+            elif name == "tl-f06-await-cancel":
+                handled.add(name)
+                settled = settle_guard(data, pid, executable)
+                record["cancelSettle"] = {"confirmed": settled is not None,
+                                          "code": settled[0] if settled else None,
+                                          "rows": settled[1] if settled else None,
+                                          "beforeTeardown": our_pid(executable, data) == pid}
+                capture(["open", str(bundle)], 30, check=False)
+                record["actions"].append({"at": name, "action": "driver cancel: settle-request while hidden, then activate"})
             elif name == "tl-n-d07-await-corrupt" and pack_dir:
                 handled.add(name)
                 target = pack_dir / "model.enzh.intgemm.alphas.bin"
@@ -434,6 +558,12 @@ def run_mode(index, mode, bundle, cache, pack_id, assets):
     record["network"] = sorted(set(record["network"]))
     if pack_dir is not None:
         record["packParentEntries"] = sorted(p.name for p in pack_dir.parent.iterdir())
+    # Settle BEFORE teardown: the backup lives only in this process.
+    settled = settle_guard(data, pid, executable) if our_pid(executable, data) == pid else None
+    record["guardSettle"] = {"confirmed": settled is not None, "code": settled[0] if settled else None,
+                             "rows": settled[1] if settled else None}
+    if mode == "translation-guard" and settled is None and record.get("killedGuard"):
+        record["guardSettle"]["expectedUnconfirmed"] = "process killed on purpose (F06); named board only"
     stop_process(pid, executable, data)
     stop_socket(socket, bundle)
     checks = smoke_checks(log_path)
@@ -453,6 +583,8 @@ def run_mode(index, mode, bundle, cache, pack_id, assets):
         slot["passed"] = slot["passed"] and (a >= 0 if name in metrics else a > 0)
         slot["values"].append([a, b])
     record["exception"] = record["checks"].get("tl-exception", {}).get("values")
+    # times another app took focus mid-run and the smoke window re-activated itself
+    record["frontRegains"] = sum(v[0] for v in record["checks"].get("tl-front-regains", {}).get("values", []))
     return record
 
 
@@ -474,12 +606,23 @@ def stop_socket(socket, bundle):
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline and any(f"-L {socket} " in command + " " for _, command in processes()):
         time.sleep(0.2)
+    # A server whose control client was orphaned by a killed app can stop
+    # answering kill-server: terminate exactly this bundle's tmux processes
+    # for this socket, by PID (identity: executable path + socket argument).
+    for signum in (signal.SIGTERM, signal.SIGKILL):
+        left = [pid for pid, command in processes()
+                if command.split(" ", 1)[0] == str(tmux) and f"-L {socket} " in command + " "]
+        for pid in left:
+            os.kill(pid, signum)
+        if left:
+            time.sleep(1)
 
 
 def cleanup():
     audit = {"processesRemaining": [], "socketsRemaining": [], "caffeinateReleased": None}
     for item in owned["processes"]:
         pid = item["pid"]
+        release_named_board(pid)
         stop_process(pid, Path(item["executable"]), Path(item["data"]))
         if our_pid(Path(item["executable"]), Path(item["data"])):
             audit["processesRemaining"].append(pid)
@@ -514,7 +657,11 @@ def evaluate(l1_results, rust_results, runs):
         for name in spec.get("rust", []):
             items.append({"layer": "L1-rust", "ref": name, "executed": name in rust_results,
                           "passed": rust_results.get(name) is True})
-        for layer, mode in (("l2", "translation"), ("l3", "translation-native")):
+        for name in spec.get("native", []):
+            ok = report["tests"].get("nativeGuardHarnessExit") == 0
+            items.append({"layer": "L1-native", "ref": f"scripts/test-smoke-guard {name}", "executed": "nativeGuardHarnessExit" in report["tests"],
+                          "passed": ok})
+        for layer, mode in (("l2", "translation"), ("l3", "translation-native"), ("lg", "translation-guard")):
             for name in spec.get(layer, []):
                 states = [run["checks"].get(name) for run in runs if run["mode"] == mode]
                 ran = len(states) == RUNS and all(states)
@@ -535,6 +682,24 @@ def evaluate(l1_results, rust_results, runs):
     report["failedCount"] = report["requiredCount"] - passed
 
 
+def guard_results(runs):
+    """Per guard, content-free: board, writes, refusals, reason, final result."""
+    out = []
+    for run in runs:
+        rows = (run.get("guardSettle") or {}).get("rows") or (run.get("cancelSettle") or {}).get("rows") or []
+        if run["mode"] == "translation-guard" and run.get("cancelSettle", {}).get("rows"):
+            rows = run["cancelSettle"]["rows"]
+        for row in rows:
+            out.append({"run": run["run"], "mode": run["mode"], **row})
+        if run.get("killedGuard"):
+            out.append({"run": run["run"], "mode": run["mode"], "id": None, "boardName": "named-test",
+                        "resultName": run["killedGuard"]["classification"], "expectedNegative": "F06 kill"})
+        if not run.get("guardSettle", {}).get("confirmed") and not run.get("killedGuard"):
+            out.append({"run": run["run"], "mode": run["mode"], "id": None, "boardName": "unknown",
+                        "resultName": "unconfirmed"})
+    return out
+
+
 def driver_checks(runs):
     removed = subprocess.run(["git", "grep", "-n", "-E",
                               "translation_clipboard_current|clipboardCurrent|translation-use-current|translation-resume|translation\\.useCurrent|translation\\.paused",
@@ -549,13 +714,32 @@ def driver_checks(runs):
         "old-contract-removed": not any(n in modes[m]["checks"] for m in MODES for n in old_names),
         "verdict-translation": len([r for r in runs if r["mode"] == "translation" and r["verdictExit"] == 0]) == RUNS,
         "verdict-translation-native": len([r for r in native_runs if r["verdictExit"] == 0]) == RUNS,
+        "verdict-translation-guard": len([r for r in runs if r["mode"] == "translation-guard" and r["verdictExit"] == 0]) == RUNS,
         "no-network": len(native_runs) == RUNS and all(not r["network"] for r in native_runs),
         "no-download": len(native_runs) == RUNS and all(not any(".staging" in e or "staging" in e for e in r.get("packParentEntries", []))
                                                           for r in native_runs),
-        "screenshots": all(r["screenshots"] for r in runs) and len(runs) == 2 * RUNS,
+        "screenshots": all(r["screenshots"] for r in runs if r["mode"] != "translation-guard") and len(runs) == len(MODES) * RUNS,
         "isolation": report["isolationVerified"],
         "cleanup": None,
     }
+    results = guard_results(runs)
+    report["clipboardGuardResults"] = results
+    general = [r for r in results if r["boardName"] == "general"]
+    guard_runs = [r for r in runs if r["mode"] == "translation-guard"]
+    report["driverChecks"].update({
+        # every general guard settled to "restored" or "not written", confirmed by the live process
+        "shared-resource-safety": bool(general) and all(r["resultName"] in ("restored", "not-written") for r in general)
+            and all(r.get("guardSettle", {}).get("confirmed") for r in runs if r["mode"] != "translation-guard")
+            and not any(r["resultName"] == "unconfirmed" and r["boardName"] != "named-test" for r in results),
+        "general-writes-only-in-native-mode": all(r["mode"] == "translation-native" for r in general),
+        "f06-cancel-settled-before-teardown": len(guard_runs) == RUNS and all(
+            (r.get("cancelSettle") or {}).get("confirmed") and r["cancelSettle"]["code"] == 11
+            and r["cancelSettle"]["beforeTeardown"] for r in guard_runs),
+        "f06-kill-reported-unconfirmed": len(guard_runs) == RUNS and all(
+            (r.get("killedGuard") or {}).get("classification") == "unconfirmed"
+            and not r["killedGuard"]["countedAsSuccess"] for r in guard_runs),
+    })
+    report["externalInterference"] = [r for r in general if r["resultName"] == "external-kept"]
 
 
 def timings(runs):
@@ -590,20 +774,25 @@ def main():
         fail("BLOCKED: the macOS GUI session is locked; the isolated WKWebView runs need an unlocked session")
         report["environmentReady"] = False
         return 2
-    if report["toolchain"]["inputSource"] not in ("com.apple.keylayout.ABC", "com.apple.keylayout.US"):
-        fail("BLOCKED: native key input needs an ASCII keyboard layout (ABC/US) as the current input source")
-        return 2
+    # The smoke window restricts its own input context to Roman sources
+    # (SmokeBridge deck_smoke_roman_input); the user's selection is recorded only.
     cache, pack_id, assets = prepare_model()
     bundle = build_bundle()
     if source_digest() != report["testedSourceDigest"]:
         raise RuntimeError("sources changed during the build")
     report["environmentReady"] = True
     save()
-    l1_results, rust_results = l1()
-    report["tests"]["l1"] = l1_results
-    report["tests"]["rust"] = rust_results
-    save()
-    baseline()
+    # DECK_TL_QUICK=1 (iteration only) skips L1 and the negative controls; such
+    # a run leaves required evidence unexecuted and can never report PASS.
+    if os.environ.get("DECK_TL_QUICK") != "1":
+        l1_results, rust_results = l1()
+        report["tests"]["l1"] = l1_results
+        report["tests"]["rust"] = rust_results
+        save()
+        baseline()
+    else:
+        report["tests"]["l1"], report["tests"]["rust"] = {}, {}
+        fail("iteration run: L1 and negative controls skipped (DECK_TL_QUICK=1)")
     owned["caffeinate"] = subprocess.Popen(["caffeinate", "-d", "-i", "-w", str(os.getpid())])
     report["ownedResources"].append({"kind": "caffeinate", "pid": owned["caffeinate"].pid})
     runs = []
@@ -613,6 +802,12 @@ def main():
                 fail(f"BLOCKED: GUI session locked before run {index} {mode}")
                 report["runs"] = runs
                 return 2
+            if mode == "translation-native" and any(
+                    r["run"] == index and r["mode"] == "translation-guard"
+                    and (r["verdictExit"] or any(not c["passed"] for c in r["checks"].values())) for r in runs):
+                fail(f"run {index}: named-board harness safety failed; the general-pasteboard mode was NOT run")
+                report["runs"] = runs
+                return None
             record = run_mode(index, mode, bundle, cache, pack_id, assets)
             runs.append(record)
             report["runs"] = runs
@@ -654,24 +849,40 @@ if __name__ == "__main__":
             evaluate(report["tests"].get("l1", {}), report["tests"].get("rust", {}), report["runs"])
         report["sharedClipboardHandling"] = {
             "isolation": "the general pasteboard is shared with the whole login session; it is NOT isolated by the separate bundle",
-            "guard": "app-hosted (SmokeBridge.swift): items kept in Deck's memory only, never written to evidence; restore only when changeCount equals the last test-owned change",
-            "results": [{"run": r["run"], "mode": r["mode"],
-                         "guard": (r["checks"].get("tl-n-guard") or r["checks"].get("tl-e04-l2-guard") or {}).get("values"),
-                         "restored": (r["checks"].get("tl-n-guard-restored") or r["checks"].get("tl-e04-l2-restored") or {}).get("values")}
-                        for r in report.get("runs", [])],
-            "writesByThisScript": "pbcopy of one synthetic sentence during C04 while the guard is active",
+            "gates": "every test write is refused BEFORE touching a board unless an active guard holds a stable backup and the "
+                     "board is still at the guard's owned version; non-guard writers (fixture /copy, the Lens writer, this "
+                     "driver) need a permit and are adopted only by their own clearContents() receipt, never by text",
+            "residualRace": "NSPasteboard has no cross-process compare-and-swap: between a version check and clearContents() "
+                            "another process can still write; the window is narrowed, not closed",
+            "restore": "settle disarms Copied-text observation first; restores only while the owned version is current; a failed "
+                       "restore keeps the backup; the driver settles through the live process before terminating it",
+            "faultInjection": "only on the test-owned named pasteboard (translation-guard mode, scripts/test-smoke-guard)",
+            "writesByThisScript": "one compare-and-write of a synthetic sentence during C04, inside a permitted guard",
+            "results": report.get("clipboardGuardResults", []),
         }
         report["sourceDigestAfter"] = source_digest()
         report["testedTreeUnchanged"] = report["sourceDigestAfter"] == report["testedSourceDigest"]
         report["requiredTestsExecuted"] = (report["executedCount"] == report["requiredCount"]
                                            and not report["skippedRequired"])
+        req = report["tests"].get("required", {})
+        harness_ids = set(MANIFEST["harnessSafetyIds"])
+        report["functionalAssertionsPassed"] = bool(req) and all(v["passed"] for k, v in req.items() if k not in harness_ids)
+        report["harnessSafetyPassed"] = (bool(req) and all(req[k]["passed"] for k in harness_ids if k in req)
+                                         and report["tests"].get("nativeGuardHarnessExit") == 0
+                                         and report.get("baselineRegressionDetected") is True)
+        report["processCleanupCompleted"] = report["cleanupCompleted"]
+        report["sharedResourceSafetyPassed"] = report.get("driverChecks", {}).get("shared-resource-safety") is True
         report["productAssertionsPassed"] = (report["passedCount"] == report["requiredCount"] and not report["failures"])
         passing = (report["environmentReady"] and report["isolationVerified"] and report["requiredTestsExecuted"]
                    and report["productAssertionsPassed"] and report["cleanupCompleted"]
+                   and report["functionalAssertionsPassed"] and report["harnessSafetyPassed"]
+                   and report["sharedResourceSafetyPassed"]
                    and report["humanInterventions"] == 0 and report["testedTreeUnchanged"]
                    and report["tests"].get("l1NodeExit") == 0 and report["tests"].get("l1CargoExit") == 0
-                   and report["tests"].get("uiGateExit") == 0)
-        if code == 2 or not report["environmentReady"]:
+                   and report["tests"].get("uiGateExit") == 0
+                   and report["tests"].get("cargoWorkspaceExit") == 0 and report["tests"].get("clippyExit") == 0
+                   and report["tests"].get("nativeGuardHarnessExit") == 0)
+        if code == 2 or not report["environmentReady"] or report.get("externalInterference"):
             report["verdict"] = "BLOCKED"
         else:
             report["verdict"] = "PASS" if passing else "FAIL"

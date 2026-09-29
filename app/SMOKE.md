@@ -281,8 +281,8 @@ One command from the repository root, no manual step:
 
     python3 scripts/translation-lens-verify.py
 
-It needs an unlocked GUI session and an ASCII keyboard layout (it reports
-BLOCKED otherwise). It creates `/tmp/deck-tl-verify-*` (0700), a bundle with
+It needs an unlocked GUI session (BLOCKED otherwise); the smoke window
+restricts only its own input context to Roman input sources. It creates `/tmp/deck-tl-verify-*` (0700), a bundle with
 its own path and `io.c9r.deck.smoke.tl*` identifier, one `deck-smoke-*`
 socket and one data root per mode and run, verifies the pinned model pack
 (read-only cache or a download into the run root), builds, runs L1, the
@@ -290,9 +290,12 @@ baseline negative control, then `DECK_TL_RUNS` (default 3) serial runs of the
 `translation` and `translation-native` WKWebView modes, judges each with
 `scripts/smoke-verdict`, and cleans up only what it started. The report is
 `<run root>/report.json`; screenshots and per-run checkpoint lines are under
-`<run root>/evidence/`. The general pasteboard is shared with the login
-session and is used only inside the guarded window described in
-`docs/translation-lens.md`.
+`<run root>/evidence/`. Each run starts with the `translation-guard` mode
+(harness-safety negatives on a test-owned named pasteboard); the
+general-pasteboard mode of that run is not started when it fails. The
+general pasteboard is used only inside the gated sections described in
+`docs/translation-lens.md`; the report gives functional, harness-safety,
+process-cleanup and shared-resource results separately.
 
 ## Away notifications (manual)
 

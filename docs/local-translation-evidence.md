@@ -94,3 +94,12 @@ of the Copied-text tab, and *Updating* is shown only while work is pending.
 Its acceptance evidence is produced by `scripts/translation-lens-verify.py`
 (isolated runs, machine report) and is not a re-certification of the numbers
 above.
+
+## Clipboard safety follow-up (2026-09-29, afternoon)
+
+During the first debug run of the Lens fix, the smoke's old pasteboard guard
+refused to restore after a text-equality claim failed, and the user's
+original general-pasteboard content from before that run was lost. It was not
+recovered and is recorded here as an incident. The follow-up replaced
+text-based claims and text-based self-copy exclusion with version checks
+before every test write and writer receipts (see `docs/translation-lens.md`).

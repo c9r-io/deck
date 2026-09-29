@@ -32,6 +32,20 @@ public func deckPasteboardReadText() -> UnsafeMutablePointer<CChar>? {
     }
 }
 
+// Deck's own Lens copy (Copy Translation, Copy Source, Cmd+C in the result).
+// Returns the changeCount that clearContents() produced for THIS write: the
+// receipt the clipboard gate uses to exclude exactly this version from
+// Copied-text observation. -1 when the write failed.
+@_cdecl("deck_pasteboard_write_text")
+public func deckPasteboardWriteText(_ text: UnsafePointer<CChar>?) -> Int64 {
+    onMain {
+        guard let text else { return -1 }
+        let board = deckTranslationPasteboard()
+        let count = board.clearContents()
+        return board.setString(String(cString: text), forType: .string) ? Int64(count) : -1
+    }
+}
+
 @_cdecl("deck_pasteboard_free")
 public func deckPasteboardFree(_ text: UnsafeMutablePointer<CChar>?) { free(text) }
 

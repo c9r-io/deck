@@ -261,20 +261,65 @@ test('[C03] a newer copy supersedes an older running one; same text is not re-tr
   const two = model.snapshot('two', 'clipboard');
   assert.equal(model.finish(one, '一').accepted, false, 'superseded copy cannot publish');
   model.finish(two, '二'); model.present();
-  assert.equal(model.newCopy('two'), false, 'same text again is already shown');
+  assert.equal(model.newCopy('two'), false, 'same current source already shown: result dedupe');
   assert.equal(model.newCopy('three'), true);
   const three = model.snapshot('three', 'clipboard');
   model.finish(three, null, 'translation-model-corrupt');
   assert.equal(model.newCopy('three'), true, 'a failed text copied again is a new attempt');
 });
 
-test('[C05] Deck-owned text (translation, source, a fragment of the translation) never feeds back', () => {
+const shownClipboard = (model, text, result) => {
+  const ticket = model.snapshot(text, 'clipboard'); model.finish(ticket, result); model.present(); return ticket;
+};
+
+test('[G01] a new copy that is a strict substring of the old translation (a kept English code span) is new input', () => {
   const model = new TranslationLensModel(); model.show('clipboard');
-  model.finish(model.snapshot('The build passed.', 'clipboard'), '构建已通过。'); model.present();
-  assert.equal(model.newCopy('构建已通过。'), false);
-  assert.equal(model.newCopy('The build passed.'), false);
-  assert.equal(model.newCopy('已通过'), false, '⌘C of part of the translation');
-  assert.equal(model.newCopy('The next answer.'), true);
+  shownClipboard(model, 'Check the log: `The deployment completed successfully.` Then continue.',
+    '检查日志：`The deployment completed successfully.` 然后继续。');
+  assert.equal(model.newCopy('The deployment completed successfully.'), true);
+  shownClipboard(model, 'The deployment completed successfully.', '部署已成功完成。');
+  assert.equal(model.sourceForCopy(), 'The deployment completed successfully.');
+  assert.equal(model.resultText(), '部署已成功完成。');
+});
+
+test('[G02] a new copy equal to the whole old translation, but not the current source, is new input', () => {
+  const model = new TranslationLensModel(); model.show('clipboard');
+  shownClipboard(model, 'The build passed.', '构建已通过。');
+  assert.equal(model.newCopy('构建已通过。'), true);
+  shownClipboard(model, '构建已通过。', '构建已通过。');
+  assert.equal(model.sourceForCopy(), '构建已通过。');
+});
+
+test('[G03] A -> B -> A returns to A; re-copying the current successful source is only a result dedupe', () => {
+  const model = new TranslationLensModel(); model.show('clipboard');
+  shownClipboard(model, 'Answer A.', '回答甲。');
+  assert.equal(model.newCopy('Answer A.'), false, 'current source already shown: dedupe, not a self-copy guess');
+  assert.equal(model.status(), 'translation.ready');
+  shownClipboard(model, 'Answer B.', '回答乙。');
+  assert.equal(model.newCopy('Answer A.'), true);
+  shownClipboard(model, 'Answer A.', '回答甲。');
+  assert.equal(model.sourceForCopy(), 'Answer A.'); assert.equal(model.resultText(), '回答甲。');
+  const running = model.snapshot('Answer C.', 'clipboard');
+  assert.equal(model.newCopy('Answer C.'), false, 'already being translated');
+  model.finish(running, '回答丙。');
+});
+
+test('[G08] after a failure the same copied text is a new attempt; one running and no stale pairing', () => {
+  const model = new TranslationLensModel(); model.show('clipboard');
+  const first = model.snapshot('Retry me.', 'clipboard');
+  model.finish(first, null, 'translation-model-corrupt');
+  assert.equal(model.newCopy('Retry me.'), true);
+  const again = model.snapshot('Retry me.', 'clipboard');
+  assert.ok(again && model.running === again && !model.pending);
+  model.finish(again, '请重试。'); model.present();
+  assert.equal(model.status(), 'translation.ready'); assert.equal(model.sourceForCopy(), 'Retry me.');
+  const update = shownClipboard(model, 'Updated text.', '已更新。');
+  assert.ok(update);
+  const failing = model.snapshot('Fails once.', 'clipboard');
+  model.finish(failing, null, 'translation-failed'); model.present();
+  assert.equal(model.resultText(), '已更新。'); assert.equal(model.sourceForCopy(), 'Updated text.');
+  assert.equal(model.status(), 'translation.error.translation-failed');
+  assert.equal(model.newCopy('Fails once.'), true);
 });
 
 test('[C01] entering Copied text shows preparing until armed, then the waiting hint; nothing is observed', () => {

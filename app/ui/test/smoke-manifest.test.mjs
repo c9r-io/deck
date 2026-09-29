@@ -15,7 +15,7 @@ const manifest = JSON.parse(readFileSync(new URL('./fixtures/smoke-manifest.json
    five of them to their own files. */
 const CARRIERS = {
   'wk-smoke.mjs': ['run', 'settings', 'ambiguous', 'restart', 'buffer', 'buffer-narrow', 'channel', 'channel-fault', 'connector', 'connector-transport', 'selection-events'],
-  'translation-smoke.mjs': ['translation', 'translation-native'],
+  'translation-smoke.mjs': ['translation', 'translation-native', 'translation-guard'],
   'attention-smoke.mjs': ['attention'],
   'resume-smoke.mjs': ['resume'],
   'review-smoke.mjs': ['review', 'review-restart'],
@@ -27,6 +27,8 @@ const CARRIERS = {
 /* Names built at runtime, which a single-line literal scan cannot read:
    (file, the exact source text that builds them, the names it yields). */
 const DYNAMIC = [
+  ['translation-smoke.mjs', "await report(`tl-f07-${name}`, ", ["tl-f07-empty", "tl-f07-multi", "tl-f07-non-text"]],
+  ['translation-smoke.mjs', "await report(`tl-f05-${fault}`, ", ["tl-f05-assertion", "tl-f05-ipc"]],
   ['translation-smoke.mjs', "await report(`tl-n-d05-${item.id}`, ", ["tl-n-d05-prose", "tl-n-d05-mixed", "tl-n-d05-fence", "tl-n-d05-chinese", "tl-n-d05-unsupported"]],
   ['translation-smoke.mjs', "await report(`tl-n-c06-${limit / 1024}k`, ", ["tl-n-c06-8k", "tl-n-c06-16k"]],
   ['translation-smoke.mjs', "await report(`tl-n-d06-${limit / 1024}k-anchors`, ", ["tl-n-d06-8k-anchors", "tl-n-d06-16k-anchors"]],

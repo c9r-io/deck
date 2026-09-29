@@ -56,9 +56,14 @@ intelligence.installTranslationSmokeBackend({
   arm: async () => { if (armGate) await armGate.promise; if (!focused) throw new Error('clipboard-not-focused');
     clipboard.armed = true; clipboard.baseline = clipboard.version; clipboard.arms = (clipboard.arms || 0) + 1; },
   disarm: async () => { clipboard.armed = false; },
+  // Same contract as the native gate: only the receipted self-write version is excluded.
   poll: async () => { if (!focused || !clipboard.armed || clipboard.version <= clipboard.baseline) return null;
-    clipboard.baseline = clipboard.version; clipboard.reads = (clipboard.reads || 0) + 1; return clipboard.text; },
-  copy: async text => { copied.push(text); clipboard.text = text; clipboard.version++; },
+    clipboard.baseline = clipboard.version;
+    const own = clipboard.own === clipboard.version; clipboard.own = null;
+    if (own) return null;
+    clipboard.reads = (clipboard.reads || 0) + 1; return clipboard.text; },
+  copy: async text => { copied.push(text); clipboard.text = text; clipboard.version++;
+    if (clipboard.armed) clipboard.own = clipboard.version; return clipboard.version; },
 });
 const copyExternally = text => { clipboard.text = text; clipboard.version++; };
 
@@ -208,6 +213,9 @@ test('[C05][C08] copying the translation never feeds back; re-choosing the curre
   assert.equal(calls.length, count, 'no feedback');
   copyExternally('A genuinely new answer.'); await tick(400);
   assert.ok(calls.some(call => call.text === 'A genuinely new answer.'), 'the next real copy still works');
+  await settleAll('一个新回答。');
+  copyExternally('复制的回答。'); await tick(400);
+  assert.ok(calls.some(call => call.text === '复制的回答。'), 'a real copy equal to the old translation is not a self-copy');
   assert.equal(typeof intelligence.clipboardCurrent, 'undefined', 'no explicit read of the current clipboard');
 });
 
@@ -258,4 +266,71 @@ test('[D03] a request still running when the Lens closes cannot publish into the
   lens.closeTranslationLens(); await openLens();
   late.ok('迟到的译文'); await flush(); await tick(100);
   assert.notEqual($('translation-result').textContent, '迟到的译文');
+});
+
+async function settleAll(text) { while (pending().length) { pending()[0].ok(text); await flush(); await tick(20); } }
+const clipboardResult = async (text, translation) => {
+  copyExternally(text); await tick(400);
+  const request = calls.find(call => call.text === text && !call.done);
+  assert.ok(request, `translated: ${text}`); request.ok(translation); await flush();
+};
+async function copiedMode() {
+  await reset(); await openLens(); await tick(400); calls[0]?.ok('第一版'); await flush();
+  await chooseTab('clipboard'); await tick(50);
+}
+
+test('[G01][G02] external copies equal to part of, or all of, the shown translation are translated', async () => {
+  await copiedMode();
+  await clipboardResult('Check: `The deployment completed successfully.` Then continue.', '检查：`The deployment completed successfully.` 然后继续。');
+  await clipboardResult('The deployment completed successfully.', '部署已成功完成。');
+  assert.equal($('translation-result').textContent, '部署已成功完成。');
+  await clipboardResult('部署已成功完成。', '部署已成功完成。');
+  assert.equal(lens.translationLensView().source, '部署已成功完成。');
+});
+
+test('[G04] both Lens copy buttons are excluded by receipt; the same bytes copied afterwards are new input', async () => {
+  await copiedMode();
+  await clipboardResult('The build passed.', '构建已通过。');
+  const count = calls.length;
+  $('translation-copy').onclick(); await tick(800);
+  $('translation-copy-source').onclick(); await tick(800);
+  assert.equal(calls.length, count, 'no feedback');
+  copyExternally('构建已通过。'); await tick(400);
+  assert.ok(calls.some(call => call.text === '构建已通过。'), 'identical bytes from a real copy are read');
+});
+
+test('[G05] Cmd+C inside the result is a receipted Lens write; the same bytes copied from the terminal are input', async () => {
+  await copiedMode();
+  await clipboardResult('The build passed.', '构建已通过。');
+  const result = $('translation-result');
+  result.contains = node => node === result;
+  const selection = { isCollapsed: false, anchorNode: result, toString: () => '已通过' };
+  document.getSelection = () => selection;
+  const event = result.fire('copy');
+  document.getSelection = () => ({ isCollapsed: true });
+  assert.equal(event.prevented, 1, 'WebKit does not write it itself');
+  await tick(800);
+  assert.equal(copied.at(-1), '已通过'); assert.ok(!calls.some(call => call.text === '已通过'));
+  copyExternally('已通过'); await tick(400);
+  assert.ok(calls.some(call => call.text === '已通过'), 'a real copy of the same bytes is read');
+});
+
+test('[G06] a real copy right after a Lens self-write, before the next poll, is not swallowed', async () => {
+  await copiedMode();
+  await clipboardResult('The build passed.', '构建已通过。');
+  $('translation-copy').onclick(); await flush();
+  copyExternally('A new answer right after.'); await tick(400);
+  assert.ok(calls.some(call => call.text === 'A new answer right after.'));
+});
+
+test('[G07] a self-write receipt from an earlier cycle cannot hide a copy in the next one', async () => {
+  await copiedMode();
+  await clipboardResult('The build passed.', '构建已通过。');
+  $('translation-copy').onclick(); await flush();
+  await chooseTab('live'); await tick(50); await settleAll('实时'); await chooseTab('clipboard'); await tick(50);
+  copyExternally('Copied in the new cycle.'); await tick(400);
+  assert.ok(calls.some(call => call.text === 'Copied in the new cycle.'));
+  focused = false; fire('blur'); copyExternally('while away'); await tick(400);
+  focused = true; fire('focus'); await tick(800);
+  assert.ok(!calls.some(call => call.text === 'while away'), 'still never reads what was copied away');
 });

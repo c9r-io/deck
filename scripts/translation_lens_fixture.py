@@ -4,12 +4,17 @@
 Used only by scripts/translation-lens-verify.py inside an isolated Deck smoke
 session. It replaces the *content provider* (a fixed synthetic English
 answer), never the Lens, the pasteboard gate or the translation provider.
-`/copy` really transfers the current answer to the macOS general pasteboard
-with pbcopy, as an Agent CLI would. This is a controlled /copy workflow, not
-a vendor Agent implementation.
+`/copy <version>` really transfers the current answer to the macOS general
+pasteboard, as an Agent CLI would, but only as a compare-and-write: it
+refuses unless the pasteboard is still at <version> (the smoke guard's
+permit), and it leaves a receipt — the changeCount its own clearContents()
+returned — in `copy-receipt` next to this file. Without a version it writes
+nothing. The check and the write are two steps (NSPasteboard has no
+cross-process compare-and-swap), so a narrow race window remains. This is a
+controlled /copy workflow, not a vendor Agent implementation.
 
-Line mode (default) commands: /copy, /next, /stream N, /history N, /clear,
-/quit. `--mouse` starts an alternate-screen viewer with SGR mouse reporting
+Line mode (default) commands: /copy <version>, /next, /stream N, /history N,
+/clear, /quit. `--mouse` starts an alternate-screen viewer with SGR mouse reporting
 that scrolls its own history on wheel sequences (an Agent-style history
 scroll that reaches Deck only as PTY redraws).
 """
@@ -40,8 +45,29 @@ def say(text=""):
     sys.stdout.flush()
 
 
-def copy(text):
-    subprocess.run(["pbcopy"], input=text.encode(), check=True)
+WRITE = """function run(argv) {
+  ObjC.import('AppKit');
+  const board = $.NSPasteboard.generalPasteboard;
+  if (Number(board.changeCount) !== Number(argv[1])) return 'refused';
+  const receipt = board.clearContents;
+  board.setStringForType($(argv[0]), $.NSPasteboardTypeString);
+  return String(receipt);
+}"""
+RECEIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "copy-receipt")
+
+
+def copy(text, version):
+    """Compare-and-write; returns the receipt or None when refused."""
+    if not version.isdigit():
+        return None
+    out = subprocess.run(["osascript", "-l", "JavaScript", "-e", WRITE, text, version],
+                         capture_output=True, text=True, check=False).stdout.strip()
+    if not out.isdigit():
+        return None
+    with open(RECEIPT + ".tmp", "w") as receipt:
+        receipt.write(out)
+    os.replace(RECEIPT + ".tmp", RECEIPT)
+    return out
 
 
 def line_mode():
@@ -57,8 +83,10 @@ def line_mode():
             return
         command, _, arg = line.strip().partition(" ")
         if command == "/copy":
-            copy(ANSWERS[current])
-            say(f"Copied the answer ({len(ANSWERS[current])} characters).")
+            if copy(ANSWERS[current], arg.strip()):
+                say(f"Copied the answer ({len(ANSWERS[current])} characters).")
+            else:
+                say("Refused: the pasteboard is not at the permitted version.")
         elif command == "/next":
             current = (current + 1) % len(ANSWERS)
             say(ANSWERS[current])

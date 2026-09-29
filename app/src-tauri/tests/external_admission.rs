@@ -523,6 +523,12 @@ const TEXT_COMMANDS: &[(&str, &str, Command)] = &[
         Command::OwnerTerminal,
     ),
     ("smoke_native.rs", "smoke_pasteboard", Command::NotTerminal),
+    // The Lens copies its own displayed text/source to the pasteboard only.
+    (
+        "intelligence/pasteboard.rs",
+        "translation_clipboard_write",
+        Command::NotTerminal,
+    ),
     // User-visible/selected/copied text is read-only translation input;
     // it never acquires terminal or scheduler delivery authority.
     (

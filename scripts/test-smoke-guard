@@ -1,0 +1,23 @@
+#!/bin/sh
+# Compile the debug-only smoke pasteboard guard with its headless tests and
+# run them on a test-owned NAMED pasteboard (never the general one). Then
+# compile each SMOKE_MUTANT_* variant; every mutant must FAIL the tests.
+set -eu
+cd "$(dirname "$0")/.."
+dir=$(mktemp -d "${TMPDIR:-/tmp}/deck-smoke-guard.XXXXXX")
+trap 'rm -rf "$dir"' EXIT HUP INT TERM
+build() {
+  xcrun swiftc -parse-as-library -swift-version 5 "$@" \
+    app/src-tauri/native/PasteboardBridge.swift app/src-tauri/native/SmokeBridge.swift \
+    app/src-tauri/native/tests/SmokeGuardTests.swift -o "$dir/guard-tests" 2>"$dir/build.log" \
+    || { cat "$dir/build.log" >&2; exit 2; }
+}
+build
+"$dir/guard-tests"
+for mutant in SMOKE_MUTANT_NO_PRECHECK SMOKE_MUTANT_TEXT_CLAIM SMOKE_MUTANT_EARLY_DISCARD; do
+  build -D "$mutant"
+  if "$dir/guard-tests" >"$dir/$mutant.log" 2>&1; then
+    echo "mutant $mutant was NOT caught" >&2; exit 1
+  fi
+  echo "mutant $mutant caught: $(tail -1 "$dir/$mutant.log")"
+done

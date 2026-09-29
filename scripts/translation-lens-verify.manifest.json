@@ -1,11 +1,45 @@
 {
-  "note": "Required Local Translation acceptance IDs. Each ID passes only when every listed evidence item was executed and passed: l1 = node:test titles containing [ID] in the listed files; rust = exact cargo test names; l2/l3 = smoke-check names in the translation / translation-native WKWebView modes, in EVERY independent GUI run; driver = checks performed by scripts/translation-lens-verify.py itself.",
-  "l1Files": ["app/ui/test/translation-lens-model.test.mjs", "app/ui/test/translation-lens-dom.test.mjs"],
-  "rustFilters": ["intelligence::", "smoke_native::"],
+  "note": "Required Local Translation acceptance IDs. Each ID passes only when every listed evidence item was executed and passed: l1 = node:test titles containing [ID] in the listed files; rust = exact cargo test names; l2/l3 = smoke-check names in the translation / translation-native WKWebView modes (l2/l3) and the translation-guard mode (lg, named pasteboard only), in EVERY independent GUI run; driver = checks performed by scripts/translation-lens-verify.py itself.",
+  "l1Files": [
+    "app/ui/test/translation-lens-model.test.mjs",
+    "app/ui/test/translation-lens-dom.test.mjs",
+    "app/ui/test/translation-guard.test.mjs"
+  ],
+  "rustFilters": [
+    "intelligence::",
+    "smoke_native::"
+  ],
   "baseline": {
-    "commit": "904e1c9a8e983f71e58f10dfda9a1032b14dfae1",
-    "file": "app/ui/test/translation-lens-dom.test.mjs",
-    "expectedFailures": ["A02", "D01", "D02", "B02", "B06", "B05", "C01", "C08", "A04", "A05"]
+    "commit": "9a2e8b1d2f368c31e79865c6890964f91fd107a3",
+    "files": [
+      "app/ui/test/translation-lens-model.test.mjs",
+      "app/ui/test/translation-lens-dom.test.mjs"
+    ],
+    "expectedFailures": [
+      "G01",
+      "G02",
+      "G04",
+      "G05"
+    ],
+    "legacyGuardFlow": {
+      "env": "TL_GUARD_FLOW=legacy",
+      "file": "app/ui/test/translation-guard.test.mjs",
+      "expectedFailures": [
+        "F01",
+        "F02",
+        "F05"
+      ]
+    },
+    "nativeMutants": [
+      "SMOKE_MUTANT_NO_PRECHECK",
+      "SMOKE_MUTANT_TEXT_CLAIM",
+      "SMOKE_MUTANT_EARLY_DISCARD"
+    ],
+    "historicalFirstRound": {
+      "commit": "904e1c9a8e983f71e58f10dfda9a1032b14dfae1",
+      "file": "app/ui/test/translation-lens-dom.test.mjs",
+      "note": "previous round's negative control, kept"
+    }
   },
   "fixedThresholds": {
     "l2StreamSubmissionsPer650ms": "ceil(streamMs / 650) + 3",
@@ -15,37 +49,576 @@
     "guiModeTimeoutS": 900
   },
   "required": {
-    "A01": { "l1": ["A01"], "l2": ["tl-a01-static-open", "tl-a01-no-output", "tl-a01-display"], "l3": ["tl-n-a01-static-open"] },
-    "A02": { "l1": ["A02"], "l2": ["tl-a02-interact", "tl-a02-display", "translation-shortcut-live"] },
-    "A03": { "l1": ["A03"], "l2": ["tl-a03-empty-honest", "tl-a03-late-output"] },
-    "A04": { "l1": ["A04"], "l2": ["tl-a04-roundtrip", "tl-a04-bounded"] },
-    "A05": { "l1": ["A05"], "l2": ["tl-a05-pane-switch", "tl-a05-pane-b", "tl-a05-reopen", "translation-disable", "translation-leave", "translation-buffer-mutual"] },
-    "A06": { "l1": ["A06", "C04"], "l2": ["tl-a06-away", "tl-a06-resume"], "l3": ["tl-n-a06-away", "tl-n-a06-resume"] },
-    "B01": { "l1": ["B01"], "l2": ["tl-b01-bounded", "tl-b01-readable", "tl-b01-tail"] },
-    "B02": { "l1": ["B02"], "l2": ["tl-b02-no-intermediate", "tl-b02-final"], "l3": ["tl-n-b02-final", "tl-n-b02-final-view"] },
-    "B03": { "l1": ["B03"], "l2": ["tl-b03-overlap", "tl-b03-tail", "tl-b03-scroll-mode", "tl-b03-scroll-pane"] },
-    "B04": { "l2": ["tl-b04-tmux-route", "tl-b04-agent-route"] },
-    "B05": { "l1": ["B05"], "l2": ["tl-b05-result-wheel", "tl-b05-click-no-pause", "tl-b05-select-hold", "tl-b05-cmd-c", "tl-b05-release", "tl-b05-keyboard"] },
-    "B06": { "l1": ["B06"], "l2": ["tl-b06-no-rewrite"] },
-    "B07": { "l2": ["tl-b07-bounded", "tl-b07-responsive", "tl-b07-caught-up"] },
-    "C01": { "l1": ["C01"], "l2": ["tl-c01-no-old-read"], "l3": ["tl-n-c01-ready", "tl-n-c01-old-unread"] },
-    "C02": { "l1": ["C02"], "l3": ["tl-n-c02-copy", "tl-n-c02-near-arm"] },
-    "C03": { "l1": ["C03"], "rust": ["intelligence::pasteboard::tests::change_during_read_is_not_published_and_the_newer_change_is"], "l2": ["tl-c03-latest", "tl-c03-same-text", "tl-d03-late-read"], "l3": ["tl-n-c03-latest", "tl-n-c03-same"] },
-    "C04": { "l1": ["C04"], "rust": ["intelligence::pasteboard::tests::focus_loss_revokes_old_baseline", "intelligence::pasteboard::tests::baseline_requires_new_change_and_generation"], "l3": ["tl-n-c04-away-unread", "tl-n-c04-after-return", "tl-n-c04-reopen-unread"] },
-    "C05": { "l1": ["C05"], "rust": ["intelligence::pasteboard::tests::self_write_rebaseline_excludes_own_change"], "l2": ["tl-c05-no-feedback", "tl-c05-next-copy", "translation-copy"], "l3": ["tl-n-c05-no-feedback", "tl-n-c05-next-copy"] },
-    "C06": { "l3": ["tl-n-c06-not-text", "tl-n-c06-empty", "tl-n-c06-8k", "tl-n-c06-8k-over", "tl-n-c06-16k", "tl-n-c06-16k-over"] },
-    "C07": { "l1": ["C07"], "l2": ["tl-c07-static", "translation-selection", "tl-c07-selection-status", "translation-selection-static", "translation-copy-source"], "l3": ["tl-n-c07-static", "tl-n-c07-selection"] },
-    "C08": { "l1": ["C08"], "l2": ["tl-c08-reselect", "tl-e03-removed"], "driver": ["removed-entry-points"] },
-    "D01": { "l1": ["D01"], "l2": ["tl-d01-retry"] },
-    "D02": { "l1": ["D02"], "l2": ["tl-d02-update-failure"] },
-    "D03": { "l1": ["D03"], "l2": ["tl-d03-late-failure", "tl-d03-late-read", "tl-a05-reopen"] },
-    "D04": { "l1": ["D04"], "rust": ["intelligence::translation::tests::certified_bounds"], "l3": ["tl-n-c06-8k-over", "tl-n-c06-16k-over"] },
-    "D05": { "l3": ["tl-n-d05-prose", "tl-n-d05-mixed", "tl-n-d05-fence", "tl-n-d05-chinese", "tl-n-d05-unsupported", "tl-n-c06-8k", "tl-n-c06-16k"] },
-    "D06": { "rust": ["intelligence::protected::tests::protected_literals_and_fake_html_are_exact"], "l3": ["tl-n-d06-protected-live", "tl-n-d06-8k-anchors", "tl-n-d06-16k-anchors", "tl-n-d05-mixed", "tl-n-d05-fence"] },
-    "D07": { "l3": ["tl-n-capability", "tl-n-d07-loaded", "tl-n-d07-unloaded", "tl-n-d07-cold-reopen", "tl-n-d07-corrupt", "tl-n-d07-missing", "tl-n-d07-restored"], "driver": ["no-network", "no-download"] },
-    "E01": { "l1": ["E01"], "l2": ["tl-e01-mouse", "tl-e01-keyboard", "tl-e01-aria", "tl-e01-narrow", "tl-e01-font", "tl-e01-themes", "tl-e01-locales", "translation-overlay", "translation-dock"], "driver": ["screenshots"] },
-    "E02": { "l2": ["translation-default-off", "translation-disabled-shortcut", "translation-enable-confirm", "translation-enable-cancel", "translation-download-enable", "tl-e02-persisted", "translation-enabled", "translation-open", "translation-shortcut-close", "translation-buffer-mutual", "translation-buffer-close", "translation-close", "translation-disable", "translation-delete"] },
-    "E03": { "l2": ["tl-e03-removed"], "driver": ["verdict-translation", "verdict-translation-native", "old-contract-removed"] },
-    "E04": { "l2": ["tl-e04-l2-guard", "tl-e04-l2-restored"], "l3": ["tl-n-guard", "tl-n-guard-restored"], "driver": ["isolation", "cleanup"] }
-  }
+    "A01": {
+      "l1": [
+        "A01"
+      ],
+      "l2": [
+        "tl-a01-static-open",
+        "tl-a01-no-output",
+        "tl-a01-display"
+      ],
+      "l3": [
+        "tl-n-a01-static-open"
+      ]
+    },
+    "A02": {
+      "l1": [
+        "A02"
+      ],
+      "l2": [
+        "tl-a02-interact",
+        "tl-a02-display",
+        "translation-shortcut-live"
+      ]
+    },
+    "A03": {
+      "l1": [
+        "A03"
+      ],
+      "l2": [
+        "tl-a03-empty-honest",
+        "tl-a03-late-output"
+      ]
+    },
+    "A04": {
+      "l1": [
+        "A04"
+      ],
+      "l2": [
+        "tl-a04-roundtrip",
+        "tl-a04-bounded"
+      ]
+    },
+    "A05": {
+      "l1": [
+        "A05"
+      ],
+      "l2": [
+        "tl-a05-pane-switch",
+        "tl-a05-pane-b",
+        "tl-a05-reopen",
+        "translation-disable",
+        "translation-leave",
+        "translation-buffer-mutual"
+      ]
+    },
+    "A06": {
+      "l1": [
+        "A06",
+        "C04"
+      ],
+      "l2": [
+        "tl-a06-away",
+        "tl-a06-resume"
+      ],
+      "l3": [
+        "tl-n-a06-away",
+        "tl-n-a06-resume"
+      ]
+    },
+    "B01": {
+      "l1": [
+        "B01"
+      ],
+      "l2": [
+        "tl-b01-bounded",
+        "tl-b01-readable",
+        "tl-b01-tail"
+      ]
+    },
+    "B02": {
+      "l1": [
+        "B02"
+      ],
+      "l2": [
+        "tl-b02-no-intermediate",
+        "tl-b02-final"
+      ],
+      "l3": [
+        "tl-n-b02-final",
+        "tl-n-b02-final-view"
+      ]
+    },
+    "B03": {
+      "l1": [
+        "B03"
+      ],
+      "l2": [
+        "tl-b03-overlap",
+        "tl-b03-tail",
+        "tl-b03-scroll-mode",
+        "tl-b03-scroll-pane"
+      ]
+    },
+    "B04": {
+      "l2": [
+        "tl-b04-tmux-route",
+        "tl-b04-agent-route"
+      ]
+    },
+    "B05": {
+      "l1": [
+        "B05"
+      ],
+      "l2": [
+        "tl-b05-result-wheel",
+        "tl-b05-click-no-pause",
+        "tl-b05-select-hold",
+        "tl-b05-cmd-c",
+        "tl-b05-release",
+        "tl-b05-keyboard"
+      ]
+    },
+    "B06": {
+      "l1": [
+        "B06"
+      ],
+      "l2": [
+        "tl-b06-no-rewrite"
+      ]
+    },
+    "B07": {
+      "l2": [
+        "tl-b07-bounded",
+        "tl-b07-responsive",
+        "tl-b07-caught-up"
+      ]
+    },
+    "C01": {
+      "l1": [
+        "C01"
+      ],
+      "l2": [
+        "tl-c01-no-old-read"
+      ],
+      "l3": [
+        "tl-n-c01-ready",
+        "tl-n-c01-old-unread"
+      ]
+    },
+    "C02": {
+      "l1": [
+        "C02"
+      ],
+      "l3": [
+        "tl-n-c02-copy",
+        "tl-n-c02-near-arm"
+      ]
+    },
+    "C03": {
+      "l1": [
+        "C03"
+      ],
+      "rust": [
+        "intelligence::pasteboard::tests::change_during_read_is_not_published_and_the_newer_change_is"
+      ],
+      "l2": [
+        "tl-c03-latest",
+        "tl-c03-same-text",
+        "tl-d03-late-read"
+      ],
+      "l3": [
+        "tl-n-c03-latest",
+        "tl-n-c03-same"
+      ]
+    },
+    "C04": {
+      "l1": [
+        "C04"
+      ],
+      "rust": [
+        "intelligence::pasteboard::tests::focus_loss_revokes_old_baseline",
+        "intelligence::pasteboard::tests::baseline_requires_new_change_and_generation"
+      ],
+      "l3": [
+        "tl-n-c04-away-unread",
+        "tl-n-c04-after-return",
+        "tl-n-c04-reopen-unread"
+      ]
+    },
+    "C05": {
+      "l1": [
+        "C05"
+      ],
+      "rust": [
+        "intelligence::pasteboard::tests::self_write_rebaseline_excludes_own_change"
+      ],
+      "l2": [
+        "tl-c05-no-feedback",
+        "tl-c05-next-copy",
+        "translation-copy"
+      ],
+      "l3": [
+        "tl-n-c05-no-feedback",
+        "tl-n-c05-next-copy"
+      ]
+    },
+    "C06": {
+      "l3": [
+        "tl-n-c06-not-text",
+        "tl-n-c06-empty",
+        "tl-n-c06-8k",
+        "tl-n-c06-8k-over",
+        "tl-n-c06-16k",
+        "tl-n-c06-16k-over"
+      ]
+    },
+    "C07": {
+      "l1": [
+        "C07"
+      ],
+      "l2": [
+        "tl-c07-static",
+        "translation-selection",
+        "tl-c07-selection-status",
+        "translation-selection-static",
+        "translation-copy-source"
+      ],
+      "l3": [
+        "tl-n-c07-static",
+        "tl-n-c07-selection"
+      ]
+    },
+    "C08": {
+      "l1": [
+        "C08"
+      ],
+      "l2": [
+        "tl-c08-reselect",
+        "tl-e03-removed"
+      ],
+      "driver": [
+        "removed-entry-points"
+      ]
+    },
+    "D01": {
+      "l1": [
+        "D01"
+      ],
+      "l2": [
+        "tl-d01-retry"
+      ]
+    },
+    "D02": {
+      "l1": [
+        "D02"
+      ],
+      "l2": [
+        "tl-d02-update-failure"
+      ]
+    },
+    "D03": {
+      "l1": [
+        "D03"
+      ],
+      "l2": [
+        "tl-d03-late-failure",
+        "tl-d03-late-read",
+        "tl-a05-reopen"
+      ]
+    },
+    "D04": {
+      "l1": [
+        "D04"
+      ],
+      "rust": [
+        "intelligence::translation::tests::certified_bounds"
+      ],
+      "l3": [
+        "tl-n-c06-8k-over",
+        "tl-n-c06-16k-over"
+      ]
+    },
+    "D05": {
+      "l3": [
+        "tl-n-d05-prose",
+        "tl-n-d05-mixed",
+        "tl-n-d05-fence",
+        "tl-n-d05-chinese",
+        "tl-n-d05-unsupported",
+        "tl-n-c06-8k",
+        "tl-n-c06-16k"
+      ]
+    },
+    "D06": {
+      "rust": [
+        "intelligence::protected::tests::protected_literals_and_fake_html_are_exact"
+      ],
+      "l3": [
+        "tl-n-d06-protected-live",
+        "tl-n-d06-8k-anchors",
+        "tl-n-d06-16k-anchors",
+        "tl-n-d05-mixed",
+        "tl-n-d05-fence"
+      ]
+    },
+    "D07": {
+      "l3": [
+        "tl-n-capability",
+        "tl-n-d07-loaded",
+        "tl-n-d07-unloaded",
+        "tl-n-d07-cold-reopen",
+        "tl-n-d07-corrupt",
+        "tl-n-d07-missing",
+        "tl-n-d07-restored"
+      ],
+      "driver": [
+        "no-network",
+        "no-download"
+      ]
+    },
+    "E01": {
+      "l1": [
+        "E01"
+      ],
+      "l2": [
+        "tl-e01-mouse",
+        "tl-e01-keyboard",
+        "tl-e01-aria",
+        "tl-e01-narrow",
+        "tl-e01-font",
+        "tl-e01-themes",
+        "tl-e01-locales",
+        "translation-overlay",
+        "translation-dock"
+      ],
+      "driver": [
+        "screenshots"
+      ]
+    },
+    "E02": {
+      "l2": [
+        "translation-default-off",
+        "translation-disabled-shortcut",
+        "translation-enable-confirm",
+        "translation-enable-cancel",
+        "translation-download-enable",
+        "tl-e02-persisted",
+        "translation-enabled",
+        "translation-open",
+        "translation-shortcut-close",
+        "translation-buffer-mutual",
+        "translation-buffer-close",
+        "translation-close",
+        "translation-disable",
+        "translation-delete"
+      ]
+    },
+    "E03": {
+      "l2": [
+        "tl-e03-removed"
+      ],
+      "driver": [
+        "verdict-translation",
+        "verdict-translation-native",
+        "old-contract-removed"
+      ]
+    },
+    "E04": {
+      "l2": [
+        "tl-e04-l2-no-general"
+      ],
+      "l3": [
+        "tl-f08-guard"
+      ],
+      "driver": [
+        "isolation",
+        "cleanup",
+        "shared-resource-safety"
+      ]
+    },
+    "F01": {
+      "l1": [
+        "F01"
+      ],
+      "native": [
+        "F01"
+      ],
+      "lg": [
+        "tl-f01-begin-refused",
+        "tl-f01-zero-effects"
+      ],
+      "driver": [
+        "verdict-translation-guard"
+      ]
+    },
+    "F02": {
+      "l1": [
+        "F02"
+      ],
+      "native": [
+        "F02"
+      ],
+      "lg": [
+        "tl-f02-no-guard",
+        "tl-f02-ended-guard",
+        "tl-f02-version-changed",
+        "tl-f02-stale-permit"
+      ]
+    },
+    "F03": {
+      "native": [
+        "F03"
+      ],
+      "lg": [
+        "tl-f03-equal-text"
+      ]
+    },
+    "F04": {
+      "native": [
+        "F04"
+      ],
+      "lg": [
+        "tl-f04-takeover"
+      ]
+    },
+    "F05": {
+      "l1": [
+        "F05"
+      ],
+      "native": [
+        "restore"
+      ],
+      "lg": [
+        "tl-f05-assertion",
+        "tl-f05-ipc"
+      ]
+    },
+    "F06": {
+      "lg": [
+        "tl-f06-await-cancel",
+        "tl-f06-cancel-settled",
+        "tl-f06-await-kill"
+      ],
+      "driver": [
+        "f06-cancel-settled-before-teardown",
+        "f06-kill-reported-unconfirmed"
+      ]
+    },
+    "F07": {
+      "native": [
+        "F07"
+      ],
+      "lg": [
+        "tl-f07-empty",
+        "tl-f07-multi",
+        "tl-f07-non-text"
+      ]
+    },
+    "F08": {
+      "l3": [
+        "tl-f08-guard",
+        "tl-n-c01-old-unread",
+        "tl-n-c02-copy",
+        "tl-n-c05-no-feedback",
+        "tl-n-c04-away-unread"
+      ],
+      "lg": [
+        "tl-f08-named-only"
+      ],
+      "driver": [
+        "shared-resource-safety",
+        "general-writes-only-in-native-mode"
+      ]
+    },
+    "G01": {
+      "l1": [
+        "G01"
+      ],
+      "l2": [
+        "tl-g01-substring"
+      ],
+      "l3": [
+        "tl-n-g01-substring"
+      ]
+    },
+    "G02": {
+      "l1": [
+        "G02"
+      ],
+      "l2": [
+        "tl-g02-whole"
+      ],
+      "l3": [
+        "tl-n-g02-whole"
+      ]
+    },
+    "G03": {
+      "l1": [
+        "G03"
+      ],
+      "l2": [
+        "tl-g03-a-b-a"
+      ],
+      "l3": [
+        "tl-n-g03-a-b-a"
+      ]
+    },
+    "G04": {
+      "l1": [
+        "G04"
+      ],
+      "rust": [
+        "intelligence::pasteboard::tests::g04_only_the_receipted_self_write_is_excluded"
+      ],
+      "l3": [
+        "tl-n-g04-buttons"
+      ]
+    },
+    "G05": {
+      "l1": [
+        "G05"
+      ],
+      "l2": [
+        "tl-b05-cmd-c",
+        "tl-g05-same-bytes"
+      ],
+      "l3": [
+        "tl-n-g05-cmd-c"
+      ]
+    },
+    "G06": {
+      "l1": [
+        "G06"
+      ],
+      "rust": [
+        "intelligence::pasteboard::tests::g06_a_real_copy_right_after_a_self_write_is_not_swallowed"
+      ],
+      "l3": [
+        "tl-n-g06-interleave"
+      ]
+    },
+    "G07": {
+      "l1": [
+        "G07"
+      ],
+      "rust": [
+        "intelligence::pasteboard::tests::g07_receipts_never_cross_an_armed_cycle"
+      ],
+      "l3": [
+        "tl-n-g07-cycles"
+      ]
+    },
+    "G08": {
+      "l1": [
+        "G08"
+      ],
+      "l2": [
+        "tl-g08-recopy",
+        "tl-g08-rapid-bounded"
+      ]
+    }
+  },
+  "nativeHarness": "scripts/test-smoke-guard",
+  "harnessSafetyIds": [
+    "F01",
+    "F02",
+    "F03",
+    "F04",
+    "F05",
+    "F06",
+    "F07",
+    "F08"
+  ]
 }

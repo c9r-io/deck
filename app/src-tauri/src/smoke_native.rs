@@ -7,10 +7,15 @@
 //! It acts only on Deck's own process: AppKit events are handed to Deck's
 //! own window (never posted to the system or another process, so no
 //! Accessibility/TCC grant is used), snapshots come from Deck's own
-//! WKWebView into the isolated data directory, and the shared general
-//! pasteboard is guarded — its original items stay in process memory and
-//! are restored only while the current change is still test-owned. Nothing
-//! here spawns a process, reads content back to JS, or logs text.
+//! WKWebView into the isolated data directory, and a pasteboard guard
+//! (general, or a test-owned named board) refuses every test write unless it
+//! holds a stable backup and the board is still at its owned version; see the
+//! contract in `native/SmokeBridge.swift`. Settling always disarms Copied-text
+//! observation first, so a restored original is never read by the Lens.
+//! A watcher thread lets the driver settle the guard (`settle-request` →
+//! `settle-result` in the fixture directory) before it terminates this
+//! process. Nothing here spawns a process, reads content back to JS, or logs
+//! text.
 use crate::error::{DeckError, ErrorKind};
 
 fn unavailable() -> DeckError {
@@ -33,13 +38,19 @@ mod native {
         pub fn deck_smoke_key(chars: *const c_char, key_code: u16, modifiers: u64) -> i32;
         pub fn deck_smoke_app(action: i32) -> i32;
         pub fn deck_smoke_viewport(height: f64);
+        pub fn deck_smoke_roman_input() -> i32;
         pub fn deck_smoke_snapshot(path: *const c_char) -> i32;
-        pub fn deck_smoke_pb_guard_begin() -> i32;
+        pub fn deck_smoke_pb_guard_begin(board: i32) -> i32;
         pub fn deck_smoke_pb_write(text: *const c_char) -> i64;
-        pub fn deck_smoke_pb_claim(expected: *const c_char) -> i32;
+        pub fn deck_smoke_pb_permit() -> i64;
+        pub fn deck_smoke_pb_adopt(receipt: i64) -> i64;
         pub fn deck_smoke_pb_guard_end() -> i32;
+        pub fn deck_smoke_pb_state() -> i32;
+        pub fn deck_smoke_pb_audit() -> *mut c_char;
         pub fn deck_smoke_pb_named(enable: i32) -> i32;
         pub fn deck_smoke_pb_named_write(kind: i32, text: *const c_char) -> i64;
+        pub fn deck_smoke_pb_count(board: i32) -> i64;
+        pub fn deck_pasteboard_free(text: *mut c_char);
     }
 }
 
@@ -58,15 +69,10 @@ async fn blocking<T: Send + 'static>(
         .map_err(|_| unavailable())?
 }
 
-const MODIFIERS: &[(&str, u64)] = &[
-    ("shift", 1 << 17),
-    ("control", 1 << 18),
-    ("option", 1 << 19),
-    ("command", 1 << 20),
-];
-
-#[tauri::command]
-pub(crate) async fn smoke_native_input(
+/// One native input step (closed `kind`; CSS coordinates in the webview).
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct NativeInput {
     kind: String,
     x: Option<f64>,
     y: Option<f64>,
@@ -75,7 +81,27 @@ pub(crate) async fn smoke_native_input(
     key_code: Option<u16>,
     modifiers: Option<Vec<String>>,
     viewport: Option<f64>,
-) -> Result<i32, DeckError> {
+}
+
+const MODIFIERS: &[(&str, u64)] = &[
+    ("shift", 1 << 17),
+    ("control", 1 << 18),
+    ("option", 1 << 19),
+    ("command", 1 << 20),
+];
+
+#[tauri::command]
+pub(crate) async fn smoke_native_input(input: NativeInput) -> Result<i32, DeckError> {
+    let NativeInput {
+        kind,
+        x,
+        y,
+        dy,
+        text,
+        key_code,
+        modifiers,
+        viewport,
+    } = input;
     blocking(move || {
         let (x, y) = (x.unwrap_or(0.0), y.unwrap_or(0.0));
         let flags = modifiers
@@ -104,6 +130,7 @@ pub(crate) async fn smoke_native_input(
                 "hide" => native::deck_smoke_app(0),
                 "state" => native::deck_smoke_app(1),
                 "activate" => native::deck_smoke_app(2),
+                "roman" => native::deck_smoke_roman_input(),
                 _ => return Err(unavailable()),
             })
         }
@@ -145,44 +172,131 @@ pub(crate) async fn smoke_native_snapshot(name: String) -> Result<i32, DeckError
     .await
 }
 
+/// Settle the guard after disarming Copied-text observation (so a restored
+/// original is never read). Returns the bridge's result code.
+#[cfg(all(debug_assertions, target_os = "macos"))]
+fn settle() -> i64 {
+    crate::intelligence::pasteboard::translation_clipboard_disarm();
+    i64::from(unsafe { native::deck_smoke_pb_guard_end() })
+}
+
+#[cfg(all(debug_assertions, target_os = "macos"))]
+fn audit() -> String {
+    unsafe {
+        let ptr = native::deck_smoke_pb_audit();
+        if ptr.is_null() {
+            return String::new();
+        }
+        let text = std::ffi::CStr::from_ptr(ptr).to_string_lossy().into_owned();
+        native::deck_pasteboard_free(ptr);
+        text
+    }
+}
+
+fn fixture_dir() -> std::path::PathBuf {
+    crate::datadir::deck_dir().join("translation-fixture")
+}
+
+/// Driver-side settlement: while this process lives, a `settle-request`
+/// file makes it settle the guard and write `settle-result`
+/// (`<code>|<audit>`, numbers only) before the driver may terminate it.
+#[cfg(all(debug_assertions, target_os = "macos"))]
+fn start_settle_watcher() {
+    static STARTED: std::sync::Once = std::sync::Once::new();
+    STARTED.call_once(|| {
+        std::thread::spawn(|| loop {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            let request = fixture_dir().join("settle-request");
+            if request.is_file() {
+                let _ = std::fs::remove_file(&request);
+                let code = settle();
+                let _ = std::fs::write(
+                    fixture_dir().join("settle-result"),
+                    format!("{code}|{}", audit()),
+                );
+            }
+        });
+    });
+}
+
 /// Pasteboard guard and the test-owned named pasteboard. Returns the
 /// bridge's closed numeric result; never any pasteboard content.
 #[tauri::command]
 pub(crate) async fn smoke_pasteboard(
     action: String,
     text: Option<String>,
+    board: Option<i32>,
+    receipt: Option<i64>,
 ) -> Result<i64, DeckError> {
     blocking(move || {
         let text = c_text(text.as_deref().unwrap_or(""))?;
         #[cfg(all(debug_assertions, target_os = "macos"))]
         unsafe {
+            start_settle_watcher();
+            let board = board.unwrap_or(0).clamp(0, 1);
             Ok(match action.as_str() {
-                "guard-begin" => i64::from(native::deck_smoke_pb_guard_begin()),
+                "guard-begin" => i64::from(native::deck_smoke_pb_guard_begin(board)),
                 "write" => native::deck_smoke_pb_write(text.as_ptr()),
-                "claim" => i64::from(native::deck_smoke_pb_claim(text.as_ptr())),
-                "guard-end" => i64::from(native::deck_smoke_pb_guard_end()),
+                "permit" => native::deck_smoke_pb_permit(),
+                "adopt" => native::deck_smoke_pb_adopt(receipt.unwrap_or(-1)),
+                "guard-end" => settle(),
+                "state" => i64::from(native::deck_smoke_pb_state()),
+                "count" => native::deck_smoke_pb_count(board),
                 "named-on" => i64::from(native::deck_smoke_pb_named(1)),
                 "named-off" => i64::from(native::deck_smoke_pb_named(0)),
                 "named-text" => native::deck_smoke_pb_named_write(0, text.as_ptr()),
                 "named-data" => native::deck_smoke_pb_named_write(1, text.as_ptr()),
                 "named-empty" => native::deck_smoke_pb_named_write(2, text.as_ptr()),
+                "named-multi" => native::deck_smoke_pb_named_write(3, text.as_ptr()),
+                "named-lazy" => native::deck_smoke_pb_named_write(4, text.as_ptr()),
+                "named-clear" => native::deck_smoke_pb_named_write(5, text.as_ptr()),
                 _ => return Err(unavailable()),
             })
         }
         #[cfg(not(all(debug_assertions, target_os = "macos")))]
         {
-            let _ = (action, text);
+            let _ = (action, text, board, receipt);
             Err(unavailable())
         }
     })
     .await
 }
 
+/// Content-free guard audit: `id,board,writes,rejects,reason,result;…`.
+#[tauri::command]
+pub(crate) async fn smoke_pasteboard_audit() -> Result<String, DeckError> {
+    blocking(|| {
+        #[cfg(all(debug_assertions, target_os = "macos"))]
+        {
+            Ok(audit())
+        }
+        #[cfg(not(all(debug_assertions, target_os = "macos")))]
+        {
+            Err(unavailable())
+        }
+    })
+    .await
+}
+
+/// The /copy fixture's (or driver's) write receipt: the changeCount its own
+/// clearContents() returned, or -1 when it refused or wrote nothing. Taking
+/// it removes it, so a receipt is used once.
+#[tauri::command]
+pub(crate) fn smoke_native_fixture_receipt() -> Result<i64, DeckError> {
+    gate()?;
+    let path = fixture_dir().join("copy-receipt");
+    let value = std::fs::read_to_string(&path).ok();
+    let _ = std::fs::remove_file(&path);
+    Ok(value
+        .and_then(|text| text.trim().parse::<i64>().ok())
+        .unwrap_or(-1))
+}
+
 /// Where the isolated driver placed the deterministic `/copy` CLI fixture.
 #[tauri::command]
 pub(crate) fn smoke_native_fixture() -> Result<String, DeckError> {
     gate()?;
-    let path = crate::datadir::deck_dir().join("translation-fixture/copy_agent.py");
+    let path = fixture_dir().join("copy_agent.py");
     if !path.is_file() {
         return Err(unavailable());
     }

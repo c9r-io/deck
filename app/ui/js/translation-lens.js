@@ -16,10 +16,12 @@
 //   gate records a baseline (never reads existing text); a later change
 //   while Deck is focused is translated automatically. Readiness is shown
 //   only after the baseline exists. Focus loss disarms; nothing copied while
-//   away is read. Deck's own copies are recognised and never fed back.
+//   away is read. Deck's own copies (both buttons, Cmd+C in the result) go
+//   through one receipted writer, and only that exact pasteboard version is
+//   excluded — never text that merely looks like an old result.
 // - Reading never pauses: a live selection inside the result only defers
 //   showing a newer result until the selection or its focus ends.
-import { $, ctx, state, listen, uev } from './state.js';
+import { $, ctx, state, listen } from './state.js';
 import { t, onLocaleChange } from './i18n.js';
 import { toast } from './dialogs.js';
 import { registerShortcutAction } from './shortcuts.js';
@@ -46,13 +48,15 @@ let appFocused = true;
 const paneIds = new WeakMap(), submitted = new WeakMap(); let paneCounter = 0;
 // Test-visible counters only (no content): schedules, requests and DOM writes.
 const metrics = { captures: 0, submitted: 0, settled: 0, cancelled: 0, maxInflight: 0,
-  domWrites: 0, retries: 0, clipboardAccepted: 0, clipboardIgnored: 0, last: {}, history: {}, accepted: [] };
+  domWrites: 0, retries: 0, clipboardAccepted: 0, clipboardIgnored: 0, last: {}, history: {}, accepted: [],
+  lastWriteReceipt: null };
 const stamp = name => {
   const now = performance.now(); metrics.last[name] = now;
   const list = metrics.history[name] ||= []; list.push(now); if (list.length > 64) list.shift();
 };
 export const translationLensMetrics = () => ({ ...metrics, last: { ...metrics.last }, history: { ...metrics.history }, accepted: [...metrics.accepted],
-  inflight: inflight ? 1 : 0, pending: model.pending ? 1 : 0, status: model.status({ active: meaningful() }) });
+  inflight: inflight ? 1 : 0, pending: model.pending ? 1 : 0, status: model.status({ active: meaningful() }),
+  activity: (enabled() ? 1 : 0) | (appFocused ? 2 : 0) | (document.hidden ? 4 : 0) | (state.view === 'session' ? 8 : 0) });
 
 // In-page view of the shown snapshot for the WKWebView smoke's assertions
 // (the DOM already shows it); it is never logged or sent anywhere.
@@ -280,10 +284,12 @@ async function translationShortcut() {
   else if (action === 'close') closeTranslationLens();
   else open();
 }
-async function copySnapshot(text, source = false) {
+async function copySnapshot(text, kind = 'translation') {
   if (!text) return;
-  try { await copyTranslation(text); toast(t(source ? 'translation.sourceCopied' : 'translation.copied')); }
-  catch { toast(t('translation.copyFailed')); }
+  try {
+    metrics.lastWriteReceipt = await copyTranslation(text);
+    if (kind !== 'selection') toast(t(kind === 'source' ? 'translation.sourceCopied' : 'translation.copied'));
+  } catch { toast(t('translation.copyFailed')); }
 }
 function tabKey(event) {
   const order = { ArrowLeft: -1, ArrowRight: 1, Home: -9, End: 9 }[event.key];
@@ -302,8 +308,16 @@ export function initTranslationLens({ panes, closeBuffer }) {
   for (const mode of MODES) $(`translation-tab-${mode}`).onclick = () => selectMode(mode);
   $('translation-tabs').addEventListener('keydown', tabKey);
   $('translation-copy').onclick = () => copySnapshot(model.resultText());
-  $('translation-copy-source').onclick = () => copySnapshot(model.sourceForCopy(), true);
+  $('translation-copy-source').onclick = () => copySnapshot(model.sourceForCopy(), 'source');
   const result = $('translation-result');
+  // Cmd+C of a selection inside the result is a Lens-owned write too: route
+  // it through the receipted writer instead of WebKit's own pasteboard write.
+  result.addEventListener('copy', event => {
+    const selection = document.getSelection?.(), text = String(selection || '');
+    if (!text || !result.contains?.(selection.anchorNode)) return;
+    event.preventDefault();
+    copySnapshot(text, 'selection');
+  });
   const release = () => { if (pointerHeld) { pointerHeld = false; render(); } };
   result.addEventListener('pointerdown', () => { pointerHeld = true; });
   // Any sign that the button is no longer pressed ends the hold: a lost
@@ -329,10 +343,13 @@ export function initTranslationLens({ panes, closeBuffer }) {
   window.addEventListener('deck-translation-enabled-changed', refreshCapability);
   const focusChanged = focused => { appFocused = focused; if (focused) resumeFocus(); else interrupt(); };
   window.addEventListener('focus', () => focusChanged(true)); // page focus implies the app is in front
+  // Without native window events (tests, or a refused listen) page blur is
+  // the fallback; this module never logs (tests/log_privacy.rs).
+  const domBlur = () => window.addEventListener('blur', () => focusChanged(false));
   if (window.__TAURI__?.event) {
-    listen('tauri://focus', () => focusChanged(true)).catch(() => uev('listen-fail', 'window-focus'));
-    listen('tauri://blur', () => focusChanged(false)).catch(() => uev('listen-fail', 'window-focus'));
-  } else window.addEventListener('blur', () => focusChanged(false)); // no native window events (tests)
+    listen('tauri://focus', () => focusChanged(true)).catch(domBlur);
+    listen('tauri://blur', () => focusChanged(false)).catch(domBlur);
+  } else domBlur();
   document.addEventListener('visibilitychange', () => { if (document.hidden) interrupt(); else resumeFocus(); });
   new ResizeObserver(() => {
     syncOverlay();

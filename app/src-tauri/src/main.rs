@@ -144,6 +144,7 @@ pub(crate) const SMOKE_ENTRIES: &[(&str, &str)] = &[
     ("voice", "m.verifyVoice()"),
     ("translation", "m.verifyTranslation()"),
     ("translation-native", "m.verifyTranslationNative()"),
+    ("translation-guard", "m.verifyTranslationGuard()"),
     ("resume", "m.verifyResume()"),
     ("buffer", "m.verifyBuffer()"),
     ("buffer-narrow", "m.verifyBufferNarrow()"),
@@ -356,6 +357,7 @@ fn main() {
             intelligence::pasteboard::translation_clipboard_arm,
             intelligence::pasteboard::translation_clipboard_disarm,
             intelligence::pasteboard::translation_clipboard_poll,
+            intelligence::pasteboard::translation_clipboard_write,
             input_source::input_source_snapshot,
             notify::notify_configure,
             notify::notify_status,
@@ -506,6 +508,8 @@ fn main() {
             smoke_native::smoke_native_snapshot,
             smoke_native::smoke_native_fixture,
             smoke_native::smoke_pasteboard,
+            smoke_native::smoke_pasteboard_audit,
+            smoke_native::smoke_native_fixture_receipt,
         ])
         .build(tauri::generate_context!())
         .expect("error while building deck")

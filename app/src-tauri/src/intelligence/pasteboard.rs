@@ -3,8 +3,12 @@
 //! time. Focus loss clears ownership; a new arm only records changeCount.
 //! There is no command that reads the clipboard's existing content: text
 //! copied before the Copied-text tab armed (or while Deck was away) is
-//! never read. Debug smoke builds may point this same gate at a named test
-//! pasteboard (`native/SmokeBridge.swift`); the gate logic is unchanged.
+//! never read. Deck's own Lens copies go through `translation_clipboard_write`,
+//! whose native write returns the changeCount it produced; the gate excludes
+//! exactly that version (never text that resembles an old result), and the
+//! receipt dies with the armed cycle. Debug smoke builds may point this same
+//! gate at a named test pasteboard (`native/SmokeBridge.swift`); the gate
+//! logic is unchanged.
 use crate::error::{DeckError, ErrorKind};
 use crate::sync::LockRecover;
 use std::ffi::{c_char, CStr};
@@ -15,23 +19,34 @@ struct Gate {
     armed: bool,
     baseline: i64,
     generation: u64,
+    /// The one version Deck's Lens itself wrote in this armed cycle (the
+    /// writer's receipt). Only that exact changeCount is excluded; a later
+    /// version is a real copy even when its text is identical.
+    own: Option<i64>,
 }
 impl Gate {
     fn arm(&mut self, count: i64) {
         self.armed = true;
         self.baseline = count;
+        self.own = None;
         self.generation = self.generation.wrapping_add(1);
     }
     fn disarm(&mut self) {
         self.armed = false;
+        self.own = None;
         self.generation = self.generation.wrapping_add(1);
+    }
+    fn wrote(&mut self, count: i64) {
+        if self.armed && count > self.baseline {
+            self.own = Some(count);
+        }
     }
     fn changed(&mut self, count: i64, generation: u64) -> bool {
         if !self.armed || self.generation != generation || count <= self.baseline {
             return false;
         }
         self.baseline = count;
-        true
+        self.own.take() != Some(count)
     }
 }
 static GATE: OnceLock<Mutex<Gate>> = OnceLock::new();
@@ -50,6 +65,7 @@ unsafe extern "C" {
     fn deck_pasteboard_focused_count() -> i64;
     fn deck_pasteboard_read_text() -> *mut c_char;
     fn deck_pasteboard_free(text: *mut c_char);
+    fn deck_pasteboard_write_text(text: *const c_char) -> i64;
 }
 fn focused_count() -> Result<i64, DeckError> {
     #[cfg(target_os = "macos")]
@@ -108,6 +124,31 @@ pub(crate) fn translation_clipboard_arm() -> Result<(), DeckError> {
 #[tauri::command]
 pub(crate) fn translation_clipboard_disarm() {
     locked().disarm();
+}
+
+/// Deck's own Lens copy (Copy Translation, Copy Source, Cmd+C inside the
+/// result). The native write returns its receipt, recorded before this
+/// command returns; sync commands run on the main thread, so a poll cannot
+/// publish the write in between. Only that version is excluded from
+/// Copied-text observation.
+#[tauri::command]
+pub(crate) fn translation_clipboard_write(text: String) -> Result<i64, DeckError> {
+    if !crate::documents::local_translation_settings().0 {
+        return Err(error("translation-disabled"));
+    }
+    let input = std::ffi::CString::new(text).map_err(|_| error("clipboard-unavailable"))?;
+    #[cfg(target_os = "macos")]
+    let count = unsafe { deck_pasteboard_write_text(input.as_ptr()) };
+    #[cfg(not(target_os = "macos"))]
+    let count = {
+        let _ = input;
+        -1
+    };
+    if count < 0 {
+        return Err(error("clipboard-unavailable"));
+    }
+    locked().wrote(count);
+    Ok(count)
 }
 
 #[tauri::command]
@@ -206,5 +247,40 @@ mod tests {
         assert!(!state.changed(5, state.generation));
         assert!(!state.changed(6, old_generation));
         assert!(state.changed(6, state.generation));
+    }
+    #[test]
+    fn g04_only_the_receipted_self_write_is_excluded() {
+        let mut state = Gate::default();
+        state.arm(10);
+        let generation = state.generation;
+        state.wrote(11); // Copy Translation
+        assert!(!state.changed(11, generation), "own write never feeds back");
+        assert!(state.changed(12, generation), "the next real copy is read");
+    }
+    #[test]
+    fn g06_a_real_copy_right_after_a_self_write_is_not_swallowed() {
+        let mut state = Gate::default();
+        state.arm(20);
+        let generation = state.generation;
+        state.wrote(21);
+        // an external copy landed before the poll: the poll sees 22
+        assert!(state.changed(22, generation));
+        assert!(!state.changed(22, generation));
+        // the stale receipt cannot hide any later version either
+        assert!(state.changed(23, generation));
+    }
+    #[test]
+    fn g07_receipts_never_cross_an_armed_cycle() {
+        let mut state = Gate::default();
+        state.arm(30);
+        state.wrote(31);
+        state.disarm(); // mode switch, close, focus loss
+        state.arm(31); // new cycle: baseline covers the old version, nothing read
+        let generation = state.generation;
+        assert!(state.own.is_none());
+        assert!(state.changed(32, generation), "a new-cycle copy is read");
+        let mut unarmed = Gate::default();
+        unarmed.wrote(5); // Live mode copy: not observing, nothing recorded
+        assert!(unarmed.own.is_none());
     }
 }

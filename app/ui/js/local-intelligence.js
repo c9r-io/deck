@@ -1,7 +1,6 @@
 // Typed Local Intelligence translation IPC. The backend is authoritative for
 // input bounds, native focus, clipboard baselines and closed errors.
 import { inv } from './state.js';
-import { writeClipboard } from './terminal-clipboard.js';
 export const MAX_TRANSLATION_BYTES = 16 * 1024;
 export const MAX_LIVE_TRANSLATION_BYTES = 4 * 1024;
 let smoke = null;
@@ -22,7 +21,9 @@ export const cancel = requestId => smoke ? smoke.cancel(requestId) : inv('transl
 export const clipboardArm = () => smoke?.arm ? smoke.arm() : inv('translation_clipboard_arm');
 export const clipboardDisarm = () => smoke?.disarm ? smoke.disarm() : inv('translation_clipboard_disarm').catch(() => {});
 export const clipboardPoll = () => smoke?.poll ? smoke.poll() : inv('translation_clipboard_poll');
-export const copyTranslation = text => smoke?.copy ? smoke.copy(text) : writeClipboard(text);
+// Lens-owned copy: resolves to the write receipt (pasteboard changeCount)
+// the native gate uses to exclude exactly this version from observation.
+export const copyTranslation = text => smoke?.copy ? smoke.copy(text) : inv('translation_clipboard_write', { text });
 const CODES = Object.freeze(['translation-disabled', 'translation-model-missing', 'translation-model-corrupt',
   'translation-model-download-failed', 'translation-model-delete-failed', 'source-language-unsupported',
   'view-too-large', 'text-empty', 'text-too-large', 'request-cancelled', 'protected-restoration-failed',
