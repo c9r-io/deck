@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.7.21 — 2026-09-30 (Nightly)
+
+- Card reminders: **Set reminder…** in a card's context menu or the Session
+  header brings you back to that card at a chosen time, through a macOS
+  notification (Open / Snooze one hour) or, if you choose, only inside Deck.
+  Due reminders show on the card, in Needs attention and in the Dock count.
+  A reminder never sends input, starts a session or moves a card, and a card
+  with a pending or due reminder is not closed automatically; closing it by
+  hand asks you to cancel the reminder first.
+- Clock automations can now use the per-rule option **Send the first step to
+  a newly started agent without waiting for readiness**, the same opt-in
+  Slack badge rules already had. Without it, clock runs keep waiting for one
+  real interaction with a freshly started agent.
+- A terminal's automatic replies to status queries from the program in the
+  pane no longer clear your text selection or jump a scrolled terminal back
+  to the bottom; only real typing and pastes do.
+
 ## 0.7.20 — 2026-09-29 (Nightly)
 
 - Local Translation starts translating as soon as you open it, even when the
