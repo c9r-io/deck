@@ -8,7 +8,8 @@ dir=$(mktemp -d "${TMPDIR:-/tmp}/deck-smoke-guard.XXXXXX")
 trap 'rm -rf "$dir"' EXIT HUP INT TERM
 build() {
   xcrun swiftc -parse-as-library -swift-version 5 "$@" \
-    app/src-tauri/native/PasteboardBridge.swift app/src-tauri/native/SmokeBridge.swift \
+    app/src-tauri/native/PasteboardBridge.swift app/src-tauri/native/NotificationBridge.swift \
+    app/src-tauri/native/SmokeBridge.swift \
     app/src-tauri/native/tests/SmokeGuardTests.swift -o "$dir/guard-tests" 2>"$dir/build.log" \
     || { cat "$dir/build.log" >&2; exit 2; }
 }
