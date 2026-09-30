@@ -449,7 +449,15 @@ fn external_text_reaches_the_one_admission() {
     );
     // ...an owner command refuses a claim outright...
     assert!(validate.contains("if a.authority.is_some() && !a.channel_path {"));
-    assert!(validate.contains("if a.first_send.is_some() && !a.channel_path {"));
+    // Owner requests can obtain only a native-verified clock head policy;
+    // request bytes alone never become a row verdict or content authority.
+    for owner in ["queue_add", "queue_add_reviewed_list"] {
+        assert!(body("scheduler/ops.rs", owner).contains("admit_first_send(&mut args);"));
+    }
+    let first_send = body("scheduler/ops.rs", "admit_first_send");
+    assert!(first_send.contains("clock_policy_pending"));
+    assert!(first_send.contains("clock_head_matches"));
+    assert!(first_send.contains("clock == args.channel_path"));
     // ...and the verdict is the backend's own (`#[serde(skip)]`), never a
     // caller field, while provenance stays set beside it
     let ops = production_sources()

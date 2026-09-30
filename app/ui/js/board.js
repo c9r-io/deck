@@ -1,5 +1,7 @@
 // board.js — board CRUD provider, polling loop, sidebar/tabs/board rendering
 // Part of deck's no-build frontend: native ES modules, no bundler.
+// Frozen automation heads claim first-send risk acceptance through native
+// source-specific admission: external Slack or owner clock, never later rows.
 // Polls are single-flight with ONE queued follow-up: a poll requested while
 // one is in flight runs after it (its request may predate the caller's event),
 // and every such caller receives the follow-up's promise. The interval tick
@@ -519,8 +521,8 @@ export const provider = {
         ...(approval.event ? { event: approval.event } : {}),
         skeletons: (approval.skeletons || []).slice(step, step + count) } } : {});
       /* the first-send readiness override belongs to the head row alone
-         (scheduler/first_send.rs); only on the external path, re-checked */
-      const firstSend = external && plan.firstSend?.rule
+         (scheduler/first_send.rs); re-checked by source-specific native admission */
+      const firstSend = ['slack', 'clock'].includes(card.origin.source) && plan.firstSend?.rule
         ? { firstSend: { rule: plan.firstSend.rule, event: card.origin.key } } : {};
       if (plan.reviewEach) {
         const first = plan.initialSteps[0];

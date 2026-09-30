@@ -5331,7 +5331,8 @@ while (sysread(STDIN, my $b, 1)) { printf $l "%02x", ord($b); }
         row.cmd = cmd.into();
         row.readiness_override = Some(ReadinessOverride {
             rule: granted_rule().id,
-            trigger: TriggerClass::SlackBadge,
+            trigger: first_send::FirstSendOrigin::SlackBadge,
+            clock_target: None,
         });
     }
     let session = row.session.clone();
@@ -5456,7 +5457,8 @@ fn first_send_rule(cmd: &str) -> crate::inbound::Rule {
 fn first_send_override() -> ReadinessOverride {
     ReadinessOverride {
         rule: granted_rule().id,
-        trigger: TriggerClass::SlackBadge,
+        trigger: first_send::FirstSendOrigin::SlackBadge,
+        clock_target: None,
     }
 }
 
@@ -5518,7 +5520,7 @@ fn legacy_rules_rows_and_deliveries_read_as_no_first_send_override() {
 /// accepted the risk, for a supported agent command, against the backend's
 /// own copy of that rule's event. Every refusal admits the row without it.
 #[test]
-fn only_a_slack_badge_head_row_can_be_admitted_with_the_override() {
+fn only_verified_automation_head_rows_can_be_admitted_with_the_override() {
     let claim = first_send_claim();
     let event = slack_event("C9/1.2", "eyes", "slack");
     let config = config_with(vec![first_send_rule("claude")]);
@@ -5566,13 +5568,20 @@ fn only_a_slack_badge_head_row_can_be_admitted_with_the_override() {
     clock.source = "clock".into();
     assert_eq!(
         verify(
-            Some(&config_with(vec![clock])),
+            Some(&config_with(vec![clock.clone()])),
             "claude",
             "at",
             false,
-            Some(&event)
+            Some(&slack_event("C9/1.2", &clock.badge, "clock"))
         ),
-        Err("trigger")
+        Ok(ReadinessOverride {
+            rule: clock.id.clone(),
+            trigger: first_send::FirstSendOrigin::Clock,
+            clock_target: Some(first_send::ClockTarget {
+                project: clock.project_id.clone(),
+                dir: clock.dir.clone()
+            })
+        })
     );
     assert_eq!(
         verify(Some(&config), "claude --resume", "at", false, Some(&event)),
@@ -5655,10 +5664,13 @@ fn the_override_rides_the_external_head_row_only() {
         first_send: Some(first_send_claim()),
         first_send_granted: None,
     };
-    assert!(
-        validate_add(&args).is_err(),
-        "an owner row never carries the claim"
-    );
+    assert!(validate_add(&args).is_ok());
+    let mut ordinary = qs(vec![]);
+    add_item(&mut ordinary, args.clone(), "first".into()).unwrap();
+    assert!(ordinary.items[0].readiness_override.is_none() && !ordinary.items[0].external);
+    // Missing native admission never changes the request fingerprint on replay.
+    add_item(&mut ordinary, args.clone(), "first".into()).unwrap();
+    assert_eq!(ordinary.items.len(), 1);
     args.channel_path = true;
     args.first_send_granted = Some(first_send_override());
     let mut q = qs(vec![]);
@@ -5953,93 +5965,105 @@ fn overridden_first_send_stabilizes_and_rechecks_before_paste() {
 #[test]
 fn overridden_stabilization_cancels_on_withdrawal_hold_or_replacement() {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-    for change in [
-        "pause",
-        "delete",
-        "revision",
-        "revocation",
-        "needs-input",
-        "unreadable",
-        "replacement",
-    ] {
-        let qm = Mutex::new(qs(vec![overridden_head("h")]));
-        let ticks = AtomicUsize::new(0);
-        let revoked = AtomicBool::new(false);
-        let obs = unestablished(NOW - 400);
-        let result = send_one_safe_stabilized(
-            &qm,
-            &AtomicBool::new(false),
-            SendRequest {
-                session: "s",
-                now_min: 720,
-                activity: &obs,
-                requested: None,
-            },
-            &SendHooks {
-                fire: &|_| panic!("{change}: no paste after withdrawal"),
-                persist: &ok_persist,
-                kill: &|_| {},
-                authority: &|| {
-                    if revoked.load(Ordering::SeqCst) && change == "unreadable" {
-                        None
-                    } else {
-                        let mut rule = first_send_rule("claude");
-                        if revoked.load(Ordering::SeqCst) && change == "revocation" {
-                            rule.first_send_without_readiness = false;
-                        }
-                        Some(config_with(vec![rule]))
-                    }
+    for clock in [false, true] {
+        for change in [
+            "pause",
+            "delete",
+            "revision",
+            "revocation",
+            "needs-input",
+            "unreadable",
+            "replacement",
+        ] {
+            let qm = Mutex::new(qs(vec![if clock {
+                clock_first_send_head()
+            } else {
+                overridden_head("h")
+            }]));
+            let ticks = AtomicUsize::new(0);
+            let revoked = AtomicBool::new(false);
+            let obs = unestablished(NOW - 400);
+            let result = send_one_safe_stabilized(
+                &qm,
+                &AtomicBool::new(false),
+                SendRequest {
+                    session: "s",
+                    now_min: 720,
+                    activity: &obs,
+                    requested: None,
                 },
-            },
-            &ContextHooks {
-                prepare: &|_, _| {
-                    Prepared::Probe(probe_result(
-                        ContextStatus::Ready,
-                        ContextCode::ProcessMatched,
-                        1,
-                    ))
-                },
-                final_probe: &|_| {
-                    probe_result(
-                        if change == "replacement" && ticks.load(Ordering::SeqCst) > 0 {
-                            ContextStatus::SessionReplaced
+                &SendHooks {
+                    fire: &|_| panic!("{change}: no paste after withdrawal"),
+                    persist: &ok_persist,
+                    kill: &|_| {},
+                    authority: &|| {
+                        if revoked.load(Ordering::SeqCst) && change == "unreadable" {
+                            None
                         } else {
-                            ContextStatus::Ready
-                        },
-                        ContextCode::ProcessMatched,
-                        1,
-                    )
-                },
-            },
-            &StabilizationOps {
-                sleep: &|_| {
-                    if ticks.fetch_add(1, Ordering::SeqCst) == 0 {
-                        let mut q = qm.lock_or_recover();
-                        match change {
-                            "pause" => q.items[0].paused = true,
-                            "delete" => q.items.clear(),
-                            "revision" => q.items[0].revision += 1,
-                            "revocation" | "unreadable" => revoked.store(true, Ordering::SeqCst),
-                            _ => {}
+                            let mut rule = if clock {
+                                clock_first_send_rule()
+                            } else {
+                                first_send_rule("claude")
+                            };
+                            if revoked.load(Ordering::SeqCst) && change == "revocation" {
+                                rule.first_send_without_readiness = false;
+                            }
+                            Some(config_with(vec![rule]))
                         }
-                    }
+                    },
                 },
-                observe: &|| {
-                    let mut latest = obs.clone();
-                    if change == "needs-input" {
-                        latest.get_mut("s").unwrap().agent = Some("needs-input");
-                    }
-                    Some(latest)
+                &ContextHooks {
+                    prepare: &|_, _| {
+                        Prepared::Probe(probe_result(
+                            ContextStatus::Ready,
+                            ContextCode::ProcessMatched,
+                            1,
+                        ))
+                    },
+                    final_probe: &|_| {
+                        probe_result(
+                            if change == "replacement" && ticks.load(Ordering::SeqCst) > 0 {
+                                ContextStatus::SessionReplaced
+                            } else {
+                                ContextStatus::Ready
+                            },
+                            ContextCode::ProcessMatched,
+                            1,
+                        )
+                    },
                 },
-            },
-        );
-        assert!(
-            matches!(result, SendResult::Nothing | SendResult::Blocked { .. }),
-            "{change}: {result:?}"
-        );
-        let q = qm.lock_or_recover();
-        assert!(q.pending.is_empty() && q.deliveries.is_empty(), "{change}");
-        assert!(q.items.iter().all(|i| i.attempts == 0), "{change}");
+                &StabilizationOps {
+                    sleep: &|_| {
+                        if ticks.fetch_add(1, Ordering::SeqCst) == 0 {
+                            let mut q = qm.lock_or_recover();
+                            match change {
+                                "pause" => q.items[0].paused = true,
+                                "delete" => q.items.clear(),
+                                "revision" => q.items[0].revision += 1,
+                                "revocation" | "unreadable" => {
+                                    revoked.store(true, Ordering::SeqCst)
+                                }
+                                _ => {}
+                            }
+                        }
+                    },
+                    observe: &|| {
+                        let mut latest = obs.clone();
+                        if change == "needs-input" {
+                            latest.get_mut("s").unwrap().agent = Some("needs-input");
+                        }
+                        Some(latest)
+                    },
+                },
+            );
+            assert!(
+                matches!(result, SendResult::Nothing | SendResult::Blocked { .. }),
+                "{change}: {result:?}"
+            );
+            let q = qm.lock_or_recover();
+            assert!(q.pending.is_empty() && q.deliveries.is_empty(), "{change}");
+            assert!(q.items.iter().all(|i| i.attempts == 0), "{change}");
+        }
     }
 }
 
@@ -6286,7 +6310,7 @@ fn an_overridden_row_keeps_every_identity_check() {
 /// the first-interaction gate on a fresh agent whatever the badge rules
 /// say, because only admission writes the override and it refuses them.
 #[test]
-fn channel_monitor_connector_and_clock_head_rows_cannot_use_the_override() {
+fn channel_monitor_connector_and_manual_head_rows_cannot_use_the_override() {
     let obs = unestablished(NOW - 400);
     // channel monitor: external head row with message text; channel rules
     // are not badge rules, so no claim naming one is ever admitted
@@ -6297,10 +6321,10 @@ fn channel_monitor_connector_and_clock_head_rows_cannot_use_the_override() {
     let mut connector = bootstrap_row("claude");
     connector.external = true;
     connector.id = "k".into();
-    // clock: owner text
-    let mut clock = bootstrap_row("claude");
-    clock.id = "c".into();
-    for row in [channel, connector, clock] {
+    // generic manual owner head: no native clock event or per-rule policy
+    let mut manual = bootstrap_row("claude");
+    manual.id = "c".into();
+    for row in [channel, connector, manual] {
         assert_eq!(
             hold_reason(&row, obs.get("s")),
             Some(Hold::FirstInteraction),
@@ -6829,4 +6853,222 @@ mod real_claude {
             }
         }
     }
+}
+
+fn clock_first_send_rule() -> crate::inbound::Rule {
+    let mut rule = first_send_rule("claude");
+    rule.source = "clock".into();
+    rule.badge = rule.id.clone();
+    rule.enabled = true;
+    rule
+}
+
+fn clock_first_send_head() -> QueueItem {
+    let mut row = overridden_head("clock-head");
+    row.external = false;
+    let rule = clock_first_send_rule();
+    row.readiness_override = Some(ReadinessOverride {
+        rule: rule.id.clone(),
+        trigger: first_send::FirstSendOrigin::Clock,
+        clock_target: Some(first_send::ClockTarget {
+            project: rule.project_id,
+            dir: rule.dir,
+        }),
+    });
+    row
+}
+
+/// Clock owner heads share the existing worker, audit, review and ambiguity paths.
+#[test]
+fn clock_head_stabilizes_without_grant_and_owner_followups_keep_ordinary_guards() {
+    let obs = unestablished(NOW - 400);
+    let mut row = clock_first_send_head();
+    row.review_each = true;
+    let mut next = bootstrap_row("claude");
+    next.id = "next".into();
+    next.mode = "chain".into();
+    next.external = false;
+    let qm = Mutex::new(qs(vec![row, next]));
+    let sleeps = std::sync::atomic::AtomicUsize::new(0);
+    let result = send_one_safe_stabilized(
+        &qm,
+        &AtomicBool::new(false),
+        SendRequest {
+            session: "s",
+            now_min: 720,
+            activity: &obs,
+            requested: None,
+        },
+        &SendHooks {
+            fire: &|i| {
+                assert!(!i.external && i.authority.is_none());
+                Ok(())
+            },
+            persist: &ok_persist,
+            kill: &|_| {},
+            authority: &|| Some(config_with(vec![clock_first_send_rule()])),
+        },
+        &ContextHooks {
+            prepare: &|_, _| {
+                Prepared::Probe(probe_result(
+                    ContextStatus::Ready,
+                    ContextCode::ProcessMatched,
+                    1,
+                ))
+            },
+            final_probe: &|_| probe_result(ContextStatus::Ready, ContextCode::ProcessMatched, 1),
+        },
+        &StabilizationOps {
+            sleep: &|_| {
+                sleeps.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            },
+            observe: &|| Some(obs.clone()),
+        },
+    );
+    assert!(matches!(result, SendResult::Sent { .. }), "{result:?}");
+    assert!(sleeps.load(std::sync::atomic::Ordering::SeqCst) >= 60);
+    let q = qm.lock_or_recover();
+    assert!(q.deliveries[0].readiness_overridden && !q.deliveries[0].manual);
+    assert!(q.items.iter().any(|i| i.state == ItemState::Review));
+    assert!(q
+        .items
+        .iter()
+        .filter(|i| i.id == "next")
+        .all(|i| i.readiness_override.is_none() && i.authority.is_none() && !i.external));
+    let reloaded: QueueState = serde_json::from_str(&serde_json::to_string(&*q).unwrap()).unwrap();
+    assert_eq!(reloaded.deliveries.len(), 1);
+}
+
+/// Current clock policy is separate from frozen schedule/template bytes.
+#[test]
+fn clock_policy_revokes_on_disable_delete_source_command_and_target_changes() {
+    let row = clock_first_send_head();
+    let rule = clock_first_send_rule();
+    assert_eq!(first_send::fence(&row, None), Fence::Unverified);
+    assert_eq!(
+        first_send::fence(&row, Some(&config_with(vec![rule.clone()]))),
+        Fence::Clear
+    );
+    for change in [
+        "off", "disabled", "deleted", "source", "command", "project", "dir",
+    ] {
+        let mut rule = rule.clone();
+        match change {
+            "off" => rule.first_send_without_readiness = false,
+            "disabled" => rule.enabled = false,
+            "source" => rule.source = "slack".into(),
+            "command" => rule.cmd = "claude --model opus".into(),
+            "project" => rule.project_id = "different".into(),
+            "dir" => rule.dir = "/different".into(),
+            _ => {}
+        }
+        let cfg = config_with(if change == "deleted" {
+            vec![]
+        } else {
+            vec![rule]
+        });
+        assert_eq!(
+            first_send::fence(&row, Some(&cfg)),
+            Fence::Revoked,
+            "{change}"
+        );
+        let mut q = qs(vec![row.clone()]);
+        assert_eq!(first_send::revoke_stale(&mut q, &cfg), 1, "{change}");
+        assert_eq!(q.items[0].text, row.text);
+        assert!(!q.items[0].external);
+        assert_eq!(
+            hold_reason(&q.items[0], unestablished(NOW - 400).get("s")),
+            Some(Hold::FirstInteraction)
+        );
+    }
+}
+
+/// A native clock event and a committed first-row identity are both required.
+#[test]
+fn clock_admission_rejects_forged_event_rule_slot_source_step_and_owner_target() {
+    let mut rule = clock_first_send_rule();
+    rule.dir = "/work".into();
+    let claim = FirstSendClaim {
+        rule: rule.id.clone(),
+        event: NOW.to_string(),
+    };
+    let event = slack_event(&claim.event, &rule.id, "clock");
+    let config = config_with(vec![rule.clone()]);
+    assert!(first_send::verify(Some(&config), &claim, "claude", "at", false, Some(&event)).is_ok());
+    for bad in [
+        slack_event("wrong-slot", &rule.id, "clock"),
+        slack_event(&claim.event, "wrong-rule", "clock"),
+        slack_event(&claim.event, &rule.id, "slack"),
+    ] {
+        assert_eq!(
+            first_send::verify(Some(&config), &claim, "claude", "at", false, Some(&bad)),
+            Err("event")
+        );
+    }
+    assert_eq!(
+        first_send::verify(
+            Some(&config),
+            &claim,
+            "claude",
+            "chain",
+            false,
+            Some(&event)
+        ),
+        Err("step")
+    );
+    assert_eq!(
+        first_send::verify(Some(&config), &claim, "claude", "at", false, None),
+        Err("no-event")
+    );
+    let args: QueueAddArgs = serde_json::from_value(serde_json::json!({"session":"s", "cardId":"card", "operationId":"head-op", "cmd":"claude", "dir":"/work", "text":"first", "mode":"at", "at":NOW, "tpl":"tpl", "tplIdx":1})).unwrap();
+    let board = serde_json::json!({"cards":[{"id":"card", "session":"s", "projectId":rule.project_id, "cmd":"claude", "dir":"/work",
+        "origin":{"source":"clock", "key":claim.event, "badge":rule.id},
+        "inboundPlan":{"firstSend":{"rule":rule.id}, "initialQueued":false, "reviewEach":false, "operationId":"list-op",
+        "initialSteps":[{"text":"first", "mode":"at", "at":NOW, "tpl":"tpl", "tplIdx":1, "operationId":"head-op"}]}}]});
+    assert!(first_send::clock_head_matches(&board, &args, &rule, &claim));
+    let mut forged_target = board.clone();
+    forged_target["cards"][0]["dir"] = "/forged-target".into();
+    let mut forged_args = args.clone();
+    forged_args.dir = "/forged-target".into();
+    assert!(
+        !first_send::clock_head_matches(&forged_target, &forged_args, &rule, &claim),
+        "a matching caller/card cannot substitute the configured target"
+    );
+    let mut reviewed_board = board.clone();
+    reviewed_board["cards"][0]["inboundPlan"]["reviewEach"] = true.into();
+    let mut reviewed_args = args.clone();
+    reviewed_args.review_each = true;
+    reviewed_args.operation_id = Some("list-op".into());
+    assert!(first_send::clock_head_matches(
+        &reviewed_board,
+        &reviewed_args,
+        &rule,
+        &claim
+    ));
+
+    for field in ["id", "session", "projectId", "cmd", "dir"] {
+        let mut forged = board.clone();
+        forged["cards"][0][field] = "forged".into();
+        assert!(
+            !first_send::clock_head_matches(&forged, &args, &rule, &claim),
+            "{field}"
+        );
+    }
+    for field in ["text", "operationId", "mode", "at", "tplIdx"] {
+        let mut forged = board.clone();
+        forged["cards"][0]["inboundPlan"]["initialSteps"][0][field] = "forged".into();
+        assert!(
+            !first_send::clock_head_matches(&forged, &args, &rule, &claim),
+            "{field}"
+        );
+    }
+    let mut duplicated = board.clone();
+    let card = duplicated["cards"][0].clone();
+    duplicated["cards"].as_array_mut().unwrap().push(card);
+    assert!(!first_send::clock_head_matches(
+        &duplicated,
+        &args,
+        &rule,
+        &claim
+    ));
 }

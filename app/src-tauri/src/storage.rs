@@ -68,8 +68,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 // v2 protects opt-in human checkpoints; v3 protects retained scratchpad and
-// channel/idempotency fields. Ordinary documents keep v1; upgrades are sticky.
-pub const SCHEMA_VERSION: u64 = 3;
+// channel/idempotency fields; v4 protects clock readiness origins/policy.
+// Ordinary documents keep v1; upgrades are sticky.
+pub const SCHEMA_VERSION: u64 = 4;
 
 /// The two documents whose review fields an old reader could misinterpret as
 /// ordinary state (queue rows it would resend; finish rules it would apply).
@@ -87,6 +88,22 @@ fn uses_review(v: &serde_json::Value) -> bool {
                 || uses_review(v)
         }),
         serde_json::Value::Array(a) => a.iter().any(uses_review),
+        _ => false,
+    }
+}
+
+// Clock readiness introduces a closed persisted origin and settings that
+// v3 readers reject. Refuse those documents on old builds, never quarantine.
+fn uses_clock_first_send(v: &serde_json::Value) -> bool {
+    match v {
+        serde_json::Value::Object(o) => {
+            (o.get("source").and_then(|v| v.as_str()) == Some("clock")
+                && o.get("firstSendWithoutReadiness").and_then(|v| v.as_bool()) == Some(true))
+                || o.get("readiness_override")
+                    .is_some_and(|v| v["trigger"] == "clock")
+                || o.values().any(uses_clock_first_send)
+        }
+        serde_json::Value::Array(a) => a.iter().any(uses_clock_first_send),
         _ => false,
     }
 }
@@ -444,7 +461,11 @@ fn save_checked_locked(
     // reaching here with a broken envelope means the file was never loaded
     // (or was replaced behind our back) — refuse rather than destroy it.
     let name = path.file_name().unwrap_or_default().to_string_lossy();
-    let feature_version = if matches!(name.as_ref(), "deck.json" | "queue.json" | "settings.json")
+    let feature_version = if matches!(name.as_ref(), "queue.json" | "settings.json")
+        && uses_clock_first_send(&data)
+    {
+        4
+    } else if matches!(name.as_ref(), "deck.json" | "queue.json" | "settings.json")
         && uses_buffer(&data)
     {
         3
@@ -1193,5 +1214,32 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
         assert_eq!(raw["schema_version"], 2);
         assert_eq!(raw["data"]["v"], 50);
+    }
+    #[test]
+    fn clock_readiness_documents_upgrade_to_sticky_v4_only_when_used() {
+        let dir = tdir("clock-readiness-version");
+        for (name, data) in [
+            (
+                "settings.json",
+                serde_json::json!({"rules":[{"source":"clock", "firstSendWithoutReadiness":true}]}),
+            ),
+            (
+                "queue.json",
+                serde_json::json!({"items":[{"readiness_override":{"rule":"R", "trigger":"clock"}}]}),
+            ),
+        ] {
+            let p = dir.join(name);
+            save_typed::<serde_json::Value>(&p, &data.to_string()).unwrap();
+            let raw: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
+            assert_eq!(raw["schema_version"], 4);
+            // The old reader's envelope refusal precedes closed-enum decode.
+            assert!(envelope_payload_for(&raw, 3).is_err());
+            save_typed::<serde_json::Value>(&p, "{}").unwrap();
+            let raw: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
+            assert_eq!(raw["schema_version"], 4);
+        }
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

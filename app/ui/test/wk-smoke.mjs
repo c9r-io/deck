@@ -2783,3 +2783,8 @@ export async function verifyReview(restart = false) {
   const { runReviewSmoke } = await import('./review-smoke.mjs');
   await runReviewSmoke(restart);
 }
+
+export async function verifyClockLive() {
+  const { runClockLiveSmoke } = await import('./clock-live-smoke.mjs');
+  await runClockLiveSmoke();
+}

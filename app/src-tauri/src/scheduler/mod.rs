@@ -307,7 +307,7 @@ pub(crate) struct QueueItem {
     authority: Option<StepAuthority>,
     /// First-send readiness override (`first_send.rs`), separate from
     /// content authority: set only on the external admission path for the
-    /// head row of a Slack badge run whose rule explicitly accepted sending
+    /// head row of a verified Slack badge or clock run whose rule explicitly accepted sending
     /// it without first-interaction evidence. It lifts only the
     /// first-interaction hold, is revalidated before the send and swept on
     /// revocation. Older decks ignore the field and keep holding the row.
@@ -498,7 +498,7 @@ pub(crate) struct DeliveryRecord {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     manual: bool,
     /// The scheduler sent this head row to an agent generation WITHOUT
-    /// first-interaction evidence because its Slack badge rule explicitly
+    /// first-interaction evidence because its automation rule explicitly
     /// allowed it (`first_send.rs`) — never "the agent was proven ready".
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     readiness_overridden: bool,

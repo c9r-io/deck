@@ -50,7 +50,7 @@
 //!   hold here still applies once it exists. Other process-bound rows
 //!   (`expected_process` naming any other program) are unchanged.
 //! - First-send readiness override (`first_send.rs`): the head row of a
-//!   Slack badge run whose rule explicitly accepted the startup-dialog risk
+//!   Slack badge or clock run whose rule explicitly accepted the startup-dialog risk
 //!   carries `readiness_override`; it lifts the first-interaction gate for
 //!   that row alone — never needs-input, Codex `Unavailable`, the external
 //!   or authority holds, or anything else — and only while this tick could

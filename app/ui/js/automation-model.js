@@ -22,13 +22,12 @@
 //
 // First-send readiness override (`withFirstSend`, backend twin
 // scheduler/first_send.rs): a SEPARATE per-rule choice for Slack badge
-// rules only. The reaction already approves the run; by default a freshly
+// and clock rules. The saved rule or reaction expresses run intent; by default a freshly
 // started agent still gets its first step only after one real interaction
 // (a startup dialog may own Enter). With `firstSendWithoutReadiness` the
 // user accepts that risk for this rule's FIRST step: readiness is unknown,
 // not proven. It is independent of the approval above (which governs
-// steps 2..N), is not part of the grant digest, never reaches a clock or
-// channel rule, and reaches Claude or Codex with `--no-daemon` only
+// steps 2..N), is not part of the grant digest, never reaches a channel rule, and reaches Claude or Codex with `--no-daemon` only
 // (`firstSendSupported`). The editor asks for confirmation when it is
 // turned on; turning it off is immediate.
 import { channelAgentCommand } from './channel-model.js';
@@ -118,6 +117,7 @@ export function ruleFacts(rule, { columnName = null, home = '', slackConnected =
     rows.push(['automation.kv.autoSend', approvalText(rule, approval)]);
     rows.push(['automation.kv.firstSend', firstSendText(rule)]);
   }
+  if (rule.source === 'clock') rows.push(['automation.kv.firstSend', firstSendText(rule)]);
   return rows;
 }
 
@@ -243,7 +243,7 @@ export const approvalText = (rule, state) => t(state === 'valid'
   ? (rule.autoSend.external ? 'automation.autoSend.onExternal' : 'automation.autoSend.on')
   : state === 'stale' ? 'automation.autoSend.stale' : 'automation.autoSend.off');
 
-/* ---------- first-send readiness override (Slack badge rules) ---------- */
+/* ---------- first-send readiness override (clock and Slack badge rules) ---------- */
 
 /* the agent commands the override can reach: Claude, or Codex kept out of
    its shared daemon by a literal `--no-daemon` (twin of
@@ -254,17 +254,17 @@ export function firstSendSupported(cmd) {
 }
 
 /* `rule` with the override set from the editor's box: only a Slack badge
-   rule may carry it, and off is stored as absent */
+   or clock rule may carry it, and off is stored as absent */
 export function withFirstSend(rule, on) {
   const next = { ...rule };
   delete next.firstSendWithoutReadiness;
-  if (on === true && next.source === 'slack') next.firstSendWithoutReadiness = true;
+  if (on === true && ['slack', 'clock'].includes(next.source)) next.firstSendWithoutReadiness = true;
   return next;
 }
 
 /* turning the box ON needs an explicit confirmation; OFF never does */
 export const firstSendNeedsConfirm = (wasOn, nowOn) => !wasOn && nowOn === true;
 
-/* the override row of a Slack badge rule's facts */
+/* the override row of a clock or Slack badge rule's facts */
 export const firstSendText = rule => t(rule.firstSendWithoutReadiness !== true ? 'automation.firstSend.off'
   : firstSendSupported(rule.cmd) ? 'automation.firstSend.on' : 'automation.firstSend.unsupported');

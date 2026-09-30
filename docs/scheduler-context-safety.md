@@ -161,7 +161,7 @@ row, never release or target one (`scheduler/select.rs`, `agent_holds`):
   may start it (a clock automation's card starts this way), bind its pane
   and stop there: nothing is pasted, no Enter is sent, and the row is not
   consumed, retried, counted or advanced — it stays pending at
-  `first-send` unless the separate, explicitly consented Slack badge
+  `first-send` unless the separate, explicitly consented clock or Slack badge
   override applies on a later pass. Other process-bound programs keep the
   old fresh-start path (a 2.5 s settle, then delivery).
 - Owner rows without a hook word keep the quiet-only rule (Codex: once
@@ -256,15 +256,18 @@ temporary compatibility escape hatch for the missing upstream primitive —
 no current Claude Code or Codex fact proves a fresh TUI is ready for its
 first typed prompt — and never a claim that the agent is ready.
 
-- A Slack badge rule may carry `firstSendWithoutReadiness` (settings.json,
-  absent = off, refused on any other rule). The frozen plan of a run it
-  creates carries `firstSend: {rule}`; the HEAD row alone claims it with
-  the event key through `channel_queue_add*`, and `first_send::verify`
-  admits it only against the current settings and the backend's own copy
-  of that rule's Slack event, for Claude or for Codex with a literal
-  `--no-daemon`. The row keeps `readiness_override {rule, trigger}`. Owner
-  commands refuse the claim; channel monitors, Connector, clock, lists and
-  MCP never produce one; later steps never carry it.
+- A clock or Slack badge rule may carry `firstSendWithoutReadiness` (absent =
+  off, no inherited default). The frozen plan carries `firstSend: {rule}`;
+  only its HEAD claims it with the event key. Slack retains external admission.
+  Clock uses owner `queue_add*`, remains `external=false`, and must match the
+  native pending slot/rule plus the committed unique card origin, session,
+  target, frozen first text and operation ID. A generic owner `at` row cannot
+  obtain the exception. Reviewed lists copy it only to row zero; operation
+  replay stays idempotent. No new Slack content-authority trigger is added.
+  `FirstSendOrigin` is separate from `TriggerClass`. Clock-enabled settings
+  and clock row origins use sticky schema v4; v3 readers refuse the envelope
+  untouched BEFORE decoding unsupported settings/closed enum values. Existing
+  Slack serialization stays unchanged.
 - Selection: the override lifts only the first-interaction gate (Claude
   without an interaction word, Codex `Unknown`) for that `at` row, and only
   while the tick read settings successfully. Needs-input, Codex
@@ -287,10 +290,15 @@ first typed prompt — and never a claim that the agent is ready.
   never inherits elapsed credit. A startup/permission dialog can still own
   Enter, which is the risk explicitly accepted for this rule.
 - Revocation: the tick sweep strips it from unsent rows whose rule no longer
-  allows it (unticked, deleted, command changed), and the pre-fire fence
+  allows it (unticked, disabled/deleted clock rule, source/command/clock target changed),
+  and the pre-fire fence
   re-reads settings under `storage::settings_fence` in the transaction that
   persists the firing intent. Unreadable settings strip nothing and send
   nothing on the override. Send-now never consults it.
+- Clock runs retain frozen template bytes and schedule admission: later
+  schedule/template edits apply to future runs. Withdrawal restores the ordinary
+  FirstInteraction gate, not cancellation of otherwise eligible work. Clock
+  follow-ups remain owner rows, without a new external grant.
 - Audit: the delivery record's `readiness_overridden` says the scheduler
   sent the row without interaction evidence because the rule allowed it; a
   send-now of the same row is `manual` instead.

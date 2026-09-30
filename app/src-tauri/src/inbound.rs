@@ -185,7 +185,7 @@ pub(crate) struct Rule {
     /// (`scheduler/authority.rs`). Absent on every legacy rule.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) auto_send: Option<AutoSend>,
-    /// Slack badge rules only: the user explicitly accepted that the first
+    /// Slack badge and clock rules: the user explicitly accepted that the first
     /// step of this rule's runs may be sent to a freshly started agent
     /// without first-interaction evidence (`scheduler/first_send.rs`). A
     /// readiness-risk policy, not an approval and never readiness. Absent
@@ -490,10 +490,12 @@ pub(crate) fn validate_settings(v: &Value) -> Result<(), DeckError> {
                 }
                 grant.validate()?;
             }
-            if rule.first_send_without_readiness && rule.source != "slack" {
+            if rule.first_send_without_readiness
+                && !matches!(rule.source.as_str(), "slack" | "clock")
+            {
                 return Err(DeckError::new(
                     ErrorKind::InvalidDoc,
-                    "only a Slack badge rule may send its first step without readiness",
+                    "only a Slack badge or clock rule may send its first step without readiness",
                 ));
             }
             if !ids.insert(rule.id.clone()) {
@@ -993,7 +995,7 @@ pub(crate) fn inbound_pending() -> Vec<PendingView> {
     with_rt(|rt| rt.pending.iter().map(|p| p.view.clone()).collect())
 }
 
-/// The still-pending Slack badge event `key` matched to rule `rule_id` — the
+/// The still-pending native Slack badge or clock event `key` matched to rule `rule_id` — the
 /// backend's own copy of the message, proof material for an approved
 /// bounded step (`scheduler/authority.rs`). The webview acks an item only
 /// after its whole plan is queued, so every first admission finds it; a
@@ -1004,8 +1006,30 @@ pub(crate) fn pending_event(key: &str, rule_id: &str) -> Option<Event> {
         rt.pending
             .iter()
             .map(|p| &p.view)
-            .find(|v| v.event.source == "slack" && v.event.key == key && v.rule.id == rule_id)
+            .find(|v| {
+                matches!(v.event.source.as_str(), "slack" | "clock")
+                    && v.event.key == key
+                    && v.rule.id == rule_id
+            })
             .map(|v| v.event.clone())
+    })
+}
+
+/// The native admitted clock event still names the same command and target.
+/// Schedule/template edits leave an already frozen run intact.
+pub(crate) fn clock_policy_pending(key: &str, rule: &Rule) -> bool {
+    with_rt(|rt| {
+        rt.pending.iter().any(|p| {
+            let v = &p.view;
+            v.event.source == "clock"
+                && v.event.key == key
+                && v.event.badge == rule.id
+                && v.rule.id == rule.id
+                && v.rule.source == rule.source
+                && v.rule.cmd == rule.cmd
+                && v.rule.dir == rule.dir
+                && v.rule.project_id == rule.project_id
+        })
     })
 }
 
@@ -1602,9 +1626,9 @@ mod tests {
     }
 
     /// The first-send readiness override is a Slack badge rule's alone;
-    /// absent reads as off, and a clock rule carrying it is refused whole.
+    /// absent reads as off for both supported sources.
     #[test]
-    fn only_a_slack_badge_rule_may_carry_the_first_send_override() {
+    fn slack_and_clock_rules_may_explicitly_accept_first_send_risk() {
         let mut on = rule("deck");
         on["firstSendWithoutReadiness"] = json!(true);
         let v = json!({"sources": {"slack": {"enabled": true}}, "rules": [on, rule("bug")]});
@@ -1622,7 +1646,12 @@ mod tests {
         let mut clock = clock_rule("daily", json!({"unit": "day", "days": [], "minute": 540}));
         clock["firstSendWithoutReadiness"] = json!(true);
         let v = json!({"sources": {"slack": {"enabled": true}}, "rules": [clock]});
-        assert_eq!(config_from_value(Some(&v)), Config::default());
+        assert!(config_from_value(Some(&v)).rules[0].first_send_without_readiness);
+        let legacy = clock_rule("daily", json!({"unit":"day", "minute":540}));
+        assert!(
+            !config_from_value(Some(&json!({"rules":[legacy]}))).rules[0]
+                .first_send_without_readiness
+        );
     }
 
     #[test]
@@ -1762,6 +1791,18 @@ mod tests {
         };
         assert_eq!(offer(app.handle(), &clock_cfg, vec![slot.clone()], true), 1);
         assert_eq!(offer(app.handle(), &clock_cfg, vec![slot.clone()], true), 0);
+        let native = pending_event(&slot.key, "a1").expect("native clock slot is pending");
+        assert_eq!(native.source, "clock");
+        assert!(pending_event("forged-slot", "a1").is_none());
+        assert!(pending_event(&slot.key, "wrong-rule").is_none());
+        let rule = clock_cfg.rules[0].clone();
+        assert!(clock_policy_pending(&slot.key, &rule));
+        let mut changed = rule.clone();
+        changed.cmd = "claude --model opus".into();
+        assert!(!clock_policy_pending(&slot.key, &changed));
+        changed = rule.clone();
+        changed.dir = "/different".into();
+        assert!(!clock_policy_pending(&slot.key, &changed));
         assert!(inbound_ack(4, "done".into(), Some("bad id!".into()), None).is_err());
         assert!(inbound_ack(4, "skipped".into(), None, Some("tired".into())).is_err());
         assert!(inbound_ack(4, "done".into(), Some("S-run1".into()), None).is_ok());

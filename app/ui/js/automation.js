@@ -26,7 +26,7 @@
 // steps. Saving unticked drops the approval, which also stops the unsent
 // rows of runs that relied on it (scheduler/authority.rs). The list shows
 // each Slack rule's approval as on / off / needs approval again.
-// A Slack badge rule also has a separate, unticked-by-default box to send
+// Clock and Slack badge rules share a separate, unticked-by-default box to send
 // its FIRST step without agent readiness (automation-model.js
 // `withFirstSend`, scheduler/first_send.rs): ticking it asks for an explicit
 // confirmation of the startup-dialog risk, unticking is immediate, and it
@@ -375,7 +375,7 @@ export function openEditor(rule) {
   const approved = rule?.source === 'slack' && approvals.get(rule.id) === 'valid';
   $('auto-send').checked = approved;
   $('auto-send-external').checked = approved && rule.autoSend.external === true;
-  $('auto-first-send').checked = rule?.source === 'slack' && rule.firstSendWithoutReadiness === true;
+  $('auto-first-send').checked = ['slack', 'clock'].includes(rule?.source) && rule.firstSendWithoutReadiness === true;
   syncEditor();
   $('auto-editor').hidden = false;
   $(channel ? 'auto-channel-ids' : 'auto-name').focus();

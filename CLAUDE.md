@@ -190,7 +190,7 @@ evolution; it makes scope expansion deliberate.
   by the backend at admission and revoked by the tick) ≠ **input readiness**
   (every scheduler hold, including the first-interaction gate). An approval
   releases only the external-follow-up hold; the fresh-start pass never types
-  into an interactive agent. A separately enabled Slack badge first-send
+  into an interactive agent. A separately enabled, native-verified Slack badge or clock first-send
   override may send the head row on a later pass after bounded compatibility
   stabilization and current fences; it is not Agent readiness evidence.
   No Signal word, quiet
@@ -232,7 +232,8 @@ evolution; it makes scope expansion deliberate.
   sticky v2 envelopes on queue.json and settings.json plus a settings barrier.
   A retained card buffer, channel/Connector run journal, frozen inbound plan, or project task preset upgrades deck.json to sticky v3, idempotent buffer
   queue operations upgrade queue.json to sticky v3, and enabled channel
-  connections/rules upgrade settings.json to sticky v3; ordinary data stays v1.
+  connections/rules upgrade settings.json to sticky v3; ordinary data stays v1. Clock first-send settings/queue origins upgrade to sticky
+  v4 so older readers refuse them untouched.
 - **The signed `deck-app` binary is never a pane executable**, and no
   `/bin/sh -c`, script or shell argv appears on the shell-restore path
   (`commands::restore_start_args`, `tests/edr_quiet.rs`).
@@ -278,7 +279,7 @@ loaded by `ui/index.html`; xterm.js vendored in `app/ui/vendor/`. Backend
 | Settings modal: sections and search, the ONE settings writer, font scale, shortcuts, theme/locale/channel choices, inbound/Connector/MCP settings; dialog primitives (confirm, choice, prompt, toast, inline rename, project defaults) stay separate; the section list, stable setting ids and search rules are DOM-free | `ui/js/settings.js`, `ui/js/settings-search-model.js`, `ui/js/dialogs.js` |
 | Lists (the ⏱ panel): queue model, selection, delivery state machine, tick | `scheduler/` (+ `docs/scheduler-context-safety.md`), `context.rs`, `ui/js/scheduler.js`, `ui/js/queue-review.js`, `scheduler/review.rs` |
 | Automation delivery authority: the approval grant, claim verification at admission, revocation sweep, delivery audit | `scheduler/authority.rs`, `inbound.rs` (`AutoSend`), `ui/js/automation-model.js` (`approveRule` / `grantState`, shared vector `ui/test/fixtures/automation-grant.json`) |
-| Slack badge first-send readiness override (explicit per-rule risk acceptance for a run's head row; never readiness evidence) | `scheduler/first_send.rs`, `inbound.rs` (`first_send_without_readiness`), `ui/js/automation-model.js` (`withFirstSend`) |
+| Slack badge and clock first-send readiness override (explicit per-rule risk acceptance for a run's head row; never readiness evidence) | `scheduler/first_send.rs`, `inbound.rs` (`first_send_without_readiness`), `ui/js/automation-model.js` (`withFirstSend`) |
 | Templates (saved lists, shared by cards and automations) | `ui/js/templates.js` |
 | Needs-attention view (sidebar entry), runtime read state, tab done-dot | `ui/js/attention.js`, `ui/js/attention-model.js` |
 | Away notifications and the Dock badge (Rust-side trigger, closed content, in-process UNUserNotificationCenter bridge) | `notify.rs`, `native/NotificationBridge.swift`, `ui/js/notify-model.js` (+ `docs/notifications.md`) |

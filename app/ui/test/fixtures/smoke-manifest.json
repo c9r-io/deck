@@ -538,6 +538,15 @@
         "empty-start-queued": {},
         "empty-start-started": {}
       }
+    },
+    "clock-live": {
+      "terminal": "done",
+      "checks": {
+        "clock-live-preflight": {},
+        "clock-live-configured": {},
+        "clock-live-armed": {},
+        "clock-live-exception": { "failureOnly": true }
+      }
     }
   }
 }

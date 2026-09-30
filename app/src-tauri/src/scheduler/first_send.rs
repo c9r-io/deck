@@ -1,4 +1,4 @@
-//! First-send readiness override: a Slack badge rule's explicit, per-rule
+//! First-send readiness override: a Slack badge or clock rule's explicit, per-rule
 //! acceptance that the FIRST step of its runs may be sent to a freshly
 //! started agent without first-interaction evidence.
 //!
@@ -13,7 +13,8 @@
 //! run; the remaining click is not an approval. This override lets the user
 //! remove it for ONE rule, knowingly. Four facts stay separate:
 //!
-//! - **run approval** — the reaction on that message (the run's head row is
+//! - **run intent** — the saved clock schedule/template or Slack reaction
+//!   on that message (the run's head row is
 //!   never held as external, `select.rs`);
 //! - **content authority** — `authority.rs` (`StepAuthority`), untouched
 //!   here: this module never makes unauthorized text sendable;
@@ -24,21 +25,21 @@
 //!   its row copy `QueueItem.readiness_override`: readiness is UNKNOWN and
 //!   the user accepted the startup-dialog risk for this rule's first send.
 //!
-//! Scope, closed: only a Slack badge rule (`TriggerClass::SlackBadge`), only
-//! the head row (`at`) of a run that rule created, only on the external
-//! admission path, only a supported agent command — Claude, or Codex with a
-//! literal `--no-daemon` (the shared app-server daemon, Codex's default,
-//! gives Deck no attributable Signal for that process at all; the override
-//! does not reach it). Channel monitors (a passive event, no per-message
-//! human action), Connector rows, clock and manual lists, MCP and every
-//! later step never carry it: `verify` is the one writer and refuses them.
+//! Scope, closed: verified Slack badge runs use external admission; verified
+//! clock runs use owner admission and remain external=false. Only the head
+//! of a frozen run may carry this policy, for Claude or literal Codex
+//! --no-daemon. This separate FirstSendOrigin never expands TriggerClass or
+//! Slack content authority. Channel monitors, Connector, MCP, manual lists
+//! and later steps never obtain it.
 //!
-//! - Admission (`verify`): the webview's claim `{rule, event}` for text 0
-//!   of a badge run is checked against the CURRENT settings and the
-//!   backend's own copy of the inbound event (`inbound::pending_event`: a
-//!   Slack event of that rule, same badge). A refused claim admits the row
-//!   without the override — the ordinary gate holds it. A replay after a
-//!   restart before the event is announced again admits it without.
+//! - Admission: CURRENT settings and the backend's pending native event must
+//!   match {rule,event}. Clock owner admission additionally checks the saved
+//!   card's unique origin, session/target, frozen first text and operation ID.
+//!   Missing native proof admits no override; replay is operation-idempotent.
+//!   The pending event cannot be manufactured by a claimed source/timestamp.
+//!   Clock target policy freezes rule project/directory; disabling, changing
+//!   source/command/target or deleting the rule withdraws it. Schedule/template
+//!   edits affect future runs, not frozen prompt bytes or this policy.
 //! - Selection (`select::hold_reason`): the override lifts ONLY the
 //!   first-interaction hold (Claude without an interaction word, Codex
 //!   `Unknown`) and only while this tick could read settings. Needs-input,
@@ -67,21 +68,38 @@
 //! - Audit: a delivery that relied on the override records
 //!   `readiness_overridden` (closed flag, no text) — "the rule allowed a
 //!   first send without readiness", never "the agent was ready".
-//! - Compatibility: every field can only withdraw the override on an older
-//!   reader (it ignores the rule flag and the row field and holds the row).
+//! - Compatibility: Slack optional fields remain compatible. Clock-enabled
+//!   settings and clock overrides upgrade to sticky schema v4: v3 refuses
+//!   them untouched instead of decoding the new closed origin as damage.
 
 use serde::{Deserialize, Serialize};
 
 use super::*;
 use crate::inbound::{Config, Event, Rule};
 
-/// The durable row fact: this row is the head of a run created by Slack
-/// badge rule `rule`, which allowed a first send without readiness when the
+/// The durable row fact: this row is the head of a run created by an automation
+/// rule `rule`, which allowed a first send without readiness when the
 /// row was admitted. Ids and a closed word only.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub(crate) struct ReadinessOverride {
     pub(crate) rule: String,
-    pub(crate) trigger: TriggerClass,
+    pub(crate) trigger: FirstSendOrigin,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) clock_target: Option<ClockTarget>,
+}
+
+/// Readiness origins are independent of Slack content-authority triggers.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum FirstSendOrigin {
+    SlackBadge,
+    Clock,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub(crate) struct ClockTarget {
+    pub(crate) project: String,
+    pub(crate) dir: String,
 }
 
 /// The frozen plan's statement that this call's first text is the head row
@@ -107,7 +125,8 @@ pub(crate) fn supported_command(cmd: &str) -> bool {
 /// Whether `rule` currently allows the override for a row launched with
 /// `cmd`.
 fn allows(rule: &Rule, cmd: &str) -> bool {
-    rule.source == "slack"
+    matches!(rule.source.as_str(), "slack" | "clock")
+        && (rule.source != "clock" || rule.enabled)
         && rule.first_send_without_readiness
         && rule.cmd == cmd
         && supported_command(cmd)
@@ -135,7 +154,9 @@ pub(crate) fn verify(
         .iter()
         .find(|r| r.id == claim.rule)
         .ok_or("no-rule")?;
-    if rule.source != "slack" {
+    if !matches!(rule.source.as_str(), "slack" | "clock")
+        || (rule.source == "clock" && !rule.enabled)
+    {
         return Err("trigger");
     }
     if !rule.first_send_without_readiness {
@@ -148,13 +169,84 @@ pub(crate) fn verify(
         return Err("agent");
     }
     let event = event.ok_or("no-event")?;
-    if event.source != "slack" || event.badge != rule.badge || event.key != claim.event {
+    if event.source != rule.source || event.badge != rule.badge || event.key != claim.event {
         return Err("event");
     }
     Ok(ReadinessOverride {
         rule: rule.id.clone(),
-        trigger: TriggerClass::SlackBadge,
+        trigger: if rule.source == "clock" {
+            FirstSendOrigin::Clock
+        } else {
+            FirstSendOrigin::SlackBadge
+        },
+        clock_target: (rule.source == "clock").then(|| ClockTarget {
+            project: rule.project_id.clone(),
+            dir: rule.dir.clone(),
+        }),
     })
+}
+
+/// Clock owner admission requires the committed run plan as well as the
+/// native pending event. Ordinary owner rows cannot mint a run-head policy.
+pub(crate) fn clock_head_matches(
+    board: &serde_json::Value,
+    args: &super::ops::QueueAddArgs,
+    rule: &Rule,
+    claim: &FirstSendClaim,
+) -> bool {
+    let Some(cards) = board.get("cards").and_then(|v| v.as_array()) else {
+        return false;
+    };
+    let matching: Vec<_> = cards
+        .iter()
+        .filter(|c| {
+            c["origin"]["source"] == "clock"
+                && c["origin"]["key"] == claim.event
+                && c["origin"]["badge"] == rule.id
+        })
+        .collect();
+    let [card] = matching.as_slice() else {
+        return false;
+    };
+    let plan = &card["inboundPlan"];
+    let head = &plan["initialSteps"][0];
+    let operation = if args.review_each {
+        &plan["operationId"]
+    } else {
+        &head["operationId"]
+    };
+    let home = dirs::home_dir().map(|p| p.to_string_lossy().into_owned());
+    let dir = rule.dir.trim();
+    let configured_dir = if dir.is_empty() || dir == "~" {
+        home.clone()
+    } else if let Some(rest) = dir.strip_prefix("~/") {
+        home.map(|h| format!("{}/{rest}", h.trim_end_matches('/')))
+    } else {
+        Some(dir.to_owned())
+    };
+    configured_dir.as_deref() == Some(args.dir.as_str())
+        && card["id"] == args.card_id
+        && card["session"] == args.session
+        && card["projectId"] == rule.project_id
+        && card["cmd"] == args.cmd
+        && card["dir"] == args.dir
+        && plan["initialQueued"] == false
+        && plan["firstSend"]["rule"] == rule.id
+        && plan["reviewEach"] == args.review_each
+        && operation.as_str() == args.operation_id.as_deref()
+        && args.operation_id.is_some()
+        && head["mode"] == "at"
+        && args.mode == "at"
+        && args.group.is_none()
+        && head["tplIdx"] == 1
+        && args.tpl_idx == Some(1)
+        && head["tpl"].as_str() == args.tpl.as_deref()
+        && head["at"].as_u64() == args.at
+        && head["text"]
+            .as_str()
+            .map(super::ops::normalize_prompt)
+            .as_deref()
+            == Some(super::ops::normalize_prompt(&args.text).as_str())
 }
 
 /// Whether the row's override is still backed by its rule.
@@ -164,7 +256,18 @@ fn still_allowed(config: &Config, i: &QueueItem) -> bool {
             .rules
             .iter()
             .find(|r| r.id == o.rule)
-            .is_some_and(|rule| allows(rule, &i.cmd))
+            .is_some_and(|rule| {
+                allows(rule, &i.cmd)
+                    && match o.trigger {
+                        FirstSendOrigin::SlackBadge => rule.source == "slack",
+                        FirstSendOrigin::Clock => {
+                            rule.source == "clock"
+                                && o.clock_target.as_ref().is_some_and(|t| {
+                                    t.project == rule.project_id && t.dir == rule.dir
+                                })
+                        }
+                    }
+            })
     })
 }
 

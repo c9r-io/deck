@@ -57,7 +57,7 @@ test('a run line states its outcome; only a running run with a card can be opene
 
 test('the fact rows name the target, the inspection mode and the trigger\'s own facts', () => {
   const clock = ruleFacts(clockRule(), { columnName: 'Working', home: '/home', nowSecs });
-  assert.deepEqual(clock.map(([key]) => key), ['automation.kv.target', 'automation.kv.cmd', 'automation.kv.template', 'queue.plan', 'automation.kv.finish', 'automation.kv.grace', 'automation.kv.next']);
+  assert.deepEqual(clock.map(([key]) => key), ['automation.kv.target', 'automation.kv.cmd', 'automation.kv.template', 'queue.plan', 'automation.kv.finish', 'automation.kv.grace', 'automation.kv.next', 'automation.kv.firstSend']);
   assert.equal(clock[0][1], 'Working · /w');
   assert.equal(clock[3][1], 'Time and quiet delivery');
   assert.equal(clock[4][1], 'close the card');
@@ -208,13 +208,13 @@ test('the bounded-step expansion vectors are the webview\'s own fill (the backen
   for (const v of vector.expansions) assert.equal(fillInboundTemplate(v.skeleton, v.msg), v.expected, v.skeleton);
 });
 
-test('the first-send readiness override is a separate, Slack-badge-only, confirmed choice', async () => {
+test('the first-send readiness override is a separate, clock-or-Slack-badge, confirmed choice', async () => {
   // off unless explicitly on; only a Slack badge rule keeps it
   assert.equal('firstSendWithoutReadiness' in withFirstSend(slackRule(), false), false);
   assert.equal(withFirstSend(slackRule(), true).firstSendWithoutReadiness, true);
   assert.equal('firstSendWithoutReadiness' in withFirstSend(slackRule({ firstSendWithoutReadiness: true }), false), false,
     'turning it off removes it');
-  assert.equal('firstSendWithoutReadiness' in withFirstSend(clockRule(), true), false);
+  assert.equal(withFirstSend(clockRule(), true).firstSendWithoutReadiness, true);
   assert.equal('firstSendWithoutReadiness' in withFirstSend({ source: 'channel', id: 'c1' }, true), false);
   assert.equal(withFirstSend(slackRule(), 'yes').firstSendWithoutReadiness, undefined, 'only a real true');
   // turning it on asks; turning it off (or keeping it) never does
@@ -239,7 +239,7 @@ test('the first-send readiness override is a separate, Slack-badge-only, confirm
     'on, but not used: the command must be Claude, or Codex with --no-daemon');
   const facts = rule => Object.fromEntries(ruleFacts(rule));
   assert.equal(facts(slackRule())['automation.kv.firstSend'], 'waits for your first interaction or Send now');
-  assert.equal('automation.kv.firstSend' in facts(clockRule()), false, 'clock rules never show it');
+  assert.equal(facts(clockRule())['automation.kv.firstSend'], 'waits for your first interaction or Send now');
   assert.equal('automation.kv.firstSend' in facts({ ...slackRule(), source: 'channel', channelIds: [], senderUserIds: [], senderBotIds: [], idleMinutes: 30 }), false);
 });
 

@@ -11,7 +11,8 @@ would take the Enter. The row waits at "Waiting for first agent
 interaction" until you interact with the agent once — with its Agent
 Status integration on, that interaction is what releases it — or you use
 **send now**. Unattended delivery to Claude or Codex therefore needs the
-Agent Status integration and one real interaction in that agent process;
+Agent Status integration and, by default, one real interaction in that agent process;
+the explicit per-rule first-send option below accepts the fresh-start risk instead.
 later rows then follow the usual rules. Cards are never moved automatically and deck never writes anything back
 to Slack. This document is the Slack connection (Settings) and the rules
 that both triggers share; the app's Automations drawer is where rules live.
@@ -100,7 +101,7 @@ delivery authority") for the exact rules.
 
 ### Send the first step to a newly started agent without waiting for readiness
 
-A separate, unticked-by-default choice on a Slack badge rule, independent of
+A separate, unticked-by-default choice on a clock or Slack badge rule, independent of
 the one above. It exists because neither Claude Code nor Codex currently
 exposes a trustworthy "ready for the first prompt" fact, so by default Deck
 waits for one real interaction with a freshly started agent: a Trust,
@@ -108,7 +109,8 @@ Update, sign-in, permission or other startup dialog may be showing, and the
 text or its Enter would answer that dialog instead (trust the folder, start
 an update). Ticking it — after an explicit confirmation — tells Deck to send
 the run's **first step** anyway: you accept that risk for this rule, so the
-reaction stays the only thing you do. Deck does not claim the agent is
+saved clock schedule/template expresses the task once, or the Slack reaction
+expresses that run. Later scheduled runs need no manual first-send confirmation. Deck does not claim the agent is
 ready; it only stops waiting for proof.
 
 - Only the first step of runs this rule creates. Later steps keep every
@@ -129,10 +131,13 @@ ready; it only stops waiting for proof.
   During and after it, cancellation, rule/settings changes, current Agent
   holds and the exact target generation are checked again. The wait spends
   no delivery attempt, and restarting Deck or the Agent begins a new wait.
-- Unticking it, deleting the rule or changing its command before the first
-  step is sent stops it for runs already waiting; if Deck cannot read its
-  settings it does not use it. Send now always works.
-- Slack channel monitors, the Connector, clock rules and lists never have
+- Unticking it, disabling/deleting the clock rule, or changing source, command
+  or clock target withdraws the exception for waiting runs. Unreadable settings
+  cannot use it. This restores FirstInteraction; it does not cancel work that
+  can proceed with real established-interaction evidence. Frozen prompt bytes
+  never change: schedule/template edits affect future runs. Review checkpoints
+  remain independent. Clock follow-ups are owner text and need no Slack grant.
+- Slack channel monitors, the Connector, manual lists and generic owner rows never have
   this option. A delivery sent this way is recorded as such (no text).
 - It is a temporary escape hatch: when an agent exposes an official
   readiness fact, Deck should use that instead.

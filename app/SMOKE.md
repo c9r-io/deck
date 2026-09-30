@@ -883,3 +883,62 @@ Nothing in this section is authorized merely by the checklist; see
       promote the tested candidate. Record candidate/Stable URLs and workflow
       runs; compare DMG/archive/signature SHA-256 byte-for-byte; update an older
       Stable through `/releases/latest/`.
+
+## Autonomous real-clock first-step acceptance (isolated debug candidate)
+
+`clock-live` is a setup-only WKWebView driver. It saves harmless templates
+through the production provider and rules through the automation editor,
+exercises decline/enable/disable/re-enable confirmation, and arms legal future
+local-minute slots. It never creates cards, queue rows, native events or Signal.
+Before configuring rules it validates native hook attribution with one separate
+manual-input setup card, using normal context guards and explicit isolated risk
+confirmation, then closes that generation. These setup actions are outside all
+unattended windows. After `clock-live-armed`, it performs no input, focus, redraw
+or mutation.
+The real native clock scheduler creates every run.
+
+Prepare a disposable private root with `home`, `work`, `claude`, `codex`, `data`
+and `evidence` directories (0700). Use only existing authorized authentication,
+selectively provision necessary credential records (0600), and complete the
+CLIs' ordinary folder/hook trust flow in separate setup generations. Never copy
+normal configuration trees, bypass permissions or bootstrap the test targets.
+Install the production-shaped status-helper hooks only into those private CLI
+configs, referring to the candidate bundle helper. Disable the test CLI's updater.
+Launch the candidate with LaunchServices and a private HOME, CLAUDE_CONFIG_DIR,
+CODEX_HOME and PATH, in addition to absolute smoke data and a unique deck-smoke
+socket. Do not use the normal `app/run.sh` path without its isolation variables.
+A build-only preparatory smoke launch must be retired before this private-env
+launch; never replace the normal application.
+
+Run `--smoke-wkwebview clock-live` on the isolated candidate. The default driver
+configures A (OFF/fresh Claude), B (ON/one reply), C1–C3 (three independent fresh
+Claude runs/three owner steps/review OFF), and D (review ON). Slots are one minute
+apart; chain rows retain the ordinary 180-second quiet and 60-second send gap.
+The separate Codex track uses a fresh private data directory/socket with the
+closed scenario `codex` in `translation-fixture/scenario`; it configures E only,
+with `codex --no-daemon`. A Claude result never certifies shared-daemon Codex.
+
+Once setup reports armed, before the earliest due time, run:
+
+```sh
+python3 scripts/clock-unattended-observe.py --root <private-root> \
+  --data <private-root>/data --socket deck-smoke-<unique> \
+  --evidence <sanitized-evidence-directory>
+```
+
+The observer freezes deadlines before the trigger (90-second A observation,
+180-second single-step/control budget, 780-second three-step budget including
+ordinary follow-up waits). It only reads test-owned state/transcripts and passively
+captures panes. Expected markers are constructed by the Agent from separate
+pieces, absent verbatim from the input; only exact assistant-role messages count.
+It preserves native slot, row/binding transitions, delivery audits, actual replies,
+review state and stabilization log intervals. No timeout authorizes resubmission.
+Record candidate diff digest, binary hash, Agent versions, all setup failures,
+intervention counts and cleanup in `unattended-acceptance.json`. Setup verdicts
+from `scripts/smoke-verdict <data> clock-live` certify configuration only.
+
+Save sanitized evidence first, then retire only the exact test-owned GUI/socket
+with `scripts/edr_runtime.py --cleanup --socket deck-smoke-<unique>
+--include-foreground`. Remove private credentials and configurations; retain the
+harness and evidence. A final read-only resource audit must be empty. Never use
+broad process-name cleanup or normal `~/.deck` as a fallback.

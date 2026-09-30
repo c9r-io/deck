@@ -211,5 +211,5 @@ test('the first-send override survives normalization on a Slack badge rule only'
   assert.equal(flag('on'), true);
   assert.equal(flag('off'), undefined, 'legacy rules read as off');
   assert.equal(flag('truthy'), undefined, 'only an explicit true');
-  assert.equal(flag('daily'), undefined, 'a clock rule never keeps it');
+  assert.equal(flag('daily'), true, 'an explicitly enabled clock rule keeps it');
 });

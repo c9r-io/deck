@@ -260,9 +260,9 @@ pub(crate) struct QueueAddArgs {
     #[serde(skip)]
     pub(crate) granted: Vec<Option<StepAuthority>>,
     /// The frozen plan's statement that this call's first text is the head
-    /// row of a Slack badge run whose rule may send it without readiness
-    /// (`first_send.rs`). A request only, accepted on the external path
-    /// alone; omitted when absent so older operation fingerprints stay
+    /// row of a verified Slack badge or clock run whose rule accepts startup
+    /// risk (`first_send.rs`). External Slack and owner clock paths verify
+    /// their native origin independently; omitted when absent so older operation fingerprints stay
     /// identical.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) first_send: Option<FirstSendClaim>,
@@ -335,12 +335,9 @@ pub(crate) fn validate_add(a: &QueueAddArgs) -> Result<(), DeckError> {
             "only an automation's external rows carry an approval",
         ));
     }
-    if a.first_send.is_some() && !a.channel_path {
-        return Err(DeckError::new(
-            ErrorKind::Invalid,
-            "only a Slack badge run's external head row carries a first-send policy",
-        ));
-    }
+    // A first-send claim is a request, never authority. Both entry paths
+    // replace the serde-skipped verdict through native admission. Retain
+    // the request even when refused so operation replay stays idempotent.
     if a.external_text {
         require_channel_agent(a)?;
         if leading_command(&a.text) {
@@ -659,8 +656,11 @@ fn add_item_bound(
 pub(crate) fn queue_add(
     state: State<'_, Queues>,
     app: AppHandle,
-    args: QueueAddArgs,
+    mut args: QueueAddArgs,
 ) -> Result<(), DeckError> {
+    if !args.channel_path {
+        admit_first_send(&mut args);
+    }
     validate_add(&args)?;
     let text = normalize_prompt(&args.text);
     if text.is_empty() {
@@ -750,12 +750,12 @@ pub(super) fn admit_authority(args: &mut QueueAddArgs, texts: &[String]) {
     }
 }
 
-/// The first-send readiness override for an externally admitted call
-/// (`first_send.rs`): its claim names the head row of a Slack badge run and
+/// The first-send readiness override for a source-verified automation head
+/// (`first_send.rs`): its claim names the head row of a verified automation run and
 /// is checked against the CURRENT settings and the backend's own copy of
 /// the event. A refused claim admits the row without it — the ordinary
-/// first-interaction gate holds it — and logs a closed code. Only the
-/// external commands call this, after `admit_external`.
+/// first-interaction gate holds it. Owner admission additionally requires a
+/// committed clock head and native pending slot; Slack stays external.
 pub(super) fn admit_first_send(args: &mut QueueAddArgs) {
     args.first_send_granted = None;
     let Some(claim) = args.first_send.clone() else {
@@ -763,6 +763,29 @@ pub(super) fn admit_first_send(args: &mut QueueAddArgs) {
     };
     let config = crate::inbound::read_config_strict();
     let event = crate::inbound::pending_event(&claim.event, &claim.rule);
+    if let Some(rule) = config
+        .as_ref()
+        .and_then(|c| c.rules.iter().find(|r| r.id == claim.rule))
+    {
+        let clock = rule.source == "clock";
+        if clock == args.channel_path {
+            return;
+        }
+        if clock {
+            if !crate::inbound::clock_policy_pending(&claim.event, rule) {
+                return;
+            }
+            let board = crate::documents::connector_board_payload()
+                .ok()
+                .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
+            if !board
+                .as_ref()
+                .is_some_and(|b| first_send::clock_head_matches(b, args, rule, &claim))
+            {
+                return;
+            }
+        }
+    }
     match first_send::verify(
         config.as_ref(),
         &claim,
@@ -1267,9 +1290,20 @@ pub(crate) fn queue_send_now(
 pub(crate) fn queue_add_reviewed_list(
     state: State<'_, Queues>,
     app: AppHandle,
-    args: QueueAddArgs,
+    mut args: QueueAddArgs,
     texts: Vec<String>,
 ) -> Result<(), DeckError> {
+    if !args.channel_path {
+        admit_first_send(&mut args);
+    }
+    if args
+        .first_send_granted
+        .as_ref()
+        .is_some_and(|o| o.trigger == first_send::FirstSendOrigin::Clock)
+        && texts.first().map(|s| normalize_prompt(s)) != Some(normalize_prompt(&args.text))
+    {
+        return Err(review_error());
+    }
     if !args.review_each || args.mode != "at" || texts.is_empty() {
         return Err(review_error());
     }
