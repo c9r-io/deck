@@ -547,6 +547,37 @@
         "clock-live-armed": {},
         "clock-live-exception": { "failureOnly": true }
       }
+    },
+    "reminder": {
+      "terminal": "done",
+      "checks": {
+            "reminder-real-due": {},
+        "reminder-date-reject": {},
+            "reminder-note-reject": {},
+            "reminder-preview": {},
+            "reminder-ui-save": {},
+            "reminder-durable": {},
+            "reminder-header": {},
+            "reminder-close-guard": {},
+            "reminder-real-exit": {},
+            "reminder-no-backlog": {},
+            "reminder-native-empty": {},
+            "reminder-cleanup": {},
+            "reminder-exception": {
+                  "failureOnly": true
+            },
+            "reminder-phase-ready": {},
+            "reminder-restart-held": {},
+            "reminder-new-lifecycle": {},
+            "reminder-restart-saved": {}
+      }
+},
+    "reminder-native": {
+      "terminal": "reminder-native-stage",
+      "checks": {
+        "reminder-native-stage": {},
+        "reminder-native-observation": {}
+      }
     }
   }
 }

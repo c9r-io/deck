@@ -120,9 +120,9 @@ function sourceText(card) {
 }
 
 function countText(filter, counts, freshness) {
-  if (freshness.kind !== 'unknown' || ['all', 'followed', 'unavailable'].includes(filter)) return formatNumber(counts[filter]);
+  if (freshness.kind !== 'unknown' || ['all', 'followed', 'unavailable', 'reminder', 'reminders'].includes(filter)) return formatNumber(counts[filter] || 0);
   // Manual follow-up is known even before the first successful status poll.
-  return filter === 'pending' && counts.followed ? `${formatNumber(counts.followed)}+` : '—';
+  return filter === 'pending' && (counts.followed || counts.reminder) ? `${formatNumber(Math.max(counts.followed, counts.reminder || 0))}+` : '—';
 }
 
 function fillTools(container, cards) {
@@ -251,7 +251,7 @@ function updateRows() {
     pin.setAttribute('aria-pressed', String(card.pinned === true));
     pin.classList.toggle('active', card.pinned === true);
     row.querySelector('.attention-origin').textContent = `${project.name} / ${column.name}`;
-    row.querySelector('.attention-reason').textContent = (card.pinned === true ? `${t('attention.filter.followed')} · ` : '') + attentionStatusText(card);
+    row.querySelector('.attention-reason').textContent = (card.pinned === true ? `${t('attention.filter.followed')} · ` : '') + attentionStatusText(card) + (card.reminder ? ' · ' + t(card.reminder.due || card.reminder.dueAt <= Date.now() ? 'reminder.due' : 'reminder.pending') : '');
     row.querySelector('.attention-reason').dataset.status = snapshot?.status || 'unknown';
     row.querySelector('.attention-viewed').textContent = sourceText(card);
     row.querySelector('.attention-open').textContent = t(locate ? 'attention.locate' : 'attention.open');

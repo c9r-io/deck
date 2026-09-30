@@ -1,3 +1,4 @@
+import { REMINDER_NOTE_BYTES } from '../js/reminder-model.js';
 // Frontend ↔ backend mirrored constants. This is the JS half of the mirror:
 // test/fixtures/limits.json is the one list, this file holds the frontend
 // exports to it, and src-tauri/src/limits_mirror.rs holds the Rust constants
@@ -93,4 +94,8 @@ test('closed status vocabularies', () => {
       assert.equal(typeof dictionary[`notice.${code}`], 'string', `${locale} notice.${code}`);
     }
   }
+});
+
+test('reminder note bounds match the native fixture', () => {
+  assert.equal(REMINDER_NOTE_BYTES, limits.reminder_note_bytes);
 });

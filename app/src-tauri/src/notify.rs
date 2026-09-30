@@ -1,3 +1,7 @@
+//! Card reminders have independent UTC intent and native scheduling in
+//! reminder.rs. The Dock unions due card IDs with enabled Agent reasons;
+//! viewing an Agent episode never handles a reminder. Agent post/withdraw
+//! identifiers and notifyAway semantics below remain unchanged.
 //! notify.rs — away notifications and the Dock badge, the desktop side of
 //! the attention loop: a macOS notification when an agent needs the user
 //! while the deck window is not in front, and a badge with the number of
@@ -154,6 +158,7 @@ fn can_post(native: &dyn Native) -> bool {
     matches!(native.status(), "authorized" | "provisional")
 }
 
+#[cfg(test)]
 fn badge_count(n: &Notify) -> usize {
     n.states
         .iter()
@@ -162,7 +167,12 @@ fn badge_count(n: &Notify) -> usize {
 }
 
 fn push_badge(n: &Notify, native: &dyn Native) {
-    native.badge(if n.enabled { badge_count(n) } else { 0 });
+    let sessions = n
+        .states
+        .iter()
+        .filter(|(_, seen)| n.enabled && (seen.state == NEEDS_INPUT || unread(seen)))
+        .map(|(session, _)| session.clone());
+    native.badge(crate::reminder::badge_keys(sessions).len());
 }
 
 fn withdraw(n: &mut Notify, native: &dyn Native, session: &str) {
@@ -445,6 +455,7 @@ pub(crate) fn init(app: AppHandle, enabled: bool, sound: bool) {
         false,
     );
     applog(&format!("[notify] boot {status}"));
+    crate::reminder::init();
 }
 
 pub(crate) fn observe(session: &str, seen: crate::agent_status::Observation) {
@@ -551,6 +562,21 @@ pub(crate) fn notify_dismiss(
         ));
     }
     Ok(())
+}
+
+/// Reminders reuse sound preference independently of Agent notifications.
+pub(crate) fn reminder_sound() -> bool {
+    NOTIFY.lock_or_recover().sound
+}
+
+pub(crate) fn refresh_badge() {
+    push_badge(&NOTIFY.lock_or_recover(), &SystemNative);
+}
+pub(crate) fn reminder_request_permission() -> String {
+    if SystemNative.status() == "not-determined" {
+        SystemNative.request();
+    }
+    SystemNative.status().into()
 }
 
 #[cfg(test)]

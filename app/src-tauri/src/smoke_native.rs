@@ -29,6 +29,54 @@ fn gate() -> Result<(), DeckError> {
     }
 }
 
+/// Debug-only LaunchServices inventory/withdrawal, before Board initialization.
+/// The same signed test identity observes UN state without rearming requests.
+pub(crate) fn reminder_maintenance() -> bool {
+    if !cfg!(debug_assertions) || gate().is_err() {
+        return false;
+    }
+    let scenario = std::fs::read_to_string(fixture_dir().join("scenario")).unwrap_or_default();
+    if !matches!(scenario.trim(), "native-inventory" | "native-cleanup") {
+        return false;
+    }
+    #[cfg(all(debug_assertions, target_os = "macos"))]
+    unsafe {
+        extern "C" {
+            fn deck_smoke_reminder_inventory() -> *mut std::ffi::c_char;
+            fn deck_smoke_reminder_withdraw() -> i32;
+        }
+        let cleanup = scenario.trim() == "native-cleanup";
+        if cleanup {
+            deck_smoke_reminder_withdraw();
+        }
+        for _ in 0..20 {
+            let ptr = deck_smoke_reminder_inventory();
+            if ptr.is_null() {
+                break;
+            }
+            let bytes = std::ffi::CStr::from_ptr(ptr).to_bytes().to_vec();
+            libc::free(ptr.cast());
+            if let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+                value["observedAt"] = serde_json::json!(crate::reminder::now_ms());
+                value["boardLoaded"] = serde_json::json!(false);
+                let empty = value["pending"].as_array().is_some_and(Vec::is_empty)
+                    && value["delivered"].as_array().is_some_and(Vec::is_empty);
+                let directory = crate::datadir::deck_dir().join("evidence");
+                let _ = crate::datadir::create_private_dir(&directory);
+                let _ = crate::datadir::write_private(
+                    &directory.join("reminder-maintenance.json"),
+                    &serde_json::to_vec(&value).unwrap_or_default(),
+                );
+                if !cleanup || empty {
+                    break;
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+    }
+    true
+}
+
 #[cfg(all(debug_assertions, target_os = "macos"))]
 mod native {
     use std::ffi::c_char;
@@ -341,6 +389,60 @@ pub(crate) fn smoke_native_fixture() -> Result<String, DeckError> {
         return Err(unavailable());
     }
     path.to_str().map(str::to_owned).ok_or_else(unavailable)
+}
+
+/// Actual system inventory, scoped to the dedicated Reminder carrier. A
+/// request or delivered item is not evidence that a user saw a banner.
+#[tauri::command]
+pub(crate) async fn smoke_reminder_inventory() -> Result<serde_json::Value, DeckError> {
+    blocking(|| {
+        #[cfg(all(debug_assertions, target_os = "macos"))]
+        unsafe {
+            extern "C" {
+                fn deck_smoke_reminder_inventory() -> *mut std::ffi::c_char;
+            }
+            let ptr = deck_smoke_reminder_inventory();
+            if ptr.is_null() {
+                return Err(unavailable());
+            }
+            let bytes = std::ffi::CStr::from_ptr(ptr).to_bytes().to_vec();
+            libc::free(ptr.cast());
+            let mut value: serde_json::Value =
+                serde_json::from_slice(&bytes).map_err(|_| unavailable())?;
+            value["observedAt"] = serde_json::json!(crate::reminder::now_ms());
+            let home = crate::datadir::deck_dir().join("home");
+            value["privateEnvironment"] = serde_json::json!({
+                "home": std::env::var_os("HOME").is_some_and(|p| p == home),
+                "claude": std::env::var_os("CLAUDE_CONFIG_DIR").is_some_and(|p| p == home.join(".claude")),
+                "codex": std::env::var_os("CODEX_HOME").is_some_and(|p| p == home.join(".codex")),
+            });
+            let directory = crate::datadir::deck_dir().join("evidence");
+            crate::datadir::create_private_dir(&directory)?;
+            crate::datadir::write_private(
+                &directory.join("reminder-system-inventory.json"),
+                &serde_json::to_vec(&value).map_err(|_| unavailable())?,
+            )?;
+            Ok(value)
+        }
+        #[cfg(not(all(debug_assertions, target_os = "macos")))]
+        Err(unavailable())
+    })
+    .await
+}
+#[tauri::command]
+pub(crate) async fn smoke_reminder_withdraw() -> Result<i32, DeckError> {
+    blocking(|| {
+        #[cfg(all(debug_assertions, target_os = "macos"))]
+        unsafe {
+            extern "C" {
+                fn deck_smoke_reminder_withdraw() -> i32;
+            }
+            Ok(deck_smoke_reminder_withdraw())
+        }
+        #[cfg(not(all(debug_assertions, target_os = "macos")))]
+        Err(unavailable())
+    })
+    .await
 }
 
 #[cfg(test)]

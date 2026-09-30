@@ -233,7 +233,11 @@ evolution; it makes scope expansion deliberate.
   A retained card buffer, channel/Connector run journal, frozen inbound plan, or project task preset upgrades deck.json to sticky v3, idempotent buffer
   queue operations upgrade queue.json to sticky v3, and enabled channel
   connections/rules upgrade settings.json to sticky v3; ordinary data stays v1. Clock first-send settings/queue origins upgrade to sticky
-  v4 so older readers refuse them untouched.
+  v4 so older readers refuse them untouched. Card Reminder intent and blocked
+  retirement identities upgrade deck.json to sticky v5. Native notifications
+  project committed Board intent; their responses return through the same writer.
+  Reminders grant no input/start authority and protect pending/due cards from
+  non-cancelling deletion, including deferred retirement after ending Reminder.
 - **The signed `deck-app` binary is never a pane executable**, and no
   `/bin/sh -c`, script or shell argv appears on the shell-restore path
   (`commands::restore_start_args`, `tests/edr_quiet.rs`).
@@ -292,6 +296,7 @@ loaded by `ui/index.html`; xterm.js vendored in `app/ui/vendor/`. Backend
 | Structured diagnostics, ui_event whitelist, exports | `diagnostics.rs` |
 | File drop / image paste | `drops.rs` |
 | Process facts without spawning `ps` | `procinfo.rs` |
+| Card Reminder intent, revision-fenced system projection and blocked retirement | `reminder.rs`, `native/NotificationBridge.swift`, `ui/js/reminder-model.js`, Board/persistence/dialogs (+ `docs/card-reminders.md`) |
 | Debug/isolated-smoke fault injection; debug-only native driver (own-window AppKit input, own-webview snapshots, general-pasteboard guard, named test pasteboard) | `smoke_faults.rs`, `smoke_native.rs`, `native/SmokeBridge.swift` (compiled into debug profiles only) |
 
 Status semantics (card colour) are documented on `effectiveCardStatus` in

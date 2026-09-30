@@ -38,6 +38,7 @@ mod prompt_delivery;
 mod pty;
 mod redact;
 mod relaunch;
+mod reminder;
 mod restart;
 mod resume;
 mod scheduler;
@@ -157,6 +158,8 @@ pub(crate) const SMOKE_ENTRIES: &[(&str, &str)] = &[
     ("authority-live", "m.verifyAuthorityLive()"),
     ("empty-start", "m.verifyEmptyStart()"),
     ("clock-live", "m.verifyClockLive()"),
+    ("reminder", "m.verifyReminder()"),
+    ("reminder-native", "m.verifyReminderNative()"),
 ];
 
 fn smoke_entry(mode: &str) -> &'static str {
@@ -167,6 +170,10 @@ fn smoke_entry(mode: &str) -> &'static str {
 }
 
 fn main() {
+    launch_args::configure_isolated_carrier();
+    if smoke_native::reminder_maintenance() {
+        return;
+    }
     if let Some(code) = relaunch::run_helper_from_args() {
         std::process::exit(code);
     }
@@ -361,6 +368,12 @@ fn main() {
             intelligence::pasteboard::translation_clipboard_write,
             input_source::input_source_snapshot,
             notify::notify_configure,
+            reminder::reminder_launch_visible,
+            reminder::reminder_status,
+            reminder::reminder_actions,
+            reminder::reminder_ack,
+            reminder::reminder_show,
+            reminder::reminder_request_permission,
             notify::notify_status,
             notify::notify_cards,
             notify::notify_dismiss,
@@ -506,6 +519,8 @@ fn main() {
             smoke_faults::smoke_query_channel,
             smoke_faults::smoke_signal_fixture,
             smoke_native::smoke_native_input,
+            smoke_native::smoke_reminder_inventory,
+            smoke_native::smoke_reminder_withdraw,
             smoke_native::smoke_native_snapshot,
             smoke_native::smoke_native_fixture,
             smoke_native::smoke_pasteboard,
@@ -518,6 +533,7 @@ fn main() {
         .run(|app, event| {
             #[cfg(target_os = "macos")]
             if let tauri::RunEvent::Reopen { .. } = event {
+                if reminder::background_launch() { return; }
                 if let Some(w) = app.get_webview_window("main") {
                     let _ = w.show();
                     let _ = w.set_focus();

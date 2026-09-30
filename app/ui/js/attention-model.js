@@ -1,3 +1,4 @@
+import { reminderDue } from './reminder-model.js';
 // attention-model.js — runtime-only observations and derived attention.
 // No Board writes, hook installation, inferred readiness, or durable ordering.
 // Three layers, kept apart:
@@ -31,7 +32,7 @@
 // categories; none of them is side-effect authority (tests/signal_census.rs).
 import { CARD_QUIET_SECS, effectiveCardStatus } from './pure.js';
 
-export const ATTENTION_FILTERS = Object.freeze(['pending', 'input', 'done', 'followed', 'unavailable', 'stopped']);
+export const ATTENTION_FILTERS = Object.freeze(['pending', 'input', 'done', 'followed', 'unavailable', 'stopped', 'reminder', 'reminders']);
 export const CODEX_SIGNAL_TRUST = Object.freeze(['unknown', 'trusted', 'unavailable']);
 
 export function createAttentionTracker() {
@@ -53,8 +54,8 @@ export function createAttentionTracker() {
   };
   const matches = (card, filter) => {
     const kind = category(card);
-    return filter === 'all' || (filter === 'followed' ? card.pinned === true
-      : filter === 'pending' ? kind === 'input' || kind === 'done' || card.pinned === true
+    return filter === 'all' || (filter === 'reminder' ? reminderDue(card) : filter === 'reminders' ? !!card.reminder : false) || (filter === 'followed' ? card.pinned === true
+      : filter === 'pending' ? kind === 'input' || kind === 'done' || card.pinned === true || reminderDue(card)
       : filter === 'unavailable' ? kind === 'unavailable' || kind === 'unknown' : kind === filter);
   };
   return {
@@ -120,9 +121,10 @@ export function createAttentionTracker() {
         const kind = category(card);
         if (kind in counts) counts[kind]++;
         if (card.pinned === true) counts.followed++;
-        if (kind === 'input' || kind === 'done' || card.pinned === true) counts.pending++;
+        if (kind === 'input' || kind === 'done' || card.pinned === true || reminderDue(card)) counts.pending++;
         if (kind === 'unknown') counts.unavailable++;
       }
+      if (cards.some(card => card.reminder)) { counts.reminder = cards.filter(card => reminderDue(card)).length; counts.reminders = cards.filter(card => card.reminder).length; }
       return counts;
     },
   };
@@ -160,11 +162,12 @@ export function attentionRows(projects, cards, tracker, filter) {
       added.add(card.id);
       if (tracker.matches(card, filter)) {
         const category = tracker.category(card);
-        const kind = filter === 'pending' && !['input', 'done'].includes(category) ? 'followed' : category;
+        const kind = reminderDue(card) && !['input', 'done'].includes(category) ? 'reminder' : filter === 'pending' && !['input', 'done'].includes(category) ? 'followed' : category;
         ordered.push({ card, project, column, kind });
       }
     }
   }
+  if (filter === 'reminder' || filter === 'reminders') return ordered.sort((a, b) => a.card.reminder.dueAt - b.card.reminder.dueAt);
   if (filter !== 'pending') return ordered;
-  return ['input', 'done', 'followed'].flatMap(kind => ordered.filter(row => row.kind === kind));
+  return ['input', 'done', 'reminder', 'followed'].flatMap(kind => ordered.filter(row => row.kind === kind));
 }

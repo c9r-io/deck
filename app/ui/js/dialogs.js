@@ -1,8 +1,9 @@
+import { localCandidates, localParts, noteValid, shortcutTime } from './reminder-model.js';
 // dialogs.js — confirm/prompt/choice dialogs, project defaults, toasts, inline rename
 // The settings modal and everything it persists live in settings.js, which
 // imports these primitives; nothing here knows the settings document.
 // Part of deck's no-build frontend: native ES modules, no bundler.
-import { $, ctx, genId } from './state.js';
+import { $, ctx, genId, inv } from './state.js';
 import { inlineRenameValue, isComposingKeyEvent } from './pure.js';
 import { t } from './i18n.js';
 import { normalizeTaskPreset, normalizeTaskPresets } from './connector-model.js';
@@ -259,4 +260,66 @@ export function initDialogs() {
     }
     if (e.key === 'Escape') { e.stopPropagation(); e.preventDefault(); cfmDone(false); }
   }, true);
+}
+
+/* Reminder input stays local: UTC candidates must round-trip exactly in the
+   displayed zone. Fold choices are explicit; neither Date nor native guesses. */
+export async function reminderDialog(current, registration = null) {
+  const zone = current?.timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const status = await inv('notify_status').catch(() => 'unsupported');
+  return new Promise(resolve => {
+    const overlay = document.createElement('div'); overlay.className = 'reminder-overlay';
+    const form = document.createElement('form'); form.className = 'reminder-editor';
+    const title = document.createElement('h2'); title.textContent = t(current && (current.due || current.dueAt <= Date.now()) ? 'reminder.later' : 'reminder.set'); form.append(title);
+    const zoneLabel = document.createElement('p'); zoneLabel.textContent = zone; form.append(zoneLabel);
+    const shortcuts = document.createElement('div');
+    const date = document.createElement('input'); date.type = 'datetime-local'; date.id = 'reminder-date'; date.required = true;
+    date.value = localParts(current?.dueAt || Date.now() + 3600000, zone);
+    for (const kind of ['hour', 'tomorrow', 'monday']) {
+      const button = document.createElement('button'); button.type = 'button'; button.className = 'btn'; button.textContent = t({ hour: 'reminder.hour', tomorrow: 'reminder.tomorrow', monday: 'reminder.monday' }[kind]);
+      button.onclick = () => { const now = Date.now(); date.value = shortcutTime(kind, now, zone); update(); if (kind === 'hour') { relativeInstant = now + 3600000; fold.hidden = true; validate(); } }; shortcuts.append(button);
+    }
+    form.append(shortcuts, date);
+    const fold = document.createElement('select'); fold.id = 'reminder-fold'; form.append(fold);
+    const note = document.createElement('input'); note.type = 'text'; note.id = 'reminder-note'; note.value = current?.note || ''; note.placeholder = t('reminder.note'); form.append(note);
+    const label = document.createElement('label');
+    const inApp = document.createElement('input'); inApp.type = 'checkbox'; inApp.id = 'reminder-in-app'; inApp.checked = current?.inAppOnly === true;
+    label.append(inApp, document.createTextNode(t('reminder.inApp'))); form.append(label);
+    const preview = document.createElement('p'); preview.id = 'reminder-preview'; form.append(preview);
+    const permissions = document.createElement('p'); permissions.textContent = t(`settings.notifyStatus.${status}`) + (current ? " · " + t({ scheduled: "reminder.registered", "registration-failed": "reminder.registrationFailed", saved: "reminder.saved" }[registration] || "reminder.saved") : ""); form.append(permissions);
+    const saved = document.createElement('p'); saved.textContent = current ? t('reminder.savedHint') : t('reminder.intentHint'); form.append(saved);
+    const actions = document.createElement('div'); actions.className = 'cfm-actions';
+    const done = value => { overlay.remove(); resolve(value); };
+    const cancel = document.createElement('button'); cancel.type = 'button'; cancel.className = 'btn'; cancel.textContent = t('common.cancel'); cancel.onclick = () => done(null); actions.append(cancel);
+    if (current) {
+      const end = document.createElement('button'); end.type = 'button'; end.className = 'btn'; end.id = 'reminder-end'; end.textContent = t('reminder.end'); end.onclick = () => done({ cancel: true }); actions.append(end);
+    }
+    const save = document.createElement('button'); save.type = 'submit'; save.className = 'btn primary'; save.id = 'reminder-save'; save.textContent = t('common.save'); actions.append(save); form.append(actions);
+    let candidates = [];
+    let relativeInstant = null;
+    const update = () => {
+      relativeInstant = null;
+      candidates = localCandidates(date.value, zone);
+      fold.replaceChildren(); fold.hidden = candidates.length < 2;
+      if (candidates.length > 1) {
+        const empty = document.createElement('option'); empty.value = ''; empty.textContent = t('reminder.ambiguous'); fold.append(empty);
+        for (const instant of candidates) { const option = document.createElement('option'); option.value = String(instant); option.textContent = new Date(instant).toISOString(); fold.append(option); }
+      }
+      validate();
+    };
+    const validate = () => {
+      const instant = relativeInstant || (candidates.length === 1 ? candidates[0] : Number(fold.value) || null);
+      const valid = instant > Date.now() && noteValid(note.value);
+      save.disabled = !valid || (!inApp.checked && !['not-determined', 'authorized', 'provisional'].includes(status));
+      preview.textContent = valid ? `${t('reminder.preview')} ${new Intl.DateTimeFormat(undefined, { timeZone: zone, dateStyle: 'full', timeStyle: 'short' }).format(instant)} (${zone})` : t('reminder.invalid');
+    };
+    date.oninput = update; fold.onchange = validate; note.oninput = validate; inApp.onchange = validate;
+    form.onsubmit = event => {
+      event.preventDefault(); validate(); if (save.disabled) return;
+      if (!inApp.checked && status === 'not-determined') inv('reminder_request_permission').catch(() => {});
+      done({ dueAt: relativeInstant || (candidates.length === 1 ? candidates[0] : Number(fold.value)), timeZone: zone, note: note.value, inAppOnly: inApp.checked });
+    };
+    overlay.onkeydown = event => { if (event.key === 'Escape') { event.stopPropagation(); done(null); } };
+    overlay.append(form); document.body.append(overlay); update(); date.focus();
+  });
 }

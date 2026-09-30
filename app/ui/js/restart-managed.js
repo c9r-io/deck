@@ -1,3 +1,4 @@
+// Reminder-protected maintenance cards are retained before any bulk side effect.
 // Local, user-confirmed managed-session closure before shell replacement.
 // Backend status is the authority; a changed review or uncertain close stops
 // before the ordinary restart command. The backend rechecks under its gate.
@@ -26,6 +27,12 @@ export async function closeManagedForRestart(review, { readStatus, getCard, clos
       current.impactToken !== review.impactToken || !same(identities(managedBlockers(current)), identities(expected)) ||
       managedBlockers(current).length !== (current.restartBlockers || []).length) {
     throw new Error('managed-review-changed');
+  }
+  const protectedCount = expected.filter(item => getCard(item.cardId)?.reminder).length;
+  if (protectedCount) {
+    const error = closeFailure('managed-reminder-protected', null, 0);
+    error.protectedCount = protectedCount;
+    throw error;
   }
   let closedCount = 0;
   for (const blocker of [...expected].sort((a, b) => a.cardId.localeCompare(b.cardId))) {

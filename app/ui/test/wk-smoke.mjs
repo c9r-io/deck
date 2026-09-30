@@ -2788,3 +2788,10 @@ export async function verifyClockLive() {
   const { runClockLiveSmoke } = await import('./clock-live-smoke.mjs');
   await runClockLiveSmoke();
 }
+
+export async function verifyReminder() {
+  const { runReminderSmoke } = await import('./reminder-smoke.mjs');
+  await runReminderSmoke();
+}
+
+export async function verifyReminderNative() { return (await import('./reminder-native-smoke.mjs')).runNativeReminderSmoke(); }

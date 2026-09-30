@@ -451,6 +451,7 @@ pub(crate) struct SessInfo {
     /// that may lead the frontend to retire the card. `alive == false`
     /// without it is an unexplained absence and never authority.
     exited_normally: bool,
+    lifecycle: Option<String>,
     /// seconds since the pane last produced output (None if unknown)
     idle_secs: Option<u64>,
     /// physical footprint of the whole process tree under the pane, in MB
@@ -665,6 +666,10 @@ pub(crate) fn poll_from_listing(
             .collect();
         evidence.classify(&names, &live, server.as_ref(), managed)
     };
+    let lifecycles: HashMap<String, String> = names
+        .iter()
+        .filter_map(|name| evidence.lifecycle(name).map(|key| (name.clone(), key)))
+        .collect();
     // ONE process-table snapshot per poll, shared by agent-status
     // reconciliation and the memory footprint
     let table = processes();
@@ -723,6 +728,7 @@ pub(crate) fn poll_from_listing(
             SessInfo {
                 alive: pane.is_some(),
                 exited_normally: verdict == crate::shell_exit::Verdict::ExitedNormally,
+                lifecycle: lifecycles.get(&name).cloned(),
                 idle_secs: pane.map(|pane| now.saturating_sub(pane.window_activity)),
                 mem_mb: mem.get(&name).copied(),
                 tail: tails.remove(&name).unwrap_or_default(),

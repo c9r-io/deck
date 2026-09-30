@@ -1,4 +1,5 @@
 {
+  "reminder_note_bytes": 280,
   "scheduler": {
     "chain_quiet_secs_default": 180,
     "quiet_secs_min": 10,

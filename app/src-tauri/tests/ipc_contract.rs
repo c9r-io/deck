@@ -61,6 +61,8 @@ const DYNAMIC_SITES: &[(&str, &str, &[&str])] = &[
 /// Registered for the debug-only WKWebView smoke and fault harness; called
 /// only from `ui/test`, never from production frontend code.
 const DEBUG_ONLY: &[&str] = &[
+    "smoke_reminder_inventory",
+    "smoke_reminder_withdraw",
     "channel_smoke_seed",
     "connector_smoke_seed",
     "connector_smoke_transport",

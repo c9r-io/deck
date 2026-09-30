@@ -942,3 +942,22 @@ with `scripts/edr_runtime.py --cleanup --socket deck-smoke-<unique>
 --include-foreground`. Remove private credentials and configurations; retain the
 harness and evidence. A final read-only resource audit must be empty. Never use
 broad process-name cleanup or normal `~/.deck` as a fallback.
+
+## Card Reminder unattended verification
+
+Run `python3 scripts/reminder-verify.py` against the live dedicated Mac mini.
+The `reminder` WK mode performs real own-window configuration and actual shell
+exit/restart/retirement controls in private carriers. It waits for a short real
+in-app due instant and checks the Dock. The fixed A1–E6 matrix and cleanup are
+recorded in `unattended-acceptance.json`. System permission, visible notification,
+quit delivery, Notification Center clicks and buttons require a legally
+authorized remote system UI channel and remain BLOCKED when unavailable;
+never substitute handler injection. See `docs/reminder-verification.md`.
+
+
+The Reminder verifier also supports `--target local|macmini|auto` for the
+explicitly authorized local smoke fallback. Local system actions use the
+connected agent CUA channel and bounded `ui-request.json` receipts; actual
+UN callbacks and inventory, not receipts alone, certify each action. The
+signed carrier has an early `native-inventory`/`native-cleanup` mode which
+never loads Board or rearms notifications. See `docs/reminder-verification.md`.

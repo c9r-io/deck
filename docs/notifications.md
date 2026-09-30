@@ -162,3 +162,12 @@ only, no-op outside a bundle; `scripts/test-notification-bridge`),
 `app/ui/js/notify-model.js` (labels and viewed-dismissals),
 `app/ui/js/attention-model.js` `attentionBadge` (the Board card badge), pinned by
 `tests/edr_quiet.rs` and `tests/log_privacy.rs`.
+
+## Card reminders
+
+[Card reminders](card-reminders.md) are saved attention intent independent of
+Agent hooks and Notify when away. They use separate UTC system requests and
+stable card/revision actions. The Dock deduplicates the union by card ID;
+future reminders do not count. Agent viewing/withdrawal never handles a reminder
+or removes its notification. See [ownership and verification](reminder-verification.md)
+for persistence, platform limits and the current unattended acceptance boundary.

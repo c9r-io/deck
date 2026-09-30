@@ -1,10 +1,12 @@
+// Reminder intent and blocked retirement identities persist with their card.
+// Only explicit current-version changes carry claims to the native save fence.
 // persistence.js — one global Board transaction queue
 // Part of deck's no-build frontend: native ES modules, no bundler.
 import { ctx, inv, store } from './state.js';
 import { createSerialTransactionQueue } from './pure.js';
 
 const PERSISTED_CARD_KEYS = new Set([
-  'id', 'projectId', 'columnId', 'title', 'desc', 'cmd', 'dir', 'session', 'pinned', 'origin', 'launched', 'buffer', 'channelRun', 'connectorRun', 'inboundPlan',
+  'id', 'projectId', 'columnId', 'title', 'desc', 'cmd', 'dir', 'session', 'pinned', 'origin', 'launched', 'buffer', 'channelRun', 'connectorRun', 'inboundPlan', 'reminder', 'reminderRetirements',
 ]);
 
 /* A card created by an automation remembers which trigger item it came from, so
@@ -27,6 +29,8 @@ export function boardData(projects = store.projects, cards = store.cards) {
       pinned: c.pinned === true,
       launched: c.launched !== false,   // absent on older boards = already launched
       ...(cardOrigin(c) ? { origin: cardOrigin(c) } : {}),
+      ...(c.reminder ? { reminder: c.reminder } : {}),
+      ...(c.reminderRetirements ? { reminderRetirements: c.reminderRetirements } : {}),
       ...(c.buffer ? { buffer: c.buffer } : {}),
       ...(c.channelRun ? { channelRun: c.channelRun } : {}),
       ...(c.connectorRun ? { connectorRun: c.connectorRun } : {}),
@@ -59,7 +63,7 @@ function commitBoard(candidate) {
 const transactions = createSerialTransactionQueue({
   snapshot: snapshotBoard,
   serialize: candidate => JSON.stringify(boardData(candidate.projects, candidate.cards), null, 2),
-  persist: (_candidate, json) => inv('save_board', { data: json }),
+  persist: (candidate, json) => inv('save_board', { data: json, reminderChanges: candidate.reminderChanges || [] }),
   commit: commitBoard,
 });
 

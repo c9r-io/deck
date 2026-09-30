@@ -9,9 +9,12 @@
 import Foundation
 import AppKit
 import WebKit
+import UserNotifications
+import ApplicationServices
 
 private func smokeWindow() -> NSWindow? {
-    NSApp.keyWindow ?? NSApp.mainWindow ?? NSApp.windows.first { $0.isVisible }
+    // Startup windows may still be hidden; select only this process's WK window.
+    NSApp.keyWindow ?? NSApp.mainWindow ?? NSApp.windows.first { findWebView($0.contentView) != nil }
 }
 private func findWebView(_ view: NSView?) -> WKWebView? {
     guard let view else { return nil }
@@ -424,4 +427,38 @@ public func deckSmokePbNamedWrite(_ kind: Int32, _ text: UnsafePointer<CChar>?) 
 @_cdecl("deck_smoke_pb_count")
 public func deckSmokePbCount(_ boardKind: Int32) -> Int64 {
     onMain { Int64((boardKind == 1 ? testBoard() : NSPasteboard.general).changeCount) }
+}
+
+// Read-only UN inventory for the isolated Reminder carrier. It intentionally
+// has no API to inject responses or claim that a physical banner was shown.
+@_cdecl("deck_smoke_reminder_inventory")
+public func deckSmokeReminderInventory() -> UnsafeMutablePointer<CChar>? {
+    guard Bundle.main.bundleIdentifier?.hasPrefix("io.c9r.deck.reminder.smoke") == true else { return nil }
+    // Inventory-only LaunchServices observers do not load a Board or project
+    // reminders; initialize AppKit only for their own Dock observation.
+    if NSApp == nil { _ = NSApplication.shared }
+    let center = UNUserNotificationCenter.current()
+    let group = DispatchGroup(); let lock = NSLock()
+    var pending = [[String: Any]](); var delivered = [[String: Any]](); var status = -1
+    group.enter(); center.getPendingNotificationRequests { requests in
+        lock.lock(); pending = requests.map { ["identifier": $0.identifier,
+            "dueAt": (($0.trigger as? UNCalendarNotificationTrigger)?.nextTriggerDate()?.timeIntervalSince1970 ?? 0) * 1000] }; lock.unlock(); group.leave()
+    }
+    group.enter(); center.getDeliveredNotifications { notifications in
+        lock.lock(); delivered = notifications.map { ["identifier": $0.request.identifier, "deliveredAt": $0.date.timeIntervalSince1970 * 1000] }; lock.unlock(); group.leave()
+    }
+    group.enter(); center.getNotificationSettings { settings in lock.lock(); status = Int(deckNotifyStatusCode(settings.authorizationStatus)); lock.unlock(); group.leave() }
+    guard group.wait(timeout: .now() + 5) == .success else { return nil }
+    lock.lock(); defer { lock.unlock() }
+    guard let data = try? JSONSerialization.data(withJSONObject: ["pending": pending, "delivered": delivered, "authorization": status, "permissionRequest": deckNotifyPermissionDiagnostics(), "appFrontmost": onMain { NSWorkspace.shared.frontmostApplication?.processIdentifier == ProcessInfo.processInfo.processIdentifier }, "accessibilityTrusted": AXIsProcessTrusted(), "dockBadge": onMain { NSApp.dockTile.badgeLabel ?? "" }]), let json = String(data: data, encoding: .utf8) else { return nil }
+    return strdup(json)
+}
+@_cdecl("deck_smoke_reminder_withdraw")
+public func deckSmokeReminderWithdraw() -> Int32 {
+    guard Bundle.main.bundleIdentifier?.hasPrefix("io.c9r.deck.reminder.smoke") == true else { return -1 }
+    let center = UNUserNotificationCenter.current()
+    // The carrier owns its whole application notification namespace. No
+    // production bundle, user notification or shared Agent is addressed.
+    center.removeAllPendingNotificationRequests(); center.removeAllDeliveredNotifications()
+    return 0
 }

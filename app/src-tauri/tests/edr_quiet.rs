@@ -469,9 +469,13 @@ fn native_notifications_are_in_process_and_content_closed() {
     assert!(swift.contains("guard deckNotifyBundled() else"));
     assert_eq!(
         swift.matches("guard deckNotifyBundled() else").count(),
-        5,
-        "every C entry is guarded"
+        6,
+        "simple C entries are bundle guarded; the Reminder projector also validates its JSON"
     );
+    assert!(swift.contains("guard deckNotifyBundled(), let data"));
+    assert!(swift.contains("reminderIdentifierOk"));
+    assert!(swift.contains("UNCalendarNotificationTrigger"));
+    assert!(!swift.contains("row[\"note\"]"));
     let notify = std::fs::read_to_string(manifest("src/notify.rs")).unwrap();
     let notify = production_region(&notify);
     assert_eq!(

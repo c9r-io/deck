@@ -66,6 +66,7 @@ async function createSession(pending) {
 
 export function closeOutcome(result) {
   if (result.ok) return { state: 'committed', code: null };
+  if (result.stage === 'reminder-protected') return { state: 'rejected', code: 'reminder-protected' };
   if (result.stage === 'shown') return { state: 'rejected', code: 'card-shown' };
   if (result.admitted) return { state: 'ambiguous', code: 'close-failed' };
   return { state: 'rejected', code: 'close-failed' };

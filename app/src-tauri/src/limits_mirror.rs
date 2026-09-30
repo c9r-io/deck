@@ -207,3 +207,11 @@ fn closed_status_vocabularies_match_the_fixture() {
     let spelled: Vec<String> = all.into_iter().map(spell).collect();
     assert_eq!(spelled, words(&l["context_statuses"]));
 }
+
+#[test]
+fn reminder_note_bound_matches_frontend() {
+    assert_eq!(
+        number(&limits()["reminder_note_bytes"]),
+        crate::reminder::NOTE_BYTES as u64
+    );
+}

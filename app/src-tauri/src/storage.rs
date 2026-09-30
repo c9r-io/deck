@@ -1,3 +1,4 @@
+//! Card reminders and blocked retirement identities use sticky Board v5.
 //! Review-aware opt-in uses envelope v2 (sticky) for queue.json and
 //! settings.json. Card buffers, frozen inbound plans and idempotent queue operations use
 //! sticky v3 envelopes for deck.json and queue.json respectively.
@@ -70,7 +71,7 @@ use std::sync::Mutex;
 // v2 protects opt-in human checkpoints; v3 protects retained scratchpad and
 // channel/idempotency fields; v4 protects clock readiness origins/policy.
 // Ordinary documents keep v1; upgrades are sticky.
-pub const SCHEMA_VERSION: u64 = 4;
+pub const SCHEMA_VERSION: u64 = 5;
 
 /// The two documents whose review fields an old reader could misinterpret as
 /// ordinary state (queue rows it would resend; finish rules it would apply).
@@ -340,6 +341,24 @@ fn unique_corrupt_path(path: &Path) -> PathBuf {
     }
 }
 
+/// A projection/save fence may inspect the main file but must never quarantine
+/// it or consume recovery before the authoritative Board loader sees warnings.
+pub(crate) fn peek_typed<T: DeserializeOwned>(path: &Path) -> Result<Option<String>, DeckError> {
+    match std::fs::read_to_string(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
+        Ok(raw) => parse_doc::<T>(&raw).map(Some).map_err(|error| match error {
+            DocErr::Newer(_) => {
+                DeckError::new(ErrorKind::NewerSchema, "board requires a newer schema")
+            }
+            DocErr::Bad(_) => DeckError::new(
+                ErrorKind::InvalidDoc,
+                "board is unreadable; recovery is required",
+            ),
+        }),
+    }
+}
+
 /// Load and fully validate a data file as document type `T`.
 /// `Ok(None)` = file does not exist (a genuine first run).
 /// A bad main file is quarantined, then the `.bak` (same validation) is
@@ -461,7 +480,17 @@ fn save_checked_locked(
     // reaching here with a broken envelope means the file was never loaded
     // (or was replaced behind our back) — refuse rather than destroy it.
     let name = path.file_name().unwrap_or_default().to_string_lossy();
-    let feature_version = if matches!(name.as_ref(), "queue.json" | "settings.json")
+    let feature_version = if name == "deck.json"
+        && data
+            .get("cards")
+            .and_then(|v| v.as_array())
+            .is_some_and(|cards| {
+                cards
+                    .iter()
+                    .any(|c| c.get("reminder").is_some() || c.get("reminderRetirements").is_some())
+            }) {
+        5
+    } else if matches!(name.as_ref(), "queue.json" | "settings.json")
         && uses_clock_first_send(&data)
     {
         4
@@ -1241,5 +1270,33 @@ mod tests {
             assert_eq!(raw["schema_version"], 4);
         }
         let _ = std::fs::remove_dir_all(dir);
+    }
+    #[test]
+    fn reminder_board_requires_sticky_v5_and_old_readers_refuse_protection() {
+        let dir = tdir("reminder-version");
+        let path = dir.join("deck.json");
+        save_typed::<serde_json::Value>(&path, r#"{"cards":[]}"#).unwrap();
+        let read =
+            || serde_json::from_slice::<serde_json::Value>(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(read()["schema_version"], 1);
+        save_typed::<serde_json::Value>(&path, r#"{"cards":[{"reminder":{"id":"identity"}}]}"#)
+            .unwrap();
+        assert_eq!(read()["schema_version"], 5);
+        assert!(envelope_payload_for(&read(), 4).is_err());
+        save_typed::<serde_json::Value>(&path, r#"{"cards":[]}"#).unwrap();
+        assert_eq!(read()["schema_version"], 5);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn peek_never_consumes_corruption_or_future_schema_before_the_owner() {
+        let dir = tdir("reminder-peek");
+        let path = dir.join("deck.json");
+        for bytes in ["broken", r#"{"schema_version":99,"data":{}}"#] {
+            std::fs::write(&path, bytes).unwrap();
+            assert!(peek_typed::<serde_json::Value>(&path).is_err());
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), bytes);
+            assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+        }
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

@@ -22,6 +22,8 @@ const CARRIERS = {
   'voice-smoke.mjs': ['voice'],
   'signal-smoke.mjs': ['signal-finish'],
   'clock-live-smoke.mjs': ['clock-live'],
+  'reminder-smoke.mjs': ['reminder'],
+  'reminder-native-smoke.mjs': ['reminder-native'],
   'authority-smoke.mjs': ['authority-live', 'empty-start'],
 };
 

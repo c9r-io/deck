@@ -23,8 +23,8 @@
 // guessing: cancel, edit the project defaults, or a shell in $HOME.
 import { $, ctx, duev, inv, state, uev } from './state.js';
 import { collapseHome, isComposingKeyEvent, isNotDirectoryError, newSessionColumn, newSessionPlan } from './pure.js';
-import { choiceDialog, confirmDialog, inlineRename, toast, promptDialog } from './dialogs.js';
-import { closeSession, openBuffer, openProjectDefaults, panes, provider, renameTab, render, switchProject, activeProject } from './board.js';
+import { choiceDialog, confirmDangerDialog, confirmDialog, inlineRename, toast, promptDialog } from './dialogs.js';
+import { closeSession, editReminder, openBuffer, openProjectDefaults, panes, provider, renameTab, render, switchProject, activeProject } from './board.js';
 import { backToBoard, openSession } from './layout.js';
 import { formatNumber, onLocaleChange, t } from './i18n.js';
 import { formatShortcut, registerShortcutAction } from './shortcuts.js';
@@ -93,9 +93,10 @@ export function showSessionCtx(e, sid) {
     ? e.currentTarget.querySelector('.name, .card-title') : null;
   const ctx = $('ctx');
   ctx.onkeydown = null;
-  ctx.innerHTML = '<button data-a="rename"></button><button data-a="desc"></button><button data-a="buffer"></button><button data-a="here"></button><hr><button data-a="close" class="danger"></button>';
+  ctx.innerHTML = '<button data-a="rename"></button><button data-a="desc"></button><button data-a="buffer"></button><button data-a="reminder"></button><button data-a="here"></button><hr><button data-a="close" class="danger"></button>';
   ctx.querySelector('[data-a="rename"]').textContent = t('menu.renameCard');
   ctx.querySelector('[data-a="desc"]').textContent = t(s.desc ? 'menu.editDescription' : 'menu.addDescription');
+  ctx.querySelector('[data-a="reminder"]').textContent = t('reminder.set');
   ctx.querySelector('[data-a="buffer"]').textContent = t('buffer.open');
   ctx.querySelector('[data-a="here"]').textContent = t('menu.newSessionHere');
   ctx.querySelector('[data-a="close"]').textContent = t('menu.closeSession');
@@ -104,6 +105,7 @@ export function showSessionCtx(e, sid) {
     ctx.style.display = 'none';
     if (a === 'rename') renameCardInline(sid, renameHost);
     if (a === 'desc') editDescInline(sid);
+    if (a === 'reminder') editReminder(sid);
     if (a === 'buffer') openBuffer(sid);
     if (a === 'here') newSession(s.dir, { projectId: s.projectId });
     if (a === 'close') closeSession(sid);
@@ -145,6 +147,8 @@ export function showProjectCtx(e, pid) {
     }
     if (a === 'remove') {
       if (provider.projects().length <= 1) { toast(t('project.atLeastOne')); return; }
+      const reminderClaims = provider.list(pid).filter(c => c.reminder).map(c => ({ cardId: c.id, id: c.reminder.id, revision: c.reminder.revision }));
+      if (reminderClaims.length && !(await confirmDangerDialog(t("reminder.projectConfirm", { count: formatNumber(reminderClaims.length) }), t("reminder.cancelClose")))) return;
       const n = provider.list(pid).length;
       const buffered = provider.list(pid).filter(retainedBuffer);
       if (!(await confirmDialog(t(buffered.length ? 'project.deleteBuffers' : 'project.delete', {
@@ -154,7 +158,7 @@ export function showProjectCtx(e, pid) {
       })))) return;
       /* nothing is removed unless every card's schedule was cancelled and
          persisted first (the toast explains a refusal) */
-      if (!(await provider.removeProject(pid))) return;
+      if (!(await provider.removeProject(pid, { reminderClaims }))) return;
       if (state.projectId === pid) {
         state.projectId = provider.projects()[0].id;
         state.view = 'board';

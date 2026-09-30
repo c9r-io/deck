@@ -69,3 +69,13 @@ test('unexpected server identity after close fails closed', async () => {
     closePane: () => {},
   }), { message: 'managed-close-ambiguous' });
 });
+
+test('bulk maintenance retains reminder cards with an exact count before closing anything', async () => {
+  const review = status([blocker(), blocker('M2')]);
+  await assert.rejects(closeManagedForRestart(review, {
+    readStatus: async () => review,
+    getCard: id => ({ id, session: `deck-${id}`, reminder: { id: 'reminder' } }),
+    closeCard: () => assert.fail('protected batch must have no close effects'),
+    closePane: () => assert.fail('protected batch must have no pane effects'),
+  }), error => error.message === 'managed-reminder-protected' && error.protectedCount === 2 && error.closedCount === 0);
+});

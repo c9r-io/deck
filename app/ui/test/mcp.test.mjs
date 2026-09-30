@@ -156,6 +156,7 @@ test('a failed native completion is surfaced as a fixed sentence, not swallowed 
 
 test('close outcomes and local error codes map to fixed states and sentences', () => {
   assert.deepEqual(closeOutcome({ ok: true }), { state: 'committed', code: null });
+  assert.deepEqual(closeOutcome({ ok: false, stage: 'reminder-protected' }), { state: 'rejected', code: 'reminder-protected' });
   assert.deepEqual(closeOutcome({ ok: false, stage: 'shown' }), { state: 'rejected', code: 'card-shown' });
   assert.deepEqual(closeOutcome({ ok: false, admitted: true, stage: 'kill' }), { state: 'ambiguous', code: 'close-failed' });
   assert.deepEqual(closeOutcome({ ok: false, admitted: false }), { state: 'rejected', code: 'close-failed' });

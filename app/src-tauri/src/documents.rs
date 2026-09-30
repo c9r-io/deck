@@ -1,3 +1,5 @@
+//! Card reminders are typed, bounded Board v5 intent. Native save fences
+//! removals/edits against explicit current-revision claims before persistence.
 //! Typed board/settings documents: `BoardDoc` and `SettingsDoc` validate
 //! business structure via `try_from` (the SAME rules on load and save), and
 //! the load/save commands plus the settings readers other modules use.
@@ -132,6 +134,10 @@ pub(crate) struct BoardCard {
     /// queued prompts; old boards have no field and therefore an empty buffer.
     #[serde(default)]
     buffer: Option<CardBuffer>,
+    #[serde(default)]
+    reminder: Option<crate::reminder::Reminder>,
+    #[serde(default, rename = "reminderRetirements")]
+    reminder_retirements: Vec<String>,
     #[serde(default, rename = "channelRun")]
     channel_run: Option<ChannelRun>,
     #[serde(default, rename = "connectorRun")]
@@ -554,6 +560,7 @@ fn validate_board(b: &BoardDocRaw) -> Result<(), DeckError> {
             }
         }
     }
+    let mut reminder_ids = HashSet::new();
     let mut card_ids = HashSet::new();
     let mut sessions = HashSet::new();
     for c in &b.cards {
@@ -576,6 +583,25 @@ fn validate_board(b: &BoardDocRaw) -> Result<(), DeckError> {
             return Err(DeckError::new(
                 ErrorKind::InvalidDoc,
                 format!("card {}: session name is already used", c.id),
+            ));
+        }
+        if let Some(reminder) = &c.reminder {
+            crate::reminder::validate(reminder)?;
+            if c.id.len() > 512 || !reminder_ids.insert(reminder.id.as_str()) {
+                return Err(DeckError::new(
+                    ErrorKind::InvalidDoc,
+                    "duplicate or unaddressable card reminder",
+                ));
+            }
+        }
+        if c.reminder_retirements.len() > 2
+            || c.reminder_retirements.iter().any(|key| {
+                key.len() > 2048 || !key.starts_with("exit:") && !key.starts_with("run:")
+            })
+        {
+            return Err(DeckError::new(
+                ErrorKind::InvalidDoc,
+                "invalid reminder retirement identity",
             ));
         }
         if let Some(buffer) = &c.buffer {
@@ -851,16 +877,66 @@ pub(crate) fn board_path() -> PathBuf {
     crate::datadir::deck_dir().join("deck.json")
 }
 
+/// A quarantined Board is never a new empty Board, including after restart.
+fn board_was_quarantined(path: &std::path::Path) -> Result<bool, DeckError> {
+    let Some(parent) = path.parent() else {
+        return Ok(false);
+    };
+    let prefix = format!(
+        "{}.corrupt-",
+        path.file_stem().unwrap_or_default().to_string_lossy()
+    );
+    match std::fs::read_dir(parent) {
+        Ok(entries) => {
+            for entry in entries {
+                let name = entry?.file_name().to_string_lossy().into_owned();
+                if name.strip_prefix(&prefix).is_some_and(|suffix| {
+                    !suffix.is_empty() && suffix.bytes().all(|b| b.is_ascii_digit() || b == b'-')
+                }) {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error.into()),
+    }
+}
+fn load_board_at(path: &std::path::Path) -> Result<Option<storage::LoadOutcome>, DeckError> {
+    if !path.exists() && board_was_quarantined(path)? {
+        let backup = path.with_file_name(format!(
+            "{}.bak",
+            path.file_name().unwrap_or_default().to_string_lossy()
+        ));
+        let payload = storage::peek_typed::<BoardDoc>(&backup)?.ok_or_else(|| {
+            DeckError::new(
+                ErrorKind::InvalidDoc,
+                "quarantined board needs recovery; refusing empty defaults",
+            )
+        })?;
+        return Ok(Some(storage::LoadOutcome {
+            payload,
+            source: "backup",
+            warning: Some("board recovered after quarantine".into()),
+        }));
+    }
+    storage::load_typed::<BoardDoc>(path)
+}
+
 #[tauri::command]
 pub(crate) fn load_board() -> Result<LoadedDoc, DeckError> {
-    Ok(to_loaded(storage::load_typed::<BoardDoc>(&board_path())?))
+    let loaded = load_board_at(&board_path())?;
+    if let Some(doc) = &loaded {
+        crate::reminder::observe_committed(&doc.payload);
+    }
+    Ok(to_loaded(loaded))
 }
 
 /// Connector read seam: the returned bytes are the committed, fully typed
 /// Board payload selected by normal recovery. Callers project closed DTOs;
 /// they never receive a mutable document handle.
 pub(crate) fn connector_board_payload() -> Result<String, DeckError> {
-    storage::load_typed::<BoardDoc>(&board_path())?
+    load_board_at(&board_path())?
         .map(|loaded| loaded.payload)
         .ok_or_else(|| DeckError::new(ErrorKind::Missing, "board is not initialized"))
 }
@@ -892,14 +968,39 @@ pub(crate) fn save_validated<T: serde::de::DeserializeOwned>(
 }
 
 #[tauri::command]
-pub(crate) fn save_board(data: String) -> Result<(), DeckError> {
+pub(crate) fn save_board(
+    data: String,
+    reminder_changes: Option<Vec<crate::reminder::Claim>>,
+) -> Result<(), DeckError> {
     if crate::smoke_faults::take("board-save") {
         return Err(DeckError::new(
             ErrorKind::Other,
             "injected board save failure",
         ));
     }
-    save_validated::<BoardDoc>(&board_path(), &data, "board")
+    serde_json::from_str::<BoardDoc>(&data)
+        .map_err(|_| DeckError::new(ErrorKind::InvalidDoc, "invalid board"))?;
+    let next: serde_json::Value = serde_json::from_str(&data)
+        .map_err(|_| DeckError::new(ErrorKind::InvalidDoc, "invalid board"))?;
+    if !board_path().exists()
+        && crate::reminder::committed_payload().is_none()
+        && board_was_quarantined(&board_path())?
+    {
+        return Err(DeckError::new(
+            ErrorKind::InvalidDoc,
+            "quarantined board needs recovery before saving",
+        ));
+    }
+    let old = storage::peek_typed::<BoardDoc>(&board_path())?
+        .or_else(crate::reminder::committed_payload)
+        .map(|payload| serde_json::from_str::<serde_json::Value>(&payload))
+        .transpose()
+        .map_err(|_| DeckError::new(ErrorKind::InvalidDoc, "invalid committed board"))?
+        .unwrap_or_else(|| serde_json::json!({"cards":[]}));
+    crate::reminder::validate_changes(&old, &next, &reminder_changes.unwrap_or_default())?;
+    save_validated::<BoardDoc>(&board_path(), &data, "board")?;
+    crate::reminder::observe_committed(&data);
+    Ok(())
 }
 
 /// Boot-time storage notices (corruption recovered from .bak, etc.) for the
@@ -1095,6 +1196,31 @@ mod tests {
                 .kind(),
             ErrorKind::InvalidDoc
         );
+    }
+
+    #[test]
+    fn board_quarantine_survives_reload_without_empty_default_overwrite() {
+        let dir =
+            std::env::temp_dir().join(format!("deck-reminder-recovery-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("deck.json");
+        let payload = board(&card("a", "P1", "C1", "shell"));
+        storage::save_typed::<BoardDoc>(&path, &payload).unwrap();
+        storage::save_typed::<BoardDoc>(&path, &payload).unwrap();
+        std::fs::write(&path, "damaged").unwrap();
+        assert_eq!(load_board_at(&path).unwrap().unwrap().source, "backup");
+        assert!(!path.exists());
+        let reloaded = load_board_at(&path).unwrap().unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&reloaded.payload).unwrap(),
+            serde_json::from_str::<serde_json::Value>(&payload).unwrap()
+        );
+        assert_eq!(reloaded.source, "backup");
+        std::fs::remove_file(dir.join("deck.json.bak")).unwrap();
+        assert!(load_board_at(&path).is_err());
+        assert!(!path.exists());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     // ---------- board / settings business validation ----------

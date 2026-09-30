@@ -1,3 +1,4 @@
+import { reconcileReminders } from './board.js';
 // app.js — in-app updates and boot
 // Part of deck's no-build frontend: native ES modules, no bundler.
 import './persistence.js';
@@ -248,6 +249,7 @@ async function restartTmuxServer() {
     const key = {
       'managed-review-changed': 'tmux.impactChanged',
       'managed-status-unavailable': 'tmux.managedStatusUnavailable',
+      'managed-reminder-protected': 'tmux.reminderProtected',
       'managed-close-rejected': 'tmux.managedCloseRejected',
       'managed-close-ambiguous': 'tmux.managedCloseAmbiguous',
       'tmux-restart-mcp-managed-sessions': 'tmux.managedStillBlocked',
@@ -257,7 +259,7 @@ async function restartTmuxServer() {
       'tmux-restart-busy': 'tmux.restartBusy',
       'tmux-restart-timeout': 'tmux.restartTimeout',
     }[message] || 'tmux.restartFailed';
-    toast(t(key, { card: error?.cardId || '?', count: error?.closedCount || 0 }));
+    toast(t(key, { card: error?.cardId || '?', count: error?.protectedCount || error?.closedCount || 0 }));
     const observed = await refreshTmuxLifecycle();
     if (invokedStatus && (observed
       ? (observed.serverPid !== invokedStatus.serverPid || observed.serverStartedAt !== invokedStatus.serverStartedAt)
@@ -361,7 +363,7 @@ export async function boot() {
     uev('notify-open');
     openFromNotification(String(event.payload?.session || ''));
   }).catch(() => uev('listen-fail', 'notify-open'));
-  await revealThemedWindow();
+
   try {
     ctx.buildIdentity = await inv('build_identity');
   } catch (e) { /* label stays empty */ }
@@ -434,9 +436,17 @@ export async function boot() {
       }
     }
   }
+  if (await inv("reminder_launch_visible").catch(() => true)) await revealThemedWindow();
   state.projectId = store.projects[0].id;
   render();
   startPolling();
+  if (!loadErr) {
+    reconcileReminders();
+    setInterval(reconcileReminders, 2000);
+    window.addEventListener("focus", reconcileReminders);
+    document.addEventListener("visibilitychange", reconcileReminders);
+  }
+
   refreshQueue();
   drainInbound();
   drainChannel();

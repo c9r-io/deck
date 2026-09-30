@@ -191,6 +191,8 @@ const RUST: &[(&str, &str, &str, usize, Class)] = &[
     ("notify.rs", "", "TURN_DONE", 1, Attention),
     ("notify.rs", "body_text", "NEEDS_INPUT", 1, Attention),
     ("notify.rs", "badge_count", "NEEDS_INPUT", 1, Attention),
+    // Enabled Agent reasons join independent reminder IDs, presentation only.
+    ("notify.rs", "push_badge", "NEEDS_INPUT", 1, Attention),
     ("notify.rs", "observe_with", "NEEDS_INPUT", 1, Attention),
     // FR-SI-05: unread = a turn-done episode not yet viewed; the viewed
     // truth is recorded for exactly one live turn-done episode

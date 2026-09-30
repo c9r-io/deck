@@ -16,6 +16,9 @@
 // Board saved, then the pane closed), re-proven on every poll, never for an
 // MCP-origin card or a card whose buffer is retained. `pty-exit` only wakes
 // the poll; it is never evidence.
+// Pending and due reminders protect deletion at the transaction boundary.
+// Blocked exit/run identities persist after ending the reminder; later real
+// generations keep ordinary retirement rules. Reminder responses never start work.
 // Live status never changes placement or durable ordering. Cards carry no
 // terminal preview: output is read in the terminal, never on the Board.
 // Codex coverage diagnostics live in the runtime attention snapshot and
@@ -35,10 +38,11 @@
 // An inbound automation card retains its frozen template plan until every
 // row is durably queued; queueInboundPlan replays stable operation IDs.
 import { $, columnHint, ctx, dotTitle, emit, genId, inv, listeners, POLL_MS, QUIET_SECS, sessionName, setMemChip, state, store, uev } from './state.js';
+import { reminderRequestId, reminderAction, reminderClaim, reminderDue, rememberRetirement, retirementBlocked, retirementKey, sameReminder } from './reminder-model.js';
 import { mutateBoard, mutateBoardDebounced } from './persistence.js';
 import { collapseHome, createConfirmationCounter, createExitRetirementTracker, effectiveCardStatus, initialLaunched, newSessionColumn, newSessionPlan, projectDefaults, reorderById, runFinishHolds, sidebarGroups } from './pure.js';
 import { channelAgentCommand } from './channel-model.js';
-import { confirmDialog, inlineRename, projectDefaultsDialog, toast } from './dialogs.js';
+import { confirmDangerDialog, reminderDialog, confirmDialog, inlineRename, projectDefaultsDialog, toast } from './dialogs.js';
 import { clearSeparators, closePaneBySid, hasPane, leaveSessionView, openSession, renderSessionView, updatePaneChrome } from './layout.js';
 import { SHELL_FG, invalidateResumeSuggestions, showProjectCtx, showSessionCtx } from './terminal.js';
 import { refreshQueue, refreshQueuePlans, renderQueueUI, setQueueChip, updateQuietHints } from './scheduler.js';
@@ -46,7 +50,7 @@ import { formatNumber, t } from './i18n.js';
 import { formatShortcut } from './shortcuts.js';
 import { renderAutomations, ruleOf } from './automation.js';
 import { createDefaultColumns, migrateColumnSemantics } from './board-defaults.js';
-import { paintCardSignalStatus, paintCardAttentionBadge, refreshAttention } from './attention.js';
+import { locateAttentionCard, paintCardSignalStatus, paintCardAttentionBadge, refreshAttention } from './attention.js';
 import { cardLabels, dismissKey, labelsKey, seenDismissals } from './notify-model.js';
 import { addManual, addQueueCopy, bufferLimitError, copyEvidence, deleteEntry, editEntry, emptyBuffer, retainedBuffer } from './buffer-model.js';
 import { nextCollectedAt } from './channel-model.js';
@@ -143,6 +147,9 @@ export const provider = {
       await mutateBoard(async draft => {
         if (!draft.projects.some(p => p.id === pid)) return { noop: true };
         const cards = draft.cards.filter(c => c.projectId === pid);
+        const protectedCards = cards.filter(c => c.reminder);
+        if (protectedCards.some(c => !sameReminder(c.reminder, (opts.reminderClaims || []).find(claim => claim.cardId === c.id)))) throw new Error("reminder confirmation changed");
+        draft.reminderChanges = protectedCards.map(reminderClaim);
         if (!(await this.cancelSchedule(cards, { quiet: opts.quiet }))) {
           const error = new Error('schedule cancellation failed');
           error.stage = 'cancel';
@@ -299,6 +306,17 @@ export const provider = {
         await mutateBoard(async draft => {
           const card = draft.cards.find(c => c.id === sid);
           if (!card) return { noop: true };
+          if (card.reminder) {
+            if (opts.automatic) {
+              rememberRetirement(card, opts.retirementKey);
+              return { protected: true };
+            }
+            if (opts.mcpOperationId || !sameReminder(card.reminder, opts.reminderClaim)) {
+              const error = new Error("card has an active reminder"); error.stage = "reminder-protected"; throw error;
+            }
+            draft.reminderChanges = [reminderClaim(card)];
+          }
+          if (opts.automatic && retirementBlocked(card, opts.retirementKey)) return { noop: true, protected: true };
           if (opts.automatic && retainedBuffer(card)) return { noop: true, protected: true };
           // A remote (MCP) close never retires a card a pane is showing: the
           // person looking at it decides. Refused before any side effect.
@@ -890,6 +908,7 @@ function noteRunEnded(card) {
 const runConfirm = createConfirmationCounter(3);
 const runRetirement = createExitRetirementTracker();
 function observeRunFinish(c, info) {
+  if (retirementBlocked(c, retirementKey("run", c))) { runConfirm.forget(c.id); return; }
   if (retainedBuffer(c)) { runConfirm.forget(c.id); return; }
   if (c.inboundPlan && !c.inboundPlan.initialQueued) { runConfirm.forget(c.id); return; }
   if (!info.alive || !c.origin) { runConfirm.forget(c.id); return; }
@@ -979,7 +998,8 @@ async function pollSessionsNow() {
     // Absence is not deletion authority, including recovery onto a fresh
     // server whose successful listing no longer contains old sessions.
     if (!info.alive) {
-      if (info.exited_normally === true && c.origin?.source !== 'mcp' && !retainedBuffer(c)) exitRetirement.observe(c.id);
+      c.lifecycle = info.lifecycle || null;
+      if (info.exited_normally === true && !retirementBlocked(c, retirementKey("exit", c, c.lifecycle)) && c.origin?.source !== 'mcp' && !retainedBuffer(c)) exitRetirement.observe(c.id);
       else exitRetirement.forget(c.id);
       const changed = c.status !== 'stopped' || c.mem != null || c.idle != null || c.fg != null || c.scrolled;
       c.status = 'stopped';
@@ -994,6 +1014,7 @@ async function pollSessionsNow() {
       }
       continue;
     }
+    c.lifecycle = info.lifecycle || null;
     exitRetirement.forget(c.id);
     const status = effectiveCardStatus(info.alive, info.agent,
       info.idle_secs != null && info.idle_secs >= QUIET_SECS);
@@ -1028,7 +1049,7 @@ async function pollSessionsNow() {
   await exitRetirement.drain({
     get: sid => provider.get(sid),
     markStopped: c => { c.status = 'stopped'; emit('status', c); },
-    close: c => ctx.tmuxRestarting ? { ok: false, applied: false } : provider.close(c.id, { quiet: true, detail: true, automatic: true }),
+    close: c => ctx.tmuxRestarting ? { ok: false, applied: false } : provider.close(c.id, { quiet: true, detail: true, automatic: true, retirementKey: retirementKey("exit", c, c.lifecycle) }),
     failed: () => toast(t('error.retire')),
     succeeded: c => {
       closePaneBySid(c.id, { detach: false });
@@ -1039,7 +1060,7 @@ async function pollSessionsNow() {
   await runRetirement.drain({
     get: sid => provider.get(sid),
     markStopped: c => { c.status = 'stopped'; emit('status', c); },
-    close: c => ctx.tmuxRestarting ? { ok: false, applied: false } : provider.close(c.id, { quiet: true, detail: true, automatic: true }),
+    close: c => ctx.tmuxRestarting ? { ok: false, applied: false } : provider.close(c.id, { quiet: true, detail: true, automatic: true, retirementKey: retirementKey("run", c) }),
     failed: () => { uev('inbound', 'run-close-fail'); toast(t('automation.runCloseFailed')); },
     succeeded: c => {
       closePaneBySid(c.id, { detach: false });
@@ -1167,7 +1188,11 @@ export function renderSidebar() {
       el.appendChild(pin);
     }
     el.onclick = () => openSession(s.id);
-    el.oncontextmenu = e => showSessionCtx(e, s.id);
+    if (s.reminder) {
+    const chip = document.createElement("button"); chip.className = "btn card-reminder";
+    chip.textContent = reminderLabel(s); chip.onclick = () => editReminder(s.id); el.append(chip);
+  }
+  el.oncontextmenu = e => showSessionCtx(e, s.id);
     /* sidebar items are drag sources for split (方案 A) */
     el.draggable = true;
     el.addEventListener('dragstart', ev => {
@@ -1511,7 +1536,7 @@ export function cardEl(s) {
   };
   el.addEventListener('click', e => {
     e.stopPropagation();   // don't toggle the board selection underneath
-    if (e.target.closest('.card-x, .card-pin, .card-signal-help')) return;
+    if (e.target.closest('.card-x, .card-pin, .card-signal-help, .card-reminder')) return;
     openSession(s.id);
   });
   el.oncontextmenu = e => showSessionCtx(e, s.id);
@@ -1523,6 +1548,8 @@ export async function closeSession(sid, needConfirm = false) {
   const s = provider.get(sid);
   if (!s) return;
   const live = s.status !== 'stopped';
+  const reminder = reminderClaim(s);
+  if (reminder && !(await confirmDangerDialog(t("reminder.closeConfirm", { time: reminderLabel(s) }), t("reminder.cancelClose")))) return;
   const hasBuffer = retainedBuffer(s);
   if ((needConfirm || hasBuffer) &&
       !(await confirmDialog(t(hasBuffer ? 'session.closeBufferConfirm' : 'session.closeConfirm', {
@@ -1531,7 +1558,7 @@ export async function closeSession(sid, needConfirm = false) {
       })))) return;
   ctx.destructiveCards.add(sid);
   try {
-    const result = await provider.close(sid, { detail: true });
+    const result = await provider.close(sid, { detail: true, reminderClaim: reminder });
     if (!result.ok || !result.applied) return;
     if (bufferTargetId === sid) closeBuffer();
     closePaneBySid(sid, { detach: false });
@@ -1558,6 +1585,7 @@ export function render() {
   if (state.view === 'board') renderBoard();
   else if (state.view === 'session') renderSessionView();
   syncBufferCount();
+  syncReminderButton();
   refreshAttention();
   panes.forEach(p => updatePaneChrome(provider.get(p.sid)));
   renderQueueUI();
@@ -1594,3 +1622,81 @@ provider.subscribe((ev, s) => {
   }
   render();
 });
+
+// Reminder UI and responses enter the SAME serial Board writer as every edit.
+export function reminderLabel(card) {
+  const r = card?.reminder;
+  if (!r) return t('reminder.set');
+  const date = new Intl.DateTimeFormat(undefined, { timeZone: r.timeZone, dateStyle: 'full', timeStyle: 'short' }).format(r.dueAt);
+  return `${reminderDue(card) ? t('reminder.due') + ' · ' : ''}${date} (${r.timeZone})`;
+}
+export async function editReminder(id) {
+  const card = provider.get(id);
+  if (!card) return;
+  const claim = reminderClaim(card);
+  const statuses = await inv("reminder_status").catch(() => ({}));
+  const result = await reminderDialog(card.reminder, card.reminder ? statuses[reminderRequestId(card)] : null);
+  if (!result) return;
+  try {
+    await mutateBoard(draft => {
+      const current = draft.cards.find(c => c.id === id);
+      if (!current || (claim ? !sameReminder(current.reminder, claim) : current.reminder)) throw new Error('reminder changed');
+      draft.reminderChanges = claim ? [claim] : [];
+      if (result.cancel) delete current.reminder;
+      else current.reminder = { ...result, id: claim?.id || crypto.randomUUID().replaceAll('-', ''), revision: (claim?.revision || 0) + 1, due: false };
+    });
+    emit('list', provider.get(id));
+  } catch (_) { toast(t('reminder.saveFailed')); }
+}
+let reminderReconciling = false;
+let reminderActionErrorShown = false;
+export async function reconcileReminders() {
+  if (reminderReconciling) return;
+  reminderReconciling = true;
+  try {
+    await inv('reminder_status');
+    const actions = await inv('reminder_actions').catch(error => { if (!reminderActionErrorShown) { reminderActionErrorShown = true; toast(t('reminder.actionFailed')); } throw error; });
+    reminderActionErrorShown = false;
+    const openings = [];
+    for (const action of actions) {
+      let open = null;
+      await mutateBoard(draft => {
+        const card = draft.cards.find(c => c.id === action.cardId);
+        const result = reminderAction(card, action, action.actedAt);
+        if (!result) return { noop: true };
+        if (result.open) { open = result.open; return { noop: true }; }
+        draft.reminderChanges = [reminderClaim(card)]; card.reminder = result.reminder;
+      });
+      if (open) openings.push({ open, action });
+      else await inv('reminder_ack', { request: action.request, kind: action.kind });
+    }
+    if (store.cards.some(c => reminderDue(c) && !c.reminder.due)) {
+      await mutateBoard(draft => {
+        draft.reminderChanges = [];
+        for (const card of draft.cards) if (reminderDue(card) && !card.reminder.due) {
+          draft.reminderChanges.push(reminderClaim(card));
+          card.reminder = { ...card.reminder, due: true };
+        }
+      });
+      render();
+    }
+    // Due-latch rendering must finish before locating a cold-start target;
+    // otherwise replacing the card DOM immediately loses its focus.
+    for (const { open, action } of openings) {
+      const card = provider.get(open);
+      if (card && sameReminder(card.reminder, action)) {
+        state.projectId = card.projectId; state.view = 'board'; render();
+        await inv('reminder_show'); locateAttentionCard(card.id);
+        if (ctx.attention.get(card)?.alive && !ctx.attention.get(card)?.stale) await openSession(card.id, { allowStart: false });
+      }
+      await inv('reminder_ack', { request: action.request, kind: action.kind });
+    }
+  } catch (_) { /* Keep committed protection and retry on the next bounded poll. */ }
+  finally { reminderReconciling = false; }
+}
+
+export function syncReminderButton() {
+  const button = $('reminder-btn'); const selected = provider.get(state.sessionId);
+  button.textContent = selected?.reminder ? reminderLabel(selected) : t('reminder.set');
+  button.onclick = () => editReminder(state.sessionId);
+}

@@ -346,6 +346,16 @@ impl ExitEvidence {
         }
     }
 
+    /// Closed, generation-bound retirement key; never content or authority.
+    pub(crate) fn lifecycle(&self, name: &str) -> Option<String> {
+        self.observed.get(name).map(|seen| {
+            format!(
+                "{}:{}:{}",
+                seen.server_pid, seen.server_start, seen.session_id
+            )
+        })
+    }
+
     /// Drop every identity: nothing that ends before a fresh observation can
     /// authorize retirement.
     pub(crate) fn forget_all(&mut self) {
