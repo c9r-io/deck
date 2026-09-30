@@ -1,0 +1,388 @@
+# deck technical reference
+
+The [README](../README.md) introduces deck; this page is the complete technical
+reference: behaviour, data, safety and build contracts. Each subsystem's
+implementation contract lives in the header of the module that owns it (see
+[CLAUDE.md](../CLAUDE.md)).
+
+## Contents
+
+- [Update channels](#update-channels)
+- [What it does](#what-it-does)
+- [Day-to-day](#day-to-day)
+- [Data](#data)
+- [Optional MCP terminal control](#optional-mcp-terminal-control)
+- [Building from source](#building-from-source)
+
+## Update channels
+
+Stable is the default and reads only the latest non-prerelease Release.
+Maintainers and testers can explicitly opt into **Nightly** in Settings to
+exercise a signed and notarized candidate through its separate feed. Nightly
+uses the same app identity and `~/.deck` data, so it replaces Stable rather
+than installing beside it. Back up important data first and do not run Stable
+and Nightly at the same time. Switching back to Stable affects future checks
+but does not downgrade a newer Nightly; reinstall the Stable DMG if a downgrade
+is required. See [release channels](release-channels.md) for the complete
+operator and recovery guide.
+
+## What it does
+
+This reference follows the current source on `main` and is canonical for
+behaviour, data and safety contracts. The [website guide](https://deck.c9r.io/guide/)
+documents the published Stable baseline in task order.
+
+**Boards are manual groups, independent of live status.** Default groups per
+project remain *Attention* · *Working* · *Queued* · *Parked*. Their names,
+card positions and order are yours; status never moves a card. Cards show their
+live status. Status summaries and filters live in the sidebar’s Needs attention
+view, keeping the Board focused on its groups.
+
+**Needs attention spans all projects.** Its sidebar entry links to sessions
+with an explicit input request, an unread turn ending, or a manual follow-up
+star, showing each card's
+original project and group. Opening a session successfully marks its ending as
+viewed, not handled or task-complete; an input request stays until its state
+changes. The back action restores the attention filter and position. Quiet or
+recent output without valid agent state is separate from confirmed requests:
+quiet never means ready. Failed or incomplete polls keep a labelled old
+snapshot, and stale/stopped entries only locate their original cards. Read
+markers last for this app run; hook reporting and unread history are not
+promised to survive restarts. Manual follow-up stars do survive restarts and
+remain until explicitly removed, regardless of viewing, status or group changes.
+The Followed filter includes every starred card; the main list deduplicates
+overlapping reasons and puts manual-only follow-up after input and unread groups.
+With **Notify me when away** on (off by default), a macOS notification is
+posted when a card enters needs-input or an unread turn ending while the deck
+window is not focused, carrying only the card title, the project name and one
+fixed phrase; clicking it opens the card. The Dock badge counts needs-input
+plus unread endings. See [away notifications](notifications.md).
+
+**Sessions outlive the app.** deck runs its own private tmux server, so
+quitting deck (or it crashing) never kills your agents. Reopen and everything
+is exactly where you left it. Closing a card (corner ✕, or Ctrl+D / `exit`
+in its shell) is the only way a session ends. Losing a tmux session or the
+server, a crash, a shell killed by a signal, or any other unexplained
+disappearance never deletes a card: it stays stopped and restartable, with
+its queued prompts.
+
+**Upgrades have an explicit process boundary.** Reopening the same deck build
+keeps the same tmux server PID and every running process. After deck itself is
+upgraded, an empty old server is replaced automatically; if it still owns
+sessions, deck asks before restarting the background shell service and shows
+what will be affected. You can choose Later and keep using existing sessions,
+but finishing the restart ends their commands and agents—Unix processes cannot
+be migrated into a new tmux server. The pending action remains in the sidebar
+and Settings. Reopening a card afterwards starts its shell in the card's
+directory (with the recovered text below, when shell recovery is on) and does
+not run the launch command again: a command belongs to the card's creation and
+is sent once, so whatever you left at the prompt — an agent's resume hint, for
+instance — is where you look first, and restarting the program is your call.
+The one exception is a card whose first start never delivered its command.
+
+A confirmed service restart first asks recognized native Claude Code/Codex
+foreground processes to exit, sharing a two-second exit window across all
+panes. With terminal output recovery enabled, Deck waits for stable shell
+output and saves the bounded tails before killing the server. Exit/capture
+failure aborts before the kill; a partial exit is possible and is not undone.
+Preparation has a three-second budget and the backend returns a result within
+eight seconds. A stalled filesystem worker retains the restart locks until it
+returns, and its expired deadline prevents a later kill. Pending prompts for
+reviewed sessions are durably paused before replacement and stay paused until
+the user resumes them. Other foreground programs retain the ordinary restart
+behavior; unknown launchers are not sent guessed exit keys.
+
+**A real terminal.** Full xterm with truecolor, ⌘C/⌘V, clickable existing
+local file paths, and complete HTTP(S) URLs even across terminal soft wraps.
+Only ⌘C writes the macOS clipboard: a program running in a pane cannot set
+or read it through the terminal (OSC 52 is off at deck's tmux server).
+Drag directly over terminal cells; holding at either vertical
+edge continuously extends the same selection through tmux history, including
+reverse shrinking across screens. A path can open in the editor, reveal in
+Finder, open its parent in the configured editor, or start a new session in
+that parent directory.
+
+**Split view.** Watch several agents at once: drag a card from the sidebar
+onto a pane edge, or hit ⌘D / ⌘⇧D (or the ◧ ⬓ buttons) and pick a session.
+Splits nest freely, dividers drag to resize, closing a pane never kills the
+session.
+
+**Voice input.** The session header's microphone starts a recording; click
+it again to stop. Speech is recognized on the Mac and typed straight into the
+focused session as it is confirmed, like keystrokes, without an Enter; a
+translucent caption under the button shows what is heard but not yet typed.
+Correct it with the keyboard and press Enter yourself. There is no draft panel and
+nothing to insert, send or clear. Native local recognition requires a
+supported macOS 12+ configuration; macOS 26 builds use the newer Speech engine
+where available. There is no cloud speech fallback. Settings → Terminal &
+sessions → Voice input saves the recognition languages and the default.
+See [voice input](voice-input.md) for target checks, permissions and limits.
+
+**Complete, safe themes.** Settings offers Deck Dark (the compatible default),
+Light, Follow System, and High Contrast, plus reviewed teal, blue, purple, and
+orange accents. A switch updates the whole app, every open xterm pane, ANSI
+palette, cursor, selection, focus and tmux copy-mode highlight immediately;
+new splits inherit it. Follow System reacts live to macOS appearance changes.
+Only the closed presets can be selected—there is no free-form color input—and
+the previous palette is restored if settings cannot be saved.
+
+**Group-ordered sidebar.** Sessions in the current project are grouped under
+their group names, in group order, with counts in each group. Sessions retain
+their durable card order within a group even as live/quiet/stopped status
+changes, so navigation never moves merely because a session was opened.
+
+**One persistent action.** The Board head keeps **＋ New session** and its
+▾ menu; everything else about starting a session lives in that menu — new
+session now, new on a clock, new on a Slack badge, and the two managers
+(Automations…, Templates…, Project defaults…). A **↻ N automation(s)** chip
+appears beside it only while the project has rules. A project with no
+sessions shows one starting point above its groups instead of four empty
+columns.
+
+**Project defaults.** A project may carry a default directory and a default
+launch command (right-click the project tab, or New session ▾ → Project
+defaults…; both optional). With them, ＋ / ⌘N start the session in that
+directory and send that command once — one click to working — and the menu's
+first item says exactly what it will do; **New shell only** keeps the
+directory without the command. Without them, ＋ opens a shell in `$HOME` as
+before. Context entries — a card's *New session in this directory*, the path
+menu's *parent folder*, a split's *new shell here* — keep their own directory
+and are always shells. Every creation starts the tmux session first and writes
+the card only after that succeeded, so a directory that no longer exists asks
+(cancel / edit the defaults / a shell in `$HOME`) and never leaves a card behind.
+
+**Command completion, Warp-style.** deck records the commands you run in its
+shells (agent prompts are never recorded) and suggests as you type: the first
+match appears as gray ghost text at the cursor — **Tab or →** applies it; more
+candidates sit in a reserved row below. Only the focused pane gives up that
+row, and xterm plus the underlying PTY are refit together.
+Typing `codex resume`, `claude --resume` or `claude -r` also offers session IDs
+from recent exit messages in that pane, ahead of ordinary command history.
+Existing options such as `codex --yolo resume` are preserved. Acceptance fills
+the command without pressing Enter. Hints use bounded tmux output (including
+restored output when shell recovery is enabled); cleared, missing or unrecognized
+exit messages simply leave ordinary completion in place.
+
+**Bounded shell recovery.** This opt-in feature is off by default. While a pane
+is back at a shell prompt, deck checkpoints its current directory and up to
+256 KB of recent plain output after redacting common credential shapes.
+After a machine/tmux restart, opening the card starts a new shell in that
+directory and places the old text directly in that pane's tmux scrollback,
+above a clear restart boundary and the new live prompt. The text is written
+only to pane output, never shell input, so commands are not replayed; processes,
+jobs, environment variables and agent TUIs are not restored. Snapshots are
+private 0600 files, have no backup copy, expire after seven days, and are
+cleared when recovery is disabled. Redaction is best-effort, so the consent
+prompt still warns that terminal output may contain secrets.
+
+**Lists.** A card's ⏱ panel holds its lists: prompts to type into that
+session later, sent in order. The first row is time-based; later rows wait
+for the configured quiet interval ("once quiet for 3 min" — an activity
+observation, not evidence that the program is ready or the work succeeded). A list has two optional fields: **not
+before** a date and time ("Friday 14:00, when my Claude window resets"; a
+past instant is refused, never rolled to tomorrow) and **repeat** — every
+5 min to 4 h, optionally only inside a daily window ("only 09:00–18:00";
+20:00–08:00 wraps midnight), until you remove it, N times or a set time. A
+repeating list sends all its rows again at every interval into the same
+session (⏸ keeps its settings). Lists on one card may interleave; their order does not establish a work
+dependency. Repeat counters count deliveries, not successful tasks. Before delivery deck resolves the pane the card owns and pins the
+exact tmux server/session/window/pane/process generation it just read — a
+pane that came back with a new generation (after an update, a crash or a
+reboot) is adopted automatically, so a list never needs re-pointing. When
+the card launch command identifies a program, deck also waits for that
+executable to return to the foreground; otherwise it sends to the same
+pane in compatibility mode, where input may be interpreted by a shell.
+Context waiting does not consume a delivery attempt. Works while detached;
+dead sessions are started and probed with a bounded wait; lists survive
+restarts. The app must be running for rows to fire.
+
+**Inspect each step.** Lists and automation rules can explicitly enable
+inspection after every delivered row, including the last. Existing lists
+remain unchanged. The sent row stays as a durable checkpoint until you view
+the result and choose **Inspected, allow next…**. Opening the pane, quiet,
+permission waits and hook reports never count as inspection. The dialog names
+the next prompt; confirmation permits only that revision and target. Editing,
+retrying or changing the target revokes unused permission. The next row still
+obeys its schedule, minimum gap and context checks. A cancelled or skipped row
+is omitted work, not inspected work. Other lists can continue in the session.
+Repeating lists require fresh inspection in each iteration. A last-row
+confirmation releases that iteration's final hold; it does not terminate a
+process itself. An opted-in automation cannot use its automatic finish path
+before that final inspection. Rule changes affect new runs only.
+
+The panel separates the execution plan from independent agent observations,
+and keeps up to 200 delivery and 200 inspection records without historical
+prompt text. Sent text remains in its pending checkpoint until that checkpoint
+is consumed. See [the checkpoint contract and data compatibility](scheduler-context-safety.md#human-inspection-checkpoints-c-v01).
+
+**Delivery you can reason about.** One prompt per session at a time, at least
+a minute apart; different sessions run independently (a session that needs a
+startup wait never delays another session's prompt). Immediately before
+delivery, deck rechecks the automatically captured target identity and optional
+foreground executable. Prompt + Enter are literal-pasted only if both still
+match. If deck crashes in the narrow delivery window,
+the list shows the row as **ambiguous** instead of claiming success or
+silently sending it again: acknowledge it as sent, or explicitly retry while
+accepting the possible duplicate. While a row is mid-send (a window of
+seconds), editing/pausing/removing it is refused with a clear message
+instead of racing the delivery. If a row permanently fails to
+send (its session can't start, say), the later rows of its list **wait** —
+the list shows ⚠ with retry ↻ and skip ⏭ buttons, and nothing runs past a
+failed row until you decide.
+
+**Automations.** A standing job is not a card's list: it is a project-level
+rule (New session ▾ → Automations… on the Board, or the ↻ chip once the
+project has one) with a **trigger** — a clock (every day,
+chosen weekdays or days of the month, at a local time) or a **Slack badge**
+(an emoji reaction you put on a message; see
+[docs/auto-respond.md](auto-respond.md) for the one-app Slack
+connection in Settings). When it fires, deck creates a fresh card in a
+column, launches the command and queues a template in a new session. A launch
+command may restore its own prior context; a clock runs one card at a time.
+With "close the card", the finish check requires an empty queue and the
+agent program gone from the foreground (no hook state, a shell in front) for
+three consecutive polls, and no open pane showing the card. A reported turn
+end never closes a run — the agent may still be working in the background —
+so a live interactive agent keeps its card until it exits or you close it.
+These observations do not prove business success.
+Opted-in runs additionally require final human inspection. A clock slot that comes due while deck is not running still
+starts within 15 minutes (or, if you choose, the same day) and is otherwise
+recorded as missed; a rule you resume or reschedule starts from that
+moment. The drawer shows each rule's next slot and its last runs.
+
+**Templates.** A template is a saved list, per project (Templates… from
+New session ▾, from a list's 📋 menu or from the automation editor; ☆ in a
+list's 📋 menu saves that list as one). 📋 on a card starts a new list from
+one or inserts one into a list — a copy, so a template changed later leaves
+the rows alone; an automation names one and sends it on every run.
+
+**Honest signals.** Green = output in the last 15 s. Amber = quiet, may be
+waiting for you. Memory chips show the *whole process tree* of a session
+(shell + agent + everything it spawned), not just the shell.
+
+## Day-to-day
+
+| Action | How |
+| --- | --- |
+| New session | ＋ New session → you're in a shell (`$HOME`, or the project's default directory running its default command); recent commands offered as chips |
+| Project defaults (directory · command) | right-click the project tab · New session ▾ → Project defaults… · the empty project's link |
+| Target group for new sessions | click a group's empty area (accent edge marks it) |
+| Enter / leave a session | click card · back button (shows the group name) or Esc |
+| Move cards | drag & drop between groups |
+| Automations · templates | New session ▾ (or right-click the project tab); ↻ chip once a rule exists |
+| Close | card ✕ / Ctrl+D in shell (instant) · in-session Close (confirms) |
+| Copy terminal text | drag directly in the terminal (hold at an edge to cross screens) · ⌘C |
+| Rename / describe | double-click titles · right-click card |
+| Split view | drag a card onto a pane edge · ⌘D right / ⌘⇧D down |
+| Lists of prompts to send later | ⏱ in the session header; 📋 for templates |
+| Collapse sidebar | ⌘B |
+
+## Data
+
+Settings is organized into eight categories, with navigation and the Done
+button kept visible while the content scrolls. Search finds individual settings
+by name or common keyword in English or Chinese and shows each match under its
+category; Enter jumps to the first match. **Data & privacy** shows the
+current diagnostic log size and offers **Export logs…** and **Reset logs…**.
+Reset requires confirmation and clears only `app.log`, without a backup; new
+events continue to be recorded. Exported logs, command history, shell recovery
+data and running sessions are preserved. History and recovery data have their
+own separate clear actions.
+
+Everything lives in `~/.deck/` as plain JSON you can inspect or edit:
+`deck.json` (boards, cards, and each live pane's latest directory) · `queue.json` (lists, incl. card/tmux
+identity, an optional sanitized executable basename, a content-free last
+context result, and a short
+delivery audit) · `history.json` (command history; wipeable from
+Settings) · `shell-state/*.json` (opt-in, redacted, seven-day shell transcript
+snapshots; wipeable or disableable from Settings) · `settings.json` (including locale, theme,
+accent, shell recovery and update channel) · `app.log` (diagnostics — event codes and
+counts only, never what you type; errors appear as categories, never as
+raw paths, and session names as a per-run tag rather than the name itself).
+Every line is redacted again as it is written—including assignment/JSON/
+quoted/ANSI-wrapped paths, URLs and credential shapes—and logs or exports an
+older deck left behind are cleaned up in place at first launch.
+
+The whole directory is readable only by you: `~/.deck` is 0700 and every
+file — including backups, quarantined corrupt files, logs and exports — is
+created 0600 from its first byte; deck re-restricts anything an older
+version left more open at every launch.
+
+Every file keeps a `.bak` of its previous good version. If a file is
+damaged, deck sets the damaged bytes aside as `<file>.corrupt-<timestamp>`,
+restores from the backup, and tells you — it never silently replaces your
+data with an empty default. A file written by a NEWER deck (or one whose
+version header deck cannot read) is left byte-for-byte alone instead of
+being overwritten.
+
+Terminal drag selection has one explicit owner. tmux copy-mode tracks the
+anchor and active endpoint while the pointer is down; at pointerup deck freezes
+the exact tmux bytes and content coordinates under a generation token. A small
+public-geometry overlay then follows those content rows while tmux scrolls the
+viewport, so scrolling cannot move the completed range. Holding a drag at the
+pane's top or bottom edge continuously crosses screens without leaving the
+terminal. ⌘C waits for the freeze and copies only that immutable logical text
+through the native macOS clipboard; with no selection it leaves the clipboard
+untouched.
+Hard newlines and real blank lines are retained, soft wraps are rejoined, and
+ANSI drawing sequences are excluded. Each pane keeps a 50,000-row tmux history;
+deck reports when that reachable history limit is hit and refuses a clipboard
+payload above 64 MiB instead of silently truncating the highlighted selection.
+
+Closing a card — or deleting a project, or exiting the card's own shell
+(Ctrl+D / `exit`) —
+permanently cancels every scheduled prompt for that session, and the card
+only leaves the board once that cancellation is on disk, its tmux session is
+stopped, and the resulting Board is durably saved. A kill or save failure keeps
+the cards visible, manageable, and retryable. Nothing deck schedules can
+outlive the card it belongs to.
+
+All Board changes share one serial persist-before-commit transaction stream.
+A later close, rename, move, project edit, or debounced description is computed
+from the latest committed state when its turn begins, so concurrent UI actions
+cannot resurrect a card or silently overwrite each other.
+
+Production sessions live on a dedicated tmux socket: `tmux -L deck ls` shows them,
+`tmux -L deck attach -t <name>` attaches from any terminal — deck never
+touches your personal tmux server. Source builds use `deck-dev`; packaged smoke
+tests require a `deck-smoke*` socket, so they cannot attach to production by
+accident.
+
+## Optional MCP terminal control
+
+Deck includes an opt-in, trusted-host MCP terminal control MVP for creating
+visible managed shell cards and executing bounded, tracked jobs from ChatGPT or
+another MCP client. See [docs/mcp.md](mcp.md), the
+[architecture ADR](mcp-architecture.md), and the
+[validation record](mcp-validation.md). It is disabled by default and is
+not an operating-system sandbox.
+
+To connect hosted ChatGPT to an authorized Deck project, follow [Connect ChatGPT to Deck with Secure Tunnel](secure-tunnel.md). The optional Helper and official OpenAI tunnel-client keep Deck off the public Internet.
+
+
+## Building from source
+
+```bash
+app/run.sh                                # build + launch the dev bundle
+app/run.sh --debug-logging                # add structured verbose diagnostics
+cd app/src-tauri && cargo run --example pty_smoke   # headless PTY test
+app/src-tauri/binaries/build-tmux.sh      # rebuild the static tmux sidecar
+```
+
+Verbose frontend diagnostics are maintainer-only and remain structured and
+redacted. For an installed build, quit deck first and launch it with
+`open -n /Applications/deck.app --args --debug-logging`; omitting the flag
+keeps verbose events off.
+
+Requires a Rust toolchain. The frontend (`app/ui/`) is plain HTML + native
+ES modules — no Node runtime, no bundler (Node is used only for dev-time
+checks: `node --check`, `node --test app/ui/test/*.test.mjs`,
+`node app/ui/js/check.mjs`).
+
+Releases use strict numeric versions. `scripts/release-version set X.Y.Z`
+prepares a synchronized application and MCP Adapter version commit. The manual `nightly` workflow builds and verifies an
+immutable prerelease; the `promote` workflow copies that exact tested DMG and
+updater archive into Stable without rebuilding. Directly pushing a strict
+`vX.Y.Z` tag remains the emergency source-build path. The hourly resolver only
+considers Stable tags and never deletes an incomplete Release. Full procedures
+are in [docs/release-channels.md](release-channels.md).
