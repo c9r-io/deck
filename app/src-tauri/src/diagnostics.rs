@@ -382,6 +382,7 @@ const SMOKE_CHECKS: &[&str] = &[
     "button-context-menu",
     "surface-context-menu",
     "font-layout",
+    "sidebar-layout",
     "natural-fault",
     "command-without-pane",
     "completion-owner",

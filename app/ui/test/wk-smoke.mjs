@@ -322,6 +322,104 @@ async function themeSmoke(card) {
   applyFontScale(ctx.settings.fontScale);
 }
 
+/* Sidebar collapse control under a long Nightly identity. Geometry, not class
+   toggles: the button must stay inside the sidebar's clip and be the hit
+   target at its centre, in both widths, through the button and the shortcut,
+   across a resize event, without drift, persistence or a lost compact signal. */
+async function sidebarSmoke(card, bootExpanded) {
+  const pane = panes.get(card.session);
+  const main = $('main');
+  const side = $('sidebar');
+  const btn = $('collapse-btn');
+  const wordmark = document.querySelector('.side-top .wordmark');
+  const ver = $('app-ver');
+  const originalVer = ver.textContent;
+  const settingsBefore = JSON.stringify(ctx.settings);
+  let storageBefore = -1;
+  try { storageBefore = localStorage.length + sessionStorage.length; } catch { /* unavailable */ }
+  const collapsed = () => document.body.classList.contains('side-collapsed');
+  const settle = () => pause(420); // 0.16s width transition + xterm fit
+  const inside = (el, box) => {
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0 && r.left >= box.left - 0.5 && r.right <= box.right + 0.5
+      && r.top >= box.top - 0.5 && r.bottom <= box.bottom + 0.5;
+  };
+  const hit = el => {
+    const r = el.getBoundingClientRect();
+    const top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+    return !!top && (top === el || el.contains(top));
+  };
+  // The sidebar's clip box is its padding box (border-right excluded).
+  const clipBox = () => {
+    const r = side.getBoundingClientRect();
+    return { left: r.left, top: r.top, right: r.left + side.clientWidth, bottom: r.top + side.clientHeight };
+  };
+  const buttonOk = () => inside(btn, clipBox()) && hit(btn);
+  const shortcut = () => document.dispatchEvent(new KeyboardEvent('keydown', {
+    key: 'b', code: 'KeyB', metaKey: true, bubbles: true, cancelable: true,
+  }));
+  const expandedWidth = innerWidth <= 800 || innerHeight <= 540 ? 190 : 232;
+  if (collapsed()) toggleSidebar();
+  ver.textContent = 'v0.7.18 · Nightly · f70e099c4b1d2a7e3f5c6b8a9d0e1f2a3b4c5d6e7f8091a2b3c4d5e6f708192a3';
+  await settle();
+  const base = {
+    side: side.getBoundingClientRect().width,
+    btn: JSON.stringify(btn.getBoundingClientRect()),
+    main: main.getBoundingClientRect().width,
+    cols: pane?.term.cols || 0,
+  };
+  const expandedOk = () => !collapsed() && Math.abs(side.getBoundingClientRect().width - expandedWidth) < 1
+    && buttonOk() && /Collapse|收起/.test(btn.title) && btn.title.includes('⌘B');
+  const longIdentity = expandedOk() && wordmark.scrollWidth > wordmark.clientWidth
+    && getComputedStyle(wordmark).textOverflow === 'ellipsis'
+    && wordmark.getBoundingClientRect().right <= btn.getBoundingClientRect().left;
+  let compactSignals = false;
+  let paneGain = 0;
+  const compactOk = () => collapsed() && Math.abs(side.getBoundingClientRect().width - 50) < 1
+    && buttonOk() && /Expand|展开/.test(btn.title) && btn.title.includes('⌘B');
+  btn.click();
+  await settle();
+  const buttonCollapse = compactOk();
+  if (buttonCollapse) {
+    const box = clipBox();
+    const active = store.cards.find(c => c.id === state.sessionId);
+    const item = active && document.querySelector(`#side-list .side-item[data-sid="${active.id}"]`);
+    const dot = item?.querySelector('.dot');
+    compactSignals = ['home-btn', 'attention-btn', 'attention-count', 'settings-btn']
+      .every(id => inside($(id), box) || (id === 'attention-count' && $(id).textContent === ''))
+      && hit($('home-btn')) && hit($('attention-btn')) && hit($('settings-btn'))
+      && !!dot && inside(dot, box) && item.title === active.title
+      && item.classList.contains('active') && hit(item);
+    window.dispatchEvent(new Event('resize'));
+    await settle();
+    compactSignals = compactSignals && compactOk();
+    paneGain = (pane?.term.cols || 0) > base.cols ? Math.round(main.getBoundingClientRect().width - base.main) : 0;
+  }
+  btn.click();
+  await settle();
+  const buttonExpand = expandedOk();
+  shortcut();
+  await settle();
+  const shortcutCollapse = compactOk();
+  shortcut();
+  await settle();
+  const shortcutExpand = expandedOk();
+  window.dispatchEvent(new Event('resize'));
+  await settle();
+  const noDrift = expandedOk() && Math.abs(side.getBoundingClientRect().width - base.side) < 0.5
+    && JSON.stringify(btn.getBoundingClientRect()) === base.btn
+    && Math.abs(main.getBoundingClientRect().width - base.main) < 0.5 && (pane?.term.cols || 0) === base.cols;
+  let storageAfter = -1;
+  try { storageAfter = localStorage.length + sessionStorage.length; } catch { /* unavailable */ }
+  const notPersisted = JSON.stringify(ctx.settings) === settingsBefore && storageAfter === storageBefore;
+  ver.textContent = originalVer;
+  const mask = (bootExpanded ? 1 : 0) | (longIdentity ? 2 : 0) | (buttonCollapse ? 4 : 0)
+    | (compactSignals ? 8 : 0) | (paneGain > 100 ? 16 : 0) | (buttonExpand ? 32 : 0)
+    | (shortcutCollapse ? 64 : 0) | (shortcutExpand ? 128 : 0) | (noDrift ? 256 : 0)
+    | (notPersisted ? 512 : 0);
+  await report('sidebar-layout', mask === 1023, mask, paneGain);
+}
+
 async function renameSmoke(card) {
   await openSession(card.id);
   const host = document.querySelector(`#side-list .side-item[data-sid="${card.id}"] .name`);
@@ -2235,6 +2333,8 @@ export async function run() {
   let stage = 0;
   try {
     stage = 1;
+    // Collapse is a temporary layout state: every boot starts expanded.
+    const bootExpanded = !document.body.classList.contains('side-collapsed');
     await settingsNavigationSmoke();
     await buttonForceTouchSmoke();
     await waitFor(() => provider.projects().length > 0);
@@ -2254,6 +2354,7 @@ export async function run() {
     await commandWithoutPaneSmoke(project, column);
     await openSession(main.id);
     await splitPickerSmoke(main);
+    await sidebarSmoke(main, bootExpanded);
     stage = 3;
     await boardConcurrency(project, column);
     stage = 4;

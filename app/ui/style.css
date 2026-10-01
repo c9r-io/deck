@@ -60,7 +60,10 @@ textarea.inline-multiline::placeholder, .q-add textarea::placeholder,
   overflow: hidden;
 }
 .side-top { display: flex; align-items: center; gap: 8px; padding: 14px 10px 10px 14px; }
-.wordmark { font-family: var(--mono); font-size: 1.15385rem; font-weight: 600; letter-spacing: 0.02em; flex: 1; white-space: nowrap; }
+/* The collapse control outranks the build identity: the wordmark is the one
+   shrinkable item (min-width: 0) and elides, so a long Nightly version never
+   pushes #collapse-btn past the sidebar's overflow clip. */
+.wordmark { font-family: var(--mono); font-size: 1.15385rem; font-weight: 600; letter-spacing: 0.02em; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wordmark .glyph { color: var(--accent); }
 .wordmark .sub { color: var(--faint); font-size: 0.769231rem; font-weight: 400; }
 .collapse-btn { padding: 5px 7px; border-radius: 6px; color: var(--faint); flex: none; }
