@@ -7,14 +7,16 @@ let renameCardInline, renderSuggest, resetSuggest, newSession;
 let showLinkCtx, toggleSidebar, addSplit, backToBoard, openSession, strToB64;
 let closePaneBySid, focusPane, cancelTerminalSelection, copyTerminalSelection, terminalSelectionElsewhere;
 let refreshQueue, toggleQueuePanel;
-let renderBufferUI, openBuffer, closeBuffer;
+let renderBufferUI, openBuffer, closeBuffer, switchProject;
+let activeSessionTool;
 let drainChannel, drainConnector;
 let activateTheme, persistThemeChoice, persistInbound, applyFontScale, getFontScale;
 let toggleAutomations;
 let terminalLogicalLine, tokenizeTerminalLinks;
 if (typeof window !== 'undefined') {
   ({ $, ctx, inv, state, store } = await import('../js/state.js'));
-  ({ panes, provider, render, pollNow, renderBufferUI, openBuffer, closeBuffer } = await import('../js/board.js'));
+  ({ panes, provider, render, pollNow, renderBufferUI, openBuffer, closeBuffer, switchProject } = await import('../js/board.js'));
+  ({ activeSessionTool } = await import('../js/session-tools.js'));
   ({ boardData } = await import('../js/persistence.js'));
   ({
     renameCardInline, renderSuggest, resetSuggest, newSession,
@@ -1972,7 +1974,7 @@ async function bufferSmoke(main, project, column) {
     && $('buffer-queue').disabled && state.view === 'board');
 
   await openSession(main.id); $('buffer-btn').click();
-  const docked = await waitFor(() => !$('session-workspace').classList.contains('buffer-overlay')
+  const docked = await waitFor(() => !$('session-workspace').classList.contains('tool-overlay')
     && $('buffer-panel').parentElement === $('session-workspace'));
   const terminalRect = $('terminal-host').getBoundingClientRect();
   const sessionDrawerRect = $('buffer-panel').getBoundingClientRect();
@@ -2507,11 +2509,103 @@ export async function verifyBuffer() {
       && $('buffer-btn').getAttribute('aria-pressed') === 'false');
     toggleQueuePanel(false);
     await openBuffer(main.id);
+    await sessionToolSlotSmoke(main, project, column);
     await report('done', !smokeFailed, 1, 0);
   } catch (error) {
     await inv('ui_event', { code: 'js-reject', detail: (error && error.name) || 'error', a: 16, b: 0 });
     await report('done', false, 0, 16);
   }
+}
+
+/* The session workspace's ONE right-hand tool slot, in real layout:
+   scheduled prompts dock on the right and narrow the panes, tools replace
+   each other, closing restores the width and leaves no click-blocking layer,
+   and a project or session switch leaves no drawer, popup or focus in a
+   disposed terminal. Programmatic opens fire no pointerdown, so only the
+   slot itself can be what closes the dropdown and the template popover. */
+async function sessionToolSlotSmoke(main, project, column) {
+  const other = await provider.createProject('slot-smoke-elsewhere');
+  const second = await provider.create({ projectId: project.id, columnId: column.id,
+    title: 'slot-smoke-second', cmd: '', dir: '/tmp' });
+  await inv('queue_add', { args: {
+    session: main.session, cardId: main.id, dir: main.dir, cmd: main.cmd,
+    text: 'slot smoke first line ' + 'with a long prompt that must elide inside the drawer '.repeat(6) + '\nsecond line',
+    mode: 'at', at: Math.floor(Date.now() / 1000) + 7200,
+    every: null, winFrom: null, winTo: null, untilN: null, untilAt: null,
+  } });
+  closeBuffer();
+  await openSession(main.id);
+  const pane = panes.get(main.session);
+  await pause(400);
+  const fullCols = pane.term.cols;
+  const shown = id => !$(id).hidden && $(id).getBoundingClientRect().width > 0;
+  const onlyShown = id => ['queue-panel', 'buffer-panel', 'translation-panel'].every(x => shown(x) === (x === id));
+  let mask = 0;
+
+  toggleQueuePanel(true);
+  await refreshQueue();
+  const narrowed = await waitFor(() => pane.term.cols < fullCols);
+  const ws = $('session-workspace').getBoundingClientRect();
+  const panel = $('queue-panel').getBoundingClientRect();
+  const host = $('terminal-host').getBoundingClientRect();
+  if (narrowed && onlyShown('queue-panel') && !$('session-workspace').classList.contains('tool-overlay')
+    && $('queue-panel').parentElement === $('session-workspace') && Math.abs(panel.right - ws.right) <= 1
+    && Math.abs(panel.top - ws.top) <= 1 && panel.height >= ws.height - 1 && host.right <= panel.left + 1
+    && $('queue-btn').getAttribute('aria-pressed') === 'true') mask |= 1;
+  await inv('smoke_native_snapshot', { name: 'slot-queue-docked' }).catch(() => -9);
+  const body = $('queue-body');
+  const inside = el => { const r = el.getBoundingClientRect(); return r.width > 0 && r.left >= panel.left - 1 && r.right <= panel.right + 1; };
+  const actions = [...document.querySelectorAll('#queue-list .q-del, #queue-list .qg-del, #queue-list .qg-tpl')];
+  if (body.scrollWidth <= body.clientWidth + 1 && actions.length >= 3 && actions.every(inside)
+    && ['q-tpl', 'q-text', 'q-add-btn', 'q-review'].every(id => inside($(id)))) mask |= 2;
+
+  $('q-tpl').click();
+  await pause(60);
+  const pop = $('tpl-pop').getBoundingClientRect();
+  const popShown = $('tpl-pop').style.display === 'block' && pop.width > 100 && pop.left >= 0 && pop.top >= 0
+    && pop.right <= window.innerWidth && pop.bottom <= window.innerHeight;
+  await inv('smoke_native_snapshot', { name: 'slot-queue-template' }).catch(() => -9);
+  await openBuffer(main.id);
+  if (popShown && $('tpl-pop').style.display !== 'block' && onlyShown('buffer-panel') && !ctx.queueOpen
+    && $('queue-btn').getAttribute('aria-pressed') === 'false' && $('buffer-btn').getAttribute('aria-pressed') === 'true'
+    && activeSessionTool() === 'buffer') mask |= 4;
+
+  toggleQueuePanel(true);
+  await pause(60);
+  const ddBtn = $('q-every').closest('.dd').querySelector('.dd-btn');
+  ddBtn.click();
+  await pause(60);
+  const menuOpen = !$('dd-menu').hidden;
+  await openBuffer(main.id);
+  if (menuOpen && $('dd-menu').hidden && ddBtn.getAttribute('aria-expanded') === 'false' && onlyShown('buffer-panel')) mask |= 8;
+
+  $('buffer-btn').click();
+  const restored = await waitFor(() => pane.term.cols === fullCols);
+  const former = document.elementFromPoint(panel.left + panel.width / 2, panel.top + panel.height / 2);
+  if (restored && onlyShown(null) && activeSessionTool() === null && !!former?.closest('#terminal-host')) mask |= 16;
+
+  toggleQueuePanel(true);
+  $('q-text').focus();
+  $('q-tpl').click();
+  await pause(60);
+  switchProject(other.id);
+  await pause(100);
+  const active = document.activeElement;
+  if (state.view === 'board' && $('queue-panel').hidden && !ctx.queueOpen && activeSessionTool() === null
+    && $('queue-btn').getAttribute('aria-pressed') === 'false' && $('tpl-pop').style.display !== 'block'
+    && $('dd-menu').hidden && (!active || active === document.body || (active.isConnected && !active.closest('.xterm'))))
+    mask |= 32;
+
+  switchProject(project.id);
+  await openSession(main.id);
+  toggleQueuePanel(true);
+  await openSession(second.id);
+  await refreshQueue();
+  await pause(100);
+  if (state.sessionId === second.id && $('queue-panel').hidden && !ctx.queueOpen && onlyShown(null)) mask |= 64;
+
+  await report('session-tool-slot', mask === 127, mask, 127);
+  backToBoard();
 }
 
 export async function verifyBufferNarrow() {
@@ -2524,7 +2618,7 @@ export async function verifyBufferNarrow() {
     const pane = panes.get(card.session);
     const before = pane.term.cols;
     await openBuffer(card.id);
-    const overlay = await waitFor(() => $('session-workspace').classList.contains('buffer-overlay'));
+    const overlay = await waitFor(() => $('session-workspace').classList.contains('tool-overlay'));
     const panel = $('buffer-panel').getBoundingClientRect();
     const terminal = $('terminal-host').getBoundingClientRect();
     const list = $('buffer-list').getBoundingClientRect();
@@ -2541,6 +2635,15 @@ export async function verifyBufferNarrow() {
     backToBoard();
     await report('buffer-leave-cleanup', $('buffer-panel').hidden && $('buffer-queue').disabled
       && $('buffer-btn').getAttribute('aria-pressed') === 'false');
+    /* narrow: scheduled prompts float over the panes like the scratchpad */
+    await openSession(card.id);
+    toggleQueuePanel(true);
+    const queueOverlay = await waitFor(() => $('session-workspace').classList.contains('tool-overlay') && !$('queue-panel').hidden);
+    const queueRect = $('queue-panel').getBoundingClientRect(), hostRect = $('terminal-host').getBoundingClientRect();
+    const queueBody = $('queue-body');
+    await report('queue-narrow-overlay', queueOverlay && queueRect.right <= hostRect.right + 1 && queueRect.left >= hostRect.left - 1
+      && queueBody.scrollWidth <= queueBody.clientWidth + 1 && panes.get(card.session).term.cols === before);
+    backToBoard();
     await report('done', !smokeFailed, 1, 0);
   } catch (error) {
     await inv('ui_event', { code: 'js-reject', detail: (error && error.name) || 'error', a: 17, b: 0 });

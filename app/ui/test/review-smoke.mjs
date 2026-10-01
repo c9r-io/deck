@@ -46,7 +46,7 @@ export async function runReviewSmoke(restart = false) {
     for (const [text, value] of [['无 hook', null], ['有 hook', 'turn-done'], ['长静默', 'working'], ['权限等待', 'needs-input']]) {
       const b = document.createElement('button'); b.textContent = text; b.onclick = () => signal(value); bar.append(b);
     }
-    $('queue-panel').prepend(bar);
+    $('queue-body').prepend(bar);
     await refreshQueue();
     const own = () => ctx.queueCache.items.filter(i => i.session === card.session);
     if (restart) {
@@ -104,7 +104,7 @@ export async function runReviewSmoke(restart = false) {
     let layoutOK = true;
     for (const locale of ['zh-Hans', 'en']) for (const theme of ['deck-dark', 'light', 'high-contrast']) for (const scale of [1, 1.6]) {
       setLocale(locale); activateTheme({ theme, accent: 'teal' }); applyFontScale(scale); renderQueueUI(); await pause(60);
-      const panel = $('queue-panel');
+      const panel = $('queue-body');
       layoutOK &&= panel.scrollWidth <= panel.clientWidth + 1
         && !!document.querySelector('.q-execution-plan') && !!document.querySelector('.q-history');
     }

@@ -173,67 +173,69 @@
         <button class="btn" id="reminder-btn" type="button" data-i18n="reminder.set">Set reminder…</button>
         <button class="btn icon-btn" id="buffer-btn" type="button" aria-pressed="false" data-i18n-title="buffer.title" title="Card scratchpad">▤<span class="cnt" id="buffer-count"></span></button>
         <button class="btn icon-btn" id="translation-btn" type="button" hidden aria-pressed="false" data-i18n-title="translation.title" data-i18n-aria-label="translation.title" title="Local Translation" aria-label="Local Translation">文A</button>
-        <button class="btn icon-btn" id="queue-btn" title="Scheduled prompts — send prompts to this session later" data-i18n-title="queue.title"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8.8" r="5"/><path d="M8 6.2v2.6l1.8 1.2"/><path d="M13.9 2.8l-1.7 1.5M2.1 2.8l1.7 1.5" stroke-linecap="round"/></svg><span class="cnt" id="queue-cnt"></span></button>
+        <button class="btn icon-btn" id="queue-btn" type="button" aria-pressed="false" title="Scheduled prompts — send prompts to this session later" data-i18n-title="queue.title"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8.8" r="5"/><path d="M8 6.2v2.6l1.8 1.2"/><path d="M13.9 2.8l-1.7 1.5M2.1 2.8l1.7 1.5" stroke-linecap="round"/></svg><span class="cnt" id="queue-cnt"></span></button>
         <button class="btn danger" id="sess-close" title="Close session (terminates the shell and removes the card)" data-i18n="session.close" data-i18n-title="session.closeTitle">Close</button>
-      </div>
-      <div id="queue-panel">
-        <div id="queue-list" tabindex="-1"></div>
-        <div class="q-new" id="q-new">
-          <div class="q-sentence q-new-head">
-            <span class="q-new-title" data-i18n="queue.newList">New list</span>
-            <span class="q-sep">·</span>
-            <span data-i18n="queue.notBefore">not before</span>
-            <select id="q-start">
-              <option value="" data-i18n="queue.start.now">now</option>
-              <option value="date" data-i18n="queue.start.date">a date and time…</option>
-            </select>
-            <input type="date" id="q-date" class="q-p q-p-startc">
-            <input type="time" id="q-time" class="q-p q-p-startc">
-            <select id="q-quick" class="q-p q-p-startc">
-              <option value="" data-i18n="queue.quick">quick…</option>
-              <option value="30" data-i18n="queue.quick.30">+30 min</option>
-              <option value="60" data-i18n="queue.quick.60">+1 h</option>
-              <option value="180" data-i18n="queue.quick.180">+3 h</option>
-              <option value="300" data-i18n="queue.quick.300">+5 h</option>
-            </select>
-            <span class="q-sep">·</span>
-            <span data-i18n="queue.repeatLabel">repeat</span>
-            <select id="q-every"></select>
-            <select id="q-win" class="q-p q-p-every">
-              <option value="" data-i18n="queue.window.any">any time of day</option>
-              <option value="540-1080" data-i18n="queue.window.day">only 09:00–18:00</option>
-              <option value="480-1320" data-i18n="queue.window.longDay">only 08:00–22:00</option>
-              <option value="custom" data-i18n="queue.window.custom">only between…</option>
-            </select>
-            <input type="time" id="q-win-a" class="q-p q-p-every q-p-winc"><span id="q-win-dash" class="q-p q-p-every q-p-winc">–</span><input type="time" id="q-win-b" class="q-p q-p-every q-p-winc">
-            <span class="q-p q-p-every" data-i18n="queue.untilLabel">until</span>
-            <select id="q-until" class="q-p q-p-every">
-              <option value="" data-i18n="queue.until.remove">I remove it</option>
-              <option value="n5" data-i18n="queue.until.n5">5 times</option>
-              <option value="n10" data-i18n="queue.until.n10">10 times</option>
-              <option value="n20" data-i18n="queue.until.n20">20 times</option>
-              <option value="date" data-i18n="queue.until.date">a date and time…</option>
-            </select>
-            <input type="date" id="q-until-d" class="q-p q-p-every q-p-untilc"><input type="time" id="q-until-t" class="q-p q-p-every q-p-untilc">
-          </div>
-          <label class="q-review-option"><input type="checkbox" id="q-review"><span data-i18n="queue.review.option">Inspect after every row, including the last</span></label>
-          <div class="q-add">
-            <button class="btn" id="q-tpl" title="Templates — start this list from one" data-i18n-title="queue.templatesTitle">📋</button>
-            <textarea id="q-text" rows="1" placeholder="first line of the new list — ⌘↵ to add" data-i18n-placeholder="queue.placeholder" autocomplete="off" spellcheck="false"></textarea>
-            <button class="btn primary" id="q-add-btn" data-i18n="common.add">Add</button>
-          </div>
-        </div>
-        <div class="q-hint" data-i18n="queue.explainer">Prompts are typed into the session at the scheduled moment.</div>
-        <div id="tpl-pop"></div>
       </div>
       <div id="session-workspace">
         <div id="terminal-host"><div id="terminal"></div><div id="quick-bar"></div></div>
-        <section id="buffer-panel" role="dialog" aria-modal="false" hidden aria-labelledby="buffer-title">
+        <section id="queue-panel" class="session-tool" role="region" hidden aria-labelledby="queue-heading">
+          <div class="queue-head"><strong id="queue-heading" data-i18n="queue.heading">Lists</strong><button class="btn icon-btn" id="queue-close" type="button" data-i18n-title="common.close" data-i18n-aria-label="common.close" title="Close" aria-label="Close">✕</button></div>
+          <div id="queue-body">
+            <div id="queue-list" tabindex="-1"></div>
+            <div class="q-new" id="q-new">
+              <div class="q-sentence q-new-head">
+                <span class="q-new-title" data-i18n="queue.newList">New list</span>
+                <span class="q-sep">·</span>
+                <span data-i18n="queue.notBefore">not before</span>
+                <select id="q-start">
+                  <option value="" data-i18n="queue.start.now">now</option>
+                  <option value="date" data-i18n="queue.start.date">a date and time…</option>
+                </select>
+                <input type="date" id="q-date" class="q-p q-p-startc">
+                <input type="time" id="q-time" class="q-p q-p-startc">
+                <select id="q-quick" class="q-p q-p-startc">
+                  <option value="" data-i18n="queue.quick">quick…</option>
+                  <option value="30" data-i18n="queue.quick.30">+30 min</option>
+                  <option value="60" data-i18n="queue.quick.60">+1 h</option>
+                  <option value="180" data-i18n="queue.quick.180">+3 h</option>
+                  <option value="300" data-i18n="queue.quick.300">+5 h</option>
+                </select>
+                <span class="q-sep">·</span>
+                <span data-i18n="queue.repeatLabel">repeat</span>
+                <select id="q-every"></select>
+                <select id="q-win" class="q-p q-p-every">
+                  <option value="" data-i18n="queue.window.any">any time of day</option>
+                  <option value="540-1080" data-i18n="queue.window.day">only 09:00–18:00</option>
+                  <option value="480-1320" data-i18n="queue.window.longDay">only 08:00–22:00</option>
+                  <option value="custom" data-i18n="queue.window.custom">only between…</option>
+                </select>
+                <input type="time" id="q-win-a" class="q-p q-p-every q-p-winc"><span id="q-win-dash" class="q-p q-p-every q-p-winc">–</span><input type="time" id="q-win-b" class="q-p q-p-every q-p-winc">
+                <span class="q-p q-p-every" data-i18n="queue.untilLabel">until</span>
+                <select id="q-until" class="q-p q-p-every">
+                  <option value="" data-i18n="queue.until.remove">I remove it</option>
+                  <option value="n5" data-i18n="queue.until.n5">5 times</option>
+                  <option value="n10" data-i18n="queue.until.n10">10 times</option>
+                  <option value="n20" data-i18n="queue.until.n20">20 times</option>
+                  <option value="date" data-i18n="queue.until.date">a date and time…</option>
+                </select>
+                <input type="date" id="q-until-d" class="q-p q-p-every q-p-untilc"><input type="time" id="q-until-t" class="q-p q-p-every q-p-untilc">
+              </div>
+              <label class="q-review-option"><input type="checkbox" id="q-review"><span data-i18n="queue.review.option">Inspect after every row, including the last</span></label>
+              <div class="q-add">
+                <button class="btn" id="q-tpl" title="Templates — start this list from one" data-i18n-title="queue.templatesTitle">📋</button>
+                <textarea id="q-text" rows="1" placeholder="first line of the new list — ⌘↵ to add" data-i18n-placeholder="queue.placeholder" autocomplete="off" spellcheck="false"></textarea>
+                <button class="btn primary" id="q-add-btn" data-i18n="common.add">Add</button>
+              </div>
+            </div>
+            <div class="q-hint" data-i18n="queue.explainer">Prompts are typed into the session at the scheduled moment.</div>
+          </div>
+        </section>
+        <section id="buffer-panel" class="session-tool" role="dialog" aria-modal="false" hidden aria-labelledby="buffer-title">
           <div class="buffer-head"><div class="buffer-head-main"><strong id="buffer-title" data-i18n="buffer.title">Card scratchpad</strong><span id="buffer-note-count"></span><b id="buffer-collecting" hidden data-i18n="buffer.collecting">Collecting</b><button class="btn" id="buffer-stop" hidden data-i18n="buffer.stop">Stop collecting</button><button class="btn icon-btn" id="buffer-close" type="button" data-i18n-title="common.close" data-i18n-aria-label="common.close" title="Close" aria-label="Close">✕</button></div><span data-i18n="buffer.hint">Notes stay with this card and are never sent automatically.</span></div>
           <div id="buffer-list"><div id="buffer-empty" data-i18n="buffer.empty">No notes yet.</div></div>
           <div class="buffer-add"><textarea id="buffer-new" rows="2" maxlength="32768" data-i18n-placeholder="buffer.placeholder" placeholder="Add a note…"></textarea><div class="buffer-actions"><button class="btn" id="buffer-add" data-i18n="common.add">Add</button><button class="btn primary" id="buffer-queue" disabled></button></div></div>
         </section>
-        <section id="translation-panel" role="region" hidden aria-labelledby="translation-title">
+        <section id="translation-panel" class="session-tool" role="region" hidden aria-labelledby="translation-title">
           <div class="translation-head">
             <strong id="translation-title" data-i18n="translation.title">Local Translation</strong>
             <button class="btn" id="translation-copy-source" type="button" data-i18n="translation.copySource" disabled>Copy Source</button>
@@ -254,6 +256,7 @@
 
 <div id="ctx"></div>
 <div id="dd-menu" role="listbox" hidden></div>
+<div id="tpl-pop"></div>
 <div id="dropzone"></div>
 <div id="settings-modal">
   <div id="settings-box" role="dialog" aria-modal="true" aria-labelledby="settings-title">

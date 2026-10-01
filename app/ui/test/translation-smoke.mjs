@@ -26,6 +26,7 @@ import { applyFontScale } from '../js/font-scale.js';
 import { serializeSettings } from '../js/settings-model.js';
 import { installTranslationSmokeBackend, packStatus, capability } from '../js/local-intelligence.js';
 import { closeTranslationLens, translationLensMetrics, translationLensView, visibleViewport } from '../js/translation-lens.js';
+import { toggleQueuePanel } from '../js/scheduler.js';
 import { withGuard, GuardRefused } from './translation-guard.mjs';
 
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -291,7 +292,7 @@ export async function runTranslationSmoke() {
     const clickAt = performance.now();
     await click($('translation-btn'));
     await report('translation-open', await waitFor(() => !$('translation-panel').hidden));
-    await report('translation-overlay', $('session-workspace').classList.contains('translation-overlay'));
+    await report('translation-overlay', $('session-workspace').classList.contains('tool-overlay'));
     const first = await waitFor(() => fake.pending('live'), 3000) && fake.pending('live');
     await report('tl-a01-static-open', !!first && first.text.includes('The build completed successfully'),
       first ? first.at - clickAt : 1, trusted('pointerdown'));
@@ -319,7 +320,7 @@ export async function runTranslationSmoke() {
     await report('tl-a02-interact', !!second && !status().includes('暂停') && !/paused/i.test(status()),
       1, trusted('pointerdown'));
     const dock = $('translation-panel').getBoundingClientRect(), terminal = $('terminal-host').getBoundingClientRect();
-    await report('translation-dock', !$('session-workspace').classList.contains('translation-overlay')
+    await report('translation-dock', !$('session-workspace').classList.contains('tool-overlay')
       && terminal.right <= dock.left + 1);
     await report('tl-a02-display', await answerLive('快捷键译文'),
       lensMetrics().submitted, statusCode() * 100 + fake.requests.filter(r => !r.done).length);
@@ -629,7 +630,7 @@ export async function runTranslationSmoke() {
     const fits = () => [tab('live'), tab('clipboard')].every(el => el.scrollWidth <= el.clientWidth + 1
       && el.getBoundingClientRect().right <= $('translation-panel').getBoundingClientRect().right + 1);
     $('session-workspace').style.maxWidth = '560px'; await pause(400);
-    await report('tl-e01-narrow', $('session-workspace').classList.contains('translation-overlay') && fits());
+    await report('tl-e01-narrow', $('session-workspace').classList.contains('tool-overlay') && fits());
     await snapshot('l2-e01-narrow');
     $('session-workspace').style.maxWidth = '';
     applyFontScale(1.3); await pause(300);
@@ -720,6 +721,14 @@ export async function runTranslationSmoke() {
     await report('translation-buffer-mutual', $('translation-panel').hidden && !$('buffer-panel').hidden);
     await click($('translation-btn'));
     await report('translation-buffer-close', $('buffer-panel').hidden && !$('translation-panel').hidden);
+    /* scheduled prompts share the slot: each replaces the other, and the Lens's own close runs */
+    const unloadsBefore = fake.unloads;
+    toggleQueuePanel(true);
+    const queueReplaced = $('translation-panel').hidden && !$('queue-panel').hidden && fake.unloads > unloadsBefore
+      && $('translation-btn').getAttribute('aria-pressed') === 'false';
+    await click($('translation-btn'));
+    await report('translation-queue-mutual', queueReplaced && $('queue-panel').hidden && !$('translation-panel').hidden
+      && $('queue-btn').getAttribute('aria-pressed') === 'false');
     await openSettings({ section: 'terminal' });
     $('set-local-translation').click();
     await report('translation-disable', await waitFor(() => $('translation-btn').hidden)

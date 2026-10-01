@@ -513,6 +513,7 @@ const dictionary = {
   'tmux.session.recent': '最近活跃',
   'tmux.notice.emptyServerReplaced': '已更新空闲的后台 Shell 服务',
   'tmux.notice.restartCompleted': '后台 Shell 服务重启完成',
+  'queue.heading': '列表',
   'queue.title': '列表 — 稍后发送到此 session 的 prompt',
   'queue.placeholder': '新列表的第一行 prompt — ⌘↵ 添加',
   'queue.newList': '新列表',

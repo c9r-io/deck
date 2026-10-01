@@ -138,7 +138,8 @@ test('minimum-window layout keeps long localized panels bounded and scrollable',
   assert.match(html, /#set-content, #tpl-content \{[^}]*min-width: 0;[^}]*overflow-y: auto;/,
     'only modal content scrolls; navigation and footer remain reachable');
   assert.match(html, /#cfm-box, #ppd-box \{[^}]*max-height: 84vh;[^}]*overflow-y: auto;/);
-  assert.match(html, /#queue-panel \{[^}]*max-height: 55vh;/);
+  assert.match(html, /#queue-body \{[^}]*min-height: 0;[^}]*overflow-y: auto;[^}]*overflow-x: hidden;/,
+    'scheduled prompts scroll inside their drawer, never sideways');
   assert.match(html, /\.qg-row \.row-meta \{[^}]*white-space: normal;/);
 });
 
@@ -277,4 +278,28 @@ test('the first-send option is a separate, unticked Slack-badge-only box with it
   const js = read('app/ui/js/automation.js');
   assert.ok(/firstSendNeedsConfirm\(false, box\.checked\)/.test(js) && /confirmDialog\(t\('automation\.firstSend\.confirm'\)\)/.test(js),
     'turning it on asks for confirmation');
+});
+
+test('every view change leaves the session view first, and the tool slot closes before panes go', () => {
+  const dir = resolve(root, 'app/ui/js');
+  const sites = [];
+  for (const file of readdirSync(dir).filter(name => name.endsWith('.js'))) {
+    const lines = read(`app/ui/js/${file}`).split('\n');
+    lines.forEach((line, n) => {
+      if (!/\bstate\.view\s*=[^=]/.test(line)) return;
+      sites.push(file);
+      /* the same function, a few lines up, detaches panes and closes the
+         session tools; a bare view write would leave both behind */
+      assert.match(lines.slice(Math.max(0, n - 6), n).join('\n'), /leaveSessionView\(/, `${file}:${n + 1}`);
+    });
+  }
+  assert.deepEqual(sites.sort(), ['app.js', 'attention.js', 'board.js', 'layout.js', 'layout.js']);
+  const layout = read('app/ui/js/layout.js');
+  assert.match(layout, /export function leaveSessionView\([^)]*\) \{\n  closeSessionTools\('leave'\);/);
+  for (const file of ['board.js', 'translation-lens.js', 'layout.js', 'app.js'])
+    assert.doesNotMatch(read(`app/ui/js/${file}`), /queue-panel|ctx\.queueOpen\s*=/, `${file} reaches into the queue drawer`);
+  const html = read('app/ui/index.html');
+  const workspace = html.slice(html.indexOf('<div id="session-workspace">'), html.indexOf('<div id="ctx">'));
+  for (const id of ['queue-panel', 'buffer-panel', 'translation-panel'])
+    assert.match(workspace, new RegExp(`<section id="${id}" class="session-tool"`), `${id} is a right-hand session tool`);
 });

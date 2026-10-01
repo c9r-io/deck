@@ -145,6 +145,7 @@
         "buffer-selection-isolation": {},
         "buffer-session-dock": {},
         "buffer-visual-fixture": {},
+        "session-tool-slot": { "a": 127 },
         "input-source-initial": {},
         "mcp-ordinary-first-frame": {}
       }
@@ -156,7 +157,8 @@
         "buffer-narrow-sections": {},
         "buffer-narrow-close": {},
         "buffer-leave-cleanup": {},
-        "buffer-narrow-reopen": {}
+        "buffer-narrow-reopen": {},
+        "queue-narrow-overlay": {}
       }
     },
     "channel": {
@@ -385,6 +387,7 @@
         "tl-l2-native-events": { "metric": true },
         "tl-t-l2-scroll-submit": { "metric": true },
         "translation-buffer-close": {},
+        "translation-queue-mutual": {},
         "translation-buffer-mutual": {},
         "translation-close": {},
         "translation-copy": {},

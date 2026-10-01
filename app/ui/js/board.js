@@ -32,6 +32,11 @@
 // the Board's own entries only; `openProjectDefaults` edits them.
 // The session header scratchpad count follows the focused card, independently
 // of the drawer target; durable card updates refresh it even with the drawer shut.
+// In the session view the scratchpad is the `buffer` tool of the right-hand
+// slot (session-tools.js): opening there claims the slot; on the Board and
+// Attention views it floats over that view and is not a session tool.
+// Leaving the session view goes through `showBoard` / leaveSessionView —
+// never a bare `state.view` write, which would leave panes and tools behind.
 // Card scratchpad: a copy of an external entry is queued with `externalText`
 // so the native gate judges it; a source link in an entry opens only through
 // `open_target("url")` (links.rs `validate_open`), never by the webview.
@@ -42,6 +47,7 @@ import { reminderRequestId, reminderAction, reminderClaim, reminderDue, remember
 import { mutateBoard, mutateBoardDebounced } from './persistence.js';
 import { collapseHome, createConfirmationCounter, createExitRetirementTracker, effectiveCardStatus, initialLaunched, newSessionColumn, newSessionPlan, projectDefaults, reorderById, runFinishHolds, sidebarGroups } from './pure.js';
 import { channelAgentCommand } from './channel-model.js';
+import { claimSessionTool, registerSessionTool, releaseSessionTool } from './session-tools.js';
 import { confirmDangerDialog, reminderDialog, confirmDialog, inlineRename, projectDefaultsDialog, toast } from './dialogs.js';
 import { clearSeparators, closePaneBySid, hasPane, leaveSessionView, openSession, renderSessionView, updatePaneChrome } from './layout.js';
 import { SHELL_FG, invalidateResumeSuggestions, showProjectCtx, showSessionCtx } from './terminal.js';
@@ -676,6 +682,7 @@ export function closeBuffer() {
   $('buffer-new').value = '';
   $('buffer-btn').setAttribute('aria-pressed', 'false');
   syncBufferQueueButton();
+  releaseSessionTool('buffer');
 }
 
 function changeBufferTarget(cardId) {
@@ -833,15 +840,14 @@ async function queueSelectedBufferEntries() {
 
 export async function openBuffer(sid) {
   if (!provider.get(sid)) return;
-  window.dispatchEvent(new Event('deck-buffer-open'));
+  if (state.view === 'session') claimSessionTool('buffer');
   changeBufferTarget(sid);
-  $('queue-panel').style.display = 'none';
-  ctx.queueOpen = false;
   $('buffer-panel').hidden = false;
   renderBufferUI();
 }
 
 export function initBuffer() {
+  registerSessionTool('buffer', () => closeBuffer());
   $('buffer-btn').onclick = () => {
     if (!$('buffer-panel').hidden && bufferTargetId === state.sessionId) closeBuffer();
     else openBuffer(state.sessionId);
@@ -1312,14 +1318,21 @@ export function renameTab(el, p) {
   });
 }
 
-export function switchProject(pid) {
-  ctx.attentionReturn = null;
-  if (state.projectId === pid && state.view === 'board') return;
+/* the one way onto a project's Board from anywhere: the session view is
+   left properly (its panes detach, its tools close) before the view flips.
+   The caller renders. */
+export function showBoard(pid) {
   closeBuffer();
   if (state.view === 'session') leaveSessionView();
   state.projectId = pid;
   state.view = 'board';
   state.sessionId = null;
+}
+
+export function switchProject(pid) {
+  ctx.attentionReturn = null;
+  if (state.projectId === pid && state.view === 'board') return;
+  showBoard(pid);
   render();
   pollNow();
 }
@@ -1685,7 +1698,7 @@ export async function reconcileReminders() {
     for (const { open, action } of openings) {
       const card = provider.get(open);
       if (card && sameReminder(card.reminder, action)) {
-        state.projectId = card.projectId; state.view = 'board'; render();
+        showBoard(card.projectId); render();
         await inv('reminder_show'); locateAttentionCard(card.id);
         if (ctx.attention.get(card)?.alive && !ctx.attention.get(card)?.stale) await openSession(card.id, { allowStart: false });
       }

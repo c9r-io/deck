@@ -18,7 +18,8 @@ import { drainChannel, drainInbound, initInbound } from './inbound.js';
 import { drainConnector, initConnector } from './connector.js';
 import { initMcp } from './mcp.js';
 import { initAutomation } from './automation.js';
-import { initDropdowns } from './dropdown.js';
+import { closeDropdownMenu, initDropdowns } from './dropdown.js';
+import { registerSessionPopup } from './session-tools.js';
 import { initAttention, openFromNotification } from './attention.js';
 import { onLocaleChange, setLocale, t, translateNotice } from './i18n.js';
 import { activateTheme, revealThemedWindow } from './theme.js';
@@ -333,14 +334,15 @@ export async function manualUpdateCheck() {
 function initModules() {
   initInputDiagnostics();
   initDropdowns();
+  registerSessionPopup(closeDropdownMenu);
   initDialogs();
   initSettings();
   initTerminalChrome();
   initAttention({ pollNow, provider, render, switchProject, leaveSessionView, closeBuffer, openSession, openSettings });
   initLayout();
-  initScheduler({ provider, pollNow, closeBuffer });
+  initScheduler({ provider, pollNow });
   initBuffer();
-  initTranslationLens({ panes, closeBuffer, saveTarget: persistSettings });
+  initTranslationLens({ panes, saveTarget: persistSettings });
   initTemplates({ provider });
   initInbound();
   initConnector();

@@ -514,6 +514,7 @@ const dictionary = {
   'tmux.session.recent': 'recently active',
   'tmux.notice.emptyServerReplaced': 'Updated the idle background shell service',
   'tmux.notice.restartCompleted': 'Background shell service restart completed',
+  'queue.heading': 'Lists',
   'queue.title': 'Lists — prompts to send to this session later',
   'queue.placeholder': 'first prompt of the new list — ⌘↵ to add',
   'queue.newList': 'New list',

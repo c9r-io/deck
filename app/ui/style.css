@@ -505,12 +505,20 @@ html[data-effective-theme="light"] #input-source-icon { background: var(--panel)
 .dd-item:disabled { color: var(--faint); }
 
 /* ---------- scheduled prompts panel ---------- */
-#queue-panel {
-  display: none; flex-direction: column; gap: 6px; position: relative;
-  padding: 10px 16px;
-  background: var(--panel); border-bottom: 1px solid var(--border-soft);
-  max-height: 40vh; overflow-y: auto;
-}
+/* A drawer in the session's right-hand tool slot (`.session-tool`): its
+   head stays, the lists and the new-list form scroll beneath it. */
+.queue-head { flex: none; display: flex; align-items: center; gap: 8px; padding: 12px 14px 10px;
+  border-bottom: 1px solid var(--border-soft); }
+.queue-head strong { flex: 1; min-width: 0; font-size: 1.076923rem; font-weight: 600; }
+#queue-close { width: 28px; height: 28px; padding: 0; justify-content: center; }
+#queue-body { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden;
+  display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; }
+/* at drawer width a row's metadata takes its own line under the prompt, so
+   the prompt keeps the space and the row's buttons stay on its first line */
+#queue-panel .qg-row .q-text { flex: 1 1 0; }
+#queue-panel .qg-row .row-meta { order: 1; flex: 1 1 calc(100% - 20px); margin-left: 20px; }
+#queue-panel .qg-head { flex-wrap: wrap; }
+#queue-panel .qg-meta { flex: 1 1 120px; }
 .q-text { flex: 1; min-width: 0; font-size: 0.961538rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .q-del, .q-retry, .q-skip, .q-wait, .q-now { color: var(--faint); padding: 2px 7px; border-radius: 4px; flex: none; }
 .q-retry:hover, .q-skip:hover, .q-wait:hover, .q-now:hover { color: var(--text); background: var(--hover); }
@@ -599,7 +607,8 @@ html[data-effective-theme="light"] #input-source-icon { background: var(--panel)
 .qg-quiet input[type=number] { width: 4.2em; }
 .qg-quiet [hidden] { display: none; }
 #tpl-pop {
-  position: absolute; display: none; background: var(--raised);
+  position: fixed; display: none; background: var(--raised);
+  max-width: calc(100vw - 16px); max-height: calc(100vh - 16px); overflow-y: auto; box-sizing: border-box;
   border: 1px solid var(--border); border-radius: 10px;
   box-shadow: 0 14px 40px var(--shadow-modal); padding: 6px;
   font-size: 0.923077rem; z-index: 80; width: 300px;
@@ -665,24 +674,29 @@ html[data-effective-theme="light"] #input-source-icon { background: var(--panel)
 }
 #queue-btn .cnt { font-family: var(--mono); font-size: 0.769231rem; color: var(--wait); }
 #buffer-btn .cnt { font-family: var(--mono); font-size: 0.769231rem; color: var(--accent); margin-left: 2px; }
-#buffer-panel {
-  width: 520px; max-width: 100%; min-width: 0; flex: none; min-height: 0;
+/* ---------- the session workspace's right-hand tool slot ----------
+   Scheduled prompts, the card scratchpad and Local Translation share ONE
+   drawer contract (session-tools.js owns which one is open). It docks to the
+   right of the panes and narrows them; when the workspace cannot keep a
+   useful terminal beside it, layout.js sets `tool-overlay` and it floats over
+   the panes instead. The scratchpad on the Board and Attention views always
+   floats. layout.js reads --session-tool-width for that threshold. The width
+   is the narrowest that holds every tool's controls: each pixel it takes is
+   terminal width, and Local Translation reads that terminal (a narrower one
+   wraps long paths and URLs across viewport rows). */
+:root { --session-tool-width: 440px; }
+.session-tool {
+  width: var(--session-tool-width); max-width: 100%; min-width: 0; flex: none; min-height: 0;
   display: flex; flex-direction: column; overflow: hidden; box-sizing: border-box;
   background: var(--panel); border-left: 1px solid var(--border);
   box-shadow: -14px 0 40px var(--shadow-menu);
 }
-#buffer-panel[hidden] { display: none; }
-#session-workspace.buffer-overlay #buffer-panel, #board-view > #buffer-panel, #attention-view > #buffer-panel {
+.session-tool[hidden] { display: none; }
+#session-workspace.tool-overlay > .session-tool, #board-view > #buffer-panel, #attention-view > #buffer-panel {
   position: absolute; z-index: 30; top: 0; right: 0; bottom: 0;
-  width: min(520px, 100%);
+  width: min(var(--session-tool-width), 100%);
 }
 #translation-btn { font-size: 0.95rem; letter-spacing: -0.08em; }
-#translation-panel { width: 440px; max-width: 100%; min-width: 0; flex: none; min-height: 0;
-  display: flex; flex-direction: column; background: var(--panel); border-left: 1px solid var(--border);
-  box-shadow: -14px 0 40px var(--shadow-menu); }
-#translation-panel[hidden] { display: none; }
-#session-workspace.translation-overlay #translation-panel { position: absolute; z-index: 30;
-  top: 0; right: 0; bottom: 0; width: min(440px, 100%); }
 .translation-head { display: flex; align-items: center; gap: 8px; padding: 12px 14px 10px;
   border-bottom: 1px solid var(--border-soft); }
 .translation-head strong { flex: 1; min-width: 0; font-weight: 600; }
@@ -1083,7 +1097,6 @@ html.font-scale-large .tmux-lifecycle-actions { align-items: flex-start; flex-wr
   #columns { padding-inline: 12px; }
   .sess-head { gap: 6px; padding: 8px; }
   .sess-title { max-width: 120px; }
-  #queue-panel { max-height: 55vh; padding: 8px; }
   #settings-modal, #tpl-modal { padding: 4vh 20px; }
   #cfm-box, #ppd-box { margin-top: 8vh; max-height: 84vh; overflow-y: auto; }
   #chd-box, #pdf-box { margin-top: 8vh; max-height: 84vh; overflow-y: auto; }
@@ -1144,7 +1157,6 @@ body.side-collapsed #attention-btn { flex-direction: column; gap: 2px; }
 body.side-collapsed #attention-count { margin-left: 0; max-width: 34px; overflow: hidden; font-size: .692308rem; }
 
 /* C v01: local execution evidence and durable human checkpoints. */
-#queue-panel { max-height: 62vh; }
 .q-review-option { display: flex; align-items: center; gap: 8px; padding: 8px 0; font-size: 0.923077rem; color: var(--muted); }
 .q-review-option input { flex: none; width: auto; }
 .q-execution-plan { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 14px; padding: 12px; border-top: 1px solid var(--border-soft); background: var(--panel); font-size: 0.923077rem; }
@@ -1161,10 +1173,9 @@ body.side-collapsed #attention-count { margin-left: 0; max-width: 34px; overflow
 .q-history { margin-top: 10px; padding: 10px 12px; border: 1px solid var(--border-soft); border-radius: 8px; }
 .q-history summary { cursor: pointer; color: var(--text); }
 .q-history-record { overflow-wrap: anywhere; color: var(--muted); font-size: 0.846154rem; }
-@media (max-width: 850px) {
-  .q-execution-plan { grid-template-columns: minmax(0, 1fr); }
-  .q-plan-evidence { border-left: 0; padding-left: 0; border-top: 1px solid var(--border-soft); padding-top: 10px; }
-}
+/* the plan lives in the drawer, which is always narrow: one column */
+#queue-panel .q-execution-plan { grid-template-columns: minmax(0, 1fr); }
+#queue-panel .q-plan-evidence { border-left: 0; padding-left: 0; border-top: 1px solid var(--border-soft); padding-top: 10px; }
 
 .q-execution-plan .q-hint, .qg-review .q-hint { color: var(--muted); }
 

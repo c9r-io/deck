@@ -406,6 +406,7 @@
         "translation-shortcut-close",
         "translation-buffer-mutual",
         "translation-buffer-close",
+        "translation-queue-mutual",
         "translation-close",
         "translation-disable",
         "translation-delete"

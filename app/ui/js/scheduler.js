@@ -44,14 +44,23 @@
 // template changed later leaves the rows alone. Calendar cadences (daily /
 // weekly / monthly) are deliberately not a card schedule — see the
 // Board-level automation note in scheduler/mod.rs.
+//
+// The panel is the `queue` tool of the session's right-hand slot
+// (session-tools.js): opening claims the slot, which closes the scratchpad or
+// Local Translation. Closing hides the drawer only — schedules, drafts and
+// expanded rows stay, and saved lists keep running. Only the user's own close
+// returns focus to the terminal; a replacement or a session leave never
+// does. The 📋 popover is fixed to the viewport (the drawer clips and
+// scrolls) and closes with the panel, when the drawer scrolls, and on resize.
 import { isReview, reviewRow, executionPlan, stageText, queueHistory, cancelQueueList } from './queue-review.js';
 import { chainWhenSuffix, contextLabel, fmtWhen, listStartCalls, localizedChainQuietHint, qMeta } from './scheduler-model.js';
 import { $, ctx, inv, listen, state, uev } from './state.js';
 import { blockedBy, chainQuietHint, CHAIN_QUIET_SECS, contextStatusKey, fmtEvery, groupQueue, groupSteps, hasWindow, hmToMin, isoDate, isoTime, itemDead, listKey, listRepeats, listScheduleArgs, localEpoch, MAX_QUIET_SECS, MIN_QUIET_SECS, minToHM, nextFire, promptSummary, promptTooltip, quietSecsOf, winHas } from './pure.js';
 export { blockedBy, chainQuietHint, contextStatusKey, fmtEvery, groupQueue, groupSteps, hasWindow, hmToMin, itemDead, minToHM, nextFire, promptSummary, promptTooltip, winHas };
 import { autoGrowField, confirmDialog, inlineRename, toast, promptDialog } from './dialogs.js';
+import { claimSessionTool, registerSessionPopup, registerSessionTool, releaseSessionTool } from './session-tools.js';
 // Board access is injected at boot; the queue view has no view-core imports.
-let provider, pollNow, closeBuffer;
+let provider, pollNow;
 import { strToB64 } from './terminal-bytes.js';
 import { openTemplates } from './templates.js';
 import { formatInterval, formatNumber, onLocaleChange, t } from './i18n.js';
@@ -505,17 +514,31 @@ export function renderQueueUI() {
   });
 }
 
+function showQueuePanel() {
+  claimSessionTool('queue');
+  ctx.queueOpen = true;
+  $('queue-panel').hidden = false;
+  $('queue-btn').setAttribute('aria-pressed', 'true');
+  resetListForm();
+  renderQueueUI();
+  $('q-text').focus();
+}
+
+/* idempotent; `reason` is 'user', 'replace' (another tool took the slot)
+   or a leave — only the user's own close refocuses the terminal */
+export function closeQueuePanel(reason = 'user') {
+  const was = ctx.queueOpen;
+  ctx.queueOpen = false;
+  $('queue-panel').hidden = true;
+  $('queue-btn').setAttribute('aria-pressed', 'false');
+  hideTplPop();
+  releaseSessionTool('queue');
+  if (was && reason === 'user' && ctx.term) ctx.term.focus();
+}
+
 export function toggleQueuePanel(open) {
-  ctx.queueOpen = open !== undefined ? open : !ctx.queueOpen;
-  $('queue-panel').style.display = ctx.queueOpen ? 'flex' : 'none';
-  if (ctx.queueOpen) {
-    closeBuffer();
-    resetListForm();
-    renderQueueUI();
-    $('q-text').focus();
-  } else if (ctx.term) {
-    ctx.term.focus();
-  }
+  if (open !== undefined ? open : !ctx.queueOpen) showQueuePanel();
+  else closeQueuePanel('user');
 }
 
 /* ---------- the new-list form ---------- */
@@ -666,18 +689,25 @@ export function showTplPop(anchor, { insert, save = null }) {
   const manage = add('t-row', '<span class="t-name"></span>');
   manage.querySelector('.t-name').textContent = '◈ ' + t('queue.manageTemplates');
   manage.onclick = () => { hideTplPop(); openTemplates(anchor); };
-  const panel = $('queue-panel');
-  const a = anchor.getBoundingClientRect(), p = panel.getBoundingClientRect();
-  pop.style.left = Math.max(0, a.left - p.left) + 'px';
-  pop.style.top = (a.bottom - p.top + panel.scrollTop + 6) + 'px';
+  /* fixed to the viewport, under the button or above it near the bottom,
+     and pulled left so a button at the drawer's right edge keeps it whole */
+  pop.style.left = '0px'; pop.style.top = '0px';
   pop.style.display = 'block';
+  const gap = 8, a = anchor.getBoundingClientRect();
+  const w = pop.offsetWidth, h = pop.offsetHeight;
+  const below = a.bottom + 6 + h <= window.innerHeight - gap;
+  pop.style.left = Math.max(gap, Math.min(a.left, window.innerWidth - w - gap)) + 'px';
+  pop.style.top = (below ? a.bottom + 6 : Math.max(gap, a.top - 6 - h)) + 'px';
 }
 
 /* DOM wiring, run once at boot (app.js) so the module can be imported
    without a document. */
 export function initScheduler(deps) {
-  ({ provider, pollNow, closeBuffer } = deps);
+  ({ provider, pollNow } = deps);
+  registerSessionTool('queue', closeQueuePanel);
+  registerSessionPopup(hideTplPop);
   $('queue-btn').onclick = () => toggleQueuePanel();
+  $('queue-close').onclick = () => closeQueuePanel('user');
 
   fillFormOptions();
   onLocaleChange(() => { fillFormOptions(); renderQueueUI(); });
@@ -713,6 +743,9 @@ export function initScheduler(deps) {
   document.addEventListener('click', e => {
     if (!e.target.closest('#tpl-pop') && !e.target.closest('#q-tpl') && !e.target.closest('.qg-tpl')) hideTplPop();
   });
+  /* a fixed popover would drift from its button: scrolling the drawer, or a resize, closes it */
+  $('queue-body').addEventListener('scroll', hideTplPop);
+  window.addEventListener('resize', hideTplPop);
 
   $('q-add-btn').onclick = async () => {
     const card = provider.get(state.sessionId);

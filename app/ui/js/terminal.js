@@ -24,7 +24,7 @@
 import { $, ctx, duev, inv, state, uev } from './state.js';
 import { collapseHome, isComposingKeyEvent, isNotDirectoryError, newSessionColumn, newSessionPlan } from './pure.js';
 import { choiceDialog, confirmDangerDialog, confirmDialog, inlineRename, toast, promptDialog } from './dialogs.js';
-import { closeSession, editReminder, openBuffer, openProjectDefaults, panes, provider, renameTab, render, switchProject, activeProject } from './board.js';
+import { closeSession, editReminder, openBuffer, openProjectDefaults, panes, provider, renameTab, render, showBoard, switchProject, activeProject } from './board.js';
 import { backToBoard, openSession } from './layout.js';
 import { formatNumber, onLocaleChange, t } from './i18n.js';
 import { formatShortcut, registerShortcutAction } from './shortcuts.js';
@@ -159,11 +159,7 @@ export function showProjectCtx(e, pid) {
       /* nothing is removed unless every card's schedule was cancelled and
          persisted first (the toast explains a refusal) */
       if (!(await provider.removeProject(pid, { reminderClaims }))) return;
-      if (state.projectId === pid) {
-        state.projectId = provider.projects()[0].id;
-        state.view = 'board';
-        state.sessionId = null;
-      }
+      if (state.projectId === pid) showBoard(provider.projects()[0].id);
       toast(t('project.deleted', { name: p.name }));
       render();
     }

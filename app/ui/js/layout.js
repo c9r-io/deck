@@ -30,13 +30,16 @@
 // tmux mouse negotiation is enabled for applications. The outer client's
 // mouse-only mode requests are consumed with xterm's public parser so pointer
 // selection remains local; wheel ownership is decided from live pane state.
+// The workspace's right-hand tool slot (session-tools.js) closes at the START
+// of leaveSessionView, before any pane is disposed, so nothing refocuses a
+// dying terminal; focusing another pane in the same layout is not a leave.
 import { $, ctx, dotTitle, duev, inv, listen, setMemChip, state, store, uev } from './state.js';
 import { choiceDialog, confirmDialog, inlineRename, toast } from './dialogs.js';
 import { t } from './i18n.js';
-import { syncReminderButton, closeBuffer, markSessionSeen, panes, pollNow, provider, render, renderSidebar, updateSidebarSelection, activeProject } from './board.js';
+import { syncReminderButton, markSessionSeen, panes, pollNow, provider, render, renderSidebar, updateSidebarSelection, activeProject } from './board.js';
 import { SHELL_FG, acceptGhost, feedMirror, maybeRecordCommand, mountQuickBar, nextShellTitle, renderSuggest, resetSuggest, showLinkCtx, updateGhost } from './terminal.js';
 import { AGENT_HISTORY_VERTICAL_UP, collapseHome, isNotDirectoryError, MAX_DROP_BYTES, mcpErrorKey, newSessionColumn, startCommand, createTerminalResizeCoordinator, createTerminalWheelAccumulator, createTerminalWheelFrameScheduler, isComposingKeyEvent, isPlainShiftKeydown, scrollResultView, shouldRouteImeKeydownThroughInput, shQuote, terminalAgentComposerGeometry, terminalAgentHistoryUpRoute, terminalCellAt, terminalSelectionWheelRoute, terminalWheelLines } from './pure.js';
-import { toggleQueuePanel } from './scheduler.js';
+import { closeSessionTools } from './session-tools.js';
 import { cancelAllTerminalSelections, cancelTerminalSelection, copyTerminalSelection, hasTerminalSelection, terminalSelectionElsewhere, wireTerminalSelection } from './selection.js';
 import { getTerminalTheme, onThemeChange, syncThemeIntegrations } from './theme.js';
 import { b64ToU8, strToB64 } from './terminal-bytes.js';
@@ -588,12 +591,14 @@ export function wireTerminalInput(pane, term, host) {
 }
 
 /* ----- layout rendering & pane lifecycle ----- */
-function updateBufferOverlay() {
+function updateToolOverlay() {
   const workspace = $('session-workspace');
-  // The dock needs its 520 px drawer plus a useful terminal at the current
-  // font scale. The class changes only presentation; the existing terminal
+  // A docked tool needs its drawer (--session-tool-width, style.css) plus a
+  // useful terminal at the current font scale; below that every session tool
+  // floats over the panes. The class changes only presentation; the terminal
   // ResizeObserver fits every pane when its actual width changes.
-  workspace.classList.toggle('buffer-overlay', workspace.clientWidth < 520 + 480 * getFontScale());
+  const drawer = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--session-tool-width')) || 440;
+  workspace.classList.toggle('tool-overlay', workspace.clientWidth < drawer + 480 * getFontScale());
 }
 
 export function fitAll() {
@@ -958,7 +963,6 @@ export async function openSession(sid, opts = {}) {
   state.projectId = card.projectId;
   state.view = 'session';
   state.sessionId = sid;
-  toggleQueuePanel(false);
   render();
   const pane = createPane(card);
   ctx.layout = leafOf(sid);
@@ -979,11 +983,10 @@ export async function openSession(sid, opts = {}) {
 }
 
 export function leaveSessionView({ switchingSession = false, detach = true } = {}) {
-  closeBuffer();
+  closeSessionTools('leave');
   window.dispatchEvent(new CustomEvent('deck-session-leave', { detail: { switchingSession } }));
   cancelAllTerminalSelections('leave');
   resetSuggest(null);
-  toggleQueuePanel(false);
   const quickBar = $('quick-bar');
   if (quickBar && quickBar.closest('.spane')) $('terminal-host').appendChild(quickBar);
   panes.forEach(p => {
@@ -1076,7 +1079,7 @@ export function initLayout() {
 
   onFontScaleChange(scale => {
     panes.forEach(pane => { pane.term.options.fontSize = TERMINAL_BASE_FONT_SIZE * scale; });
-    updateBufferOverlay();
+    updateToolOverlay();
     fitAll();
   });
 
@@ -1085,7 +1088,7 @@ export function initLayout() {
     ctx.resizeTimer = setTimeout(fitAll, 80);
   }).observe(document.getElementById('terminal'));
 
-  new ResizeObserver(updateBufferOverlay).observe($('session-workspace'));
+  new ResizeObserver(updateToolOverlay).observe($('session-workspace'));
 
   $('split-right').onclick = e => { e.stopPropagation(); showSplitPicker('row'); };
 

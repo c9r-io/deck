@@ -18,7 +18,9 @@
 // a document-wide observer. Keyboard: Enter / Space / ↓ open, ↑↓ Home End
 // move, Enter / Space choose, Escape closes and returns focus. The menu is
 // position:fixed under (or, near the bottom, above) its button and closes
-// on any outside pointer, scroll or resize.
+// on any outside pointer, scroll or resize, and when a caller closes it
+// (`closeDropdownMenu`: the session tool slot does so on every tool switch
+// and session leave, so the menu never outlives the control it belongs to).
 import { $ } from './state.js';
 
 const wrappers = new WeakMap();   // select → { wrap, btn, text, sync }
@@ -41,6 +43,9 @@ function closeMenu(refocus = false) {
   btn.setAttribute('aria-expanded', 'false');
   if (refocus) btn.focus();
 }
+
+/* close without refocusing its button: the button may be leaving the page */
+export function closeDropdownMenu() { closeMenu(false); }
 
 function place(m, btn) {
   const r = btn.getBoundingClientRect();

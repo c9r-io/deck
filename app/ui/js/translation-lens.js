@@ -21,10 +21,16 @@
 //   excluded — never text that merely looks like an old result.
 // - Reading never pauses: a live selection inside the result only defers
 //   showing a newer result until the selection or its focus ends.
+// - The panel is the `translation` tool of the session's right-hand slot
+//   (session-tools.js): opening claims it (closing scheduled prompts or the
+//   scratchpad); the slot's close is closeTranslationLens, the full cleanup,
+//   and leaving the session closes it. Switching panes inside one session
+//   layout only retargets Live (`deck-pane-focused`).
 import { $, ctx, state, listen } from './state.js';
 import { t, onLocaleChange } from './i18n.js';
 import { toast } from './dialogs.js';
 import { registerShortcutAction } from './shortcuts.js';
+import { claimSessionTool, registerSessionTool, releaseSessionTool } from './session-tools.js';
 import { copyTerminalSelection, hasTerminalSelection } from './selection.js';
 import { TranslationLensModel, LiveCadence, translationShortcutAction } from './translation-lens-model.js';
 import { capability, translate, cancel, clipboardArm, clipboardDisarm,
@@ -249,19 +255,16 @@ async function refreshCapability() {
   render();
 }
 export function closeTranslationLens() {
+  releaseSessionTool('translation');
   if (!model.open) return;
   cadence.stop(); stopClipboard(); clearTimeout(retryTimer); retryTimer = null;
   model.close(); pump(); pointerHeld = false; render();
   unload().catch(() => {});
 }
-function syncOverlay() {
-  $('session-workspace').classList.toggle('translation-overlay',
-    $('session-workspace').clientWidth < 440 + 480);
-}
 function open(mode = 'live') {
   if (!enabled() || !backend.available || state.view !== 'session') return;
-  deps.closeBuffer(); model.show(mode); stamp('open');
-  syncOverlay(); enterMode(mode);
+  claimSessionTool('translation'); model.show(mode); stamp('open');
+  enterMode(mode);
 }
 async function selectedText() {
   const pane = focusedPane(); let text = null;
@@ -301,8 +304,9 @@ function tabKey(event) {
   $(`translation-tab-${MODES[next]}`).focus();
   selectMode(MODES[next]);
 }
-export function initTranslationLens({ panes, closeBuffer }) {
-  deps = { panes, closeBuffer };
+export function initTranslationLens({ panes }) {
+  deps = { panes };
+  registerSessionTool('translation', () => closeTranslationLens());
   $('translation-btn').onclick = () => { if (model.open) closeTranslationLens(); else open(); };
   $('translation-close').onclick = closeTranslationLens;
   for (const mode of MODES) $(`translation-tab-${mode}`).onclick = () => selectMode(mode);
@@ -337,8 +341,6 @@ export function initTranslationLens({ panes, closeBuffer }) {
     if (!model.retarget()) return; // a snapshot tab keeps its snapshot
     cadence.stop(); dropWork(); liveIntent(); render();
   });
-  window.addEventListener('deck-session-leave', closeTranslationLens);
-  window.addEventListener('deck-buffer-open', closeTranslationLens);
   window.addEventListener('deck-translation-disabled', closeTranslationLens);
   window.addEventListener('deck-translation-enabled-changed', refreshCapability);
   const focusChanged = focused => { appFocused = focused; if (focused) resumeFocus(); else interrupt(); };
@@ -351,10 +353,7 @@ export function initTranslationLens({ panes, closeBuffer }) {
     listen('tauri://blur', () => focusChanged(false)).catch(domBlur);
   } else domBlur();
   document.addEventListener('visibilitychange', () => { if (document.hidden) interrupt(); else resumeFocus(); });
-  new ResizeObserver(() => {
-    syncOverlay();
-    if (liveActive()) cadence.output();
-  }).observe($('session-workspace'));
+  new ResizeObserver(() => { if (liveActive()) cadence.output(); }).observe($('session-workspace'));
   onLocaleChange(render);
   refreshCapability(); // default OFF never verifies or loads a model
 }
