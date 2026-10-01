@@ -288,6 +288,122 @@ class ReleaseChannelTests(unittest.TestCase):
         (directory / "gate.yml").write_text("jobs:\n  gate:\n    steps:\n      - run: cargo test\n")
         with self.assertRaises(rc.ReleaseError):
             rc.assert_workflow_gates(path)
+        # a multi-job reusable gate counts only with the audit in an
+        # unconditional job and a summary `gate` job over every other job
+        split = (
+            "jobs:\n"
+            "  checks:\n"
+            "    steps:\n"
+            "      - run: cargo audit --file app/src-tauri/Cargo.lock\n"
+            "  rust:\n"
+            "    steps:\n"
+            "      - run: cargo test\n"
+            "  gate:\n"
+            "    needs: [checks, rust]\n"
+            "    if: always()\n"
+            "    steps:\n"
+            "      - env:\n"
+            "          NEEDS: ${{ toJSON(needs) }}\n"
+            "        run: python3 scripts/release_channels.py gate-results --needs \"$NEEDS\"\n"
+        )
+        (directory / "gate.yml").write_text(split)
+        rc.assert_workflow_gates(path)
+        for broken in (
+            split.replace("  checks:\n    steps:", "  checks:\n    if: github.event_name == 'push'\n    steps:"),
+            split.replace("    needs: [checks, rust]\n", "    needs: [rust]\n"),
+            split.replace("    if: always()\n", ""),
+            split.replace("    if: always()\n", "    if: success()\n"),
+            split.replace("gate-results", "assert-workflow-gates"),
+            split.replace("  gate:\n", "  summary:\n"),
+        ):
+            (directory / "gate.yml").write_text(broken)
+            with self.assertRaises(rc.ReleaseError, msg=broken):
+                rc.assert_workflow_gates(path)
+
+    def test_gate_results_pass_only_when_every_job_succeeded_on_one_commit(self) -> None:
+        commit = "a" * 40
+        job = lambda result="success", sha=commit: {"result": result, "outputs": {"commit": sha}}  # noqa: E731
+        needs = {"checks": job(), "rust": job(), "release": job(), "macos14-launch": job()}
+        self.assertEqual(rc.assert_gate_results(needs), commit)
+        self.assertEqual(rc.assert_gate_results(needs, commit), commit)
+        self.assertEqual(rc.assert_gate_results(needs, "main"), commit)
+        for name, broken in (
+            ("failure", {**needs, "rust": job("failure")}),
+            ("cancelled", {**needs, "release": job("cancelled")}),
+            ("skipped", {**needs, "macos14-launch": {"result": "skipped", "outputs": {}}}),
+            ("no result", {**needs, "checks": {"outputs": {"commit": commit}}}),
+            ("no commit", {**needs, "checks": {"result": "success", "outputs": {}}}),
+            ("short commit", {**needs, "checks": job(sha=commit[:12])}),
+            ("two commits", {**needs, "release": job(sha="b" * 40)}),
+            ("no jobs", {}),
+            ("not an object", []),
+        ):
+            with self.assertRaises(rc.ReleaseError, msg=name):
+                rc.assert_gate_results(broken)
+        with self.assertRaises(rc.ReleaseError):
+            rc.assert_gate_results(needs, "c" * 40)
+
+        def cli(*argv: str) -> int:
+            with patch.object(sys, "argv", ["release_channels.py", *argv]), \
+                    redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                return rc.cli()
+
+        self.assertEqual(cli("gate-results", "--needs", json.dumps(needs)), 0)
+        self.assertNotEqual(cli("gate-results", "--needs", json.dumps({**needs, "rust": job("cancelled")})), 0)
+        self.assertNotEqual(cli("gate-results", "--needs", "not json"), 0)
+
+    def test_repository_gate_splits_without_dropping_a_check(self) -> None:
+        gate = (ROOT / ".github/workflows/gate.yml").read_text()
+        jobs = rc.workflow_jobs(gate)
+        self.assertEqual(set(jobs), {"checks", "rust", "release", "macos14-launch", "gate"})
+        rc.assert_gate_summary(ROOT / ".github/workflows/gate.yml")
+        self.assertEqual(rc.job_needs(jobs["macos14-launch"]), {"release"})
+        for name in ("checks", "rust", "release"):
+            self.assertEqual(rc.job_needs(jobs[name]), set(), f"{name} starts at once")
+            self.assertNotRegex(jobs[name], r"(?m)^    if:", f"{name} always runs")
+        for name in ("checks", "rust", "release", "macos14-launch", "gate"):
+            self.assertIn("ref: ${{ inputs.ref }}", jobs[name], f"{name} checks out the gated ref")
+        for name in ("checks", "rust", "release", "macos14-launch"):
+            self.assertIn("commit: ${{ steps.commit.outputs.sha }}", jobs[name], name)
+            self.assertIn('echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"', jobs[name], name)
+        for command, owner in (
+            ("shasum -a 256 -c app/src-tauri/binaries/tmux-aarch64-apple-darwin.sha256", "checks"),
+            ("scripts/check-bergamot-patches", "checks"),
+            ("cargo fmt --all --check --manifest-path app/src-tauri/Cargo.toml", "checks"),
+            ("node --check", "checks"),
+            ("scripts/ui-tests", "checks"),
+            ("scripts/test-speech-bridge", "checks"),
+            ("scripts/test-notification-bridge", "checks"),
+            ("scripts/test-smoke-guard", "checks"),
+            ("node app/ui/js/check.mjs", "checks"),
+            ("python3 -m unittest scripts/test_release_tools.py", "checks"),
+            ("scripts/check-workflows", "checks"),
+            ("cargo audit --file app/src-tauri/Cargo.lock", "checks"),
+            ("cargo clippy --all-targets --locked --manifest-path tools/deck-tunnelctl/Cargo.toml -- -D warnings", "checks"),
+            ("cargo test --all-targets --locked --manifest-path tools/deck-tunnelctl/Cargo.toml", "checks"),
+            ("cargo audit --file tools/deck-tunnelctl/Cargo.lock", "checks"),
+            ("cargo clippy --workspace --all-targets --all-features --locked --manifest-path app/src-tauri/Cargo.toml -- -D warnings", "rust"),
+            ("cargo llvm-cov --workspace --all-targets --all-features --locked --fail-under-lines 75 --fail-under-functions 75", "rust"),
+            ("cargo build --locked -p deck-mcp-runner", "rust"),
+            ("python3 scripts/ce_parity.py --plan scripts/ce/plan-full-local-2.json --mode ci --app-evidence", "rust"),
+            ("--gate full_local_parity:ci", "rust"),
+            ("cargo build --release --locked --manifest-path app/src-tauri/Cargo.toml", "release"),
+            ("python3 scripts/check_local_translation_binary.py app/src-tauri/target/release/deck-app", "release"),
+            ("scripts/check-edr-binary app/src-tauri/target/release/deck-app", "release"),
+            ("scripts/package-compat-candidate", "release"),
+            ("scripts/test-compat-candidate", "macos14-launch"),
+        ):
+            self.assertEqual([name for name, body in jobs.items() if command in body], [owner], command)
+        # the coverage run is what writes the B-admission evidence: it gets
+        # every probe variable from the binding step, and parity reads that file
+        coverage = jobs["rust"][jobs["rust"].index("- name: cargo test + coverage"):]
+        coverage = coverage[:coverage.index("\n      - name:", 1)]
+        for variable in ("DECK_CE_EVIDENCE", "DECK_CE_PLAN_DIGEST", "DECK_CE_DECK_BUILD", "DECK_CE_PLAN_ID", "DECK_CE_CASE"):
+            self.assertIn(f"{variable}: ${{{{ steps.ce-probe.outputs.{variable} }}}}", coverage)
+        self.assertLess(jobs["rust"].index("--print-app-probe-env"), jobs["rust"].index("cargo llvm-cov"))
+        self.assertLess(jobs["rust"].index("cargo llvm-cov"), jobs["rust"].index("--mode ci --app-evidence"))
+        self.assertNotIn("--app-probe ", gate)
+        self.assertNotIn("GITHUB_SHA", gate)
 
     def test_repository_workflows_gate_every_app_build_on_the_audit(self) -> None:
         for path in (ROOT / ".github/workflows").glob("*.yml"):
@@ -298,9 +414,10 @@ class ReleaseChannelTests(unittest.TestCase):
     def test_gate_installs_prebuilt_checked_runners(self) -> None:
         gate = (ROOT / ".github/workflows/gate.yml").read_text()
         self.assertNotIn("cargo install", gate)
-        self.assertIn("tool: cargo-llvm-cov@0.8.5,cargo-audit@0.22.2", gate)
-        self.assertIn("checksum: true", gate)
-        self.assertIn("fallback: none", gate)
+        self.assertIn("tool: cargo-llvm-cov@0.8.5\n", gate)
+        self.assertIn("tool: cargo-audit@0.22.2\n", gate)
+        self.assertEqual(len(re.findall(r"(?m)^\s+checksum: true$", gate)), 2)
+        self.assertEqual(len(re.findall(r"(?m)^\s+fallback: none$", gate)), 2)
 
     def test_nightly_tags_are_ignored_by_stable_resolver(self) -> None:
         with self.assertRaises(rc.ReleaseError):

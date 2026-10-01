@@ -40,8 +40,17 @@ Lanes (plan names):
 - B-shell / B2-shell: the same runner, `/bin/zsh -lic` — the candidate
   Terminal-semantic invocation. Its records also carry `invocation` metadata
   (exit code, duration, output byte count; never the output).
-- B-admission (`--app-probe`, ci only): the deck-app test `ce1_probe_*`
-  records how the production `deck_exec` route admits a Full Local cwd.
+- B-admission (ci only): the deck-app test `ce1_probe_*` records how the
+  production `deck_exec` route admits a Full Local cwd. Either this script
+  runs that test itself (`--app-probe`, a separate `cargo test` build), or
+  the test already ran inside the caller's own test run and wrote its
+  evidence there: `--print-app-probe-env --app-evidence F` prints the
+  `DECK_CE_*` variables (KEY=VALUE lines) that make it write F and removes
+  any stale F; after that run, `--app-evidence F` checks that F is bound to
+  this plan, its digest, its single B-admission case and `--deck-build`
+  before it becomes `<out>.app.jsonl`. Missing, unbound or malformed
+  evidence makes the run incomplete (exit 1), never a pass; the verdict
+  stays scripts/ce_verdict.py's.
 
 Cleanup is evidence (`cleanup`): ci kills its server and removes its
 directory; designated kills only the sessions it created, removes its
@@ -51,6 +60,7 @@ server are the operator's to stop afterwards (`scripts/edr_runtime.py
 credentialed network destination is touched.
 
   scripts/ce_parity.py --plan scripts/ce/plan-full-local-2.json --out ci.jsonl --app-probe
+  scripts/ce_parity.py --plan scripts/ce/plan-full-local-2.json --out ci.jsonl --app-evidence app.jsonl --deck-build <sha>
   scripts/ce_parity.py --plan scripts/ce/plan-full-local-2.json --mode designated \\
       --smoke-socket deck-smoke-ce --runner <smoke bundle>/deck-mcp-runner --out d.jsonl
 
@@ -656,19 +666,76 @@ def run_designated(args, plan, digest, runner_binary: Path) -> tuple[list[dict],
     return records, complete
 
 
+def admission_case(plan: dict) -> str | None:
+    cases = [case["id"] for case in plan["cases"] if "B-admission" in case["lanes"]]
+    return cases[0] if len(cases) == 1 else None
+
+
+def app_probe_env(plan: dict, digest: str, deck_build: str, evidence: Path) -> dict[str, str]:
+    """What the deck-app test `ce1_probe_*` reads to write B-admission evidence."""
+    return {
+        "DECK_CE_EVIDENCE": str(evidence), "DECK_CE_PLAN_DIGEST": digest, "DECK_CE_DECK_BUILD": deck_build,
+        "DECK_CE_PLAN_ID": plan["id"], "DECK_CE_CASE": admission_case(plan) or "",
+    }
+
+
+def check_app_evidence(path: Path, plan: dict, digest: str, deck_build: str) -> tuple[list[dict] | None, str]:
+    """The B-admission evidence, or None and why it cannot be used. It must be
+    exactly the probe's run header, one observation of this plan's
+    B-admission case and a cleanup record, bound to this plan, digest and
+    build. Whether the observation passes is ce_verdict.py's decision."""
+    try:
+        records = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+    except FileNotFoundError:
+        return None, "missing (the probe test did not run with DECK_CE_EVIDENCE)"
+    except (OSError, ValueError) as error:
+        return None, f"unreadable ({type(error).__name__})"
+    if [record.get("kind") if isinstance(record, dict) else None for record in records] != ["run", "observation", "cleanup"]:
+        return None, "not a run header, one observation and a cleanup record"
+    run, observation, _ = records
+    expected = {"schema": EVIDENCE_SCHEMA, "plan": plan["id"], "plan_digest": digest, "evidence_env": "ci",
+                "lanes": ["B-admission"], "deck_build": deck_build}
+    unbound = sorted(key for key, value in expected.items() if run.get(key) != value)
+    if unbound:
+        return None, "bound to another " + ", ".join(unbound)
+    case = admission_case(plan)
+    if case is None or observation.get("case") != case or observation.get("lane") != "B-admission":
+        return None, "the observation is not this plan's B-admission case"
+    return records, ""
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
     parser.add_argument("--plan", required=True, type=Path, help="frozen plan (scripts/ce/plan-*.json)")
-    parser.add_argument("--out", required=True, help="evidence JSONL to write")
+    parser.add_argument("--out", help="evidence JSONL to write (required unless --print-app-probe-env)")
     parser.add_argument("--mode", choices=("ci", "designated"), default="ci")
     parser.add_argument("--runner", default=str(RUNNER), help="deck-mcp-runner binary (default: debug build)")
     parser.add_argument("--smoke-socket", help="designated: the isolated smoke Deck tmux socket label")
     parser.add_argument("--app-probe", action="store_true", help="ci: also record the deck_exec cwd admission (B-admission)")
+    parser.add_argument("--app-evidence", type=Path,
+                        help="ci: B-admission evidence the deck-app ce1 probe wrote during the caller's own test run")
+    parser.add_argument("--print-app-probe-env", action="store_true",
+                        help="print the DECK_CE_* variables that make the probe write --app-evidence, and exit")
     parser.add_argument("--deck-build", default="unknown", help="commit the evidence describes")
     args = parser.parse_args(argv)
 
     plan = json.loads(args.plan.read_text())
     digest = plan_digest(args.plan)
+    if admission_case(plan) is None and (args.app_probe or args.app_evidence):
+        print("the plan must name exactly one B-admission case", file=sys.stderr)
+        return 2
+    if args.print_app_probe_env:
+        if args.app_evidence is None:
+            print("--print-app-probe-env needs --app-evidence", file=sys.stderr)
+            return 2
+        # a file left from an earlier run can never stand in for this one
+        args.app_evidence.unlink(missing_ok=True)
+        for key, value in app_probe_env(plan, digest, args.deck_build, args.app_evidence.resolve()).items():
+            print(f"{key}={value}")
+        return 0
+    if args.out is None or (args.app_probe and args.app_evidence) or (args.mode != "ci" and (args.app_probe or args.app_evidence)):
+        print("--out is required; --app-probe and --app-evidence are ci-only alternatives", file=sys.stderr)
+        return 2
     # absolute: the pane starts in the disposable project directory
     runner_binary = Path(args.runner).resolve()
     for required in (TMUX, PROBE, runner_binary):
@@ -680,34 +747,46 @@ def main(argv: list[str] | None = None) -> int:
         print("bundled tmux does not match its pinned SHA-256", file=sys.stderr)
         return 2
 
+    started = time.monotonic()
     if args.mode == "ci":
         records, complete = run_ci(args, plan, digest, runner_binary)
     else:
         records, complete = run_designated(args, plan, digest, runner_binary)
+    print(f"lanes ({args.mode}): {time.monotonic() - started:.1f}s")
     with open(args.out, "w", encoding="utf-8") as handle:
         for record in records:
             handle.write(json.dumps(record, sort_keys=True) + "\n")
 
-    if args.app_probe and args.mode == "ci":
-        app_out = Path(str(args.out) + ".app.jsonl")
-        app_out.unlink(missing_ok=True)
-        admission = [case["id"] for case in plan["cases"] if "B-admission" in case["lanes"]]
-        if len(admission) != 1:
-            print("the plan must name exactly one B-admission case", file=sys.stderr)
-            return 2
+    app_out = Path(str(args.out) + ".app.jsonl")
+    app_out.unlink(missing_ok=True)
+    source = args.app_evidence
+    if args.app_probe:
+        started = time.monotonic()
+        source = Path(str(args.out) + ".probe.jsonl")
+        source.unlink(missing_ok=True)
+        # output passes through: a failing probe build or test stays visible
         result = subprocess.run(
             ["cargo", "test", "--locked", "--manifest-path", str(TAURI / "Cargo.toml"), "-p", "deck-app", "--bin", "deck-app",
              "ce1_probe_", "--", "--test-threads=1"],
-            env={**os.environ, "DECK_CE_EVIDENCE": str(app_out), "DECK_CE_PLAN_DIGEST": digest,
-                 "DECK_CE_DECK_BUILD": args.deck_build, "DECK_CE_PLAN_ID": plan["id"],
-                 "DECK_CE_CASE": admission[0]},
-            capture_output=True, text=True,
+            env={**os.environ, **app_probe_env(plan, digest, args.deck_build, source.resolve())},
+            stdout=sys.stderr,
         )
-        if result.returncode != 0 or not app_out.exists():
-            print("the deck-app ce1 probe did not record evidence", file=sys.stderr)
+        print(f"app probe (cargo test build + run): {time.monotonic() - started:.1f}s")
+        if result.returncode != 0:
+            print("the deck-app ce1 probe test failed", file=sys.stderr)
+            complete = False
+    if source is not None:
+        app_records, problem = check_app_evidence(source, plan, digest, args.deck_build)
+        if app_records is None:
+            print(f"app evidence {source}: {problem}", file=sys.stderr)
             complete = False
         else:
+            with open(app_out, "w", encoding="utf-8") as handle:
+                for record in app_records:
+                    handle.write(json.dumps(record, sort_keys=True) + "\n")
             print(f"app evidence: {app_out}")
+        if args.app_probe:
+            source.unlink(missing_ok=True)
     print(f"evidence: {args.out} ({'complete' if complete else 'INCOMPLETE'})")
     return 0 if complete else 1
 

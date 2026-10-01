@@ -157,17 +157,28 @@ to TD-4) plus the uncalibrated shells (anything but zsh).
 ## CI gate
 
 `.github/workflows/gate.yml` runs the real workload on every gate, not only
-the aggregator's tests, in three steps that each fail the job on their own
-exit code (no pipe, no `|| true`, no retry — a lane error is UNKNOWN and
-blocks):
+the aggregator's tests, in its `rust` job, in steps that each fail the job on
+their own exit code (no pipe, no `|| true`, no retry — a lane error is
+UNKNOWN and blocks):
 
-1. build `deck-mcp-runner`;
-2. `ce_parity.py --plan scripts/ce/plan-full-local-2.json --mode ci
-   --app-probe` — evidence generation; exits 1 unless every planned ci
-   observation was recorded and cleanup was confirmed;
-3. `ce_verdict.py … --gate full_local_parity:ci` — exits 0 only when the
+1. `ce_parity.py --print-app-probe-env --app-evidence F` binds the
+   B-admission probe to this run: it prints the `DECK_CE_*` variables (plan
+   id, digest, case, the checked-out commit, the file F) and removes any
+   stale F;
+2. the coverage step (`cargo llvm-cov`) gets exactly those variables, so its
+   ordinary run of `ce1_probe_*` writes F — the same production `deck_exec`
+   route, without the separately built second `cargo test` that
+   `--app-probe` costs;
+3. build `deck-mcp-runner`;
+4. `ce_parity.py --plan scripts/ce/plan-full-local-2.json --mode ci
+   --app-evidence F` — the real deterministic lanes; exits 1 unless every
+   planned ci observation was recorded, cleanup was confirmed, and F is
+   present and bound to this plan, digest, case and commit (only then does
+   it become `<out>.app.jsonl`);
+5. `ce_verdict.py … --gate full_local_parity:ci` — exits 0 only when the
    ci sub-status of `full_local_parity` passes and every ci run counter
-   (cleanup, friction, prompts, fallback, run errors) is 0.
+   (cleanup, friction, prompts, fallback, run errors) is 0. A missing
+   B-admission observation is `missing`, never a pass.
 
 The ci corpus is host-independent (synthetic tools and variables only), so it
 runs on any macOS arm64 runner with the bundled tmux. The designated cases

@@ -389,14 +389,71 @@ def assert_workflow_gates(path: Path) -> None:
 
 def job_runs_audit(body: str, workflows: Path) -> bool:
     """A job runs the audit itself, or calls a reusable workflow in the same
-    directory (`uses: ./.github/workflows/<file>.yml`) whose text does."""
+    directory (`uses: ./.github/workflows/<file>.yml`) that runs it in an
+    unconditional job and ends in a summary gate (`assert_gate_summary`).
+    The calling job then fails whenever any job of the called workflow does."""
     if CARGO_AUDIT in body:
         return True
     called = re.search(r"^    uses:\s*\./\.github/workflows/([A-Za-z0-9_.-]+\.yml)\s*$", body, re.M)
     if not called:
         return False
     target = workflows / called.group(1)
-    return target.is_file() and CARGO_AUDIT in target.read_text()
+    if not target.is_file():
+        return False
+    jobs = workflow_jobs(target.read_text())
+    if len(jobs) > 1:
+        assert_gate_summary(target)
+    return any(CARGO_AUDIT in job and not re.search(r"^    if:", job, re.M) for job in jobs.values())
+
+
+GATE_RESULTS = "python3 scripts/release_channels.py gate-results"
+
+
+def assert_gate_summary(path: Path) -> None:
+    """A multi-job gate ends in ONE job named `gate` that needs every other
+    job, runs even when they fail or are cancelled (`if: always()`), and
+    decides through `gate-results`: success only when every upstream job
+    succeeded on the same checked-out commit."""
+    jobs = workflow_jobs(path.read_text())
+    summary = jobs.get("gate")
+    if summary is None:
+        raise ReleaseError(f"{path.name}: a multi-job gate needs a final `gate` job")
+    if job_needs(summary) != set(jobs) - {"gate"}:
+        raise ReleaseError(f"{path.name}: the `gate` job must need every other job")
+    if not re.search(r"^    if: always\(\)\s*$", summary, re.M):
+        raise ReleaseError(f"{path.name}: the `gate` job must run when an upstream job fails")
+    if GATE_RESULTS not in summary or "toJSON(needs)" not in summary:
+        raise ReleaseError(f"{path.name}: the `gate` job must decide through gate-results over toJSON(needs)")
+
+
+def assert_gate_results(needs: object, ref: str = "") -> str:
+    """The summary gate's decision over `toJSON(needs)`: every upstream job
+    succeeded (failure, cancelled and skipped all fail) and every one
+    reported the same full commit it checked out — equal to `ref` when the
+    caller pinned a full SHA. Returns that commit."""
+    if not isinstance(needs, dict) or not needs:
+        raise ReleaseError("the gate saw no upstream jobs")
+    problems = []
+    commits = {}
+    for name, job in sorted(needs.items()):
+        result = job.get("result") if isinstance(job, dict) else None
+        if result != "success":
+            problems.append(f"{name}: {result}")
+            continue
+        outputs = job.get("outputs") if isinstance(job.get("outputs"), dict) else {}
+        commit = outputs.get("commit")
+        if not isinstance(commit, str) or not re.fullmatch(r"[0-9a-f]{40}", commit):
+            problems.append(f"{name}: no checked-out commit")
+        else:
+            commits[name] = commit
+    distinct = set(commits.values())
+    if len(distinct) > 1:
+        problems.append("jobs checked out different commits: " + ", ".join(f"{k}={v[:12]}" for k, v in sorted(commits.items())))
+    if re.fullmatch(r"[0-9a-f]{40}", ref) and distinct and distinct != {ref}:
+        problems.append(f"jobs did not check out the requested {ref[:12]}")
+    if problems:
+        raise ReleaseError("gate: " + "; ".join(problems))
+    return distinct.pop()
 
 
 def cli() -> int:
@@ -431,6 +488,9 @@ def cli() -> int:
     no_build.add_argument("path", type=Path)
     gates = sub.add_parser("assert-workflow-gates")
     gates.add_argument("paths", type=Path, nargs="+")
+    gate_results = sub.add_parser("gate-results")
+    gate_results.add_argument("--needs", required=True, help="toJSON(needs) of the summary gate job")
+    gate_results.add_argument("--ref", default="", help="the ref the gate was asked to check")
     provenance = sub.add_parser("provenance")
     provenance.add_argument("--dir", type=Path, required=True)
     provenance.add_argument("--dmg", required=True)
@@ -480,6 +540,12 @@ def cli() -> int:
         elif args.command == "assert-workflow-gates":
             for path in args.paths:
                 assert_workflow_gates(path)
+        elif args.command == "gate-results":
+            try:
+                needs = json.loads(args.needs)
+            except ValueError:
+                raise ReleaseError("gate: upstream job results are not JSON") from None
+            print(f"gate: every upstream job succeeded on {assert_gate_results(needs, args.ref)}")
         elif args.command == "provenance":
             data = create_provenance(
                 args.dir, args.dmg, args.version, args.tag, args.commit,

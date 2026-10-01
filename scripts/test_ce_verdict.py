@@ -1,6 +1,8 @@
 """Closed-contract tests for scripts/ce_verdict.py (CE1 certification aggregator)."""
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import sys
 import tempfile
@@ -8,6 +10,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import ce_parity  # noqa: E402
 import ce_verdict  # noqa: E402
 
 REPOSITORY = Path(__file__).resolve().parent.parent
@@ -331,6 +334,95 @@ class FrozenPlanTests(unittest.TestCase):
             mandatory = [item for item in plan["cases"] if item["mandatory"] and item["evidence_env"] == env]
             self.assertGreaterEqual(len(mandatory), 20)
         self.assertEqual(sum(1 for item in plan["cases"] if "B-admission" in item["lanes"]), 1)
+
+
+
+class AppEvidenceBindingTests(unittest.TestCase):
+    """ce_parity.py --app-evidence: the B-admission evidence the deck-app
+    ce1 probe wrote inside the gate's own coverage run is used only when it
+    is bound to this plan, digest, case and build."""
+
+    BUILD = "0123456789abcdef0123456789abcdef01234567"
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.root = Path(self.dir.name)
+        self.plan = json.loads(FROZEN_PLAN_V2.read_text())
+        self.digest = ce_parity.plan_digest(FROZEN_PLAN_V2)
+        self.path = self.root / "app.jsonl"
+
+    def tearDown(self):
+        self.dir.cleanup()
+
+    def write(self, **changes):
+        # the three records ce1_probe_full_local_exec_cwd_outside_the_project_root writes
+        run = {"kind": "run", "schema": "deck-ce-evidence/1", "plan": self.plan["id"], "plan_digest": self.digest,
+               "evidence_env": "ci", "lanes": ["B-admission"], "deck_build": self.BUILD,
+               "runner_build": "fake-runner", "started_at_ms": 1}
+        observation = {"kind": "observation", "case": "FL2-HOST-cwd-outside-project", "lane": "B-admission",
+                       "observation": {"kind": "cwd-admission", "capable": True, "detail": "admitted"}}
+        cleanup = {"kind": "cleanup", "tmux_server_gone": True, "pane_processes_gone": True,
+                   "listeners_closed": True, "work_dir_removed": True}
+        run.update(changes.pop("run", {}))
+        observation.update(changes.pop("observation", {}))
+        records = changes.pop("records", [run, observation, cleanup])
+        self.path.write_text("".join(json.dumps(record) + "\n" for record in records))
+
+    def check(self, build=BUILD):
+        return ce_parity.check_app_evidence(self.path, self.plan, self.digest, build)
+
+    def test_bound_probe_evidence_is_accepted_and_reaches_the_verdict(self):
+        self.write()
+        records, problem = self.check()
+        self.assertEqual(problem, "")
+        self.assertEqual([record["kind"] for record in records], ["run", "observation", "cleanup"])
+        plan, digest = ce_verdict.load_plan(FROZEN_PLAN_V2)
+        runs = ce_verdict.load_evidence([self.path], digest)
+        self.assertEqual(runs[0]["header"]["lanes"], ["B-admission"])
+
+    def test_missing_unbound_or_malformed_evidence_is_refused(self):
+        self.assertIsNone(self.check()[0], "a probe that never ran")
+        for changes, build in (
+            ({"run": {"plan_digest": "sha256:" + "0" * 64}}, self.BUILD),
+            ({"run": {"plan": "ce-full-local-1"}}, self.BUILD),
+            ({"run": {"deck_build": "unknown"}}, self.BUILD),
+            ({}, "fedcba9876543210fedcba9876543210fedcba98"),
+            ({"run": {"lanes": ["B-admission", "B-direct"]}}, self.BUILD),
+            ({"run": {"evidence_env": "designated"}}, self.BUILD),
+            ({"observation": {"case": "FL2-HOST-path-value"}}, self.BUILD),
+            ({"observation": {"lane": "B-direct"}}, self.BUILD),
+            ({"records": [{"kind": "run"}]}, self.BUILD),
+            ({"records": []}, self.BUILD),
+        ):
+            self.write(**changes)
+            self.assertIsNone(self.check(build)[0], f"{changes} {build}")
+        self.path.write_text("{not json\n")
+        self.assertIsNone(self.check()[0])
+
+    def test_print_app_probe_env_names_the_probe_inputs_and_removes_stale_evidence(self):
+        self.write()
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            code = ce_parity.main(["--plan", str(FROZEN_PLAN_V2), "--app-evidence", str(self.path),
+                                   "--deck-build", self.BUILD, "--print-app-probe-env"])
+        self.assertEqual(code, 0)
+        self.assertFalse(self.path.exists(), "a stale file never stands in for this run")
+        values = dict(line.split("=", 1) for line in buffer.getvalue().splitlines())
+        self.assertEqual(values, {
+            "DECK_CE_EVIDENCE": str(self.path.resolve()), "DECK_CE_PLAN_DIGEST": self.digest,
+            "DECK_CE_DECK_BUILD": self.BUILD, "DECK_CE_PLAN_ID": self.plan["id"],
+            "DECK_CE_CASE": "FL2-HOST-cwd-outside-project",
+        })
+
+    def test_app_evidence_options_are_ci_only_alternatives(self):
+        for argv in (
+            ["--out", str(self.root / "o.jsonl"), "--app-probe", "--app-evidence", str(self.path)],
+            ["--out", str(self.root / "o.jsonl"), "--mode", "designated", "--app-evidence", str(self.path)],
+            ["--app-evidence", str(self.path)],
+            ["--print-app-probe-env"],
+        ):
+            with contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(ce_parity.main(["--plan", str(FROZEN_PLAN_V2), *argv]), 2, argv)
 
 
 if __name__ == "__main__":

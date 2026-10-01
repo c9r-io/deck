@@ -47,12 +47,13 @@ fn build_sidecars() {
         } else {
             target_dir.to_string()
         };
+        let started = std::time::Instant::now();
         let mut command = std::process::Command::new(&cargo);
         command.arg("build");
         if release {
             command.arg("--release");
         }
-        let status = command
+        let output = command
             .args([
                 "--locked",
                 "--manifest-path",
@@ -68,9 +69,21 @@ fn build_sidecars() {
             .env_remove("RUSTFLAGS")
             .env_remove("CARGO_ENCODED_RUSTFLAGS")
             .env_remove("RUSTC_WORKSPACE_WRAPPER")
-            .status()
+            .output()
             .unwrap_or_else(|_| panic!("failed to run cargo for {package}"));
-        assert!(status.success(), "{package} build failed");
+        // passed through, so `cargo -vv` and a failure still show the nested build
+        let log = String::from_utf8_lossy(&output.stderr);
+        eprint!("{log}");
+        assert!(output.status.success(), "{package} build failed");
+        let compiled = log
+            .lines()
+            .filter(|line| line.trim_start().starts_with("Compiling "))
+            .count();
+        timing(
+            &format!("sidecar {package}"),
+            started,
+            &format!("cargo build ran, {compiled} crates compiled ({target_dir})"),
+        );
         let built = format!("{target_dir}/{triple}/{profile}/{binary}");
         let dest = format!("binaries/{binary}-{triple}");
         std::fs::copy(&built, &dest).unwrap_or_else(|_| panic!("failed to place {binary} sidecar"));
@@ -107,6 +120,7 @@ fn stage_frontend() {
             }
         }
     }
+    let started = std::time::Instant::now();
     let release = std::env::var("PROFILE").as_deref() == Ok("release");
     let dist = std::path::Path::new("ui-dist");
     let _ = std::fs::remove_dir_all(dist);
@@ -115,6 +129,7 @@ fn stage_frontend() {
         dist,
         if release { Some("test") } else { None },
     );
+    timing("frontend staging", started, "ui-dist staged from scratch");
 }
 
 // Swift is compiled and statically linked at build time, never spawned by Deck.
@@ -138,6 +153,7 @@ fn build_native_bridges() {
     } else {
         "x86_64"
     };
+    let started = std::time::Instant::now();
     let object = out.join("NativeBridges.o");
     let mut compiler = std::process::Command::new("xcrun");
     compiler.arg("swiftc");
@@ -178,6 +194,11 @@ fn build_native_bridges() {
         .status()
         .expect("failed to archive the native bridges");
     assert!(status.success(), "failed to archive the native bridges");
+    timing(
+        "native bridges",
+        started,
+        "swiftc compiled (per OUT_DIR, not shared)",
+    );
     println!("cargo:rustc-link-search=native={}", out.display());
     println!("cargo:rustc-link-lib=static=deck_native");
     let compiler = std::process::Command::new("xcrun")
@@ -216,44 +237,150 @@ fn build_native_bridges() {
 // Bergamot is repository-owned C++ source. CMake only compiles local inputs;
 // it must never fetch source or a model. The resulting archives are merged
 // into one static archive so Deck ships no executable translation sidecar.
+//
+// The CMake build directory is SHARED by every cargo context of this checkout
+// (check/clippy, test, `cargo llvm-cov`, release) instead of living in each
+// context's OUT_DIR: the C++ compile does not depend on the cargo profile —
+// it is always CMake `Release` with the arguments below, and nothing cargo or
+// cargo-llvm-cov sets for a build script is read by CMake or this tree (see
+// `BERGAMOT_ENV`). One directory per configuration identity, under
+// `target/native/`: the configure arguments, the target arch, the resolved
+// compiler, SDK and CMake, and every environment variable CMake would bake in
+// at configure time. A different identity gets a different directory and
+// never inherits objects from another. Within one directory make's own
+// dependency tracking (including the system and Homebrew headers it
+// depfiles) decides what is stale, so an edit to `vendor/bergamot` or the
+// bridge recompiles exactly the affected objects. A lock serializes
+// concurrent cargo processes on the same directory. The merged archive is
+// still produced per OUT_DIR, so each context links its own copy.
+const BERGAMOT_ENV: [&str; 17] = [
+    "CMAKE",
+    "CC",
+    "CXX",
+    "CFLAGS",
+    "CXXFLAGS",
+    "CPPFLAGS",
+    "LDFLAGS",
+    "SDKROOT",
+    "MACOSX_DEPLOYMENT_TARGET",
+    "DEVELOPER_DIR",
+    "CMAKE_GENERATOR",
+    "CMAKE_TOOLCHAIN_FILE",
+    // read by clang itself on every compile
+    "CPATH",
+    "C_INCLUDE_PATH",
+    "CPLUS_INCLUDE_PATH",
+    "LIBRARY_PATH",
+    "CCC_OVERRIDE_OPTIONS",
+];
+
+fn tool_output(program: &str, args: &[&str]) -> String {
+    std::process::Command::new(program)
+        .args(args)
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
+        .unwrap_or_else(|| "unavailable".into())
+}
+
 fn build_bergamot() {
     println!("cargo:rerun-if-changed=vendor/bergamot");
     println!("cargo:rerun-if-changed=native/BergamotBridge.cpp");
-    println!("cargo:rerun-if-env-changed=CMAKE");
+    for name in BERGAMOT_ENV {
+        println!("cargo:rerun-if-env-changed={name}");
+    }
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("macos") {
         return;
     }
     let out = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
-    let build = out.join("bergamot-build");
     let arch = match std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() {
         Ok("aarch64") => ("arm64", "armv8-a"),
         Ok("x86_64") => ("x86_64", "core2"),
         other => panic!("unsupported Bergamot target arch: {other:?}"),
     };
     let cmake = std::env::var("CMAKE").unwrap_or_else(|_| "cmake".into());
-    let status = std::process::Command::new(&cmake)
-        .args(["-S", "vendor/bergamot", "-B"])
-        .arg(&build)
-        .args([
-            "-DCMAKE_BUILD_TYPE=Release",
-            "-DCMAKE_POLICY_VERSION_MINIMUM=3.5",
-            "-DCMAKE_OSX_DEPLOYMENT_TARGET=11.0",
-            "-DUSE_STATIC_LIBS=ON",
-            "-DCOMPILE_CPU=ON",
-            "-DCOMPILE_CUDA=OFF",
-        ])
-        .arg(format!("-DCMAKE_OSX_ARCHITECTURES={}", arch.0))
-        .arg(format!("-DBUILD_ARCH={}", arch.1))
-        .status()
-        .expect("CMake is required to build vendored Bergamot");
-    assert!(status.success(), "Bergamot configure failed");
-    let status = std::process::Command::new(&cmake)
+    let configure = [
+        "-DCMAKE_BUILD_TYPE=Release".to_string(),
+        "-DCMAKE_POLICY_VERSION_MINIMUM=3.5".into(),
+        "-DCMAKE_OSX_DEPLOYMENT_TARGET=11.0".into(),
+        "-DUSE_STATIC_LIBS=ON".into(),
+        "-DCOMPILE_CPU=ON".into(),
+        "-DCOMPILE_CUDA=OFF".into(),
+        format!("-DCMAKE_OSX_ARCHITECTURES={}", arch.0),
+        format!("-DBUILD_ARCH={}", arch.1),
+    ];
+    let mut identity = format!("deck-bergamot-build/1\nconfigure {}\n", configure.join(" "));
+    for name in BERGAMOT_ENV {
+        identity += &format!("env {name}={:?}\n", std::env::var_os(name));
+    }
+    identity += &format!("cmake {}\n", tool_output(&cmake, &["--version"]));
+    for (label, args) in [
+        ("c++", &["--find", "c++"][..]),
+        ("clang++", &["clang++", "--version"][..]),
+        ("sdk", &["--show-sdk-path"][..]),
+        ("sdk-version", &["--show-sdk-version"][..]),
+    ] {
+        identity += &format!("{label} {}\n", tool_output("xcrun", args));
+    }
+    let key = {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        identity.hash(&mut hasher);
+        format!("{:016x}", hasher.finish())
+    };
+    let root = std::path::Path::new("target/native");
+    std::fs::create_dir_all(root).expect("create the native build directory");
+    let lock = std::fs::File::create(root.join(format!("bergamot-{key}.lock")))
+        .expect("create the Bergamot build lock");
+    lock.lock().expect("lock the Bergamot build directory");
+    let build = std::env::current_dir()
+        .expect("build script directory")
+        .join(root)
+        .join(format!("bergamot-{key}"));
+    // The identity is recorded in full: a directory whose record differs (a
+    // key collision, an interrupted configure) is discarded, never reused.
+    let record = build.join("deck-build-identity.txt");
+    let started = std::time::Instant::now();
+    let configured = std::fs::read_to_string(&record).ok().as_deref() == Some(identity.as_str());
+    if !configured {
+        let _ = std::fs::remove_dir_all(&build);
+        let status = std::process::Command::new(&cmake)
+            .args(["-S", "vendor/bergamot", "-B"])
+            .arg(&build)
+            .args(&configure)
+            .status()
+            .expect("CMake is required to build vendored Bergamot");
+        assert!(status.success(), "Bergamot configure failed");
+        std::fs::write(&record, &identity).expect("record the Bergamot build identity");
+    }
+    let configure_time = started.elapsed();
+    let started = std::time::Instant::now();
+    let output = std::process::Command::new(&cmake)
         .args(["--build"])
         .arg(&build)
         .args(["--target", "deck_bergamot_bridge", "--parallel", "8"])
-        .status()
+        .output()
         .expect("failed to run Bergamot build");
-    assert!(status.success(), "Bergamot static build failed");
+    let log = String::from_utf8_lossy(&output.stdout);
+    print!("{log}");
+    eprint!("{}", String::from_utf8_lossy(&output.stderr));
+    assert!(output.status.success(), "Bergamot static build failed");
+    // make prints one "Building C/CXX object" line per object it compiles;
+    // zero means the shared directory was already up to date.
+    let compiled = log
+        .lines()
+        .filter(|line| line.contains("Building C"))
+        .count();
+    timing(
+        "bergamot",
+        started,
+        &format!(
+            "{} (configure {:.1}s), make ran, {compiled} objects compiled in target/native/bergamot-{key}",
+            if configured { "configured directory reused" } else { "fresh configure" },
+            configure_time.as_secs_f64()
+        ),
+    );
     fn archives(dir: &std::path::Path, found: &mut Vec<std::path::PathBuf>) {
         for entry in std::fs::read_dir(dir).expect("read Bergamot build directory") {
             let path = entry.expect("Bergamot build entry").path();
@@ -285,6 +412,37 @@ fn build_bergamot() {
     println!("cargo:rustc-link-lib=iconv");
     println!("cargo:rustc-link-lib=pcre2-8");
     println!("cargo:rustc-link-lib=c++");
+}
+
+/// One line per build-script stage in the file named by `DECK_BUILD_TIMINGS`
+/// (CI sets it; unset, nothing is written): the cargo context, the stage's
+/// wall time and what it actually did. Running a build command is reported
+/// apart from how much it compiled — make or cargo finding everything up to
+/// date is not a rebuild. Best effort: a write failure never fails the build.
+fn timing(stage: &str, started: std::time::Instant, detail: &str) {
+    use std::io::Write;
+    let Some(path) = std::env::var_os("DECK_BUILD_TIMINGS") else {
+        return;
+    };
+    let profile = std::env::var("PROFILE").unwrap_or_default();
+    let context = if std::env::var_os("CARGO_LLVM_COV").is_some() {
+        "coverage"
+    } else if std::env::var_os("RUSTC_WORKSPACE_WRAPPER").is_some() {
+        "lint"
+    } else {
+        "build"
+    };
+    let line = format!(
+        "build.rs [{profile}/{context}] {stage}: {:.1}s, {detail}\n",
+        started.elapsed().as_secs_f64()
+    );
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = file.write_all(line.as_bytes());
+    }
 }
 
 fn main() {

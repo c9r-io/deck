@@ -5,6 +5,21 @@ name: gate
 # any build. A step added here guards all three. scripts/release_channels.py
 # (`assert_workflow_gates`) follows this call when it checks that every app
 # build depends on a job running the RustSec audit.
+#
+# Three independent work groups on their own runners and checkouts (no two
+# builds share a source tree), then ONE summary job named `gate`:
+# - checks: formatting, JS, Swift bridge helpers, release tooling, workflow
+#   lint, both RustSec audits and the Tunnel Helper — none of it waits for
+#   an app compile;
+# - rust: clippy, tests with coverage (the Full Local B-admission probe runs
+#   inside that same test run) and the Full Local parity workload;
+# - release: the release executable checks and the compatibility candidate
+#   that macos14-launch starts on macOS 14.
+# Every job records the commit it actually checked out; `gate` succeeds only
+# when every job succeeded on that same commit (scripts/release_channels.py
+# `gate-results`), and runs even when one failed or was cancelled.
+# Wall clock is the slowest group, not the sum; runner time is the sum, and
+# the rust and release groups each still build their own app once.
 
 on:
   workflow_call:
@@ -16,20 +31,23 @@ on:
         default: ''
 
 jobs:
-  gate:
-    # arm64 runner: the committed tmux sidecar the contract tests drive is
-    # an aarch64 binary
+  checks:
     runs-on: macos-26
     permissions:
       contents: read
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.4.1.app/Contents/Developer
       DECK_REQUIRE_MODERN_SPEECH: "1"
+    outputs:
+      commit: ${{ steps.commit.outputs.sha }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ inputs.ref }}
           persist-credentials: false
+      - name: Record the checked-out commit
+        id: commit
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
@@ -38,69 +56,29 @@ jobs:
           # keep in step with rust-toolchain.toml at the repository root
           toolchain: 1.97.1
           components: clippy, rustfmt
-      # prebuilt binaries at exact versions, each checked against the SHA-256
-      # in the action's manifest at this commit; `fallback: none` refuses to
-      # compile from source or use an unchecked installer instead. (A cold
-      # source build of both took ~5 min of every gate run.)
-      - name: Install pinned coverage and audit runners
+      # prebuilt binary at an exact version, checked against the SHA-256 in
+      # the action's manifest at this commit; `fallback: none` refuses to
+      # compile from source or use an unchecked installer instead.
+      - name: Install pinned audit runner
         uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172 # v2.87.20
         with:
-          tool: cargo-llvm-cov@0.8.5,cargo-audit@0.22.2
+          tool: cargo-audit@0.22.2
           checksum: true
           fallback: none
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
-          workspaces: |
-            app/src-tauri
-            tools/deck-tunnelctl
+          workspaces: tools/deck-tunnelctl
 
       # the bundled tmux every deck session descends from must be the pinned
-      # build; shell check first so it reports even when compilation fails
-      # (tests/tmux_contract.rs asserts the same pin from Rust)
+      # build (tests/tmux_contract.rs asserts the same pin from Rust)
       - name: Bundled tmux matches its committed SHA-256
         run: shasum -a 256 -c app/src-tauri/binaries/tmux-aarch64-apple-darwin.sha256
 
       - name: Vendored Bergamot compatibility patch matches source
         run: scripts/check-bergamot-patches
 
-      # one workspace (app/src-tauri + its status-helper member): fmt --check,
-      # clippy -D warnings, tests with coverage — each once
       - name: cargo fmt
         run: cargo fmt --all --check --manifest-path app/src-tauri/Cargo.toml
-
-      - name: cargo clippy -D warnings
-        run: cargo clippy --workspace --all-targets --all-features --locked --manifest-path app/src-tauri/Cargo.toml -- -D warnings
-
-      # Parallel test threads, adopted on CI measurement (2026-09-25,
-      # macos-15 runner, this exact step). Parallel: 20 runs, 20 green,
-      # min/median/max 169/204/285 s. Serial controls: main before FR-5,
-      # median 375 s (5 runs); the same code with --test-threads=1, median
-      # 359 s (5 runs). Saving ~156-172 s, 43-46 %. The suite is
-      # parallel-safe since FR-5 (TZ guard + lock, per-thread storage
-      # notices, unique tmux/runner names, polled waits).
-      # Rollback rule: any parallel-related red on the production gate
-      # restores --test-threads=1 at once; no second attempt.
-      - name: cargo test + coverage (unit, storage/scheduler recovery, log privacy, tmux contract, status helper)
-        run: cargo llvm-cov --workspace --all-targets --all-features --locked --fail-under-lines 75 --fail-under-functions 75 --manifest-path app/src-tauri/Cargo.toml
-
-      - name: Release executable linkage and EDR vocabulary
-        run: |
-          cargo build --release --locked --manifest-path app/src-tauri/Cargo.toml
-          python3 scripts/check_local_translation_binary.py app/src-tauri/target/release/deck-app
-          scripts/check-edr-binary app/src-tauri/target/release/deck-app
-
-      # A non-release carrier for the older-runtime launch check below. This
-      # is a release-profile executable in a minimal ad-hoc-signed app bundle;
-      # no updater artifact, release feed, tag, or production signing is used.
-      - name: Package compatibility candidate
-        run: scripts/package-compat-candidate
-      - name: Transfer compatibility candidate within this gate
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: deck-compat-candidate
-          path: app/src-tauri/target/deck-compat-candidate.tar.gz
-          if-no-files-found: error
-          retention-days: 1
 
       # no-build frontend, three gates:
       # 1. real syntax check of every module (node --check)
@@ -129,28 +107,13 @@ jobs:
       - name: Release tooling fixtures
         run: python3 -m unittest scripts/test_release_tools.py scripts/test_edr_runtime.py scripts/test_signal_candidate.py scripts/test_codex_title_probe.py scripts/test_ce_verdict.py
 
-      # Full Local parity (Controlled Execution, docs/ce-calibration.md): the
-      # REAL workload on the frozen plan v2, not only the aggregator's unit
-      # tests. Deterministic lanes only (synthetic HOME, tools and variables
-      # on a disposable bundled-tmux server); the designated real-user lanes
-      # are a separate certification. Three steps, each failing on its own
-      # exit code: no pipe, no retry — a lane error is UNKNOWN and blocks.
-      - name: Build the MCP runner for the Full Local parity workload
-        run: cargo build --locked -p deck-mcp-runner --manifest-path app/src-tauri/Cargo.toml
-      - name: Full Local parity evidence (plan v2, deterministic lanes)
-        run: python3 scripts/ce_parity.py --plan scripts/ce/plan-full-local-2.json --mode ci --app-probe --deck-build "$GITHUB_SHA" --out "$RUNNER_TEMP/ce-full-local.jsonl"
-      - name: Full Local parity verdict gate (full_local_parity:ci)
-        run: python3 scripts/ce_verdict.py --plan scripts/ce/plan-full-local-2.json --evidence "$RUNNER_TEMP/ce-full-local.jsonl" --evidence "$RUNNER_TEMP/ce-full-local.jsonl.app.jsonl" --out "$RUNNER_TEMP/ce-full-local-verdict.json" --gate full_local_parity:ci
-
       - name: Workflow syntax and expression validation
         run: scripts/check-workflows
 
-      # RustSec advisories against the committed lockfile. Last, so an
-      # advisory published upstream never masks a real test failure — it
-      # fails the build on its own line. Default severity: known
-      # vulnerabilities fail; informational notices (unmaintained, unsound)
-      # are reported without failing, so a transitive crate going unmaintained
-      # does not block every PR.
+      # RustSec advisories against the committed lockfile, on its own line.
+      # Default severity: known vulnerabilities fail; informational notices
+      # (unmaintained, unsound) are reported without failing, so a
+      # transitive crate going unmaintained does not block every PR.
       - name: cargo audit (RustSec advisories)
         run: cargo audit --file app/src-tauri/Cargo.lock
 
@@ -166,9 +129,200 @@ jobs:
       - name: cargo audit (Tunnel Helper lockfile)
         run: cargo audit --file tools/deck-tunnelctl/Cargo.lock
 
+  rust:
+    # arm64 runner: the committed tmux sidecar the contract tests drive is
+    # an aarch64 binary
+    runs-on: macos-26
+    permissions:
+      contents: read
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.4.1.app/Contents/Developer
+      DECK_REQUIRE_MODERN_SPEECH: "1"
+    outputs:
+      commit: ${{ steps.commit.outputs.sha }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      # DECK_BUILD_TIMINGS: build.rs appends one line per stage (native
+      # bridges, Bergamot, each sidecar, frontend) — summarized at the end
+      - name: Record the checked-out commit
+        id: commit
+        run: |
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "DECK_GATE_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+          echo "DECK_BUILD_TIMINGS=$RUNNER_TEMP/deck-build-timings.txt" >> "$GITHUB_ENV"
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+        with:
+          # keep in step with rust-toolchain.toml at the repository root
+          toolchain: 1.97.1
+          components: clippy, rustfmt
+      # prebuilt binary at an exact version, checked against the SHA-256 in
+      # the action's manifest at this commit; `fallback: none` refuses to
+      # compile from source or use an unchecked installer instead. (A cold
+      # source build of the coverage and audit runners took ~5 min.)
+      - name: Install pinned coverage runner
+        uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172 # v2.87.20
+        with:
+          tool: cargo-llvm-cov@0.8.5
+          checksum: true
+          fallback: none
+      # build.rs builds each sidecar in its own target dir (cargo-in-cargo);
+      # they are cached like the workspace's. Bergamot's shared CMake dir
+      # (target/native) is not: the action empties non-profile dirs before
+      # saving, and a fresh checkout's mtimes would rebuild it anyway.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: |
+            app/src-tauri
+            app/src-tauri/status-helper -> target
+            app/src-tauri/mcp-runner -> target
+            app/src-tauri/mcp-adapter -> target
+
+      # one workspace (app/src-tauri + its sidecar members): clippy -D
+      # warnings and tests with coverage — each once
+      - name: cargo clippy -D warnings
+        run: cargo clippy --workspace --all-targets --all-features --locked --manifest-path app/src-tauri/Cargo.toml -- -D warnings
+
+      # The Full Local B-admission lane is the deck-app test ce1_probe_*; it
+      # runs inside the coverage step below instead of a second, separately
+      # built `cargo test`. This step names the evidence file it must write
+      # (bound to the frozen plan, its digest and this commit) and removes
+      # any stale one; the parity step refuses evidence that is missing or
+      # bound to anything else.
+      - name: Bind the Full Local B-admission probe to this run
+        id: ce-probe
+        run: python3 scripts/ce_parity.py --plan scripts/ce/plan-full-local-2.json --app-evidence "$RUNNER_TEMP/ce-app-probe.jsonl" --deck-build "$DECK_GATE_COMMIT" --print-app-probe-env >> "$GITHUB_OUTPUT"
+
+      # Parallel test threads, adopted on CI measurement (2026-09-25,
+      # macos-15 runner, this exact step). Parallel: 20 runs, 20 green,
+      # min/median/max 169/204/285 s. Serial controls: main before FR-5,
+      # median 375 s (5 runs); the same code with --test-threads=1, median
+      # 359 s (5 runs). Saving ~156-172 s, 43-46 %. The suite is
+      # parallel-safe since FR-5 (TZ guard + lock, per-thread storage
+      # notices, unique tmux/runner names, polled waits).
+      # Rollback rule: any parallel-related red on the production gate
+      # restores --test-threads=1 at once; no second attempt.
+      - name: cargo test + coverage (unit, storage/scheduler recovery, log privacy, tmux contract, status helper)
+        env:
+          DECK_CE_EVIDENCE: ${{ steps.ce-probe.outputs.DECK_CE_EVIDENCE }}
+          DECK_CE_PLAN_DIGEST: ${{ steps.ce-probe.outputs.DECK_CE_PLAN_DIGEST }}
+          DECK_CE_DECK_BUILD: ${{ steps.ce-probe.outputs.DECK_CE_DECK_BUILD }}
+          DECK_CE_PLAN_ID: ${{ steps.ce-probe.outputs.DECK_CE_PLAN_ID }}
+          DECK_CE_CASE: ${{ steps.ce-probe.outputs.DECK_CE_CASE }}
+        run: cargo llvm-cov --workspace --all-targets --all-features --locked --fail-under-lines 75 --fail-under-functions 75 --manifest-path app/src-tauri/Cargo.toml
+
+      # Full Local parity (Controlled Execution, docs/ce-calibration.md): the
+      # REAL workload on the frozen plan v2, not only the aggregator's unit
+      # tests. Deterministic lanes only (synthetic HOME, tools and variables
+      # on a disposable bundled-tmux server); the designated real-user lanes
+      # are a separate certification. Three steps, each failing on its own
+      # exit code: no pipe, no retry — a lane error is UNKNOWN and blocks.
+      - name: Build the MCP runner for the Full Local parity workload
+        run: cargo build --locked -p deck-mcp-runner --manifest-path app/src-tauri/Cargo.toml
+      - name: Full Local parity evidence (plan v2, deterministic lanes + the coverage run's B-admission)
+        run: python3 scripts/ce_parity.py --plan scripts/ce/plan-full-local-2.json --mode ci --app-evidence "$RUNNER_TEMP/ce-app-probe.jsonl" --deck-build "$DECK_GATE_COMMIT" --out "$RUNNER_TEMP/ce-full-local.jsonl"
+      - name: Full Local parity verdict gate (full_local_parity:ci)
+        run: python3 scripts/ce_verdict.py --plan scripts/ce/plan-full-local-2.json --evidence "$RUNNER_TEMP/ce-full-local.jsonl" --evidence "$RUNNER_TEMP/ce-full-local.jsonl.app.jsonl" --out "$RUNNER_TEMP/ce-full-local-verdict.json" --gate full_local_parity:ci
+
+      - name: Build-script stage timings
+        if: always()
+        run: |
+          if [ -s "$DECK_BUILD_TIMINGS" ]; then
+            cat "$DECK_BUILD_TIMINGS"
+            { echo '### build.rs stages (rust)'; echo '```'; cat "$DECK_BUILD_TIMINGS"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  release:
+    runs-on: macos-26
+    permissions:
+      contents: read
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.4.1.app/Contents/Developer
+      DECK_REQUIRE_MODERN_SPEECH: "1"
+    outputs:
+      commit: ${{ steps.commit.outputs.sha }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - name: Record the checked-out commit
+        id: commit
+        run: |
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "DECK_BUILD_TIMINGS=$RUNNER_TEMP/deck-build-timings.txt" >> "$GITHUB_ENV"
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+        with:
+          # keep in step with rust-toolchain.toml at the repository root
+          toolchain: 1.97.1
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: |
+            app/src-tauri
+            app/src-tauri/status-helper -> target
+            app/src-tauri/mcp-runner -> target
+            app/src-tauri/mcp-adapter -> target
+
+      - name: Release executable linkage and EDR vocabulary
+        run: |
+          cargo build --release --locked --manifest-path app/src-tauri/Cargo.toml
+          python3 scripts/check_local_translation_binary.py app/src-tauri/target/release/deck-app
+          scripts/check-edr-binary app/src-tauri/target/release/deck-app
+
+      # A non-release carrier for the older-runtime launch check below. This
+      # is a release-profile executable in a minimal ad-hoc-signed app bundle;
+      # no updater artifact, release feed, tag, or production signing is used.
+      - name: Package compatibility candidate
+        run: scripts/package-compat-candidate
+      - name: Transfer compatibility candidate within this gate
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: deck-compat-candidate
+          path: app/src-tauri/target/deck-compat-candidate.tar.gz
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Build-script stage timings
+        if: always()
+        run: |
+          if [ -s "$DECK_BUILD_TIMINGS" ]; then
+            cat "$DECK_BUILD_TIMINGS"
+            { echo '### build.rs stages (release)'; echo '```'; cat "$DECK_BUILD_TIMINGS"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
   macos14-launch:
-    needs: gate
+    needs: release
     runs-on: macos-14
+    permissions:
+      contents: read
+    outputs:
+      commit: ${{ steps.commit.outputs.sha }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - name: Record the checked-out commit
+        id: commit
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: deck-compat-candidate
+          path: ${{ runner.temp }}
+      - name: Launch candidate through LaunchServices on macOS 14
+        run: scripts/test-compat-candidate "${{ runner.temp }}/deck-compat-candidate.tar.gz"
+
+  # The one result callers and branch checks read ("test / gate"). It runs
+  # even when an upstream job failed or was cancelled, and passes only when
+  # every one of them succeeded on the same checked-out commit: failure,
+  # cancelled and skipped all fail it. Nothing is skipped by design.
+  gate:
+    needs: [checks, rust, release, macos14-launch]
+    if: always()
+    runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
@@ -176,9 +330,8 @@ jobs:
         with:
           ref: ${{ inputs.ref }}
           persist-credentials: false
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: deck-compat-candidate
-          path: ${{ runner.temp }}
-      - name: Launch candidate through LaunchServices on macOS 14
-        run: scripts/test-compat-candidate "${{ runner.temp }}/deck-compat-candidate.tar.gz"
+      - name: Every gate job succeeded on the same commit
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+          GATE_REF: ${{ inputs.ref }}
+        run: python3 scripts/release_channels.py gate-results --needs "$NEEDS" --ref "$GATE_REF"
