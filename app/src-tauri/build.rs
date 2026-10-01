@@ -75,9 +75,11 @@ fn build_sidecars() {
         let log = String::from_utf8_lossy(&output.stderr);
         eprint!("{log}");
         assert!(output.status.success(), "{package} build failed");
+        // the bare word: CARGO_TERM_COLOR=always (CI) wraps the status word
+        // in ANSI escapes, so neither a prefix nor a trailing space matches
         let compiled = log
             .lines()
-            .filter(|line| line.trim_start().starts_with("Compiling "))
+            .filter(|line| line.contains("Compiling"))
             .count();
         timing(
             &format!("sidecar {package}"),
