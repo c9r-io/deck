@@ -154,6 +154,7 @@
     "buffer-narrow": {
       "terminal": "done",
       "checks": {
+        "window-min-clamp": { "a": 1280 },
         "buffer-narrow-overlay": {},
         "buffer-narrow-sections": {},
         "buffer-narrow-close": {},

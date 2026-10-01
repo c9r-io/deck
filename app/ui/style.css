@@ -1090,8 +1090,10 @@ html.font-scale-large .tmux-lifecycle-actions { align-items: flex-start; flex-wr
   border-bottom: 1px solid var(--waiting-soft-border);
 }
 
-/* The supported minimum window is 720×480. Keep long English/Chinese
-   labels scrollable or elided instead of letting controls cover content. */
+/* The minimum supported window is 1280×800 points (tauri.conf.json
+   minWidth/minHeight). These small-viewport rules predate that boundary and
+   are kept only as cheap defensive degradation; sizes below 1280×800 are
+   outside the supported product envelope and are not verified. */
 @media (max-width: 800px), (max-height: 540px) {
   #sidebar { width: 190px; }
   .board-head .hint, .sess-path { display: none; }

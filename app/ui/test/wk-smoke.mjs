@@ -358,7 +358,7 @@ async function sidebarSmoke(card, bootExpanded) {
   const shortcut = () => document.dispatchEvent(new KeyboardEvent('keydown', {
     key: 'b', code: 'KeyB', metaKey: true, bubbles: true, cancelable: true,
   }));
-  const expandedWidth = innerWidth <= 800 || innerHeight <= 540 ? 190 : 232;
+  const expandedWidth = 232; // at or above the minimum supported window
   if (collapsed()) toggleSidebar();
   ver.textContent = 'v0.7.18 · Nightly · f70e099c4b1d2a7e3f5c6b8a9d0e1f2a3b4c5d6e7f8091a2b3c4d5e6f708192a3';
   await settle();
@@ -2709,9 +2709,17 @@ async function sessionToolSlotSmoke(main, project, column) {
   backToBoard();
 }
 
+/* A narrow WORKSPACE inside the minimum supported window (tauri.conf.json
+   minWidth × minHeight; main.rs records what AppKit enforces as
+   window-min-clamp): at 160% text a session tool needs more room
+   than the workspace has, so it floats over the panes. Smaller windows are
+   outside the supported envelope and are not exercised. */
 export async function verifyBufferNarrow() {
+  const scale = getFontScale();
   try {
     await waitFor(() => provider.projects().length > 0);
+    applyFontScale(1.6);
+    await pause(100);
     const project = provider.projects()[0];
     const card = await provider.create({ projectId: project.id, columnId: project.columns[0].id,
       title: 'narrow scratchpad', cmd: '', dir: '/tmp' });
@@ -2745,8 +2753,10 @@ export async function verifyBufferNarrow() {
     await report('queue-narrow-overlay', queueOverlay && queueRect.right <= hostRect.right + 1 && queueRect.left >= hostRect.left - 1
       && queueBody.scrollWidth <= queueBody.clientWidth + 1 && panes.get(card.session).term.cols === before);
     backToBoard();
+    applyFontScale(scale);
     await report('done', !smokeFailed, 1, 0);
   } catch (error) {
+    applyFontScale(scale);
     await inv('ui_event', { code: 'js-reject', detail: (error && error.name) || 'error', a: 17, b: 0 });
     await report('done', false, 0, 17);
   }

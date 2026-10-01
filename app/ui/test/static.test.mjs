@@ -127,9 +127,20 @@ test('the coverage exclusion list only shrinks: new logic lands in a measured *-
   }
 });
 
-test('minimum-window layout keeps long localized panels bounded and scrollable', () => {
+test('the minimum supported window is 1280×800 points, enforced by the window config alone', () => {
+  const [window, ...others] = JSON.parse(read('app/src-tauri/tauri.conf.json')).app.windows;
+  assert.equal(others.length, 0, 'one window');
+  assert.equal(window.minWidth, 1280);
+  assert.equal(window.minHeight, 800);
+  assert.ok(window.width >= window.minWidth && window.height >= window.minHeight,
+    'the default window is inside the supported envelope');
+  const smoke = JSON.parse(read('app/ui/test/fixtures/smoke-manifest.json'));
+  assert.equal(smoke.modes['buffer-narrow'].checks['window-min-clamp'].a, window.minWidth,
+    'the real-window smoke judges the same minimum');
+});
+
+test('long localized panels stay bounded and scrollable in the window', () => {
   const html = read('app/ui/style.css');
-  assert.match(html, /@media \(max-width: 800px\), \(max-height: 540px\)/);
   assert.match(html, /#settings-modal, #tpl-modal \{[^}]*align-items: center;[^}]*padding: 20px;/);
   assert.match(html, /#settings-box, #tpl-box \{[^}]*width: 940px;[^}]*max-height: 100%;[^}]*overflow: hidden;/,
     'settings frame stays inside the viewport');

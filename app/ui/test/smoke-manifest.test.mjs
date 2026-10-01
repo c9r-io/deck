@@ -8,6 +8,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
+const mainRs = readFileSync(new URL('../../src-tauri/src/main.rs', import.meta.url), 'utf8');
 const manifest = JSON.parse(readFileSync(new URL('./fixtures/smoke-manifest.json', import.meta.url), 'utf8'));
 
 /* Which modes each carrier file serves: main.rs dispatches every
@@ -44,6 +45,13 @@ const DYNAMIC = [
   ['review-smoke.mjs', "report(seq === 2 ? 'review-second' : 'review-last', ", ['review-second', 'review-last']],
   ['voice-smoke.mjs', 'report(`voice-theme-${theme}`, ', ['voice-theme-light', 'voice-theme-high-contrast', 'voice-theme-deck-dark']],
   ['voice-smoke.mjs', 'report(`voice-exception-${stage}`, ', ['voice-exception-0', 'voice-exception-1', 'voice-exception-2', 'voice-exception-3', 'voice-exception-4']],
+];
+
+/* Checkpoints the backend logs itself from a debug-only setup seam in
+   main.rs (mode, the exact source text, the name): the native window size,
+   which the page cannot read without a window-control permission. */
+const NATIVE = [
+  ['buffer-narrow', 'Some("window-min-clamp".into())', 'window-min-clamp'],
 ];
 
 /* Literal checkpoint names on one line: report('x', / metric('x', and a
@@ -93,6 +101,11 @@ test('each carrier emits exactly the checkpoints the manifest expects from its m
       if (dynamicFile !== file) continue;
       assert.ok(source.includes(text), `${file} no longer builds names with ${text}`);
       for (const name of names) emitted.add(name);
+    }
+    for (const [mode, text, name] of NATIVE) {
+      if (!modes.includes(mode)) continue;
+      assert.ok(mainRs.includes(text), `main.rs no longer logs ${name}`);
+      emitted.add(name);
     }
     assert.deepEqual([...emitted].sort(), [...expectedFor(modes)].sort(), file);
   }

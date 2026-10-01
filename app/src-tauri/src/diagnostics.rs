@@ -392,6 +392,7 @@ const SMOKE_CHECKS: &[&str] = &[
     "buffer-board-overlay",
     "buffer-attention-overlay",
     "buffer-attention-cleanup",
+    "window-min-clamp",
     "buffer-narrow-overlay",
     "buffer-narrow-sections",
     "buffer-narrow-close",

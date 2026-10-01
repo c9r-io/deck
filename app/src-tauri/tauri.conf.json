@@ -14,8 +14,8 @@
         "title": "deck",
         "width": 1280,
         "height": 800,
-        "minWidth": 720,
-        "minHeight": 480,
+        "minWidth": 1280,
+        "minHeight": 800,
         "dragDropEnabled": false,
         "visible": false,
         "backgroundColor": "#101318"

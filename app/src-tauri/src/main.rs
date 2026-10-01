@@ -243,14 +243,34 @@ fn main() {
             }
             agent_status::spawn_listener();
             input_source::init(app.handle().clone());
-            // Narrow-window smoke uses the actual WKWebView geometry without
-            // adding a frontend window-control permission or production seam.
+            // The minimum supported window is tauri.conf.json minWidth ×
+            // minHeight (content points); the window manager is its only
+            // enforcement, and it binds user resizes, not programmatic ones.
+            // The narrow smoke records what AppKit holds Deck's window to and
+            // the size it runs at, without a frontend window-control
+            // permission or production seam.
             if crate::launch_args::debug_arg("--smoke-wkwebview").as_deref()
                 == Some("buffer-narrow")
             {
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.set_size(tauri::LogicalSize::new(800.0, 600.0));
-                }
+                let conf = app.config().app.windows.first();
+                let min_w = conf.and_then(|w| w.min_width).unwrap_or(f64::MAX);
+                let min_h = conf.and_then(|w| w.min_height).unwrap_or(f64::MAX);
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_secs(2));
+                    let [enforced_w, enforced_h, w, h] =
+                        smoke_native::window_min().unwrap_or_default();
+                    let held = enforced_w >= min_w && enforced_h >= min_h && w >= min_w && h >= min_h;
+                    diagnostics::ui_event(
+                        "smoke-check".into(),
+                        Some("window-min-clamp".into()),
+                        Some(if held { enforced_w as i64 } else { -(enforced_w as i64) - 1 }),
+                        Some(enforced_h as i64 * 10_000 + h as i64),
+                        None,
+                    );
+                    applog(&format!(
+                        "[smoke] window min {enforced_w:.0}x{enforced_h:.0} content {w:.0}x{h:.0}"
+                    ));
+                });
             }
             // Update-check heartbeat from a Rust thread: webview timers are
             // frozen by App Nap when the app is backgrounded, so a JS

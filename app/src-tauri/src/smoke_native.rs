@@ -7,7 +7,8 @@
 //! It acts only on Deck's own process: AppKit events are handed to Deck's
 //! own window (never posted to the system or another process, so no
 //! Accessibility/TCC grant is used), snapshots come from Deck's own
-//! WKWebView into the isolated data directory, and a pasteboard guard
+//! WKWebView into the isolated data directory, the window's enforced minimum
+//! size is read from Deck's own NSWindow (`window_min`), and a pasteboard guard
 //! (general, or a test-owned named board) refuses every test write unless it
 //! holds a stable backup and the board is still at its owned version; see the
 //! contract in `native/SmokeBridge.swift`. Settling always disarms Copied-text
@@ -88,6 +89,7 @@ mod native {
         pub fn deck_smoke_viewport(height: f64);
         pub fn deck_smoke_roman_input() -> i32;
         pub fn deck_smoke_snapshot(path: *const c_char) -> i32;
+        pub fn deck_smoke_window_min(out: *mut f64) -> i32;
         pub fn deck_smoke_pb_guard_begin(board: i32) -> i32;
         pub fn deck_smoke_pb_write(text: *const c_char) -> i64;
         pub fn deck_smoke_pb_permit() -> i64;
@@ -102,6 +104,23 @@ mod native {
         pub fn deck_smoke_pb_fail_next_fill() -> i32;
         pub fn deck_pasteboard_free(text: *mut c_char);
     }
+}
+
+/// Debug-only: the minimum content size AppKit enforces on a user resize of
+/// Deck's window and its current content size, in points
+/// `[min_w, min_h, w, h]` (`deck_smoke_window_min`); `None` outside an
+/// isolated smoke or before the window exists.
+pub(crate) fn window_min() -> Option<[f64; 4]> {
+    gate().ok()?;
+    #[cfg(all(debug_assertions, target_os = "macos"))]
+    {
+        let mut out = [0.0_f64; 4];
+        // SAFETY: the bridge writes exactly four doubles into `out`.
+        let code = unsafe { native::deck_smoke_window_min(out.as_mut_ptr()) };
+        (code == 0).then_some(out)
+    }
+    #[cfg(not(all(debug_assertions, target_os = "macos")))]
+    None
 }
 
 fn c_text(text: &str) -> Result<std::ffi::CString, DeckError> {

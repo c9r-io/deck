@@ -56,7 +56,8 @@ it works the same with a plain shell.
 ## Install
 
 Requires **macOS 11 or later on Apple Silicon**. Intel Macs are not currently
-supported.
+supported. The minimum supported window size is **1280×800 points**; the
+window cannot be resized smaller.
 
 1. Download `deck_<version>_aarch64.dmg` from the
    [latest Stable release](https://github.com/c9r-io/deck/releases/latest).

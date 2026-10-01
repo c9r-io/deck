@@ -107,6 +107,17 @@ started by the scheduler and delivered (`scripts/smoke-verdict <root>
 empty-start`). It is the regression for the zero-session deadlock, where a
 failed `list-panes -a` on an empty server selected nothing forever.
 
+**Window size.** Every mode runs in the default window, which is the minimum
+supported window size: 1280×800 points (`tauri.conf.json` `minWidth` /
+`minHeight`, enforced only by the window manager). Sizes below 1280×800 are
+outside the supported product envelope; no mode certifies them. `buffer-narrow`
+reads the minimum AppKit holds Deck's own window to on a user resize and the
+window's content size (`window-min-clamp`: a = enforced minimum width, which
+must be 1280; b = enforced minimum height × 10000 + content height); its
+narrow workspace comes from 160% text, not from a smaller window. A
+programmatic resize is not bound by the minimum, so no smoke shrinks the
+window.
+
 
 Everything below is a **live** checklist of WKWebView/xterm integration
 behaviours that cannot be tested headless: Chromium-based harnesses pass while
@@ -358,8 +369,9 @@ poll only knows the fixture cards, so a card you create by hand in the
 left-over instance is NOT polled — press the strip's 真实轮询 first to hand
 the page back to the real backend before testing exits). A debug-only strip
 leaves Board / Empty project / Needs attention / Update failed available for
-screenshots; the strip and fixture never ship in release bundles. Also inspect at the 720×480
-minimum window: controls must remain reachable and long names must wrap.
+screenshots; the strip and fixture never ship in release bundles. Also inspect at the
+minimum supported window size, 1280×800: controls must remain reachable and long names
+must wrap. Sizes below 1280×800 are outside the supported product envelope.
 
 ## Settings navigation and diagnostic log reset
 

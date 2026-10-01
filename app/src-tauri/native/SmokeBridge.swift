@@ -120,6 +120,25 @@ public func deckSmokeRomanInput() -> Int32 {
     }
 }
 
+// The content size AppKit holds Deck's own window to on a user resize (Tauri
+// installs tauri.conf.json minWidth/minHeight as NSWindow.minSize, a frame
+// size) and the current content size, in points: out[0..4] = min w, min h,
+// w, h. Programmatic setContentSize is NOT bound by this minimum.
+@_cdecl("deck_smoke_window_min")
+public func deckSmokeWindowMin(_ out: UnsafeMutablePointer<Double>?) -> Int32 {
+    guard let out else { return -1 }
+    return onMain {
+        guard let window = smokeWindow() else { return -2 }
+        let fromFrame = window.contentRect(forFrameRect: NSRect(origin: .zero, size: window.minSize)).size
+        let content = window.contentRect(forFrameRect: window.frame).size
+        out[0] = Double(max(fromFrame.width, window.contentMinSize.width))
+        out[1] = Double(max(fromFrame.height, window.contentMinSize.height))
+        out[2] = Double(content.width)
+        out[3] = Double(content.height)
+        return 0
+    }
+}
+
 // Must be called off the main thread; writes a PNG of Deck's own WKWebView.
 @_cdecl("deck_smoke_snapshot")
 public func deckSmokeSnapshot(_ path: UnsafePointer<CChar>?) -> Int32 {

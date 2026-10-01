@@ -297,7 +297,7 @@ loaded by `ui/index.html`; xterm.js vendored in `app/ui/vendor/`. Backend
 | File drop / image paste | `drops.rs` |
 | Process facts without spawning `ps` | `procinfo.rs` |
 | Card Reminder intent, revision-fenced system projection and blocked retirement | `reminder.rs`, `native/NotificationBridge.swift`, `ui/js/reminder-model.js`, Board/persistence/dialogs (+ `docs/card-reminders.md`) |
-| Debug/isolated-smoke fault injection; debug-only native driver (own-window AppKit input, own-webview snapshots, general-pasteboard guard, named test pasteboard) | `smoke_faults.rs`, `smoke_native.rs`, `native/SmokeBridge.swift` (compiled into debug profiles only) |
+| Debug/isolated-smoke fault injection; debug-only native driver (own-window AppKit input, own-webview snapshots, own-window minimum-size read, general-pasteboard guard, named test pasteboard) | `smoke_faults.rs`, `smoke_native.rs`, `native/SmokeBridge.swift` (compiled into debug profiles only) |
 
 Status semantics (card colour) are documented on `effectiveCardStatus` in
 `pure.js`: agent state outranks the 15s output heuristic.
@@ -387,6 +387,12 @@ Status semantics (card colour) are documented on `effectiveCardStatus` in
 
 ## Invariants
 
+- **Minimum supported window size: 1280×800 points** (`tauri.conf.json`
+  `minWidth`/`minHeight`, pinned by `ui/test/static.test.mjs`; the window
+  manager is the only enforcement, and it binds user resizes, not programmatic
+  ones). Sizes below are outside the supported product envelope: no layout
+  work targets them and no smoke certifies them; the old small-viewport CSS
+  stays only as free defensive degradation.
 - Ordinary sessions are started with a plain shell + `send-keys` of the command,
   NOT by exec'ing the command, so the session survives agent exit and scrollback
   stays inspectable. The explicit exception is an MCP-managed session, whose

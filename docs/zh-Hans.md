@@ -31,7 +31,7 @@ deck 在本机运行，已内置 tmux，无需 deck 账号，采用 MIT 许可�
 
 ## 快速开始
 
-需要 **Apple Silicon Mac，macOS 11 或更新版本**；当前不支持 Intel Mac。语音录音需要受支持的 macOS 12+ 本地识别配置，详见[语音输入说明](voice-input.md)。
+需要 **Apple Silicon Mac，macOS 11 或更新版本**；当前不支持 Intel Mac。最小支持窗口尺寸为 **1280×800 点**，窗口无法再缩小。语音录音需要受支持的 macOS 12+ 本地识别配置，详见[语音输入说明](voice-input.md)。
 
 1. 打开[最新稳定版 Release](https://github.com/c9r-io/deck/releases/latest)，下载 `deck_<版本号>_aarch64.dmg`。
 2. 打开 DMG，将 **deck** 拖入「应用程序」，然后启动。应用经过签名与 Apple 公证，tmux 已包含在内。
