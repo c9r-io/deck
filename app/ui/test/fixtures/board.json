@@ -23,7 +23,7 @@
       "projectId": "P1",
       "columnId": "C1",
       "title": "full card",
-      "desc": "every persisted key, nothing else",
+      "desc": "the keys every card persists; the cards below add each conditional one",
       "cmd": "claude",
       "dir": "~/work",
       "session": "deck-full-card-ab12",
@@ -34,6 +34,152 @@
         "key": "C1:1.2",
         "badge": "eyes"
       }
+    },
+    {
+      "id": "K2",
+      "projectId": "P1",
+      "columnId": "C2",
+      "title": "automation run",
+      "desc": "a run card keeps its frozen plan until its rows are queued",
+      "cmd": "claude",
+      "dir": "~/work",
+      "session": "deck-automation-run-cd34",
+      "pinned": false,
+      "launched": false,
+      "origin": {
+        "source": "clock",
+        "key": "R1:1790000000",
+        "badge": "R1"
+      },
+      "inboundPlan": {
+        "operationId": "B-plan-1",
+        "reviewEach": false,
+        "initialSteps": [
+          {
+            "operationId": "B-step-1",
+            "text": "summarize yesterday's changes",
+            "mode": "at",
+            "at": 1790000000000,
+            "tpl": "Daily summary",
+            "tplIdx": 1,
+            "tplTotal": 1
+          }
+        ],
+        "initialQueued": false
+      }
+    },
+    {
+      "id": "K3",
+      "projectId": "P1",
+      "columnId": "C1",
+      "title": "channel collection",
+      "desc": "a collection card keeps its buffer and its run",
+      "cmd": "claude",
+      "dir": "~/work",
+      "session": "deck-channel-collection-ef56",
+      "pinned": false,
+      "launched": true,
+      "origin": {
+        "source": "channel",
+        "key": "default/T1/C2/rule-1/1.2",
+        "badge": "rule-1"
+      },
+      "buffer": {
+        "revision": 1,
+        "collecting": true,
+        "entries": [
+          {
+            "id": "E1",
+            "kind": "external",
+            "text": "deploy failed on main",
+            "revision": 1,
+            "createdAt": 1790000000000,
+            "updatedAt": 1790000000000,
+            "source": {
+              "type": "channel",
+              "eventId": "Ev1",
+              "connection": "default",
+              "channel": "C2",
+              "rule": "rule-1",
+              "at": 1790000000,
+              "links": [],
+              "workspaceId": "T1",
+              "messageTs": "1.2"
+            },
+            "copies": []
+          }
+        ]
+      },
+      "channelRun": {
+        "groupKey": "default/T1/C2/rule-1",
+        "firstEventId": "Ev1",
+        "connectionId": "default",
+        "workspaceId": "T1",
+        "channelId": "C2",
+        "ruleId": "rule-1",
+        "lastCollectedAt": 1790000000,
+        "idleMinutes": 30,
+        "collecting": true,
+        "initialSteps": [],
+        "initialQueued": true
+      }
+    },
+    {
+      "id": "K4",
+      "projectId": "P1",
+      "columnId": "C2",
+      "title": "connector task",
+      "desc": "a Connector task keeps its frozen preset steps",
+      "cmd": "codex",
+      "dir": "~/work",
+      "session": "deck-connector-task-ab78",
+      "pinned": false,
+      "launched": false,
+      "origin": {
+        "source": "connector",
+        "key": "abababababababababababababababababababababababababababababababab",
+        "badge": "R1"
+      },
+      "connectorRun": {
+        "handle": "abababababababababababababababababababababababababababababababab",
+        "presetId": "R1",
+        "initialSteps": [
+          {
+            "operationId": "B-task-1",
+            "text": "fix the failing build",
+            "mode": "at",
+            "at": 1790000000000,
+            "tpl": "R1",
+            "tplIdx": 1,
+            "tplTotal": 1
+          }
+        ],
+        "initialQueued": false
+      }
+    },
+    {
+      "id": "K5",
+      "projectId": "P1",
+      "columnId": "C1",
+      "title": "card with a reminder",
+      "desc": "a reminder and the retirement it blocked",
+      "cmd": "",
+      "dir": "~/work",
+      "session": "deck-reminder-card-cd90",
+      "pinned": false,
+      "launched": true,
+      "reminder": {
+        "id": "0123456789abcdef0123456789abcdef",
+        "revision": 1,
+        "dueAt": 1790000000000,
+        "timeZone": "Asia/Tokyo",
+        "note": "check the deploy",
+        "inAppOnly": false,
+        "due": false
+      },
+      "reminderRetirements": [
+        "exit:deck-reminder-card-cd90/1790000000"
+      ]
     }
   ]
 }

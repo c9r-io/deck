@@ -373,19 +373,36 @@ test('Board serialization retains Connector frozen task plans and project preset
 });
 
 test('the Board fixture is exactly the shape persistence.js writes', async () => {
-  // fixtures/board.json is the one document both sides pin: this test proves
-  // it is what the frontend serializes, documents.rs proves what the backend
-  // requires of it. Adding a persisted card key changes this fixture, and the
-  // Rust side then refuses to compile a guess.
+  // fixtures/board.json is the one document both sides pin. Its first card
+  // carries the keys every card persists; the others add each conditional
+  // key (a frozen plan, a collection run with its buffer, a Connector task,
+  // a reminder). This test proves the fixture is what the frontend
+  // serializes and, through a read probe, that boardData reads no card key
+  // the fixture leaves out: a new persisted key cannot land without an
+  // example here. The backend then takes a position on every key in it:
+  // documents.rs loads the document and names what BoardCard requires of the
+  // first card, and tests/ipc_contract.rs holds the fixture's keys equal to
+  // the declared BoardCard fields plus the keys that are the frontend's alone.
   const { readFileSync } = await import('node:fs');
   const fixture = JSON.parse(readFileSync(new URL('./fixtures/board.json', import.meta.url), 'utf8'));
-  const full = {
-    ...fixture.cards[0], status: 'running', mem: 42, tail: ['runtime only'], idle: 3,
-    origin: { ...fixture.cards[0].origin, text: 'never persisted' },
-  };
-  const serialized = boardData(fixture.projects, [full]);
-  assert.deepEqual(Object.keys(serialized.cards[0]).sort(), Object.keys(fixture.cards[0]).sort());
+  const read = new Set();
+  const probed = card => new Proxy(card, {
+    get(target, key, receiver) {
+      if (typeof key === 'string') read.add(key);
+      return Reflect.get(target, key, receiver);
+    },
+  });
+  const live = fixture.cards.map(card => probed({
+    ...card, status: 'running', mem: 42, tail: ['runtime only'], idle: 3,
+    origin: { ...card.origin, text: 'never persisted' },
+  }));
+  const serialized = boardData(fixture.projects, live);
+  serialized.cards.forEach((card, index) => assert.deepEqual(
+    Object.keys(card).sort(), Object.keys(fixture.cards[index]).sort(), `card ${fixture.cards[index].id}`));
   assert.deepEqual(serialized, fixture);
+  const pinned = new Set(fixture.cards.flatMap(card => Object.keys(card)));
+  assert.deepEqual([...read].sort(), [...pinned].sort(),
+    'every card key boardData reads has an example in the fixture, and the fixture holds none it never writes');
 });
 
 test('launched persists as written and reads true on boards from before the field', () => {

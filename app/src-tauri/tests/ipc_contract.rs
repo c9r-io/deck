@@ -10,6 +10,10 @@
 //!    name still a quoted literal inside the named JS function), or is a
 //!    `DEBUG_ONLY` command the WKWebView smoke / debug harness calls from
 //!    `ui/test`. A new command that is none of these fails: classify it.
+//! 4. the persisted Board card is held equal the same way: every card key in
+//!    `ui/test/fixtures/board.json` (which `dom.test.mjs` proves is every key
+//!    `persistence.js` writes) is a declared `BoardCard` field or listed as
+//!    the frontend's alone, and every declared field has an example there.
 //!
 //! Extraction is single-line literal matching only (FR-2 shape rule): a
 //! call whose name cannot be read from one line is a dynamic site and is
@@ -293,4 +297,96 @@ fn literal_extraction_reads_one_line_only() {
     assert!(literal_calls("core.invoke(cmd, args)").is_empty());
     assert!(literal_calls("x.inv('queue_add')").is_empty());
     assert!(literal_calls("await inv(a ? 'mcp_enable' : 'mcp_disable')").is_empty());
+}
+
+// ------------------------------------------------- persisted Board card
+
+/// Card keys `persistence.js` writes that `BoardCard` deliberately does not
+/// declare: the backend keeps them as part of the document and never reads
+/// them. Everything else the frontend persists is a typed, validated
+/// `BoardCard` field.
+const FRONTEND_ONLY_CARD_KEYS: &[&str] = &["desc", "origin"];
+
+/// JSON keys of the fields `BoardCard` declares (`src/documents.rs`), read
+/// from its source: a field's own name, or its `#[serde(rename = "…")]`.
+fn board_card_fields() -> BTreeSet<String> {
+    let documents = std::fs::read_to_string(manifest("src/documents.rs")).unwrap();
+    let start = documents
+        .find("pub(crate) struct BoardCard {")
+        .expect("struct BoardCard");
+    // every key is spelled on its field; a struct-level casing rule would
+    // make this reading wrong, so it fails instead of guessing
+    assert!(
+        documents[..start]
+            .lines()
+            .rev()
+            .take_while(|line| line.starts_with("#["))
+            .all(|line| !line.contains("rename_all")),
+        "BoardCard gained a rename_all: teach board_card_fields the casing rule"
+    );
+    let body = &documents[start..];
+    let body = &body[..body.find("\n}").expect("end of BoardCard")];
+    let mut fields = BTreeSet::new();
+    let mut rename = None;
+    for line in body.lines().skip(1).map(str::trim) {
+        if let Some(attribute) = line.strip_prefix("#[serde(") {
+            if let Some((_, rest)) = attribute.split_once("rename = \"") {
+                rename = rest.split('"').next().map(str::to_owned);
+            }
+        } else if !line.is_empty() && !line.starts_with("#[") && !line.starts_with("//") {
+            let name = line.split(':').next().unwrap_or_default().trim();
+            assert!(
+                !name.is_empty()
+                    && name
+                        .bytes()
+                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_'),
+                "unexpected line in BoardCard: {line}"
+            );
+            fields.insert(rename.take().unwrap_or_else(|| name.to_owned()));
+        }
+    }
+    fields
+}
+
+#[test]
+fn every_persisted_card_key_is_a_board_card_field_or_the_frontends_alone() {
+    let fixture: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(manifest("../ui/test/fixtures/board.json")).unwrap(),
+    )
+    .unwrap();
+    let pinned: BTreeSet<String> = fixture["cards"]
+        .as_array()
+        .expect("cards")
+        .iter()
+        .flat_map(|card| card.as_object().expect("card").keys().cloned())
+        .collect();
+    let declared = board_card_fields();
+    assert!(
+        declared.contains("projectId") && declared.contains("session"),
+        "BoardCard fields were not read: {declared:?}"
+    );
+    let mut problems = Vec::new();
+    for key in &pinned {
+        if !declared.contains(key) && !FRONTEND_ONLY_CARD_KEYS.contains(&key.as_str()) {
+            problems.push(format!(
+                "the frontend persists card key `{key}` that BoardCard does not declare: declare \
+                 it (typed and validated in documents.rs) or add it to FRONTEND_ONLY_CARD_KEYS \
+                 on purpose"
+            ));
+        }
+    }
+    for key in &declared {
+        if !pinned.contains(key) {
+            problems.push(format!(
+                "BoardCard declares `{key}` but no card in ui/test/fixtures/board.json has it: \
+                 add the shape persistence.js writes"
+            ));
+        }
+    }
+    for key in FRONTEND_ONLY_CARD_KEYS {
+        if declared.contains(*key) || !pinned.contains(*key) {
+            problems.push(format!("stale frontend-only card key `{key}`"));
+        }
+    }
+    assert!(problems.is_empty(), "{problems:#?}");
 }
