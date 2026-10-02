@@ -143,6 +143,17 @@ transport. Run the smoke with no other build in progress: under a concurrent
 always report positive. Red or green is decided by `scripts/smoke-verdict`,
 not by reading the log.
 
+The real WKWebView smoke needs an unlocked Mac with the smoke window's page
+visible and the desktop left alone while it runs. A hidden page (locked
+screen, covered window, another Space, or any cause) has its timers
+throttled and the product rightly cancels a held press or drag; such runs
+used to fail `link-repaint` and the timing checks above with no stated cause.
+`page-visible` now reports any hidden time as an environment red. The
+link-repaint and selection stages hold trusted OS input and window focus
+changes, which `input-isolation` counts; `input-isolation-proof` injects real
+AppKit input last, bringing the window to the front for a moment, then hides
+the app.
+
 ## Human inspection checkpoints (05 C v01)
 
 Run `DECK_SMOKE_DATA_DIR="$(mktemp -d /tmp/deck-review.XXXXXX)" DECK_SMOKE_TMUX_SOCKET=deck-smoke-review-UNIQUE DECK_SMOKE_WKWEBVIEW=review app/run.sh`.

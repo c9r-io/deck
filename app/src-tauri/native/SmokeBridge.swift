@@ -13,9 +13,18 @@ import UserNotifications
 import ApplicationServices
 
 private func smokeWindow() -> NSWindow? {
-    // Startup windows may still be hidden; select only this process's WK window.
-    NSApp.keyWindow ?? NSApp.mainWindow ?? NSApp.windows.first { findWebView($0.contentView) != nil }
+    // Startup windows may still be hidden; select only this process's WK
+    // window (the key-status panel below is never the smoke window).
+    [NSApp.keyWindow, NSApp.mainWindow].compactMap { $0 }.first { findWebView($0.contentView) != nil }
+        ?? NSApp.windows.first { findWebView($0.contentView) != nil }
 }
+// A 1×1 borderless panel of this process that can hold key status, so the
+// webview's window resigns key — a real window blur — while it stays fully
+// visible (hiding the app would also hide the page).
+private final class SmokeKeyPanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+}
+private var smokeKeyPanel: SmokeKeyPanel?
 private func findWebView(_ view: NSView?) -> WKWebView? {
     guard let view else { return nil }
     if let web = view as? WKWebView { return web }
@@ -92,8 +101,10 @@ public func deckSmokeKey(_ chars: UnsafePointer<CChar>?, _ keyCode: UInt16, _ mo
 }
 
 // 0 = hide Deck (a real resign-active); 1 = state bits only; 2 = bring
-// Deck's own window forward (may be refused by the system).
-// bit 1 active, bit 2 key window, bit 4 hidden.
+// Deck's own window forward (may be refused by the system); 3 = move key
+// status to the 1×1 panel (the webview window resigns key, stays visible);
+// 4 = close that panel and make the webview window key again.
+// bit 1 active, bit 2 key window, bit 4 hidden, bit 8 webview window is key.
 @_cdecl("deck_smoke_app")
 public func deckSmokeApp(_ action: Int32) -> Int32 {
     onMain {
@@ -103,7 +114,21 @@ public func deckSmokeApp(_ action: Int32) -> Int32 {
             NSApp.activate(ignoringOtherApps: true)
             smokeWindow()?.makeKeyAndOrderFront(nil)
         }
+        if action == 3 {
+            let panel = smokeKeyPanel ?? SmokeKeyPanel(contentRect: NSRect(x: 0, y: 0, width: 1, height: 1),
+                                                       styleMask: [.borderless], backing: .buffered, defer: false)
+            panel.isReleasedWhenClosed = false
+            smokeKeyPanel = panel
+            panel.makeKeyAndOrderFront(nil)
+        }
+        if action == 4 {
+            smokeKeyPanel?.orderOut(nil)
+            smokeKeyPanel = nil
+            smokeWindow()?.makeKeyAndOrderFront(nil)
+        }
+        let webKey = NSApp.windows.contains { $0.isKeyWindow && findWebView($0.contentView) != nil }
         return (NSApp.isActive ? 1 : 0) | (NSApp.keyWindow != nil ? 2 : 0) | (NSApp.isHidden ? 4 : 0)
+            | (webKey ? 8 : 0)
     }
 }
 

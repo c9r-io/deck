@@ -440,6 +440,73 @@ async function renameSmoke(card) {
     && [sidebar, header, pane, board].every(v => v === 'renamed-enter-smoke'), 1, 1);
 }
 
+/* Page visibility is a precondition of every timing and gesture check: a
+   hidden page (occluded window, other Space) has its timers throttled to
+   about one second and the product rightly cancels a held press or drag, so
+   such a run failed `link-repaint` and the timing checks for a reason no
+   checkpoint named. The smoke needs an unlocked, visible, undisturbed
+   desktop and does not try to force one: run() waits for a visible page,
+   and any hidden period during the run (whatever caused it) is reported by
+   `page-visible`, so such a red names the environment instead of a product
+   check. Closed numbers only. */
+const visibility = { hidden: 0, ms: 0, since: 0 };
+if (typeof document !== 'undefined') {
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) { visibility.hidden++; visibility.since = performance.now(); }
+    else if (visibility.since) { visibility.ms += performance.now() - visibility.since; visibility.since = 0; }
+  });
+}
+const hiddenMs = () => Math.round(visibility.ms + (visibility.since ? performance.now() - visibility.since : 0));
+
+/* Synthetic-input exclusivity. A stage that drives the product with
+   synthetic pointer transactions must be the only input source while it
+   runs. A TRUSTED (OS-originated) pointer/mouse/wheel event or a trusted
+   window blur/focus is a second, contradictory source. The product obeys it
+   as specified (a press whose pointer reaches another cell is promoted to a
+   tmux drag; a window blur ends a drag in progress), so a real window blur
+   ended `selection-up`'s held drag (`cancel-blur`) and a far-cell move can
+   promote a held `link-repaint` press — red depending only on what the
+   operator's machine did while the smoke window was key. The guard stops those
+   events at window capture, before every product and xterm listener,
+   cancels their default action, and counts them; the stage reports the count
+   as `input-isolation` so foreign input stays visible. Synthetic events
+   (isTrusted false) — including the deliberate synthetic blurs that test the
+   blur contract — and the trusted focus events the page's own `.focus()`
+   calls produce on elements pass untouched. Never weaken this into ignoring
+   a product reaction: only events the operating system delivered are held. */
+// One guarded stage; `input-isolation` a = trusted input events held, b = trusted window focus changes held.
+async function isolatedStage(stage) {
+  const guard = isolateSyntheticInput();
+  try { return await stage(guard); } finally {
+    const held = guard.end();
+    await metric('input-isolation', held.input, held.window);
+  }
+}
+const ISOLATED_INPUT = ['pointerdown', 'pointermove', 'pointerup', 'pointercancel',
+  'mousedown', 'mousemove', 'mouseup', 'click', 'dblclick', 'auxclick', 'contextmenu', 'wheel'];
+const ISOLATED_WINDOW = ['blur', 'focus'];
+function isolateSyntheticInput(target = window) {
+  const held = { input: 0, window: 0, seen: new Set() };
+  const hold = event => {
+    if (!event.isTrusted) return;
+    if (ISOLATED_WINDOW.includes(event.type) && event.target !== target) return;
+    held.seen.add(event.type);
+    if (ISOLATED_WINDOW.includes(event.type)) {
+      held.window++;
+    } else {
+      held.input++;
+      if (event.cancelable) event.preventDefault();
+    }
+    event.stopImmediatePropagation();
+  };
+  const types = [...ISOLATED_INPUT, ...ISOLATED_WINDOW];
+  for (const type of types) target.addEventListener(type, hold, { capture: true, passive: false });
+  return {
+    held,
+    end() { for (const type of types) target.removeEventListener(type, hold, { capture: true }); return held; },
+  };
+}
+
 function pointer(type, id, x, y, button = 0) {
   return new PointerEvent(type, {
     pointerId: id, pointerType: 'mouse', isPrimary: true, button,
@@ -1604,6 +1671,79 @@ async function linkRepaintSmoke(card) {
   }
 }
 
+/* Regression for the isolation itself. While a synthetic press on a path
+   link is held, real AppKit input arrives — trusted in the DOM, handed to
+   this process's own windows by the debug native driver: a click-drag 20
+   rows away (the far-cell promotion of a held press) and a window blur that
+   leaves the page visible (what ended the held `selection-up` drag). Every
+   wait is for observed state — foreground, settled grid, the printed
+   target, link hover, the
+   foreign events reaching the page, key status — never a fixed delay.
+   Isolated, the press stays a click and opens the menu once; unisolated,
+   the foreign press replaces it or the blur cancels it and no menu opens.
+   It runs last and hides the app afterwards: no stage inherits foreground. */
+async function foreignInputProof(card, guard) {
+  await openSession(card.id);
+  const pane = panes.get(card.session), term = pane.term;
+  const path = '/tmp/deck-link-probe.txt', fixture = `说明(${path})`;
+  const screen = pane.body.querySelector('.xterm-screen'), menu = $('ctx');
+  const state = () => inv('smoke_native_input', { input: { kind: 'state' } });
+  let mask = 0;
+  // AppKit hands mouse input to the page only while this window is key in
+  // the active app. Establish that first, then let the grid settle: the
+  // fixture is written only once xterm and the tmux pane agree on size.
+  await inv('smoke_native_input', { input: { kind: 'activate' } });
+  const foreground = await waitFor(async () => ((await state()) & 3) === 3, 3000);
+  pane.fit.fit();
+  const settled = await waitFor(async () => {
+    await pane.syncSize().catch(() => {});
+    const metrics = await inv('terminal_metrics', { name: card.session });
+    return metrics.pane_cols === term.cols && metrics.pane_rows === term.rows;
+  }, 5000);
+  // The press target is printed by the shell, so it lives in tmux's screen:
+  // a pane redraw (key and focus changes can cause one) reproduces it, where
+  // a local-only xterm write would be erased mid-press.
+  menu.style.display = 'none'; term.focus();
+  await inv('pty_write', { name: card.session, dataB64: strToB64(`clear; printf '%s\\n' '${fixture}'\r`) });
+  const printed = await waitFor(() => {
+    term.scrollToBottom();
+    return term.buffer.active.getLine(term.buffer.active.viewportY)?.translateToString(true) === fixture;
+  }, 5000);
+  if (foreground && settled && printed) mask |= 1;
+  const rect = screen.getBoundingClientRect();
+  const cellX = col => rect.left + (col + 0.5) * rect.width / term.cols;
+  const rowY = row => rect.top + (row + 0.5) * rect.height / term.rows;
+  const x = cellX(10), y = rowY(0);
+  const mouse = (type, buttons = 0, clientX = x, clientY = y) => screen.dispatchEvent(new MouseEvent(type, {
+    bubbles: true, cancelable: true, button: 0, buttons, clientX, clientY, detail: 1,
+  }));
+  mouse('mousemove', 0, rect.right - 4, rowY(1)); mouse('mousemove');
+  const hovered = await waitFor(() => screen.classList.contains('xterm-cursor-pointer'), 2000);
+  screen.dispatchEvent(pointer('pointerdown', 94, x, y)); mouse('mousedown', 1);
+  const native = (kind, row) => inv('smoke_native_input', {
+    input: { kind, x: cellX(30), y: rowY(row), viewport: window.innerHeight },
+  });
+  guard.held.seen.clear();
+  await native('down', 20); await native('drag', 21); await native('up', 21);
+  // pointerup is the foreign gesture's last event in either arm (holding the
+  // trusted pointerdown also suppresses its compatibility mouse events)
+  if (hovered && await waitFor(() => guard.held.seen.has('pointerup'), 3000)) mask |= 2;
+  // A real window blur while the page stays visible: key status moves to a
+  // 1×1 panel of this process, then back (each awaited as observed state).
+  await inv('smoke_native_input', { input: { kind: 'resign-key' } });
+  if (await waitFor(async () => ((await state()) & 8) === 0 && guard.held.seen.has('blur'), 3000)) mask |= 4;
+  await inv('smoke_native_input', { input: { kind: 'restore-key' } });
+  await waitFor(async () => ((await state()) & 8) === 8 && guard.held.seen.has('focus'), 3000);
+  if (!pane.selection.isDragging() && !pane.selection.hasSelection()) mask |= 8;
+  document.dispatchEvent(pointer('pointerup', 94, x, y)); mouse('mouseup'); mouse('click');
+  if (menu.style.display === 'block' && menu.querySelector('.ctx-value')?.textContent === path) mask |= 16;
+  menu.style.display = 'none';
+  await cancelTerminalSelection(pane);
+  // hand the foreground back to whatever app the operator was using
+  await inv('smoke_native_input', { input: { kind: 'hide' } });
+  await report('input-isolation-proof', mask === 31, mask, guard.held.seen.size);
+}
+
 async function imeRoutingSmoke(card) {
   await openSession(card.id);
   const pane = panes.get(card.session);
@@ -2335,6 +2475,7 @@ export async function run() {
     stage = 1;
     // Collapse is a temporary layout state: every boot starts expanded.
     const bootExpanded = !document.body.classList.contains('side-collapsed');
+    const shown = await waitFor(() => !document.hidden, 5000);
     await settingsNavigationSmoke();
     await buttonForceTouchSmoke();
     await waitFor(() => provider.projects().length > 0);
@@ -2363,13 +2504,13 @@ export async function run() {
     await renameSmoke(main);
     stage = 6;
     await pathSmoke(main);
-    await linkRepaintSmoke(main);
+    await isolatedStage(() => linkRepaintSmoke(main));
     stage = 7;
     await completionSmoke(main, project, column);
     stage = 8;
     await themeSmoke(main);
     stage = 9;
-    await selectionSmoke(main);
+    await isolatedStage(() => selectionSmoke(main));
     stage = 10;
     await imeRoutingSmoke(main);
     stage = 11;
@@ -2424,6 +2565,10 @@ export async function run() {
     await automationSmoke(project, column);
     await terminalPaintSmoke(project, column);
     await inv('smoke_seed_ambiguous');
+    await report('page-visible', shown && visibility.hidden === 0 && !document.hidden,
+      shown ? hiddenMs() || 1 : 0, visibility.hidden);
+    // Last: it brings this window to the front, which no later stage may inherit.
+    await isolatedStage(guard => foreignInputProof(main, guard));
     await report('done', !smokeFailed, 1, 0);
   } catch (error) {
     const stack = String((error && error.stack) || '');

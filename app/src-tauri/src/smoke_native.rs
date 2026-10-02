@@ -199,6 +199,8 @@ pub(crate) async fn smoke_native_input(input: NativeInput) -> Result<i32, DeckEr
                 "hide" => native::deck_smoke_app(0),
                 "state" => native::deck_smoke_app(1),
                 "activate" => native::deck_smoke_app(2),
+                "resign-key" => native::deck_smoke_app(3),
+                "restore-key" => native::deck_smoke_app(4),
                 "roman" => native::deck_smoke_roman_input(),
                 _ => return Err(unavailable()),
             })
