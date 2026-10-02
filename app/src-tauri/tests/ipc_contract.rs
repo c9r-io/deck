@@ -10,6 +10,8 @@
 //!    name still a quoted literal inside the named JS function), or is a
 //!    `DEBUG_ONLY` command the WKWebView smoke / debug harness calls from
 //!    `ui/test`. A new command that is none of these fails: classify it.
+//!    A `DEBUG_ONLY` command also refuses outside an isolated debug smoke
+//!    launch, unless it is pinned in `LIVE_IN_RELEASE` with the reason.
 //! 4. the persisted Board card is held equal the same way: every card key in
 //!    `ui/test/fixtures/board.json` (which `dom.test.mjs` proves is every key
 //!    `persistence.js` writes) is a declared `BoardCard` field or listed as
@@ -20,7 +22,7 @@
 //! listed here, never parsed.
 
 mod source_scan;
-use source_scan::{all_sources, js_enclosing, js_sources, manifest};
+use source_scan::{all_sources, function_body, js_enclosing, js_sources, manifest};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// (JS file, enclosing function, command names it chooses between).
@@ -63,7 +65,10 @@ const DYNAMIC_SITES: &[(&str, &str, &[&str])] = &[
 ];
 
 /// Registered for the debug-only WKWebView smoke and fault harness; called
-/// only from `ui/test`, never from production frontend code.
+/// only from `ui/test`, never from production frontend code. "Debug-only"
+/// is also a property of the command itself: each one refuses unless
+/// `smoke_faults::enabled()` (`harness_commands_refuse_outside_an_isolated_
+/// debug_smoke`), except the `LIVE_IN_RELEASE` ones.
 const DEBUG_ONLY: &[&str] = &[
     "smoke_reminder_inventory",
     "smoke_reminder_withdraw",
@@ -87,6 +92,24 @@ const DEBUG_ONLY: &[&str] = &[
     "smoke_seed_ambiguous",
     "terminal_metrics",
 ];
+
+/// `DEBUG_ONLY` commands that stay live in a release build, each with the
+/// reason that is acceptable there.
+const LIVE_IN_RELEASE: &[(&str, &str)] = &[(
+    "terminal_metrics",
+    "read-only pane geometry and scroll position of a validated session name",
+)];
+
+/// How a harness command refuses. The one switch is
+/// `smoke_faults::enabled()` — a debug build AND the two isolated-smoke
+/// launch arguments — reached directly, as `enabled()` inside
+/// smoke_faults.rs, or through the native driver's `gate()` / `blocking()`
+/// in smoke_native.rs.
+fn refuses_outside_a_smoke_launch(file: &str, body: &str) -> bool {
+    body.contains("!crate::smoke_faults::enabled()")
+        || (file == "smoke_faults.rs" && body.contains("!enabled()"))
+        || (file == "smoke_native.rs" && (body.contains("gate()?;") || body.contains("blocking(")))
+}
 
 fn command_name(text: &str) -> Option<&str> {
     let end = text.find(['\'', '"'])?;
@@ -281,6 +304,82 @@ fn every_registered_command_has_a_classified_caller() {
             problems.push(format!(
                 "`{name}` has no frontend caller: call it, list its dynamic site, mark it debug-only, or remove it"
             ));
+        }
+    }
+    assert!(problems.is_empty(), "{problems:#?}");
+}
+
+/// A harness command that forgot its gate would be callable by the
+/// production webview in a release build: synthetic native input, pasteboard
+/// writes, injected faults. Nine of them have a fail-closed behaviour test
+/// beside the code; the other eleven — the native input, snapshot and
+/// pasteboard drivers among them — have none, and nothing made a new harness
+/// command gate itself. So the gate is read from each body.
+#[test]
+fn harness_commands_refuse_outside_an_isolated_debug_smoke() {
+    let sources = all_sources();
+    let source = |file: &str| -> &str {
+        &sources
+            .iter()
+            .find(|(name, _)| name == file)
+            .unwrap_or_else(|| panic!("{file}"))
+            .1
+    };
+    // the switch, and the two wrappers that lead to it
+    let enabled = function_body(source("smoke_faults.rs"), "enabled").expect("enabled");
+    for needle in [
+        "cfg!(debug_assertions)",
+        "--smoke-wkwebview",
+        "--smoke-data-dir",
+    ] {
+        assert!(
+            enabled.contains(needle),
+            "smoke_faults::enabled no longer requires {needle}"
+        );
+    }
+    let native = source("smoke_native.rs");
+    assert!(
+        function_body(native, "gate")
+            .expect("gate")
+            .contains("crate::smoke_faults::enabled()"),
+        "smoke_native::gate is no longer the smoke switch"
+    );
+    assert!(
+        function_body(native, "blocking")
+            .expect("blocking")
+            .contains("gate()?;"),
+        "smoke_native::blocking no longer refuses before it runs the work"
+    );
+
+    let mut problems = Vec::new();
+    for name in DEBUG_ONLY {
+        let declared: Vec<(&str, &str)> = sources
+            .iter()
+            .filter_map(|(file, text)| function_body(text, name).map(|body| (file.as_str(), body)))
+            .collect();
+        let [(file, body)] = declared.as_slice() else {
+            problems.push(format!(
+                "`{name}` is declared {} times: this census reads one body",
+                declared.len()
+            ));
+            continue;
+        };
+        let live = LIVE_IN_RELEASE.iter().any(|(listed, _)| listed == name);
+        match (refuses_outside_a_smoke_launch(file, body), live) {
+            (false, false) => problems.push(format!(
+                "harness command `{name}` ({file}) does not refuse outside a smoke launch: gate \
+                 it on smoke_faults::enabled(), or list it in LIVE_IN_RELEASE with the reason it \
+                 is safe in a release build"
+            )),
+            (true, true) => problems.push(format!(
+                "`{name}` refuses outside a smoke launch: drop it from LIVE_IN_RELEASE"
+            )),
+            _ => {}
+        }
+    }
+    for (name, _) in LIVE_IN_RELEASE {
+        if !DEBUG_ONLY.contains(name) {
+            problems.push(format!("stale LIVE_IN_RELEASE entry `{name}`"));
         }
     }
     assert!(problems.is_empty(), "{problems:#?}");

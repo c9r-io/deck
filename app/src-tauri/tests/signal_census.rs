@@ -28,8 +28,8 @@
 
 mod source_scan;
 use source_scan::{
-    code_only, enclosing_function, is_declared_test_file, is_ident, js_declaration, js_ident,
-    js_sources, production_sources,
+    body_span, code_only, enclosing_function, is_declared_test_file, is_ident, js_declaration,
+    js_ident, js_sources, production_sources,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -87,41 +87,6 @@ const RUST_TOKENS: &[&str] = &[
     "notify::observe(",
     ".agent",
 ];
-
-/// Byte span of the brace-balanced body opened after `from` (string and
-/// char literals skipped).
-fn body_span(source: &str, from: usize) -> Option<(usize, usize)> {
-    let open = from + source[from..].find('{')?;
-    let bytes = source.as_bytes();
-    let (mut depth, mut i) = (0usize, open);
-    while i < bytes.len() {
-        match bytes[i] {
-            b'"' => {
-                i += 1;
-                while i < bytes.len() && bytes[i] != b'"' {
-                    i += if bytes[i] == b'\\' { 2 } else { 1 };
-                }
-            }
-            b'\'' if bytes.get(i + 1) == Some(&b'\\') => {
-                i += 2;
-                while i < bytes.len() && bytes[i] != b'\'' {
-                    i += 1;
-                }
-            }
-            b'\'' if bytes.get(i + 2) == Some(&b'\'') => i += 2,
-            b'{' => depth += 1,
-            b'}' => {
-                depth -= 1;
-                if depth == 0 {
-                    return Some((open, i));
-                }
-            }
-            _ => {}
-        }
-        i += 1;
-    }
-    None
-}
 
 /// The innermost `fn` whose body holds `at`; "" at item scope (a const or
 /// a spec table), where `enclosing_function` would name an earlier fn.
