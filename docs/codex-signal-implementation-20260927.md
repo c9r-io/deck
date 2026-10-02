@@ -1,5 +1,9 @@
 # Codex Signal 覆盖补充（2026-09-27）
 
+历史记录：0.157.1 shared daemon — **BLOCKED**；0.160.0 — **BLOCKED（2026-10-02）**。
+后续认证没有改变本页实现或 scheduler/readiness gate。长期信任条件及 embedded
+attribution topology 对照见[认证记录](codex-signal-certification-20261002.md)。
+
 承接 [诊断与方案](codex-signal-diagnosis-20260927.md)。本次落地缺失状态的可见提示、诊断入口及兼容路径说明，并保留独立的终端标题研究原型；没有把共享 daemon 的事件恢复成可信 Signal。
 
 ## 已实现

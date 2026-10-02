@@ -99,6 +99,14 @@ as “Agent status unavailable” may help, but is not automatically “needs at
 or an urgent notification. Expose blind spots without making each one an interruption.
 For Codex's shared-daemon case, unattributable Signal means no trusted Signal and no
 authority from it: safety is preserved, attention coverage is degraded, not fully solved.
+Shared-daemon Signal can become Trusted only when each event is verifiably bound
+to a specific interactive client and its current pane foreground generation.
+Inherited `TMUX_PANE`, cwd, timing, executable name, transcript path, and
+session/thread/turn IDs are not pane ownership proof. This is a provenance rule,
+not a version allowlist: 0.157.1 and 0.160.0 remain BLOCKED; `--no-daemon`
+embedded attribution topology can satisfy the existing model. See
+`docs/codex-signal-certification-20261002.md`; current `CodexSignalTrust::Unavailable`
+and scheduler/readiness gates remain unchanged.
 Prefer a future official client-provenance primitive to a permanent substitute
 protocol; expose the gap honestly while authoritative attribution is unavailable.
 

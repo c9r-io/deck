@@ -29,9 +29,12 @@ captions, no audio; waiting time is cut.*
   deck's own private server. Quit or crash deck and your work keeps going;
   reopen it and everything is where you left it.
 
-When coverage is missing, deck says so instead of guessing. Codex on its shared
-background service (the default since 0.157) does not report which terminal a
-hook came from, so deck rejects those events and shows no agent status for it.
+When coverage is missing, deck says so instead of guessing. Codex shared-daemon
+Signal requires trustworthy binding to the specific interactive client and its
+current pane foreground generation. The 0.157.1 and 0.160.0 certifications remain
+BLOCKED, so deck rejects their unattributable events. `codex --no-daemon` offers
+an optional compatible attribution topology. See the
+[trust contract and certification history](docs/codex-signal-certification-20261002.md).
 
 ## What deck deliberately doesn't do
 

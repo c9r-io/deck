@@ -124,7 +124,8 @@ row, never release or target one (`scheduler/select.rs`, `agent_holds`):
   *trusted* for that Codex process: one of its hooks was accepted as
   provably from that pane. Until then (a fresh process, or Deck just
   restarted), and once any of its hooks is refused as
-  `terminal-discontinuity` (Codex 0.157's shared background service) —
+  `terminal-discontinuity` (a shared daemon without trustworthy binding to
+  the specific interactive client and current pane foreground generation) —
   which also withdraws its earlier status and is never healed by a later
   hook of the same process — Deck cannot see a Codex permission prompt, so
   "no hook word" must not fall back to the quiet-only rule. A failed pane

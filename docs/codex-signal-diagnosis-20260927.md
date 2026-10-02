@@ -1,5 +1,10 @@
 # Codex Signal 覆盖诊断（2026-09-27）
 
+历史记录：本页的「最新版」指当时的 0.157.1，其 shared-daemon 认证为 **BLOCKED**。
+2026-10-02 的 0.160.0 复认证仍为 **BLOCKED**。版本无关的长期契约与后续证据见
+[认证记录](codex-signal-certification-20261002.md)：事件必须可信绑定到具体 interactive
+client 和当前 pane foreground generation；session/thread/turn ID 不能替代 pane proof。
+
 结论：可以改善并分阶段恢复 Codex 的状态覆盖，但最新版并没有自动解决共享 daemon 的归属问题。保持现有拒收边界是正确的；把拒收后的完全沉默当作产品终态则不够。应分别处理「用户知道状态不可用」「可验证的终端状态展示」「完整、可归属的交互事件」。
 
 本文件记录最初的诊断与方案评估阶段；当时未改变应用代码、Codex 配置、运行中的会话或发布状态。用户随后批准执行，后续结果见[实现与验证记录](codex-signal-implementation-20260927.md)。工作区原有的 `CLAUDE.md` 修改保持不变。

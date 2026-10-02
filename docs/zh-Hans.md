@@ -10,7 +10,7 @@ deck 是一个原生 macOS 应用，面向你放着让它跑的终端工作：Cl
 - **其余时候不打扰你**：卡片放在哪里由你决定，状态不会移动卡片。没有状态报告时，deck 只显示输出活动并如实说明：安静不代表已就绪，也不代表已完成。
 - **退出应用，session 仍在运行**：每张卡片都是 deck 私有 tmux 服务中的真实 session。退出或崩溃都不影响工作；重新打开，一切都在原处。重启机器或后台 Shell 服务会结束运行中的进程。
 
-覆盖不到的地方，deck 会直说而不去猜。Codex 使用共享后台服务时（0.157 起默认）不说明 hook 来自哪个终端，deck 会拒绝这些事件，因此没有 agent 状态。
+覆盖不到的地方，deck 会直说而不去猜。Codex shared-daemon Signal 只有在事件能可信绑定到具体 interactive client 和当前 pane foreground generation 时，才能成为 Trusted Signal。0.157.1 和 0.160.0 的认证仍为 BLOCKED，deck 会拒绝无法归属的事件；`codex --no-daemon` 是 attribution topology 可通过现有模型的可选兼容路径。见[信任契约与认证历史](codex-signal-certification-20261002.md)。
 
 ## deck 刻意不做的事
 

@@ -26,7 +26,8 @@
 //!   Codex in the foreground and Codex Signal is not `Trusted` for that
 //!   process generation (`agent_status::CodexSignalTrust`): `Unknown` (no
 //!   proof yet) and `Unavailable` (its hooks are refused as
-//!   `terminal-discontinuity`, e.g. Codex 0.157's shared daemon) both hold.
+//!   `terminal-discontinuity`, e.g. a shared daemon without trustworthy
+//!   interactive-client/current-pane-generation binding) both hold.
 //!   Without a trusted hook Deck cannot see a Codex permission prompt, and
 //!   "no agent word" must not fall back to the quiet-only rule for it. The
 //!   gate applies to an existing session whose Signal target has a trust

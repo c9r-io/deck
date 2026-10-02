@@ -133,9 +133,11 @@ an unread ending was viewed, and passes the two settings.
   tmux session name.
 - No history panel, no snooze, no per-project switch: one switch, two
   signals.
-- Codex using its shared background service (feature `daemon_auto_start`,
-  on by default since Codex 0.157) does not currently expose enough
-  per-client identity for deck to safely attribute hooks to a terminal: the
+- Codex shared-daemon Signal can become Trusted only when events are
+  verifiably bound to a specific interactive client and its current pane
+  foreground generation. Inherited `TMUX_PANE`, cwd, timing, executable name,
+  transcript path and session/thread/turn IDs are not pane ownership proof.
+  The 0.157.1 and 0.160.0 (2026-10-02) certifications remain BLOCKED: the
   service runs every client's hooks with the environment of the client that
   started it. deck rejects those events (`terminal-discontinuity` in the
   log) rather than guessing, so such a card has no agent state, never
@@ -145,9 +147,11 @@ an unread ending was viewed, and passes the two settings.
   process restores it. Because Deck then cannot see a Codex permission
   prompt, lists hold every automatic send into that card (send-now still
   works). Installing the hooks does not by itself mean
-  status works. Codex running without the shared service (embedded) reports
-  normally. This lasts until Codex exposes a trustworthy per-client hook
-  binding.
+  status works. Codex running without the shared service (embedded) has
+  attribution topology that can satisfy the existing model. Current
+  `CodexSignalTrust::Unavailable` and scheduler/readiness gates remain
+  unchanged; a future release needs fresh client/pane ownership proof, not
+  a version-based exemption. See [certification record](codex-signal-certification-20261002.md).
 - Codex reports *turn ended* when the model attempts to stop, so its ending
   can be slightly early, and an Esc-interrupt reports it too while
   background terminals may keep running (see the agent-status contract).

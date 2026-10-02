@@ -231,7 +231,7 @@ fn run(trace: &Value) -> Value {
             let mut table = world.table();
             let from = step["from"].as_str();
             let parent = match from.and_then(|f| f.strip_prefix("daemon:")) {
-                // a Codex 0.157 shared app-server started by that pane's
+                // the blocked shared app-server topology started by that pane's
                 // agent: no terminal, its own group; it spawns the hooks
                 // of EVERY client with the starter's `$TMUX_PANE`
                 Some(starter) => {

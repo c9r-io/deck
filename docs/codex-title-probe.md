@@ -1,5 +1,11 @@
 # Codex 0.157.1 terminal-title probe
 
+Historical presentation probe, not a Trusted Signal certification. Shared-daemon
+attribution remains **BLOCKED** for 0.157.1 and 0.160.0 (2026-10-02). See the
+[version-independent trust contract and certification](codex-signal-certification-20261002.md).
+Neither terminal titles nor session/thread/turn IDs replace ownership proof for
+the specific interactive client and its current pane foreground generation.
+
 This prototype tests the narrow portion of Codex terminal titles that Deck
 could display without interpreting project names, thread names, prompts, or
 transcript content. Its reusable parser is offline. The runtime evidence below

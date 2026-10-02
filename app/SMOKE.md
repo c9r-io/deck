@@ -261,8 +261,17 @@ plan file:
   an agent interaction` must be the only queue line for that card. Esc out
   of the dialog afterwards; never answer it with Enter;
 - Codex in two modes, certified separately:
+  Shared-daemon Signal becomes Trusted only with verifiable binding to the
+  specific interactive client and its current pane foreground generation.
+  Inherited `TMUX_PANE`, cwd, timing, executable name, transcript path and
+  session/thread/turn IDs are not pane ownership proof. This is not a version
+  allowlist: 0.157.1 — BLOCKED; 0.160.0 — BLOCKED (2026-10-02). See
+  [certification record](../docs/codex-signal-certification-20261002.md).
+  `CodexSignalTrust::Unavailable` and scheduler/readiness gates remain unchanged.
+
   - **embedded (functional)** — Codex running without its shared background
-    service. Launch each test Codex with `--no-daemon` (0.157.1), which
+    service. Launch each test Codex with `--no-daemon`, whose attribution
+    topology can satisfy the existing model (verified through 0.160.0). It
     stays embedded even if a shared daemon already exists. Never stop a
     user daemon for certification. This is a test topology and optional
     compatibility path, never a product requirement. Cases: `codex-normal`, `codex-permission`, `codex-interrupt`

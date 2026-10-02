@@ -132,17 +132,24 @@
 //! helper's parent is that leader for every hook word. Finally the chain
 //! from the helper to that leader must stay on the pane's terminal, apart
 //! from the one terminal-less process group the agent spawns the hook in
-//! (`terminal-discontinuity`, `terminal_continuous`). Codex 0.157's shared
-//! background app-server (feature `daemon_auto_start`) spawns EVERY
-//! client's hooks with the environment of the client that started it, so
+//! (`terminal-discontinuity`, `terminal_continuous`). Shared-daemon Signal
+//! can become Trusted only when an event is verifiably bound to a specific
+//! interactive client and its CURRENT pane foreground generation. This is
+//! a provenance rule, not a version allowlist. Certifications: Codex 0.157.1
+//! BLOCKED; 0.160.0 BLOCKED (2026-10-02), documented in
+//! `docs/codex-signal-certification-20261002.md`. In both tested releases,
+//! the shared background app-server (feature `daemon_auto_start`) spawns
+//! clients' hooks with the environment of the client that started it, so
 //! `$TMUX_PANE` names the starter's pane for all of them; while the starter
 //! TUI lives in pane P, another client's hook passes `foreign-pane` and the
 //! generation check for P. The daemon is a second terminal-less group in the
-//! chain, so those events are refused: Codex in shared-daemon mode has no
-//! Agent Signal in Deck (unavailable, never guessed) until Codex exposes a
-//! trustworthy per-client hook binding. Embedded Codex (no daemon) and
-//! Claude Code keep theirs. `$TMUX_PANE`, inherited environment, cwd,
-//! transcript paths, executable names and timing are never pane proof.
+//! chain, so those events are refused. Without trustworthy client/pane
+//! binding, shared-daemon Signal remains unavailable and scheduler/readiness
+//! gates stay in place. Embedded Codex (`--no-daemon`) attribution topology
+//! can satisfy this model; that does not certify full attention coverage.
+//! Claude Code keeps its existing admission. Inherited `$TMUX_PANE`, cwd,
+//! timing, executable names, transcript paths and session/thread/turn IDs
+//! are never pane ownership proof.
 //! The Board receives generation-bound Codex coverage separately from the
 //! observation: a quiet diagnostic can explain missing Signal without
 //! creating an attention episode or changing any automation hold.
@@ -445,7 +452,8 @@ fn with_agents<R>(f: impl FnOnce(&mut HashMap<PaneKey, Entry>) -> R) -> R {
 /// - `Unavailable`: a hook whose ancestry reaches this pane's own process
 ///   and current foreground leader (so it passed `foreign-pane` and the
 ///   generation check) was refused for `terminal-discontinuity`: this
-///   generation's hooks are not provably its own (Codex 0.157 shared daemon);
+///   generation's hooks are not provably its own (e.g. a shared daemon
+///   without trustworthy interactive-client/pane binding);
 /// - `Unknown`: no evidence yet (fresh process, or Deck restarted).
 ///
 /// A discontinuity proves that events can now claim this pane without
@@ -827,14 +835,15 @@ pub(crate) struct Origin {
 /// that group leader's parent is the agent on the pane's tty. That leading
 /// run is allowed only when it is terminal-less, is all the helper's group,
 /// and ends at the group's leader; everything above it must hold the pane's
-/// non-zero tty. Codex 0.157's shared app-server daemon is a second
-/// terminal-less group between the hook and the TUI that started it, so its
+/// non-zero tty. In the blocked 0.157.1 and 0.160.0 certifications, the shared
+/// app-server daemon is a second terminal-less group between the hook and
+/// the TUI that started it, so its
 /// hooks fail here even though the starter pane passes `foreign-pane` and
 /// the generation check. Deck does not claim the discontinuity IS a daemon;
 /// any topology it cannot prove this way fails closed. One snapshot, no
 /// extra reads. Accepted residual: an agent host that ran hooks inside its
 /// OWN terminal-less group (no new group per hook) would look like a hook
-/// wrapper; Codex 0.157 does not.
+/// wrapper; neither certified shared-daemon topology does.
 fn terminal_continuous(table: &ProcessTable, chain: &[u32], leader: u32, pane_pid: u32) -> bool {
     let Some(tty) = table.get(&pane_pid).map(|p| p.tty).filter(|tty| *tty != 0) else {
         return false;
@@ -2015,7 +2024,8 @@ mod tests {
         helper.pid
     }
 
-    /// A Codex 0.157 shared app-server daemon started by the TUI `starter`:
+    /// The blocked shared app-server topology certified in Codex 0.157.1
+    /// and 0.160.0, started by the TUI `starter`:
     /// its own group, no terminal.
     fn daemon(table: &mut ProcessTable, pid: u32, starter: u32) {
         table.insert(pid, process(pid, starter, 0, 0, 4000));
@@ -2081,7 +2091,7 @@ mod tests {
         reset_for_tests();
     }
 
-    /// Codex 0.157's shared app-server daemon, as probed: every client's hook
+    /// The blocked shared app-server topology, as probed: every client's hook
     /// is spawned by the daemon and inherits the STARTER's `$TMUX_PANE`, so
     /// all of them name the starter's pane — and pass `foreign-pane` and the
     /// generation check while the starter TUI lives there. Terminal

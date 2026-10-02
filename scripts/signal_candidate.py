@@ -25,9 +25,11 @@ logged under a new `sess-…` afterwards), so a case spanning a restart names
 every tag it was logged under: "session": ["sess-before", "sess-after"].
 A single string stays the normal form.
 
-`codex-daemon-refused` is a SAFETY case, not a functional one: Codex 0.157's
-shared app-server daemon spawns every client's hooks with the starter's
-pane, and Deck refuses them (`terminal-discontinuity`). Its "session" lists
+`codex-daemon-refused` is a SAFETY case, not a functional one: a shared daemon
+without trustworthy interactive-client/current-pane-generation binding cannot
+supply Trusted Signal. The blocked 0.157.1 and 0.160.0 certifications found
+hooks inherited the starter's pane; Deck refuses that topology
+(`terminal-discontinuity`). Its "session" lists
 the cards of at least two simultaneous Codex clients sharing one daemon; it
 passes only when the window shows such refusals and NOT ONE accepted event
 or notification for any of those cards.
