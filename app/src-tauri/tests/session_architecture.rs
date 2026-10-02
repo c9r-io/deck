@@ -265,6 +265,102 @@ fn the_documents_door_names_only_reviewed_modules() {
     assert!(documents.contains("crate::admission::channel_agent_command("));
 }
 
+/// settings.json has one owner — the webview, through `load_settings` and
+/// `save_settings` — and readers all over the backend: the scheduler's
+/// authority check, the pollers, the notification, locale and translation
+/// switches. A reader that goes through the owner's door moves a damaged file
+/// aside before the webview has seen it: the recovery warning is dropped, the
+/// next read finds no file, and the scheduler takes "no file" for "no rules"
+/// and strips every approval. So the doors are a closed list: each storage
+/// door that names `SettingsDoc`, and each function that asks for the
+/// settings path, with the one function it is allowed in. Three of them may
+/// set a damaged file aside — the owner's load, the owner's save, and the
+/// queue's review barrier, which writes the document back — and every other
+/// one is `read_typed`. The quarantining `load_typed` is in none of them.
+#[test]
+fn only_the_settings_owner_uses_a_door_that_moves_the_file() {
+    const DOORS: &[&str] = &[
+        "load_typed",
+        "peek_typed",
+        "read_typed",
+        "load_as_owner",
+        "save_typed",
+        "save_typed_version",
+        "save_typed_ephemeral",
+        "save_typed_as_owner",
+        "save_validated",
+        "ensure_review_schema",
+    ];
+    let (mut doors, mut paths) = (Vec::new(), Vec::new());
+    for (file, text) in source_scan::production_sources() {
+        let code = code_only(&text);
+        for door in DOORS {
+            let call = format!("{door}::<");
+            for (at, _) in code.match_indices(&call) {
+                if code[..at]
+                    .chars()
+                    .next_back()
+                    .is_some_and(source_scan::is_ident)
+                {
+                    continue; // a longer name ending in this one
+                }
+                let argument = &code[at + call.len()..];
+                let argument = &argument[..argument.find('>').expect("a closed type argument")];
+                if argument.rsplit("::").next() == Some("SettingsDoc") {
+                    doors.push(format!(
+                        "{door} in {file} {}",
+                        source_scan::enclosing_function(&code, at)
+                    ));
+                }
+            }
+        }
+        for (at, _) in code.match_indices("settings_path()") {
+            let before = &code[..at];
+            if before.ends_with("fn ")
+                || before
+                    .chars()
+                    .next_back()
+                    .is_some_and(source_scan::is_ident)
+            {
+                continue; // the declaration, or another module's own path
+            }
+            paths.push(format!(
+                "{file} {}",
+                source_scan::enclosing_function(&code, at)
+            ));
+        }
+    }
+    doors.sort();
+    paths.sort();
+    assert_eq!(
+        doors,
+        [
+            "ensure_review_schema in scheduler/mod.rs save_queue",
+            "load_as_owner in documents.rs load_settings_at",
+            "read_typed in documents.rs settings_value_at",
+            "read_typed in inbound.rs read_config_strict_at",
+            "read_typed in inbound_channel.rs read_config_at",
+            "save_typed_as_owner in documents.rs save_settings_at",
+        ],
+        "a settings read outside the webview's load goes through storage::read_typed, which \
+         never moves a file; only the owner's load and save and the review barrier may set \
+         one aside"
+    );
+    assert_eq!(
+        paths,
+        [
+            "documents.rs load_settings",
+            "documents.rs save_settings",
+            "documents.rs settings_value",
+            "inbound.rs read_config_strict",
+            "inbound_channel.rs read_config",
+            "scheduler/mod.rs save_queue",
+        ],
+        "a new reader of settings.json: route it through documents::settings_value, \
+         inbound::read_config_strict or inbound_channel::read_config"
+    );
+}
+
 /// Automation authority revocation fence (`scheduler/authority.rs`): a
 /// settings write and the automatic send's pre-fire authority decision
 /// serialize on `storage::settings_fence`, taken before the queue lock and
@@ -283,7 +379,12 @@ fn settings_writes_and_the_pre_fire_authority_check_share_one_fence() {
     let fence = save
         .find("storage::settings_fence()")
         .expect("save_settings takes the fence");
-    assert!(fence < save.find("save_validated::<SettingsDoc>").unwrap());
+    assert!(
+        fence
+            < save
+                .find("storage::save_typed_as_owner::<SettingsDoc>")
+                .unwrap()
+    );
     let delivery = source("scheduler/delivery.rs");
     let guarded = &delivery[delivery.find("fn send_one_guarded(").unwrap()..];
     let taken = guarded

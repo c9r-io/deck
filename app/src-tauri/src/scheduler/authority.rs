@@ -62,6 +62,14 @@
 //!   automatic send that relies on an approval holds — at selection
 //!   (`Hold::AuthorityUnverified`, stage `authority-unverified`) and at the
 //!   fence (`Unverified`) — until settings can be read; send-now still works.
+//!   The source is read without moving the settings file
+//!   (`inbound::read_config_strict`, `storage::read_typed`), so this state
+//!   lasts as long as its cause and never turns into "no settings, nothing
+//!   granted". While the main file is damaged its backup answers: the grants
+//!   of the previous save. The fence above is therefore a statement about the
+//!   settings file as last written — a revocation made in the one save a
+//!   damaged file took with it is not seen again until settings are saved,
+//!   and a grant made in that save is withdrawn from waiting rows.
 //! - `revoke_stale` (the scheduler tick) strips authority from every unsent
 //!   row whose grant is no longer the rule's valid grant — revoked, edited,
 //!   the rule deleted — and bumps its revision, so the panel and disk agree

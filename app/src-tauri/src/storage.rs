@@ -26,6 +26,21 @@
 //!   marked corrupt, and `save` refuses to overwrite it;
 //! - recovery itself never writes: recovered data only reaches disk when the
 //!   user actually changes something and a normal save runs;
+//! - only a file's OWNER moves it. The owner is the code that loads the
+//!   document into memory and saves it back; `load_typed` is its door. A
+//!   file that others also read (settings.json: the scheduler's authority
+//!   check, the pollers, the notification, locale and translation switches)
+//!   gives those readers `read_typed`, which never renames or writes: a main
+//!   file with damaged content is answered from the validated `.bak`, a main
+//!   file that cannot be READ is an error meaning "unknown" (not damage, no
+//!   fallback), and a main file an earlier recovery set aside is answered
+//!   from the `.bak` until the owner's next save puts it back
+//!   (`was_quarantined`). Its owner loads with `load_as_owner`, so the same
+//!   state is not a first run on the next start either and the warning is
+//!   produced once, and saves with `save_typed_as_owner`, which sets aside a
+//!   main file damaged while deck runs instead of refusing the save. The one
+//!   backend writer of settings.json, `ensure_review_schema`, loads the same
+//!   way and leaves a main file it merely cannot read alone;
 //! - a single flock guards against two deck instances fighting over the
 //!   same files (and double-firing the scheduler).
 //!
@@ -379,6 +394,124 @@ pub(crate) fn was_quarantined(path: &Path) -> Result<bool, DeckError> {
     }
 }
 
+/// What one file holds, as far as a reader that will not move it can tell.
+enum Held {
+    /// no file at that path
+    Nothing,
+    /// a fully validated payload
+    Good(String),
+    /// written by a newer deck
+    Newer,
+    /// its CONTENT cannot be used: not UTF-8, not JSON, a broken envelope or
+    /// the wrong structure (the reason, for the log's category code)
+    Damaged(String),
+    /// the READ failed — permissions, descriptors, a failing disk; the file
+    /// may be perfectly fine
+    Unreadable(std::io::ErrorKind),
+}
+
+fn held<T: DeserializeOwned>(path: &Path) -> Held {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Held::Nothing,
+        Err(error) => return Held::Unreadable(error.kind()),
+    };
+    let Ok(raw) = std::str::from_utf8(&bytes) else {
+        return Held::Damaged("invalid UTF-8".into());
+    };
+    match parse_doc::<T>(raw) {
+        Ok(payload) => Held::Good(payload),
+        Err(DocErr::Newer(_)) => Held::Newer,
+        Err(DocErr::Bad(reason)) => Held::Damaged(reason),
+    }
+}
+
+/// The read for everything that does not OWN the file: the best validated
+/// copy, with the disk left exactly as it was found. Nothing is renamed,
+/// created or rewritten, however often this runs and whoever runs first.
+///
+/// - A usable main file is the answer.
+/// - A main file written by a newer deck is refused, never read around.
+/// - A main file that is there but cannot be READ is an error meaning
+///   "unknown": that is not damage, and the backup does not stand in.
+/// - A main file whose CONTENT is damaged is answered from the backup (the
+///   same full validation); an error when that is unusable too.
+/// - No main file is `Ok(None)`, a first run — unless a recovery set it
+///   aside and its backup still loads: then the backup answers until the
+///   owner's next save puts the main file back.
+///
+/// Moving a damaged file and telling the user are the owner's
+/// (`load_as_owner`, `save_typed_as_owner`); an outcome from here never
+/// carries a warning, and its errors name the file, never its content.
+pub(crate) fn read_typed<T: DeserializeOwned>(
+    path: &Path,
+) -> Result<Option<LoadOutcome>, DeckError> {
+    let name = path
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let unreadable = |kind: std::io::ErrorKind| {
+        DeckError::new(
+            ErrorKind::io(kind),
+            format!("{name} could not be read ({kind}); it was left untouched"),
+        )
+    };
+    let newer = || {
+        DeckError::new(
+            ErrorKind::NewerSchema,
+            format!("{name} was written by a newer deck — update deck; it was left untouched"),
+        )
+    };
+    let main_is_gone = match held::<T>(path) {
+        Held::Good(payload) => {
+            return Ok(Some(LoadOutcome {
+                payload,
+                source: "main",
+                warning: None,
+            }))
+        }
+        Held::Newer => return Err(newer()),
+        Held::Unreadable(kind) => return Err(unreadable(kind)),
+        Held::Damaged(_) => false,
+        Held::Nothing => true,
+    };
+    let bak = bak_path(path);
+    // no backup, or nothing ever set aside: an ordinary first run
+    if main_is_gone && !(bak.exists() && was_quarantined(path)?) {
+        return Ok(None);
+    }
+    match held::<T>(&bak) {
+        Held::Good(payload) => Ok(Some(LoadOutcome {
+            payload,
+            source: "backup",
+            warning: None,
+        })),
+        Held::Newer => Err(newer()),
+        Held::Unreadable(kind) => Err(unreadable(kind)),
+        // nothing loadable is left of a file whose loss was already reported
+        Held::Nothing | Held::Damaged(_) if main_is_gone => Ok(None),
+        Held::Nothing | Held::Damaged(_) => Err(DeckError::new(
+            ErrorKind::Recovery,
+            format!("{name} is damaged and its backup is unusable"),
+        )),
+    }
+}
+
+/// The load for the OWNER of a file that has readers beside it (settings):
+/// `load_typed` — the one place a damaged main file is set aside and its
+/// warning produced — and, when that finds no main file, `read_typed`, so a
+/// file set aside by an earlier recovery and not saved since is still not a
+/// first run. The warning comes once, from the load that moved the file;
+/// later starts answer from the backup without one.
+pub(crate) fn load_as_owner<T: DeserializeOwned>(
+    path: &Path,
+) -> Result<Option<LoadOutcome>, DeckError> {
+    match load_typed::<T>(path)? {
+        Some(doc) => Ok(Some(doc)),
+        None => read_typed::<T>(path),
+    }
+}
+
 /// A projection/save fence may inspect the main file but must never quarantine
 /// it or consume recovery before the authoritative Board loader sees warnings.
 pub(crate) fn peek_typed<T: DeserializeOwned>(path: &Path) -> Result<Option<String>, DeckError> {
@@ -397,11 +530,14 @@ pub(crate) fn peek_typed<T: DeserializeOwned>(path: &Path) -> Result<Option<Stri
     }
 }
 
-/// Load and fully validate a data file as document type `T`.
+/// Load and fully validate a data file as document type `T`, for its owner.
 /// `Ok(None)` = file does not exist (a genuine first run).
 /// A bad main file is quarantined, then the `.bak` (same validation) is
 /// tried; success carries a warning for the UI, failure is a hard error the
-/// caller must surface — NOT to be treated as an empty first run.
+/// caller must surface — NOT to be treated as an empty first run. A main
+/// file the owner cannot read is set aside the same way: the owner goes on
+/// to save from memory, and only a file that is out of the way is safe from
+/// that save. Code that does not own the file uses `read_typed`.
 pub fn load_typed<T: DeserializeOwned>(path: &Path) -> Result<Option<LoadOutcome>, DeckError> {
     if !path.exists() {
         return Ok(None);
@@ -646,8 +782,47 @@ pub(crate) fn save_typed_version<T: DeserializeOwned>(
     })
 }
 
+/// The save for the OWNER of a file that has readers beside it (settings).
+/// Those readers never move anything (`read_typed`), so a main file damaged
+/// while deck runs would refuse every later save. The owner holds the
+/// document in memory: the damaged file is set aside — kept as
+/// `.corrupt-<ts>`, never made the backup — and the save goes ahead. A main
+/// file written by a newer deck or one that cannot be read is refused,
+/// exactly as `save_typed` refuses it; a payload that is not a `T` is
+/// refused before anything is moved.
+pub(crate) fn save_typed_as_owner<T: DeserializeOwned>(
+    path: &Path,
+    payload: &str,
+) -> Result<(), DeckError> {
+    serde_json::from_str::<T>(payload)
+        .map_err(|e| DeckError::classified(format!("refusing to save wrong structure: {e}")))?;
+    let _save_guard = SAVE_LOCK.lock_or_recover();
+    if let Held::Damaged(reason) = held::<T>(path) {
+        // a failed move leaves the file where it is; the save below refuses it
+        if quarantine(path).is_ok() {
+            applog(&format!(
+                "[storage] {} was damaged when saving; kept aside ({})",
+                path.file_name().unwrap_or_default().to_string_lossy(),
+                err_code(&reason)
+            ));
+        }
+    }
+    save_checked_locked(path, payload, true, 1, |existing| {
+        serde_json::from_value::<T>(existing.clone())
+            .map(|_| ())
+            .map_err(DeckError::from)
+    })
+}
+
 /// Upgrade only the envelope while holding the same lock as settings saves.
 /// Reading outside this lock could restore stale user settings during opt-in.
+/// It writes the settings back as their owner would load them: a damaged
+/// main file is set aside and the backup written in its place (raising the
+/// recovery notice the webview's own load will no longer see), and a file an
+/// earlier recovery set aside is rebuilt from its backup, never from `{}`.
+/// It runs on the scheduler's thread, though, not for the owner: a main file
+/// it merely cannot READ is left where it is, and the queue save that asked
+/// for the barrier fails and is retried.
 pub(crate) fn ensure_review_schema<T: DeserializeOwned>(path: &Path) -> Result<(), DeckError> {
     let _save_guard = SAVE_LOCK.lock_or_recover();
     let already_v2 = std::fs::read_to_string(path)
@@ -658,9 +833,24 @@ pub(crate) fn ensure_review_schema<T: DeserializeOwned>(path: &Path) -> Result<(
     if already_v2 {
         return Ok(());
     }
-    let payload = load_typed::<T>(path)?
-        .map(|v| v.payload)
-        .unwrap_or_else(|| "{}".into());
+    if let Held::Unreadable(kind) = held::<T>(path) {
+        return Err(DeckError::new(
+            ErrorKind::io(kind),
+            format!(
+                "{} could not be read ({kind}); it was left untouched",
+                path.file_name().unwrap_or_default().to_string_lossy()
+            ),
+        ));
+    }
+    let payload = match load_as_owner::<T>(path)? {
+        Some(doc) => {
+            if let Some(note) = doc.warning {
+                warn(StorageNotice::Recovered, note);
+            }
+            doc.payload
+        }
+        None => "{}".into(),
+    };
     serde_json::from_str::<T>(&payload).map_err(DeckError::from)?;
     save_checked_locked(path, &payload, true, 2, |existing| {
         serde_json::from_value::<T>(existing.clone())
@@ -1330,5 +1520,456 @@ mod tests {
             assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
         }
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    // ---------- the reader's door (`read_typed`) and the owner's doors ----------
+
+    /// Every entry of `d` with its bytes (nothing for one that cannot be
+    /// read): equal listings mean nothing was moved, created, removed or
+    /// rewritten.
+    fn listing(d: &Path) -> Vec<(String, Vec<u8>)> {
+        let mut files: Vec<_> = std::fs::read_dir(d)
+            .unwrap()
+            .flatten()
+            .map(|entry| {
+                (
+                    entry.file_name().to_string_lossy().into_owned(),
+                    std::fs::read(entry.path()).unwrap_or_default(),
+                )
+            })
+            .collect();
+        files.sort();
+        files
+    }
+
+    fn envelope(v: u64) -> Vec<u8> {
+        format!(r#"{{"schema_version":1,"data":{{"v":{v}}}}}"#).into_bytes()
+    }
+
+    const NEWER: &[u8] = br#"{"schema_version":99,"data":{"v":9}}"#;
+
+    /// What a reader is owed in one cell of main × backup × set-aside.
+    #[derive(Debug, PartialEq)]
+    enum Answer {
+        Main(u64),
+        Backup(u64),
+        FirstRun,
+        Fails(ErrorKind),
+    }
+
+    /// One cell: its name, the main file, the backup, whether something was
+    /// set aside before, and the answer.
+    type Cell<'a> = (&'a str, Option<&'a [u8]>, Option<&'a [u8]>, bool, Answer);
+
+    fn answer(p: &Path) -> Answer {
+        match read_typed::<Doc>(p) {
+            Ok(None) => Answer::FirstRun,
+            Ok(Some(doc)) => {
+                assert!(doc.warning.is_none(), "a reader is never the one told");
+                let v = serde_json::from_str::<serde_json::Value>(&doc.payload).unwrap()["v"]
+                    .as_u64()
+                    .unwrap();
+                match doc.source {
+                    "main" => Answer::Main(v),
+                    "backup" => Answer::Backup(v),
+                    other => panic!("unknown source {other}"),
+                }
+            }
+            Err(error) => Answer::Fails(error.kind()),
+        }
+    }
+
+    /// The whole matrix, one row per cell. In every cell the reader gets the
+    /// best validated copy (or an honest "no"), twice in a row, and the
+    /// directory is byte for byte what it was.
+    #[test]
+    fn a_reader_gets_the_best_validated_copy_and_never_changes_the_disk() {
+        use Answer::{Backup, Fails, FirstRun, Main};
+        let broken: &[u8] = b"{broken";
+        let not_utf8: &[u8] = &[0xff, 0xfe, b'{', b'}'];
+        let wrong_type: &[u8] = br#"{"schema_version":1,"data":{"v":"text"}}"#;
+        let half_envelope: &[u8] = br#"{"schema_version":1}"#;
+        let (one, two) = (envelope(1), envelope(2));
+        let cells: [Cell; 19] = [
+            ("usable main", Some(&two), Some(&one), false, Main(2)),
+            ("usable main, no backup", Some(&two), None, false, Main(2)),
+            (
+                "usable main, damaged backup",
+                Some(&two),
+                Some(broken),
+                false,
+                Main(2),
+            ),
+            (
+                "usable main, set aside long ago",
+                Some(&two),
+                Some(&one),
+                true,
+                Main(2),
+            ),
+            (
+                "damaged main, usable backup",
+                Some(broken),
+                Some(&one),
+                false,
+                Backup(1),
+            ),
+            (
+                "not UTF-8, usable backup",
+                Some(not_utf8),
+                Some(&one),
+                false,
+                Backup(1),
+            ),
+            (
+                "wrong structure, usable backup",
+                Some(wrong_type),
+                Some(&one),
+                false,
+                Backup(1),
+            ),
+            (
+                "half an envelope, usable backup",
+                Some(half_envelope),
+                Some(&one),
+                false,
+                Backup(1),
+            ),
+            (
+                "damaged main, damaged backup",
+                Some(broken),
+                Some(broken),
+                false,
+                Fails(ErrorKind::Recovery),
+            ),
+            (
+                "damaged main, no backup",
+                Some(broken),
+                None,
+                false,
+                Fails(ErrorKind::Recovery),
+            ),
+            (
+                "damaged main, newer backup",
+                Some(broken),
+                Some(NEWER),
+                false,
+                Fails(ErrorKind::NewerSchema),
+            ),
+            (
+                "newer main, usable backup",
+                Some(NEWER),
+                Some(&one),
+                false,
+                Fails(ErrorKind::NewerSchema),
+            ),
+            (
+                "newer main, set aside before",
+                Some(NEWER),
+                Some(&one),
+                true,
+                Fails(ErrorKind::NewerSchema),
+            ),
+            ("no main, nothing else", None, None, false, FirstRun),
+            (
+                "no main, a backup, never set aside",
+                None,
+                Some(&one),
+                false,
+                FirstRun,
+            ),
+            (
+                "no main, set aside, usable backup",
+                None,
+                Some(&one),
+                true,
+                Backup(1),
+            ),
+            (
+                "no main, set aside, damaged backup",
+                None,
+                Some(broken),
+                true,
+                FirstRun,
+            ),
+            ("no main, set aside, no backup", None, None, true, FirstRun),
+            (
+                "no main, set aside, newer backup",
+                None,
+                Some(NEWER),
+                true,
+                Fails(ErrorKind::NewerSchema),
+            ),
+        ];
+        for (k, (cell, main, backup, set_aside, want)) in cells.into_iter().enumerate() {
+            let d = tdir(&format!("read-{k}"));
+            let p = d.join("x.json");
+            if let Some(bytes) = main {
+                std::fs::write(&p, bytes).unwrap();
+            }
+            if let Some(bytes) = backup {
+                std::fs::write(bak_path(&p), bytes).unwrap();
+            }
+            if set_aside {
+                std::fs::write(d.join("x.corrupt-1700000000"), b"kept").unwrap();
+            }
+            let before = listing(&d);
+            for round in 0..2 {
+                assert_eq!(answer(&p), want, "{cell}, read {round}");
+            }
+            assert_eq!(listing(&d), before, "{cell}: the read changed the disk");
+            std::fs::remove_dir_all(d).unwrap();
+        }
+    }
+
+    /// A file that is there but cannot be READ is "unknown" to a reader: not
+    /// a first run, not damage, and a good backup does not stand in for it.
+    /// The same holds for the backup of a damaged or set-aside main file.
+    #[test]
+    fn a_reader_reports_an_unreadable_file_as_unknown_and_never_reads_around_it() {
+        let unknown = |p: &Path, cell: &str| {
+            let kind = match read_typed::<Doc>(p) {
+                Err(error) => error.kind(),
+                Ok(found) => panic!("{cell}: answered {:?}", found.map(|doc| doc.source)),
+            };
+            assert!(
+                !matches!(kind, ErrorKind::Recovery | ErrorKind::NewerSchema),
+                "{cell}: {kind:?} says damaged or newer"
+            );
+        };
+        // a directory where the file should be: the read fails for any user
+        let d = tdir("read-unreadable");
+        let p = d.join("x.json");
+        std::fs::create_dir(&p).unwrap();
+        std::fs::write(bak_path(&p), envelope(1)).unwrap();
+        let before = listing(&d);
+        for _ in 0..2 {
+            unknown(&p, "unreadable main, usable backup");
+        }
+        assert_eq!(listing(&d), before);
+        assert!(p.is_dir(), "not moved");
+
+        // a permission failure, where the test user is not privileged
+        let d = tdir("read-denied");
+        let p = d.join("x.json");
+        std::fs::write(&p, envelope(2)).unwrap();
+        std::fs::write(bak_path(&p), envelope(1)).unwrap();
+        set_mode(&p, 0o000);
+        if std::fs::read(&p).is_err() {
+            assert_eq!(
+                read_typed::<Doc>(&p).unwrap_err().kind(),
+                ErrorKind::Perm,
+                "the kind says why"
+            );
+            assert_eq!(listing(&d).len(), 2, "nothing set aside");
+        }
+        set_mode(&p, 0o600);
+        assert_eq!(answer(&p), Answer::Main(2), "readable again, untouched");
+
+        // the backup cannot be read: unknown too, never "nothing there"
+        for (cell, main, set_aside) in [
+            (
+                "damaged main, unreadable backup",
+                Some(&b"{broken"[..]),
+                false,
+            ),
+            ("no main, set aside, unreadable backup", None, true),
+        ] {
+            let d = tdir("read-unreadable-backup");
+            let p = d.join("x.json");
+            if let Some(bytes) = main {
+                std::fs::write(&p, bytes).unwrap();
+            }
+            if set_aside {
+                std::fs::write(d.join("x.corrupt-1700000000"), b"kept").unwrap();
+            }
+            std::fs::create_dir(bak_path(&p)).unwrap();
+            let before = listing(&d);
+            unknown(&p, cell);
+            assert_eq!(listing(&d), before, "{cell}");
+        }
+    }
+
+    /// "Set aside before" is exactly the name `load_typed` gives a file it
+    /// moves — `<stem>.corrupt-<digits>` with an optional `-<n>` — for THIS
+    /// file, and nothing else in the directory.
+    #[test]
+    fn only_a_recovery_s_own_file_name_counts_as_set_aside() {
+        let d = tdir("marker");
+        let p = d.join("settings.json");
+        assert!(!was_quarantined(&p).unwrap(), "an empty directory");
+        for other in [
+            "settings.corrupt-",
+            "settings.corrupt-abc",
+            "settings.corrupt-17x",
+            "settings.json.corrupt-1700000000",
+            "deck.corrupt-1700000000",
+            "settings.json.bak",
+        ] {
+            std::fs::write(d.join(other), b"x").unwrap();
+            assert!(!was_quarantined(&p).unwrap(), "{other} is not a marker");
+        }
+        std::fs::write(d.join("settings.corrupt-1700000000-1"), b"x").unwrap();
+        assert!(was_quarantined(&p).unwrap(), "the numbered form counts");
+        // the real thing: whatever name the quarantine picks is recognised
+        let d = tdir("marker-real");
+        let p = d.join("settings.json");
+        std::fs::write(&p, "{broken").unwrap();
+        assert!(load_doc(&p).is_err());
+        assert!(was_quarantined(&p).unwrap());
+        assert!(!was_quarantined(&d.join("deck.json")).unwrap());
+        // a directory that is not there has nothing set aside
+        assert!(!was_quarantined(&d.join("missing").join("settings.json")).unwrap());
+    }
+
+    /// The owner's load across a restart: the load that moves the damaged
+    /// file carries the warning; the next ones, with the main file still
+    /// gone, answer from the backup without one; a save ends the episode.
+    #[test]
+    fn the_owner_is_warned_once_and_a_set_aside_file_is_never_a_first_run() {
+        let d = tdir("owner-load");
+        let p = d.join("x.json");
+        save(&p, r#"{"v":1}"#).unwrap();
+        save(&p, r#"{"v":2}"#).unwrap(); // .bak holds v1
+        std::fs::write(&p, "{broken").unwrap();
+        let first = load_as_owner::<Doc>(&p).unwrap().unwrap();
+        assert_eq!(first.source, "backup");
+        assert!(first.warning.is_some());
+        for start in 0..2 {
+            let later = load_as_owner::<Doc>(&p).unwrap().unwrap();
+            assert_eq!(later.source, "backup", "start {start}");
+            assert!(later.payload.contains("\"v\":1"), "{}", later.payload);
+            assert!(later.warning.is_none(), "start {start}: told once");
+        }
+        assert!(!p.exists(), "loading never writes");
+        save(&p, &first.payload).unwrap();
+        let rebuilt = load_as_owner::<Doc>(&p).unwrap().unwrap();
+        assert_eq!((rebuilt.source, rebuilt.warning), ("main", None));
+        // with no usable backup: a hard error once, then a first run
+        let d = tdir("owner-load-lost");
+        let p = d.join("x.json");
+        std::fs::write(&p, "{broken").unwrap();
+        assert_eq!(
+            load_as_owner::<Doc>(&p).unwrap_err().kind(),
+            ErrorKind::Recovery
+        );
+        assert!(load_as_owner::<Doc>(&p).unwrap().is_none());
+    }
+
+    /// The owner's save: a main file whose content is damaged is set aside
+    /// and the save goes ahead; everything `save_typed` refuses for another
+    /// reason is still refused, with the disk untouched.
+    #[test]
+    fn the_owners_save_sets_a_damaged_main_aside_and_refuses_what_save_refuses() {
+        let d = tdir("owner-save");
+        let p = d.join("x.json");
+        save_typed::<Doc>(&p, r#"{"v":1}"#).unwrap();
+        save_typed::<Doc>(&p, r#"{"v":2}"#).unwrap(); // .bak holds v1
+        let backup = std::fs::read(bak_path(&p)).unwrap();
+
+        // usable main: an ordinary save, the previous version becomes the backup
+        save_typed_as_owner::<Doc>(&p, r#"{"v":3}"#).unwrap();
+        assert_eq!(answer(&p), Answer::Main(3));
+        assert_ne!(std::fs::read(bak_path(&p)).unwrap(), backup);
+        assert_eq!(listing(&d).len(), 2, "nothing set aside");
+        let backup = std::fs::read(bak_path(&p)).unwrap(); // v2
+
+        // a payload that is not the document: refused before anything moves
+        std::fs::write(&p, "{broken").unwrap();
+        let before = listing(&d);
+        assert!(save_typed_as_owner::<Doc>(&p, r#"{"v":"text"}"#).is_err());
+        assert_eq!(listing(&d), before);
+
+        // damaged content: set aside with its bytes, saved, backup untouched
+        save_typed_as_owner::<Doc>(&p, r#"{"v":4}"#).unwrap();
+        assert_eq!(answer(&p), Answer::Main(4));
+        assert_eq!(std::fs::read(bak_path(&p)).unwrap(), backup);
+        let kept: Vec<_> = listing(&d)
+            .into_iter()
+            .filter(|(name, _)| name.starts_with("x.corrupt-"))
+            .collect();
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].1, b"{broken");
+        assert_eq!(mode_of(&d.join(&kept[0].0)), 0o600);
+
+        // written by a newer deck: refused untouched
+        std::fs::write(&p, NEWER).unwrap();
+        let before = listing(&d);
+        assert_eq!(
+            save_typed_as_owner::<Doc>(&p, r#"{"v":5}"#)
+                .unwrap_err()
+                .kind(),
+            ErrorKind::NewerSchema
+        );
+        assert_eq!(listing(&d), before);
+
+        // cannot be read: refused untouched, like any save
+        std::fs::remove_file(&p).unwrap();
+        std::fs::create_dir(&p).unwrap();
+        let before = listing(&d);
+        assert!(save_typed_as_owner::<Doc>(&p, r#"{"v":5}"#).is_err());
+        assert_eq!(listing(&d), before);
+        assert!(p.is_dir());
+    }
+
+    /// The review barrier writes settings back, so it must write what their
+    /// owner would load: never `{}` over settings that can be recovered, and
+    /// a recovery it performs itself is reported.
+    #[test]
+    fn the_review_barrier_rebuilds_recoverable_settings_instead_of_emptying_them() {
+        let d = tdir("review-recovery");
+        let p = d.join("settings.json");
+        let on_disk = |p: &Path| {
+            serde_json::from_slice::<serde_json::Value>(&std::fs::read(p).unwrap()).unwrap()
+        };
+        save_typed::<Doc>(&p, r#"{"v":1}"#).unwrap();
+        save_typed::<Doc>(&p, r#"{"v":2}"#).unwrap(); // .bak holds v1
+
+        // set aside by its owner's load, not saved since
+        std::fs::write(&p, "{broken").unwrap();
+        assert_eq!(load_as_owner::<Doc>(&p).unwrap().unwrap().source, "backup");
+        take_notices();
+        ensure_review_schema::<Doc>(&p).unwrap();
+        assert_eq!(on_disk(&p)["schema_version"], 2);
+        assert_eq!(on_disk(&p)["data"]["v"], 1, "rebuilt from the backup");
+        assert!(take_notices().is_empty(), "its owner was already told");
+
+        // damaged and not yet seen by its owner: set aside here, told once
+        std::fs::write(&p, "{broken again").unwrap();
+        ensure_review_schema::<Doc>(&p).unwrap();
+        assert_eq!(on_disk(&p)["schema_version"], 2);
+        assert_eq!(on_disk(&p)["data"]["v"], 1);
+        assert_eq!(take_notices(), [StorageNotice::Recovered]);
+        let loaded = load_as_owner::<Doc>(&p).unwrap().unwrap();
+        assert_eq!((loaded.source, loaded.warning), ("main", None));
+        let kept = listing(&d)
+            .into_iter()
+            .filter(|(name, _)| name.starts_with("settings.corrupt-"))
+            .count();
+        assert_eq!(kept, 2, "both damaged files are kept");
+
+        // a real first run still gets the empty barrier
+        let fresh = tdir("review-first").join("settings.json");
+        ensure_review_schema::<serde_json::Value>(&fresh).unwrap();
+        assert_eq!(on_disk(&fresh)["schema_version"], 2);
+        assert_eq!(on_disk(&fresh)["data"], serde_json::json!({}));
+
+        // a main file that cannot be read right now is not this thread's to
+        // move: the barrier fails (the queue save is retried), nothing is set
+        // aside, and no backup is written in its place
+        let d = tdir("review-unreadable");
+        let p = d.join("settings.json");
+        std::fs::create_dir(&p).unwrap();
+        std::fs::write(bak_path(&p), envelope(1)).unwrap();
+        let before = listing(&d);
+        take_notices();
+        let refused = ensure_review_schema::<Doc>(&p).unwrap_err();
+        assert!(
+            !matches!(refused.kind(), ErrorKind::Recovery),
+            "not damage: {refused}"
+        );
+        assert_eq!(listing(&d), before);
+        assert!(p.is_dir(), "left where it was");
+        assert!(take_notices().is_empty());
     }
 }

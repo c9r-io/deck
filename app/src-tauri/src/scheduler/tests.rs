@@ -5182,6 +5182,85 @@ fn an_unreadable_authority_source_holds_without_revoking() {
     );
 }
 
+/// A damaged settings.json withdraws nothing. The tick's sweep judges rows
+/// against whatever `read_config_strict` hands it, so the file states go
+/// through the real read here: with the main file damaged and its backup
+/// intact, the approval and the first-send override on queued rows survive
+/// tick after tick and the file stays where it is; with nothing provable
+/// there is no sweep at all (the rows hold, as above); only a settings file
+/// that is really absent is an empty config.
+#[test]
+fn a_damaged_settings_file_strips_no_approval_and_no_override_from_queued_rows() {
+    let dir = std::env::temp_dir().join(format!("deck-sched-settings-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("settings.json");
+    // the fixture's approved Slack badge rule, and a second badge rule that
+    // accepted the first-send override for Claude
+    let approved = grant_fixture()["rule"].clone();
+    let mut accepting = approved.clone();
+    accepting["id"] = "Rfirst01".into();
+    accepting["badge"] = "rocket".into();
+    accepting["cmd"] = "claude".into();
+    accepting["firstSendWithoutReadiness"] = true.into();
+    accepting.as_object_mut().unwrap().remove("autoSend");
+    let settings = |editor: &str| {
+        serde_json::json!({"editor": editor, "inbound": {"sources": {"slack": {"enabled": true}}, "rules": [approved, accepting]}})
+            .to_string()
+    };
+    let save = |text: &str| {
+        crate::storage::save_typed::<crate::documents::SettingsDoc>(&path, text).unwrap()
+    };
+    save(&settings("Zed")); // ends up in the backup
+    save(&settings("Cursor")); // the main file
+
+    let mut head = overridden_head("h");
+    head.readiness_override.as_mut().unwrap().rule = "Rfirst01".into();
+    let mut q = qs(vec![external_step("e", Some(step_authority(0))), head]);
+    let sweep = |q: &mut QueueState| {
+        crate::inbound::read_config_strict_at(&path)
+            .map(|config| revoke_stale(q, &config) + first_send::revoke_stale(q, &config))
+    };
+    let kept = |q: &QueueState| {
+        (
+            q.items[0].authority.is_some(),
+            q.items[1].readiness_override.is_some(),
+        )
+    };
+    assert_eq!(
+        sweep(&mut q),
+        Some(0),
+        "the ordinary path withdraws nothing"
+    );
+
+    std::fs::write(&path, "{damaged").unwrap();
+    for tick in 0..3 {
+        assert_eq!(
+            sweep(&mut q),
+            Some(0),
+            "tick {tick}: the backup still proves both"
+        );
+        assert_eq!(kept(&q), (true, true), "tick {tick}");
+    }
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        b"{damaged",
+        "the sweep moved or rewrote the settings file"
+    );
+
+    // nothing provable: no sweep, the rows hold with what they carry
+    std::fs::write(dir.join("settings.json.bak"), "{damaged too").unwrap();
+    for tick in 0..3 {
+        assert_eq!(sweep(&mut q), None, "tick {tick}");
+        assert_eq!(kept(&q), (true, true), "tick {tick}");
+    }
+
+    // a settings file that is really absent grants nothing
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert_eq!(sweep(&mut q), Some(2));
+    assert_eq!(kept(&q), (false, false));
+}
+
 /// B.1-4: the run's content is a snapshot, its authority is revocable. A
 /// rule/template edit never rewrites a queued row's bytes; it retires the
 /// grant version the row was approved under, so the row loses automatic

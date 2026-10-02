@@ -315,6 +315,17 @@ data with an empty default. A file written by a NEWER deck (or one whose
 version header deck cannot read) is left byte-for-byte alone instead of
 being overwritten.
 
+For `settings.json` this holds whichever part of deck reads the file first.
+With a usable backup, every setting, automation and approval of the previous
+save carries on, you are told once, and your next settings change writes the
+file again; nothing needs doing in `~/.deck`. With no usable backup deck says
+once that settings could not be loaded and you carry on from the defaults;
+the damaged file stays where it was set aside. A settings file that is there
+but cannot be read for the moment is not treated as damaged by the scheduler
+or the pollers: they wait for it, and no approval is withdrawn meanwhile. To
+start over with default settings on purpose, remove both `settings.json` and
+`settings.json.bak`.
+
 Terminal drag selection has one explicit owner. tmux copy-mode tracks the
 anchor and active endpoint while the pointer is down; at pointerup deck freezes
 the exact tmux bytes and content coordinates under a generation token. A small

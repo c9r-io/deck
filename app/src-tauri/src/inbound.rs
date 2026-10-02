@@ -522,15 +522,20 @@ pub(crate) fn read_config() -> Config {
 }
 
 /// `read_config` that tells a failed read apart: `None` when settings.json
-/// exists but cannot be read, parsed or validated, so a caller deciding
-/// about authority (`scheduler::authority`) can treat "unknown" as neither
-/// granted nor revoked. A missing file is a real empty config.
+/// exists but nothing validated can be read from it or its backup, so a
+/// caller deciding about authority (`scheduler::authority`) can treat
+/// "unknown" as neither granted nor revoked. A missing file is a real empty
+/// config. The scheduler asks on every tick and the settings belong to the
+/// webview, so this reads without moving anything (`storage::read_typed`):
+/// a damaged main file is answered from its backup — the rules, approvals
+/// and first-send choices of the previous save — and "unknown" stays
+/// unknown for as long as it lasts instead of turning into "missing".
 pub(crate) fn read_config_strict() -> Option<Config> {
     read_config_strict_at(&crate::documents::settings_path())
 }
 
 pub(crate) fn read_config_strict_at(path: &std::path::Path) -> Option<Config> {
-    let raw = match storage::load_typed::<crate::documents::SettingsDoc>(path) {
+    let raw = match storage::read_typed::<crate::documents::SettingsDoc>(path) {
         Ok(Some(doc)) => doc.payload,
         Ok(None) => return Some(Config::default()),
         Err(_) => return None,
@@ -1654,6 +1659,105 @@ mod tests {
             !config_from_value(Some(&json!({"rules":[legacy]}))).rules[0]
                 .first_send_without_readiness
         );
+    }
+
+    /// The authority source across the settings recovery states. `Some` is a
+    /// config the scheduler may judge approvals against (a rule missing from
+    /// it is a real revocation); `None` is no proof either way, and the rows
+    /// hold. In no state does this read move or rewrite a file, however many
+    /// ticks ask.
+    #[test]
+    fn the_authority_source_survives_a_damaged_settings_file_and_moves_nothing() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir =
+            std::env::temp_dir().join(format!("deck-inbound-settings-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        let backup = dir.join("settings.json.bak");
+        let settings = |rules: Vec<Value>| {
+            json!({"inbound": {"sources": {"slack": {"enabled": true}}, "rules": rules}})
+                .to_string()
+        };
+        let save = |text: &str| {
+            crate::storage::save_typed::<crate::documents::SettingsDoc>(&path, text).unwrap()
+        };
+        let listing = || {
+            let mut files: Vec<_> = fs::read_dir(&dir)
+                .unwrap()
+                .flatten()
+                .map(|entry| {
+                    (
+                        entry.file_name().to_string_lossy().into_owned(),
+                        fs::read(entry.path()).unwrap_or_default(),
+                    )
+                })
+                .collect();
+            files.sort();
+            files
+        };
+        let ids = |config: &Config| {
+            config
+                .rules
+                .iter()
+                .map(|rule| rule.id.clone())
+                .collect::<Vec<_>>()
+        };
+
+        // a first run: no file is a real, empty config
+        assert_eq!(read_config_strict_at(&path), Some(Config::default()));
+
+        let mut accepted = rule("deck");
+        accepted["firstSendWithoutReadiness"] = json!(true);
+        save(&settings(vec![accepted.clone()])); // ends up in the backup
+        save(&settings(vec![accepted, rule("bug")])); // the main file
+        assert_eq!(
+            ids(&read_config_strict_at(&path).unwrap()),
+            ["R-deck", "R-bug"]
+        );
+
+        // damaged main, good backup: the backup's rules, on every tick
+        fs::write(&path, "{damaged").unwrap();
+        let before = listing();
+        for tick in 0..3 {
+            let config = read_config_strict_at(&path)
+                .unwrap_or_else(|| panic!("tick {tick}: the backup is proof"));
+            assert_eq!(ids(&config), ["R-deck"], "tick {tick}");
+            assert!(config.slack_enabled && config.rules[0].first_send_without_readiness);
+        }
+        assert_eq!(listing(), before, "the read moved or rewrote a file");
+
+        // both damaged: no proof either way, on every tick
+        fs::write(&backup, "{damaged too").unwrap();
+        let before = listing();
+        for tick in 0..3 {
+            assert_eq!(read_config_strict_at(&path), None, "tick {tick}");
+        }
+        assert_eq!(listing(), before, "the read moved or rewrote a file");
+
+        // written by a newer deck: no proof, left untouched
+        fs::write(&path, r#"{"schema_version":99,"data":{}}"#).unwrap();
+        let before = listing();
+        for tick in 0..3 {
+            assert_eq!(read_config_strict_at(&path), None, "tick {tick}");
+        }
+        assert_eq!(listing(), before, "the read moved or rewrote a file");
+
+        // present but unreadable right now: no proof, nothing moved
+        fs::remove_file(&path).unwrap();
+        fs::remove_file(&backup).unwrap();
+        save(&settings(vec![rule("deck")]));
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
+        if fs::read(&path).is_err() {
+            for tick in 0..3 {
+                assert_eq!(read_config_strict_at(&path), None, "tick {tick}");
+            }
+            assert!(path.exists(), "an unreadable file was moved");
+            assert_eq!(listing().len(), 1, "an unreadable file was set aside");
+        }
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(ids(&read_config_strict_at(&path).unwrap()), ["R-deck"]);
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

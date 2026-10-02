@@ -328,8 +328,10 @@ pub(crate) fn read_config() -> ChannelConfig {
     read_config_at(&crate::documents::settings_path())
 }
 
+/// Read, never moved: settings.json belongs to the webview
+/// (`storage::read_typed`).
 fn read_config_at(path: &std::path::Path) -> ChannelConfig {
-    let raw = match crate::storage::load_typed::<crate::documents::SettingsDoc>(path) {
+    let raw = match crate::storage::read_typed::<crate::documents::SettingsDoc>(path) {
         Ok(Some(doc)) => doc.payload,
         _ => return ChannelConfig::default(),
     };
@@ -1191,6 +1193,49 @@ mod tests {
             assert!(validate_settings(&saved).is_ok(), "{command}");
             assert_eq!(config_from_value(Some(&saved)).rules.len(), 1, "{command}");
         }
+    }
+
+    /// The channel rules are read like every other backend setting: from the
+    /// backup while the main file is damaged, and without moving anything.
+    #[test]
+    fn channel_config_reads_the_backup_of_a_damaged_settings_file_and_moves_nothing() {
+        let dir =
+            std::env::temp_dir().join(format!("deck-channel-settings-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        let settings = |enabled: bool| {
+            json!({"inbound":{"channelConnection":{"enabled":enabled,"connectionId":"default"},"channelRules":[serde_json::to_value(rule()).unwrap()]}}).to_string()
+        };
+        let save = |text: &str| {
+            crate::storage::save_typed::<crate::documents::SettingsDoc>(&path, text).unwrap()
+        };
+        let names = || {
+            let mut names: Vec<_> = std::fs::read_dir(&dir)
+                .unwrap()
+                .flatten()
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .collect();
+            names.sort();
+            names
+        };
+        save(&settings(true)); // ends up in the backup
+        save(&settings(false)); // the main file
+        assert!(!read_config_at(&path).connection.enabled);
+
+        std::fs::write(&path, "{damaged").unwrap();
+        let before = names();
+        for read in 0..3 {
+            let config = read_config_at(&path);
+            assert!(
+                config.connection.enabled,
+                "read {read}: the backup stands in"
+            );
+            assert_eq!(config.rules.len(), 1, "read {read}");
+        }
+        assert_eq!(names(), before, "the read moved a file");
+        assert_eq!(std::fs::read(&path).unwrap(), b"{damaged");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

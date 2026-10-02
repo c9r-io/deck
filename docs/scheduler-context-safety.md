@@ -320,7 +320,14 @@ first typed prompt — and never a claim that the agent is ready.
   row, and no stored authority, is removed or rewritten, but every
   automatic send that relies on an approval holds (stage
   `authority-unverified`, and the fence refuses) until settings can be read
-  again. Send-now still works.
+  again. Send-now still works. The scheduler reads settings without ever
+  moving the file (`storage::read_typed`), so "unreadable" lasts as long as
+  the condition does and never turns into "no settings": while the main
+  file is damaged the backup answers — the rules, approvals and first-send
+  choices of the previous save — and only a settings file that is really
+  absent is an empty config that withdraws them. A revocation made in the
+  one save a damaged file took with it is therefore not seen until the
+  settings are saved again.
 - **Content snapshot vs authority lifetime.** A run's prompt bytes are frozen
   when it is created; no rule or template edit ever rewrites them. Its
   authority is not frozen: it lives exactly as long as the grant version it

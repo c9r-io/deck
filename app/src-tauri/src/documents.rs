@@ -27,11 +27,28 @@
 //!   its emitter named (`storage.privacy`, `queue.persist`, `queue.load`,
 //!   `history.load`, `queue.interrupted`, `storage.recovered`), never a code
 //!   inferred from the note's wording.
-//! - The settings readers (`editor_app`, `locale_setting`,
-//!   `update_channel_setting`) load the file through the same typed door on
-//!   every call, never a cache, and fall back (None / "system" / "stable")
-//!   when the file or field is absent or malformed: a broken settings file
-//!   must not take the editor menu, the locale or the updater down with it.
+//! - settings.json has one owner, the webview. `load_settings`
+//!   (`storage::load_as_owner`) sets a damaged file aside and reports the
+//!   recovery once, in-band; `save_settings` (`storage::save_typed_as_owner`)
+//!   writes it, setting aside a file damaged since the load instead of
+//!   refusing the user. The one other writer is the queue's review barrier
+//!   (`storage::ensure_review_schema`), which writes the same document back
+//!   under a higher envelope version. A file whose backup still loads keeps
+//!   every setting across the restart and is rebuilt by the next save; one
+//!   with no usable backup is a load error the first time and a first run
+//!   after that, so Settings is never locked.
+//! - The settings readers (`editor_app`, `locale_setting`, `notify_settings`,
+//!   `update_channel_setting`, `local_translation_settings`) read the same
+//!   typed, validated document on every call, never a cache, through
+//!   `storage::read_typed`: they run before the webview and on every later
+//!   use, so they never move or write a file. They answer from the backup
+//!   while the main file is damaged, and fall back (None / "system" / off /
+//!   "stable") when nothing can be read or the field is absent or foreign: a
+//!   broken settings file must not take the editor menu, the locale or the
+//!   updater down with it. `inbound::read_config_strict` and
+//!   `inbound_channel::read_config` read through the same door
+//!   (`tests/session_architecture.rs` keeps the quarantining door out of
+//!   every reader).
 //! - `save_settings` refuses an unknown `updateChannel` before disk
 //!   (`validate_saved_update_channel`) so a build can never be pointed at an
 //!   endpoint deck does not ship.
@@ -992,8 +1009,11 @@ pub(crate) fn settings_path() -> PathBuf {
     crate::datadir::deck_dir().join("settings.json")
 }
 
+/// The webview's load: a damaged settings file is set aside here, its
+/// recovery reported once, and a file set aside earlier keeps loading from
+/// its backup (`storage::load_as_owner`).
 fn load_settings_at(path: &std::path::Path) -> Result<Option<storage::LoadOutcome>, DeckError> {
-    storage::load_typed::<SettingsDoc>(path)
+    storage::load_as_owner::<SettingsDoc>(path)
 }
 
 #[tauri::command]
@@ -1001,12 +1021,17 @@ pub(crate) fn load_settings() -> Result<LoadedDoc, DeckError> {
     Ok(to_loaded(load_settings_at(&settings_path())?))
 }
 
+/// The webview's save. The same full validation as load, before anything
+/// touches disk; a main file damaged while deck was running is set aside
+/// rather than refusing the user (`storage::save_typed_as_owner`).
 fn save_settings_at(path: &std::path::Path, data: &str) -> Result<(), DeckError> {
     validate_saved_update_channel(data)?;
     // a revoked automation approval is committed only under the fence the
     // scheduler's pre-fire authority check holds (storage::settings_fence)
     let _fence = storage::settings_fence();
-    save_validated::<SettingsDoc>(path, data, "settings")
+    serde_json::from_str::<SettingsDoc>(data)
+        .map_err(|e| DeckError::classified(format!("refusing to save invalid settings: {e}")))?;
+    storage::save_typed_as_owner::<SettingsDoc>(path, data)
 }
 
 #[tauri::command]
@@ -1039,13 +1064,16 @@ fn validate_saved_update_channel(data: &str) -> Result<(), DeckError> {
 
 /// The settings document as loose JSON, or None when it is absent or
 /// unreadable. Every reader below tolerates a missing/foreign value: settings
-/// are advisory, and a bad file must never stop the app from booting.
+/// are advisory, and a bad file must never stop the app from booting. These
+/// readers run before the webview loads and on every later use, so they read
+/// without moving anything (`storage::read_typed`): a damaged main file is
+/// answered from its backup and stays where it is for the webview to recover.
 fn settings_value() -> Option<serde_json::Value> {
     settings_value_at(&settings_path())
 }
 
 fn settings_value_at(path: &std::path::Path) -> Option<serde_json::Value> {
-    let raw = storage::load_typed::<SettingsDoc>(path).ok()??.payload;
+    let raw = storage::read_typed::<SettingsDoc>(path).ok()??.payload;
     serde_json::from_str(&raw).ok()
 }
 
@@ -1205,6 +1233,347 @@ mod tests {
         assert!(load_board_at(&path).is_err());
         assert!(!path.exists());
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    // ---------- settings recovery: the state matrix ----------
+    //
+    // Main file × backup × "a recovery set it aside before", one cell per
+    // test. The READERS are the backend's own reads of settings.json (every
+    // reader in this module goes through `settings_value_at`); the OWNER is
+    // the webview, through `load_settings_at` and `save_settings_at`.
+
+    /// The generation that ends up in the backup.
+    const OLDER: &str = r#"{"locale":"zh-Hans","editor":"Zed","notifyAway":true,"notifySound":true,"updateChannel":"nightly"}"#;
+    /// The generation in the main file.
+    const LATEST: &str = r#"{"locale":"en","editor":"Cursor","notifyAway":true,"notifySound":false,"updateChannel":"nightly"}"#;
+
+    struct SettingsDir(PathBuf);
+
+    impl SettingsDir {
+        fn empty(tag: &str) -> Self {
+            let dir =
+                std::env::temp_dir().join(format!("deck-settings-{tag}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            SettingsDir(dir)
+        }
+
+        /// Saved twice: the main file holds LATEST and the backup OLDER.
+        fn saved_twice(tag: &str) -> Self {
+            let dir = Self::empty(tag);
+            save_settings_at(&dir.main(), OLDER).unwrap();
+            save_settings_at(&dir.main(), LATEST).unwrap();
+            dir
+        }
+
+        fn main(&self) -> PathBuf {
+            self.0.join("settings.json")
+        }
+
+        fn backup(&self) -> PathBuf {
+            self.0.join("settings.json.bak")
+        }
+
+        /// Every file with its bytes: equal listings mean nothing was moved,
+        /// created, removed or rewritten.
+        fn files(&self) -> Vec<(String, Vec<u8>)> {
+            let mut files: Vec<_> = std::fs::read_dir(&self.0)
+                .unwrap()
+                .flatten()
+                .map(|entry| {
+                    (
+                        entry.file_name().to_string_lossy().into_owned(),
+                        std::fs::read(entry.path()).unwrap_or_default(),
+                    )
+                })
+                .collect();
+            files.sort();
+            files
+        }
+
+        /// The files a recovery set aside.
+        fn set_aside(&self) -> Vec<(String, Vec<u8>)> {
+            self.files()
+                .into_iter()
+                .filter(|(name, _)| name.starts_with("settings.corrupt-"))
+                .collect()
+        }
+    }
+
+    impl Drop for SettingsDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// What the backend readers see: locale, editor, notify switches, channel.
+    type Seen = (String, Option<String>, (bool, bool), String);
+
+    fn seen(path: &std::path::Path) -> Option<Seen> {
+        let value = settings_value_at(path)?;
+        let value = Some(&value);
+        Some((
+            locale_from(value),
+            editor_from(value),
+            notify_from(value),
+            update_channel_from(value),
+        ))
+    }
+
+    fn older() -> Option<Seen> {
+        Some((
+            "zh-Hans".into(),
+            Some("Zed".into()),
+            (true, true),
+            "nightly".into(),
+        ))
+    }
+
+    fn latest() -> Option<Seen> {
+        Some((
+            "en".into(),
+            Some("Cursor".into()),
+            (true, false),
+            "nightly".into(),
+        ))
+    }
+
+    fn json(text: &str) -> serde_json::Value {
+        serde_json::from_str(text).unwrap()
+    }
+
+    /// Normal: both doors read the main file, the backup is the previous
+    /// save, and reading changes nothing on disk.
+    #[test]
+    fn settings_matrix_normal_reads_the_main_file_and_touches_nothing() {
+        let d = SettingsDir::saved_twice("normal");
+        let before = d.files();
+        assert_eq!(seen(&d.main()), latest());
+        let loaded = load_settings_at(&d.main()).unwrap().unwrap();
+        assert_eq!((loaded.source, loaded.warning.is_none()), ("main", true));
+        assert_eq!(json(&loaded.payload), json(LATEST));
+        assert_eq!(d.files(), before);
+        assert_eq!(
+            json(&std::fs::read_to_string(d.backup()).unwrap())["data"],
+            json(OLDER)
+        );
+        assert!(d.set_aside().is_empty());
+    }
+
+    /// Main damaged, backup good — the readers. They run before the webview
+    /// at boot and on every scheduler tick: they read the backup and leave
+    /// the disk exactly as they found it, however often they run.
+    #[test]
+    fn settings_matrix_damaged_main_readers_use_the_backup_and_move_nothing() {
+        let d = SettingsDir::saved_twice("damaged-readers");
+        std::fs::write(d.main(), "{damaged").unwrap();
+        let before = d.files();
+        for round in 0..2 {
+            assert_eq!(seen(&d.main()), older(), "read {round}");
+        }
+        assert_eq!(d.files(), before, "a reader moved or rewrote a file");
+    }
+
+    /// Main damaged, backup good — the owner. Whoever read first, the webview
+    /// learns of the recovery exactly once, keeps every setting across a
+    /// restart, and its next save puts the main file back.
+    #[test]
+    fn settings_matrix_damaged_main_owner_recovers_tells_once_and_the_next_save_rebuilds() {
+        let d = SettingsDir::saved_twice("damaged-owner");
+        std::fs::write(d.main(), "{damaged").unwrap();
+        let backup = std::fs::read(d.backup()).unwrap();
+        assert_eq!(seen(&d.main()), older(), "a boot-time reader runs first");
+
+        let first = load_settings_at(&d.main())
+            .unwrap()
+            .expect("recovered, not a first run");
+        assert_eq!(first.source, "backup");
+        assert_eq!(json(&first.payload), json(OLDER));
+        assert_eq!(
+            to_loaded(Some(first)).warning.map(|notice| notice.code),
+            Some("storage.recovered"),
+            "the webview is told"
+        );
+        assert!(!d.main().exists(), "the owner set the damaged file aside");
+        let aside = d.set_aside();
+        assert_eq!(aside.len(), 1);
+        assert_eq!(aside[0].1, b"{damaged", "its bytes are kept");
+        assert_eq!(std::fs::read(d.backup()).unwrap(), backup);
+
+        // a restart before any save: the same settings and no second notice
+        for round in 0..2 {
+            let again = load_settings_at(&d.main())
+                .unwrap()
+                .expect("still not a first run");
+            assert_eq!(again.source, "backup", "restart {round}");
+            assert_eq!(json(&again.payload), json(OLDER));
+            assert!(again.warning.is_none(), "told once, not on every start");
+            assert_eq!(seen(&d.main()), older());
+        }
+        assert_eq!(d.set_aside(), aside);
+        assert!(!d.main().exists(), "recovery itself never writes");
+
+        // the user changes a setting: the main file is back, the kept bytes stay
+        save_settings_at(&d.main(), LATEST).unwrap();
+        let rebuilt = load_settings_at(&d.main()).unwrap().unwrap();
+        assert_eq!((rebuilt.source, rebuilt.warning.is_none()), ("main", true));
+        assert_eq!(seen(&d.main()), latest());
+        assert_eq!(d.set_aside(), aside);
+        assert_eq!(
+            std::fs::read(d.backup()).unwrap(),
+            backup,
+            "nothing was rotated over the good copy"
+        );
+    }
+
+    /// Main and backup both damaged: the readers have no answer and move
+    /// nothing; the owner reports the failure once, keeps the damaged bytes,
+    /// and the user can go on changing and saving settings.
+    #[test]
+    fn settings_matrix_both_damaged_is_reported_once_and_never_locks_settings() {
+        let d = SettingsDir::saved_twice("both-damaged");
+        std::fs::write(d.main(), "{damaged main").unwrap();
+        std::fs::write(d.backup(), "{damaged backup").unwrap();
+        let before = d.files();
+        assert_eq!(seen(&d.main()), None);
+        assert_eq!(d.files(), before, "a reader moved or rewrote a file");
+
+        let failure = load_settings_at(&d.main()).unwrap_err();
+        assert_eq!(
+            failure.kind(),
+            ErrorKind::Recovery,
+            "a load failure, never a first run"
+        );
+        let aside = d.set_aside();
+        assert_eq!(aside.len(), 1);
+        assert_eq!(aside[0].1, b"{damaged main");
+        assert_eq!(std::fs::read(d.backup()).unwrap(), b"{damaged backup");
+
+        // the next start has nothing left to load and nothing new to report
+        assert!(load_settings_at(&d.main()).unwrap().is_none());
+        assert_eq!(seen(&d.main()), None);
+
+        save_settings_at(&d.main(), LATEST).unwrap();
+        assert_eq!(load_settings_at(&d.main()).unwrap().unwrap().source, "main");
+        assert_eq!(seen(&d.main()), latest());
+        assert_eq!(d.set_aside(), aside, "the damaged bytes are still there");
+    }
+
+    /// No main file. With nothing set aside this is a first run, even with a
+    /// backup lying there (the user removed the file): the backup stands in
+    /// only for a file a recovery moved away.
+    #[test]
+    fn settings_matrix_missing_main_is_a_first_run_unless_a_recovery_moved_it() {
+        let d = SettingsDir::empty("missing");
+        assert!(load_settings_at(&d.main()).unwrap().is_none());
+        assert_eq!(seen(&d.main()), None);
+        assert!(d.files().is_empty());
+
+        let d = SettingsDir::saved_twice("missing-removed");
+        std::fs::remove_file(d.main()).unwrap();
+        let before = d.files();
+        assert!(load_settings_at(&d.main()).unwrap().is_none());
+        assert_eq!(seen(&d.main()), None);
+        assert_eq!(d.files(), before);
+    }
+
+    /// Main file present but unreadable right now (permissions, descriptors,
+    /// a failing disk): a reader has no answer for this call — it does not
+    /// call the file damaged, move it or read around it — and reads it again
+    /// as soon as it can.
+    #[test]
+    fn settings_matrix_unreadable_main_is_unknown_to_readers_and_moves_nothing() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = SettingsDir::saved_twice("unreadable-readers");
+        let names = |d: &SettingsDir| {
+            d.files()
+                .into_iter()
+                .map(|(name, _)| name)
+                .collect::<Vec<_>>()
+        };
+        let before = names(&d);
+        std::fs::set_permissions(d.main(), std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::read(d.main()).is_ok() {
+            return; // a privileged test user reads through any mode
+        }
+        for round in 0..2 {
+            assert_eq!(seen(&d.main()), None, "read {round}");
+        }
+        assert_eq!(names(&d), before, "a reader moved a file it could not read");
+        std::fs::set_permissions(d.main(), std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(
+            seen(&d.main()),
+            latest(),
+            "readable again: the same file, untouched"
+        );
+    }
+
+    /// The owner is different: it must end up with settings the user can
+    /// save. A main file it cannot read when the app starts is set aside
+    /// like a damaged one and the backup stands in — waiting instead would
+    /// lock a file with a lasting fault out of Settings.
+    #[test]
+    fn settings_matrix_unreadable_main_owner_sets_it_aside_and_uses_the_backup() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = SettingsDir::saved_twice("unreadable-owner");
+        std::fs::set_permissions(d.main(), std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::read(d.main()).is_ok() {
+            return; // a privileged test user reads through any mode
+        }
+        let loaded = load_settings_at(&d.main()).unwrap().unwrap();
+        assert_eq!(loaded.source, "backup");
+        assert!(loaded.warning.is_some());
+        assert_eq!(json(&loaded.payload), json(OLDER));
+        assert_eq!(d.set_aside().len(), 1, "kept, restricted to the user");
+        save_settings_at(&d.main(), LATEST).unwrap();
+        assert_eq!(seen(&d.main()), latest());
+    }
+
+    /// Written by a newer deck: refused as it is by every door — never set
+    /// aside, never read around through the older backup, never saved over.
+    #[test]
+    fn settings_matrix_newer_schema_is_refused_untouched_by_every_door() {
+        let d = SettingsDir::saved_twice("newer");
+        std::fs::write(d.main(), r#"{"schema_version":99,"data":{"locale":"en"}}"#).unwrap();
+        let before = d.files();
+        for round in 0..2 {
+            assert_eq!(seen(&d.main()), None, "read {round}");
+            assert_eq!(
+                load_settings_at(&d.main()).unwrap_err().kind(),
+                ErrorKind::NewerSchema
+            );
+            assert_eq!(
+                save_settings_at(&d.main(), LATEST).unwrap_err().kind(),
+                ErrorKind::NewerSchema
+            );
+        }
+        assert_eq!(d.files(), before);
+    }
+
+    /// Damaged while deck runs (the webview holds the settings in memory):
+    /// the readers carry on from the backup, and the owner's next save is not
+    /// refused — it sets the damaged file aside and writes what the user
+    /// sees. A save deck would refuse anyway sets nothing aside.
+    #[test]
+    fn settings_matrix_damage_while_running_never_refuses_the_owners_save() {
+        let d = SettingsDir::saved_twice("damaged-running");
+        std::fs::write(d.main(), "{damaged").unwrap();
+        let backup = std::fs::read(d.backup()).unwrap();
+        let before = d.files();
+        assert_eq!(seen(&d.main()), older());
+        assert!(save_settings_at(&d.main(), r#"{"locale":"xx"}"#).is_err());
+        assert_eq!(d.files(), before, "an invalid save moved or rewrote a file");
+
+        save_settings_at(&d.main(), LATEST).unwrap();
+        assert_eq!(seen(&d.main()), latest());
+        let aside = d.set_aside();
+        assert_eq!(aside.len(), 1);
+        assert_eq!(aside[0].1, b"{damaged");
+        assert_eq!(
+            std::fs::read(d.backup()).unwrap(),
+            backup,
+            "the damaged bytes never became the backup"
+        );
     }
 
     // ---------- board / settings business validation ----------
