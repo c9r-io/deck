@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.7.22 — 2026-10-02 (Nightly)
+
+- Scheduled prompts, the scratchpad and Local Translation now share one
+  right-hand panel in a session: opening one closes the other, so two can no
+  longer be open at once, and leaving the session closes whichever is open.
+- The sidebar's collapse button stays visible in Nightly builds, whose long
+  version label used to push it out of sight (⌘B still worked).
+- Deck's minimum window size is now 1280×800; the window can no longer be
+  resized smaller than that.
+
 ## 0.7.21 — 2026-09-30 (Nightly)
 
 - Card reminders: **Set reminder…** in a card's context menu or the Session
