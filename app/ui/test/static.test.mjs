@@ -46,6 +46,97 @@ test('i18n owns visible copy and translation parameters never enter innerHTML', 
     'visible dynamic prose must use a stable translation key');
 });
 
+// The content policy is what keeps injected markup from running script
+// (`script-src 'self'`, nothing inline) or reaching the network, and the
+// security section is where a webview gains reach (an asset protocol, a
+// relaxed pattern). Both are a reviewed edit here, not a config tweak.
+test('the webview content policy and security options are the reviewed ones', () => {
+  const { security } = JSON.parse(read('app/src-tauri/tauri.conf.json')).app;
+  assert.deepEqual(Object.keys(security).sort(), ['csp', 'dangerousDisableAssetCspModification'],
+    'a new security option widens what the page may reach');
+  assert.equal(security.csp, "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+    + "font-src 'self' data:; connect-src ipc: http://ipc.localhost; object-src 'none'; base-uri 'none'; form-action 'none'; "
+    + "frame-src 'none'");
+  assert.deepEqual(security.dangerousDisableAssetCspModification, ['style-src'],
+    'only the style directive is left as written; scripts keep the policy the loader enforces');
+});
+
+/* The expression that starts at `from`, reduced to its shape: every string
+   literal becomes `S`, a template literal `S` followed by its `${…}`
+   expressions, and whitespace is dropped. It ends at the `;` or at the
+   unbalanced closing bracket that ends the expression. An unterminated
+   literal just ends the scan at the end of the file; such a module already
+   fails the syntax gate. */
+function shapeAt(source, from) {
+  let shape = '';
+  let depth = 0;
+  for (let i = from; i < source.length; i++) {
+    const c = source[i];
+    if (c === "'" || c === '"') {
+      for (i++; i < source.length && source[i] !== c; i++) if (source[i] === '\\') i++;
+      shape += 'S';
+    } else if (c === '`') {
+      shape += 'S';
+      for (i++; i < source.length && source[i] !== '`'; i++) {
+        if (source[i] === '\\') { i++; continue; }
+        if (source[i] !== '$' || source[i + 1] !== '{') continue;
+        let braces = 1, expression = '';
+        for (i += 2; i < source.length; i++) {
+          if (source[i] === '{') braces++;
+          else if (source[i] === '}' && --braces === 0) break;
+          expression += source[i];
+        }
+        shape += `{${expression.replace(/\s+/g, '')}}`;
+      }
+    } else if ('([{'.includes(c)) { depth++; shape += c; }
+    else if (')]}'.includes(c)) { if (depth-- === 0) break; shape += c; }
+    else if (c === ';' && depth === 0) break;
+    else if (!/\s/.test(c)) shape += c;
+  }
+  return shape;
+}
+const shapesAfter = (source, pattern) => [...source.matchAll(pattern)].map(m => shapeAt(source, m.index + m[0].length));
+// literals joined by `+`, where `(condition ? 'a' : 'b')` still chooses between literals
+const literalOnly = shape => /^S(\+S)*$/.test(shape.replace(/\((?:[^()]|\([^()]*\))*\?S:S\)/g, 'S'));
+
+test('innerHTML takes literals; interpolated sites are a reviewed list and none carries translated text', () => {
+  assert.equal(literalOnly(shapeAt("'<a>' + (open ? '<b></b>' : '') + '</a>';", 0)), true);
+  assert.equal(literalOnly(shapeAt('`<i></i>`;', 0)), true);
+  assert.equal(literalOnly(shapeAt('`<i>${name}</i>`;', 0)), false);
+  assert.equal(literalOnly(shapeAt("'<b>' + t('key');", 0)), false);
+  assert.equal(literalOnly(shapeAt('html;', 0)), false);
+  assert.equal(literalOnly(shapeAt("'<b>unterminated + name", 0)), true, 'an unterminated literal ends the scan');
+  assert.equal(shapeAt('`<b>${never closed', 0), 'S{neverclosed}');
+  // What each interpolated site puts into markup, in source order. Text the
+  // user or the outside world wrote goes through textContent, never here.
+  const reviewed = {
+    'board.js': [
+      'S{s.status}',       // the sidebar dot: a closed status word as a class
+      'S{cards.length}',   // a column's card count: a number
+      'S{s.status}',       // the card dot: the same closed status word
+    ],
+    'layout.js': ['S{card.status}'],   // the pane head dot: the same closed status word
+    'scheduler.js': ['html'],          // the template menu's local `add(cls, html)`: literals only, checked below
+    // the link menu: one button per entry of a closed action list
+    'terminal.js': ['S+linkMenuItems(kind).map(item=>S{item.action}).join(S)'],
+  };
+  let sites = 0;
+  for (const name of readdirSync(resolve(root, 'app/ui/js')).filter(file => file.endsWith('.js')).sort()) {
+    const shapes = shapesAfter(read(`app/ui/js/${name}`), /\.innerHTML\s*=(?!=)/g);
+    sites += shapes.length;
+    const interpolated = shapes.filter(shape => !literalOnly(shape));
+    assert.deepEqual(interpolated, reviewed[name] ?? [],
+      `${name}: innerHTML takes a literal and values go in through textContent; a closed value may be interpolated once its shape is reviewed here`);
+    for (const shape of interpolated) {
+      assert.doesNotMatch(shape, /(?<![\w$.])t\(/, `${name}: translated text never enters innerHTML`);
+    }
+  }
+  assert.ok(sites >= 20, `the scan reads the assignments (${sites})`);
+  const menuRows = shapesAfter(read('app/ui/js/scheduler.js'), /(?<![.\w$])add\(/g);
+  assert.ok(menuRows.length >= 4, 'the template menu helper is still called `add`');
+  for (const shape of menuRows) assert.match(shape, /^S(,S)?$/, 'the template menu builds its rows from literals');
+});
+
 test('the updater, relaunch and server restart stay backend-owned', () => {
   const app = read('app/ui/js/app.js');
   const dialogs = read('app/ui/js/dialogs.js') + read('app/ui/js/settings.js');
