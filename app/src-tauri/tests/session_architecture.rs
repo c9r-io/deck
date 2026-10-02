@@ -5,7 +5,13 @@
 //! source scans stand in. `references` counts every way a file can reach a
 //! module — a full path, `use crate::m;` followed by `m::x`, a grouped
 //! `use crate::{a, m::x}`, and the same through `super::` — so a plain
-//! import no longer slips past a check for `crate::m::`.
+//! import no longer slips past a check for `crate::m::`. `referenced` lists
+//! every module a file names that way, so a rule can be a closed allow-list
+//! (the documents door) instead of a list of names to keep out: a deny-list
+//! only knows the features that existed when it was written.
+mod source_scan;
+use source_scan::{code_only, production_region};
+use std::collections::BTreeMap;
 use std::path::Path;
 
 fn source(name: &str) -> String {
@@ -38,10 +44,10 @@ fn is_ident(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || byte == b'_'
 }
 
-/// How many times `source` names `module` through `crate::` or `super::`
-/// (as a path, a `use`, or an item of a `{…}` group).
-fn references(source: &str, module: &str) -> usize {
-    let mut count = 0;
+/// Every module `source` names through `crate::` or `super::` (as a path, a
+/// `use`, or an item of a `{…}` group), with how many times.
+fn referenced(source: &str) -> BTreeMap<String, usize> {
+    let mut found = BTreeMap::new();
     for prefix in ["crate::", "super::"] {
         for (at, _) in source.match_indices(prefix) {
             if at > 0 && is_ident(source.as_bytes()[at - 1]) {
@@ -80,17 +86,21 @@ fn references(source: &str, module: &str) -> usize {
             } else {
                 vec![rest]
             };
-            count += heads
-                .iter()
-                .filter(|item| {
-                    let item = item.trim_start();
-                    let len = item.bytes().take_while(|&b| is_ident(b)).count();
-                    &item[..len] == module
-                })
-                .count();
+            for item in heads {
+                let item = item.trim_start();
+                let len = item.bytes().take_while(|&b| is_ident(b)).count();
+                if len > 0 {
+                    *found.entry(item[..len].to_owned()).or_default() += 1;
+                }
+            }
         }
     }
-    count
+    found
+}
+
+/// How many times `source` names `module` (`referenced`).
+fn references(source: &str, module: &str) -> usize {
+    referenced(source).get(module).copied().unwrap_or(0)
 }
 
 #[test]
@@ -168,28 +178,90 @@ fn lifecycle_and_ledger_do_not_name_feature_modules() {
     }
 }
 
-/// The typed-documents door delegates exactly two things to feature modules:
-/// the `inbound` settings section to its owner's validator and task-preset
-/// commands to the channel admission table. Every other feature stays out.
+/// What the typed-documents door may name, as a closed list: the
+/// infrastructure underneath it, two closed vocabularies it validates
+/// against, the two delegations it makes to feature modules — and one
+/// registered debt. A module that is not listed fails. A count is pinned only
+/// where the number is the rule: one lookup per vocabulary, one call per
+/// delegation, and a debt that may only shrink. Counted over production code
+/// (no comments, no strings, not the trailing test module).
+const DOCUMENTS_MAY_NAME: &[(&str, Option<usize>, &str)] = &[
+    ("error", None, "the one error type"),
+    (
+        "storage",
+        None,
+        "the typed envelope and atomic writes underneath",
+    ),
+    ("datadir", None, "where deck.json and settings.json live"),
+    (
+        "smoke_faults",
+        None,
+        "debug-only save faults of the isolated smoke",
+    ),
+    (
+        "tmux",
+        Some(1),
+        "the session-name rule the runtime enforces on start and attach",
+    ),
+    ("voice", Some(1), "the closed list of dictation languages"),
+    (
+        "inbound",
+        Some(1),
+        "delegation: the `inbound` settings section to its owner's validator",
+    ),
+    (
+        "admission",
+        Some(1),
+        "delegation: task-preset commands to the channel admission table",
+    ),
+    // Registered debt, not an endorsement. Since the Card Reminder work the
+    // Board door takes the reminder type and its validator (a Board-domain
+    // delegation like the two above), and `load_board` / `save_board` also
+    // read and feed the reminder module's in-memory mirror of the committed
+    // Board. Moving that mirror behind the persistence side is governance
+    // item 12-C3; until then this count may only go down.
+    (
+        "reminder",
+        Some(8),
+        "DEBT (12-C3): the reminder type, its validator and the committed-Board mirror",
+    ),
+];
+
 #[test]
-fn documents_delegate_only_settings_validation_and_preset_admission() {
+fn the_documents_door_names_only_reviewed_modules() {
     let documents = source("documents.rs");
-    for module in [
-        "mcp",
-        "connector",
-        "scheduler",
-        "inbound_slack",
-        "inbound_clock",
-    ] {
-        assert!(
-            references(&documents, module) == 0,
-            "documents depends on {module}"
-        );
+    let named = referenced(&code_only(production_region(&documents)));
+    let mut problems = Vec::new();
+    for (module, count) in &named {
+        match DOCUMENTS_MAY_NAME
+            .iter()
+            .find(|(name, _, _)| name == module)
+        {
+            None => problems.push(format!(
+                "documents.rs names `{module}` ({count}): the document door does not depend on \
+                 features. Point the dependency the other way (a guard or callback the feature \
+                 registers, like `tmux_lifecycle::set_restart_guard`), or add a reviewed row to \
+                 DOCUMENTS_MAY_NAME that says why"
+            )),
+            Some((_, Some(reviewed), why)) if reviewed != count => problems.push(format!(
+                "documents.rs names `{module}` {count} time(s), reviewed {reviewed} ({why}): \
+                 lower the count when the dependency shrinks; a higher one needs its own reason"
+            )),
+            Some(_) => {}
+        }
     }
-    assert_eq!(references(&documents, "inbound"), 1);
+    for (module, _, why) in DOCUMENTS_MAY_NAME {
+        if !named.contains_key(*module) {
+            problems.push(format!(
+                "stale entry `{module}` ({why}): documents.rs no longer names it"
+            ));
+        }
+    }
+    assert!(problems.is_empty(), "{problems:#?}");
+    // the two vocabularies and the two delegations, by the exact use they are
+    assert!(documents.contains("crate::tmux::validate_session_name("));
+    assert!(documents.contains("crate::voice::SUPPORTED_LANGUAGES"));
     assert!(documents.contains("crate::inbound::validate_settings("));
-    assert_eq!(references(&documents, "inbound_channel"), 0);
-    assert_eq!(references(&documents, "admission"), 1);
     assert!(documents.contains("crate::admission::channel_agent_command("));
 }
 
