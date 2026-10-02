@@ -23,10 +23,16 @@
 //!   (`tmux::tmux_program()`), never Homebrew/MacPorts or a PATH lookup
 //!   (`/usr/local/bin` is user-writable on many Macs, and every deck session
 //!   descends from that binary);
-//! - open a listener other than the disabled-by-default Connector's one
-//!   inbound HTTPS listener on the selected private IPv4 address (RFC1918,
-//!   169.254/16 on `bridge*` or 100.64/10 on `utun*` — `docs/connector.md`;
-//!   never public or 0.0.0.0).
+//! - open a network listener other than the disabled-by-default Connector's
+//!   one inbound HTTPS listener on the selected private IPv4 address
+//!   (RFC1918, 169.254/16 on `bridge*` or 100.64/10 on `utun*` —
+//!   `docs/connector.md`; never public or 0.0.0.0), or bind a datagram
+//!   socket of any kind. Local IPC is stream Unix sockets inside the private
+//!   data directory, each 0600 and nothing else: the agent-status socket the
+//!   bundled helper reports to (`agent_status.rs`), the control socket of
+//!   the opt-in MCP feature, bound only while it is enabled
+//!   (`mcp/control.rs`), and the control socket of each MCP pane runner
+//!   (`mcp-runner`).
 //!
 //! - let a dependency spawn on its behalf: the updater plugin's macOS
 //!   installer runs an admin AppleScript (OSAKit) when the bundle is not
@@ -37,9 +43,12 @@
 //!   strings stay linked in the binary; `scripts/check-edr-binary` names
 //!   them as gated rather than forbidden.
 //!
-//! - post anything but a card title and one of two fixed phrases as a
-//!   macOS notification (`notify.rs` + `native/NotificationBridge.swift`,
-//!   in-process, UNUserNotificationCenter only, no-op outside a bundle).
+//! - post anything as a macOS notification but a card's title, its project
+//!   name and a fixed phrase: one of two for an agent's away notification
+//!   (`notify.rs`), one for a card reminder, which also offers two fixed
+//!   actions (`reminder.rs`). No prompt, output, path or reminder note
+//!   reaches the system (`native/NotificationBridge.swift`: in-process,
+//!   UNUserNotificationCenter only, no-op outside a bundle).
 //!
 //! What deck may spawn: low-frequency, fixed-argument system tools named by
 //! absolute `/usr/bin` path (`open`, `plutil`, `pbcopy`, `sw_vers`, `uname`;
@@ -82,6 +91,9 @@
 //!    bootstrap (`commands::restore_start_args` pins the positive shape).
 //! 6. the disabled-by-default Connector owns the only production TCP bind,
 //!    and its enable path must call the private/local IPv4 validator first;
+//!    every Unix listener bind is a reviewed file and function — two in the
+//!    app, one in the MCP runner — and nothing binds a UDP or Unix datagram
+//!    socket or calls the `libc` socket functions directly;
 //! 7. updates are installed by deck, never by the plugin (no
 //!    `download_and_install` / `install(`), behind the writability guard,
 //!    and the reviewed plugin version is pinned in `Cargo.lock`.
@@ -444,8 +456,11 @@ fn native_speech_is_in_process_local_and_content_free() {
 
 /// The notification bridge talks to UNUserNotificationCenter and nothing
 /// else: no process, no network, no file, no log line, and every entry is
-/// a no-op outside a bundle. notify.rs hands the system only a card title
-/// and one of two fixed phrases, from exactly one call site.
+/// a no-op outside a bundle. An away notification is the card's title, its
+/// project name and one of two fixed phrases, handed over by notify.rs from
+/// exactly one call site. A card reminder is the title, the project name
+/// and one fixed phrase, with two fixed actions; its note never crosses.
+/// The bridge sets no other content field.
 #[test]
 fn native_notifications_are_in_process_and_content_closed() {
     let swift = std::fs::read_to_string(manifest("native/NotificationBridge.swift")).unwrap();
@@ -476,6 +491,41 @@ fn native_notifications_are_in_process_and_content_closed() {
     assert!(swift.contains("reminderIdentifierOk"));
     assert!(swift.contains("UNCalendarNotificationTrigger"));
     assert!(!swift.contains("row[\"note\"]"));
+    // what a notification can carry: a title, a body, the reminder category
+    // and the default sound — no subtitle, badge, thread or summary text
+    // (a sentence in a comment that ends in "content." names no field)
+    let fields: std::collections::BTreeSet<String> = swift
+        .match_indices("content.")
+        .map(|(at, _)| {
+            swift[at + "content.".len()..]
+                .chars()
+                .take_while(|character| is_ident(*character))
+                .collect::<String>()
+        })
+        .filter(|field| !field.is_empty())
+        .collect();
+    assert_eq!(
+        fields.iter().map(String::as_str).collect::<Vec<_>>(),
+        ["body", "categoryIdentifier", "sound", "title"],
+        "a new notification field carries content the contract does not name"
+    );
+    // a reminder's body is the project name and one fixed phrase per locale,
+    // and its two actions have fixed titles
+    for (fixed, times) in [
+        (
+            "content.body = project.isEmpty ? phrase : \"\\(project) — \\(phrase)\"",
+            1,
+        ),
+        ("\"Return to this card\"", 1),
+        ("\"回到此卡片\"", 1),
+        ("UNNotificationAction(", 2),
+        ("\"Open card\"", 1),
+        ("\"打开卡片\"", 1),
+        ("\"Remind in 1 hour\"", 1),
+        ("\"推迟1小时\"", 1),
+    ] {
+        assert_eq!(swift.matches(fixed).count(), times, "{fixed}");
+    }
     let notify = std::fs::read_to_string(manifest("src/notify.rs")).unwrap();
     let notify = production_region(&notify);
     assert_eq!(
