@@ -8,9 +8,16 @@
 //! 0600 too. `atomic_write` is unique temp → fsync → rename → parent fsync.
 //! `harden_data_dir` migrates a tree an older deck left 0644 at boot, and
 //! `prune_old_files` ages out transient drops and snapshots.
+//!
+//! `deck_dir` is the ONE resolver of that directory, and in a unit-test
+//! build it answers with a directory of the test process's own under the
+//! system temp directory, never `~/.deck`: a test that reaches a real save,
+//! a quarantine or the tmux config — on purpose, or because the code under
+//! test was changed — cannot touch the data of the person running the tests
+//! (`tests/session_architecture.rs` keeps every other `~/.deck` path a
+//! reviewed list).
 
 use crate::error::{DeckError, ErrorKind};
-use crate::launch_args::debug_arg;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -180,8 +187,9 @@ pub(crate) fn prune_old_files(dir: &Path, max_age_secs: u64) {
     }
 }
 
+#[cfg(not(test))]
 pub(crate) fn deck_dir() -> PathBuf {
-    if let Some(root) = debug_arg("--smoke-data-dir") {
+    if let Some(root) = crate::launch_args::debug_arg("--smoke-data-dir") {
         let path = PathBuf::from(root);
         if path.is_absolute() {
             return path;
@@ -190,6 +198,21 @@ pub(crate) fn deck_dir() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".deck")
+}
+
+/// In a unit-test build: one private directory per test process, empty at
+/// first use, so no test shares the data of the person running it. The name
+/// is short on purpose: socket paths built under it must fit `sun_path`.
+#[cfg(test)]
+pub(crate) fn deck_dir() -> PathBuf {
+    static DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| {
+        let dir = std::env::temp_dir().join(format!("deck-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        create_private_dir(&dir).expect("a private data directory for this test process");
+        dir
+    })
+    .clone()
 }
 
 /// chmod 0600 — best-effort, silent (fixes pre-existing lax modes; new files
@@ -225,6 +248,33 @@ mod tests {
     fn set_mode(p: &Path, mode: u32) {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(p, std::fs::Permissions::from_mode(mode)).unwrap();
+    }
+
+    /// A test build never resolves the data directory to `~/.deck`: every
+    /// path built on `deck_dir()` lands in this process's own directory.
+    #[test]
+    fn tests_have_a_data_directory_of_their_own() {
+        let dir = deck_dir();
+        assert!(
+            dir.starts_with(std::env::temp_dir()),
+            "under the system temp directory"
+        );
+        if let Some(home) = dirs::home_dir() {
+            assert!(
+                !dir.starts_with(home.join(".deck")),
+                "not the user's data directory"
+            );
+        }
+        assert!(dir.file_name().is_some_and(
+            |name| name.to_string_lossy() == format!("deck-test-{}", std::process::id())
+        ));
+        assert_eq!(mode_of(&dir), 0o700, "private like the real one");
+        assert_eq!(deck_dir(), dir, "one directory for the whole test process");
+        // the documents and the tmux config are built on it
+        assert!(crate::documents::settings_path().starts_with(&dir));
+        assert!(crate::documents::board_path().starts_with(&dir));
+        assert!(crate::scheduler::queue_path().starts_with(&dir));
+        assert!(std::path::Path::new(&crate::tmux::tmux_conf()).starts_with(&dir));
     }
 
     #[test]

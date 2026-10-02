@@ -361,6 +361,61 @@ fn only_the_settings_owner_uses_a_door_that_moves_the_file() {
     );
 }
 
+/// The data directory has one resolver, `datadir::deck_dir()`, and in a
+/// unit-test build it answers with a directory of the test process's own —
+/// so a test that reaches a real save, a quarantine or the tmux config can
+/// never touch the data of the person running the tests. A second place
+/// that builds `~/.deck` from the home directory would get around that, so
+/// those places are a closed list: the resolver, the boot-time removal of
+/// the pre-0.5.12 helper copy (called from `main` only), and the one default
+/// socket path each sidecar binary must spell for itself.
+#[test]
+fn the_data_directory_has_one_resolver() {
+    const JOIN: &str = ".join(\".deck";
+    let sites = |file: &str, text: &str| {
+        text.match_indices(JOIN)
+            .map(|(at, _)| format!("{file} {}", source_scan::enclosing_function(text, at)))
+            .collect::<Vec<_>>()
+    };
+    let mut app = Vec::new();
+    for (file, text) in source_scan::production_sources() {
+        app.extend(sites(&file, &text));
+    }
+    app.sort();
+    assert_eq!(
+        app,
+        [
+            "agent_status.rs retire_legacy_helper_copy",
+            "datadir.rs deck_dir",
+        ],
+        "a path under the data directory starts from datadir::deck_dir(), which unit tests \
+         redirect; building it from the home directory reaches the user's real data"
+    );
+    for (file, function) in [
+        ("status-helper/src/main.rs", "socket_path"),
+        ("mcp-adapter/src/main.rs", "parse_args"),
+    ] {
+        let text = std::fs::read_to_string(source_scan::manifest(file)).unwrap();
+        assert_eq!(
+            sites(file, production_region(&text)),
+            [format!("{file} {function}")],
+            "{file}: one default socket path, where it was reviewed"
+        );
+    }
+    // the resolver itself: the user's directory only outside a test build
+    let datadir = source("datadir.rs");
+    for (gate, body) in [
+        ("#[cfg(not(test))]", ".join(\".deck\")"),
+        ("#[cfg(test)]", "std::env::temp_dir()"),
+    ] {
+        let declared = format!("{gate}\npub(crate) fn deck_dir() -> PathBuf");
+        assert_eq!(datadir.matches(&declared).count(), 1, "{declared}");
+        let at = datadir.find(&declared).unwrap();
+        let (open, close) = source_scan::body_span(&datadir, at).unwrap();
+        assert!(datadir[open..close].contains(body), "{gate}: {body}");
+    }
+}
+
 /// Automation authority revocation fence (`scheduler/authority.rs`): a
 /// settings write and the automatic send's pre-fire authority decision
 /// serialize on `storage::settings_fence`, taken before the queue lock and
