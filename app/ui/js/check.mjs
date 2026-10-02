@@ -12,14 +12,26 @@
 // module must be a leaf or a strict dependency — what a leaf needs from the
 // core arrives through its `init*(deps)` from app.js (attention, templates,
 // automation and scheduler set the pattern). A cycle through any other module fails.
-// Runs in CI (test.yml) and exits non-zero on violations.
+// The cycle check sees every STATIC edge — `import … from`, a bare side-effect
+// `import './x.js'` and a re-export `export … from` — between every module
+// under this directory, subdirectories included, and reports strongly
+// connected components, so a cycle is found whichever edge closes it.
+// Runs in CI (gate.yml) and exits non-zero on violations. `node check.mjs
+// <directory>` checks another module directory (ui/test/static.test.mjs
+// feeds it small fixtures).
 
 import { readFileSync, readdirSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, posix, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const dir = dirname(fileURLToPath(import.meta.url));
-const files = readdirSync(dir).filter(f => f.endsWith('.js'));
+const dir = process.argv[2] ? resolve(process.argv[2]) : dirname(fileURLToPath(import.meta.url));
+// every module, as a path relative to `dir` with `/` (subdirectories included)
+function modulesUnder(prefix) {
+  return readdirSync(join(dir, prefix), { withFileTypes: true }).flatMap(entry =>
+    entry.isDirectory() ? modulesUnder(`${prefix}${entry.name}/`)
+      : entry.name.endsWith('.js') ? [`${prefix}${entry.name}`] : []);
+}
+const files = modulesUnder('').sort();
 
 const BROWSER = new Set([
   'window', 'document', 'globalThis', 'navigator', 'location', 'console',
@@ -185,27 +197,42 @@ for (const f of files) {
 }
 // ---- import cycles outside the view core ----
 const CORE = new Set(['board.js', 'layout.js', 'terminal.js']);
-// static specifiers only (a dynamic import() is a deliberate late edge)
+// Static specifiers only (a dynamic import() is a deliberate late edge), in
+// each form a module can depend on another: `import … from`, the bare
+// `import './x.js'`, and `export * from` / `export { … } from`.
+const STATIC_EDGE = /^(?:import\s+(?:[^;'"]*?\bfrom\s+)?|export\s+(?:\*[^;'"]*?|\{[^;'"]*?\})\s*from\s+)['"](\.{1,2}\/[^'"]+\.js)['"]/gm;
 const edges = new Map(files.map(f => [f,
-  [...readFileSync(join(dir, f), 'utf8').matchAll(/^import\s[^;]*?from\s+['"]\.\/([\w-]+\.js)['"]/gm)].map(m => m[1])]));
-const cycles = new Set();
-const stack = [];
-const done = new Set();
-function walk(node) {
-  const at = stack.indexOf(node);
-  if (at >= 0) { cycles.add(stack.slice(at).concat(node).join(' -> ')); return; }
-  if (done.has(node)) return;
-  stack.push(node);
-  for (const next of edges.get(node) || []) walk(next);
-  stack.pop();
-  done.add(node);
+  [...readFileSync(join(dir, f), 'utf8').matchAll(STATIC_EDGE)]
+    .map(m => posix.normalize(posix.join(posix.dirname(f), m[1])))
+    .filter(target => files.includes(target))]));
+// A cycle is a strongly connected component of more than one module (or a
+// module that imports itself). Components rather than a depth-first walk
+// that returns at visited modules: such a walk never reports a cycle that
+// closes through a module it has already finished.
+function components() {
+  const index = new Map(), low = new Map(), onStack = new Set(), stack = [], found = [];
+  const visit = node => {
+    index.set(node, index.size); low.set(node, index.get(node));
+    stack.push(node); onStack.add(node);
+    for (const next of edges.get(node)) {
+      if (!index.has(next)) { visit(next); low.set(node, Math.min(low.get(node), low.get(next))); }
+      else if (onStack.has(next)) low.set(node, Math.min(low.get(node), index.get(next)));
+    }
+    if (low.get(node) !== index.get(node)) return;
+    const component = [];
+    let member;
+    do { member = stack.pop(); onStack.delete(member); component.push(member); } while (member !== node);
+    found.push(component.sort());
+  };
+  for (const f of files) if (!index.has(f)) visit(f);
+  return found;
 }
-for (const f of files) walk(f);
-for (const cycle of cycles) {
-  const outside = cycle.split(' -> ').filter(name => !CORE.has(name));
+for (const component of components()) {
+  if (component.length === 1 && !edges.get(component[0]).includes(component[0])) continue;
+  const outside = component.filter(name => !CORE.has(name));
   if (outside.length) {
     bad++;
-    console.error(`import cycle leaves the view core (${[...new Set(outside)].join(', ')}): ${cycle}`);
+    console.error(`import cycle leaves the view core (${outside.join(', ')}): ${component.join(' <-> ')}`);
   }
 }
 

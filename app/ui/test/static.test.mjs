@@ -4,10 +4,12 @@
 // Rust unit and contract tests, and the real-WKWebView smoke.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { readFileSync, readdirSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { dirname, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { en } from '../js/i18n/en.js';
 import { COPY_NO_SELECTION_REASONS, PROMOTION_SOURCES } from '../js/selection-forensics.js';
 
@@ -410,4 +412,74 @@ test('every view change leaves the session view first, and the tool slot closes 
   const workspace = html.slice(html.indexOf('<div id="session-workspace">'), html.indexOf('<div id="ctx">'));
   for (const id of ['queue-panel', 'buffer-panel', 'translation-panel'])
     assert.match(workspace, new RegExp(`<section id="${id}" class="session-tool"`), `${id} is a right-hand session tool`);
+});
+
+// check.mjs is the gate that keeps import cycles inside the view core. It is
+// run here on small module directories: a cycle outside the core must be
+// found whichever static edge closes it, wherever the module lives, and
+// whatever the walk has already finished.
+test('the import-cycle gate sees every static edge and every cycle', () => {
+  const checker = resolve(root, 'app/ui/js/check.mjs');
+  const env = { ...process.env };
+  delete env.NODE_V8_COVERAGE;   // a gate run in a child process, not a covered module
+  const check = modules => {
+    const dir = mkdtempSync(join(tmpdir(), 'deck-check-'));
+    try {
+      for (const [name, source] of Object.entries(modules)) {
+        mkdirSync(dirname(join(dir, name)), { recursive: true });
+        writeFileSync(join(dir, name), source);
+      }
+      const run = spawnSync(process.execPath, [checker, dir], { encoding: 'utf8', env });
+      return { status: run.status, output: run.stdout + run.stderr };
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+  const core = {
+    'board.js': "import { layout } from './layout.js';\nexport const board = layout;\n",
+    'layout.js': "import { terminal } from './terminal.js';\nexport const layout = terminal;\n",
+    'terminal.js': "import { board } from './board.js';\nexport const terminal = board;\n",
+  };
+  const b = "import { a } from './a.js';\nexport const b = a;\n";
+
+  // the three core modules may import each other, and a leaf may be used
+  const allowed = check({
+    ...core,
+    'leaf.js': 'export const leaf = 1;\n',
+    'user.js': "import { leaf } from './leaf.js';\nexport const user = leaf;\n",
+  });
+  assert.equal(allowed.status, 0, allowed.output);
+  assert.match(allowed.output, /^ok: 5 modules/);
+
+  // one cycle between two leaves, closed by each kind of static edge
+  const closedBy = {
+    'import … from': { 'a.js': "import { b } from './b.js';\nexport const a = b;\n", 'b.js': b },
+    'a multi-line import': { 'a.js': "import {\n  b,\n} from './b.js';\nexport const a = b;\n", 'b.js': b },
+    'a side-effect import': { 'a.js': "import './b.js';\nexport const a = 1;\n", 'b.js': b },
+    'export * from': { 'a.js': "export * from './b.js';\nexport const a = 1;\n", 'b.js': b },
+    'export { … } from': { 'a.js': "export { b } from './b.js';\nexport const a = 1;\n", 'b.js': b },
+    'a module in a subdirectory': {
+      'a.js': "import { b } from './sub/b.js';\nexport const a = b;\n",
+      'sub/b.js': "import { a } from '../a.js';\nexport const b = a;\n",
+    },
+  };
+  for (const [edge, modules] of Object.entries(closedBy)) {
+    const found = check(modules);
+    assert.equal(found.status, 1, `${edge}: ${found.output}`);
+    assert.match(found.output, /import cycle leaves the view core \(a\.js, (?:sub\/)?b\.js\): a\.js <-> (?:sub\/)?b\.js/, edge);
+  }
+
+  // a leaf in a cycle THROUGH the core, closed by a module the walk has
+  // already finished: board ⇄ layout is seen first, then board → leaf → layout
+  const through = check({
+    'board.js': "import { layout } from './layout.js';\nimport { leaf } from './leaf.js';\nexport const board = [layout, leaf];\n",
+    'layout.js': "import { board } from './board.js';\nexport const layout = board;\n",
+    'leaf.js': "import { layout } from './layout.js';\nexport const leaf = layout;\n",
+  });
+  assert.equal(through.status, 1, through.output);
+  assert.match(through.output, /import cycle leaves the view core \(leaf\.js\): board\.js <-> layout\.js <-> leaf\.js/);
+
+  // a dynamic import() is a deliberate late edge, not a cycle
+  const late = check({ 'a.js': "export const a = () => import('./b.js');\n", 'b.js': b });
+  assert.equal(late.status, 0, late.output);
 });
