@@ -190,7 +190,9 @@ test('followed filter includes overlapping live reasons without changing project
   assert.equal(attentionRows(projects, [stopped], tracker, 'pending')[0].kind, 'followed');
 });
 
-test('the card badge is the Dock set: needs input or an unread ending, nothing else', () => {
+// The Dock badge is the union of these agent reasons and due card reminders
+// (notify.rs `push_badge`); a reminder has its own chip, never this badge.
+test('the card badge is the agent part of the Dock set: needs input or an unread ending, nothing else', () => {
   const tracker = trackerOf();
   const kinds = Object.fromEntries(cards.map(card => [card.id, attentionBadge(tracker, card)?.kind ?? null]));
   // every card: a badge exactly when the attention category is input or done
@@ -203,7 +205,7 @@ test('the card badge is the Dock set: needs input or an unread ending, nothing e
   const counts = tracker.counts(cards);
   assert.equal(Object.values(kinds).filter(Boolean).length,
     NOTIFY_COUNTED_FILTERS.reduce((sum, filter) => sum + counts[filter], 0),
-    'as many badges as the Dock badge counts');
+    'as many badges as the agent reasons the Dock badge counts');
   assert.deepEqual(Object.keys(ATTENTION_BADGE_LABELS), [...NOTIFY_COUNTED_FILTERS]);
   // manual follow-up alone, working, quiet, unavailable and stopped carry none
   for (const id of ['02', '03', '04', '05', '06', '09', '11', '12']) assert.equal(kinds[id], null, `card ${id}`);
