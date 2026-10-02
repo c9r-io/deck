@@ -22,6 +22,30 @@ spec.loader.exec_module(rc)
 translation_binary = runpy.run_path(str(ROOT / "scripts" / "check_local_translation_binary.py"))
 
 
+def script_tests_the_gate_misses(gate: str, scripts: Path) -> list[str]:
+    """Test files beside the tools that no gate step runs.
+
+    A Python test module (`scripts/test_*.py`) must be an argument of the one
+    `python3 -m unittest` step, and a test program (`scripts/test-*`) must
+    have a `run:` step of its own. A file on disk that the gate does not name
+    is a test nobody runs; a name the gate lists that is not on disk is a
+    step that fails for the wrong reason.
+    """
+    commands = re.findall(r"(?m)^\s+run: python3 -m unittest (.+)$", gate)
+    if len(commands) != 1:
+        return [f"expected one unittest step, found {len(commands)}"]
+    listed = commands[0].split()
+    on_disk = sorted(f"scripts/{path.name}" for path in scripts.glob("test_*.py"))
+    problems = [f"{name} is not in the unittest step" for name in on_disk if name not in listed]
+    problems += [f"{name} is listed but does not exist" for name in listed if name not in on_disk]
+    problems += [f"{name} is listed more than once" for name in sorted(set(listed)) if listed.count(name) > 1]
+    for path in sorted(scripts.glob("test-*")):
+        name = f"scripts/{path.name}"
+        if not re.search(rf"(?m)^\s+run: {re.escape(name)}(?:\s|$)", gate):
+            problems.append(f"{name} has no run step")
+    return problems
+
+
 class VersionToolTests(unittest.TestCase):
     def fixture(self, tauri: str = "0.4.37", cargo: str = "0.4.37", lock: str = "0.4.37", adapter: str | None = None) -> Path:
         root = Path(tempfile.mkdtemp(prefix="deck-version-test-"))
@@ -404,6 +428,30 @@ class ReleaseChannelTests(unittest.TestCase):
         self.assertLess(jobs["rust"].index("cargo llvm-cov"), jobs["rust"].index("--mode ci --app-evidence"))
         self.assertNotIn("--app-probe ", gate)
         self.assertNotIn("GITHUB_SHA", gate)
+
+    def test_gate_runs_every_script_test(self) -> None:
+        gate = (ROOT / ".github/workflows/gate.yml").read_text()
+        self.assertEqual(script_tests_the_gate_misses(gate, ROOT / "scripts"), [])
+        # the check itself, on a gate and a scripts directory made for it
+        step = "        run: "
+        ok = f"{step}python3 -m unittest scripts/test_a.py scripts/test_b.py\n{step}scripts/test-shell --flag\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            scripts = Path(tmp)
+            for name in ("test_a.py", "test_b.py", "test-shell", "helper.py", "tool"):
+                (scripts / name).write_text("")
+            self.assertEqual(script_tests_the_gate_misses(ok, scripts), [])
+            for broken, problem in (
+                (ok.replace(" scripts/test_b.py", ""), "scripts/test_b.py is not in the unittest step"),
+                (ok.replace("test_b.py", "test_b.py scripts/test_gone.py"), "scripts/test_gone.py is listed but does not exist"),
+                (ok.replace("test_b.py", "test_b.py scripts/test_a.py"), "scripts/test_a.py is listed more than once"),
+                (ok.replace(f"{step}scripts/test-shell", f"{step}scripts/test-shell-two"), "scripts/test-shell has no run step"),
+                # a comment or an argument that mentions the program is not a step
+                (ok.replace(f"{step}scripts/test-shell", "        # scripts/test-shell"), "scripts/test-shell has no run step"),
+                (ok.replace(f"{step}scripts/test-shell", f"{step}echo scripts/test-shell"), "scripts/test-shell has no run step"),
+                (ok.replace(f"{step}python3", f"{step}echo python3"), "expected one unittest step, found 0"),
+                (ok + ok, "expected one unittest step, found 2"),
+            ):
+                self.assertEqual(script_tests_the_gate_misses(broken, scripts), [problem], broken)
 
     def test_repository_workflows_gate_every_app_build_on_the_audit(self) -> None:
         for path in (ROOT / ".github/workflows").glob("*.yml"):
