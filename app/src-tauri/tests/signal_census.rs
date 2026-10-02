@@ -694,11 +694,30 @@ fn an_interaction_boundary_is_never_side_effect_authority() {
         .find(|(f, _)| f == "scheduler/select.rs")
         .unwrap()
         .1;
-    let at = select.find("fn agent_holds(").expect("agent_holds");
-    let (open, close) = body_span(&select, at).unwrap();
-    let hold = &select[open..=close];
-    for word in TURN_DONE_TOKENS.iter().chain(&["WORKING", "\"working\""]) {
-        assert!(!hold.contains(word), "agent_holds reads {word}");
+    // The scheduler's hold decision, read directly: of the agent words it
+    // names `needs-input` and nothing else. The decision is
+    // `hold_reason_with`; `hold_reason` and `agent_holds` only delegate to
+    // it, and all three are read so the check stays with the decision.
+    let body = |function: &str| {
+        let at = select
+            .find(&format!("fn {function}("))
+            .unwrap_or_else(|| panic!("{function}"));
+        let (open, close) = body_span(&select, at).unwrap();
+        &select[open..=close]
+    };
+    // Self-check: this IS the decision. When the logic moves to another
+    // function the scan has to move with it; it must never again pass over
+    // an empty delegate (it read the one-line `agent_holds` for a while).
+    let decision = body("hold_reason_with");
+    assert!(
+        decision.contains("agent_status::NEEDS_INPUT") && decision.contains("Hold::NeedsInput"),
+        "hold_reason_with no longer makes the agent-hold decision: point this scan at the \
+         function that does"
+    );
+    for function in ["hold_reason_with", "hold_reason", "agent_holds"] {
+        for word in TURN_DONE_TOKENS.iter().chain(&["WORKING", "\"working\""]) {
+            assert!(!body(function).contains(word), "{function} reads {word}");
+        }
     }
 }
 
