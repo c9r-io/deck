@@ -172,7 +172,7 @@
         <div id="voice-caption" class="voice-caption" aria-hidden="true" hidden></div>
         <button class="btn" id="reminder-btn" type="button" data-i18n="reminder.set">Set reminder…</button>
         <button class="btn icon-btn" id="buffer-btn" type="button" aria-pressed="false" data-i18n-title="buffer.title" title="Card scratchpad">▤<span class="cnt" id="buffer-count"></span></button>
-        <button class="btn icon-btn" id="translation-btn" type="button" hidden aria-pressed="false" data-i18n-title="translation.title" data-i18n-aria-label="translation.title" title="Local Translation" aria-label="Local Translation">文A</button>
+        <button class="btn icon-btn" id="translation-btn" type="button" aria-pressed="false" data-i18n-title="translation.title" data-i18n-aria-label="translation.title" title="Local Translation" aria-label="Local Translation">文A</button>
         <button class="btn icon-btn" id="queue-btn" type="button" aria-pressed="false" title="Scheduled prompts — send prompts to this session later" data-i18n-title="queue.title"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8.8" r="5"/><path d="M8 6.2v2.6l1.8 1.2"/><path d="M13.9 2.8l-1.7 1.5M2.1 2.8l1.7 1.5" stroke-linecap="round"/></svg><span class="cnt" id="queue-cnt"></span></button>
         <button class="btn danger" id="sess-close" title="Close session (terminates the shell and removes the card)" data-i18n="session.close" data-i18n-title="session.closeTitle">Close</button>
       </div>
@@ -242,7 +242,12 @@
             <button class="btn icon-btn" id="translation-copy" type="button" data-i18n-title="translation.copy" data-i18n-aria-label="translation.copy" disabled>⧉</button>
             <button class="btn icon-btn" id="translation-close" type="button" data-i18n-title="common.close" data-i18n-aria-label="common.close">✕</button>
           </div>
-          <div class="translation-controls">
+          <div id="translation-setup" hidden>
+            <p id="translation-setup-message" role="status"></p>
+            <progress id="translation-setup-progress" hidden data-i18n-aria-label="translation.setupBusy"></progress>
+            <button class="btn primary" id="translation-setup-action" type="button"></button>
+          </div>
+          <div id="translation-controls" class="translation-controls">
             <div id="translation-tabs" class="translation-tabs" role="tablist" data-i18n-aria-label="translation.source" aria-label="Translation source"><button class="translation-tab selected" id="translation-tab-live" type="button" role="tab" aria-selected="true" aria-controls="translation-result" data-i18n="translation.live">Live view</button><button class="translation-tab" id="translation-tab-clipboard" type="button" role="tab" aria-selected="false" aria-controls="translation-result" tabindex="-1" data-i18n="translation.clipboard">Copied text</button></div>
             <select id="translation-target" disabled data-i18n-aria-label="translation.target"><option value="zh-Hans" data-i18n="settings.locale.zh-Hans">简体中文</option></select>
           </div>

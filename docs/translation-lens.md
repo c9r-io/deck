@@ -2,6 +2,8 @@
 
 Local Translation is an optional Local Intelligence capability. It defaults OFF. The Settings switch does not silently download a model: a missing English → Simplified Chinese offline pack requires an explicit download confirmation. Turning the feature off closes the Translation Lens, disarms clipboard observation, invalidates requests, and unloads the model; closing the Lens also unloads it, so the next open loads it again. The verified pack remains installed until the user explicitly deletes it.
 
+The session toolbar always exposes Local Translation. Opening it while unavailable shows inline setup without reading terminal text or downloading anything. The explicit “Download and enable” action shows the pack size, starts installation with an indeterminate progress indicator, and uses the same settings writer as Settings. An installed pack only needs “Enable Local Translation”. Success starts Live in the still-open panel; failure permits retry, and corrupt packs link to Settings for removal. Closing during setup does not reopen the panel when setup finishes.
+
 The Lens is a session companion dock on a wide workspace and an overlay on a narrow one. It is not a card, layout leaf, terminal, shell, or Agent parser. It has two directly clickable tabs, **Live view** and **Copied text** (an ARIA tablist: arrow keys, Home/End, visible focus). Translating a selection is a snapshot shortcut, not a third tab.
 
 ## What is translated
@@ -41,3 +43,42 @@ The deployment target remains macOS 11. Bergamot is statically linked into Deck;
 ## Unattended acceptance
 
 `python3 scripts/translation-lens-verify.py` is the single acceptance entry: it builds an isolated debug bundle, runs the L1 tests, a negative control against the pre-fix sources, and three independent GUI runs of the `translation` (controlled provider) and `translation-native` (real model, real pasteboard gate, `/copy` CLI fixture) WKWebView smoke modes, judges them with `scripts/smoke-verdict`, cleans up everything it started and writes a machine report. The required IDs and their evidence are listed in `scripts/translation-lens-verify.manifest.json`. Native input is AppKit events handed to Deck's own window by a debug-only bridge (`native/SmokeBridge.swift`, absent from release executables). The general pasteboard is shared with the login session. Every test write is refused before it touches a board unless an active guard holds a stable, complete backup and the board is still at the guard's owned version; writes the test does not perform itself (the `/copy` fixture's compare-and-write, the Lens writer, the driver) need a permit and are adopted only by their writer's `clearContents()` receipt, never by comparing text. Settling disarms Copied-text observation first, restores only while the owned version is current (a newer external version is kept), and keeps the backup when a restore fails. A guard write records the board as modified (with its own clearContents() receipt) the moment it clears it, so a fill that fails afterwards is still restored, never reported as not written or external. The driver finishes every test instance through one idempotent sequence — the normal tail, a real exception, a command timeout or a cancel reaching its outer cleanup alike: settle through the live process (nonce-tagged reply, bounded retries while the backup holder is alive), record the result, then terminate; an exhausted budget is reported as restore-failed or unconfirmed, never as clean. NSPasteboard has no cross-process compare-and-swap, so a narrow race window between a version check and a write remains. Fault injection (refused backups, takeovers, equal-text impostors, exceptions, cancel, kill) runs only on a test-owned named pasteboard (`translation-guard` mode, `scripts/test-smoke-guard`). A locked GUI session makes the run BLOCKED, never a manual checklist.
+
+## Setup acceptance — 2026-10-02
+
+PASS on the local 0.7.22 candidate, with no version change or release.
+Reproduce with `python3 scripts/translation-setup-verify.py`. The focused
+manifest is `app/ui/test/fixtures/translation-setup-manifest.json`; it uses
+`smoke-verdict.mjs`'s existing strict judge. These scenarios run through the
+existing translation smoke entry points and are not additional app modes.
+
+- Controlled transport in real WKWebView: missing-pack guide, failed download
+  and retry, duplicate native clicks, close/card-switch while pending, no
+  automatic reopen, explicitly reopened panel targets the new card, and
+  Translation/Queue/Scratchpad mutual exclusion.
+- Production transport in real WKWebView: actual HTTPS pack download into an
+  empty isolated directory, verification, enable persistence, Bergamot Live
+  translation, and cold reopen on the current session.
+- Two actual process restarts on the same native data directory: enabled
+  restores and translates; disabled restores with the pack still installed,
+  offers Enable, and enters Live after the native click.
+- Setup/control clicks are AppKit events delivered to the test app's own
+  window. Synthetic cards and card switching use the production Board/layout
+  APIs. Only the controlled run substitutes pack/translation transport; native
+  runs use neither a preseeded pack nor a fake translation provider. No test
+  reads or writes the shared clipboard.
+
+Evidence: `/private/tmp/deck-translation-setup-bz5ik93p/report.json`, per-scenario
+verdicts/logs and WKWebView PNGs in that directory. All four scenario verdicts
+returned 0. Candidate binary SHA-256:
+`b741455d95c2383fb1aee75c61af7e5103fcc386af89baf3b7c2c9af32281bf9`.
+The staged frontend matched every source file. Final isolated-process/tmux
+inventory returned 0; production data and sessions were untouched.
+
+The first acceptance attempt caught two harness issues (a ninth click expected
+in an eight-click path, and focused scenarios placed in the global app-mode
+manifest). Both were corrected and the complete matrix rerun. No further
+product defect was found. Frontend gate: 468 passed, 0 failed, coverage passed;
+module identifier/import checks, changed-JS syntax checks and diff whitespace
+checks passed. This focused acceptance does not claim the separate full
+clipboard/scrolling translation certification suite was rerun.

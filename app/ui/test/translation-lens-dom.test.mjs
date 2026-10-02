@@ -41,10 +41,12 @@ const status = () => $('translation-status').textContent;
 
 // Backend: every translate call is controlled by the test.
 const calls = [];
+let available = true, installed = true, corrupt = false, setupCalls = 0, setupGate = null;
 let clipboard = { version: 0, baseline: 0, armed: false, text: '' };
 let armGate = null, outstanding = 0, maxOutstanding = 0, copied = [];
 intelligence.installTranslationSmokeBackend({
-  capability: async () => ({ available: true, enabled: true, installed: true, loaded: false }),
+  capability: async () => ({ available, enabled: ctx.settings.localIntelligence.translation.enabled, installed, loaded: false }),
+  packStatus: async () => ({ installed, corrupt, downloadBytes: 36745493 }),
   unload: async () => {},
   translate: (id, text, target, strategy) => new Promise((resolve, reject) => {
     outstanding++; maxOutstanding = Math.max(maxOutstanding, outstanding);
@@ -75,7 +77,13 @@ const panes = new Map([['a', pane('a')], ['b', pane('b')]]);
 ctx.settings.localIntelligence = { translation: { enabled: true, documentLimitBytes: 16384 } };
 state.view = 'session'; ctx.attachedName = 'a';
 ids.set('translation-result', new CountingElement());
-lens.initTranslationLens({ panes, closeBuffer() {} });
+let settingsOpened = 0;
+lens.initTranslationLens({ panes, openSettings() { settingsOpened++; }, async enableTranslation() {
+  setupCalls++;
+  const ok = setupGate ? await setupGate : true;
+  if (ok) { available = true; installed = true; ctx.settings.localIntelligence.translation.enabled = true; }
+  return ok;
+} });
 await flush();
 
 const openLens = async () => { $('translation-btn').onclick(); await flush(); };
@@ -333,4 +341,43 @@ test('[G07] a self-write receipt from an earlier cycle cannot hide a copy in the
   focused = false; fire('blur'); copyExternally('while away'); await tick(400);
   focused = true; fire('focus'); await tick(800);
   assert.ok(!calls.some(call => call.text === 'while away'), 'still never reads what was copied away');
+});
+
+async function setupState({ hasPack = false, damaged = false } = {}) {
+  await reset(); available = false; installed = hasPack; corrupt = damaged;
+  setupCalls = 0; setupGate = null;
+  ctx.settings.localIntelligence.translation.enabled = false;
+  fire('deck-translation-enabled-changed'); await flush(); await openLens();
+}
+test('disabled translation opens setup without reading or downloading; explicit action enables and translates', async () => {
+  await setupState(); await tick(400);
+  assert.equal($('translation-btn').hidden, false);
+  assert.equal($('translation-panel').hidden, false);
+  assert.equal($('translation-setup').hidden, false);
+  assert.equal($('translation-controls').hidden, true);
+  assert.equal(calls.length, 0); assert.equal(setupCalls, 0);
+  assert.match($('translation-setup-message').textContent, /35/);
+  await $('translation-setup-action').onclick(); await tick(400);
+  assert.equal(setupCalls, 1); assert.equal($('translation-setup').hidden, true);
+  assert.equal($('translation-controls').hidden, false); assert.equal(calls.length, 1);
+});
+test('installed pack offers enable; corrupt pack routes to settings', async () => {
+  await setupState({ hasPack: true });
+  assert.equal($('translation-setup-action').textContent, t('translation.enable'));
+  await $('translation-setup-action').onclick(); assert.equal(setupCalls, 1);
+  await setupState({ damaged: true });
+  await $('translation-setup-action').onclick();
+  assert.equal(settingsOpened, 1); assert.equal(setupCalls, 0);
+});
+test('setup failure is retryable; busy setup ignores duplicates and cannot reopen a closed panel', async () => {
+  await setupState(); setupGate = Promise.resolve(false);
+  await $('translation-setup-action').onclick();
+  assert.equal($('translation-setup-message').textContent, t('translation.setupFailed'));
+  let finish; setupGate = new Promise(resolve => { finish = resolve; });
+  const pendingSetup = $('translation-setup-action').onclick();
+  assert.equal($('translation-setup-action').disabled, true);
+  assert.equal($('translation-setup-progress').hidden, false);
+  await $('translation-setup-action').onclick(); assert.equal(setupCalls, 2);
+  lens.closeTranslationLens(); finish(true); await pendingSetup; await tick(400);
+  assert.equal($('translation-panel').hidden, true); assert.equal(calls.length, 0);
 });

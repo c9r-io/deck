@@ -1,0 +1,79 @@
+{
+  "modes": {
+    "setup-controlled": {
+      "terminal": "done",
+      "checks": {
+        "translation-default-off": {},
+        "translation-enable-confirm": {},
+        "translation-queue-mutual": {},
+        "translation-shortcut-live": {},
+        "translation-buffer-mutual": {},
+        "translation-buffer-close": {},
+        "tl-a01-static-open": {},
+        "tl-e01-mouse": {},
+        "translation-disable": {},
+        "tl-d02-update-failure": {},
+        "tl-d01-retry": {},
+        "tl-b07-bounded": {},
+        "translation-download-enable": {},
+        "tl-d03-late-read": {},
+        "translation-open": {},
+        "tl-b07-responsive": {},
+        "translation-leave": {},
+        "tl-a04-bounded": {},
+        "tl-a05-pane-b": {},
+        "tl-exception": {
+          "failureOnly": true
+        }
+      }
+    },
+    "setup-native-install": {
+      "terminal": "done",
+      "checks": {
+        "translation-default-off": {},
+        "translation-enable-confirm": {},
+        "translation-queue-mutual": {},
+        "translation-shortcut-live": {},
+        "translation-buffer-mutual": {},
+        "translation-buffer-close": {},
+        "tl-a01-static-open": {},
+        "tl-e01-mouse": {},
+        "translation-delete": {},
+        "translation-download-enable": {},
+        "tl-n-capability": {},
+        "tl-exception": {
+          "failureOnly": true
+        }
+      }
+    },
+    "setup-restart-disabled": {
+      "terminal": "done",
+      "checks": {
+        "translation-default-off": {},
+        "translation-enable-confirm": {},
+        "translation-queue-mutual": {},
+        "translation-shortcut-live": {},
+        "translation-buffer-mutual": {},
+        "translation-buffer-close": {},
+        "tl-a01-static-open": {},
+        "tl-e01-mouse": {},
+        "tl-e02-persisted": {},
+        "translation-enabled": {},
+        "tl-exception": {
+          "failureOnly": true
+        }
+      }
+    },
+    "setup-restart-enabled": {
+      "terminal": "done",
+      "checks": {
+        "tl-e02-persisted": {},
+        "translation-open": {},
+        "translation-disable": {},
+        "tl-exception": {
+          "failureOnly": true
+        }
+      }
+    }
+  }
+}

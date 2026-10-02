@@ -194,7 +194,7 @@ const lagProbe = () => {
 function controlledBackend() {
   const fake = { requests: [], outstanding: 0, maxOutstanding: 0, cancelled: 0, auto: null, autoDelay: 120,
     failNext: [], clipboard: '', version: 0, baseline: 0, armed: false, arms: 0, reads: 0, pollDelay: 0,
-    installed: false, copied: '', unloads: 0 };
+    installCalls: 0, installWait: null, installFail: false, installed: false, copied: '', unloads: 0 };
   const pack = () => ({ installed: fake.installed, corrupt: false, downloadBytes: 36745493, installedBytes: 49913927,
     liveBytes: 4096, selectionBytes: 16384, documentChoices: [8192, 16384], targetLanguage: 'zh-Hans' });
   const settle = (item, text, code) => {
@@ -208,7 +208,12 @@ function controlledBackend() {
     capability: async () => ({ available: fake.installed && ctx.settings.localIntelligence.translation.enabled,
       enabled: ctx.settings.localIntelligence.translation.enabled, installed: fake.installed, loaded: false }),
     packStatus: async () => pack(),
-    packInstall: async () => { fake.installed = true; return pack(); },
+    packInstall: async () => {
+      fake.installCalls++;
+      if (fake.installWait) await fake.installWait;
+      if (fake.installFail) { fake.installFail = false; throw new Error('translation-model-download-failed'); }
+      fake.installed = true; return pack();
+    },
     packDelete: async () => { fake.installed = false; },
     unload: async () => { fake.unloads++; },
     translate: (id, text, target, strategy) => new Promise((resolve, reject) => {
@@ -244,6 +249,8 @@ const fakeTranslation = text => `译文〔${lastLine(text)}〕\n第二行\n第�
 
 export async function runTranslationSmoke() {
   const fake = controlledBackend();
+  const scenario = await inv('smoke_native_scenario');
+  if (scenario === 'setup-controlled') return runTranslationSetupSmoke(scenario, fake);
   let stage = 0;
   try {
     const fixture = await inv('smoke_native_fixture');
@@ -254,9 +261,11 @@ export async function runTranslationSmoke() {
     const paneA = panes.get(cardA.session);
     await ensureFront();
     await waitFor(() => viewportHas(paneA, 'The build completed successfully'), 15000);
-    await report('translation-default-off', $('translation-btn').hidden && $('translation-panel').hidden);
+    await report('translation-default-off', !$('translation-btn').hidden && $('translation-panel').hidden);
     await chord(); await pause(150);
-    await report('translation-disabled-shortcut', $('translation-panel').hidden, 1, trusted('keydown'));
+    await report('translation-disabled-shortcut', !$('translation-panel').hidden && !$('translation-setup').hidden
+      && $('translation-controls').hidden && !fake.installed, 1, trusted('keydown'));
+    await chord();
     stage = 2;
     const { openSettings } = await import('../js/settings.js');
     await openSettings({ section: 'terminal' });
@@ -731,8 +740,8 @@ export async function runTranslationSmoke() {
       && $('queue-btn').getAttribute('aria-pressed') === 'false');
     await openSettings({ section: 'terminal' });
     $('set-local-translation').click();
-    await report('translation-disable', await waitFor(() => $('translation-btn').hidden)
-      && $('translation-panel').hidden && fake.unloads > 0 && fake.installed);
+    await report('translation-disable', await waitFor(() => !ctx.settings.localIntelligence.translation.enabled)
+      && !$('translation-btn').hidden && $('translation-panel').hidden && fake.unloads > 0 && fake.installed);
     $('set-translation-delete').click();
     await waitFor(() => $('cfm').style.display === 'flex');
     $('cfm-yes').click();
@@ -779,6 +788,8 @@ const CORPUS = [
 ];
 
 export async function runTranslationNativeSmoke() {
+  const scenario = await inv('smoke_native_scenario');
+  if (scenario.startsWith('setup-')) return runTranslationSetupSmoke(scenario);
   let stage = 0, named = false;
   const newRequests = since => lensMetrics().submitted - since;
   const shown = async (pred, timeout = 30000) => waitFor(pred, timeout, 25);
@@ -1259,5 +1270,120 @@ export async function runTranslationGuardSmoke() {
   } catch (error) {
     await metric('tl-exception', stage, String(error?.message || '').length);
     await report('done', false, 1, stage);
+  }
+}
+
+// Focused setup acceptance in the SAME WKWebView/bundle. Controlled mode
+// replaces only the translation/pack transport for deterministic download
+// delays and failures; native modes use the real HTTPS pack and Bergamot.
+// No clipboard read/write; all setup, settings and drawer clicks are native.
+async function runTranslationSetupSmoke(scenario, fake = null) {
+  let stage = 0;
+  const visible = id => !$(id).hidden && $(id).getBoundingClientRect().width > 0
+    && getComputedStyle($(id)).display !== 'none';
+  const live = () => visible('translation-result') && !visible('translation-setup')
+    && resultText().length > 0 && isStatus('translation.ready');
+  const check = async (name, predicate) => {
+    const ok = await waitFor(predicate, 90000);
+    await report(name, ok);
+    if (!ok) throw new Error(name);
+  };
+  const openSettings = (await import('../js/settings.js')).openSettings;
+  const disable = async () => {
+    await openSettings({ section: 'terminal' });
+    if ($('set-local-translation').checked) await click($('set-local-translation'));
+    await check('translation-disable', () => !ctx.settings.localIntelligence.translation.enabled);
+    await click($('set-close'));
+  };
+  try {
+    await waitFor(() => provider.projects().length > 0);
+    const wasEnabled = ctx.settings.localIntelligence.translation.enabled;
+    const pack = await packStatus();
+    const cardA = await newCard('Setup Alpha', "printf 'The build completed successfully. All tests passed.\\n'");
+    const cardB = await newCard('Setup Beta', "printf 'The server restarted successfully. The connection is ready.\\n'");
+    await openSession(cardA.id); await ensureFront();
+    await waitFor(() => viewportHas(panes.get(cardA.session), 'The build completed successfully'));
+    stage = 1;
+    if (scenario === 'setup-restart-enabled') {
+      await report('tl-e02-persisted', wasEnabled && pack.installed);
+      await click($('translation-btn'));
+      await check('translation-open', live);
+      await snapshot('setup-restart-enabled');
+      await disable();
+      await report('done', !failed); return;
+    }
+    await report('translation-default-off', !wasEnabled && visible('translation-btn') && !visible('translation-panel'));
+    await click($('translation-btn'));
+    await check('translation-enable-confirm', () => visible('translation-setup') && !visible('translation-controls')
+      && !$('translation-setup-action').disabled
+      && $('translation-setup-action').textContent === t(pack.installed ? 'translation.enable' : 'translation.downloadEnable'));
+    await snapshot('setup-guide');
+    stage = 2;
+    if (scenario === 'setup-restart-disabled') {
+      await report('tl-e02-persisted', !wasEnabled && pack.installed);
+      await click($('translation-setup-action'));
+      await check('translation-enabled', live);
+    } else if (!fake) {
+      await report('translation-delete', !pack.installed);
+      await click($('translation-setup-action'));
+      await snapshot('setup-downloading');
+      await check('translation-download-enable', () => ctx.settings.localIntelligence.translation.enabled && live());
+      await report('tl-n-capability', (await capability()).available && (await packStatus()).installed);
+    } else {
+      fake.auto = fakeTranslation;
+      fake.installFail = true;
+      await click($('translation-setup-action'));
+      await check('tl-d02-update-failure', () => $('translation-setup-message').textContent === t('translation.setupFailed')
+        && !$('translation-setup-action').disabled && !ctx.settings.localIntelligence.translation.enabled);
+      await snapshot('setup-failed');
+      let finish;
+      fake.installWait = new Promise(resolve => { finish = resolve; });
+      await click($('translation-setup-action'));
+      await check('tl-d01-retry', () => fake.installCalls === 2 && $('translation-setup-action').disabled
+        && visible('translation-setup-progress'));
+      await click($('translation-setup-action'));
+      await report('tl-b07-bounded', fake.installCalls === 2);
+      await click($('translation-close'));
+      await openSession(cardB.id); await ensureFront();
+      finish();
+      await check('translation-download-enable', () => ctx.settings.localIntelligence.translation.enabled);
+      await pause(600);
+      await report('tl-d03-late-read', !visible('translation-panel') && fake.requests.length === 0);
+      await click($('translation-btn'));
+      await check('translation-open', () => live() && lensSourceText().includes('The server restarted successfully')
+        && !lensSourceText().includes('The build completed successfully'));
+      // Repeat with an explicitly reopened panel on the next card. Finishing
+      // the old download must target that card, not the initiating viewport.
+      await disable(); fake.installed = false; fake.installWait = new Promise(resolve => { finish = resolve; });
+      await openSession(cardA.id); await ensureFront(); await click($('translation-btn'));
+      await waitFor(() => $('translation-setup-action').textContent === t('translation.downloadEnable'));
+      await click($('translation-setup-action'));
+      await check('tl-b07-responsive', () => fake.installCalls === 3 && $('translation-setup-action').disabled);
+      await openSession(cardB.id); await ensureFront();
+      await report('translation-leave', !visible('translation-panel'));
+      await click($('translation-btn'));
+      await report('tl-a04-bounded', $('translation-setup-action').disabled && fake.installCalls === 3);
+      finish();
+      await check('tl-a05-pane-b', () => live() && lensSourceText().includes('The server restarted successfully')
+        && !lensSourceText().includes('The build completed successfully'));
+    }
+    stage = 3;
+    await snapshot('setup-live');
+    await click($('queue-btn'));
+    await report('translation-queue-mutual', visible('queue-panel') && !visible('translation-panel') && !visible('buffer-panel'));
+    await click($('translation-btn'));
+    await check('translation-shortcut-live', live);
+    await report('translation-queue-mutual', !visible('queue-panel') && visible('translation-panel'));
+    await click($('buffer-btn'));
+    await report('translation-buffer-mutual', visible('buffer-panel') && !visible('translation-panel') && !visible('queue-panel'));
+    await click($('translation-btn'));
+    await check('translation-buffer-close', () => live() && !visible('buffer-panel'));
+    await click($('translation-close')); await click($('translation-btn'));
+    await check('tl-a01-static-open', live);
+    await report('tl-e01-mouse', trusted('pointerdown') >= 8, trusted('pointerdown'));
+    await report('done', !failed);
+  } catch (error) {
+    await metric('tl-exception', stage, String(error?.message || '').length);
+    await snapshot('setup-exception'); await report('done', false, 1, stage);
   }
 }

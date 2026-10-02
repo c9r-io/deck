@@ -700,6 +700,10 @@ html[data-effective-theme="light"] #input-source-icon { background: var(--panel)
   width: min(var(--session-tool-width), 100%);
 }
 #translation-btn { font-size: 0.95rem; letter-spacing: -0.08em; }
+#translation-setup { padding: 14px; }
+#translation-setup-action { white-space: normal; }
+#translation-setup-progress { display: block; width: 100%; margin-bottom: 12px; }
+#translation-panel [hidden] { display: none; }
 .translation-head { display: flex; align-items: center; gap: 8px; padding: 12px 14px 10px;
   border-bottom: 1px solid var(--border-soft); }
 .translation-head strong { flex: 1; min-width: 0; font-weight: 600; }

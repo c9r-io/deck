@@ -21,19 +21,22 @@
 //   excluded — never text that merely looks like an old result.
 // - Reading never pauses: a live selection inside the result only defers
 //   showing a newer result until the selection or its focus ends.
+// - The button always opens the panel. Until enabled and installed it shows
+//   an explicit setup action; opening alone never downloads or reads text.
+//   Settings owns installation and the durable enable write.
 // - The panel is the `translation` tool of the session's right-hand slot
 //   (session-tools.js): opening claims it (closing scheduled prompts or the
 //   scratchpad); the slot's close is closeTranslationLens, the full cleanup,
 //   and leaving the session closes it. Switching panes inside one session
 //   layout only retargets Live (`deck-pane-focused`).
 import { $, ctx, state, listen } from './state.js';
-import { t, onLocaleChange } from './i18n.js';
+import { t, formatNumber, onLocaleChange } from './i18n.js';
 import { toast } from './dialogs.js';
 import { registerShortcutAction } from './shortcuts.js';
 import { claimSessionTool, registerSessionTool, releaseSessionTool } from './session-tools.js';
 import { copyTerminalSelection, hasTerminalSelection } from './selection.js';
 import { TranslationLensModel, LiveCadence, translationShortcutAction } from './translation-lens-model.js';
-import { capability, translate, cancel, clipboardArm, clipboardDisarm,
+import { capability, packStatus, translate, cancel, clipboardArm, clipboardDisarm,
   clipboardPoll, copyTranslation, unload, closedCode,
   MAX_LIVE_TRANSLATION_BYTES, MAX_TRANSLATION_BYTES } from './local-intelligence.js';
 
@@ -42,6 +45,7 @@ const ARM_RETRY_MS = 250, ARM_ATTEMPTS = 12;
 const MODES = ['live', 'clipboard'];
 const model = new TranslationLensModel();
 let backend = { available: false }, deps, shortcutDispose = null;
+let setupPack = null, setupBusy = false, setupError = null, refreshEpoch = 0;
 let requestCounter = Date.now() * 1000, inflight = null, retryTimer = null;
 let clipboardEpoch = 0, pollTimer = null, armTimer = null, polling = false;
 let clipboardChain = Promise.resolve();
@@ -68,7 +72,7 @@ export const translationLensMetrics = () => ({ ...metrics, last: { ...metrics.la
 // (the DOM already shows it); it is never logged or sent anywhere.
 export const translationLensView = () => ({ text: model.resultText(), source: model.sourceForCopy() });
 const enabled = () => ctx.settings.localIntelligence?.translation?.enabled === true;
-const meaningful = () => enabled() && model.open && state.view === 'session' && !document.hidden && appFocused;
+const meaningful = () => enabled() && backend.available && model.open && state.view === 'session' && !document.hidden && appFocused;
 const focusedPane = () => deps.panes.get(ctx.attachedName);
 const paneId = pane => {
   if (!pane) return null;
@@ -142,12 +146,30 @@ function renderTabs() {
   panel.setAttribute('aria-labelledby', MODES.includes(model.mode) ? `translation-tab-${model.mode}` : 'translation-title');
 }
 function render() {
-  $('translation-btn').hidden = !enabled() || !backend.available;
+  $('translation-btn').hidden = false;
   $('translation-panel').hidden = !model.open;
   $('translation-btn').setAttribute('aria-pressed', String(model.open));
   if (!model.open) {
     if (renderedText) { $('translation-result').textContent = ''; metrics.domWrites++; }
     renderedText = null; return;
+  }
+  const ready = enabled() && backend.available;
+  $('translation-setup').hidden = ready;
+  $('translation-controls').hidden = !ready;
+  $('translation-result').hidden = !ready;
+  $('translation-status').hidden = !ready;
+  $('translation-copy').hidden = !ready;
+  $('translation-copy-source').hidden = !ready;
+  if (!ready) {
+    $('translation-setup-message').textContent = t(setupError || (setupPack?.corrupt
+      ? 'settings.translationPackCorrupt' : setupPack?.installed ? 'translation.setupEnable' : 'translation.setupDownload'),
+      { size: formatNumber(Math.round((setupPack?.downloadBytes || 36745493) / 1048576)) });
+    $('translation-setup-action').textContent = t(setupBusy ? 'translation.setupBusy'
+      : !setupPack ? 'translation.setupRetry' : setupPack?.corrupt ? 'translation.setupSettings' : setupPack?.installed ? 'translation.enable' : 'translation.downloadEnable');
+    $('translation-setup-action').disabled = setupBusy;
+    $('translation-setup-progress').hidden = !setupBusy;
+    $('translation-setup').setAttribute('aria-busy', String(setupBusy));
+    return;
   }
   renderTabs();
   model.present(readingHold());
@@ -247,12 +269,30 @@ function resumeFocus() {
   pump(); render();
 }
 async function refreshCapability() {
-  if (!enabled()) { backend = { available: false }; closeTranslationLens(); shortcutDispose?.(); shortcutDispose = null; render(); return; }
-  try { backend = await capability(); }
-  catch { backend = { available: false }; }
-  if (backend.available && !shortcutDispose) shortcutDispose = registerShortcutAction('translationLens', translationShortcut);
-  if (!backend.available && shortcutDispose) { shortcutDispose(); shortcutDispose = null; closeTranslationLens(); }
+  const epoch = ++refreshEpoch;
+  let next;
+  try { next = await capability(); }
+  catch { next = { available: false }; }
+  if (epoch !== refreshEpoch) return;
+  backend = next;
+  if (!backend.available && model.open) {
+    cadence.stop(); stopClipboard(); dropWork();
+    try { setupPack = await packStatus(); }
+    catch { setupPack = null; setupError = 'settings.translationPackState.unavailable'; }
+    if (epoch !== refreshEpoch) return;
+  }
+  if (model.open && backend.available) resumeFocus();
   render();
+}
+async function setupTranslation() {
+  if (setupBusy) return;
+  if (!setupPack) { setupError = null; await refreshCapability(); return; }
+  if (setupPack.corrupt) { deps.openSettings?.(); return; }
+  setupBusy = true; setupError = null; render();
+  try {
+    if (!(await deps.enableTranslation())) setupError = 'translation.setupFailed';
+  } catch { setupError = 'translation.setupFailed'; }
+  finally { setupBusy = false; await refreshCapability(); render(); }
 }
 export function closeTranslationLens() {
   releaseSessionTool('translation');
@@ -262,9 +302,10 @@ export function closeTranslationLens() {
   unload().catch(() => {});
 }
 function open(mode = 'live') {
-  if (!enabled() || !backend.available || state.view !== 'session') return;
+  if (state.view !== 'session') return;
   claimSessionTool('translation'); model.show(mode); stamp('open');
   enterMode(mode);
+  if (!backend.available) { setupError = null; refreshCapability(); }
 }
 async function selectedText() {
   const pane = focusedPane(); let text = null;
@@ -274,13 +315,14 @@ async function selectedText() {
 }
 function translateSelection(text) {
   if (!model.open) open('selection');
-  if (!model.open) return;
+  if (!model.open || !backend.available || !enabled()) return;
   cadence.stop(); stopClipboard(); clearTimeout(retryTimer); retryTimer = null;
   model.snapshot(text, 'selection', MAX_TRANSLATION_BYTES);
   pump(); render();
 }
 async function translationShortcut() {
-  if (!enabled() || state.view !== 'session') return;
+  if (state.view !== 'session') return;
+  if (!enabled() || !backend.available) { if (model.open) closeTranslationLens(); else open(); return; }
   const text = await selectedText();
   const action = translationShortcutAction(!!text, model.open);
   if (action === 'selection') translateSelection(text);
@@ -304,8 +346,11 @@ function tabKey(event) {
   $(`translation-tab-${MODES[next]}`).focus();
   selectMode(MODES[next]);
 }
-export function initTranslationLens({ panes }) {
-  deps = { panes };
+export function initTranslationLens({ panes, enableTranslation, openSettings }) {
+  deps = { panes, enableTranslation, openSettings };
+  shortcutDispose?.();
+  shortcutDispose = registerShortcutAction('translationLens', translationShortcut);
+  $('translation-setup-action').onclick = setupTranslation;
   registerSessionTool('translation', () => closeTranslationLens());
   $('translation-btn').onclick = () => { if (model.open) closeTranslationLens(); else open(); };
   $('translation-close').onclick = closeTranslationLens;
@@ -355,5 +400,5 @@ export function initTranslationLens({ panes }) {
   document.addEventListener('visibilitychange', () => { if (document.hidden) interrupt(); else resumeFocus(); });
   new ResizeObserver(() => { if (liveActive()) cadence.output(); }).observe($('session-workspace'));
   onLocaleChange(render);
-  refreshCapability(); // default OFF never verifies or loads a model
+  refreshCapability(); // no pack lookup until the user opens setup
 }

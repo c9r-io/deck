@@ -4,6 +4,8 @@
 // logs, the settings writer every choice goes through and the ONE commit
 // shape (`commitSettings`: candidate first, rollback on failure) behind
 // every optimistic choice.
+// The Lens may explicitly download and enable through installTranslationPack;
+// it shares the same settings writer and installation guard as Settings.
 // Navigation and search: the sections and the searchable settings (stable
 // ids, markup `set-item-<id>`) come from settings-search-model.js, which owns
 // the matching rules. A search shows the matching setting groups under their
@@ -160,17 +162,24 @@ async function saveTranslationEnabled(enabled) {
   renderLocalTranslationSettings();
   return ok;
 }
-async function installTranslationPack(enableAfter) {
+let translationInstallPending = false;
+export async function installTranslationPack(enableAfter, { confirmed = false } = {}) {
+  if (translationInstallPending) return false;
+  translationInstallPending = true;
+  const controls = ['set-local-translation', 'set-translation-download', 'set-translation-delete'].map($);
+  controls.forEach(control => { control.disabled = true; });
+  try { return await performTranslationInstall(enableAfter, confirmed); }
+  finally { translationInstallPending = false; controls.forEach(control => { control.disabled = false; }); }
+}
+async function performTranslationInstall(enableAfter, confirmed) {
   await refreshTranslationPack();
   if (translationPack?.corrupt) { toast(t('settings.translationPackCorrupt')); return false; }
   if (translationPack?.installed) return enableAfter ? saveTranslationEnabled(true) : true;
   const size = formatNumber(Math.round((translationPack?.downloadBytes || 36745493) / 1048576));
-  if (!(await confirmDialog(t(enableAfter ? 'settings.translationDownloadConfirm'
+  if (!confirmed && !(await confirmDialog(t(enableAfter ? 'settings.translationDownloadConfirm'
     : 'settings.translationDownloadOnlyConfirm', { size })))) {
     renderLocalTranslationSettings(); return false;
   }
-  $('set-translation-download').disabled = true;
-  $('set-local-translation').disabled = true;
   try {
     translationPack = await packInstall();
     renderLocalTranslationSettings();
@@ -180,8 +189,6 @@ async function installTranslationPack(enableAfter) {
     await refreshTranslationPack();
     return false;
   } finally {
-    $('set-translation-download').disabled = false;
-    $('set-local-translation').disabled = false;
     renderLocalTranslationSettings();
   }
 }
