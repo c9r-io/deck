@@ -94,8 +94,8 @@
 
 mod source_scan;
 use source_scan::{
-    all_sources, enclosing_function, is_declared_test_file, is_ident, manifest, production_region,
-    production_sources,
+    all_sources, code_only, enclosing_function, is_declared_test_file, is_ident, manifest,
+    production_region, production_sources,
 };
 
 #[derive(Debug, Eq, PartialEq)]
@@ -677,6 +677,128 @@ fn connector_owns_the_only_production_tcp_listener() {
         "TcpSocket::bind(addr)",
     ] {
         assert_eq!(tcp_bind_count(sample), 1, "scanner missed {sample}");
+    }
+}
+
+/// Local IPC listeners: (file, enclosing function, what it is). The TCP
+/// census above does not see a Unix-domain socket, and until this list a
+/// new one — or a UDP bind, which is as network-visible as a second TCP
+/// listener — passed every check in this file. Each of these binds a path
+/// inside deck's private data directory and is not reachable from the
+/// network.
+const UNIX_LISTENERS: &[(&str, &str, &str)] = &[
+    (
+        "agent_status.rs",
+        "listen_at",
+        "the agent-status hook socket the bundled helper reports to",
+    ),
+    (
+        "mcp/control.rs",
+        "bind_private_socket",
+        "the MCP control socket the bundled adapter connects to",
+    ),
+];
+const SIDECAR_UNIX_LISTENERS: &[(&str, &str, &str)] = &[(
+    "mcp-runner/src/main.rs",
+    "bind_private_socket",
+    "the pane runner's control socket deck connects to",
+)];
+
+const UNIX_LISTENER_BINDS: &[&str] = &["UnixListener::bind(", "UnixListener::bind_addr("];
+/// Socket kinds deck does not use at all.
+const UNREVIEWED_BINDS: &[&str] = &[
+    "UnixDatagram::bind(",
+    "UnixDatagram::bind_addr(",
+    "UdpSocket::bind(",
+    "libc::socket(",
+    "libc::bind(",
+    "libc::listen(",
+];
+
+/// (the enclosing function of every Unix listener bind, every other socket
+/// bind) in real code — comments and strings are not sites. A bind written
+/// with whitespace inside the path is reported, never missed.
+fn local_socket_sites(source: &str) -> (Vec<String>, Vec<String>) {
+    let code = code_only(source);
+    let compact: String = code.chars().filter(|c| !c.is_whitespace()).collect();
+    let mut listeners = Vec::new();
+    let mut unreviewed = Vec::new();
+    for token in UNIX_LISTENER_BINDS {
+        let functions: Vec<String> = code
+            .match_indices(token)
+            .map(|(at, _)| enclosing_function(&code, at))
+            .collect();
+        if compact.matches(token).count() != functions.len() {
+            unreviewed.push(format!("{token} written with whitespace inside"));
+        }
+        listeners.extend(functions);
+    }
+    for token in UNREVIEWED_BINDS {
+        if compact.contains(token) {
+            unreviewed.push((*token).to_string());
+        }
+    }
+    (listeners, unreviewed)
+}
+
+#[test]
+fn local_sockets_are_a_reviewed_list_and_nothing_binds_a_datagram() {
+    let mut problems = Vec::new();
+    let mut check = |name: &str, source: &str, reviewed: &[(&str, &str, &str)]| {
+        let (listeners, unreviewed) = local_socket_sites(source);
+        for token in unreviewed {
+            problems.push(format!(
+                "{name} binds a socket kind deck does not use: {token}"
+            ));
+        }
+        let expected: Vec<&str> = reviewed
+            .iter()
+            .filter(|(file, _, _)| *file == name)
+            .map(|(_, function, _)| *function)
+            .collect();
+        if listeners != expected {
+            problems.push(format!(
+                "{name} binds Unix listeners in {listeners:?}, reviewed {expected:?}: a new local \
+                 socket is new process surface — add it to the list with what it is, or remove it"
+            ));
+        }
+    };
+    for (name, source) in production_sources() {
+        check(&name, &source, UNIX_LISTENERS);
+    }
+    for sidecar in [
+        "mcp-adapter/src/main.rs",
+        "mcp-runner/src/main.rs",
+        "status-helper/src/main.rs",
+    ] {
+        let source = std::fs::read_to_string(manifest(sidecar)).unwrap();
+        check(sidecar, production_region(&source), SIDECAR_UNIX_LISTENERS);
+    }
+    assert!(problems.is_empty(), "{problems:#?}");
+
+    let listener = "fn serve() { std::os::unix::net::UnixListener::bind(path).unwrap(); }";
+    assert_eq!(local_socket_sites(listener).0, ["serve"]);
+    assert_eq!(
+        local_socket_sites("fn f() { tokio::net::UnixListener::bind(p)?; }").0,
+        ["f"]
+    );
+    assert!(
+        local_socket_sites("// UnixListener::bind(path)\nfn f() {}")
+            .0
+            .is_empty(),
+        "a comment is not a site"
+    );
+    for sample in [
+        "fn f() { std::net::UdpSocket::bind(\"0.0.0.0:0\"); }",
+        "fn f() { UnixDatagram::bind(path); }",
+        "fn f() { unsafe { libc::bind(fd, addr, len) }; }",
+        "fn f() { UnixListener :: bind(path); }",
+    ] {
+        assert_eq!(
+            local_socket_sites(sample).1.len(),
+            1,
+            "scanner missed {sample}"
+        );
     }
 }
 
