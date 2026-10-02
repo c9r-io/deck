@@ -105,7 +105,7 @@ jobs:
         run: node app/ui/js/check.mjs
 
       - name: Release tooling fixtures
-        run: python3 -m unittest scripts/test_release_tools.py scripts/test_edr_runtime.py scripts/test_signal_candidate.py scripts/test_codex_title_probe.py scripts/test_ce_verdict.py
+        run: python3 -m unittest scripts/test_release_tools.py scripts/test_edr_runtime.py scripts/test_signal_candidate.py scripts/test_codex_title_probe.py scripts/test_ce_verdict.py scripts/test_reminder_verify.py
 
       - name: Workflow syntax and expression validation
         run: scripts/check-workflows
