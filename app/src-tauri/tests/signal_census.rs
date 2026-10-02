@@ -75,6 +75,7 @@ fn sites(source: &str, token: &str, ident: fn(char) -> bool) -> Vec<usize> {
 const RUST_TOKENS: &[&str] = &[
     "TURN_DONE",
     "NEEDS_INPUT",
+    "WORKING",
     "\"turn-done\"",
     "\"needs-input\"",
     "\"working\"",
@@ -159,12 +160,14 @@ const RUST: &[(&str, &str, &str, usize, Class)] = &[
     // that may establish interaction evidence — a producer fact, no authority)
     ("agent_status.rs", "", "TURN_DONE", 3, Producer),
     ("agent_status.rs", "", "NEEDS_INPUT", 3, Producer),
+    ("agent_status.rs", "", "WORKING", 3, Producer),
     ("agent_status.rs", "", "\"turn-done\"", 4, Producer),
     ("agent_status.rs", "", "\"needs-input\"", 3, Producer),
     ("agent_status.rs", "", "\"working\"", 3, Producer),
     // FR-SI-04: the interaction tracker admits words per source interaction
     // (refuses late/ended/mismatched ones); it grants nothing
     ("agent_status.rs", "admit", "NEEDS_INPUT", 4, Producer),
+    ("agent_status.rs", "admit", "WORKING", 2, Producer),
     // ingest forwards a word to the desktop attention loop only from the
     // session's Signal target pane; `renotify` re-projects (reconcile on
     // target changes, ingest when a Codex generation turns ambiguous)
@@ -558,10 +561,14 @@ const JS: &[(&str, &str, &str, usize, Class)] = &[
     ("resume-model.js", "resumeCommands", ".agent", 2, NotSignal),
 ];
 
-/// `pollSessionsNow` projects every card's status AND retires a card whose
-/// shell died (`!info.alive`, liveness, not a hook word) in the same loop.
-/// Its agent read is pinned to exactly one `effectiveCardStatus` call; the
-/// finish decision is handed to `observeRunFinish` (Hold).
+/// `pollSessionsNow` projects every card's status AND, in the same loop,
+/// queues the retirement of a card whose owning shell exited normally
+/// (`info.exited_normally === true`: verified process-level evidence from
+/// tmux's pane-died ledger — not a hook word, and never `!info.alive` on its
+/// own, because absence is not deletion authority; `shell-exit.test.mjs` and
+/// `restart.test.mjs` hold that behaviour). Its agent read is pinned to
+/// exactly one `effectiveCardStatus` call; the finish decision is handed to
+/// `observeRunFinish` (Hold).
 const POLL_EXEMPTION: (&str, &str) = ("board.js", "pollSessionsNow");
 
 /// Calls that change the Board, a pane or the queue. A Presentation or
